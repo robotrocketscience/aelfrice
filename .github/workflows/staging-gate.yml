@@ -68,6 +68,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Fetch all branches
+        run: |
+          git fetch --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
       - name: Decode patterns
         env:
           PATTERNS: ${{ secrets.SCAN_RULES_B64 }}
@@ -77,8 +80,8 @@ jobs:
       - name: Scan history
         run: |
           set -euo pipefail
-          git log --all --format='%H%n%an%n%ae%n%cn%n%ce%n%s%n%b' > /tmp/h
-          git log --all -p > /tmp/d
+          git log --all --remotes='origin/*' --format='%H%n%an%n%ae%n%cn%n%ce%n%s%n%b' > /tmp/h
+          git log --all --remotes='origin/*' -p > /tmp/d
           fail=0
           while IFS= read -r p; do
             [ -z "$p" ] && continue
