@@ -1,0 +1,115 @@
+name: Staging Gate
+
+on:
+  push:
+    branches: [staging]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  secrets-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+  pattern-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Decode patterns
+        env:
+          PATTERNS: ${{ secrets.SCAN_RULES_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PATTERNS:-}" ]; then
+            echo "::error::SCAN_RULES_B64 not configured"
+            exit 1
+          fi
+          echo "$PATTERNS" | base64 -d > /tmp/p
+          [ -s /tmp/p ] || { echo "::error::empty"; exit 1; }
+      - name: Scan tracked files
+        run: |
+          set -euo pipefail
+          mapfile -t EXEMPT < <(grep -vE '^(#|$)' .github-pii-exempt 2>/dev/null || true)
+          mapfile -t FILES < <(git ls-files | while read -r f; do
+            skip=0
+            for pat in "${EXEMPT[@]:-}"; do
+              [ -z "$pat" ] && continue
+              [[ "$f" == $pat ]] && { skip=1; break; }
+            done
+            [ "$skip" -eq 0 ] && echo "$f"
+          done)
+          fail=0
+          while IFS= read -r p; do
+            [ -z "$p" ] && continue
+            [[ "$p" =~ ^# ]] && continue
+            if matches=$(grep -EHnI "$p" "${FILES[@]}" 2>/dev/null); then
+              echo "::error::pattern hit"
+              echo "$matches"
+              fail=1
+            fi
+          done < /tmp/p
+          rm -f /tmp/p
+          exit "$fail"
+
+  history-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch all branches
+        run: |
+          git fetch --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
+      - name: Decode patterns
+        env:
+          PATTERNS: ${{ secrets.SCAN_RULES_B64 }}
+        run: |
+          set -euo pipefail
+          echo "$PATTERNS" | base64 -d > /tmp/p
+      - name: Scan history
+        run: |
+          set -euo pipefail
+          git log --all --remotes='origin/*' --format='%H%n%an%n%ae%n%cn%n%ce%n%s%n%b' > /tmp/h
+          git log --all --remotes='origin/*' -p > /tmp/d
+          fail=0
+          while IFS= read -r p; do
+            [ -z "$p" ] && continue
+            [[ "$p" =~ ^# ]] && continue
+            if grep -El "$p" /tmp/h /tmp/d >/dev/null; then
+              echo "::error::pattern hit in history"
+              fail=1
+            fi
+          done < /tmp/p
+          rm -f /tmp/p /tmp/h /tmp/d
+          exit "$fail"
+
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: uv sync --frozen --extra dev
+      - run: uv run pytest tests/ -q
+
+  auto-pr-to-main:
+    if: false
+    needs: [secrets-scan, pattern-scan, history-scan, pytest]
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'
