@@ -3,9 +3,16 @@
 v0.1.0 storage layer. Stdlib-only (sqlite3). WAL journal mode for concurrent
 reads. FTS5 virtual table mirrors `beliefs.content` for keyword retrieval.
 
-Future-Rust-port boundary: graph-walk math (propagate_valence next commit;
-decay_sweep in v0.2.0) are the candidates for native re-implementation if/
-when Python bandwidth becomes a bottleneck. CRUD + FTS5 stay in Python.
+Setr propagate_valence lives here too (rather than a separate module) to keep
+v0.1.0 at the [redacted] module count. Broker-confidence attenuation: each hop
+through an intermediate belief is dampened by that belief's
+alpha/(alpha+beta), so low-confidence brokers absorb propagation. This is the
+v2.0 Setr fix.
+
+Future-Rust-port boundary: `propagate_valence` (here) and `decay_sweep`
+(landing in v0.2.0) are the hot paths and the candidates for native
+re-implementation if/when Python bandwidth becomes a bottleneck. The CRUD
+surface and FTS5 search stay in Python; only the graph-walk math moves.
 
 demotion_pressure note: this column is BOTH written and read end-to-end here.
 v2.0 had a bug where it was persisted but never surfaced; the test suite
@@ -221,6 +228,60 @@ class Store:
             "SELECT * FROM edges WHERE src = ?", (src,)
         )
         return [_row_to_edge(r) for r in cur.fetchall()]
+
+    # --- Setr: propagate_valence -----------------------------------------
+
+    def propagate_valence(
+        self,
+        src_id: str,
+        valence: float,
+        max_hops: int = 3,
+        min_threshold: float = 0.05,
+    ) -> dict[str, float]:
+        """Propagate a valence signal outward through edges, attenuated by
+        broker confidence (alpha / (alpha + beta) of intermediate beliefs).
+
+        BFS over outbound edges. At each hop the carried magnitude is
+        multiplied by:
+            EDGE_VALENCE[edge.type] * broker_confidence(dst)
+        Stops when |carried| < min_threshold or hop count exceeds max_hops.
+
+        Returns: dict mapping touched belief_id -> sum of applied deltas.
+        The src_id itself is NOT included in the returned map (it's the
+        source, not a recipient).
+        """
+        applied: dict[str, float] = {}
+        # Frontier entries: (belief_id, magnitude_carried_into_it, hops_taken)
+        # The source contributes its outbound edges at hop 1.
+        frontier: list[tuple[str, float, int]] = [(src_id, valence, 0)]
+        visited: set[str] = {src_id}
+
+        while frontier:
+            next_frontier: list[tuple[str, float, int]] = []
+            for current_id, carried, hops in frontier:
+                if hops >= max_hops:
+                    continue
+                if abs(carried) < min_threshold:
+                    continue
+                for edge in self.edges_from(current_id):
+                    multiplier = EDGE_VALENCE.get(edge.type, 0.0)
+                    if multiplier == 0.0:
+                        continue
+                    dst = self.get_belief(edge.dst)
+                    if dst is None:
+                        continue
+                    denom = dst.alpha + dst.beta
+                    broker = (dst.alpha / denom) if denom > 0 else 0.0
+                    delta = carried * multiplier * broker
+                    if abs(delta) < min_threshold:
+                        continue
+                    applied[edge.dst] = applied.get(edge.dst, 0.0) + delta
+                    if edge.dst not in visited:
+                        visited.add(edge.dst)
+                        next_frontier.append((edge.dst, delta, hops + 1))
+            frontier = next_frontier
+
+        return applied
 
     # --- Bulk helpers (used by tests / future modules) -------------------
 
