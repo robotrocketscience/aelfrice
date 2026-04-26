@@ -1,0 +1,26 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  id-token: write
+  attestations: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen --extra dev
+      - run: uv run pytest tests/ -q
+      - run: uv build
+      - uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: 'dist/*'
+      - uses: pypa/gh-action-pypi-publish@release/v1
