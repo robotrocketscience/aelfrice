@@ -1,22 +1,16 @@
 """SQLite-backed store for Beliefs and Edges, with FTS5 full-text search.
 
-v0.1.0 storage layer. Stdlib-only (sqlite3). WAL journal mode for concurrent
-reads. FTS5 virtual table mirrors `beliefs.content` for keyword retrieval.
+Stdlib-only (sqlite3). WAL journal mode for concurrent reads. FTS5 virtual
+table mirrors `beliefs.content` for keyword retrieval.
 
-Setr propagate_valence lives here too (rather than a separate module) to keep
-v0.1.0 at the [redacted] module count. Broker-confidence attenuation: each hop
-through an intermediate belief is dampened by that belief's
-alpha/(alpha+beta), so low-confidence brokers absorb propagation. This is the
-v2.0 Setr fix.
+`propagate_valence` lives here so v0.1.0 stays a small module set.
+Broker-confidence attenuation: each hop through an intermediate belief is
+dampened by that belief's alpha/(alpha+beta), so low-confidence brokers
+absorb propagation rather than amplify it.
 
-Future-Rust-port boundary: `propagate_valence` (here) and `decay_sweep`
-(landing in v0.2.0) are the hot paths and the candidates for native
-re-implementation if/when Python bandwidth becomes a bottleneck. The CRUD
-surface and FTS5 search stay in Python; only the graph-walk math moves.
-
-demotion_pressure note: this column is BOTH written and read end-to-end here.
-v2.0 had a bug where it was persisted but never surfaced; the test suite
-locks that behavior in from day one (see tests/test_demotion_pressure.py).
+`demotion_pressure` is both written and read end-to-end here; the test
+suite locks that behaviour in from day one
+(see tests/test_demotion_pressure.py).
 """
 from __future__ import annotations
 
@@ -140,7 +134,7 @@ class Store:
         return _row_to_belief(row) if row else None
 
     def update_belief(self, b: Belief) -> None:
-        """Full-row update. demotion_pressure included -- v2.0 bug fix."""
+        """Full-row update; demotion_pressure included."""
         self._conn.execute(
             """
             UPDATE beliefs SET

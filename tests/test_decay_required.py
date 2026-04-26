@@ -1,4 +1,4 @@
-"""[redacted] [redacted]: without decay, evidence mass runs unbounded.
+"""Without decay, evidence mass runs unbounded.
 
 Property: 100 mixed-sign feedback events on a baseline (1,1) belief.
 - Without decay: final (alpha+beta) >= 2 * baseline (= 4).

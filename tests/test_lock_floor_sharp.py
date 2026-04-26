@@ -1,8 +1,8 @@
-"""[redacted] [redacted]: lock-floor is a sharp step, not a gradient.
+"""Lock-floor is a sharp step, not a gradient.
 
 - Below floor (lock_level=user): decay() returns input unchanged regardless of age.
 - Above floor (lock_level=none): mass decreases as ~1 - 0.5^(age/half_life)
-  -- linear in that quantity by construction (allow epsilon tolerance).
+  — linear in that quantity by construction (allow epsilon tolerance).
 """
 from __future__ import annotations
 
