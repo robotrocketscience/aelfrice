@@ -1,9 +1,9 @@
-"""R&D round-1 E1b: high evidence-mass beliefs are inertial.
+"""High-evidence-mass beliefs are inertial.
 
 Property: Spearman rho < -0.5 between (alpha+beta) and per-event
 |delta posterior_mean| under a single +1 alpha update.
 
-Spearman is hand-rolled (stdlib only) -- scipy is banned per MVP_SCOPE.
+Spearman is hand-rolled (stdlib only).
 """
 from __future__ import annotations
 

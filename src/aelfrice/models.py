@@ -1,15 +1,15 @@
-"""Domain dataclasses for aelfrice v0.1.0.
+"""Domain dataclasses for aelfrice.
 
-Per MVP_SCOPE: load-bearing fields only. 4 belief types, 5 edge types,
-2 lock levels. No multi-source tagging, no rigor tier, no bitemporal
-event_time -- those are deferred to v1.x.
+Load-bearing fields only. 4 belief types, 5 edge types, 2 lock levels. No
+multi-source tagging, no rigor tier, no bitemporal event_time — those are
+deferred to a later release.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Final
 
-# --- Belief types (4, per MVP_SCOPE) ---
+# --- Belief types ---
 BELIEF_FACTUAL: Final[str] = "factual"
 BELIEF_CORRECTION: Final[str] = "correction"
 BELIEF_PREFERENCE: Final[str] = "preference"
@@ -22,7 +22,7 @@ BELIEF_TYPES: Final[frozenset[str]] = frozenset({
     BELIEF_REQUIREMENT,
 })
 
-# --- Edge types (5, per MVP_SCOPE) ---
+# --- Edge types ---
 EDGE_SUPPORTS: Final[str] = "SUPPORTS"
 EDGE_CITES: Final[str] = "CITES"
 EDGE_CONTRADICTS: Final[str] = "CONTRADICTS"
@@ -41,7 +41,7 @@ EDGE_VALENCE: Final[dict[str, float]] = {
 
 EDGE_TYPES: Final[frozenset[str]] = frozenset(EDGE_VALENCE.keys())
 
-# --- Lock levels (2, per MVP_SCOPE; promoted/freeze deferred to v1.3) ---
+# --- Lock levels ---
 LOCK_NONE: Final[str] = "none"
 LOCK_USER: Final[str] = "user"
 
@@ -52,8 +52,8 @@ LOCK_LEVELS: Final[frozenset[str]] = frozenset({LOCK_NONE, LOCK_USER})
 class Belief:
     """A unit of memory with Bayesian confidence and lock state.
 
-    Fields per MVP_SCOPE: (id, content, content_hash, alpha, beta, type,
-    lock_level, locked_at, demotion_pressure, created_at, last_retrieved_at).
+    Fields: id, content, content_hash, alpha, beta, type, lock_level,
+    locked_at, demotion_pressure, created_at, last_retrieved_at.
     """
 
     id: str

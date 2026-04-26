@@ -1,23 +1,14 @@
 """Scoring primitives: Beta-Bernoulli posterior, type-specific decay, relevance.
 
-Per MVP_SCOPE.md "In MVP (v1.0)" -> scoring.py:
-- Beta-Bernoulli posterior mean (alpha / (alpha + beta))
-- Type-specific decay using the 4 belief-type half-lives
-- Basic relevance (no document-class multipliers; deferred to v1.5)
+Half-lives (in hours, converted to seconds below):
+    factual     336   (14 days)
+    preference  2016  (12 weeks)
+    correction  4032  (24 weeks)
+    requirement 4032  (24 weeks)
 
-Half-life values are sourced from the v2.0 legacy scoring module:
-    git ref: chore/migration-phase1-inventory:src/aelfrice/scoring.py:16-19
-        factual:     336 hours  (14 days)
-        preference:  2016 hours (12 weeks)
-        correction:  4032 hours (24 weeks)
-        requirement: 4032 hours (24 weeks)
-Converted to seconds for the v0.2.0 API (time_seconds is the canonical unit
-in this rewrite; CHANGELOG narrative talks weeks/days but the source-of-truth
-constants live in legacy scoring.py).
-
-Lock-floor (round-1 E2): when a belief's lock_level is "user", decay() is a
-no-op (zero work). Above the floor (lock_level "none"), decay is exponential
-toward the Jeffreys prior (0.5, 0.5).
+Lock-floor: when a belief's lock_level is "user", decay() is a no-op
+regardless of age (zero work, sharp step). Above the floor decay is
+exponential toward the Jeffreys prior (0.5, 0.5).
 """
 from __future__ import annotations
 
@@ -25,7 +16,7 @@ from typing import Final
 
 from aelfrice.models import LOCK_USER, Belief
 
-# --- Half-lives in seconds, derived from legacy v2.0 scoring.py:16-19 ---
+# --- Half-lives in seconds ---
 _HOUR: Final[float] = 3600.0
 TYPE_HALF_LIFE_SECONDS: Final[dict[str, float]] = {
     "factual": 336.0 * _HOUR,         # 14 days
@@ -69,8 +60,8 @@ def decay(
 ) -> tuple[float, float]:
     """Exponentially decay (alpha, beta) toward the Jeffreys prior (0.5, 0.5).
 
-    Lock-floor short-circuit (round-1 E2): if lock_level == "user", returns
-    (alpha, beta) unchanged regardless of age. Sharp step, not gradient.
+    Lock-floor short-circuit: if lock_level == "user", returns (alpha, beta)
+    unchanged regardless of age. Sharp step, not gradient.
 
     Otherwise both alpha and beta move toward the prior by the same factor
     f = 0.5 ** (age_seconds / half_life_seconds), so total evidence (alpha+beta)
@@ -93,7 +84,7 @@ def decay(
 def relevance(belief: Belief, query_overlap_score: float) -> float:
     """Basic relevance: confidence * query overlap.
 
-    query_overlap_score is supplied by retrieval (v0.3.0). Document-class
-    multipliers and other layered weights are deferred to v1.5 per MVP_SCOPE.
+    query_overlap_score is supplied by retrieval. Document-class multipliers
+    and other layered weights are deferred to a later release.
     """
     return posterior_mean(belief.alpha, belief.beta) * query_overlap_score

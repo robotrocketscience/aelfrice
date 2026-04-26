@@ -1,7 +1,7 @@
 [project]
 name = "aelfrice"
 version = "0.2.0"
-description = "Bayesian memory that learns from feedback"
+description = "Bayesian memory designed for feedback-driven learning"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
