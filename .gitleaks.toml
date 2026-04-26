@@ -1,0 +1,13 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "project allowlist"
+
+regexes = [
+  '''noreply@robotrocketscience\.com''',
+  '''noreply\+[a-z0-9._-]+@anthropic\.com''',
+]
+
+paths = [
+]
