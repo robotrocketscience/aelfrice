@@ -1,6 +1,6 @@
 [project]
 name = "aelfrice"
-version = "1.0.0"
+version = "1.0.1"
 description = "Bayesian memory for LLM agents — local, SQLite-backed, feedback-driven."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -57,6 +57,11 @@ dev = [
 ]
 mcp = [
     "fastmcp>=0.2.0",
+]
+archive = [
+    # Required only for `aelf uninstall --archive`: AES-128-CBC + HMAC
+    # via Fernet, with a scrypt-derived key from a user-supplied password.
+    "cryptography>=42.0",
 ]
 benchmarks = [
     # Sentence tokenization for MAB / LoCoMo adapters

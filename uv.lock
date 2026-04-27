@@ -12,10 +12,13 @@ resolution-markers = [
 
 [[package]]
 name = "aelfrice"
-version = "1.0.0"
+version = "1.0.1"
 source = { editable = "." }
 
 [package.optional-dependencies]
+archive = [
+    { name = "cryptography" },
+]
 benchmarks = [
     { name = "datasets" },
     { name = "huggingface-hub" },
@@ -33,6 +36,7 @@ mcp = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", marker = "extra == 'archive'", specifier = ">=42.0" },
     { name = "datasets", marker = "extra == 'benchmarks'", specifier = ">=2.14" },
     { name = "fastmcp", marker = "extra == 'mcp'", specifier = ">=0.2.0" },
     { name = "huggingface-hub", marker = "extra == 'benchmarks'", specifier = ">=0.20" },
@@ -42,7 +46,7 @@ requires-dist = [
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3" },
     { name = "tiktoken", marker = "extra == 'benchmarks'", specifier = ">=0.7" },
 ]
-provides-extras = ["dev", "mcp", "benchmarks"]
+provides-extras = ["dev", "mcp", "archive", "benchmarks"]
 
 [[package]]
 name = "aiofile"

@@ -63,6 +63,15 @@ _COMMAND_KEY: Final[str] = "command"
 _TIMEOUT_KEY: Final[str] = "timeout"
 _STATUS_MESSAGE_KEY: Final[str] = "statusMessage"
 _HOOK_TYPE_COMMAND: Final[str] = "command"
+_STATUSLINE_KEY: Final[str] = "statusLine"
+STATUSLINE_COMMAND: Final[str] = "aelf statusline"
+STATUSLINE_SUFFIX: Final[str] = " ; aelf statusline 2>/dev/null"
+# Shell metacharacters that signal a "complex" existing statusline command
+# we do NOT want to mutate. If any of these are already in the user's
+# command we leave it alone and ask them to compose manually.
+_COMPLEX_SHELL_TOKENS: Final[tuple[str, ...]] = (
+    "|", "<<", "&&", "||", "`", "\\",
+)
 
 
 @dataclass(frozen=True)
@@ -164,6 +173,130 @@ def uninstall_user_prompt_submit_hook(
     user_prompt_submit[:] = kept
     _atomic_write(settings_path, data)
     return UninstallResult(path=settings_path, removed=removed)
+
+
+# --- Statusline auto-wiring ---------------------------------------------
+
+
+@dataclass(frozen=True)
+class StatuslineInstallResult:
+    """Outcome of `install_statusline`.
+
+    `mode` describes what we did:
+      'installed'   - settings had no statusLine; we wrote a fresh one.
+      'composed'    - settings had a simple existing statusLine; we
+                      appended our snippet to its command.
+      'already'     - settings already had our statusline (idempotent).
+      'skipped'     - existing statusLine was complex (shell
+                      metacharacters); we left it alone. The caller
+                      should print the documented manual-compose hint.
+    """
+    path: Path
+    mode: Literal["installed", "composed", "already", "skipped"]
+    existing_command: str | None = None
+
+
+@dataclass(frozen=True)
+class StatuslineUninstallResult:
+    """Outcome of `uninstall_statusline`.
+
+    `mode` describes what we did:
+      'removed'   - statusLine was just `aelf statusline`; field deleted.
+      'unwrapped' - statusLine was a composed `<orig> ; aelf statusline ...`;
+                    we restored the original command.
+      'absent'    - no statusLine matched ours; no-op.
+    """
+    path: Path
+    mode: Literal["removed", "unwrapped", "absent"]
+
+
+def _looks_complex(command: str) -> bool:
+    """True iff `command` contains shell tokens we refuse to wrap."""
+    return any(tok in command for tok in _COMPLEX_SHELL_TOKENS)
+
+
+def _has_our_statusline(command: str) -> bool:
+    """True iff `command` already invokes our statusline snippet."""
+    return STATUSLINE_COMMAND in command
+
+
+def install_statusline(
+    settings_path: Path, *, statusline_command: str = STATUSLINE_COMMAND
+) -> StatuslineInstallResult:
+    """Add or compose `aelf statusline` into Claude Code's statusLine.
+
+    Deterministic rules:
+      * No `statusLine` set -> write fresh `{type, command}`.
+      * Already `aelf statusline` -> idempotent no-op.
+      * Existing simple command -> append ' ; aelf statusline 2>/dev/null'.
+      * Existing complex command -> skip with a 'skipped' result.
+    """
+    data = _load_settings(settings_path)
+    existing = data.get(_STATUSLINE_KEY)
+    if existing is None:
+        data[_STATUSLINE_KEY] = {
+            _TYPE_KEY: _HOOK_TYPE_COMMAND,
+            _COMMAND_KEY: statusline_command,
+        }
+        _atomic_write(settings_path, data)
+        return StatuslineInstallResult(
+            path=settings_path, mode="installed", existing_command=None
+        )
+    if not isinstance(existing, dict):
+        # Malformed -- leave alone, signal as skipped so caller can warn.
+        return StatuslineInstallResult(
+            path=settings_path, mode="skipped",
+            existing_command=str(existing),
+        )
+    existing_dict = cast(dict[str, object], existing)
+    cmd_obj = existing_dict.get(_COMMAND_KEY)
+    if not isinstance(cmd_obj, str):
+        return StatuslineInstallResult(
+            path=settings_path, mode="skipped", existing_command=None
+        )
+    if _has_our_statusline(cmd_obj):
+        return StatuslineInstallResult(
+            path=settings_path, mode="already", existing_command=cmd_obj
+        )
+    if _looks_complex(cmd_obj):
+        return StatuslineInstallResult(
+            path=settings_path, mode="skipped", existing_command=cmd_obj
+        )
+    existing_dict[_COMMAND_KEY] = cmd_obj + STATUSLINE_SUFFIX
+    _atomic_write(settings_path, data)
+    return StatuslineInstallResult(
+        path=settings_path, mode="composed", existing_command=cmd_obj
+    )
+
+
+def uninstall_statusline(
+    settings_path: Path, *, statusline_command: str = STATUSLINE_COMMAND
+) -> StatuslineUninstallResult:
+    """Reverse `install_statusline` surgically.
+
+    Recognises both the standalone form (drop the field) and the
+    composed form (strip our suffix, restore the original command).
+    Leaves anything else alone.
+    """
+    if not settings_path.exists():
+        return StatuslineUninstallResult(path=settings_path, mode="absent")
+    data = _load_settings(settings_path)
+    existing = data.get(_STATUSLINE_KEY)
+    if not isinstance(existing, dict):
+        return StatuslineUninstallResult(path=settings_path, mode="absent")
+    existing_dict = cast(dict[str, object], existing)
+    cmd_obj = existing_dict.get(_COMMAND_KEY)
+    if not isinstance(cmd_obj, str):
+        return StatuslineUninstallResult(path=settings_path, mode="absent")
+    if cmd_obj == statusline_command:
+        del data[_STATUSLINE_KEY]
+        _atomic_write(settings_path, data)
+        return StatuslineUninstallResult(path=settings_path, mode="removed")
+    if cmd_obj.endswith(STATUSLINE_SUFFIX):
+        existing_dict[_COMMAND_KEY] = cmd_obj[: -len(STATUSLINE_SUFFIX)]
+        _atomic_write(settings_path, data)
+        return StatuslineUninstallResult(path=settings_path, mode="unwrapped")
+    return StatuslineUninstallResult(path=settings_path, mode="absent")
 
 
 # --- internal helpers ---------------------------------------------------
