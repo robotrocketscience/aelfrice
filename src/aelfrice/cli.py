@@ -661,14 +661,56 @@ def _add_hook_scope_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+_UPDATE_CHECK_SKIP_CMDS: Final[frozenset[str]] = frozenset(
+    {"upgrade", "uninstall", "statusline"}
+)
+
+
+def _maybe_emit_update_banner(cmd: str | None) -> None:
+    """Print a one-line orange notice on stderr if an update is pending.
+
+    Skipped for commands that already speak about updates themselves
+    (`aelf upgrade`, `aelf uninstall`, `aelf statusline`) so we do not
+    double-print or stomp on machine-readable output.
+    """
+    if cmd in _UPDATE_CHECK_SKIP_CMDS:
+        return
+    if _update_check_disabled():
+        return
+    status = _read_update_cache()
+    if not status.update_available:
+        return
+    print(
+        f"\x1b[38;5;208m⬆ aelfrice {status.latest} available, "
+        f"run: aelf upgrade\x1b[0m",
+        file=sys.stderr,
+    )
+
+
 def main(argv: Sequence[str] | None = None, out: object = None) -> int:
     """CLI entry point. Returns process exit code.
 
     `argv` lets tests pass synthetic args; defaults to sys.argv[1:].
     `out` lets tests capture stdout; defaults to sys.stdout.
+
+    Two things happen for free on every invocation:
+      1. A TTL-gated background update check is fired (detached
+         subprocess, never blocks).
+      2. After the command runs, if the cache says an update is
+         available, an orange banner is printed to stderr.
+
+    Both are skipped if AELF_NO_UPDATE_CHECK is set, and the banner
+    is skipped for commands that already handle update messaging
+    themselves (upgrade / uninstall / statusline).
     """
     if out is None:
         out = sys.stdout
     parser = build_parser()
     args = parser.parse_args(argv)
-    return int(args.func(args, out))
+    cmd = getattr(args, "cmd", None)
+    if not _update_check_disabled() and cmd not in _UPDATE_CHECK_SKIP_CMDS:
+        # Fire-and-forget: cache TTL gates duplicate work, never blocks.
+        maybe_check_for_update_async()
+    code = int(args.func(args, out))
+    _maybe_emit_update_banner(cmd)
+    return code

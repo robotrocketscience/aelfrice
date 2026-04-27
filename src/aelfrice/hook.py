@@ -62,6 +62,14 @@ def user_prompt_submit(
     sout = stdout if stdout is not None else sys.stdout
     serr = stderr if stderr is not None else sys.stderr
     try:
+        # TTL-gated background update check, completely detached, never
+        # blocks the hook. Statusline reads the cache it writes.
+        try:
+            from aelfrice.lifecycle import maybe_check_for_update_async
+
+            maybe_check_for_update_async()
+        except Exception:
+            pass
         raw = sin.read()
         prompt = _extract_prompt(raw)
         if prompt is None:
