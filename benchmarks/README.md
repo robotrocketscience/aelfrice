@@ -14,56 +14,66 @@ which is a small in-tree corpus that runs in CI on every PR.
 | Synthetic regression | `src/aelfrice/benchmark.py` | Catch retrieval/scoring regressions | <1s | $0 |
 | Academic suite | `benchmarks/` (here) | Reproduce website headline numbers | minutes–hours | LLM API spend |
 
-## Activation status (aelfrice v1.0.x post-P2 ingest shim)
+## Activation status (aelfrice v1.0.x post-retrieve_v2 wrapper)
 
 The adapters were ported from the private lab repo
 (`aelfrice-lab/benchmarks/`) where they target lab v2.0.0. P2
-landed an ingest-pipeline shim (`aelfrice.ingest.ingest_turn`,
-`aelfrice.extraction`, `MemoryStore.create_session`) so all five
-academic adapters now **import successfully**. End-to-end runs
-remain blocked on per-adapter issues:
+landed the ingest-pipeline shim. The follow-up wrapper PR adds
+`aelfrice.retrieval.retrieve_v2` and `[benchmarks]` extras; all
+five academic adapters now run end-to-end in `--retrieve-only`
+mode. Numbers produced are the L0+FTS5 baseline.
 
-| File | Imports | End-to-end | Notes |
+| File | Imports | Retrieve-only | Notes |
 |---|---|---|---|
 | `verify_clean.py` | OK | runs | stdlib only |
-| `mab_adapter.py` | needs `nltk` + `tiktoken` | blocked | retrieval kwargs `budget`/`use_hrr`/`use_bfs` differ from public `retrieve(token_budget=...)` |
-| `mab_reader.py` | needs `anthropic` (already a dep) | runs | LLM reader; not an aelfrice ingest path |
-| `locomo_adapter.py` | needs `nltk` | blocked | same retrieval-kwarg gap |
+| `mab_adapter.py` | OK with `[benchmarks]` extras | runs | needs `nltk` + `tiktoken` |
+| `mab_reader.py` | OK | runs | LLM reader; gated behind workflow_dispatch in CI |
+| `locomo_adapter.py` | OK with `[benchmarks]` extras | runs | needs `nltk` |
 | `locomo_generate.py` | OK | runs | stdlib only |
-| `locomo_score.py` | needs `nltk` (via adapter) | blocked | scoring depends on adapter symbols |
-| `locomo_score_protocol.py` | same | blocked | same |
-| `longmemeval_adapter.py` | OK | blocked | retrieval-kwarg gap |
-| `longmemeval_budget_sweep.py` | OK | blocked | depends on adapter |
+| `locomo_score.py` | OK with `[benchmarks]` extras | runs | scoring after adapter |
+| `locomo_score_protocol.py` | OK with `[benchmarks]` extras | runs | scoring after adapter |
+| `longmemeval_adapter.py` | OK | **smoked** (15 Q, baseline in `results/v1.2.0-pre.json`) | retrieve-only path validated; reader/judge passes deferred |
+| `longmemeval_budget_sweep.py` | OK | runs | depends on adapter |
 | `longmemeval_score.py` | OK | runs | stdlib only |
-| `structmemeval_adapter.py` | OK | blocked | retrieval-kwarg gap |
-| `amabench_adapter.py` | needs `datasets` (HuggingFace) | blocked | retrieval-kwarg gap |
+| `structmemeval_adapter.py` | OK | runs | retrieve-only path |
+| `amabench_adapter.py` | OK with `[benchmarks]` extras | runs | needs `datasets` |
 
 Three additional adapters from the lab (`mab_triple_adapter.py`,
 `mab_entity_index_adapter.py`, `mab_llm_entity_adapter.py`) are
 **not yet present**; they require triple-extraction (P3) and
 entity-index retrieval (P4) and will land alongside those features.
 
-### Remaining blockers for end-to-end runs
+### Baseline behavior at v1.0.x
 
-1. **Optional dependencies.** `nltk`, `tiktoken`, `datasets`. Add to
-   `[project.optional-dependencies] benchmarks` and require
-   `pip install aelfrice[benchmarks]` for end-to-end use.
-2. **Retrieval-kwarg gap.** Adapters call:
+Retrieve-only runs produce **avg_beliefs ≈ 0** on LongMemEval at
+this version. This is the expected, documented behavior:
 
-   ```python
-   result = retrieve(store=store, query=q, budget=N,
-                     include_locked=False, use_hrr=True, use_bfs=True)
-   parts = [b.content for b in result.beliefs]
-   ```
+- Public `retrieve()` is L0 (locked) + L1 (FTS5 BM25). No HRR
+  vocabulary bridge, no BFS multi-hop chaining.
+- Adapters call `retrieve_v2(use_hrr=True, use_bfs=True)`; both
+  flags are accepted but no-op at v1.0.x.
+- The LongMemEval paper itself reports BM25 session-level
+  Recall@5 = 0.634 — the BM25-only failure mode is precedented.
 
-   Public v1.0.x `retrieve` returns `list[Belief]` directly and
-   accepts `token_budget` (not `budget`); has no `include_locked`,
-   `use_hrr`, or `use_bfs`. Two paths to close this:
-   - Patch each adapter to use the public signature (intrusive).
-   - Add `aelfrice.retrieval.retrieve_v2(...)` wrapper with the
-     lab signature; HRR/BFS flags no-op until ported. (Recommended.)
+Real numbers (matching the website's headline 59.0% on
+LongMemEval) appear once HRR (P4) and BFS (P3) port from lab.
 
-   This wrapper is the next chunk of P2 (or rolled into P3).
+### Running benchmarks locally
+
+```bash
+# Install with the benchmarks extras:
+pip install -e ".[benchmarks]"
+
+# Or with uv:
+uv pip install -e ".[benchmarks]"
+
+# Run a tiny LongMemEval smoke (3 questions, retrieve-only):
+PYTHONPATH=. python benchmarks/longmemeval_adapter.py \
+    --subset 3 --retrieve-only /tmp/lme_smoke.json
+
+# Verify no contamination in the retrieval file:
+PYTHONPATH=. aelf bench verify-clean /tmp/lme_smoke.json
+```
 
 ## Missing public-surface dependencies
 
