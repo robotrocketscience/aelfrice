@@ -68,6 +68,30 @@ These existed in the legacy v2.0 codebase. Each will be reintroduced with a benc
 - **v1.3 retrieval wave:** HRR / vocabulary bridging, multi-hop graph retrieval, LLM-Haiku classification (~$0.005/session), cross-project knowledge federation (#109).
 - **v2.0:** full academic benchmark suite (LoCoMo, MAB, LongMemEval, StructMemEval, AmaBench) + the `wonder`, `reason`, `core`, `unlock`, `delete`, `confirm` commands. Snapshot / timeline / evolution / diff tools. Obsidian export/sync. Vector embeddings and ANN are NOT planned for v2.0 — `aelfrice` stays SQLite + FTS5 by default at every milestone in this list.
 
+## Out of scope by design
+
+Some properties are **not** v1.x gaps to close — they are scope choices that follow from aelfrice's architectural commitments. Listed here so users evaluating the project know what it is *not* trying to be.
+
+### Multi-session aggregation / counting / fuzzy semantic recall
+
+aelfrice's retrieval is BM25 lexical plus a typed graph walk. This is the right substrate for known-item search over behavioural directives — the core design target — and it has known limitations on aggregative or counting queries spanning many sessions ("how many times did the user mention X across last quarter?", "summarise all my preferences about testing"). On benchmarks like LongMemEval multi-session, embedding-based systems will outperform aelfrice on this query category, and that is a real performance gap on those queries.
+
+The principled response is **not** to add embeddings as a fallback retrieval path. Doing so would break the determinism contract documented in [PHILOSOPHY § Determinism is the property](PHILOSOPHY.md#determinism-is-the-property): one non-deterministic retrieval step destroys bit-level reproducibility, named-rule traceability, and write-log historical reconstruction for every result the system returns, not just the embedding-routed ones. The trade is structurally bad — the deterministic guarantees are the property that makes the entire system valuable for high-stakes deployment, and they hold compositionally only.
+
+The principled response **is** one of:
+
+1. **Improve the lexical layer for aggregative cases.** Detect aggregative query intent at Layer 0 (structural query analysis) and route to a specialised handler that operates over the deterministic store: SQL aggregations over `feedback_history`, scoped graph walks, time-bucketed COUNT queries.
+2. **Document the scope choice.** This section. aelfrice is for behavioural directive recall, lock enforcement, and correction memory — not for general-purpose long-context QA over conversational history.
+3. **Pair aelfrice with a separate tool when the use case demands fuzzy semantic recall.** The two have different trust profiles and different deployment stories; pairing them is fine, blending them inside a single retrieval pipeline is not.
+
+### General-purpose long-context QA
+
+aelfrice is not optimised for "answer arbitrary questions over a large conversation history." That is the LLM-with-RAG-and-summary-buffer task. aelfrice is optimised for *the agent doesn't forget the rule you gave it*. These are different problems with different success criteria; separating them is the cleaner architectural stance.
+
+### Probabilistic retrieval-relevance
+
+Retrieval relevance is computed deterministically from BM25 scores plus typed-edge weights. There is no learned re-ranker, no neural relevance model, and no fine-tuning path. Relevance quality is improved by: better tokenisation, better Layer 0 query analysis, better edge inference at write time. None of these introduce non-determinism into the retrieval path.
+
 ## Surface limits at v1.0
 
 - **Retrieval is keyword only.** No stemming beyond porter+unicode61. No synonym expansion. "deploy" won't surface "publish to prod" without a tokenizable substring overlap.
