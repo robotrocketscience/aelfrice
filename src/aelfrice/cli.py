@@ -9,6 +9,7 @@ Commands:
   feedback <id> <used|harmful>     apply one Bayesian feedback event
   stats                            summary of belief / lock / history counts
   health                           regime classifier output
+  doctor                           verify hook commands resolve in settings.json
   setup                            install UserPromptSubmit hook in Claude Code
   unsetup                          remove UserPromptSubmit hook from Claude Code
   upgrade                          print the right pip-upgrade command line
@@ -45,6 +46,7 @@ from aelfrice.models import (
 )
 from aelfrice import __version__ as _AELFRICE_VERSION
 from aelfrice.benchmark import run_benchmark, seed_corpus
+from aelfrice.doctor import diagnose, format_report
 from aelfrice.lifecycle import (
     PACKAGE_NAME as _PKG,
     UpdateStatus,
@@ -749,6 +751,23 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
+    """Diagnose hook + statusline command resolution in settings.json files.
+
+    Exit 0 when nothing is broken, exit 1 when at least one broken
+    command is found. CI-friendly.
+    """
+    project_root = Path(args.project_root) if args.project_root else None
+    user_settings = (
+        Path(args.user_settings) if args.user_settings else None
+    )
+    report = diagnose(
+        user_settings=user_settings, project_root=project_root
+    )
+    print(format_report(report), file=out)  # type: ignore[arg-type]
+    return 1 if report.broken else 0
+
+
 # --- Dispatcher ---------------------------------------------------------
 
 
@@ -805,6 +824,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_health = sub.add_parser("health", help="regime classifier output")
     p_health.set_defaults(func=_cmd_health)
+
+    p_doctor = sub.add_parser(
+        "doctor",
+        help=(
+            "diagnose Claude Code hook + statusline commands in user "
+            "and project settings.json. Exits 1 if any are broken."
+        ),
+    )
+    p_doctor.add_argument(
+        "--user-settings", default=None,
+        help="override user settings.json path (default: ~/.claude/settings.json)",
+    )
+    p_doctor.add_argument(
+        "--project-root", default=None,
+        help="override project root for project-scope check (default: cwd)",
+    )
+    p_doctor.set_defaults(func=_cmd_doctor)
 
     p_setup = sub.add_parser(
         "setup",
