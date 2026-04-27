@@ -44,6 +44,34 @@ installable release; see the roadmap in [README.md](README.md).
   substring case-insensitive). No regex in the user-facing schema.
   Library callers can pass an explicit `NoiseConfig` to
   `scan_repo(..., noise_config=...)` to bypass file discovery (#72).
+- `aelf upgrade` subcommand: prints the right pip-upgrade command for
+  the user's install context (venv / pipx / system), includes the
+  published wheel SHA-256 + PyPI URL for hash-pinned installs (#73).
+- `aelf uninstall` subcommand with mutually-exclusive `--keep-db` /
+  `--purge` / `--archive PATH` disposition flags. `--purge` requires
+  three redundant gates (explicit flag, typed `PURGE`, final `[y/N]`).
+  `--archive` encrypts the DB with AES-128-CBC + HMAC via Fernet,
+  scrypt-derived key from a user password (Salt embedded; password is
+  the only secret needed for recovery). Public `decrypt_archive()` API
+  for later recovery (#73).
+- `aelf statusline` subcommand: emits an orange-coloured one-line
+  update-banner prefix snippet for Claude Code's statusbar (and any
+  shell-driven status bar). Empty output when no update is pending.
+  Truecolor → 256-color → basic-yellow fallback, NO_COLOR honoured (#73).
+- Two-component update notifier ported from GSD's pattern: detached
+  background PyPI check writes a JSON cache at
+  `~/.cache/aelfrice/update_check.json`; statusline + post-command
+  banners read that cache only. Cache TTL: 24h. Opt out via
+  `AELF_NO_UPDATE_CHECK=1` (#73).
+- `aelf setup` auto-wires the statusline alongside the hook by default
+  (`--no-statusline` opts out). Composes deterministically with an
+  existing `statusLine`: empty slot → install; already ours → no-op;
+  simple existing → wrap with `; aelf statusline 2>/dev/null`; complex
+  (shell metacharacters) → leave alone with a one-line hint (#73).
+- `aelf unsetup` reverses the statusline composition surgically (#73).
+- New optional extra: `pip install 'aelfrice[archive]'` adds the
+  `cryptography` dep that `aelf uninstall --archive` needs (#73).
+- Slash commands: `/aelf:upgrade`, `/aelf:uninstall`, `/aelf:statusline` (#73).
 
 ### Changed
 
@@ -53,6 +81,13 @@ installable release; see the roadmap in [README.md](README.md).
   same OPEN_TAG/CLOSE_TAG output envelope, same payload schema; the
   behavioural difference is the audit-row write per returned belief
   (#70).
+- `aelf setup` output now shows two lines (hook + statusline) on a
+  fresh install. `aelf unsetup` shows the matching teardown lines (#73).
+- README "Install" section rewritten with explicit verification
+  commands; new "Upgrade" and "Uninstall" sections (#73).
+- `docs/INSTALL.md` rewritten with explicit Statusline composition
+  table, full uninstall reference (including archive recovery), and
+  Update notifier opt-out instructions (#73).
 
 ## [1.0.0] - 2026-04-27
 

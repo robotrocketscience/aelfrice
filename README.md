@@ -52,12 +52,64 @@ Per-version detail with deliverables, recovery inventory, and structural-fix rat
 ## Install
 
 ```bash
-pip install aelfrice              # core
-pip install "aelfrice[mcp]"       # add MCP server
-aelf setup                         # wire UserPromptSubmit hook into Claude Code
+pip install aelfrice                # core (zero runtime deps)
+pip install "aelfrice[mcp]"         # add MCP server
+pip install "aelfrice[archive]"     # add encrypted DB archive on uninstall
+aelf --version                       # confirm install
+aelf setup                           # wire hook + statusline into Claude Code
+aelf health                          # confirm wiring + store init
 ```
 
+`aelf setup` wires two things into `~/.claude/settings.json`:
+
+1. The **UserPromptSubmit hook** (`aelf-hook`) which injects relevant beliefs into every Claude Code prompt.
+2. The **statusline notifier** (`aelf statusline`) which shows an orange `⬆ aelfrice X.Y.Z available, run: aelf upgrade` banner *only* when an update is pending. When you're up to date the banner is empty and your statusline looks unchanged.
+
+If you already have a custom `statusLine` configured, `aelf setup` composes its snippet onto the end of your command (preserving your bar). If your existing command uses pipes, here-docs, `&&`, backticks, or backslashes it's left untouched and you get a one-line hint about manual composition.
+
+`--no-statusline` opts out of the auto-wire if you want hook-only.
+
 [docs/INSTALL.md](docs/INSTALL.md) covers Codex wiring, generic MCP hosts, and troubleshooting.
+
+## Upgrade
+
+```bash
+aelf upgrade           # prints the right pip-upgrade line for your env
+aelf upgrade --check   # yes/no, no command line printed
+```
+
+`aelf upgrade` detects venv vs pipx vs system and tells you the exact line. It does **not** execute pip itself: replacing the running package mid-process is unreliable on Windows and can leave a broken interpreter. You run the line.
+
+When an update is available the output also includes the published wheel SHA-256 plus the PyPI release URL so you can hash-pin the install if you want.
+
+The orange statusline banner appears automatically when an update is pending and disappears once you're up to date — no manual refresh needed.
+
+Opt out of the update notifier at any time with `export AELF_NO_UPDATE_CHECK=1` or `aelf <cmd> --no-update-check`.
+
+## Uninstall
+
+aelfrice has an explicit teardown command. You **must** pick exactly one disposition for the brain-graph DB:
+
+```bash
+aelf uninstall --keep-db       # leave ~/.aelfrice/memory.db alone (safe)
+aelf uninstall --archive ~/aelf-backup.aenc   # encrypt then delete
+aelf uninstall --purge         # permanently delete (redundant gates fire)
+pip uninstall aelfrice         # finally, remove the wheel
+```
+
+Verify removal:
+
+```bash
+aelf --version 2>&1 | grep -q "aelfrice" || echo "removed"
+```
+
+Details:
+
+- **`--keep-db`** — DB preserved. Default also runs `unsetup` (removes hook + statusline). Pass `--keep-hook` to keep those too.
+- **`--archive PATH`** — DB encrypted (AES-128-CBC + HMAC via Fernet, scrypt-derived key) to PATH, then original deleted. Password is read interactively (twice, must match) or via `--password-stdin`. Recover later with `python -c "from aelfrice.lifecycle import decrypt_archive; open('out.db','wb').write(decrypt_archive('PATH','pw'))"`. Requires `pip install 'aelfrice[archive]'`.
+- **`--purge`** — Permanently deletes the DB. Three gates fire before deletion: (1) the flag must be passed explicitly, (2) you must type `PURGE` verbatim, (3) a final `[y/N]` confirmation. `--yes` skips the prompts but does **not** auto-pass `--purge`.
+
+[docs/INSTALL.md](docs/INSTALL.md#uninstall) has the full uninstall reference including archive-recovery details.
 
 ## Docs
 

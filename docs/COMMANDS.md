@@ -1,6 +1,6 @@
 # CLI Reference
 
-Eleven subcommands. The first eight (retrieval/feedback) are also available as MCP tools and Claude Code slash commands. `setup`/`unsetup`/`bench` are CLI-only.
+Fourteen subcommands. The first eight (retrieval/feedback) are also available as MCP tools and Claude Code slash commands. The lifecycle commands (`setup`/`unsetup`/`upgrade`/`uninstall`/`statusline`) and `bench` are CLI-only.
 
 DB resolves from `$AELFRICE_DB` or `~/.aelfrice/memory.db`.
 
@@ -20,9 +20,13 @@ aelf <subcommand> [args] [options]
 | `feedback <belief_id> <used\|harmful> [--source S]` | id, signal, optional source | `used` ⇒ α += 1. `harmful` ⇒ β += 1. Positive feedback flowing through outbound CONTRADICTS edges to user-locks bumps their `demotion_pressure`; ≥ 5 ⇒ auto-demote. |
 | `stats` | — | beliefs / edges / locked / feedback_events counts. |
 | `health` | — | Regime classifier: one of `early-onboarding`, `steady`, `lock-heavy`, `over-confident`, `insufficient-data`. |
-| `setup [--scope user\|project] [--project-root D] [--settings-path P] [--command C] [--timeout N] [--status-message M]` | various | Install `UserPromptSubmit` hook in Claude Code `settings.json`. Default command: `aelf-hook`. Idempotent + atomic. |
-| `unsetup` (same scope flags) | — | Remove the hook. Match by command string. |
+| `setup [--scope user\|project] [--project-root D] [--settings-path P] [--command C] [--timeout N] [--status-message M] [--no-statusline]` | various | Install `UserPromptSubmit` hook + `statusLine` notifier in Claude Code `settings.json`. Default command: `aelf-hook`. Idempotent + atomic. `--no-statusline` skips the statusline auto-wire. |
+| `unsetup` (same scope flags) | — | Remove both the hook and our statusline contribution. Composed statuslines are surgically unwrapped to restore the original command. |
+| `upgrade [--check]` | — | Print the right pip-upgrade command for the running env (venv → `pip install --upgrade`, pipx → `pipx upgrade`, system → `pip install --user --upgrade`). When an update is available, also prints the wheel SHA-256 + PyPI release URL for hash-pinned installs. `--check` suppresses the command line. |
+| `uninstall (--keep-db \| --purge \| --archive PATH) [--password-stdin] [--yes] [--keep-hook] [--settings-path P]` | one disposition flag required | Tear down aelfrice. Disposition modes are mutually exclusive. `--purge` requires typing `PURGE` then `[y/N]` unless `--yes` is passed. `--archive` requires `pip install 'aelfrice[archive]'`. By default also runs `unsetup`; `--keep-hook` opts out. Tail message points at `pip uninstall aelfrice` for wheel removal. |
+| `statusline` | — | Emit the orange update-banner snippet (or empty when no update is pending). Reads cache only, no network. Composes onto an existing statusline via shell `;`. Color: truecolor → 256-color → basic, NO_COLOR honoured. |
 | `bench [--db PATH] [--top-k N]` | — | Run the deterministic 16-belief × 16-query benchmark. Print a single JSON `BenchmarkReport`: `hit_at_1` / `hit_at_3` / `hit_at_5` / `mrr` + `p50_latency_ms` / `p99_latency_ms`. |
+| `--version` (root flag) | — | Print `aelfrice X.Y.Z` and exit. |
 
 ## Output format
 
