@@ -359,11 +359,11 @@ def is_noise(text: str, config: NoiseConfig | None = None) -> bool:
     if not text or not text.strip():
         return True
     cfg = _resolve(config)
-    if cfg.drop_fragments and is_three_word_fragment(text, cfg):
-        return True
     if cfg.drop_headings and is_heading_block(text, cfg):
         return True
     if cfg.drop_checklists and is_checklist_block(text, cfg):
+        return True
+    if cfg.drop_fragments and is_three_word_fragment(text, cfg):
         return True
     if cfg.drop_license and is_license_boilerplate(text, cfg):
         return True
