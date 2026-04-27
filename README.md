@@ -47,6 +47,11 @@ After `v1.0.0`, the `v1.x` series recovers `v2.0` features incrementally with ev
 
 What does NOT work yet: install via `pip`, final docs/CHANGELOG/LICENSE (v0.8.0), and the v0.9.0-rc benchmark harness. Wait for `v1.0.0` if you want a stable release; until then, install editable from source (`uv pip install -e .`) and run `aelf setup` to wire the hook into Claude Code.
 
+## docs
+
+- [docs/INSTALL.md](docs/INSTALL.md) — install, configure, quickstart, Claude Code wiring.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module map, data model, Bayesian update path, retrieval flow, Claude Code integration diagram.
+
 ## design notes
 
 - **Clean by construction, not clean by audit.** Filtering is a tripwire, not a gate.
