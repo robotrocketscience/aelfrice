@@ -60,7 +60,9 @@ from aelfrice.scanner import scan_repo
 from aelfrice.setup import (
     SettingsScope,
     default_settings_path,
+    install_statusline,
     install_user_prompt_submit_hook,
+    uninstall_statusline,
     uninstall_user_prompt_submit_hook,
 )
 from aelfrice.store import MemoryStore
@@ -394,6 +396,30 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
             f"(command={args.command!r})",
             file=out,  # type: ignore[arg-type]
         )
+    if not args.no_statusline:
+        sl = install_statusline(path)
+        if sl.mode == "installed":
+            print(
+                f"installed statusline in {sl.path} "
+                f"(command='aelf statusline')",
+                file=out,  # type: ignore[arg-type]
+            )
+        elif sl.mode == "composed":
+            print(
+                f"composed statusline into existing command in {sl.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+        elif sl.mode == "already":
+            pass  # silent: already wired
+        elif sl.mode == "skipped":
+            print(
+                f"statusline NOT installed in {sl.path}: existing "
+                f"statusLine looks complex (shell metacharacters). "
+                f"To enable update notifications append "
+                f"' ; aelf statusline 2>/dev/null' to your existing "
+                f"statusLine command manually.",
+                file=out,  # type: ignore[arg-type]
+            )
     return 0
 
 
@@ -411,6 +437,17 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
             f"removed {result.removed} hook entr"
             f"{'y' if result.removed == 1 else 'ies'} from {result.path} "
             f"(command={args.command!r})",
+            file=out,  # type: ignore[arg-type]
+        )
+    sl = uninstall_statusline(path)
+    if sl.mode == "removed":
+        print(
+            f"removed statusline from {sl.path}",
+            file=out,  # type: ignore[arg-type]
+        )
+    elif sl.mode == "unwrapped":
+        print(
+            f"restored prior statusline command in {sl.path}",
             file=out,  # type: ignore[arg-type]
         )
     return 0
@@ -600,6 +637,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup.add_argument(
         "--status-message", default=None,
         help="status message Claude Code shows while the hook runs",
+    )
+    p_setup.add_argument(
+        "--no-statusline", action="store_true",
+        help="skip the auto-install of the update-notifier statusline snippet",
     )
     p_setup.set_defaults(func=_cmd_setup)
 
