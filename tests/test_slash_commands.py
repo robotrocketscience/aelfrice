@@ -1,4 +1,4 @@
-"""Verify the 10 slash-command markdown files match the CLI surface.
+"""Verify the 11 slash-command markdown files match the CLI surface.
 
 These files ship inside the aelfrice package so `setup.py` (v0.7.0) can
 copy them into `~/.claude/commands/aelf/`. The tests check structural
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-# The 10-tool surface — must match cli.py's subparsers exactly.
+# The 11-tool surface — must match cli.py's subparsers exactly.
 EXPECTED_COMMANDS = (
     "onboard",
     "search",
@@ -24,6 +24,7 @@ EXPECTED_COMMANDS = (
     "health",
     "setup",
     "unsetup",
+    "bench",
 )
 
 
