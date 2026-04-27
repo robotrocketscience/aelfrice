@@ -30,7 +30,7 @@ import tiktoken  # type: ignore[import-untyped]
 from datasets import load_dataset  # type: ignore[import-untyped]
 
 from aelfrice.ingest import ingest_turn
-from aelfrice.retrieval import retrieve
+from aelfrice.retrieval import retrieve_v2 as retrieve  # v1.0.x lab-compat shim
 from aelfrice.store import MemoryStore
 
 # ---------------------------------------------------------------------------

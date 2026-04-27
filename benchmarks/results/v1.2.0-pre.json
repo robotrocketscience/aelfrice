@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "label": "v1.2.0-pre baseline (first end-to-end smoke)",
+  "captured_at_utc": "2026-04-27T17:33:55Z",
+  "git_commit": "35eda1d9e3184ec4d11674cac84deebeedcf6435",
+  "aelfrice_version": "1.0.0",
+  "branch": "feat/retrieve-wrapper-smoke",
+  "purpose": "First end-to-end activation of an academic adapter against real data. Measures the L0+FTS5 baseline before HRR vocabulary bridge (P4) and BFS multi-hop chaining (P3) port from lab. These numbers are the floor; lab v1.1 numbers are the ceiling once those features land.",
+  "runs": [
+    {
+      "benchmark": "LongMemEval",
+      "adapter": "benchmarks/longmemeval_adapter.py",
+      "dataset": {
+        "source": "huggingface",
+        "id": "xiaowu0162/longmemeval-cleaned",
+        "file": "longmemeval_oracle.json",
+        "subset_size": 10,
+        "question_type_filter": null
+      },
+      "retrieval": {
+        "wrapper": "aelfrice.retrieval.retrieve_v2",
+        "include_locked": false,
+        "use_hrr": true,
+        "use_bfs": true,
+        "use_hrr_actually_active": false,
+        "use_bfs_actually_active": false,
+        "budget_tokens": 2000
+      },
+      "metrics": {
+        "total_questions": 10,
+        "total_ingested_turns": 243,
+        "total_ingest_time_s": 0.37,
+        "avg_beliefs_per_query": 0.0,
+        "avg_query_latency_ms": 0.3,
+        "by_category": {
+          "temporal-reasoning": {
+            "n": 10,
+            "avg_beliefs": 0.0,
+            "avg_latency_ms": 0.3
+          }
+        }
+      },
+      "contamination_check": {
+        "tool": "aelf bench verify-clean",
+        "result": "CLEAN",
+        "banned_keys_found": []
+      },
+      "reader_pass": null,
+      "scoring_pass": null,
+      "notes": "avg_beliefs=0 at this v1.0.x baseline is the expected and documented behavior. Public retrieve() is L0+FTS5 BM25 only; the use_hrr / use_bfs flags are accepted by retrieve_v2 but no-op until lab features port. The LongMemEval paper itself reports BM25 session-level Recall@5 = 0.634 (not the same metric but the same general failure mode). Real numbers begin to appear at P3 (BFS) and P4 (HRR)."
+    },
+    {
+      "benchmark": "LongMemEval",
+      "adapter": "benchmarks/longmemeval_adapter.py",
+      "dataset": {
+        "source": "huggingface",
+        "id": "xiaowu0162/longmemeval-cleaned",
+        "file": "longmemeval_oracle.json",
+        "subset_size": 5,
+        "question_type_filter": "single-session-user"
+      },
+      "retrieval": {
+        "wrapper": "aelfrice.retrieval.retrieve_v2",
+        "include_locked": false,
+        "use_hrr": true,
+        "use_bfs": true,
+        "use_hrr_actually_active": false,
+        "use_bfs_actually_active": false,
+        "budget_tokens": 2000
+      },
+      "metrics": {
+        "total_questions": 5,
+        "by_category": {
+          "single-session-user": {
+            "n": 5,
+            "avg_beliefs": 0.0,
+            "avg_latency_ms": 0.2
+          }
+        }
+      },
+      "contamination_check": {
+        "tool": "aelf bench verify-clean",
+        "result": "CLEAN",
+        "banned_keys_found": []
+      },
+      "notes": "Single-session-user category should be the easiest for keyword overlap (questions about facts the user stated directly in one session). avg_beliefs=0 here too suggests the FTS5 BM25 needs help — likely from HRR vocabulary expansion since user questions paraphrase the answer rather than echo its keywords."
+    }
+  ],
+  "infrastructure_validated": [
+    "retrieve_v2 lab-compat wrapper signature accepted by adapter",
+    "ingest_turn shim ingests session turns into MemoryStore via FTS5",
+    "[benchmarks] optional extras install nltk, tiktoken, datasets, hf_hub",
+    "academic-suite adapter import + run end-to-end without code modification beyond a single import alias",
+    "contamination gate (verify-clean) detects clean output and exits 0",
+    "ground truth and retrieval files are produced in separate JSONs"
+  ],
+  "next_phases_unlocked_by_this_baseline": {
+    "P3": "Port BFS multi-hop chaining and entity-index retrieval; expect avg_beliefs to rise from 0 toward lab v1.1 numbers (LongMemEval ~59% accuracy with reader pass).",
+    "P4": "Port HRR vocabulary bridge; expect category-by-category gains, especially single-session-user.",
+    "Reader/judge passes": "Out of scope for this measurement (zero LLM API spend). Will activate behind workflow_dispatch in P6 CI integration."
+  }
+}
