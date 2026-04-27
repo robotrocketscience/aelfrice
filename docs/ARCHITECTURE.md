@@ -4,11 +4,22 @@ Module map, data flow, design decisions. Maps directly to source under `src/aelf
 
 ## Principles
 
-1. **Stdlib + SQLite only.** No vector DB, no embeddings, no cloud, no LLM in the hot path. The `[mcp]` extra is the only non-stdlib runtime dependency, and it's optional.
-2. **Bayesian, not vibes.** Confidence is `α / (α + β)`. Every update has a closed-form rule. (Note: at v1.0 this score does not yet drive retrieval ranking — see [LIMITATIONS](LIMITATIONS.md#known-issues-at-v10).)
-3. **`apply_feedback` is the central endpoint.** One writer of `(α, β)`. One audit row per successful update.
-4. **Locks are user-asserted ground truth.** A `user`-locked belief short-circuits decay (lock floor) and bypasses L1 budgeting on retrieval. Contradicting positive feedback accumulates `demotion_pressure`; ≥ 5 ⇒ auto-demote.
-5. **Clean by construction, not clean by audit.** Filtering is a tripwire, not a gate.
+1. **Determinism end to end.** Every retrieval result is bit-identical given the same write log and the same code. Every result traces to named beliefs and named rules. The four-property commitment (bit-level reproducibility, named-rule traceability, write-log historical reconstruction, non-technical audit) is documented in [PHILOSOPHY § Determinism is the property](PHILOSOPHY.md#determinism-is-the-property). New components must preserve it; non-deterministic steps either run as one-time enrichment whose outputs are stored as deterministic content (see § Enrichment-step boundary below) or are clearly marked as opt-in non-deterministic paths.
+2. **Stdlib + SQLite only.** No vector DB, no embeddings, no cloud, no LLM in the hot path. The `[mcp]` extra is the only non-stdlib runtime dependency, and it's optional.
+3. **Bayesian, not vibes.** Confidence is `α / (α + β)`. Every update has a closed-form rule. (Note: at v1.0 this score does not yet drive retrieval ranking — see [LIMITATIONS](LIMITATIONS.md#known-issues-at-v10).)
+4. **`apply_feedback` is the central endpoint.** One writer of `(α, β)`. One audit row per successful update.
+5. **Locks are user-asserted ground truth.** A `user`-locked belief short-circuits decay (lock floor) and bypasses L1 budgeting on retrieval. Contradicting positive feedback accumulates `demotion_pressure`; ≥ 5 ⇒ auto-demote.
+6. **Clean by construction, not clean by audit.** Filtering is a tripwire, not a gate.
+
+### Enrichment-step boundary
+
+The determinism contract applies to retrieval — every read is reproducible from the inputs. Some write-side operations (LLM-driven sentence classification on the v1.3 polymorphic onboard path; future `wonder` / `reason` capabilities in v2.0) involve non-deterministic upstream steps. The boundary is explicit:
+
+- **Inputs to enrichment** (raw sentence, source path, host-LLM model id and version, prompt template hash) are recorded deterministically.
+- **Outputs of enrichment** (assigned belief type, type prior, derived edges) are stored as deterministic content with provenance: classifier version, rule-set hash, timestamp.
+- **All retrieval and feedback math downstream** of the enriched store is deterministic. Replaying retrieval against the same enriched corpus produces bit-identical results.
+
+The contract is *deterministic substrate + bounded, audited enrichment layer*, not "no model ever touches the data." A reviewer can identify, for any belief, exactly which step was bounded-non-deterministic and inspect the model id, prompt, and output. Replay-from-raw-text reproducibility requires re-running the enrichment with the same model version; replay-from-enriched-corpus reproducibility is unconditional.
 
 ## Modules
 
