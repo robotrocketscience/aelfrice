@@ -17,6 +17,7 @@ aelf <subcommand> [args] [options]
 | `lock <statement>` | `statement` | Insert at `(α, β) = (9.0, 0.5)` with `lock_level=user`. Idempotent — re-lock of identical text upgrades existing. |
 | `locked [--pressured]` | `--pressured` | List locks. With flag, only those with `demotion_pressure > 0`. |
 | `demote <belief_id>` | `belief_id` | `lock_level → none`, `locked_at → null`, `demotion_pressure → 0`. Belief itself remains. |
+| `resolve` | — | Sweep unresolved CONTRADICTS edges. For each pair, pick a winner per precedence (`user_stated > user_corrected > document_recent`; ties broken by recency, then by id) and create a SUPERSEDES edge from winner to loser. Writes one `feedback_history` row per resolution with `source='contradiction_tiebreaker:<rule>'`. Idempotent. |
 | `feedback <belief_id> <used\|harmful> [--source S]` | id, signal, optional source | `used` ⇒ α += 1. `harmful` ⇒ β += 1. Positive feedback flowing through outbound CONTRADICTS edges to user-locks bumps their `demotion_pressure`; ≥ 5 ⇒ auto-demote. |
 | `stats` | — | beliefs / edges / locked / feedback_events counts. |
 | `health` | — | Regime classifier: one of `early-onboarding`, `steady`, `lock-heavy`, `over-confident`, `insufficient-data`. |

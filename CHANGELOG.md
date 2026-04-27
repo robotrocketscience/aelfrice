@@ -72,6 +72,23 @@ adds a no-config noise filter (with a TOML escape hatch), and ships
 
 ### Added
 
+- `aelfrice.contradiction` module: `resolve_contradiction`,
+  `find_unresolved_contradictions`, `auto_resolve_all_contradictions`.
+  When the graph holds a CONTRADICTS edge, the tie-breaker picks a
+  winner via precedence (`user_stated > user_corrected >
+  document_recent`; ties broken by recency, then by id), creates a
+  SUPERSEDES edge from winner to loser, and writes a
+  `feedback_history` audit row tagged
+  `source='contradiction_tiebreaker:<rule>'`. v1.0.1 collapses to
+  three precedence classes (the fourth `agent_inferred` class needs
+  a `Belief.origin` field landing in v1.1.0) (#NN).
+- `aelf resolve` CLI subcommand (12th) — sweeps unresolved
+  CONTRADICTS edges in the store and runs the tie-breaker on each.
+  Matching `slash_commands/resolve.md`. The 1:1 CLI ↔ slash
+  invariant is preserved at 12/12 (#NN).
+
+### Added
+
 - `aelfrice.hook_search` module: `search_for_prompt(store, prompt, ...)`
   and `record_retrieval(store, beliefs, ...)`. Closes the v1.0.1
   retrieval-side feedback-loop gap: every UserPromptSubmit hook
