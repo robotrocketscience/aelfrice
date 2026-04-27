@@ -33,7 +33,7 @@ Tracked openly. Each item is mapped to its target version below.
 
 ### Feedback semantics — v1.0.1
 
-- **Contradictions detected but not auto-resolved.** Search output prints `WARNING: CONTRADICTS [X] vs [Y]` and continues. v1.0.1 adds a default tie-breaker (`user_stated > user_corrected > document_recent > agent_inferred`, then ISO timestamp) that auto-supersedes the loser. Until then: review with `aelf locked --pressured`.
+- ✅ **Contradiction tie-breaker (v1.0.1).** New `aelfrice.contradiction` module: `resolve_contradiction(store, a_id, b_id)` picks a winner per precedence — `user_stated` (lock_level=user) > `user_corrected` (type=correction) > `document_recent` (everything else). Ties within a class break by `created_at` recency; final tiebreak by belief id (deterministic). Inserts a SUPERSEDES edge from winner to loser and writes one `feedback_history` row tagged `source='contradiction_tiebreaker:<rule>'`. `aelf resolve` (CLI) sweeps all unresolved CONTRADICTS edges in the store. Idempotent — re-running the command on a resolved store does no edge work but writes no audit rows either. The fourth class named in the original spec (`agent_inferred`) requires a `Belief.origin` field not in the v1.0 schema; in practice no v1.0 path produces beliefs that map to it, so v1.0.1 collapses to three classes. v1.1.0 adds the `origin` field alongside project-identity work and the four-class split becomes faithful.
 
 ### Project identity — v1.1.0
 

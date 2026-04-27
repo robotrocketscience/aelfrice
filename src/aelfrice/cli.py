@@ -220,6 +220,38 @@ def _cmd_demote(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_resolve(args: argparse.Namespace, out: object) -> int:
+    """Resolve all unresolved CONTRADICTS edges via the v1.0.1 tie-breaker."""
+    _ = args
+    from aelfrice.contradiction import (
+        auto_resolve_all_contradictions,
+        find_unresolved_contradictions,
+    )
+
+    store = _open_store()
+    try:
+        unresolved = find_unresolved_contradictions(store)
+        if not unresolved:
+            print("no unresolved contradictions", file=out)  # type: ignore[arg-type]
+            return 0
+        results = auto_resolve_all_contradictions(store)
+    finally:
+        store.close()
+    for r in results:
+        print(
+            f"resolved: {r.winner_id} supersedes {r.loser_id} "
+            f"({r.rule_fired})",
+            file=out,  # type: ignore[arg-type]
+        )
+    skipped = len(unresolved) - len(results)
+    if skipped > 0:
+        print(
+            f"skipped {skipped} pair(s) with missing endpoints",
+            file=out,  # type: ignore[arg-type]
+        )
+    return 0
+
+
 def _cmd_feedback(args: argparse.Namespace, out: object) -> int:
     valence = _FEEDBACK_VALENCES.get(args.signal)
     if valence is None:
@@ -820,6 +852,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_demote = sub.add_parser("demote", help="manually demote a lock to none")
     p_demote.add_argument("belief_id", help="id of the belief to demote")
     p_demote.set_defaults(func=_cmd_demote)
+
+    p_resolve = sub.add_parser(
+        "resolve",
+        help="resolve unresolved CONTRADICTS edges via the v1.0.1 tie-breaker",
+        epilog=(
+            "Picks a winner per precedence (user_stated > user_corrected "
+            "> document_recent; ties broken by recency, then id) and "
+            "creates a SUPERSEDES edge from winner to loser. Each "
+            "resolution writes an audit row to feedback_history with "
+            "source='contradiction_tiebreaker:<rule>'. Idempotent — "
+            "already-resolved pairs are skipped."
+        ),
+    )
+    p_resolve.set_defaults(func=_cmd_resolve)
 
     p_feedback = sub.add_parser("feedback", help="apply one feedback event")
     p_feedback.add_argument("belief_id", help="id of the belief")

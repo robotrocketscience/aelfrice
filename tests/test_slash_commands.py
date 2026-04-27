@@ -14,12 +14,14 @@ import pytest
 
 # The CLI's user-facing surface -- must match cli.py's subparsers exactly.
 # Lifecycle commands (upgrade/uninstall/statusline) added in v1.0.1.
+# `resolve` joins at v1.0.1 alongside the contradiction tie-breaker.
 EXPECTED_COMMANDS = (
     "onboard",
     "search",
     "lock",
     "locked",
     "demote",
+    "resolve",
     "feedback",
     "stats",
     "health",

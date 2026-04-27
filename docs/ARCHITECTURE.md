@@ -33,12 +33,13 @@ One-directional imports — lower in the table imports from higher.
 | `retrieval.py` | `retrieve(store, query, token_budget=2000)` — L0 locked auto-load + L1 FTS5 BM25. L0 never trimmed. |
 | `feedback.py` | `apply_feedback(store, belief_id, valence, source)` — the only Bayesian-update path. Writes `feedback_history`. Drives demotion-pressure increment + auto-demote. |
 | `correction.py` | No-LLM heuristic correction detector. |
+| `contradiction.py` | `resolve_contradiction` — picks a winner per precedence (user_stated > user_corrected > document_recent; ties broken by recency, then by id), creates a SUPERSEDES edge from winner to loser, writes a `feedback_history` audit row tagged `source='contradiction_tiebreaker:<rule>'`. `auto_resolve_all_contradictions` sweeps the graph. v1.0.1. |
 | `classification.py` | `TYPE_PRIORS` + regex fallback. Polymorphic onboard state machine. |
 | `noise_filter.py` | `is_noise(text, config)` — drops markdown heading blocks, checklist blocks, three-word fragments, and license boilerplate before classification. `NoiseConfig` dataclass + `.aelfrice.toml` discovery via `discover()` walk-up. Power-user surface documented in [CONFIG.md](CONFIG.md). |
 | `scanner.py` | `scan_repo` — filesystem + git log + Python AST extractors, noise filter, classification, persistence. Idempotent against `content_hash`. |
 | `health.py` | Regime classifier (`insufficient_data` / `early-onboarding` / `steady` / `lock-heavy` / `over-confident`) over confidence, mass, lock density, edge density. |
 | `benchmark.py` | `seed_corpus(store)` + `run_benchmark(store, *, aelfrice_version, top_k=5)` — deterministic 16-belief × 16-query synthetic harness. Frozen `BenchmarkReport` with `hit_at_1` / `hit_at_3` / `hit_at_5` / `mrr` + `p50_latency_ms` / `p99_latency_ms`. |
-| `cli.py` | argparse 11-subcommand CLI. DB resolves from `$AELFRICE_DB` or `~/.aelfrice/memory.db`. Entry: `aelf`. |
+| `cli.py` | argparse 12-subcommand CLI (added `aelf resolve` at v1.0.1 alongside the contradiction tie-breaker). DB resolves from `$AELFRICE_DB` or `~/.aelfrice/memory.db`. Entry: `aelf`. |
 | `mcp_server.py` | FastMCP server, 8 tools. `[mcp]` optional extra. |
 | `setup.py` | Idempotent install/uninstall of the Claude Code `UserPromptSubmit` hook. Atomic write via tempfile + `os.replace`. |
 | `hook.py` | `aelfrice.hook:main` — process Claude Code spawns when the hook fires. Reads JSON from stdin, calls `retrieve()`, emits `<aelfrice-memory>...</aelfrice-memory>` on stdout. Non-blocking by contract. Entry: `aelf-hook`. |
