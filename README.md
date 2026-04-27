@@ -1,6 +1,6 @@
 # aelfrice
 
-**Bayesian memory designed for feedback-driven learning.** Today: knowledge store, retrieval, feedback loop, scanner, CLI, and MCP server all landed on `main`. Next on the path to `v1.0.0`: Claude Code setup automation, docs/license, and benchmark harness.
+**Bayesian memory designed for feedback-driven learning.** Today: knowledge store, retrieval, feedback loop, scanner, CLI, MCP server, and Claude Code wiring all landed on `main`. Next on the path to `v1.0.0`: docs/license and benchmark harness.
 
 > ⚠️ **Status: under active rebuild — do not depend on this for production.** The first installable release is `v1.0.0`; until then, modules land milestone-by-milestone. The previous codebase (`v2.0`) is preserved at [`aelfrice-v0`](https://github.com/robotrocketscience/aelfrice-v0) (archived, read-only).
 
@@ -27,24 +27,25 @@ The rebuild is structured as a sequence of small, atomic milestones.
 | **v0.4.0** | shipped | `feedback.py` — the central new endpoint (`apply_feedback`, `feedback_history` table, demotion-pressure-acted-on) + `correction.py` |
 | **v0.5.0** | shipped | `scanner.py` — onboarding with filesystem walk, git log, simple AST extractors |
 | **v0.6.0** | shipped | `cli.py` (8 commands) + `mcp_server.py` (8 MCP tools) + `slash_commands/` |
-| **v0.7.0** | next | `setup.py` — Claude Code wiring (`UserPromptSubmit` hook for retrieval injection) |
-| **v0.8.0** | planned | docs, `CHANGELOG.md`, `LICENSE` (MIT), final `pyproject.toml` |
+| **v0.7.0** | shipped | `setup.py` — Claude Code wiring (`UserPromptSubmit` hook for retrieval injection) + `aelfrice.hook` entry-point + `aelf setup` / `aelf unsetup` CLI + `aelf-hook` script |
+| **v0.8.0** | next | docs, `CHANGELOG.md`, `LICENSE` (MIT), final `pyproject.toml` |
 | **v0.9.0-rc** | planned | minimal benchmark harness producing a publishable score |
 | **v1.0.0** | planned | tag, push, PyPI publish |
 
 After `v1.0.0`, the `v1.x` series recovers `v2.0` features incrementally with evidence justifying each addition.
 
-## What works today (v0.6.0)
+## What works today (v0.7.0)
 
 - SQLite-backed Belief and Edge storage with WAL journaling and FTS5 search
 - Beta-Bernoulli confidence math; per-type half-life decay
 - Lock floor (a `user`-locked belief does not decay)
 - Broker-confidence-attenuated valence propagation through the belief graph
 - Retrieval (locked-belief auto-load + BM25 FTS5, token-budgeted) and the `apply_feedback` endpoint (Beta-Bernoulli updates + demotion-pressure auto-demote)
-- Onboarding scanner (filesystem walk + git log + AST extractors) and `cli.py` (8 commands), `mcp_server.py` (8 tools, `[mcp]` extra), and 8 slash commands under `slash_commands/`
-- ~400 test functions across the unit suite, including 3 pre-registered property tests (Bayesian inertia, decay necessity, lock-floor sharpness) and end-to-end regression scenarios for retrieval, feedback, and onboarding
+- Onboarding scanner (filesystem walk + git log + AST extractors), `cli.py` (10 commands), `mcp_server.py` (8 tools, `[mcp]` extra), and 10 slash commands under `slash_commands/`
+- Claude Code wiring: `aelf setup` / `aelf unsetup` install or remove a `UserPromptSubmit` hook in Claude Code's `settings.json`; `aelf-hook` is the script entry-point that reads the hook payload, runs retrieval, and emits an `<aelfrice-memory>` block as injected context
+- ~500 test functions across the unit suite, including 3 pre-registered property tests (Bayesian inertia, decay necessity, lock-floor sharpness) and end-to-end regression scenarios for retrieval, feedback, onboarding, and the Claude Code setup→hook→unsetup round-trip
 
-What does NOT work yet: install via `pip`, the Claude Code `setup.py` wiring (v0.7.0), final docs/CHANGELOG/LICENSE (v0.8.0), and the v0.9.0-rc benchmark harness. Wait for `v1.0.0` if you want a stable release; until then, install editable from source (`uv pip install -e .`).
+What does NOT work yet: install via `pip`, final docs/CHANGELOG/LICENSE (v0.8.0), and the v0.9.0-rc benchmark harness. Wait for `v1.0.0` if you want a stable release; until then, install editable from source (`uv pip install -e .`) and run `aelf setup` to wire the hook into Claude Code.
 
 ## design notes
 
