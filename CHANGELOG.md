@@ -10,6 +10,26 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-04-27
+
+First installable PyPI release. The full v1.0 surface is the cumulative
+shipped contents of v0.1.0–v0.9.0rc0; this release tags it, builds the
+sdist + wheel, and publishes via the GitHub Actions Trusted Publisher
+workflow.
+
+### Added
+
+- PyPI publication: `pip install aelfrice` (`pip install "aelfrice[mcp]"`
+  for the MCP server extra).
+
+### Changed
+
+- Trove `Development Status` classifier promoted from `4 - Beta` to
+  `5 - Production/Stable`.
+- README headline and tagline rewritten for a post-rebuild audience:
+  install instruction front-and-centre, "Status: under active rebuild"
+  warning removed, "What works today" section retitled to v1.0.0.
+
 ## [0.9.0rc0] - 2026-04-26
 
 Benchmark-harness milestone — final gate before `v1.0.0`. The `v0.9.0-rc`
@@ -223,7 +243,8 @@ Foundation milestone — store, models, config.
 - Initial repo scaffold: pyproject, README, GitHub Actions workflows,
   scan configs (commit `67b4343`).
 
-[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v0.9.0rc0...HEAD
+[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/robotrocketscience/aelfrice/compare/v0.9.0rc0...v1.0.0
 [0.9.0rc0]: https://github.com/robotrocketscience/aelfrice/compare/v0.8.0...v0.9.0rc0
 [0.8.0]: https://github.com/robotrocketscience/aelfrice/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/robotrocketscience/aelfrice/releases/tag/v0.7.0
