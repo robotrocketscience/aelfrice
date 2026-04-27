@@ -16,6 +16,9 @@ dev = [
     "pytest-timeout>=2.3",
     "pyright>=1.1.409",
 ]
+mcp = [
+    "fastmcp>=0.2.0",
+]
 
 [build-system]
 requires = ["hatchling"]
