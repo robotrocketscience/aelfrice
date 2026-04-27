@@ -249,26 +249,106 @@ def _cmd_stats(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
-def _cmd_bench(args: argparse.Namespace, out: object) -> int:
-    """Run the v0.9.0-rc benchmark harness; print one JSON document.
+# Academic-suite targets that are scaffolded but not yet runnable at v1.0.0.
+# Each entry maps target name -> phase that activates it.
+# See benchmarks/README.md for status detail.
+_BENCH_INERT_TARGETS: Final[dict[str, str]] = {
+    "mab": "v1.2.0 (P2 — triple extraction port)",
+    "locomo": "v1.2.0 (P2 — ingest pipeline port)",
+    "longmemeval": "v1.2.0 (P2 — ingest pipeline port)",
+    "structmemeval": "v1.2.0 (P2 — ingest pipeline port)",
+    "amabench": "v1.2.0 (P2 — ingest pipeline port)",
+    "all": "v2.0.0 (full reproducibility milestone)",
+}
 
-    Default: seed an in-memory store with the synthetic corpus and
-    score retrieval. The benchmark is fully reproducible — repeated
-    invocations against fresh in-memory stores produce identical
-    accuracy numbers (latency varies).
+
+def _cmd_bench(args: argparse.Namespace, out: object) -> int:
+    """Run a benchmark target.
+
+    Default (no target / 'synthetic'): the v0.9.0-rc synthetic harness —
+    seed an in-memory store with a 16-belief corpus and score retrieval.
+    Fully reproducible across runs (latency varies).
+
+    Academic-suite targets (mab, locomo, longmemeval, structmemeval,
+    amabench, all) are scaffolded in benchmarks/ but inert at v1.0.0;
+    they exit 2 with a pointer to benchmarks/README.md until their
+    feature dependencies (aelfrice.ingest, MemoryStore) port from lab.
+
+    Stdlib-only utilities exposed today:
+      verify-clean PATH        contamination gate over a retrieval JSON
+      longmemeval-score PREDS GT  scoring without aelfrice imports
     """
     import json
-    db = ":memory:" if args.db is None else str(Path(args.db))
-    store = Store(db)
-    try:
-        seed_corpus(store)
-        report = run_benchmark(
-            store, aelfrice_version=_AELFRICE_VERSION, top_k=args.top_k
+    target = (args.target or "synthetic").lower()
+
+    if target == "synthetic":
+        db = ":memory:" if args.db is None else str(Path(args.db))
+        store = Store(db)
+        try:
+            seed_corpus(store)
+            report = run_benchmark(
+                store, aelfrice_version=_AELFRICE_VERSION, top_k=args.top_k
+            )
+        finally:
+            store.close()
+        print(json.dumps(report.to_dict(), indent=2), file=out)  # type: ignore[arg-type]
+        return 0
+
+    if target == "verify-clean":
+        try:
+            from benchmarks import verify_clean
+        except ModuleNotFoundError:
+            print(
+                "aelf bench verify-clean requires the source tree "
+                "(benchmarks/ is dev-only and not shipped in the wheel). "
+                "Clone the repo and run from the repo root.",
+                file=out,  # type: ignore[arg-type]
+            )
+            return 2
+        if not args.rest:
+            print("usage: aelf bench verify-clean PATH [PATH ...]", file=out)  # type: ignore[arg-type]
+            return 2
+        all_clean = True
+        for path in args.rest:
+            if not verify_clean.verify_file(path):
+                all_clean = False
+        return 0 if all_clean else 1
+
+    if target == "longmemeval-score":
+        try:
+            from benchmarks import longmemeval_score
+        except ModuleNotFoundError:
+            print(
+                "aelf bench longmemeval-score requires the source tree "
+                "(benchmarks/ is dev-only and not shipped in the wheel). "
+                "Clone the repo and run from the repo root.",
+                file=out,  # type: ignore[arg-type]
+            )
+            return 2
+        if len(args.rest) < 3:
+            print("usage: aelf bench longmemeval-score PREDS GT JUDGE", file=out)  # type: ignore[arg-type]
+            return 2
+        return longmemeval_score.score(args.rest[0], args.rest[1], args.rest[2])
+
+    if target in _BENCH_INERT_TARGETS:
+        phase = _BENCH_INERT_TARGETS[target]
+        print(
+            f"aelf bench {target}: scaffolded but not runnable at "
+            f"aelfrice {_AELFRICE_VERSION}.\n"
+            f"Activates in {phase}.\n"
+            f"See benchmarks/README.md for the full activation roadmap.",
+            file=out,  # type: ignore[arg-type]
         )
-    finally:
-        store.close()
-    print(json.dumps(report.to_dict(), indent=2), file=out)  # type: ignore[arg-type]
-    return 0
+        return 2
+
+    print(
+        f"aelf bench: unknown target {target!r}.\n"
+        f"Known targets: synthetic (default), verify-clean, "
+        f"longmemeval-score, "
+        f"{', '.join(sorted(_BENCH_INERT_TARGETS))}.",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 2
 
 
 def _resolve_settings_path(args: argparse.Namespace) -> Path:
@@ -438,18 +518,34 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_bench = sub.add_parser(
         "bench",
-        help="run the v0.9.0-rc benchmark harness and print a JSON report",
+        help=(
+            "run a benchmark target. Default: v0.9.0-rc synthetic harness. "
+            "Academic-suite targets (mab, locomo, ...) are scaffolded in "
+            "benchmarks/ but inert until their dependencies port from lab."
+        ),
+    )
+    p_bench.add_argument(
+        "target", nargs="?", default=None,
+        help=(
+            "benchmark target: synthetic (default), verify-clean, "
+            "longmemeval-score, mab, locomo, longmemeval, structmemeval, "
+            "amabench, all. See benchmarks/README.md."
+        ),
+    )
+    p_bench.add_argument(
+        "rest", nargs=argparse.REMAINDER,
+        help="target-specific arguments",
     )
     p_bench.add_argument(
         "--db", default=None,
         help=(
-            "path to an empty SQLite file to seed and benchmark against. "
+            "(synthetic only) path to an empty SQLite file to seed. "
             "Default: in-memory store (fully reproducible across runs)."
         ),
     )
     p_bench.add_argument(
         "--top-k", type=int, default=5,
-        help="retrieval depth used for hit@k accounting (default 5)",
+        help="(synthetic only) retrieval depth for hit@k (default 5)",
     )
     p_bench.set_defaults(func=_cmd_bench)
 

@@ -68,6 +68,11 @@ packages = ["src/aelfrice"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Add the repo root to sys.path so tests can `import benchmarks` (the
+# top-level academic-suite directory, dev-only and not packaged in the
+# wheel). Equivalent to invoking `python -m pytest` instead of `pytest`,
+# which is what CI (uv run pytest) does.
+pythonpath = ["."]
 # Test policy: every test must deterministically terminate. 5s default
 # wall-clock timeout for unit/property tests. Subprocess-driven CLI/MCP
 # integration tests (v0.6.0+) override per-test via @pytest.mark.timeout(N).
