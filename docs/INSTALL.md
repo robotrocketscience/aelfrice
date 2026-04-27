@@ -1,168 +1,93 @@
 # INSTALL
 
-Installation, configuration, and verification for aelfrice.
-
-> aelfrice is pre-`1.0.0`. The first installable PyPI release is `v1.0.0`.
-> Until then install editable from a clone.
-
----
-
 ## Prerequisites
 
-- **Python 3.12 or 3.13.** Declared in `pyproject.toml` as
-  `requires-python = ">=3.12"`. Python 3.11 will not resolve.
-- **[uv](https://docs.astral.sh/uv/)** is the supported workflow tool.
-  Plain `pip` works too, but every command in this doc is written for
-  `uv` because that's what CI runs.
-- **No external services.** aelfrice is stdlib-only at the dependency
-  level (`dependencies = []` in `pyproject.toml`). The optional `[mcp]`
-  extra adds [`fastmcp`](https://pypi.org/project/fastmcp/) for the
-  MCP server entry point.
+- Python 3.12 or 3.13
+- Either `pip` (works) or [`uv`](https://docs.astral.sh/uv/) (recommended, used in CI)
 
----
-
-## Editable install from source
+## Install from PyPI
 
 ```bash
-git clone git@github.com:robotrocketscience/aelfrice.git
+pip install aelfrice              # core
+pip install "aelfrice[mcp]"       # add the MCP server (fastmcp)
+```
+
+Two console scripts: `aelf` (the CLI) and `aelf-hook` (the Claude Code hook entry-point).
+
+Verify: `aelf health` should print `brain mode: insufficient_data` on a fresh DB.
+
+## Install from source
+
+```bash
+git clone https://github.com/robotrocketscience/aelfrice.git
 cd aelfrice
-uv sync                # creates .venv and installs aelfrice in editable mode
+uv sync                  # core
+uv sync --extra mcp      # add MCP server
+uv sync --extra dev      # add pytest, pyright
 ```
 
-`uv sync` reads `pyproject.toml` + `uv.lock` and produces a
-deterministic environment. To include the optional MCP server
-dependency:
+## Database
+
+SQLite at `~/.aelfrice/memory.db` by default. Override with `$AELFRICE_DB` (use `:memory:` for tests).
+
+## Wire into Claude Code
 
 ```bash
-uv sync --extra mcp
+aelf setup                                        # ~/.claude/settings.json
+aelf setup --scope project --project-root .       # project-local
+aelf unsetup                                      # remove
 ```
 
-Two console scripts are exposed by `[project.scripts]`:
+Idempotent. The hook reads each `UserPromptSubmit` payload, runs retrieval, and emits an `<aelfrice-memory>...</aelfrice-memory>` block above the prompt. Every failure mode exits 0 with no output — the hook can't block a prompt.
 
-| Script | Entry point | Purpose |
-|---|---|---|
-| `aelf` | `aelfrice.cli:main` | the user-facing CLI (10 subcommands) |
-| `aelf-hook` | `aelfrice.hook:main` | the Claude Code `UserPromptSubmit` hook entry-point |
+## Wire into Codex / generic MCP hosts
 
-Verify the install:
+Don't run `aelf setup` — that writes Claude-specific entries. Register the server directly:
+
+```json
+{
+  "mcpServers": {
+    "aelfrice": {
+      "command": "aelf",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+Or, from a checkout: `["uv", "run", "--project", "/abs/path/to/aelfrice", "python", "-m", "aelfrice.mcp_server"]`. The `[mcp]` extra is required. Tools register under `aelf:*`.
+
+## Run the benchmark
 
 ```bash
-uv run aelf stats
-uv run aelf health
+aelf bench
 ```
 
-Both should exit `0`. On a fresh DB, `aelf health` reports
-`brain mode: insufficient_data` — that's correct.
+Prints a single JSON document with `hit_at_1` / `hit_at_3` / `hit_at_5` / `mrr` and `p50_latency_ms` / `p99_latency_ms` against a deterministic 16-belief × 16-query corpus. `--db PATH` to use a real DB; `--top-k N` to override hit-depth.
 
----
-
-## Database location
-
-aelfrice persists to a single SQLite file with WAL journaling and an
-FTS5 mirror of belief content. Resolution order:
-
-1. `$AELFRICE_DB` if set (absolute or relative path).
-2. `~/.aelfrice/memory.db` otherwise. Parent directory is created on
-   first write.
-
-For tests, set `AELFRICE_DB=:memory:` to use an in-memory store, or
-point at a `tmp_path` fixture.
-
----
-
-## Quickstart: onboard, search, lock, feedback
+## Development
 
 ```bash
-# Ingest an existing project as a corpus of beliefs
-uv run aelf onboard ~/code/some-project
-
-# Keyword retrieval (L0 locked auto-load + L1 FTS5 BM25, token-budgeted)
-uv run aelf search "kitchen layout"
-
-# Lock a belief as user-asserted ground truth (will not decay)
-uv run aelf lock "the build target is wasm32-unknown-unknown"
-
-# List all locked beliefs (and any with nonzero demotion_pressure)
-uv run aelf locked --pressured
-
-# Apply Bayesian feedback against a retrieval hit
-uv run aelf feedback <belief-id> used     # bumps alpha
-uv run aelf feedback <belief-id> harmful  # bumps beta + (if locked) demotion_pressure
-
-# Inspect the brain
-uv run aelf stats
-uv run aelf health
+uv sync --extra dev
+uv run pytest                # ~530 tests, ~7s
+uv run pyright               # strict
+uv run pytest -m regression  # cumulative integration scenarios
 ```
 
-Run `uv run aelf --help` for the full subcommand list and per-command
-flags.
+## Troubleshooting
 
----
-
-## Wiring aelfrice into Claude Code
-
-aelfrice ships `aelf setup` to install a `UserPromptSubmit` hook in
-Claude Code's `settings.json` so every prompt is augmented with the
-most relevant locked beliefs and FTS5 hits.
-
-```bash
-# User scope (default): ~/.claude/settings.json
-uv run aelf setup
-
-# Project scope: <project-root>/.claude/settings.json
-uv run aelf setup --scope project --project-root .
-
-# Custom command override (e.g., wrap aelf-hook in a status-message bash script)
-uv run aelf setup --command /usr/local/bin/my-hook.sh --status-message "thinking..."
-```
-
-The default `--command` is `aelf-hook` (the script entry-point added
-by `pyproject.toml`). The install is idempotent: a second
-`aelf setup` invocation reports `hook already installed` and writes
-nothing.
-
-To remove:
-
-```bash
-uv run aelf unsetup
-```
-
-`aelf unsetup` matches by command string, so passing the same
-`--scope` / `--settings-path` / `--command` flags you used at install
-time finds the right entry. A no-op invocation reports
-`no matching hook`.
-
-The hook itself reads the `UserPromptSubmit` JSON payload from stdin,
-runs aelfrice retrieval, and writes an
-`<aelfrice-memory>...</aelfrice-memory>` block to stdout that Claude
-Code injects above the user's message. Every failure mode (empty
-stdin, malformed JSON, retrieval errors) exits `0` with no output, so
-the hook can never block a prompt from reaching the model.
-
----
-
-## Development install
-
-To run tests, type-check, and contribute:
-
-```bash
-uv sync --extra dev          # pytest, pytest-timeout, pyright
-uv run pytest                # ~500 tests, ~6s on Apple Silicon
-uv run pyright               # strict mode, src + tests
-uv run pytest -m regression  # cumulative integration scenarios only
-```
-
-A 5-second wall-clock timeout is the default for all tests
-(`pyproject.toml` `[tool.pytest.ini_options]`). Subprocess-driven
-tests (e.g., the v0.7.0 setup→hook→unsetup regression) override
-per-test via `@pytest.mark.timeout(N)`.
-
----
+| Symptom | Fix |
+|---|---|
+| `aelf: command not found` | run via `uv run aelf …` or `pipx install aelfrice` |
+| `ModuleNotFoundError: fastmcp` | `pip install "aelfrice[mcp]"` |
+| `unable to open database file` | parent dir of `$AELFRICE_DB` doesn't exist |
+| Hook registered, no memory block | DB is empty — run `aelf onboard <project>` |
+| MCP tools not visible in host | restart the host — MCP servers load at launch |
 
 ## Uninstall
 
 ```bash
-uv run aelf unsetup    # remove the Claude Code hook
-rm -rf ~/.aelfrice     # delete the local memory DB (irreversible)
-uv pip uninstall aelfrice
+aelf unsetup
+rm -rf ~/.aelfrice
+pip uninstall aelfrice
 ```

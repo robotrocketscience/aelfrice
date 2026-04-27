@@ -1,0 +1,77 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+title: "<area>: <one-line summary>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Before continuing, a few quick checks:
+
+        - Confirm you can reproduce on a fresh database (`AELFRICE_DB=/tmp/scratch.db`). Don't paste your real `~/.aelfrice/memory.db` — it contains your private beliefs.
+        - Check that the issue isn't already listed in [LIMITATIONS.md](https://github.com/robotrocketscience/aelfrice/blob/main/docs/LIMITATIONS.md).
+        - For privacy or security issues, please use [SECURITY.md](https://github.com/robotrocketscience/aelfrice/blob/main/SECURITY.md) instead of a public issue.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Exact CLI invocation or MCP call, exact output. Paste the command and the response.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: what-expected
+    attributes:
+      label: What you expected
+      description: One-liner describing the expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: |
+        A scratch directory and the smallest sequence of `aelf` calls that triggers the bug. If a small directory tree is necessary, describe its shape (file names, contents).
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: aelfrice version
+      placeholder: "0.6.0 (from pyproject.toml)"
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.12.4"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 15.1, or Linux distro + kernel"
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which surface
+      multiple: true
+      options:
+        - aelf CLI
+        - MCP server (Claude Code)
+        - MCP server (Codex)
+        - MCP server (other host)
+        - Slash commands in Claude Code
+        - Pure handler import (tests/embedding)
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Stack traces, log output, related issues. Optional.

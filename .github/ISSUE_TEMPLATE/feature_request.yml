@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest a new behavior, command, or surface
+title: "<area>: <one-line summary>"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion. A note on scope:
+
+        - The v1.0 surface is intentionally narrow. Many features that existed in the legacy v2.0 codebase (`wonder`, `reason`, Obsidian sync, vector retrieval) are deferred to v1.x — see [LIMITATIONS.md](https://github.com/robotrocketscience/aelfrice/blob/main/docs/LIMITATIONS.md).
+        - "We had this before" is not a sufficient reason. Each v1.x re-introduction needs an experiment or benchmark justifying it.
+        - The biggest open gap is feedback-driven retrieval ranking (the BM25-only ordering at v1.0). Proposals tied to that are the highest-leverage requests.
+
+        Feature requests that propose **measurable** improvements (a benchmark to pass, a use case the eleven commands can't serve) are most likely to land.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: Describe the user-facing problem in one paragraph. Avoid jumping to a solution.
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: How are you handling it today
+      description: Workaround, manual procedure, or "I just don't do this." This tells us how painful the gap is.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Optional. If you have a shape in mind (CLI flag, new command, schema change), describe it.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about and why they don't work.
+  - type: textarea
+    id: success
+    attributes:
+      label: How would we know it worked
+      description: A concrete check or benchmark. "It would let me do X in N steps instead of M" is good. "It would feel better" is not.

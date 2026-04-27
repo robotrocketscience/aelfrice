@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+message: "If you use aelfrice in academic work, please cite it as below."
+title: "aelfrice: Bayesian memory for AI coding agents"
+abstract: >
+  aelfrice is a small, local, SQLite-backed memory for LLM coding agents.
+  It records facts, corrections, preferences, and requirements as beliefs
+  with Beta-Bernoulli posterior confidence; supports user-locked beliefs
+  with sharp decay-floor and demotion-pressure auto-correction; and
+  exposes the same eight operations through a CLI, an MCP server, and
+  Claude Code slash commands.
+type: software
+authors:
+  - name: "robotrocketscience"
+url: "https://github.com/robotrocketscience/aelfrice"
+license: MIT
+keywords:
+  - artificial intelligence
+  - agent memory
+  - Bayesian inference
+  - Beta-Bernoulli
+  - retrieval-augmented generation
+  - Model Context Protocol
+  - SQLite
+  - FTS5
+preferred-citation:
+  type: software
+  title: "aelfrice: Bayesian memory for AI coding agents"
+  authors:
+    - name: "robotrocketscience"
+  year: 2026
+  url: "https://github.com/robotrocketscience/aelfrice"
