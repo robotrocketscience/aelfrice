@@ -25,6 +25,35 @@ are scaffolded but inert at v1.0.0; they activate as their feature
 dependencies port from the lab repo. See `benchmarks/README.md` for the
 per-adapter activation roadmap.
 
+## What we measure and why
+
+aelfrice's task is **known-item search over behavioural directives** — the
+agent has corrected the user, locked a rule, or recorded a decision; on the
+next relevant prompt we want that specific item retrieved. This is a different
+problem from open-ended topical retrieval (Cranfield-paradigm IR), where the
+goal is "documents relevant to a topic." The natural headline metric for
+known-item search is **mean reciprocal rank (MRR)** — how high does the
+correct item appear when the user has one in mind. The synthetic harness
+reports `mrr` alongside `hit_at_k`; the academic suite reports MRR where the
+benchmark protocol allows it.
+
+We also report the metrics each external benchmark *defines* (token-level F1
+on LoCoMo, substring exact match on MAB, GPT-4o binary judge on LongMemEval,
+LLM-judge accuracy on StructMemEval / AMA-Bench) because comparability with
+prior published systems requires it. Those metrics are framed for
+**topical** relevance (Saracevic 1975 — does the document cover the topic)
+rather than **behavioural** or **situational** relevance (does this directive
+apply to what the agent is about to do). The behavioural / situational frame
+is closer to aelfrice's actual contribution; the topical frame is what the
+external benchmarks measure. Both numbers are reported; the headline
+positioning is on MRR.
+
+This is also why the LongMemEval multi-session aggregation gap (see
+[LIMITATIONS § Out of scope by design](LIMITATIONS.md#out-of-scope-by-design))
+shows up as a low number on a topical-relevance benchmark and is *not*
+treated as a v1.x defect: aelfrice's design target is the directive-recall
+slice of the workload, not the cross-session aggregation slice.
+
 ## Activation status (v1.0.0)
 
 | Adapter | Status | Activates in |
