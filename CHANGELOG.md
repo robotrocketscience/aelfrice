@@ -26,6 +26,14 @@ installable release; see the roadmap in [README.md](README.md).
 - `aelf --version` flag prints `aelf <__version__>` and exits 0.
   Closes the long-standing argparse error users hit when probing the
   installed version (#71).
+- `aelfrice.noise_filter` module: pure-stdlib pure-function predicate
+  `is_noise(text)` that drops candidate paragraphs matching one of
+  four well-known non-belief shapes — markdown heading blocks,
+  checklist blocks, three-word fragments, or license-header
+  boilerplate (seven canonical signatures). Wired into
+  `scanner.scan_repo` before classification. New
+  `ScanResult.skipped_noise` counter (default 0 for back-compat)
+  reports how many candidates were filtered per scan (#NN).
 
 ### Changed
 
