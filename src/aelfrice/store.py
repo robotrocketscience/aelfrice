@@ -306,6 +306,36 @@ class Store:
             return 0
         return int(row["n"])
 
+    # --- Aggregations (used by aelf:health) ------------------------------
+
+    def count_beliefs(self) -> int:
+        cur = self._conn.execute("SELECT COUNT(*) AS n FROM beliefs")
+        row = cur.fetchone()
+        return int(row["n"]) if row else 0
+
+    def count_edges(self) -> int:
+        cur = self._conn.execute("SELECT COUNT(*) AS n FROM edges")
+        row = cur.fetchone()
+        return int(row["n"]) if row else 0
+
+    def count_locked(self) -> int:
+        cur = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM beliefs WHERE lock_level != 'none'"
+        )
+        row = cur.fetchone()
+        return int(row["n"]) if row else 0
+
+    def alpha_beta_pairs(self) -> list[tuple[float, float]]:
+        """Return every belief's (alpha, beta) for aggregate computation.
+
+        Used by health.py to compute confidence mean / median and mass
+        mean. Memory-bound at large scale (~16 bytes per belief); for
+        v1.0 acceptable at the realistic 10^4-10^5 scale. Streams via
+        sqlite cursor rather than fetchall to keep peak memory linear.
+        """
+        cur = self._conn.execute("SELECT alpha, beta FROM beliefs")
+        return [(float(r["alpha"]), float(r["beta"])) for r in cur.fetchall()]
+
     def list_locked_beliefs(self) -> list[Belief]:
         """All beliefs with lock_level != 'none', ordered by locked_at DESC.
 
