@@ -10,6 +10,14 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-04-27
+
+Patch release: per-project install routing, `aelf doctor` settings
+linter, and CI guardrails for release docs. Closes the v1.0.1 gap
+where one machine couldn't cleanly route per-project venv hooks
+alongside a global `pipx` install, and the README roadmap drifted out
+of sync minutes after the wheel was on PyPI.
+
 ### Added
 
 - `aelf doctor`: scan user-scope and project-scope Claude Code
@@ -17,6 +25,15 @@ installable release; see the roadmap in [README.md](README.md).
   doesn't resolve. Catches dangling absolute paths, bare names not on
   `$PATH`, and missing scripts under `bash /…` interpreter wrappers.
   Exits `1` on any broken finding so it can gate CI (#81).
+- `staging-gate.yml` `release-docs-check` job: when a PR bumps
+  `pyproject.toml` `version`, enforce `CHANGELOG.md` has a matching
+  `## [X.Y.Z]` section + compare-link footnote, and that `README.md`
+  has no roadmap row marking the released version as `next` /
+  `planned`. No-op on non-release PRs (#80).
+- `post-release-docs-issue.yml`: on `release.published`, opens a
+  tracking issue `docs sweep for vX.Y.Z` with a per-doc checklist
+  for the second-order docs the gate can't verify automatically
+  (RELEASING.md test counts, ROADMAP.md narrative, etc.) (#80).
 
 ### Changed
 
@@ -357,7 +374,8 @@ Foundation milestone — store, models, config.
 - Initial repo scaffold: pyproject, README, GitHub Actions workflows,
   scan configs (commit `67b4343`).
 
-[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/robotrocketscience/aelfrice/compare/v0.9.0rc0...v1.0.0
 [0.9.0rc0]: https://github.com/robotrocketscience/aelfrice/compare/v0.8.0...v0.9.0rc0
