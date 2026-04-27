@@ -19,9 +19,12 @@ from typing import Iterable
 
 from aelfrice.models import (
     EDGE_VALENCE,
+    ONBOARD_STATE_COMPLETED,
+    ONBOARD_STATE_PENDING,
     Belief,
     Edge,
     FeedbackEvent,
+    OnboardSession,
 )
 
 # --- Schema ---------------------------------------------------------------
@@ -64,9 +67,20 @@ _SCHEMA: tuple[str, ...] = (
         created_at  TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS onboard_sessions (
+        session_id      TEXT PRIMARY KEY,
+        repo_path       TEXT NOT NULL,
+        state           TEXT NOT NULL,
+        candidates_json TEXT NOT NULL,
+        created_at      TEXT NOT NULL,
+        completed_at    TEXT
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src)",
     "CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst)",
     "CREATE INDEX IF NOT EXISTS idx_feedback_belief ON feedback_history(belief_id)",
+    "CREATE INDEX IF NOT EXISTS idx_onboard_state ON onboard_sessions(state)",
 )
 
 
@@ -125,6 +139,17 @@ def _row_to_feedback(row: sqlite3.Row) -> FeedbackEvent:
         valence=row["valence"],
         source=row["source"],
         created_at=row["created_at"],
+    )
+
+
+def _row_to_onboard_session(row: sqlite3.Row) -> OnboardSession:
+    return OnboardSession(
+        session_id=row["session_id"],
+        repo_path=row["repo_path"],
+        state=row["state"],
+        candidates_json=row["candidates_json"],
+        created_at=row["created_at"],
+        completed_at=row["completed_at"],
     )
 
 
@@ -451,3 +476,80 @@ class Store:
     def insert_edges(self, edges: Iterable[Edge]) -> None:
         for e in edges:
             self.insert_edge(e)
+
+    # --- Onboard sessions -------------------------------------------------
+
+    def insert_onboard_session(self, s: OnboardSession) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO onboard_sessions (
+                session_id, repo_path, state, candidates_json,
+                created_at, completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                s.session_id, s.repo_path, s.state, s.candidates_json,
+                s.created_at, s.completed_at,
+            ),
+        )
+        self._conn.commit()
+
+    def get_onboard_session(self, session_id: str) -> OnboardSession | None:
+        cur = self._conn.execute(
+            "SELECT * FROM onboard_sessions WHERE session_id = ?",
+            (session_id,),
+        )
+        row = cur.fetchone()
+        return _row_to_onboard_session(row) if row else None
+
+    def complete_onboard_session(
+        self, session_id: str, completed_at: str,
+    ) -> bool:
+        """Mark a pending session completed. Returns True if a row was
+        updated, False if no pending session with that id existed.
+
+        Idempotent: re-completing an already-completed session updates
+        `completed_at` to the new timestamp but the state stays
+        `completed`. Caller is responsible for ensuring the session
+        wasn't already completed if that matters to it.
+        """
+        cur = self._conn.execute(
+            """
+            UPDATE onboard_sessions
+            SET state = ?, completed_at = ?
+            WHERE session_id = ?
+            """,
+            (ONBOARD_STATE_COMPLETED, completed_at, session_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def count_onboard_sessions(self, state: str | None = None) -> int:
+        if state is None:
+            cur = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM onboard_sessions"
+            )
+        else:
+            cur = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM onboard_sessions WHERE state = ?",
+                (state,),
+            )
+        row = cur.fetchone()
+        return int(row["n"]) if row else 0
+
+    def list_pending_onboard_sessions(self) -> list[OnboardSession]:
+        """All sessions in `pending` state, oldest first.
+
+        Used by the polymorphic onboard handshake to expose `aelf:onboard()`
+        with no args as a status call: "what sessions are awaiting host
+        classification?".
+        """
+        cur = self._conn.execute(
+            """
+            SELECT * FROM onboard_sessions
+            WHERE state = ?
+            ORDER BY created_at ASC, session_id ASC
+            """,
+            (ONBOARD_STATE_PENDING,),
+        )
+        return [_row_to_onboard_session(r) for r in cur.fetchall()]
