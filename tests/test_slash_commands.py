@@ -12,7 +12,8 @@ from pathlib import Path
 
 import pytest
 
-# The 11-tool surface — must match cli.py's subparsers exactly.
+# The CLI's user-facing surface -- must match cli.py's subparsers exactly.
+# Lifecycle commands (upgrade/uninstall/statusline) added in v1.0.1.
 EXPECTED_COMMANDS = (
     "onboard",
     "search",
@@ -24,6 +25,9 @@ EXPECTED_COMMANDS = (
     "health",
     "setup",
     "unsetup",
+    "upgrade",
+    "uninstall",
+    "statusline",
     "bench",
 )
 
