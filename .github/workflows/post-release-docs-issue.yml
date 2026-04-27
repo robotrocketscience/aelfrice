@@ -1,0 +1,60 @@
+name: Post-Release Docs Sweep
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  open-sweep-issue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Open docs sweep tracking issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          title="docs sweep for ${TAG}"
+          body=$(cat <<EOF
+          Tracking docs that the **release-docs-check** staging-gate cannot verify automatically. Close once each item is either fixed in a follow-up PR or confirmed still accurate.
+
+          Release: ${RELEASE_URL}
+
+          ## Checklist
+
+          - [ ] \`README.md\` headline NOTE (\`> v1.0 ships the surface ...\`) reflects anything new in ${TAG} that changes the user-facing pitch
+          - [ ] \`README.md\` Install/60-seconds blocks mention any new install-time commands or extras shipped in ${TAG}
+          - [ ] \`README.md\` roadmap table — verify next-version row points at the right theme (status flip is gated by CI; theme drift is not)
+          - [ ] \`docs/ROADMAP.md\` — \`## v${version}\` section exists and lists what actually shipped (vs what was originally planned)
+          - [ ] \`docs/ROADMAP.md\` — next-version section reflects scope changes that happened in ${TAG} (deferred items, items pulled in)
+          - [ ] \`docs/RELEASING.md\` — pytest count comment ("~N passing at vX.Y.Z") still in the right ballpark
+          - [ ] \`docs/COMMANDS.md\` — every new CLI subcommand or flag is documented; total command count in the opening line matches
+          - [ ] \`docs/INSTALL.md\` — new optional extras and post-install verification commands present
+          - [ ] \`docs/BENCHMARKS.md\` — "Activation status" version label refreshed if any adapter changed status
+          - [ ] \`docs/LIMITATIONS.md\` — any items resolved by ${TAG} moved out of "known issues at v1.0" into resolved/historical
+          - [ ] \`docs/MCP.md\` / \`docs/SLASH_COMMANDS.md\` — surface counts and new entries reflect ${TAG}
+
+          ## What CI already verified (do not re-check)
+
+          - \`CHANGELOG.md\` has a \`## [${version}]\` section with a compare-link footnote
+          - \`README.md\` roadmap row for v${version} is no longer marked \`next\` or \`planned\`
+
+          Close this issue when the sweep is done, or convert remaining items into a tracked PR.
+          EOF
+          )
+          gh issue create \
+            --title "$title" \
+            --body "$body" \
+            --label "docs,release-followup" \
+            --repo "${{ github.repository }}" \
+            || gh issue create \
+              --title "$title" \
+              --body "$body" \
+              --repo "${{ github.repository }}"
