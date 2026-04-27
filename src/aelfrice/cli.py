@@ -12,6 +12,7 @@ Commands:
   setup                            install UserPromptSubmit hook in Claude Code
   unsetup                          remove UserPromptSubmit hook from Claude Code
   upgrade                          print the right pip-upgrade command line
+  uninstall                        tear down aelfrice locally + handle DB
   statusline                       emit Claude Code statusline snippet
   bench                            run the v0.9.0-rc benchmark harness
 
@@ -53,6 +54,7 @@ from aelfrice.lifecycle import (
     is_newer,
     maybe_check_for_update_async,
     read_cache as _read_update_cache,
+    uninstall as _lifecycle_uninstall,
     upgrade_advice,
 )
 from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
@@ -453,6 +455,163 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _read_password(args: argparse.Namespace) -> str | None:
+    """Read the archive password.
+
+    Order of precedence:
+      1. --password-stdin: read first line of stdin (no trailing newline,
+         no shell history exposure).
+      2. Interactive: getpass twice, must match.
+    Never accepts password on argv (would leak via ps/proc/cmdline).
+    """
+    if args.password_stdin:
+        line = sys.stdin.readline()
+        return line.rstrip("\n\r")
+    import getpass
+
+    pw1 = getpass.getpass("archive password: ")
+    pw2 = getpass.getpass("confirm password: ")
+    if pw1 != pw2:
+        return None
+    return pw1
+
+
+def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
+    """Tear down aelfrice's local footprint with redundant data gates.
+
+    Mutually exclusive --keep-db / --purge / --archive PATH.
+    --purge gates:
+      1. Must be passed explicitly (default is none -> error w/ help).
+      2. Print the affected DB path + size.
+      3. Require user to type 'PURGE' verbatim (or --yes to skip).
+      4. Final [y/N] confirmation (or --yes to skip).
+    Default: also runs `aelf unsetup` for the user-scope settings.json
+    so the hook + statusline are removed in one go (--keep-hook opts
+    out).
+    """
+    chosen = sum(
+        [bool(args.keep_db), bool(args.purge), args.archive is not None]
+    )
+    if chosen == 0:
+        print(
+            "error: pick one of --keep-db, --purge, --archive PATH "
+            "(see 'aelf uninstall --help')",
+            file=sys.stderr,
+        )
+        return 2
+    if chosen > 1:
+        print(
+            "error: --keep-db, --purge, and --archive are mutually exclusive",
+            file=sys.stderr,
+        )
+        return 2
+
+    target_db = db_path()
+
+    # --- Gate 1+2+3: redundant prompts before destroying data ---------
+    if args.purge:
+        if target_db.exists():
+            try:
+                size = target_db.stat().st_size
+                size_str = f"{size:,} bytes"
+            except OSError:
+                size_str = "unknown size"
+            print(
+                f"--purge will permanently delete {target_db} ({size_str}).",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"--purge target {target_db} does not exist; nothing to delete.",
+                file=out,  # type: ignore[arg-type]
+            )
+        if not args.yes:
+            try:
+                ack = input("type 'PURGE' to confirm: ")
+            except EOFError:
+                ack = ""
+            if ack != "PURGE":
+                print("aborted (no 'PURGE' confirmation).", file=out)  # type: ignore[arg-type]
+                return 1
+            try:
+                final = input("Last chance. Cannot be undone. Continue? [y/N]: ")
+            except EOFError:
+                final = ""
+            if final.strip().lower() not in {"y", "yes"}:
+                print("aborted.", file=out)  # type: ignore[arg-type]
+                return 1
+
+    # --- Archive path: collect password BEFORE touching the DB --------
+    password: str | None = None
+    archive_path: Path | None = None
+    if args.archive is not None:
+        archive_path = Path(args.archive)
+        password = _read_password(args)
+        if not password:
+            print(
+                "aborted: empty or non-matching password.",
+                file=sys.stderr,
+            )
+            return 1
+
+    # --- Apply data disposition --------------------------------------
+    try:
+        result = _lifecycle_uninstall(
+            target_db,
+            keep_db=args.keep_db,
+            purge=args.purge,
+            archive_path=archive_path,
+            archive_password=password,
+        )
+    except RuntimeError as exc:
+        # cryptography missing -- surface the install hint, exit non-zero.
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    if result.mode == "kept":
+        print(
+            f"DB preserved at {target_db}.",
+            file=out,  # type: ignore[arg-type]
+        )
+    elif result.mode == "purged":
+        print(
+            f"DB deleted: {target_db}.",
+            file=out,  # type: ignore[arg-type]
+        )
+    elif result.mode == "archived":
+        print(
+            f"DB encrypted to {result.archive_path}, original deleted.",
+            file=out,  # type: ignore[arg-type]
+        )
+        print(
+            "(decrypt later via aelfrice.lifecycle.decrypt_archive(path, pw))",
+            file=out,  # type: ignore[arg-type]
+        )
+
+    # --- Clear update-check cache (no point keeping it post-uninstall)
+    _clear_update_cache()
+
+    # --- Hook + statusline removal (default on, --keep-hook opts out)-
+    if not args.keep_hook:
+        # Delegate by re-using the existing _cmd_unsetup path: pretend
+        # the user invoked `aelf unsetup --scope user`.
+        unsetup_args = argparse.Namespace(
+            scope="user",
+            project_root=None,
+            settings_path=args.settings_path,
+            command=DEFAULT_HOOK_COMMAND,
+            cmd="unsetup",
+            func=_cmd_unsetup,
+        )
+        _cmd_unsetup(unsetup_args, out)
+
+    print(
+        f"\nFinish removing aelfrice with: pip uninstall {_PKG}",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
 def _cmd_statusline(args: argparse.Namespace, out: object) -> int:
     """Print a statusline prefix snippet ('' when no update pending).
 
@@ -643,6 +802,53 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip the auto-install of the update-notifier statusline snippet",
     )
     p_setup.set_defaults(func=_cmd_setup)
+
+    p_uninstall = sub.add_parser(
+        "uninstall",
+        help=(
+            "tear down aelfrice locally: pick exactly one of --keep-db / "
+            "--purge / --archive PATH for the brain-graph DB. Also runs "
+            "unsetup unless --keep-hook is given."
+        ),
+    )
+    p_uninstall.add_argument(
+        "--keep-db", action="store_true",
+        help="leave ~/.aelfrice/memory.db untouched (safe default for review)",
+    )
+    p_uninstall.add_argument(
+        "--purge", action="store_true",
+        help=(
+            "PERMANENTLY DELETE the brain-graph DB. Requires typing "
+            "'PURGE' followed by [y] unless --yes is passed."
+        ),
+    )
+    p_uninstall.add_argument(
+        "--archive", default=None,
+        help=(
+            "encrypt the DB to this path with a password, then delete "
+            "the original (requires: pip install 'aelfrice[archive]')"
+        ),
+    )
+    p_uninstall.add_argument(
+        "--password-stdin", action="store_true",
+        help="read archive password from stdin (no interactive prompt)",
+    )
+    p_uninstall.add_argument(
+        "--yes", action="store_true",
+        help=(
+            "skip confirmation prompts (still requires --purge to be "
+            "passed explicitly -- never auto-purges)"
+        ),
+    )
+    p_uninstall.add_argument(
+        "--keep-hook", action="store_true",
+        help="do not run unsetup; leave the Claude Code hook in place",
+    )
+    p_uninstall.add_argument(
+        "--settings-path", default=None,
+        help="explicit settings.json for the unsetup half (defaults to user-scope)",
+    )
+    p_uninstall.set_defaults(func=_cmd_uninstall)
 
     p_statusline = sub.add_parser(
         "statusline",
