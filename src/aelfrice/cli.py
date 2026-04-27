@@ -18,15 +18,19 @@ Commands:
   bench                            run the v0.9.0-rc benchmark harness
 
 DB path resolves from AELFRICE_DB environment variable when set,
-otherwise from ~/.aelfrice/memory.db. Callers can run `main(argv=...)`
-in-process for tests; the `aelf` entry point in pyproject.toml maps to
-`main()`.
+otherwise from <git-common-dir>/aelfrice/memory.db when cwd is inside
+a git work-tree, otherwise from ~/.aelfrice/memory.db. The git-common-dir
+branch makes worktrees of one repo share a single DB; .git/ is not
+git-tracked, so the brain graph never crosses the git boundary. Callers
+can run `main(argv=...)` in-process for tests; the `aelf` entry point in
+pyproject.toml maps to `main()`.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import os
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -82,11 +86,50 @@ _LOCK_ID_LEN: Final[int] = 16
 _VALID_SCOPES: Final[tuple[SettingsScope, ...]] = ("user", "project")
 
 
+def _git_common_dir() -> Path | None:
+    """Absolute path of cwd's git-common-dir, or None when not in a repo.
+
+    Two worktrees of one repo share a --git-common-dir, so resolving
+    against this gives them a single shared DB. Returns None when cwd
+    is outside any git work-tree, when the `git` binary is missing, or
+    when the rev-parse call fails for any reason — callers fall back to
+    the home-dir path.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    raw = result.stdout.strip()
+    if not raw:
+        return None
+    return Path(raw).resolve()
+
+
 def db_path() -> Path:
-    """Resolve the DB path from $AELFRICE_DB or the default."""
+    """Resolve the DB path.
+
+    Resolution order:
+    1. $AELFRICE_DB (explicit override; honoured even inside a git repo).
+    2. <git-common-dir>/aelfrice/memory.db when cwd is in a git work-tree.
+    3. ~/.aelfrice/memory.db (legacy global fallback for non-git dirs).
+
+    The DB stays under .git/, which git does not track — the brain
+    graph never crosses the git boundary.
+    """
     override = os.environ.get("AELFRICE_DB")
     if override:
         return Path(override)
+    git_dir = _git_common_dir()
+    if git_dir is not None:
+        return git_dir / "aelfrice" / DEFAULT_DB_FILENAME
     return DEFAULT_DB_DIR / DEFAULT_DB_FILENAME
 
 

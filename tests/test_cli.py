@@ -9,11 +9,12 @@ property each, per the deterministic-atomic-short policy.
 from __future__ import annotations
 
 import io
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from aelfrice.cli import db_path, main
+from aelfrice.cli import DEFAULT_DB_DIR, DEFAULT_DB_FILENAME, db_path, main
 from aelfrice.models import LOCK_USER
 from aelfrice.store import MemoryStore
 
@@ -42,11 +43,71 @@ def test_db_path_honors_env_override(tmp_path: Path,
     assert db_path() == target
 
 
-def test_db_path_falls_back_to_default_when_no_env(
-    monkeypatch: pytest.MonkeyPatch,
+def test_db_path_resolves_to_git_common_dir_when_in_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Inside a git work-tree, the DB lives at <git-common-dir>/aelfrice/memory.db."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     monkeypatch.delenv("AELFRICE_DB", raising=False)
-    assert db_path().name == "memory.db"
+    monkeypatch.chdir(repo)
+    resolved = db_path()
+    assert resolved == (repo / ".git" / "aelfrice" / DEFAULT_DB_FILENAME).resolve()
+
+
+def test_db_path_worktrees_share_one_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two worktrees of one repo resolve to the same DB path."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    # need at least one commit before adding a worktree
+    (repo / "README").write_text("seed", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+         "-c", "commit.gpgsign=false",
+         "commit", "-q", "-m", "seed"],
+        cwd=repo, check=True,
+    )
+    wt = tmp_path / "worktree-feature"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "feature", str(wt)],
+        cwd=repo, check=True,
+    )
+    monkeypatch.delenv("AELFRICE_DB", raising=False)
+
+    monkeypatch.chdir(repo)
+    main_db = db_path()
+    monkeypatch.chdir(wt)
+    wt_db = db_path()
+    assert main_db == wt_db
+
+
+def test_db_path_falls_back_to_home_outside_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-git directory falls back to ~/.aelfrice/memory.db."""
+    monkeypatch.delenv("AELFRICE_DB", raising=False)
+    non_git = tmp_path / "no-repo"
+    non_git.mkdir()
+    monkeypatch.chdir(non_git)
+    assert db_path() == DEFAULT_DB_DIR / DEFAULT_DB_FILENAME
+
+
+def test_db_path_env_override_wins_inside_git_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """$AELFRICE_DB beats git-common-dir resolution."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    target = tmp_path / "explicit.db"
+    monkeypatch.setenv("AELFRICE_DB", str(target))
+    monkeypatch.chdir(repo)
+    assert db_path() == target
 
 
 # --- onboard ------------------------------------------------------------
