@@ -12,6 +12,7 @@ Commands:
   setup                            install UserPromptSubmit hook in Claude Code
   unsetup                          remove UserPromptSubmit hook from Claude Code
   upgrade                          print the right pip-upgrade command line
+  statusline                       emit Claude Code statusline snippet
   bench                            run the v0.9.0-rc benchmark harness
 
 DB path resolves from AELFRICE_DB environment variable when set,
@@ -415,6 +416,25 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_statusline(args: argparse.Namespace, out: object) -> int:
+    """Print a statusline prefix snippet ('' when no update pending).
+
+    Composes with any existing statusline command via shell:
+    'original-cmd ; aelf statusline 2>/dev/null'. Reads the cache only,
+    never networks. End-of-line is intentionally absent so the snippet
+    sits inline with whatever else is on the bar.
+    """
+    _ = args
+    from aelfrice.statusline import render
+
+    snippet = render()
+    if snippet:
+        # Use write rather than print so we don't append a newline that
+        # would force a line break in the host's statusline.
+        out.write(snippet)  # type: ignore[attr-defined]
+    return 0
+
+
 def _cmd_upgrade(args: argparse.Namespace, out: object) -> int:
     """Print the right upgrade command for this install context.
 
@@ -582,6 +602,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="status message Claude Code shows while the hook runs",
     )
     p_setup.set_defaults(func=_cmd_setup)
+
+    p_statusline = sub.add_parser(
+        "statusline",
+        help=(
+            "emit a statusline prefix snippet (orange update banner "
+            "or empty). Compose with: 'your-cmd ; aelf statusline 2>/dev/null'"
+        ),
+    )
+    p_statusline.set_defaults(func=_cmd_statusline)
 
     p_upgrade = sub.add_parser(
         "upgrade",
