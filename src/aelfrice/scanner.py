@@ -17,6 +17,7 @@ above.
 """
 from __future__ import annotations
 
+import ast
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -119,6 +120,8 @@ def _split_paragraphs(text: str) -> list[str]:
 _GIT_LOG_DEFAULT_LIMIT: Final[int] = 100
 _GIT_LOG_TIMEOUT_SECONDS: Final[float] = 5.0
 
+_PY_EXTENSION: Final[str] = ".py"
+
 
 def extract_git_log(
     root: Path,
@@ -179,6 +182,119 @@ def extract_git_log(
                 source=f"git:commit:{sha[:7]}",
             )
         )
+    return candidates
+
+
+def _iter_py_files(root: Path) -> list[Path]:
+    """Return .py files under root in deterministic sorted order.
+
+    Honors the same _SKIP_DIRS exclusions as the doc walk.
+    """
+    out: list[Path] = []
+    if not root.exists() or not root.is_dir():
+        return out
+    stack: list[Path] = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = sorted(current.iterdir(), key=lambda p: p.name)
+        except (PermissionError, OSError):
+            continue
+        for entry in entries:
+            if entry.is_symlink():
+                continue
+            if entry.is_dir():
+                if entry.name in _SKIP_DIRS:
+                    continue
+                stack.append(entry)
+                continue
+            if entry.suffix == _PY_EXTENSION:
+                out.append(entry)
+    out.sort()
+    return out
+
+
+def _extract_from_module(
+    tree: ast.Module, rel: str
+) -> list[SentenceCandidate]:
+    """One pass over the module: collect module docstring + top-level
+    function and class docstrings.
+
+    No-docstring symbols are skipped (not enough signal). Nested
+    functions and methods are skipped (top-level only) — per the
+    v1.0 'simple AST' contract.
+    """
+    out: list[SentenceCandidate] = []
+
+    module_doc = ast.get_docstring(tree)
+    if module_doc:
+        out.append(
+            SentenceCandidate(
+                text=module_doc.strip(),
+                source=f"ast:{rel}:module",
+            )
+        )
+
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            doc = ast.get_docstring(node)
+            if doc:
+                out.append(
+                    SentenceCandidate(
+                        text=doc.strip(),
+                        source=f"ast:{rel}:func:{node.name}",
+                    )
+                )
+        elif isinstance(node, ast.AsyncFunctionDef):
+            doc = ast.get_docstring(node)
+            if doc:
+                out.append(
+                    SentenceCandidate(
+                        text=doc.strip(),
+                        source=f"ast:{rel}:func:{node.name}",
+                    )
+                )
+        elif isinstance(node, ast.ClassDef):
+            doc = ast.get_docstring(node)
+            if doc:
+                out.append(
+                    SentenceCandidate(
+                        text=doc.strip(),
+                        source=f"ast:{rel}:class:{node.name}",
+                    )
+                )
+    return out
+
+
+def extract_ast(root: Path) -> list[SentenceCandidate]:
+    """Walk .py files under root and extract docstrings as candidates.
+
+    Three sources only — module docstrings, top-level function
+    docstrings, top-level class docstrings — per the v1.0 'simple AST'
+    contract. Nested functions and methods are skipped intentionally;
+    the next release can expand if usage justifies it.
+
+    Files that fail to parse are skipped silently (returns the
+    candidates from the rest of the tree). Pure stdlib (`ast` module),
+    deterministic for any stable input tree.
+
+    Source formats:
+      `ast:<rel-path>:module`
+      `ast:<rel-path>:func:<name>`
+      `ast:<rel-path>:class:<name>`
+    """
+    candidates: list[SentenceCandidate] = []
+    for path in _iter_py_files(root):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except (PermissionError, OSError):
+            continue
+        try:
+            tree = ast.parse(text, filename=str(path))
+        except SyntaxError:
+            continue
+        rel = path.relative_to(root).as_posix()
+        candidates.extend(_extract_from_module(tree, rel))
     return candidates
 
 
