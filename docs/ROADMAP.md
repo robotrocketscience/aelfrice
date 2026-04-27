@@ -17,7 +17,8 @@ This is a rebuild, not a port. Structural issues that survived agentmemory are b
 | Version | Status | Theme |
 |---|---|---|
 | v0.1 – v1.0 | shipped | core memory, CLI, MCP, hook wiring, synthetic benchmark, PyPI publish |
-| **v1.0.1** | next | launch fix-up — hook→retrieval wiring, onboard noise, `aelf --version` |
+| **v1.0.1** | shipped | launch fix-up — hook→retrieval wiring, onboard noise, `aelf --version` |
+| **v1.0.2** | shipped | per-project install routing, `aelf doctor`, release-docs CI gate |
 | **v1.1.0** | planned | project identity, edges→threads, status/health split |
 | **v1.2.0** | planned | commit-ingest hook, seed files, triple-extraction port |
 | **v1.3.0** | planned | retrieval wave — entity index + BFS multi-hop + LLM classification |
@@ -37,6 +38,13 @@ The first patch closes the highest-visibility gaps from launch. Each item is tra
 - **Contradiction tie-breaker.** Default precedence `user_stated > user_corrected > document_recent > agent_inferred`, with ISO timestamp as the deciding fallback. The loser is auto-superseded; the audit row records which rule fired.
 - **`aelf --version`.** Reads from `aelfrice.__version__`. Trivial, but currently raises an argparse error.
 - **Query result cache.** A bounded LRU cache wrapping `aelfrice.retrieval.retrieve()`, keyed on a canonicalized form of `(query, token_budget, l1_limit)` and invalidated on every store mutation. Skips a full L0+L1 pass when an agent loop re-issues the same query. Spec: [`lru_query_cache.md`](lru_query_cache.md).
+
+## v1.0.2 — install routing + release guardrails
+
+Second patch. Two threads:
+
+- **Per-project install routing + `aelf doctor`.** `aelf setup` auto-detects scope (`project` if `cwd/.venv` matches the active interpreter, else `user`) and writes an absolute `aelf-hook` path so one machine can route per-project venvs to their own hook alongside a global `pipx`-installed fallback without bare-name `$PATH` collisions. `aelf doctor` is a settings linter that scans user- and project-scope `settings.json` for hook + statusline commands whose program token doesn't resolve, exits `1` on findings so it can gate CI. Closes [#81](https://github.com/robotrocketscience/aelfrice/issues/81).
+- **Release-docs CI gate + post-release docs sweep.** The v1.0.1 cut shipped to PyPI with the README roadmap row still saying `v1.0.1 | next`. New `staging-gate.yml` `release-docs-check` job enforces, on any version-bump PR, that `CHANGELOG.md` has the matching `[X.Y.Z]` section + compare-link footnote and that `README.md` has no roadmap row marking the released version as `next` / `planned`. New `post-release-docs-issue.yml` opens a tracking issue on `release.published` for second-order docs the gate can't verify (RELEASING.md test counts, ROADMAP.md narrative).
 
 ## v1.1.0 — project identity and cosmetic surface
 
