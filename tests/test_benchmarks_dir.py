@@ -111,4 +111,5 @@ def test_aelf_bench_longmemeval_score_no_args_exits_2() -> None:
 
 def test_benchmarks_package_imports() -> None:
     """The benchmarks/ directory is a valid (empty) package."""
-    import benchmarks  # noqa: F401
+    import benchmarks
+    assert benchmarks is not None
