@@ -11,14 +11,30 @@ a real corpus.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Final
 
-from aelfrice.models import Belief
+from aelfrice.models import LOCK_NONE, Belief
 from aelfrice.store import MemoryStore
 
 DEFAULT_TOKEN_BUDGET: Final[int] = 2000
 _CHARS_PER_TOKEN: Final[float] = 4.0
 DEFAULT_L1_LIMIT: Final[int] = 50
+
+
+@dataclass(frozen=True)
+class RetrievalResult:
+    """Wrapper object for retrieve_v2 callers (academic-suite adapters).
+
+    Public v1.0.x retrieve() returns list[Belief] directly. Lab v2.0.0
+    adapters expect `result.beliefs` plus auxiliary diagnostics fields
+    that aren't yet computed in public — those are placeholders here so
+    adapter code that reads them does not crash.
+    """
+
+    beliefs: list[Belief]
+    hrr_expansions: list[str] = field(default_factory=lambda: [])
+    bfs_chains: list[list[str]] = field(default_factory=lambda: [])
 
 
 def _estimate_tokens(text: str) -> int:
@@ -67,3 +83,40 @@ def retrieve(
         out.append(b)
         used += cost
     return out
+
+
+def retrieve_v2(
+    store: MemoryStore,
+    query: str,
+    budget: int = DEFAULT_TOKEN_BUDGET,
+    include_locked: bool = True,
+    use_hrr: bool = False,  # noqa: ARG001
+    use_bfs: bool = False,  # noqa: ARG001
+    l1_limit: int = DEFAULT_L1_LIMIT,
+) -> RetrievalResult:
+    """Lab-compatible retrieval wrapper for academic-suite adapters.
+
+    Wraps the public `retrieve()` in the signature lab v2.0.0 adapters
+    expect:
+
+    - `budget` (lab kwarg) maps to `token_budget` (public kwarg).
+    - `include_locked=False` filters out lock_level != LOCK_NONE post-retrieval
+      (public always returns L0 first; this wrapper drops them on demand).
+    - `use_hrr` and `use_bfs` are accepted but no-op at v1.0.x — the HRR
+      vocabulary bridge (P4) and BFS multi-hop chaining (P3) have not yet
+      ported. Callers can pass them for forward-compat without conditionals.
+    - Returns a `RetrievalResult` wrapper so adapters can read
+      `result.beliefs` (and stub diagnostics fields).
+
+    Numbers produced through retrieve_v2 at v1.0.x are the L0+FTS5 baseline.
+    They will improve once HRR/BFS port; that is the explicit measurement
+    path P3+ takes.
+    """
+    raw: list[Belief] = retrieve(
+        store, query, token_budget=budget, l1_limit=l1_limit,
+    )
+    if include_locked:
+        beliefs = raw
+    else:
+        beliefs = [b for b in raw if b.lock_level == LOCK_NONE]
+    return RetrievalResult(beliefs=beliefs)
