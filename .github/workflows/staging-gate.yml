@@ -104,3 +104,44 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --frozen --extra dev --extra archive
       - run: uv run pytest tests/ -q
+
+  release-docs-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect release PR and verify docs
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          extract_version() {
+            grep -m1 -E '^version[[:space:]]*=' "$1" | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/'
+          }
+          head_ver="$(extract_version pyproject.toml)"
+          git fetch --no-tags origin "$BASE_REF" --depth=1
+          git show "origin/${BASE_REF}:pyproject.toml" > /tmp/base_pyproject.toml
+          base_ver="$(extract_version /tmp/base_pyproject.toml)"
+          if [ "$head_ver" = "$base_ver" ]; then
+            echo "Not a release PR (version unchanged: ${head_ver}). Skipping docs check."
+            exit 0
+          fi
+          echo "Release PR detected: ${base_ver} -> ${head_ver}"
+          fail=0
+          if ! grep -qE "^## \[${head_ver}\]" CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::Missing '## [${head_ver}]' section. Move [Unreleased] entries into a dated [${head_ver}] block."
+            fail=1
+          fi
+          if ! grep -qE "^\[${head_ver}\]:\s*https://github.com/" CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::Missing compare-link footnote '[${head_ver}]: https://github.com/...' near bottom of file."
+            fail=1
+          fi
+          if grep -qE "v?${head_ver}\s*\|\s*(next|planned)\b" README.md; then
+            echo "::error file=README.md::Roadmap row for v${head_ver} still says 'next' or 'planned'. Flip status to 'shipped' before cutting the release."
+            fail=1
+          fi
+          if [ -f docs/ROADMAP.md ] && ! grep -qE "v${head_ver}" docs/ROADMAP.md; then
+            echo "::warning file=docs/ROADMAP.md::No mention of v${head_ver}. Consider adding a section (non-blocking)."
+          fi
+          exit "$fail"
