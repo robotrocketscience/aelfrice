@@ -14,6 +14,7 @@ from typing import cast
 import pytest
 
 from aelfrice.cli import DEFAULT_HOOK_COMMAND, main
+from aelfrice.setup import resolve_hook_command
 
 
 @pytest.fixture(autouse=True)
@@ -63,8 +64,10 @@ def test_setup_default_command_writes_project_settings(tmp_path: Path) -> None:
     assert code == 0
     settings = _project_settings(tmp_path)
     assert settings.exists()
-    assert _hook_commands(settings) == [DEFAULT_HOOK_COMMAND]
+    expected = resolve_hook_command("project")
+    assert _hook_commands(settings) == [expected]
     assert "installed" in output
+    # The basename is always present, whether we wrote bare or absolute.
     assert DEFAULT_HOOK_COMMAND in output
 
 
@@ -75,7 +78,8 @@ def test_setup_idempotent_reports_already_present(tmp_path: Path) -> None:
     )
     assert code == 0
     assert "already installed" in output
-    assert _hook_commands(_project_settings(tmp_path)) == [DEFAULT_HOOK_COMMAND]
+    expected = resolve_hook_command("project")
+    assert _hook_commands(_project_settings(tmp_path)) == [expected]
 
 
 def test_setup_custom_command_timeout_and_status_message(
@@ -112,7 +116,12 @@ def test_setup_explicit_settings_path_overrides_scope(tmp_path: Path) -> None:
     code, _ = _run("setup", "--settings-path", str(explicit))
     assert code == 0
     assert explicit.exists()
-    assert _hook_commands(explicit) == [DEFAULT_HOOK_COMMAND]
+    # Without an explicit --scope, auto-detect from cwd. Whichever scope
+    # auto-detect picks, the resolver returns the same command for that
+    # scope, so we just check basename ends up correct.
+    cmds = _hook_commands(explicit)
+    assert len(cmds) == 1
+    assert Path(cmds[0]).name == DEFAULT_HOOK_COMMAND
 
 
 def test_unsetup_removes_default_command(tmp_path: Path) -> None:
@@ -159,4 +168,5 @@ def test_user_scope_writes_into_monkeypatched_user_path(
     code, _ = _run("setup", "--scope", "user")
     assert code == 0
     assert fake_user_settings.exists()
-    assert _hook_commands(fake_user_settings) == [DEFAULT_HOOK_COMMAND]
+    expected = resolve_hook_command("user")
+    assert _hook_commands(fake_user_settings) == [expected]

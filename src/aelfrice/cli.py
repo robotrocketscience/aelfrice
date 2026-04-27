@@ -29,7 +29,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Final, Sequence
+from typing import Final, Sequence, cast
 
 from aelfrice.feedback import apply_feedback
 from aelfrice.health import (
@@ -61,9 +61,12 @@ from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
 from aelfrice.setup import (
     SettingsScope,
+    clean_dangling_shims,
     default_settings_path,
+    detect_default_scope,
     install_statusline,
     install_user_prompt_submit_hook,
+    resolve_hook_command,
     uninstall_statusline,
     uninstall_user_prompt_submit_hook,
 )
@@ -368,34 +371,52 @@ def _cmd_bench(args: argparse.Namespace, out: object) -> int:
     return 2
 
 
-def _resolve_settings_path(args: argparse.Namespace) -> Path:
-    if args.settings_path is not None:
-        return Path(args.settings_path)
-    scope: SettingsScope = args.scope
+def _effective_scope(args: argparse.Namespace) -> SettingsScope:
+    """Return the explicit `--scope` if given, else auto-detect."""
+    scope = getattr(args, "scope", None)
+    if scope in _VALID_SCOPES:
+        return cast(SettingsScope, scope)
     project_root = (
         Path(args.project_root) if args.project_root is not None else None
     )
-    return default_settings_path(scope, project_root=project_root)
+    return detect_default_scope(cwd=project_root)
+
+
+def _resolve_settings_path(args: argparse.Namespace) -> Path:
+    if args.settings_path is not None:
+        return Path(args.settings_path)
+    project_root = (
+        Path(args.project_root) if args.project_root is not None else None
+    )
+    return default_settings_path(_effective_scope(args), project_root=project_root)
 
 
 def _cmd_setup(args: argparse.Namespace, out: object) -> int:
+    scope = _effective_scope(args)
     path = _resolve_settings_path(args)
+    command = args.command if args.command is not None else resolve_hook_command(scope)
+    cleanup = clean_dangling_shims()
+    for removed_path in cleanup.removed:
+        print(
+            f"cleaned dangling shim: {removed_path}",
+            file=out,  # type: ignore[arg-type]
+        )
     result = install_user_prompt_submit_hook(
         path,
-        command=args.command,
+        command=command,
         timeout=args.timeout,
         status_message=args.status_message,
     )
     if result.already_present:
         print(
             f"hook already installed in {result.path} "
-            f"(command={args.command!r})",
+            f"(command={command!r})",
             file=out,  # type: ignore[arg-type]
         )
     else:
         print(
             f"installed UserPromptSubmit hook in {result.path} "
-            f"(command={args.command!r})",
+            f"(command={command!r})",
             file=out,  # type: ignore[arg-type]
         )
     if not args.no_statusline:
@@ -427,18 +448,24 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
 
 def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
     path = _resolve_settings_path(args)
-    result = uninstall_user_prompt_submit_hook(path, command=args.command)
+    if args.command is None:
+        result = uninstall_user_prompt_submit_hook(
+            path, command_basename=DEFAULT_HOOK_COMMAND
+        )
+        match_label = f"basename={DEFAULT_HOOK_COMMAND!r}"
+    else:
+        result = uninstall_user_prompt_submit_hook(path, command=args.command)
+        match_label = f"command={args.command!r}"
     if result.removed == 0:
         print(
-            f"no matching hook in {result.path} "
-            f"(command={args.command!r})",
+            f"no matching hook in {result.path} ({match_label})",
             file=out,  # type: ignore[arg-type]
         )
     else:
         print(
             f"removed {result.removed} hook entr"
             f"{'y' if result.removed == 1 else 'ies'} from {result.path} "
-            f"(command={args.command!r})",
+            f"({match_label})",
             file=out,  # type: ignore[arg-type]
         )
     sl = uninstall_statusline(path)
@@ -594,12 +621,14 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
     # --- Hook + statusline removal (default on, --keep-hook opts out)-
     if not args.keep_hook:
         # Delegate by re-using the existing _cmd_unsetup path: pretend
-        # the user invoked `aelf unsetup --scope user`.
+        # the user invoked `aelf unsetup --scope user`. command=None
+        # triggers basename-match cleanup, which catches both bare and
+        # absolute-path installs.
         unsetup_args = argparse.Namespace(
             scope="user",
             project_root=None,
             settings_path=args.settings_path,
-            command=DEFAULT_HOOK_COMMAND,
+            command=None,
             cmd="unsetup",
             func=_cmd_unsetup,
         )
@@ -783,10 +812,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_hook_scope_args(p_setup)
     p_setup.add_argument(
-        "--command", default=DEFAULT_HOOK_COMMAND,
+        "--command", default=None,
         help=(
-            f"hook command Claude Code will spawn "
-            f"(default {DEFAULT_HOOK_COMMAND!r})"
+            "hook command Claude Code will spawn. Default: auto-resolved "
+            "absolute path to aelf-hook (project venv for project scope, "
+            "$PATH for user scope)."
         ),
     )
     p_setup.add_argument(
@@ -875,10 +905,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_hook_scope_args(p_unsetup)
     p_unsetup.add_argument(
-        "--command", default=DEFAULT_HOOK_COMMAND,
+        "--command", default=None,
         help=(
-            "hook command string to remove "
-            f"(default {DEFAULT_HOOK_COMMAND!r})"
+            "exact hook command string to remove. Default: remove every "
+            f"entry whose command basename is {DEFAULT_HOOK_COMMAND!r} "
+            "(matches both bare-name and absolute-path installs)."
         ),
     )
     p_unsetup.set_defaults(func=_cmd_unsetup)
@@ -921,8 +952,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _add_hook_scope_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
-        "--scope", choices=list(_VALID_SCOPES), default="user",
-        help="settings.json scope (default 'user' = ~/.claude/settings.json)",
+        "--scope", choices=list(_VALID_SCOPES), default=None,
+        help=(
+            "settings.json scope. Default: auto -- 'project' if cwd has a "
+            ".venv matching the active interpreter, else 'user'."
+        ),
     )
     parser.add_argument(
         "--project-root", default=None,

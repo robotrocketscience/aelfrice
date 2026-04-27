@@ -282,15 +282,30 @@ def install_user_prompt_submit_hook(
 
 
 def uninstall_user_prompt_submit_hook(
-    settings_path: Path, *, command: str
+    settings_path: Path,
+    *,
+    command: str | None = None,
+    command_basename: str | None = None,
 ) -> UninstallResult:
-    """Remove all UserPromptSubmit entries running exactly `command`.
+    """Remove UserPromptSubmit entries matching `command` or `command_basename`.
+
+    Pass exactly one of:
+      * `command` -- exact-string match of the stored hook command.
+      * `command_basename` -- match every hook whose stored command,
+        treated as a path, has this basename. Lets a bare-name install
+        and an absolute-path install be cleaned up by the same call.
 
     Returns `removed=0` if the file does not exist, has no matching
     entry, or has no `hooks.UserPromptSubmit` block at all.
     """
-    if not command:
+    if command is None and command_basename is None:
+        raise ValueError("provide command or command_basename")
+    if command is not None and command_basename is not None:
+        raise ValueError("command and command_basename are mutually exclusive")
+    if command is not None and not command:
         raise ValueError("command must be a non-empty string")
+    if command_basename is not None and not command_basename:
+        raise ValueError("command_basename must be a non-empty string")
     if not settings_path.exists():
         return UninstallResult(path=settings_path, removed=0)
     data = _load_settings(settings_path)
@@ -298,10 +313,17 @@ def uninstall_user_prompt_submit_hook(
     if user_prompt_submit is None:
         return UninstallResult(path=settings_path, removed=0)
     before = len(user_prompt_submit)
-    kept = [
-        entry for entry in user_prompt_submit
-        if not _entry_matches(entry, command)
-    ]
+    if command is not None:
+        kept = [
+            entry for entry in user_prompt_submit
+            if not _entry_matches(entry, command)
+        ]
+    else:
+        assert command_basename is not None
+        kept = [
+            entry for entry in user_prompt_submit
+            if not _entry_matches_basename(entry, command_basename)
+        ]
     removed = before - len(kept)
     if removed == 0:
         return UninstallResult(path=settings_path, removed=0)
@@ -521,6 +543,29 @@ def _entry_matches(entry: dict[str, object], command: str) -> bool:
             hook_dict.get(_TYPE_KEY) == _HOOK_TYPE_COMMAND
             and hook_dict.get(_COMMAND_KEY) == command
         ):
+            return True
+    return False
+
+
+def _entry_matches_basename(
+    entry: dict[str, object], basename: str
+) -> bool:
+    """True iff any inner command's first whitespace-stripped path token has `basename`."""
+    inner = entry.get(_INNER_HOOKS_KEY)
+    if not isinstance(inner, list):
+        return False
+    for hook in cast(list[object], inner):
+        if not isinstance(hook, dict):
+            continue
+        hook_dict = cast(dict[str, object], hook)
+        if hook_dict.get(_TYPE_KEY) != _HOOK_TYPE_COMMAND:
+            continue
+        cmd = hook_dict.get(_COMMAND_KEY)
+        if not isinstance(cmd, str):
+            continue
+        # First whitespace token is the program; basename match against it.
+        first = cmd.strip().split(maxsplit=1)[0] if cmd.strip() else ""
+        if first and Path(first).name == basename:
             return True
     return False
 
