@@ -1,247 +1,129 @@
 # ARCHITECTURE
 
-Module map, data flow, and design decisions for aelfrice.
+Module map, data flow, design decisions. Maps directly to source under `src/aelfrice/`.
 
-> Pre-`v1.0.0`. Architecture stabilises at `v1.0.0`; the `v1.x` line
-> recovers `v2.0` features incrementally with evidence justifying each
-> addition.
+## Principles
 
----
+1. **Stdlib + SQLite only.** No vector DB, no embeddings, no cloud, no LLM in the hot path. The `[mcp]` extra is the only non-stdlib runtime dependency, and it's optional.
+2. **Bayesian, not vibes.** Confidence is `α / (α + β)`. Every update has a closed-form rule. (Note: at v1.0 this score does not yet drive retrieval ranking — see [LIMITATIONS](LIMITATIONS.md#known-issues-at-v10).)
+3. **`apply_feedback` is the central endpoint.** One writer of `(α, β)`. One audit row per successful update.
+4. **Locks are user-asserted ground truth.** A `user`-locked belief short-circuits decay (lock floor) and bypasses L1 budgeting on retrieval. Contradicting positive feedback accumulates `demotion_pressure`; ≥ 5 ⇒ auto-demote.
+5. **Clean by construction, not clean by audit.** Filtering is a tripwire, not a gate.
 
-## Design principles
+## Modules
 
-1. **Stdlib + SQLite only.** No vector DB, no embeddings, no cloud
-   sync, no LLM in the hot path. Pure Python 3.12 stdlib plus
-   `sqlite3` (with WAL + FTS5). The `[mcp]` extra is the only
-   non-stdlib dependency, and it's optional.
-2. **Bayesian, not "vibes".** Confidence is a Beta-Bernoulli
-   posterior (`α / (α + β)`). Updates are mathematically grounded; no
-   ad-hoc score arithmetic.
-3. **`apply_feedback` is the central endpoint.** Not an admin
-   command, not a hook, not an undocumented path. Read+write of
-   `demotion_pressure` is required.
-4. **Clean by construction, not clean by audit.** Filtering is a
-   tripwire, not a gate.
-5. **Locks are user-asserted ground truth.** A `user`-locked belief
-   short-circuits decay (lock floor) and bypasses the L1 token
-   budget on retrieval. Contradicting feedback against a lock
-   accumulates `demotion_pressure`; cross a threshold and the lock
-   auto-demotes.
-
----
-
-## Module map
-
-All source lives under `src/aelfrice/`. Each file is single-purpose;
-cross-module imports are one-directional (lower in the list imports
-from higher).
+One-directional imports — lower in the table imports from higher.
 
 | Module | Responsibility |
 |---|---|
-| `models.py` | `Belief`, `Edge`, `FeedbackEvent`, `OnboardSession` dataclasses; module-level constants for belief / edge / lock / onboard-state types. No I/O, no SQL. |
-| `scoring.py` | `posterior_mean`, `decay`, `relevance_combiner`. Type-specific half-lives (factual 14d, requirement 30d, preference 12w, correction 24w). Lock-floor short-circuit. Decay target is the Jeffreys prior `(0.5, 0.5)`. |
-| `store.py` | SQLite schema, WAL setup, FTS5 mirror of `beliefs.content`, CRUD for beliefs / edges / feedback / onboard sessions, `propagate_valence` (broker-confidence-attenuated). |
-| `retrieval.py` | `retrieve(store, query, token_budget)`. Two-layer: L0 = locked beliefs auto-loaded regardless of query; L1 = FTS5 BM25 keyword hits. L0 is never trimmed by the budget; L1 is trimmed from the tail. Char-based token estimate (4 chars/token). |
-| `feedback.py` | `apply_feedback(store, belief_id, valence, source)` — the single Bayesian-update path at runtime. Writes a row to `feedback_history` for every successful update. Drives demotion-pressure increment and auto-demote at threshold. |
-| `correction.py` | No-LLM heuristic correction detector (text-pattern based). Producer of `correction`-typed beliefs during onboarding and feedback. |
-| `classification.py` | `TYPE_PRIORS` plus a regex fallback that maps onboarding candidates onto belief types. Polymorphic onboard state machine. |
-| `scanner.py` | `scan_repo(store, path)` orchestrator combining three extractors (filesystem walk, git log, AST) with classification and the store. Idempotent against a previously onboarded path. |
-| `health.py` | Regime classifier (`insufficient_data` / `supersede` / `ignore` / `balanced`) backed by aggregate confidence, lock density, edge density. |
-| `cli.py` | `argparse`-driven 10-subcommand CLI. Resolves DB path from `$AELFRICE_DB` or `~/.aelfrice/memory.db`. Entry point exposed as `aelf` in `[project.scripts]`. |
-| `mcp_server.py` | FastMCP server with 8 tools mirroring the CLI. `[mcp]` optional dependency. |
-| `setup.py` | Idempotent install / uninstall of a Claude Code `UserPromptSubmit` hook in `settings.json`. Atomic on-disk write via sibling tempfile + `os.replace`. |
-| `hook.py` | `aelfrice.hook:main` — process Claude Code spawns when the hook fires. Reads JSON payload from stdin, runs retrieval, emits an `<aelfrice-memory>...</aelfrice-memory>` block on stdout. Non-blocking by contract. Entry point exposed as `aelf-hook`. |
-| `slash_commands/` | One `<cmd>.md` per CLI subcommand. Shipped as package data so future tooling can copy them into `~/.claude/commands/aelf/`. A test enforces 1:1 correspondence with CLI subparsers. |
-
-Removed from earlier rounds: `config.py` (folded into `cli.py` at v0.6.0).
-
----
+| `models.py` | `Belief`, `Edge`, `FeedbackEvent`, `OnboardSession` dataclasses; belief / edge / lock / state constants. No I/O. |
+| `scoring.py` | `posterior_mean`, `decay`, `relevance_combiner`. Type-specific half-lives (factual 14d / requirement 30d / preference 12w / correction 24w). Lock-floor short-circuit. Decay target: Jeffreys prior `(0.5, 0.5)`. |
+| `store.py` | SQLite WAL + FTS5 + CRUD. `propagate_valence` BFS with broker-confidence attenuation. |
+| `retrieval.py` | `retrieve(store, query, token_budget=2000)` — L0 locked auto-load + L1 FTS5 BM25. L0 never trimmed. |
+| `feedback.py` | `apply_feedback(store, belief_id, valence, source)` — the only Bayesian-update path. Writes `feedback_history`. Drives demotion-pressure increment + auto-demote. |
+| `correction.py` | No-LLM heuristic correction detector. |
+| `classification.py` | `TYPE_PRIORS` + regex fallback. Polymorphic onboard state machine. |
+| `scanner.py` | `scan_repo` — filesystem + git log + Python AST extractors, classification, persistence. Idempotent against `content_hash`. |
+| `health.py` | Regime classifier (`insufficient_data` / `early-onboarding` / `steady` / `lock-heavy` / `over-confident`) over confidence, mass, lock density, edge density. |
+| `benchmark.py` | `seed_corpus(store)` + `run_benchmark(store, *, aelfrice_version, top_k=5)` — deterministic 16-belief × 16-query synthetic harness. Frozen `BenchmarkReport` with `hit_at_1` / `hit_at_3` / `hit_at_5` / `mrr` + `p50_latency_ms` / `p99_latency_ms`. |
+| `cli.py` | argparse 11-subcommand CLI. DB resolves from `$AELFRICE_DB` or `~/.aelfrice/memory.db`. Entry: `aelf`. |
+| `mcp_server.py` | FastMCP server, 8 tools. `[mcp]` optional extra. |
+| `setup.py` | Idempotent install/uninstall of the Claude Code `UserPromptSubmit` hook. Atomic write via tempfile + `os.replace`. |
+| `hook.py` | `aelfrice.hook:main` — process Claude Code spawns when the hook fires. Reads JSON from stdin, calls `retrieve()`, emits `<aelfrice-memory>...</aelfrice-memory>` on stdout. Non-blocking by contract. Entry: `aelf-hook`. |
+| `slash_commands/` | 11 markdown files, 1:1 with CLI subcommands. |
 
 ## Data model
 
-### `Belief`
+**Belief** — `id, content, content_hash, alpha, beta, type, lock_level, locked_at, demotion_pressure, created_at, last_retrieved_at`. `type ∈ {factual, correction, preference, requirement}`. `lock_level ∈ {none, user}`.
 
-| Field | Type | Purpose |
+**Edge** — `src, dst, type, weight`. Five types with valence multipliers:
+
+| Type | Mult | |
 |---|---|---|
-| `id` | `str` | Stable identifier (16-char hex for user locks; content-hash-derived elsewhere). |
-| `content` | `str` | The belief text. Mirrored into the FTS5 virtual table. |
-| `content_hash` | `str` | SHA-256 of `content`. Used to deduplicate against re-ingest. |
-| `alpha`, `beta` | `float` | Beta-Bernoulli posterior parameters. Confidence is `α / (α + β)`. |
-| `type` | `str` | One of `factual` / `correction` / `preference` / `requirement`. Drives decay half-life. |
-| `lock_level` | `str` | One of `none` / `user`. `user` short-circuits decay. |
-| `locked_at` | `str?` | ISO-8601 UTC timestamp of the lock event, or `None`. |
-| `demotion_pressure` | `int` | Accumulator of contradicting-feedback events against a lock; threshold-triggered auto-demote. |
-| `created_at` | `str` | ISO-8601 UTC creation time. |
-| `last_retrieved_at` | `str?` | ISO-8601 UTC of most recent retrieval, or `None`. |
+| `SUPPORTS` | +1.0 | full positive |
+| `CITES` | +0.5 | half positive |
+| `RELATES_TO` | +0.3 | weak positive |
+| `CONTRADICTS` | -0.5 | half negative |
+| `SUPERSEDES` | 0.0 | structural; no propagation |
 
-### `Edge`
-
-Five edge types: `SUPPORTS`, `CITES`, `CONTRADICTS`, `SUPERSEDES`,
-`RELATES_TO`. `propagate_valence` only walks `SUPPORTS` and
-`CONTRADICTS` paths; the others are informational and load-bearing
-for retrieval ranking.
-
-### `FeedbackEvent`
-
-Audit row written by every successful `apply_feedback` call. Records
-`belief_id`, `valence`, `prior_alpha`, `prior_beta`, `new_alpha`,
-`new_beta`, `source`, `created_at`. Enables post-hoc reconstruction
-of the brain's update history.
-
-### `OnboardSession`
-
-State machine row driving the polymorphic onboarding flow. States
-include `pending` and `completed`; intermediate states track which
-extractor stage is in flight.
-
----
+**SQLite tables:** `beliefs`, `beliefs_fts` (FTS5 virtual, porter unicode61), `edges` PK `(src, dst, type)`, `feedback_history`, `onboard_sessions`, `schema_meta`.
 
 ## Bayesian update path
 
 `apply_feedback(store, belief_id, valence, source)`:
 
-1. Load the belief.
-2. **If `valence > 0`:** `α ← α + 1`. Confidence rises.
-3. **If `valence < 0`:** `β ← β + 1`. Confidence falls. Plus, if the
-   belief is locked, walk all `CONTRADICTS` edges and increment
-   `demotion_pressure` for the lock anchor; if pressure crosses
-   `DEMOTION_THRESHOLD` (default 5), auto-demote the lock.
-4. Write the new `α`, `β`, `demotion_pressure`, `lock_level` back
-   atomically.
+1. Load belief. Reject zero valence; reject empty source.
+2. **Positive valence:** `α += valence`. Then walk source's outbound `CONTRADICTS` edges; for each `dst` that is `user`-locked, `dst.demotion_pressure += 1`. If pressure ≥ `DEMOTION_THRESHOLD` (default 5), demote (`lock_level → none`, `locked_at → None`, `demotion_pressure → 0`).
+3. **Negative valence:** `β += |valence|`. No pressure walk — a negative signal weakens the contradictor itself, which the β increment already handles.
+4. Persist atomically.
 5. Append a `FeedbackEvent` row. Always.
 
-The write path goes through `store.update_belief` which is a single
-SQLite UPDATE wrapped in the connection's default autocommit
-transaction. No two-phase write; correctness comes from each
-mutation being a single SQL statement.
+Walk is **1-hop only**. Multi-hop pressure is deferred to v1.x.
 
----
+> **v1.0 note:** updated `(α, β)` does not currently affect retrieval ranking. `store.search_beliefs` orders L1 hits by `bm25(beliefs_fts)`. The v1.x roadmap consumes the posterior in ranking.
 
-## Retrieval flow
-
-`retrieve(store, query, token_budget=2000, l1_limit=50)`:
+## Retrieval
 
 ```
-┌──────────────────────────────┐
-│ L0: store.list_locked()      │  always loaded; never trimmed
-│   sorted by locked_at desc   │
-└─────────────┬────────────────┘
-              │
-┌─────────────▼────────────────┐
-│ L1: FTS5 BM25 keyword search │  query escaped; ranked by relevance
-│   limit l1_limit             │
-└─────────────┬────────────────┘
-              │
-┌─────────────▼────────────────┐
-│ Dedupe: drop L1 hits whose   │
-│   id appears in L0           │
-└─────────────┬────────────────┘
-              │
-┌─────────────▼────────────────┐
-│ Trim L1 from the tail until  │
-│   sum(estimated_tokens) ≤    │
-│   token_budget. L0 is never  │
-│   trimmed.                   │
-└──────────────────────────────┘
+L0: store.list_locked()         always loaded; never trimmed
+        ↓
+L1: FTS5 BM25 keyword search    limit l1_limit, query escaped
+        ↓
+Dedupe L1 against L0 ids
+        ↓
+Trim L1 from tail until sum(estimated_tokens) ≤ token_budget
 ```
 
-Token estimate: `(len(content) + 3) // 4`. Conservative.
+Token estimate: `(len(content) + 3) // 4`. Empty query: L0 only. L0 always wins overflow.
 
-Empty query: returns L0 only (FTS5 has nothing to match).
+## Onboarding
 
-Locked-set overflow: if L0 alone exceeds `token_budget`, the full L0
-set is still returned and L1 is empty. Locks always win.
+`scan_repo(store, path)`:
 
----
+1. **Filesystem walk** over `*.md`, `*.rst`, `*.txt`, `*.adoc` → `factual` / `requirement` candidates.
+2. **Git log** → `factual` candidates and edges to touched-file beliefs.
+3. **Python AST** → function/class names + docstrings → `factual` candidates.
 
-## Onboarding flow
+Classification via `TYPE_PRIORS` + regex fallback. Idempotent: `content_hash` dedupe.
 
-`scan_repo(store, project_path)` runs three extractors against a
-project directory, classifies the candidates, and inserts non-duplicate
-beliefs:
-
-1. **Filesystem walk** — non-binary text files matched against
-   patterns. Produces `factual` / `requirement` candidates.
-2. **Git log** — commit messages and authorship metadata.
-   Produces `factual` candidates and edges between commits and
-   touched-file beliefs.
-3. **AST extractor** — Python AST (initially) for function and class
-   names with their docstrings. Produces `factual` candidates.
-
-The classification stage routes each candidate to a belief type via
-`TYPE_PRIORS` plus a regex fallback. Idempotent: re-running
-`scan_repo` against the same path skips beliefs whose `content_hash`
-already exists.
-
----
-
-## Claude Code integration
+## Claude Code hook
 
 ```
-                     ┌────────────────────────────────────┐
-                     │ ~/.claude/settings.json            │
-                     │   hooks.UserPromptSubmit: [        │
-                     │     {hooks:[{type:"command",       │
-                     │              command:"aelf-hook"}]}│
-                     │   ]                                │
-                     └────────────────┬───────────────────┘
-                                      │  written by aelf setup
-                                      │
-                          ┌───────────▼────────────┐
-                          │  Claude Code (LLM)     │
-                          └───────────┬────────────┘
-                                      │ user submits prompt
-                                      │ JSON payload on stdin →
-                          ┌───────────▼────────────┐
-                          │  aelf-hook subprocess  │
-                          │  (aelfrice.hook:main)  │
-                          └───────────┬────────────┘
-                                      │ retrieve(store, prompt)
-                          ┌───────────▼────────────┐
-                          │  ~/.aelfrice/memory.db │
-                          └───────────┬────────────┘
-                                      │ <aelfrice-memory> block on stdout
-                          ┌───────────▼────────────┐
-                          │  Claude Code injects   │
-                          │  block as added context│
-                          └────────────────────────┘
+~/.claude/settings.json  hooks.UserPromptSubmit: [{command: "aelf-hook"}]
+                                  ↓ written by aelf setup
+                          Claude Code (LLM)
+                                  ↓ JSON payload on stdin
+                          aelf-hook subprocess (aelfrice.hook:main)
+                                  ↓ retrieve(store, prompt)
+                          ~/.aelfrice/memory.db
+                                  ↓ <aelfrice-memory> on stdout
+                          Claude Code injects above prompt
 ```
 
-Non-blocking contract: `aelf-hook` always exits 0. Empty stdin,
-malformed JSON, missing `prompt` field, retrieval exceptions — all
-emit nothing on stdout and exit 0. Internal exceptions are written
-to stderr (Claude Code captures and surfaces these in the hook log)
-but never propagate.
+Non-blocking contract: every failure path exits 0 with no stdout.
 
----
+## Benchmark harness
 
-## Test layers
+`aelfrice.benchmark` ships a deterministic 16-belief × 16-query synthetic corpus.
 
-| Layer | Marker | What it covers |
+```bash
+aelf bench                 # in-memory store, fresh seed each run
+aelf bench --db PATH       # against an existing DB
+aelf bench --top-k 5       # override hit-depth
+```
+
+Output is a single JSON document with `BenchmarkReport` fields. Reproducible across runs against fresh in-memory stores. The harness is the **measurement instrument**, not yet a proof of the feedback claim — see the v1.0 note above.
+
+## Tests
+
+| Layer | Marker | Coverage |
 |---|---|---|
-| Unit | (default) | One property per test. Pyright strict. ~5s suite-wide timeout. |
+| Unit | (default) | One property per test. Pyright strict. ~5s suite timeout. |
 | Property | (default) | Pre-registered invariants: Bayesian inertia, decay-required, lock-floor sharpness, token-budget invariant, broker-attenuation. |
-| Regression | `@pytest.mark.regression` | Cumulative integration scenarios. One per shipped milestone with cross-module behavior: retrieval round-trip, feedback loop, onboarding flow, Claude Code setup→hook→unsetup. |
+| Regression | `@pytest.mark.regression` | Cross-module scenarios: retrieval round-trip, feedback loop, onboarding, setup→hook→unsetup, `aelf bench` end-to-end. |
 
-Run all: `uv run pytest`. Regression only:
-`uv run pytest -m regression`.
+`uv run pytest` (~530 tests, ~7s on Apple Silicon). `uv run pytest -m regression` for integration only.
 
----
+## Out of scope through v1.0 (lands in v1.x with evidence)
 
-## What's out of scope through `v1.0.0`
-
-These features were in `v2.0` but are deliberately deferred until the
-`v1.x` line because the rebuild aims at a small evidence-backed core
-first:
-
-- HRR / holographic reduced representation retrieval.
-- BFS multi-hop graph retrieval.
-- Entity index / NER.
-- LLM in the hot path (classification, correction, retrieval).
-- Sentence-transformer embeddings.
-- Multi-source provenance tagging.
-- Bitemporal `event_time` (separate from `created_at`).
-- Rigor-tier metadata.
-
-Each of these will land with a benchmark showing it improved a
-measurable end-to-end metric over the v1.0 baseline.
+Posterior-aware retrieval ranking. HRR retrieval. BFS multi-hop graph retrieval. Entity index/NER. LLM in the hot path. Sentence-transformer embeddings. Multi-source provenance tagging. Bitemporal `event_time`. Rigor-tier metadata. Cross-project knowledge federation.
