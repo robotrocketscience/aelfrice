@@ -262,6 +262,46 @@ def test_uninstall_rejects_empty_command(tmp_path: Path) -> None:
         uninstall_user_prompt_submit_hook(settings, command="")
 
 
+def test_uninstall_basename_match_removes_bare_and_absolute(
+    tmp_path: Path,
+) -> None:
+    """Basename mode catches both 'aelf-hook' and any absolute path
+    whose final component is 'aelf-hook' -- which is the round-trip
+    pairing for the new auto-resolving setup."""
+    settings = tmp_path / "settings.json"
+    install_user_prompt_submit_hook(settings, command="aelf-hook")
+    install_user_prompt_submit_hook(
+        settings, command="/Users/me/.venv/bin/aelf-hook"
+    )
+    install_user_prompt_submit_hook(settings, command="/keep/me")
+
+    result = uninstall_user_prompt_submit_hook(
+        settings, command_basename="aelf-hook"
+    )
+
+    assert result.removed == 2
+    data = _read_json(settings)
+    cmds = [
+        cast(list[dict[str, object]], entry["hooks"])[0]["command"]
+        for entry in _user_prompt_submit_list(data)
+    ]
+    assert cmds == ["/keep/me"]
+
+
+def test_uninstall_requires_exactly_one_match_kind(
+    tmp_path: Path,
+) -> None:
+    settings = tmp_path / "settings.json"
+    with pytest.raises(ValueError):
+        uninstall_user_prompt_submit_hook(settings)
+    with pytest.raises(ValueError):
+        uninstall_user_prompt_submit_hook(
+            settings, command="x", command_basename="x"
+        )
+    with pytest.raises(ValueError):
+        uninstall_user_prompt_submit_hook(settings, command_basename="")
+
+
 def test_install_atomic_no_partial_file_on_simulated_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

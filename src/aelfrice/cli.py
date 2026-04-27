@@ -30,7 +30,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Final, Sequence, cast
+from typing import Final, Sequence
 
 from aelfrice.feedback import apply_feedback
 from aelfrice.health import (
@@ -376,8 +376,8 @@ def _cmd_bench(args: argparse.Namespace, out: object) -> int:
 def _effective_scope(args: argparse.Namespace) -> SettingsScope:
     """Return the explicit `--scope` if given, else auto-detect."""
     scope = getattr(args, "scope", None)
-    if scope in _VALID_SCOPES:
-        return cast(SettingsScope, scope)
+    if scope == "user" or scope == "project":
+        return scope
     project_root = (
         Path(args.project_root) if args.project_root is not None else None
     )

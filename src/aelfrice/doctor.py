@@ -16,6 +16,7 @@ nothing on $PATH supplies -- which is what bit issue #81.
 """
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
@@ -23,11 +24,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal, cast
 
-from aelfrice.setup import (
-    PROJECT_SETTINGS_RELPATH,
-    USER_SETTINGS_PATH,
-    _load_settings,
-)
+from aelfrice.setup import PROJECT_SETTINGS_RELPATH, USER_SETTINGS_PATH
+
+
+def _load_settings_json(path: Path) -> dict[str, object]:
+    """Read settings.json. Empty / nonexistent files are treated as {}."""
+    if not path.exists():
+        return {}
+    raw = path.read_text(encoding="utf-8")
+    if not raw.strip():
+        return {}
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            f"settings file must contain a JSON object at top level: {path}"
+        )
+    return cast(dict[str, object], parsed)
 
 Scope = Literal["user", "project"]
 
@@ -71,8 +83,12 @@ class CommandFinding:
 @dataclass
 class DoctorReport:
     """Aggregate result of scanning one or more settings.json files."""
-    scopes_scanned: list[tuple[Scope, Path]] = field(default_factory=list)
-    findings: list[CommandFinding] = field(default_factory=list)
+    scopes_scanned: list[tuple[Scope, Path]] = field(
+        default_factory=lambda: cast(list[tuple[Scope, Path]], [])
+    )
+    findings: list[CommandFinding] = field(
+        default_factory=lambda: cast(list[CommandFinding], [])
+    )
 
     @property
     def broken(self) -> list[CommandFinding]:
@@ -115,7 +131,7 @@ def diagnose(
 def _scan_settings(path: Path) -> list[CommandFinding]:
     """Yield findings for every hook command + the statusline in `path`."""
     try:
-        data = _load_settings(path)
+        data = _load_settings_json(path)
     except (ValueError, OSError):
         return [CommandFinding(
             settings_path=path, location="<root>", command="",
