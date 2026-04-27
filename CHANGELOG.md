@@ -12,9 +12,29 @@ installable release; see the roadmap in [README.md](README.md).
 
 ### Added
 
+- `aelfrice.hook_search` module: `search_for_prompt(store, prompt, ...)`
+  and `record_retrieval(store, beliefs, ...)`. Closes the v1.0.1
+  retrieval-side feedback-loop gap: every UserPromptSubmit hook
+  retrieval now writes one `feedback_history` row per returned belief,
+  tagged `source='hook'` with `HOOK_RETRIEVAL_VALENCE` (0.1) positive
+  valence (#70).
+- `propagate: bool = True` kwarg on `aelfrice.feedback.apply_feedback`.
+  Default preserves the corrective-feedback contract (positive signal
+  on a contradictor pressures the contradicted user lock); pass `False`
+  for non-corrective signals (hook-driven retrievals) to update the
+  posterior without pressure-walking locked beliefs (#70).
 - `aelf --version` flag prints `aelf <__version__>` and exits 0.
   Closes the long-standing argparse error users hit when probing the
   installed version (#71).
+
+### Changed
+
+- `aelfrice.hook.user_prompt_submit` now routes through
+  `aelfrice.hook_search.search_for_prompt` instead of calling
+  `aelfrice.retrieval.retrieve()` directly. Same non-blocking contract,
+  same OPEN_TAG/CLOSE_TAG output envelope, same payload schema; the
+  behavioural difference is the audit-row write per returned belief
+  (#70).
 
 ## [1.0.0] - 2026-04-27
 
