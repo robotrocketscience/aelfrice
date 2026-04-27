@@ -251,6 +251,7 @@ def test_uninstall_purge_silent_when_db_absent(tmp_path: Path) -> None:
 
 
 def test_uninstall_archive_roundtrip(tmp_path: Path) -> None:
+    pytest.importorskip("cryptography")
     db = tmp_path / "memory.db"
     sqlite3.connect(str(db)).executescript(
         "CREATE TABLE x(y INT); INSERT INTO x VALUES(42);"
