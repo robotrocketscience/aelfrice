@@ -10,6 +10,39 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-04-27
+
+Patch release: contradiction tie-breaker, `aelf resolve` CLI, onboard
+performance regression test, and a power-user CONFIG.md for the
+`.aelfrice.toml` schema. Three feature PRs and a docs PR landed
+between v1.0.2 and v1.0.3 — this release surfaces them to PyPI.
+
+### Added
+
+- `aelfrice.contradiction` module: `resolve_contradiction`,
+  `find_unresolved_contradictions`, `auto_resolve_all_contradictions`.
+  When the graph holds a CONTRADICTS edge, the tie-breaker picks a
+  winner via precedence (`user_stated > user_corrected >
+  document_recent`; ties broken by recency, then by id), creates a
+  SUPERSEDES edge from winner to loser, and writes a
+  `feedback_history` audit row tagged
+  `source='contradiction_tiebreaker:<rule>'`. v1.0.x collapses to
+  three precedence classes (the fourth `agent_inferred` class needs
+  a `Belief.origin` field landing in v1.1.0) (#75).
+- `aelf resolve` CLI subcommand (12th) — sweeps unresolved
+  CONTRADICTS edges in the store and runs the tie-breaker on each.
+  Matching `slash_commands/resolve.md`. The 1:1 CLI ↔ slash
+  invariant is preserved at 12/12 (#75).
+- `tests/regression/test_onboard_perf_50k_loc.py`: regression benchmark
+  asserting `scan_repo` finishes in under 60s on a synthetic ~55k-LOC
+  project (250 .py + 60 doc files). Marked `regression`. Held against
+  the `:memory:` store. Current measured time ~0.8s on Apple Silicon;
+  the 60s budget is a regression alarm, not a target (#76).
+- `docs/CONFIG.md`: power-user reference for `.aelfrice.toml` —
+  full schema, worked examples, and what each setting affects. Linked
+  from the noise-filter LIMITATIONS entry, the onboard CLI help, and
+  ARCHITECTURE.md (#74).
+
 ## [1.0.2] - 2026-04-27
 
 Patch release: per-project install routing, `aelf doctor` settings
@@ -61,31 +94,6 @@ Patch release: power-user ergonomics + retrieval-side feedback loop.
 Closes the v1.0.0 gap where hook retrievals never wrote audit rows,
 adds a no-config noise filter (with a TOML escape hatch), and ships
 `aelf --version` as a first-class CLI flag.
-
-### Added
-
-- `tests/regression/test_onboard_perf_50k_loc.py`: regression benchmark
-  asserting `scan_repo` finishes in under 60s on a synthetic ~55k-LOC
-  project (250 .py + 60 doc files). Marked `regression`. Held against
-  the `:memory:` store. Current measured time ~0.8s on Apple Silicon;
-  the 60s budget is a regression alarm, not a target (#NN).
-
-### Added
-
-- `aelfrice.contradiction` module: `resolve_contradiction`,
-  `find_unresolved_contradictions`, `auto_resolve_all_contradictions`.
-  When the graph holds a CONTRADICTS edge, the tie-breaker picks a
-  winner via precedence (`user_stated > user_corrected >
-  document_recent`; ties broken by recency, then by id), creates a
-  SUPERSEDES edge from winner to loser, and writes a
-  `feedback_history` audit row tagged
-  `source='contradiction_tiebreaker:<rule>'`. v1.0.1 collapses to
-  three precedence classes (the fourth `agent_inferred` class needs
-  a `Belief.origin` field landing in v1.1.0) (#NN).
-- `aelf resolve` CLI subcommand (12th) — sweeps unresolved
-  CONTRADICTS edges in the store and runs the tie-breaker on each.
-  Matching `slash_commands/resolve.md`. The 1:1 CLI ↔ slash
-  invariant is preserved at 12/12 (#NN).
 
 ### Added
 
@@ -399,7 +407,8 @@ Foundation milestone — store, models, config.
 - Initial repo scaffold: pyproject, README, GitHub Actions workflows,
   scan configs (commit `67b4343`).
 
-[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/robotrocketscience/aelfrice/compare/v0.9.0rc0...v1.0.0
