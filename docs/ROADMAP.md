@@ -36,6 +36,7 @@ The first patch closes the highest-visibility gaps from launch. Each item is tra
 - **Onboard performance.** A regression test verifying < 60s on a 50k-LOC project.
 - **Contradiction tie-breaker.** Default precedence `user_stated > user_corrected > document_recent > agent_inferred`, with ISO timestamp as the deciding fallback. The loser is auto-superseded; the audit row records which rule fired.
 - **`aelf --version`.** Reads from `aelfrice.__version__`. Trivial, but currently raises an argparse error.
+- **Query result cache.** A bounded LRU cache wrapping `aelfrice.retrieval.retrieve()`, keyed on a canonicalized form of `(query, token_budget, l1_limit)` and invalidated on every store mutation. Skips a full L0+L1 pass when an agent loop re-issues the same query. Spec: [`lru_query_cache.md`](lru_query_cache.md).
 
 ## v1.1.0 — project identity and cosmetic surface
 

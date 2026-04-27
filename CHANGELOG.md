@@ -247,10 +247,10 @@ Foundation milestone — store, models, config.
 [1.0.0]: https://github.com/robotrocketscience/aelfrice/compare/v0.9.0rc0...v1.0.0
 [0.9.0rc0]: https://github.com/robotrocketscience/aelfrice/compare/v0.8.0...v0.9.0rc0
 [0.8.0]: https://github.com/robotrocketscience/aelfrice/compare/v0.7.0...v0.8.0
-[0.7.0]: https://github.com/robotrocketscience/aelfrice/releases/tag/v0.7.0
-[0.6.0]: https://github.com/robotrocketscience/aelfrice/compare/8b45b77...c088314
-[0.5.0]: https://github.com/robotrocketscience/aelfrice/compare/8fdee15...a2f6841
-[0.4.0]: https://github.com/robotrocketscience/aelfrice/compare/259e9a6...488bd6c
-[0.3.0]: https://github.com/robotrocketscience/aelfrice/compare/8b45b77...8fdee15
-[0.2.0]: https://github.com/robotrocketscience/aelfrice/compare/f7afd65...8b45b77
-[0.1.0]: https://github.com/robotrocketscience/aelfrice/commit/f7afd65
+[0.7.0]: https://github.com/robotrocketscience/aelfrice/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/robotrocketscience/aelfrice/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/robotrocketscience/aelfrice/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/robotrocketscience/aelfrice/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/robotrocketscience/aelfrice/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/robotrocketscience/aelfrice/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/robotrocketscience/aelfrice/releases/tag/v0.1.0

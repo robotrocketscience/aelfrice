@@ -17,7 +17,7 @@ from __future__ import annotations
 import secrets
 import sqlite3
 from datetime import datetime, timezone
-from typing import Iterable
+from typing import Callable, Iterable
 
 from aelfrice.models import (
     EDGE_VALENCE,
@@ -171,9 +171,27 @@ class MemoryStore:
         for stmt in _SCHEMA:
             self._conn.execute(stmt)
         self._conn.commit()
+        self._invalidation_callbacks: list[Callable[[], None]] = []
 
     def close(self) -> None:
         self._conn.close()
+
+    # --- Invalidation callbacks ------------------------------------------
+    #
+    # External components (e.g. RetrievalCache) register a zero-arg callback
+    # that is fired on every belief/edge mutation. Used to wipe derived
+    # state — query result caches, materialized views — that depends on the
+    # store's contents. Callback order is registration order; exceptions
+    # raised by a callback propagate (better to fail loudly than silently
+    # serve stale data).
+
+    def add_invalidation_callback(self, fn: Callable[[], None]) -> None:
+        """Register a zero-arg callback fired after every store mutation."""
+        self._invalidation_callbacks.append(fn)
+
+    def _fire_invalidation(self) -> None:
+        for fn in self._invalidation_callbacks:
+            fn()
 
     # --- Belief CRUD ------------------------------------------------------
 
@@ -197,6 +215,7 @@ class MemoryStore:
             (b.id, b.content),
         )
         self._conn.commit()
+        self._fire_invalidation()
 
     def get_belief(self, belief_id: str) -> Belief | None:
         cur = self._conn.execute(
@@ -234,6 +253,7 @@ class MemoryStore:
             (b.id, b.content),
         )
         self._conn.commit()
+        self._fire_invalidation()
 
     def delete_belief(self, belief_id: str) -> None:
         self._conn.execute("DELETE FROM beliefs WHERE id = ?", (belief_id,))
@@ -243,6 +263,7 @@ class MemoryStore:
             (belief_id, belief_id),
         )
         self._conn.commit()
+        self._fire_invalidation()
 
     def search_beliefs(self, query: str, limit: int = 20) -> list[Belief]:
         """FTS5 keyword search over belief content. Ranked by bm25.
@@ -387,6 +408,7 @@ class MemoryStore:
             (e.src, e.dst, e.type, e.weight),
         )
         self._conn.commit()
+        self._fire_invalidation()
 
     def get_edge(self, src: str, dst: str, type_: str) -> Edge | None:
         cur = self._conn.execute(
@@ -402,6 +424,7 @@ class MemoryStore:
             (e.weight, e.src, e.dst, e.type),
         )
         self._conn.commit()
+        self._fire_invalidation()
 
     def delete_edge(self, src: str, dst: str, type_: str) -> None:
         self._conn.execute(
@@ -409,6 +432,7 @@ class MemoryStore:
             (src, dst, type_),
         )
         self._conn.commit()
+        self._fire_invalidation()
 
     def edges_from(self, src: str) -> list[Edge]:
         cur = self._conn.execute(
