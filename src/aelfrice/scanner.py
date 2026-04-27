@@ -27,6 +27,7 @@ from typing import Final
 
 from aelfrice.classification import classify_sentence
 from aelfrice.models import LOCK_NONE, Belief
+from aelfrice.noise_filter import is_noise
 from aelfrice.store import MemoryStore
 
 # Directories the scanner never descends into. Standard "build artefact"
@@ -112,8 +113,12 @@ def scan_repo(
     inserted = 0
     skipped_existing = 0
     skipped_non_persisting = 0
+    skipped_noise = 0
 
     for candidate in candidates:
+        if is_noise(candidate.text):
+            skipped_noise += 1
+            continue
         result = classify_sentence(candidate.text, candidate.source)
         if not result.persist:
             skipped_non_persisting += 1
@@ -142,6 +147,7 @@ def scan_repo(
         skipped_existing=skipped_existing,
         skipped_non_persisting=skipped_non_persisting,
         total_candidates=len(candidates),
+        skipped_noise=skipped_noise,
     )
 
 
@@ -209,12 +215,16 @@ class ScanResult:
     - skipped_non_persisting: count of candidates the classifier
       flagged persist=False (questions, empty paragraphs)
     - total_candidates: sum across all extractors before filtering
+    - skipped_noise: count of candidates dropped by the v1.0.1
+      noise_filter before classification (markdown headings,
+      checklist blocks, three-word fragments, license boilerplate)
     """
 
     inserted: int
     skipped_existing: int
     skipped_non_persisting: int
     total_candidates: int
+    skipped_noise: int = 0
 
 
 def _derive_belief_id(text: str, source: str) -> str:
