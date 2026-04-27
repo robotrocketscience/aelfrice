@@ -1,6 +1,6 @@
 # aelfrice
 
-**Bayesian memory designed for feedback-driven learning.** Today: knowledge store, retrieval, feedback loop, scanner, CLI, MCP server, Claude Code wiring, docs, LICENSE, and CHANGELOG all landed on `main`. Next on the path to `v1.0.0`: benchmark harness.
+**Bayesian memory designed for feedback-driven learning.** Today: knowledge store, retrieval, feedback loop, scanner, CLI, MCP server, Claude Code wiring, docs, LICENSE, CHANGELOG, and benchmark harness all landed on `main`. Next: tag `v1.0.0` and publish to PyPI.
 
 > ⚠️ **Status: under active rebuild — do not depend on this for production.** The first installable release is `v1.0.0`; until then, modules land milestone-by-milestone. The previous codebase (`v2.0`) is preserved at [`aelfrice-v0`](https://github.com/robotrocketscience/aelfrice-v0) (archived, read-only).
 
@@ -29,24 +29,25 @@ The rebuild is structured as a sequence of small, atomic milestones.
 | **v0.6.0** | shipped | `cli.py` (8 commands) + `mcp_server.py` (8 MCP tools) + `slash_commands/` |
 | **v0.7.0** | shipped | `setup.py` — Claude Code wiring (`UserPromptSubmit` hook for retrieval injection) + `aelfrice.hook` entry-point + `aelf setup` / `aelf unsetup` CLI + `aelf-hook` script |
 | **v0.8.0** | shipped | docs (`docs/INSTALL.md`, `docs/ARCHITECTURE.md`), `CHANGELOG.md`, `LICENSE` (MIT), PyPI-ready `pyproject.toml` metadata |
-| **v0.9.0-rc** | next | minimal benchmark harness producing a publishable score |
-| **v1.0.0** | planned | tag, push, PyPI publish |
+| **v0.9.0-rc** (`0.9.0rc0`) | shipped | `aelfrice.benchmark` + `aelf bench` — 16-belief × 16-query reproducible JSON score harness with hit@1 / hit@3 / hit@5 / MRR + p50 / p99 latency |
+| **v1.0.0** | next | tag, push, PyPI publish |
 
 After `v1.0.0`, the `v1.x` series recovers `v2.0` features incrementally with evidence justifying each addition.
 
-## What works today (v0.8.0)
+## What works today (v0.9.0rc0)
 
 - SQLite-backed Belief and Edge storage with WAL journaling and FTS5 search
 - Beta-Bernoulli confidence math; per-type half-life decay
 - Lock floor (a `user`-locked belief does not decay)
 - Broker-confidence-attenuated valence propagation through the belief graph
 - Retrieval (locked-belief auto-load + BM25 FTS5, token-budgeted) and the `apply_feedback` endpoint (Beta-Bernoulli updates + demotion-pressure auto-demote)
-- Onboarding scanner (filesystem walk + git log + AST extractors), `cli.py` (10 commands), `mcp_server.py` (8 tools, `[mcp]` extra), and 10 slash commands under `slash_commands/`
+- Onboarding scanner (filesystem walk + git log + AST extractors), `cli.py` (11 commands), `mcp_server.py` (8 tools, `[mcp]` extra), and 11 slash commands under `slash_commands/`
 - Claude Code wiring: `aelf setup` / `aelf unsetup` install or remove a `UserPromptSubmit` hook in Claude Code's `settings.json`; `aelf-hook` is the script entry-point that reads the hook payload, runs retrieval, and emits an `<aelfrice-memory>` block as injected context
+- Benchmark harness: `aelf bench` runs a deterministic 16-belief × 16-query corpus and prints a single JSON document (`hit_at_1` / `hit_at_3` / `hit_at_5` / `mrr` + `p50_latency_ms` / `p99_latency_ms`). Reproducible across runs against fresh in-memory stores.
 - Project metadata: `LICENSE` (MIT), `CHANGELOG.md` (Keep-a-Changelog), `docs/INSTALL.md`, `docs/ARCHITECTURE.md`, and PyPI-ready `pyproject.toml` (description, authors, keywords, 13 classifiers, project URLs)
-- ~500 test functions across the unit suite, including 3 pre-registered property tests (Bayesian inertia, decay necessity, lock-floor sharpness) and end-to-end regression scenarios for retrieval, feedback, onboarding, and the Claude Code setup→hook→unsetup round-trip
+- ~530 test functions across the unit suite, including 3 pre-registered property tests (Bayesian inertia, decay necessity, lock-floor sharpness) and end-to-end regression scenarios for retrieval, feedback, onboarding, the Claude Code setup→hook→unsetup round-trip, and the `aelf bench` CLI
 
-What does NOT work yet: install via `pip` (PyPI publish gated until v1.0.0), and the v0.9.0-rc benchmark harness. Until then, install editable from source (`uv pip install -e .`) and run `aelf setup` to wire the hook into Claude Code.
+What does NOT work yet: install via `pip` (PyPI publish gated until `v1.0.0` tag). Until then, install editable from source (`uv pip install -e .`) and run `aelf setup` to wire the hook into Claude Code.
 
 ## docs
 
