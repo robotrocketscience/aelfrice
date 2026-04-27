@@ -784,7 +784,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    p_onboard = sub.add_parser("onboard", help="scan a project and ingest beliefs")
+    p_onboard = sub.add_parser(
+        "onboard",
+        help="scan a project and ingest beliefs",
+        epilog=(
+            "Power users: tune the onboard noise filter via "
+            ".aelfrice.toml at the project root. Disable categories, "
+            "override the fragment threshold, or add project-specific "
+            "exclude_words / exclude_phrases. See docs/CONFIG.md for "
+            "the schema and worked examples."
+        ),
+    )
     p_onboard.add_argument("path", help="path to a project directory")
     p_onboard.set_defaults(func=_cmd_onboard)
 

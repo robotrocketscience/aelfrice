@@ -34,7 +34,8 @@ One-directional imports — lower in the table imports from higher.
 | `feedback.py` | `apply_feedback(store, belief_id, valence, source)` — the only Bayesian-update path. Writes `feedback_history`. Drives demotion-pressure increment + auto-demote. |
 | `correction.py` | No-LLM heuristic correction detector. |
 | `classification.py` | `TYPE_PRIORS` + regex fallback. Polymorphic onboard state machine. |
-| `scanner.py` | `scan_repo` — filesystem + git log + Python AST extractors, classification, persistence. Idempotent against `content_hash`. |
+| `noise_filter.py` | `is_noise(text, config)` — drops markdown heading blocks, checklist blocks, three-word fragments, and license boilerplate before classification. `NoiseConfig` dataclass + `.aelfrice.toml` discovery via `discover()` walk-up. Power-user surface documented in [CONFIG.md](CONFIG.md). |
+| `scanner.py` | `scan_repo` — filesystem + git log + Python AST extractors, noise filter, classification, persistence. Idempotent against `content_hash`. |
 | `health.py` | Regime classifier (`insufficient_data` / `early-onboarding` / `steady` / `lock-heavy` / `over-confident`) over confidence, mass, lock density, edge density. |
 | `benchmark.py` | `seed_corpus(store)` + `run_benchmark(store, *, aelfrice_version, top_k=5)` — deterministic 16-belief × 16-query synthetic harness. Frozen `BenchmarkReport` with `hit_at_1` / `hit_at_3` / `hit_at_5` / `mrr` + `p50_latency_ms` / `p99_latency_ms`. |
 | `cli.py` | argparse 11-subcommand CLI. DB resolves from `$AELFRICE_DB` or `~/.aelfrice/memory.db`. Entry: `aelf`. |
