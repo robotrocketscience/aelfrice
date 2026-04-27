@@ -51,7 +51,7 @@ from aelfrice.store import Store
 
 DEFAULT_DB_DIR: Final[Path] = Path.home() / ".aelfrice"
 DEFAULT_DB_FILENAME: Final[str] = "memory.db"
-DEFAULT_HOOK_COMMAND: Final[str] = "python -m aelfrice.hook"
+DEFAULT_HOOK_COMMAND: Final[str] = "aelf-hook"
 _FEEDBACK_VALENCES: Final[dict[str, float]] = {"used": 1.0, "harmful": -1.0}
 _LOCK_ID_LEN: Final[int] = 16
 _VALID_SCOPES: Final[tuple[SettingsScope, ...]] = ("user", "project")
