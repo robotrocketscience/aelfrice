@@ -265,7 +265,7 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
 # --- Dispatcher ---------------------------------------------------------
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aelf",
         description="Bayesian memory designed for feedback-driven learning.",
@@ -324,6 +324,6 @@ def main(argv: Sequence[str] | None = None, out: object = None) -> int:
     """
     if out is None:
         out = sys.stdout
-    parser = _build_parser()
+    parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args, out))
