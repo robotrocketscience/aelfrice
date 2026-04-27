@@ -14,33 +14,56 @@ which is a small in-tree corpus that runs in CI on every PR.
 | Synthetic regression | `src/aelfrice/benchmark.py` | Catch retrieval/scoring regressions | <1s | $0 |
 | Academic suite | `benchmarks/` (here) | Reproduce website headline numbers | minutes–hours | LLM API spend |
 
-## Activation status (aelfrice v1.0.0)
+## Activation status (aelfrice v1.0.x post-P2 ingest shim)
 
 The adapters were ported from the private lab repo
-(`aelfrice-lab/benchmarks/`) where they target lab v2.0.0. They
-require modules that have not yet ported into the public v1.0.0
-release. They are present in the public tree as **scaffold for
-future activation**, not because they currently run.
+(`aelfrice-lab/benchmarks/`) where they target lab v2.0.0. P2
+landed an ingest-pipeline shim (`aelfrice.ingest.ingest_turn`,
+`aelfrice.extraction`, `MemoryStore.create_session`) so all five
+academic adapters now **import successfully**. End-to-end runs
+remain blocked on per-adapter issues:
 
-| File | Status | Activates in |
-|---|---|---|
-| `verify_clean.py` | **runnable** | v1.1.0 (P1) |
-| `mab_adapter.py` | inert — needs `aelfrice.ingest`, `MemoryStore` | v1.2.0 (P2) |
-| `mab_reader.py` | runnable (stdlib + `anthropic` only) | v1.1.0 (P1) |
-| `locomo_adapter.py` | inert — needs `aelfrice.ingest`, `MemoryStore` | v1.2.0 (P2) |
-| `locomo_generate.py` | runnable (stdlib only) | v1.1.0 (P1) |
-| `locomo_score.py` | inert — depends on `locomo_adapter` symbols | v1.2.0 (P2) |
-| `locomo_score_protocol.py` | inert — depends on `locomo_adapter` symbols | v1.2.0 (P2) |
-| `longmemeval_adapter.py` | inert — needs `aelfrice.ingest`, `MemoryStore` | v1.2.0 (P2) |
-| `longmemeval_budget_sweep.py` | inert — depends on adapter | v1.2.0 (P2) |
-| `longmemeval_score.py` | runnable (stdlib only) | v1.1.0 (P1) |
-| `structmemeval_adapter.py` | inert — needs `aelfrice.ingest`, `MemoryStore` | v1.2.0 (P2) |
-| `amabench_adapter.py` | inert — needs `aelfrice.ingest`, `MemoryStore` | v1.2.0 (P2) |
+| File | Imports | End-to-end | Notes |
+|---|---|---|---|
+| `verify_clean.py` | OK | runs | stdlib only |
+| `mab_adapter.py` | needs `nltk` + `tiktoken` | blocked | retrieval kwargs `budget`/`use_hrr`/`use_bfs` differ from public `retrieve(token_budget=...)` |
+| `mab_reader.py` | needs `anthropic` (already a dep) | runs | LLM reader; not an aelfrice ingest path |
+| `locomo_adapter.py` | needs `nltk` | blocked | same retrieval-kwarg gap |
+| `locomo_generate.py` | OK | runs | stdlib only |
+| `locomo_score.py` | needs `nltk` (via adapter) | blocked | scoring depends on adapter symbols |
+| `locomo_score_protocol.py` | same | blocked | same |
+| `longmemeval_adapter.py` | OK | blocked | retrieval-kwarg gap |
+| `longmemeval_budget_sweep.py` | OK | blocked | depends on adapter |
+| `longmemeval_score.py` | OK | runs | stdlib only |
+| `structmemeval_adapter.py` | OK | blocked | retrieval-kwarg gap |
+| `amabench_adapter.py` | needs `datasets` (HuggingFace) | blocked | retrieval-kwarg gap |
 
 Three additional adapters from the lab (`mab_triple_adapter.py`,
 `mab_entity_index_adapter.py`, `mab_llm_entity_adapter.py`) are
-**not yet present**; they require triple-extraction (P2) and
-entity-index retrieval (P3) and will land alongside those features.
+**not yet present**; they require triple-extraction (P3) and
+entity-index retrieval (P4) and will land alongside those features.
+
+### Remaining blockers for end-to-end runs
+
+1. **Optional dependencies.** `nltk`, `tiktoken`, `datasets`. Add to
+   `[project.optional-dependencies] benchmarks` and require
+   `pip install aelfrice[benchmarks]` for end-to-end use.
+2. **Retrieval-kwarg gap.** Adapters call:
+
+   ```python
+   result = retrieve(store=store, query=q, budget=N,
+                     include_locked=False, use_hrr=True, use_bfs=True)
+   parts = [b.content for b in result.beliefs]
+   ```
+
+   Public v1.0.x `retrieve` returns `list[Belief]` directly and
+   accepts `token_budget` (not `budget`); has no `include_locked`,
+   `use_hrr`, or `use_bfs`. Two paths to close this:
+   - Patch each adapter to use the public signature (intrusive).
+   - Add `aelfrice.retrieval.retrieve_v2(...)` wrapper with the
+     lab signature; HRR/BFS flags no-op until ported. (Recommended.)
+
+   This wrapper is the next chunk of P2 (or rolled into P3).
 
 ## Missing public-surface dependencies
 
