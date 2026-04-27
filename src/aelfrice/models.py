@@ -47,6 +47,20 @@ LOCK_USER: Final[str] = "user"
 
 LOCK_LEVELS: Final[frozenset[str]] = frozenset({LOCK_NONE, LOCK_USER})
 
+# --- Onboard-session states ---
+# A polymorphic onboard handshake passes through exactly two persisted
+# states: `pending` after `start_onboard_session` records the scanner
+# candidates, `completed` after the host's classifications have been
+# accepted and beliefs inserted. No `aborted` state in v1.0 — abandoned
+# sessions are simply garbage-collected later by id and timestamp.
+ONBOARD_STATE_PENDING: Final[str] = "pending"
+ONBOARD_STATE_COMPLETED: Final[str] = "completed"
+
+ONBOARD_STATES: Final[frozenset[str]] = frozenset({
+    ONBOARD_STATE_PENDING,
+    ONBOARD_STATE_COMPLETED,
+})
+
 
 @dataclass
 class Belief:
@@ -77,6 +91,25 @@ class Edge:
     dst: str
     type: str
     weight: float
+
+
+@dataclass
+class OnboardSession:
+    """One polymorphic-onboard handshake row.
+
+    `candidates_json` is the JSON-serialized list of scanner candidates
+    awaiting host classification. Stored as a blob (rather than a
+    side-table) because the candidate list is read/written exactly once
+    per session and never queried by field — JSON keeps the schema
+    minimal without imposing a second table.
+    """
+
+    session_id: str
+    repo_path: str
+    state: str
+    candidates_json: str
+    created_at: str
+    completed_at: str | None
 
 
 @dataclass
