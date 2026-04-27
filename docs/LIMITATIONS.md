@@ -49,9 +49,17 @@ Tracked openly. Each item is mapped to its target version below.
 - **No commit-ingest PostToolUse hook.** Beliefs accumulate only on explicit `onboard` / `lock` / `feedback`. v1.2.0 adds an automatic capture path so the graph grows during normal sessions.
 - **Seed files for git-tracked knowledge bootstrapping.** `.aelfrice/seed.md` committed to a repo, auto-ingested on first onboard. v1.2.0.
 
-### Harness conflict — out of scope
+### Harness conflict — Claude Code auto-memory write path
 
-- **Claude Code's built-in auto-memory directive competes for write authority with the aelfrice MCP.** Writes go to flat `.md` files instead of beliefs. CLAUDE.md / harness-level fix, not an aelfrice code change. Tracked separately.
+**Behavior.** When `aelfrice` is installed alongside Claude Code's built-in file-based auto-memory system, the harness directive routes any "save a memory" intent to its own file-based store (under `.claude/projects/.../memory/*.md` plus a `MEMORY.md` index), not to the `aelfrice` MCP server. The MCP server stays connected and remains queryable for retrieval, but it does not receive new beliefs from normal session activity. New beliefs only enter the `aelfrice` store via explicit tool calls (`aelf remember`, `aelf onboard`, MCP `aelf:remember`) or bulk import.
+
+**Why this is a limitation.** The README's central claim is that `apply_feedback` is the endpoint that makes `aelfrice` distinct from plain RAG: a memory which actually applies feedback should outperform one that doesn't. If the MCP receives no new beliefs during a conversation, then `apply_feedback` is firing against a snapshot written at install time (or at the most recent explicit `aelf onboard` / `aelf remember` call), not against beliefs the agent forms during current work. The feedback loop is intact mathematically but starved of fresh inputs.
+
+**v1.0.1 partial mitigation.** v1.0.1 closes the retrieval-side of the loop: the `UserPromptSubmit` hook records every retrieval as a `feedback_history` row tagged `source='hook'`, and `apply_feedback` moves posteriors based on actual hook-driven retrievals. This means even without a new write path, beliefs already in the store are exercised by feedback during normal use. The write path itself remains gated by the harness directive at v1.0.1.
+
+**Workaround today.** To make the `aelfrice` MCP the canonical write path, edit your `~/.claude/CLAUDE.md` to remove or rephrase the auto-memory harness directive, and rely on `aelf remember` (CLI) or the MCP `aelf:remember` tool for new beliefs. This is a user-side configuration change; `aelfrice` does not attempt to override the harness in code.
+
+**Tracked.** v1.2 will publish `docs/HARNESS_INTEGRATION.md` with a documented procedure for users who want the MCP to be canonical without manually editing `CLAUDE.md`.
 
 ## Deferred to v1.3 / v2.0 (with evidence required)
 
