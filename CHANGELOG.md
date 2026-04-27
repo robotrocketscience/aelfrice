@@ -10,10 +10,30 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-04-26
+
+Project-metadata milestone — everything required for PyPI publish (gated
+until v1.0.0) is now present and verified.
+
 ### Added
 
 - `LICENSE` file at repo root (MIT) matching the `pyproject.toml` license
-  declaration. `uv build` now bundles it into both wheel and sdist (#45).
+  declaration. `uv build` bundles it into both wheel and sdist (#45).
+- `CHANGELOG.md` following the [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/)
+  format with retroactive sections for v0.1.0–v0.7.0 (#46).
+- `docs/INSTALL.md` — install, configure, quickstart, Claude Code wiring,
+  development workflow, uninstall (#47).
+- `docs/ARCHITECTURE.md` — design principles, module map, data model,
+  Bayesian update path, retrieval flow with ASCII diagram, Claude Code
+  integration diagram, test layers, explicit "out of scope through v1.0.0"
+  list (#47).
+- README `## docs` section linking to both new files (#47).
+- `pyproject.toml` PyPI-ready metadata pass: sharpened `description`,
+  `authors` with email, explicit `license-files = ["LICENSE"]`, ten
+  `keywords`, thirteen Trove `classifiers` (Beta dev status, Python 3 /
+  3.12 / 3.13, MIT, Topic / Audience / `Typing :: Typed`), and
+  `[project.urls]` (Homepage, Repository, Documentation, Changelog,
+  Issues) (#48).
 
 ## [0.7.0] - 2026-04-26
 
@@ -170,7 +190,8 @@ Foundation milestone — store, models, config.
 - Initial repo scaffold: pyproject, README, GitHub Actions workflows,
   scan configs (commit `67b4343`).
 
-[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/robotrocketscience/aelfrice/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/robotrocketscience/aelfrice/releases/tag/v0.7.0
 [0.6.0]: https://github.com/robotrocketscience/aelfrice/compare/8b45b77...c088314
 [0.5.0]: https://github.com/robotrocketscience/aelfrice/compare/8fdee15...a2f6841
