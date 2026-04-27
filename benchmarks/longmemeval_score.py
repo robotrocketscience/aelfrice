@@ -14,16 +14,13 @@ from collections import Counter
 from pathlib import Path
 
 
-def main() -> None:
-    if len(sys.argv) < 4:
-        print("Usage: longmemeval_score.py <preds.json> <gt.json> <judge.json>")
-        sys.exit(1)
+def score(preds_path: str, gt_path_str: str, judge_path_str: str) -> int:
+    """Programmatic entry. Returns 0 on success, nonzero on failure."""
+    preds_path_p: Path = Path(preds_path)
+    gt_path: Path = Path(gt_path_str)
+    judge_path: Path = Path(judge_path_str)
 
-    preds_path: Path = Path(sys.argv[1])
-    gt_path: Path = Path(sys.argv[2])
-    judge_path: Path = Path(sys.argv[3])
-
-    with preds_path.open("r", encoding="utf-8") as f:
+    with preds_path_p.open("r", encoding="utf-8") as f:
         preds: list[dict[str, object]] = json.load(f)
     with gt_path.open("r", encoding="utf-8") as f:
         gt: list[dict[str, object]] = json.load(f)
@@ -76,6 +73,14 @@ def main() -> None:
     print()
     print("Reference: GPT-4o + LongMemEval_S pipeline = 60.6%")
     print("Note: Judge is Opus (non-standard; paper uses GPT-4o)")
+    return 0
+
+
+def main() -> None:
+    if len(sys.argv) < 4:
+        print("Usage: longmemeval_score.py <preds.json> <gt.json> <judge.json>")
+        sys.exit(1)
+    sys.exit(score(sys.argv[1], sys.argv[2], sys.argv[3]))
 
 
 if __name__ == "__main__":
