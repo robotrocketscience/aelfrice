@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Final
 
 from aelfrice.models import Belief
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 DEFAULT_TOKEN_BUDGET: Final[int] = 2000
 _CHARS_PER_TOKEN: Final[float] = 4.0
@@ -33,7 +33,7 @@ def _belief_tokens(b: Belief) -> int:
 
 
 def retrieve(
-    store: Store,
+    store: MemoryStore,
     query: str,
     token_budget: int = DEFAULT_TOKEN_BUDGET,
     l1_limit: int = DEFAULT_L1_LIMIT,

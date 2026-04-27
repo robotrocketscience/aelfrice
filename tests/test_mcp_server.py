@@ -34,16 +34,16 @@ from aelfrice.models import (
     LOCK_USER,
     Belief,
 )
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 
 @pytest.fixture
-def store() -> Store:
-    return Store(":memory:")
+def store() -> MemoryStore:
+    return MemoryStore(":memory:")
 
 
 def _put_belief(
-    store: Store,
+    store: MemoryStore,
     *,
     id: str = "b1",
     content: str = "hello world",
@@ -99,13 +99,13 @@ def test_serve_raises_clear_error_when_fastmcp_missing() -> None:
 # --- search ------------------------------------------------------------
 
 
-def test_search_returns_results_kind(store: Store) -> None:
+def test_search_returns_results_kind(store: MemoryStore) -> None:
     _put_belief(store, content="the quick brown fox")
     out = tool_search(store, query="brown")
     assert out["kind"] == "search.results"
 
 
-def test_search_returns_hit_payload_shape(store: Store) -> None:
+def test_search_returns_hit_payload_shape(store: MemoryStore) -> None:
     _put_belief(store, content="the quick brown fox")
     out = tool_search(store, query="brown")
     assert out["n_hits"] == 1
@@ -113,7 +113,7 @@ def test_search_returns_hit_payload_shape(store: Store) -> None:
     assert set(hit.keys()) == {"id", "content", "lock_level", "type"}
 
 
-def test_search_no_match_returns_zero_hits(store: Store) -> None:
+def test_search_no_match_returns_zero_hits(store: MemoryStore) -> None:
     out = tool_search(store, query="zzznonexistent")
     assert out["n_hits"] == 0
 
@@ -121,7 +121,7 @@ def test_search_no_match_returns_zero_hits(store: Store) -> None:
 # --- lock --------------------------------------------------------------
 
 
-def test_lock_creates_new_belief(store: Store) -> None:
+def test_lock_creates_new_belief(store: MemoryStore) -> None:
     out = tool_lock(store, statement="we always sign commits with ssh")
     assert out["action"] == "locked"
     bid = out["id"]
@@ -130,7 +130,7 @@ def test_lock_creates_new_belief(store: Store) -> None:
     assert inserted.lock_level == LOCK_USER
 
 
-def test_lock_upgrades_existing_unlocked_belief(store: Store) -> None:
+def test_lock_upgrades_existing_unlocked_belief(store: MemoryStore) -> None:
     first = tool_lock(store, statement="claude is my friend")
     bid = first["id"]
     # demote then re-lock to exercise the upgrade path
@@ -147,20 +147,20 @@ def test_lock_upgrades_existing_unlocked_belief(store: Store) -> None:
 # --- locked ------------------------------------------------------------
 
 
-def test_locked_lists_user_locks(store: Store) -> None:
+def test_locked_lists_user_locks(store: MemoryStore) -> None:
     tool_lock(store, statement="alpha")
     tool_lock(store, statement="beta")
     out = tool_locked(store)
     assert out["n"] == 2
 
 
-def test_locked_pressured_filter_excludes_unpressured(store: Store) -> None:
+def test_locked_pressured_filter_excludes_unpressured(store: MemoryStore) -> None:
     tool_lock(store, statement="alpha")
     out = tool_locked(store, pressured=True)
     assert out["n"] == 0
 
 
-def test_locked_pressured_filter_includes_pressured(store: Store) -> None:
+def test_locked_pressured_filter_includes_pressured(store: MemoryStore) -> None:
     tool_lock(store, statement="alpha")
     bid = tool_locked(store)["locked"][0]["id"]
     b = store.get_belief(bid)
@@ -174,7 +174,7 @@ def test_locked_pressured_filter_includes_pressured(store: Store) -> None:
 # --- demote ------------------------------------------------------------
 
 
-def test_demote_unlocks_a_locked_belief(store: Store) -> None:
+def test_demote_unlocks_a_locked_belief(store: MemoryStore) -> None:
     bid = tool_lock(store, statement="x")["id"]
     out = tool_demote(store, belief_id=bid)
     assert out["demoted"] is True
@@ -183,13 +183,13 @@ def test_demote_unlocks_a_locked_belief(store: Store) -> None:
     assert b.lock_level == LOCK_NONE
 
 
-def test_demote_unknown_belief_returns_not_found(store: Store) -> None:
+def test_demote_unknown_belief_returns_not_found(store: MemoryStore) -> None:
     out = tool_demote(store, belief_id="deadbeef")
     assert out["kind"] == "demote.not_found"
     assert out["demoted"] is False
 
 
-def test_demote_unlocked_belief_is_no_op(store: Store) -> None:
+def test_demote_unlocked_belief_is_no_op(store: MemoryStore) -> None:
     _put_belief(store, id="b1", lock_level=LOCK_NONE)
     out = tool_demote(store, belief_id="b1")
     assert out["kind"] == "demote.not_locked"
@@ -199,27 +199,27 @@ def test_demote_unlocked_belief_is_no_op(store: Store) -> None:
 # --- feedback ----------------------------------------------------------
 
 
-def test_feedback_used_increments_alpha(store: Store) -> None:
+def test_feedback_used_increments_alpha(store: MemoryStore) -> None:
     _put_belief(store, id="b1", alpha=2.0, beta=1.0)
     out = tool_feedback(store, belief_id="b1", signal="used")
     assert out["kind"] == "feedback.applied"
     assert out["new_alpha"] > out["prior_alpha"]
 
 
-def test_feedback_harmful_increments_beta(store: Store) -> None:
+def test_feedback_harmful_increments_beta(store: MemoryStore) -> None:
     _put_belief(store, id="b1", alpha=2.0, beta=1.0)
     out = tool_feedback(store, belief_id="b1", signal="harmful")
     assert out["new_beta"] > out["prior_beta"]
 
 
-def test_feedback_bad_signal_returns_error(store: Store) -> None:
+def test_feedback_bad_signal_returns_error(store: MemoryStore) -> None:
     _put_belief(store, id="b1")
     out = tool_feedback(store, belief_id="b1", signal="bogus")
     assert out["kind"] == "feedback.bad_signal"
     assert "error" in out
 
 
-def test_feedback_unknown_belief_returns_error(store: Store) -> None:
+def test_feedback_unknown_belief_returns_error(store: MemoryStore) -> None:
     out = tool_feedback(store, belief_id="nope", signal="used")
     assert out["kind"] == "feedback.unknown_belief"
 
@@ -227,7 +227,7 @@ def test_feedback_unknown_belief_returns_error(store: Store) -> None:
 # --- stats / health ----------------------------------------------------
 
 
-def test_stats_returns_count_keys(store: Store) -> None:
+def test_stats_returns_count_keys(store: MemoryStore) -> None:
     out = tool_stats(store)
     assert {
         "beliefs", "edges", "locked", "feedback_events",
@@ -235,20 +235,20 @@ def test_stats_returns_count_keys(store: Store) -> None:
     }.issubset(out.keys())
 
 
-def test_stats_counts_match_after_inserts(store: Store) -> None:
+def test_stats_counts_match_after_inserts(store: MemoryStore) -> None:
     _put_belief(store, id="a")
     _put_belief(store, id="b")
     out = tool_stats(store)
     assert out["beliefs"] == 2
 
 
-def test_health_returns_regime_field(store: Store) -> None:
+def test_health_returns_regime_field(store: MemoryStore) -> None:
     out = tool_health(store)
     assert "regime" in out
     assert "description" in out
 
 
-def test_health_insufficient_data_omits_features(store: Store) -> None:
+def test_health_insufficient_data_omits_features(store: MemoryStore) -> None:
     """Empty store -> insufficient_data regime; features must not be
     reported (they would be undefined)."""
     out = tool_health(store)
@@ -259,7 +259,7 @@ def test_health_insufficient_data_omits_features(store: Store) -> None:
 # --- onboard (polymorphic) --------------------------------------------
 
 
-def test_onboard_path_starts_session(store: Store, tmp_path: Path) -> None:
+def test_onboard_path_starts_session(store: MemoryStore, tmp_path: Path) -> None:
     _populate_repo(tmp_path)
     out = tool_onboard(store, path=str(tmp_path))
     assert out["kind"] == "onboard.session_started"
@@ -267,14 +267,14 @@ def test_onboard_path_starts_session(store: Store, tmp_path: Path) -> None:
     assert isinstance(out["sentences"], list)
 
 
-def test_onboard_status_no_pending_returns_zero(store: Store) -> None:
+def test_onboard_status_no_pending_returns_zero(store: MemoryStore) -> None:
     out = tool_onboard(store)
     assert out["kind"] == "onboard.status"
     assert out["n_pending"] == 0
 
 
 def test_onboard_status_lists_started_session(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     started = tool_onboard(store, path=str(tmp_path))
@@ -284,7 +284,7 @@ def test_onboard_status_lists_started_session(
 
 
 def test_onboard_accept_completes_session(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     started = tool_onboard(store, path=str(tmp_path))
@@ -299,7 +299,7 @@ def test_onboard_accept_completes_session(
 
 
 def test_onboard_accept_with_no_classifications_completes_empty(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     started = tool_onboard(store, path=str(tmp_path))
@@ -309,7 +309,7 @@ def test_onboard_accept_with_no_classifications_completes_empty(
 
 
 def test_onboard_after_complete_no_longer_pending(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     started = tool_onboard(store, path=str(tmp_path))
@@ -319,7 +319,7 @@ def test_onboard_after_complete_no_longer_pending(
 
 
 def test_onboard_sync_falls_back_to_regex_classifier(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     out = tool_onboard_sync(store, path=str(tmp_path))
@@ -330,7 +330,7 @@ def test_onboard_sync_falls_back_to_regex_classifier(
 # --- end-to-end smoke ---------------------------------------------------
 
 
-def test_end_to_end_lock_search_feedback_demote(store: Store) -> None:
+def test_end_to_end_lock_search_feedback_demote(store: MemoryStore) -> None:
     locked = tool_lock(store, statement="we use uv exclusively")
     bid = locked["id"]
 
@@ -349,7 +349,7 @@ def test_end_to_end_lock_search_feedback_demote(store: Store) -> None:
 
 
 def test_end_to_end_polymorphic_onboard_then_search(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     started = tool_onboard(store, path=str(tmp_path))
@@ -367,7 +367,7 @@ def test_end_to_end_polymorphic_onboard_then_search(
 
 
 def test_polymorphic_onboard_handlers_share_state_with_classification_module(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     """Round-trip via the bare classification API should match the MCP
     tool's view of the world. Catches drift between the two surfaces."""
@@ -388,7 +388,7 @@ def test_polymorphic_onboard_handlers_share_state_with_classification_module(
 
 
 def test_unused_classification_import_does_not_drift(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     via_classification = start_onboard_session(

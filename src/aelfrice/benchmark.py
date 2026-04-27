@@ -41,7 +41,7 @@ from typing import Final
 
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
 from aelfrice.retrieval import retrieve
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 BENCHMARK_NAME: Final[str] = "aelfrice-bench-v1"
 """Stable identifier for this benchmark configuration.
@@ -154,7 +154,7 @@ class BenchmarkReport:
 # --- Harness ----------------------------------------------------------
 
 
-def seed_corpus(store: Store, *, created_at: str = "2026-04-26T00:00:00Z") -> int:
+def seed_corpus(store: MemoryStore, *, created_at: str = "2026-04-26T00:00:00Z") -> int:
     """Insert the deterministic benchmark corpus into `store`.
 
     Inserts each `_CorpusEntry` as an unlocked factual belief with
@@ -182,7 +182,7 @@ def seed_corpus(store: Store, *, created_at: str = "2026-04-26T00:00:00Z") -> in
 
 
 def run_benchmark(
-    store: Store,
+    store: MemoryStore,
     *,
     aelfrice_version: str,
     top_k: int = DEFAULT_TOP_K,

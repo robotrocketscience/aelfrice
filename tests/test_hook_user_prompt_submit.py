@@ -14,7 +14,7 @@ from aelfrice.hook import (
     user_prompt_submit,
 )
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 
 def _mk(
@@ -39,7 +39,7 @@ def _mk(
 
 
 def _seed_db(db_path: Path, beliefs: list[Belief]) -> None:
-    store = Store(str(db_path))
+    store = MemoryStore(str(db_path))
     try:
         for b in beliefs:
             store.insert_belief(b)
@@ -207,7 +207,7 @@ def test_hook_passes_default_token_budget(
     real_retrieve = hook_mod.retrieve
 
     def spy_retrieve(
-        store: Store, query: str, token_budget: int = 2000, l1_limit: int = 50
+        store: MemoryStore, query: str, token_budget: int = 2000, l1_limit: int = 50
     ) -> list[Belief]:
         captured["token_budget"] = token_budget
         return real_retrieve(store, query, token_budget=token_budget,
@@ -232,7 +232,7 @@ def test_hook_honors_explicit_token_budget(
     real_retrieve = hook_mod.retrieve
 
     def spy_retrieve(
-        store: Store, query: str, token_budget: int = 2000, l1_limit: int = 50
+        store: MemoryStore, query: str, token_budget: int = 2000, l1_limit: int = 50
     ) -> list[Belief]:
         captured["token_budget"] = token_budget
         return real_retrieve(store, query, token_budget=token_budget,
@@ -256,7 +256,7 @@ def test_hook_non_blocking_on_internal_error(
     import aelfrice.hook as hook_mod
 
     def boom(
-        _store: Store, _q: str, token_budget: int = 2000, l1_limit: int = 50
+        _store: MemoryStore, _q: str, token_budget: int = 2000, l1_limit: int = 50
     ) -> list[Belief]:
         _ = token_budget, l1_limit
         raise RuntimeError("simulated retrieval failure")

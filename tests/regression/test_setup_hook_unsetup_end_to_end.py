@@ -37,7 +37,7 @@ import pytest
 from aelfrice.cli import main as cli_main
 from aelfrice.hook import CLOSE_TAG, OPEN_TAG
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 pytestmark = pytest.mark.regression
 
@@ -67,7 +67,7 @@ def _mk(
 def seeded_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """One locked belief + one FTS5-matchable unlocked belief."""
     db = tmp_path / "memory.db"
-    store = Store(str(db))
+    store = MemoryStore(str(db))
     try:
         store.insert_belief(
             _mk(

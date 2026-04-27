@@ -50,7 +50,7 @@ from aelfrice.setup import (
     install_user_prompt_submit_hook,
     uninstall_user_prompt_submit_hook,
 )
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 DEFAULT_DB_DIR: Final[Path] = Path.home() / ".aelfrice"
 DEFAULT_DB_FILENAME: Final[str] = "memory.db"
@@ -72,11 +72,11 @@ def _ensure_parent_dir(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
-def _open_store() -> Store:
+def _open_store() -> MemoryStore:
     p = db_path()
     if str(p) != ":memory:":
         _ensure_parent_dir(p)
-    return Store(str(p))
+    return MemoryStore(str(p))
 
 
 def _utc_now_iso() -> str:
@@ -283,7 +283,7 @@ def _cmd_bench(args: argparse.Namespace, out: object) -> int:
 
     if target == "synthetic":
         db = ":memory:" if args.db is None else str(Path(args.db))
-        store = Store(db)
+        store = MemoryStore(db)
         try:
             seed_corpus(store)
             report = run_benchmark(

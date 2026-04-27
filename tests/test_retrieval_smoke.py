@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.retrieval import retrieve
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 
 def _mk(
@@ -33,7 +33,7 @@ def _mk(
 
 
 def test_retrieval_returns_l0_locked_beliefs_for_unrelated_query() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("L1", "user pinned a fact about cats",
                         lock_level=LOCK_USER, locked_at="2026-04-26T01:00:00Z"))
     s.insert_belief(_mk("F1", "an unrelated fact about elephants"))
@@ -47,7 +47,7 @@ def test_retrieval_returns_l0_locked_beliefs_for_unrelated_query() -> None:
 
 
 def test_retrieval_returns_l1_fts5_match_when_present() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("F1", "the kitchen is full of bananas"))
     s.insert_belief(_mk("F2", "the garage is full of tools"))
 
@@ -57,7 +57,7 @@ def test_retrieval_returns_l1_fts5_match_when_present() -> None:
 
 
 def test_retrieval_empty_query_returns_locked_only() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("L1", "locked truth",
                         lock_level=LOCK_USER, locked_at="2026-04-26T01:00:00Z"))
     s.insert_belief(_mk("F1", "free-floating fact"))
@@ -68,7 +68,7 @@ def test_retrieval_empty_query_returns_locked_only() -> None:
 
 
 def test_retrieval_dedupes_locked_belief_appearing_in_fts5_match() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("L1", "the user pinned a banana fact",
                         lock_level=LOCK_USER, locked_at="2026-04-26T01:00:00Z"))
     s.insert_belief(_mk("F1", "the kitchen is full of bananas"))
@@ -82,7 +82,7 @@ def test_retrieval_dedupes_locked_belief_appearing_in_fts5_match() -> None:
 
 
 def test_retrieval_returns_pure_belief_objects() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("F1", "a fact"))
     hits = retrieve(s, query="fact")
     assert len(hits) == 1

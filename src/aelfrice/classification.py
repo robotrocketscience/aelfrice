@@ -47,7 +47,7 @@ from aelfrice.models import (
 )
 
 if TYPE_CHECKING:
-    from aelfrice.store import Store
+    from aelfrice.store import MemoryStore
 
 # --- Priors (per Exp 61, restricted to v1.0's 4-type catalog) -----------
 
@@ -363,7 +363,7 @@ def _content_hash(text: str) -> str:
 
 
 def start_onboard_session(
-    store: "Store",
+    store: "MemoryStore",
     repo_path: Path,
     *,
     now: str | None = None,
@@ -435,7 +435,7 @@ def start_onboard_session(
 
 
 def accept_classifications(
-    store: "Store",
+    store: "MemoryStore",
     session_id: str,
     classifications: list[HostClassification],
     *,

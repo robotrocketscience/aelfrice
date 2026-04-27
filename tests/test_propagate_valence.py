@@ -12,7 +12,7 @@ from aelfrice.models import (
     Belief,
     Edge,
 )
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 
 def _mk(bid: str, alpha: float, beta: float) -> Belief:
@@ -31,8 +31,8 @@ def _mk(bid: str, alpha: float, beta: float) -> Belief:
     )
 
 
-def _build_chain(broker_alpha: float, broker_beta: float) -> Store:
-    s = Store(":memory:")
+def _build_chain(broker_alpha: float, broker_beta: float) -> MemoryStore:
+    s = MemoryStore(":memory:")
     # A is source; broker confidence at A doesn't matter for downstream
     # because propagation multiplier uses dst broker, but give it neutral.
     s.insert_belief(_mk("A", alpha=5.0, beta=5.0))
@@ -66,7 +66,7 @@ def test_low_broker_confidence_attenuates_vs_high() -> None:
 
 
 def test_propagate_returns_empty_for_isolated_source() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("solo", alpha=5.0, beta=5.0))
     out = s.propagate_valence("solo", valence=1.0)
     assert out == {}

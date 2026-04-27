@@ -29,7 +29,7 @@ from typing import IO, Final, cast
 from aelfrice.cli import db_path
 from aelfrice.models import LOCK_USER, Belief
 from aelfrice.retrieval import retrieve
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 DEFAULT_HOOK_TOKEN_BUDGET: Final[int] = 1500
 """Conservative default budget for hook-injected context.
@@ -118,11 +118,11 @@ def _format_hits(hits: list[Belief]) -> str:
     return "\n".join(lines)
 
 
-def _open_store() -> Store:
+def _open_store() -> MemoryStore:
     p = db_path()
     if str(p) != ":memory:":
         p.parent.mkdir(parents=True, exist_ok=True)
-    return Store(str(p))
+    return MemoryStore(str(p))
 
 
 def main() -> int:

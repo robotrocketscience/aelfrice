@@ -7,7 +7,7 @@ having get_belief return it. This test enforces that contract.
 from __future__ import annotations
 
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 
 def _mk(dp: int) -> Belief:
@@ -27,7 +27,7 @@ def _mk(dp: int) -> Belief:
 
 
 def test_demotion_pressure_initial_zero_persists() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk(0))
     got = s.get_belief("b1")
     assert got is not None
@@ -35,7 +35,7 @@ def test_demotion_pressure_initial_zero_persists() -> None:
 
 
 def test_demotion_pressure_update_to_three_reads_back() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     b = _mk(0)
     s.insert_belief(b)
     b.demotion_pressure = 3
@@ -46,7 +46,7 @@ def test_demotion_pressure_update_to_three_reads_back() -> None:
 
 
 def test_demotion_pressure_update_again_to_seven_reads_back() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     b = _mk(0)
     s.insert_belief(b)
     b.demotion_pressure = 3
@@ -60,7 +60,7 @@ def test_demotion_pressure_update_again_to_seven_reads_back() -> None:
 
 def test_demotion_pressure_inserted_nonzero_persists() -> None:
     """Belt-and-suspenders: insert path also persists nonzero values."""
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk(11))
     got = s.get_belief("b1")
     assert got is not None

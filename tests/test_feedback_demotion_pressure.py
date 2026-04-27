@@ -25,7 +25,7 @@ from aelfrice.models import (
     Belief,
     Edge,
 )
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 
 def _mk(
@@ -50,8 +50,8 @@ def _mk(
 
 
 def _build(source_id: str, target_id: str, edge_type: str,
-           target_lock: str = LOCK_USER) -> Store:
-    s = Store(":memory:")
+           target_lock: str = LOCK_USER) -> MemoryStore:
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk(source_id))
     s.insert_belief(_mk(target_id, lock_level=target_lock,
                         locked_at="2026-04-26T01:00:00Z"))
@@ -59,7 +59,7 @@ def _build(source_id: str, target_id: str, edge_type: str,
     return s
 
 
-def _pressure(store: Store, bid: str) -> int:
+def _pressure(store: MemoryStore, bid: str) -> int:
     got = store.get_belief(bid)
     assert got is not None
     return got.demotion_pressure
@@ -122,7 +122,7 @@ def test_negative_valence_does_not_increment_pressure() -> None:
 def test_inbound_contradicts_edge_does_not_increment_pressure() -> None:
     """Edge Y->X CONTRADICTS means Y contradicts X. Feedback on X should
     not pressure Y under the 1-hop outbound semantics."""
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("X"))
     s.insert_belief(_mk("Y", lock_level=LOCK_USER,
                         locked_at="2026-04-26T01:00:00Z"))
@@ -143,7 +143,7 @@ def test_pressure_accumulates_across_repeated_positive_calls() -> None:
 
 
 def test_pressure_starts_from_existing_value_not_zero() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("X"))
     s.insert_belief(_mk("Y", lock_level=LOCK_USER,
                         locked_at="2026-04-26T01:00:00Z",
@@ -157,7 +157,7 @@ def test_pressure_starts_from_existing_value_not_zero() -> None:
 
 
 def test_two_locked_contradicted_targets_both_pressured() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("X"))
     s.insert_belief(_mk("Y1", lock_level=LOCK_USER,
                         locked_at="2026-04-26T01:00:00Z"))
@@ -171,7 +171,7 @@ def test_two_locked_contradicted_targets_both_pressured() -> None:
 
 
 def test_mix_of_locked_and_unlocked_targets_only_locked_pressured() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("X"))
     s.insert_belief(_mk("Y_locked", lock_level=LOCK_USER,
                         locked_at="2026-04-26T01:00:00Z"))
@@ -201,7 +201,7 @@ def test_result_reports_no_pressured_locks_when_no_contradiction() -> None:
 
 
 def test_result_reports_multiple_pressured_locks_sorted() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("X"))
     s.insert_belief(_mk("Yb", lock_level=LOCK_USER,
                         locked_at="2026-04-26T01:00:00Z"))

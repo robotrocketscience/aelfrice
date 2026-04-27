@@ -14,7 +14,9 @@ suite locks that behaviour in from day one
 """
 from __future__ import annotations
 
+import secrets
 import sqlite3
+from datetime import datetime, timezone
 from typing import Iterable
 
 from aelfrice.models import (
@@ -25,6 +27,7 @@ from aelfrice.models import (
     Edge,
     FeedbackEvent,
     OnboardSession,
+    Session,
 )
 
 # --- Schema ---------------------------------------------------------------
@@ -153,7 +156,7 @@ def _row_to_onboard_session(row: sqlite3.Row) -> OnboardSession:
     )
 
 
-class Store:
+class MemoryStore:
     """SQLite store. Pass `:memory:` for tests, a path otherwise."""
 
     def __init__(self, path: str) -> None:
@@ -553,3 +556,34 @@ class Store:
             (ONBOARD_STATE_PENDING,),
         )
         return [_row_to_onboard_session(r) for r in cur.fetchall()]
+
+    def create_session(
+        self,
+        model: str | None = None,
+        project_context: str | None = None,
+    ) -> Session:
+        """Create an ephemeral Session handle for grouping ingest calls.
+
+        The public v1.0.0 schema does not persist sessions; this returns
+        a Session dataclass with a fresh id but does not write to any
+        table. Academic-suite adapters use the id to tag belief metadata
+        (and call complete_session at the end of a logical group).
+        """
+        return Session(
+            id=secrets.token_hex(16),
+            started_at=datetime.now(timezone.utc).isoformat(),
+            completed_at=None,
+            model=model,
+            project_context=project_context,
+        )
+
+    def complete_session(self, session_id: str) -> None:  # noqa: ARG002
+        """No-op terminator paired with create_session.
+
+        Public v1.0.0 does not persist session lifecycle; this exists so
+        adapters porting from lab v2.0.0 do not need conditional logic.
+        Lab v2.0.0 uses this entry point to write completed_at, summary,
+        and velocity metrics; that behavior lands when (or if) the
+        sessions table ports to public.
+        """
+        return None

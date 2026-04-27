@@ -22,7 +22,7 @@ from aelfrice.models import (
     Belief,
     Edge,
 )
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 
 def _mk(
@@ -46,8 +46,8 @@ def _mk(
     )
 
 
-def _build(starting_pressure: int = 0) -> Store:
-    s = Store(":memory:")
+def _build(starting_pressure: int = 0) -> MemoryStore:
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("X"))
     s.insert_belief(_mk("Y", lock_level=LOCK_USER,
                         locked_at="2026-04-26T01:00:00Z",
@@ -56,7 +56,7 @@ def _build(starting_pressure: int = 0) -> Store:
     return s
 
 
-def _y(store: Store) -> Belief:
+def _y(store: MemoryStore) -> Belief:
     got = store.get_belief("Y")
     assert got is not None
     return got
@@ -194,7 +194,7 @@ def test_at_threshold_pressured_and_demoted_both_contain_target() -> None:
 
 
 def test_only_at_threshold_target_demotes_others_remain_locked() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("X"))
     s.insert_belief(_mk("Y_high", lock_level=LOCK_USER,
                         locked_at="2026-04-26T01:00:00Z",

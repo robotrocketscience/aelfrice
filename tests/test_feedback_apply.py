@@ -10,7 +10,7 @@ import pytest
 from aelfrice.feedback import FeedbackResult, apply_feedback
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
 from aelfrice.scoring import posterior_mean
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 
 def _mk(bid: str = "b1", alpha: float = 1.0, beta: float = 1.0) -> Belief:
@@ -29,8 +29,8 @@ def _mk(bid: str = "b1", alpha: float = 1.0, beta: float = 1.0) -> Belief:
     )
 
 
-def _store_with(b: Belief) -> Store:
-    s = Store(":memory:")
+def _store_with(b: Belief) -> MemoryStore:
+    s = MemoryStore(":memory:")
     s.insert_belief(b)
     return s
 
@@ -205,13 +205,13 @@ def test_empty_source_raises_value_error() -> None:
 
 
 def test_unknown_belief_id_raises_value_error() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     with pytest.raises(ValueError):
         apply_feedback(s, "nonexistent", valence=1.0, source="user")
 
 
 def test_unknown_belief_id_does_not_write_history() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     with pytest.raises(ValueError):
         apply_feedback(s, "nonexistent", valence=1.0, source="user")
     assert s.count_feedback_events() == 0

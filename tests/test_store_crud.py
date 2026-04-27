@@ -8,7 +8,7 @@ from aelfrice.models import (
     Belief,
     Edge,
 )
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 
 def _mk_belief(
@@ -34,7 +34,7 @@ def _mk_belief(
 
 
 def test_belief_insert_and_get_roundtrip() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     b = _mk_belief()
     s.insert_belief(b)
     got = s.get_belief("b1")
@@ -53,7 +53,7 @@ def test_belief_insert_and_get_roundtrip() -> None:
 
 
 def test_belief_update_persists_alpha_beta_and_demotion() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     b = _mk_belief()
     s.insert_belief(b)
     b.alpha = 5.5
@@ -68,14 +68,14 @@ def test_belief_update_persists_alpha_beta_and_demotion() -> None:
 
 
 def test_belief_delete_returns_none() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk_belief())
     s.delete_belief("b1")
     assert s.get_belief("b1") is None
 
 
 def test_edge_insert_get_update_delete() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk_belief("a"))
     s.insert_belief(_mk_belief("b", content="thing two"))
     e = Edge(src="a", dst="b", type=EDGE_SUPPORTS, weight=0.7)
@@ -95,7 +95,7 @@ def test_edge_insert_get_update_delete() -> None:
 
 
 def test_fts5_search_finds_belief_by_keyword() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk_belief("b1", content="apples are red and crunchy"))
     s.insert_belief(_mk_belief("b2", content="bananas are yellow"))
     s.insert_belief(_mk_belief("b3", content="grapes are purple"))
@@ -110,7 +110,7 @@ def test_fts5_search_finds_belief_by_keyword() -> None:
 
 
 def test_fts5_search_after_update_reflects_new_content() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     b = _mk_belief("b1", content="initial wording about cats")
     s.insert_belief(b)
     assert {h.id for h in s.search_beliefs("cats")} == {"b1"}

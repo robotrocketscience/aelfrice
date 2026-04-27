@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Final
 
 from aelfrice.models import EDGE_CONTRADICTS, LOCK_NONE, LOCK_USER, Belief
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 DEMOTION_THRESHOLD: int = 5
 
@@ -63,7 +63,7 @@ def _bayesian_update(b: Belief, valence: float) -> tuple[float, float]:
 
 
 def _pressure_and_maybe_demote(
-    store: Store, source_id: str
+    store: MemoryStore, source_id: str
 ) -> tuple[list[str], list[str]]:
     """For each outbound CONTRADICTS edge from source_id whose dst is a
     user-locked belief, increment that belief's demotion_pressure by 1.
@@ -104,7 +104,7 @@ def _pressure_and_maybe_demote(
 
 
 def apply_feedback(
-    store: Store,
+    store: MemoryStore,
     belief_id: str,
     valence: float,
     source: str,

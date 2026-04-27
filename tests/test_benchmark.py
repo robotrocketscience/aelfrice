@@ -15,11 +15,11 @@ from aelfrice.benchmark import (
 )
 from aelfrice.benchmark import _percentile, _rank_of  # type: ignore[reportPrivateUsage]
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 
-def _fresh_store(tmp_path: Path) -> Store:
-    return Store(str(tmp_path / "bench.db"))
+def _fresh_store(tmp_path: Path) -> MemoryStore:
+    return MemoryStore(str(tmp_path / "bench.db"))
 
 
 def _mk(bid: str, content: str) -> Belief:
@@ -128,8 +128,8 @@ def test_run_benchmark_is_deterministic(tmp_path: Path) -> None:
     """Two runs against fresh stores must produce identical
     accuracy scores. Latencies will differ; that's expected and
     handled at the percentile-only assertion above."""
-    s1 = Store(str(tmp_path / "a.db"))
-    s2 = Store(str(tmp_path / "b.db"))
+    s1 = MemoryStore(str(tmp_path / "a.db"))
+    s2 = MemoryStore(str(tmp_path / "b.db"))
     try:
         seed_corpus(s1)
         seed_corpus(s2)

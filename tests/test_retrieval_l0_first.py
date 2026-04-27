@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.retrieval import retrieve
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 
 def _mk(
@@ -33,8 +33,8 @@ def _mk(
     )
 
 
-def _populate_mixed_store() -> Store:
-    s = Store(":memory:")
+def _populate_mixed_store() -> MemoryStore:
+    s = MemoryStore(":memory:")
     # 3 locked beliefs (L0), 5 unlocked beliefs (L1 candidates).
     s.insert_belief(_mk("L_a", "the user pinned a strong opinion about coffee",
                         lock_level=LOCK_USER, locked_at="2026-04-26T03:00:00Z"))
