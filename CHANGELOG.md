@@ -64,6 +64,14 @@ adds a no-config noise filter (with a TOML escape hatch), and ships
 
 ### Added
 
+- `tests/regression/test_onboard_perf_50k_loc.py`: regression benchmark
+  asserting `scan_repo` finishes in under 60s on a synthetic ~55k-LOC
+  project (250 .py + 60 doc files). Marked `regression`. Held against
+  the `:memory:` store. Current measured time ~0.8s on Apple Silicon;
+  the 60s budget is a regression alarm, not a target (#NN).
+
+### Added
+
 - `aelfrice.hook_search` module: `search_for_prompt(store, prompt, ...)`
   and `record_retrieval(store, beliefs, ...)`. Closes the v1.0.1
   retrieval-side feedback-loop gap: every UserPromptSubmit hook
