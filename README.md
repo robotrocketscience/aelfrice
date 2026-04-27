@@ -40,7 +40,7 @@ After `v1.0.0`, the `v1.x` series recovers `v2.0` features incrementally with ev
 - Beta-Bernoulli confidence math; per-type half-life decay
 - Lock floor (a `user`-locked belief does not decay)
 - Broker-confidence-attenuated valence propagation through the belief graph
-- 16 tests, including 3 pre-registered tests for Bayesian inertia, decay necessity, and lock-floor sharpness
+- 24 tests, including 3 pre-registered property tests (Bayesian inertia, decay necessity, lock-floor sharpness) and 7 type-half-life lockdown tests
 
 What does NOT work yet: retrieval, the feedback endpoint, the CLI, the MCP server, onboarding, install via `pip`. Wait for `v1.0.0` if you want to use this.
 
