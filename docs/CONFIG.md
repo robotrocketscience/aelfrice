@@ -123,7 +123,7 @@ Edits to `.aelfrice.toml` apply on the next `aelf onboard` run. They do **not** 
 If you want to remove existing noise from a store, the cleanest path is:
 
 ```bash
-rm ~/.aelfrice/memory.db        # or AELFRICE_DB path
+rm "$(python -c 'from aelfrice.cli import db_path; print(db_path())')"  # resolves to .git/aelfrice/memory.db inside a repo, ~/.aelfrice/memory.db otherwise, or AELFRICE_DB if set
 aelf onboard /path/to/project   # re-onboard with new config
 ```
 

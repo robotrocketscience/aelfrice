@@ -49,12 +49,13 @@ Second patch. Two threads:
 
 ## v1.1.0 — project identity and cosmetic surface
 
-- **In-repo store.** `.git/aelfrice/memory.db` becomes the default location. The current `SHA256(cwd)`-keyed path produces orphan databases on directory rename or worktree creation; the new layout is portable and survives both. The DB stays under `.git/`, which git does not track — the brain graph never crosses the git boundary.
-- **Orphan-DB cleanup tooling.** A migration command finds and merges abandoned per-`cwd` databases into the in-repo store.
-- **Worktree concurrency tests.** Multiple worktrees of the same repo share one `.git/aelfrice/memory.db` without corruption.
-- **`aelf health` vs `aelf status` split.** `status` becomes a counts snapshot; `health` becomes a real graph auditor — orphan edges, isolated clusters, FTS5 sync, locked-belief contradictions, decay anomalies.
+- **Per-project DB resolution.** v1.0.x shipped a single global DB at `~/.aelfrice/memory.db` shared across every project on the machine. v1.1.0 lands a resolution chain: `$AELFRICE_DB` (override) → `<git-common-dir>/aelfrice/memory.db` (when `cwd` is inside a git work-tree) → `~/.aelfrice/memory.db` (non-git fallback). Worktrees of one repo share one DB via the git-common-dir. `.git/` is not git-tracked — the brain graph never crosses the git boundary. Shipped at [#88](https://github.com/robotrocketscience/aelfrice/issues/88).
+- **`aelf migrate` from legacy global store.** One-shot copy from `~/.aelfrice/memory.db` (the v1.0 single global DB) into the active project's `.git/aelfrice/memory.db`. Dry-run by default; `--apply` writes. Idempotent.
+- **Worktree concurrency tests.** Multiple worktrees of the same repo share one `.git/aelfrice/memory.db` without corruption under WAL mode.
+- **`aelf health` rewritten as diagnostic auditor.** Replaces the v1.0 regime classifier output (preserved as `aelf regime`). Reports credal gap, orphan beliefs, edge type counts, feedback coverage, FTS5 sync, locked-belief contradictions. Exits 1 on structural failures (orphan edges, FTS5 mismatch, locked-belief contradictions); informational metrics stay exit 0. `aelf status` aliases `aelf health` per lab COMMAND_DESIGN convention.
 - **`edges` → `threads`.** User-facing rename in CLI output and MCP tool descriptions. Internal schema is unchanged.
-- **Onboard improvements.** Git-recency weighting for source files; explicit `agent_inferred` → `user_validated` promotion path so onboard-derived beliefs can graduate without being re-locked.
+- **Onboard git-recency weighting.** Scanner records source file's most-recent git commit date as `belief.created_at`, so the existing decay mechanism penalises pre-migration content from old branches.
+- **`agent_inferred` → `user_validated` promotion path.** Designed in v1.1.0 ([docs/promotion_path.md](promotion_path.md), [#95](https://github.com/robotrocketscience/aelfrice/issues/95)); implemented in v1.2.0.
 - **Query result cache.** A bounded LRU cache wrapping `aelfrice.retrieval.retrieve()`, keyed on a canonicalized form of `(query, token_budget, l1_limit)` and invalidated on every store mutation. Skips a full L0+L1 pass when an agent loop re-issues the same query. Spec: [`lru_query_cache.md`](lru_query_cache.md).
 
 ## v1.2.0 — auto-capture and triple extraction
@@ -131,7 +132,7 @@ The earlier research line implemented these modules. They are not in v1.0.0; eac
 
 The rewrite is fixing the following structural issues at the foundation rather than patching them forward.
 
-- **Per-project DB identity** keyed off arbitrary `cwd` hashes silently produced orphan stores on directory rename and worktree creation. Fixed in v1.1.0 by storing the DB inside `.git/` (which git does not track), keyed off the git-common-dir.
+- **No per-project DB identity.** v1.0 shipped a single global DB at `~/.aelfrice/memory.db` shared across every project on the machine; onboarding repo A and repo B mixed their beliefs in one file. Fixed in v1.1.0 ([#88](https://github.com/robotrocketscience/aelfrice/issues/88)) by introducing per-project resolution: the DB defaults to `.git/aelfrice/memory.db` for git repos (keyed off the git-common-dir so worktrees share one DB) and falls back to `~/.aelfrice/memory.db` for non-git directories. `.git/` is not git-tracked, so the brain graph never crosses the git boundary. A one-shot `aelf migrate` copies beliefs from the legacy global store into the active project's in-repo store.
 - **Hook → retrieval coupling** missed the feedback-history audit row, so retrievals did not exercise posteriors and were not auditable. Fixed in v1.0.1 by routing the hook through the same `retrieval.retrieve()` codepath as the CLI / MCP, with one `feedback_history` row per retrieval.
 - **Contradictions** were detected but never resolved — both beliefs remained equally retrievable, with a warning logged. Fixed in v1.0.1 by a default tie-breaker that auto-supersedes the loser and records the rule that fired.
 - **Onboard noise** (Markdown headings, license boilerplate, three-word fragments) entered as first-class beliefs and depressed signal-to-noise on every subsequent retrieval. Fixed in v1.0.1 by the `noise_filter` module wired into the synchronous onboard path.

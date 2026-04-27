@@ -2,7 +2,7 @@
 
 Fifteen subcommands. The first eight (retrieval/feedback) are also available as MCP tools and Claude Code slash commands. The lifecycle commands (`setup`/`unsetup`/`upgrade`/`uninstall`/`statusline`/`doctor`) and `bench` are CLI-only.
 
-DB resolves from `$AELFRICE_DB` or `~/.aelfrice/memory.db`.
+DB resolves from `$AELFRICE_DB` (override), then `<git-common-dir>/aelfrice/memory.db` when `cwd` is in a git work-tree, then `~/.aelfrice/memory.db` as the non-git fallback. `.git/` is not git-tracked — the brain graph never crosses the git boundary.
 
 ```
 aelf <subcommand> [args] [options]

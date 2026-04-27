@@ -39,7 +39,7 @@ One-directional imports — lower in the table imports from higher.
 | `scanner.py` | `scan_repo` — filesystem + git log + Python AST extractors, noise filter, classification, persistence. Idempotent against `content_hash`. |
 | `health.py` | Regime classifier (`insufficient_data` / `early-onboarding` / `steady` / `lock-heavy` / `over-confident`) over confidence, mass, lock density, edge density. |
 | `benchmark.py` | `seed_corpus(store)` + `run_benchmark(store, *, aelfrice_version, top_k=5)` — deterministic 16-belief × 16-query synthetic harness. Frozen `BenchmarkReport` with `hit_at_1` / `hit_at_3` / `hit_at_5` / `mrr` + `p50_latency_ms` / `p99_latency_ms`. |
-| `cli.py` | argparse 12-subcommand CLI (added `aelf resolve` at v1.0.1 alongside the contradiction tie-breaker). DB resolves from `$AELFRICE_DB` or `~/.aelfrice/memory.db`. Entry: `aelf`. |
+| `cli.py` | argparse 12-subcommand CLI (added `aelf resolve` at v1.0.1 alongside the contradiction tie-breaker). DB resolves from `$AELFRICE_DB` (override), then `<git-common-dir>/aelfrice/memory.db` when `cwd` is in a git work-tree, then `~/.aelfrice/memory.db` as the non-git fallback (v1.1.0). `.git/` is not git-tracked, so the brain graph never crosses the git boundary. Entry: `aelf`. |
 | `mcp_server.py` | FastMCP server, 8 tools. `[mcp]` optional extra. |
 | `setup.py` | Idempotent install/uninstall of the Claude Code `UserPromptSubmit` hook. Atomic write via tempfile + `os.replace`. |
 | `hook.py` | `aelfrice.hook:main` — process Claude Code spawns when the hook fires. Reads JSON from stdin, calls `retrieve()`, emits `<aelfrice-memory>...</aelfrice-memory>` on stdout. Non-blocking by contract. Entry: `aelf-hook`. |
@@ -108,7 +108,7 @@ Classification via `TYPE_PRIORS` + regex fallback. Idempotent: `content_hash` de
                                   ↓ JSON payload on stdin
                           aelf-hook subprocess (aelfrice.hook:main)
                                   ↓ retrieve(store, prompt)
-                          ~/.aelfrice/memory.db
+                          .git/aelfrice/memory.db (or ~/.aelfrice/memory.db)
                                   ↓ <aelfrice-memory> on stdout
                           Claude Code injects above prompt
 ```
