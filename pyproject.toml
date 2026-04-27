@@ -1,11 +1,49 @@
 [project]
 name = "aelfrice"
 version = "0.7.0"
-description = "Bayesian memory designed for feedback-driven learning"
+description = "Bayesian memory for LLM agents — local, SQLite-backed, feedback-driven."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
+license-files = ["LICENSE"]
+authors = [
+    { name = "robotrocketscience", email = "noreply@robotrocketscience.com" },
+]
+keywords = [
+    "agent",
+    "bayesian",
+    "claude-code",
+    "fts5",
+    "knowledge-graph",
+    "llm",
+    "mcp",
+    "memory",
+    "retrieval",
+    "sqlite",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/robotrocketscience/aelfrice"
+Repository = "https://github.com/robotrocketscience/aelfrice"
+Documentation = "https://github.com/robotrocketscience/aelfrice#readme"
+Changelog = "https://github.com/robotrocketscience/aelfrice/blob/main/CHANGELOG.md"
+Issues = "https://github.com/robotrocketscience/aelfrice/issues"
 
 [project.scripts]
 aelf = "aelfrice.cli:main"
