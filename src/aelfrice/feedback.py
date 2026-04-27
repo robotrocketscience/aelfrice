@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Final
 
-from aelfrice.models import EDGE_CONTRADICTS, LOCK_USER, Belief
+from aelfrice.models import EDGE_CONTRADICTS, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.store import Store
 
 DEMOTION_THRESHOLD: int = 5
@@ -42,6 +42,7 @@ class FeedbackResult:
     valence: float
     source: str
     pressured_locks: list[str]
+    demoted_locks: list[str]
 
 
 def _utc_now_iso() -> str:
@@ -61,20 +62,28 @@ def _bayesian_update(b: Belief, valence: float) -> tuple[float, float]:
     return (b.alpha, b.beta + (-valence))
 
 
-def _increment_pressured_locks(store: Store, source_id: str) -> list[str]:
+def _pressure_and_maybe_demote(
+    store: Store, source_id: str
+) -> tuple[list[str], list[str]]:
     """For each outbound CONTRADICTS edge from source_id whose dst is a
-    user-locked belief, increment that belief's demotion_pressure by 1
-    and return the list of pressured belief ids in deterministic order.
+    user-locked belief, increment that belief's demotion_pressure by 1.
+    If the post-increment pressure is at or above DEMOTION_THRESHOLD,
+    demote the belief one tier (lock_level -> none, locked_at -> None,
+    demotion_pressure reset to 0).
 
-    Only fires on positive-valence calls (caller's responsibility): a
-    positive signal on a contradictor is evidence that the contradicted
-    lock is wrong. Negative-valence calls weaken the contradictor itself,
-    not the target.
+    Returns (pressured_ids, demoted_ids) — both sorted for determinism.
+    A belief that demotes in this call appears in BOTH lists: it was
+    pressured (the increment that crossed the threshold) and demoted
+    (the resulting tier change).
 
-    1-hop only. Multi-hop pressure accumulation is deferred to a later
-    release pending evidence that single-hop coverage is insufficient.
+    Caller is responsible for only invoking on positive-valence events:
+    a positive signal on a contradictor is evidence the contradicted
+    lock is wrong; a negative signal weakens the contradictor itself.
+
+    1-hop only. Multi-hop pressure accumulation is deferred.
     """
     pressured: list[str] = []
+    demoted: list[str] = []
     for edge in store.edges_from(source_id):
         if edge.type != EDGE_CONTRADICTS:
             continue
@@ -84,9 +93,14 @@ def _increment_pressured_locks(store: Store, source_id: str) -> list[str]:
         if target.lock_level != LOCK_USER:
             continue
         target.demotion_pressure += 1
-        store.update_belief(target)
         pressured.append(target.id)
-    return sorted(pressured)
+        if target.demotion_pressure >= DEMOTION_THRESHOLD:
+            target.lock_level = LOCK_NONE
+            target.locked_at = None
+            target.demotion_pressure = 0
+            demoted.append(target.id)
+        store.update_belief(target)
+    return (sorted(pressured), sorted(demoted))
 
 
 def apply_feedback(
@@ -133,8 +147,11 @@ def apply_feedback(
     )
 
     pressured_locks: list[str] = []
+    demoted_locks: list[str] = []
     if valence > 0.0:
-        pressured_locks = _increment_pressured_locks(store, belief_id)
+        pressured_locks, demoted_locks = _pressure_and_maybe_demote(
+            store, belief_id
+        )
 
     return FeedbackResult(
         belief_id=belief_id,
@@ -146,4 +163,5 @@ def apply_feedback(
         valence=valence,
         source=source,
         pressured_locks=pressured_locks,
+        demoted_locks=demoted_locks,
     )
