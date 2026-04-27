@@ -217,3 +217,46 @@ def test_negative_valence_result_pressured_locks_empty() -> None:
     s = _build("X", "Y", EDGE_CONTRADICTS)
     result = apply_feedback(s, "X", valence=-1.0, source="user")
     assert result.pressured_locks == []
+
+
+# --- propagate=False suppresses the walk (non-corrective signals) --------
+
+
+def test_propagate_false_does_not_increment_pressure() -> None:
+    """Hook-driven retrievals pass propagate=False so that implicit
+    exposure does not pressure-walk locked beliefs on every prompt."""
+    s = _build("X", "Y", EDGE_CONTRADICTS)
+    apply_feedback(s, "X", valence=1.0, source="hook", propagate=False)
+    assert _pressure(s, "Y") == 0
+
+
+def test_propagate_false_still_updates_posterior() -> None:
+    """propagate=False suppresses the walk, not the Bayesian update."""
+    s = _build("X", "Y", EDGE_CONTRADICTS)
+    result = apply_feedback(s, "X", valence=0.5, source="hook",
+                            propagate=False)
+    assert result.new_alpha == 1.5
+    assert result.new_beta == 1.0
+
+
+def test_propagate_false_still_writes_audit_row() -> None:
+    s = _build("X", "Y", EDGE_CONTRADICTS)
+    result = apply_feedback(s, "X", valence=1.0, source="hook",
+                            propagate=False)
+    assert result.event_id > 0
+    assert s.count_feedback_events() == 1
+
+
+def test_propagate_false_result_pressured_locks_empty() -> None:
+    s = _build("X", "Y", EDGE_CONTRADICTS)
+    result = apply_feedback(s, "X", valence=1.0, source="hook",
+                            propagate=False)
+    assert result.pressured_locks == []
+    assert result.demoted_locks == []
+
+
+def test_propagate_default_true_preserves_corrective_walk() -> None:
+    """Existing callers without the kwarg get the same pressure walk."""
+    s = _build("X", "Y", EDGE_CONTRADICTS)
+    apply_feedback(s, "X", valence=1.0, source="user")
+    assert _pressure(s, "Y") == 1
