@@ -22,7 +22,7 @@ Tracked openly. Each item is mapped to its target version below.
 
 - ✅ **`aelf --version` (v1.0.1).** Prints `aelf <__version__>` and exits 0. Short-circuits the required-subcommand check via argparse's standard version action.
 - **The `aelf-hook` UserPromptSubmit hook may return empty results despite a populated FTS5 index.** Hook fires; no `<aelfrice-memory>` block appears. Workaround: drop to CLI.
-- **Hook bypasses `aelfrice.retrieval.retrieve()` and does not record retrievals as feedback events.** Highest-impact gap. The hook uses an inline FTS5 shim, skipping L0 locked-belief auto-load and feedback-history logging. The "feedback-driven learning" claim depends on this loop closing. v1.0.1 introduces `src/aelfrice/hook_search.py` (`search_for_prompt` + `record_retrieval`) and replaces the shim.
+- ✅ **Hook records retrievals as feedback events (v1.0.1).** The `aelf-hook` UserPromptSubmit entry-point now routes through `aelfrice.hook_search.search_for_prompt`, which wraps `aelfrice.retrieval.retrieve()` and writes one `feedback_history` row per returned belief, tagged `source='hook'` with valence `HOOK_RETRIEVAL_VALENCE` (0.1) and `propagate=False` so implicit retrieval-time exposure does not pressure-walk locked beliefs. The "feedback updates the math" loop is closed on the retrieval side; ranking still uses BM25 only at v1.0.1 (the v1.3 retrieval wave wires posterior into ranking).
 
 ### Onboarding — v1.0.1 + v1.1.0
 

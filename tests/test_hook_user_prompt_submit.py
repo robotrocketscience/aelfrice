@@ -204,16 +204,18 @@ def test_hook_passes_default_token_budget(
     captured: dict[str, int] = {}
     import aelfrice.hook as hook_mod
 
-    real_retrieve = hook_mod.retrieve
+    real = hook_mod.search_for_prompt
 
-    def spy_retrieve(
-        store: MemoryStore, query: str, token_budget: int = 2000, l1_limit: int = 50
+    def spy(
+        store: MemoryStore,
+        prompt: str,
+        token_budget: int = 2000,
+        **kwargs: object,
     ) -> list[Belief]:
         captured["token_budget"] = token_budget
-        return real_retrieve(store, query, token_budget=token_budget,
-                              l1_limit=l1_limit)
+        return real(store, prompt, token_budget=token_budget, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(hook_mod, "retrieve", spy_retrieve)
+    monkeypatch.setattr(hook_mod, "search_for_prompt", spy)
     user_prompt_submit(
         stdin=io.StringIO(_payload("bananas")), stdout=io.StringIO()
     )
@@ -229,16 +231,18 @@ def test_hook_honors_explicit_token_budget(
     captured: dict[str, int] = {}
     import aelfrice.hook as hook_mod
 
-    real_retrieve = hook_mod.retrieve
+    real = hook_mod.search_for_prompt
 
-    def spy_retrieve(
-        store: MemoryStore, query: str, token_budget: int = 2000, l1_limit: int = 50
+    def spy(
+        store: MemoryStore,
+        prompt: str,
+        token_budget: int = 2000,
+        **kwargs: object,
     ) -> list[Belief]:
         captured["token_budget"] = token_budget
-        return real_retrieve(store, query, token_budget=token_budget,
-                              l1_limit=l1_limit)
+        return real(store, prompt, token_budget=token_budget, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(hook_mod, "retrieve", spy_retrieve)
+    monkeypatch.setattr(hook_mod, "search_for_prompt", spy)
     user_prompt_submit(
         stdin=io.StringIO(_payload("bananas")),
         stdout=io.StringIO(),
@@ -256,12 +260,15 @@ def test_hook_non_blocking_on_internal_error(
     import aelfrice.hook as hook_mod
 
     def boom(
-        _store: MemoryStore, _q: str, token_budget: int = 2000, l1_limit: int = 50
+        _store: MemoryStore,
+        _prompt: str,
+        token_budget: int = 2000,
+        **_kwargs: object,
     ) -> list[Belief]:
-        _ = token_budget, l1_limit
+        _ = token_budget
         raise RuntimeError("simulated retrieval failure")
 
-    monkeypatch.setattr(hook_mod, "retrieve", boom)
+    monkeypatch.setattr(hook_mod, "search_for_prompt", boom)
     sout = io.StringIO()
     serr = io.StringIO()
     rc = user_prompt_submit(

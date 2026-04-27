@@ -109,6 +109,7 @@ def apply_feedback(
     valence: float,
     source: str,
     now: str | None = None,
+    propagate: bool = True,
 ) -> FeedbackResult:
     """Apply one feedback event to one belief.
 
@@ -120,6 +121,16 @@ def apply_feedback(
     4. Persist the new posterior on the belief row.
     5. Append one row to feedback_history (created_at = `now` or UTC now).
     6. Return a FeedbackResult with prior + new posteriors and the row id.
+
+    `propagate` controls the demotion-pressure walk on positive valence.
+    Default True preserves the corrective-feedback contract: a positive
+    signal on a contradictor counts as evidence the contradicted lock is
+    wrong, and the walk increments the lock's pressure. Pass False for
+    non-corrective positive signals (e.g., implicit retrieval-time exposure
+    from the UserPromptSubmit hook) where the caller updates posteriors
+    on the retrieved belief but does not wish to pressure neighbouring
+    locked beliefs. Negative valence is unaffected — the pressure walk
+    only fires on positive valence regardless of `propagate`.
     """
     if valence == 0.0:
         raise ValueError("valence must be nonzero")
@@ -148,7 +159,7 @@ def apply_feedback(
 
     pressured_locks: list[str] = []
     demoted_locks: list[str] = []
-    if valence > 0.0:
+    if valence > 0.0 and propagate:
         pressured_locks, demoted_locks = _pressure_and_maybe_demote(
             store, belief_id
         )

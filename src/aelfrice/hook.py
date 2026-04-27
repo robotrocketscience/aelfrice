@@ -27,8 +27,8 @@ import traceback
 from typing import IO, Final, cast
 
 from aelfrice.cli import db_path
+from aelfrice.hook_search import search_for_prompt
 from aelfrice.models import LOCK_USER, Belief
-from aelfrice.retrieval import retrieve
 from aelfrice.store import MemoryStore
 
 DEFAULT_HOOK_TOKEN_BUDGET: Final[int] = 1500
@@ -100,7 +100,7 @@ def _extract_prompt(raw: str) -> str | None:
 def _retrieve_and_format(prompt: str, token_budget: int) -> str:
     store = _open_store()
     try:
-        hits = retrieve(store, prompt, token_budget=token_budget)
+        hits = search_for_prompt(store, prompt, token_budget=token_budget)
     finally:
         store.close()
     if not hits:
