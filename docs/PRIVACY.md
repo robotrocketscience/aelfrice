@@ -18,13 +18,17 @@ There is no usage tracking. No analytics. No phone-home. Not opt-out — **the c
 
 ## No accounts
 
-No sign-in, no API key, no sync server. Everything is the file at `~/.aelfrice/memory.db` (or `$AELFRICE_DB`). To back up: copy the file. To share across machines: sync the file. It's plain SQLite.
+No sign-in, no API key, no sync server. Everything is one local SQLite file. To back up: copy the file. aelfrice ships no mechanism for sharing memory contents between users, machines, or projects — see [LIMITATIONS § Sharing or sync of brain-graph content](LIMITATIONS.md#sharing-or-sync-of-brain-graph-content).
 
 ## Data location
 
-Default `~/.aelfrice/memory.db` — single SQLite file with WAL journaling. Six tables: `beliefs`, `beliefs_fts`, `edges`, `feedback_history`, `onboard_sessions`, `schema_meta`.
+A single SQLite file with WAL journaling. Six tables: `beliefs`, `beliefs_fts`, `edges`, `feedback_history`, `onboard_sessions`, `schema_meta`.
 
-Override with `AELFRICE_DB`. Use `:memory:` for ephemeral.
+Resolution order (v1.1.0):
+
+1. `$AELFRICE_DB` if set (override; use `:memory:` for ephemeral).
+2. `<git-common-dir>/aelfrice/memory.db` when `cwd` is inside a git work-tree. `.git/` is not git-tracked — the brain graph never crosses the git boundary.
+3. `~/.aelfrice/memory.db` for non-git directories.
 
 ## What aelfrice doesn't control
 
@@ -37,7 +41,7 @@ If a fact must never leave your machine, don't store it.
 
 ## Reproducible from source
 
-All beliefs come from files you already have: code, docs, git history. After `rm ~/.aelfrice/memory.db`, re-running onboard is deterministic up to the classifier. The state of the world is your codebase, not the memory.
+All beliefs come from files you already have: code, docs, git history. After `rm <resolved-db-path>`, re-running `aelf onboard .` is deterministic up to the classifier. The state of the world is your codebase, not the memory.
 
 ## Reporting
 

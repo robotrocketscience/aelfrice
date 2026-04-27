@@ -95,7 +95,7 @@ Opt out of the update notifier at any time with `export AELF_NO_UPDATE_CHECK=1`.
 aelfrice has an explicit teardown command. You **must** pick exactly one disposition for the brain-graph DB:
 
 ```bash
-aelf uninstall --keep-db       # leave ~/.aelfrice/memory.db alone (safe)
+aelf uninstall --keep-db       # leave the resolved DB alone (safe)
 aelf uninstall --archive ~/aelf-backup.aenc   # encrypt then delete
 aelf uninstall --purge         # permanently delete (redundant gates fire)
 pip uninstall aelfrice         # finally, remove the wheel

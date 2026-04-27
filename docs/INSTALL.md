@@ -35,7 +35,13 @@ uv sync --extra dev      # add pytest, pyright
 
 ## Database
 
-SQLite at `~/.aelfrice/memory.db` by default. Override with `$AELFRICE_DB` (use `:memory:` for tests).
+SQLite. Resolution order:
+
+1. `$AELFRICE_DB` if set (override; use `:memory:` for tests).
+2. `<git-common-dir>/aelfrice/memory.db` when `cwd` is inside a git work-tree (v1.1.0). Two worktrees of one repo share a `--git-common-dir` and therefore one DB. `.git/` is not git-tracked, so the brain graph never crosses the git boundary.
+3. `~/.aelfrice/memory.db` as the fallback for non-git directories.
+
+Pin per-project (overriding the chain) with `export AELFRICE_DB=/abs/path/.aelfrice.db` — handy via direnv.
 
 ## Wire into Claude Code
 
@@ -186,7 +192,7 @@ uv run pytest -m regression  # cumulative integration scenarios
 
 ## Uninstall
 
-aelfrice ships an explicit teardown command. You **must** pick exactly one of `--keep-db`, `--purge`, or `--archive PATH` so the brain-graph SQLite DB at `~/.aelfrice/memory.db` doesn't get accidentally lost or accidentally retained.
+aelfrice ships an explicit teardown command. You **must** pick exactly one of `--keep-db`, `--purge`, or `--archive PATH` so the brain-graph SQLite DB doesn't get accidentally lost or accidentally retained. The command operates on the resolved DB path for the current `cwd` (see [§ Database](#database) for the resolution chain).
 
 ```bash
 aelf uninstall --keep-db                           # safe default for review
@@ -199,12 +205,14 @@ Verification:
 
 ```bash
 aelf --version 2>&1 | grep -q aelfrice || echo "wheel removed"
-test -f ~/.aelfrice/memory.db && echo "db still there" || echo "db gone"
+# Resolve DB path for current cwd, then test it:
+DB=$(uv run python -c "from aelfrice.cli import db_path; print(db_path())")
+test -f "$DB" && echo "db still there at $DB" || echo "db gone"
 ```
 
 ### `--keep-db`
 
-DB preserved at `~/.aelfrice/memory.db`. The default also runs `unsetup` so the Claude Code hook + statusline are removed from `~/.claude/settings.json`. Pass `--keep-hook` if you want to keep those wired (e.g. you plan to reinstall and skip onboarding).
+DB preserved at the resolved path. The default also runs `unsetup` so the Claude Code hook + statusline are removed from `~/.claude/settings.json`. Pass `--keep-hook` if you want to keep those wired (e.g. you plan to reinstall and skip onboarding).
 
 ### `--archive PATH`
 
@@ -240,7 +248,7 @@ Wrong password raises `cryptography.fernet.InvalidToken`. Requires `pip install 
 
 ### `--purge`
 
-Permanently deletes `~/.aelfrice/memory.db`. Three gates fire before deletion:
+Permanently deletes the resolved DB. Three gates fire before deletion:
 
 1. The `--purge` flag must be passed explicitly. Default behavior is an error pointing at `--help`.
 2. Print the target path + size, then require the user to type `PURGE` verbatim (case-sensitive).

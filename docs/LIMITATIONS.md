@@ -37,7 +37,7 @@ Tracked openly. Each item is mapped to its target version below.
 
 ### Project identity — v1.1.0
 
-- **The default DB is keyed by `SHA256(cwd)`.** Worktree and directory rename each produce a different orphan DB. Workaround today: pin with `AELFRICE_DB=/abs/path/.aelfrice.db`. v1.1.0 lands `.git/aelfrice/memory.db` (in-repo storage; `.git/` is not git-tracked, so the brain graph never crosses the git boundary), plus orphan-DB cleanup tooling and worktree concurrency tests. Note that fresh clones intentionally start with an empty store — the brain graph stays on the machine it was written on (see [§ Sharing or sync of brain-graph content](#sharing-or-sync-of-brain-graph-content)). Bootstrap a clone with `aelf onboard .`.
+- ✅ **Per-project DB resolution (v1.1.0, [#88](https://github.com/robotrocketscience/aelfrice/issues/88)).** v1.0.x shipped a single global DB at `~/.aelfrice/memory.db` shared across every project on the machine — onboarding repo A and repo B writes both projects' beliefs into one file. v1.1.0 introduces a resolution chain in `cli.db_path()`: `$AELFRICE_DB` (override, honoured even inside a git repo) → `<git-common-dir>/aelfrice/memory.db` (when `cwd` is inside a git work-tree; resolved via `git rev-parse --path-format=absolute --git-common-dir`, so worktrees of one repo share one DB) → `~/.aelfrice/memory.db` (legacy global fallback for non-git dirs). `.git/` is not git-tracked, so the brain graph never crosses the git boundary. `aelf migrate` ([#93](https://github.com/robotrocketscience/aelfrice/issues/93)) ports beliefs from the legacy global store into per-project stores. Fresh clones intentionally start with an empty store — the brain graph stays on the machine it was written on (see [§ Sharing or sync of brain-graph content](#sharing-or-sync-of-brain-graph-content)); bootstrap a clone with `aelf onboard .`.
 
 ### Cosmetic — v1.1.0
 
@@ -118,7 +118,7 @@ This applies to the v2.0.0 release also: there is no "cross-project shared store
 - **Classifier is regex-based on the CLI path.** Only the polymorphic MCP onboard uses host-LLM classification.
 - **No bulk operations.** No batch lock, no `delete <pattern>`, no merge.
 - **No edit.** Wrong belief → insert corrected one with `SUPERSEDES` edge; original stays.
-- **No graph viz.** Inspect with `sqlite3 ~/.aelfrice/memory.db`.
+- **No graph viz.** Inspect with `sqlite3 "$(python -c 'from aelfrice.cli import db_path; print(db_path())')"`.
 
 ## Performance caveats
 
