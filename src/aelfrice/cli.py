@@ -1,4 +1,4 @@
-"""Ten-command CLI matching the MVP user surface.
+"""Eleven-command CLI matching the MVP user surface.
 
 Commands:
   onboard <path>                   scan a project and ingest beliefs
@@ -11,6 +11,7 @@ Commands:
   health                           regime classifier output
   setup                            install UserPromptSubmit hook in Claude Code
   unsetup                          remove UserPromptSubmit hook from Claude Code
+  bench                            run the v0.9.0-rc benchmark harness
 
 DB path resolves from AELFRICE_DB environment variable when set,
 otherwise from ~/.aelfrice/memory.db. Callers can run `main(argv=...)`
@@ -39,6 +40,8 @@ from aelfrice.models import (
     LOCK_USER,
     Belief,
 )
+from aelfrice import __version__ as _AELFRICE_VERSION
+from aelfrice.benchmark import run_benchmark, seed_corpus
 from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
 from aelfrice.setup import (
@@ -246,6 +249,28 @@ def _cmd_stats(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_bench(args: argparse.Namespace, out: object) -> int:
+    """Run the v0.9.0-rc benchmark harness; print one JSON document.
+
+    Default: seed an in-memory store with the synthetic corpus and
+    score retrieval. The benchmark is fully reproducible — repeated
+    invocations against fresh in-memory stores produce identical
+    accuracy numbers (latency varies).
+    """
+    import json
+    db = ":memory:" if args.db is None else str(Path(args.db))
+    store = Store(db)
+    try:
+        seed_corpus(store)
+        report = run_benchmark(
+            store, aelfrice_version=_AELFRICE_VERSION, top_k=args.top_k
+        )
+    finally:
+        store.close()
+    print(json.dumps(report.to_dict(), indent=2), file=out)  # type: ignore[arg-type]
+    return 0
+
+
 def _resolve_settings_path(args: argparse.Namespace) -> Path:
     if args.settings_path is not None:
         return Path(args.settings_path)
@@ -410,6 +435,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_unsetup.set_defaults(func=_cmd_unsetup)
+
+    p_bench = sub.add_parser(
+        "bench",
+        help="run the v0.9.0-rc benchmark harness and print a JSON report",
+    )
+    p_bench.add_argument(
+        "--db", default=None,
+        help=(
+            "path to an empty SQLite file to seed and benchmark against. "
+            "Default: in-memory store (fully reproducible across runs)."
+        ),
+    )
+    p_bench.add_argument(
+        "--top-k", type=int, default=5,
+        help="retrieval depth used for hit@k accounting (default 5)",
+    )
+    p_bench.set_defaults(func=_cmd_bench)
 
     return parser
 
