@@ -284,6 +284,64 @@ def maybe_check_for_update_async(
         return False
 
 
+# --- Upgrade advice -----------------------------------------------------
+
+
+@dataclass(frozen=True)
+class UpgradeAdvice:
+    """How to upgrade aelfrice in the user's specific install context."""
+
+    command: str
+    context: str  # 'venv' | 'pipx' | 'system' | 'unknown'
+
+
+def _is_pipx_install() -> bool:
+    """Detect a pipx-managed install by checking sys.prefix path.
+
+    pipx installs each package into ~/.local/pipx/venvs/<pkg>/ -- the
+    presence of '/pipx/venvs/' in sys.prefix is the canonical signal.
+    """
+    import sys
+
+    return "/pipx/venvs/" in sys.prefix.replace("\\", "/")
+
+
+def _is_venv() -> bool:
+    """Detect a generic venv (PEP 405 / virtualenv).
+
+    sys.prefix != sys.base_prefix is the standard idiom; works for
+    venv, virtualenv, uv venv, and conda envs.
+    """
+    import sys
+
+    return getattr(sys, "base_prefix", sys.prefix) != sys.prefix
+
+
+def upgrade_advice() -> UpgradeAdvice:
+    """Return the right pip-upgrade incantation for the running env.
+
+    pipx checked before generic venv because a pipx install IS a venv,
+    but its upgrade path is different (pipx upgrade, not pip install).
+    """
+    if _is_pipx_install():
+        return UpgradeAdvice(
+            command=f"pipx upgrade {PACKAGE_NAME}",
+            context="pipx",
+        )
+    if _is_venv():
+        return UpgradeAdvice(
+            command=f"pip install --upgrade {PACKAGE_NAME}",
+            context="venv",
+        )
+    # Fall through: system / user-site install. --user is the safest
+    # default since system-site requires root and most users don't
+    # want to sudo pip install.
+    return UpgradeAdvice(
+        command=f"pip install --user --upgrade {PACKAGE_NAME}",
+        context="system",
+    )
+
+
 def clear_cache(cache_path: Path = CACHE_FILE) -> None:
     """Remove the update-check cache file. Silent if absent.
 
