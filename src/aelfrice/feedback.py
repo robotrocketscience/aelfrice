@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Final
 
-from aelfrice.models import Belief
+from aelfrice.models import EDGE_CONTRADICTS, LOCK_USER, Belief
 from aelfrice.store import Store
 
 DEMOTION_THRESHOLD: int = 5
@@ -41,6 +41,7 @@ class FeedbackResult:
     new_beta: float
     valence: float
     source: str
+    pressured_locks: list[str]
 
 
 def _utc_now_iso() -> str:
@@ -58,6 +59,34 @@ def _bayesian_update(b: Belief, valence: float) -> tuple[float, float]:
     if valence > 0.0:
         return (b.alpha + valence, b.beta)
     return (b.alpha, b.beta + (-valence))
+
+
+def _increment_pressured_locks(store: Store, source_id: str) -> list[str]:
+    """For each outbound CONTRADICTS edge from source_id whose dst is a
+    user-locked belief, increment that belief's demotion_pressure by 1
+    and return the list of pressured belief ids in deterministic order.
+
+    Only fires on positive-valence calls (caller's responsibility): a
+    positive signal on a contradictor is evidence that the contradicted
+    lock is wrong. Negative-valence calls weaken the contradictor itself,
+    not the target.
+
+    1-hop only. Multi-hop pressure accumulation is deferred to a later
+    release pending evidence that single-hop coverage is insufficient.
+    """
+    pressured: list[str] = []
+    for edge in store.edges_from(source_id):
+        if edge.type != EDGE_CONTRADICTS:
+            continue
+        target = store.get_belief(edge.dst)
+        if target is None:
+            continue
+        if target.lock_level != LOCK_USER:
+            continue
+        target.demotion_pressure += 1
+        store.update_belief(target)
+        pressured.append(target.id)
+    return sorted(pressured)
 
 
 def apply_feedback(
@@ -103,6 +132,10 @@ def apply_feedback(
         created_at=timestamp,
     )
 
+    pressured_locks: list[str] = []
+    if valence > 0.0:
+        pressured_locks = _increment_pressured_locks(store, belief_id)
+
     return FeedbackResult(
         belief_id=belief_id,
         event_id=event_id,
@@ -112,4 +145,5 @@ def apply_feedback(
         new_beta=new_beta,
         valence=valence,
         source=source,
+        pressured_locks=pressured_locks,
     )
