@@ -59,4 +59,4 @@ Closed to outside contribution until `v1.0.0` ships. Issues welcome at that poin
 
 ## License
 
-Will land at `v0.8.0` (MIT planned). Until then, all rights reserved by the author.
+[MIT](LICENSE). Copyright (c) 2026 robotrocketscience.
