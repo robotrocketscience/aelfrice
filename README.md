@@ -39,11 +39,11 @@ Same operations are available as MCP tools and Claude Code slash commands. Full 
 | v0.1 – v1.0 | **shipped** | core memory, CLI, MCP, hook wiring, synthetic benchmark, PyPI publish |
 | v1.0.1 | next | launch fix-up — hook→retrieval wiring, onboard noise, `aelf --version` |
 | v1.1.0 | planned | project identity (`.git/aelfrice/`, `.aelfrice.toml`), edges→threads, status/health split |
-| v1.2.0 | planned | commit-ingest hook, seed files, full hook perf audit |
-| v1.3 | planned | retrieval wave — HRR + LLM classification + cross-project federation |
-| v2.0 | planned | full academic benchmark suite (LoCoMo, MAB, LongMemEval) + v2-line feature parity |
+| v1.2.0 | planned | commit-ingest hook, seed files, triple-extraction port |
+| v1.3 | planned | retrieval wave — entity index + BFS multi-hop + LLM classification |
+| v2.0 | planned | feature parity with the earlier research line + full benchmark reproducibility |
 
-[Known issues at v1.0](docs/LIMITATIONS.md#known-issues-at-v10) maps each item to its target version.
+Per-version detail with deliverables, recovery inventory, and structural-fix rationale: [docs/ROADMAP.md](docs/ROADMAP.md). Per-issue tracking: [docs/LIMITATIONS.md](docs/LIMITATIONS.md#known-issues-at-v10).
 
 ## Install
 
