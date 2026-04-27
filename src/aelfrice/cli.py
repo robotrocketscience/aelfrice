@@ -11,6 +11,7 @@ Commands:
   health                           regime classifier output
   setup                            install UserPromptSubmit hook in Claude Code
   unsetup                          remove UserPromptSubmit hook from Claude Code
+  upgrade                          print the right pip-upgrade command line
   bench                            run the v0.9.0-rc benchmark harness
 
 DB path resolves from AELFRICE_DB environment variable when set,
@@ -42,6 +43,17 @@ from aelfrice.models import (
 )
 from aelfrice import __version__ as _AELFRICE_VERSION
 from aelfrice.benchmark import run_benchmark, seed_corpus
+from aelfrice.lifecycle import (
+    PACKAGE_NAME as _PKG,
+    UpdateStatus,
+    check_for_update,
+    clear_cache as _clear_update_cache,
+    is_disabled as _update_check_disabled,
+    is_newer,
+    maybe_check_for_update_async,
+    read_cache as _read_update_cache,
+    upgrade_advice,
+)
 from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
 from aelfrice.setup import (
@@ -403,6 +415,69 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_upgrade(args: argparse.Namespace, out: object) -> int:
+    """Print the right upgrade command for this install context.
+
+    Does NOT shell out to pip itself: replacing the running package
+    mid-process is unreliable on Windows and can leave the user with a
+    broken interpreter. We tell the user the exact line; they run it.
+
+    --check: only print "up to date" / "update available" status,
+    suppress the upgrade command line. Useful for scripts that want
+    a yes/no answer without copy-paste material.
+    """
+    advice = upgrade_advice()
+    # Force a fresh sync check unless explicitly disabled. This is the
+    # one CLI surface where the user has explicitly asked about updates,
+    # so we ignore the 24h TTL.
+    if _update_check_disabled():
+        status = _read_update_cache()
+    else:
+        status = check_for_update()
+        if status.installed == "" and status.latest == "":
+            # Network failed: fall back to whatever is cached.
+            status = _read_update_cache()
+    if status.update_available:
+        print(
+            f"aelfrice {status.latest} available "
+            f"(installed: {status.installed or _AELFRICE_VERSION})",
+            file=out,  # type: ignore[arg-type]
+        )
+        if status.sha256:
+            print(
+                f"verify: sha256:{status.sha256}",
+                file=out,  # type: ignore[arg-type]
+            )
+            print(
+                f"        https://pypi.org/project/{_PKG}/{status.latest}/",
+                file=out,  # type: ignore[arg-type]
+            )
+        if not args.check:
+            print(
+                f"run: {advice.command}",
+                file=out,  # type: ignore[arg-type]
+            )
+        return 0
+    # No update or unknown -- be explicit.
+    if status.latest and not status.update_available:
+        print(
+            f"aelfrice is up to date "
+            f"(installed: {status.installed or _AELFRICE_VERSION}, "
+            f"latest: {status.latest})",
+            file=out,  # type: ignore[arg-type]
+        )
+        # The cache says we're current; clear any stale "available"
+        # marker that might still be sitting around from before this
+        # check.
+        _clear_update_cache()
+    else:
+        print(
+            f"aelfrice {_AELFRICE_VERSION} (no update info available)",
+            file=out,  # type: ignore[arg-type]
+        )
+    return 0
+
+
 def _cmd_health(args: argparse.Namespace, out: object) -> int:
     _ = args
     store = _open_store()
@@ -507,6 +582,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="status message Claude Code shows while the hook runs",
     )
     p_setup.set_defaults(func=_cmd_setup)
+
+    p_upgrade = sub.add_parser(
+        "upgrade",
+        help="print the right pip-upgrade command for this install context",
+    )
+    p_upgrade.add_argument(
+        "--check", action="store_true",
+        help="only report status, do not print the upgrade command line",
+    )
+    p_upgrade.set_defaults(func=_cmd_upgrade)
 
     p_unsetup = sub.add_parser(
         "unsetup",
