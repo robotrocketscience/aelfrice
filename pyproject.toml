@@ -8,7 +8,10 @@ license = { text = "MIT" }
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = [
+    "pytest>=8.0",
+    "pyright>=1.1.409",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -19,3 +22,9 @@ packages = ["src/aelfrice"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.pyright]
+include = ["src/aelfrice", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
