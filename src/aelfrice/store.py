@@ -21,6 +21,7 @@ from aelfrice.models import (
     EDGE_VALENCE,
     Belief,
     Edge,
+    FeedbackEvent,
 )
 
 # --- Schema ---------------------------------------------------------------
@@ -54,8 +55,18 @@ _SCHEMA: tuple[str, ...] = (
     CREATE VIRTUAL TABLE IF NOT EXISTS beliefs_fts
     USING fts5(id UNINDEXED, content, tokenize='porter unicode61')
     """,
+    """
+    CREATE TABLE IF NOT EXISTS feedback_history (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        belief_id   TEXT NOT NULL,
+        valence     REAL NOT NULL,
+        source      TEXT NOT NULL,
+        created_at  TEXT NOT NULL
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src)",
     "CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_belief ON feedback_history(belief_id)",
 )
 
 
@@ -81,6 +92,16 @@ def _row_to_edge(row: sqlite3.Row) -> Edge:
         dst=row["dst"],
         type=row["type"],
         weight=row["weight"],
+    )
+
+
+def _row_to_feedback(row: sqlite3.Row) -> FeedbackEvent:
+    return FeedbackEvent(
+        id=row["id"],
+        belief_id=row["belief_id"],
+        valence=row["valence"],
+        source=row["source"],
+        created_at=row["created_at"],
     )
 
 
@@ -185,6 +206,68 @@ class Store:
             (query, limit),
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
+
+    # --- Feedback history ------------------------------------------------
+
+    def insert_feedback_event(
+        self,
+        belief_id: str,
+        valence: float,
+        source: str,
+        created_at: str,
+    ) -> int:
+        """Append one row to feedback_history; return its rowid.
+
+        Called by apply_feedback() for every successful Bayesian update.
+        """
+        cur = self._conn.execute(
+            """
+            INSERT INTO feedback_history (belief_id, valence, source, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (belief_id, valence, source, created_at),
+        )
+        self._conn.commit()
+        rowid = cur.lastrowid
+        if rowid is None:
+            raise RuntimeError("feedback_history insert returned no rowid")
+        return rowid
+
+    def list_feedback_events(
+        self,
+        belief_id: str | None = None,
+        limit: int = 100,
+    ) -> list[FeedbackEvent]:
+        """Recent feedback events, ordered by id DESC. Filter by belief if given."""
+        if belief_id is None:
+            cur = self._conn.execute(
+                "SELECT * FROM feedback_history ORDER BY id DESC LIMIT ?",
+                (limit,),
+            )
+        else:
+            cur = self._conn.execute(
+                """
+                SELECT * FROM feedback_history
+                WHERE belief_id = ?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (belief_id, limit),
+            )
+        return [_row_to_feedback(r) for r in cur.fetchall()]
+
+    def count_feedback_events(self, belief_id: str | None = None) -> int:
+        """Count rows; total or per-belief."""
+        if belief_id is None:
+            cur = self._conn.execute("SELECT COUNT(*) AS n FROM feedback_history")
+        else:
+            cur = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM feedback_history WHERE belief_id = ?",
+                (belief_id,),
+            )
+        row = cur.fetchone()
+        if row is None:
+            return 0
+        return int(row["n"])
 
     def list_locked_beliefs(self) -> list[Belief]:
         """All beliefs with lock_level != 'none', ordered by locked_at DESC.
