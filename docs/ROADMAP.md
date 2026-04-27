@@ -20,7 +20,7 @@ This is a rebuild, not a port. Structural issues that survived agentmemory are b
 | **v1.0.1** | shipped | launch fix-up — hook→retrieval wiring, onboard noise, `aelf --version` |
 | **v1.0.2** | shipped | per-project install routing, `aelf doctor`, release-docs CI gate |
 | **v1.1.0** | planned | project identity, edges→threads, status/health split |
-| **v1.2.0** | planned | commit-ingest hook, seed files, triple-extraction port |
+| **v1.2.0** | planned | commit-ingest hook, triple-extraction port, harness-integration doc |
 | **v1.3.0** | planned | retrieval wave — entity index + BFS multi-hop + LLM classification |
 | **v1.4.0** | planned | context rebuilder — automatic PreCompact-driven retrieval-curated context |
 | **v2.0.0** | planned | feature parity with the earlier research line + full benchmark reproducibility |
@@ -49,8 +49,7 @@ Second patch. Two threads:
 
 ## v1.1.0 — project identity and cosmetic surface
 
-- **In-repo store.** `.git/aelfrice/memory.db` becomes the default location. The current `SHA256(cwd)`-keyed path produces orphan databases on directory rename, machine move, or worktree creation; the new layout is portable and survives all three.
-- **`.aelfrice.toml`.** Optional cross-machine project identity. A repo's memory follows the repo, not the absolute path.
+- **In-repo store.** `.git/aelfrice/memory.db` becomes the default location. The current `SHA256(cwd)`-keyed path produces orphan databases on directory rename or worktree creation; the new layout is portable and survives both. The DB stays under `.git/`, which git does not track — the brain graph never crosses the git boundary.
 - **Orphan-DB cleanup tooling.** A migration command finds and merges abandoned per-`cwd` databases into the in-repo store.
 - **Worktree concurrency tests.** Multiple worktrees of the same repo share one `.git/aelfrice/memory.db` without corruption.
 - **`aelf health` vs `aelf status` split.** `status` becomes a counts snapshot; `health` becomes a real graph auditor — orphan edges, isolated clusters, FTS5 sync, locked-belief contradictions, decay anomalies.
@@ -60,10 +59,11 @@ Second patch. Two threads:
 
 ## v1.2.0 — auto-capture and triple extraction
 
-- **Commit-ingest `PostToolUse` hook.** The graph grows during normal sessions without explicit `onboard` / `remember` / `feedback` calls.
-- **Transcript-ingest hooks.** A pair of `UserPromptSubmit` + `Stop` hooks append every conversation turn to a per-project `<root>/.git/aelfrice/transcripts/turns.jsonl` log; a `PreCompact` hook rotates the log and triggers `ingest_jsonl()` to pull turns into the brain graph as beliefs and edges. Closes the harness-conflict write-path gap (the MCP no longer depends on the harness's auto-memory directive to receive new beliefs from normal session activity) and densifies production data with `session_id` and `DERIVED_FROM` edges from real conversations. Required prerequisite for the v1.4.0 context rebuilder.
-- **`.aelfrice/seed.md`.** A git-tracked seed file auto-ingested on first `onboard`. Lets a project author bootstrap collaborator memory directly from the repository.
+- **Commit-ingest `PostToolUse` hook.** The graph grows during normal sessions without explicit `onboard` / `remember` / `feedback` calls. Writes are local-only — the hook never crosses the git boundary or any network boundary.
+- **Transcript-ingest hooks.** A pair of `UserPromptSubmit` + `Stop` hooks append every conversation turn to a per-project `<root>/.git/aelfrice/transcripts/turns.jsonl` log; a `PreCompact` hook rotates the log and triggers `ingest_jsonl()` to pull turns into the brain graph as beliefs and edges. Closes the harness-conflict write-path gap (the MCP no longer depends on the harness's auto-memory directive to receive new beliefs from normal session activity) and densifies production data with `session_id` and `DERIVED_FROM` edges from real conversations. Writes land under `.git/aelfrice/`, which git does not track — transcripts and ingested beliefs never cross the git boundary. Required prerequisite for the v1.4.0 context rebuilder.
 - **Triple-extraction port.** The triple-extraction ingest module from the earlier research line ports forward. Migration is forward-compatible against v1.0 stores — existing rows continue to read.
+- **`agent_inferred → user_validated` promotion.** Onboard-derived beliefs can graduate to user-validated under explicit user action without being re-locked. Designed in v1.1.0; implemented here.
+- **`docs/HARNESS_INTEGRATION.md`.** Documented procedure for users who want the MCP to be the canonical write path under Claude Code, addressing the auto-memory directive conflict described in [LIMITATIONS.md § harness conflict](LIMITATIONS.md).
 - **First academic benchmark activations.** `mab_triple_adapter` activates in `benchmarks/`.
 
 ## v1.3.0 — retrieval wave
@@ -95,7 +95,6 @@ The release that re-anchors every published claim. After v2.0.0, the benchmark h
 
 - **HRR vocabulary bridge.** Closes the vocabulary-gap-recovery claim against a corpus checked into the repository.
 - **Type-aware compression.** Tokens-per-belief reductions on retrieved output. Reproduces the published compression ratio on a fixed input corpus.
-- **Cross-project shared store.** Optional, opt-in. Beliefs scoped `shared` participate across projects; project-scoped beliefs do not. The default remains per-project isolation.
 - **Intentional clustering.** Co-locating related beliefs in the graph for higher retrieval coherence on multi-fact queries.
 - **Correction-detection eval.** A five-codebase labeled fixture, scored by both the zero-LLM detector and the LLM-judge path. Reproduces the published 92% / 99% targets.
 - **Bayesian feedback drives ranking.** The full feedback-into-retrieval loop. The 10-round MRR uplift eval and ECE calibration scorer are part of this release.
@@ -122,7 +121,6 @@ The earlier research line implemented these modules. They are not in v1.0.0; eac
 | HRR vocabulary bridge (`hrr`) | v2.0.0 |
 | Type-aware compression (`compression`) | v2.0.0 |
 | Doc / semantic linker (`doc_linker`, `semantic_linker`) | v2.0.0 |
-| Cross-project shared scopes (`shared_scopes`) | v2.0.0 |
 | Full edge-type vocabulary (`SUPPORTS`, `TESTS`, `IMPLEMENTS`, `TEMPORAL_NEXT`, `POTENTIALLY_STALE`, `DERIVED_FROM`) | v1.2.0 partial; v2.0.0 complete |
 | Relationship detector / supersession (`relationship_detector`, `supersession`) | v1.2.0 partial; v2.0.0 complete |
 | Wonder / reason / core / unlock / delete / confirm CLI commands | v2.0.0 |
@@ -133,7 +131,7 @@ The earlier research line implemented these modules. They are not in v1.0.0; eac
 
 The rewrite is fixing the following structural issues at the foundation rather than patching them forward.
 
-- **Per-project DB identity** keyed off arbitrary `cwd` hashes silently produced orphan stores on directory rename, machine move, and worktree creation. Fixed in v1.1.0 via in-repo storage and `.aelfrice.toml`.
+- **Per-project DB identity** keyed off arbitrary `cwd` hashes silently produced orphan stores on directory rename and worktree creation. Fixed in v1.1.0 by storing the DB inside `.git/` (which git does not track), keyed off the git-common-dir.
 - **Hook → retrieval coupling** missed the feedback-history audit row, so retrievals did not exercise posteriors and were not auditable. Fixed in v1.0.1 by routing the hook through the same `retrieval.retrieve()` codepath as the CLI / MCP, with one `feedback_history` row per retrieval.
 - **Contradictions** were detected but never resolved — both beliefs remained equally retrievable, with a warning logged. Fixed in v1.0.1 by a default tie-breaker that auto-supersedes the loser and records the rule that fired.
 - **Onboard noise** (Markdown headings, license boilerplate, three-word fragments) entered as first-class beliefs and depressed signal-to-noise on every subsequent retrieval. Fixed in v1.0.1 by the `noise_filter` module wired into the synchronous onboard path.
@@ -159,8 +157,9 @@ Each version above ships as a real tagged release on PyPI. Users on a working v1
 ## Non-goals
 
 - **Vector database / embedding-based retrieval.** aelfrice stays SQLite + FTS5 at every milestone in this roadmap. The HRR bridge in v2.0.0 is a structural retrieval layer, not an embedding layer.
-- **Cloud sync.** The runtime stays local. Cross-project sharing in v2.0.0 is opt-in and on-disk; it does not introduce network IO in the retrieval path.
+- **Cloud sync.** The runtime stays local. No release in this roadmap introduces network IO in the retrieval path or the write path.
 - **Telemetry.** No release in this roadmap adds outbound network calls in the default install. The optional `[mcp]` extra adds the MCP transport (local).
+- **Brain-graph sharing, sync, or export between users / machines / projects.** No release in this roadmap ships a mechanism for distributing memory contents outside the machine they were written on. See [LIMITATIONS.md § Sharing or sync of brain-graph content](LIMITATIONS.md#sharing-or-sync-of-brain-graph-content) for the architectural rationale.
 
 ## Where this list grows
 

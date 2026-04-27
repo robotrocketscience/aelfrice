@@ -43,8 +43,8 @@ Same operations are available as MCP tools and Claude Code slash commands. Full 
 | v0.1 – v1.0 | **shipped** | core memory, CLI, MCP, hook wiring, synthetic benchmark, PyPI publish |
 | v1.0.1 | **shipped** | launch fix-up — hook→retrieval wiring, onboard noise, `aelf --version` |
 | v1.0.2 | **shipped** | per-project install routing, `aelf doctor`, release-docs CI gate |
-| v1.1.0 | planned | project identity (`.git/aelfrice/`, `.aelfrice.toml`), edges→threads, status/health split |
-| v1.2.0 | planned | commit-ingest hook, seed files, triple-extraction port |
+| v1.1.0 | planned | project identity (`.git/aelfrice/`), edges→threads, status/health split |
+| v1.2.0 | planned | commit-ingest hook, triple-extraction port, harness-integration doc |
 | v1.3 | planned | retrieval wave — entity index + BFS multi-hop + LLM classification |
 | v2.0 | planned | feature parity with the earlier research line + full benchmark reproducibility |
 
