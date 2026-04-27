@@ -10,6 +10,13 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-04-27
+
+Patch release: power-user ergonomics + retrieval-side feedback loop.
+Closes the v1.0.0 gap where hook retrievals never wrote audit rows,
+adds a no-config noise filter (with a TOML escape hatch), and ships
+`aelf --version` as a first-class CLI flag.
+
 ### Added
 
 - `aelfrice.hook_search` module: `search_for_prompt(store, prompt, ...)`
@@ -322,7 +329,8 @@ Foundation milestone — store, models, config.
 - Initial repo scaffold: pyproject, README, GitHub Actions workflows,
   scan configs (commit `67b4343`).
 
-[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/robotrocketscience/aelfrice/compare/v0.9.0rc0...v1.0.0
 [0.9.0rc0]: https://github.com/robotrocketscience/aelfrice/compare/v0.8.0...v0.9.0rc0
 [0.8.0]: https://github.com/robotrocketscience/aelfrice/compare/v0.7.0...v0.8.0
