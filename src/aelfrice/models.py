@@ -77,3 +77,19 @@ class Edge:
     dst: str
     type: str
     weight: float
+
+
+@dataclass
+class FeedbackEvent:
+    """One row in the feedback_history audit log.
+
+    Recorded for every successful apply_feedback call so the project's
+    feedback regime can be characterized after the fact. Closes the v2.0
+    gap where the audit table only logged ignored/superseded events.
+    """
+
+    id: int
+    belief_id: str
+    valence: float
+    source: str
+    created_at: str
