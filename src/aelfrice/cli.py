@@ -437,6 +437,12 @@ def build_parser() -> argparse.ArgumentParser:
         prog="aelf",
         description="Bayesian memory designed for feedback-driven learning.",
     )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"aelf {_AELFRICE_VERSION}",
+        help="print the installed aelfrice version and exit",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_onboard = sub.add_parser("onboard", help="scan a project and ingest beliefs")

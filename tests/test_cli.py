@@ -270,3 +270,29 @@ def test_no_subcommand_exits_nonzero() -> None:
     """argparse `required=True` rejects empty subcommand path."""
     with pytest.raises(SystemExit):
         _run()
+
+
+# --- --version ----------------------------------------------------------
+
+
+def test_version_flag_prints_package_version(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`aelf --version` prints `aelf <__version__>` to stdout and
+    exits 0. argparse's version action raises SystemExit with code 0
+    after writing; we catch and inspect captured stdout."""
+    from aelfrice import __version__ as version
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(argv=["--version"])
+    assert excinfo.value.code == 0
+    captured = capsys.readouterr()
+    assert f"aelf {version}" in captured.out
+
+
+def test_version_flag_short_circuits_required_subcommand() -> None:
+    """`--version` must short-circuit the required-subcommand check
+    (otherwise argparse exits 2 demanding a subcommand)."""
+    with pytest.raises(SystemExit) as excinfo:
+        main(argv=["--version"])
+    assert excinfo.value.code == 0
