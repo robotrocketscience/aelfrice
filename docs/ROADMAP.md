@@ -56,6 +56,7 @@ Second patch. Two threads:
 - **`aelf health` vs `aelf status` split.** `status` becomes a counts snapshot; `health` becomes a real graph auditor — orphan edges, isolated clusters, FTS5 sync, locked-belief contradictions, decay anomalies.
 - **`edges` → `threads`.** User-facing rename in CLI output and MCP tool descriptions. Internal schema is unchanged.
 - **Onboard improvements.** Git-recency weighting for source files; explicit `agent_inferred` → `user_validated` promotion path so onboard-derived beliefs can graduate without being re-locked.
+- **Query result cache.** A bounded LRU cache wrapping `aelfrice.retrieval.retrieve()`, keyed on a canonicalized form of `(query, token_budget, l1_limit)` and invalidated on every store mutation. Skips a full L0+L1 pass when an agent loop re-issues the same query. Spec: [`lru_query_cache.md`](lru_query_cache.md).
 
 ## v1.2.0 — auto-capture and triple extraction
 
