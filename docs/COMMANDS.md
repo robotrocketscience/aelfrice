@@ -12,7 +12,7 @@ aelf <subcommand> [args] [options]
 
 | Command | Args | Behaviour |
 |---|---|---|
-| `onboard <path>` | `path` | Walk filesystem (`.md/.rst/.txt/.adoc`), git log, Python AST. Classify candidates, insert non-duplicates. |
+| `onboard <path>` | `path` | Walk filesystem (`.md/.rst/.txt/.adoc`), git log, Python AST. Classify candidates, insert non-duplicates. Power users can tune the noise filter via a `.aelfrice.toml` at the project root — see [CONFIG.md](CONFIG.md). |
 | `search <query> [--budget N]` | `query`, `--budget` (default 2000) | L0 locked + L1 FTS5 BM25, token-budgeted. |
 | `lock <statement>` | `statement` | Insert at `(α, β) = (9.0, 0.5)` with `lock_level=user`. Idempotent — re-lock of identical text upgrades existing. |
 | `locked [--pressured]` | `--pressured` | List locks. With flag, only those with `demotion_pressure > 0`. |
