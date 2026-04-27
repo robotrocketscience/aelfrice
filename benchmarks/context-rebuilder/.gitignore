@@ -1,0 +1,9 @@
+# Eval corpus is real captured transcripts. PII-scrub before adding.
+# Files churn frequently; gitignore them and track only meta.
+eval_corpus/*.jsonl
+eval_corpus/*.meta.json
+
+# Sweep outputs are run-specific; track only calibration_*.json
+# files referenced from the spec.
+results/*
+!results/calibration_*.json

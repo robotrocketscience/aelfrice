@@ -22,6 +22,7 @@ This is a rebuild, not a port. Structural issues that survived agentmemory are b
 | **v1.1.0** | planned | project identity, edges→threads, status/health split |
 | **v1.2.0** | planned | commit-ingest hook, seed files, triple-extraction port |
 | **v1.3.0** | planned | retrieval wave — entity index + BFS multi-hop + LLM classification |
+| **v1.4.0** | planned | context rebuilder — automatic PreCompact-driven retrieval-curated context |
 | **v2.0.0** | planned | feature parity with the earlier research line + full benchmark reproducibility |
 
 ## v1.0.0 — shipped
@@ -59,6 +60,7 @@ Second patch. Two threads:
 ## v1.2.0 — auto-capture and triple extraction
 
 - **Commit-ingest `PostToolUse` hook.** The graph grows during normal sessions without explicit `onboard` / `remember` / `feedback` calls.
+- **Transcript-ingest hooks.** A pair of `UserPromptSubmit` + `Stop` hooks append every conversation turn to a per-project `<root>/.git/aelfrice/transcripts/turns.jsonl` log; a `PreCompact` hook rotates the log and triggers `ingest_jsonl()` to pull turns into the brain graph as beliefs and edges. Closes the harness-conflict write-path gap (the MCP no longer depends on the harness's auto-memory directive to receive new beliefs from normal session activity) and densifies production data with `session_id` and `DERIVED_FROM` edges from real conversations. Required prerequisite for the v1.4.0 context rebuilder.
 - **`.aelfrice/seed.md`.** A git-tracked seed file auto-ingested on first `onboard`. Lets a project author bootstrap collaborator memory directly from the repository.
 - **Triple-extraction port.** The triple-extraction ingest module from the earlier research line ports forward. Migration is forward-compatible against v1.0 stores — existing rows continue to read.
 - **First academic benchmark activations.** `mab_triple_adapter` activates in `benchmarks/`.
@@ -72,6 +74,19 @@ This is the release where retrieval moves beyond BM25-only.
 - **LLM-classification onboard path.** A Haiku-backed classifier becomes an opt-in alternative to the regex classifier. Cost is documented per-session in the published claims.
 - **Bayesian-weighted ranking — partial.** Retrieval scoring begins to incorporate posterior confidence on top of BM25. The full feedback-into-ranking eval lands in v2.0.0.
 - **Benchmark activations.** `mab_entity_index_adapter` and `mab_llm_entity_adapter` activate in `benchmarks/`.
+
+## v1.4.0 — context rebuilder
+
+The release that makes long-running sessions cheaper without a visible seam to the user.
+
+- **`PreCompact`-driven context rebuild.** When the harness signals an approaching context limit, an aelfrice hook intercepts and queries the brain graph for the highest-value beliefs against the tail of the session transcript. The rebuild emits as `additionalContext`: locked beliefs first, then session-scoped beliefs from the same `session_id`, then BM25 / posterior-weighted hits, packed to a configurable token budget. The user's next prompt is answered against a leaner, retrieval-curated working set instead of the harness's generic compaction summary.
+- **Augment mode at v1.4.0.** The hook augments the harness's default compaction; both summaries land in the new context. Suppress mode (replacing the harness's compaction entirely) is parked as a v2.x candidate gated on continuation-fidelity evidence.
+- **Trigger modes.** Manual (`/aelf-rebuild` slash command) ships first as the explicit testing surface. Threshold mode (auto-fire at a configurable fraction of the model's window) ships with calibration data — the default threshold is derived from the eval harness, not hardcoded. Dynamic mode (heuristic-driven trigger) is gated on showing it tracks fidelity better than a fixed threshold.
+- **Continuation-fidelity eval harness.** A new harness in `benchmarks/context-rebuilder/` replays captured transcripts, forces a midpoint clear, runs the rebuilder, and measures: (a) fraction of post-clear turns where the agent's answer matches the original session's answer, (b) rebuild block size as a fraction of the full-replay baseline, (c) PreCompact hook latency. Headline regression band: ≥80% continuation fidelity at ≤30% token cost on the v1.0.0 baseline. Higher targets land at v1.5.x and v2.0.0.
+- **Hard prerequisites.** v1.2.0 transcript-ingest (the rebuilder reads `<root>/.git/aelfrice/transcripts/turns.jsonl`) and the v1.2.0 `session_id` schema addition.
+- **Soft prerequisites.** v1.3.0 partial Bayesian-weighted ranking improves rebuild quality; without it the rebuilder ships against BM25-only retrieval.
+
+The central claim of v1.4.0: long-running sessions use less context per steady-state turn without measurable continuation regression. The eval harness is what makes that claim falsifiable.
 
 ## v2.0.0 — feature parity and reproducibility
 
@@ -94,6 +109,8 @@ The earlier research line implemented these modules. They are not in v1.0.0; eac
 |---|---|
 | Triple extraction (`triple_extraction`) | v1.2.0 |
 | Commit-ingest `PostToolUse` integration (`commit_tracker`) | v1.2.0 |
+| Transcript-ingest hooks + `ingest_jsonl()` (`transcript_ingest`) | v1.2.0 |
+| Context rebuilder + continuation-fidelity eval (`context_rebuilder`) | v1.4.0 |
 | Graph metrics + status/health split (`graph_metrics`) | v1.1.0 |
 | Entity-index retrieval (regex + entity patterns) | v1.3.0 |
 | BFS multi-hop graph traversal | v1.3.0 |
