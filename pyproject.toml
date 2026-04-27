@@ -9,6 +9,7 @@ dependencies = []
 
 [project.scripts]
 aelf = "aelfrice.cli:main"
+aelf-hook = "aelfrice.hook:main"
 
 [project.optional-dependencies]
 dev = [

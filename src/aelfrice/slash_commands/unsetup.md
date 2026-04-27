@@ -14,11 +14,11 @@ unrelated `UserPromptSubmit` entries are preserved.
 <process>
 Run: `uv run aelf unsetup`
 
-Defaults match `aelf setup`: user scope and command
-`python -m aelfrice.hook`. Pass the same `--scope` /
-`--settings-path` / `--command` flags you used at install time so
-the matching entry is found. The command is idempotent: a second
-invocation is a no-op and reports `no matching hook`.
+Defaults match `aelf setup`: user scope and command `aelf-hook`.
+Pass the same `--scope` / `--settings-path` / `--command` flags you
+used at install time so the matching entry is found. The command
+is idempotent: a second invocation is a no-op and reports
+`no matching hook`.
 
 Display the output verbatim. Do not add commentary.
 </process>

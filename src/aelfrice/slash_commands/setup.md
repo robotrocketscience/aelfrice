@@ -16,10 +16,11 @@ Run: `uv run aelf setup`
 
 By default the hook is installed user-wide
 (`~/.claude/settings.json`) and the recorded command is
-`python -m aelfrice.hook`. Pass `--scope project` for a
-project-scoped install, or `--settings-path PATH` to write to an
-explicit location. The command is idempotent: running it twice
-results in exactly one matching hook entry.
+`aelf-hook` (the script entry-point exposed by aelfrice's
+pyproject). Pass `--scope project` for a project-scoped install, or
+`--settings-path PATH` to write to an explicit location. The
+command is idempotent: running it twice results in exactly one
+matching hook entry.
 
 Display the output verbatim. Do not add commentary.
 </process>
