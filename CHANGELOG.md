@@ -10,6 +10,39 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+## [0.9.0rc0] - 2026-04-26
+
+Benchmark-harness milestone — final gate before `v1.0.0`. The `v0.9.0-rc`
+roadmap row is shipped as PEP 440 release candidate `0.9.0rc0`.
+
+### Added
+
+- `aelfrice.benchmark` module — deterministic 16-belief × 16-query
+  synthetic harness. Public surface: `BENCHMARK_NAME`,
+  `seed_corpus(store)`, `run_benchmark(store, *, aelfrice_version,
+  top_k=5)`, frozen `BenchmarkReport` dataclass with `hit_at_1`,
+  `hit_at_3`, `hit_at_5`, `mrr`, `p50_latency_ms`, `p99_latency_ms`
+  (#50).
+- `aelf bench` CLI subcommand — prints the report as a single JSON
+  document. Defaults to in-memory store for full reproducibility;
+  `--db PATH` for an explicit on-disk SQLite file; `--top-k N` to
+  override hit@k accounting depth (#50).
+- `slash_commands/bench.md` keeping the CLI ↔ slash 1:1 invariant
+  green at 11 commands (#50).
+- `tests/regression/test_benchmark_cli_end_to_end.py` —
+  `@pytest.mark.regression` end-to-end coverage of `aelf bench`
+  default invocation, `--db PATH`, and `--top-k` override (#50).
+
+### Notes
+
+- The harness is the **measurement instrument**, not proof of the
+  central feedback claim. Retrieval ranking in the v1.0 line is
+  BM25-only (`store.search_beliefs` orders by `bm25(beliefs_fts)`,
+  posterior `alpha`/`beta` are not consumed), so `apply_feedback`
+  does not currently move benchmark scores. A v1.x retrieval
+  upgrade that consumes posterior is the precondition for using
+  this harness to claim feedback drives accuracy.
+
 ## [0.8.0] - 2026-04-26
 
 Project-metadata milestone — everything required for PyPI publish (gated
@@ -190,7 +223,8 @@ Foundation milestone — store, models, config.
 - Initial repo scaffold: pyproject, README, GitHub Actions workflows,
   scan configs (commit `67b4343`).
 
-[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v0.9.0rc0...HEAD
+[0.9.0rc0]: https://github.com/robotrocketscience/aelfrice/compare/v0.8.0...v0.9.0rc0
 [0.8.0]: https://github.com/robotrocketscience/aelfrice/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/robotrocketscience/aelfrice/releases/tag/v0.7.0
 [0.6.0]: https://github.com/robotrocketscience/aelfrice/compare/8b45b77...c088314
