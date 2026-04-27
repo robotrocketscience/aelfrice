@@ -18,10 +18,16 @@ above.
 from __future__ import annotations
 
 import ast
+import hashlib
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final
+
+from aelfrice.classification import classify_sentence
+from aelfrice.models import LOCK_NONE, Belief
+from aelfrice.store import Store
 
 # Directories the scanner never descends into. Standard "build artefact"
 # locations and version-control internals.
@@ -70,6 +76,73 @@ class SentenceCandidate:
 
     text: str
     source: str
+
+
+def scan_repo(
+    store: Store,
+    root: Path,
+    now: str | None = None,
+) -> ScanResult:
+    """Run all three extractors on `root`, classify each candidate, and
+    insert persistable results as Beliefs in the store.
+
+    Idempotent: a belief id is `sha256(source\\x00text)[:16]`, so
+    re-scanning the same tree produces no duplicates. Existing beliefs
+    are detected via `Store.get_belief(id)` and skipped.
+
+    Non-persistable candidates (classifier returned `persist=False` —
+    empty paragraphs, question-form sentences) are counted in
+    `skipped_non_persisting` for visibility but never reach the store.
+
+    No new edges are formed by `scan_repo` in v1.0. Edge formation at
+    onboard time is deferred to a later release; for now beliefs land
+    standalone and edges are added by feedback flows or future
+    explicit-edge tools.
+
+    Returns a ScanResult summarizing what happened. Pure-stdlib
+    orchestration: no third-party deps, deterministic for any stable
+    input tree + clock supplied via `now`.
+    """
+    timestamp = now if now is not None else _utc_now_iso()
+    candidates: list[SentenceCandidate] = []
+    candidates.extend(extract_filesystem(root))
+    candidates.extend(extract_git_log(root))
+    candidates.extend(extract_ast(root))
+
+    inserted = 0
+    skipped_existing = 0
+    skipped_non_persisting = 0
+
+    for candidate in candidates:
+        result = classify_sentence(candidate.text, candidate.source)
+        if not result.persist:
+            skipped_non_persisting += 1
+            continue
+        belief_id = _derive_belief_id(candidate.text, candidate.source)
+        if store.get_belief(belief_id) is not None:
+            skipped_existing += 1
+            continue
+        store.insert_belief(Belief(
+            id=belief_id,
+            content=candidate.text,
+            content_hash=_content_hash(candidate.text),
+            alpha=result.alpha,
+            beta=result.beta,
+            type=result.belief_type,
+            lock_level=LOCK_NONE,
+            locked_at=None,
+            demotion_pressure=0,
+            created_at=timestamp,
+            last_retrieved_at=None,
+        ))
+        inserted += 1
+
+    return ScanResult(
+        inserted=inserted,
+        skipped_existing=skipped_existing,
+        skipped_non_persisting=skipped_non_persisting,
+        total_candidates=len(candidates),
+    )
 
 
 def _iter_doc_files(root: Path) -> list[Path]:
@@ -121,6 +194,44 @@ _GIT_LOG_DEFAULT_LIMIT: Final[int] = 100
 _GIT_LOG_TIMEOUT_SECONDS: Final[float] = 5.0
 
 _PY_EXTENSION: Final[str] = ".py"
+
+_BELIEF_ID_HEX_LEN: Final[int] = 16
+
+
+@dataclass
+class ScanResult:
+    """Aggregate outcome of a scan_repo run.
+
+    Fields:
+    - inserted: count of new beliefs added to the store
+    - skipped_existing: count of candidates whose deterministic id was
+      already present (re-scan idempotence)
+    - skipped_non_persisting: count of candidates the classifier
+      flagged persist=False (questions, empty paragraphs)
+    - total_candidates: sum across all extractors before filtering
+    """
+
+    inserted: int
+    skipped_existing: int
+    skipped_non_persisting: int
+    total_candidates: int
+
+
+def _derive_belief_id(text: str, source: str) -> str:
+    """Deterministic id from (text, source). Re-running scan on the same
+    tree yields the same ids — that's how the orchestrator stays
+    idempotent without a separate dedupe table.
+    """
+    h = hashlib.sha256(f"{source}\x00{text}".encode("utf-8")).hexdigest()
+    return h[:_BELIEF_ID_HEX_LEN]
+
+
+def _content_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def extract_git_log(
