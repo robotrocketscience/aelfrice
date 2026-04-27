@@ -26,7 +26,7 @@ from longmemeval_adapter import (  # type: ignore[import-untyped]
     parse_questions,
     ingest_sessions,
 )
-from aelfrice.retrieval import retrieve
+from aelfrice.retrieval import retrieve_v2 as retrieve  # v1.0.x lab-compat shim
 from aelfrice.store import MemoryStore
 
 # (top_k, budget) combinations to sweep
