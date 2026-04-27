@@ -27,13 +27,23 @@ installable release; see the roadmap in [README.md](README.md).
   Closes the long-standing argparse error users hit when probing the
   installed version (#71).
 - `aelfrice.noise_filter` module: pure-stdlib pure-function predicate
-  `is_noise(text)` that drops candidate paragraphs matching one of
-  four well-known non-belief shapes — markdown heading blocks,
+  `is_noise(text, config)` that drops candidate paragraphs matching
+  one of four well-known non-belief shapes — markdown heading blocks,
   checklist blocks, three-word fragments, or license-header
   boilerplate (seven canonical signatures). Wired into
   `scanner.scan_repo` before classification. New
   `ScanResult.skipped_noise` counter (default 0 for back-compat)
-  reports how many candidates were filtered per scan (#NN).
+  reports how many candidates were filtered per scan (#72).
+- Power-user configuration via a single `.aelfrice.toml` at the
+  project root (or any ancestor); discovered automatically by
+  `scan_repo` walking up from the scan root. The `[noise]` table
+  exposes: `disable` (subset of `headings`, `checklists`,
+  `fragments`, `license`), `min_words` (override fragment
+  threshold), `exclude_words` (whole-word case-insensitive — "jso"
+  drops "jso" but never "json"), and `exclude_phrases` (literal
+  substring case-insensitive). No regex in the user-facing schema.
+  Library callers can pass an explicit `NoiseConfig` to
+  `scan_repo(..., noise_config=...)` to bypass file discovery (#72).
 
 ### Changed
 

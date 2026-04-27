@@ -155,3 +155,64 @@ def test_scan_repo_idempotent_with_noise(tmp_path: Path) -> None:
     assert first.skipped_noise == second.skipped_noise
     assert second.inserted == 0
     assert second.skipped_existing >= first.inserted
+
+
+def test_scan_repo_discovers_aelfrice_toml(tmp_path: Path) -> None:
+    """End-to-end: a `.aelfrice.toml` at the project root is read
+    automatically by scan_repo. Custom exclude_words drop paragraphs
+    the default config would have kept."""
+    _write(
+        tmp_path / ".aelfrice.toml",
+        '[noise]\n'
+        'exclude_words = ["jso"]\n'
+        'exclude_phrases = ["TODO:"]\n',
+    )
+    _write(
+        tmp_path / "ARCH.md",
+        # Paragraph mentioning jso (initials) — should be dropped by config.
+        "The whole publish path is owned by jso end to end.\n\n"
+        # Paragraph with TODO: — should be dropped by phrase rule.
+        "TODO: refactor the retrieval pipeline before v1.1 ships.\n\n"
+        # Paragraph mentioning json (substring of jso) — must NOT be
+        # dropped, otherwise the word-boundary contract is broken.
+        "Benchmark adapters parse json files from the lab corpus and "
+        "feed them into the retrieve pipeline for end-to-end runs.\n\n"
+        # Real prose paragraph with no excluded terms — should persist.
+        "The retrieval pipeline uses BM25 over an FTS5 virtual table "
+        "with locked beliefs auto-loaded as L0 above L1 hits."
+    )
+    s = MemoryStore(":memory:")
+    result = scan_repo(s, tmp_path)
+    # Two custom-excluded paragraphs dropped.
+    assert result.skipped_noise >= 2
+    # 'jso' as initials should be gone; 'json' file mention should
+    # survive (word-boundary contract).
+    assert s.search_beliefs("publish", limit=10) == []
+    assert s.search_beliefs("refactor", limit=10) == []
+    assert len(s.search_beliefs("adapters", limit=10)) >= 1
+    assert len(s.search_beliefs("retrieval", limit=10)) >= 1
+
+
+def test_scan_repo_explicit_noise_config_overrides_discovery(
+    tmp_path: Path,
+) -> None:
+    """Passing noise_config=... bypasses .aelfrice.toml discovery —
+    library callers can override the file."""
+    from aelfrice.noise_filter import NoiseConfig
+
+    _write(
+        tmp_path / ".aelfrice.toml",
+        '[noise]\nexclude_words = ["should_not_apply"]\n',
+    )
+    _write(
+        tmp_path / "ARCH.md",
+        "The retrieval pipeline uses BM25 over an FTS5 virtual table "
+        "with locked beliefs auto-loaded as L0 above L1 hits.\n\n"
+        "Authored by jso for review and downstream landing.",
+    )
+    s = MemoryStore(":memory:")
+    explicit = NoiseConfig(exclude_words=("jso",))
+    result = scan_repo(s, tmp_path, noise_config=explicit)
+    # Explicit config strips jso paragraph (file's exclude_words ignored).
+    assert s.search_beliefs("Authored", limit=10) == []
+    assert result.skipped_noise >= 1
