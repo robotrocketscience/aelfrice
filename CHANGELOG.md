@@ -10,6 +10,34 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+### Added
+
+- `aelf doctor`: scan user-scope and project-scope Claude Code
+  `settings.json` for hook + statusline commands whose program token
+  doesn't resolve. Catches dangling absolute paths, bare names not on
+  `$PATH`, and missing scripts under `bash /…` interpreter wrappers.
+  Exits `1` on any broken finding so it can gate CI (#81).
+
+### Changed
+
+- `aelf setup` no longer requires `--scope`. Default is auto-detect:
+  `project` (writes `<cwd>/.claude/settings.json`) when `cwd/.venv`
+  matches the active interpreter's `sys.prefix`, else `user` (writes
+  `~/.claude/settings.json`). Explicit `--scope` still wins (#81).
+- `aelf setup --command` defaults to an absolute path: project scope
+  -> the active venv's `aelf-hook`; user scope -> the first
+  `aelf-hook` on `$PATH` (typically a `pipx`-installed
+  `~/.local/bin/aelf-hook`). Lets one machine route per-project venvs
+  to their own hook AND fall back to a global pipx install outside
+  any project, without bare-name `$PATH` collisions (#81).
+- `aelf setup` now silently removes legacy dangling
+  `/usr/local/bin/aelf{,-hook}` symlinks if their target no longer
+  exists. Real files and live symlinks are never touched (#81).
+- `aelf unsetup` defaults to basename-match cleanup (every entry
+  whose program basename is `aelf-hook`), so an install written with
+  the new auto-resolved absolute path can be torn down by bare
+  `aelf unsetup` without specifying the path (#81).
+
 ## [1.0.1] - 2026-04-27
 
 Patch release: power-user ergonomics + retrieval-side feedback loop.

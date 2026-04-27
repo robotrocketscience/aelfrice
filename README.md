@@ -57,13 +57,16 @@ pip install "aelfrice[mcp]"         # add MCP server
 pip install "aelfrice[archive]"     # add encrypted DB archive on uninstall
 aelf --version                       # confirm install
 aelf setup                           # wire hook + statusline into Claude Code
+aelf doctor                          # verify hook commands resolve
 aelf health                          # confirm wiring + store init
 ```
 
-`aelf setup` wires two things into `~/.claude/settings.json`:
+`aelf setup` wires two things into Claude Code's `settings.json`:
 
 1. The **UserPromptSubmit hook** (`aelf-hook`) which injects relevant beliefs into every Claude Code prompt.
 2. The **statusline notifier** (`aelf statusline`) which shows an orange `⬆ aelfrice X.Y.Z available, run: aelf upgrade` banner *only* when an update is pending. When you're up to date the banner is empty and your statusline looks unchanged.
+
+`aelf setup` auto-routes the install per-project: when run from a project venv it writes `<project>/.claude/settings.json` pointing at `<project>/.venv/bin/aelf-hook`; when run outside any project it writes `~/.claude/settings.json` pointing at the first `aelf-hook` on `$PATH` (typically a `pipx`-installed global). Explicit `--scope user|project` overrides.
 
 If you already have a custom `statusLine` configured, `aelf setup` composes its snippet onto the end of your command (preserving your bar). If your existing command uses pipes, here-docs, `&&`, backticks, or backslashes it's left untouched and you get a one-line hint about manual composition.
 

@@ -45,6 +45,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,6 +56,14 @@ SettingsScope = Literal["user", "project"]
 
 USER_SETTINGS_PATH: Final[Path] = Path.home() / ".claude" / "settings.json"
 PROJECT_SETTINGS_RELPATH: Final[Path] = Path(".claude") / "settings.json"
+_HOOK_SCRIPT_NAME: Final[str] = "aelf-hook"
+# Legacy / pre-pipx shim locations we will silently clean up if they
+# point at a deleted target. Keep this list narrow: only paths the
+# package itself ever wrote, never user-managed binaries.
+_DANGLING_SHIM_CANDIDATES: Final[tuple[Path, ...]] = (
+    Path("/usr/local/bin/aelf"),
+    Path("/usr/local/bin/aelf-hook"),
+)
 
 _HOOKS_KEY: Final[str] = "hooks"
 _EVENT_KEY: Final[str] = "UserPromptSubmit"
@@ -114,6 +124,131 @@ def default_settings_path(
     return root / PROJECT_SETTINGS_RELPATH
 
 
+def _venv_bin_dir() -> Path:
+    """Return the directory holding entry-point scripts for the active interpreter.
+
+    Uses `sys.prefix`, which is the venv root for an active virtualenv
+    (and the system root otherwise). `sys._base_executable` points at
+    the *base* interpreter even inside a venv, so it is unsuitable.
+    """
+    return Path(sys.prefix) / "bin"
+
+
+def _executable_in_dir(directory: Path, name: str) -> Path | None:
+    """Return `directory/name` if it exists and is executable, else None."""
+    candidate = directory / name
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return candidate
+    return None
+
+
+def resolve_hook_command(scope: SettingsScope) -> str:
+    """Pick the absolute `aelf-hook` path appropriate for `scope`.
+
+    Project scope: prefer the entry point next to `sys.executable` so
+    project-scope settings always pin to that project's venv. This is
+    the routing primitive — `~/projects/aelfrice` and
+    `~/projects/aelfrice-lab` each get their own venv's `aelf-hook`.
+
+    User scope: prefer `shutil.which("aelf-hook")` so the hook resolves
+    to whatever the user has on $PATH (typically a pipx-installed
+    `~/.local/bin/aelf-hook`). Fallback chain ensures we never write a
+    bare `aelf-hook` that depends on a venv being active later.
+
+    Last-resort fallback is the bare name; tested but emitted only when
+    no executable is found anywhere on the system, in which case the
+    user has bigger problems and `aelf doctor` will flag it.
+    """
+    venv_bin = _venv_bin_dir()
+    venv_hook = _executable_in_dir(venv_bin, _HOOK_SCRIPT_NAME)
+    path_hook_str = shutil.which(_HOOK_SCRIPT_NAME)
+    path_hook = Path(path_hook_str) if path_hook_str else None
+    if scope == "project":
+        chosen = venv_hook or path_hook
+    else:
+        chosen = path_hook or venv_hook
+    if chosen is None:
+        return _HOOK_SCRIPT_NAME
+    return str(chosen)
+
+
+def detect_default_scope(cwd: Path | None = None) -> SettingsScope:
+    """Pick `project` if the active interpreter is the venv at `cwd`, else `user`.
+
+    The strict test: `sys.prefix` (the active venv root) must equal
+    `<cwd>/.venv`. We deliberately do not `.resolve()` `sys.executable`
+    because on uv-managed venvs the `python` shim resolves through to
+    the *base* interpreter, which would defeat the comparison. Comparing
+    venv roots is the correct primitive.
+    """
+    project_root = cwd if cwd is not None else Path.cwd()
+    venv_dir = project_root / ".venv"
+    if not venv_dir.exists():
+        return "user"
+    try:
+        venv_resolved = venv_dir.resolve()
+        prefix_resolved = Path(sys.prefix).resolve()
+    except OSError:
+        return "user"
+    if prefix_resolved != venv_resolved:
+        return "user"
+    return "project"
+
+
+@dataclass(frozen=True)
+class DanglingShimCleanup:
+    """Outcome of `clean_dangling_shims`.
+
+    `removed` lists the absolute paths that were unlinked (each was a
+    symlink whose target no longer existed). Empty when nothing to do.
+    `skipped` lists paths we declined to touch (real files, symlinks
+    whose target still exists, or non-symlinks owned by another tool).
+    """
+    removed: tuple[Path, ...]
+    skipped: tuple[Path, ...]
+
+
+def clean_dangling_shims(
+    candidates: tuple[Path, ...] | None = None,
+) -> DanglingShimCleanup:
+    """Silently remove dangling symlinks the package itself ever wrote.
+
+    Only acts on paths in `_DANGLING_SHIM_CANDIDATES` (or the override
+    list for tests). A path is removed iff it is a symlink AND its
+    target does not exist. Real files and live symlinks are skipped —
+    we never destroy a working install.
+    """
+    targets = candidates if candidates is not None else _DANGLING_SHIM_CANDIDATES
+    removed: list[Path] = []
+    skipped: list[Path] = []
+    for path in targets:
+        try:
+            is_symlink = path.is_symlink()
+        except OSError:
+            skipped.append(path)
+            continue
+        if not is_symlink:
+            if path.exists():
+                skipped.append(path)
+            continue
+        try:
+            target_exists = path.resolve(strict=True).exists()
+        except (OSError, RuntimeError):
+            target_exists = False
+        if target_exists:
+            skipped.append(path)
+            continue
+        try:
+            path.unlink()
+        except OSError:
+            skipped.append(path)
+            continue
+        removed.append(path)
+    return DanglingShimCleanup(
+        removed=tuple(removed), skipped=tuple(skipped)
+    )
+
+
 def install_user_prompt_submit_hook(
     settings_path: Path,
     *,
@@ -147,15 +282,30 @@ def install_user_prompt_submit_hook(
 
 
 def uninstall_user_prompt_submit_hook(
-    settings_path: Path, *, command: str
+    settings_path: Path,
+    *,
+    command: str | None = None,
+    command_basename: str | None = None,
 ) -> UninstallResult:
-    """Remove all UserPromptSubmit entries running exactly `command`.
+    """Remove UserPromptSubmit entries matching `command` or `command_basename`.
+
+    Pass exactly one of:
+      * `command` -- exact-string match of the stored hook command.
+      * `command_basename` -- match every hook whose stored command,
+        treated as a path, has this basename. Lets a bare-name install
+        and an absolute-path install be cleaned up by the same call.
 
     Returns `removed=0` if the file does not exist, has no matching
     entry, or has no `hooks.UserPromptSubmit` block at all.
     """
-    if not command:
+    if command is None and command_basename is None:
+        raise ValueError("provide command or command_basename")
+    if command is not None and command_basename is not None:
+        raise ValueError("command and command_basename are mutually exclusive")
+    if command is not None and not command:
         raise ValueError("command must be a non-empty string")
+    if command_basename is not None and not command_basename:
+        raise ValueError("command_basename must be a non-empty string")
     if not settings_path.exists():
         return UninstallResult(path=settings_path, removed=0)
     data = _load_settings(settings_path)
@@ -163,10 +313,17 @@ def uninstall_user_prompt_submit_hook(
     if user_prompt_submit is None:
         return UninstallResult(path=settings_path, removed=0)
     before = len(user_prompt_submit)
-    kept = [
-        entry for entry in user_prompt_submit
-        if not _entry_matches(entry, command)
-    ]
+    if command is not None:
+        kept = [
+            entry for entry in user_prompt_submit
+            if not _entry_matches(entry, command)
+        ]
+    else:
+        assert command_basename is not None
+        kept = [
+            entry for entry in user_prompt_submit
+            if not _entry_matches_basename(entry, command_basename)
+        ]
     removed = before - len(kept)
     if removed == 0:
         return UninstallResult(path=settings_path, removed=0)
@@ -386,6 +543,29 @@ def _entry_matches(entry: dict[str, object], command: str) -> bool:
             hook_dict.get(_TYPE_KEY) == _HOOK_TYPE_COMMAND
             and hook_dict.get(_COMMAND_KEY) == command
         ):
+            return True
+    return False
+
+
+def _entry_matches_basename(
+    entry: dict[str, object], basename: str
+) -> bool:
+    """True iff any inner command's first whitespace-stripped path token has `basename`."""
+    inner = entry.get(_INNER_HOOKS_KEY)
+    if not isinstance(inner, list):
+        return False
+    for hook in cast(list[object], inner):
+        if not isinstance(hook, dict):
+            continue
+        hook_dict = cast(dict[str, object], hook)
+        if hook_dict.get(_TYPE_KEY) != _HOOK_TYPE_COMMAND:
+            continue
+        cmd = hook_dict.get(_COMMAND_KEY)
+        if not isinstance(cmd, str):
+            continue
+        # First whitespace token is the program; basename match against it.
+        first = cmd.strip().split(maxsplit=1)[0] if cmd.strip() else ""
+        if first and Path(first).name == basename:
             return True
     return False
 

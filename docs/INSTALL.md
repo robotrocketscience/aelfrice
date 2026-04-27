@@ -40,16 +40,54 @@ SQLite at `~/.aelfrice/memory.db` by default. Override with `$AELFRICE_DB` (use 
 ## Wire into Claude Code
 
 ```bash
-aelf setup                                        # ~/.claude/settings.json
-aelf setup --scope project --project-root .       # project-local
-aelf setup --no-statusline                        # hook only, no statusline
-aelf unsetup                                      # remove both
+aelf setup                                        # auto-detect scope + path
+aelf setup --scope user                            # force user-scope (~/.claude/settings.json)
+aelf setup --scope project --project-root .        # force project-scope (.claude/settings.json)
+aelf setup --no-statusline                         # hook only, no statusline
+aelf unsetup                                       # remove both
+aelf doctor                                        # verify hook commands resolve
 ```
 
 Idempotent. `aelf setup` wires two things:
 
 1. **`UserPromptSubmit` hook** (`aelf-hook`). Reads each prompt payload, runs retrieval, emits an `<aelfrice-memory>...</aelfrice-memory>` block above the prompt. Every failure mode exits 0 with no output — the hook can't block a prompt.
 2. **`statusLine` notifier** (`aelf statusline`). Prints an orange one-line update banner in the Claude Code statusbar **only when an update is available**, empty otherwise. Reads the cached PyPI check; never makes network calls. Banner disappears automatically once you've upgraded.
+
+### How `aelf setup` picks scope and command path
+
+Without explicit flags, `aelf setup` looks at the active interpreter and current directory and routes the install correctly so the same command works in three layouts:
+
+| You ran `aelf setup` from… | `--scope` resolves to | `--command` resolves to |
+|---|---|---|
+| inside a project venv (e.g. `cd ~/projects/foo && .venv/bin/aelf setup`) | `project` (writes `<project>/.claude/settings.json`) | absolute path: `<project>/.venv/bin/aelf-hook` |
+| a pipx-installed `aelf` outside any project venv | `user` (writes `~/.claude/settings.json`) | first `aelf-hook` on `$PATH` (typically `~/.local/bin/aelf-hook`) |
+| a venv in some other repo | `user` | first `aelf-hook` on `$PATH`, falling back to the active venv |
+
+Effect: when Claude Code is launched in `~/projects/foo`, the `UserPromptSubmit` hook runs that project's venv `aelf-hook`. When launched anywhere else, the global pipx hook runs. No `$PATH` collision, no dangling symlinks, no per-machine scripting needed.
+
+**Recommended setup for working on multiple projects:**
+
+```bash
+pipx install aelfrice                                 # global default lives in ~/.local/bin/
+aelf setup                                            # writes ~/.claude/settings.json -> ~/.local/bin/aelf-hook
+
+cd ~/projects/foo && uv sync                          # project venv
+.venv/bin/aelf setup                                  # writes <project>/.claude/settings.json -> <project>/.venv/bin/aelf-hook
+```
+
+Override either resolution at any time with explicit `--scope` / `--command`.
+
+`aelf setup` also silently removes the legacy `/usr/local/bin/aelf{,-hook}` symlinks if they point at a deleted target — these were written by older install scripts and otherwise shadow a healthy `pipx`-managed `aelf` on `$PATH`. Real files and live symlinks are never touched.
+
+### `aelf doctor`
+
+Run after any setup (or at any time) to verify wiring. Walks `~/.claude/settings.json` and `<cwd>/.claude/settings.json` (when present), inspects every hook command and the top-level `statusLine`, and reports any program token whose absolute path is missing or whose bare name isn't on `$PATH`. Exits `1` when at least one broken command is found, so you can gate CI on it.
+
+```bash
+aelf doctor                                  # scan both scopes
+aelf doctor --user-settings /tmp/test.json   # explicit user settings file
+aelf doctor --project-root /path/to/repo     # explicit project root
+```
 
 Composition with an existing `statusLine`:
 
@@ -143,6 +181,8 @@ uv run pytest -m regression  # cumulative integration scenarios
 | `unable to open database file` | parent dir of `$AELFRICE_DB` doesn't exist |
 | Hook registered, no memory block | DB is empty — run `aelf onboard <project>` |
 | MCP tools not visible in host | restart the host — MCP servers load at launch |
+| Hook silently fails outside a project venv | run `aelf doctor` — most likely a stale absolute path or bare `aelf-hook` not on `$PATH`. Re-run `aelf setup` from the matching install context |
+| Wrong project's memory shows up in another project | each project should have its own `.claude/settings.json`. From inside the project venv: `.venv/bin/aelf setup` (auto-routes to project scope) |
 
 ## Uninstall
 

@@ -23,6 +23,7 @@ EXPECTED_COMMANDS = (
     "feedback",
     "stats",
     "health",
+    "doctor",
     "setup",
     "unsetup",
     "upgrade",
