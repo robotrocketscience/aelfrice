@@ -1,4 +1,4 @@
-"""Eight-command CLI matching the MVP user surface.
+"""Ten-command CLI matching the MVP user surface.
 
 Commands:
   onboard <path>                   scan a project and ingest beliefs
@@ -9,6 +9,8 @@ Commands:
   feedback <id> <used|harmful>     apply one Bayesian feedback event
   stats                            summary of belief / lock / history counts
   health                           regime classifier output
+  setup                            install UserPromptSubmit hook in Claude Code
+  unsetup                          remove UserPromptSubmit hook from Claude Code
 
 DB path resolves from AELFRICE_DB environment variable when set,
 otherwise from ~/.aelfrice/memory.db. Callers can run `main(argv=...)`
@@ -39,12 +41,20 @@ from aelfrice.models import (
 )
 from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
+from aelfrice.setup import (
+    SettingsScope,
+    default_settings_path,
+    install_user_prompt_submit_hook,
+    uninstall_user_prompt_submit_hook,
+)
 from aelfrice.store import Store
 
 DEFAULT_DB_DIR: Final[Path] = Path.home() / ".aelfrice"
 DEFAULT_DB_FILENAME: Final[str] = "memory.db"
+DEFAULT_HOOK_COMMAND: Final[str] = "python -m aelfrice.hook"
 _FEEDBACK_VALENCES: Final[dict[str, float]] = {"used": 1.0, "harmful": -1.0}
 _LOCK_ID_LEN: Final[int] = 16
+_VALID_SCOPES: Final[tuple[SettingsScope, ...]] = ("user", "project")
 
 
 def db_path() -> Path:
@@ -236,6 +246,58 @@ def _cmd_stats(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _resolve_settings_path(args: argparse.Namespace) -> Path:
+    if args.settings_path is not None:
+        return Path(args.settings_path)
+    scope: SettingsScope = args.scope
+    project_root = (
+        Path(args.project_root) if args.project_root is not None else None
+    )
+    return default_settings_path(scope, project_root=project_root)
+
+
+def _cmd_setup(args: argparse.Namespace, out: object) -> int:
+    path = _resolve_settings_path(args)
+    result = install_user_prompt_submit_hook(
+        path,
+        command=args.command,
+        timeout=args.timeout,
+        status_message=args.status_message,
+    )
+    if result.already_present:
+        print(
+            f"hook already installed in {result.path} "
+            f"(command={args.command!r})",
+            file=out,  # type: ignore[arg-type]
+        )
+    else:
+        print(
+            f"installed UserPromptSubmit hook in {result.path} "
+            f"(command={args.command!r})",
+            file=out,  # type: ignore[arg-type]
+        )
+    return 0
+
+
+def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
+    path = _resolve_settings_path(args)
+    result = uninstall_user_prompt_submit_hook(path, command=args.command)
+    if result.removed == 0:
+        print(
+            f"no matching hook in {result.path} "
+            f"(command={args.command!r})",
+            file=out,  # type: ignore[arg-type]
+        )
+    else:
+        print(
+            f"removed {result.removed} hook entr"
+            f"{'y' if result.removed == 1 else 'ies'} from {result.path} "
+            f"(command={args.command!r})",
+            file=out,  # type: ignore[arg-type]
+        )
+    return 0
+
+
 def _cmd_health(args: argparse.Namespace, out: object) -> int:
     _ = args
     store = _open_store()
@@ -313,7 +375,61 @@ def build_parser() -> argparse.ArgumentParser:
     p_health = sub.add_parser("health", help="regime classifier output")
     p_health.set_defaults(func=_cmd_health)
 
+    p_setup = sub.add_parser(
+        "setup",
+        help="install the UserPromptSubmit hook in Claude Code settings.json",
+    )
+    _add_hook_scope_args(p_setup)
+    p_setup.add_argument(
+        "--command", default=DEFAULT_HOOK_COMMAND,
+        help=(
+            f"hook command Claude Code will spawn "
+            f"(default {DEFAULT_HOOK_COMMAND!r})"
+        ),
+    )
+    p_setup.add_argument(
+        "--timeout", type=int, default=None,
+        help="hook execution timeout in seconds (default: not set)",
+    )
+    p_setup.add_argument(
+        "--status-message", default=None,
+        help="status message Claude Code shows while the hook runs",
+    )
+    p_setup.set_defaults(func=_cmd_setup)
+
+    p_unsetup = sub.add_parser(
+        "unsetup",
+        help="remove the UserPromptSubmit hook from Claude Code settings.json",
+    )
+    _add_hook_scope_args(p_unsetup)
+    p_unsetup.add_argument(
+        "--command", default=DEFAULT_HOOK_COMMAND,
+        help=(
+            "hook command string to remove "
+            f"(default {DEFAULT_HOOK_COMMAND!r})"
+        ),
+    )
+    p_unsetup.set_defaults(func=_cmd_unsetup)
+
     return parser
+
+
+def _add_hook_scope_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--scope", choices=list(_VALID_SCOPES), default="user",
+        help="settings.json scope (default 'user' = ~/.claude/settings.json)",
+    )
+    parser.add_argument(
+        "--project-root", default=None,
+        help="project root for --scope project (default: current directory)",
+    )
+    parser.add_argument(
+        "--settings-path", default=None,
+        help=(
+            "explicit settings.json path; overrides --scope and "
+            "--project-root when set"
+        ),
+    )
 
 
 def main(argv: Sequence[str] | None = None, out: object = None) -> int:
