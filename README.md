@@ -1,6 +1,6 @@
 # aelfrice
 
-**Bayesian memory designed for feedback-driven learning.** Today: knowledge store with Bayesian priors. Coming in `v0.4.0`: the feedback loop that teaches the store.
+**Bayesian memory designed for feedback-driven learning.** Today: knowledge store, retrieval, feedback loop, scanner, CLI, and MCP server all landed on `main`. Next on the path to `v1.0.0`: Claude Code setup automation, docs/license, and benchmark harness.
 
 > ⚠️ **Status: under active rebuild — do not depend on this for production.** The first installable release is `v1.0.0`; until then, modules land milestone-by-milestone. The previous codebase (`v2.0`) is preserved at [`aelfrice-v0`](https://github.com/robotrocketscience/aelfrice-v0) (archived, read-only).
 
@@ -23,26 +23,28 @@ The rebuild is structured as a sequence of small, atomic milestones.
 |---|---|---|
 | **v0.1.0** | shipped | `models.py` + `config.py` + `store.py` (SQLite WAL + FTS5 + CRUD + broker-attenuated `propagate_valence` + `demotion_pressure` read/write) |
 | **v0.2.0** | shipped | `scoring.py` (Beta-Bernoulli posterior mean, type-specific decay with lock-floor short-circuit, basic relevance combiner) + tests for Bayesian inertia, decay-required, and lock-floor sharpness |
-| **v0.3.0** | next | `retrieval.py` — locked beliefs auto-load + FTS5 keyword search with BM25. Token-budgeted output. No HRR, no BFS multi-hop, no entity-index in v1.0. |
-| **v0.4.0** | planned | `feedback.py` — the central new endpoint (`apply_feedback`, `feedback_history` table, demotion-pressure-acted-on) + `correction.py` |
-| **v0.5.0** | planned | `scanner.py` — onboarding with filesystem walk, git log, simple AST extractors |
-| **v0.6.0** | planned | `cli.py` (8 commands) + `mcp_server.py` (8 MCP tools) + `slash_commands/` |
-| **v0.7.0** | planned | `setup.py` — Claude Code wiring (`UserPromptSubmit` hook for retrieval injection) |
+| **v0.3.0** | shipped | `retrieval.py` — locked beliefs auto-load + FTS5 keyword search with BM25. Token-budgeted output. No HRR, no BFS multi-hop, no entity-index in v1.0. |
+| **v0.4.0** | shipped | `feedback.py` — the central new endpoint (`apply_feedback`, `feedback_history` table, demotion-pressure-acted-on) + `correction.py` |
+| **v0.5.0** | shipped | `scanner.py` — onboarding with filesystem walk, git log, simple AST extractors |
+| **v0.6.0** | shipped | `cli.py` (8 commands) + `mcp_server.py` (8 MCP tools) + `slash_commands/` |
+| **v0.7.0** | next | `setup.py` — Claude Code wiring (`UserPromptSubmit` hook for retrieval injection) |
 | **v0.8.0** | planned | docs, `CHANGELOG.md`, `LICENSE` (MIT), final `pyproject.toml` |
 | **v0.9.0-rc** | planned | minimal benchmark harness producing a publishable score |
 | **v1.0.0** | planned | tag, push, PyPI publish |
 
 After `v1.0.0`, the `v1.x` series recovers `v2.0` features incrementally with evidence justifying each addition.
 
-## What works today (v0.2.0)
+## What works today (v0.6.0)
 
 - SQLite-backed Belief and Edge storage with WAL journaling and FTS5 search
 - Beta-Bernoulli confidence math; per-type half-life decay
 - Lock floor (a `user`-locked belief does not decay)
 - Broker-confidence-attenuated valence propagation through the belief graph
-- 24 tests, including 3 pre-registered property tests (Bayesian inertia, decay necessity, lock-floor sharpness) and 7 type-half-life lockdown tests
+- Retrieval (locked-belief auto-load + BM25 FTS5, token-budgeted) and the `apply_feedback` endpoint (Beta-Bernoulli updates + demotion-pressure auto-demote)
+- Onboarding scanner (filesystem walk + git log + AST extractors) and `cli.py` (8 commands), `mcp_server.py` (8 tools, `[mcp]` extra), and 8 slash commands under `slash_commands/`
+- ~400 test functions across the unit suite, including 3 pre-registered property tests (Bayesian inertia, decay necessity, lock-floor sharpness) and end-to-end regression scenarios for retrieval, feedback, and onboarding
 
-What does NOT work yet: retrieval, the feedback endpoint, the CLI, the MCP server, onboarding, install via `pip`. Wait for `v1.0.0` if you want to use this.
+What does NOT work yet: install via `pip`, the Claude Code `setup.py` wiring (v0.7.0), final docs/CHANGELOG/LICENSE (v0.8.0), and the v0.9.0-rc benchmark harness. Wait for `v1.0.0` if you want a stable release; until then, install editable from source (`uv pip install -e .`).
 
 ## design notes
 
