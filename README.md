@@ -53,6 +53,7 @@ Install: `pip install aelfrice` (or `uv pip install aelfrice`). Optional: `pip i
 
 - [docs/INSTALL.md](docs/INSTALL.md) — install, configure, quickstart, Claude Code wiring.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module map, data model, Bayesian update path, retrieval flow, Claude Code integration diagram.
+- [docs/LIMITATIONS.md](docs/LIMITATIONS.md) — known limitations at v1.0.0 (auto-memory write path under Claude Code, BM25-only retrieval, MCP surface scope, project-identity portability).
 
 ## design notes
 
