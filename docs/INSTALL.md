@@ -69,8 +69,7 @@ Every `aelf <cmd>` invocation and every `UserPromptSubmit` hook fire kicks off a
 Opt out:
 
 ```bash
-export AELF_NO_UPDATE_CHECK=1     # globally, in your shell config
-aelf <cmd> --no-update-check      # one-off  [TODO: not yet wired]
+export AELF_NO_UPDATE_CHECK=1     # disables the check globally
 ```
 
 When the cache says an update is available you'll see two things:

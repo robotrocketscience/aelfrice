@@ -84,7 +84,7 @@ When an update is available the output also includes the published wheel SHA-256
 
 The orange statusline banner appears automatically when an update is pending and disappears once you're up to date — no manual refresh needed.
 
-Opt out of the update notifier at any time with `export AELF_NO_UPDATE_CHECK=1` or `aelf <cmd> --no-update-check`.
+Opt out of the update notifier at any time with `export AELF_NO_UPDATE_CHECK=1`.
 
 ## Uninstall
 
