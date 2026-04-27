@@ -10,6 +10,12 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+### Added
+
+- `aelf --version` flag prints `aelf <__version__>` and exits 0.
+  Closes the long-standing argparse error users hit when probing the
+  installed version (#71).
+
 ## [1.0.0] - 2026-04-27
 
 First installable PyPI release. The full v1.0 surface is the cumulative

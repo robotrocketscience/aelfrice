@@ -20,7 +20,7 @@ Tracked openly. Each item is mapped to its target version below.
 
 ### Hook layer — v1.0.1
 
-- **`aelf --version` does not exist.** Argparse error today. ~5 LOC + unit test.
+- ✅ **`aelf --version` (v1.0.1).** Prints `aelf <__version__>` and exits 0. Short-circuits the required-subcommand check via argparse's standard version action.
 - **The `aelf-hook` UserPromptSubmit hook may return empty results despite a populated FTS5 index.** Hook fires; no `<aelfrice-memory>` block appears. Workaround: drop to CLI.
 - **Hook bypasses `aelfrice.retrieval.retrieve()` and does not record retrievals as feedback events.** Highest-impact gap. The hook uses an inline FTS5 shim, skipping L0 locked-belief auto-load and feedback-history logging. The "feedback-driven learning" claim depends on this loop closing. v1.0.1 introduces `src/aelfrice/hook_search.py` (`search_for_prompt` + `record_retrieval`) and replaces the shim.
 
