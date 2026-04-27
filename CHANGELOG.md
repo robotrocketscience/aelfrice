@@ -1,0 +1,180 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+Pre-`1.0.0` releases are atomic milestones building toward the first
+installable release; see the roadmap in [README.md](README.md).
+
+## [Unreleased]
+
+### Added
+
+- `LICENSE` file at repo root (MIT) matching the `pyproject.toml` license
+  declaration. `uv build` now bundles it into both wheel and sdist (#45).
+
+## [0.7.0] - 2026-04-26
+
+Claude Code wiring milestone — aelfrice retrieval can now be installed
+as a `UserPromptSubmit` hook with a single `aelf setup`.
+
+### Added
+
+- `aelfrice.setup` module: idempotent `install_user_prompt_submit_hook` /
+  `uninstall_user_prompt_submit_hook` / `default_settings_path`
+  functions that mutate a Claude Code `settings.json`. Atomic on-disk
+  write via sibling tempfile + `os.replace` (#39).
+- `aelfrice.hook` module: `aelfrice.hook:main` reads the
+  `UserPromptSubmit` JSON payload from stdin, runs aelfrice retrieval,
+  and writes an `<aelfrice-memory>...</aelfrice-memory>` block to stdout.
+  Non-blocking by contract — every failure mode (empty stdin, malformed
+  JSON, missing/blank/wrong-type prompt field, retrieval exceptions)
+  exits 0 with no stdout (#40).
+- `aelf setup` and `aelf unsetup` CLI subcommands wrapping the install /
+  uninstall functions, with `--scope user|project`, `--project-root`,
+  `--settings-path`, `--command`, `--timeout`, `--status-message`. CLI
+  surface grows from 8 to 10 commands; matching `setup.md` and
+  `unsetup.md` slash commands ship in `src/aelfrice/slash_commands/`
+  (#41).
+- `aelf-hook = "aelfrice.hook:main"` script in `[project.scripts]`. CLI
+  default `--command` switches to `aelf-hook` (#42).
+- End-to-end regression test in `tests/regression/` exercising
+  `aelf setup` → real subprocess spawn of the recorded hook command →
+  verify retrieval output → `aelf unsetup` (#43).
+
+### Changed
+
+- `aelfrice.__version__` and `uv.lock` synced to `0.6.0` after v0.6.0
+  shipped (#38).
+
+## [0.6.0] - 2026-04-26
+
+CLI / MCP / slash-commands milestone — the user-facing surface.
+
+### Added
+
+- `aelfrice.cli` with eight subcommands (`onboard`, `search`, `lock`,
+  `locked`, `demote`, `feedback`, `stats`, `health`) and the `aelf`
+  console script in `[project.scripts]`. Folds `config.py` into the CLI
+  and reorganises `scoring.py` / `store.py` (#32).
+- `aelfrice.mcp_server` with eight FastMCP tools mirroring the CLI
+  surface; `pip install aelfrice[mcp]` extra adds the `fastmcp`
+  dependency (#35).
+- `src/aelfrice/slash_commands/` directory with eight markdown slash
+  commands matched 1:1 to CLI subcommands; an invariant test enforces
+  the correspondence (#36).
+- `aelfrice.health` module with regime classifier
+  (insufficient-data / supersede / ignore / balanced) backed by
+  confidence, lock density, and edge density features (#31).
+- Polymorphic onboard state machine in `aelfrice.classification` (#34).
+- `onboard_sessions` schema + CRUD helpers in `aelfrice.store` (#33).
+
+### Fixed
+
+- FTS5 query special characters are now escaped in `search_beliefs`
+  (#30).
+
+## [0.5.0] - 2026-04-26
+
+Scanner milestone — onboarding from a project directory.
+
+### Added
+
+- `aelfrice.scanner` package with `scan_repo` orchestrator combining
+  three extractors (filesystem walk, git log, AST) with the
+  classification module and the store (#28).
+- Filesystem-walk extractor (#25), git-log extractor (#26), and AST
+  extractor (#27).
+- `aelfrice.classification` with `TYPE_PRIORS` and a regex fallback
+  (#24).
+- End-to-end regression test for the onboarding flow (#29).
+
+## [0.4.0] - 2026-04-26
+
+Feedback-loop milestone — the central `apply_feedback` endpoint.
+
+### Added
+
+- `apply_feedback` endpoint in `aelfrice.feedback` performing
+  Beta-Bernoulli updates and writing to the `feedback_history` table
+  (#19).
+- `feedback_history` table + `Store` helpers (#18).
+- Demotion-pressure-on-contradiction-edge: contradicting feedback
+  against a locked belief now increments `demotion_pressure` (#20).
+- Auto-demote locked belief when `demotion_pressure` crosses threshold
+  (#21).
+- No-LLM correction detector in `aelfrice.correction` (#22).
+- End-to-end regression test for the feedback loop (#23).
+
+## [0.3.0] - 2026-04-26
+
+Retrieval milestone — two-layer L0 locked + L1 FTS5 BM25.
+
+### Added
+
+- `aelfrice.retrieval` module with L0 locked-belief auto-load and L1
+  FTS5 BM25 keyword search. Token-budgeted output. No HRR, no BFS
+  multi-hop, no entity-index in the v1.0 line (#14).
+- Lock test enforcing L0-before-L1 ordering invariant in retrieval
+  output (#15).
+- Property test: token-budget invariant holds across budget magnitudes
+  (#17).
+
+### Changed
+
+- Pytest configured with `pytest-timeout` (5s default) and registered
+  markers; subprocess-driven tests (v0.6.0+) override per-test (#16).
+
+## [0.2.0] - 2026-04-26
+
+Scoring milestone — Beta-Bernoulli posterior + decay.
+
+### Added
+
+- `aelfrice.scoring` with posterior mean, type-specific half-life decay
+  (with lock-floor short-circuit), and a basic relevance combiner; plus
+  the `test_bayesian_inertia` property test (#8).
+- `test_decay_required` property test confirming decay actually moves
+  posteriors over time (#9).
+- `test_lock_floor_sharp` property test confirming a `user`-locked
+  belief does not decay (#10).
+
+### Changed
+
+- Pyright strict mode enabled across `src/aelfrice` and `tests` (#12).
+
+### Fixed
+
+- `requirement` belief half-life corrected to 720h per spec (#11).
+
+### Documentation
+
+- README test-count corrected (#13).
+
+## [0.1.0] - 2026-04-26
+
+Foundation milestone — store, models, config.
+
+### Added
+
+- `aelfrice.models`: `Belief` / `Edge` dataclasses plus enum-style
+  module-level constants for belief / edge / lock types; `aelfrice.config`
+  with type half-lives and broker-attenuation parameters (#4).
+- `aelfrice.store` with SQLite WAL journaling, FTS5 full-text search,
+  CRUD for beliefs and edges, broker-confidence-attenuated
+  `propagate_valence`, and `demotion_pressure` read/write (#5).
+- Property test: `propagate_valence` broker-attenuation invariant (#6).
+- Round-trip test for `demotion_pressure` reads + writes (#7).
+- Initial repo scaffold: pyproject, README, GitHub Actions workflows,
+  scan configs (commit `67b4343`).
+
+[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/robotrocketscience/aelfrice/releases/tag/v0.7.0
+[0.6.0]: https://github.com/robotrocketscience/aelfrice/compare/8b45b77...c088314
+[0.5.0]: https://github.com/robotrocketscience/aelfrice/compare/8fdee15...a2f6841
+[0.4.0]: https://github.com/robotrocketscience/aelfrice/compare/259e9a6...488bd6c
+[0.3.0]: https://github.com/robotrocketscience/aelfrice/compare/8b45b77...8fdee15
+[0.2.0]: https://github.com/robotrocketscience/aelfrice/compare/f7afd65...8b45b77
+[0.1.0]: https://github.com/robotrocketscience/aelfrice/commit/f7afd65
