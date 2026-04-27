@@ -186,6 +186,21 @@ class Store:
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
 
+    def list_locked_beliefs(self) -> list[Belief]:
+        """All beliefs with lock_level != 'none', ordered by locked_at DESC.
+
+        Used by the L0 retrieval layer: locked beliefs are user-asserted
+        ground truth and auto-load above any keyword-search results.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT * FROM beliefs
+            WHERE lock_level != 'none'
+            ORDER BY locked_at DESC, id ASC
+            """
+        )
+        return [_row_to_belief(r) for r in cur.fetchall()]
+
     # --- Edge CRUD --------------------------------------------------------
 
     def insert_edge(self, e: Edge) -> None:
