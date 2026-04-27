@@ -4,10 +4,12 @@
 
 > Bayesian memory for AI coding agents. Local-only. Auditable.
 
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![CI](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml/badge.svg)](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/aelfrice.svg)](https://pypi.org/project/aelfrice/)
+[![Python](https://img.shields.io/pypi/pyversions/aelfrice.svg)](https://pypi.org/project/aelfrice/)
+[![License](https://img.shields.io/pypi/l/aelfrice.svg)](LICENSE)
+[![CI](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml/badge.svg)](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml)
+[![Staging Gate](https://github.com/robotrocketscience/aelfrice/actions/workflows/staging-gate.yml/badge.svg)](https://github.com/robotrocketscience/aelfrice/actions/workflows/staging-gate.yml)
+[![Downloads](https://img.shields.io/pypi/dm/aelfrice.svg)](https://pypi.org/project/aelfrice/)
 
 > [!NOTE]
 > v1.0 ships the surface — local SQLite store, retrieval, the `apply_feedback` endpoint, the onboarding scanner, an 11-command CLI, an MCP server, Claude Code wiring, and a reproducible benchmark harness. **Retrieval ranking is BM25-only at v1.0** — feedback updates the math but doesn't yet move ranking. The v1.x line wires posterior into ranking and closes [known issues](docs/LIMITATIONS.md#known-issues-at-v10).
