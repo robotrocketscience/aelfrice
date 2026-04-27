@@ -21,6 +21,8 @@ No GPU. No network. No telemetry. No cloud.
 SQLite at ~/.aelfrice/memory.db. That's the whole runtime.
 ```
 
+Every retrieval result is traceable to the beliefs and rules that produced it. Every state of the system is reproducible from its write log. We are not aware of another agent-memory system that combines bit-level reproducibility, named-rule traceability, write-log historical reconstruction, and audit comprehensible to a non-technical reviewer as a single system property. See [PHILOSOPHY § Determinism is the property](docs/PHILOSOPHY.md#determinism-is-the-property).
+
 ## 60 seconds
 
 ```bash
