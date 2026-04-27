@@ -70,6 +70,29 @@ _SCHEMA: tuple[str, ...] = (
 )
 
 
+def _escape_fts5_query(query: str) -> str:
+    """Convert free-form user input into a safe FTS5 MATCH expression.
+
+    Strategy: tokenize on whitespace, drop tokens that are empty after
+    stripping, double-quote-wrap each remaining token (with embedded
+    `"` doubled per FTS5 syntax), join with spaces. The result is a
+    valid FTS5 query that ANDs the tokens implicitly.
+
+    Empty / whitespace-only input returns the empty string; callers
+    treat that as "no match" without hitting the FTS5 engine.
+    """
+    tokens = query.split()
+    if not tokens:
+        return ""
+    escaped: list[str] = []
+    for t in tokens:
+        if not t:
+            continue
+        inner = t.replace('"', '""')
+        escaped.append(f'"{inner}"')
+    return " ".join(escaped)
+
+
 def _row_to_belief(row: sqlite3.Row) -> Belief:
     return Belief(
         id=row["id"],
@@ -194,7 +217,21 @@ class Store:
         self._conn.commit()
 
     def search_beliefs(self, query: str, limit: int = 20) -> list[Belief]:
-        """FTS5 keyword search over belief content. Ranked by bm25."""
+        """FTS5 keyword search over belief content. Ranked by bm25.
+
+        User input is escaped before being passed to FTS5: each
+        whitespace-separated token is wrapped in double quotes (with
+        embedded `"` doubled per FTS5 syntax) and joined with spaces
+        (implicit AND). This protects against FTS5 special characters
+        (., -, /, parens, quotes, AND/OR/NEAR keywords) raising
+        OperationalError on what looks like an ordinary user query.
+
+        Empty / whitespace-only queries return [] without hitting FTS5
+        (which would raise on an empty MATCH expression).
+        """
+        escaped = _escape_fts5_query(query)
+        if not escaped:
+            return []
         cur = self._conn.execute(
             """
             SELECT b.* FROM beliefs b
@@ -203,7 +240,7 @@ class Store:
             ORDER BY bm25(beliefs_fts)
             LIMIT ?
             """,
-            (query, limit),
+            (escaped, limit),
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
 
