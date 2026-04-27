@@ -2,9 +2,9 @@
 
 Half-lives (in hours, converted to seconds below):
     factual     336   (14 days)
+    requirement 720   (30 days)
     preference  2016  (12 weeks)
     correction  4032  (24 weeks)
-    requirement 4032  (24 weeks)
 
 Lock-floor: when a belief's lock_level is "user", decay() is a no-op
 regardless of age (zero work, sharp step). Above the floor decay is
@@ -20,9 +20,9 @@ from aelfrice.models import LOCK_USER, Belief
 _HOUR: Final[float] = 3600.0
 TYPE_HALF_LIFE_SECONDS: Final[dict[str, float]] = {
     "factual": 336.0 * _HOUR,         # 14 days
+    "requirement": 720.0 * _HOUR,     # 30 days
     "preference": 2016.0 * _HOUR,     # 12 weeks
     "correction": 4032.0 * _HOUR,     # 24 weeks
-    "requirement": 4032.0 * _HOUR,    # 24 weeks
 }
 
 # Jeffreys prior -- decay target.
