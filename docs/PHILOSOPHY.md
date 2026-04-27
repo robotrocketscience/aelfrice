@@ -53,7 +53,7 @@ Every dependency is maintenance debt and attack surface. Heavier machinery — v
 ## What this design buys
 
 - **Continuity.** Close the terminal, come back next week, "where were we?" — the memory restores it.
-- **Compounding (by design).** At v1.0 the graph fills during explicit `onboard`/`lock`/`feedback` calls. Automatic write paths and feedback-driven retrieval ranking land in v1.x — see [LIMITATIONS](LIMITATIONS.md#known-issues-at-v10).
+- **Compounding (by design).** At v1.0 the graph fills during explicit `onboard`/`lock`/`feedback` calls. v1.0.1 closes the hook→feedback-history loop so retrievals leave an audit trail. v1.2.0 adds the commit-ingest hook for automatic capture. v1.3 wires the posterior into retrieval ranking. See [LIMITATIONS](LIMITATIONS.md#known-issues-at-v10).
 - **Self-correction.** Stale rules decay. Wrong locks demote. The mechanism notices when reality has moved.
 - **Auditability.** Every belief has a content hash and timestamp. Every feedback event has an audit row. Every score is `α / (α + β)`. Read the database; reproduce the system's claims about itself.
 - **Locality.** No service to fail, no account to lose, no quota to exceed.

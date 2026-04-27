@@ -4,47 +4,61 @@ aelfrice at v1.0 ships the surface but has gaps the v1.x line is closing. Librar
 
 ## Known issues at v1.0
 
-Tracked openly. The v1.x line picks them up.
+Tracked openly. Each item is mapped to its target version below.
 
-### Feedback in retrieval (the big one)
+| Bucket | Theme | Lands |
+|---|---|---|
+| **v1.0.1** | launch fix-up — hook layer + onboard noise + regression baseline | patch |
+| **v1.1.0** | project identity + onboard behavior + cosmetic surface | minor |
+| **v1.2.0** | commit-ingest hook + hook perf + seed files | minor |
+| **v1.3** | retrieval wave (HRR + LLM classification + cross-project federation) | minor, 6-9 wks |
+| **v2.0** | full benchmark suite (LoCoMo, MAB, LongMemEval) + feature parity with the legacy v3 codebase | major |
 
-**Posterior `α` / `β` does not currently drive retrieval ranking.** `store.search_beliefs` orders L1 hits by `bm25(beliefs_fts)` only. So `apply_feedback` updates the math (and the audit log) but doesn't yet move what the agent sees. The benchmark harness ships at v1.0 as the measurement instrument; a v1.x retrieval upgrade that consumes the posterior is the precondition for using it to claim feedback drives accuracy.
+### Feedback in retrieval (the big one) — v1.3
 
-### Hook layer
+**Posterior `α` / `β` does not currently drive retrieval ranking.** `store.search_beliefs` orders L1 hits by `bm25(beliefs_fts)` only. So `apply_feedback` updates the math (and the audit log) but doesn't yet move what the agent sees. The synthetic benchmark harness ships at v1.0 as the measurement instrument; the v1.3 retrieval wave wires the posterior into ranking, which is the precondition for claiming feedback drives accuracy.
 
-- **`aelf --version` does not exist.** Argparse error today. Trivial fix; hasn't landed.
-- **The `aelf-hook` UserPromptSubmit hook may return empty results despite a populated FTS5 index.** Hook fires; no `<aelfrice-memory>` block appears. Workaround: drop to CLI (`aelf search`, `aelf locked`).
-- **The hook now calls `aelfrice.retrieval.retrieve()` directly** — that's a v0.7→v1.0 upgrade from the inline FTS5 fallback that earlier versions used.
+### Hook layer — v1.0.1
 
-### Onboarding
+- **`aelf --version` does not exist.** Argparse error today. ~5 LOC + unit test.
+- **The `aelf-hook` UserPromptSubmit hook may return empty results despite a populated FTS5 index.** Hook fires; no `<aelfrice-memory>` block appears. Workaround: drop to CLI.
+- **Hook bypasses `aelfrice.retrieval.retrieve()` and does not record retrievals as feedback events.** Highest-impact gap. The hook uses an inline FTS5 shim, skipping L0 locked-belief auto-load and feedback-history logging. The "feedback-driven learning" claim depends on this loop closing. v1.0.1 introduces `src/aelfrice/hook_search.py` (`search_for_prompt` + `record_retrieval`) and replaces the shim.
 
-- **Noise filtering is not wired into the synchronous onboard path.** Markdown headings, checklist items, three-word fragments, and license-header boilerplate currently surface as candidate beliefs. Use the polymorphic MCP onboard (host-LLM classification) for higher signal until the filters land.
-- **No git-recency weighting.** Pre-migration content from old branches surfaces as first-class beliefs alongside current code.
-- **Onboard performance.** Believed batched in v0.6+ via WAL + transaction batching, but not yet measured at scale on a 50k-LOC project for v1.0 sign-off.
+### Onboarding — v1.0.1 + v1.1.0
 
-### Feedback semantics
+- **Noise filtering not wired into the synchronous onboard path.** Markdown headings, checklist items, three-word fragments, license-header boilerplate currently surface as candidate beliefs. Use the polymorphic MCP onboard (host-LLM classification) for higher signal. Filters land in v1.0.1 as a separate `noise_filter` module.
+- **Onboard performance.** Believed batched in v0.6+ via WAL + transaction batching; v1.0.1 adds a regression benchmark verifying < 60s on a 50k-LOC project.
+- **No git-recency weighting.** Pre-migration content from old branches surfaces as first-class beliefs. v1.1.0.
+- **No promotion path from `agent_inferred` to `user_validated`.** Beliefs from onboard stay `agent_inferred` unless explicitly locked. v1.1.0.
 
-- **Contradictions are detected but not auto-resolved.** Search output prints `WARNING: CONTRADICTS [X] vs [Y]` and continues. There is no default tie-breaker (timestamp, source-tier, git-blame recency). Until v1.x: review contradictions manually with `aelf locked --pressured`.
-- **No promotion path from `agent_inferred` to `user_validated`.** Beliefs created during onboard are tagged `agent_inferred` and stay that way unless explicitly locked. The math is sound at the `(α, β)` level; the tier-promotion mechanism isn't in the data flow yet.
+### Feedback semantics — v1.0.1
 
-### Project identity
+- **Contradictions detected but not auto-resolved.** Search output prints `WARNING: CONTRADICTS [X] vs [Y]` and continues. v1.0.1 adds a default tie-breaker (`user_stated > user_corrected > document_recent > agent_inferred`, then ISO timestamp) that auto-supersedes the loser. Until then: review with `aelf locked --pressured`.
 
-- **The default DB is keyed by `SHA256(cwd)`.** Worktree, directory move, fresh clone — each produces a different orphan DB. The local-only promise breaks the moment you move the directory. Workaround today: pin with `AELFRICE_DB=/abs/path/.aelfrice.db`. Long-term plan: `.git/aelfrice/memory.db` (in-repo storage) plus `.aelfrice.toml` (cross-machine identity).
+### Project identity — v1.1.0
 
-### Cosmetic
+- **The default DB is keyed by `SHA256(cwd)`.** Worktree, directory move, fresh clone — each produces a different orphan DB. Workaround today: pin with `AELFRICE_DB=/abs/path/.aelfrice.db`. v1.1.0 lands `.git/aelfrice/memory.db` (in-repo storage) and `.aelfrice.toml` (cross-machine identity), plus orphan-DB cleanup tooling and worktree concurrency tests.
+
+### Cosmetic — v1.1.0
 
 - **`edges` not yet renamed to `threads`** in user-facing CLI output and MCP tool descriptions. Decision recorded; not implemented.
-- **`aelf health` and `aelf status` are aliased.** They should be split: `status` = counts snapshot, `health` = a real graph auditor (orphan edges, isolated clusters, FTS5 sync, locked-belief contradictions, decay anomalies).
+- **`aelf health` and `aelf status` are aliased.** v1.1.0 splits them: `status` = counts snapshot, `health` = real graph auditor (orphan edges, isolated clusters, FTS5 sync, locked-belief contradictions, decay anomalies).
 
-### Harness conflict
+### Auto-capture — v1.2.0
 
-- **Claude Code's built-in auto-memory directive competes for write authority with the aelfrice MCP.** When the harness instructs the model to "save a memory," the write goes to a flat `.md` file rather than to a belief. Result: the graph stops growing after explicit `onboard` / `lock` / `feedback` calls. This is a CLAUDE.md / harness-level fix, not a code change in aelfrice itself.
+- **No commit-ingest PostToolUse hook.** Beliefs accumulate only on explicit `onboard` / `lock` / `feedback`. v1.2.0 adds an automatic capture path so the graph grows during normal sessions.
+- **Seed files for git-tracked knowledge bootstrapping.** `.aelfrice/seed.md` committed to a repo, auto-ingested on first onboard. v1.2.0.
 
-## Deferred to v1.x (with evidence required)
+### Harness conflict — out of scope
+
+- **Claude Code's built-in auto-memory directive competes for write authority with the aelfrice MCP.** Writes go to flat `.md` files instead of beliefs. CLAUDE.md / harness-level fix, not an aelfrice code change. Tracked separately.
+
+## Deferred to v1.3 / v2.0 (with evidence required)
 
 These existed in the legacy v2.0 codebase. Each will be reintroduced with a benchmark, an experiment, or a clear use case justifying inclusion.
 
-`wonder`, `reason`, `core`, `unlock`, `delete`, `confirm` commands. Obsidian export/sync. Cross-project memory federation. Vector embeddings, ANN, semantic similarity. HRR / structural binding. Multi-hop graph retrieval. Snapshot / timeline / evolution / diff tools.
+- **v1.3 retrieval wave:** HRR / vocabulary bridging, multi-hop graph retrieval, LLM-Haiku classification (~$0.005/session), cross-project knowledge federation (#109).
+- **v2.0:** full academic benchmark suite (LoCoMo, MAB, LongMemEval, StructMemEval, AmaBench) + the `wonder`, `reason`, `core`, `unlock`, `delete`, `confirm` commands. Snapshot / timeline / evolution / diff tools. Obsidian export/sync. Vector embeddings and ANN are NOT planned for v2.0 — `aelfrice` stays SQLite + FTS5 by default at every milestone in this list.
 
 ## Surface limits at v1.0
 

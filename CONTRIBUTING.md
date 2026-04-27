@@ -36,14 +36,17 @@ Body should include:
 
 Don't include `~/.aelfrice/memory.db` from a real project — it contains your private beliefs. Reproduce on a scratch DB (`AELFRICE_DB=/tmp/scratch.db`) and share that.
 
-## What's likely to land in v1.x
+## What's likely to land where
 
-- **Posterior in retrieval ranking.** Today `apply_feedback` updates `(α, β)` but ranking is BM25-only. Wiring posterior into ordering is the precondition for using the bench harness to claim feedback drives accuracy.
-- **Per-project DB defaults.** Path-keyed databases so per-project memory is automatic, surviving worktrees / clones / moves.
-- **Onboard noise filtering.** Drop markdown headings, checklist items, license boilerplate, near-duplicates before insertion.
-- **Benchmarks against LongMemEval.** Move beyond the synthetic 16-belief × 16-query harness.
-- **Cross-project read-only mode.** Port from the legacy v2.0 codebase.
-- **The `wonder` and `reason` commands.** Reintroduced with evidence.
+The v1.x roadmap is bucketed. See [LIMITATIONS](docs/LIMITATIONS.md#known-issues-at-v10) for each issue's target version.
+
+- **v1.0.1** — launch fix-up. Hook → `aelfrice.retrieval.retrieve()` rewrite + `feedback_history` recording (highest-impact gap). `aelf --version` flag. Onboard noise filters. CONTRADICTS auto-supersession. Onboard performance regression baseline.
+- **v1.1.0** — project identity (`.git/aelfrice/memory.db`, `.aelfrice.toml`, orphan-DB cleanup, worktree concurrency). Onboard behavior (git-recency weighting, `agent_inferred` → `user_validated` promotion). Cosmetic surface (edges→threads, split `aelf status` from `aelf health`).
+- **v1.2.0** — commit-ingest PostToolUse hook for automatic capture. Full hook performance audit. Seed files for git-tracked knowledge bootstrapping.
+- **v1.3** — retrieval wave. HRR / vocabulary bridging. LLM-Haiku classification on the onboard path (~$0.005/session, opt-in). Cross-project knowledge federation. Posterior consumed in ranking. 6–9 weeks estimated.
+- **v2.0** — full academic benchmark suite (LoCoMo, MAB, LongMemEval, StructMemEval, AmaBench) + the v2-line feature surface (`wonder`, `reason`, `core`, snapshot/timeline tools).
+
+Highest-leverage contributions right now are tied to **v1.0.1** — the launch fix-up — because they unblock the "feedback-driven memory" claim end-to-end.
 
 ## What's not on the path
 
