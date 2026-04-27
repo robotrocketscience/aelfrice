@@ -126,3 +126,22 @@ class FeedbackEvent:
     valence: float
     source: str
     created_at: str
+
+
+@dataclass
+class Session:
+    """Ephemeral session identifier produced by MemoryStore.create_session.
+
+    The public v1.0.0 schema does not persist sessions; this dataclass
+    exists so academic-suite benchmark adapters that group ingest calls
+    by session_id (LongMemEval, LoCoMo, MAB, StructMemEval, AMA-Bench)
+    have a stable handle to pass through. Lab v2.0.0 persists this as
+    a full sessions table with token/correction/velocity tracking; the
+    public shim exposes only what the adapters consume.
+    """
+
+    id: str
+    started_at: str
+    completed_at: str | None
+    model: str | None
+    project_context: str | None
