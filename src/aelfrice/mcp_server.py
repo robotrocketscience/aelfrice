@@ -3,7 +3,7 @@
 
 The same surface as the CLI, accessible from any host that speaks the
 Model Context Protocol. The handlers are pure Python — they take a
-`Store` plus structured args and return JSON-shaped dicts. The thin
+`MemoryStore` plus structured args and return JSON-shaped dicts. The thin
 `serve()` shim opens a per-process store at the default path and
 registers the pure handlers as FastMCP tools.
 
@@ -58,7 +58,7 @@ from aelfrice.models import (
 )
 from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 _FEEDBACK_VALENCES: Final[dict[str, float]] = {"used": 1.0, "harmful": -1.0}
 _LOCK_ID_LEN: Final[int] = 16
@@ -83,11 +83,11 @@ def _ensure_parent_dir(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
-def _open_default_store() -> Store:
+def _open_default_store() -> MemoryStore:
     p = db_path()
     if str(p) != ":memory:":
         _ensure_parent_dir(p)
-    return Store(str(p))
+    return MemoryStore(str(p))
 
 
 # --- Pure tool handlers (test target) ----------------------------------
@@ -98,7 +98,7 @@ def _open_default_store() -> Store:
 
 
 def tool_onboard(
-    store: Store,
+    store: MemoryStore,
     *,
     path: str | None = None,
     session_id: str | None = None,
@@ -117,7 +117,7 @@ def tool_onboard(
     return _onboard_status(store)
 
 
-def _onboard_start(store: Store, repo_path: str) -> dict[str, Any]:
+def _onboard_start(store: MemoryStore, repo_path: str) -> dict[str, Any]:
     # CI / no-host-agent environments use scan_repo for sync onboarding;
     # the polymorphic state machine is for hosts that can classify in
     # their own context. The MCP server always has a host (that's what
@@ -137,7 +137,7 @@ def _onboard_start(store: Store, repo_path: str) -> dict[str, Any]:
 
 
 def _onboard_accept(
-    store: Store,
+    store: MemoryStore,
     session_id: str,
     classifications: Sequence[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -161,7 +161,7 @@ def _onboard_accept(
     }
 
 
-def _onboard_status(store: Store) -> dict[str, Any]:
+def _onboard_status(store: MemoryStore) -> dict[str, Any]:
     pending = store.list_pending_onboard_sessions()
     return {
         "kind": "onboard.status",
@@ -170,7 +170,7 @@ def _onboard_status(store: Store) -> dict[str, Any]:
     }
 
 
-def tool_onboard_sync(store: Store, *, path: str) -> dict[str, Any]:
+def tool_onboard_sync(store: MemoryStore, *, path: str) -> dict[str, Any]:
     """Synchronous fallback that runs the regex-classifier pipeline
     instead of the host handshake. Exposed for hosts that explicitly
     want the no-LLM onboard path (CI runs, scripted setup). Not a
@@ -187,7 +187,7 @@ def tool_onboard_sync(store: Store, *, path: str) -> dict[str, Any]:
 
 
 def tool_search(
-    store: Store, *, query: str, budget: int = DEFAULT_TOKEN_BUDGET,
+    store: MemoryStore, *, query: str, budget: int = DEFAULT_TOKEN_BUDGET,
 ) -> dict[str, Any]:
     hits = retrieve(store, query, token_budget=budget)
     return {
@@ -205,7 +205,7 @@ def tool_search(
     }
 
 
-def tool_lock(store: Store, *, statement: str) -> dict[str, Any]:
+def tool_lock(store: MemoryStore, *, statement: str) -> dict[str, Any]:
     bid = _lock_id_for(statement)
     existing = store.get_belief(bid)
     now = _utc_now_iso()
@@ -232,7 +232,7 @@ def tool_lock(store: Store, *, statement: str) -> dict[str, Any]:
 
 
 def tool_locked(
-    store: Store, *, pressured: bool = False,
+    store: MemoryStore, *, pressured: bool = False,
 ) -> dict[str, Any]:
     locked = store.list_locked_beliefs()
     if pressured:
@@ -252,7 +252,7 @@ def tool_locked(
     }
 
 
-def tool_demote(store: Store, *, belief_id: str) -> dict[str, Any]:
+def tool_demote(store: MemoryStore, *, belief_id: str) -> dict[str, Any]:
     belief = store.get_belief(belief_id)
     if belief is None:
         return {
@@ -275,7 +275,7 @@ def tool_demote(store: Store, *, belief_id: str) -> dict[str, Any]:
 
 
 def tool_feedback(
-    store: Store,
+    store: MemoryStore,
     *,
     belief_id: str,
     signal: str,
@@ -311,7 +311,7 @@ def tool_feedback(
     }
 
 
-def tool_stats(store: Store) -> dict[str, Any]:
+def tool_stats(store: MemoryStore) -> dict[str, Any]:
     return {
         "kind": "stats.snapshot",
         "beliefs": store.count_beliefs(),
@@ -322,7 +322,7 @@ def tool_stats(store: Store) -> dict[str, Any]:
     }
 
 
-def tool_health(store: Store) -> dict[str, Any]:
+def tool_health(store: MemoryStore) -> dict[str, Any]:
     report = assess_health(store)
     payload: dict[str, Any] = {
         "kind": "health.report",

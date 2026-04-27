@@ -27,7 +27,7 @@ import pytest
 from aelfrice.models import LOCK_USER
 from aelfrice.retrieval import retrieve
 from aelfrice.scanner import scan_repo
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 _GIT_AVAILABLE = shutil.which("git") is not None
 needs_git = pytest.mark.skipif(not _GIT_AVAILABLE, reason="git binary not on PATH")
@@ -84,14 +84,14 @@ def _seed_fixture(root: Path, with_git: bool = True) -> None:
 
 def test_scan_inserts_at_least_one_belief(tmp_path: Path) -> None:
     _seed_fixture(tmp_path, with_git=False)
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     result = scan_repo(s, tmp_path)
     assert result.inserted >= 1
 
 
 def test_doc_paragraph_lands_in_store(tmp_path: Path) -> None:
     _seed_fixture(tmp_path, with_git=False)
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     scan_repo(s, tmp_path)
     hits = s.search_beliefs("regex")
     assert len(hits) >= 1
@@ -99,7 +99,7 @@ def test_doc_paragraph_lands_in_store(tmp_path: Path) -> None:
 
 def test_module_docstring_lands_in_store(tmp_path: Path) -> None:
     _seed_fixture(tmp_path, with_git=False)
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     scan_repo(s, tmp_path)
     hits = s.search_beliefs("scanner")
     assert any("module exposes" in h.content for h in hits)
@@ -108,7 +108,7 @@ def test_module_docstring_lands_in_store(tmp_path: Path) -> None:
 @needs_git
 def test_git_commit_subject_lands_in_store(tmp_path: Path) -> None:
     _seed_fixture(tmp_path, with_git=True)
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     scan_repo(s, tmp_path)
     hits = s.search_beliefs("milestone")
     assert any("v0.5 milestone" in h.content for h in hits)
@@ -119,7 +119,7 @@ def test_git_commit_subject_lands_in_store(tmp_path: Path) -> None:
 
 def test_retrieve_finds_doc_belief_via_l1(tmp_path: Path) -> None:
     _seed_fixture(tmp_path, with_git=False)
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     scan_repo(s, tmp_path)
     hits = retrieve(s, query="regex", token_budget=10_000)
     contents = " ".join(h.content for h in hits)
@@ -130,7 +130,7 @@ def test_retrieve_query_with_no_match_returns_empty_when_no_locks(
     tmp_path: Path,
 ) -> None:
     _seed_fixture(tmp_path, with_git=False)
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     scan_repo(s, tmp_path)
     hits = retrieve(s, query="nonexistentterm12345", token_budget=10_000)
     assert hits == []
@@ -141,7 +141,7 @@ def test_retrieve_query_with_no_match_returns_empty_when_no_locks(
 
 def test_locked_scanned_belief_appears_first(tmp_path: Path) -> None:
     _seed_fixture(tmp_path, with_git=False)
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     scan_repo(s, tmp_path)
     docs = s.search_beliefs("regex")
     assert len(docs) >= 1
@@ -159,7 +159,7 @@ def test_locked_scanned_belief_appears_first(tmp_path: Path) -> None:
 
 def test_rescan_inserts_zero_new_beliefs(tmp_path: Path) -> None:
     _seed_fixture(tmp_path, with_git=False)
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     scan_repo(s, tmp_path)
     second = scan_repo(s, tmp_path)
     assert second.inserted == 0
@@ -167,7 +167,7 @@ def test_rescan_inserts_zero_new_beliefs(tmp_path: Path) -> None:
 
 def test_rescan_total_belief_set_unchanged(tmp_path: Path) -> None:
     _seed_fixture(tmp_path, with_git=False)
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     scan_repo(s, tmp_path)
     ids_one = {b.id for b in s.search_beliefs("regex")} | {
         b.id for b in s.search_beliefs("scanner")
@@ -190,7 +190,7 @@ def test_doc_and_git_with_overlapping_text_remain_distinct(
     text get stored as two distinct beliefs because the source-keyed
     id derivation distinguishes them."""
     _seed_fixture(tmp_path, with_git=True)
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     scan_repo(s, tmp_path)
     hits = s.search_beliefs("regex")
     sources_distinct = len({h.id for h in hits})
@@ -205,7 +205,7 @@ def test_question_in_doc_does_not_land(tmp_path: Path) -> None:
         "what is the project shipping at the next milestone?",
         encoding="utf-8",
     )
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     scan_repo(s, tmp_path)
     # Use a plain alphanumeric query to avoid FTS5 syntax characters.
     # The FTS5-escape bug surfaced by version-string queries like "v0.5"
@@ -228,7 +228,7 @@ def test_scanned_belief_can_be_locked_and_unlocked_by_demotion(
     from aelfrice.models import EDGE_CONTRADICTS, BELIEF_FACTUAL, Belief, Edge, LOCK_NONE
 
     _seed_fixture(tmp_path, with_git=False)
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     scan_repo(s, tmp_path)
     target = s.search_beliefs("regex")[0]
     target.lock_level = LOCK_USER

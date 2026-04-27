@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 # E43: minimum belief count below which the classifier reports
 # `insufficient_data` instead of forcing a regime label. Lowered from
@@ -103,7 +103,7 @@ def _median(sorted_values: list[float]) -> float:
     return (sorted_values[n // 2 - 1] + sorted_values[n // 2]) / 2.0
 
 
-def compute_features(store: Store) -> HealthFeatures:
+def compute_features(store: MemoryStore) -> HealthFeatures:
     """Roll up the store into the five-feature vector the classifier
     consumes. Pure function of the current store state.
 
@@ -212,7 +212,7 @@ def classify_regime(features: HealthFeatures) -> HealthReport:
     )
 
 
-def assess_health(store: Store) -> HealthReport:
+def assess_health(store: MemoryStore) -> HealthReport:
     """Single-call convenience: compute features then classify.
 
     Pure function over the current store state. Deterministic for any

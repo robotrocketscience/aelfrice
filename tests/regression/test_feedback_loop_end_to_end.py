@@ -26,18 +26,18 @@ from aelfrice.models import (
 )
 from aelfrice.retrieval import retrieve
 from aelfrice.scoring import posterior_mean
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 pytestmark = pytest.mark.regression
 
 
-def _seed_store() -> Store:
+def _seed_store() -> MemoryStore:
     """Common fixture: locked belief Y challenged by contradictor X.
 
     X has content matching the search query "main"; Y has content
     matching "master". Edge X -> Y CONTRADICTS. Y is user-locked.
     """
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(Belief(
         id="X",
         content="we always use main as the default branch name",
@@ -68,13 +68,13 @@ def _seed_store() -> Store:
     return s
 
 
-def _y(store: Store) -> Belief:
+def _y(store: MemoryStore) -> Belief:
     got = store.get_belief("Y")
     assert got is not None
     return got
 
 
-def _x(store: Store) -> Belief:
+def _x(store: MemoryStore) -> Belief:
     got = store.get_belief("X")
     assert got is not None
     return got

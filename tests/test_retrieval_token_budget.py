@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.retrieval import retrieve
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 _CHARS_PER_TOKEN = 4.0
 
@@ -53,9 +53,9 @@ def _mk(
     )
 
 
-def _store_with_n_facts(n: int, content_len: int = 200) -> Store:
+def _store_with_n_facts(n: int, content_len: int = 200) -> MemoryStore:
     """N unlocked beliefs, each with content_len chars matching 'fact'."""
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     body = "fact " * (content_len // 5)
     for i in range(n):
         s.insert_belief(_mk(f"F{i}", body[:content_len]))
@@ -74,7 +74,7 @@ def test_output_tokens_at_or_below_budget_when_l0_fits() -> None:
 def test_l0_returned_in_full_even_when_l0_alone_exceeds_budget() -> None:
     """Three locked beliefs, each ~50 tokens; budget 10. All three survive,
     L1 is empty in the output."""
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     big_content = "x" * 200  # ~50 tokens
     s.insert_belief(_mk("L1", big_content, lock_level=LOCK_USER,
                         locked_at="2026-04-26T03:00:00Z"))

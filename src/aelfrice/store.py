@@ -153,7 +153,7 @@ def _row_to_onboard_session(row: sqlite3.Row) -> OnboardSession:
     )
 
 
-class Store:
+class MemoryStore:
     """SQLite store. Pass `:memory:` for tests, a path otherwise."""
 
     def __init__(self, path: str) -> None:

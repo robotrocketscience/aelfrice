@@ -48,9 +48,12 @@ The adapters import the following lab-side modules that have not
 yet ported to the public v1.0.0 release:
 
 - `aelfrice.ingest` — `ingest_turn()` end-to-end ingest pipeline
-- `aelfrice.store.MemoryStore` — public v1.0.0 ships `Store` (rename or alias pending)
 - (transitively) `aelfrice.extraction`, `aelfrice.relationship_detector`,
   `aelfrice.supersession`, `aelfrice.triple_extraction`
+
+The `Store` → `MemoryStore` rename landed in P2 (`feat/p2-ingest-port`)
+ahead of the ingest port itself; adapters now find the class they
+expect.
 
 These ports are scheduled in P2/P3/P4 of the v2.0.0 milestone plan
 (see private `aelfrice-lab/docs/V2_BENCHMARK_MILESTONE_PLAN.md`).

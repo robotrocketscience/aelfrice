@@ -15,7 +15,7 @@ import pytest
 
 from aelfrice.cli import db_path, main
 from aelfrice.models import LOCK_USER
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 
 @pytest.fixture(autouse=True)
@@ -70,7 +70,7 @@ def test_onboard_inserts_beliefs_in_db(tmp_path: Path,
     code, out = _run("onboard", str(repo))
     assert code == 0
     assert "added" in out
-    s = Store(str(isolated_db))
+    s = MemoryStore(str(isolated_db))
     try:
         assert s.count_beliefs() >= 1
     finally:
@@ -84,7 +84,7 @@ def test_lock_inserts_locked_belief(isolated_db: Path) -> None:
     code, out = _run("lock", "we always sign commits with ssh")
     assert code == 0
     assert "locked:" in out
-    s = Store(str(isolated_db))
+    s = MemoryStore(str(isolated_db))
     try:
         assert s.count_locked() == 1
     finally:
@@ -106,7 +106,7 @@ def test_locked_pressured_filters_to_pressured_only(isolated_db: Path) -> None:
     assert "no pressured locks" in out
 
     # Manually pressure the lock so the next call sees it.
-    s = Store(str(isolated_db))
+    s = MemoryStore(str(isolated_db))
     try:
         for b in s.list_locked_beliefs():
             b.demotion_pressure = 2
@@ -120,7 +120,7 @@ def test_locked_pressured_filters_to_pressured_only(isolated_db: Path) -> None:
 
 def test_demote_removes_user_lock(isolated_db: Path) -> None:
     _run("lock", "we always sign commits with ssh")
-    s = Store(str(isolated_db))
+    s = MemoryStore(str(isolated_db))
     try:
         bid = s.list_locked_beliefs()[0].id
     finally:
@@ -128,7 +128,7 @@ def test_demote_removes_user_lock(isolated_db: Path) -> None:
     code, out = _run("demote", bid)
     assert code == 0
     assert "demoted" in out
-    s = Store(str(isolated_db))
+    s = MemoryStore(str(isolated_db))
     try:
         b = s.get_belief(bid)
         assert b is not None
@@ -147,7 +147,7 @@ def test_demote_already_unlocked_exits_zero_with_message(
 ) -> None:
     """Demoting a belief that is already unlocked is a no-op success."""
     _run("lock", "the source of truth is the manifest")
-    s = Store(str(isolated_db))
+    s = MemoryStore(str(isolated_db))
     try:
         bid = s.list_locked_beliefs()[0].id
     finally:
@@ -163,7 +163,7 @@ def test_demote_already_unlocked_exits_zero_with_message(
 
 def test_feedback_used_increments_alpha(isolated_db: Path) -> None:
     _run("lock", "the source of truth is the manifest")
-    s = Store(str(isolated_db))
+    s = MemoryStore(str(isolated_db))
     try:
         bid = s.list_locked_beliefs()[0].id
         pre = s.get_belief(bid)
@@ -173,7 +173,7 @@ def test_feedback_used_increments_alpha(isolated_db: Path) -> None:
         s.close()
     code, _ = _run("feedback", bid, "used")
     assert code == 0
-    s = Store(str(isolated_db))
+    s = MemoryStore(str(isolated_db))
     try:
         post = s.get_belief(bid)
         assert post is not None

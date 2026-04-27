@@ -26,12 +26,12 @@ from aelfrice.models import (
     ONBOARD_STATE_PENDING,
     Belief,
 )
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 
 @pytest.fixture
-def store() -> Store:
-    return Store(":memory:")
+def store() -> MemoryStore:
+    return MemoryStore(":memory:")
 
 
 def _populate_repo(root: Path) -> None:
@@ -49,7 +49,7 @@ def _populate_repo(root: Path) -> None:
     )
 
 
-def test_start_returns_nonempty_session_id(store: Store, tmp_path: Path) -> None:
+def test_start_returns_nonempty_session_id(store: MemoryStore, tmp_path: Path) -> None:
     _populate_repo(tmp_path)
     result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
     assert result.session_id
@@ -57,7 +57,7 @@ def test_start_returns_nonempty_session_id(store: Store, tmp_path: Path) -> None
 
 
 def test_start_persists_session_in_pending_state(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
@@ -66,7 +66,7 @@ def test_start_persists_session_in_pending_state(
     assert session.state == ONBOARD_STATE_PENDING
 
 
-def test_start_session_records_repo_path(store: Store, tmp_path: Path) -> None:
+def test_start_session_records_repo_path(store: MemoryStore, tmp_path: Path) -> None:
     _populate_repo(tmp_path)
     result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
     session = store.get_onboard_session(result.session_id)
@@ -74,14 +74,14 @@ def test_start_session_records_repo_path(store: Store, tmp_path: Path) -> None:
     assert session.repo_path == str(tmp_path)
 
 
-def test_start_returns_at_least_one_sentence(store: Store, tmp_path: Path) -> None:
+def test_start_returns_at_least_one_sentence(store: MemoryStore, tmp_path: Path) -> None:
     _populate_repo(tmp_path)
     result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
     assert len(result.sentences) > 0
 
 
 def test_sentences_have_contiguous_indices_from_zero(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
@@ -90,7 +90,7 @@ def test_sentences_have_contiguous_indices_from_zero(
 
 
 def test_candidates_json_round_trips_sentences(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
@@ -102,14 +102,14 @@ def test_candidates_json_round_trips_sentences(
 
 
 def test_start_on_empty_dir_returns_empty_sentence_list(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
     assert result.sentences == []
 
 
 def test_start_on_empty_dir_still_creates_session(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
     session = store.get_onboard_session(result.session_id)
@@ -117,7 +117,7 @@ def test_start_on_empty_dir_still_creates_session(
 
 
 def test_start_skips_already_present_beliefs(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     first = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
@@ -132,14 +132,14 @@ def test_start_skips_already_present_beliefs(
     assert second.n_already_present > 0
 
 
-def test_accept_unknown_session_raises(store: Store) -> None:
+def test_accept_unknown_session_raises(store: MemoryStore) -> None:
     with pytest.raises(ValueError, match="unknown session"):
         accept_classifications(store, "no-such-session", [],
                                 now="2026-04-26T01:00:00Z")
 
 
 def test_accept_already_completed_session_raises(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
@@ -151,7 +151,7 @@ def test_accept_already_completed_session_raises(
 
 
 def test_accept_invalid_belief_type_raises(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
@@ -161,7 +161,7 @@ def test_accept_invalid_belief_type_raises(
                                 now="2026-04-26T01:00:00Z")
 
 
-def test_accept_marks_session_completed(store: Store, tmp_path: Path) -> None:
+def test_accept_marks_session_completed(store: MemoryStore, tmp_path: Path) -> None:
     _populate_repo(tmp_path)
     result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
     accept_classifications(store, result.session_id, [],
@@ -172,7 +172,7 @@ def test_accept_marks_session_completed(store: Store, tmp_path: Path) -> None:
 
 
 def test_accept_writes_completed_at_timestamp(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
@@ -184,7 +184,7 @@ def test_accept_writes_completed_at_timestamp(
 
 
 def test_accept_inserts_one_belief_per_persisting_classification(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
@@ -199,7 +199,7 @@ def test_accept_inserts_one_belief_per_persisting_classification(
 
 
 def test_accept_skips_non_persisting_classifications(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
@@ -216,7 +216,7 @@ def test_accept_skips_non_persisting_classifications(
 
 
 def test_accept_counts_unclassified_sentences(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
@@ -233,7 +233,7 @@ def test_accept_counts_unclassified_sentences(
 
 
 def test_accept_assigns_host_provided_belief_type(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
@@ -253,7 +253,7 @@ def test_accept_assigns_host_provided_belief_type(
 
 
 def test_accept_skips_existing_beliefs_inserted_after_session_started(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
@@ -282,7 +282,7 @@ def test_accept_skips_existing_beliefs_inserted_after_session_started(
 
 
 def test_two_starts_produce_distinct_session_ids(
-    store: Store, tmp_path: Path
+    store: MemoryStore, tmp_path: Path
 ) -> None:
     _populate_repo(tmp_path)
     a = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")

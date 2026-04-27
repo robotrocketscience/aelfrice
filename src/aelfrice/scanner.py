@@ -8,7 +8,7 @@ Three extractors only in v1.0 (pre-commit `MVP_SCOPE.md`):
 Each extractor returns a list of `SentenceCandidate(text, source)`. The
 `scan_repo` orchestrator combines them, classifies each candidate via
 `classification.classify_sentence`, and inserts the persistable results
-as Beliefs into a Store.
+as Beliefs into a MemoryStore.
 
 The other five extractors from the previous codebase (HRR-related,
 doc-cross-reference, citation, sentence-decomposition, structural) are
@@ -27,7 +27,7 @@ from typing import Final
 
 from aelfrice.classification import classify_sentence
 from aelfrice.models import LOCK_NONE, Belief
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 # Directories the scanner never descends into. Standard "build artefact"
 # locations and version-control internals.
@@ -79,7 +79,7 @@ class SentenceCandidate:
 
 
 def scan_repo(
-    store: Store,
+    store: MemoryStore,
     root: Path,
     now: str | None = None,
 ) -> ScanResult:
@@ -88,7 +88,7 @@ def scan_repo(
 
     Idempotent: a belief id is `sha256(source\\x00text)[:16]`, so
     re-scanning the same tree produces no duplicates. Existing beliefs
-    are detected via `Store.get_belief(id)` and skipped.
+    are detected via `MemoryStore.get_belief(id)` and skipped.
 
     Non-persistable candidates (classifier returned `persist=False` —
     empty paragraphs, question-form sentences) are counted in

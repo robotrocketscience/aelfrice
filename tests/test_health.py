@@ -28,7 +28,7 @@ from aelfrice.models import (
     Belief,
     Edge,
 )
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 
 
 def _mk(
@@ -57,7 +57,7 @@ def _mk(
 
 
 def test_empty_store_features_zero() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     f = compute_features(s)
     assert f.n_beliefs == 0
     assert f.confidence_mean == 0.0
@@ -65,7 +65,7 @@ def test_empty_store_features_zero() -> None:
 
 
 def test_single_belief_features_match_belief() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("b1", alpha=3.0, beta=1.0))
     f = compute_features(s)
     assert f.n_beliefs == 1
@@ -74,7 +74,7 @@ def test_single_belief_features_match_belief() -> None:
 
 
 def test_three_beliefs_confidence_mean_is_average() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("b1", alpha=4.0, beta=1.0))  # 0.8
     s.insert_belief(_mk("b2", alpha=2.0, beta=2.0))  # 0.5
     s.insert_belief(_mk("b3", alpha=1.0, beta=4.0))  # 0.2
@@ -83,7 +83,7 @@ def test_three_beliefs_confidence_mean_is_average() -> None:
 
 
 def test_odd_count_median_is_middle_element() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("b1", alpha=4.0, beta=1.0))  # 0.8
     s.insert_belief(_mk("b2", alpha=2.0, beta=2.0))  # 0.5
     s.insert_belief(_mk("b3", alpha=1.0, beta=4.0))  # 0.2
@@ -92,7 +92,7 @@ def test_odd_count_median_is_middle_element() -> None:
 
 
 def test_even_count_median_averages_middle_two() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("b1", alpha=4.0, beta=1.0))  # 0.8
     s.insert_belief(_mk("b2", alpha=2.0, beta=2.0))  # 0.5
     s.insert_belief(_mk("b3", alpha=1.0, beta=4.0))  # 0.2
@@ -103,14 +103,14 @@ def test_even_count_median_averages_middle_two() -> None:
 
 
 def test_lock_per_1000_zero_when_no_locks() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("b1", alpha=1.0, beta=1.0))
     f = compute_features(s)
     assert f.lock_per_1000 == 0.0
 
 
 def test_lock_per_1000_scaled_correctly() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     # 1 of 4 locked -> 250 per 1000.
     s.insert_belief(_mk("b1", 1.0, 1.0))
     s.insert_belief(_mk("b2", 1.0, 1.0))
@@ -122,14 +122,14 @@ def test_lock_per_1000_scaled_correctly() -> None:
 
 
 def test_edge_per_belief_zero_when_no_edges() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("b1", 1.0, 1.0))
     f = compute_features(s)
     assert f.edge_per_belief == 0.0
 
 
 def test_edge_per_belief_one_when_one_edge_per_belief() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     s.insert_belief(_mk("a", 1.0, 1.0))
     s.insert_belief(_mk("b", 1.0, 1.0))
     s.insert_edge(Edge(src="a", dst="b", type=EDGE_SUPPORTS, weight=1.0))
@@ -258,19 +258,19 @@ def test_classification_confidence_in_unit_range() -> None:
 
 
 def test_assess_health_empty_store_insufficient_data() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     r = assess_health(s)
     assert r.regime == REGIME_INSUFFICIENT_DATA
 
 
 def test_assess_health_returns_health_report_typed() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     r = assess_health(s)
     assert isinstance(r, HealthReport)
 
 
 def test_assess_health_n_beliefs_matches_store() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     for i in range(7):
         s.insert_belief(_mk(f"b{i}", 1.0, 1.0))
     r = assess_health(s)
@@ -278,7 +278,7 @@ def test_assess_health_n_beliefs_matches_store() -> None:
 
 
 def test_assess_health_under_threshold_yields_insufficient_data() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     for i in range(MIN_BELIEFS - 1):
         s.insert_belief(_mk(f"b{i}", 1.0, 1.0))
     r = assess_health(s)
@@ -286,7 +286,7 @@ def test_assess_health_under_threshold_yields_insufficient_data() -> None:
 
 
 def test_assess_health_at_threshold_yields_a_real_regime() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     for i in range(MIN_BELIEFS):
         s.insert_belief(_mk(f"b{i}", 4.0, 1.0))  # supersede-shaped
     r = assess_health(s)
@@ -297,7 +297,7 @@ def test_assess_health_at_threshold_yields_a_real_regime() -> None:
 
 
 def test_repeated_assessment_returns_same_regime() -> None:
-    s = Store(":memory:")
+    s = MemoryStore(":memory:")
     for i in range(MIN_BELIEFS):
         s.insert_belief(_mk(f"b{i}", 4.0, 1.0))
     one = assess_health(s)
