@@ -37,7 +37,7 @@ Tracked openly. Each item is mapped to its target version below.
 
 ### Project identity — v1.1.0
 
-- **The default DB is keyed by `SHA256(cwd)`.** Worktree, directory move, fresh clone — each produces a different orphan DB. Workaround today: pin with `AELFRICE_DB=/abs/path/.aelfrice.db`. v1.1.0 lands `.git/aelfrice/memory.db` (in-repo storage) and `.aelfrice.toml` (cross-machine identity), plus orphan-DB cleanup tooling and worktree concurrency tests.
+- **The default DB is keyed by `SHA256(cwd)`.** Worktree and directory rename each produce a different orphan DB. Workaround today: pin with `AELFRICE_DB=/abs/path/.aelfrice.db`. v1.1.0 lands `.git/aelfrice/memory.db` (in-repo storage; `.git/` is not git-tracked, so the brain graph never crosses the git boundary), plus orphan-DB cleanup tooling and worktree concurrency tests. Note that fresh clones intentionally start with an empty store — the brain graph stays on the machine it was written on (see [§ Sharing or sync of brain-graph content](#sharing-or-sync-of-brain-graph-content)). Bootstrap a clone with `aelf onboard .`.
 
 ### Cosmetic — v1.1.0
 
@@ -91,6 +91,24 @@ aelfrice is not optimised for "answer arbitrary questions over a large conversat
 ### Probabilistic retrieval-relevance
 
 Retrieval relevance is computed deterministically from BM25 scores plus typed-edge weights. There is no learned re-ranker, no neural relevance model, and no fine-tuning path. Relevance quality is improved by: better tokenisation, better Layer 0 query analysis, better edge inference at write time. None of these introduce non-determinism into the retrieval path.
+
+### Sharing or sync of brain-graph content
+
+aelfrice ships no mechanism for exporting, syncing, or distributing memory contents between users, machines, or projects. The brain graph stays on the machine it was written on. There is no `aelf seed export`, no `.aelfrice/seed/` git-tracked directory, no cross-machine sync, no team-shared store, and no cross-project federation in the default install or any planned release.
+
+This is a scope choice, not a missing feature. The local-only contract is what makes aelfrice's privacy, determinism, and audit guarantees meaningful:
+
+- **Privacy.** A brain graph derived from real session activity contains absolute filesystem paths, hostnames, internal URLs, identifiers from git config, project-internal architecture details, names from commit history, and content the agent inferred from chat context. None of that is suitable for cross-machine or cross-user distribution by default, and no per-belief allowlist mechanism is reliable enough to make automated export safe by construction.
+- **Determinism.** Every state of the store must be reproducible from its local write log. Importing curated content from another store breaks the property that the local write log is the single source of truth.
+- **Audit.** Every retrieval result must be traceable to the locally-recorded events that produced it. Imported content has no local provenance and breaks the audit chain.
+
+The principled response **is** one of:
+
+1. **Bootstrap new collaborators with `aelf onboard .`** — re-extract from the repo's prose, git log, and AST on each new clone. This produces a graph derived from the publicly visible repo content only; nothing private leaks.
+2. **Lock rules in CLAUDE.md, CONTRIBUTING.md, or other repo-tracked prose.** The onboarding scanner picks them up. The repo file is the source of truth; the brain graph is one machine's local index of it.
+3. **Pair aelfrice with a separate tool when the use case demands shared memory.** A tool that distributes memory contents has a fundamentally different trust profile and deployment story. Mixing the two inside aelfrice would weaken aelfrice's guarantees for the use cases it does serve well.
+
+This applies to the v2.0.0 release also: there is no "cross-project shared store," "shared scopes," or federation primitive on any planned release.
 
 ## Surface limits at v1.0
 
