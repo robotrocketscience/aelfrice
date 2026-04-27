@@ -10,6 +10,7 @@ dependencies = []
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pytest-timeout>=2.3",
     "pyright>=1.1.409",
 ]
 
@@ -22,6 +23,15 @@ packages = ["src/aelfrice"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Test policy: every test must deterministically terminate. 5s default
+# wall-clock timeout for unit/property tests. Subprocess-driven CLI/MCP
+# integration tests (v0.6.0+) override per-test via @pytest.mark.timeout(N).
+timeout = 5
+strict_markers = true
+markers = [
+    "regression: cumulative integration scenarios run alongside the unit suite",
+    "uat: v1.0 acceptance-criteria tests, run as the final pre-tag gate",
+]
 
 [tool.pyright]
 include = ["src/aelfrice", "tests"]
