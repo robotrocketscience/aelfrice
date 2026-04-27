@@ -58,6 +58,11 @@ dev = [
 mcp = [
     "fastmcp>=0.2.0",
 ]
+archive = [
+    # Required only for `aelf uninstall --archive`: AES-128-CBC + HMAC
+    # via Fernet, with a scrypt-derived key from a user-supplied password.
+    "cryptography>=42.0",
+]
 benchmarks = [
     # Sentence tokenization for MAB / LoCoMo adapters
     "nltk>=3.9",

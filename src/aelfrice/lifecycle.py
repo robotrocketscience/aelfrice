@@ -342,6 +342,156 @@ def upgrade_advice() -> UpgradeAdvice:
     )
 
 
+# --- Uninstall ----------------------------------------------------------
+
+ARCHIVE_MAGIC: Final[bytes] = b"AELFENC1"  # 8 bytes, format identifier
+ARCHIVE_SCRYPT_N: Final[int] = 2 ** 14
+ARCHIVE_SCRYPT_R: Final[int] = 8
+ARCHIVE_SCRYPT_P: Final[int] = 1
+ARCHIVE_SALT_LEN: Final[int] = 16
+ARCHIVE_KEY_LEN: Final[int] = 32  # Fernet wants base64-32 but we feed raw 32
+
+
+@dataclass(frozen=True)
+class UninstallResult:
+    """Outcome of `uninstall(...)`. Mode is one of:
+      'kept'    - DB preserved at db_path.
+      'purged'  - DB deleted.
+      'archived'- DB encrypted to archive_path then deleted from db_path.
+    """
+
+    mode: str  # 'kept' | 'purged' | 'archived'
+    db_path: Path | None
+    archive_path: Path | None = None
+
+
+def _encrypt_db_to_archive(
+    db_path: Path, archive_path: Path, password: str
+) -> None:
+    """Encrypt `db_path`'s contents to `archive_path` with `password`.
+
+    Format: 8-byte magic | 16-byte salt | Fernet-token over the DB.
+    Key is derived via scrypt(password, salt, N=2**14, r=8, p=1, len=32)
+    and base64-urlsafe-encoded (Fernet's required encoding). The same
+    parameters are recoverable from the archive header alone, so the
+    user only needs the password to decrypt.
+    """
+    try:
+        import base64
+        import secrets
+
+        from cryptography.fernet import Fernet
+        from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+    except ImportError as exc:
+        raise RuntimeError(
+            "--archive requires the 'archive' extra: "
+            "pip install 'aelfrice[archive]'"
+        ) from exc
+    if not password:
+        raise ValueError("password must be a non-empty string")
+    salt = secrets.token_bytes(ARCHIVE_SALT_LEN)
+    kdf = Scrypt(
+        salt=salt, length=ARCHIVE_KEY_LEN,
+        n=ARCHIVE_SCRYPT_N, r=ARCHIVE_SCRYPT_R, p=ARCHIVE_SCRYPT_P,
+    )
+    raw_key = kdf.derive(password.encode("utf-8"))
+    fernet_key = base64.urlsafe_b64encode(raw_key)
+    f = Fernet(fernet_key)
+    plaintext = db_path.read_bytes()
+    token = f.encrypt(plaintext)
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    with archive_path.open("wb") as out:
+        out.write(ARCHIVE_MAGIC)
+        out.write(salt)
+        out.write(token)
+
+
+def decrypt_archive(archive_path: Path, password: str) -> bytes:
+    """Decrypt an archive produced by `_encrypt_db_to_archive`.
+
+    Public: shipped so future tooling (or curious users) can recover an
+    archived DB. Returns the decrypted SQLite bytes; the caller is
+    responsible for writing them somewhere.
+    """
+    try:
+        import base64
+
+        from cryptography.fernet import Fernet
+        from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+    except ImportError as exc:
+        raise RuntimeError(
+            "decrypt_archive requires: pip install 'aelfrice[archive]'"
+        ) from exc
+    blob = archive_path.read_bytes()
+    if not blob.startswith(ARCHIVE_MAGIC):
+        raise ValueError(
+            f"not an aelfrice archive (bad magic): {archive_path}"
+        )
+    header_end = len(ARCHIVE_MAGIC) + ARCHIVE_SALT_LEN
+    salt = blob[len(ARCHIVE_MAGIC):header_end]
+    token = blob[header_end:]
+    kdf = Scrypt(
+        salt=salt, length=ARCHIVE_KEY_LEN,
+        n=ARCHIVE_SCRYPT_N, r=ARCHIVE_SCRYPT_R, p=ARCHIVE_SCRYPT_P,
+    )
+    raw_key = kdf.derive(password.encode("utf-8"))
+    fernet_key = base64.urlsafe_b64encode(raw_key)
+    f = Fernet(fernet_key)
+    return f.decrypt(token)
+
+
+def uninstall(
+    db_path: Path,
+    *,
+    keep_db: bool = False,
+    purge: bool = False,
+    archive_path: Path | None = None,
+    archive_password: str | None = None,
+) -> UninstallResult:
+    """Apply the data-disposition choice for `aelf uninstall`.
+
+    Exactly one of `keep_db`, `purge`, `archive_path` must be specified.
+    The CLI is responsible for prompting the user; this function is
+    pure mechanism. The hook removal and pip uninstallation happen
+    elsewhere -- this is the data half only.
+    """
+    chosen = sum(
+        [bool(keep_db), bool(purge), archive_path is not None]
+    )
+    if chosen != 1:
+        raise ValueError(
+            "exactly one of keep_db / purge / archive_path required"
+        )
+    if keep_db:
+        return UninstallResult(
+            mode="kept",
+            db_path=db_path if db_path.exists() else None,
+        )
+    if archive_path is not None:
+        if archive_password is None:
+            raise ValueError("archive_password required when archive_path set")
+        if not db_path.exists():
+            # Nothing to archive; surface as 'kept' so caller can warn.
+            return UninstallResult(
+                mode="kept", db_path=None, archive_path=None,
+            )
+        _encrypt_db_to_archive(db_path, archive_path, archive_password)
+        try:
+            db_path.unlink()
+        except FileNotFoundError:
+            pass
+        return UninstallResult(
+            mode="archived", db_path=None, archive_path=archive_path,
+        )
+    # purge
+    try:
+        if db_path.exists():
+            db_path.unlink()
+    except OSError:
+        pass
+    return UninstallResult(mode="purged", db_path=None)
+
+
 def clear_cache(cache_path: Path = CACHE_FILE) -> None:
     """Remove the update-check cache file. Silent if absent.
 
