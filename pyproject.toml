@@ -58,6 +58,15 @@ dev = [
 mcp = [
     "fastmcp>=0.2.0",
 ]
+benchmarks = [
+    # Sentence tokenization for MAB / LoCoMo adapters
+    "nltk>=3.9",
+    # GPT-4o-compatible token counting for MAB chunking parity
+    "tiktoken>=0.7",
+    # HuggingFace dataset loading for MAB / LongMemEval / AMA-Bench
+    "datasets>=2.14",
+    "huggingface_hub>=0.20",
+]
 
 [build-system]
 requires = ["hatchling"]
