@@ -13,11 +13,20 @@ A sentinel file at `~/.aelfrice/projects/<id>/.last_warm` debounces
 repeat calls; subsequent invocations within `debounce_seconds` are
 no-ops and return `WarmResult.DEBOUNCED`.
 
+**Sentinel keying:** the sentinel `<id>` is derived from the repo's
+`git-common-dir` (via `git rev-parse --git-common-dir`), not from the
+worktree path. Two worktrees of the same repo share one git-common-dir
+and therefore share one sentinel, matching the v1.1.0 design principle
+that worktrees share a single belief store. `ProjectRef.root` remains
+the worktree working directory so that `_warm_store` can `os.chdir` to
+the right place for `db_path()`.
+
 Resolution order for `resolve_project_root(path)`:
 
-1. `git rev-parse --show-toplevel` from `path`. Returns the worktree
-   root, not the main checkout — worktrees are separate workspaces and
-   should each warm independently.
+1. `git rev-parse --git-common-dir` from `path`. Two worktrees of the
+   same repo share a git-common-dir, so both map to the same `id` and
+   share one debounce sentinel. `ProjectRef.root` is still the
+   worktree's working directory.
 2. First ancestor of `path` containing a `.aelfrice/projects/<id>/`
    directory. Lets non-git workspaces (research notebooks, scratch
    dirs) opt in by hand-creating that layout.
@@ -100,18 +109,26 @@ def _project_id(root: Path) -> str:
     return digest[:_PROJECT_ID_LEN]
 
 
-def _git_show_toplevel(path: Path) -> Path | None:
-    """Return cwd's git work-tree root, or None when not in a repo.
+def _git_resolve(path: Path) -> tuple[Path, Path] | None:
+    """Return (worktree_root, git_common_dir) for `path`, or None.
 
-    `--show-toplevel` returns the worktree path for `git worktree`
-    checkouts, not the main repo. That's intentional: worktrees are
-    separate workspaces and warm independently.
+    `worktree_root` is `git rev-parse --show-toplevel` — the working
+    directory for this worktree. `git_common_dir` is the shared git
+    object store root (identical across all worktrees of one repo and
+    matches what `cli._git_common_dir()` returns). Using git-common-dir
+    as the sentinel key means all worktrees of one repo share a single
+    debounce sentinel, matching the v1.1.0 design.
     """
     if not path.is_dir():
         return None
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            [
+                "git", "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+                "--git-common-dir",
+            ],
             cwd=str(path),
             capture_output=True,
             text=True,
@@ -122,10 +139,12 @@ def _git_show_toplevel(path: Path) -> Path | None:
         return None
     if result.returncode != 0:
         return None
-    raw = result.stdout.strip()
-    if not raw:
+    lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+    if len(lines) < 2:
         return None
-    return Path(raw).resolve()
+    worktree_root = Path(lines[0]).resolve()
+    common_dir = Path(lines[1]).resolve()
+    return worktree_root, common_dir
 
 
 def _ancestor_with_project_layout(
@@ -163,11 +182,18 @@ def resolve_project_root(
 
     See module docstring for the resolution rules. `aelfrice_home`
     overrides the default `~/.aelfrice/` for tests.
+
+    For git repos/worktrees: `ProjectRef.root` is the worktree working
+    directory (used by `_warm_store` for `os.chdir`), while
+    `ProjectRef.id` is keyed off the git-common-dir so all worktrees of
+    one repo share the same sentinel.
     """
     home = aelfrice_home if aelfrice_home is not None else Path.home() / _AELFRICE_HOME_DIRNAME
-    root = _git_show_toplevel(path)
-    if root is None:
-        root = _ancestor_with_project_layout(path, home)
+    git_result = _git_resolve(path)
+    if git_result is not None:
+        worktree_root, common_dir = git_result
+        return ProjectRef(root=worktree_root, id=_project_id(common_dir))
+    root = _ancestor_with_project_layout(path, home)
     if root is None:
         return None
     return ProjectRef(root=root, id=_project_id(root))

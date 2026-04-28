@@ -120,11 +120,36 @@ def test_resolve_project_root_git_worktree(
 
     ref = resolve_project_root(wt, aelfrice_home=fake_home)
 
-    # The risk-acknowledged behaviour: worktrees are separate workspaces,
-    # so the returned root is the worktree path, not the main checkout.
+    # ProjectRef.root is the worktree working directory — not the main
+    # checkout — so _warm_store can os.chdir to the right place.
     assert ref is not None
     assert ref.root == wt.resolve()
     assert ref.root != repo.resolve()
+
+
+def test_resolve_project_root_worktrees_share_id(
+    tmp_path: Path, fake_home: Path,
+) -> None:
+    """Two worktrees of the same repo share a single ProjectRef.id.
+
+    The sentinel is keyed by git-common-dir, so both worktrees hit the
+    same debounce sentinel, matching the v1.1.0 design that worktrees of
+    one repo share a single belief store.
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    wt = tmp_path / "wt"
+    _git(["worktree", "add", "-q", "-b", "feat/x", str(wt)], cwd=repo)
+
+    ref_main = resolve_project_root(repo, aelfrice_home=fake_home)
+    ref_wt = resolve_project_root(wt, aelfrice_home=fake_home)
+
+    assert ref_main is not None
+    assert ref_wt is not None
+    # Roots differ — each worktree is a separate working directory.
+    assert ref_main.root != ref_wt.root
+    # IDs must be identical — both map to the same git-common-dir.
+    assert ref_main.id == ref_wt.id
 
 
 def test_resolve_project_root_non_git_dir(
@@ -426,7 +451,9 @@ def test_cli_project_warm_warms_and_debounces(
     assert buf1.getvalue() == ""
     assert buf2.getvalue() == ""
     from aelfrice.project_warm import _project_id  # pyright: ignore[reportPrivateUsage]
-    pid = _project_id(repo.resolve())
+    # The sentinel id is keyed off git-common-dir (repo/.git for a
+    # non-worktree repo), not the repo root itself.
+    pid = _project_id((repo / ".git").resolve())
     sentinel = fake_home / "projects" / pid / ".last_warm"
     assert sentinel.is_file()
     assert float(sentinel.read_text(encoding="utf-8").strip()) == fixed_now
