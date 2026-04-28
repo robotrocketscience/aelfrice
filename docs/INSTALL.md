@@ -63,13 +63,16 @@ Override with `--scope user|project` and `--command /abs/path/aelf-hook` when yo
 aelf doctor
 ```
 
-Walks every `command` in `settings.json` and checks the binary is reachable. Exits 1 on broken entries so CI can gate on it. It also surfaces stale `bash <missing>.sh 2>/dev/null || true` style hooks left over from older installs.
+At v1.2.0 `aelf doctor` runs two checks back-to-back: hook resolution (every `command` in `settings.json` checked against `$PATH`; surfaces stale `bash <missing>.sh 2>/dev/null || true` wrappers from older installs) and the structural graph audit (orphan threads, FTS5 sync, locked-belief contradictions, corpus volume). Exits 1 on any structural failure so CI can gate on it. Empty store on a fresh project is normal — the corpus-volume warning only fires once the project is at least 7 days old.
+
+Scope to one half:
 
 ```bash
-aelf health
+aelf doctor hooks      # hook resolution only
+aelf doctor graph      # structural auditor only
 ```
 
-Runs the structural auditor: orphan threads, FTS5 sync, locked-belief contradictions, corpus volume. Empty store on a fresh project is normal — the warning only fires once the project is at least 7 days old.
+`aelf health` and `aelf stats` continue to work as back-compat aliases through v1.2.x; they are scheduled for deletion at v1.4. The canonical replacements are `aelf doctor graph` and `aelf status`.
 
 ## 4. Onboard a project
 
