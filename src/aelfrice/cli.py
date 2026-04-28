@@ -8,7 +8,9 @@ Commands:
   demote <id>                      manually demote a lock to none
   feedback <id> <used|harmful>     apply one Bayesian feedback event
   stats                            summary of belief / lock / history counts
-  health                           regime classifier output
+  health                           structural auditor (orphan edges, FTS5 sync, locked contradictions)
+  status                           alias for health
+  regime                           v1.0 regime classifier (supersede / ignore / mixed)
   doctor                           verify hook commands resolve in settings.json
   setup                            install UserPromptSubmit hook in Claude Code
   unsetup                          remove UserPromptSubmit hook from Claude Code
@@ -36,6 +38,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final, Sequence
 
+from aelfrice.auditor import (
+    SEVERITY_FAIL as AUDIT_SEVERITY_FAIL,
+    audit,
+)
 from aelfrice.feedback import apply_feedback
 from aelfrice.health import (
     REGIME_INSUFFICIENT_DATA,
@@ -801,6 +807,46 @@ def _cmd_upgrade(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_health(args: argparse.Namespace, out: object) -> int:
+    """Run the v1.1.0 structural auditor and print findings + metrics.
+
+    Exits 1 if any audit check fails (orphan edges, FTS5 sync, locked
+    contradictions). Informational metrics never affect exit status.
+    The v1.0 regime classifier moved to `aelf regime`.
+    """
+    _ = args
+    store = _open_store()
+    try:
+        report = audit(store)
+    finally:
+        store.close()
+    print("audit:", file=out)  # type: ignore[arg-type]
+    for f in report.findings:
+        marker = "FAIL" if f.severity == AUDIT_SEVERITY_FAIL else "ok"
+        print(
+            f"  [{marker:4s}] {f.check:24s} {f.detail}",
+            file=out,  # type: ignore[arg-type]
+        )
+    print("", file=out)  # type: ignore[arg-type]
+    print("metrics:", file=out)  # type: ignore[arg-type]
+    for key, value in report.metrics.items():
+        if isinstance(value, float):
+            display = f"{value:.3f}"
+        else:
+            display = str(value)
+        print(f"  {key:24s} {display}", file=out)  # type: ignore[arg-type]
+    print("", file=out)  # type: ignore[arg-type]
+    print("run `aelf regime` for the v1.0 regime classifier.",
+          file=out)  # type: ignore[arg-type]
+    return 1 if report.failed else 0
+
+
+def _cmd_regime(args: argparse.Namespace, out: object) -> int:
+    """Print the v1.0 regime classifier output (supersede / ignore / mixed).
+
+    Preserved as a separate command in v1.1.0 after `aelf health` was
+    rewritten as the structural auditor. The classifier is informational
+    — it never affects exit status.
+    """
     _ = args
     store = _open_store()
     try:
@@ -921,8 +967,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_stats = sub.add_parser("stats", help="summary of belief / lock / history counts")
     p_stats.set_defaults(func=_cmd_stats)
 
-    p_health = sub.add_parser("health", help="regime classifier output")
+    p_health = sub.add_parser(
+        "health",
+        help="structural auditor (orphan edges, FTS5 sync, locked contradictions)",
+    )
     p_health.set_defaults(func=_cmd_health)
+
+    p_status = sub.add_parser(
+        "status",
+        help="alias for `aelf health` (structural auditor)",
+    )
+    p_status.set_defaults(func=_cmd_health)
+
+    p_regime = sub.add_parser(
+        "regime",
+        help="v1.0 regime classifier (supersede / ignore / mixed)",
+    )
+    p_regime.set_defaults(func=_cmd_regime)
 
     p_doctor = sub.add_parser(
         "doctor",

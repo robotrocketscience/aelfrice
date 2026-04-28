@@ -1,6 +1,6 @@
 # CLI Reference
 
-Fifteen subcommands. The first eight (retrieval/feedback) are also available as MCP tools and Claude Code slash commands. The lifecycle commands (`setup`/`unsetup`/`upgrade`/`uninstall`/`statusline`/`doctor`) and `bench` are CLI-only.
+Eighteen subcommands. The first eight (retrieval/feedback) are also available as MCP tools and Claude Code slash commands. The lifecycle commands (`setup`/`unsetup`/`upgrade`/`uninstall`/`statusline`/`doctor`) and `bench` are CLI-only.
 
 DB resolves from `$AELFRICE_DB` (override), then `<git-common-dir>/aelfrice/memory.db` when `cwd` is in a git work-tree, then `~/.aelfrice/memory.db` as the non-git fallback. `.git/` is not git-tracked — the brain graph never crosses the git boundary.
 
@@ -20,7 +20,9 @@ aelf <subcommand> [args] [options]
 | `resolve` | — | Sweep unresolved CONTRADICTS edges. For each pair, pick a winner per precedence (`user_stated > user_corrected > document_recent`; ties broken by recency, then by id) and create a SUPERSEDES edge from winner to loser. Writes one `feedback_history` row per resolution with `source='contradiction_tiebreaker:<rule>'`. Idempotent. |
 | `feedback <belief_id> <used\|harmful> [--source S]` | id, signal, optional source | `used` ⇒ α += 1. `harmful` ⇒ β += 1. Positive feedback flowing through outbound CONTRADICTS edges to user-locks bumps their `demotion_pressure`; ≥ 5 ⇒ auto-demote. |
 | `stats` | — | beliefs / edges / locked / feedback_events counts. |
-| `health` | — | Regime classifier: one of `early-onboarding`, `steady`, `lock-heavy`, `over-confident`, `insufficient-data`. |
+| `health` | — | Structural auditor (v1.1.0): three checks fire — orphan edges, FTS5 sync drift, locked-belief CONTRADICTS pairs. Each finding prints `[ok  ]` or `[FAIL]`. Exit 1 if any failure, 0 otherwise. Informational metrics (counts, average confidence, credal gap, edge counts by type) print alongside but don't affect exit. |
+| `status` | — | Alias for `health`. Same output, same exit codes. |
+| `regime` | — | v1.0 regime classifier preserved as a separate command. One of `supersede`, `ignore`, `mixed`, `insufficient_data`. Informational only; always exits 0. |
 | `doctor [--user-settings P] [--project-root D]` | — | Verify hook + statusline commands in user and project `settings.json` resolve to executables. Reports broken absolute paths and bare names not on `$PATH`. Special-cases `bash /script.sh` to inspect the script. Exits `1` on any broken finding. |
 | `setup [--scope user\|project] [--project-root D] [--settings-path P] [--command C] [--timeout N] [--status-message M] [--no-statusline]` | various | Install `UserPromptSubmit` hook + `statusLine` notifier in Claude Code `settings.json`. Defaults: `--scope` auto-detects `project` if `cwd/.venv` matches `sys.prefix` else `user`; `--command` auto-resolves to absolute `aelf-hook` (project venv for project scope, `$PATH` for user scope). Also silently removes legacy dangling `/usr/local/bin/aelf{,-hook}` symlinks. Idempotent + atomic. |
 | `unsetup` (same scope flags, `--command`) | — | Remove the hook + our statusline contribution. Default `--command` matches every entry whose program basename is `aelf-hook`, so a bare-name install and an absolute-path install are both cleaned by the same call. Composed statuslines are surgically unwrapped to restore the original command. |

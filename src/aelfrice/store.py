@@ -400,6 +400,73 @@ class MemoryStore:
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
 
+    # --- Auditor queries (used by aelf health) ---------------------------
+
+    def count_orphan_edges(self) -> int:
+        """Edges whose `src` or `dst` no longer exists in `beliefs`.
+
+        Should always be zero in a healthy store: `delete_belief` cascades
+        to incident edges. A nonzero result indicates a foreign-key invariant
+        violation (or a partial write the v1.0 schema's lack of FK enforcement
+        let through).
+        """
+        cur = self._conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM edges e
+            WHERE NOT EXISTS (SELECT 1 FROM beliefs WHERE id = e.src)
+               OR NOT EXISTS (SELECT 1 FROM beliefs WHERE id = e.dst)
+            """
+        )
+        row = cur.fetchone()
+        return int(row["n"]) if row else 0
+
+    def count_fts_rows(self) -> int:
+        """Row count of the `beliefs_fts` virtual table.
+
+        Should equal `count_beliefs()` in a healthy store. Drift indicates
+        an FTS5 / `beliefs` write was not properly mirrored — usually a
+        crash mid-`update_belief` or a manual schema edit.
+        """
+        cur = self._conn.execute("SELECT COUNT(*) AS n FROM beliefs_fts")
+        row = cur.fetchone()
+        return int(row["n"]) if row else 0
+
+    def list_locked_contradicts_pairs(self) -> list[tuple[str, str]]:
+        """All `(a_id, b_id)` pairs where both beliefs are locked AND a
+        `CONTRADICTS` edge exists between them in either direction.
+
+        Pairs are deduplicated and ordered by `(min(a,b), max(a,b))` so the
+        result is deterministic. The contradiction tie-breaker (v1.0.1)
+        should resolve these via SUPERSEDES; remaining pairs indicate
+        unresolved contradictions a reviewer or `aelf resolve` should act on.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT DISTINCT
+                MIN(e.src, e.dst) AS a,
+                MAX(e.src, e.dst) AS b
+            FROM edges e
+            JOIN beliefs ba ON ba.id = e.src
+            JOIN beliefs bb ON bb.id = e.dst
+            WHERE e.type = 'CONTRADICTS'
+              AND ba.lock_level != 'none'
+              AND bb.lock_level != 'none'
+            ORDER BY a, b
+            """
+        )
+        return [(str(r["a"]), str(r["b"])) for r in cur.fetchall()]
+
+    def count_edges_by_type(self) -> dict[str, int]:
+        """`{edge_type: count}` for every edge type in the store.
+
+        Used by `aelf health` informational output and the v1.1.0 auditor
+        feedback-coverage metric.
+        """
+        cur = self._conn.execute(
+            "SELECT type, COUNT(*) AS n FROM edges GROUP BY type"
+        )
+        return {str(r["type"]): int(r["n"]) for r in cur.fetchall()}
+
     # --- Edge CRUD --------------------------------------------------------
 
     def insert_edge(self, e: Edge) -> None:
