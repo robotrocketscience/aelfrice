@@ -56,6 +56,309 @@ _TOKEN_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
+# --- v1.5.0 Bash matcher (#155) ------------------------------------------
+
+# Halved budget vs. the v1.2.x Grep|Glob path. Bash extraction is one
+# parse hop further from the agent's intent so the auxiliary-context
+# allowance shrinks correspondingly. Spec § Token budget.
+BASH_INJECTED_TOKEN_BUDGET: Final[int] = 300
+BASH_INJECTED_L1_LIMIT: Final[int] = 5
+
+# Per-turn fire cap. State is keyed by session_id and reset when a
+# new session_id appears. Prevents pipeline storms (e.g. a `for` loop
+# running `rg` ten times). Spec § Per-turn fire cap.
+BASH_FIRE_CAP_PER_TURN: Final[int] = 3
+
+# Truncated `cmd` attribute on the emitted block. Keeps the
+# additionalContext payload bounded.
+BASH_CMD_ATTR_CHAR_CAP: Final[int] = 80
+
+# Per-command flag table. Each entry maps a flag to whether the flag
+# consumes the next token as its value. The parser walks token-by-
+# token and skips both the flag and (if applicable) its value.
+#
+# Long-form flags with `=value` are recognised by the parser
+# regardless of this table — only space-separated `--flag value`
+# pairs need the takes-arg signal.
+_GREP_FLAGS_WITH_ARG: Final[frozenset[str]] = frozenset({
+    "-A", "-B", "-C", "-e", "-f", "-m",
+    "--after-context", "--before-context", "--context",
+    "--regexp", "--file", "--max-count",
+    "--include", "--exclude", "--exclude-dir",
+    "-d", "--directories",
+})
+_RG_FLAGS_WITH_ARG: Final[frozenset[str]] = frozenset(_GREP_FLAGS_WITH_ARG | {
+    "-t", "-T", "--type", "--type-not",
+    "-g", "--glob", "--iglob",
+    "--max-depth", "--maxdepth",
+})
+_FIND_FLAGS_WITH_ARG: Final[frozenset[str]] = frozenset({
+    "-name", "-iname", "-path", "-ipath",
+    "-type", "-mindepth", "-maxdepth",
+    "-newer", "-mtime", "-atime", "-ctime",
+    "-size", "-user", "-group", "-perm",
+    "-exec", "-execdir", "-ok", "-okdir",
+})
+_FD_FLAGS_WITH_ARG: Final[frozenset[str]] = frozenset({
+    "-t", "-T", "--type", "--type-not",
+    "-e", "--extension",
+    "-d", "--max-depth", "--min-depth",
+    "-x", "--exec", "-X", "--exec-batch",
+    "--changed-within", "--changed-before",
+    "--owner",
+})
+
+# Tokens that abort the Bash parser immediately. Pipeline / shell-
+# control / command-substitution / redirection. Conservative: any
+# of these implies the actual search query is something the parser
+# can't reliably lift, so we silent-skip rather than guess.
+_BASH_ABORT_TOKENS: Final[frozenset[str]] = frozenset({
+    "|", "||", "&&", "&", ";", ";;",
+    ">", ">>", "<", "<<", "<<<", "<<-", "2>", "2>>", "&>", "&>>",
+    "$(", "`", ")", "(",
+    "for", "while", "until", "if", "case", "do", "done", "fi", "esac",
+    "then", "else", "elif",
+})
+
+# Allowlisted commands grouped by their micro-parser. The map
+# value is the flag-value table the parser consults.
+_BASH_ALLOWLIST: Final[dict[str, frozenset[str]]] = {
+    "grep":     _GREP_FLAGS_WITH_ARG,
+    "egrep":    _GREP_FLAGS_WITH_ARG,
+    "fgrep":    _GREP_FLAGS_WITH_ARG,
+    "rg":       _RG_FLAGS_WITH_ARG,
+    "ripgrep":  _RG_FLAGS_WITH_ARG,
+    "ack":      _GREP_FLAGS_WITH_ARG,
+    "find":     _FIND_FLAGS_WITH_ARG,
+    "fd":       _FD_FLAGS_WITH_ARG,
+    "fdfind":   _FD_FLAGS_WITH_ARG,
+}
+
+# Per-process per-turn fire counter. Keyed by session_id; on a new
+# session_id, the counter resets. Not thread-safe; the hook process
+# is short-lived and single-threaded by Claude Code's contract.
+_BASH_FIRE_STATE: dict[str, int] = {}
+
+
+def _is_abort_token(token: str) -> bool:
+    """Return True if `token` matches an abort-list entry exactly OR
+    contains one as a prefix / substring (covers naive whitespace
+    splits of $(cmd) / $cmd / backtick-quoted / inline backticks).
+    """
+    if token in _BASH_ABORT_TOKENS:
+        return True
+    # Command substitution / process substitution / arithmetic
+    # expansion all start with `$(` or backtick. Backslash is not
+    # in the regular tokens. Substring `$(` covers both naked and
+    # quoted forms.
+    if "$(" in token:
+        return True
+    if "`" in token:
+        return True
+    if "<(" in token or ">(" in token:
+        return True
+    return False
+
+
+def _strip_command_prefix(tokens: list[str]) -> list[str]:
+    """Skip leading no-op prefix tokens until an allowlisted command
+    is reached.
+
+    Handles:
+      - env-assignment prefixes:  `RUST_LOG=trace rg ...`
+      - `nohup` / `time` / `command` wrappers:  `nohup rg ...`
+      - leading `cd foo &&` is rejected by the abort-token list,
+        not by this function.
+
+    Returns the suffix starting at the allowlisted command, or
+    `[]` if no allowlisted command is found.
+    """
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t in _BASH_ABORT_TOKENS:
+            return []
+        # KEY=VALUE env assignments at the start of a command are
+        # standard shell syntax. Skip them.
+        if "=" in t and t.split("=", 1)[0].isidentifier():
+            i += 1
+            continue
+        if t in ("nohup", "time", "command", "exec"):
+            i += 1
+            continue
+        # Strip path prefix on a real command (`/usr/bin/grep` -> `grep`).
+        basename = t.rsplit("/", 1)[-1]
+        if basename in _BASH_ALLOWLIST:
+            return [basename, *tokens[i + 1:]]
+        return []
+    return []
+
+
+def _parse_grep_like(tokens: list[str], flags_with_arg: frozenset[str]) -> str | None:
+    """Walk grep / rg / ack tokens; return the first positional as the query.
+
+    Skips flag tokens (leading `-`) and their values when the table
+    indicates the flag takes an argument. `--flag=value` form is
+    treated as flag-only (the value is embedded). Returns `None` if
+    no positional remains or any token is in the abort set.
+    """
+    i = 1  # skip the command name itself
+    while i < len(tokens):
+        t = tokens[i]
+        if t in _BASH_ABORT_TOKENS:
+            return None
+        if t.startswith("-"):
+            # Long-form `--flag=value`: consume only the flag.
+            if "=" in t:
+                i += 1
+                continue
+            if t in flags_with_arg:
+                # Skip flag + its value. If we run off the end, that's
+                # a malformed command; abort.
+                if i + 1 >= len(tokens):
+                    return None
+                if tokens[i + 1] in _BASH_ABORT_TOKENS:
+                    return None
+                i += 2
+                continue
+            # Bare flag with no argument.
+            i += 1
+            continue
+        # First non-flag positional is the query.
+        return t
+    return None
+
+
+def _parse_find(tokens: list[str]) -> str | None:
+    """Walk `find` tokens; return the `-name` / `-iname` value.
+
+    Find's contract is stricter than grep's: only `-name` or
+    `-iname` produces a query. `find . -type f` and similar
+    name-less invocations silent-skip.
+    """
+    i = 1
+    while i < len(tokens):
+        t = tokens[i]
+        if t in _BASH_ABORT_TOKENS:
+            return None
+        if t in ("-name", "-iname"):
+            if i + 1 >= len(tokens):
+                return None
+            value = tokens[i + 1]
+            if value in _BASH_ABORT_TOKENS:
+                return None
+            return value
+        if t.startswith("-") and t in _FIND_FLAGS_WITH_ARG:
+            # Consume the flag's value.
+            i += 2
+            continue
+        i += 1
+    return None
+
+
+def _parse_fd(tokens: list[str]) -> str | None:
+    """Walk `fd` / `fdfind` tokens; return first non-flag positional."""
+    return _parse_grep_like(tokens, _FD_FLAGS_WITH_ARG)
+
+
+def _parse_bash_command(command: str) -> tuple[str, str] | None:
+    """Lift `(query, command_name)` from a raw Bash `tool_input.command`.
+
+    Returns `None` when the command is not allowlisted, the parser
+    cannot find a query, or the command contains pipeline /
+    command-substitution / shell-control tokens.
+
+    Tokenisation is a naive whitespace split. We deliberately do
+    NOT shell-evaluate the command. Quoted arguments with embedded
+    whitespace will tokenise incorrectly here; the parser's
+    failure mode is to return `None` rather than guess.
+    """
+    if not command or not command.strip():
+        return None
+    tokens = command.split()
+    # Reject the entire command if any abort token (pipeline, shell
+    # control, command substitution, redirection) appears anywhere.
+    # The narrow parser cannot reliably lift a query out of a multi-
+    # stage shell expression; silent-skip beats wrong-query.
+    if any(_is_abort_token(t) for t in tokens):
+        return None
+    suffix = _strip_command_prefix(tokens)
+    if not suffix:
+        return None
+    cmd = suffix[0]
+    flags_table = _BASH_ALLOWLIST.get(cmd)
+    if flags_table is None:
+        return None
+    if cmd in ("find",):
+        query = _parse_find(suffix)
+    elif cmd in ("fd", "fdfind"):
+        query = _parse_fd(suffix)
+    else:
+        query = _parse_grep_like(suffix, flags_table)
+    if query is None:
+        return None
+    # Strip wrapping quotes.
+    cleaned = query.strip("'\"")
+    if not cleaned:
+        return None
+    return cleaned, cmd
+
+
+def _extract_bash_query(
+    payload: dict[str, object],
+) -> tuple[str, str, str] | None:
+    """Return `(fts5_query, command_name, raw_cmd_truncated)` for a
+    Bash payload, or `None` to silent-skip.
+
+    Tokenises the lifted query string the same way the Grep|Glob
+    path does (3-char minimum, FTS5 OR-join, 5-token cap), so the
+    Bash matcher's downstream `retrieve()` call sees the same
+    shape of query the v1.2.x matcher emits.
+    """
+    if payload.get("tool_name") != "Bash":
+        return None
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    raw_cmd = cast(dict[str, object], tool_input).get("command")
+    if not isinstance(raw_cmd, str) or not raw_cmd.strip():
+        return None
+    parsed = _parse_bash_command(raw_cmd)
+    if parsed is None:
+        return None
+    query_str, cmd_name = parsed
+    tokens = _TOKEN_RE.findall(query_str)
+    if not tokens:
+        return None
+    fts5_query = " OR ".join(tokens[:QUERY_TOKEN_LIMIT])
+    truncated = raw_cmd.strip().replace("\n", " ")
+    if len(truncated) > BASH_CMD_ATTR_CHAR_CAP:
+        truncated = truncated[: BASH_CMD_ATTR_CHAR_CAP - 3] + "..."
+    return fts5_query, cmd_name, truncated
+
+
+def _bash_fire_cap_reached(session_id: str | None) -> bool:
+    """Return True if `session_id` has hit BASH_FIRE_CAP_PER_TURN.
+
+    A session_id of `None` (missing from payload) collapses to a
+    sentinel key and shares the cap with other untagged calls in
+    the same process. Conservative: caps still apply.
+    """
+    key = session_id or "<no-session>"
+    count = _BASH_FIRE_STATE.get(key, 0)
+    return count >= BASH_FIRE_CAP_PER_TURN
+
+
+def _record_bash_fire(session_id: str | None) -> None:
+    key = session_id or "<no-session>"
+    _BASH_FIRE_STATE[key] = _BASH_FIRE_STATE.get(key, 0) + 1
+
+
+def _reset_bash_fire_state() -> None:
+    """Test-only helper. Not part of the public API."""
+    _BASH_FIRE_STATE.clear()
+
+
 def _read_payload(stdin: IO[str]) -> dict[str, object] | None:
     raw = stdin.read()
     if not raw.strip():
@@ -96,13 +399,30 @@ def _extract_query(payload: dict[str, object]) -> str | None:
 
 
 def _format_results(
-    query: str, beliefs: list[object], locked_ids: set[str]
+    query: str,
+    beliefs: list[object],
+    locked_ids: set[str],
+    *,
+    bash_source: tuple[str, str] | None = None,
 ) -> str:
     """Render retrieve() output as a flat text block for additionalContext.
 
     Format: "[L0] {id-prefix}: {content}" for locked, "[L1] ..." for
     BM25-ranked. One belief per line, truncated to PER_LINE_CHAR_CAP.
+
+    When `bash_source` is set (v1.5.0 #155 Bash matcher), the
+    emitted block carries `source="bash:<cmd>"` and `cmd="<truncated>"`
+    attributes so the agent can tell which Bash invocation triggered
+    the injection. Default `None` preserves the v1.2.x output shape.
     """
+    if bash_source is not None:
+        cmd_name, raw_cmd = bash_source
+        attrs = (
+            f'query="{query}" source="bash:{cmd_name}" '
+            f'cmd="{raw_cmd}"'
+        )
+    else:
+        attrs = f'query="{query}"'
     lines: list[str] = []
     for b in beliefs:
         bid = getattr(b, "id", "") or ""
@@ -117,13 +437,13 @@ def _format_results(
         lines.append(line)
     if not lines:
         return (
-            f'<aelfrice-search query="{query}">'
+            f'<aelfrice-search {attrs}>'
             f"no matching beliefs in store; the tool result will fill the gap"
             f"</aelfrice-search>"
         )
     body = "\n".join(lines)
     return (
-        f'<aelfrice-search query="{query}">aelf search ran on this query before '
+        f'<aelfrice-search {attrs}>aelf search ran on this query before '
         f"the tool fires; results:\n{body}\n"
         f"If this answers the question, you may skip the tool call. Otherwise "
         f"use the tool to fill gaps.</aelfrice-search>"
@@ -150,10 +470,26 @@ def _do_search(
     calls that aren't `Grep` / `Glob`, or on patterns that have no
     extractable tokens.
     """
-    if not _is_search_tool_call(payload):
-        return
-    query = _extract_query(payload)
-    if query is None:
+    bash_source: tuple[str, str] | None = None
+    if _is_search_tool_call(payload):
+        query = _extract_query(payload)
+        if query is None:
+            return
+    elif payload.get("tool_name") == "Bash":
+        # v1.5.0 #155 Bash matcher path. Per-turn fire cap applies
+        # only to this lane; Grep|Glob fires once per direct tool
+        # call and is not capped.
+        session_obj = payload.get("session_id")
+        session_id = session_obj if isinstance(session_obj, str) else None
+        if _bash_fire_cap_reached(session_id):
+            return
+        bash_extracted = _extract_bash_query(payload)
+        if bash_extracted is None:
+            return
+        query, cmd_name, raw_cmd = bash_extracted
+        bash_source = (cmd_name, raw_cmd)
+        _record_bash_fire(session_id)
+    else:
         return
 
     cwd_obj = payload.get("cwd")
@@ -168,9 +504,18 @@ def _do_search(
     if str(p) != ":memory:" and not p.exists():
         # Empty / not-yet-onboarded store — explicit sentinel so the agent
         # learns the check ran.
-        _emit(stdout, _format_results(query, [], set()))
+        _emit(stdout, _format_results(
+            query, [], set(), bash_source=bash_source,
+        ))
         return
 
+    # Bash matcher gets a halved token budget + L1 limit (spec § Token budget).
+    token_budget = (
+        BASH_INJECTED_TOKEN_BUDGET if bash_source else INJECTED_TOKEN_BUDGET
+    )
+    l1_limit = (
+        BASH_INJECTED_L1_LIMIT if bash_source else INJECTED_L1_LIMIT
+    )
     store = MemoryStore(str(p))
     try:
         locked = store.list_locked_beliefs()
@@ -178,13 +523,15 @@ def _do_search(
         beliefs = retrieve(
             store,
             query,
-            token_budget=INJECTED_TOKEN_BUDGET,
-            l1_limit=INJECTED_L1_LIMIT,
+            token_budget=token_budget,
+            l1_limit=l1_limit,
         )
     finally:
         store.close()
 
-    _emit(stdout, _format_results(query, beliefs, locked_ids))
+    _emit(stdout, _format_results(
+        query, beliefs, locked_ids, bash_source=bash_source,
+    ))
 
 
 def _db_path_accepts_cwd(db_path_fn: object) -> bool:
