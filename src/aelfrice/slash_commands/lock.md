@@ -1,6 +1,6 @@
 ---
 name: aelf:lock
-description: Insert (or upgrade an existing belief into) a user-locked ground-truth belief.
+description: Lock a statement as user-asserted ground truth (L0). Re-locking the same text refreshes the lock.
 argument-hint: The statement text to lock as ground truth
 allowed-tools:
   - Bash
