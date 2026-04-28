@@ -1462,7 +1462,7 @@ def _cmd_upgrade(args: argparse.Namespace, out: object) -> int:
     advice = upgrade_advice()
     # Force a fresh sync check unless explicitly disabled. This is the
     # one CLI surface where the user has explicitly asked about updates,
-    # so we ignore the 24h TTL.
+    # so we ignore the cache TTL.
     if _update_check_disabled():
         status = _read_update_cache()
     else:
