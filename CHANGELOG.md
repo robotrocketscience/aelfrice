@@ -10,6 +10,14 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+### Added
+
+- **BM25F sparse-matvec retrieval lane (v1.5.0)** ([#148](https://github.com/robotrocketscience/aelfrice/issues/148)). New module `aelfrice.bm25` carries a BM25F-augmented inverted index (Robertson 2004 stream-replication form) with a single sparse matvec query path. Each belief's indexed document is its own tokens plus the concatenation of incoming-edge `anchor_text` tokens replicated by `anchor_weight` (default `W=3`); standard BM25 length-normalisation absorbs the inflated token count correctly. The `(n_docs × n_terms)` scipy.sparse CSR `tf` matrix, per-doc length vector `dl`, and per-term `idf` vector are precomputed at index time; per-query cost is one sparse matvec plus a length-normalisation broadcast. `BM25Index.serialize` / `deserialize` produce deterministic byte payloads. `BM25IndexCache` subscribes to the store's invalidation callback for rebuild-on-mutation. New `MemoryStore.iter_incoming_anchor_text()` and `MemoryStore.list_beliefs_for_indexing()` helpers expose the data the index needs. The `retrieve()`, `retrieve_with_tiers()`, `retrieve_v2()`, and `RetrievalCache.retrieve` surfaces gain a `bm25f_enabled` (resp. `use_bm25f`) flag, plus the `AELFRICE_BM25F` env var and `[retrieval] bm25f_enabled` TOML key, all default-OFF. The FTS5 BM25 path stays the L1 default at v1.5.0 so the v1.4 byte-identical contract holds; the composition default flip is gated on the v1.5.0 composition tracker (#154). Test suite covers the seven acceptance criteria in `tests/test_bm25_index.py` (build dimensions, augmented-doc length invariant, W=0 FTS5 equivalence, vocab-shift recovery with W=3, perf gate via `--run-perf`, rebuild ≤ 1s at N=10k, deterministic serialise round-trip).
+
+### Changed
+
+- **numpy and scipy promoted to runtime dependencies** ([#148](https://github.com/robotrocketscience/aelfrice/issues/148)). The zero-runtime-deps invariant carried by v1.0–v1.4 is broken deliberately to support the BM25F sparse-matvec retrieval lane. The v1.x "no GPU, no network" promise still holds, but the install footprint is no longer stdlib-only — scipy pulls native BLAS / libgfortran. Existing optional extras (`mcp`, `onboard-llm`, `archive`, `benchmarks`) are unchanged.
+
 ## [1.4.0] - 2026-04-28
 
 ### Added

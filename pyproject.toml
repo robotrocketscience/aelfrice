@@ -36,7 +36,15 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
-dependencies = []
+dependencies = [
+    # v1.5.0 added numpy + scipy as runtime deps for the BM25Index
+    # sparse matvec retrieval lane (`aelfrice.bm25`). See #148. Heavy
+    # native deps (BLAS, libgfortran via scipy); the v1.x "no GPU, no
+    # network" promise still holds, but the install footprint is no
+    # longer stdlib-only. CHANGELOG records the change.
+    "numpy>=2.0",
+    "scipy>=1.11",
+]
 
 [project.urls]
 Homepage = "https://github.com/robotrocketscience/aelfrice"
