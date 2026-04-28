@@ -1893,7 +1893,22 @@ class _SuppressSubparsersFormatter(argparse.HelpFormatter):
         return super()._format_action(action)
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
+    """Build the top-level argument parser.
+
+    Parameters
+    ----------
+    show_advanced:
+        When *True* the parser uses the plain :class:`argparse.HelpFormatter`
+        so every subcommand (including those registered with
+        ``help=argparse.SUPPRESS``) appears in ``--help`` output.  This is
+        the behaviour triggered by ``aelf --advanced [--help]``.
+        When *False* (the default) :class:`_SuppressSubparsersFormatter` hides
+        the suppressed subcommands from ``--help``.
+    """
+    formatter = (
+        argparse.HelpFormatter if show_advanced else _SuppressSubparsersFormatter
+    )
     parser = argparse.ArgumentParser(
         prog="aelf",
         description=(
@@ -1903,7 +1918,7 @@ def build_parser() -> argparse.ArgumentParser:
             "points) are hidden from --help. See docs/COMMANDS.md for the "
             "complete reference."
         ),
-        formatter_class=_SuppressSubparsersFormatter,
+        formatter_class=formatter,
     )
     parser.add_argument(
         "--version",
@@ -2456,11 +2471,33 @@ def main(argv: Sequence[str] | None = None, out: object = None) -> int:
     Both are skipped if AELF_NO_UPDATE_CHECK is set, and the banner
     is skipped for commands that already handle update messaging
     themselves (upgrade / uninstall / statusline).
+
+    ``--advanced`` flag
+    -------------------
+    ``aelf --advanced`` (or ``aelf --help --advanced``) prints the full help
+    output including subcommands that are hidden from the default ``--help``
+    view (those registered with ``help=argparse.SUPPRESS``).  ``--advanced``
+    is a *help-modifier* flag: it is consumed before argparse sees the rest of
+    the argv, and always results in help being printed then a clean exit (0).
     """
     if out is None:
         out = sys.stdout
+
+    # Pre-scan argv for --advanced *before* building the parser.  We consume
+    # the flag here rather than registering it with argparse so that it can
+    # coexist naturally with --help / -h without argparse complaining about
+    # conflicting actions.
+    effective_argv: list[str] = list(argv) if argv is not None else sys.argv[1:]
+    show_advanced = "--advanced" in effective_argv
+    if show_advanced:
+        adv_parser = build_parser(show_advanced=True)
+        # Print full help to *out* (not stdout) so tests can capture it.
+        adv_parser.print_help(file=out)  # type: ignore[arg-type]
+        print("", file=out)  # type: ignore[arg-type]
+        return 0
+
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(effective_argv)
     cmd = getattr(args, "cmd", None)
     if not _update_check_disabled() and cmd not in _UPDATE_CHECK_SKIP_CMDS:
         # Fire-and-forget: cache TTL gates duplicate work, never blocks.
