@@ -105,6 +105,7 @@ from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
 from aelfrice.setup import (
     COMMIT_INGEST_SCRIPT_NAME,
+    SEARCH_TOOL_BASH_SCRIPT_NAME,
     SEARCH_TOOL_SCRIPT_NAME,
     SESSION_START_HOOK_SCRIPT_NAME,
     SettingsScope,
@@ -113,6 +114,7 @@ from aelfrice.setup import (
     default_settings_path,
     detect_default_scope,
     install_commit_ingest_hook,
+    install_search_tool_bash_hook,
     install_search_tool_hook,
     install_pre_compact_hook,
     install_session_start_hook,
@@ -120,12 +122,14 @@ from aelfrice.setup import (
     install_transcript_ingest_hooks,
     install_user_prompt_submit_hook,
     resolve_commit_ingest_command,
+    resolve_search_tool_bash_command,
     resolve_search_tool_command,
     resolve_hook_command,
     resolve_pre_compact_hook_command,
     resolve_session_start_hook_command,
     resolve_transcript_logger_command,
     uninstall_commit_ingest_hook,
+    uninstall_search_tool_bash_hook,
     uninstall_search_tool_hook,
     uninstall_pre_compact_hook,
     uninstall_session_start_hook,
@@ -1087,6 +1091,38 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 f"(command={st_command!r})",
                 file=out,  # type: ignore[arg-type]
             )
+    if getattr(args, "search_tool_bash", False):
+        stb_command = resolve_search_tool_bash_command(scope)
+        stb_result = install_search_tool_bash_hook(
+            path, command=stb_command, timeout=args.timeout,
+        )
+        if stb_result.already_present:
+            print(
+                f"search-tool-bash hook already installed in {stb_result.path} "
+                f"(command={stb_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed search-tool-bash PreToolUse:Bash hook in "
+                f"{stb_result.path} (command={stb_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "no_search_tool_bash", False):
+        stb_rm = uninstall_search_tool_bash_hook(
+            path, command_basename=SEARCH_TOOL_BASH_SCRIPT_NAME,
+        )
+        if stb_rm.removed == 0:
+            print(
+                f"no search-tool-bash hook in {stb_rm.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"removed {stb_rm.removed} search-tool-bash entr"
+                f"{'y' if stb_rm.removed == 1 else 'ies'} from {stb_rm.path}",
+                file=out,  # type: ignore[arg-type]
+            )
     _print_setup_next_step(out)
     _print_setup_jsonl_history_hint(out)
     return 0
@@ -1265,6 +1301,21 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
             print(
                 f"removed {st_result.removed} search-tool entr"
                 f"{'y' if st_result.removed == 1 else 'ies'} from {st_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "search_tool_bash", False):
+        stb_result = uninstall_search_tool_bash_hook(
+            path, command_basename=SEARCH_TOOL_BASH_SCRIPT_NAME,
+        )
+        if stb_result.removed == 0:
+            print(
+                f"no search-tool-bash hook in {stb_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"removed {stb_result.removed} search-tool-bash entr"
+                f"{'y' if stb_result.removed == 1 else 'ies'} from {stb_result.path}",
                 file=out,  # type: ignore[arg-type]
             )
     return 0
@@ -2267,6 +2318,28 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "docs/search_tool_hook.md."
         ),
     )
+    _stb_group = p_setup.add_mutually_exclusive_group()
+    _stb_group.add_argument(
+        "--search-tool-bash", dest="search_tool_bash", action="store_true",
+        default=False,
+        help=(
+            "additionally wire the PreToolUse:Bash hook so shell search "
+            "commands (grep, rg, find, fd, ack) run against the per-project "
+            "belief store before firing. Independent of --search-tool; "
+            "either, both, or neither may be installed. Default-OFF at "
+            "v1.5.0; default-on flip is gated on telemetry. See "
+            "docs/search_tool_hook.md § Bash extension."
+        ),
+    )
+    _stb_group.add_argument(
+        "--no-search-tool-bash", dest="no_search_tool_bash", action="store_true",
+        default=False,
+        help=(
+            "remove the PreToolUse:Bash search-tool-bash hook if present. "
+            "Idempotent (no-op when the hook is not installed). "
+            "Independent of --search-tool / --no-search-tool."
+        ),
+    )
     p_setup.set_defaults(func=_cmd_setup)
 
     # Hidden: install lifecycle, surfaced by docs not by --help.
@@ -2362,6 +2435,10 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_unsetup.add_argument(
         "--search-tool", dest="search_tool", action="store_true",
         help="also remove the PreToolUse:Grep|Glob search-tool hook entry.",
+    )
+    p_unsetup.add_argument(
+        "--search-tool-bash", dest="search_tool_bash", action="store_true",
+        help="also remove the PreToolUse:Bash search-tool-bash hook entry.",
     )
     p_unsetup.set_defaults(func=_cmd_unsetup)
 
