@@ -41,7 +41,7 @@ Tracked openly. Each item is mapped to its target version below.
 
 ### Cosmetic — v1.1.0
 
-- **`edges` not yet renamed to `threads`** in user-facing CLI output and MCP tool descriptions. Decision recorded; not implemented.
+- ✅ **`edges` → `threads` user-facing rename (v1.1.0, [#92](https://github.com/robotrocketscience/aelfrice/issues/92)).** All user-facing surfaces (CLI output labels, slash command descriptions, COMMANDS.md, MCP.md prose) now use `threads`. The internal SQLite schema, the `Edge` Python dataclass, and the `EDGE_*` type constants are unchanged. The MCP `aelf:stats` tool emits **both** `edges` and `threads` keys with the same integer value for the v1.1.0 deprecation window; `edges` is removed in v1.2.0. Same for `aelf:health.features.edge_per_belief` / `thread_per_belief`. Clients should migrate to `threads` now. The `auditor.CHECK_ORPHAN_EDGES` constant is kept as a deprecated alias of `CHECK_ORPHAN_THREADS` for v1.0 importer compatibility; removed in v1.2.0.
 - **`aelf health` and `aelf status` are aliased.** v1.1.0 splits them: `status` = counts snapshot, `health` = real graph auditor (orphan edges, isolated clusters, FTS5 sync, locked-belief contradictions, decay anomalies).
 
 ### Auto-capture — v1.2.0

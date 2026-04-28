@@ -229,10 +229,18 @@ def test_feedback_unknown_belief_returns_error(store: MemoryStore) -> None:
 
 def test_stats_returns_count_keys(store: MemoryStore) -> None:
     out = tool_stats(store)
+    # v1.1.0 emits both `edges` (deprecated) and `threads` (canonical).
+    # `edges` removed in v1.2.0.
     assert {
-        "beliefs", "edges", "locked", "feedback_events",
+        "beliefs", "edges", "threads", "locked", "feedback_events",
         "onboard_sessions_total",
     }.issubset(out.keys())
+
+
+def test_stats_threads_aliases_edges(store: MemoryStore) -> None:
+    """`threads` and `edges` carry the same integer value at v1.1.0."""
+    out = tool_stats(store)
+    assert out["threads"] == out["edges"]
 
 
 def test_stats_counts_match_after_inserts(store: MemoryStore) -> None:

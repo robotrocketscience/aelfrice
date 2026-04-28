@@ -10,6 +10,16 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+### Changed
+
+- **`edges` → `threads` user-facing rename ([#92](https://github.com/robotrocketscience/aelfrice/issues/92)).** All user-facing surfaces (CLI output labels in `aelf stats` / `aelf health`; slash command descriptions; COMMANDS.md / MCP.md prose) now use "threads". The internal SQLite schema, the `Edge` Python dataclass, and the `EDGE_*` type constants are unchanged. The auditor's `metrics` dict keys (`threads`, `threads_supports`, `threads_contradicts`, …) follow the rename.
+
+### Deprecated
+
+- **MCP `aelf:stats` JSON: `edges` key.** v1.1.0 emits both `edges` and `threads` with the same integer value. **`edges` is removed in v1.2.0.** Clients should migrate to `threads` now.
+- **MCP `aelf:health.features.edge_per_belief` key.** v1.1.0 emits both `edge_per_belief` and `thread_per_belief` with the same value. `edge_per_belief` is removed in v1.2.0.
+- **`aelfrice.auditor.CHECK_ORPHAN_EDGES` constant.** Kept as a deprecated alias of `CHECK_ORPHAN_THREADS` for v1.0 importer compatibility. Removed in v1.2.0.
+
 ## [1.0.3] - 2026-04-27
 
 Patch release: contradiction tie-breaker, `aelf resolve` CLI, onboard

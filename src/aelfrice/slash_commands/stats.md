@@ -1,6 +1,6 @@
 ---
 name: aelf:stats
-description: Show summary counts — beliefs, edges, locks, and feedback events.
+description: Show summary counts — beliefs, threads, locks, and feedback events.
 allowed-tools:
   - Bash
 ---

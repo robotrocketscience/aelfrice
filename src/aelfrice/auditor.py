@@ -2,18 +2,24 @@
 
 Three mechanical checks in v1.1.0. Each fires `severity='fail'` when the
 invariant is violated; `aelf health` exits 1 if any failure is present
-so CI can gate on it. Informational metrics (credal gap, edge counts,
+so CI can gate on it. Informational metrics (credal gap, thread counts,
 feedback coverage, average confidence) are reported alongside but do
 not affect exit status.
 
 Checks:
-  - orphan_edges     edges whose src or dst no longer exists in beliefs
-  - fts_sync         beliefs_fts row count matches beliefs row count
-  - locked_contradicts pairs of locked beliefs joined by a CONTRADICTS edge
+  - orphan_threads     threads (graph relationships) whose src or dst
+                       no longer exists in beliefs
+  - fts_sync           beliefs_fts row count matches beliefs row count
+  - locked_contradicts pairs of locked beliefs joined by a CONTRADICTS thread
 
 Threshold-tuned checks (isolated clusters, decay anomalies) are deferred
 to v1.2.0+ — they require calibration data the v1.1.0 store doesn't yet
 make available.
+
+The internal schema and code keep "edges"; user-facing labels surface as
+"threads" per the v1.1.0 cosmetic rename. `CHECK_ORPHAN_EDGES` is kept
+as a deprecated alias for the constant (same value as the new
+`CHECK_ORPHAN_THREADS`) for v1.0 importer compatibility; remove in v1.2.0.
 """
 from __future__ import annotations
 
@@ -25,7 +31,9 @@ from aelfrice.store import MemoryStore
 SEVERITY_FAIL: Final[str] = "fail"
 SEVERITY_INFO: Final[str] = "info"
 
-CHECK_ORPHAN_EDGES: Final[str] = "orphan_edges"
+CHECK_ORPHAN_THREADS: Final[str] = "orphan_threads"
+# Deprecated alias for v1.0 importer compatibility. Drop in v1.2.0.
+CHECK_ORPHAN_EDGES: Final[str] = CHECK_ORPHAN_THREADS
 CHECK_FTS_SYNC: Final[str] = "fts_sync"
 CHECK_LOCKED_CONTRADICTS: Final[str] = "locked_contradicts"
 
@@ -57,16 +65,16 @@ def _check_orphan_edges(store: MemoryStore) -> AuditFinding:
     n = store.count_orphan_edges()
     if n == 0:
         return AuditFinding(
-            check=CHECK_ORPHAN_EDGES,
+            check=CHECK_ORPHAN_THREADS,
             severity=SEVERITY_INFO,
             count=0,
-            detail="all edges resolve to existing beliefs",
+            detail="all threads resolve to existing beliefs",
         )
     return AuditFinding(
-        check=CHECK_ORPHAN_EDGES,
+        check=CHECK_ORPHAN_THREADS,
         severity=SEVERITY_FAIL,
         count=n,
-        detail=f"{n} edge(s) reference deleted or missing beliefs",
+        detail=f"{n} thread(s) reference deleted or missing beliefs",
     )
 
 
@@ -105,7 +113,7 @@ def _check_locked_contradicts(store: MemoryStore) -> AuditFinding:
         check=CHECK_LOCKED_CONTRADICTS,
         severity=SEVERITY_FAIL,
         count=len(pairs),
-        detail=f"{len(pairs)} locked CONTRADICTS pair(s): {sample} — run `aelf resolve`",
+        detail=f"{len(pairs)} locked CONTRADICTS thread(s): {sample} — run `aelf resolve`",
     )
 
 
@@ -131,14 +139,16 @@ def _gather_metrics(store: MemoryStore) -> dict[str, float | int]:
         credal_gap = 0
     metrics: dict[str, float | int] = {
         "beliefs": n_beliefs,
-        "edges": n_edges,
+        # v1.1.0 user-facing rename: graph relationships surface as
+        # "threads" in CLI output. Internal schema keeps `edges`.
+        "threads": n_edges,
         "locked": n_locked,
         "feedback_events": n_feedback,
         "avg_confidence": round(avg_confidence, 3),
         "credal_gap": credal_gap,
     }
     for edge_type, count in sorted(edges_by_type.items()):
-        metrics[f"edges_{edge_type.lower()}"] = count
+        metrics[f"threads_{edge_type.lower()}"] = count
     return metrics
 
 

@@ -32,8 +32,8 @@ Tools register under the `aelf:` namespace.
 | `aelf:locked` | — | `pressured` | `{kind, n, locked[]}` |
 | `aelf:demote` | `belief_id` | — | `{kind, id, demoted}` |
 | `aelf:feedback` | `belief_id`, `signal` | `source` | `{kind, id, signal, prior_alpha, new_alpha, prior_beta, new_beta, pressured_locks, demoted_locks}` |
-| `aelf:stats` | — | — | `{kind, beliefs, edges, locked, feedback_events, onboard_sessions_total}` |
-| `aelf:health` | — | — | `{kind, regime, description, classification_confidence?, features?}` |
+| `aelf:stats` | — | — | `{kind, beliefs, edges, threads, locked, feedback_events, onboard_sessions_total}` — `threads` is the v1.1.0 alias for `edges` (same integer value); `edges` is **deprecated** and removed in v1.2.0. |
+| `aelf:health` | — | — | `{kind, regime, description, classification_confidence?, features?}` — `features` includes both `edge_per_belief` and `thread_per_belief` (same value) for the v1.1.0 deprecation window; `edge_per_belief` removed in v1.2.0. |
 
 ## `aelf:onboard` polymorphism
 
