@@ -27,9 +27,14 @@ network boundary.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
+import tempfile
+import time
 import traceback
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import IO, Final, cast
 
 QUERY_TOKEN_LIMIT: Final[int] = 5
@@ -359,6 +364,117 @@ def _reset_bash_fire_state() -> None:
     _BASH_FIRE_STATE.clear()
 
 
+# --- Telemetry (v1.5.0 #155 AC3 prerequisite) ----------------------------
+
+TELEMETRY_RING_CAP: Final[int] = 1000
+"""Maximum entries retained in the JSONL ring buffer."""
+
+TELEMETRY_SUBPATH: Final[str] = "aelfrice/telemetry/search_tool_hook.jsonl"
+"""Path fragment appended to the git-common-dir to get the telemetry file.
+Lives next to the DB and inherits its gitignore boundary."""
+
+
+def _telemetry_path_for_db(db_path: Path) -> Path:
+    """Derive the telemetry file path from the DB path.
+
+    The DB lives at `<git-common-dir>/aelfrice/memory.db` (or
+    ~/.aelfrice/memory.db for non-git dirs). The telemetry file lives at
+    `<git-common-dir>/aelfrice/telemetry/search_tool_hook.jsonl`,
+    adjacent to the DB.
+    """
+    return db_path.parent / "telemetry" / "search_tool_hook.jsonl"
+
+
+def _append_telemetry(
+    telemetry_path: Path,
+    *,
+    session_id: str | None,
+    command: str,
+    query: str,
+    latency_ms: float,
+    injected_l1: int,
+    injected_l0: int,
+    stderr: IO[str] | None = None,
+) -> None:
+    """Append one telemetry record to the JSONL ring buffer. Fail-soft.
+
+    Uses read-all → trim → rewrite-atomically (tempfile + os.replace).
+    If the write fails for any reason (read-only, disk-full, missing
+    parent), traces one line to stderr and continues.
+    """
+    record: dict[str, object] = {
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "session_id": session_id or "",
+        "command": command,
+        "query": query,
+        "latency_ms": round(latency_ms, 3),
+        "injected_l1": injected_l1,
+        "injected_l0": injected_l0,
+    }
+    try:
+        telemetry_path.parent.mkdir(parents=True, exist_ok=True)
+        if telemetry_path.exists():
+            lines = [
+                ln for ln in telemetry_path.read_text(encoding="utf-8").splitlines()
+                if ln.strip()
+            ]
+        else:
+            lines = []
+        lines.append(json.dumps(record))
+        # Evict oldest to hold the ring cap.
+        if len(lines) > TELEMETRY_RING_CAP:
+            lines = lines[-TELEMETRY_RING_CAP:]
+        payload = "\n".join(lines) + "\n"
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=telemetry_path.name + ".", suffix=".tmp",
+            dir=str(telemetry_path.parent),
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, telemetry_path)
+        except Exception:
+            if tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
+            raise
+    except Exception as exc:  # fail-soft contract
+        serr = stderr if stderr is not None else sys.stderr
+        print(
+            f"aelfrice: telemetry write failed (non-fatal): {exc}",
+            file=serr,
+        )
+
+
+def read_telemetry(path: Path) -> list[dict[str, object]]:
+    """Read the JSONL ring buffer at `path`. Returns [] when missing.
+
+    Raises `ValueError` if the file exists but contains a line that
+    is not valid JSON (real corruption). Lines that are valid JSON
+    but not objects are silently skipped (defensive).
+    """
+    if not path.exists():
+        return []
+    records: list[dict[str, object]] = []
+    text = path.read_text(encoding="utf-8")
+    for i, line in enumerate(text.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"telemetry file {path} line {i + 1} is not valid JSON: {exc}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            continue
+        records.append(cast(dict[str, object], parsed))
+    return records
+
+
 def _read_payload(stdin: IO[str]) -> dict[str, object] | None:
     raw = stdin.read()
     if not raw.strip():
@@ -461,7 +577,9 @@ def _emit(stdout: IO[str], context: str) -> None:
 
 
 def _do_search(
-    payload: dict[str, object], stdout: IO[str]
+    payload: dict[str, object],
+    stdout: IO[str],
+    stderr: IO[str] | None = None,
 ) -> None:
     """Core hook body. Returns silently on any non-budget failure.
 
@@ -471,6 +589,8 @@ def _do_search(
     extractable tokens.
     """
     bash_source: tuple[str, str] | None = None
+    session_id: str | None = None
+    t0: float | None = None
     if _is_search_tool_call(payload):
         query = _extract_query(payload)
         if query is None:
@@ -479,6 +599,7 @@ def _do_search(
         # v1.5.0 #155 Bash matcher path. Per-turn fire cap applies
         # only to this lane; Grep|Glob fires once per direct tool
         # call and is not capped.
+        t0 = time.perf_counter()
         session_obj = payload.get("session_id")
         session_id = session_obj if isinstance(session_obj, str) else None
         if _bash_fire_cap_reached(session_id):
@@ -507,6 +628,19 @@ def _do_search(
         _emit(stdout, _format_results(
             query, [], set(), bash_source=bash_source,
         ))
+        if bash_source is not None and t0 is not None:
+            latency_ms = (time.perf_counter() - t0) * 1000.0
+            tel_path = _telemetry_path_for_db(p)
+            _append_telemetry(
+                tel_path,
+                session_id=session_id,
+                command=bash_source[0],
+                query=query,
+                latency_ms=latency_ms,
+                injected_l1=0,
+                injected_l0=0,
+                stderr=stderr,
+            )
         return
 
     # Bash matcher gets a halved token budget + L1 limit (spec § Token budget).
@@ -532,6 +666,23 @@ def _do_search(
     _emit(stdout, _format_results(
         query, beliefs, locked_ids, bash_source=bash_source,
     ))
+
+    # Write telemetry for the Bash branch only (AC3 prerequisite).
+    if bash_source is not None and t0 is not None:
+        latency_ms = (time.perf_counter() - t0) * 1000.0
+        n_l0 = sum(1 for b in beliefs if getattr(b, "id", "") in locked_ids)
+        n_l1 = len(beliefs) - n_l0
+        tel_path = _telemetry_path_for_db(p)
+        _append_telemetry(
+            tel_path,
+            session_id=session_id,
+            command=bash_source[0],
+            query=query,
+            latency_ms=latency_ms,
+            injected_l1=n_l1,
+            injected_l0=n_l0,
+            stderr=stderr,
+        )
 
 
 def _db_path_accepts_cwd(db_path_fn: object) -> bool:
@@ -565,7 +716,7 @@ def main(
         payload = _read_payload(sin)
         if payload is None:
             return 0
-        _do_search(payload, sout)
+        _do_search(payload, sout, stderr=serr)
     except Exception:  # non-blocking: surface but never raise
         traceback.print_exc(file=serr)
     return 0
