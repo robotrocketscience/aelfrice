@@ -123,6 +123,46 @@ def relevance(belief: Belief, query_overlap_score: float) -> float:
     return posterior_mean(belief.alpha, belief.beta) * query_overlap_score
 
 
+def _digamma(x: float) -> float:
+    """Digamma function ψ(x) via asymptotic series with recurrence shift.
+
+    Recurrence ψ(x) = ψ(x+1) − 1/x shifts x ≥ 6, then applies:
+        ψ(x) ≈ ln(x) − 1/(2x) − 1/(12x²) + 1/(120x⁴) − 1/(252x⁶)
+    Accuracy ~1e-10 for x ≥ 6 (adequate for entropy scoring).
+    """
+    # Shift via recurrence until x >= 6
+    result = 0.0
+    while x < 6.0:
+        result -= 1.0 / x
+        x += 1.0
+    # Asymptotic series
+    inv_x = 1.0 / x
+    inv_x2 = inv_x * inv_x
+    result += (
+        math.log(x)
+        - 0.5 * inv_x
+        - inv_x2 / 12.0
+        + inv_x2 * inv_x2 / 120.0
+        - inv_x2 * inv_x2 * inv_x2 / 252.0
+    )
+    return result
+
+
+def uncertainty_score(alpha: float, beta: float) -> float:
+    """Beta differential entropy H(α, β) as an uncertainty scalar.
+
+    H(α, β) = ln B(α, β) − (α−1)·ψ(α) − (β−1)·ψ(β) + (α+β−2)·ψ(α+β)
+    where ln B(α, β) = lgamma(α) + lgamma(β) − lgamma(α+β) and ψ is digamma.
+    """
+    ln_beta = math.lgamma(alpha) + math.lgamma(beta) - math.lgamma(alpha + beta)
+    return (
+        ln_beta
+        - (alpha - 1.0) * _digamma(alpha)
+        - (beta - 1.0) * _digamma(beta)
+        + (alpha + beta - 2.0) * _digamma(alpha + beta)
+    )
+
+
 def partial_bayesian_score(
     bm25_raw: float,
     alpha: float,
