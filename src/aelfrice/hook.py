@@ -26,10 +26,12 @@ import json
 import os
 import sys
 import tempfile
+import tomllib
 import traceback
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Final, cast
+from typing import IO, Any, Final, cast
 
 try:
     from aelfrice.cli import db_path
@@ -81,6 +83,97 @@ SESSION_START_CLOSE_TAG: Final[str] = "</aelfrice-baseline>"
 _PROMPT_KEY: Final[str] = "prompt"
 _TRANSCRIPT_PATH_KEY: Final[str] = "transcript_path"
 _CWD_KEY: Final[str] = "cwd"
+
+# ---------------------------------------------------------------------------
+# Per-hook configuration (#218 AC6)
+# ---------------------------------------------------------------------------
+
+_UPS_SECTION: Final[str] = "user_prompt_submit_hook"
+_COLLAPSE_KEY: Final[str] = "collapse_duplicate_hashes"
+_CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
+
+
+@dataclass(frozen=True)
+class UserPromptSubmitConfig:
+    """Configuration for the UserPromptSubmit hook.
+
+    All fields default to their OFF/safe value so missing config degrades
+    gracefully. Loaded from `.aelfrice.toml [user_prompt_submit_hook]`
+    by `load_user_prompt_submit_config()`.
+    """
+
+    collapse_duplicate_hashes: bool = False
+
+
+def load_user_prompt_submit_config(
+    start: Path | None = None,
+    *,
+    stderr: IO[str] | None = None,
+) -> UserPromptSubmitConfig:
+    """Walk up from `start` looking for `.aelfrice.toml`.
+
+    Returns the resolved `[user_prompt_submit_hook]` config. Missing
+    file / missing section / malformed TOML / wrong-typed values all
+    degrade to defaults with a stderr trace; never raises.
+    """
+    serr: IO[str] = stderr if stderr is not None else sys.stderr
+    current = (start if start is not None else Path.cwd()).resolve()
+    seen: set[Path] = set()
+    while current not in seen:
+        seen.add(current)
+        candidate = current / _CONFIG_FILENAME
+        if candidate.is_file():
+            try:
+                raw = candidate.read_bytes()
+            except OSError as exc:
+                print(
+                    f"aelfrice hook: cannot read {candidate}: {exc}",
+                    file=serr,
+                )
+                return UserPromptSubmitConfig()
+            try:
+                parsed: dict[str, Any] = tomllib.loads(
+                    raw.decode("utf-8", errors="replace"),
+                )
+            except tomllib.TOMLDecodeError as exc:
+                print(
+                    f"aelfrice hook: malformed TOML in {candidate}: {exc}",
+                    file=serr,
+                )
+                return UserPromptSubmitConfig()
+            section_obj: Any = parsed.get(_UPS_SECTION, {})
+            if not isinstance(section_obj, dict):
+                return UserPromptSubmitConfig()
+            section = cast(dict[str, Any], section_obj)
+            collapse_obj: Any = section.get(_COLLAPSE_KEY, False)
+            if not isinstance(collapse_obj, bool):
+                print(
+                    f"aelfrice hook: ignoring [{_UPS_SECTION}] "
+                    f"{_COLLAPSE_KEY} in {candidate} (expected bool)",
+                    file=serr,
+                )
+                collapse_obj = False
+            return UserPromptSubmitConfig(
+                collapse_duplicate_hashes=collapse_obj,
+            )
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return UserPromptSubmitConfig()
+
+
+def _dedup_by_content_hash(hits: list[Belief]) -> list[Belief]:
+    """Return hits with duplicate content hashes removed (first occurrence wins)."""
+    seen_hashes: set[str] = set()
+    result: list[Belief] = []
+    for h in hits:
+        digest = hashlib.sha1(h.content.encode()).hexdigest()
+        if digest not in seen_hashes:
+            seen_hashes.add(digest)
+            result.append(h)
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Telemetry ring buffer (#218 AC1-3)
@@ -228,8 +321,10 @@ def user_prompt_submit(
             if token_budget is not None
             else DEFAULT_HOOK_TOKEN_BUDGET
         )
+        config = load_user_prompt_submit_config(stderr=serr)
         hits = _retrieve(prompt, budget)
         if hits:
+            # AC1 telemetry: record pre-collapse counts.
             n_returned = len(hits)
             unique_hashes = {
                 hashlib.sha1(h.content.encode()).hexdigest()
@@ -238,6 +333,10 @@ def user_prompt_submit(
             n_unique = len(unique_hashes)
             n_l0 = sum(1 for h in hits if h.lock_level == LOCK_USER)
             n_l1 = n_returned - n_l0
+            # AC6: optional dedup before formatting.
+            if config.collapse_duplicate_hashes:
+                hits = _dedup_by_content_hash(hits)
+            # total_chars measured post-collapse (what is actually injected).
             total_chars = sum(len(h.content) for h in hits)
             body = _format_hits(hits)
             sout.write(body)
