@@ -22,19 +22,33 @@ v2.0 must commit one way before `wonder`, `reason`, and the speculative-belief s
 
 ### Option A — port the multi-axis substrate
 
-- **Schema migration.** Add three columns to `beliefs`:
+- **Schema migration.** Three additive `ALTER TABLE beliefs ADD COLUMN` statements appended to `_MIGRATIONS` in `src/aelfrice/store.py:146`. The store has no `schema_version` PRAGMA — migrations are an idempotent tuple, `duplicate column name` is swallowed on re-run. Columns:
     - `uncertainty_vector TEXT` — JSON-serialised `[[α₁,β₁], [α₂,β₂], [α₃,β₃], [α₄,β₄]]`.
     - `hibernation_score REAL` — soft-suspend score; `NULL` for active beliefs.
     - `activation_condition TEXT` — JSON predicate that re-activates a hibernated belief.
+    Plus one row in `_BACKFILL_STATEMENTS` to populate `uncertainty_vector` for legacy beliefs (split scalar evenly across the four axes, or use `NULL` and treat as the projected-from-scalar fallback).
 - **Code port.** ~242 LOC from agentmemory `uncertainty.py`. Clean stdlib (`json`, `math`, `dataclasses`); zero coupling to other research-line modules (verified — no imports from `multimodel`, `intention`, `semantic_linker`).
 - **Capabilities unlocked.**
     - `wonder.analyze_gaps` answers *"this aspect of this belief is uncertain — research it"* rather than *"this belief is uncertain overall."*
     - `voi(prior, observation)` — value-of-information for a proposed evidence-gathering action. Lets `wonder` rank what's worth investigating next.
     - `hibernate(belief, threshold)` — soft-suspend beliefs whose confidence has decayed below a per-axis threshold; lifecycle distinct from delete.
     - `propagate(source_vector, edge_type)` — uncertainty propagation across graph edges with edge-type-specific decay rates.
-- **Backwards compatibility.** `Belief.alpha` and `Belief.beta_param` remain on the model as the *aggregate* projection of the vector — `α = sum(α_i)`, `β = sum(β_i)` — so single-axis consumers (current `partial_bayesian_score`, BFS broker dampening, `apply_feedback` arithmetic) keep working unchanged. Multi-axis is purely additive at the consumption surface.
+- **Backwards compatibility.** `Belief.alpha` and `Belief.beta` (the actual model field; not `beta_param` — that's the historical research-line name) remain on the model as the *aggregate* projection of the vector — `α = sum(α_i)`, `β = sum(β_i)`. Verified single-axis consumer surface (audited 2026-04-28 against `src/aelfrice/`):
+    - `scoring.posterior_mean(α, β)` — division
+    - `scoring.partial_bayesian_score(...)` — retrieval ranking
+    - `scoring.relevance(belief, ...)` — relevance scoring
+    - `scoring.decay(α, β, ...)` — half-life aging
+    - `feedback._bayesian_update(b, valence)` — feedback arithmetic
+    - `feedback.apply_feedback` — persistence
+    - `store.alpha_beta_pairs()` and `telemetry.py:184` — aggregate stats
+    - `store.propagate_feedback` BFS — broker dampening
+    - `retrieval.py:518` — passes scalars to `partial_bayesian_score`
+    - `classification.get_source_adjusted_prior(type, source)` — sets the *initial* (α, β) at insert time, keyed to belief-type. **Under Option A, this needs a per-axis counterpart**, not just a scalar projection. That's the single non-trivial port outside `uncertainty.py` itself, and it's a semantic decision (does an "agent_inferred / requirement" belief load equally on existence/semantics/mechanism/cost? probably not — but the research line shipped without calibrating that).
+    - Write paths: `scanner.py:240,281`, `ingest.py:124`, `llm_classifier.py:1017,1049` — all set α, β at insert via `get_source_adjusted_prior`. Inherit whatever decision lands there.
+
+    Multi-axis is additive at the *read* surface (projection covers existing readers via the property tested in `tests/test_substrate_assumptions.py`). It is **not** additive at the *write* surface — every write path needs a decision about which axes to populate. The memo's earlier framing ("unchanged") was too clean.
 - **Costs.**
-    - Schema migration discipline: new `store.migrate()` step, version-bump to `schema_version = 2`, idempotent re-run.
+    - Schema migration: three `ALTER TABLE ... ADD COLUMN` statements appended to `_MIGRATIONS`, mechanically identical to the v1.0→v1.2 `session_id` / `anchor_text` / `origin` adds. No `schema_version` concept exists in this codebase to bump; the `duplicate column name`-swallowing pattern at `store.py:280-285` makes the migration idempotent across re-opens.
     - Documentation surface: `PHILOSOPHY.md § Bayesian, not vector` flips from "single-axis only" to "single-axis is the projection of the vector", which is a substantive narrative change. `ARCHITECTURE.md` gains an `uncertainty_vector` section.
     - Benchmark complication: the synthetic-graph harness scores beliefs as scalars; either it stays scalar (vector projects to scalar for benchmarks) or each benchmark grows a per-axis variant.
     - User-visible vector. `aelf show <id>` either hides the vector (then `wonder` becomes a hidden mechanism) or surfaces it (then users must learn the four axes). Neither is free.
@@ -44,7 +58,9 @@ v2.0 must commit one way before `wonder`, `reason`, and the speculative-belief s
 
 - **Schema migration.** Add one column:
     - `hibernation_score REAL` — soft-suspend score on the existing scalar posterior; `NULL` for active beliefs.
-- **Code port.** Zero from `uncertainty.py`. `scoring.uncertainty_score(α, β)` (#195) ports as a scalar Beta-entropy function, ~15 LOC, stdlib `math.lgamma`. `wonder` operates on scalar entropy. No `voi`. No `propagate`.
+- **Code port.** Zero from `uncertainty.py`. `scoring.uncertainty_score(α, β)` (#195) ports as a scalar Beta-entropy function — ~30 LOC including a digamma helper (the ~15 LOC estimate in #195's body undercounted; `math.lgamma` covers `ln Γ` but `ψ` needs a small recurse-then-asymptotic-series helper). `wonder` operates on scalar entropy. No `voi`. No `propagate`.
+
+    **Surprise from `tests/test_substrate_assumptions.py` (committed alongside this memo):** Beta differential entropy is *not* bounded below by zero. Sharp-evidence Betas have H << 0; even Jeffreys Beta(0.5, 0.5) has H ≈ −0.24 nats. The user-facing "uncertainty score" must therefore be a *relative ordering*, not an absolute magnitude. `aelf show <id> --uncertainty` shows a rank or percentile, not a raw value. This applies under either option, but is easier to reason about under B because there's only one number to relativise.
 - **Capabilities lost vs research line.**
     - `wonder.analyze_gaps` becomes *"these beliefs are uncertain overall"* — a coarser filter than per-aspect. Mechanically still useful; semantically less informative.
     - VOI is computable on the scalar (entropy reduction is well-defined for a single Beta), but the comparison axis is lost — VOI tells you *which belief* to investigate, not *which aspect of which belief*.
@@ -83,7 +99,7 @@ This memo proposes Option B. Ratify or override:
 If Option B is ratified:
 
 - **#195** (`scoring.uncertainty_score`) ports as scalar — `uncertainty_score(alpha: float, beta: float) -> float`, returning Beta differential entropy via `math.lgamma`. Tier stays `rook`; spec becomes a one-paragraph addendum to this memo.
-- **#199** (enforcement) is unaffected — the directive/compliance/selective-injection triad doesn't depend on per-axis uncertainty.
+- **#199** (enforcement) is unaffected — the directive/compliance/selective-injection triad doesn't depend on per-axis uncertainty. Verified by inspecting `src/aelfrice/hook.py:329-398`: current SessionStart injection is unconditional over locked beliefs (calls `retrieve(store, "")`), and H3 selective-injection scoring would multiply `posterior_mean` by query overlap — locked beliefs have saturated posteriors anyway, so the projected scalar gives the same ordering as any axis aggregate.
 - **#193** (sentiment-from-prose), **#197** (dedup), **#198** (multimodel), **#201** (relationship_detector) are all unaffected by the substrate axis count. They ship or defer on their own merits.
 - **`wonder` and `reason`** ship as v2.0 line items operating on scalar entropy. Their PRs reference this memo's § Capabilities lost section for the deliberate scope-narrowing.
 - **`LIMITATIONS.md § Sharp edges`** gains one entry: *"v2.0 `wonder` ranks beliefs by scalar Beta entropy. The research line ranked by per-aspect entropy across four axes (existence / semantics / mechanism / cost); aelfrice v2.0 deliberately ships the scalar form. See [substrate_decision.md](substrate_decision.md)."*
