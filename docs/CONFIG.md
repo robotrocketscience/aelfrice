@@ -9,7 +9,7 @@ This is the reference for power users whose project has a documentation idiom or
 A single optional TOML file at the root of a project (or any ancestor). It exposes two power-user surfaces:
 
 - `[noise]` — onboard-time belief filter. Changes how `aelf onboard` ingests beliefs; nothing else.
-- `[retrieval]` (v1.3+) — retrieval-time tier toggles. The only knob at v1.3.0 is the entity-index (L2.5) flag.
+- `[retrieval]` (v1.3+) — retrieval-time tier toggles. At v1.3.0 there are two knobs: the entity-index (L2.5) flag and the BFS multi-hop (L3) flag.
 
 Locks, hooks, MCP tools, and the Bayesian feedback math are not affected.
 
@@ -42,6 +42,13 @@ exclude_phrases = []
 # between L0 locked beliefs and L1 FTS5 BM25. Set to false to
 # disable (alongside the AELFRICE_ENTITY_INDEX=0 env-var off-switch).
 entity_index_enabled = true
+
+# v1.3+. Default-OFF at v1.3.0. Enables the L3 BFS multi-hop graph
+# traversal layered on top of L0+L2.5+L1. Set to true to opt in
+# (alongside the AELFRICE_BFS=1 env-var on-switch). Bounded by
+# max_depth=2, nodes_per_hop=16, total_budget_nodes=32, and a
+# 0.10 path-score floor; shares the unified token budget.
+bfs_enabled = false
 
 [onboard.llm]
 # v1.3.0+. Opt in to the LLM-Haiku classifier at onboard time.
@@ -166,6 +173,25 @@ When disabled (TOML `false`, or `AELFRICE_ENTITY_INDEX=0`, or explicit `entity_i
 Precedence (first decisive wins): env var `AELFRICE_ENTITY_INDEX=0` > explicit Python kwarg > TOML > default `true`.
 
 The on-write index is always populated regardless of this flag — disabling only affects reads. Re-enabling sees an up-to-date index without a backfill pass.
+
+### `bfs_enabled`
+
+Boolean, default `false` at v1.3.0. Toggles the L3 BFS multi-hop graph traversal retrieval tier.
+
+When enabled:
+- After L0+L2.5+L1 are packed, `retrieve()` walks outbound edges from those seeds.
+- Each visited belief scores `product(BFS_EDGE_WEIGHTS[edge.type])` along its path.
+- Bounded by `max_depth=2`, `nodes_per_hop=16`, `total_budget_nodes=32`, `min_path_score=0.10`.
+- Edge-type weights bias the frontier toward decisional edges: SUPERSEDES 0.90, CONTRADICTS 0.85, DERIVED_FROM 0.70, SUPPORTS 0.60, CITES 0.40, RELATES_TO 0.30.
+- BFS expansions append to the same packed output, consuming the same `token_budget` as the prior tiers in score-descending order.
+- `RetrievalResult.bfs_chains` exposes the edge-type path that reached each L3 expansion.
+
+When disabled (the v1.3.0 default):
+- L3 does not fire; output is byte-identical to the L0+L2.5+L1 baseline.
+
+Precedence (first decisive wins): env var `AELFRICE_BFS=1`/`0` > explicit Python kwarg > TOML > default `false`.
+
+The flag ships default-OFF at v1.3.0 because the literature-default edge weights have not yet been calibrated against the v1.2 corpus. A v1.3.x patch may re-tune them; a default-on flip is a v2.0 candidate once benchmark uplift is confirmed. See [bfs_multihop.md](bfs_multihop.md) for the full spec, including the temporal-coherence limitation carried forward to v2.0.
 
 ## When changes apply
 
