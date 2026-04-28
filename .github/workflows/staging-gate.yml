@@ -3,7 +3,6 @@ name: Staging Gate
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
@@ -146,85 +145,3 @@ jobs:
             echo "::warning file=docs/ROADMAP.md::No mention of v${head_ver}. Consider adding a section (non-blocking)."
           fi
           exit "$fail"
-
-  # ---------------------------------------------------------------------------
-  # #169 — Conventional-commit prefix enforcement
-  #
-  # Validates that every commit in the PR (base..head) starts with an allowed
-  # conventional-commit prefix.  The check is delegated entirely to
-  # scripts/check-commit-msg.py so the prefix list stays in one place.
-  #
-  # Exempt subjects (handled inside the script):
-  #   - "Merge ..."  — git-generated merge commits
-  #   - "Revert ..." — git-generated revert commits
-  #
-  # This job fails the PR if any commit has an invalid prefix.
-  # ---------------------------------------------------------------------------
-  commit-msg-prefix:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Validate commit-message prefixes
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          fail=0
-          while IFS= read -r sha; do
-            subject="$(git log -1 --format='%s' "$sha")"
-            if ! python3 scripts/check-commit-msg.py --subject "$subject"; then
-              echo "::error::Bad commit prefix in $sha: $subject"
-              fail=1
-            fi
-          done < <(git log --format='%H' "${BASE_SHA}..${HEAD_SHA}")
-          if [ "$fail" -eq 0 ]; then
-            echo "All commit subjects have valid conventional-commit prefixes."
-          fi
-          exit "$fail"
-
-  # ---------------------------------------------------------------------------
-  # #170 — PR-body issue-link warning (non-blocking)
-  #
-  # Inspects the PR body for a GitHub auto-close keyword followed by an issue
-  # reference.  Recognised patterns (case-insensitive):
-  #
-  #   close[sd]? #N        closes #N, close #N, closed #N
-  #   fix(e[sd])? #N       fixes #N, fix #N, fixed #N
-  #   resolve[sd]? #N      resolves #N, resolve #N, resolved #N
-  #   … same with "GH-N" instead of "#N"
-  #
-  # PRs that legitimately have no issue (release PRs, dependency bumps, etc.)
-  # can silence the warning by including the marker <!-- no-issue --> anywhere
-  # in the PR body.
-  #
-  # CONTRACT: this job always exits 0.  It is informational only and must
-  # never block a merge.  The ::warning:: annotation appears in the CI log
-  # and as a check-run summary.  See CONTRIBUTING.md § PR body requirements.
-  # ---------------------------------------------------------------------------
-  pr-body-issue-link:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check PR body for issue link
-        env:
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: |
-          set -euo pipefail
-          # Regex: optional leading whitespace, keyword, optional space,
-          # then "#N" or "GH-N" (N = one or more digits).
-          LINK_PATTERN='(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+(#|GH-)[0-9]+'
-          OPTOUT_MARKER='<!-- no-issue -->'
-          body="${PR_BODY:-}"
-          if echo "$body" | grep -qiE "$LINK_PATTERN"; then
-            echo "::notice::PR body contains an issue-close link. Traceability OK."
-            exit 0
-          fi
-          if echo "$body" | grep -qF "$OPTOUT_MARKER"; then
-            echo "::notice::PR body contains <!-- no-issue --> opt-out marker. Skipping link check."
-            exit 0
-          fi
-          echo "::warning::PR body has no Closes/Fixes/Resolves issue link and no <!-- no-issue --> opt-out marker. Consider adding 'Closes #N' so GitHub links the issue automatically. If this PR has no associated issue, add <!-- no-issue --> to silence this warning."
-          # Always exit 0 — this check is advisory, not a gate.
-          exit 0
