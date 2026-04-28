@@ -65,7 +65,7 @@ Pulled forward from v1.3.0 to validate the `PreToolUse` retrieval surface ahead 
 This is the release where retrieval moves beyond BM25-only.
 
 - **Entity-index retrieval.** L2.5 entity-index ports forward, including the regex extraction patterns. Spec: [entity_index.md](entity_index.md).
-- **BFS multi-hop graph traversal.** Edge-type-weighted graph walks layered on top of FTS5 hits. Bounded depth, bounded budget.
+- **BFS multi-hop graph traversal.** Edge-type-weighted graph walks layered on top of FTS5 hits. Bounded depth, bounded budget. Spec: [bfs_multihop.md](bfs_multihop.md).
 - **LLM-classification onboard path.** Haiku-backed classifier as an opt-in alternative to the regex classifier. Default-off; opt in via `aelf onboard --llm-classify` or `[onboard.llm].enabled = true` in `.aelfrice.toml`. Boundary policy and prompt template specified in [llm_classifier.md](llm_classifier.md). PRIVACY note: this introduces the first outbound call in the install path that transmits user content; see [PRIVACY § Optional outbound calls](PRIVACY.md#optional-outbound-calls).
 - **Posterior-weighted ranking (partial).** Retrieval scoring begins to incorporate `α / (α+β)` on top of BM25. Full feedback-into-ranking eval lands at v2.0.0.
 
