@@ -72,6 +72,8 @@ Imports are one-directional — modules lower in the table import from higher.
 | `CONTRADICTS` | -0.5 | half negative |
 | `SUPERSEDES` | 0.0 | structural; no propagation |
 
+The research line carried 17 edge types — 12 core (the six above plus `CALLS`, `TESTS`, `IMPLEMENTS`, `TEMPORAL_NEXT`, `CO_CHANGED`, `CONTAINS`, `COMMIT_TOUCHES`) and 5 speculative/causal (`SPECULATES`, `DEPENDS_ON`, `RESOLVES`, `HIBERNATED`, `DERIVED_FROM`). The narrowing to six is deliberate: the speculative/causal set hangs on the deferred `wonder` / multi-axis-uncertainty substrate (see [ROADMAP § Recovery inventory](ROADMAP.md#recovery-inventory)), and the additional core types (`CALLS`, `TESTS`, `IMPLEMENTS`, etc.) come back with the additional onboarding extractors that produce them — not by extending this enum in isolation.
+
 **SQLite tables:** `beliefs`, `beliefs_fts` (virtual, porter unicode61), `edges` PK `(src, dst, type)`, `feedback_history`, `sessions`, `onboard_sessions`, `schema_meta`.
 
 ## Bayesian update
