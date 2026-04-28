@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Final
 
 from aelfrice.classification import classify_sentence
-from aelfrice.models import LOCK_NONE, Belief
+from aelfrice.models import LOCK_NONE, ORIGIN_AGENT_INFERRED, Belief
 from aelfrice.noise_filter import NoiseConfig, is_noise
 from aelfrice.store import MemoryStore
 
@@ -173,6 +173,7 @@ def scan_repo(
             demotion_pressure=0,
             created_at=created_at,
             last_retrieved_at=None,
+            origin=ORIGIN_AGENT_INFERRED,
         ))
         inserted += 1
 

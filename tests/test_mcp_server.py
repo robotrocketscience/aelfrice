@@ -26,12 +26,15 @@ from aelfrice.mcp_server import (
     tool_onboard_sync,
     tool_search,
     tool_stats,
+    tool_validate,
 )
 from aelfrice.models import (
     BELIEF_FACTUAL,
     BELIEF_REQUIREMENT,
     LOCK_NONE,
     LOCK_USER,
+    ORIGIN_AGENT_INFERRED,
+    ORIGIN_USER_VALIDATED,
     Belief,
 )
 from aelfrice.store import MemoryStore
@@ -194,6 +197,70 @@ def test_demote_unlocked_belief_is_no_op(store: MemoryStore) -> None:
     out = tool_demote(store, belief_id="b1")
     assert out["kind"] == "demote.not_locked"
     assert out["demoted"] is False
+
+
+# --- validate (v1.2) ---------------------------------------------------
+
+
+def _put_inferred(store: MemoryStore, id: str = "inf1") -> Belief:
+    b = Belief(
+        id=id, content="some inferred fact", content_hash="hh",
+        alpha=1.0, beta=1.0, type=BELIEF_FACTUAL,
+        lock_level=LOCK_NONE, locked_at=None,
+        demotion_pressure=0, created_at="2026-04-26T00:00:00Z",
+        last_retrieved_at=None, origin=ORIGIN_AGENT_INFERRED,
+    )
+    store.insert_belief(b)
+    return b
+
+
+def test_validate_promotes_origin(store: MemoryStore) -> None:
+    _put_inferred(store, id="b1")
+    out = tool_validate(store, belief_id="b1")
+    assert out["kind"] == "validate.promoted"
+    assert out["prior_origin"] == ORIGIN_AGENT_INFERRED
+    assert out["new_origin"] == ORIGIN_USER_VALIDATED
+    after = store.get_belief("b1")
+    assert after is not None
+    assert after.origin == ORIGIN_USER_VALIDATED
+
+
+def test_validate_idempotent(store: MemoryStore) -> None:
+    _put_inferred(store, id="b1")
+    tool_validate(store, belief_id="b1")
+    out = tool_validate(store, belief_id="b1")
+    assert out["kind"] == "validate.already"
+
+
+def test_validate_missing_belief_returns_error(store: MemoryStore) -> None:
+    out = tool_validate(store, belief_id="ghost")
+    assert out["kind"] == "validate.error"
+    assert "ghost" in out["error"]
+
+
+def test_validate_locked_belief_returns_error(store: MemoryStore) -> None:
+    _put_belief(store, id="b1", lock_level=LOCK_USER)
+    out = tool_validate(store, belief_id="b1")
+    assert out["kind"] == "validate.error"
+    assert "locked" in out["error"]
+
+
+def test_validate_custom_source_label(store: MemoryStore) -> None:
+    _put_inferred(store, id="b1")
+    tool_validate(store, belief_id="b1", source="mcp_validate")
+    events = store.list_feedback_events()
+    assert events[0].source == "promotion:mcp_validate"
+
+
+def test_demote_devalidates_user_validated_via_mcp(store: MemoryStore) -> None:
+    _put_inferred(store, id="b1")
+    tool_validate(store, belief_id="b1")
+    out = tool_demote(store, belief_id="b1")
+    assert out["kind"] == "demote.devalidated"
+    assert out["demoted"] is True
+    after = store.get_belief("b1")
+    assert after is not None
+    assert after.origin == ORIGIN_AGENT_INFERRED
 
 
 # --- feedback ----------------------------------------------------------

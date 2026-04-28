@@ -1,4 +1,4 @@
-"""Contradiction tie-breaker for v1.0.1.
+"""Contradiction tie-breaker.
 
 When the graph holds a `CONTRADICTS` edge between two beliefs, the
 tie-breaker picks one as the winner via a deterministic precedence
@@ -6,40 +6,32 @@ rule and supersedes the loser. The result is a normal `SUPERSEDES`
 edge from winner → loser, plus an audit row in `feedback_history`
 recording which rule fired.
 
-## Precedence
+## Precedence (v1.2+, five classes)
 
-Three classes at v1.0.1 (down from the four named in the LIMITATIONS
-spec — see "Why three not four" below):
-
-1. **`user_stated`** — `lock_level == LOCK_USER`. The user explicitly
-   asserted this belief as ground truth via `aelf lock` or
-   `aelf:lock`. Highest precedence.
-2. **`user_corrected`** — `type == BELIEF_CORRECTION`. The belief was
-   inserted as an explicit correction signal. The classifier's
-   correction-detector path produces these.
-3. **`document_recent`** — anything else. Inserted by `scan_repo`
-   from a doc/git/AST source, or by an unmarked path. Within this
-   class, more recent timestamp wins.
+1. **`user_stated`** — `lock_level == LOCK_USER` (short-circuit) or
+   `origin == 'user_stated'`. The user explicitly asserted this
+   belief as ground truth via `aelf lock` or `aelf:lock`. Highest.
+2. **`user_corrected`** — `type == BELIEF_CORRECTION` (legacy path)
+   or `origin == 'user_corrected'`. Explicit correction signal.
+3. **`user_validated`** — `origin == 'user_validated'`. The user
+   acknowledged an onboard belief without locking it.
+4. **`document_recent`** — `origin in {'document_recent', 'unknown',
+   'agent_remembered'}`. Within-class breaks by recency.
+5. **`agent_inferred`** — `origin == 'agent_inferred'`. Onboard
+   scanner output that has not been validated. Lowest.
 
 When two beliefs have the same precedence class, **more recent
 `created_at` wins**. When created_at also matches (rare; collision
 implies identical-second insertion), **higher `id` wins** as a
-deterministic tie-breaker — this gates against subtle non-determinism
-in test harnesses that share a clock.
+deterministic tie-breaker.
 
-## Why three not four
+## v1.0/v1.1 absorption
 
-The original spec named four classes (`user_stated > user_corrected >
-document_recent > agent_inferred`). The fourth — `agent_inferred` —
-needs a `Belief.origin` field that the v1.0 schema does not have; in
-practice no v1.0 code path produces beliefs that would map to
-agent_inferred (every insert path is one of: user lock, MCP remember,
-scan_repo, or correction detection). Adding the field requires a
-schema migration that's out of scope for a patch release; v1.1.0 will
-add it alongside the project-identity work. Until then, the
-`document_recent` class absorbs any belief that isn't user-locked or
-type=correction. This is a faithful approximation for v1.0.1 —
-expanding to the full four-class split is forward-compatible.
+v1.0 stores opening on v1.2 are migrated by store.py: locked rows
+become `user_stated`, correction rows become `user_corrected`,
+everything else stays `unknown`. The `unknown` origin is treated as
+the same precedence class as `document_recent`, preserving v1.0.1
+tie-breaker behaviour for un-tagged content.
 
 ## When this fires
 
@@ -76,6 +68,10 @@ from aelfrice.models import (
     EDGE_CONTRADICTS,
     EDGE_SUPERSEDES,
     LOCK_USER,
+    ORIGIN_AGENT_INFERRED,
+    ORIGIN_USER_CORRECTED,
+    ORIGIN_USER_STATED,
+    ORIGIN_USER_VALIDATED,
     Belief,
     Edge,
 )
@@ -84,14 +80,18 @@ from aelfrice.store import MemoryStore
 # Precedence classes. Higher value wins. Names are stable wire-format
 # strings — they appear in feedback_history.source — so do not rename
 # without a migration.
-PRECEDENCE_USER_STATED: Final[int] = 3
-PRECEDENCE_USER_CORRECTED: Final[int] = 2
-PRECEDENCE_DOCUMENT_RECENT: Final[int] = 1
+PRECEDENCE_USER_STATED: Final[int] = 5
+PRECEDENCE_USER_CORRECTED: Final[int] = 4
+PRECEDENCE_USER_VALIDATED: Final[int] = 3
+PRECEDENCE_DOCUMENT_RECENT: Final[int] = 2
+PRECEDENCE_AGENT_INFERRED: Final[int] = 1
 
 CLASS_NAMES: Final[dict[int, str]] = {
     PRECEDENCE_USER_STATED: "user_stated",
     PRECEDENCE_USER_CORRECTED: "user_corrected",
+    PRECEDENCE_USER_VALIDATED: "user_validated",
     PRECEDENCE_DOCUMENT_RECENT: "document_recent",
+    PRECEDENCE_AGENT_INFERRED: "agent_inferred",
 }
 
 # Audit-row source prefix. Anything written to feedback_history by the
@@ -133,11 +133,32 @@ class ResolutionResult:
 def precedence_class(belief: Belief) -> int:
     """Return the precedence class for `belief`.
 
-    Three classes at v1.0.1: USER_STATED (lock_level=user),
-    USER_CORRECTED (type=correction), DOCUMENT_RECENT (anything else).
+    v1.2+ five-class precedence (highest first): user_stated,
+    user_corrected, user_validated, document_recent, agent_inferred.
+
+    Resolution order:
+      1. lock_level=user short-circuits to user_stated regardless of
+         the origin field. Preserves the v1.0.1 invariant that locks
+         always win the contradiction.
+      2. Origin string maps directly to its class for the explicit
+         origins set by v1.2+ producers.
+      3. Legacy fallback: type=correction maps to user_corrected
+         (covers correction beliefs whose origin is still 'unknown'
+         pre-backfill on a v1.0/v1.1 store).
+      4. Anything else (origin in {document_recent, unknown,
+         agent_remembered}) maps to document_recent. Honest 'don't
+         know' bucket; preserves v1.0.1 absorption.
     """
     if belief.lock_level == LOCK_USER:
         return PRECEDENCE_USER_STATED
+    if belief.origin == ORIGIN_USER_STATED:
+        return PRECEDENCE_USER_STATED
+    if belief.origin == ORIGIN_USER_CORRECTED:
+        return PRECEDENCE_USER_CORRECTED
+    if belief.origin == ORIGIN_USER_VALIDATED:
+        return PRECEDENCE_USER_VALIDATED
+    if belief.origin == ORIGIN_AGENT_INFERRED:
+        return PRECEDENCE_AGENT_INFERRED
     if belief.type == BELIEF_CORRECTION:
         return PRECEDENCE_USER_CORRECTED
     return PRECEDENCE_DOCUMENT_RECENT

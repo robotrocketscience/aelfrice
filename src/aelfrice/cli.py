@@ -58,6 +58,9 @@ from aelfrice.models import (
     BELIEF_FACTUAL,
     LOCK_NONE,
     LOCK_USER,
+    ORIGIN_AGENT_INFERRED,
+    ORIGIN_USER_STATED,
+    ORIGIN_USER_VALIDATED,
     Belief,
 )
 from aelfrice import __version__ as _AELFRICE_VERSION
@@ -280,12 +283,14 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
                 demotion_pressure=0,
                 created_at=now,
                 last_retrieved_at=None,
+                origin=ORIGIN_USER_STATED,
             ))
             print(f"locked: {bid}", file=out)  # type: ignore[arg-type]
         else:
             existing.lock_level = LOCK_USER
             existing.locked_at = now
             existing.demotion_pressure = 0
+            existing.origin = ORIGIN_USER_STATED
             store.update_belief(existing)
             print(f"upgraded existing belief to lock: {bid}", file=out)  # type: ignore[arg-type]
     finally:
@@ -320,14 +325,49 @@ def _cmd_demote(args: argparse.Namespace, out: object) -> int:
         if belief is None:
             print(f"belief not found: {args.belief_id}", file=sys.stderr)
             return 1
-        if belief.lock_level == LOCK_NONE:
-            print(f"belief is not locked: {args.belief_id}", file=out)  # type: ignore[arg-type]
+        # One tier per call: lock first, then user_validated.
+        if belief.lock_level == LOCK_USER:
+            belief.lock_level = LOCK_NONE
+            belief.locked_at = None
+            belief.demotion_pressure = 0
+            store.update_belief(belief)
+            print(f"demoted: {args.belief_id}", file=out)  # type: ignore[arg-type]
             return 0
-        belief.lock_level = LOCK_NONE
-        belief.locked_at = None
-        belief.demotion_pressure = 0
-        store.update_belief(belief)
-        print(f"demoted: {args.belief_id}", file=out)  # type: ignore[arg-type]
+        if belief.origin == ORIGIN_USER_VALIDATED:
+            from aelfrice.promotion import devalidate
+            devalidate(store, args.belief_id)
+            print(f"devalidated: {args.belief_id}", file=out)  # type: ignore[arg-type]
+            return 0
+        print(f"belief is not locked: {args.belief_id}", file=out)  # type: ignore[arg-type]
+    finally:
+        store.close()
+    return 0
+
+
+def _cmd_validate(args: argparse.Namespace, out: object) -> int:
+    """Promote agent_inferred -> user_validated. v1.2.0."""
+    from aelfrice.promotion import promote
+
+    store = _open_store()
+    try:
+        try:
+            result = promote(
+                store, args.belief_id,
+                source_label=f"promotion:{args.source}"
+                if args.source != "user_validated"
+                else "promotion:user_validated",
+            )
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        if result.already_validated:
+            print(f"already validated: {args.belief_id}", file=out)  # type: ignore[arg-type]
+            return 0
+        print(
+            f"validated: {args.belief_id} "
+            f"(origin: {result.prior_origin} -> {result.new_origin})",
+            file=out,  # type: ignore[arg-type]
+        )
     finally:
         store.close()
     return 0
@@ -1269,9 +1309,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_locked.set_defaults(func=_cmd_locked)
 
-    p_demote = sub.add_parser("demote", help="manually demote a lock to none")
+    p_demote = sub.add_parser(
+        "demote",
+        help=(
+            "demote a belief one tier: lock_level=user -> none, or "
+            "origin=user_validated -> agent_inferred. v1.2: "
+            "demote a validated belief to revert promotion."
+        ),
+    )
     p_demote.add_argument("belief_id", help="id of the belief to demote")
     p_demote.set_defaults(func=_cmd_demote)
+
+    p_validate = sub.add_parser(
+        "validate",
+        help=(
+            "promote an onboard belief to origin=user_validated. "
+            "v1.2: an explicit acknowledgement weaker than 'aelf lock'."
+        ),
+    )
+    p_validate.add_argument(
+        "belief_id", help="id of the belief to validate",
+    )
+    p_validate.add_argument(
+        "--source", default="user_validated",
+        help=(
+            "audit-row source suffix; written as 'promotion:<source>' "
+            "in feedback_history. Defaults to 'user_validated'."
+        ),
+    )
+    p_validate.set_defaults(func=_cmd_validate)
 
     p_resolve = sub.add_parser(
         "resolve",

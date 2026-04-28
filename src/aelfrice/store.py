@@ -46,7 +46,8 @@ _SCHEMA: tuple[str, ...] = (
         demotion_pressure   INTEGER NOT NULL DEFAULT 0,
         created_at          TEXT NOT NULL,
         last_retrieved_at   TEXT,
-        session_id          TEXT
+        session_id          TEXT,
+        origin              TEXT NOT NULL DEFAULT 'unknown'
     )
     """,
     """
@@ -105,12 +106,28 @@ _SCHEMA: tuple[str, ...] = (
 _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE beliefs ADD COLUMN session_id TEXT",
     "ALTER TABLE edges ADD COLUMN anchor_text TEXT",
+    "ALTER TABLE beliefs ADD COLUMN origin TEXT NOT NULL DEFAULT 'unknown'",
 )
 
 # Indexes that depend on migrated columns. Run after _MIGRATIONS so
 # they see the post-ALTER schema.
 _POST_MIGRATION_INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_beliefs_session ON beliefs(session_id)",
+    "CREATE INDEX IF NOT EXISTS idx_beliefs_origin ON beliefs(origin)",
+)
+
+# One-shot backfill for v1.0/v1.1 stores opening on v1.2+. Each row
+# only flips if it is still at the default 'unknown'. Idempotent —
+# reruns find no candidates after the first pass. See promotion_path.md
+# § 1: locked beliefs become user_stated; correction beliefs become
+# user_corrected; everything else stays unknown to avoid retroactively
+# claiming agent_inferred for content the v1.0 scanner didn't commit
+# to that label.
+_BACKFILL_STATEMENTS: tuple[str, ...] = (
+    "UPDATE beliefs SET origin = 'user_stated' "
+    "WHERE origin = 'unknown' AND lock_level = 'user'",
+    "UPDATE beliefs SET origin = 'user_corrected' "
+    "WHERE origin = 'unknown' AND type = 'correction'",
 )
 
 
@@ -151,6 +168,7 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
         created_at=row["created_at"],
         last_retrieved_at=row["last_retrieved_at"],
         session_id=row["session_id"],
+        origin=row["origin"],
     )
 
 
@@ -227,6 +245,8 @@ class MemoryStore:
                     raise
         for stmt in _POST_MIGRATION_INDEXES:
             self._conn.execute(stmt)
+        for stmt in _BACKFILL_STATEMENTS:
+            self._conn.execute(stmt)
         self._conn.commit()
         self._invalidation_callbacks: list[Callable[[], None]] = []
 
@@ -258,13 +278,13 @@ class MemoryStore:
             INSERT INTO beliefs (
                 id, content, content_hash, alpha, beta, type,
                 lock_level, locked_at, demotion_pressure,
-                created_at, last_retrieved_at, session_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, last_retrieved_at, session_id, origin
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 b.id, b.content, b.content_hash, b.alpha, b.beta, b.type,
                 b.lock_level, b.locked_at, b.demotion_pressure,
-                b.created_at, b.last_retrieved_at, b.session_id,
+                b.created_at, b.last_retrieved_at, b.session_id, b.origin,
             ),
         )
         self._conn.execute(
@@ -296,13 +316,15 @@ class MemoryStore:
                 demotion_pressure = ?,
                 created_at = ?,
                 last_retrieved_at = ?,
-                session_id = ?
+                session_id = ?,
+                origin = ?
             WHERE id = ?
             """,
             (
                 b.content, b.content_hash, b.alpha, b.beta, b.type,
                 b.lock_level, b.locked_at, b.demotion_pressure,
-                b.created_at, b.last_retrieved_at, b.session_id, b.id,
+                b.created_at, b.last_retrieved_at, b.session_id,
+                b.origin, b.id,
             ),
         )
         self._conn.execute("DELETE FROM beliefs_fts WHERE id = ?", (b.id,))
