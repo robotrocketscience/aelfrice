@@ -136,8 +136,8 @@ The same operations are also available as MCP tools and `/aelf:*` slash commands
 | v1.2.x | planned | search-tool `PreToolUse` hook — memory-first context on Grep/Glob |
 | v1.3 | shipped | retrieval wave — entity index (L2.5), BFS multi-hop (L3), LLM-Haiku onboard classifier (opt-in), partial Bayesian-weighted ranking |
 | v1.4 | shipped | context rebuilder — PreCompact retrieval-curated continuation (augment mode); manual + threshold trigger; continuation-fidelity scorer (exact-match) |
-| v1.5 | planned | retrieval plumbing — unified `retrieve()` composition tracker (#154), BM25F anchor text (#148), search-tool matcher extension (#155), v1.4 dynamic-trigger revisit |
-| v1.6 | planned | graph signal wave — signed Laplacian + eigenbasis (#149), heat kernel authority (#150), posterior-weighted ranking full (#151) |
+| v1.5 | planned | retrieval plumbing — unified `retrieve()` composition tracker (#154), BM25F anchor text (#148, merged), search-tool matcher extension (#155), v1.4 dynamic-trigger revisit (#188) |
+| v1.6 | planned | graph signal wave — signed Laplacian + eigenbasis (#149), heat kernel authority (#150), posterior-weighted ranking full (#151), Plate FFT HRR primitives (#216) |
 | v1.7 | planned | structural retrieval lane — HRR bind/probe (#152), `uri_baki` post-rank adjuster retest (#153) |
 | v2.0 | planned | feature parity with the original research line + benchmark reproducibility. v2.0's component issues land incrementally across v1.5–v1.7; final v2.0 tag is the reproducibility cut. |
 
