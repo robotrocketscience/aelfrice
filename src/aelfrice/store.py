@@ -858,6 +858,43 @@ class MemoryStore:
         )
         return [_row_to_edge(r) for r in cur.fetchall()]
 
+    def iter_incoming_anchor_text(self) -> Iterable[tuple[str, str]]:
+        """Yield `(dst_belief_id, anchor_text)` for every edge whose
+        `anchor_text` is non-NULL and non-empty, ordered by
+        `(dst, src, type)` for deterministic iteration.
+
+        Used by `aelfrice.bm25.BM25Index.build` to construct each
+        belief's BM25F augmented document — the belief's own content
+        plus the concatenation of its incoming edges' anchor text
+        (replicated by a fixed weight). v1.2 stores already populate
+        `Edge.anchor_text` via the commit-ingest hook and triple
+        extractor; pre-v1.2 rows have NULL and contribute nothing.
+
+        One row per edge (not per belief); callers group by `dst`.
+        """
+        cur = self._conn.execute(
+            "SELECT dst, anchor_text FROM edges "
+            "WHERE anchor_text IS NOT NULL AND anchor_text != '' "
+            "ORDER BY dst ASC, src ASC, type ASC"
+        )
+        for row in cur.fetchall():
+            yield (str(row["dst"]), str(row["anchor_text"]))
+
+    def list_beliefs_for_indexing(self) -> list[tuple[str, str]]:
+        """Return `[(belief_id, content)]` for every belief, ordered by
+        `belief_id ASC` for deterministic indexing.
+
+        Used by `aelfrice.bm25.BM25Index.build` to walk the corpus once
+        and assemble the (n_docs × n_terms) sparse term-frequency
+        matrix. The id-ASC order is the canonical row order of the
+        index — `BM25Index.belief_ids[i]` lines up with row `i` of
+        `tf` and entry `i` of `dl`.
+        """
+        cur = self._conn.execute(
+            "SELECT id, content FROM beliefs ORDER BY id ASC"
+        )
+        return [(str(r["id"]), str(r["content"])) for r in cur.fetchall()]
+
     # --- Setr: propagate_valence -----------------------------------------
 
     def propagate_valence(
