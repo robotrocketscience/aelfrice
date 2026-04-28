@@ -52,7 +52,7 @@ def test_no_color_strips_ansi() -> None:
         _fresh(), env={"NO_COLOR": "", "COLORTERM": "truecolor"}
     )
     assert "\x1b[" not in out
-    assert "aelfrice 1.2.3 available" in out
+    assert "/aelf:upgrade to v1.2.3" in out
 
 
 def test_no_color_set_to_anything_strips_ansi() -> None:
@@ -67,7 +67,7 @@ def test_snippet_includes_upgrade_command() -> None:
     out = statusline.format_snippet(
         _fresh(), env={"COLORTERM": "truecolor"}
     )
-    assert "run: aelf upgrade" in out
+    assert "/aelf:upgrade to v" in out
     assert statusline.ICON in out
 
 

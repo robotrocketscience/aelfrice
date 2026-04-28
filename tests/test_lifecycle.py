@@ -203,10 +203,9 @@ def test_wheel_sha256_returns_none_when_empty() -> None:
 
 
 def test_upgrade_advice_in_venv() -> None:
-    # The test runner itself is in a venv, so this should always be 'venv'
-    # unless we're somehow running in pipx (uncommon in CI).
+    # The test runner is in some kind of managed environment.
     advice = lifecycle.upgrade_advice()
-    assert advice.context in {"venv", "pipx", "system"}
+    assert advice.context in {"uv_tool", "venv", "pipx", "system"}
     assert "aelfrice" in advice.command
 
 
