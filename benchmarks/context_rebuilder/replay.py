@@ -36,7 +36,7 @@ import json
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from benchmarks.context_rebuilder.inject import ClearInjection
 from benchmarks.context_rebuilder.measure import (
@@ -44,6 +44,12 @@ from benchmarks.context_rebuilder.measure import (
     hook_latency_ms,
     token_budget_delta,
 )
+
+if TYPE_CHECKING:
+    # Forward-only import. The score module imports ReplayResult from
+    # this module, so a top-level import here would close a cycle.
+    # `run()` does the actual import lazily at call time.
+    from benchmarks.context_rebuilder.score import FidelityScore, ScoreMethod
 
 #: Approximate per-turn rebuild-block overhead, in tokens. Models the
 #: cost of the `<aelfrice-rebuild>...<continue/></aelfrice-rebuild>`
@@ -103,7 +109,12 @@ class ReplayResult:
     """Top-level result of one replay run.
 
     Serialized to JSON by `__main__` for the eval-harness JSON
-    output schema (#136 acceptance criterion).
+    output schema (#136 + #138 acceptance criteria).
+
+    `continuation_fidelity` (added at #138) carries the v1.4 ship-gate
+    answer-match number. It is `None` only on internal callers that
+    construct a ReplayResult directly without scoring; `run()` always
+    populates it (vacuously 1.0 when no clear was injected).
     """
     fixture_path: str
     n_turns: int
@@ -114,9 +125,25 @@ class ReplayResult:
     turns: list[ReplayTurnResult] = field(
         default_factory=lambda: [],  # typed-empty for pyright strict
     )
+    # Late-binding default (`None`) so callers that build a
+    # ReplayResult by hand in tests don't have to import the scorer.
+    # The runtime `run()` path always fills this in.
+    continuation_fidelity: "FidelityScore | None" = None
 
     def to_dict(self) -> dict[str, object]:
-        """JSON-serializable view used by `__main__`."""
+        """JSON-serializable view used by `__main__`.
+
+        `continuation_fidelity` is emitted as a sub-object alongside
+        the per-turn `token_budget_delta` and `hook_latency_ms`
+        scaffolding metrics -- the three v1.4 ship-gate metrics.
+        When the field is None (legacy callers), it serializes as
+        JSON null.
+        """
+        fidelity_payload: object = (
+            self.continuation_fidelity.to_dict()
+            if self.continuation_fidelity is not None
+            else None
+        )
         return {
             "fixture_path": self.fixture_path,
             "n_turns": self.n_turns,
@@ -125,6 +152,7 @@ class ReplayResult:
             "full_replay_baseline_tokens": self.full_replay_baseline_tokens,
             "rebuild_block_tokens": self.rebuild_block_tokens,
             "turns": [asdict(t) for t in self.turns],
+            "continuation_fidelity": fidelity_payload,
         }
 
 
@@ -203,8 +231,10 @@ def run(
     *,
     inject: ClearInjection | None = None,
     rebuild_overhead_tokens: int = DEFAULT_REBUILD_OVERHEAD_TOKENS,
+    score_method: "ScoreMethod" = "exact",
+    post_clear_answers: list[str] | None = None,
 ) -> ReplayResult:
-    """End-to-end replay of one fixture against the scaffolding harness.
+    """End-to-end replay of one fixture against the v1.4 harness.
 
     Walks the fixture turn-by-turn, accumulates the full-replay
     baseline token count, and -- if `inject` is provided -- forces
@@ -216,11 +246,20 @@ def run(
       * `hook_latency_ms` (float >= 0): wall-clock for the rebuild
         simulation; 0 on turns where the hook did not fire.
 
+    On top of those scaffolding metrics, the run computes a
+    `continuation_fidelity` score (#138) by handing the per-turn
+    record list and the original fixture's per-turn texts to the
+    scorer. `score_method` defaults to `'exact'` -- the v1.4.0
+    ship-gate method -- and `post_clear_answers` defaults to
+    `None`, which means "score the fixture against itself" (the
+    perfect-replay baseline; useful as a metric-pipeline smoke
+    test until the rebuilder hook lands in #139).
+
     Pure-ish -- the only impurity is `time.monotonic()` for the
     latency measurement. Determinism guarantee: re-running on the
-    same fixture with `inject=None` produces identical numeric
-    output (apart from `hook_latency_ms`, which is always 0 in that
-    branch).
+    same fixture with the same arguments produces identical
+    `token_budget_delta` and `continuation_fidelity` numbers
+    (apart from `hook_latency_ms`, which is wall-clock).
     """
     turns, n_skipped = load_turns(fixture)
 
@@ -275,7 +314,12 @@ def run(
             )
         )
 
-    return ReplayResult(
+    # Build the no-fidelity result first so we can hand it to the
+    # scorer as a single object (the scorer reads `clear_injected_at`
+    # + `turns` from the result it scores). The scorer is imported
+    # lazily here to avoid a circular import: `score.py` imports
+    # `ReplayResult` from this module.
+    base_result = ReplayResult(
         fixture_path=str(fixture),
         n_turns=len(turns),
         n_skipped_lines=n_skipped,
@@ -283,6 +327,27 @@ def run(
         full_replay_baseline_tokens=full_replay_baseline_tokens,
         rebuild_block_tokens=rebuild_block_tokens,
         turns=turn_results,
+    )
+    from benchmarks.context_rebuilder.score import score_continuation_fidelity
+
+    fidelity = score_continuation_fidelity(
+        base_result,
+        fixture_turn_texts=[t.text for t in turns],
+        post_clear_answers=post_clear_answers,
+        method=score_method,
+    )
+    # Frozen dataclass: rebuild via dataclasses.replace would also
+    # work, but we already have all fields locally so a fresh
+    # construction is just as clear and one less import.
+    return ReplayResult(
+        fixture_path=base_result.fixture_path,
+        n_turns=base_result.n_turns,
+        n_skipped_lines=base_result.n_skipped_lines,
+        clear_injected_at=base_result.clear_injected_at,
+        full_replay_baseline_tokens=base_result.full_replay_baseline_tokens,
+        rebuild_block_tokens=base_result.rebuild_block_tokens,
+        turns=base_result.turns,
+        continuation_fidelity=fidelity,
     )
 
 
