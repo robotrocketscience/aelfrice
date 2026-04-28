@@ -61,7 +61,7 @@ No embedding model. No hyperparameter search. No opaque ranking. Every score is 
 
 The cost: dense semantic similarity is gone. The benefit: a learning loop that converges on what works *for you*, not what's textually similar — and a retrieval pipeline that preserves determinism end to end.
 
-What's intentionally absent: an exploration term. Thompson sampling, UCB, or any other bandit-style exploration on top of the posterior would surface uncertain beliefs more often to gather feedback on them. It would also break the "same query, same beliefs" property — exploration is non-deterministic by construction. v1.3 ships log-additive posterior reranking with no exploration term; if exploration earns its way in via a benchmark, it ships behind a flag in v2.x.
+What's intentionally absent: an exploration term in retrieval. The research-line requirement was that ≥15% of retrievals surface high-uncertainty beliefs to keep the feedback loop from collapsing into a filter bubble — confident beliefs reinforced, uncertain beliefs never re-tested. aelfrice does not yet address that requirement. Any exploration mechanism (bandit-style, entropy-weighted, sampling-based) breaks the "same query, same beliefs" property, which v1.x prioritises higher. v1.3 ships posterior reranking with no exploration term. If a future benchmark shows filter-bubble cost outweighs the determinism gain, exploration ships behind a flag in v2.x.
 
 > At v1.0–v1.2 the posterior is computed and stored, but L1 retrieval still ranks by BM25 alone. The v1.3 retrieval wave wires the posterior into ranking. Until then, feedback updates the audit trail but doesn't yet move what the agent sees. See [LIMITATIONS](LIMITATIONS.md).
 
