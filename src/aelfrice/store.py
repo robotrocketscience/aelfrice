@@ -604,6 +604,44 @@ class MemoryStore:
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
 
+    def search_beliefs_scored(
+        self, query: str, limit: int = 20,
+    ) -> list[tuple[Belief, float]]:
+        """FTS5 keyword search returning `(belief, bm25_score)` pairs.
+
+        Sibling of `search_beliefs`. Same MATCH escaping, same ordering
+        (ascending by `bm25(beliefs_fts)`, which SQLite returns as a
+        non-positive number — smaller = more relevant). The raw FTS5
+        BM25 score is exposed for callers that need to compose it with
+        other signals (e.g. v1.3 partial Bayesian-weighted ranking,
+        which combines `log(-bm25)` with `log(posterior_mean)` log-
+        additively).
+
+        Empty / whitespace-only queries return [] without hitting
+        FTS5.
+        """
+        escaped = _escape_fts5_query(query)
+        if not escaped:
+            return []
+        cur = self._conn.execute(
+            """
+            SELECT b.*, bm25(beliefs_fts) AS bm25_score
+            FROM beliefs b
+            JOIN beliefs_fts f ON f.id = b.id
+            WHERE beliefs_fts MATCH ?
+            ORDER BY bm25(beliefs_fts)
+            LIMIT ?
+            """,
+            (escaped, limit),
+        )
+        rows = cur.fetchall()
+        out: list[tuple[Belief, float]] = []
+        for r in rows:
+            score_obj = r["bm25_score"]
+            score = float(score_obj) if score_obj is not None else 0.0
+            out.append((_row_to_belief(r), score))
+        return out
+
     # --- Feedback history ------------------------------------------------
 
     def insert_feedback_event(
