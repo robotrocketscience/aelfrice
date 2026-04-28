@@ -37,9 +37,7 @@ release promotes both to runtime deps; see CHANGELOG and
 from __future__ import annotations
 
 import io
-import math
 import re
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Final
 
@@ -538,22 +536,6 @@ class BM25IndexCache:
         self._index = None
 
 
-def _expected_augmented_length(
-    content_tokens: int,
-    incoming_anchor_tokens: int,
-    anchor_weight: int,
-) -> int:
-    """Return the expected length of the augmented document.
-
-    Pure helper for AC2 in the test suite. Kept module-public so the
-    relationship between the spec invariant and the build path is
-    visible at one site.
-    """
-    return content_tokens + anchor_weight * incoming_anchor_tokens
-
-
-# Public API kept narrow so the import surface from `bm25` does not
-# accidentally wire scoring internals into downstream code.
 __all__ = [
     "DEFAULT_ANCHOR_WEIGHT",
     "DEFAULT_K1",
@@ -563,12 +545,3 @@ __all__ = [
     "BM25IndexCache",
     "tokenize",
 ]
-
-
-# Backwards-compat with `math` import path used internally for tests.
-_ = math  # noqa: F841 (kept for future log-base experiments)
-
-# `Iterable` used only as a forward-compat hook for incremental
-# updates (planned for #154); kept imported so a follow-up does not
-# need to re-add it.
-_ = Iterable  # noqa: F841

@@ -65,6 +65,7 @@ from aelfrice.bfs_multihop import (
     DEFAULT_TOTAL_BUDGET_NODES as BFS_DEFAULT_TOTAL_BUDGET_NODES,
     expand_bfs,
 )
+from aelfrice.bm25 import BM25IndexCache
 from aelfrice.entity_extractor import extract_entities
 from aelfrice.models import LOCK_NONE, Belief
 from aelfrice.scoring import (
@@ -100,6 +101,10 @@ RETRIEVAL_SECTION: Final[str] = "retrieval"
 ENTITY_INDEX_FLAG: Final[str] = "entity_index_enabled"
 BFS_FLAG: Final[str] = "bfs_enabled"
 POSTERIOR_WEIGHT_FLAG: Final[str] = "posterior_weight"
+# v1.5.0 BM25F flag. Default-OFF: FTS5 BM25 stays the L1 path until a
+# benchmark gate (#154 composition tracker) flips the default. Opt-in
+# via the kwarg, AELFRICE_BM25F=1, or `[retrieval] bm25f_enabled = true`.
+BM25F_FLAG: Final[str] = "bm25f_enabled"
 
 # Env var override. Set to "0", "false", or "no" to force-disable
 # the index. Unset / any other value falls through to the TOML
@@ -111,6 +116,10 @@ ENV_ENTITY_INDEX: Final[str] = "AELFRICE_ENTITY_INDEX"
 # default-off contract means the env-var omission is the same as
 # the explicit-off case.
 ENV_BFS: Final[str] = "AELFRICE_BFS"
+# v1.5.0 BM25F env override. Tri-state like ENV_BFS — unset means
+# "fall through" rather than "force off", because the default at
+# v1.5.0 is already off.
+ENV_BM25F: Final[str] = "AELFRICE_BM25F"
 # v1.3.0 posterior-weight env override. Float-typed; "0.0" is the
 # only value that fully disables (collapsing to BM25-only ordering).
 # Empty / non-numeric values fall through to the next precedence
@@ -195,6 +204,21 @@ def _env_bfs_override() -> bool | None:
     semantics for BFS are: env > kwarg > TOML > False.
     """
     raw = os.environ.get(ENV_BFS)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def _env_bm25f_override() -> bool | None:
+    """Return True/False if AELFRICE_BM25F is set to a recognised
+    truthy/falsy value, else None. Symmetric to `_env_bfs_override`.
+    """
+    raw = os.environ.get(ENV_BM25F)
     if raw is None:
         return None
     norm = raw.strip().lower()
@@ -407,6 +431,35 @@ def is_entity_index_enabled(
     return True
 
 
+def is_bm25f_enabled(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the BM25F (anchor-augmented sparse matvec) flag.
+
+    Precedence (first decisive wins):
+      1. AELFRICE_BM25F env var (truthy / falsy normalised).
+      2. Explicit `explicit` kwarg from the caller.
+      3. `[retrieval] bm25f_enabled` in `.aelfrice.toml`.
+      4. Default: False (v1.5.0 default-OFF).
+
+    The default-off contract means the v1.4 FTS5 path remains
+    byte-identical for callers that do not opt in. The composition
+    tracker (#154) flips the default at v1.5.x once benchmarks
+    confirm the quality lift on captured-corpus data.
+    """
+    env = _env_bm25f_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    toml_value = _read_toml_flag_for(BM25F_FLAG, start)
+    if toml_value is not None:
+        return toml_value
+    return False
+
+
 def is_bfs_enabled(
     explicit: bool | None = None,
     *,
@@ -491,22 +544,56 @@ def _l1_hits(
     *,
     l1_limit: int,
     posterior_weight: float,
+    bm25f_enabled: bool = False,
+    bm25f_cache: BM25IndexCache | None = None,
 ) -> list[Belief]:
-    """Run L1: FTS5 BM25 search, optionally reranked by partial-
-    Bayesian score.
+    """Run L1: FTS5 BM25 search (default) or BM25F sparse-matvec
+    (v1.5.0 opt-in), optionally reranked by partial-Bayesian score.
 
-    `posterior_weight = 0.0` short-circuits to the v1.0.x path —
-    `store.search_beliefs(query, limit)` returns rows already
-    ordered by `bm25(beliefs_fts)` ascending, and we discard the
-    score. This guarantees byte-identical ordering with the v1.0
-    ranker.
+    `bm25f_enabled = True` swaps the FTS5 lane for `BM25Index.score`
+    over the augmented (content + W * incoming-anchor) document set.
+    The posterior rerank still applies on top of the BM25F score.
+    The cache is rebuilt on store mutation via the BM25IndexCache
+    invalidation hook.
 
-    `posterior_weight > 0` swaps in the scored variant and re-
-    sorts by `partial_bayesian_score(...)` descending. The
-    underlying SQL ORDER BY keeps the BM25 prefilter deterministic
-    in the truncation case (rare-but-possible at small `l1_limit`).
-    Tie-break on belief id ASC so result lists are reproducible.
+    `posterior_weight = 0.0` and FTS5 path short-circuits to the
+    v1.0.x byte-identical contract. BM25F + posterior_weight = 0.0
+    returns the BM25F top-K in score-descending, tie-break id-ASC
+    order — the byte-identical guarantee against FTS5 only holds
+    when bm25f_enabled is False.
+
+    `posterior_weight > 0` reranks via `partial_bayesian_score`.
     """
+    if bm25f_enabled:
+        # The cache lazy-builds the index on first call and is
+        # invalidated by store mutations. The rerank below uses the
+        # raw BM25F score in the same `bm25_raw` slot the FTS5 path
+        # uses for ``bm25(beliefs_fts)``; see partial_bayesian_score
+        # for the log-additive composition.
+        cache = bm25f_cache or BM25IndexCache(store)
+        index = cache.get()
+        scored_pairs = index.score(query, top_k=l1_limit)
+        beliefs: list[tuple[Belief, float]] = []
+        for bid, raw in scored_pairs:
+            b = store.get_belief(bid)
+            if b is None:
+                continue
+            beliefs.append((b, raw))
+        if posterior_weight == 0.0:
+            return [b for b, _ in beliefs]
+        keyed: list[tuple[float, str, Belief]] = []
+        for b, raw in beliefs:
+            # BM25F scores are non-negative; partial_bayesian_score
+            # was written for FTS5's negative bm25 convention. Pass
+            # `-raw` so the log-additive composition treats higher
+            # raw scores as more relevant, matching the FTS5 path.
+            s = partial_bayesian_score(
+                -raw, b.alpha, b.beta, posterior_weight,
+            )
+            keyed.append((s, b.id, b))
+        keyed.sort(key=lambda x: (-x[0], x[1]))
+        return [b for _, _, b in keyed]
+
     if posterior_weight == 0.0:
         return store.search_beliefs(query, limit=l1_limit)
     scored = store.search_beliefs_scored(query, limit=l1_limit)
@@ -540,6 +627,8 @@ def retrieve(
     bfs_total_budget_nodes: int = BFS_DEFAULT_TOTAL_BUDGET_NODES,
     bfs_min_path_score: float = BFS_DEFAULT_MIN_PATH_SCORE,
     posterior_weight: float | None = None,
+    bm25f_enabled: bool | None = None,
+    bm25f_cache: BM25IndexCache | None = None,
 ) -> list[Belief]:
     """Return L0 locked + L2.5 entity + L1 BM25 + L3 BFS expansions.
 
@@ -581,6 +670,7 @@ def retrieve(
     """
     enabled = is_entity_index_enabled(entity_index_enabled)
     bfs_on = is_bfs_enabled(bfs_enabled)
+    bm25f_on = is_bm25f_enabled(bm25f_enabled)
     weight = resolve_posterior_weight(posterior_weight)
 
     locked: list[Belief] = store.list_locked_beliefs()
@@ -623,6 +713,7 @@ def retrieve(
         raw_l1: list[Belief] = _l1_hits(
             store, query,
             l1_limit=l1_limit, posterior_weight=weight,
+            bm25f_enabled=bm25f_on, bm25f_cache=bm25f_cache,
         )
         l1 = [
             b for b in raw_l1
@@ -686,6 +777,8 @@ def retrieve_with_tiers(
     bfs_total_budget_nodes: int = BFS_DEFAULT_TOTAL_BUDGET_NODES,
     bfs_min_path_score: float = BFS_DEFAULT_MIN_PATH_SCORE,
     posterior_weight: float | None = None,
+    bm25f_enabled: bool | None = None,
+    bm25f_cache: BM25IndexCache | None = None,
 ) -> tuple[
     list[Belief], list[str], list[str], list[str], list[list[str]],
 ]:
@@ -703,6 +796,7 @@ def retrieve_with_tiers(
     """
     enabled = is_entity_index_enabled(entity_index_enabled)
     bfs_on = is_bfs_enabled(bfs_enabled)
+    bm25f_on = is_bm25f_enabled(bm25f_enabled)
     weight = resolve_posterior_weight(posterior_weight)
 
     locked: list[Belief] = store.list_locked_beliefs()
@@ -737,6 +831,7 @@ def retrieve_with_tiers(
         raw_l1: list[Belief] = _l1_hits(
             store, query,
             l1_limit=l1_limit, posterior_weight=weight,
+            bm25f_enabled=bm25f_on, bm25f_cache=bm25f_cache,
         )
         l1 = [
             b for b in raw_l1
@@ -798,6 +893,8 @@ def retrieve_v2(
     bfs_total_budget_nodes: int = BFS_DEFAULT_TOTAL_BUDGET_NODES,
     bfs_min_path_score: float = BFS_DEFAULT_MIN_PATH_SCORE,
     posterior_weight: float | None = None,
+    use_bm25f: bool | None = None,
+    bm25f_cache: BM25IndexCache | None = None,
 ) -> RetrievalResult:
     """Lab-compatible retrieval wrapper for academic-suite adapters.
 
@@ -842,6 +939,8 @@ def retrieve_v2(
         bfs_total_budget_nodes=bfs_total_budget_nodes,
         bfs_min_path_score=bfs_min_path_score,
         posterior_weight=posterior_weight,
+        bm25f_enabled=use_bm25f,
+        bm25f_cache=bm25f_cache,
     )
     if include_locked:
         beliefs = out
@@ -891,7 +990,8 @@ class RetrievalCache:
         self._capacity = capacity
         self._entries: OrderedDict[
             tuple[
-                str, int, int, bool | None, bool | None, float | None,
+                str, int, int,
+                bool | None, bool | None, float | None, bool | None,
             ],
             list[Belief],
         ] = OrderedDict()
@@ -906,6 +1006,8 @@ class RetrievalCache:
         entity_index_enabled: bool | None = None,
         bfs_enabled: bool | None = None,
         posterior_weight: float | None = None,
+        bm25f_enabled: bool | None = None,
+        bm25f_cache: BM25IndexCache | None = None,
     ) -> list[Belief]:
         """Cached `retrieve()`. Identical contract to the free function.
 
@@ -929,6 +1031,7 @@ class RetrievalCache:
             entity_index_enabled,
             bfs_enabled,
             key_weight,
+            bm25f_enabled,
         )
         cached = self._entries.get(key)
         if cached is not None:
@@ -940,6 +1043,8 @@ class RetrievalCache:
             entity_index_enabled=entity_index_enabled,
             bfs_enabled=bfs_enabled,
             posterior_weight=posterior_weight,
+            bm25f_enabled=bm25f_enabled,
+            bm25f_cache=bm25f_cache,
         )
         self._entries[key] = list(result)
         if len(self._entries) > self._capacity:
