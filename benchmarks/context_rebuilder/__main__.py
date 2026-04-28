@@ -39,6 +39,14 @@ from benchmarks.context_rebuilder.replay import (
     FixtureError,
     run,
 )
+from benchmarks.context_rebuilder.score import DEFAULT_SCORE_METHOD, ScoreMethod
+
+#: Score-method strings the CLI accepts. Mirrors `score.ScoreMethod`
+#: but spelled as a tuple of strings so argparse can validate via
+#: `choices=`. Methods other than `'exact'` raise NotImplementedError
+#: at the scorer call site (parked at v1.4.0); we still surface them
+#: in `--score-method --help` so the toggle path is documented.
+_SCORE_METHOD_CHOICES: tuple[str, ...] = ("exact", "embedding", "llm-judge")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -75,6 +83,18 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--score-method",
+        choices=_SCORE_METHOD_CHOICES,
+        default=DEFAULT_SCORE_METHOD,
+        help=(
+            "Continuation-fidelity scoring method. Default: "
+            f"'{DEFAULT_SCORE_METHOD}' (deterministic, reproducible, "
+            "no outbound calls). 'embedding' and 'llm-judge' are "
+            "parked at v1.4.0 and raise NotImplementedError -- see "
+            "benchmarks/context_rebuilder/score.py and #138."
+        ),
+    )
+    p.add_argument(
         "--out",
         type=Path,
         default=None,
@@ -108,6 +128,11 @@ def main(
     clear_at: int | None = args.clear_at  # type: ignore[assignment]
     rebuild_overhead: int = args.rebuild_overhead_tokens  # type: ignore[assignment]
     out_path: Path | None = args.out  # type: ignore[assignment]
+    score_method_raw: str = args.score_method  # type: ignore[assignment]
+
+    # `argparse choices=` already restricts to _SCORE_METHOD_CHOICES;
+    # the `cast` keeps pyright strict-happy without re-validating.
+    score_method: ScoreMethod = score_method_raw  # type: ignore[assignment]
 
     inject: ClearInjection | None = None
     if clear_at is not None:
@@ -122,10 +147,16 @@ def main(
             fixture,
             inject=inject,
             rebuild_overhead_tokens=rebuild_overhead,
+            score_method=score_method,
         )
     except FixtureError as exc:
         print(f"error: {exc}", file=err_stream)
         return 1
+    except NotImplementedError as exc:
+        # Parked-method paths (`embedding`, `llm-judge`). Surface as
+        # exit 2 (caller config error), not exit 1 (fixture error).
+        print(f"error: {exc}", file=err_stream)
+        return 2
 
     payload = json.dumps(result.to_dict(), indent=2, sort_keys=True)
     if out_path is not None:
