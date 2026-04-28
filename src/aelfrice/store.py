@@ -20,11 +20,11 @@ from datetime import datetime, timezone
 from typing import Callable, Final, Iterable, Iterator
 
 from aelfrice.models import (
+    CORROBORATION_SOURCE_TYPES,
     EDGE_VALENCE,
     ONBOARD_STATE_COMPLETED,
     ONBOARD_STATE_PENDING,
     Belief,
-    BeliefCorroboration,
     Edge,
     FeedbackEvent,
     OnboardSession,
@@ -127,12 +127,15 @@ _SCHEMA: tuple[str, ...] = (
     # observable as a first-class signal without disturbing the
     # existing dedup contract. ON DELETE CASCADE removes corroboration
     # rows when a belief is deleted (rare; covered for hygiene).
+    # NOTE: belief_id is TEXT NOT NULL (not INTEGER) because beliefs.id
+    # is TEXT PRIMARY KEY in this codebase; the spec sketch said INTEGER
+    # but that was adapted to match the actual schema.
     """
     CREATE TABLE IF NOT EXISTS belief_corroborations (
         id                INTEGER PRIMARY KEY AUTOINCREMENT,
-        belief_id         INTEGER NOT NULL REFERENCES beliefs(id) ON DELETE CASCADE,
-        ingested_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        source_type       TEXT NOT NULL,
+        belief_id         TEXT    NOT NULL REFERENCES beliefs(id) ON DELETE CASCADE,
+        ingested_at       TEXT    NOT NULL,
+        source_type       TEXT    NOT NULL,
         session_id        TEXT,
         source_path_hash  TEXT
     )
@@ -276,17 +279,6 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
         session_id=row["session_id"],
         origin=row["origin"],
         corroboration_count=corroboration_count,
-    )
-
-
-def _row_to_corroboration(row: sqlite3.Row) -> BeliefCorroboration:
-    return BeliefCorroboration(
-        id=int(row["id"]),
-        belief_id=str(row["belief_id"]),
-        ingested_at=str(row["ingested_at"]),
-        source_type=str(row["source_type"]),
-        session_id=row["session_id"] if row["session_id"] is not None else None,
-        source_path_hash=row["source_path_hash"] if row["source_path_hash"] is not None else None,
     )
 
 
@@ -937,29 +929,30 @@ class MemoryStore:
 
     # --- Belief corroborations (v1.5+, #190) -----------------------------
 
-    def insert_corroboration(
+    def record_corroboration(
         self,
         belief_id: str,
-        source_type: str,
         *,
+        source_type: str,
         session_id: str | None = None,
         source_path_hash: str | None = None,
-        ingested_at: str | None = None,
-    ) -> int:
-        """Record one re-ingest of an existing belief.
+    ) -> None:
+        """Record one corroboration row for an already-existing belief.
 
-        Called when `ingest_turn` (or another ingest path) hits an
-        existing `content_hash`. The canonical belief row is unchanged;
-        this row makes the re-assertion observable as a first-class
-        signal.
+        Called by the ingest path when an INSERT hits the content_hash
+        UNIQUE constraint. Validates `source_type` against
+        CORROBORATION_SOURCE_TYPES; raises ValueError on unknown values.
 
         `session_id` and `source_path_hash` are nullable: pass None
         when unavailable; no exception is raised.
-
-        Returns the rowid of the newly inserted corroboration row.
         """
-        ts = ingested_at or datetime.now(timezone.utc).isoformat()
-        cur = self._conn.execute(
+        if source_type not in CORROBORATION_SOURCE_TYPES:
+            raise ValueError(
+                f"Unknown source_type {source_type!r}. "
+                f"Must be one of {sorted(CORROBORATION_SOURCE_TYPES)}"
+            )
+        ts = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
             """
             INSERT INTO belief_corroborations
                 (belief_id, ingested_at, source_type, session_id, source_path_hash)
@@ -968,42 +961,47 @@ class MemoryStore:
             (belief_id, ts, source_type, session_id, source_path_hash),
         )
         self._conn.commit()
-        rowid = cur.lastrowid
-        if rowid is None:
-            raise RuntimeError("belief_corroborations insert returned no rowid")
-        return rowid
 
-    def count_corroborations(self, belief_id: str | None = None) -> int:
-        """Count corroboration rows; total or per-belief."""
-        if belief_id is None:
-            cur = self._conn.execute(
-                "SELECT COUNT(*) AS n FROM belief_corroborations"
-            )
-        else:
-            cur = self._conn.execute(
-                "SELECT COUNT(*) AS n FROM belief_corroborations "
-                "WHERE belief_id = ?",
-                (belief_id,),
-            )
+    def count_corroborations(self, belief_id: str) -> int:
+        """Return the count of belief_corroborations rows for one belief.
+
+        Used by _row_to_belief to populate Belief.corroboration_count.
+        """
+        cur = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM belief_corroborations "
+            "WHERE belief_id = ?",
+            (belief_id,),
+        )
         row = cur.fetchone()
         return int(row["n"]) if row else 0
 
     def list_corroborations(
         self,
         belief_id: str,
-        limit: int = 100,
-    ) -> list[BeliefCorroboration]:
-        """Corroboration rows for one belief, newest first."""
+    ) -> list[tuple[str, str, str | None, str | None]]:
+        """Return [(ingested_at, source_type, session_id, source_path_hash)]
+        for one belief, ordered by ingested_at ASC.
+
+        Used by tests and future debug CLI.
+        """
         cur = self._conn.execute(
             """
-            SELECT * FROM belief_corroborations
+            SELECT ingested_at, source_type, session_id, source_path_hash
+            FROM belief_corroborations
             WHERE belief_id = ?
-            ORDER BY id DESC
-            LIMIT ?
+            ORDER BY ingested_at ASC
             """,
-            (belief_id, limit),
+            (belief_id,),
         )
-        return [_row_to_corroboration(r) for r in cur.fetchall()]
+        return [
+            (
+                str(r["ingested_at"]),
+                str(r["source_type"]),
+                r["session_id"],
+                r["source_path_hash"],
+            )
+            for r in cur.fetchall()
+        ]
 
     # --- Aggregations (used by aelf:health) ------------------------------
 

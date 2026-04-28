@@ -10,6 +10,10 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+### Added
+
+- **Belief corroboration tracking — sibling table + ingest recorder (phantom-prereqs T1)** ([#190](https://github.com/robotrocketscience/aelfrice/issues/190)). New `belief_corroborations` table records each re-ingest of identical content without disturbing the existing dedup contract. When `ingest_turn` or `ingest_triples` encounters an already-existing belief (by id), it calls `MemoryStore.record_corroboration(belief_id, source_type=...)` instead of silently discarding the duplicate. Four `source_type` constants distinguish the ingest paths: `CORROBORATION_SOURCE_COMMIT_INGEST`, `CORROBORATION_SOURCE_TRANSCRIPT_INGEST`, `CORROBORATION_SOURCE_MCP_REMEMBER`, `CORROBORATION_SOURCE_HOOK_INGEST` (all in `aelfrice.models`); `record_corroboration` validates against `CORROBORATION_SOURCE_TYPES` and raises `ValueError` on unknown values. `Belief.corroboration_count` (default 0) is populated at retrieval time via a per-belief subquery in `get_belief`, `search_beliefs`, `search_beliefs_scored`, and `list_locked_beliefs`. `session_id` and `source_path_hash` columns are nullable; T3 (#192) will wire session propagation. `ON DELETE CASCADE` removes corroboration rows when a belief is deleted. 16 new deterministic tests in `tests/test_corroborations.py` cover schema creation, idempotency, re-ingest recording, corroboration count on retrieval, cascade deletion, nullable fields, source_type enum coverage, and ValueError on unknown source_type.
+
 ## [1.5.0] - 2026-04-28
 
 ### Added
