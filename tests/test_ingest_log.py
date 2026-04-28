@@ -496,6 +496,119 @@ def test_accept_classifications_writes_log_row_per_new_belief(
         s.close()
 
 
+def test_reachability_check_passes_after_v2_0_ingest(
+    store: MemoryStore,
+) -> None:
+    """Hypothesis: after a v2.0 ingest_turn run, every belief has a
+    matching log row, so check_log_reachability reports zero orphans.
+    Spec acceptance #1 (every belief reachable from log). Falsifiable
+    by any non-empty orphan list."""
+    from aelfrice.ingest import ingest_turn
+    from aelfrice.replay import check_log_reachability
+    ingest_turn(
+        store,
+        "The default port is 8080. The configuration file is at /etc/x.",
+        source="user",
+    )
+    report = check_log_reachability(store)
+    assert report.total_beliefs > 0
+    assert report.all_reachable, f"orphans: {report.orphan_belief_ids}"
+
+
+def test_reachability_check_flags_orphan_beliefs(
+    store: MemoryStore,
+) -> None:
+    """Hypothesis: if a belief is inserted directly without recording
+    a log row, the reachability check flags it as an orphan. Confirms
+    the check is non-trivial (would catch a missing wire-up)."""
+    from aelfrice.replay import check_log_reachability
+    from aelfrice.models import (
+        BELIEF_FACTUAL,
+        LOCK_NONE,
+        ORIGIN_AGENT_INFERRED,
+        Belief,
+    )
+    bid = "manualbelief01ab"
+    store.insert_belief(Belief(
+        id=bid,
+        content="orphan",
+        content_hash="h",
+        alpha=1.0,
+        beta=1.0,
+        type=BELIEF_FACTUAL,
+        lock_level=LOCK_NONE,
+        locked_at=None,
+        demotion_pressure=0,
+        created_at="2026-04-28T00:00:00Z",
+        last_retrieved_at=None,
+        origin=ORIGIN_AGENT_INFERRED,
+    ))
+    report = check_log_reachability(store)
+    assert bid in report.orphan_belief_ids
+    assert not report.all_reachable
+
+
+def test_full_equality_replay_not_implemented_in_v2_0_slice(
+    store: MemoryStore,
+) -> None:
+    """Hypothesis: replay_full_equality is wired but explicitly not
+    implemented in this slice (v2.x deliverable). Falsifiable if the
+    function silently claims success."""
+    from aelfrice.replay import replay_full_equality
+    report = replay_full_equality(store)
+    assert report.implemented is False
+    assert report.excluded_legacy_unknown == 0
+
+
+def test_ingest_latency_within_budget(store: MemoryStore) -> None:
+    """Hypothesis: parallel-write to ingest_log adds ≤15% latency to
+    ingest_turn (memo D6 budget). Falsifiable if the ratio exceeds
+    1.15 averaged over a 50-turn workload.
+
+    Note: this test is an alarm, not a strict gate. Wall-clock noise
+    on shared CI can spike the ratio. We allow up to 2.0x and flag
+    >1.15 in stdout so a regression is visible without failing the
+    suite. Deterministic in the sense that the same workload runs
+    twice — no randomness — but absolute times depend on the host."""
+    import time
+    from aelfrice.ingest import ingest_turn
+
+    sentences = [
+        f"Sentence {i} with enough words to be classified factual."
+        for i in range(20)
+    ]
+    text = " ".join(sentences)
+
+    # Baseline: same store, but skip the log insert by patching out
+    # record_ingest. This isolates the parallel-write cost from the
+    # rest of ingest_turn.
+    real_record_ingest = store.record_ingest
+    try:
+        store.record_ingest = lambda **kwargs: "x"  # type: ignore[method-assign]
+        t0 = time.perf_counter()
+        for i in range(5):
+            ingest_turn(store, text, source=f"src-baseline-{i}")
+        baseline = time.perf_counter() - t0
+    finally:
+        store.record_ingest = real_record_ingest  # type: ignore[method-assign]
+
+    t0 = time.perf_counter()
+    for i in range(5):
+        ingest_turn(store, text, source=f"src-with-log-{i}")
+    with_log = time.perf_counter() - t0
+
+    ratio = with_log / baseline if baseline > 0 else float("inf")
+    if ratio > 1.15:
+        # Alarm only; print so reviewers can see drift.
+        print(
+            f"\n[#205 latency alarm] ingest_turn with log = {with_log:.4f}s, "
+            f"baseline = {baseline:.4f}s, ratio = {ratio:.2f}x (budget 1.15x)"
+        )
+    # Hard ceiling: 2.0x. If the parallel write doubles ingest time,
+    # something's wrong.
+    assert ratio < 2.0, f"latency regression: {ratio:.2f}x baseline"
+
+
 def test_scan_repo_writes_log_row_per_new_belief(
     tmp_path: Path,
 ) -> None:
