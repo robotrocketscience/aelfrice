@@ -48,6 +48,7 @@ Issues = "https://github.com/robotrocketscience/aelfrice/issues"
 [project.scripts]
 aelf = "aelfrice.cli:main"
 aelf-hook = "aelfrice.hook:main"
+aelf-transcript-logger = "aelfrice.transcript_logger:main"
 
 [project.optional-dependencies]
 dev = [

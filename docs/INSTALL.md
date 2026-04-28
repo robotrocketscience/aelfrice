@@ -50,14 +50,18 @@ aelf setup                                        # auto-detect scope + path
 aelf setup --scope user                            # force user-scope (~/.claude/settings.json)
 aelf setup --scope project --project-root .        # force project-scope (.claude/settings.json)
 aelf setup --no-statusline                         # hook only, no statusline
-aelf unsetup                                       # remove both
+aelf setup --transcript-ingest                     # opt in to live conversation capture (v1.2+)
+aelf unsetup                                       # remove the prompt hook + statusline
+aelf unsetup --transcript-ingest                   # remove the transcript-logger hooks too
 aelf doctor                                        # verify hook commands resolve
 ```
 
-Idempotent. `aelf setup` wires two things:
+Idempotent. `aelf setup` wires two things by default:
 
 1. **`UserPromptSubmit` hook** (`aelf-hook`). Reads each prompt payload, runs retrieval, emits an `<aelfrice-memory>...</aelfrice-memory>` block above the prompt. Every failure mode exits 0 with no output — the hook can't block a prompt.
 2. **`statusLine` notifier** (`aelf statusline`). Prints an orange one-line update banner in the Claude Code statusbar **only when an update is available**, empty otherwise. Reads the cached PyPI check; never makes network calls. Banner disappears automatically once you've upgraded.
+
+`--transcript-ingest` (v1.2+) additionally wires four hook events (`UserPromptSubmit`, `Stop`, `PreCompact`, `PostCompact`) to the `aelf-transcript-logger` entry point. Each conversation turn lands as one JSONL line in `<git-common-dir>/aelfrice/transcripts/turns.jsonl`; `PreCompact` rotates the log into a sibling `archive/` directory and spawns `aelf ingest-transcript` detached so the turns enter the brain graph as session-tagged beliefs with `DERIVED_FROM` edges between consecutive turns. Sub-10ms per-turn budget; non-blocking on every failure path. Storage stays under `.git/`, which git does not track — transcripts never cross the git boundary. Opt-in at v1.2; the default may flip on once disk-footprint and latency telemetry are in.
 
 ### How `aelf setup` picks scope and command path
 

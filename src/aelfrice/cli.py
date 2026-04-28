@@ -79,13 +79,17 @@ from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
 from aelfrice.setup import (
     SettingsScope,
+    TRANSCRIPT_LOGGER_SCRIPT_NAME,
     clean_dangling_shims,
     default_settings_path,
     detect_default_scope,
     install_statusline,
+    install_transcript_ingest_hooks,
     install_user_prompt_submit_hook,
     resolve_hook_command,
+    resolve_transcript_logger_command,
     uninstall_statusline,
+    uninstall_transcript_ingest_hooks,
     uninstall_user_prompt_submit_hook,
 )
 from aelfrice.store import MemoryStore
@@ -510,6 +514,24 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
             f"(command={command!r})",
             file=out,  # type: ignore[arg-type]
         )
+    if getattr(args, "transcript_ingest", False):
+        ti_command = resolve_transcript_logger_command(scope)
+        ti_result = install_transcript_ingest_hooks(
+            path, command=ti_command, timeout=args.timeout,
+        )
+        if ti_result.installed:
+            print(
+                f"installed transcript-ingest hooks "
+                f"({', '.join(ti_result.installed)}) in {ti_result.path} "
+                f"(command={ti_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        if ti_result.already:
+            print(
+                f"transcript-ingest hooks already installed for "
+                f"({', '.join(ti_result.already)}) in {ti_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
     if not args.no_statusline:
         sl = install_statusline(path)
         if sl.mode == "installed":
@@ -559,6 +581,22 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
             f"({match_label})",
             file=out,  # type: ignore[arg-type]
         )
+    if getattr(args, "transcript_ingest", False):
+        ti_result = uninstall_transcript_ingest_hooks(
+            path, command_basename=TRANSCRIPT_LOGGER_SCRIPT_NAME,
+        )
+        if not ti_result.removed:
+            print(
+                f"no transcript-ingest hooks in {ti_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            for event, n in ti_result.removed.items():
+                print(
+                    f"removed {n} {event} entr"
+                    f"{'y' if n == 1 else 'ies'} from {ti_result.path}",
+                    file=out,  # type: ignore[arg-type]
+                )
     sl = uninstall_statusline(path)
     if sl.mode == "removed":
         print(
@@ -919,6 +957,41 @@ def _print_migrate_report(report: MigrateReport, out: object) -> None:
         )
 
 
+def _cmd_ingest_transcript(args: argparse.Namespace, out: object) -> int:
+    """Ingest a turns.jsonl file into the active project's DB.
+
+    Used by:
+      - The transcript-logger PreCompact hook, which spawns this
+        command detached on rotation.
+      - Manual recovery / replay (`aelf ingest-transcript PATH`).
+
+    Returns 0 on success or empty file. Returns 1 only if the path
+    does not exist; an empty / malformed file is reported but not
+    an error (the hook needs idempotency on edge cases).
+    """
+    from aelfrice.ingest import ingest_jsonl
+
+    path = Path(args.path)
+    if not path.is_file():
+        print(f"ingest-transcript: {path} not found", file=sys.stderr)
+        return 1
+    store = _open_store()
+    try:
+        result = ingest_jsonl(store, path, source_label=args.source_label)
+    finally:
+        store.close()
+    print(
+        f"ingest-transcript: {path.name} "
+        f"lines={result.lines_read} "
+        f"turns={result.turns_ingested} "
+        f"beliefs={result.beliefs_inserted} "
+        f"edges={result.edges_inserted} "
+        f"skipped={result.skipped_lines}",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
 def _cmd_regime(args: argparse.Namespace, out: object) -> int:
     """Print the v1.0 regime classifier output (supersede / ignore / mixed).
 
@@ -1089,6 +1162,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_migrate.set_defaults(func=_cmd_migrate)
 
+    p_ingest_transcript = sub.add_parser(
+        "ingest-transcript",
+        help=(
+            "ingest a turns.jsonl file into the active project's DB. "
+            "Spawned by the transcript-logger PreCompact hook on rotation; "
+            "also runnable manually for replay."
+        ),
+    )
+    p_ingest_transcript.add_argument(
+        "path", help="path to a turns.jsonl file (typically under .git/aelfrice/transcripts/archive/)",
+    )
+    p_ingest_transcript.add_argument(
+        "--source-label", default="transcript",
+        help="source label written on every belief (default: 'transcript')",
+    )
+    p_ingest_transcript.set_defaults(func=_cmd_ingest_transcript)
+
     p_doctor = sub.add_parser(
         "doctor",
         help=(
@@ -1130,6 +1220,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup.add_argument(
         "--no-statusline", action="store_true",
         help="skip the auto-install of the update-notifier statusline snippet",
+    )
+    p_setup.add_argument(
+        "--transcript-ingest", dest="transcript_ingest", action="store_true",
+        help=(
+            "additionally wire the four transcript-logger hooks "
+            "(UserPromptSubmit, Stop, PreCompact, PostCompact) so live "
+            "conversation turns are captured to the per-project transcripts "
+            "log and ingested at compaction boundaries."
+        ),
     )
     p_setup.set_defaults(func=_cmd_setup)
 
@@ -1210,6 +1309,13 @@ def build_parser() -> argparse.ArgumentParser:
             "exact hook command string to remove. Default: remove every "
             f"entry whose command basename is {DEFAULT_HOOK_COMMAND!r} "
             "(matches both bare-name and absolute-path installs)."
+        ),
+    )
+    p_unsetup.add_argument(
+        "--transcript-ingest", dest="transcript_ingest", action="store_true",
+        help=(
+            "also remove the four transcript-logger entries "
+            "(UserPromptSubmit, Stop, PreCompact, PostCompact)."
         ),
     )
     p_unsetup.set_defaults(func=_cmd_unsetup)
