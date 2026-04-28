@@ -14,6 +14,7 @@ suite locks that behaviour in from day one
 """
 from __future__ import annotations
 
+import json
 import secrets
 import sqlite3
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ from typing import Callable, Final, Iterable, Iterator
 from aelfrice.models import (
     CORROBORATION_SOURCE_TYPES,
     EDGE_VALENCE,
+    INGEST_SOURCE_KINDS,
     ONBOARD_STATE_COMPLETED,
     ONBOARD_STATE_PENDING,
     Belief,
@@ -30,6 +32,7 @@ from aelfrice.models import (
     OnboardSession,
     Session,
 )
+from aelfrice.ulid import ulid
 
 # --- Schema ---------------------------------------------------------------
 
@@ -184,6 +187,35 @@ _SCHEMA: tuple[str, ...] = (
     "ON belief_versions(belief_id)",
     "CREATE INDEX IF NOT EXISTS idx_edge_versions_edge "
     "ON edge_versions(src, dst, type)",
+    # v2.0 #205 ingest_log. Append-only record of every raw input
+    # that produced a belief or edge. Parallel-write for v2.0 first
+    # slice; not yet authoritative. Spec: docs/design/write-log-as-truth.md.
+    # `id` is a Crockford base32 ULID (26 chars) — lexicographic sort
+    # equals time sort. `raw_meta`, `derived_belief_ids`, and
+    # `derived_edge_ids` are JSON-encoded strings (TEXT) because
+    # SQLite has no native JSON type and we never filter in WHERE
+    # on their interior; access is read-then-deserialize. The
+    # `(source_kind, source_path)` index covers the spec's required
+    # O(log n) (source_path, raw_text) lookup.
+    """
+    CREATE TABLE IF NOT EXISTS ingest_log (
+        id                 TEXT PRIMARY KEY,
+        ts                 TEXT NOT NULL,
+        source_kind        TEXT NOT NULL,
+        source_path        TEXT,
+        raw_text           TEXT NOT NULL,
+        raw_meta           TEXT,
+        derived_belief_ids TEXT,
+        derived_edge_ids   TEXT,
+        classifier_version TEXT,
+        rule_set_hash      TEXT,
+        session_id         TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_ingest_log_source "
+    "ON ingest_log(source_kind, source_path)",
+    "CREATE INDEX IF NOT EXISTS idx_ingest_log_session "
+    "ON ingest_log(session_id)",
 )
 
 # Marker key for the entity-index one-shot backfill. Empty value =
@@ -314,6 +346,71 @@ def _row_to_feedback(row: sqlite3.Row) -> FeedbackEvent:
     )
 
 
+def _drop_stale_ingest_log(conn: sqlite3.Connection) -> None:
+    """Drop a pre-#205 experimental `ingest_log` table if present.
+
+    Some local stores carry a stale `ingest_log` from prior off-branch
+    experimentation (id INTEGER PK, `raw_meta_json` column, no
+    `session_id`). The schema never landed on main, never persisted
+    data, and is incompatible with the v2.0 #205 contract. We drop it
+    on open if (a) it exists, AND (b) its column set differs from the
+    canonical v2.0 schema, AND (c) it holds zero rows.
+
+    Idempotent: a table that already matches the canonical schema is
+    left alone. A non-empty stale table is left alone (operator must
+    intervene; we will not silently destroy data).
+    """
+    cur = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='ingest_log'"
+    )
+    if cur.fetchone() is None:
+        return
+    cols = {
+        r["name"] for r in conn.execute("PRAGMA table_info(ingest_log)").fetchall()
+    }
+    canonical = {
+        "id", "ts", "source_kind", "source_path", "raw_text", "raw_meta",
+        "derived_belief_ids", "derived_edge_ids", "classifier_version",
+        "rule_set_hash", "session_id",
+    }
+    if cols == canonical:
+        return
+    n = conn.execute("SELECT COUNT(*) AS n FROM ingest_log").fetchone()["n"]
+    if n != 0:
+        # Operator must inspect: leaving the table in place will surface
+        # as a CREATE INDEX failure later, which is the right signal.
+        return
+    conn.execute("DROP TABLE ingest_log")
+
+
+def _ingest_row_to_dict(row: sqlite3.Row) -> dict[str, object]:
+    """Decode an `ingest_log` sqlite row into a Python dict.
+
+    JSON-encoded TEXT columns (raw_meta, derived_belief_ids,
+    derived_edge_ids) are deserialized; absent values become None.
+    Used by `MemoryStore.get_ingest_log_entry` and the validation
+    harness.
+    """
+    def _maybe_json(v: object) -> object:
+        if v is None:
+            return None
+        return json.loads(str(v))
+
+    return {
+        "id": str(row["id"]),
+        "ts": str(row["ts"]),
+        "source_kind": str(row["source_kind"]),
+        "source_path": row["source_path"],
+        "raw_text": str(row["raw_text"]),
+        "raw_meta": _maybe_json(row["raw_meta"]),
+        "derived_belief_ids": _maybe_json(row["derived_belief_ids"]),
+        "derived_edge_ids": _maybe_json(row["derived_edge_ids"]),
+        "classifier_version": row["classifier_version"],
+        "rule_set_hash": row["rule_set_hash"],
+        "session_id": row["session_id"],
+    }
+
+
 def _row_to_onboard_session(row: sqlite3.Row) -> OnboardSession:
     return OnboardSession(
         session_id=row["session_id"],
@@ -342,6 +439,7 @@ class MemoryStore:
         # aelfrice/memory.db. Per the v1.1.0 #89 concurrency tests.
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute("PRAGMA foreign_keys=ON")
+        _drop_stale_ingest_log(self._conn)
         for stmt in _SCHEMA:
             self._conn.execute(stmt)
         for stmt in _MIGRATIONS:
@@ -1002,6 +1100,132 @@ class MemoryStore:
             )
             for r in cur.fetchall()
         ]
+
+    # --- Ingest log (v2.0, #205) -----------------------------------------
+
+    def record_ingest(
+        self,
+        *,
+        source_kind: str,
+        raw_text: str,
+        source_path: str | None = None,
+        raw_meta: dict[str, object] | None = None,
+        derived_belief_ids: list[str] | None = None,
+        derived_edge_ids: list[tuple[str, str, str]] | None = None,
+        classifier_version: str | None = None,
+        rule_set_hash: str | None = None,
+        session_id: str | None = None,
+        ts: str | None = None,
+        log_id: str | None = None,
+    ) -> str:
+        """Append one row to the v2.0 ingest_log. Returns the log id (ULID).
+
+        Per the spec at docs/design/write-log-as-truth.md, every belief
+        and edge must trace back to at least one ingest_log row. v2.0
+        first slice writes the log in parallel; v2.x flips authority.
+
+        `source_kind` must be one of INGEST_SOURCE_KINDS; raises
+        ValueError otherwise. JSON-serializable fields (raw_meta,
+        derived_belief_ids, derived_edge_ids) are encoded at write
+        time so callers don't have to. `ts` and `log_id` are
+        injectable for deterministic tests.
+        """
+        if source_kind not in INGEST_SOURCE_KINDS:
+            raise ValueError(
+                f"Unknown source_kind {source_kind!r}. "
+                f"Must be one of {sorted(INGEST_SOURCE_KINDS)}"
+            )
+        log_id = log_id if log_id is not None else ulid()
+        ts = ts if ts is not None else datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            """
+            INSERT INTO ingest_log (
+                id, ts, source_kind, source_path, raw_text, raw_meta,
+                derived_belief_ids, derived_edge_ids,
+                classifier_version, rule_set_hash, session_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                log_id, ts, source_kind, source_path, raw_text,
+                json.dumps(raw_meta) if raw_meta is not None else None,
+                json.dumps(derived_belief_ids)
+                if derived_belief_ids is not None else None,
+                json.dumps(derived_edge_ids)
+                if derived_edge_ids is not None else None,
+                classifier_version, rule_set_hash, session_id,
+            ),
+        )
+        self._conn.commit()
+        return log_id
+
+    def update_ingest_derived_ids(
+        self,
+        log_id: str,
+        *,
+        derived_belief_ids: list[str] | None = None,
+        derived_edge_ids: list[tuple[str, str, str]] | None = None,
+    ) -> None:
+        """Set derived_belief_ids / derived_edge_ids on an existing log row.
+
+        Used when the log row is written before classification produces
+        belief/edge ids. Either argument may be None to leave that
+        column untouched.
+        """
+        sets: list[str] = []
+        params: list[object] = []
+        if derived_belief_ids is not None:
+            sets.append("derived_belief_ids = ?")
+            params.append(json.dumps(derived_belief_ids))
+        if derived_edge_ids is not None:
+            sets.append("derived_edge_ids = ?")
+            params.append(json.dumps(derived_edge_ids))
+        if not sets:
+            return
+        params.append(log_id)
+        self._conn.execute(
+            f"UPDATE ingest_log SET {', '.join(sets)} WHERE id = ?",
+            params,
+        )
+        self._conn.commit()
+
+    def get_ingest_log_entry(self, log_id: str) -> dict[str, object] | None:
+        """Return a dict view of one ingest_log row, or None if missing.
+
+        Decodes the JSON-encoded fields (raw_meta, derived_*_ids).
+        Used by tests and the v2.0 replay validation harness.
+        """
+        cur = self._conn.execute(
+            "SELECT * FROM ingest_log WHERE id = ?",
+            (log_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return _ingest_row_to_dict(row)
+
+    def count_ingest_log(self) -> int:
+        cur = self._conn.execute("SELECT COUNT(*) AS n FROM ingest_log")
+        return int(cur.fetchone()["n"])
+
+    def iter_ingest_log_for_belief(
+        self, belief_id: str,
+    ) -> list[dict[str, object]]:
+        """All ingest_log rows whose derived_belief_ids contains belief_id.
+
+        Linear scan — v2.0 first slice has no inverted index. Acceptable
+        for the validation harness; revisit if interactive callers appear.
+        """
+        cur = self._conn.execute(
+            "SELECT * FROM ingest_log WHERE derived_belief_ids IS NOT NULL"
+        )
+        out: list[dict[str, object]] = []
+        for row in cur.fetchall():
+            d = _ingest_row_to_dict(row)
+            ids = d.get("derived_belief_ids") or []
+            if isinstance(ids, list) and belief_id in ids:
+                out.append(d)
+        return out
 
     # --- Aggregations (used by aelf:health) ------------------------------
 

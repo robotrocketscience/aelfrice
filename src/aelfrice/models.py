@@ -90,6 +90,28 @@ CORROBORATION_SOURCE_TYPES: Final[frozenset[str]] = frozenset({
     CORROBORATION_SOURCE_HOOK_INGEST,
 })
 
+# v2.0 #205 ingest_log source_kind enum. Wire-format strings; do not
+# rename without a migration. Spec: docs/design/write-log-as-truth.md.
+INGEST_SOURCE_FILESYSTEM: Final[str] = "filesystem"
+INGEST_SOURCE_GIT: Final[str] = "git"
+INGEST_SOURCE_PYTHON_AST: Final[str] = "python_ast"
+INGEST_SOURCE_MCP_REMEMBER: Final[str] = "mcp_remember"
+INGEST_SOURCE_CLI_REMEMBER: Final[str] = "cli_remember"
+INGEST_SOURCE_FEEDBACK_LOOP_SYNTHESIS: Final[str] = "feedback_loop_synthesis"
+# `legacy_unknown` is reserved for migration: pre-v2.0 beliefs get
+# synthesized log rows at their `created_at` timestamp.
+INGEST_SOURCE_LEGACY_UNKNOWN: Final[str] = "legacy_unknown"
+
+INGEST_SOURCE_KINDS: Final[frozenset[str]] = frozenset({
+    INGEST_SOURCE_FILESYSTEM,
+    INGEST_SOURCE_GIT,
+    INGEST_SOURCE_PYTHON_AST,
+    INGEST_SOURCE_MCP_REMEMBER,
+    INGEST_SOURCE_CLI_REMEMBER,
+    INGEST_SOURCE_FEEDBACK_LOOP_SYNTHESIS,
+    INGEST_SOURCE_LEGACY_UNKNOWN,
+})
+
 # --- Onboard-session states ---
 # A polymorphic onboard handshake passes through exactly two persisted
 # states: `pending` after `start_onboard_session` records the scanner
