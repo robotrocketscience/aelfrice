@@ -57,6 +57,7 @@ SettingsScope = Literal["user", "project"]
 USER_SETTINGS_PATH: Final[Path] = Path.home() / ".claude" / "settings.json"
 PROJECT_SETTINGS_RELPATH: Final[Path] = Path(".claude") / "settings.json"
 _HOOK_SCRIPT_NAME: Final[str] = "aelf-hook"
+_PRE_COMPACT_HOOK_SCRIPT_NAME: Final[str] = "aelf-pre-compact-hook"
 # Legacy / pre-pipx shim locations we will silently clean up if they
 # point at a deleted target. Keep this list narrow: only paths the
 # package itself ever wrote, never user-managed binaries.
@@ -160,16 +161,29 @@ def resolve_hook_command(scope: SettingsScope) -> str:
     no executable is found anywhere on the system, in which case the
     user has bigger problems and `aelf doctor` will flag it.
     """
+    return _resolve_script(_HOOK_SCRIPT_NAME, scope)
+
+
+def resolve_pre_compact_hook_command(scope: SettingsScope) -> str:
+    """Pick the absolute `aelf-pre-compact-hook` path for `scope`.
+
+    Same resolution rules as `resolve_hook_command`; different script
+    name. Used by `aelf setup --rebuilder`.
+    """
+    return _resolve_script(_PRE_COMPACT_HOOK_SCRIPT_NAME, scope)
+
+
+def _resolve_script(script_name: str, scope: SettingsScope) -> str:
     venv_bin = _venv_bin_dir()
-    venv_hook = _executable_in_dir(venv_bin, _HOOK_SCRIPT_NAME)
-    path_hook_str = shutil.which(_HOOK_SCRIPT_NAME)
+    venv_hook = _executable_in_dir(venv_bin, script_name)
+    path_hook_str = shutil.which(script_name)
     path_hook = Path(path_hook_str) if path_hook_str else None
     if scope == "project":
         chosen = venv_hook or path_hook
     else:
         chosen = path_hook or venv_hook
     if chosen is None:
-        return _HOOK_SCRIPT_NAME
+        return script_name
     return str(chosen)
 
 

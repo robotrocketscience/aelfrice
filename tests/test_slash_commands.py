@@ -17,9 +17,11 @@ import pytest
 # `resolve` joins at v1.0.1 alongside the contradiction tie-breaker.
 # `status` (alias for health), `regime` (preserved v1.0 classifier),
 # and `migrate` (legacy-DB import) join at v1.1.0.
+# `rebuild` (context rebuilder MVP) joins at v1.1.0 alpha.
 EXPECTED_COMMANDS = (
     "onboard",
     "search",
+    "rebuild",
     "lock",
     "locked",
     "demote",
