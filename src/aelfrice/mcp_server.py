@@ -1,5 +1,5 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUntypedFunctionDecorator=false, reportUnusedFunction=false
-"""MCP server exposing the 8 user-visible tools.
+"""MCP server exposing the 9 user-visible tools.
 
 The same surface as the CLI, accessible from any host that speaks the
 Model Context Protocol. The handlers are pure Python — they take a
@@ -22,6 +22,7 @@ Tool surface (all under the `aelf:` namespace at the host):
   aelf:lock            {statement}                       -> id + action
   aelf:locked          {pressured?}                      -> locked beliefs
   aelf:demote          {belief_id}                       -> demoted bool
+  aelf:validate        {belief_id, source?}              -> origin promotion
   aelf:feedback        {belief_id, signal, source?}      -> updated priors
   aelf:stats           {}                                -> counts
   aelf:health          {}                                -> regime report
@@ -54,6 +55,8 @@ from aelfrice.models import (
     BELIEF_FACTUAL,
     LOCK_NONE,
     LOCK_USER,
+    ORIGIN_USER_STATED,
+    ORIGIN_USER_VALIDATED,
     Belief,
 )
 from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
@@ -222,11 +225,13 @@ def tool_lock(store: MemoryStore, *, statement: str) -> dict[str, Any]:
             demotion_pressure=0,
             created_at=now,
             last_retrieved_at=None,
+            origin=ORIGIN_USER_STATED,
         ))
         return {"kind": "lock.created", "id": bid, "action": "locked"}
     existing.lock_level = LOCK_USER
     existing.locked_at = now
     existing.demotion_pressure = 0
+    existing.origin = ORIGIN_USER_STATED
     store.update_belief(existing)
     return {"kind": "lock.upgraded", "id": bid, "action": "upgraded"}
 
@@ -261,17 +266,69 @@ def tool_demote(store: MemoryStore, *, belief_id: str) -> dict[str, Any]:
             "demoted": False,
             "error": "belief not found",
         }
-    if belief.lock_level == LOCK_NONE:
+    if belief.lock_level == LOCK_USER:
+        belief.lock_level = LOCK_NONE
+        belief.locked_at = None
+        belief.demotion_pressure = 0
+        store.update_belief(belief)
+        return {"kind": "demote.demoted", "id": belief_id, "demoted": True}
+    if belief.origin == ORIGIN_USER_VALIDATED:
+        from aelfrice.promotion import devalidate
+        devalidate(store, belief_id)
         return {
-            "kind": "demote.not_locked",
+            "kind": "demote.devalidated",
             "id": belief_id,
-            "demoted": False,
+            "demoted": True,
+            "tier": "user_validated_to_agent_inferred",
         }
-    belief.lock_level = LOCK_NONE
-    belief.locked_at = None
-    belief.demotion_pressure = 0
-    store.update_belief(belief)
-    return {"kind": "demote.demoted", "id": belief_id, "demoted": True}
+    return {
+        "kind": "demote.not_locked",
+        "id": belief_id,
+        "demoted": False,
+    }
+
+
+def tool_validate(
+    store: MemoryStore,
+    *,
+    belief_id: str,
+    source: str = "user_validated",
+) -> dict[str, Any]:
+    """Promote agent_inferred -> user_validated. v1.2.0.
+
+    `source` becomes the audit-row source suffix: "promotion:<source>".
+    Defaults to "user_validated" so the audit row reads
+    "promotion:user_validated" — the canonical wire-format string.
+    """
+    from aelfrice.promotion import promote
+
+    label = (
+        f"promotion:{source}"
+        if source != "user_validated"
+        else "promotion:user_validated"
+    )
+    try:
+        result = promote(store, belief_id, source_label=label)
+    except ValueError as e:
+        return {
+            "kind": "validate.error",
+            "id": belief_id,
+            "error": str(e),
+        }
+    if result.already_validated:
+        return {
+            "kind": "validate.already",
+            "id": belief_id,
+            "prior_origin": result.prior_origin,
+            "new_origin": result.new_origin,
+        }
+    return {
+        "kind": "validate.promoted",
+        "id": belief_id,
+        "prior_origin": result.prior_origin,
+        "new_origin": result.new_origin,
+        "audit_event_id": result.audit_event_id,
+    }
 
 
 def tool_feedback(
@@ -427,6 +484,18 @@ def serve() -> None:
             store.close()
 
     @mcp.tool()
+    def aelf_validate(
+        belief_id: str, source: str = "user_validated",
+    ) -> dict[str, Any]:
+        store = _open_default_store()
+        try:
+            return tool_validate(
+                store, belief_id=belief_id, source=source,
+            )
+        finally:
+            store.close()
+
+    @mcp.tool()
     def aelf_feedback(
         belief_id: str, signal: str, source: str = "user",
     ) -> dict[str, Any]:
@@ -459,7 +528,7 @@ def serve() -> None:
     # themselves. They serve no runtime purpose.
     _registered = (
         aelf_onboard, aelf_search, aelf_lock, aelf_locked,
-        aelf_demote, aelf_feedback, aelf_stats, aelf_health,
+        aelf_demote, aelf_validate, aelf_feedback, aelf_stats, aelf_health,
     )
     del _registered
 
