@@ -19,7 +19,13 @@ from __future__ import annotations
 import os
 from typing import Final
 
-from aelfrice.lifecycle import UpdateStatus, installed_version, is_newer, read_cache
+from aelfrice.lifecycle import (
+    UpdateStatus,
+    format_update_banner,
+    installed_version,
+    is_newer,
+    read_cache,
+)
 
 # CSS orange #FFA500 in truecolor, 256-color 208 (#FF8700), basic 33.
 ANSI_RESET: Final[str] = "\x1b[0m"
@@ -81,10 +87,7 @@ def format_snippet(
         return ""
     color_on = _pick_color(env)
     color_off = ANSI_RESET if color_on else ""
-    body = (
-        f"{ICON} aelfrice {status.latest} available, "
-        f"run: aelf upgrade"
-    )
+    body = format_update_banner(status.latest)
     return f"{color_on}{body}{color_off}{SEPARATOR}"
 
 
