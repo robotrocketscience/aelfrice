@@ -51,7 +51,7 @@ DB resolves from `$AELFRICE_DB`, then `<git-common-dir>/aelfrice/memory.db` when
 
 ## Help flags
 
-`aelf --help` shows the everyday surface (visible subcommands). `aelf --help --advanced` (or `aelf --advanced`) shows the full surface including hidden subcommands (`bench`, `feedback`, `health`, `migrate`, `project-warm`, `rebuild`, `regime`, `session-delta`, `stats`, `statusline`, `unsetup`). The `--advanced` flag was wired in v1.4 (PR #174).
+`aelf --help` shows the everyday surface (visible subcommands). `aelf --help --advanced` (or `aelf --advanced`) shows the full surface including hidden subcommands (`bench`, `feedback`, `health`, `migrate`, `project-warm`, `regime`, `session-delta`, `stats`, `statusline`, `unsetup`). The `--advanced` flag was wired in v1.4 (PR #174).
 
 ## Output and exit codes
 
