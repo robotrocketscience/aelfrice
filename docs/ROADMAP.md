@@ -19,6 +19,7 @@ This is a rebuild, not a port. Structural issues that survived the research line
 | v1.0.x | shipped | core memory, CLI, MCP, hook wiring, install routing, contradiction tie-breaker |
 | **v1.1.0** | shipped | per-project DBs, `aelf migrate`, `edges`→`threads` rename, `aelf health` rewrite |
 | **v1.2.0** | shipped | auto-capture pipeline (transcript-ingest, commit-ingest, SessionStart), `agent_inferred → user_validated` promotion, triple extractor, `--batch` JSONL ingest, CLI consolidation, `INEDIBLE` per-file opt-out |
+| **v1.2.x** | planned | search-tool `PreToolUse` hook — memory-first context on Grep/Glob |
 | **v1.3.0** | planned | retrieval wave — entity index + BFS multi-hop + LLM classification + posterior-weighted ranking |
 | **v1.4.0** | planned | context rebuilder — PreCompact retrieval-curated continuation |
 | **v2.0.0** | planned | feature parity with the research line + benchmark reproducibility |
@@ -52,6 +53,12 @@ Stable core: SQLite + FTS5 store, Beta-Bernoulli scoring, L0+L1 retrieval at a 2
 - **Harness integration guide.** Three operational modes for coexisting with Claude Code's auto-memory directive.
 
 ## Planned
+
+### v1.2.x — search-tool hook (planned patch)
+
+Pulled forward from v1.3.0 to validate the `PreToolUse` retrieval surface ahead of the bigger retrieval wave. Ships against the v1.0 retrieval pipeline + v1.1.0 per-project DB resolution; no dependency on entity-index, BFS, or LLM classifier work.
+
+- **Search-tool `PreToolUse` hook** ([search_tool_hook.md](search_tool_hook.md)). Fires before `Grep` and `Glob` tool calls, lifts the agent's search query out of `tool_input.pattern`, runs the same query against the per-project belief store, and emits results as `additionalContext` so the agent sees them *before* the tool runs. First retrieval-shaped hook on the agent's *own* tool intent (the v1.0.1 `UserPromptSubmit` hook covers user-initiated retrieval; this covers agent-initiated). Opt-in via `aelf setup --search-tool` at v1.2.x; default-on candidate at v1.3.0 once production telemetry confirms the latency budget (median ≤ 50 ms, p95 ≤ 200 ms on a 10k-belief store).
 
 ### v1.3.0 — retrieval wave
 
