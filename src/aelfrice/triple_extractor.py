@@ -31,6 +31,7 @@ from typing import Final
 
 from aelfrice.models import (
     BELIEF_FACTUAL,
+    CORROBORATION_SOURCE_COMMIT_INGEST,
     EDGE_CITES,
     EDGE_CONTRADICTS,
     EDGE_DERIVED_FROM,
@@ -250,10 +251,19 @@ def _resolve_or_create_belief(
 ) -> str:
     """Return the id of the belief representing `phrase`, creating
     one with the project default prior (alpha=1.0, beta=1.0) if none
-    exists. The first creator within a call stamps `session_id`."""
+    exists. The first creator within a call stamps `session_id`.
+
+    When the belief already exists (same id = same normalised phrase),
+    a corroboration row is recorded so the re-assertion is observable.
+    """
     bid = _belief_id_for_phrase(phrase)
     existing = store.get_belief(bid)
     if existing is not None:
+        store.record_corroboration(
+            bid,
+            source_type=CORROBORATION_SOURCE_COMMIT_INGEST,
+            session_id=session_id,
+        )
         return bid
     belief = Belief(
         id=bid,

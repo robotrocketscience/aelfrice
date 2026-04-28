@@ -74,6 +74,22 @@ ORIGINS: Final[frozenset[str]] = frozenset({
     ORIGIN_UNKNOWN,
 })
 
+# --- Corroboration source types (v1.5+) ---
+# Wire-format strings. Do not rename without a migration. Distinguishes
+# which ingest path produced the corroboration row. Used by T2 (#191)
+# for grace-window cross-checking.
+CORROBORATION_SOURCE_COMMIT_INGEST: Final[str] = "commit_ingest"
+CORROBORATION_SOURCE_TRANSCRIPT_INGEST: Final[str] = "transcript_ingest"
+CORROBORATION_SOURCE_MCP_REMEMBER: Final[str] = "mcp_remember"
+CORROBORATION_SOURCE_HOOK_INGEST: Final[str] = "hook_ingest"
+
+CORROBORATION_SOURCE_TYPES: Final[frozenset[str]] = frozenset({
+    CORROBORATION_SOURCE_COMMIT_INGEST,
+    CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+    CORROBORATION_SOURCE_MCP_REMEMBER,
+    CORROBORATION_SOURCE_HOOK_INGEST,
+})
+
 # --- Onboard-session states ---
 # A polymorphic onboard handshake passes through exactly two persisted
 # states: `pending` after `start_onboard_session` records the scanner
@@ -123,6 +139,7 @@ class Belief:
     last_retrieved_at: str | None
     session_id: str | None = None
     origin: str = ORIGIN_UNKNOWN
+    corroboration_count: int = 0
 
 
 ANCHOR_TEXT_MAX_LEN: Final[int] = 1000
@@ -205,3 +222,5 @@ class Session:
     completed_at: str | None
     model: str | None
     project_context: str | None
+
+

@@ -53,6 +53,7 @@ from aelfrice.health import (
 )
 from aelfrice.models import (
     BELIEF_FACTUAL,
+    CORROBORATION_SOURCE_MCP_REMEMBER,
     LOCK_NONE,
     LOCK_USER,
     ORIGIN_USER_STATED,
@@ -233,6 +234,9 @@ def tool_lock(store: MemoryStore, *, statement: str) -> dict[str, Any]:
     existing.demotion_pressure = 0
     existing.origin = ORIGIN_USER_STATED
     store.update_belief(existing)
+    # Record a corroboration for the re-assertion so downstream
+    # consumers can count how often a belief was re-locked.
+    store.record_corroboration(bid, source_type=CORROBORATION_SOURCE_MCP_REMEMBER)
     return {"kind": "lock.upgraded", "id": bid, "action": "upgraded"}
 
 

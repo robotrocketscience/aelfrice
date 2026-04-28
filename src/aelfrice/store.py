@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Callable, Final, Iterable, Iterator
 
 from aelfrice.models import (
+    CORROBORATION_SOURCE_TYPES,
     EDGE_VALENCE,
     ONBOARD_STATE_COMPLETED,
     ONBOARD_STATE_PENDING,
@@ -120,6 +121,27 @@ _SCHEMA: tuple[str, ...] = (
         value TEXT NOT NULL
     )
     """,
+    # v1.5.0 belief_corroborations (#190). Records each re-ingest of
+    # content whose content_hash already exists in `beliefs`. The
+    # canonical belief row is unchanged; this table makes re-assertions
+    # observable as a first-class signal without disturbing the
+    # existing dedup contract. ON DELETE CASCADE removes corroboration
+    # rows when a belief is deleted (rare; covered for hygiene).
+    # NOTE: belief_id is TEXT NOT NULL (not INTEGER) because beliefs.id
+    # is TEXT PRIMARY KEY in this codebase; the spec sketch said INTEGER
+    # but that was adapted to match the actual schema.
+    """
+    CREATE TABLE IF NOT EXISTS belief_corroborations (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        belief_id         TEXT    NOT NULL REFERENCES beliefs(id) ON DELETE CASCADE,
+        ingested_at       TEXT    NOT NULL,
+        source_type       TEXT    NOT NULL,
+        session_id        TEXT,
+        source_path_hash  TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_belief_corroborations_belief_id "
+    "ON belief_corroborations(belief_id)",
     "CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src)",
     "CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst)",
     "CREATE INDEX IF NOT EXISTS idx_feedback_belief ON feedback_history(belief_id)",
@@ -240,6 +262,8 @@ def _escape_fts5_query(query: str) -> str:
 
 
 def _row_to_belief(row: sqlite3.Row) -> Belief:
+    keys = row.keys()
+    corroboration_count = int(row["corroboration_count"]) if "corroboration_count" in keys else 0
     return Belief(
         id=row["id"],
         content=row["content"],
@@ -254,6 +278,7 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
         last_retrieved_at=row["last_retrieved_at"],
         session_id=row["session_id"],
         origin=row["origin"],
+        corroboration_count=corroboration_count,
     )
 
 
@@ -528,9 +553,39 @@ class MemoryStore:
         self._conn.commit()
         self._fire_invalidation()
 
+    def get_belief_by_content_hash(self, content_hash: str) -> Belief | None:
+        """Look up a belief by its content_hash. Returns None if not found.
+
+        Used by ingest paths to detect re-ingest of identical content
+        across different (source, text) pairs — e.g. the same sentence
+        ingested once via transcript-ingest and once via commit-ingest.
+        When found, the caller records a belief_corroborations row
+        instead of silently dropping the duplicate.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT b.*,
+                   (SELECT COUNT(*) FROM belief_corroborations bc
+                    WHERE bc.belief_id = b.id) AS corroboration_count
+            FROM beliefs b
+            WHERE b.content_hash = ?
+            LIMIT 1
+            """,
+            (content_hash,),
+        )
+        row = cur.fetchone()
+        return _row_to_belief(row) if row else None
+
     def get_belief(self, belief_id: str) -> Belief | None:
         cur = self._conn.execute(
-            "SELECT * FROM beliefs WHERE id = ?", (belief_id,)
+            """
+            SELECT b.*,
+                   (SELECT COUNT(*) FROM belief_corroborations bc
+                    WHERE bc.belief_id = b.id) AS corroboration_count
+            FROM beliefs b
+            WHERE b.id = ?
+            """,
+            (belief_id,),
         )
         row = cur.fetchone()
         return _row_to_belief(row) if row else None
@@ -756,7 +811,10 @@ class MemoryStore:
             return []
         cur = self._conn.execute(
             """
-            SELECT b.* FROM beliefs b
+            SELECT b.*,
+                   (SELECT COUNT(*) FROM belief_corroborations bc
+                    WHERE bc.belief_id = b.id) AS corroboration_count
+            FROM beliefs b
             JOIN beliefs_fts f ON f.id = b.id
             WHERE beliefs_fts MATCH ?
             ORDER BY bm25(beliefs_fts)
@@ -787,7 +845,10 @@ class MemoryStore:
             return []
         cur = self._conn.execute(
             """
-            SELECT b.*, bm25(beliefs_fts) AS bm25_score
+            SELECT b.*,
+                   bm25(beliefs_fts) AS bm25_score,
+                   (SELECT COUNT(*) FROM belief_corroborations bc
+                    WHERE bc.belief_id = b.id) AS corroboration_count
             FROM beliefs b
             JOIN beliefs_fts f ON f.id = b.id
             WHERE beliefs_fts MATCH ?
@@ -866,6 +927,82 @@ class MemoryStore:
             return 0
         return int(row["n"])
 
+    # --- Belief corroborations (v1.5+, #190) -----------------------------
+
+    def record_corroboration(
+        self,
+        belief_id: str,
+        *,
+        source_type: str,
+        session_id: str | None = None,
+        source_path_hash: str | None = None,
+    ) -> None:
+        """Record one corroboration row for an already-existing belief.
+
+        Called by the ingest path when an INSERT hits the content_hash
+        UNIQUE constraint. Validates `source_type` against
+        CORROBORATION_SOURCE_TYPES; raises ValueError on unknown values.
+
+        `session_id` and `source_path_hash` are nullable: pass None
+        when unavailable; no exception is raised.
+        """
+        if source_type not in CORROBORATION_SOURCE_TYPES:
+            raise ValueError(
+                f"Unknown source_type {source_type!r}. "
+                f"Must be one of {sorted(CORROBORATION_SOURCE_TYPES)}"
+            )
+        ts = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            """
+            INSERT INTO belief_corroborations
+                (belief_id, ingested_at, source_type, session_id, source_path_hash)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (belief_id, ts, source_type, session_id, source_path_hash),
+        )
+        self._conn.commit()
+
+    def count_corroborations(self, belief_id: str) -> int:
+        """Return the count of belief_corroborations rows for one belief.
+
+        Used by _row_to_belief to populate Belief.corroboration_count.
+        """
+        cur = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM belief_corroborations "
+            "WHERE belief_id = ?",
+            (belief_id,),
+        )
+        row = cur.fetchone()
+        return int(row["n"]) if row else 0
+
+    def list_corroborations(
+        self,
+        belief_id: str,
+    ) -> list[tuple[str, str, str | None, str | None]]:
+        """Return [(ingested_at, source_type, session_id, source_path_hash)]
+        for one belief, ordered by ingested_at ASC.
+
+        Used by tests and future debug CLI.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT ingested_at, source_type, session_id, source_path_hash
+            FROM belief_corroborations
+            WHERE belief_id = ?
+            ORDER BY ingested_at ASC
+            """,
+            (belief_id,),
+        )
+        return [
+            (
+                str(r["ingested_at"]),
+                str(r["source_type"]),
+                r["session_id"],
+                r["source_path_hash"],
+            )
+            for r in cur.fetchall()
+        ]
+
     # --- Aggregations (used by aelf:health) ------------------------------
 
     def count_beliefs(self) -> int:
@@ -904,9 +1041,12 @@ class MemoryStore:
         """
         cur = self._conn.execute(
             """
-            SELECT * FROM beliefs
-            WHERE lock_level != 'none'
-            ORDER BY locked_at DESC, id ASC
+            SELECT b.*,
+                   (SELECT COUNT(*) FROM belief_corroborations bc
+                    WHERE bc.belief_id = b.id) AS corroboration_count
+            FROM beliefs b
+            WHERE b.lock_level != 'none'
+            ORDER BY b.locked_at DESC, b.id ASC
             """
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
