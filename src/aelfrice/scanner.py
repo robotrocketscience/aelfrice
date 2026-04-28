@@ -27,7 +27,12 @@ from typing import Final
 
 from aelfrice.classification import classify_sentence
 from aelfrice.inedible import is_inedible
-from aelfrice.models import LOCK_NONE, ORIGIN_AGENT_INFERRED, Belief
+from aelfrice.models import (
+    INGEST_SOURCE_FILESYSTEM,
+    LOCK_NONE,
+    ORIGIN_AGENT_INFERRED,
+    Belief,
+)
 from aelfrice.noise_filter import NoiseConfig, is_noise
 from aelfrice.store import MemoryStore
 
@@ -233,6 +238,17 @@ def scan_repo(
             skipped_existing += 1
             continue
         created_at = candidate.commit_date or timestamp
+        # v2.0 #205 parallel-write: log the raw classifier input
+        # before materializing the belief. derived_belief_ids is
+        # known up-front because belief_id is deterministic on
+        # (source, text).
+        store.record_ingest(
+            source_kind=INGEST_SOURCE_FILESYSTEM,
+            source_path=candidate.source,
+            raw_text=candidate.text,
+            derived_belief_ids=[belief_id],
+            ts=created_at,
+        )
         store.insert_belief(Belief(
             id=belief_id,
             content=candidate.text,

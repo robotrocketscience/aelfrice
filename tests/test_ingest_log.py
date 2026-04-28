@@ -353,3 +353,65 @@ def test_count_ingest_log_increments_per_record(store: MemoryStore) -> None:
             source_kind=INGEST_SOURCE_CLI_REMEMBER, raw_text=f"row {i}",
         )
     assert store.count_ingest_log() == 5
+
+
+# --- Entry-point parallel-write contract --------------------------------
+
+
+def test_ingest_turn_writes_log_row_per_new_belief(
+    store: MemoryStore,
+) -> None:
+    """Hypothesis: every belief inserted by ingest_turn has at least
+    one ingest_log row that references its id in derived_belief_ids.
+    Falsifiable by any orphan belief (the spec's reachability check)."""
+    from aelfrice.ingest import ingest_turn
+    text = (
+        "The configuration file lives at /etc/aelfrice/conf. "
+        "The default port is 8080 for the dashboard."
+    )
+    n = ingest_turn(store, text, source="user", session_id="s-1")
+    assert n == 2
+    for belief_id in store.list_belief_ids():
+        rows = store.iter_ingest_log_for_belief(belief_id)
+        assert rows, f"belief {belief_id} has no log row"
+        # Spec: source_kind + raw_text + session_id stamped.
+        assert all(r["source_kind"] == "filesystem" for r in rows)
+        assert all(r["session_id"] == "s-1" for r in rows)
+
+
+def test_ingest_turn_dedup_does_not_double_log(store: MemoryStore) -> None:
+    """Hypothesis: re-ingesting the same (source, sentence) skips the
+    belief insert AND skips the log row (dedup is idempotent on both).
+    Falsifiable if log count grows on the no-op second call."""
+    from aelfrice.ingest import ingest_turn
+    text = "The default port is 8080 for the dashboard service."
+    ingest_turn(store, text, source="user")
+    log_after_first = store.count_ingest_log()
+    ingest_turn(store, text, source="user")
+    log_after_second = store.count_ingest_log()
+    assert log_after_first == log_after_second
+
+
+def test_scan_repo_writes_log_row_per_new_belief(
+    tmp_path: Path,
+) -> None:
+    """Hypothesis: every belief inserted by scan_repo has at least one
+    ingest_log row referencing its id. Falsifiable by any orphan belief."""
+    from aelfrice.scanner import scan_repo
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text(
+        "This project must use uv for environment management.\n\n"
+        "We always prefer atomic commits over batched commits.\n"
+    )
+    s = MemoryStore(":memory:")
+    try:
+        scan_repo(s, repo, now="2026-04-28T00:00:00Z")
+        ids = s.list_belief_ids()
+        assert ids, "expected scan_repo to insert beliefs"
+        for belief_id in ids:
+            rows = s.iter_ingest_log_for_belief(belief_id)
+            assert rows, f"belief {belief_id} has no log row"
+            assert all(r["source_kind"] == "filesystem" for r in rows)
+    finally:
+        s.close()
