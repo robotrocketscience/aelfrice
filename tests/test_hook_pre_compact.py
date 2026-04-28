@@ -76,6 +76,14 @@ def _aelfrice_log(cwd: Path, lines: list[dict[str, object]]) -> Path:
     p = cwd / ".git" / "aelfrice" / "transcripts" / "turns.jsonl"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+    # The v1.4 ship default for `trigger_mode` is "manual"; these
+    # tests exercise the auto-fire path, so opt them into "threshold".
+    cfg = cwd / ".aelfrice.toml"
+    if not cfg.exists():
+        cfg.write_text(
+            '[rebuilder]\ntrigger_mode = "threshold"\n',
+            encoding="utf-8",
+        )
     return p
 
 
@@ -193,6 +201,10 @@ def test_pre_compact_falls_back_to_claude_transcript(
     _set_db(monkeypatch, db)
     no_git = tmp_path / "no_git"
     no_git.mkdir()
+    # v1.4 default trigger_mode is "manual"; opt into auto-fire.
+    (no_git / ".aelfrice.toml").write_text(
+        '[rebuilder]\ntrigger_mode = "threshold"\n', encoding="utf-8",
+    )
     transcript = tmp_path / "claude.jsonl"
     _claude_transcript(transcript, [
         {"type": "user", "message": {"role": "user", "content": "kitchen check"}},

@@ -27,10 +27,11 @@ def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 # Subcommands that must be HIDDEN from the default --help surface.
+# `rebuild` is intentionally absent: at v1.4.0 (#141) it became the
+# user-facing manual-trigger surface for the context rebuilder.
 _ADVANCED_SUBCOMMANDS = [
     "project-warm",
     "session-delta",
-    "rebuild",
     "demote",
     "validate",
     "resolve",
@@ -72,8 +73,11 @@ def test_help_default_hides_session_delta() -> None:
     assert "session-delta" not in _default_help()
 
 
-def test_help_default_hides_rebuild() -> None:
-    assert "rebuild" not in _default_help()
+def test_help_default_shows_rebuild() -> None:
+    """v1.4.0 (#141): `rebuild` is the user-facing manual-trigger
+    surface for the context rebuilder. Must appear in default --help.
+    """
+    assert "rebuild" in _default_help()
 
 
 def test_help_default_hides_bench() -> None:
