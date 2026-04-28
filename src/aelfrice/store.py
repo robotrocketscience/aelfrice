@@ -1057,9 +1057,9 @@ class MemoryStore:
         Orphan definition (two signals, both must be true):
           1. type = 'unknown' OR type IS NULL — never successfully typed by
              onboard or ingest.
-          2. alpha + beta < 2 — never received any feedback event
-             (the default prior is alpha=1, beta=1, so sum=2 means
-             completely untouched; any feedback pushes the sum above 2).
+          2. alpha + beta <= 2 — never received any feedback event
+             (the default prior is alpha=1, beta=1, sum=2; any feedback
+             pushes the sum above 2).
 
         Additional signals (entity_index miss, zero non-CONTAINS edges) are
         planned as future extensions once #143 and edge-type auditing land.
@@ -1073,7 +1073,7 @@ class MemoryStore:
             f"""
             SELECT * FROM beliefs
             WHERE (type = 'unknown' OR type IS NULL)
-              AND (alpha + beta) < 2
+              AND (alpha + beta) <= 2
             ORDER BY created_at ASC
             {limit_clause}
             """

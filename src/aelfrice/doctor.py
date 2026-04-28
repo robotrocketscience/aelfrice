@@ -27,7 +27,7 @@ warnings:
 
 `aelf doctor --classify-orphans` (issue #206) finds beliefs whose
 `type` was never resolved (type = 'unknown') AND that have never
-received any feedback (alpha + beta < 2 — the untouched prior), then
+received any feedback (alpha + beta <= 2 — the untouched prior), then
 re-classifies them through the same Haiku batch path used by
 `aelf onboard --llm-classify`.
 """
@@ -859,7 +859,7 @@ def classify_orphans(
 
     Orphan definition (both signals required):
       - type = 'unknown' OR type IS NULL  (never successfully typed)
-      - alpha + beta < 2                  (no feedback ever applied)
+      - alpha + beta <= 2                  (no feedback ever applied)
 
     The function reuses `aelfrice.llm_classifier.classify_batch` — the
     same path `aelf onboard --llm-classify` uses.  No new LLM client is

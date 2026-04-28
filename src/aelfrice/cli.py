@@ -2588,7 +2588,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         default=False,
         help=(
             "find beliefs with type='unknown' and no feedback signal "
-            "(alpha+beta < 2), then re-classify them via Haiku batch. "
+            "(alpha+beta <= 2), then re-classify them via Haiku batch. "
             "Requires ANTHROPIC_API_KEY and the [onboard-llm] extra "
             "(pip install aelfrice[onboard-llm]). "
             "Bypasses the hooks/graph checks. "
