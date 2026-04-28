@@ -23,7 +23,7 @@ This is a rebuild, not a port. Structural issues that survived the research line
 | **v1.3.0** | planned | retrieval wave — entity index + BFS multi-hop + LLM classification + posterior-weighted ranking |
 | **v1.4.0** | planned | context rebuilder — PreCompact retrieval-curated continuation |
 | **v1.5.0** | planned | retrieval plumbing — composition tracker, BM25F anchor text, search-tool matcher extension, dynamic-trigger revisit |
-| **v1.6.0** | planned | graph signal wave — signed Laplacian + eigenbasis, heat kernel authority, posterior-weighted ranking (full) |
+| **v1.6.0** | planned | graph signal wave — signed Laplacian + eigenbasis, heat kernel authority, posterior-weighted ranking (full), Plate FFT HRR primitives |
 | **v1.7.0** | planned | structural retrieval lane — HRR bind/probe, `uri_baki` post-rank adjuster retest |
 | **v2.0.0** | planned | feature parity with the research line + benchmark reproducibility |
 
@@ -88,9 +88,9 @@ Hard prerequisites: v1.2 transcript-ingest, v1.2 `session_id` schema. Alpha ship
 Composition gate first, then cheap retrieval wins. No new ranking math in this minor; that's v1.6.
 
 - **Pipeline composition tracker — unified `retrieve()` with feature-flag gate** ([#154](https://github.com/robotrocketscience/aelfrice/issues/154)). One entry point, every retrieval feature behind a config flag, telemetry per lane. This is the prerequisite for the v1.6 graph wave: `retrieve()` must be the only path before heat kernel and posterior-full can ship safely behind defaults.
-- **Augmented BM25F (incoming-edge anchor text) + vectorized BM25 sparse matvec** ([#148](https://github.com/robotrocketscience/aelfrice/issues/148)). +0.06 NDCG @ +0 ms vs BM25 in the v1.6 component bake-off — adopt now since runtime cost is free.
+- **Augmented BM25F (incoming-edge anchor text) + vectorized BM25 sparse matvec** ([#148](https://github.com/robotrocketscience/aelfrice/issues/148), merged on `main`). +0.06 NDCG @ +0 ms vs BM25 in the v1.6 component bake-off — adopt now since runtime cost is free.
 - **Search-tool hook — extend matcher beyond `Grep|Glob`** ([#155](https://github.com/robotrocketscience/aelfrice/issues/155)). Carryover from v1.3. Widens the `PreToolUse` matcher list once telemetry from v1.2.x confirms latency budget on the existing two.
-- **v1.4 dynamic-trigger revisit** ([#141](https://github.com/robotrocketscience/aelfrice/issues/141)). The dynamic mode parked at v1.4 ship-gate (no ≥ 5% absolute fidelity uplift over threshold on synthetic fixture) gets a second eval pass on captured-corpus calibration data. Keeps parking if the bar still isn't met.
+- **v1.4 dynamic-trigger revisit** ([#188](https://github.com/robotrocketscience/aelfrice/issues/188)). The dynamic mode parked at v1.4 ship-gate (no ≥ 5% absolute fidelity uplift over threshold on synthetic fixture) gets a second eval pass on captured-corpus calibration data. Keeps parking if the bar still isn't met.
 
 ### v1.6.0 — graph signal wave
 
@@ -99,6 +99,7 @@ The release where ranking moves beyond BM25 + L2.5 + BFS into graph-authority an
 - **Signed normalized Laplacian + offline eigenbasis (top-K=200) builder** ([#149](https://github.com/robotrocketscience/aelfrice/issues/149)). Offline-only build step; no runtime cost. Hard prerequisite for #150.
 - **Heat kernel authority signal via precomputed eigenbasis** ([#150](https://github.com/robotrocketscience/aelfrice/issues/150)). +0.41 NDCG @ +7.8 ms p50 on a 50k-belief store — biggest single retrieval gain in the bake-off. Ships default-on; latency stays inside the v1.2.x search-tool hook's 50 ms median budget.
 - **Posterior-weighted ranking via Beta-Bernoulli prior — full** ([#151](https://github.com/robotrocketscience/aelfrice/issues/151)). Closes the v1.3 partial. Log-additive, weight 0.5, with the 10-round MRR uplift eval and ECE calibration scorer that v1.3 deferred. The central feedback-into-ranking claim becomes fully testable here; v2.0 only re-runs it for the canonical reproducibility cut.
+- **Plate FFT HRR primitives — port to public repo** ([#216](https://github.com/robotrocketscience/aelfrice/issues/216)). Hard prerequisite for the v1.7 HRR structural-query lane (#152); lifted to v1.6 to land the math + tests ahead of the lane wiring.
 
 Hard prerequisite: v1.5 #154 composition tracker (heat kernel and posterior-full must ship behind the unified `retrieve()` entry point with telemetry per lane).
 
