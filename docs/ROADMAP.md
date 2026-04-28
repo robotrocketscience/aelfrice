@@ -20,8 +20,8 @@ This is a rebuild, not a port. Structural issues that survived the research line
 | **v1.1.0** | shipped | per-project DBs, `aelf migrate`, `edges`→`threads` rename, `aelf health` rewrite |
 | **v1.2.0** | shipped | auto-capture pipeline (transcript-ingest, commit-ingest, SessionStart), `agent_inferred → user_validated` promotion, triple extractor, `--batch` JSONL ingest, CLI consolidation, `INEDIBLE` per-file opt-out |
 | **v1.2.x** | planned | search-tool `PreToolUse` hook — memory-first context on Grep/Glob |
-| **v1.3.0** | planned | retrieval wave — entity index + BFS multi-hop + LLM classification + posterior-weighted ranking |
-| **v1.4.0** | planned | context rebuilder — PreCompact retrieval-curated continuation |
+| **v1.3.0** | shipped | retrieval wave — entity index (L2.5), BFS multi-hop (L3), LLM-Haiku onboard classifier (opt-in), partial posterior-weighted ranking |
+| **v1.4.0** | shipped | context rebuilder — PreCompact retrieval-curated continuation (augment mode); manual + threshold trigger; continuation-fidelity scorer (exact-match) |
 | **v1.5.0** | planned | retrieval plumbing — composition tracker, BM25F anchor text, search-tool matcher extension, dynamic-trigger revisit |
 | **v1.6.0** | planned | graph signal wave — signed Laplacian + eigenbasis, heat kernel authority, posterior-weighted ranking (full), Plate FFT HRR primitives |
 | **v1.7.0** | planned | structural retrieval lane — HRR bind/probe, `uri_baki` post-rank adjuster retest |
@@ -55,33 +55,33 @@ Stable core: SQLite + FTS5 store, Beta-Bernoulli scoring, L0+L1 retrieval at a 2
 - **CLI consolidation + `INEDIBLE` per-file opt-out.** v1.3 prep: surface tightened, per-file privacy marker added.
 - **Harness integration guide.** Three operational modes for coexisting with Claude Code's auto-memory directive.
 
-## Planned
-
-### v1.2.x — search-tool hook (planned patch)
-
-Pulled forward from v1.3.0 to validate the `PreToolUse` retrieval surface ahead of the bigger retrieval wave. Ships against the v1.0 retrieval pipeline + v1.1.0 per-project DB resolution; no dependency on entity-index, BFS, or LLM classifier work.
-
-- **Search-tool `PreToolUse` hook** ([search_tool_hook.md](search_tool_hook.md)). Fires before `Grep` and `Glob` tool calls, lifts the agent's search query out of `tool_input.pattern`, runs the same query against the per-project belief store, and emits results as `additionalContext` so the agent sees them *before* the tool runs. First retrieval-shaped hook on the agent's *own* tool intent (the v1.0.1 `UserPromptSubmit` hook covers user-initiated retrieval; this covers agent-initiated). Opt-in via `aelf setup --search-tool` at v1.2.x; default-on candidate at v1.3.0 once production telemetry confirms the latency budget (median ≤ 50 ms, p95 ≤ 200 ms on a 10k-belief store).
-
 ### v1.3.0 — retrieval wave
 
-This is the release where retrieval moves beyond BM25-only.
+The release where retrieval moves beyond BM25-only.
 
-- **Entity-index retrieval.** L2.5 entity-index ports forward, including the regex extraction patterns. Spec: [entity_index.md](entity_index.md).
+- **Entity-index retrieval.** L2.5 entity-index, including the regex extraction patterns. Spec: [entity_index.md](entity_index.md).
 - **BFS multi-hop graph traversal.** Edge-type-weighted graph walks layered on top of FTS5 hits. Bounded depth, bounded budget. Spec: [bfs_multihop.md](bfs_multihop.md).
-- **LLM-classification onboard path.** Haiku-backed classifier as an opt-in alternative to the regex classifier. Default-off; opt in via `aelf onboard --llm-classify` or `[onboard.llm].enabled = true` in `.aelfrice.toml`. Boundary policy and prompt template specified in [llm_classifier.md](llm_classifier.md). PRIVACY note: this introduces the first outbound call in the install path that transmits user content; see [PRIVACY § Optional outbound calls](PRIVACY.md#optional-outbound-calls).
-- **Posterior-weighted ranking (partial).** Retrieval scoring begins to incorporate `α / (α+β)` on top of BM25, log-additively at weight 0.5. See [bayesian_ranking.md](bayesian_ranking.md) for the v1.3 contract. Full feedback-into-ranking eval — 10-round MRR uplift, ECE calibration, BM25F + heat-kernel composition — lands at v2.0.0.
+- **LLM-classification onboard path.** Haiku-backed classifier as an opt-in alternative to the regex classifier. Default-off; opt in via `aelf onboard --llm-classify` or `[onboard.llm].enabled = true` in `.aelfrice.toml`. Boundary policy and prompt template in [llm_classifier.md](llm_classifier.md). PRIVACY note: first outbound call in the install path that transmits user content; see [PRIVACY § Optional outbound calls](PRIVACY.md#optional-outbound-calls).
+- **Posterior-weighted ranking (partial).** Retrieval scoring incorporates `α / (α+β)` on top of BM25, log-additively at weight 0.5. See [bayesian_ranking.md](bayesian_ranking.md) for the v1.3 contract. Full feedback-into-ranking eval — 10-round MRR uplift, ECE calibration, BM25F + heat-kernel composition — lands at v1.6.0 (#151) / re-runs for the canonical cut at v2.0.0.
 
 ### v1.4.0 — context rebuilder
 
 Long-running sessions cheaper without a visible seam.
 
 - **PreCompact-driven rebuild.** When the harness signals an approaching context limit, an aelfrice hook queries the brain graph for the highest-value beliefs against the session tail and emits them as `additionalContext`. Locked beliefs first, then session-scoped, then BM25 / posterior-weighted hits, packed to a configurable token budget.
-- **Augment mode.** The hook augments the harness's compaction; both summaries land in the new context. Replace mode is parked for v2.x.
-- **Trigger modes** ([#141](https://github.com/robotrocketscience/aelfrice/issues/141)). Manual (`/aelf:rebuild`) and threshold ship at v1.4; dynamic parks to v1.5 (the v1.4 ship-gate investigation in `benchmarks/context_rebuilder/dynamic_probe.py` did not produce ≥ 5% absolute fidelity uplift over threshold at same-or-lower token cost on the synthetic fixture). Threshold default fraction (0.6) is sourced from eval-harness calibration in `benchmarks/context-rebuilder/calibration_v1_4_0.json`. Manual is the v1.4 ship default; threshold is opt-in until production telemetry.
-- **Continuation-fidelity eval.** `benchmarks/context-rebuilder/` replays fixture transcripts, forces a midpoint clear, runs the rebuilder, and measures continuation fidelity vs. the full-replay baseline. Fixture corpus policy (synthetic public for CI / headline number; captured corpus held lab-side for offline calibration only) is decided in [eval_fixture_policy.md](eval_fixture_policy.md).
+- **Augment mode.** The hook augments the harness's compaction; both summaries land in the new context. Replace mode parked for v2.x.
+- **Trigger modes** ([#141](https://github.com/robotrocketscience/aelfrice/issues/141)). Manual (`/aelf:rebuild`) and threshold shipped at v1.4; dynamic parked to v1.5 (the v1.4 ship-gate investigation in `benchmarks/context_rebuilder/dynamic_probe.py` did not produce ≥ 5% absolute fidelity uplift over threshold at same-or-lower token cost on the synthetic fixture; revisit tracked at #188). Threshold default fraction (0.6) sourced from eval-harness calibration in `benchmarks/context-rebuilder/calibration_v1_4_0.json`. Manual is the v1.4 ship default; threshold is opt-in until production telemetry.
+- **Continuation-fidelity eval.** `benchmarks/context-rebuilder/` replays fixture transcripts, forces a midpoint clear, runs the rebuilder, and measures continuation fidelity vs. the full-replay baseline. Fixture corpus policy (synthetic public for CI / headline number; captured corpus held lab-side for offline calibration only) decided in [eval_fixture_policy.md](eval_fixture_policy.md).
 
 Hard prerequisites: v1.2 transcript-ingest, v1.2 `session_id` schema. Alpha shipped in v1.2.0a0.
+
+## Planned
+
+### v1.2.x — search-tool hook (planned patch)
+
+Pulled forward from v1.3.0 to validate the `PreToolUse` retrieval surface ahead of the bigger retrieval wave. Ships against the v1.0 retrieval pipeline + v1.1.0 per-project DB resolution; no dependency on entity-index, BFS, or LLM classifier work.
+
+- **Search-tool `PreToolUse` hook** ([search_tool_hook.md](search_tool_hook.md)). Fires before `Grep` and `Glob` tool calls, lifts the agent's search query out of `tool_input.pattern`, runs the same query against the per-project belief store, and emits results as `additionalContext` so the agent sees them *before* the tool runs. First retrieval-shaped hook on the agent's *own* tool intent (the v1.0.1 `UserPromptSubmit` hook covers user-initiated retrieval; this covers agent-initiated). Opt-in via `aelf setup --search-tool` at v1.2.x; matcher extension to other tools tracked at #155 for v1.5.
 
 ### v1.5.0 — retrieval plumbing
 
