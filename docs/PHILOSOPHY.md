@@ -59,6 +59,8 @@ harmful ⟹ β += 1
 
 No embedding model. No hyperparameter search. No opaque ranking. Every score is one division and the audit trail is one table. The Bayesian update is itself one of the named rules traceability bottoms out in.
 
+The posterior is **single-axis**. One `(α, β)` pair per belief, not a vector. A wrong belief is wrong overall; a useful belief is useful overall. The research line shipped a multi-axis `UncertaintyVector` (per-aspect `(α_i, β_i)` across existence / semantics / mechanism / cost) used by the speculative-belief surface (`wonder`, `reason`). aelfrice v1.x is single-axis only. Whether v2.0 adopts the multi-axis substrate is a load-bearing architectural decision tracked at [#196](https://github.com/robotrocketscience/aelfrice/issues/196); until that lands, assume single-axis when porting.
+
 The cost: dense semantic similarity is gone. The benefit: a learning loop that converges on what works *for you*, not what's textually similar — and a retrieval pipeline that preserves determinism end to end.
 
 What's intentionally absent: an exploration term in retrieval. The research-line requirement was that ≥15% of retrievals surface high-uncertainty beliefs to keep the feedback loop from collapsing into a filter bubble — confident beliefs reinforced, uncertain beliefs never re-tested. aelfrice does not yet address that requirement. Any exploration mechanism (bandit-style, entropy-weighted, sampling-based) breaks the "same query, same beliefs" property, which v1.x prioritises higher. v1.3 ships posterior reranking with no exploration term. If a future benchmark shows filter-bubble cost outweighs the determinism gain, exploration ships behind a flag in v2.x.
