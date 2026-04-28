@@ -185,3 +185,144 @@ def test_uppercase_text_fires_same_signals_as_lowercase() -> None:
     upper = detect_correction("ALWAYS RUN TESTS BEFORE PUSHING")
     lower = detect_correction("always run tests before pushing")
     assert upper.signals == lower.signals
+
+
+# --- correction_anchor signal --------------------------------------------
+
+
+def test_correction_anchor_fires_on_supersedes() -> None:
+    r = detect_correction("the previous instruction supersedes the README")
+    assert "correction_anchor" in r.signals
+
+
+def test_correction_anchor_fires_on_no_longer() -> None:
+    r = detect_correction("the old approach is no longer valid")
+    assert "correction_anchor" in r.signals
+
+
+def test_correction_anchor_fires_on_the_previous() -> None:
+    r = detect_correction("the previous decision was incorrect")
+    assert "correction_anchor" in r.signals
+
+
+def test_correction_anchor_fires_on_instead() -> None:
+    r = detect_correction("use pytest instead of unittest")
+    assert "correction_anchor" in r.signals
+
+
+def test_correction_anchor_fires_on_actually() -> None:
+    r = detect_correction("actually the API returns a list not a dict")
+    assert "correction_anchor" in r.signals
+
+
+def test_correction_anchor_fires_case_insensitive() -> None:
+    r = detect_correction("This SUPERSEDES the earlier spec")
+    assert "correction_anchor" in r.signals
+
+
+def test_correction_anchor_does_not_fire_on_unrelated_text() -> None:
+    r = detect_correction("the cat sat on the mat quietly")
+    assert "correction_anchor" not in r.signals
+
+
+def test_correction_anchor_counted_as_distinct_signal_from_imperative() -> None:
+    # "instead" fires correction_anchor; "use" at start fires imperative — distinct.
+    r = detect_correction("use pytest instead of unittest")
+    assert "imperative" in r.signals
+    assert "correction_anchor" in r.signals
+    assert r.signals.count("correction_anchor") == 1
+    assert r.signals.count("imperative") == 1
+
+
+# --- requirement_anchor signal -------------------------------------------
+
+
+def test_requirement_anchor_fires_on_do_not() -> None:
+    r = detect_correction("do not commit secrets")
+    assert "requirement_anchor" in r.signals
+
+
+def test_requirement_anchor_fires_on_never() -> None:
+    r = detect_correction("never push to main without a review")
+    assert "requirement_anchor" in r.signals
+
+
+def test_requirement_anchor_fires_on_must_not() -> None:
+    r = detect_correction("you must not merge without CI passing")
+    assert "requirement_anchor" in r.signals
+
+
+def test_requirement_anchor_fires_on_cannot() -> None:
+    r = detect_correction("the agent cannot modify files outside src/")
+    assert "requirement_anchor" in r.signals
+
+
+def test_requirement_anchor_fires_on_fails_if() -> None:
+    r = detect_correction("the build fails if pyright reports errors")
+    assert "requirement_anchor" in r.signals
+
+
+def test_requirement_anchor_fires_case_insensitive() -> None:
+    r = detect_correction("NEVER push to main")
+    assert "requirement_anchor" in r.signals
+
+
+def test_requirement_anchor_does_not_fire_on_unrelated_text() -> None:
+    r = detect_correction("the cat sat on the mat quietly")
+    assert "requirement_anchor" not in r.signals
+
+
+def test_requirement_anchor_counted_as_distinct_signal_from_always_never() -> None:
+    # "never" fires both always_never (term list) and requirement_anchor (regex) —
+    # they are separate categories and both must appear.
+    r = detect_correction("never push to main")
+    assert "always_never" in r.signals
+    assert "requirement_anchor" in r.signals
+    assert len(set(r.signals)) == len(r.signals)  # no duplicates within a category
+
+
+def test_requirement_anchor_counted_as_distinct_signal_from_negation() -> None:
+    # "do not" fires both negation (term list) and requirement_anchor (regex).
+    r = detect_correction("do not commit secrets")
+    assert "negation" in r.signals
+    assert "requirement_anchor" in r.signals
+
+
+# --- Three categories are distinct signal names --------------------------
+
+
+def test_three_anchor_categories_are_distinct() -> None:
+    # A sentence that fires all three anchor categories plus others must
+    # list each category at most once and never collapse them.
+    r = detect_correction(
+        "the previous rule supersedes the README: do not push to main"
+    )
+    assert "correction_anchor" in r.signals
+    assert "requirement_anchor" in r.signals
+    assert len(r.signals) == len(set(r.signals))
+    assert r.is_correction is True
+
+
+def test_correction_utterance_from_issue_fires_anchor_signal() -> None:
+    # Canonical example from issue #225: correction_anchor fires.
+    r = detect_correction("the previous instruction supersedes the README")
+    assert "correction_anchor" in r.signals
+
+
+def test_correction_utterance_two_signals_is_correction() -> None:
+    # With an additional signal the threshold is crossed.
+    r = detect_correction("the previous rule must supersede the README")
+    assert "correction_anchor" in r.signals
+    assert r.is_correction is True
+
+
+def test_requirement_utterance_do_not_is_detected() -> None:
+    # "do not" triggers negation + requirement_anchor -> 2 signals -> correction.
+    r = detect_correction("do not commit secrets")
+    assert r.is_correction is True
+
+
+def test_requirement_utterance_never_push_is_detected() -> None:
+    # "never" triggers always_never + requirement_anchor -> 2 signals -> correction.
+    r = detect_correction("never push to main")
+    assert r.is_correction is True

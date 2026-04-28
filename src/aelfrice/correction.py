@@ -1,10 +1,12 @@
 """No-LLM correction detector.
 
 Heuristic detector that identifies user corrections / directives by
-counting signal-class hits across seven categories: imperative-verb
+counting signal-class hits across nine categories: imperative-verb
 start, always/never absolutist language, negation, emphasis, prior
-reference, declarative override, and strong directive. A text counts
-as a correction when at least two distinct signals fire (precision
+reference, declarative override, strong directive, correction anchor
+(supersedes/replaces/the previous/instead/actually), and requirement
+anchor (must not/cannot/fails if/do not/never). A text counts as a
+correction when at least two distinct signals fire (precision
 trade-off: single-signal matches have ~60% precision; the explicit
 two-signal threshold trades recall for precision so the explicit
 correct-this-belief path covers the gap).
@@ -79,6 +81,20 @@ _DIRECTIVE_TERMS: tuple[str, ...] = (
     "hard rule",
 )
 
+# Correction-class anchor: phrases that signal a prior belief is being
+# replaced or overridden.  Anchored at word boundaries, case-insensitive.
+_CORRECTION_ANCHOR_RE: re.Pattern[str] = re.compile(
+    r"\b(?:supersedes?|no longer|the previous|instead|actually)\b",
+    re.IGNORECASE,
+)
+
+# Requirement-class anchor: prohibitive / precondition language that signals
+# a hard rule or constraint being stated.  Case-insensitive, word-boundary safe.
+_REQUIREMENT_ANCHOR_RE: re.Pattern[str] = re.compile(
+    r"\b(?:must not|cannot|fails? if|do not|never)\b",
+    re.IGNORECASE,
+)
+
 CORRECTION_SIGNAL_THRESHOLD: int = 2
 _CONFIDENCE_PER_SIGNAL: float = 0.3
 
@@ -101,11 +117,11 @@ class CorrectionResult:
 
 
 def detect_correction(text: str) -> CorrectionResult:
-    """Score `text` against the seven correction-signal categories.
+    """Score `text` against the nine correction-signal categories.
 
     Categories (in evaluation order, which is also the output order):
         imperative, always_never, negation, emphasis, prior_ref,
-        declarative, directive
+        declarative, directive, correction_anchor, requirement_anchor
 
     Pure function: no I/O, no side effects, deterministic for any input.
     """
@@ -132,6 +148,12 @@ def detect_correction(text: str) -> CorrectionResult:
 
     if any(term in text_lower for term in _DIRECTIVE_TERMS):
         signals.append("directive")
+
+    if _CORRECTION_ANCHOR_RE.search(text_lower):
+        signals.append("correction_anchor")
+
+    if _REQUIREMENT_ANCHOR_RE.search(text_lower):
+        signals.append("requirement_anchor")
 
     is_correction: bool = len(signals) >= CORRECTION_SIGNAL_THRESHOLD
     confidence: float = min(1.0, len(signals) * _CONFIDENCE_PER_SIGNAL)
