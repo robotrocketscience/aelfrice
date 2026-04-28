@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Final
 
 from aelfrice.classification import classify_sentence
+from aelfrice.derivation import DerivationInput, derive
 from aelfrice.inedible import is_inedible
 from aelfrice.models import (
     INGEST_SOURCE_FILESYSTEM,
@@ -233,36 +234,72 @@ def scan_repo(
         if not route.persist:
             skipped_non_persisting += 1
             continue
-        belief_id = _derive_belief_id(candidate.text, candidate.source)
-        if store.get_belief(belief_id) is not None:
-            skipped_existing += 1
-            continue
         created_at = candidate.commit_date or timestamp
-        # v2.0 #205 parallel-write: log the raw classifier input
-        # before materializing the belief. derived_belief_ids is
-        # known up-front because belief_id is deterministic on
-        # (source, text).
-        store.record_ingest(
-            source_kind=INGEST_SOURCE_FILESYSTEM,
-            source_path=candidate.source,
-            raw_text=candidate.text,
-            derived_belief_ids=[belief_id],
-            ts=created_at,
-        )
-        store.insert_belief(Belief(
-            id=belief_id,
-            content=candidate.text,
-            content_hash=_content_hash(candidate.text),
-            alpha=route.alpha,
-            beta=route.beta,
-            type=route.belief_type,
-            lock_level=LOCK_NONE,
-            locked_at=None,
-            demotion_pressure=0,
-            created_at=created_at,
-            last_retrieved_at=None,
-            origin=route.origin,
-        ))
+
+        if llm_router is None:
+            # Regex path: delegate fully to derive() — pure, deterministic.
+            inp = DerivationInput(
+                raw_text=candidate.text,
+                source_kind=INGEST_SOURCE_FILESYSTEM,
+                source_path=candidate.source,
+                raw_meta=None,
+                session_id=None,
+                ts=created_at,
+                classifier_version=None,
+                rule_set_hash=None,
+            )
+            out = derive(inp)
+            # route.persist was already checked above; derive() should agree.
+            # If it disagrees (edge case: noise filter passed but classify
+            # rejects), treat as skipped.
+            if out.belief is None:
+                skipped_non_persisting += 1
+                continue
+            belief_id = out.belief.id
+            if store.get_belief(belief_id) is not None:
+                skipped_existing += 1
+                continue
+            # v2.0 #205 parallel-write.
+            store.record_ingest(
+                source_kind=INGEST_SOURCE_FILESYSTEM,
+                source_path=candidate.source,
+                raw_text=candidate.text,
+                derived_belief_ids=[belief_id],
+                ts=created_at,
+            )
+            store.insert_belief(out.belief)
+        else:
+            # LLM-router path: the router supplies origin, alpha, beta
+            # directly. derive() is not used here because the LLM router
+            # may return a non-AGENT_INFERRED origin (e.g. DOCUMENT_RECENT)
+            # that is not representable through the current DerivationInput.
+            belief_id = _derive_belief_id(candidate.text, candidate.source)
+            if store.get_belief(belief_id) is not None:
+                skipped_existing += 1
+                continue
+            # v2.0 #205 parallel-write.
+            store.record_ingest(
+                source_kind=INGEST_SOURCE_FILESYSTEM,
+                source_path=candidate.source,
+                raw_text=candidate.text,
+                derived_belief_ids=[belief_id],
+                ts=created_at,
+            )
+            store.insert_belief(Belief(
+                id=belief_id,
+                content=candidate.text,
+                content_hash=_content_hash(candidate.text),
+                alpha=route.alpha,
+                beta=route.beta,
+                type=route.belief_type,
+                lock_level=LOCK_NONE,
+                locked_at=None,
+                demotion_pressure=0,
+                created_at=created_at,
+                last_retrieved_at=None,
+                origin=route.origin,
+            ))
+
         inserted += 1
         # Audit row for fallback insertions (spec § 7.2 step 3).
         if route.audit_source is not None:
