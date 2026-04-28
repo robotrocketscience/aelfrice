@@ -76,7 +76,7 @@ Long-running sessions cheaper without a visible seam.
 - **PreCompact-driven rebuild.** When the harness signals an approaching context limit, an aelfrice hook queries the brain graph for the highest-value beliefs against the session tail and emits them as `additionalContext`. Locked beliefs first, then session-scoped, then BM25 / posterior-weighted hits, packed to a configurable token budget.
 - **Augment mode.** The hook augments the harness's compaction; both summaries land in the new context. Replace mode is parked for v2.x.
 - **Trigger modes.** Manual (`/aelf-rebuild`) ships first; threshold mode ships with calibration data.
-- **Continuation-fidelity eval.** `benchmarks/context-rebuilder/` replays captured transcripts, forces a midpoint clear, runs the rebuilder, and measures continuation fidelity vs. the full-replay baseline.
+- **Continuation-fidelity eval.** `benchmarks/context-rebuilder/` replays fixture transcripts, forces a midpoint clear, runs the rebuilder, and measures continuation fidelity vs. the full-replay baseline. Fixture corpus policy (synthetic public for CI / headline number; captured corpus held lab-side for offline calibration only) is decided in [eval_fixture_policy.md](eval_fixture_policy.md).
 
 Hard prerequisites: v1.2 transcript-ingest, v1.2 `session_id` schema. Alpha shipped in v1.2.0a0.
 
