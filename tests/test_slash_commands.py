@@ -37,6 +37,7 @@ EXPECTED_COMMANDS = (
     "uninstall",
     "statusline",
     "bench",
+    "ingest-transcript",
 )
 
 

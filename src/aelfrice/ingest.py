@@ -21,6 +21,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 from aelfrice.classification import classify_sentence
 from aelfrice.extraction import extract_sentences
@@ -190,22 +191,23 @@ def ingest_jsonl(
                 skipped += 1
                 continue
             try:
-                obj = json.loads(line)
+                obj = json.loads(line)  # pyright: ignore[reportAny]
             except json.JSONDecodeError:
                 skipped += 1
                 continue
             if not isinstance(obj, dict):
                 skipped += 1
                 continue
-            role = obj.get("role")
-            text = obj.get("text")
+            obj_typed = cast(dict[str, object], obj)
+            role = obj_typed.get("role")
+            text = obj_typed.get("text")
             if not isinstance(role, str) or not isinstance(text, str) or not text:
                 # compaction markers (event=...) and malformed lines
                 skipped += 1
                 continue
-            sess = obj.get("session_id")
+            sess = obj_typed.get("session_id")
             sess_str = sess if isinstance(sess, str) and sess else None
-            ts = obj.get("ts")
+            ts = obj_typed.get("ts")
             created_at = ts if isinstance(ts, str) else None
             ids = _ingest_turn_ids(
                 store=store, text=text, source=source_label,

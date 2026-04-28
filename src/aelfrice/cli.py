@@ -79,13 +79,17 @@ from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
 from aelfrice.setup import (
     SettingsScope,
+    TRANSCRIPT_LOGGER_SCRIPT_NAME,
     clean_dangling_shims,
     default_settings_path,
     detect_default_scope,
     install_statusline,
+    install_transcript_ingest_hooks,
     install_user_prompt_submit_hook,
     resolve_hook_command,
+    resolve_transcript_logger_command,
     uninstall_statusline,
+    uninstall_transcript_ingest_hooks,
     uninstall_user_prompt_submit_hook,
 )
 from aelfrice.store import MemoryStore
@@ -510,6 +514,24 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
             f"(command={command!r})",
             file=out,  # type: ignore[arg-type]
         )
+    if getattr(args, "transcript_ingest", False):
+        ti_command = resolve_transcript_logger_command(scope)
+        ti_result = install_transcript_ingest_hooks(
+            path, command=ti_command, timeout=args.timeout,
+        )
+        if ti_result.installed:
+            print(
+                f"installed transcript-ingest hooks "
+                f"({', '.join(ti_result.installed)}) in {ti_result.path} "
+                f"(command={ti_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        if ti_result.already:
+            print(
+                f"transcript-ingest hooks already installed for "
+                f"({', '.join(ti_result.already)}) in {ti_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
     if not args.no_statusline:
         sl = install_statusline(path)
         if sl.mode == "installed":
@@ -559,6 +581,22 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
             f"({match_label})",
             file=out,  # type: ignore[arg-type]
         )
+    if getattr(args, "transcript_ingest", False):
+        ti_result = uninstall_transcript_ingest_hooks(
+            path, command_basename=TRANSCRIPT_LOGGER_SCRIPT_NAME,
+        )
+        if not ti_result.removed:
+            print(
+                f"no transcript-ingest hooks in {ti_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            for event, n in ti_result.removed.items():
+                print(
+                    f"removed {n} {event} entr"
+                    f"{'y' if n == 1 else 'ies'} from {ti_result.path}",
+                    file=out,  # type: ignore[arg-type]
+                )
     sl = uninstall_statusline(path)
     if sl.mode == "removed":
         print(
@@ -1183,6 +1221,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-statusline", action="store_true",
         help="skip the auto-install of the update-notifier statusline snippet",
     )
+    p_setup.add_argument(
+        "--transcript-ingest", dest="transcript_ingest", action="store_true",
+        help=(
+            "additionally wire the four transcript-logger hooks "
+            "(UserPromptSubmit, Stop, PreCompact, PostCompact) so live "
+            "conversation turns are captured to the per-project transcripts "
+            "log and ingested at compaction boundaries."
+        ),
+    )
     p_setup.set_defaults(func=_cmd_setup)
 
     p_uninstall = sub.add_parser(
@@ -1262,6 +1309,13 @@ def build_parser() -> argparse.ArgumentParser:
             "exact hook command string to remove. Default: remove every "
             f"entry whose command basename is {DEFAULT_HOOK_COMMAND!r} "
             "(matches both bare-name and absolute-path installs)."
+        ),
+    )
+    p_unsetup.add_argument(
+        "--transcript-ingest", dest="transcript_ingest", action="store_true",
+        help=(
+            "also remove the four transcript-logger entries "
+            "(UserPromptSubmit, Stop, PreCompact, PostCompact)."
         ),
     )
     p_unsetup.set_defaults(func=_cmd_unsetup)

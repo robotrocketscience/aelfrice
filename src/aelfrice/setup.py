@@ -332,6 +332,136 @@ def uninstall_user_prompt_submit_hook(
     return UninstallResult(path=settings_path, removed=removed)
 
 
+# --- Transcript-ingest hooks (v1.2+) ------------------------------------
+
+# The four hook events the transcript-logger wires onto. All four use
+# the no-matcher `{"hooks": [{type, command}]}` entry shape (Stop and
+# the compaction events do not take a matcher).
+TRANSCRIPT_INGEST_EVENTS: Final[tuple[str, ...]] = (
+    "UserPromptSubmit", "Stop", "PreCompact", "PostCompact",
+)
+TRANSCRIPT_LOGGER_SCRIPT_NAME: Final[str] = "aelf-transcript-logger"
+
+
+def resolve_transcript_logger_command(scope: SettingsScope) -> str:
+    """Pick the absolute aelf-transcript-logger path for `scope`.
+
+    Same routing primitive as `resolve_hook_command`: project scope
+    pins to the venv next to sys.executable; user scope prefers
+    $PATH (typically a pipx install).
+    """
+    venv_bin = _venv_bin_dir()
+    venv_hook = _executable_in_dir(venv_bin, TRANSCRIPT_LOGGER_SCRIPT_NAME)
+    path_hook_str = shutil.which(TRANSCRIPT_LOGGER_SCRIPT_NAME)
+    path_hook = Path(path_hook_str) if path_hook_str else None
+    if scope == "project":
+        chosen = venv_hook or path_hook
+    else:
+        chosen = path_hook or venv_hook
+    if chosen is None:
+        return TRANSCRIPT_LOGGER_SCRIPT_NAME
+    return str(chosen)
+
+
+@dataclass(frozen=True)
+class TranscriptIngestInstallResult:
+    """Per-event outcome of `install_transcript_ingest_hooks`.
+
+    `installed` lists events where a fresh entry was added. `already`
+    lists events where an entry with the same command was already
+    present (idempotent no-op).
+    """
+    path: Path
+    installed: tuple[str, ...]
+    already: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TranscriptIngestUninstallResult:
+    """Outcome of `uninstall_transcript_ingest_hooks`.
+
+    `removed` maps each event to how many entries with the matching
+    command (or basename) were stripped.
+    """
+    path: Path
+    removed: dict[str, int]
+
+
+def install_transcript_ingest_hooks(
+    settings_path: Path, *, command: str, timeout: int | None = None,
+) -> TranscriptIngestInstallResult:
+    """Wire the four transcript-logger events to `command`. Idempotent.
+
+    Each event gets its own entry under `hooks.<EventName>`. The same
+    `command` is reused across all four events; the logger dispatches
+    internally on the `hook_event_name` field of the JSON payload.
+    """
+    if not command:
+        raise ValueError("command must be a non-empty string")
+    data = _load_settings(settings_path)
+    installed: list[str] = []
+    already: list[str] = []
+    for event in TRANSCRIPT_INGEST_EVENTS:
+        entries = _get_event_list(data, event, create=True)
+        if _find_entry_index(entries, command) is not None:
+            already.append(event)
+            continue
+        entries.append(_build_entry(
+            command=command, timeout=timeout, status_message=None,
+        ))
+        installed.append(event)
+    if installed:
+        _atomic_write(settings_path, data)
+    return TranscriptIngestInstallResult(
+        path=settings_path,
+        installed=tuple(installed),
+        already=tuple(already),
+    )
+
+
+def uninstall_transcript_ingest_hooks(
+    settings_path: Path, *,
+    command: str | None = None,
+    command_basename: str | None = None,
+) -> TranscriptIngestUninstallResult:
+    """Strip transcript-logger entries from all four events. Idempotent.
+
+    Pass exactly one of `command` (exact match) or `command_basename`
+    (basename match — lets a bare-name install and an absolute-path
+    install be cleaned up by the same call).
+    """
+    if command is None and command_basename is None:
+        raise ValueError("provide command or command_basename")
+    if command is not None and command_basename is not None:
+        raise ValueError("command and command_basename are mutually exclusive")
+    removed: dict[str, int] = {}
+    if not settings_path.exists():
+        return TranscriptIngestUninstallResult(path=settings_path, removed=removed)
+    data = _load_settings(settings_path)
+    any_removed = False
+    for event in TRANSCRIPT_INGEST_EVENTS:
+        entries = _get_event_list(data, event, create=False)
+        if entries is None:
+            continue
+        before = len(entries)
+        if command is not None:
+            kept = [e for e in entries if not _entry_matches(e, command)]
+        else:
+            assert command_basename is not None
+            kept = [
+                e for e in entries
+                if not _entry_matches_basename(e, command_basename)
+            ]
+        n_removed = before - len(kept)
+        if n_removed:
+            entries[:] = kept
+            removed[event] = n_removed
+            any_removed = True
+    if any_removed:
+        _atomic_write(settings_path, data)
+    return TranscriptIngestUninstallResult(path=settings_path, removed=removed)
+
+
 # --- Statusline auto-wiring ---------------------------------------------
 
 
@@ -474,6 +604,46 @@ def _load_settings(path: Path) -> dict[str, object]:
 
 
 @overload
+def _get_event_list(
+    data: dict[str, object], event: str, *, create: Literal[True]
+) -> list[dict[str, object]]: ...
+
+
+@overload
+def _get_event_list(
+    data: dict[str, object], event: str, *, create: Literal[False]
+) -> list[dict[str, object]] | None: ...
+
+
+def _get_event_list(
+    data: dict[str, object], event: str, *, create: bool
+) -> list[dict[str, object]] | None:
+    """Return `data['hooks'][event]` as a list, optionally creating it.
+
+    Generic over event name so the same machinery can wire
+    UserPromptSubmit, Stop, PreCompact, PostCompact, etc.
+    """
+    hooks_obj = data.get(_HOOKS_KEY)
+    if hooks_obj is None:
+        if not create:
+            return None
+        hooks_obj = {}
+        data[_HOOKS_KEY] = hooks_obj
+    if not isinstance(hooks_obj, dict):
+        raise ValueError(f"'{_HOOKS_KEY}' must be an object")
+    hooks_dict = cast(dict[str, object], hooks_obj)
+    event_list = hooks_dict.get(event)
+    if event_list is None:
+        if not create:
+            return None
+        event_list = []
+        hooks_dict[event] = event_list
+    if not isinstance(event_list, list):
+        raise ValueError(f"'{_HOOKS_KEY}.{event}' must be a list")
+    return cast(list[dict[str, object]], event_list)
+
+
+@overload
 def _get_user_prompt_submit_list(
     data: dict[str, object], *, create: Literal[True]
 ) -> list[dict[str, object]]: ...
@@ -488,24 +658,10 @@ def _get_user_prompt_submit_list(
 def _get_user_prompt_submit_list(
     data: dict[str, object], *, create: bool
 ) -> list[dict[str, object]] | None:
-    hooks_obj = data.get(_HOOKS_KEY)
-    if hooks_obj is None:
-        if not create:
-            return None
-        hooks_obj = {}
-        data[_HOOKS_KEY] = hooks_obj
-    if not isinstance(hooks_obj, dict):
-        raise ValueError(f"'{_HOOKS_KEY}' must be an object")
-    hooks_dict = cast(dict[str, object], hooks_obj)
-    event_list = hooks_dict.get(_EVENT_KEY)
-    if event_list is None:
-        if not create:
-            return None
-        event_list = []
-        hooks_dict[_EVENT_KEY] = event_list
-    if not isinstance(event_list, list):
-        raise ValueError(f"'{_HOOKS_KEY}.{_EVENT_KEY}' must be a list")
-    return cast(list[dict[str, object]], event_list)
+    """Back-compat wrapper for the UserPromptSubmit-specific event list."""
+    if create:
+        return _get_event_list(data, _EVENT_KEY, create=True)
+    return _get_event_list(data, _EVENT_KEY, create=False)
 
 
 def _build_entry(
