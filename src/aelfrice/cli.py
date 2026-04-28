@@ -561,25 +561,32 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_rebuild(args: argparse.Namespace, out: object) -> int:
-    """Manual rebuild for the v1.1 alpha (spec acceptance criterion 5).
+    """Manual rebuild — same code path as the PreCompact hook.
 
     Reads recent turns from the canonical aelfrice transcript log if
     present, otherwise from a Claude Code internal transcript path
     given by --transcript. Prints the rebuild block to stdout. Useful
     for inspecting what the PreCompact hook would emit without
     triggering the actual hook.
+
+    v1.4: now drives the same `rebuild_v14()` codepath the
+    PreCompact hook uses (L0 + session-scoped + L2.5/L1 via
+    `retrieve()`). Defaults follow `[rebuilder]` in `.aelfrice.toml`
+    when present; CLI flags override.
     """
     from aelfrice.context_rebuilder import (
-        DEFAULT_N_RECENT_TURNS,
-        DEFAULT_TOKEN_BUDGET,
         find_aelfrice_log,
+        load_rebuilder_config,
         read_recent_turns_aelfrice,
         read_recent_turns_claude_transcript,
-        rebuild,
+        rebuild_v14,
     )
 
-    n = args.n if args.n is not None else DEFAULT_N_RECENT_TURNS
-    budget = args.budget if args.budget is not None else DEFAULT_TOKEN_BUDGET
+    config = load_rebuilder_config()
+    n = args.n if args.n is not None else config.turn_window_n
+    budget = (
+        args.budget if args.budget is not None else config.token_budget
+    )
 
     transcript_arg: str | None = args.transcript
     if transcript_arg:
@@ -595,7 +602,7 @@ def _cmd_rebuild(args: argparse.Namespace, out: object) -> int:
 
     store = _open_store()
     try:
-        block = rebuild(recent, store, token_budget=budget)
+        block = rebuild_v14(recent, store, token_budget=budget)
     finally:
         store.close()
     print(block, file=out, end="")  # type: ignore[arg-type]
@@ -1043,7 +1050,7 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
         else:
             print(
                 f"installed PreCompact hook in {pc_result.path} "
-                f"(command={pc_command!r}) [v1.1 rebuilder alpha]",
+                f"(command={pc_command!r})",
                 file=out,  # type: ignore[arg-type]
             )
     if getattr(args, "commit_ingest", False):
@@ -1996,11 +2003,19 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     p_rebuild.add_argument(
         "--n", type=int, default=None,
-        help="number of recent turns to seed the query (default: 10)",
+        help=(
+            "number of recent turns to seed the query (default: "
+            "[rebuilder].turn_window_n in .aelfrice.toml, "
+            "or 50 when unset)"
+        ),
     )
     p_rebuild.add_argument(
         "--budget", type=int, default=None,
-        help="token budget for the rebuild block (default: 2000)",
+        help=(
+            "token budget for the rebuild block (default: "
+            "[rebuilder].token_budget in .aelfrice.toml, "
+            "or 4000 when unset)"
+        ),
     )
     p_rebuild.set_defaults(func=_cmd_rebuild)
 
@@ -2212,9 +2227,10 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_setup.add_argument(
         "--rebuilder", action="store_true",
         help=(
-            "ALSO install the PreCompact hook for the v1.2 context "
-            "rebuilder (alpha). Idempotent; coexists with all other "
-            "hooks. Augment-mode only at v1.2.0a0."
+            "ALSO install the PreCompact hook for the context "
+            "rebuilder. Idempotent; coexists with all other hooks. "
+            "Augment-mode only at v1.4.0; suppress mode is parked "
+            "for v2.x."
         ),
     )
     p_setup.add_argument(
