@@ -22,7 +22,8 @@ The CLI scanner walks three sources: prose files (`*.md`, `*.rst`, `*.txt`, `*.a
 
 The research line shipped a wider set of extractors — citation-ref scanning across markdown bodies, test↔implementation linkage from filename and import patterns, and a directive detector that captured imperative user statements as TODO beliefs. v1.x does not ship these; the directive-detection path in particular has architectural implications (it would land alongside the violation-detection tier of [PHILOSOPHY § What we can and can't guarantee](PHILOSOPHY.md#what-we-can-and-cant-guarantee)) and is parked for v2.0.
 
-Classification on the CLI path defaults to regex-based priors. Higher-quality classification is available via two paths:
+Classification on the CLI path defaults to regex-based priors. Higher-quality classification is available via three paths:
+- **`/aelf:onboard <path>`** (v1.5.x, default-on) — host-driven flow that orchestrates the four-class classifier through the host model's Task tool. No API key required. Soft-falls to the regex classifier when the host's Task tool is unavailable. See [llm_classifier.md](llm_classifier.md).
 - **MCP `aelf:onboard`** polymorphic flow, which routes through the host LLM.
 - **`aelf onboard --llm-classify`** (v1.3+, default-off) — routes through Claude Haiku directly. Requires `ANTHROPIC_API_KEY`. Four consent gates enforce the privacy boundary. See [llm_classifier.md](llm_classifier.md).
 

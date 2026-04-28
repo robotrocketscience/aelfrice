@@ -134,7 +134,8 @@ What the research line had, when each piece returns:
 | Graph metrics + status/health split | v1.1.0 |
 | Entity-index retrieval | v1.3.0 |
 | BFS multi-hop graph traversal | v1.3.0 |
-| LLM-Haiku onboard classifier | v1.3.0 |
+| LLM-Haiku onboard classifier (opt-in) | v1.3.0 |
+| LLM-Haiku onboard classifier (default-on, host-driven) | v1.5.0 |
 | Posterior-weighted ranking | v1.3.0 (partial) / v1.6.0 (full) |
 | BM25F anchor-text + vectorized BM25 | v1.5.0 |
 | Signed Laplacian + heat-kernel authority | v1.6.0 |

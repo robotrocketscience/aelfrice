@@ -20,26 +20,28 @@ The single exception: the update notifier (`lifecycle.py`) makes one TTL-gated G
 
 No usage tracking. No analytics. No phone-home. **Not opt-out — the capability does not exist in the shipped package.** No conditional import, no commented-out endpoint, no env-var toggle to enable it. Confirm by reading `pyproject.toml`: only `[mcp]` and `[onboard-llm]` add anything beyond stdlib, and neither is installed by `pip install aelfrice` alone.
 
-## Optional outbound calls
+## Onboard-time outbound call
 
-aelfrice ships one optional path that, when explicitly opted into, sends content from your codebase to a third party: the v1.3.0 LLM-Haiku onboard classifier. The boundary policy is non-negotiable; the design lives in [llm_classifier.md](llm_classifier.md).
+aelfrice runs LLM-quality classification once per project, at onboard time. The runtime stays local; no day-to-day operation makes any outbound call.
 
-**Default off.** A baseline `pip install aelfrice` does not pull the `anthropic` SDK and does not have any code path that contacts Anthropic. To use the LLM-classify path, all four of these must hold:
+**The default flow at v1.5.0+ is host-driven and makes zero direct calls from the aelfrice CLI itself.** When the user runs `/aelf:onboard <path>` from a host that exposes a Task tool (Claude Code and similar), the slash command body in [`src/aelfrice/slash_commands/onboard.md`](../src/aelfrice/slash_commands/onboard.md) drives the classifier through the host's own model dispatch against the cheapest model in its stack. The host already has whatever credentials and billing it needs; aelfrice does not require an API key, and the aelfrice package never imports `anthropic` on this path. The user's data already goes to their host LLM — aelfrice just reuses the cheapest model in that stack to do classification once.
+
+**The direct-API fallback (`aelf onboard --llm-classify`) is explicit-opt-in and unchanged from v1.3.0.** It is the path for users who don't run a host with a Task tool and instead want aelfrice to call the Anthropic API directly. Four gates guard it; if any of these is missing, no outbound call is made:
 
 1. The user installed the optional extra: `pip install aelfrice[onboard-llm]`.
 2. The user set `ANTHROPIC_API_KEY` in their environment.
 3. The user passed `--llm-classify` on the `aelf onboard` command line, **or** added `[onboard.llm].enabled = true` to `.aelfrice.toml`.
 4. The user accepted the one-time, per-machine, interactive confirmation prompt (or pre-created the consent sentinel for CI use).
 
-If any of those four are missing, no outbound call is made. Confirm by reading `pyproject.toml` (`[onboard-llm]` is opt-in extras), `src/aelfrice/scanner.py` (regex classifier is the default classifier), and `docs/llm_classifier.md` § 4 (full boundary policy).
+The v1.5.0 default-on flip in `[onboard.llm].enabled` is non-destructive: users without the `[onboard-llm]` extra or without `ANTHROPIC_API_KEY` who haven't passed `--llm-classify` get the v1.0/v1.2 regex behaviour silently (soft-fall in `check_gates`). Confirm by reading `pyproject.toml` (`[onboard-llm]` is opt-in extras), `src/aelfrice/scanner.py` (regex classifier is the default classifier), and `docs/llm_classifier.md` § 4 (full boundary policy on the direct-API path).
 
 **What is sent when opted in:** the candidate sentences/paragraphs the onboard scanner already extracts (markdown paragraphs, git commit subjects, Python docstrings), plus their `source` strings (e.g., `doc:README.md:p3`), plus a templated system prompt that contains no user data.
 
 **What is never sent:** file contents beyond the extracted candidate, the `ANTHROPIC_API_KEY` itself (used only as bearer token), working directory paths, hostnames, usernames, machine ids, git remotes, git config, git author email, or anything in a file matching the `INEDIBLE` marker or in a `_SKIP_DIRS` directory. The opt-out surface is the same one that already governs local ingest.
 
-**Telemetry remains zero.** aelfrice does not phone-home about its own LLM usage. Tokens consumed are reported on stdout to the user only, never written to any network endpoint or logging service. `aelf onboard --llm-classify` makes one or more requests to `https://api.anthropic.com/`; nothing else.
+**Telemetry remains zero.** aelfrice does not phone-home about its own LLM usage. Tokens consumed are reported on stdout to the user only, never written to any network endpoint or logging service. On the direct-API path, `aelf onboard --llm-classify` makes one or more requests to `https://api.anthropic.com/`; nothing else. On the host-driven path, the aelfrice CLI makes zero direct outbound calls — the host LLM handles its own network IO under its own credentials.
 
-**Update notifier remains the only outbound call by default.** The TTL-gated GET to `https://pypi.org/pypi/aelfrice/json` (covered above) is read-only and unconditional; the LLM-classify path is opt-in and conditional. Together these are the only two outbound calls the shipped package can make, and one of them transmits no data.
+**Update notifier remains the only outbound call from aelfrice itself by default.** The TTL-gated GET to `https://pypi.org/pypi/aelfrice/json` (covered above) is read-only and unconditional; the direct-API LLM-classify path is opt-in and conditional. Those are the only two outbound calls the shipped aelfrice package can make, and one of them transmits no data.
 
 **Confirm at the source:**
 
