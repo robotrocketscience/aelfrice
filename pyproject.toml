@@ -1,6 +1,6 @@
 [project]
 name = "aelfrice"
-version = "1.2.0a0"
+version = "1.2.0"
 description = "Bayesian memory for LLM agents — local, SQLite-backed, feedback-driven."
 readme = "README.md"
 requires-python = ">=3.12"
