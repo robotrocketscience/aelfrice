@@ -639,6 +639,95 @@ def uninstall_commit_ingest_hook(
     return UninstallResult(path=settings_path, removed=removed)
 
 
+# --- Search-tool wiring -----------------------------------------------
+
+
+SEARCH_TOOL_EVENT: Final[str] = "PreToolUse"
+SEARCH_TOOL_MATCHER: Final[str] = "Grep|Glob"
+SEARCH_TOOL_SCRIPT_NAME: Final[str] = "aelf-search-tool-hook"
+
+
+def resolve_search_tool_command(scope: SettingsScope) -> str:
+    """Pick the absolute aelf-search-tool-hook path for `scope`.
+
+    Same routing primitive as resolve_commit_ingest_command: project
+    scope pins to the venv next to sys.executable; user scope prefers
+    $PATH (typically a pipx install).
+    """
+    venv_bin = _venv_bin_dir()
+    venv_hook = _executable_in_dir(venv_bin, SEARCH_TOOL_SCRIPT_NAME)
+    path_hook_str = shutil.which(SEARCH_TOOL_SCRIPT_NAME)
+    path_hook = Path(path_hook_str) if path_hook_str else None
+    if scope == "project":
+        chosen = venv_hook or path_hook
+    else:
+        chosen = path_hook or venv_hook
+    if chosen is None:
+        return SEARCH_TOOL_SCRIPT_NAME
+    return str(chosen)
+
+
+def install_search_tool_hook(
+    settings_path: Path, *, command: str, timeout: int | None = None,
+) -> InstallResult:
+    """Add a PreToolUse:matcher=Grep|Glob hook entry running `command`.
+
+    Idempotent against the same `command`. Coexists with other PreToolUse
+    entries — appending only after confirming no matching entry already
+    exists for the same command.
+    """
+    if not command:
+        raise ValueError("command must be a non-empty string")
+    data = _load_settings(settings_path)
+    entries = _get_event_list(data, SEARCH_TOOL_EVENT, create=True)
+    if _find_entry_index(entries, command) is not None:
+        return InstallResult(
+            path=settings_path, installed=False, already_present=True,
+        )
+    entries.append(_build_entry(
+        command=command, timeout=timeout, status_message=None,
+        matcher=SEARCH_TOOL_MATCHER,
+    ))
+    _atomic_write(settings_path, data)
+    return InstallResult(
+        path=settings_path, installed=True, already_present=False,
+    )
+
+
+def uninstall_search_tool_hook(
+    settings_path: Path, *,
+    command: str | None = None,
+    command_basename: str | None = None,
+) -> UninstallResult:
+    """Strip PreToolUse entries matching `command` or `command_basename`.
+
+    Pass exactly one of the two. Other PreToolUse entries (other matchers,
+    other tools) are left alone.
+    """
+    if command is None and command_basename is None:
+        raise ValueError("provide command or command_basename")
+    if command is not None and command_basename is not None:
+        raise ValueError("command and command_basename are mutually exclusive")
+    if not settings_path.exists():
+        return UninstallResult(path=settings_path, removed=0)
+    data = _load_settings(settings_path)
+    entries = _get_event_list(data, SEARCH_TOOL_EVENT, create=False)
+    if entries is None:
+        return UninstallResult(path=settings_path, removed=0)
+    before = len(entries)
+    if command is not None:
+        kept = [e for e in entries if not _entry_matches(e, command)]
+    else:
+        assert command_basename is not None
+        kept = [e for e in entries if not _entry_matches_basename(e, command_basename)]
+    removed = before - len(kept)
+    if removed == 0:
+        return UninstallResult(path=settings_path, removed=0)
+    entries[:] = kept
+    _atomic_write(settings_path, data)
+    return UninstallResult(path=settings_path, removed=removed)
+
+
 # --- SessionStart wiring -----------------------------------------------
 
 
