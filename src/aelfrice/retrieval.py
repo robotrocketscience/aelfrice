@@ -1,4 +1,5 @@
-"""Three-layer retrieval: L0 locked beliefs, L2.5 entity-index, L1 FTS5 BM25.
+"""Four-layer retrieval: L0 locked beliefs, L2.5 entity-index, L1 FTS5
+BM25, L3 BFS multi-hop graph traversal.
 
 Token-budgeted output (default 2400 tokens at v1.3.0, ~4 chars/token
 estimate). L0 beliefs always present in the output above any non-locked
@@ -12,6 +13,14 @@ L0 and L1. It extracts entities from the query using
 belief_id ASC), and feeds a `DEFAULT_L25_TOKEN_SUBBUDGET`-sized slice
 into the output ahead of L1. L1 fills the remaining budget.
 
+L3 (v1.3.0) is `aelfrice.bfs_multihop.expand_bfs` — edge-type-weighted
+BFS over outbound edges from the L0+L2.5+L1 seed set. Bounded depth /
+fanout / total-budget; multiplicative path-score over the table in
+`bfs_multihop.BFS_EDGE_WEIGHTS`. Default-OFF at v1.3.0; opt in via the
+`bfs_enabled` flag in `[retrieval]` of `.aelfrice.toml`, the
+`AELFRICE_BFS=1` env var, or an explicit kwarg. See
+`docs/bfs_multihop.md` for the spec.
+
 Default-on at v1.3.0 via the config flag `entity_index_enabled` in
 `[retrieval]` of `.aelfrice.toml`. Two off-switches:
 
@@ -20,19 +29,23 @@ Default-on at v1.3.0 via the config flag `entity_index_enabled` in
   - `entity_index_enabled=False` kwarg on `retrieve()` /
     `retrieve_v2()`.
 
-When the flag is off — for any reason — `retrieve()` reproduces the
+When BOTH flags are off — for any reason — `retrieve()` reproduces the
 v1.2 byte-identical L0 + L1 path with the v1.0 default budget of 2000
-tokens. This is the spec's "default-off byte-identical fallback"
-acceptance criterion.
+tokens. When only `bfs_enabled` is off (the v1.3.0 default) and L2.5
+is on (also default), `retrieve()` is byte-identical to the entity-
+index-enabled v1.3.0 baseline. Both invariants are guarded by
+regression tests.
 
-NO HRR, NO BFS multi-hop in v1.3.0. Those land in subsequent v1.3.x
-PRs once the L2.5 chain-valid lift is verified on MAB.
+NO HRR in v1.3.0. That lands at v2.0.0.
 
 A `RetrievalCache` wrapper provides bounded LRU memoization. Cache
 invalidation is wired through the store's callback registry, which
 fires on every belief / edge / entity-row mutation (the entity rows
 mutate inside `insert_belief` / `update_belief` / `delete_belief`,
-so the existing callback semantics already cover them).
+so the existing callback semantics already cover them). The v1.0.1
+wipe-on-write policy on edge mutators (`insert_edge`, `update_edge`,
+`delete_edge`) is exactly what makes the v1.3 BFS cache correctness
+zero-effort — see docs/bfs_multihop.md § Cache invalidation.
 """
 from __future__ import annotations
 
@@ -45,6 +58,13 @@ from typing import IO, Any, Final
 import sys
 import tomllib
 
+from aelfrice.bfs_multihop import (
+    DEFAULT_MAX_DEPTH as BFS_DEFAULT_MAX_DEPTH,
+    DEFAULT_MIN_PATH_SCORE as BFS_DEFAULT_MIN_PATH_SCORE,
+    DEFAULT_NODES_PER_HOP as BFS_DEFAULT_NODES_PER_HOP,
+    DEFAULT_TOTAL_BUDGET_NODES as BFS_DEFAULT_TOTAL_BUDGET_NODES,
+    expand_bfs,
+)
 from aelfrice.entity_extractor import extract_entities
 from aelfrice.models import LOCK_NONE, Belief
 from aelfrice.store import MemoryStore
@@ -74,13 +94,20 @@ DEFAULT_CACHE_CAPACITY: Final[int] = 256
 CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 RETRIEVAL_SECTION: Final[str] = "retrieval"
 ENTITY_INDEX_FLAG: Final[str] = "entity_index_enabled"
+BFS_FLAG: Final[str] = "bfs_enabled"
 
 # Env var override. Set to "0", "false", or "no" to force-disable
 # the index. Unset / any other value falls through to the TOML
 # config (which defaults to True at v1.3.0). Same convention as the
 # v1.2.x `AELFRICE_SEARCH_TOOL=0` off-switch.
 ENV_ENTITY_INDEX: Final[str] = "AELFRICE_ENTITY_INDEX"
+# BFS env override. Symmetric to ENV_ENTITY_INDEX but with default
+# OFF at v1.3.0 — set to "1", "true", "yes", "on" to opt in. The
+# default-off contract means the env-var omission is the same as
+# the explicit-off case.
+ENV_BFS: Final[str] = "AELFRICE_BFS"
 _ENV_FALSY: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
+_ENV_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 
 _CANONICALIZE_PUNCT: Final[re.Pattern[str]] = re.compile(r"[^\w\s]")
 
@@ -143,10 +170,33 @@ def _env_disabled() -> bool:
     return raw.strip().lower() in _ENV_FALSY
 
 
-def _read_toml_flag(start: Path | None = None) -> bool | None:
+def _env_bfs_override() -> bool | None:
+    """Return True/False if AELFRICE_BFS is set to a recognised
+    truthy/falsy value, else None.
+
+    Symmetric to `_env_disabled` but tri-state because the BFS flag
+    ships default-OFF at v1.3.0 — an unset env var is "fall through
+    to the next precedence layer", not "force off". The config-flag
+    semantics for BFS are: env > kwarg > TOML > False.
+    """
+    raw = os.environ.get(ENV_BFS)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def _read_toml_flag_for(
+    key: str,
+    start: Path | None = None,
+) -> bool | None:
     """Walk up from `start` looking for a `.aelfrice.toml` with
-    `[retrieval] entity_index_enabled`. Returns the boolean value
-    when found, or None when no file / no key.
+    `[retrieval] <key>`. Returns the boolean value when found, or
+    None when no file / no key.
 
     Tolerant: a malformed TOML or wrong-typed value returns None
     (let the default win) and traces to stderr without raising.
@@ -180,14 +230,14 @@ def _read_toml_flag(start: Path | None = None) -> bool | None:
             section_obj: Any = parsed.get(RETRIEVAL_SECTION, {})
             if not isinstance(section_obj, dict):
                 return None
-            if ENTITY_INDEX_FLAG not in section_obj:  # type: ignore[operator]
+            if key not in section_obj:  # type: ignore[operator]
                 return None
-            value: Any = section_obj[ENTITY_INDEX_FLAG]  # type: ignore[index]
+            value: Any = section_obj[key]  # type: ignore[index]
             if isinstance(value, bool):
                 return value
             print(
                 f"aelfrice retrieval: ignoring [{RETRIEVAL_SECTION}] "
-                f"{ENTITY_INDEX_FLAG} in {candidate} (expected bool)",
+                f"{key} in {candidate} (expected bool)",
                 file=serr,
             )
             return None
@@ -214,10 +264,38 @@ def is_entity_index_enabled(
         return False
     if explicit is not None:
         return explicit
-    toml_value = _read_toml_flag(start)
+    toml_value = _read_toml_flag_for(ENTITY_INDEX_FLAG, start)
     if toml_value is not None:
         return toml_value
     return True
+
+
+def is_bfs_enabled(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the BFS multi-hop flag.
+
+    Precedence (first decisive wins):
+      1. AELFRICE_BFS env var (truthy / falsy normalised).
+      2. Explicit `explicit` kwarg from the caller.
+      3. `[retrieval] bfs_enabled` in `.aelfrice.toml`.
+      4. Default: False (v1.3.0 default-OFF).
+
+    The default-off contract is part of the v1.3.0 acceptance
+    criteria: a fresh install must not change retrieval output
+    against the v1.2 baseline.
+    """
+    env = _env_bfs_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    toml_value = _read_toml_flag_for(BFS_FLAG, start)
+    if toml_value is not None:
+        return toml_value
+    return False
 
 
 # --- Retrieval -----------------------------------------------------------
@@ -280,10 +358,15 @@ def retrieve(
     l25_limit: int = DEFAULT_L25_LIMIT,
     l25_token_subbudget: int = DEFAULT_L25_TOKEN_SUBBUDGET,
     query_entity_cap: int = DEFAULT_QUERY_ENTITY_CAP,
+    bfs_enabled: bool | None = None,
+    bfs_max_depth: int = BFS_DEFAULT_MAX_DEPTH,
+    bfs_nodes_per_hop: int = BFS_DEFAULT_NODES_PER_HOP,
+    bfs_total_budget_nodes: int = BFS_DEFAULT_TOTAL_BUDGET_NODES,
+    bfs_min_path_score: float = BFS_DEFAULT_MIN_PATH_SCORE,
 ) -> list[Belief]:
-    """Return L0 locked + L2.5 entity hits + L1 FTS5 BM25 results.
+    """Return L0 locked + L2.5 entity + L1 BM25 + L3 BFS expansions.
 
-    Output is token-budgeted: L1 results are trimmed from the tail
+    Output is token-budgeted: results are trimmed from the tail
     until the estimated total token count is at or below
     `token_budget`. L0 beliefs are never trimmed.
 
@@ -293,13 +376,25 @@ def retrieve(
     behaviour byte-for-byte, with the legacy budget if the caller
     didn't pass an explicit one.
 
-    Empty / whitespace-only query: returns L0 only (no L2.5, no L1).
+    L3 (v1.3.0): BFS multi-hop expansion. Default-OFF; gated by
+    `is_bfs_enabled()` (env override → kwarg → TOML → default
+    False). Seeds are the L0+L2.5+L1 set that survived the prior
+    tiers' filtering. Expansions are appended in score-descending
+    order until the shared token budget is exhausted. When
+    disabled, output is byte-identical to the L0+L2.5+L1 path.
+
+    Empty / whitespace-only query: returns L0 only (no L2.5, L1, or
+    L3).
 
     Dedupe: L1 hits whose id appears in L0 or L2.5 are dropped
     before budget accounting. L2.5 hits whose id appears in L0 are
-    likewise dropped.
+    likewise dropped. L3 expansions whose id appears in any prior
+    tier are dropped (the visited-set in `expand_bfs` prevents
+    seeds from being re-surfaced; we additionally guard against
+    overlap with L1 hits the seeds didn't include).
     """
     enabled = is_entity_index_enabled(entity_index_enabled)
+    bfs_on = is_bfs_enabled(bfs_enabled)
 
     locked: list[Belief] = store.list_locked_beliefs()
     locked_ids: set[str] = {b.id for b in locked}
@@ -348,12 +443,40 @@ def retrieve(
     # the output. L1 trims from the tail.
     used: int = locked_used + sum(_belief_tokens(b) for b in l25)
     out: list[Belief] = list(locked) + list(l25)
+    l1_packed: list[Belief] = []
     for b in l1:
         cost: int = _belief_tokens(b)
         if used + cost > effective_budget:
             break
         out.append(b)
+        l1_packed.append(b)
         used += cost
+
+    # L3 BFS expansion. Default-off — `bfs_on` False short-circuits
+    # before any graph work, preserving byte-identical output.
+    if bfs_on and query.strip():
+        seeds: list[Belief] = list(locked) + list(l25) + list(l1_packed)
+        if seeds:
+            hops = expand_bfs(
+                seeds,
+                store,
+                max_depth=bfs_max_depth,
+                nodes_per_hop=bfs_nodes_per_hop,
+                total_budget=bfs_total_budget_nodes,
+                min_path_score=bfs_min_path_score,
+            )
+            seen_ids: set[str] = (
+                locked_ids | l25_ids | {b.id for b in l1_packed}
+            )
+            for hop in hops:
+                if hop.belief.id in seen_ids:
+                    continue
+                cost = _belief_tokens(hop.belief)
+                if used + cost > effective_budget:
+                    break
+                out.append(hop.belief)
+                seen_ids.add(hop.belief.id)
+                used += cost
     return out
 
 
@@ -367,15 +490,28 @@ def retrieve_with_tiers(
     l25_limit: int = DEFAULT_L25_LIMIT,
     l25_token_subbudget: int = DEFAULT_L25_TOKEN_SUBBUDGET,
     query_entity_cap: int = DEFAULT_QUERY_ENTITY_CAP,
-) -> tuple[list[Belief], list[str], list[str], list[str]]:
+    bfs_enabled: bool | None = None,
+    bfs_max_depth: int = BFS_DEFAULT_MAX_DEPTH,
+    bfs_nodes_per_hop: int = BFS_DEFAULT_NODES_PER_HOP,
+    bfs_total_budget_nodes: int = BFS_DEFAULT_TOTAL_BUDGET_NODES,
+    bfs_min_path_score: float = BFS_DEFAULT_MIN_PATH_SCORE,
+) -> tuple[
+    list[Belief], list[str], list[str], list[str], list[list[str]],
+]:
     """Same logic as `retrieve()` but returns the per-tier id lists
     alongside the merged output.
 
     Used by the v1.3.0 benchmark adapter to surface L0 / L1 / L2.5
     counts in the per-question JSON without making a second call.
-    Returns (merged_output, locked_ids, l25_ids, l1_ids).
+    Returns
+    `(merged_output, locked_ids, l25_ids, l1_ids, bfs_chains)`.
+    `bfs_chains[i]` is the edge-type path that reached the i-th
+    L3-tier expansion belief in `merged_output` (empty list when
+    BFS is off / produced nothing / bfs hits collide with prior
+    tiers).
     """
     enabled = is_entity_index_enabled(entity_index_enabled)
+    bfs_on = is_bfs_enabled(bfs_enabled)
 
     locked: list[Belief] = store.list_locked_beliefs()
     locked_ids_list: list[str] = [b.id for b in locked]
@@ -415,14 +551,42 @@ def retrieve_with_tiers(
     used: int = locked_used + sum(_belief_tokens(b) for b in l25)
     out: list[Belief] = list(locked) + list(l25)
     l1_ids_list: list[str] = []
+    l1_packed: list[Belief] = []
     for b in l1:
         cost: int = _belief_tokens(b)
         if used + cost > effective_budget:
             break
         out.append(b)
+        l1_packed.append(b)
         used += cost
         l1_ids_list.append(b.id)
-    return out, locked_ids_list, l25_ids_list, l1_ids_list
+
+    bfs_chains: list[list[str]] = []
+    if bfs_on and query.strip():
+        seeds: list[Belief] = list(locked) + list(l25) + list(l1_packed)
+        if seeds:
+            hops = expand_bfs(
+                seeds,
+                store,
+                max_depth=bfs_max_depth,
+                nodes_per_hop=bfs_nodes_per_hop,
+                total_budget=bfs_total_budget_nodes,
+                min_path_score=bfs_min_path_score,
+            )
+            seen_ids: set[str] = (
+                locked_ids | l25_ids | set(l1_ids_list)
+            )
+            for hop in hops:
+                if hop.belief.id in seen_ids:
+                    continue
+                cost = _belief_tokens(hop.belief)
+                if used + cost > effective_budget:
+                    break
+                out.append(hop.belief)
+                bfs_chains.append(list(hop.path))
+                seen_ids.add(hop.belief.id)
+                used += cost
+    return out, locked_ids_list, l25_ids_list, l1_ids_list, bfs_chains
 
 
 def retrieve_v2(
@@ -431,9 +595,13 @@ def retrieve_v2(
     budget: int = DEFAULT_TOKEN_BUDGET,
     include_locked: bool = True,
     use_hrr: bool = False,  # noqa: ARG001
-    use_bfs: bool = False,  # noqa: ARG001
+    use_bfs: bool | None = None,
     use_entity_index: bool | None = None,
     l1_limit: int = DEFAULT_L1_LIMIT,
+    bfs_max_depth: int = BFS_DEFAULT_MAX_DEPTH,
+    bfs_nodes_per_hop: int = BFS_DEFAULT_NODES_PER_HOP,
+    bfs_total_budget_nodes: int = BFS_DEFAULT_TOTAL_BUDGET_NODES,
+    bfs_min_path_score: float = BFS_DEFAULT_MIN_PATH_SCORE,
 ) -> RetrievalResult:
     """Lab-compatible retrieval wrapper for academic-suite adapters.
 
@@ -443,22 +611,40 @@ def retrieve_v2(
     - `budget` (lab kwarg) maps to `token_budget` (public kwarg).
     - `include_locked=False` filters out lock_level != LOCK_NONE post-retrieval
       (public always returns L0 first; this wrapper drops them on demand).
-    - `use_hrr` and `use_bfs` are accepted but no-op at v1.3.0 — the HRR
-      vocabulary bridge and BFS multi-hop chaining have not yet
-      ported. Callers can pass them for forward-compat without conditionals.
+    - `use_hrr` is accepted but no-op at v1.3.0 — the HRR vocabulary
+      bridge has not yet ported. Callers can pass it for forward-compat
+      without conditionals.
+    - `use_bfs` (v1.3.0) maps to `retrieve()`'s `bfs_enabled` kwarg.
+      None falls through to the default-OFF resolution (env / TOML
+      / False at v1.3.0). Setting it True opts a single retrieve_v2
+      call into BFS regardless of process-wide config.
     - `use_entity_index` (v1.3.0) maps to `retrieve()`'s
       `entity_index_enabled` kwarg. None falls through to the default
       (env / TOML / True). The v1.3.0 benchmark adapter sets it
       explicitly.
+    - `bfs_max_depth`, `bfs_nodes_per_hop`, `bfs_total_budget_nodes`,
+      `bfs_min_path_score` — pass-through tuning knobs for the L3
+      tier. Defaults match `bfs_multihop.DEFAULT_*`.
     - Returns a `RetrievalResult` wrapper so adapters can read
       `result.beliefs` (and stub diagnostics fields, plus the new
-      v1.3 `entity_hits`).
+      v1.3 `entity_hits` and `bfs_chains`).
     """
-    out, locked_ids_list, l25_ids_list, l1_ids_list = retrieve_with_tiers(
+    (
+        out,
+        locked_ids_list,
+        l25_ids_list,
+        l1_ids_list,
+        bfs_chains,
+    ) = retrieve_with_tiers(
         store, query,
         token_budget=budget,
         entity_index_enabled=use_entity_index,
         l1_limit=l1_limit,
+        bfs_enabled=use_bfs,
+        bfs_max_depth=bfs_max_depth,
+        bfs_nodes_per_hop=bfs_nodes_per_hop,
+        bfs_total_budget_nodes=bfs_total_budget_nodes,
+        bfs_min_path_score=bfs_min_path_score,
     )
     if include_locked:
         beliefs = out
@@ -469,6 +655,7 @@ def retrieve_v2(
         entity_hits=l25_ids_list,
         locked_ids=locked_ids_list,
         l1_ids=l1_ids_list,
+        bfs_chains=bfs_chains,
     )
 
 
@@ -480,8 +667,14 @@ class RetrievalCache:
     the cache. Per-instance: two `RetrievalCache` objects pointing
     at different stores never share state.
 
-    Cache key includes the entity-index flag (v1.3.0). Two queries
-    that differ only in `entity_index_enabled` are distinct entries.
+    Cache key includes both the entity-index flag (v1.3.0 default-on)
+    and the BFS flag (v1.3.0 default-off). Two queries that differ
+    only in either flag are distinct entries. The BFS knobs
+    (`bfs_max_depth` etc.) are NOT in the key — per
+    docs/bfs_multihop.md § Cache invalidation, callers that toggle
+    them per call would defeat the cache anyway, and the default-off
+    flag means a single process either uses BFS for every retrieval
+    or none.
     """
 
     def __init__(
@@ -494,7 +687,7 @@ class RetrievalCache:
         self._store = store
         self._capacity = capacity
         self._entries: OrderedDict[
-            tuple[str, int, int, bool | None], list[Belief]
+            tuple[str, int, int, bool | None, bool | None], list[Belief]
         ] = OrderedDict()
         store.add_invalidation_callback(self.invalidate)
 
@@ -505,6 +698,7 @@ class RetrievalCache:
         l1_limit: int = DEFAULT_L1_LIMIT,
         *,
         entity_index_enabled: bool | None = None,
+        bfs_enabled: bool | None = None,
     ) -> list[Belief]:
         """Cached `retrieve()`. Identical contract to the free function."""
         key = (
@@ -512,6 +706,7 @@ class RetrievalCache:
             token_budget,
             l1_limit,
             entity_index_enabled,
+            bfs_enabled,
         )
         cached = self._entries.get(key)
         if cached is not None:
@@ -521,6 +716,7 @@ class RetrievalCache:
             self._store, query,
             token_budget=token_budget, l1_limit=l1_limit,
             entity_index_enabled=entity_index_enabled,
+            bfs_enabled=bfs_enabled,
         )
         self._entries[key] = list(result)
         if len(self._entries) > self._capacity:

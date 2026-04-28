@@ -351,7 +351,7 @@ def test_ac5_l25_subbudget_caps_entity_hits() -> None:
     big = "x" * 200  # ~50 tokens
     for i in range(30):
         s.insert_belief(_mk(f"E{i:02d}", f"the src/foo.py and {big}"))
-    _out, _l0, l25_ids, _l1 = retrieve_with_tiers(s, "src/foo.py")
+    _out, _l0, l25_ids, _l1, _bfs = retrieve_with_tiers(s, "src/foo.py")
     # L2.5 alone is bounded: 50-token beliefs against the 400-token
     # sub-budget fit at most 8 (allow off-by-one from rounding).
     assert len(l25_ids) <= 9, (
