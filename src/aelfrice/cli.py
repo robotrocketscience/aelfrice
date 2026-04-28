@@ -96,6 +96,7 @@ from aelfrice.lifecycle import (
     UpdateStatus,
     check_for_update,
     clear_cache as _clear_update_cache,
+    format_update_banner as _format_update_banner,
     is_disabled as _update_check_disabled,
     is_newer,
     maybe_check_for_update_async,
@@ -1702,6 +1703,14 @@ def _cmd_statusline(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+_UPGRADE_CONTEXT_NOTE: dict[str, str] = {
+    "uv_tool": "installed via uv tool — use uv to upgrade",
+    "pipx": "installed via pipx — use pipx to upgrade",
+    "venv": "running inside a virtual environment — use pip to upgrade",
+    "system": "system / user install — use pip to upgrade",
+}
+
+
 def _cmd_upgrade(args: argparse.Namespace, out: object) -> int:
     """Print the right upgrade command for this install context.
 
@@ -1740,6 +1749,12 @@ def _cmd_upgrade(args: argparse.Namespace, out: object) -> int:
                 file=out,  # type: ignore[arg-type]
             )
         if not args.check:
+            note = _UPGRADE_CONTEXT_NOTE.get(advice.context, "")
+            if note:
+                print(
+                    f"({note})",
+                    file=out,  # type: ignore[arg-type]
+                )
             print(
                 f"run: {advice.command}",
                 file=out,  # type: ignore[arg-type]
@@ -2795,8 +2810,7 @@ def _maybe_emit_update_banner(cmd: str | None) -> None:
     if not status.update_available:
         return
     print(
-        f"\x1b[38;5;208m⬆ aelfrice {status.latest} available, "
-        f"run: aelf upgrade\x1b[0m",
+        f"\x1b[38;5;208m{_format_update_banner(status.latest)}\x1b[0m",
         file=sys.stderr,
     )
 

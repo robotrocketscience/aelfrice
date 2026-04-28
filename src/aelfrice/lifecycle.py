@@ -88,15 +88,17 @@ def is_newer(a: str, b: str) -> bool:
 
 
 def installed_version() -> str:
-    """Resolve the installed aelfrice version.
+    """Resolve the installed aelfrice version from package metadata.
 
-    Reads aelfrice.__version__ which is the source of truth. Falls back
-    to '0.0.0' if the import is unexpectedly broken (defensive only).
+    Uses importlib.metadata so the returned version always matches the
+    installed wheel, even after an in-place upgrade that leaves the
+    source tree's __version__ constant stale. Falls back to '0.0.0'
+    when the package is not found (e.g. during unit tests run against
+    an editable install that hasn't been built yet).
     """
     try:
-        from aelfrice import __version__
-
-        return str(__version__)
+        from importlib.metadata import version, PackageNotFoundError
+        return version(PACKAGE_NAME)
     except Exception:
         return "0.0.0"
 
@@ -284,6 +286,21 @@ def maybe_check_for_update_async(
         return False
 
 
+# --- Banner helper -------------------------------------------------------
+
+
+def format_update_banner(latest: str) -> str:
+    """Return the plain (no ANSI) body text for an update-available banner.
+
+    Single source of truth for the banner format. Both the statusline
+    snippet and the CLI stderr notice derive their text from this
+    function so the wording never drifts between the two surfaces.
+
+    Example: '⬆ /aelf:upgrade to v1.5.0'
+    """
+    return f"⬆ /aelf:upgrade to v{latest}"
+
+
 # --- Upgrade advice -----------------------------------------------------
 
 
@@ -292,22 +309,55 @@ class UpgradeAdvice:
     """How to upgrade aelfrice in the user's specific install context."""
 
     command: str
-    context: str  # 'venv' | 'pipx' | 'system' | 'unknown'
+    context: str  # 'uv_tool' | 'pipx' | 'venv' | 'system'
+
+
+def _is_uv_tool_install() -> bool:
+    """Detect a uv-tool-managed install.
+
+    uv tool installs each package under ~/.local/share/uv/tools/<pkg>/.
+    We check for the package directory directly rather than shelling
+    out to `uv` (which may not be on PATH inside the managed env).
+    As a secondary signal, if sys.executable or sys.prefix resolves
+    under the uv tools directory we also consider it a uv-tool install.
+    """
+    uv_tools_dir = Path.home() / ".local" / "share" / "uv" / "tools" / PACKAGE_NAME
+    if uv_tools_dir.exists():
+        return True
+    # Secondary: check if sys.prefix or sys.executable path contains the
+    # uv tools tree. Covers cases where the package dir name differs.
+    import sys
+    prefix_norm = sys.prefix.replace("\\", "/")
+    # ~/.local/share/uv/tools/ is the canonical uv tools root on
+    # Linux/macOS. On Windows it is %APPDATA%\uv\tools\ but we only
+    # support the POSIX layout for now.
+    uv_tools_root = str(Path.home() / ".local" / "share" / "uv" / "tools")
+    return prefix_norm.startswith(uv_tools_root.replace("\\", "/"))
 
 
 def _is_pipx_install() -> bool:
-    """Detect a pipx-managed install by checking sys.prefix path.
+    """Detect a pipx-managed install.
 
-    pipx installs each package into ~/.local/pipx/venvs/<pkg>/ -- the
-    presence of '/pipx/venvs/' in sys.prefix is the canonical signal.
+    pipx installs each package into ~/.local/pipx/venvs/<pkg>/ and
+    sys.prefix will be rooted there. We check both sys.prefix (fast,
+    no FS access) and the venv directory directly (handles edge cases
+    where sys.prefix normalisation differs on some platforms).
+
+    We do NOT shell out to `pipx list` -- it's slow and may not be
+    installed in the running environment.
     """
     import sys
 
-    return "/pipx/venvs/" in sys.prefix.replace("\\", "/")
+    prefix_norm = sys.prefix.replace("\\", "/")
+    if "/pipx/venvs/" in prefix_norm:
+        return True
+    # Filesystem check: covers users whose sys.prefix is symlinked.
+    pipx_venv_dir = Path.home() / ".local" / "pipx" / "venvs" / PACKAGE_NAME
+    return pipx_venv_dir.exists()
 
 
 def _is_venv() -> bool:
-    """Detect a generic venv (PEP 405 / virtualenv).
+    """Detect a generic venv (PEP 405 / virtualenv / uv venv).
 
     sys.prefix != sys.base_prefix is the standard idiom; works for
     venv, virtualenv, uv venv, and conda envs.
@@ -318,11 +368,22 @@ def _is_venv() -> bool:
 
 
 def upgrade_advice() -> UpgradeAdvice:
-    """Return the right pip-upgrade incantation for the running env.
+    """Return the correct upgrade command for the running install context.
 
-    pipx checked before generic venv because a pipx install IS a venv,
-    but its upgrade path is different (pipx upgrade, not pip install).
+    Detection order matters: uv-tool and pipx are both virtualenvs, so
+    they must be identified before the generic venv check.
+
+    Contexts and their upgrade commands:
+      uv_tool  — uv tool upgrade aelfrice
+      pipx     — pipx upgrade aelfrice
+      venv     — pip install --upgrade aelfrice  (active venv's pip)
+      system   — pip install --user --upgrade aelfrice
     """
+    if _is_uv_tool_install():
+        return UpgradeAdvice(
+            command=f"uv tool upgrade {PACKAGE_NAME}",
+            context="uv_tool",
+        )
     if _is_pipx_install():
         return UpgradeAdvice(
             command=f"pipx upgrade {PACKAGE_NAME}",
