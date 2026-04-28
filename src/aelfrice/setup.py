@@ -67,6 +67,7 @@ _DANGLING_SHIM_CANDIDATES: Final[tuple[Path, ...]] = (
 
 _HOOKS_KEY: Final[str] = "hooks"
 _EVENT_KEY: Final[str] = "UserPromptSubmit"
+_PRE_COMPACT_EVENT_KEY: Final[str] = "PreCompact"
 _INNER_HOOKS_KEY: Final[str] = "hooks"
 _TYPE_KEY: Final[str] = "type"
 _COMMAND_KEY: Final[str] = "command"
@@ -256,7 +257,48 @@ def install_user_prompt_submit_hook(
     timeout: int | None = None,
     status_message: str | None = None,
 ) -> InstallResult:
-    """Add a UserPromptSubmit hook entry running `command`.
+    """Add a UserPromptSubmit hook entry running `command`."""
+    return _install_event_hook(
+        settings_path,
+        event_key=_EVENT_KEY,
+        command=command,
+        timeout=timeout,
+        status_message=status_message,
+    )
+
+
+def install_pre_compact_hook(
+    settings_path: Path,
+    *,
+    command: str,
+    timeout: int | None = None,
+    status_message: str | None = None,
+) -> InstallResult:
+    """Add a PreCompact hook entry running `command`.
+
+    Mirrors install_user_prompt_submit_hook for the PreCompact event,
+    which Claude Code fires before its default context compaction. The
+    aelfrice context-rebuilder lives behind this event; the command
+    string typically resolves to `aelf-pre-compact-hook`.
+    """
+    return _install_event_hook(
+        settings_path,
+        event_key=_PRE_COMPACT_EVENT_KEY,
+        command=command,
+        timeout=timeout,
+        status_message=status_message,
+    )
+
+
+def _install_event_hook(
+    settings_path: Path,
+    *,
+    event_key: str,
+    command: str,
+    timeout: int | None,
+    status_message: str | None,
+) -> InstallResult:
+    """Shared install logic for any hook event.
 
     Creates `settings_path` (and parent dirs) if missing. Preserves
     every other key in the file. Idempotent: a second call with the
@@ -265,12 +307,12 @@ def install_user_prompt_submit_hook(
     if not command:
         raise ValueError("command must be a non-empty string")
     data = _load_settings(settings_path)
-    user_prompt_submit = _get_user_prompt_submit_list(data, create=True)
-    if _find_entry_index(user_prompt_submit, command) is not None:
+    entries = _get_event_list(data, event_key, create=True)
+    if _find_entry_index(entries, command) is not None:
         return InstallResult(
             path=settings_path, installed=False, already_present=True
         )
-    user_prompt_submit.append(
+    entries.append(
         _build_entry(
             command=command, timeout=timeout, status_message=status_message
         )
@@ -287,7 +329,38 @@ def uninstall_user_prompt_submit_hook(
     command: str | None = None,
     command_basename: str | None = None,
 ) -> UninstallResult:
-    """Remove UserPromptSubmit entries matching `command` or `command_basename`.
+    """Remove UserPromptSubmit entries matching `command` or `command_basename`."""
+    return _uninstall_event_hook(
+        settings_path,
+        event_key=_EVENT_KEY,
+        command=command,
+        command_basename=command_basename,
+    )
+
+
+def uninstall_pre_compact_hook(
+    settings_path: Path,
+    *,
+    command: str | None = None,
+    command_basename: str | None = None,
+) -> UninstallResult:
+    """Remove PreCompact entries matching `command` or `command_basename`."""
+    return _uninstall_event_hook(
+        settings_path,
+        event_key=_PRE_COMPACT_EVENT_KEY,
+        command=command,
+        command_basename=command_basename,
+    )
+
+
+def _uninstall_event_hook(
+    settings_path: Path,
+    *,
+    event_key: str,
+    command: str | None,
+    command_basename: str | None,
+) -> UninstallResult:
+    """Shared uninstall logic for any hook event.
 
     Pass exactly one of:
       * `command` -- exact-string match of the stored hook command.
@@ -296,7 +369,7 @@ def uninstall_user_prompt_submit_hook(
         and an absolute-path install be cleaned up by the same call.
 
     Returns `removed=0` if the file does not exist, has no matching
-    entry, or has no `hooks.UserPromptSubmit` block at all.
+    entry, or has no `hooks.<event_key>` block at all.
     """
     if command is None and command_basename is None:
         raise ValueError("provide command or command_basename")
@@ -309,25 +382,25 @@ def uninstall_user_prompt_submit_hook(
     if not settings_path.exists():
         return UninstallResult(path=settings_path, removed=0)
     data = _load_settings(settings_path)
-    user_prompt_submit = _get_user_prompt_submit_list(data, create=False)
-    if user_prompt_submit is None:
+    entries = _get_event_list(data, event_key, create=False)
+    if entries is None:
         return UninstallResult(path=settings_path, removed=0)
-    before = len(user_prompt_submit)
+    before = len(entries)
     if command is not None:
         kept = [
-            entry for entry in user_prompt_submit
+            entry for entry in entries
             if not _entry_matches(entry, command)
         ]
     else:
         assert command_basename is not None
         kept = [
-            entry for entry in user_prompt_submit
+            entry for entry in entries
             if not _entry_matches_basename(entry, command_basename)
         ]
     removed = before - len(kept)
     if removed == 0:
         return UninstallResult(path=settings_path, removed=0)
-    user_prompt_submit[:] = kept
+    entries[:] = kept
     _atomic_write(settings_path, data)
     return UninstallResult(path=settings_path, removed=removed)
 
