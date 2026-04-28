@@ -31,7 +31,7 @@ from typing import Final
 
 from aelfrice.models import (
     BELIEF_FACTUAL,
-    CORROBORATION_COMMIT_INGEST,
+    CORROBORATION_SOURCE_COMMIT_INGEST,
     EDGE_CITES,
     EDGE_CONTRADICTS,
     EDGE_DERIVED_FROM,
@@ -259,9 +259,9 @@ def _resolve_or_create_belief(
     bid = _belief_id_for_phrase(phrase)
     existing = store.get_belief(bid)
     if existing is not None:
-        store.insert_corroboration(
+        store.record_corroboration(
             bid,
-            CORROBORATION_COMMIT_INGEST,
+            source_type=CORROBORATION_SOURCE_COMMIT_INGEST,
             session_id=session_id,
         )
         return bid

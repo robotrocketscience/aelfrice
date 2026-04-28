@@ -9,18 +9,16 @@ Each test must complete well under 1 second.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterator
-
 import pytest
 
 from aelfrice.ingest import ingest_turn
 from aelfrice.models import (
     BELIEF_FACTUAL,
-    CORROBORATION_COMMIT_INGEST,
-    CORROBORATION_HOOK_INGEST,
-    CORROBORATION_MCP_REMEMBER,
+    CORROBORATION_SOURCE_COMMIT_INGEST,
+    CORROBORATION_SOURCE_HOOK_INGEST,
+    CORROBORATION_SOURCE_MCP_REMEMBER,
+    CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     CORROBORATION_SOURCE_TYPES,
-    CORROBORATION_TRANSCRIPT_INGEST,
     LOCK_NONE,
     Belief,
 )
@@ -83,7 +81,7 @@ def test_index_created_on_fresh_store() -> None:
         store.close()
 
 
-def test_table_creation_idempotent(tmp_path: Path) -> None:
+def test_migration_idempotent_on_rerun(tmp_path: Path) -> None:
     """Opening the same on-disk store twice does not error — schema is
     CREATE IF NOT EXISTS throughout."""
     db = str(tmp_path / "idem.db")
@@ -202,7 +200,7 @@ def test_corroboration_count_increments_on_retrieval(tmp_path: Path) -> None:
         assert beliefs
         bid = beliefs[0].id
 
-        # Two re-ingests → two corroboration rows
+        # Two re-ingests => two corroboration rows
         ingest_turn(store, text, source=source)
         ingest_turn(store, text, source=source)
 
@@ -248,21 +246,22 @@ def test_different_source_types_record_distinctly() -> None:
         b = _belief("b1", "X uses Y.", "hash-b1")
         store.insert_belief(b)
 
-        store.insert_corroboration("b1", CORROBORATION_TRANSCRIPT_INGEST)
-        store.insert_corroboration("b1", CORROBORATION_COMMIT_INGEST)
-        store.insert_corroboration("b1", CORROBORATION_MCP_REMEMBER)
-        store.insert_corroboration("b1", CORROBORATION_HOOK_INGEST)
+        store.record_corroboration("b1", source_type=CORROBORATION_SOURCE_TRANSCRIPT_INGEST)
+        store.record_corroboration("b1", source_type=CORROBORATION_SOURCE_COMMIT_INGEST)
+        store.record_corroboration("b1", source_type=CORROBORATION_SOURCE_MCP_REMEMBER)
+        store.record_corroboration("b1", source_type=CORROBORATION_SOURCE_HOOK_INGEST)
 
         assert store.count_corroborations("b1") == 4
 
         rows = store.list_corroborations("b1")
         assert len(rows) == 4
-        recorded_types = {r.source_type for r in rows}
+        # rows are (ingested_at, source_type, session_id, source_path_hash)
+        recorded_types = {r[1] for r in rows}
         assert recorded_types == {
-            CORROBORATION_TRANSCRIPT_INGEST,
-            CORROBORATION_COMMIT_INGEST,
-            CORROBORATION_MCP_REMEMBER,
-            CORROBORATION_HOOK_INGEST,
+            CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+            CORROBORATION_SOURCE_COMMIT_INGEST,
+            CORROBORATION_SOURCE_MCP_REMEMBER,
+            CORROBORATION_SOURCE_HOOK_INGEST,
         }
     finally:
         store.close()
@@ -272,10 +271,10 @@ def test_source_type_enum_covers_all_variants() -> None:
     """CORROBORATION_SOURCE_TYPES contains exactly the four documented
     values."""
     expected = {
-        "commit-ingest",
-        "transcript-ingest",
-        "MCP-remember",
-        "hook-ingest",
+        "commit_ingest",
+        "transcript_ingest",
+        "mcp_remember",
+        "hook_ingest",
     }
     assert CORROBORATION_SOURCE_TYPES == expected
 
@@ -286,24 +285,25 @@ def test_source_type_enum_covers_all_variants() -> None:
 
 
 def test_null_session_id_and_source_path_hash_accepted() -> None:
-    """insert_corroboration with session_id=None and source_path_hash=None
+    """record_corroboration with session_id=None and source_path_hash=None
     must not raise, and the stored row reflects NULLs."""
     store = _fresh_store()
     try:
         b = _belief("b2", "Y implies Z.", "hash-b2")
         store.insert_belief(b)
 
-        store.insert_corroboration(
+        store.record_corroboration(
             "b2",
-            CORROBORATION_TRANSCRIPT_INGEST,
+            source_type=CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
             session_id=None,
             source_path_hash=None,
         )
 
         rows = store.list_corroborations("b2")
         assert len(rows) == 1
-        assert rows[0].session_id is None
-        assert rows[0].source_path_hash is None
+        # rows are (ingested_at, source_type, session_id, source_path_hash)
+        assert rows[0][2] is None  # session_id
+        assert rows[0][3] is None  # source_path_hash
     finally:
         store.close()
 
@@ -315,17 +315,18 @@ def test_session_id_stamped_when_provided() -> None:
         b = _belief("b3", "Z follows W.", "hash-b3")
         store.insert_belief(b)
 
-        store.insert_corroboration(
+        store.record_corroboration(
             "b3",
-            CORROBORATION_TRANSCRIPT_INGEST,
+            source_type=CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
             session_id="sess-abc",
             source_path_hash="pathsha256",
         )
 
         rows = store.list_corroborations("b3")
         assert len(rows) == 1
-        assert rows[0].session_id == "sess-abc"
-        assert rows[0].source_path_hash == "pathsha256"
+        # rows are (ingested_at, source_type, session_id, source_path_hash)
+        assert rows[0][2] == "sess-abc"    # session_id
+        assert rows[0][3] == "pathsha256"  # source_path_hash
     finally:
         store.close()
 
@@ -347,7 +348,8 @@ def test_ingest_turn_passes_session_id_to_corroboration(tmp_path: Path) -> None:
 
         rows = store.list_corroborations(bid)
         assert len(rows) == 1
-        assert rows[0].session_id == "sess-2"
+        # rows are (ingested_at, source_type, session_id, source_path_hash)
+        assert rows[0][2] == "sess-2"  # session_id
     finally:
         store.close()
 
@@ -381,35 +383,76 @@ def test_belief_deletion_cascades_to_corroborations(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# insert_corroboration directly (store API)
+# record_corroboration directly (store API)
 # ---------------------------------------------------------------------------
 
 
-def test_insert_corroboration_returns_rowid() -> None:
-    """insert_corroboration returns a positive integer rowid."""
+def test_record_corroboration_returns_none() -> None:
+    """record_corroboration returns None (side-effect only, no rowid exposed)."""
     store = _fresh_store()
     try:
         b = _belief("b4", "A causes B.", "hash-b4")
         store.insert_belief(b)
 
-        rowid = store.insert_corroboration("b4", CORROBORATION_COMMIT_INGEST)
-        assert isinstance(rowid, int)
-        assert rowid > 0
+        result = store.record_corroboration("b4", source_type=CORROBORATION_SOURCE_COMMIT_INGEST)
+        assert result is None
     finally:
         store.close()
 
 
-def test_count_corroborations_total() -> None:
-    """count_corroborations() with no argument returns the total across all beliefs."""
+def test_count_corroborations_per_belief() -> None:
+    """count_corroborations(belief_id) returns the count for that belief only."""
     store = _fresh_store()
     try:
         for i in range(3):
             bid = f"b{i}"
             b = _belief(bid, f"Statement {i}.", f"hash-{i}")
             store.insert_belief(b)
-            store.insert_corroboration(bid, CORROBORATION_TRANSCRIPT_INGEST)
-            store.insert_corroboration(bid, CORROBORATION_COMMIT_INGEST)
+            store.record_corroboration(bid, source_type=CORROBORATION_SOURCE_TRANSCRIPT_INGEST)
+            store.record_corroboration(bid, source_type=CORROBORATION_SOURCE_COMMIT_INGEST)
 
-        assert store.count_corroborations() == 6
+        # Each belief has 2 corroborations
+        for i in range(3):
+            assert store.count_corroborations(f"b{i}") == 2
+    finally:
+        store.close()
+
+
+# ---------------------------------------------------------------------------
+# Spec-required test: record_corroboration_adds_one_row
+# ---------------------------------------------------------------------------
+
+
+def test_record_corroboration_adds_one_row() -> None:
+    """record_corroboration adds exactly one row to belief_corroborations
+    per call (direct store API contract)."""
+    store = _fresh_store()
+    try:
+        b = _belief("b_rcar", "Z precedes W.", "hash-rcar")
+        store.insert_belief(b)
+
+        assert store.count_corroborations("b_rcar") == 0
+        store.record_corroboration(
+            "b_rcar", source_type=CORROBORATION_SOURCE_COMMIT_INGEST
+        )
+        assert store.count_corroborations("b_rcar") == 1
+    finally:
+        store.close()
+
+
+# ---------------------------------------------------------------------------
+# Spec-required test: test_unknown_source_type_raises_valueerror
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_source_type_raises_valueerror() -> None:
+    """record_corroboration raises ValueError for an unknown source_type."""
+    store = _fresh_store()
+    try:
+        b = _belief("b_err", "A causes B.", "hash-b-err")
+        store.insert_belief(b)
+
+        with pytest.raises(ValueError, match="Unknown source_type"):
+            store.record_corroboration("b_err", source_type="not_a_real_source")
     finally:
         store.close()

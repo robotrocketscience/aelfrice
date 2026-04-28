@@ -27,7 +27,7 @@ from aelfrice.classification import classify_sentence
 from aelfrice.extraction import extract_sentences
 from aelfrice.models import (
     ANCHOR_TEXT_MAX_LEN,
-    CORROBORATION_TRANSCRIPT_INGEST,
+    CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     EDGE_DERIVED_FROM,
     LOCK_NONE,
     Belief,
@@ -120,9 +120,9 @@ def _ingest_turn_ids(
         if store.get_belief(belief_id) is not None:
             # Exact (source, sentence) duplicate: record a corroboration
             # so re-assertions are observable. Canonical row unchanged.
-            store.insert_corroboration(
+            store.record_corroboration(
                 belief_id,
-                CORROBORATION_TRANSCRIPT_INGEST,
+                source_type=CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
                 session_id=session_id,
             )
             continue

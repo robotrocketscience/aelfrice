@@ -6,8 +6,8 @@ deferred to a later release.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Final, Literal
+from dataclasses import dataclass
+from typing import Final
 
 # --- Belief types ---
 BELIEF_FACTUAL: Final[str] = "factual"
@@ -78,23 +78,16 @@ ORIGINS: Final[frozenset[str]] = frozenset({
 # Wire-format strings. Do not rename without a migration. Distinguishes
 # which ingest path produced the corroboration row. Used by T2 (#191)
 # for grace-window cross-checking.
-CORROBORATION_COMMIT_INGEST: Final[str] = "commit-ingest"
-CORROBORATION_TRANSCRIPT_INGEST: Final[str] = "transcript-ingest"
-CORROBORATION_MCP_REMEMBER: Final[str] = "MCP-remember"
-CORROBORATION_HOOK_INGEST: Final[str] = "hook-ingest"
-
-CorroborationSourceType = Literal[
-    "commit-ingest",
-    "transcript-ingest",
-    "MCP-remember",
-    "hook-ingest",
-]
+CORROBORATION_SOURCE_COMMIT_INGEST: Final[str] = "commit_ingest"
+CORROBORATION_SOURCE_TRANSCRIPT_INGEST: Final[str] = "transcript_ingest"
+CORROBORATION_SOURCE_MCP_REMEMBER: Final[str] = "mcp_remember"
+CORROBORATION_SOURCE_HOOK_INGEST: Final[str] = "hook_ingest"
 
 CORROBORATION_SOURCE_TYPES: Final[frozenset[str]] = frozenset({
-    CORROBORATION_COMMIT_INGEST,
-    CORROBORATION_TRANSCRIPT_INGEST,
-    CORROBORATION_MCP_REMEMBER,
-    CORROBORATION_HOOK_INGEST,
+    CORROBORATION_SOURCE_COMMIT_INGEST,
+    CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+    CORROBORATION_SOURCE_MCP_REMEMBER,
+    CORROBORATION_SOURCE_HOOK_INGEST,
 })
 
 # --- Onboard-session states ---
@@ -231,23 +224,3 @@ class Session:
     project_context: str | None
 
 
-@dataclass
-class BeliefCorroboration:
-    """One row in the belief_corroborations sibling table (v1.5+, #190).
-
-    Records each re-ingest of content whose content_hash already exists
-    in `beliefs`. The canonical belief row is unchanged; this row makes
-    the re-assertion observable as a first-class signal.
-
-    `session_id` and `source_path_hash` are nullable: callers that lack
-    the value pass None and the row is inserted with SQL NULLs. T3 (#192)
-    is responsible for populating `session_id` in production; T1 lands
-    the column only.
-    """
-
-    id: int
-    belief_id: str
-    ingested_at: str
-    source_type: str
-    session_id: str | None
-    source_path_hash: str | None
