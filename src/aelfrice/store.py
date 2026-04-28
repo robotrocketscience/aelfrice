@@ -17,7 +17,7 @@ from __future__ import annotations
 import secrets
 import sqlite3
 from datetime import datetime, timezone
-from typing import Callable, Iterable
+from typing import Callable, Final, Iterable
 
 from aelfrice.models import (
     EDGE_VALENCE,
@@ -92,11 +92,51 @@ _SCHEMA: tuple[str, ...] = (
         project_context TEXT
     )
     """,
+    # v1.3.0 entity-index (L2.5 retrieval). One row per (belief, entity
+    # span). Composite PK permits the same entity_lower to appear in
+    # one belief at distinct span_starts (e.g. a file path mentioned
+    # twice). Indexes cover the three lookup patterns: entity → beliefs
+    # (hot path), belief → entities (refresh / debug), and kind filters
+    # (future kind-weighted ranker). Additive: forward-compatible with
+    # v1.0/v1.1/v1.2 stores per docs/entity_index.md § Migration story.
+    """
+    CREATE TABLE IF NOT EXISTS belief_entities (
+        belief_id    TEXT NOT NULL,
+        entity_lower TEXT NOT NULL,
+        entity_raw   TEXT NOT NULL,
+        kind         TEXT NOT NULL,
+        span_start   INTEGER NOT NULL,
+        span_end     INTEGER NOT NULL,
+        PRIMARY KEY (belief_id, entity_lower, span_start)
+    )
+    """,
+    # v1.3.0 schema_meta. Single-row registry of one-shot migrations
+    # that need to be tracked across opens (currently: the entity-index
+    # backfill flag). Key/value to keep the schema generic. Values are
+    # ISO timestamps (or empty strings) — no booleans across SQLite.
+    """
+    CREATE TABLE IF NOT EXISTS schema_meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src)",
     "CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst)",
     "CREATE INDEX IF NOT EXISTS idx_feedback_belief ON feedback_history(belief_id)",
     "CREATE INDEX IF NOT EXISTS idx_onboard_state ON onboard_sessions(state)",
+    "CREATE INDEX IF NOT EXISTS idx_belief_entities_lower "
+    "ON belief_entities(entity_lower)",
+    "CREATE INDEX IF NOT EXISTS idx_belief_entities_belief "
+    "ON belief_entities(belief_id)",
+    "CREATE INDEX IF NOT EXISTS idx_belief_entities_kind "
+    "ON belief_entities(kind)",
 )
+
+# Marker key for the entity-index one-shot backfill. Empty value =
+# not yet run. ISO timestamp = completed at that time. Tracked in
+# `schema_meta` so a v1.3+ binary opening a pre-v1.3 store knows to
+# re-extract entities for every existing belief on first open.
+SCHEMA_META_ENTITY_BACKFILL: Final[str] = "entity_backfill_complete"
 
 # v1.0 -> v1.2 column additions. Each ALTER runs after _SCHEMA. ALTERs
 # are idempotent: a duplicate-column OperationalError on a v1.2-fresh
@@ -270,6 +310,34 @@ class MemoryStore:
         for fn in self._invalidation_callbacks:
             fn()
 
+    # --- Schema meta (v1.3+ migration tracker) ---------------------------
+
+    def get_schema_meta(self, key: str) -> str | None:
+        """Return the value stored under `key` in schema_meta, or None.
+
+        Used by v1.3+ migrations (entity-index backfill) to decide
+        whether a one-shot pass has already run on this DB.
+        """
+        cur = self._conn.execute(
+            "SELECT value FROM schema_meta WHERE key = ?", (key,)
+        )
+        row = cur.fetchone()
+        return row["value"] if row else None
+
+    def set_schema_meta(self, key: str, value: str) -> None:
+        """Insert or replace one schema_meta row. Idempotent."""
+        self._conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        self._conn.commit()
+
+    def list_belief_ids(self) -> list[str]:
+        """All belief ids in insertion-time order. Used by the v1.3
+        entity-index backfill to walk every existing belief once."""
+        cur = self._conn.execute("SELECT id FROM beliefs ORDER BY id ASC")
+        return [str(r["id"]) for r in cur.fetchall()]
+
     # --- Belief CRUD ------------------------------------------------------
 
     def insert_belief(self, b: Belief) -> None:
@@ -291,6 +359,7 @@ class MemoryStore:
             "INSERT INTO beliefs_fts (id, content) VALUES (?, ?)",
             (b.id, b.content),
         )
+        self._write_belief_entities(b.id, b.content)
         self._conn.commit()
         self._fire_invalidation()
 
@@ -332,6 +401,13 @@ class MemoryStore:
             "INSERT INTO beliefs_fts (id, content) VALUES (?, ?)",
             (b.id, b.content),
         )
+        # Rewrite entity rows for this belief: drop and re-extract.
+        # Single-transaction with the FTS5 rewrite so we never expose
+        # a half-updated index to readers between commits.
+        self._conn.execute(
+            "DELETE FROM belief_entities WHERE belief_id = ?", (b.id,)
+        )
+        self._write_belief_entities(b.id, b.content)
         self._conn.commit()
         self._fire_invalidation()
 
@@ -342,8 +418,106 @@ class MemoryStore:
             "DELETE FROM edges WHERE src = ? OR dst = ?",
             (belief_id, belief_id),
         )
+        self._conn.execute(
+            "DELETE FROM belief_entities WHERE belief_id = ?", (belief_id,)
+        )
         self._conn.commit()
         self._fire_invalidation()
+
+    # --- Entity index (v1.3 L2.5 retrieval) ------------------------------
+
+    def _write_belief_entities(self, belief_id: str, content: str) -> None:
+        """Extract entities from `content` and insert one row per match.
+
+        Called inside `insert_belief` and `update_belief` BEFORE the
+        outer commit. Failure here aborts the parent transaction —
+        the index ↔ store invariant is preserved (either both rows
+        commit or neither does). The extractor is pure regex; it does
+        not raise under normal input.
+
+        Lazy import of `aelfrice.entity_extractor` to keep the import
+        graph acyclic (entity_extractor only imports triple_extractor,
+        not store) and so the extra cost of regex compilation is paid
+        once on first insert rather than at module load.
+        """
+        from aelfrice.entity_extractor import extract_entities
+
+        entities = extract_entities(content)
+        if not entities:
+            return
+        rows = [
+            (belief_id, e.lower, e.raw, e.kind, e.span_start, e.span_end)
+            for e in entities
+        ]
+        self._conn.executemany(
+            "INSERT OR IGNORE INTO belief_entities "
+            "(belief_id, entity_lower, entity_raw, kind, span_start, span_end) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+
+    def lookup_entities(
+        self,
+        entity_lowers: Iterable[str],
+        *,
+        limit: int,
+    ) -> list[tuple[str, int]]:
+        """Return [(belief_id, overlap_count)] sorted overlap DESC, id ASC.
+
+        `entity_lowers` is the lowercased entity-text key per row in
+        `belief_entities`. Distinct keys are GROUP BY'd so the same
+        entity occurring twice in one belief still counts as one
+        overlap (the spec ranks by entity overlap COUNT, not by
+        match count).
+
+        Empty input returns [] without hitting SQLite. The L2.5
+        retrieval tier consumes this via `lookup_entities` directly —
+        there is no separate index object to keep in sync with the
+        underlying table.
+        """
+        keys = [k for k in entity_lowers if k]
+        if not keys or limit <= 0:
+            return []
+        # SQL placeholder expansion: avoid building a query with
+        # unbounded `?` count by using a temp table-style IN clause.
+        # SQLite's parameter cap is 999 by default; we trim above
+        # that defensively (the L2.5 query-side extraction caps at
+        # 16 entities per call so this is generous).
+        keys = list(dict.fromkeys(keys))[:512]
+        placeholders = ",".join("?" * len(keys))
+        sql = (
+            "SELECT belief_id, COUNT(DISTINCT entity_lower) AS overlap "
+            "FROM belief_entities "
+            f"WHERE entity_lower IN ({placeholders}) "
+            "GROUP BY belief_id "
+            "ORDER BY overlap DESC, belief_id ASC "
+            "LIMIT ?"
+        )
+        cur = self._conn.execute(sql, (*keys, limit))
+        return [(str(r["belief_id"]), int(r["overlap"])) for r in cur.fetchall()]
+
+    def count_belief_entities(self) -> int:
+        """Total row count in `belief_entities`. Telemetry / health surface."""
+        cur = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM belief_entities"
+        )
+        row = cur.fetchone()
+        return int(row["n"]) if row else 0
+
+    def belief_entities_for(self, belief_id: str) -> list[tuple[str, str, str]]:
+        """List of (entity_lower, entity_raw, kind) for one belief.
+
+        Used by tests and the future debug CLI; not on the hot path.
+        """
+        cur = self._conn.execute(
+            "SELECT entity_lower, entity_raw, kind FROM belief_entities "
+            "WHERE belief_id = ? ORDER BY span_start ASC",
+            (belief_id,),
+        )
+        return [
+            (str(r["entity_lower"]), str(r["entity_raw"]), str(r["kind"]))
+            for r in cur.fetchall()
+        ]
 
     def search_beliefs(self, query: str, limit: int = 20) -> list[Belief]:
         """FTS5 keyword search over belief content. Ranked by bm25.
