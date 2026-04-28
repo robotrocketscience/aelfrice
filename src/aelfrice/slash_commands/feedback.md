@@ -8,7 +8,7 @@ allowed-tools:
 <objective>
 Record one feedback event. `used` increments alpha; `harmful` increments
 beta and contributes demotion pressure to any locked beliefs reached via
-CONTRADICTS edges.
+CONTRADICTS threads.
 </objective>
 
 <process>

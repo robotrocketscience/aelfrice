@@ -312,10 +312,15 @@ def tool_feedback(
 
 
 def tool_stats(store: MemoryStore) -> dict[str, Any]:
+    n_edges = store.count_edges()
     return {
         "kind": "stats.snapshot",
         "beliefs": store.count_beliefs(),
-        "edges": store.count_edges(),
+        # `edges` is the v1.0 key. v1.1.0 adds `threads` as the
+        # forward-compatible alias and emits both for one minor; v1.2.0
+        # drops `edges`. Clients should migrate now.
+        "edges": n_edges,
+        "threads": n_edges,
         "locked": store.count_locked(),
         "feedback_events": store.count_feedback_events(),
         "onboard_sessions_total": store.count_onboard_sessions(),
@@ -337,7 +342,10 @@ def tool_health(store: MemoryStore) -> dict[str, Any]:
             "confidence_median": report.features.confidence_median,
             "mass_mean": report.features.mass_mean,
             "lock_per_1000": report.features.lock_per_1000,
+            # `edge_per_belief` is the v1.0 key. v1.1.0 adds
+            # `thread_per_belief` and emits both; v1.2.0 drops the edge form.
             "edge_per_belief": report.features.edge_per_belief,
+            "thread_per_belief": report.features.edge_per_belief,
         }
     return payload
 

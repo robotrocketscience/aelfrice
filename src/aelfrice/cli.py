@@ -8,7 +8,7 @@ Commands:
   demote <id>                      manually demote a lock to none
   feedback <id> <used|harmful>     apply one Bayesian feedback event
   stats                            summary of belief / lock / history counts
-  health                           structural auditor (orphan edges, FTS5 sync, locked contradictions)
+  health                           structural auditor (orphan threads, FTS5 sync, locked contradictions)
   status                           alias for health
   regime                           v1.0 regime classifier (supersede / ignore / mixed)
   migrate                          copy beliefs from legacy ~/.aelfrice/memory.db
@@ -276,7 +276,7 @@ def _cmd_demote(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_resolve(args: argparse.Namespace, out: object) -> int:
-    """Resolve all unresolved CONTRADICTS edges via the v1.0.1 tie-breaker."""
+    """Resolve all unresolved CONTRADICTS threads via the v1.0.1 tie-breaker."""
     _ = args
     from aelfrice.contradiction import (
         auto_resolve_all_contradictions,
@@ -346,13 +346,15 @@ def _cmd_stats(args: argparse.Namespace, out: object) -> int:
     store = _open_store()
     try:
         n_beliefs = store.count_beliefs()
-        n_edges = store.count_edges()
+        n_threads = store.count_edges()
         n_locked = store.count_locked()
         n_history = store.count_feedback_events()
     finally:
         store.close()
     print(f"beliefs:           {n_beliefs}", file=out)  # type: ignore[arg-type]
-    print(f"edges:             {n_edges}", file=out)  # type: ignore[arg-type]
+    # v1.1.0 user-facing rename: "edges" -> "threads". Internal schema
+    # keeps `edges`. MCP `aelf:stats` emits both keys for one minor.
+    print(f"threads:           {n_threads}", file=out)  # type: ignore[arg-type]
     print(f"locked:            {n_locked}", file=out)  # type: ignore[arg-type]
     print(f"feedback events:   {n_history}", file=out)  # type: ignore[arg-type]
     return 0
@@ -815,7 +817,7 @@ def _cmd_upgrade(args: argparse.Namespace, out: object) -> int:
 def _cmd_health(args: argparse.Namespace, out: object) -> int:
     """Run the v1.1.0 structural auditor and print findings + metrics.
 
-    Exits 1 if any audit check fails (orphan edges, FTS5 sync, locked
+    Exits 1 if any audit check fails (orphan threads, FTS5 sync, locked
     contradictions). Informational metrics never affect exit status.
     The v1.0 regime classifier moved to `aelf regime`.
     """
@@ -1021,11 +1023,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_resolve = sub.add_parser(
         "resolve",
-        help="resolve unresolved CONTRADICTS edges via the v1.0.1 tie-breaker",
+        help="resolve unresolved CONTRADICTS threads via the v1.0.1 tie-breaker",
         epilog=(
             "Picks a winner per precedence (user_stated > user_corrected "
             "> document_recent; ties broken by recency, then id) and "
-            "creates a SUPERSEDES edge from winner to loser. Each "
+            "creates a SUPERSEDES thread from winner to loser. Each "
             "resolution writes an audit row to feedback_history with "
             "source='contradiction_tiebreaker:<rule>'. Idempotent — "
             "already-resolved pairs are skipped."
@@ -1046,7 +1048,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_health = sub.add_parser(
         "health",
-        help="structural auditor (orphan edges, FTS5 sync, locked contradictions)",
+        help="structural auditor (orphan threads, FTS5 sync, locked contradictions)",
     )
     p_health.set_defaults(func=_cmd_health)
 

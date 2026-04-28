@@ -73,7 +73,7 @@ def test_audit_empty_store_passes_all_checks(store: MemoryStore) -> None:
 def test_audit_empty_store_metrics_are_zeros(store: MemoryStore) -> None:
     report = audit(store)
     assert report.metrics["beliefs"] == 0
-    assert report.metrics["edges"] == 0
+    assert report.metrics["threads"] == 0
     assert report.metrics["locked"] == 0
 
 
