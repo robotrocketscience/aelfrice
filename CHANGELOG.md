@@ -8,6 +8,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Pre-`1.0.0` releases are atomic milestones building toward the first
 installable release; see the roadmap in [README.md](README.md).
 
+## [1.2.0a0] - 2026-04-27
+
+Alpha pre-release. **Context rebuilder MVP** lands as an opt-in
+`PreCompact` hook that surfaces aelfrice retrieval results before
+Claude Code runs its default summarization. Augment-mode only --
+the harness still runs its own compaction afterward, so this is
+additive context, not a replacement.
+
+This is a vertical slice. Several quality dimensions are deferred
+until the supporting infrastructure ships (transcript ingest at
+v1.2.0, posterior-weighted ranking at v1.3+, triple-extracted
+queries, session-scoped retrieval). The alpha is for measurement
+and feedback, not for setting the v1.x default.
+
+### Added
+
+- `aelfrice.context_rebuilder.rebuild()`: pure function taking a
+  list of recent turns and an open `MemoryStore`, returns the
+  formatted `<aelfrice-rebuild>` XML block with L0 locked beliefs
+  and L1 BM25 hits. Per-token union retrieval works around the
+  public store's AND-only FTS5 semantics. Deterministic given
+  identical inputs (eval-harness contract).
+- Two transcript adapters: `read_recent_turns_aelfrice` for the
+  canonical `<root>/.git/aelfrice/transcripts/turns.jsonl` log
+  (per-turn ingest format from the v1.2.0 transcript-ingest spec)
+  and `read_recent_turns_claude_transcript` as a best-effort
+  fallback for Claude Code's internal per-session JSONL.
+- `pre_compact()` hook entry-point in `aelfrice.hook`: reads the
+  PreCompact JSON payload, locates a transcript (canonical
+  preferred, Claude-internal fallback), invokes `rebuild()`,
+  writes the block to stdout. Honors the non-blocking hook
+  contract (returns 0 on every failure path).
+- `aelf-pre-compact-hook` console script entry registered for
+  `settings.json` hook entries.
+- `install_pre_compact_hook` / `uninstall_pre_compact_hook` /
+  `resolve_pre_compact_hook_command`: same idempotency,
+  atomic-write, and basename-match semantics as the existing
+  UserPromptSubmit pair. Two events coexist in the same
+  `settings.json` without disturbing each other.
+- `aelf setup --rebuilder` flag: also installs the PreCompact hook
+  alongside the UserPromptSubmit hook.
+- `aelf rebuild` CLI subcommand (with `--transcript`, `--n`,
+  `--budget`): manually emits the rebuild block to stdout for
+  inspection. Required surface for spec acceptance criterion 5
+  (manual mode ships before threshold-mode auto-triggers).
+- Matching `rebuild.md` slash command shipped in
+  `src/aelfrice/slash_commands/`.
+
+### Deferred (named here so users know they are coming)
+
+- **Session-scoped retrieval.** The schema's `session_id` field is
+  not yet populated end-to-end. The MVP retrieves globally.
+- **Triple-extractor query construction.** The MVP concatenates
+  recent turn text and per-token-unions over the result. A
+  triple-extracted query will replace this once the extractor
+  ships.
+- **Posterior-weighted ranking.** The MVP uses the public BM25
+  ranker. The Bayesian-weighted ranker is a v1.3+ candidate.
+- **Suppress-mode coordination with the harness.** The MVP runs in
+  augment mode only. Suppress-mode lands once eval-harness fidelity
+  calibration justifies it.
+- **Default trigger threshold.** Augment-mode means the trigger is
+  whatever Claude Code's default PreCompact firing is; the rebuilder
+  emits on every PreCompact. Per-session-state trigger tuning is
+  v1.3+.
+
 ## [Unreleased]
 
 ### Added (toward v1.2.0)
