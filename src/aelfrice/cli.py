@@ -606,7 +606,6 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 f"statusLine command manually.",
                 file=out,  # type: ignore[arg-type]
             )
-<<<<<<< HEAD
     if getattr(args, "rebuilder", False):
         pc_command = resolve_pre_compact_hook_command(scope)
         pc_result = install_pre_compact_hook(
@@ -619,7 +618,14 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
             print(
                 f"PreCompact hook already installed in {pc_result.path} "
                 f"(command={pc_command!r})",
-=======
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed PreCompact hook in {pc_result.path} "
+                f"(command={pc_command!r}) [v1.1 rebuilder alpha]",
+                file=out,  # type: ignore[arg-type]
+            )
     if getattr(args, "commit_ingest", False):
         ci_command = resolve_commit_ingest_command(scope)
         ci_result = install_commit_ingest_hook(
@@ -629,18 +635,12 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
             print(
                 f"commit-ingest hook already installed in {ci_result.path} "
                 f"(command={ci_command!r})",
->>>>>>> 3a4946a (feat: aelf setup --commit-ingest wires PostToolUse:Bash hook)
                 file=out,  # type: ignore[arg-type]
             )
         else:
             print(
-<<<<<<< HEAD
-                f"installed PreCompact hook in {pc_result.path} "
-                f"(command={pc_command!r}) [v1.1 rebuilder alpha]",
-=======
                 f"installed commit-ingest PostToolUse hook in {ci_result.path} "
                 f"(command={ci_command!r})",
->>>>>>> 3a4946a (feat: aelf setup --commit-ingest wires PostToolUse:Bash hook)
                 file=out,  # type: ignore[arg-type]
             )
     return 0
@@ -1373,20 +1373,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_setup.add_argument(
-<<<<<<< HEAD
         "--rebuilder", action="store_true",
         help=(
             "ALSO install the PreCompact hook for the v1.2 context "
             "rebuilder (alpha). Idempotent; coexists with all other "
             "hooks. Augment-mode only at v1.2.0a0."
-=======
+        ),
+    )
+    p_setup.add_argument(
         "--commit-ingest", dest="commit_ingest", action="store_true",
         help=(
             "additionally wire the PostToolUse:Bash hook so each "
             "successful `git commit` runs the triple extractor on its "
             "commit message and persists the resulting beliefs and "
             "edges under a session derived from git context."
->>>>>>> 3a4946a (feat: aelf setup --commit-ingest wires PostToolUse:Bash hook)
         ),
     )
     p_setup.set_defaults(func=_cmd_setup)
@@ -1478,13 +1478,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_unsetup.add_argument(
-<<<<<<< HEAD
         "--rebuilder", action="store_true",
         help="also remove the rebuilder PreCompact hook entry.",
-=======
+    )
+    p_unsetup.add_argument(
         "--commit-ingest", dest="commit_ingest", action="store_true",
         help="also remove the PostToolUse:Bash commit-ingest entry.",
->>>>>>> 3a4946a (feat: aelf setup --commit-ingest wires PostToolUse:Bash hook)
     )
     p_unsetup.set_defaults(func=_cmd_unsetup)
 
