@@ -67,6 +67,10 @@ from aelfrice.bfs_multihop import (
 )
 from aelfrice.entity_extractor import extract_entities
 from aelfrice.models import LOCK_NONE, Belief
+from aelfrice.scoring import (
+    DEFAULT_POSTERIOR_WEIGHT,
+    partial_bayesian_score,
+)
 from aelfrice.store import MemoryStore
 
 # v1.0 / v1.2 baseline. Used by the disabled-flag fallback so the
@@ -95,6 +99,7 @@ CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 RETRIEVAL_SECTION: Final[str] = "retrieval"
 ENTITY_INDEX_FLAG: Final[str] = "entity_index_enabled"
 BFS_FLAG: Final[str] = "bfs_enabled"
+POSTERIOR_WEIGHT_FLAG: Final[str] = "posterior_weight"
 
 # Env var override. Set to "0", "false", or "no" to force-disable
 # the index. Unset / any other value falls through to the TOML
@@ -106,6 +111,16 @@ ENV_ENTITY_INDEX: Final[str] = "AELFRICE_ENTITY_INDEX"
 # default-off contract means the env-var omission is the same as
 # the explicit-off case.
 ENV_BFS: Final[str] = "AELFRICE_BFS"
+# v1.3.0 posterior-weight env override. Float-typed; "0.0" is the
+# only value that fully disables (collapsing to BM25-only ordering).
+# Empty / non-numeric values fall through to the next precedence
+# layer (kwarg → TOML → DEFAULT_POSTERIOR_WEIGHT) and trace to
+# stderr. Same shape as `_read_toml_flag_for` tolerance.
+ENV_POSTERIOR_WEIGHT: Final[str] = "AELFRICE_POSTERIOR_WEIGHT"
+# Number of decimal places used to round `posterior_weight` before
+# inclusion in the cache key. Two callers passing weights that
+# differ by less than this granularity collapse to the same key.
+POSTERIOR_WEIGHT_KEY_PRECISION: Final[int] = 4
 _ENV_FALSY: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
 _ENV_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 
@@ -247,6 +262,128 @@ def _read_toml_flag_for(
     return None
 
 
+def _read_toml_float_for(
+    key: str,
+    start: Path | None = None,
+) -> float | None:
+    """Walk up from `start` looking for a `.aelfrice.toml` with
+    `[retrieval] <key>` typed as int or float. Returns the float
+    value when found, or None when no file / no key.
+
+    Tolerant: a malformed TOML or wrong-typed value returns None
+    and traces to stderr without raising. Mirrors
+    `_read_toml_flag_for` semantics but accepts numeric types.
+    """
+    serr: IO[str] = sys.stderr
+    current = (start if start is not None else Path.cwd()).resolve()
+    seen: set[Path] = set()
+    while current not in seen:
+        seen.add(current)
+        candidate = current / CONFIG_FILENAME
+        if candidate.is_file():
+            try:
+                raw = candidate.read_bytes()
+            except OSError as exc:
+                print(
+                    f"aelfrice retrieval: cannot read {candidate}: {exc}",
+                    file=serr,
+                )
+                return None
+            try:
+                parsed: dict[str, Any] = tomllib.loads(
+                    raw.decode("utf-8", errors="replace"),
+                )
+            except tomllib.TOMLDecodeError as exc:
+                print(
+                    f"aelfrice retrieval: malformed TOML in {candidate}: {exc}",
+                    file=serr,
+                )
+                return None
+            section_obj: Any = parsed.get(RETRIEVAL_SECTION, {})
+            if not isinstance(section_obj, dict):
+                return None
+            if key not in section_obj:  # type: ignore[operator]
+                return None
+            value: Any = section_obj[key]  # type: ignore[index]
+            # bool is a subclass of int -- reject it explicitly so
+            # `posterior_weight = true` reads as malformed rather
+            # than silently coercing to 1.0.
+            if isinstance(value, bool):
+                print(
+                    f"aelfrice retrieval: ignoring [{RETRIEVAL_SECTION}] "
+                    f"{key} in {candidate} (expected number, got bool)",
+                    file=serr,
+                )
+                return None
+            if isinstance(value, (int, float)):
+                return float(value)
+            print(
+                f"aelfrice retrieval: ignoring [{RETRIEVAL_SECTION}] "
+                f"{key} in {candidate} (expected number)",
+                file=serr,
+            )
+            return None
+        if current.parent == current:
+            break
+        current = current.parent
+    return None
+
+
+def _env_posterior_weight() -> float | None:
+    """Return the AELFRICE_POSTERIOR_WEIGHT env value as a float,
+    or None when unset / non-numeric.
+
+    Non-numeric values trace to stderr and fall through (same
+    fail-soft contract as the TOML readers).
+    """
+    raw = os.environ.get(ENV_POSTERIOR_WEIGHT)
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    try:
+        return float(stripped)
+    except ValueError:
+        print(
+            f"aelfrice retrieval: ignoring {ENV_POSTERIOR_WEIGHT}={raw!r} "
+            f"(expected float)",
+            file=sys.stderr,
+        )
+        return None
+
+
+def resolve_posterior_weight(
+    explicit: float | None = None,
+    *,
+    start: Path | None = None,
+) -> float:
+    """Resolve the posterior weight per v1.3 precedence:
+
+      1. AELFRICE_POSTERIOR_WEIGHT env var (float, including 0.0).
+      2. Explicit `explicit` kwarg from the caller.
+      3. `[retrieval] posterior_weight` in `.aelfrice.toml`.
+      4. Default: DEFAULT_POSTERIOR_WEIGHT (0.5 at v1.3.0).
+
+    A weight of `0.0` is treated as "BM25-only" (the byte-identical-
+    with-v1.0.x ordering case); negative weights are clamped to
+    0.0 since the spec defines the contract for weight ≥ 0 only.
+    """
+    env = _env_posterior_weight()
+    if env is not None:
+        weight = env
+    elif explicit is not None:
+        weight = float(explicit)
+    else:
+        toml_value = _read_toml_float_for(POSTERIOR_WEIGHT_FLAG, start)
+        weight = float(toml_value) if toml_value is not None else (
+            DEFAULT_POSTERIOR_WEIGHT
+        )
+    if weight < 0.0:
+        return 0.0
+    return weight
+
+
 def is_entity_index_enabled(
     explicit: bool | None = None,
     *,
@@ -348,6 +485,45 @@ def _l25_hits(
     return out
 
 
+def _l1_hits(
+    store: MemoryStore,
+    query: str,
+    *,
+    l1_limit: int,
+    posterior_weight: float,
+) -> list[Belief]:
+    """Run L1: FTS5 BM25 search, optionally reranked by partial-
+    Bayesian score.
+
+    `posterior_weight = 0.0` short-circuits to the v1.0.x path —
+    `store.search_beliefs(query, limit)` returns rows already
+    ordered by `bm25(beliefs_fts)` ascending, and we discard the
+    score. This guarantees byte-identical ordering with the v1.0
+    ranker.
+
+    `posterior_weight > 0` swaps in the scored variant and re-
+    sorts by `partial_bayesian_score(...)` descending. The
+    underlying SQL ORDER BY keeps the BM25 prefilter deterministic
+    in the truncation case (rare-but-possible at small `l1_limit`).
+    Tie-break on belief id ASC so result lists are reproducible.
+    """
+    if posterior_weight == 0.0:
+        return store.search_beliefs(query, limit=l1_limit)
+    scored = store.search_beliefs_scored(query, limit=l1_limit)
+    if not scored:
+        return []
+    keyed: list[tuple[float, str, Belief]] = []
+    for b, bm25_raw in scored:
+        s = partial_bayesian_score(
+            bm25_raw, b.alpha, b.beta, posterior_weight,
+        )
+        keyed.append((s, b.id, b))
+    # Higher score = more relevant. Tie-break on id ASC for
+    # determinism (matches the convention in bfs_multihop and L2.5).
+    keyed.sort(key=lambda x: (-x[0], x[1]))
+    return [b for _, _, b in keyed]
+
+
 def retrieve(
     store: MemoryStore,
     query: str,
@@ -363,6 +539,7 @@ def retrieve(
     bfs_nodes_per_hop: int = BFS_DEFAULT_NODES_PER_HOP,
     bfs_total_budget_nodes: int = BFS_DEFAULT_TOTAL_BUDGET_NODES,
     bfs_min_path_score: float = BFS_DEFAULT_MIN_PATH_SCORE,
+    posterior_weight: float | None = None,
 ) -> list[Belief]:
     """Return L0 locked + L2.5 entity + L1 BM25 + L3 BFS expansions.
 
@@ -383,6 +560,15 @@ def retrieve(
     order until the shared token budget is exhausted. When
     disabled, output is byte-identical to the L0+L2.5+L1 path.
 
+    `posterior_weight` (v1.3.0): float ≥ 0. Combines the L1 BM25
+    score with the Beta-Bernoulli posterior_mean log-additively:
+    `score = log(-bm25) + posterior_weight * log(posterior_mean)`.
+    `0.0` collapses to v1.0.x BM25-only ordering (byte-identical
+    regression-tested). Default `0.5` per docs/bayesian_ranking.md
+    § Defaults; resolved via `resolve_posterior_weight()` (env →
+    kwarg → TOML → 0.5). L0 locks bypass the score entirely; L2.5
+    and L3 are unaffected.
+
     Empty / whitespace-only query: returns L0 only (no L2.5, L1, or
     L3).
 
@@ -395,6 +581,7 @@ def retrieve(
     """
     enabled = is_entity_index_enabled(entity_index_enabled)
     bfs_on = is_bfs_enabled(bfs_enabled)
+    weight = resolve_posterior_weight(posterior_weight)
 
     locked: list[Belief] = store.list_locked_beliefs()
     locked_ids: set[str] = {b.id for b in locked}
@@ -433,7 +620,10 @@ def retrieve(
 
     l1: list[Belief] = []
     if query.strip():
-        raw_l1: list[Belief] = store.search_beliefs(query, limit=l1_limit)
+        raw_l1: list[Belief] = _l1_hits(
+            store, query,
+            l1_limit=l1_limit, posterior_weight=weight,
+        )
         l1 = [
             b for b in raw_l1
             if b.id not in locked_ids and b.id not in l25_ids
@@ -495,6 +685,7 @@ def retrieve_with_tiers(
     bfs_nodes_per_hop: int = BFS_DEFAULT_NODES_PER_HOP,
     bfs_total_budget_nodes: int = BFS_DEFAULT_TOTAL_BUDGET_NODES,
     bfs_min_path_score: float = BFS_DEFAULT_MIN_PATH_SCORE,
+    posterior_weight: float | None = None,
 ) -> tuple[
     list[Belief], list[str], list[str], list[str], list[list[str]],
 ]:
@@ -512,6 +703,7 @@ def retrieve_with_tiers(
     """
     enabled = is_entity_index_enabled(entity_index_enabled)
     bfs_on = is_bfs_enabled(bfs_enabled)
+    weight = resolve_posterior_weight(posterior_weight)
 
     locked: list[Belief] = store.list_locked_beliefs()
     locked_ids_list: list[str] = [b.id for b in locked]
@@ -542,7 +734,10 @@ def retrieve_with_tiers(
 
     l1: list[Belief] = []
     if query.strip():
-        raw_l1: list[Belief] = store.search_beliefs(query, limit=l1_limit)
+        raw_l1: list[Belief] = _l1_hits(
+            store, query,
+            l1_limit=l1_limit, posterior_weight=weight,
+        )
         l1 = [
             b for b in raw_l1
             if b.id not in locked_ids and b.id not in l25_ids
@@ -602,6 +797,7 @@ def retrieve_v2(
     bfs_nodes_per_hop: int = BFS_DEFAULT_NODES_PER_HOP,
     bfs_total_budget_nodes: int = BFS_DEFAULT_TOTAL_BUDGET_NODES,
     bfs_min_path_score: float = BFS_DEFAULT_MIN_PATH_SCORE,
+    posterior_weight: float | None = None,
 ) -> RetrievalResult:
     """Lab-compatible retrieval wrapper for academic-suite adapters.
 
@@ -645,6 +841,7 @@ def retrieve_v2(
         bfs_nodes_per_hop=bfs_nodes_per_hop,
         bfs_total_budget_nodes=bfs_total_budget_nodes,
         bfs_min_path_score=bfs_min_path_score,
+        posterior_weight=posterior_weight,
     )
     if include_locked:
         beliefs = out
@@ -667,14 +864,20 @@ class RetrievalCache:
     the cache. Per-instance: two `RetrievalCache` objects pointing
     at different stores never share state.
 
-    Cache key includes both the entity-index flag (v1.3.0 default-on)
-    and the BFS flag (v1.3.0 default-off). Two queries that differ
-    only in either flag are distinct entries. The BFS knobs
-    (`bfs_max_depth` etc.) are NOT in the key — per
+    Cache key includes the entity-index flag (v1.3.0 default-on),
+    the BFS flag (v1.3.0 default-off), and `posterior_weight`
+    (v1.3.0 default 0.5, rounded to `POSTERIOR_WEIGHT_KEY_PRECISION`
+    decimals so floating-point jitter does not fragment the cache).
+    Two queries that differ in any of these are distinct entries.
+    BFS knobs (`bfs_max_depth` etc.) are NOT in the key — per
     docs/bfs_multihop.md § Cache invalidation, callers that toggle
-    them per call would defeat the cache anyway, and the default-off
-    flag means a single process either uses BFS for every retrieval
-    or none.
+    them per call would defeat the cache anyway.
+
+    The `posterior_weight` cache-key extension is a structural fix
+    against cross-caller collisions per docs/bayesian_ranking.md §
+    "Cache invalidation". Posterior-write staleness is handled by
+    the existing store-mutation callback (apply_feedback ->
+    update_belief -> _fire_invalidation -> cache wipe).
     """
 
     def __init__(
@@ -687,7 +890,10 @@ class RetrievalCache:
         self._store = store
         self._capacity = capacity
         self._entries: OrderedDict[
-            tuple[str, int, int, bool | None, bool | None], list[Belief]
+            tuple[
+                str, int, int, bool | None, bool | None, float | None,
+            ],
+            list[Belief],
         ] = OrderedDict()
         store.add_invalidation_callback(self.invalidate)
 
@@ -699,14 +905,30 @@ class RetrievalCache:
         *,
         entity_index_enabled: bool | None = None,
         bfs_enabled: bool | None = None,
+        posterior_weight: float | None = None,
     ) -> list[Belief]:
-        """Cached `retrieve()`. Identical contract to the free function."""
+        """Cached `retrieve()`. Identical contract to the free function.
+
+        Cache key keeps `posterior_weight` in its caller-supplied
+        form (None or a float) — `None` is its own bucket and
+        deferred env / TOML resolution happens once on the miss
+        path. Resolving on every hit would walk Path.cwd().resolve()
+        each time and blow the AC2 cache-hit latency budget.
+        """
+        if posterior_weight is None:
+            key_weight: float | None = None
+        else:
+            key_weight = round(
+                float(posterior_weight),
+                POSTERIOR_WEIGHT_KEY_PRECISION,
+            )
         key = (
             canonicalize_query(query),
             token_budget,
             l1_limit,
             entity_index_enabled,
             bfs_enabled,
+            key_weight,
         )
         cached = self._entries.get(key)
         if cached is not None:
@@ -717,6 +939,7 @@ class RetrievalCache:
             token_budget=token_budget, l1_limit=l1_limit,
             entity_index_enabled=entity_index_enabled,
             bfs_enabled=bfs_enabled,
+            posterior_weight=posterior_weight,
         )
         self._entries[key] = list(result)
         if len(self._entries) > self._capacity:
