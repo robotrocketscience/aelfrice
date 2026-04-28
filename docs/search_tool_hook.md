@@ -301,3 +301,278 @@ The hook closes the gap on the agent-search code path.
   user-prompt budget. Worth measuring real-world injection size
   before defaulting; could be 400 or 800 depending on observed
   signal-to-noise.
+
+---
+
+## Bash extension (v1.5.0, #155)
+
+**Status:** spec.
+**Target milestone:** v1.5.0.
+**Dependencies:** v1.2.x search-tool hook (this document § Design).
+Reuses the `aelfrice.hook_search_tool` entry point, the
+`retrieve()` plumbing it already calls, and the v1.5.0 BM25F lane
+(opt-in via `bm25f_enabled`; #148).
+**Risk:** medium. Bash hooks fire many times per turn; a poorly
+budgeted matcher would make the agent feel slow without the user
+ever invoking a search tool directly.
+
+### Decision summary
+
+The v1.2.x hook ships matcher `Grep|Glob` only (this doc §
+Design). The carryover question from the 2026-04-27 design
+discussion was whether to extend to `Bash` for shell commands
+that carry the same search intent (`grep`, `rg`, `find`, `fd`).
+
+**Decision: extend to a narrow allowlist of search-shaped Bash
+commands behind a separate opt-in flag.** Default-OFF at v1.5.0;
+default-on flip is gated on telemetry showing the latency and
+injection-noise budgets hold (§ AC3 below).
+
+### Allowlist
+
+The matcher fires only when `tool_name == "Bash"` AND the parsed
+command matches one of:
+
+| command | maps to | query field |
+| --- | --- | --- |
+| `grep` / `egrep` / `fgrep` | Grep | first non-flag positional after the pattern recogniser |
+| `rg` / `ripgrep` | Grep | first non-flag positional after the pattern recogniser |
+| `ack` | Grep | first non-flag positional after the pattern recogniser |
+| `find` | Glob | argument to `-name` / `-iname` if present, else skip |
+| `fd` / `fdfind` | Glob | first non-flag positional after the pattern recogniser |
+
+`ls <path>` is **explicitly excluded.** The "what's here" reflex
+fires too frequently and the path token rarely carries belief-
+worthy intent. Reconsider after telemetry on the v1.5.0 surface.
+
+`cd`, `cat`, `head`, `tail`, `wc`, `sort`, `uniq`, and any pipe
+to such are **excluded.** They are state changes, output
+manipulation, or aggregation — none carry retrieval intent.
+
+Anything not in the allowlist silent-skips. There is no
+fall-through to "match all Bash."
+
+### Per-command parsing
+
+Each allowlisted command is its own micro-parser. The parser:
+
+1. Tokenises `tool_input.command` on whitespace (no shell
+   evaluation; the hook never executes the command).
+2. Skips the leading prefix (e.g., `cd foo &&`, `nohup`, env
+   assignments like `RUST_LOG=trace rg ...`) until the first
+   token matches an allowlisted command name (or its absolute /
+   relative path basename — `/usr/bin/grep` matches `grep`).
+3. Walks remaining tokens; flag tokens (leading `-`) and their
+   parameter values (where the flag takes one) are skipped per a
+   per-command flag-value table.
+4. Returns the first remaining positional as the query, or `None`
+   if no positional remains.
+
+For `find`, the rule is stricter: the parser ONLY emits a query
+when an `-name` or `-iname` argument is present. `find . -type f`
+contributes no signal and is silent-skipped.
+
+Pipelines, command substitutions, redirections, here-docs, and
+shell control flow (`for`, `while`, `if`) abort the parser:
+returning `None` on any unrecognised structural token. The
+parser is intentionally narrow; failure to parse must
+silent-skip, never fire on a wrong query.
+
+The flag-value table per command lives in
+`aelfrice.hook_search_tool` as a module-level `Final` mapping;
+each entry is a tuple `(takes_arg: bool, ...)`. The table is
+unit-tested per-command (§ Test plan).
+
+### Per-turn fire cap
+
+The Bash matcher introduces a fire cap of **3 fires per session
+turn** to prevent pipeline storms (e.g., a `for` loop that runs
+`rg` ten times). State is stored in a per-process counter keyed
+by `session_id` from the hook payload. Once the cap is reached
+the matcher silent-skips for the rest of the turn.
+
+The 3-cap is conservative; can be raised after telemetry. The
+cap does NOT apply to the existing `Grep|Glob` matcher (which
+fires once per direct tool call and rarely loops).
+
+### Token budget
+
+Bash matches are auxiliary signals — lower confidence than a
+direct `Grep` / `Glob` invocation, where the agent has already
+formulated the query as the tool input. Bash extraction is one
+parse hop further from the agent's intent, so the budget shrinks
+correspondingly:
+
+| matcher | `token_budget` | `l1_limit` |
+| --- | --- | --- |
+| `Grep|Glob` (v1.2.x) | 600 | 10 |
+| `Bash` allowlist (v1.5.0) | **300** | **5** |
+
+Half the v1.2.x figures. Tunable per `[search_tool_hook]
+bash_token_budget` / `bash_l1_limit` keys in `.aelfrice.toml`
+once production data lands.
+
+### BM25F interaction (v1.5.0 #148)
+
+The hook continues to call `retrieve()`. When the project has
+opted into BM25F via `[retrieval] bm25f_enabled = true` (or the
+`AELFRICE_BM25F` env), the Bash-matcher fires use the same lane
+— no separate plumb-through. Default-off at v1.5.0 so the
+combined surface is conservative until telemetry validates both
+levers.
+
+### Hook payload extension
+
+The Bash-matcher path keys its emitted `additionalContext` block
+by the parsed query AND the original command (truncated to 80
+chars), so the agent can tell which Bash invocation triggered
+the injection:
+
+```
+<aelfrice-search query="..." source="bash:rg" cmd="rg -t py foo src/">
+  ...results...
+</aelfrice-search>
+```
+
+The `Grep|Glob` matcher emits no `source` attribute (preserving
+v1.2.x output for unchanged callers).
+
+### Telemetry
+
+The default-on flip is gated on two metrics, captured by the
+hook to a per-project ring buffer at
+`<project>/.git/aelfrice/telemetry/search_tool_hook.jsonl`
+(append-only, capped at 1000 entries, oldest evicted):
+
+1. **Latency p95.** Per-fire wall-clock from hook entry to
+   stdout flush. Budget: same 50 ms median / 200 ms p95 contract
+   as the v1.2.x matcher.
+2. **Injection-noise rate.** Fraction of Bash-matcher fires
+   that produced no L0 hits AND no L1 hits at confidence ≥ a
+   documented floor. Budget: ≤ 30 % at the default-on flip
+   threshold. Higher means the matcher is dragging the agent's
+   context window with low-signal injections.
+
+The telemetry surface lands as a small `aelfrice.telemetry`
+module addition; reuse the existing per-project DB locator
+(`aelfrice.cli.db_path`) so the file lives next to the brain
+graph and inherits its gitignore boundary.
+
+`aelf doctor` gains a `search_tool_hook telemetry` section that
+prints the rolling p50 / p95 latency and the noise rate.
+
+### Failure modes
+
+Same contract as the v1.2.x hook: any failure path
+(unrecognised command, parser error, fire-cap reached, store
+missing, retrieval exception) returns silently with no
+`additionalContext`. The Bash tool runs unaffected. The
+principle is unchanged: **the hook may NEVER cause a Bash
+command to feel broken.**
+
+### Opt-in surface
+
+`aelf setup --search-tool-bash` writes the Bash matcher
+configuration. Default on fresh install: opt-in at v1.5.0,
+mirroring the v1.2.x `--search-tool` rollout.
+
+`aelf setup --no-search-tool-bash` removes it. Independent of
+`--search-tool` (the v1.2.x Grep|Glob path) so a user can run
+either, both, or neither.
+
+### Acceptance criteria
+
+1. The Bash matcher fires only on allowlisted commands and
+   silent-skips on every other Bash invocation. Verified by a
+   parser-level unit test per command in the allowlist plus a
+   property test that randomly generated non-allowlisted
+   commands never fire.
+2. Per-command query extraction is exact for the documented
+   shape (e.g., `grep -r foo src/` → `"foo"`). Each command has
+   ≥ 5 unit tests in `tests/test_search_tool_hook_bash.py`
+   covering: bare invocation, with flags, with flag values, with
+   pipelines (must skip), with command substitution (must skip).
+3. Default-on flip is gated on telemetry showing latency p95
+   ≤ 200 ms AND injection-noise rate ≤ 30 % over a documented
+   sample size (≥ 200 fires from a representative corpus).
+   Until both clear, default stays OFF.
+4. Allowlist is narrow: no fall-through to "match all Bash". A
+   regression test asserts that an unmodified `bash -c 'something'`
+   payload never produces an `additionalContext` block.
+5. Per-turn fire cap (3) holds: a payload that triggers four
+   allowlisted fires within one `session_id` produces three
+   `additionalContext` blocks and one silent skip.
+6. Hook output for the Bash matcher carries `source="bash:<cmd>"`
+   and the truncated `cmd` attribute. Hook output for the
+   v1.2.x Grep|Glob matcher is unchanged (no `source`
+   attribute).
+7. `aelf setup --search-tool-bash` writes the hook config and
+   `aelf setup --no-search-tool-bash` removes it. Idempotent in
+   both directions, independent of the v1.2.x flag.
+8. `aelf doctor` surfaces the rolling latency and noise-rate
+   telemetry summary. Empty / missing telemetry file prints
+   "no fires recorded" rather than raising.
+
+### Test plan
+
+- `tests/test_search_tool_hook_bash.py`: per-command parser
+  unit tests (criteria 1–2, 4–5).
+- `tests/test_search_tool_hook_bash_integration.py`: end-to-end
+  hook invocation against a `:memory:` store, asserting the
+  emitted block shape and the `source` attribute (criterion 6).
+- `tests/test_aelf_setup_search_tool_bash.py`: idempotent
+  install + uninstall (criterion 7).
+- `tests/test_aelf_doctor_telemetry.py`: doctor surface
+  (criterion 8).
+- `tests/regression/test_search_tool_bash_latency.py`: per-fire
+  p95 budget on a 10k-belief store. Reuses the v1.2.x latency
+  fixture conventions.
+
+All deterministic, in-memory store, < 200 ms each except the
+latency regression. Wall-clock cap matches the existing test
+suite policy.
+
+### Out of scope
+
+- Detecting search intent in arbitrary shell pipelines (`grep
+  foo file | sed ... | head`). The parser is allowlist-only;
+  pipelines abort. Reconsider after the v1.5.x telemetry
+  pass.
+- LLM-augmented query rewriting on the parsed query. The Bash
+  matcher reuses the same mechanical token-OR-join the v1.2.x
+  hook uses; smarter expansion lands jointly with v2.0 HRR.
+- Writing belief observations from Bash hook fires. The hook
+  is read-only, same contract as v1.2.x.
+- Cross-tool deduplication. A turn that fires the v1.2.x
+  matcher AND the Bash matcher emits two blocks; the agent
+  reads both. Dedup is a v1.6.x candidate after telemetry on
+  the actual collision rate.
+
+### What unblocks when this lands
+
+The Bash matcher closes the v1.2.x gap where the agent reaches
+for `rg` or `find` instead of `Grep` / `Glob` (e.g., when an
+agent has been trained on shell habits, or when the user's
+prompt style steers toward bash commands). With both matchers
+running, the agent's search-shaped tool intent is covered
+regardless of which surface it picks.
+
+This is also the v1.5.x prerequisite for the v1.6+ proposal to
+consolidate the hooks on a single intent-extraction layer (one
+hook, multiple tool-name → query-field maps), which only makes
+sense once the per-command-per-tool surface has been validated
+in production.
+
+### Open questions deferred to implementation
+
+- Should the per-turn fire cap be configurable, or is 3 a
+  permanent invariant? Lean toward configurable
+  (`bash_fire_cap_per_turn` in `.aelfrice.toml`) so users can
+  tighten or loosen without a code change.
+- Do we ship the telemetry file at v1.5.0 or wait for v1.5.x?
+  Recommendation: ship at v1.5.0. The default-on flip is the
+  whole point of the gate, and it can't happen without
+  telemetry data flowing.
+- Should `aelf setup --search-tool` imply `--search-tool-bash`?
+  Recommendation: no at v1.5.0. Keep the surfaces independent
+  until production data shows they should rise/fall together.
