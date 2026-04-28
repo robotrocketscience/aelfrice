@@ -678,7 +678,7 @@ def parse_response(
 
 
 @dataclass
-class _ClientResponse:
+class ClientResponse:
     """Internal: shape we expect from the Anthropic SDK call."""
 
     text: str
@@ -694,7 +694,7 @@ def _call_anthropic(
     user_message: str,
     max_output_tokens: int,
     sdk_module: "Any" = None,
-) -> _ClientResponse:
+) -> ClientResponse:
     """Make one Anthropic Messages API call and return the response text + usage.
 
     `sdk_module` is a test injection: tests pass a fake module with
@@ -731,7 +731,7 @@ def _call_anthropic(
 
     text = _extract_text_from_response(resp)
     input_tokens, output_tokens = _extract_usage(resp)
-    return _ClientResponse(
+    return ClientResponse(
         text=text,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
