@@ -282,3 +282,19 @@ def run(
         rebuild_block_tokens=rebuild_block_tokens,
         turns=turn_results,
     )
+
+
+if __name__ == "__main__":
+    # `python -m benchmarks.context_rebuilder.replay <fixture>` invokes
+    # this branch. Defer to __main__.py for the CLI surface so
+    # `python -m benchmarks.context_rebuilder` and `python -m
+    # benchmarks.context_rebuilder.replay` produce identical behaviour.
+    # Lazy import avoids the import cycle that would arise if __main__
+    # were imported at top of file (it imports back from us).
+    import runpy as _runpy
+    import sys as _sys
+
+    _runpy.run_module(
+        "benchmarks.context_rebuilder", run_name="__main__", alter_sys=True,
+    )
+    _sys.exit(0)
