@@ -79,6 +79,7 @@ from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
 from aelfrice.setup import (
     COMMIT_INGEST_SCRIPT_NAME,
+    SESSION_START_HOOK_SCRIPT_NAME,
     SettingsScope,
     TRANSCRIPT_LOGGER_SCRIPT_NAME,
     clean_dangling_shims,
@@ -86,15 +87,18 @@ from aelfrice.setup import (
     detect_default_scope,
     install_commit_ingest_hook,
     install_pre_compact_hook,
+    install_session_start_hook,
     install_statusline,
     install_transcript_ingest_hooks,
     install_user_prompt_submit_hook,
     resolve_commit_ingest_command,
     resolve_hook_command,
     resolve_pre_compact_hook_command,
+    resolve_session_start_hook_command,
     resolve_transcript_logger_command,
     uninstall_commit_ingest_hook,
     uninstall_pre_compact_hook,
+    uninstall_session_start_hook,
     uninstall_statusline,
     uninstall_transcript_ingest_hooks,
     uninstall_user_prompt_submit_hook,
@@ -582,6 +586,24 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 f"({', '.join(ti_result.already)}) in {ti_result.path}",
                 file=out,  # type: ignore[arg-type]
             )
+    if getattr(args, "session_start", False):
+        ss_command = resolve_session_start_hook_command(scope)
+        ss_result = install_session_start_hook(
+            path, command=ss_command, timeout=args.timeout,
+            status_message=args.status_message,
+        )
+        if ss_result.already_present:
+            print(
+                f"SessionStart hook already installed in {ss_result.path} "
+                f"(command={ss_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed SessionStart hook in {ss_result.path} "
+                f"(command={ss_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
     if not args.no_statusline:
         sl = install_statusline(path)
         if sl.mode == "installed":
@@ -668,6 +690,21 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
             f"({match_label})",
             file=out,  # type: ignore[arg-type]
         )
+    if getattr(args, "session_start", False):
+        ss_result = uninstall_session_start_hook(
+            path, command_basename=SESSION_START_HOOK_SCRIPT_NAME,
+        )
+        if ss_result.removed == 0:
+            print(
+                f"no SessionStart hook in {ss_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"removed {ss_result.removed} SessionStart entr"
+                f"{'y' if ss_result.removed == 1 else 'ies'} from {ss_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
     if getattr(args, "transcript_ingest", False):
         ti_result = uninstall_transcript_ingest_hooks(
             path, command_basename=TRANSCRIPT_LOGGER_SCRIPT_NAME,
@@ -1389,6 +1426,14 @@ def build_parser() -> argparse.ArgumentParser:
             "edges under a session derived from git context."
         ),
     )
+    p_setup.add_argument(
+        "--session-start", dest="session_start", action="store_true",
+        help=(
+            "additionally wire the SessionStart hook so each new Claude Code "
+            "session opens with L0 locked beliefs already injected. "
+            "Coexists with the UserPromptSubmit and transcript-ingest hooks."
+        ),
+    )
     p_setup.set_defaults(func=_cmd_setup)
 
     p_uninstall = sub.add_parser(
@@ -1484,6 +1529,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_unsetup.add_argument(
         "--commit-ingest", dest="commit_ingest", action="store_true",
         help="also remove the PostToolUse:Bash commit-ingest entry.",
+    )
+    p_unsetup.add_argument(
+        "--session-start", dest="session_start", action="store_true",
+        help="also remove the SessionStart hook entry.",
     )
     p_unsetup.set_defaults(func=_cmd_unsetup)
 

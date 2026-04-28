@@ -428,6 +428,8 @@ TRANSCRIPT_INGEST_EVENTS: Final[tuple[str, ...]] = (
     "UserPromptSubmit", "Stop", "PreCompact", "PostCompact",
 )
 TRANSCRIPT_LOGGER_SCRIPT_NAME: Final[str] = "aelf-transcript-logger"
+SESSION_START_EVENT_KEY: Final[str] = "SessionStart"
+SESSION_START_HOOK_SCRIPT_NAME: Final[str] = "aelf-session-start-hook"
 
 
 def resolve_transcript_logger_command(scope: SettingsScope) -> str:
@@ -629,6 +631,108 @@ def uninstall_commit_ingest_hook(
     else:
         assert command_basename is not None
         kept = [e for e in entries if not _entry_matches_basename(e, command_basename)]
+    removed = before - len(kept)
+    if removed == 0:
+        return UninstallResult(path=settings_path, removed=0)
+    entries[:] = kept
+    _atomic_write(settings_path, data)
+    return UninstallResult(path=settings_path, removed=removed)
+
+
+# --- SessionStart wiring -----------------------------------------------
+
+
+def resolve_session_start_hook_command(scope: SettingsScope) -> str:
+    """Pick the absolute aelf-session-start-hook path for `scope`.
+
+    Same routing primitive as resolve_hook_command and
+    resolve_transcript_logger_command: project scope pins to the venv
+    next to sys.executable; user scope prefers $PATH.
+    """
+    venv_bin = _venv_bin_dir()
+    venv_hook = _executable_in_dir(venv_bin, SESSION_START_HOOK_SCRIPT_NAME)
+    path_hook_str = shutil.which(SESSION_START_HOOK_SCRIPT_NAME)
+    path_hook = Path(path_hook_str) if path_hook_str else None
+    if scope == "project":
+        chosen = venv_hook or path_hook
+    else:
+        chosen = path_hook or venv_hook
+    if chosen is None:
+        return SESSION_START_HOOK_SCRIPT_NAME
+    return str(chosen)
+
+
+def install_session_start_hook(
+    settings_path: Path,
+    *,
+    command: str,
+    timeout: int | None = None,
+    status_message: str | None = None,
+) -> InstallResult:
+    """Add a SessionStart hook entry running `command`. Idempotent.
+
+    SessionStart fires once per Claude Code session, before any user
+    message. The aelfrice handler injects L0 locked beliefs as the
+    session's baseline context.
+
+    Coexists with the UserPromptSubmit and transcript-ingest hooks
+    independently; the three events live under separate keys in
+    settings.json's hooks block and never disturb each other.
+    """
+    if not command:
+        raise ValueError("command must be a non-empty string")
+    data = _load_settings(settings_path)
+    entries = _get_event_list(data, SESSION_START_EVENT_KEY, create=True)
+    if _find_entry_index(entries, command) is not None:
+        return InstallResult(
+            path=settings_path, installed=False, already_present=True
+        )
+    entries.append(
+        _build_entry(
+            command=command, timeout=timeout, status_message=status_message
+        )
+    )
+    _atomic_write(settings_path, data)
+    return InstallResult(
+        path=settings_path, installed=True, already_present=False
+    )
+
+
+def uninstall_session_start_hook(
+    settings_path: Path,
+    *,
+    command: str | None = None,
+    command_basename: str | None = None,
+) -> UninstallResult:
+    """Remove SessionStart entries matching `command` or `command_basename`.
+
+    Same exact/basename match semantics as
+    uninstall_user_prompt_submit_hook. Returns removed=0 if the file
+    does not exist or has no matching entry.
+    """
+    if command is None and command_basename is None:
+        raise ValueError("provide command or command_basename")
+    if command is not None and command_basename is not None:
+        raise ValueError("command and command_basename are mutually exclusive")
+    if command is not None and not command:
+        raise ValueError("command must be a non-empty string")
+    if command_basename is not None and not command_basename:
+        raise ValueError("command_basename must be a non-empty string")
+    if not settings_path.exists():
+        return UninstallResult(path=settings_path, removed=0)
+    data = _load_settings(settings_path)
+    entries = _get_event_list(data, SESSION_START_EVENT_KEY, create=False)
+    if entries is None:
+        return UninstallResult(path=settings_path, removed=0)
+    before = len(entries)
+    if command is not None:
+        kept = [e for e in entries if not _entry_matches(e, command)]
+    else:
+        assert command_basename is not None
+        kept = [
+            e for e in entries
+            if not _entry_matches_basename(e, command_basename)
+        ]
     removed = before - len(kept)
     if removed == 0:
         return UninstallResult(path=settings_path, removed=0)

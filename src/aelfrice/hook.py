@@ -39,6 +39,7 @@ from aelfrice.context_rebuilder import (
 )
 from aelfrice.hook_search import search_for_prompt
 from aelfrice.models import LOCK_USER, Belief
+from aelfrice.retrieval import retrieve
 from aelfrice.store import MemoryStore
 
 DEFAULT_HOOK_TOKEN_BUDGET: Final[int] = 1500
@@ -49,8 +50,20 @@ prompt and other concurrent UserPromptSubmit hooks competing for
 the same context window.
 """
 
+DEFAULT_SESSION_START_TOKEN_BUDGET: Final[int] = 1500
+"""Token budget for the SessionStart context block.
+
+SessionStart fires once at the beginning of a Claude Code session,
+before any user prompt. The block surfaces L0 locked beliefs (the
+user-asserted ground truth) so the agent enters the session with
+durable baseline knowledge already in context. Per-prompt
+retrieval continues to fire on every UserPromptSubmit thereafter.
+"""
+
 OPEN_TAG: Final[str] = "<aelfrice-memory>"
 CLOSE_TAG: Final[str] = "</aelfrice-memory>"
+SESSION_START_OPEN_TAG: Final[str] = "<aelfrice-baseline>"
+SESSION_START_CLOSE_TAG: Final[str] = "</aelfrice-baseline>"
 _PROMPT_KEY: Final[str] = "prompt"
 _TRANSCRIPT_PATH_KEY: Final[str] = "transcript_path"
 _CWD_KEY: Final[str] = "cwd"
@@ -247,6 +260,89 @@ def _rebuild_and_format(
         store.close()
 
 
+def session_start(
+    *,
+    stdin: IO[str] | None = None,
+    stdout: IO[str] | None = None,
+    stderr: IO[str] | None = None,
+    token_budget: int | None = None,
+) -> int:
+    """Run the SessionStart hook. Always returns 0.
+
+    Reads the SessionStart JSON payload from stdin (consumed for
+    protocol compatibility -- no fields are read from it at MVP) and
+    writes a baseline context block of L0 locked beliefs to stdout.
+    The block fires once per session, before any user message.
+
+    Empty store / no locked beliefs: emit nothing (return 0). Per the
+    non-blocking hook contract, every failure path returns 0; internal
+    exceptions write to stderr and are otherwise swallowed.
+
+    Why locked-only: at session start there is no prompt to query
+    against, so BM25-driven L1 retrieval would have nothing to score.
+    L0 locked beliefs are the user-asserted ground truth that should
+    survive across every session regardless of context, which makes
+    them the correct content for an unconditional session-start
+    injection.
+    """
+    sin = stdin if stdin is not None else sys.stdin
+    sout = stdout if stdout is not None else sys.stdout
+    serr = stderr if stderr is not None else sys.stderr
+    try:
+        # Drain stdin so the hook protocol is honored even though we
+        # do not consume any fields.
+        try:
+            _ = sin.read()
+        except Exception:
+            pass
+        budget = (
+            token_budget
+            if token_budget is not None
+            else DEFAULT_SESSION_START_TOKEN_BUDGET
+        )
+        body = _retrieve_and_format_baseline(budget)
+        if body:
+            sout.write(body)
+    except Exception:  # non-blocking: surface but do not fail
+        traceback.print_exc(file=serr)
+    return 0
+
+
+def _retrieve_and_format_baseline(token_budget: int) -> str:
+    """Retrieve L0 locked beliefs and emit them as the baseline block.
+
+    Calls retrieve() with an empty query so only the L0 layer fires.
+    Equivalent to MemoryStore.list_locked_beliefs() filtered through
+    retrieve()'s budget logic, which leaves L0 untrimmed even when
+    the locked set alone exceeds the budget.
+    """
+    store = _open_store()
+    try:
+        hits = retrieve(store, "", token_budget=token_budget)
+    finally:
+        store.close()
+    if not hits:
+        return ""
+    return _format_baseline_hits(hits)
+
+
+def _format_baseline_hits(hits: list[Belief]) -> str:
+    """Format SessionStart block.
+
+    Same per-line shape as `_format_hits` (the UserPromptSubmit
+    formatter) but wrapped in distinct <aelfrice-baseline> tags so
+    the model can tell which channel a belief arrived through. The
+    [locked] prefix renders identically.
+    """
+    lines: list[str] = [SESSION_START_OPEN_TAG]
+    for h in hits:
+        prefix = "[locked]" if h.lock_level == LOCK_USER else "        "
+        lines.append(f"{prefix} {h.id}: {h.content}")
+    lines.append(SESSION_START_CLOSE_TAG)
+    lines.append("")
+    return "\n".join(lines)
+
+
 def main() -> int:
     """Entry point for `python -m aelfrice.hook`."""
     return user_prompt_submit()
@@ -255,6 +351,11 @@ def main() -> int:
 def main_pre_compact() -> int:
     """Entry point for the PreCompact hook console script."""
     return pre_compact()
+
+
+def main_session_start() -> int:
+    """Entry point for the SessionStart hook console script."""
+    return session_start()
 
 
 if __name__ == "__main__":
