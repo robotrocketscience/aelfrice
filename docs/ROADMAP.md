@@ -111,14 +111,21 @@ What the research line had, when each piece returns:
 | HRR vocabulary bridge | v2.0.0 |
 | Type-aware compression | v2.0.0 |
 | Doc / semantic linker | v2.0.0 |
-| `wonder` / `reason` / `core` / `unlock` / `delete` / `confirm` | v2.0.0 |
-| Multi-axis uncertainty substrate (`UncertaintyVector`) | v2.0.0 (substrate for `wonder`; decision pending) |
+| Graph-traversal store methods (`expand_graph`, `get_neighbors`, `edge_exists`) | v1.5 or v1.6 (substrate for `wonder` + `reason`; ships ahead of v2.0) |
+| `ingest_turn(bulk=)` parameter | v2.0.0 ([#194](https://github.com/robotrocketscience/aelfrice/issues/194); mechanical, post-`wonder_ingest` port) |
+| `scoring.uncertainty_score(α, β)` | v2.0.0 ([#195](https://github.com/robotrocketscience/aelfrice/issues/195); conditional on substrate decision) |
+| Multi-axis uncertainty substrate (`UncertaintyVector`) | v2.0.0 substrate decision ([#196](https://github.com/robotrocketscience/aelfrice/issues/196); load-bearing — blocks `wonder` + `reason`) |
+| Speculative-belief schema migration (3 columns + 1 belief type + 2 edge types) | v2.0.0 (depends on #196) |
 | Speculative / causal edge types (`SPECULATES`, `DEPENDS_ON`, `RESOLVES`, `HIBERNATED`) | v2.0.0 (with `wonder`) |
-| Directive-detection + compliance-audit + selective-injection triad | v2.0.0 candidate |
-| Sentiment-from-prose feedback | v2.0.0 candidate |
-| Near-duplicate audit (`aelf doctor dedup`) | v1.x candidate |
-| Multi-model belief classifier (SIGNAL/NOISE/STALE/CONTESTED) | v2.0.0 candidate |
-| Automatic CONTRADICTS detection (semantic-divergence) | v1.x candidate |
+| `wonder` (gap-analysis frontend) | v2.0.0 (depends on substrate + graph-traversal) |
+| `wonder_ingest` + `wonder_gc` (speculative-belief lifecycle) | v2.0.0 (depends on substrate) |
+| `reason` (graph-walk reasoning) | v2.0.0 (depends on graph-traversal) |
+| `core` / `unlock` / `delete` / `confirm` (CLI surface) | v2.0.0 |
+| Directive-detection + compliance-audit + selective-injection triad | v2.0.0 candidate ([#199](https://github.com/robotrocketscience/aelfrice/issues/199)) |
+| Sentiment-from-prose feedback | v2.0.0 candidate ([#193](https://github.com/robotrocketscience/aelfrice/issues/193)) |
+| Near-duplicate audit (`aelf doctor dedup`) | v1.x candidate ([#197](https://github.com/robotrocketscience/aelfrice/issues/197)) |
+| Multi-model belief classifier (SIGNAL/NOISE/STALE/CONTESTED) | v2.0.0 candidate ([#198](https://github.com/robotrocketscience/aelfrice/issues/198)) |
+| Automatic CONTRADICTS detection (semantic-divergence) | v1.x candidate ([#201](https://github.com/robotrocketscience/aelfrice/issues/201)) |
 
 The four "candidate" lines are the orphaned research-line capabilities from the agentmemory parity audit — neither shipping today nor previously listed on this roadmap. They land if and only if a benchmark or experiment justifies the inclusion (per the validation discipline below); otherwise they stay parked.
 
