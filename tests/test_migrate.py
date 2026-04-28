@@ -181,6 +181,34 @@ def test_apply_writes_only_filtered_beliefs(
         s.close()
 
 
+def test_apply_preserves_origin_from_legacy_row(
+    tmp_path: Path, project_root: Path, legacy_db: Path,
+) -> None:
+    """Migrating from a v1.2+ legacy DB preserves the origin column.
+    The seeded locked belief is backfilled to 'user_stated' by the
+    v1.2 catch-up migration (lock_level=user → user_stated); we assert
+    the migrate path passes that value through to the target store
+    rather than dropping it. Regression for #224."""
+    target = tmp_path / "tgt.db"
+    migrate(
+        legacy_path=legacy_db,
+        target_path=target,
+        project_root=project_root,
+        apply=True,
+        copy_all=True,
+    )
+    s = MemoryStore(str(target))
+    try:
+        b = s.get_belief("aaaa")
+        assert b is not None
+        assert b.origin == "user_stated"
+        b2 = s.get_belief("bbbb")
+        assert b2 is not None
+        assert b2.origin == "unknown"
+    finally:
+        s.close()
+
+
 def test_apply_all_writes_every_legacy_belief(
     tmp_path: Path, project_root: Path, legacy_db: Path,
 ) -> None:

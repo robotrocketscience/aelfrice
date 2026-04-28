@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from aelfrice.models import Belief, Edge
+from aelfrice.models import ORIGIN_UNKNOWN, Belief, Edge
 from aelfrice.store import MemoryStore
 
 LEGACY_DB_NAME: Final[str] = "memory.db"
@@ -73,8 +73,10 @@ def _belongs_to_project(content: str, project_root: Path) -> bool:
 
 def _read_legacy_beliefs(conn: sqlite3.Connection) -> list[Belief]:
     cur = conn.execute("SELECT * FROM beliefs")
+    rows = cur.fetchall()
+    has_origin = bool(rows) and "origin" in rows[0].keys()
     out: list[Belief] = []
-    for row in cur.fetchall():
+    for row in rows:
         out.append(Belief(
             id=row["id"],
             content=row["content"],
@@ -87,6 +89,7 @@ def _read_legacy_beliefs(conn: sqlite3.Connection) -> list[Belief]:
             demotion_pressure=int(row["demotion_pressure"]),
             created_at=row["created_at"],
             last_retrieved_at=row["last_retrieved_at"],
+            origin=row["origin"] if has_origin else ORIGIN_UNKNOWN,
         ))
     return out
 
