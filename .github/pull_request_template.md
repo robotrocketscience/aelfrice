@@ -9,6 +9,8 @@ v1.0 has shipped. Issues and PRs are open. Please align on approach via an issue
 ## Linked issues
 
 <!-- Closes #N, references #M -->
+<!-- If this PR has no associated issue, add the opt-out marker below to silence the CI advisory warning: -->
+<!-- <!-- no-issue --> -->
 
 ## Type of change
 
