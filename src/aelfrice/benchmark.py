@@ -39,7 +39,7 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Final
 
-from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
+from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, ORIGIN_UNKNOWN, Belief
 from aelfrice.retrieval import retrieve
 from aelfrice.store import MemoryStore
 
@@ -175,6 +175,7 @@ def seed_corpus(store: MemoryStore, *, created_at: str = "2026-04-26T00:00:00Z")
                 demotion_pressure=0,
                 created_at=created_at,
                 last_retrieved_at=None,
+                origin=ORIGIN_UNKNOWN,
             )
         )
         inserted += 1

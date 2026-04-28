@@ -42,6 +42,7 @@ from aelfrice.models import (
     BELIEF_TYPES,
     LOCK_NONE,
     ONBOARD_STATE_PENDING,
+    ORIGIN_AGENT_INFERRED,
     Belief,
     OnboardSession,
 )
@@ -512,6 +513,7 @@ def accept_classifications(
                 demotion_pressure=0,
                 created_at=timestamp,
                 last_retrieved_at=None,
+                origin=ORIGIN_AGENT_INFERRED,
             )
         )
         inserted += 1

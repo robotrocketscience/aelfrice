@@ -75,6 +75,19 @@ def test_ingest_turn_accepts_session_id_and_source_id(store: MemoryStore) -> Non
     assert n == 1
 
 
+def test_ingest_turn_stamps_origin_agent_inferred(store: MemoryStore) -> None:
+    """Ingested-via-classifier beliefs land with origin=agent_inferred,
+    not the model default ORIGIN_UNKNOWN. Regression for #224."""
+    ingest_turn(
+        store,
+        "The default port is 8080 for the dashboard service.",
+        source="user",
+    )
+    hits = store.search_beliefs("dashboard", limit=10)
+    assert len(hits) == 1
+    assert hits[0].origin == "agent_inferred"
+
+
 def test_ingest_turn_uses_provided_created_at(store: MemoryStore) -> None:
     ingest_turn(
         store,
