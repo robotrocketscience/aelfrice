@@ -30,6 +30,7 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     EDGE_DERIVED_FROM,
     LOCK_NONE,
+    ORIGIN_AGENT_INFERRED,
     Belief,
     Edge,
 )
@@ -139,6 +140,7 @@ def _ingest_turn_ids(
             created_at=ts,
             last_retrieved_at=None,
             session_id=session_id,
+            origin=ORIGIN_AGENT_INFERRED,
         )
         store.insert_belief(belief)
         inserted.append(belief_id)
