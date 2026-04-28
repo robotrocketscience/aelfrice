@@ -84,6 +84,7 @@ from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
 from aelfrice.setup import (
     COMMIT_INGEST_SCRIPT_NAME,
+    SEARCH_TOOL_SCRIPT_NAME,
     SESSION_START_HOOK_SCRIPT_NAME,
     SettingsScope,
     TRANSCRIPT_LOGGER_SCRIPT_NAME,
@@ -91,17 +92,20 @@ from aelfrice.setup import (
     default_settings_path,
     detect_default_scope,
     install_commit_ingest_hook,
+    install_search_tool_hook,
     install_pre_compact_hook,
     install_session_start_hook,
     install_statusline,
     install_transcript_ingest_hooks,
     install_user_prompt_submit_hook,
     resolve_commit_ingest_command,
+    resolve_search_tool_command,
     resolve_hook_command,
     resolve_pre_compact_hook_command,
     resolve_session_start_hook_command,
     resolve_transcript_logger_command,
     uninstall_commit_ingest_hook,
+    uninstall_search_tool_hook,
     uninstall_pre_compact_hook,
     uninstall_session_start_hook,
     uninstall_statusline,
@@ -777,6 +781,23 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 f"(command={ci_command!r})",
                 file=out,  # type: ignore[arg-type]
             )
+    if getattr(args, "search_tool", False):
+        st_command = resolve_search_tool_command(scope)
+        st_result = install_search_tool_hook(
+            path, command=st_command, timeout=args.timeout,
+        )
+        if st_result.already_present:
+            print(
+                f"search-tool hook already installed in {st_result.path} "
+                f"(command={st_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed search-tool PreToolUse hook in {st_result.path} "
+                f"(command={st_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
     _print_setup_next_step(out)
     _print_setup_jsonl_history_hint(out)
     return 0
@@ -940,6 +961,21 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
             print(
                 f"removed {ci_result.removed} commit-ingest entr"
                 f"{'y' if ci_result.removed == 1 else 'ies'} from {ci_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "search_tool", False):
+        st_result = uninstall_search_tool_hook(
+            path, command_basename=SEARCH_TOOL_SCRIPT_NAME,
+        )
+        if st_result.removed == 0:
+            print(
+                f"no search-tool hook in {st_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"removed {st_result.removed} search-tool entr"
+                f"{'y' if st_result.removed == 1 else 'ies'} from {st_result.path}",
                 file=out,  # type: ignore[arg-type]
             )
     return 0
@@ -1849,6 +1885,17 @@ def build_parser() -> argparse.ArgumentParser:
             "Coexists with the UserPromptSubmit and transcript-ingest hooks."
         ),
     )
+    p_setup.add_argument(
+        "--search-tool", dest="search_tool", action="store_true",
+        help=(
+            "additionally wire the PreToolUse:Grep|Glob hook so the agent's "
+            "own search queries first run against the per-project belief "
+            "store and the results are injected as additionalContext. "
+            "If memory has the answer the agent can skip / refine the tool "
+            "call; if not, the tool result fills the gap. See "
+            "docs/search_tool_hook.md."
+        ),
+    )
     p_setup.set_defaults(func=_cmd_setup)
 
     # Hidden: install lifecycle, surfaced by docs not by --help.
@@ -1940,6 +1987,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_unsetup.add_argument(
         "--session-start", dest="session_start", action="store_true",
         help="also remove the SessionStart hook entry.",
+    )
+    p_unsetup.add_argument(
+        "--search-tool", dest="search_tool", action="store_true",
+        help="also remove the PreToolUse:Grep|Glob search-tool hook entry.",
     )
     p_unsetup.set_defaults(func=_cmd_unsetup)
 
