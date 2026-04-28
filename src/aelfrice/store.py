@@ -167,6 +167,11 @@ class MemoryStore:
             self._conn.execute("PRAGMA journal_mode=WAL")
         except sqlite3.DatabaseError:
             pass
+        # Block up to 5s waiting for a write lock instead of failing
+        # with `database is locked` immediately. Required for safe
+        # multi-worktree access where two processes share one .git/
+        # aelfrice/memory.db. Per the v1.1.0 #89 concurrency tests.
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute("PRAGMA foreign_keys=ON")
         for stmt in _SCHEMA:
             self._conn.execute(stmt)
