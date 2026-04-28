@@ -2,7 +2,10 @@
 
 # aelfrice
 
-> Lock the rules your AI agent keeps forgetting. SQLite on your laptop. Auditable.
+> Persistent memory for AI agents.
+> Set up once. Stays out of your way.
+>
+> _Local SQLite. Auditable. No GPU, no network._
 
 [![PyPI](https://img.shields.io/pypi/v/aelfrice.svg)](https://pypi.org/project/aelfrice/)
 [![Python](https://img.shields.io/pypi/pyversions/aelfrice.svg)](https://pypi.org/project/aelfrice/)
@@ -11,16 +14,16 @@
 
 You correct your agent. *"Got it,"* it says. Next session, same mistake.
 
-aelfrice gives the agent a memory you can lock down. You write the rule once. It gets injected into every prompt thereafter. No cross-references for the agent to skip, no markdown files to maintain.
+aelfrice runs in the background and stops the forgetting. You write a rule once and it gets attached to every prompt thereafter — no cross-references for the agent to skip, no markdown files to maintain, nothing to remember to do.
 
 ```bash
 pip install aelfrice
 aelf onboard .
 aelf lock "never push directly to main; use scripts/publish.sh"
-aelf setup       # wire the UserPromptSubmit hook into Claude Code
+aelf setup       # wire the hook into Claude Code
 ```
 
-Restart Claude Code. The next prompt that mentions "push" will already have your rule attached.
+That's it. Restart Claude Code and your next prompt that mentions "push" already has the rule attached. From here on out aelfrice is invisible — no command to remember to run, no file to keep updated.
 
 ---
 
@@ -104,16 +107,22 @@ That property is what makes aelfrice usable in regulated contexts. It's also wha
 
 ---
 
-## What's in the box
+## Day-to-day surface
 
-| Surface | Count | Where |
-|---|---|---|
-| CLI subcommands | 22 | `aelf <subcommand>` — see [COMMANDS](docs/COMMANDS.md) |
-| MCP tools | 9 | called by the agent automatically — see [MCP](docs/MCP.md) |
-| Slash commands | 22 | `/aelf:*` in Claude Code — see [SLASH_COMMANDS](docs/SLASH_COMMANDS.md) |
-| Hook events | 4 | UserPromptSubmit, PreCompact, Stop, PostToolUse (opt-in) |
+After `aelf setup` you should rarely type `aelf` again. The day-to-day commands are six:
 
-The CLI, MCP, and slash command surfaces are 1:1 wrappers over the same library. Anything you can do in one, you can do in the others.
+```
+aelf onboard .                      # once per project — scan and ingest
+aelf lock "never push to main"      # add a permanent rule
+aelf locked                          # see what rules are active
+aelf search "push to main"           # check what the agent will see
+aelf status                          # quick health summary
+aelf setup / aelf doctor            # initial install + verification
+```
+
+Everything else (deeper diagnostics, archive/uninstall, migration tools, hook entry-points called by Claude Code itself) is callable but not something you reach for in normal use. `aelf --help` shows the everyday surface; `aelf --help --advanced` lists the rest. Full reference: [COMMANDS](docs/COMMANDS.md).
+
+The same operations are also available as MCP tools and `/aelf:*` slash commands — same library underneath. See [MCP](docs/MCP.md) and [SLASH_COMMANDS](docs/SLASH_COMMANDS.md).
 
 ---
 
