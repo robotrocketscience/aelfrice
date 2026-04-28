@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Final
 
 from aelfrice.classification import classify_sentence
+from aelfrice.inedible import is_inedible
 from aelfrice.models import LOCK_NONE, ORIGIN_AGENT_INFERRED, Belief
 from aelfrice.noise_filter import NoiseConfig, is_noise
 from aelfrice.store import MemoryStore
@@ -211,9 +212,13 @@ def _iter_doc_files(root: Path) -> list[Path]:
             if entry.is_dir():
                 if entry.name in _SKIP_DIRS:
                     continue
+                if is_inedible(entry):
+                    continue
                 stack.append(entry)
                 continue
             if entry.suffix.lower() in _DOC_EXTENSIONS:
+                if is_inedible(entry):
+                    continue
                 out.append(entry)
     out.sort()
     return out
@@ -425,9 +430,13 @@ def _iter_py_files(root: Path) -> list[Path]:
             if entry.is_dir():
                 if entry.name in _SKIP_DIRS:
                     continue
+                if is_inedible(entry):
+                    continue
                 stack.append(entry)
                 continue
             if entry.suffix == _PY_EXTENSION:
+                if is_inedible(entry):
+                    continue
                 out.append(entry)
     out.sort()
     return out

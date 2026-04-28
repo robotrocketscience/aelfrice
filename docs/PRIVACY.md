@@ -39,6 +39,22 @@ The cloud LLM at the other end of your prompt sees whatever aelfrice injects. Th
 
 If a fact must never leave your machine, don't store it.
 
+## Per-file opt-out: `INEDIBLE` marker (v1.3+)
+
+Any file whose basename contains the literal string `INEDIBLE` (case-sensitive, all caps, anywhere in the basename) is unconditionally skipped by every aelfrice ingest path:
+
+- `aelf onboard` filesystem walk and AST walk.
+- `aelf ingest-transcript` (single-file invocation).
+- `aelf ingest-transcript --batch DIR` recursive scan.
+
+Examples that match: `INEDIBLE.md`, `INEDIBLE_secrets.txt`, `notes_INEDIBLE.txt`, `partINEDIBLEpart.py`. Examples that do not: `inedible.md`, `Inedible.md`. Case sensitivity is intentional — the marker should be unmistakable in directory listings.
+
+Directory basenames also count: a directory named `INEDIBLE/` (or `INEDIBLE_drafts/`) is not descended at all, so its contents never reach a classifier or an extractor regardless of file names underneath.
+
+The check is on the basename, not the content. When `is_inedible(path)` returns True, aelfrice does not open, read, or hash the file. The check happens before any classification, before any tokenization, before any noise filter — earlier in the pipeline than any other exclusion in the codebase.
+
+Mechanism: see [`src/aelfrice/inedible.py`](../src/aelfrice/inedible.py). The predicate is the only opt-out aelfrice respects deterministically across every ingest path; reproduce with `python3 -c "from aelfrice.inedible import is_inedible; print(is_inedible('your/path.md'))"`.
+
 ## Reproducible from source
 
 All beliefs come from files you already have: code, docs, git history. After `rm <resolved-db-path>`, re-running `aelf onboard .` is deterministic up to the classifier. The state of the world is your codebase, not the memory.

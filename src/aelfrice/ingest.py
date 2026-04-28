@@ -243,6 +243,8 @@ def ingest_jsonl(
     snapshots, tool-result entries, malformed) are counted under
     `skipped_lines` and ignored without raising.
     """
+    from aelfrice.inedible import is_inedible
+
     path = Path(jsonl_path)
     lines_read = 0
     turns_ingested = 0
@@ -253,6 +255,10 @@ def ingest_jsonl(
     # session_id -> (last_belief_id_inserted, last_turn_text)
 
     if not path.is_file():
+        return IngestJsonlResult(0, 0, 0, 0, 0)
+    if is_inedible(path):
+        # Privacy opt-out — file is excluded from the brain graph by
+        # name. No content read, zero side effects on the store.
         return IngestJsonlResult(0, 0, 0, 0, 0)
 
     with path.open("r", encoding="utf-8") as f:
@@ -331,6 +337,7 @@ class IngestJsonlBatchResult:
     beliefs_inserted: int
     edges_inserted: int
     skipped_lines: int
+    files_skipped_inedible: int = 0
 
 
 def ingest_jsonl_dir(
@@ -353,6 +360,8 @@ def ingest_jsonl_dir(
     `ingest_jsonl`'s per-line dedup. Skips files that do not exist
     or cannot be stat'd without raising. Issue #115.
     """
+    from aelfrice.inedible import is_inedible
+
     root = Path(directory)
     if not root.is_dir():
         return IngestJsonlBatchResult(0, 0, 0, 0, 0, 0, 0, 0)
@@ -360,6 +369,7 @@ def ingest_jsonl_dir(
     walked = 0
     ingested = 0
     skipped_age = 0
+    skipped_inedible = 0
     lines_total = 0
     turns_total = 0
     beliefs_total = 0
@@ -369,6 +379,9 @@ def ingest_jsonl_dir(
         if not path.is_file():
             continue
         walked += 1
+        if is_inedible(path):
+            skipped_inedible += 1
+            continue
         if cutoff_ts is not None:
             try:
                 mtime = path.stat().st_mtime
@@ -389,6 +402,7 @@ def ingest_jsonl_dir(
         files_walked=walked,
         files_ingested=ingested,
         files_skipped_age=skipped_age,
+        files_skipped_inedible=skipped_inedible,
         lines_read=lines_total,
         turns_ingested=turns_total,
         beliefs_inserted=beliefs_total,
