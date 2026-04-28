@@ -31,6 +31,15 @@ from aelfrice.models import LOCK_NONE, ORIGIN_AGENT_INFERRED, Belief
 from aelfrice.noise_filter import NoiseConfig, is_noise
 from aelfrice.store import MemoryStore
 
+# Optional v1.3+ LLM-classify routing path. `LLMRouter` is a Protocol
+# the scanner depends on; production callers pass an instance built in
+# `aelfrice.llm_classifier`. The actual `anthropic` SDK is NOT imported
+# here — the SDK call lives behind the Protocol. Default install never
+# builds a router so this surface is never reached without explicit
+# opt-in. v1.0/v1.2 callers keep `llm_router=None` and the regex path
+# is unchanged.
+from typing import Protocol
+
 # Directories the scanner never descends into. Standard "build artefact"
 # locations and version-control internals.
 _SKIP_DIRS: Final[frozenset[str]] = frozenset({
@@ -88,12 +97,52 @@ class SentenceCandidate:
     commit_date: str | None = None
 
 
+class LLMRouter(Protocol):
+    """Minimal interface scanner needs from an LLM-classify driver.
+
+    Production callers pass `aelfrice.llm_classifier.ScannerRouter`
+    (defined in cli.py to keep the SDK lazily-imported); tests pass a
+    mock. The protocol decouples scanner.py from the optional
+    `anthropic` SDK at module-load.
+
+    Contract: `classify` returns one route per candidate in input
+    order. The router is responsible for batching, telemetry, and
+    regex fallback on transient failure. Auth failures and token-cap
+    aborts are signalled to the caller by raising — scanner does not
+    catch them so the cli wrapper can map to exit codes.
+    """
+
+    def classify(
+        self,
+        candidates: "list[SentenceCandidate]",
+    ) -> "list[LLMRoute]":
+        ...
+
+
+@dataclass
+class LLMRoute:
+    """Per-candidate output of the router.
+
+    `belief_type`, `origin`, `persist`, `alpha`, `beta` are the
+    fields scanner needs to write a Belief. `audit_source` (when set)
+    is written to feedback_history for fallback insertions.
+    """
+
+    belief_type: str
+    origin: str
+    persist: bool
+    alpha: float
+    beta: float
+    audit_source: str | None = None
+
+
 def scan_repo(
     store: MemoryStore,
     root: Path,
     now: str | None = None,
     *,
     noise_config: NoiseConfig | None = None,
+    llm_router: LLMRouter | None = None,
 ) -> ScanResult:
     """Run all three extractors on `root`, classify each candidate, and
     insert persistable results as Beliefs in the store.
@@ -149,12 +198,34 @@ def scan_repo(
     skipped_non_persisting = 0
     skipped_noise = 0
 
+    # Two-pass when an llm_router is supplied: first collect the
+    # noise-filtered candidates, then route them all through the
+    # batched LLM call. Single-pass when no router (default OFF):
+    # the regex path is unchanged from v1.0.
+    filtered: list[SentenceCandidate] = []
     for candidate in candidates:
         if is_noise(candidate.text, cfg):
             skipped_noise += 1
             continue
-        result = classify_sentence(candidate.text, candidate.source)
-        if not result.persist:
+        filtered.append(candidate)
+
+    routes: list[LLMRoute]
+    if llm_router is not None:
+        routes = llm_router.classify(filtered)
+    else:
+        routes = [_route_from_regex(c) for c in filtered]
+
+    if len(routes) != len(filtered):
+        # The router contract requires one-route-per-candidate
+        # in input order. A length mismatch is a programming
+        # error, not a user-visible state.
+        raise RuntimeError(
+            f"llm_router.classify returned {len(routes)} routes for "
+            f"{len(filtered)} candidates"
+        )
+
+    for candidate, route in zip(filtered, routes):
+        if not route.persist:
             skipped_non_persisting += 1
             continue
         belief_id = _derive_belief_id(candidate.text, candidate.source)
@@ -166,17 +237,25 @@ def scan_repo(
             id=belief_id,
             content=candidate.text,
             content_hash=_content_hash(candidate.text),
-            alpha=result.alpha,
-            beta=result.beta,
-            type=result.belief_type,
+            alpha=route.alpha,
+            beta=route.beta,
+            type=route.belief_type,
             lock_level=LOCK_NONE,
             locked_at=None,
             demotion_pressure=0,
             created_at=created_at,
             last_retrieved_at=None,
-            origin=ORIGIN_AGENT_INFERRED,
+            origin=route.origin,
         ))
         inserted += 1
+        # Audit row for fallback insertions (spec § 7.2 step 3).
+        if route.audit_source is not None:
+            store.insert_feedback_event(
+                belief_id=belief_id,
+                valence=0.0,
+                source=route.audit_source,
+                created_at=timestamp,
+            )
 
     return ScanResult(
         inserted=inserted,
@@ -184,6 +263,24 @@ def scan_repo(
         skipped_non_persisting=skipped_non_persisting,
         total_candidates=len(candidates),
         skipped_noise=skipped_noise,
+    )
+
+
+def _route_from_regex(candidate: SentenceCandidate) -> LLMRoute:
+    """Build an LLMRoute from the regex `classify_sentence` output.
+
+    Default-ON path used when no LLM router is supplied. Origin is
+    fixed at ORIGIN_AGENT_INFERRED (legacy v1.0/v1.2 behaviour);
+    fixing this is the LLM-classify path's job, not the regex path.
+    """
+    result = classify_sentence(candidate.text, candidate.source)
+    return LLMRoute(
+        belief_type=result.belief_type,
+        origin=ORIGIN_AGENT_INFERRED,
+        persist=result.persist,
+        alpha=result.alpha,
+        beta=result.beta,
+        audit_source=None,
     )
 
 

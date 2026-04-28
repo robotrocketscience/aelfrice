@@ -38,7 +38,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Final, Sequence
+from typing import Any, Final, Sequence
 
 from aelfrice.auditor import (
     CORPUS_MIN_DEFAULT as AUDIT_CORPUS_MIN_DEFAULT,
@@ -69,6 +69,22 @@ from aelfrice.models import (
 from aelfrice import __version__ as _AELFRICE_VERSION
 from aelfrice.benchmark import run_benchmark, seed_corpus
 from aelfrice.doctor import diagnose, format_report
+from aelfrice.llm_classifier import (
+    ENV_API_KEY as _LLM_ENV_API_KEY,
+    LLMAuthError as _LLMAuthError,
+    LLMConfig as _LLMConfig,
+    LLMTokenCapExceeded as _LLMTokenCapExceeded,
+    ScannerRouter as _LLMScannerRouter,
+    check_gates as _llm_check_gates,
+    format_telemetry_line as _llm_format_telemetry_line,
+    is_sentinel_valid as _llm_is_sentinel_valid,
+    prompt_for_consent as _llm_prompt_for_consent,
+    read_sentinel as _llm_read_sentinel,
+    resolve_enabled as _llm_resolve_enabled,
+    revoke_sentinel as _llm_revoke_sentinel,
+    sentinel_path as _llm_sentinel_path,
+    write_sentinel as _llm_write_sentinel,
+)
 from aelfrice.lifecycle import (
     PACKAGE_NAME as _PKG,
     UpdateStatus,
@@ -256,7 +272,152 @@ def _resolve_corpus_min() -> int:
 # --- Command handlers ----------------------------------------------------
 
 
+def _load_llm_config(root: Path) -> _LLMConfig:
+    """Walk up from `root` looking for `.aelfrice.toml`; parse
+    `[onboard.llm]`. Returns the default config if no file is found,
+    the file is malformed, or the table is missing.
+
+    Mirrors `NoiseConfig.discover` resilience: failures degrade to
+    defaults with a stderr trace; never raises.
+    """
+    import tomllib
+
+    current = root.resolve() if root.exists() else root
+    seen: set[Path] = set()
+    candidate = current if current.is_dir() else current.parent
+    while candidate not in seen:
+        seen.add(candidate)
+        cfg_path = candidate / ".aelfrice.toml"
+        if cfg_path.is_file():
+            try:
+                raw = cfg_path.read_bytes()
+                parsed: Any = tomllib.loads(
+                    raw.decode("utf-8", errors="replace")
+                )
+            except (OSError, tomllib.TOMLDecodeError) as exc:
+                print(
+                    f"aelfrice llm_classifier: cannot read {cfg_path}: {exc}",
+                    file=sys.stderr,
+                )
+                return _LLMConfig.default()
+            if not isinstance(parsed, dict):
+                return _LLMConfig.default()
+            from typing import cast
+            parsed_dict = cast(dict[str, Any], parsed)
+            section = parsed_dict.get("onboard", {})
+            if isinstance(section, dict):
+                section_dict = cast(dict[str, Any], section)
+                llm_any = section_dict.get("llm", {})
+                if isinstance(llm_any, dict):
+                    return _LLMConfig.from_mapping(
+                        cast(dict[str, Any], llm_any)
+                    )
+            return _LLMConfig.default()
+        if candidate.parent == candidate:
+            break
+        candidate = candidate.parent
+    return _LLMConfig.default()
+
+
+def _resolve_llm_flag(args: argparse.Namespace) -> bool | None:
+    """Resolve the --llm-classify CLI flag to True/False/None.
+
+    None: flag not present.
+    True: --llm-classify or --llm-classify=true.
+    False: --llm-classify=false.
+    """
+    raw = getattr(args, "llm_classify", None)
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return raw
+    s = str(raw).strip().lower()
+    if s in ("true", "1", "yes", "y", ""):
+        return True
+    if s in ("false", "0", "no", "n"):
+        return False
+    return True  # any other value: opt-in
+
+
 def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
+    path = Path(args.path)
+
+    # --revoke-consent: remove sentinel and exit; no scan, no network.
+    if getattr(args, "revoke_consent", False):
+        sentinel = _llm_sentinel_path()
+        removed = _llm_revoke_sentinel(sentinel)
+        if removed:
+            print(f"aelf: revoked LLM-classify consent ({sentinel})", file=out)  # type: ignore[arg-type]
+        else:
+            print(
+                f"aelf: no LLM-classify consent sentinel at {sentinel}",
+                file=out,  # type: ignore[arg-type]
+            )
+        return 0
+
+    cfg = _load_llm_config(path)
+    flag = _resolve_llm_flag(args)
+    enabled = _llm_resolve_enabled(flag=flag, config_enabled=cfg.enabled)
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    if not enabled:
+        # Default-OFF path: regex classifier, no LLM imports, zero
+        # network. This is what `aelf onboard <path>` has always done.
+        if dry_run:
+            print(
+                "aelf: --dry-run requires --llm-classify; "
+                "the regex path has nothing to dry-run.",
+                file=sys.stderr,
+            )
+            return 1
+        return _run_regex_onboard(args, out)
+
+    # Gates 1-3 (extra installed, env var, opt-in resolved).
+    gate = _llm_check_gates(
+        enabled=enabled,
+        model=cfg.model,
+    )
+    if not gate.pass_all:
+        if gate.exit_code is not None:
+            if gate.message:
+                print(gate.message, file=sys.stderr)
+            return gate.exit_code
+        # Defensive: enabled=True with pass_all=False and exit_code=None
+        # means a configuration we don't recognise; fall back to regex.
+        return _run_regex_onboard(args, out)
+
+    # Gate 4: consent. --dry-run skips the prompt AND the network.
+    sentinel = _llm_sentinel_path()
+    sentinel_record = _llm_read_sentinel(sentinel)
+    if not _llm_is_sentinel_valid(sentinel_record, model=cfg.model):
+        if dry_run:
+            # Dry-run must NOT prompt and MUST NOT write the sentinel.
+            print(
+                "aelf: dry-run skipping consent prompt "
+                f"(no valid sentinel at {sentinel}). No network call.",
+                file=sys.stderr,
+            )
+        else:
+            prompt = _llm_prompt_for_consent()
+            if not prompt.accepted:
+                print(
+                    f"aelf: --llm-classify aborted ({prompt.reason}); "
+                    "no network call.",
+                    file=sys.stderr,
+                )
+                return 1
+            _llm_write_sentinel(sentinel, model=cfg.model)
+
+    # Dry-run: print candidates without contacting the network.
+    if dry_run:
+        return _run_llm_dry_run(args, out)
+
+    # Real LLM path.
+    return _run_llm_onboard(args, out, cfg)
+
+
+def _run_regex_onboard(args: argparse.Namespace, out: object) -> int:
+    """Default v1.0/v1.2 regex onboard. Unchanged behaviour."""
     store = _open_store()
     try:
         result = scan_repo(store, Path(args.path))
@@ -268,6 +429,102 @@ def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
         f"{result.skipped_existing} skipped (already present), "
         f"{result.skipped_non_persisting} skipped (non-persisting), "
         f"{result.total_candidates} candidates seen",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
+def _run_llm_dry_run(args: argparse.Namespace, out: object) -> int:
+    """Print the candidates that would be sent, without network IO.
+
+    Spec § 4.4: full extractor + noise filter + dedup pipeline,
+    print one line per candidate prefixed with the source string.
+    No sentinel side-effect (the caller already gated this path).
+    """
+    from aelfrice.scanner import (
+        extract_ast,
+        extract_filesystem,
+        extract_git_log,
+    )
+    from aelfrice.noise_filter import NoiseConfig, is_noise
+
+    root = Path(args.path)
+    cfg = NoiseConfig.discover(root)
+    candidates: list[Any] = []
+    candidates.extend(extract_filesystem(root))
+    candidates.extend(extract_git_log(root))
+    candidates.extend(extract_ast(root))
+
+    n_total = len(candidates)
+    n_kept = 0
+    print(f"# dry-run: extracting candidates from {root}", file=out)  # type: ignore[arg-type]
+    for c in candidates:
+        if is_noise(c.text, cfg):
+            continue
+        n_kept += 1
+        # Rough token estimate: ~30 tokens per candidate (source + text)
+        # — matches the spec § 6.1 budget.
+        single_line = c.text.replace("\n", " ").replace("\r", " ")
+        print(f"[{c.source}] {single_line}", file=out)  # type: ignore[arg-type]
+    print(
+        f"# dry-run: {n_kept} candidates after noise filter "
+        f"(of {n_total} extracted). No network call. No sentinel written.",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
+def _run_llm_onboard(
+    args: argparse.Namespace,
+    out: object,
+    cfg: _LLMConfig,
+) -> int:
+    """Run scan_repo with an LLMScannerRouter installed.
+
+    Maps router exceptions (auth, cap) to exit-1 codes per spec § 7.
+    Telemetry is printed to stdout after the scan completes.
+    """
+    api_key = os.environ.get(_LLM_ENV_API_KEY, "")
+    if not api_key:
+        # Defensive: gates already checked this; double-check before
+        # wiring the router.
+        print(
+            f"aelf: {_LLM_ENV_API_KEY} not set; cannot --llm-classify.",
+            file=sys.stderr,
+        )
+        return 1
+    router = _LLMScannerRouter(
+        api_key=api_key,
+        model=cfg.model,
+        max_tokens=cfg.max_tokens,
+    )
+    store = _open_store()
+    try:
+        result = scan_repo(store, Path(args.path), llm_router=router)
+    except _LLMAuthError as exc:
+        print(
+            f"aelf: Anthropic auth failure ({exc}). No beliefs inserted. "
+            f"Verify {_LLM_ENV_API_KEY}.",
+            file=sys.stderr,
+        )
+        return 1
+    except _LLMTokenCapExceeded as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    print(
+        f"onboarded {args.path}: "
+        f"{result.inserted} added, "
+        f"{result.skipped_existing} skipped (already present), "
+        f"{result.skipped_non_persisting} skipped (non-persisting), "
+        f"{result.total_candidates} candidates seen",
+        file=out,  # type: ignore[arg-type]
+    )
+    print(
+        _llm_format_telemetry_line(
+            model=router.model, telemetry=router.telemetry,
+        ),
         file=out,  # type: ignore[arg-type]
     )
     return 0
@@ -1672,6 +1929,36 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_onboard.add_argument("path", help="path to a project directory")
+    p_onboard.add_argument(
+        "--llm-classify",
+        dest="llm_classify",
+        nargs="?",
+        const=True,
+        default=None,
+        help=(
+            "opt in to the LLM-Haiku classifier (v1.3.0+). Requires the "
+            "[onboard-llm] extra and ANTHROPIC_API_KEY. Default: off. "
+            "Pass --llm-classify=false to override [onboard.llm].enabled."
+        ),
+    )
+    p_onboard.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        help=(
+            "print the candidates that would be sent to the classifier "
+            "without contacting the network. Implies --llm-classify."
+        ),
+    )
+    p_onboard.add_argument(
+        "--revoke-consent",
+        dest="revoke_consent",
+        action="store_true",
+        help=(
+            "remove the per-machine LLM-classify consent sentinel and "
+            "exit. No scan is run."
+        ),
+    )
     p_onboard.set_defaults(func=_cmd_onboard)
 
     p_search = sub.add_parser("search", help="L0 locked + L1 FTS5 retrieval")
