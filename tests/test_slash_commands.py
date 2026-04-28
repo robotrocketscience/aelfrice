@@ -18,28 +18,23 @@ import pytest
 # `status` (alias for health), `regime` (preserved v1.0 classifier),
 # and `migrate` (legacy-DB import) join at v1.1.0.
 # `rebuild` (context rebuilder MVP) joins at v1.1.0 alpha.
+# v1.3 user-facing surface — must match cli.py's non-SUPPRESS subparsers.
+# Hidden subparsers (rebuild, statusline, bench, regime, migrate, unsetup,
+# health, stats) keep working but ship no slash file.
 EXPECTED_COMMANDS = (
     "onboard",
     "search",
-    "rebuild",
     "lock",
     "locked",
     "demote",
     "validate",
     "resolve",
     "feedback",
-    "stats",
-    "health",
     "status",
-    "regime",
-    "migrate",
     "doctor",
     "setup",
-    "unsetup",
     "upgrade",
     "uninstall",
-    "statusline",
-    "bench",
     "ingest-transcript",
 )
 
@@ -100,16 +95,27 @@ def test_no_extra_files_in_slash_commands_dir() -> None:
     assert files == expected
 
 
-def test_slash_commands_match_cli_subcommands() -> None:
-    """The 8 markdown files must correspond exactly to the CLI's
-    subparser names. If the CLI grows or shrinks a command, this test
-    forces the slash directory to follow."""
+# Subparsers intentionally hidden from --help at v1.3. Aliases live one
+# minor and are deleted at v1.4 (`health`, `stats`); the rest stay
+# callable indefinitely as scripting / hook entry points.
+HIDDEN_SUBCOMMANDS = frozenset({
+    "rebuild", "statusline", "bench", "regime", "migrate", "unsetup",
+    "health", "stats",
+})
+
+
+def test_slash_commands_match_visible_cli_subcommands() -> None:
+    """The CLI's full subparser set must equal EXPECTED ∪ HIDDEN, and the
+    slash directory must equal EXPECTED. Catches drift in either
+    direction."""
     from aelfrice.cli import build_parser
     parser = build_parser()
-    # The first positional sub-action holds the subparsers.
     sub_actions = [a for a in parser._subparsers._actions  # type: ignore[union-attr]
                     if a.__class__.__name__ == "_SubParsersAction"]
     assert sub_actions, "cli has no subparsers"
-    cli_names = sorted(sub_actions[0].choices.keys())  # type: ignore[attr-defined]
-    md_names = sorted(EXPECTED_COMMANDS)
-    assert cli_names == md_names, f"cli subcommands {cli_names} != slash {md_names}"
+    cli_names = set(sub_actions[0].choices.keys())  # type: ignore[attr-defined]
+    expected_total = set(EXPECTED_COMMANDS) | HIDDEN_SUBCOMMANDS
+    assert cli_names == expected_total, (
+        f"cli subcommands {sorted(cli_names)} != "
+        f"EXPECTED ∪ HIDDEN {sorted(expected_total)}"
+    )

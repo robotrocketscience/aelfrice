@@ -436,12 +436,51 @@ def test_health_points_at_aelf_regime_for_classifier(isolated_db: Path) -> None:
     assert "aelf regime" in out
 
 
-def test_status_aliases_health(isolated_db: Path) -> None:
-    """`aelf status` produces the same output as `aelf health`."""
-    code_h, out_h = _run("health")
-    code_s, out_s = _run("status")
-    assert code_h == code_s == 0
-    assert out_h == out_s
+def test_status_now_aliases_stats(isolated_db: Path) -> None:
+    """v1.3 rename: `aelf status` runs the counts snapshot (was `aelf stats`).
+
+    The v1.1 alias of `aelf health` is gone — graph audit moved to
+    `aelf doctor graph`.
+    """
+    code_st, out_st = _run("stats")
+    code_status, out_status = _run("status")
+    assert code_st == code_status == 0
+    assert out_st == out_status
+    assert "beliefs:" in out_status
+
+
+def test_doctor_graph_runs_audit(isolated_db: Path) -> None:
+    """`aelf doctor graph` produces the structural audit (was `aelf health`)."""
+    code, out = _run("doctor", "graph")
+    assert code == 0
+    assert "audit:" in out
+    assert "metrics:" in out
+
+
+def test_doctor_no_scope_runs_both(isolated_db: Path) -> None:
+    """`aelf doctor` (no scope) runs both hooks and graph checks."""
+    code, out = _run("doctor")
+    assert code == 0
+    # hooks output
+    assert "store:" in out
+    # graph output
+    assert "audit:" in out
+    assert "metrics:" in out
+
+
+def test_doctor_hooks_skips_graph_audit(isolated_db: Path) -> None:
+    """`aelf doctor hooks` does not print the audit findings block."""
+    code, out = _run("doctor", "hooks")
+    assert code == 0
+    assert "audit:" not in out
+
+
+def test_health_is_deprecated_alias_for_doctor_graph(isolated_db: Path) -> None:
+    """`aelf health` still works (one-minor back-compat) and runs graph audit."""
+    code, out = _run("health")
+    assert code == 0
+    assert "audit:" in out
+    assert "metrics:" in out
 
 
 def test_health_exits_nonzero_when_audit_fails(isolated_db: Path) -> None:

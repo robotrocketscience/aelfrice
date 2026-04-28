@@ -1438,29 +1438,47 @@ def _cmd_regime(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
-    """Diagnose hook + statusline command resolution in settings.json files.
+    """Diagnose hooks + brain-graph health.
 
-    Exit 0 when nothing is broken, exit 1 when at least one broken
-    command is found. CI-friendly. Slash-command orphans (issue
-    #115) are informational and never affect exit status.
+    `args.scope`:
+      - `hooks`  → settings.json hook validation only.
+      - `graph`  → structural audit only (orphan threads, FTS5 sync,
+                   locked contradictions).
+      - None     → run both (default).
+
+    Exit 1 if any structural failure fires in either subcheck;
+    informational warnings never trip exit. The v1.2 deprecated alias
+    `aelf health` routes here with scope='graph' implicitly via
+    `_cmd_health`.
     """
-    project_root = Path(args.project_root) if args.project_root else None
-    user_settings = (
-        Path(args.user_settings) if args.user_settings else None
-    )
-    hook_failures_log = (
-        Path(args.hook_failures_log) if args.hook_failures_log else None
-    )
-    known_subs = _known_cli_subcommands()
-    report = diagnose(
-        user_settings=user_settings,
-        project_root=project_root,
-        hook_failures_log=hook_failures_log,
-        known_cli_subcommands=known_subs,
-    )
-    print(format_report(report), file=out)  # type: ignore[arg-type]
-    _print_doctor_store_check(out)
-    return 1 if report.broken else 0
+    scope = getattr(args, "scope", None)
+    exit_code = 0
+    if scope in (None, "hooks"):
+        project_root = Path(args.project_root) if args.project_root else None
+        user_settings = (
+            Path(args.user_settings) if args.user_settings else None
+        )
+        hook_failures_log = (
+            Path(args.hook_failures_log) if args.hook_failures_log else None
+        )
+        known_subs = _known_cli_subcommands()
+        report = diagnose(
+            user_settings=user_settings,
+            project_root=project_root,
+            hook_failures_log=hook_failures_log,
+            known_cli_subcommands=known_subs,
+        )
+        print(format_report(report), file=out)  # type: ignore[arg-type]
+        _print_doctor_store_check(out)
+        if report.broken:
+            exit_code = 1
+    if scope in (None, "graph"):
+        if scope is None:
+            print("", file=out)  # type: ignore[arg-type]
+        graph_exit = _cmd_health(args, out)
+        if graph_exit != 0:
+            exit_code = graph_exit
+    return exit_code
 
 
 def _print_doctor_store_check(out: object) -> None:
@@ -1517,10 +1535,29 @@ def _known_cli_subcommands() -> frozenset[str]:
 # --- Dispatcher ---------------------------------------------------------
 
 
+class _SuppressSubparsersFormatter(argparse.HelpFormatter):
+    """Hide subparsers registered with help=argparse.SUPPRESS from --help.
+
+    argparse's stock HelpFormatter ignores SUPPRESS on subparser
+    pseudo-actions, so they leak through as `==SUPPRESS==` literals. We
+    filter them out at format time.
+    """
+
+    def _format_action(self, action: argparse.Action) -> str:
+        if isinstance(action, argparse._SubParsersAction):  # pyright: ignore[reportPrivateUsage]
+            kept = [
+                ca for ca in action._choices_actions  # pyright: ignore[reportPrivateUsage]
+                if ca.help is not argparse.SUPPRESS
+            ]
+            action._choices_actions = kept  # pyright: ignore[reportPrivateUsage]
+        return super()._format_action(action)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aelf",
         description="Bayesian memory designed for feedback-driven learning.",
+        formatter_class=_SuppressSubparsersFormatter,
     )
     parser.add_argument(
         "--version",
@@ -1552,13 +1589,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_search.set_defaults(func=_cmd_search)
 
-    p_rebuild = sub.add_parser(
-        "rebuild",
-        help=(
-            "v1.1 alpha: manually emit the context-rebuild block to "
-            "stdout (what the PreCompact hook would produce)"
-        ),
-    )
+    # Hidden: PreCompact hook driver. Humans rarely invoke directly.
+    p_rebuild = sub.add_parser("rebuild", help=argparse.SUPPRESS)
     p_rebuild.add_argument(
         "--transcript", default=None,
         help=(
@@ -1640,34 +1672,29 @@ def build_parser() -> argparse.ArgumentParser:
                              help="audit source label (default 'user')")
     p_feedback.set_defaults(func=_cmd_feedback)
 
-    p_stats = sub.add_parser("stats", help="summary of belief / lock / history counts")
-    p_stats.set_defaults(func=_cmd_stats)
-
-    p_health = sub.add_parser(
-        "health",
-        help="structural auditor (orphan threads, FTS5 sync, locked contradictions)",
-    )
-    p_health.set_defaults(func=_cmd_health)
-
+    # `aelf status` — one-screen "what's in this store" snapshot.
+    # Renamed from `aelf stats` at v1.3 per CLI_SURFACE_AUDIT.md;
+    # `stats` stays as a hidden alias for one minor.
     p_status = sub.add_parser(
         "status",
-        help="alias for `aelf health` (structural auditor)",
+        help="summary of belief / lock / history counts",
     )
-    p_status.set_defaults(func=_cmd_health)
+    p_status.set_defaults(func=_cmd_stats)
 
-    p_regime = sub.add_parser(
-        "regime",
-        help="v1.0 regime classifier (supersede / ignore / mixed)",
-    )
+    # Deprecated alias of `status`. Hidden from --help; deleted at v1.4.
+    p_stats = sub.add_parser("stats", help=argparse.SUPPRESS)
+    p_stats.set_defaults(func=_cmd_stats)
+
+    # Deprecated alias of `doctor graph`. Hidden from --help; deleted at v1.4.
+    p_health = sub.add_parser("health", help=argparse.SUPPRESS)
+    p_health.set_defaults(func=_cmd_health)
+
+    # Hidden: research output, not a daily verb.
+    p_regime = sub.add_parser("regime", help=argparse.SUPPRESS)
     p_regime.set_defaults(func=_cmd_regime)
 
-    p_migrate = sub.add_parser(
-        "migrate",
-        help=(
-            "copy beliefs from the legacy global ~/.aelfrice/memory.db "
-            "into the active project's per-project DB"
-        ),
-    )
+    # Hidden: one-shot v1.0 -> v1.1 migration; the era is over.
+    p_migrate = sub.add_parser("migrate", help=argparse.SUPPRESS)
     p_migrate.add_argument(
         "--from", dest="from_path", default=None,
         help="legacy DB path (default: ~/.aelfrice/memory.db)",
@@ -1727,8 +1754,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_doctor = sub.add_parser(
         "doctor",
         help=(
-            "diagnose Claude Code hook + statusline commands in user "
-            "and project settings.json. Exits 1 if any are broken."
+            "diagnose hooks + brain-graph health. With no subcommand "
+            "runs both checks. Exits 1 on any structural failure."
+        ),
+    )
+    p_doctor.add_argument(
+        "scope", nargs="?", choices=("hooks", "graph"), default=None,
+        help=(
+            "limit doctor to one check. 'hooks' validates settings.json "
+            "hook commands resolve; 'graph' runs the structural auditor "
+            "(orphan threads, FTS5 sync, locked contradictions). "
+            "Omit to run both."
         ),
     )
     p_doctor.add_argument(
@@ -1856,13 +1892,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_uninstall.set_defaults(func=_cmd_uninstall)
 
-    p_statusline = sub.add_parser(
-        "statusline",
-        help=(
-            "emit a statusline prefix snippet (orange update banner "
-            "or empty). Compose with: 'your-cmd ; aelf statusline 2>/dev/null'"
-        ),
-    )
+    # Hidden: statusline command target in settings.json. Not a verb humans invoke.
+    p_statusline = sub.add_parser("statusline", help=argparse.SUPPRESS)
     p_statusline.set_defaults(func=_cmd_statusline)
 
     p_upgrade = sub.add_parser(
@@ -1875,10 +1906,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_upgrade.set_defaults(func=_cmd_upgrade)
 
-    p_unsetup = sub.add_parser(
-        "unsetup",
-        help="remove the UserPromptSubmit hook from Claude Code settings.json",
-    )
+    # Hidden: scriptable counterpart to setup. Humans use `aelf uninstall`.
+    p_unsetup = sub.add_parser("unsetup", help=argparse.SUPPRESS)
     _add_hook_scope_args(p_unsetup)
     p_unsetup.add_argument(
         "--command", default=None,
@@ -1909,14 +1938,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_unsetup.set_defaults(func=_cmd_unsetup)
 
-    p_bench = sub.add_parser(
-        "bench",
-        help=(
-            "run a benchmark target. Default: v0.9.0-rc synthetic harness. "
-            "Academic-suite targets (mab, locomo, ...) are scaffolded in "
-            "benchmarks/ but inert until their dependencies port from lab."
-        ),
-    )
+    # Hidden: CI regression target. Humans run via `python -m aelfrice.benchmark`
+    # if needed.
+    p_bench = sub.add_parser("bench", help=argparse.SUPPRESS)
     p_bench.add_argument(
         "target", nargs="?", default=None,
         help=(
