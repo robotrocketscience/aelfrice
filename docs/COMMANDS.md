@@ -1,6 +1,6 @@
 # CLI Reference
 
-Eighteen subcommands. The first eight (retrieval/feedback) are also available as MCP tools and Claude Code slash commands. The lifecycle commands (`setup`/`unsetup`/`upgrade`/`uninstall`/`statusline`/`doctor`) and `bench` are CLI-only.
+Nineteen subcommands. The first eight (retrieval/feedback) are also available as MCP tools and Claude Code slash commands. The lifecycle commands (`setup`/`unsetup`/`upgrade`/`uninstall`/`statusline`/`doctor`/`migrate`) and `bench` are CLI-only.
 
 DB resolves from `$AELFRICE_DB` (override), then `<git-common-dir>/aelfrice/memory.db` when `cwd` is in a git work-tree, then `~/.aelfrice/memory.db` as the non-git fallback. `.git/` is not git-tracked — the brain graph never crosses the git boundary.
 
@@ -23,6 +23,7 @@ aelf <subcommand> [args] [options]
 | `health` | — | Structural auditor (v1.1.0): three checks fire — orphan edges, FTS5 sync drift, locked-belief CONTRADICTS pairs. Each finding prints `[ok  ]` or `[FAIL]`. Exit 1 if any failure, 0 otherwise. Informational metrics (counts, average confidence, credal gap, edge counts by type) print alongside but don't affect exit. |
 | `status` | — | Alias for `health`. Same output, same exit codes. |
 | `regime` | — | v1.0 regime classifier preserved as a separate command. One of `supersede`, `ignore`, `mixed`, `insufficient_data`. Informational only; always exits 0. |
+| `migrate [--from PATH] [--apply] [--all] [--yes]` | — | Copy beliefs from the legacy global DB (default: `~/.aelfrice/memory.db`) into the active project's resolved DB. Dry-run by default — `--apply` writes. Filter copies only beliefs whose content references the absolute project root path; `--all` skips the filter. Edges follow only when both endpoints land. Reads source via SQLite `mode=ro` URI; never deletes from the source. Idempotent. |
 | `doctor [--user-settings P] [--project-root D]` | — | Verify hook + statusline commands in user and project `settings.json` resolve to executables. Reports broken absolute paths and bare names not on `$PATH`. Special-cases `bash /script.sh` to inspect the script. Exits `1` on any broken finding. |
 | `setup [--scope user\|project] [--project-root D] [--settings-path P] [--command C] [--timeout N] [--status-message M] [--no-statusline]` | various | Install `UserPromptSubmit` hook + `statusLine` notifier in Claude Code `settings.json`. Defaults: `--scope` auto-detects `project` if `cwd/.venv` matches `sys.prefix` else `user`; `--command` auto-resolves to absolute `aelf-hook` (project venv for project scope, `$PATH` for user scope). Also silently removes legacy dangling `/usr/local/bin/aelf{,-hook}` symlinks. Idempotent + atomic. |
 | `unsetup` (same scope flags, `--command`) | — | Remove the hook + our statusline contribution. Default `--command` matches every entry whose program basename is `aelf-hook`, so a bare-name install and an absolute-path install are both cleaned by the same call. Composed statuslines are surgically unwrapped to restore the original command. |

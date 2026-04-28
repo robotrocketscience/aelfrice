@@ -15,8 +15,8 @@ import pytest
 # The CLI's user-facing surface -- must match cli.py's subparsers exactly.
 # Lifecycle commands (upgrade/uninstall/statusline) added in v1.0.1.
 # `resolve` joins at v1.0.1 alongside the contradiction tie-breaker.
-# `status` (alias for health) and `regime` (preserved v1.0 classifier)
-# join at v1.1.0 alongside the structural auditor.
+# `status` (alias for health), `regime` (preserved v1.0 classifier),
+# and `migrate` (legacy-DB import) join at v1.1.0.
 EXPECTED_COMMANDS = (
     "onboard",
     "search",
@@ -29,6 +29,7 @@ EXPECTED_COMMANDS = (
     "health",
     "status",
     "regime",
+    "migrate",
     "doctor",
     "setup",
     "unsetup",

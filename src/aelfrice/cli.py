@@ -11,6 +11,7 @@ Commands:
   health                           structural auditor (orphan edges, FTS5 sync, locked contradictions)
   status                           alias for health
   regime                           v1.0 regime classifier (supersede / ignore / mixed)
+  migrate                          copy beliefs from legacy ~/.aelfrice/memory.db
   doctor                           verify hook commands resolve in settings.json
   setup                            install UserPromptSubmit hook in Claude Code
   unsetup                          remove UserPromptSubmit hook from Claude Code
@@ -43,6 +44,11 @@ from aelfrice.auditor import (
     audit,
 )
 from aelfrice.feedback import apply_feedback
+from aelfrice.migrate import (
+    MigrateReport,
+    default_legacy_db_path,
+    migrate as _migrate_action,
+)
 from aelfrice.health import (
     REGIME_INSUFFICIENT_DATA,
     assess_health,
@@ -840,6 +846,77 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
     return 1 if report.failed else 0
 
 
+def _cmd_migrate(args: argparse.Namespace, out: object) -> int:
+    """Copy beliefs from the legacy global DB into the active project's DB.
+
+    Dry-run by default; `--apply` writes. `--all` skips the project-mention
+    filter. `--from` overrides the source path. Reads source via SQLite
+    `mode=ro` URI so accidental writes are rejected at the DB layer.
+    Exits 0 on success or no-op, 1 when source DB is missing or refuses
+    to open.
+    """
+    legacy = (
+        Path(args.from_path) if args.from_path
+        else default_legacy_db_path()
+    )
+    target = db_path()
+    project_root = Path.cwd()
+
+    if not legacy.exists():
+        print(
+            f"legacy DB not found at {legacy} — nothing to migrate",
+            file=sys.stderr,
+        )
+        return 1
+    if legacy.resolve() == target.resolve():
+        print(
+            f"legacy and target are the same DB ({legacy}) — refusing to migrate",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        report = _migrate_action(
+            legacy_path=legacy,
+            target_path=target,
+            project_root=project_root,
+            apply=args.apply,
+            copy_all=args.copy_all,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"migrate failed: {exc}", file=sys.stderr)
+        return 1
+
+    _print_migrate_report(report, out=out)
+    return 0
+
+
+def _print_migrate_report(report: MigrateReport, out: object) -> None:
+    c = report.counts
+    mode = "applied" if report.applied else "dry-run"
+    print(f"migrate ({mode}):", file=out)  # type: ignore[arg-type]
+    print(f"  source:  {report.legacy_path}", file=out)  # type: ignore[arg-type]
+    print(f"  target:  {report.target_path}", file=out)  # type: ignore[arg-type]
+    print(f"  legacy beliefs:           {c.legacy_beliefs}", file=out)  # type: ignore[arg-type]
+    print(f"  legacy edges:             {c.legacy_edges}", file=out)  # type: ignore[arg-type]
+    print(f"  matched (project-filter): {c.matched_beliefs}", file=out)  # type: ignore[arg-type]
+    if report.applied:
+        verb = "inserted"
+    else:
+        verb = "would insert"
+    print(f"  {verb} beliefs:        {c.inserted_beliefs}", file=out)  # type: ignore[arg-type]
+    print(f"  skipped existing:         {c.skipped_existing_beliefs}", file=out)  # type: ignore[arg-type]
+    print(f"  {verb} edges:           {c.inserted_edges}", file=out)  # type: ignore[arg-type]
+    print(f"  skipped orphan edges:     {c.skipped_orphan_edges}", file=out)  # type: ignore[arg-type]
+    if not report.applied:
+        print("", file=out)  # type: ignore[arg-type]
+        print(
+            "re-run with --apply to actually copy "
+            "(add --all to skip the project-mention filter).",
+            file=out,  # type: ignore[arg-type]
+        )
+
+
 def _cmd_regime(args: argparse.Namespace, out: object) -> int:
     """Print the v1.0 regime classifier output (supersede / ignore / mixed).
 
@@ -984,6 +1061,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="v1.0 regime classifier (supersede / ignore / mixed)",
     )
     p_regime.set_defaults(func=_cmd_regime)
+
+    p_migrate = sub.add_parser(
+        "migrate",
+        help=(
+            "copy beliefs from the legacy global ~/.aelfrice/memory.db "
+            "into the active project's per-project DB"
+        ),
+    )
+    p_migrate.add_argument(
+        "--from", dest="from_path", default=None,
+        help="legacy DB path (default: ~/.aelfrice/memory.db)",
+    )
+    p_migrate.add_argument(
+        "--apply", action="store_true",
+        help="actually copy beliefs (default: dry-run)",
+    )
+    p_migrate.add_argument(
+        "--all", dest="copy_all", action="store_true",
+        help="skip the project-mention filter and copy every legacy belief",
+    )
+    p_migrate.add_argument(
+        "--yes", action="store_true",
+        help="skip the confirmation prompt under --apply",
+    )
+    p_migrate.set_defaults(func=_cmd_migrate)
 
     p_doctor = sub.add_parser(
         "doctor",
