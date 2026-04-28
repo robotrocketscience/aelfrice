@@ -1869,6 +1869,115 @@ class MemoryStore:
             if isinstance(ids, list) and belief_id in ids:
                 out.append(d)
         return out
+    # --- Deferred feedback queue (v1.6+, #191) ---------------------------
+
+    def enqueue_deferred_feedback(
+        self,
+        belief_id: str,
+        *,
+        event_type: str,
+        enqueued_at: str,
+    ) -> int:
+        """Insert one row into deferred_feedback_queue with status='enqueued'.
+
+        Returns the new rowid. Caller is responsible for grouping bulk
+        enqueues (e.g. one retrieve() call producing N surfaced beliefs)
+        by sharing a single `enqueued_at` timestamp so the grace-window
+        check is well-defined for the batch.
+        """
+        cur = self._conn.execute(
+            """
+            INSERT INTO deferred_feedback_queue
+                (belief_id, enqueued_at, event_type, status)
+            VALUES (?, ?, ?, 'enqueued')
+            """,
+            (belief_id, enqueued_at, event_type),
+        )
+        self._conn.commit()
+        rowid = cur.lastrowid
+        if rowid is None:
+            raise RuntimeError(
+                "deferred_feedback_queue insert returned no rowid"
+            )
+        return rowid
+
+    def list_pending_deferred_feedback(
+        self,
+        *,
+        cutoff_iso: str,
+        limit: int = 1000,
+    ) -> list[tuple[int, str, str, str]]:
+        """Return [(id, belief_id, enqueued_at, event_type)] for queue
+        rows with status='enqueued' and enqueued_at <= cutoff_iso.
+
+        Ordered by id ASC for deterministic processing. The caller
+        provides the cutoff (typically `now - T_grace`) so the sweeper
+        only sees rows whose grace window has elapsed.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT id, belief_id, enqueued_at, event_type
+            FROM deferred_feedback_queue
+            WHERE status = 'enqueued' AND enqueued_at <= ?
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            (cutoff_iso, limit),
+        )
+        return [
+            (
+                int(r["id"]),
+                str(r["belief_id"]),
+                str(r["enqueued_at"]),
+                str(r["event_type"]),
+            )
+            for r in cur.fetchall()
+        ]
+
+    def has_explicit_feedback_in_window(
+        self,
+        belief_id: str,
+        *,
+        window_start_iso: str,
+        window_end_iso: str,
+        retrieval_source: str,
+    ) -> bool:
+        """True if any feedback_history row exists for `belief_id` whose
+        `created_at` falls within [window_start_iso, window_end_iso] and
+        whose `source` is NOT `retrieval_source`.
+
+        Used by the deferred-feedback sweeper to detect whether an
+        explicit user correction or a contradiction-tiebreaker event
+        landed during the grace window — either case cancels the
+        pending implicit increment per the explicit-beats-implicit
+        contract.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT 1 FROM feedback_history
+            WHERE belief_id = ?
+              AND source != ?
+              AND created_at >= ? AND created_at <= ?
+            LIMIT 1
+            """,
+            (belief_id, retrieval_source, window_start_iso, window_end_iso),
+        )
+        return cur.fetchone() is not None
+
+    def count_deferred_feedback_by_status(self) -> dict[str, int]:
+        """Return a {status: count} dict over deferred_feedback_queue.
+
+        Used by tests and `aelf doctor` to surface queue health.
+        Statuses with zero rows are omitted from the dict.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT status, COUNT(*) AS n
+            FROM deferred_feedback_queue
+            GROUP BY status
+            """
+        )
+        return {str(r["status"]): int(r["n"]) for r in cur.fetchall()}
 
     # --- Aggregations (used by aelf:health) ------------------------------
 
