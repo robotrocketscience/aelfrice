@@ -730,25 +730,6 @@ def _get_event_list(
     return cast(list[dict[str, object]], event_list)
 
 
-@overload
-def _get_user_prompt_submit_list(
-    data: dict[str, object], *, create: Literal[True]
-) -> list[dict[str, object]]: ...
-
-
-@overload
-def _get_user_prompt_submit_list(
-    data: dict[str, object], *, create: Literal[False]
-) -> list[dict[str, object]] | None: ...
-
-
-def _get_user_prompt_submit_list(
-    data: dict[str, object], *, create: bool
-) -> list[dict[str, object]] | None:
-    """Back-compat wrapper for the UserPromptSubmit-specific event list."""
-    if create:
-        return _get_event_list(data, _EVENT_KEY, create=True)
-    return _get_event_list(data, _EVENT_KEY, create=False)
 
 
 def _build_entry(

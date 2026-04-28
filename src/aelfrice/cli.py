@@ -663,6 +663,21 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
                     f"{'y' if n == 1 else 'ies'} from {ti_result.path}",
                     file=out,  # type: ignore[arg-type]
                 )
+    if getattr(args, "rebuilder", False):
+        pc_result = uninstall_pre_compact_hook(
+            path, command_basename="aelf-pre-compact-hook",
+        )
+        if pc_result.removed == 0:
+            print(
+                f"no rebuilder PreCompact hook in {pc_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"removed {pc_result.removed} rebuilder PreCompact entr"
+                f"{'y' if pc_result.removed == 1 else 'ies'} from {pc_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
     sl = uninstall_statusline(path)
     if sl.mode == "removed":
         print(
@@ -1416,6 +1431,10 @@ def build_parser() -> argparse.ArgumentParser:
             "also remove the four transcript-logger entries "
             "(UserPromptSubmit, Stop, PreCompact, PostCompact)."
         ),
+    )
+    p_unsetup.add_argument(
+        "--rebuilder", action="store_true",
+        help="also remove the rebuilder PreCompact hook entry.",
     )
     p_unsetup.set_defaults(func=_cmd_unsetup)
 

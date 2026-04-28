@@ -56,7 +56,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, cast
 
-from aelfrice.models import LOCK_NONE, LOCK_USER, Belief
+from aelfrice.models import LOCK_USER, Belief
 from aelfrice.store import MemoryStore
 
 DEFAULT_N_RECENT_TURNS: Final[int] = 10
