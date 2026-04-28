@@ -121,8 +121,9 @@ def user_prompt_submit(
             if token_budget is not None
             else DEFAULT_HOOK_TOKEN_BUDGET
         )
-        body = _retrieve_and_format(prompt, budget)
-        if body:
+        hits = _retrieve(prompt, budget)
+        if hits:
+            body = _format_hits(hits)
             sout.write(body)
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
@@ -147,15 +148,19 @@ def _extract_prompt(raw: str) -> str | None:
     return prompt
 
 
-def _retrieve_and_format(prompt: str, token_budget: int) -> str:
+def _retrieve(prompt: str, token_budget: int) -> list[Belief]:
+    """Run retrieval for the given prompt and return the raw hit list.
+
+    Separating retrieval from formatting lets callers inspect the hits
+    (for telemetry, optional dedup, etc.) before the string is built.
+    Returns an empty list when the store is absent or retrieval yields
+    nothing.
+    """
     store = _open_store()
     try:
-        hits = search_for_prompt(store, prompt, token_budget=token_budget)
+        return search_for_prompt(store, prompt, token_budget=token_budget)
     finally:
         store.close()
-    if not hits:
-        return ""
-    return _format_hits(hits)
 
 
 def _format_hits(hits: list[Belief]) -> str:
