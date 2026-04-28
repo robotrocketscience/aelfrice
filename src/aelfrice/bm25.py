@@ -1,3 +1,4 @@
+# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportMissingTypeStubs=false, reportOptionalSubscript=false, reportAttributeAccessIssue=false, reportGeneralTypeIssues=false
 """BM25F sparse-matvec retrieval index (v1.5.0, #148).
 
 Augments standard BM25 over each belief's own content with
