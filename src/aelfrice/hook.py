@@ -27,23 +27,30 @@ import traceback
 from pathlib import Path
 from typing import IO, Final, cast
 
-from aelfrice.cli import db_path
-from aelfrice.context_rebuilder import (
-    TRIGGER_MODE_DYNAMIC,
-    TRIGGER_MODE_MANUAL,
-    TRIGGER_MODE_THRESHOLD,
-    RecentTurn,
-    emit_pre_compact_envelope,
-    find_aelfrice_log,
-    load_rebuilder_config,
-    read_recent_turns_aelfrice,
-    read_recent_turns_claude_transcript,
-    rebuild_v14,
-)
-from aelfrice.hook_search import search_for_prompt
-from aelfrice.models import LOCK_USER, Belief
-from aelfrice.retrieval import retrieve
-from aelfrice.store import MemoryStore
+try:
+    from aelfrice.cli import db_path
+    from aelfrice.context_rebuilder import (
+        TRIGGER_MODE_DYNAMIC,
+        TRIGGER_MODE_MANUAL,
+        TRIGGER_MODE_THRESHOLD,
+        RecentTurn,
+        emit_pre_compact_envelope,
+        find_aelfrice_log,
+        load_rebuilder_config,
+        read_recent_turns_aelfrice,
+        read_recent_turns_claude_transcript,
+        rebuild_v14,
+    )
+    from aelfrice.hook_search import search_for_prompt
+    from aelfrice.models import LOCK_USER, Belief
+    from aelfrice.retrieval import retrieve
+    from aelfrice.store import MemoryStore
+
+    _IMPORTS_OK: bool = True
+    _IMPORT_ERR: ImportError | None = None
+except ImportError as _e:
+    _IMPORTS_OK = False
+    _IMPORT_ERR = _e
 
 DEFAULT_HOOK_TOKEN_BUDGET: Final[int] = 1500
 """Conservative default budget for hook-injected context.
@@ -89,6 +96,13 @@ def user_prompt_submit(
     sin = stdin if stdin is not None else sys.stdin
     sout = stdout if stdout is not None else sys.stdout
     serr = stderr if stderr is not None else sys.stderr
+    if not _IMPORTS_OK:
+        missing = getattr(_IMPORT_ERR, "name", None) or str(_IMPORT_ERR)
+        print(
+            f"aelf-hook: install incomplete (missing {missing}); skipping",
+            file=serr,
+        )
+        return 0
     try:
         # TTL-gated background update check, completely detached, never
         # blocks the hook. Statusline reads the cache it writes.
@@ -200,6 +214,13 @@ def pre_compact(
     sin = stdin if stdin is not None else sys.stdin
     sout = stdout if stdout is not None else sys.stdout
     serr = stderr if stderr is not None else sys.stderr
+    if not _IMPORTS_OK:
+        missing = getattr(_IMPORT_ERR, "name", None) or str(_IMPORT_ERR)
+        print(
+            f"aelf-hook: install incomplete (missing {missing}); skipping",
+            file=serr,
+        )
+        return 0
     try:
         raw = sin.read()
         payload = _parse_pre_compact_payload(raw)
@@ -343,6 +364,13 @@ def session_start(
     sin = stdin if stdin is not None else sys.stdin
     sout = stdout if stdout is not None else sys.stdout
     serr = stderr if stderr is not None else sys.stderr
+    if not _IMPORTS_OK:
+        missing = getattr(_IMPORT_ERR, "name", None) or str(_IMPORT_ERR)
+        print(
+            f"aelf-hook: install incomplete (missing {missing}); skipping",
+            file=serr,
+        )
+        return 0
     try:
         # Drain stdin so the hook protocol is honored even though we
         # do not consume any fields.
