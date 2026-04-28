@@ -106,21 +106,13 @@ POSTERIOR_WEIGHT_FLAG: Final[str] = "posterior_weight"
 # via the kwarg, AELFRICE_BM25F=1, or `[retrieval] use_bm25f_anchors = true`.
 BM25F_FLAG: Final[str] = "use_bm25f_anchors"
 
-# v1.5.0 #154 composition-tracker placeholder flags. None of these
-# correspond to wired lanes yet — the components ship across
-# v1.6 / v1.7 (signed Laplacian + heat kernel + posterior-full at
-# v1.6; HRR structural at v1.7). Listed here so:
-#
-#   1. `.aelfrice.toml` keys can be set ahead of the components
-#      shipping without producing "unknown key" warnings.
-#   2. The flag-resolution code path is identical to the live
-#      `use_bm25f_anchors` flag, so wiring a lane in a v1.6+ PR
-#      is a one-line edit at the consumption site.
-#
-# Each placeholder is silently default-OFF. Setting one to True at
-# v1.5.0 is a no-op with a single stderr warning that the lane
-# has not yet shipped — same fail-soft posture as the rest of the
-# config surface.
+# v1.5.0 #154 composition-tracker placeholder flags. The components
+# ship across v1.6 / v1.7. Each was a no-op placeholder at v1.5.0;
+# `HEAT_KERNEL_FLAG` is the first to leave the placeholder set as the
+# heat-kernel scorer (#150) lands here. Listed in `PLACEHOLDER_FLAGS`
+# only while the lane is still unwired — once the wiring lands, the
+# flag is removed from the placeholder tuple so the deprecation
+# warning stops firing for users who set it.
 SIGNED_LAPLACIAN_FLAG: Final[str] = "use_signed_laplacian"
 HEAT_KERNEL_FLAG: Final[str] = "use_heat_kernel"
 POSTERIOR_RANKING_FLAG: Final[str] = "use_posterior_ranking"
@@ -128,7 +120,6 @@ HRR_STRUCTURAL_FLAG: Final[str] = "use_hrr_structural"
 
 PLACEHOLDER_FLAGS: Final[tuple[str, ...]] = (
     SIGNED_LAPLACIAN_FLAG,
-    HEAT_KERNEL_FLAG,
     POSTERIOR_RANKING_FLAG,
     HRR_STRUCTURAL_FLAG,
 )
@@ -147,6 +138,8 @@ ENV_BFS: Final[str] = "AELFRICE_BFS"
 # "fall through" rather than "force off", because the default at
 # v1.5.0 is already off.
 ENV_BM25F: Final[str] = "AELFRICE_BM25F"
+# v1.7.0 heat-kernel env override. Tri-state like ENV_BM25F.
+ENV_HEAT_KERNEL: Final[str] = "AELFRICE_HEAT_KERNEL"
 # v1.3.0 posterior-weight env override. Float-typed; "0.0" is the
 # only value that fully disables (collapsing to BM25-only ordering).
 # Empty / non-numeric values fall through to the next precedence
@@ -246,6 +239,21 @@ def _env_bm25f_override() -> bool | None:
     truthy/falsy value, else None. Symmetric to `_env_bfs_override`.
     """
     raw = os.environ.get(ENV_BM25F)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def _env_heat_kernel_override() -> bool | None:
+    """Return True/False if AELFRICE_HEAT_KERNEL is set to a recognised
+    truthy/falsy value, else None. Symmetric to `_env_bm25f_override`.
+    """
+    raw = os.environ.get(ENV_HEAT_KERNEL)
     if raw is None:
         return None
     norm = raw.strip().lower()
@@ -563,6 +571,37 @@ def _reset_placeholder_warnings() -> None:
     a test that toggles a placeholder flag and re-invokes the
     warner sees the warning again. Not part of the public API."""
     _PLACEHOLDER_WARNED.clear()
+
+
+def is_heat_kernel_enabled(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the heat-kernel authority-scoring flag (#150).
+
+    Precedence (first decisive wins):
+      1. AELFRICE_HEAT_KERNEL env var (truthy / falsy normalised).
+      2. Explicit `explicit` kwarg from the caller.
+      3. `[retrieval] use_heat_kernel` in `.aelfrice.toml`.
+      4. Default: False — the lane is implemented but stays opt-in
+         until the composition tracker (#154) flips the default
+         after the real-corpus benchmark gate.
+
+    Reuses the `HEAT_KERNEL_FLAG` constant that #232 introduced as a
+    placeholder. Now that the lane has shipped, the flag is no
+    longer in `PLACEHOLDER_FLAGS` so `warn_placeholder_flags()` will
+    not flag it as unwired.
+    """
+    env = _env_heat_kernel_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    toml_value = _read_toml_flag_for(HEAT_KERNEL_FLAG, start)
+    if toml_value is not None:
+        return toml_value
+    return False
 
 
 def is_bfs_enabled(
