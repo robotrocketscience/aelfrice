@@ -1576,6 +1576,28 @@ def _print_doctor_store_check(out: object) -> None:
         )
 
 
+def _cmd_session_delta(args: argparse.Namespace, out: object) -> int:
+    """Compute per-session telemetry and append one v=1 row.
+
+    Called by the SessionEnd hook. Exits 0 on every code path — a hook
+    failure must never surface to the user as a broken shell session.
+    A missing or empty --id is a warning-only no-op (stderr, exit 0).
+    """
+    from aelfrice.telemetry import DEFAULT_TELEMETRY_PATH, emit_session_delta
+    from pathlib import Path as _Path
+
+    session_id: str = args.session_id or ""
+    telemetry_path: _Path | None = (
+        _Path(args.telemetry_path) if args.telemetry_path else DEFAULT_TELEMETRY_PATH
+    )
+    store = _open_store()
+    try:
+        emit_session_delta(session_id, store=store, path=telemetry_path)
+    finally:
+        store.close()
+    return 0
+
+
 def _known_cli_subcommands() -> frozenset[str]:
     """Snapshot of the subcommands the running `aelf` parser knows.
 
@@ -2063,6 +2085,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_project_warm.set_defaults(func=_cmd_project_warm)
+
+    # Hidden: advanced telemetry verb. Invoked by the SessionEnd hook in the
+    # HOME repo. Computes per-session deltas from the active store and appends
+    # one v=1 row to ~/.aelfrice/telemetry.jsonl. Silent on missing session_id
+    # (logs to stderr, exits 0). Issue #140.
+    p_session_delta = sub.add_parser("session-delta", help=argparse.SUPPRESS)
+    p_session_delta.add_argument(
+        "--id", dest="session_id", default=None,
+        help="Claude Code session id to compute telemetry for",
+    )
+    p_session_delta.add_argument(
+        "--telemetry-path", dest="telemetry_path", default=None,
+        help=(
+            "path to the telemetry JSONL file "
+            "(default: ~/.aelfrice/telemetry.jsonl)"
+        ),
+    )
+    p_session_delta.set_defaults(func=_cmd_session_delta)
 
     return parser
 
