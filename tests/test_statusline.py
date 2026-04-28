@@ -8,6 +8,16 @@ import pytest
 from aelfrice import lifecycle, statusline
 
 
+@pytest.fixture(autouse=True)
+def _pin_installed_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin installed_version() to a low value so format_snippet's
+    self-suppression (added by the stale-banner fix) does not gate
+    every snippet test on the running package version."""
+    monkeypatch.setattr(
+        statusline, "installed_version", lambda: "0.0.0"
+    )
+
+
 def _fresh(latest: str = "1.2.3", available: bool = True) -> lifecycle.UpdateStatus:
     return lifecycle.UpdateStatus(
         update_available=available,

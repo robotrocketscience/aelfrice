@@ -65,7 +65,9 @@ def test_statusline_snippet_uses_banner_helper() -> None:
         checked=0.0,
         sha256=None,
     )
-    snippet = statusline.format_snippet(status, env={})
+    # Pass installed="" so the snippet is not suppressed by the running
+    # package version (which is >= status.latest in this worktree).
+    snippet = statusline.format_snippet(status, env={}, installed="")
     expected_body = lifecycle.format_update_banner("1.5.0")
     assert expected_body in snippet
 
@@ -87,8 +89,9 @@ def test_banner_shared_substring_in_statusline_and_cli(
         checked=0.0,
         sha256=None,
     )
-    # Statusline path.
-    snippet = statusline.format_snippet(status, env={})
+    # Statusline path. Pass installed="" so the running package version
+    # does not auto-suppress the snippet.
+    snippet = statusline.format_snippet(status, env={}, installed="")
     assert "/aelf:upgrade to v" in snippet
 
     # CLI stderr banner path — monkeypatch the cache reader.
