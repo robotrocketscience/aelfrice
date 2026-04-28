@@ -58,6 +58,9 @@ from aelfrice.models import (
     BELIEF_FACTUAL,
     LOCK_NONE,
     LOCK_USER,
+    ORIGIN_AGENT_INFERRED,
+    ORIGIN_USER_STATED,
+    ORIGIN_USER_VALIDATED,
     Belief,
 )
 from aelfrice import __version__ as _AELFRICE_VERSION
@@ -280,12 +283,14 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
                 demotion_pressure=0,
                 created_at=now,
                 last_retrieved_at=None,
+                origin=ORIGIN_USER_STATED,
             ))
             print(f"locked: {bid}", file=out)  # type: ignore[arg-type]
         else:
             existing.lock_level = LOCK_USER
             existing.locked_at = now
             existing.demotion_pressure = 0
+            existing.origin = ORIGIN_USER_STATED
             store.update_belief(existing)
             print(f"upgraded existing belief to lock: {bid}", file=out)  # type: ignore[arg-type]
     finally:
