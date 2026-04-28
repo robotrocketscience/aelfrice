@@ -54,6 +54,7 @@ from aelfrice.health import (
 from aelfrice.models import (
     BELIEF_FACTUAL,
     CORROBORATION_SOURCE_MCP_REMEMBER,
+    INGEST_SOURCE_MCP_REMEMBER,
     LOCK_NONE,
     LOCK_USER,
     ORIGIN_USER_STATED,
@@ -214,6 +215,13 @@ def tool_lock(store: MemoryStore, *, statement: str) -> dict[str, Any]:
     existing = store.get_belief(bid)
     now = _utc_now_iso()
     if existing is None:
+        # v2.0 #205 parallel-write: log the user-stated raw text.
+        store.record_ingest(
+            source_kind=INGEST_SOURCE_MCP_REMEMBER,
+            raw_text=statement,
+            derived_belief_ids=[bid],
+            ts=now,
+        )
         store.insert_belief(Belief(
             id=bid,
             content=statement,

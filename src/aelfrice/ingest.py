@@ -29,6 +29,7 @@ from aelfrice.models import (
     ANCHOR_TEXT_MAX_LEN,
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     EDGE_DERIVED_FROM,
+    INGEST_SOURCE_FILESYSTEM,
     LOCK_NONE,
     ORIGIN_AGENT_INFERRED,
     Belief,
@@ -127,6 +128,17 @@ def _ingest_turn_ids(
                 session_id=session_id,
             )
             continue
+        # v2.0 #205 parallel-write: log the classifier input before
+        # materializing the belief. belief_id is deterministic on
+        # (source, sentence) so derived_belief_ids is known up-front.
+        store.record_ingest(
+            source_kind=INGEST_SOURCE_FILESYSTEM,
+            source_path=source,
+            raw_text=sentence,
+            derived_belief_ids=[belief_id],
+            session_id=session_id,
+            ts=ts,
+        )
         belief = Belief(
             id=belief_id,
             content=sentence,

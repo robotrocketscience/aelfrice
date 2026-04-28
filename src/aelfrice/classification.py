@@ -40,6 +40,7 @@ from aelfrice.models import (
     BELIEF_PREFERENCE,
     BELIEF_REQUIREMENT,
     BELIEF_TYPES,
+    INGEST_SOURCE_FILESYSTEM,
     LOCK_NONE,
     ONBOARD_STATE_PENDING,
     ORIGIN_AGENT_INFERRED,
@@ -500,6 +501,14 @@ def accept_classifications(
             skipped_existing += 1
             continue
         alpha, beta = get_source_adjusted_prior(c.belief_type, source)
+        # v2.0 #205 parallel-write: log the host-classified text.
+        store.record_ingest(
+            source_kind=INGEST_SOURCE_FILESYSTEM,
+            source_path=source,
+            raw_text=text,
+            derived_belief_ids=[bid],
+            ts=timestamp,
+        )
         store.insert_belief(
             Belief(
                 id=bid,
