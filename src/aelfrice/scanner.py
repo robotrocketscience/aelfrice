@@ -31,7 +31,7 @@ from aelfrice.models import LOCK_NONE, ORIGIN_AGENT_INFERRED, Belief
 from aelfrice.noise_filter import NoiseConfig, is_noise
 from aelfrice.store import MemoryStore
 
-# Optional v1.3+ LLM-classify routing path. `_LLMRouter` is a Protocol
+# Optional v1.3+ LLM-classify routing path. `LLMRouter` is a Protocol
 # the scanner depends on; production callers pass an instance built in
 # `aelfrice.llm_classifier`. The actual `anthropic` SDK is NOT imported
 # here — the SDK call lives behind the Protocol. Default install never
@@ -97,7 +97,7 @@ class SentenceCandidate:
     commit_date: str | None = None
 
 
-class _LLMRouter(Protocol):
+class LLMRouter(Protocol):
     """Minimal interface scanner needs from an LLM-classify driver.
 
     Production callers pass `aelfrice.llm_classifier.ScannerRouter`
@@ -115,12 +115,12 @@ class _LLMRouter(Protocol):
     def classify(
         self,
         candidates: "list[SentenceCandidate]",
-    ) -> "list[_LLMRoute]":
+    ) -> "list[LLMRoute]":
         ...
 
 
 @dataclass
-class _LLMRoute:
+class LLMRoute:
     """Per-candidate output of the router.
 
     `belief_type`, `origin`, `persist`, `alpha`, `beta` are the
@@ -142,7 +142,7 @@ def scan_repo(
     now: str | None = None,
     *,
     noise_config: NoiseConfig | None = None,
-    llm_router: _LLMRouter | None = None,
+    llm_router: LLMRouter | None = None,
 ) -> ScanResult:
     """Run all three extractors on `root`, classify each candidate, and
     insert persistable results as Beliefs in the store.
@@ -209,7 +209,7 @@ def scan_repo(
             continue
         filtered.append(candidate)
 
-    routes: list[_LLMRoute]
+    routes: list[LLMRoute]
     if llm_router is not None:
         routes = llm_router.classify(filtered)
     else:
@@ -266,15 +266,15 @@ def scan_repo(
     )
 
 
-def _route_from_regex(candidate: SentenceCandidate) -> _LLMRoute:
-    """Build an _LLMRoute from the regex `classify_sentence` output.
+def _route_from_regex(candidate: SentenceCandidate) -> LLMRoute:
+    """Build an LLMRoute from the regex `classify_sentence` output.
 
     Default-ON path used when no LLM router is supplied. Origin is
     fixed at ORIGIN_AGENT_INFERRED (legacy v1.0/v1.2 behaviour);
     fixing this is the LLM-classify path's job, not the regex path.
     """
     result = classify_sentence(candidate.text, candidate.source)
-    return _LLMRoute(
+    return LLMRoute(
         belief_type=result.belief_type,
         origin=ORIGIN_AGENT_INFERRED,
         persist=result.persist,

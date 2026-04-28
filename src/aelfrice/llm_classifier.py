@@ -915,6 +915,153 @@ def regex_fallback_classify(
     return classify_sentence(candidate.text, candidate.source)
 
 
+class ScannerRouter:
+    """Concrete `LLMRouter` for `aelfrice.scanner.scan_repo`.
+
+    Wraps `classify_batch` + the regex-fallback bridge into the
+    one-route-per-candidate contract scanner expects. Tracks
+    telemetry for stdout emission after the run completes.
+
+    Constructor args:
+      api_key: ANTHROPIC_API_KEY value (caller already validated).
+      model: pinned model id, default `DEFAULT_MODEL`.
+      max_tokens: per-run cap, default `DEFAULT_MAX_TOKENS`. 0 = off.
+      sdk_module: optional SDK injection for tests.
+
+    Raises (during `classify`):
+      LLMAuthError on 401/403 — the caller must exit 1.
+      LLMTokenCapExceeded when the running token total exceeds the
+        configured cap mid-run — caller must exit 1, partial inserts
+        already in the store will be picked up on a re-run via the
+        deterministic belief id.
+    """
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str = DEFAULT_MODEL,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+        sdk_module: "Any" = None,
+    ) -> None:
+        self._api_key = api_key
+        self._model = model
+        self._max_tokens = max_tokens
+        self._sdk_module = sdk_module
+        self.telemetry = BatchTelemetry()
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    def classify(
+        self,
+        candidates: "list[Any]",
+    ) -> "list[Any]":
+        """Run one batched Haiku call, return one route per candidate.
+
+        Uses a deferred type for `list[SentenceCandidate]` /
+        `list[LLMRoute]` so this module does not depend on
+        scanner.py (which itself imports llm_classifier indirectly
+        via the cli wrapper). The runtime objects are still
+        SentenceCandidate / LLMRoute.
+        """
+        from aelfrice.scanner import LLMRoute  # local import: avoid cycle
+
+        if not candidates:
+            return []
+
+        inputs = [
+            CandidateInput(index=i, text=c.text, source=c.source)
+            for i, c in enumerate(candidates)
+        ]
+        batch = classify_batch(
+            inputs,
+            api_key=self._api_key,
+            model=self._model,
+            max_tokens=self._max_tokens,
+            sdk_module=self._sdk_module,
+        )
+
+        # Auth failure: the caller maps to exit 1; we re-raise so
+        # scan_repo does not insert anything from this batch.
+        if batch.auth_error is not None:
+            raise LLMAuthError(batch.auth_error)
+        # Token-cap abort: re-raise so the caller exits 1.
+        if batch.token_cap_exceeded:
+            raise LLMTokenCapExceeded(
+                consumed=batch.token_cap_consumed,
+                cap=self._max_tokens,
+            )
+
+        # Accumulate telemetry for the eventual stdout summary.
+        self.telemetry.input_tokens += batch.telemetry.input_tokens
+        self.telemetry.output_tokens += batch.telemetry.output_tokens
+        self.telemetry.requests += batch.telemetry.requests
+        self.telemetry.fallbacks += batch.telemetry.fallbacks
+        self.telemetry.skipped_invalid += batch.telemetry.skipped_invalid
+
+        routes: list[Any] = []
+        if batch.fallback_used:
+            # Whole-batch regex fallback. Spec § 7.2 step 1-3:
+            # synchronous regex reclassification, audit-row note.
+            for c in candidates:
+                regex = regex_fallback_classify(
+                    CandidateInput(index=0, text=c.text, source=c.source),
+                )
+                routes.append(
+                    LLMRoute(
+                        belief_type=regex.belief_type,
+                        origin=ORIGIN_AGENT_INFERRED,
+                        persist=regex.persist,
+                        alpha=regex.alpha,
+                        beta=regex.beta,
+                        audit_source=(
+                            f"onboard.llm.fallback:{batch.fallback_reason}"
+                            if regex.persist
+                            else None
+                        ),
+                    )
+                )
+            return routes
+
+        # Per-candidate routing. Build a map by index to handle
+        # holes (per-candidate invalid-field drops, spec § 5.4).
+        by_index = {c.index: c for c in batch.classifications}
+        for i, c in enumerate(candidates):
+            cls = by_index.get(i)
+            if cls is None:
+                # Per-candidate invalid → drop the candidate entirely
+                # (treat as non-persisting). The whole-batch fallback
+                # is only triggered by structural failures, not
+                # per-row validation drops.
+                routes.append(
+                    LLMRoute(
+                        belief_type="factual",
+                        origin=ORIGIN_AGENT_INFERRED,
+                        persist=False,
+                        alpha=0.6,
+                        beta=1.0,
+                        audit_source=None,
+                    )
+                )
+                continue
+            alpha, beta = get_source_adjusted_prior(
+                cls.belief_type, c.source,
+            )
+            routes.append(
+                LLMRoute(
+                    belief_type=cls.belief_type,
+                    origin=cls.origin,
+                    persist=cls.persist,
+                    alpha=alpha,
+                    beta=beta,
+                    audit_source=None,
+                )
+            )
+        return routes
+
+
 def llm_origin_for_source(source: str) -> str:
     """Default origin tier for a scanner candidate source string.
 
@@ -968,6 +1115,7 @@ __all__ = [
     "LLMTokenCapExceeded",
     "LLMTransientError",
     "PromptResult",
+    "ScannerRouter",
     "Sentinel",
     "build_user_message",
     "check_gates",
