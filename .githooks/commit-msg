@@ -1,0 +1,5 @@
+#!/bin/sh
+# commit-msg hook: validates conventional-commit prefix.
+# Installed via:  git config core.hooksPath .githooks
+# Or run scripts/setup-hooks.sh to wire automatically.
+exec python3 "$(git rev-parse --show-toplevel)/scripts/check-commit-msg.py" "$1"
