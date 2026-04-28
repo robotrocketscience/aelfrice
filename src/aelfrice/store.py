@@ -130,6 +130,38 @@ _SCHEMA: tuple[str, ...] = (
     "ON belief_entities(belief_id)",
     "CREATE INDEX IF NOT EXISTS idx_belief_entities_kind "
     "ON belief_entities(kind)",
+    # v1.5.0 #204 forward-compat for v3 federation. One row per
+    # (belief, scope) so each belief carries a version vector
+    # `{scope_id: counter}`. SQLite-idiomatic sidecar table beats
+    # the JSON-column alternative because we never need to filter
+    # in WHERE on individual scope counters; the rows are
+    # accumulated locally and consumed by federation reconcile
+    # (which lands at v3, not now).
+    """
+    CREATE TABLE IF NOT EXISTS belief_versions (
+        belief_id TEXT NOT NULL,
+        scope_id  TEXT NOT NULL,
+        counter   INTEGER NOT NULL,
+        PRIMARY KEY (belief_id, scope_id)
+    )
+    """,
+    # Edge version vectors. Edges have a composite key
+    # `(src, dst, type)` per the v1.0 schema; the version sidecar
+    # mirrors that.
+    """
+    CREATE TABLE IF NOT EXISTS edge_versions (
+        src       TEXT NOT NULL,
+        dst       TEXT NOT NULL,
+        type      TEXT NOT NULL,
+        scope_id  TEXT NOT NULL,
+        counter   INTEGER NOT NULL,
+        PRIMARY KEY (src, dst, type, scope_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_belief_versions_belief "
+    "ON belief_versions(belief_id)",
+    "CREATE INDEX IF NOT EXISTS idx_edge_versions_edge "
+    "ON edge_versions(src, dst, type)",
 )
 
 # Marker key for the entity-index one-shot backfill. Empty value =
@@ -137,6 +169,19 @@ _SCHEMA: tuple[str, ...] = (
 # `schema_meta` so a v1.3+ binary opening a pre-v1.3 store knows to
 # re-extract entities for every existing belief on first open.
 SCHEMA_META_ENTITY_BACKFILL: Final[str] = "entity_backfill_complete"
+
+# v1.5.0 #204 federation forward-compat. Stable per-DB scope id,
+# generated on first v1.5+ open and persisted in `schema_meta`.
+# Today aelfrice is single-scope per DB; the local scope id is
+# just a UUID. When federation ships at v3, peer scopes appear
+# alongside this one in the version-vector dicts.
+SCHEMA_META_LOCAL_SCOPE_ID: Final[str] = "local_scope_id"
+# Marker for the v1.5.0 backfill that stamps `{local_scope: 1}`
+# on every pre-#204 belief and edge row. ISO timestamp on
+# completion; absence triggers the backfill on next open.
+SCHEMA_META_VERSION_VECTOR_BACKFILL: Final[str] = (
+    "version_vector_backfill_complete"
+)
 
 # v1.0 -> v1.2 column additions. Each ALTER runs after _SCHEMA. ALTERs
 # are idempotent: a duplicate-column OperationalError on a v1.2-fresh
@@ -289,10 +334,19 @@ class MemoryStore:
             self._conn.execute(stmt)
         self._conn.commit()
         self._invalidation_callbacks: list[Callable[[], None]] = []
+        # v1.5.0 #204 federation forward-compat. Resolve (or
+        # generate) the local scope id BEFORE any belief/edge
+        # write path runs — write hooks consume `_local_scope_id`
+        # to bump the version-vector counter.
+        self._local_scope_id: str = self._resolve_local_scope_id()
         # v1.3 entity-index one-shot backfill. Skipped on a v1.3-fresh
         # store (no rows in beliefs yet) — the marker just stamps to
         # the current time so the next open is a no-op. Idempotent.
         self._maybe_backfill_entity_index()
+        # v1.5.0 #204 version-vector backfill. Stamps
+        # `{local_scope: 1}` on every pre-existing belief and edge
+        # the first time a v1.5+ binary opens this DB. Idempotent.
+        self._maybe_backfill_version_vectors()
 
     def close(self) -> None:
         self._conn.close()
@@ -336,6 +390,112 @@ class MemoryStore:
         )
         self._conn.commit()
 
+    # --- v1.5.0 #204 version-vector helpers ------------------------------
+
+    @property
+    def local_scope_id(self) -> str:
+        """The stable per-DB scope id used for federation forward-compat.
+
+        Generated on first open of a v1.5+ binary against this DB and
+        persisted in `schema_meta`. Stays stable for the life of the
+        DB; never rotated.
+        """
+        return self._local_scope_id
+
+    def _resolve_local_scope_id(self) -> str:
+        """Read the persisted scope id, generating one on first open."""
+        existing = self.get_schema_meta(SCHEMA_META_LOCAL_SCOPE_ID)
+        if existing:
+            return existing
+        new_scope = secrets.token_hex(16)
+        self.set_schema_meta(SCHEMA_META_LOCAL_SCOPE_ID, new_scope)
+        return new_scope
+
+    def _bump_belief_version(self, belief_id: str) -> None:
+        """Increment `belief_versions[belief_id, local_scope_id]` by 1.
+
+        Called from every belief insert / update path. Local-write
+        rule per the #204 spec: `vv[local_scope] += 1` on every
+        write. Idempotent INSERT OR REPLACE on the composite PK keeps
+        the row count bounded by `n_beliefs * n_scopes`.
+        """
+        self._conn.execute(
+            "INSERT INTO belief_versions (belief_id, scope_id, counter) "
+            "VALUES (?, ?, 1) "
+            "ON CONFLICT(belief_id, scope_id) "
+            "DO UPDATE SET counter = counter + 1",
+            (belief_id, self._local_scope_id),
+        )
+
+    def _bump_edge_version(self, src: str, dst: str, type_: str) -> None:
+        """Increment `edge_versions[(src, dst, type), local_scope_id]`."""
+        self._conn.execute(
+            "INSERT INTO edge_versions (src, dst, type, scope_id, counter) "
+            "VALUES (?, ?, ?, ?, 1) "
+            "ON CONFLICT(src, dst, type, scope_id) "
+            "DO UPDATE SET counter = counter + 1",
+            (src, dst, type_, self._local_scope_id),
+        )
+
+    def get_belief_version_vector(self, belief_id: str) -> dict[str, int]:
+        """Return `{scope_id: counter}` for `belief_id`.
+
+        Empty dict on a belief that has no version rows yet (e.g., a
+        store row written by a pre-v1.5 binary that has not yet been
+        backfilled). Federation reconcile (v3) consumes this map.
+        """
+        cur = self._conn.execute(
+            "SELECT scope_id, counter FROM belief_versions "
+            "WHERE belief_id = ?",
+            (belief_id,),
+        )
+        return {str(r["scope_id"]): int(r["counter"]) for r in cur.fetchall()}
+
+    def get_edge_version_vector(
+        self, src: str, dst: str, type_: str,
+    ) -> dict[str, int]:
+        """Return `{scope_id: counter}` for the edge `(src, dst, type)`."""
+        cur = self._conn.execute(
+            "SELECT scope_id, counter FROM edge_versions "
+            "WHERE src = ? AND dst = ? AND type = ?",
+            (src, dst, type_),
+        )
+        return {str(r["scope_id"]): int(r["counter"]) for r in cur.fetchall()}
+
+    def _maybe_backfill_version_vectors(self) -> int:
+        """One-shot backfill stamping `{local_scope: 1}` on every
+        pre-existing belief and edge that lacks a version row.
+
+        Idempotent: stamped marker short-circuits subsequent opens.
+        Re-running by dropping the marker also no-ops because of
+        `INSERT OR IGNORE` against the composite PK.
+
+        Returns the count of rows inserted across both tables.
+        """
+        if self.get_schema_meta(SCHEMA_META_VERSION_VECTOR_BACKFILL):
+            return 0
+        scope = self._local_scope_id
+        belief_cur = self._conn.execute(
+            "INSERT OR IGNORE INTO belief_versions "
+            "(belief_id, scope_id, counter) "
+            "SELECT id, ?, 1 FROM beliefs",
+            (scope,),
+        )
+        belief_inserted = belief_cur.rowcount or 0
+        edge_cur = self._conn.execute(
+            "INSERT OR IGNORE INTO edge_versions "
+            "(src, dst, type, scope_id, counter) "
+            "SELECT src, dst, type, ?, 1 FROM edges",
+            (scope,),
+        )
+        edge_inserted = edge_cur.rowcount or 0
+        self._conn.commit()
+        self.set_schema_meta(
+            SCHEMA_META_VERSION_VECTOR_BACKFILL,
+            datetime.now(timezone.utc).isoformat(),
+        )
+        return belief_inserted + edge_inserted
+
     def list_belief_ids(self) -> list[str]:
         """All belief ids in insertion-time order. Used by the v1.3
         entity-index backfill to walk every existing belief once."""
@@ -364,6 +524,7 @@ class MemoryStore:
             (b.id, b.content),
         )
         self._write_belief_entities(b.id, b.content)
+        self._bump_belief_version(b.id)
         self._conn.commit()
         self._fire_invalidation()
 
@@ -412,6 +573,7 @@ class MemoryStore:
             "DELETE FROM belief_entities WHERE belief_id = ?", (b.id,)
         )
         self._write_belief_entities(b.id, b.content)
+        self._bump_belief_version(b.id)
         self._conn.commit()
         self._fire_invalidation()
 
@@ -824,6 +986,7 @@ class MemoryStore:
             "VALUES (?, ?, ?, ?, ?)",
             (e.src, e.dst, e.type, e.weight, e.anchor_text),
         )
+        self._bump_edge_version(e.src, e.dst, e.type)
         self._conn.commit()
         self._fire_invalidation()
 
@@ -841,6 +1004,7 @@ class MemoryStore:
             "WHERE src = ? AND dst = ? AND type = ?",
             (e.weight, e.anchor_text, e.src, e.dst, e.type),
         )
+        self._bump_edge_version(e.src, e.dst, e.type)
         self._conn.commit()
         self._fire_invalidation()
 
