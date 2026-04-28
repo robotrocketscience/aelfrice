@@ -99,6 +99,13 @@ _NP = (
     rf"(?:(?:{_DET})\s+)?{_TOKEN}(?:\s+{_TOKEN}){{0,4}}"
 )
 
+# Public alias of the internal noun-phrase pattern. Re-exported so
+# downstream extractors (the v1.3.0 entity-index path) can compose
+# the same NP shape without reaching into the underscore name. The
+# string itself is what's exposed; consumers compile it themselves
+# with whatever flags they need.
+NOUN_PHRASE_PATTERN: Final[str] = _NP
+
 
 def _np(group_name: str) -> str:
     """Build a named non-greedy noun-phrase capture group."""
