@@ -28,15 +28,20 @@ EDGE_CITES: Final[str] = "CITES"
 EDGE_CONTRADICTS: Final[str] = "CONTRADICTS"
 EDGE_SUPERSEDES: Final[str] = "SUPERSEDES"
 EDGE_RELATES_TO: Final[str] = "RELATES_TO"
+EDGE_DERIVED_FROM: Final[str] = "DERIVED_FROM"
 
 # Edge-type valence multipliers for propagation.
 # Positive = propagate same sign; negative = invert; 0.0 = no propagation.
+# DERIVED_FROM mirrors CITES (0.5): both indicate B's content depends on A,
+# distinct because DERIVED_FROM carries stronger contextual coupling
+# (sibling becomes stale if A is superseded).
 EDGE_VALENCE: Final[dict[str, float]] = {
     EDGE_SUPPORTS: 1.0,
     EDGE_CITES: 0.5,
     EDGE_CONTRADICTS: -0.5,
     EDGE_SUPERSEDES: 0.0,
     EDGE_RELATES_TO: 0.3,
+    EDGE_DERIVED_FROM: 0.5,
 }
 
 EDGE_TYPES: Final[frozenset[str]] = frozenset(EDGE_VALENCE.keys())
