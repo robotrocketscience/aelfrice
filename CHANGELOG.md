@@ -8,21 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Pre-`1.0.0` releases are atomic milestones building toward the first
 installable release; see the roadmap in [README.md](README.md).
 
-## [Unreleased]
+## [1.2.0] - 2026-04-28
 
-### Fixed
-
-- **`aelf doctor` now flags hooks that wrap a script in `2>/dev/null || true`** ([#113](https://github.com/robotrocketscience/aelfrice/issues/113), [#114](https://github.com/robotrocketscience/aelfrice/issues/114)). Previously the shell-meta heuristic short-circuited before extracting the script path, so a stale `bash /abs/path.sh 2>/dev/null || true` hook entry — like the one #113 reproduces against the long-deleted `hook-aelf-search.sh` — was reported as `skipped` instead of `broken`. The check now extracts the script path even with a trailing wrapper and reports it as broken when the file is missing. Hooks using the silent-failure pattern are additionally surfaced as a soft warning regardless of whether the underlying script resolves, with a fix-hint pointing at `~/.aelfrice/logs/hook-failures.log`. Doctor also now tails that log when present, so future bash hook wrappers that redirect stderr into it have a discovery path back to the user.
+Major release. Auto-capture pipeline (transcript-ingest, commit-ingest, SessionStart hooks), the v1.1.0-designed `agent_inferred → user_validated` promotion path, the triple extractor, ingest-enrichment schema, batch-ingest of historical Claude Code JSONLs, the harness-integration guide, the `INEDIBLE` per-file privacy opt-out, and the v1.3-planned CLI consolidation rolled forward into this release. 16 PRs landed since v1.1.0. Folds in everything that shipped under the v1.2.0a0 alpha (#109) — that pre-release is now superseded; users should upgrade directly to 1.2.0.
 
 ### Added
 
+- **CLI surface consolidation** ([#127](https://github.com/robotrocketscience/aelfrice/pull/127), [#129](https://github.com/robotrocketscience/aelfrice/pull/129)). The user-facing surface drops from 22 verbs to 14 listed in `--help` without removing capability. `aelf stats` is renamed to `aelf status` (counts snapshot); `aelf health` folds into `aelf doctor graph`; `aelf doctor` grows a positional `[hooks|graph]` scope arg and runs both checks when no scope is given. Hidden via `help=argparse.SUPPRESS`: `rebuild`, `statusline`, `bench`, `regime`, `migrate`, `unsetup`, plus the back-compat aliases `health` and (old) `stats`. Custom `_SuppressSubparsersFormatter` filters argparse's leaked `==SUPPRESS==` literal. Slash commands track only the user-facing surface — `bench.md`, `health.md`, `migrate.md`, `rebuild.md`, `regime.md`, `statusline.md`, `stats.md`, `unsetup.md` deleted at this release. Aliases live one minor and are deleted at v1.3+. Design memo: [`docs/CLI_SURFACE_AUDIT.md`](docs/CLI_SURFACE_AUDIT.md).
+- **`INEDIBLE` filename marker** ([#129](https://github.com/robotrocketscience/aelfrice/pull/129)). Per-file privacy opt-out. Any file or directory whose basename contains `INEDIBLE` (case-sensitive, all caps, anywhere in the basename) is unconditionally skipped by every aelfrice ingest path: `scan_repo` filesystem walk, `scan_repo` AST walk, `ingest_jsonl` single-file path, and `ingest_jsonl_dir` batch path. Examples that match: `INEDIBLE.md`, `INEDIBLE_secrets.txt`, `notes_INEDIBLE.txt`, `partINEDIBLEpart.py`. Lowercase variants do not match — case sensitivity is the deliberate discoverability cue. The check is on the basename only; when `is_inedible(path)` returns True, aelfrice does not open, read, or hash the file. New `aelfrice.inedible` module exposes `INEDIBLE_MARKER` + `is_inedible(path)`. `IngestJsonlBatchResult` gains a `files_skipped_inedible` counter. Documented in `docs/PRIVACY.md § Per-file opt-out`.
+- **`aelf doctor` now flags hooks that wrap a script in `2>/dev/null || true`** ([#113](https://github.com/robotrocketscience/aelfrice/issues/113), [#114](https://github.com/robotrocketscience/aelfrice/issues/114)). Previously the shell-meta heuristic short-circuited before extracting the script path, so a stale `bash /abs/path.sh 2>/dev/null || true` hook entry — like the one #113 reproduces against the long-deleted `hook-aelf-search.sh` — was reported as `skipped` instead of `broken`. The check now extracts the script path even with a trailing wrapper and reports it as broken when the file is missing. Hooks using the silent-failure pattern are additionally surfaced as a soft warning regardless of whether the underlying script resolves, with a fix-hint pointing at `~/.aelfrice/logs/hook-failures.log`. Doctor also now tails that log when present, so future bash hook wrappers that redirect stderr into it have a discovery path back to the user.
 - **Empty-store onboarding signals across `aelf health`, `aelf doctor`, `aelf search`, and `aelf setup`** ([#116](https://github.com/robotrocketscience/aelfrice/issues/116)). `aelf health` now runs a `corpus_volume` audit check that fires `severity='warn'` when belief count is below `AELFRICE_CORPUS_MIN` (default 50) AND the project is at least seven days old (resolved from `git log --reverse --max-parents=0`). The warning is informational — it never affects the exit code, so CI consumers are unaffected. Brand-new projects and non-git directories never warn. `aelf doctor` prints a `store: N belief(s)` line at the end of its report and surfaces the same empty-store hint when the active project's DB is at zero. `aelf search` distinguishes "store is empty" from "no FTS5 match" so the user can tell whether their query missed or whether nothing has been indexed yet. `aelf setup` prints a one-line `next step: ... aelf onboard .` hint when the active store is empty after install. Resolves the dogfooding gap discovered when an aelfrice-lab project had only 5 beliefs after weeks of active use because the onboard step had no discovery path back to the user.
 - **`aelf ingest-transcript --batch DIR [--since DATE]`** ([#115](https://github.com/robotrocketscience/aelfrice/issues/115)). Batch ingest of historical JSONL session logs into the active project's belief store. The path argument is now optional (mutually exclusive with `--batch`). `--batch DIR` recurses into DIR for every `*.jsonl` file; `--since YYYY-MM-DD` (or full ISO timestamp) filters by file mtime so incremental backfill is cheap. `ingest_jsonl` now auto-detects two formats per line: aelfrice's own transcript-logger `turns.jsonl` shape AND Claude Code's internal session-log shape at `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl` (`{"type": "user", "message": {"role": ..., "content": ...}, "sessionId": ..., "timestamp": ...}` with `content` either a string or a `[{"type":"text","text":...}]` array). Idempotent on re-run thanks to existing per-`(source, sentence)` dedup. New `IngestJsonlBatchResult` aggregates per-file counts.
 - **`aelf setup` historical-JSONL hint** ([#115](https://github.com/robotrocketscience/aelfrice/issues/115)). When `~/.claude/projects/` exists with at least one `*.jsonl`, setup prints a one-line count + the exact `aelf ingest-transcript --batch` command to backfill, plus a pointer at the privacy trade-off note. Counting is capped at 1000 to keep setup fast.
 - **`aelf doctor` orphan-slash check** ([#115](https://github.com/robotrocketscience/aelfrice/issues/115)). Reads `~/.claude/commands/aelf/*.md`, compares the basenames against the running CLI's argparse subcommand registry, and surfaces any slash file naming a subcommand the CLI does not implement (the canonical case: a slash command is published in a docs branch but the corresponding CLI feature lives on a different branch). Informational only — never affects exit status. New `--known-cli-subcommands` parameter on `diagnose()` keeps the check off when callers don't ask for it (backwards-compat).
 - **`docs/INSTALL.md § Batch ingest of historical sessions`**. New subsection covers `--batch`/`--since`, idempotency, format auto-detection, and the privacy trade-off (Claude Code session JSONLs may contain pasted secrets — there is no PII scrubber on the v1.2 ingest path; review before backfilling).
-
-### Added (toward v1.2.0 final)
 
 - **Ingest enrichment schema** ([docs/ingest_enrichment.md](docs/ingest_enrichment.md)). Three coupled additions: `DERIVED_FROM` edge type (valence 0.5, mirrors `CITES`); `anchor_text TEXT` column on `edges` carrying the citing belief's own phrasing of the relationship, capped at 1000 characters at the dataclass boundary; `session_id TEXT` column on `beliefs` plus a real `sessions` table (`MemoryStore.create_session` / `complete_session` go from no-op stubs to persisting). `ingest_turn` now writes `session_id` end-to-end. Forward-compatible with v1.0 stores: `ALTER TABLE` adds the columns on first open and is idempotent on re-open. The `idx_beliefs_session` index is sequenced after the migration so a v1.0 store can open at all. Producers that populate the new fields densely are the v1.2.0 transcript-ingest, commit-ingest, and triple-extraction paths.
 - **Commit-ingest `PostToolUse` hook** ([docs/commit_ingest_hook.md](docs/commit_ingest_hook.md)). New `aelfrice.hook_commit_ingest:main` entry point fires after every successful `git commit` Bash call, parses `[branch shorthash]` from the commit's stdout, runs the triple extractor on the full commit message body (fetched via one `git log -1 --format=%B <hash>` subprocess), and inserts beliefs and edges under a deterministic session id `sha256(branch + ":" + commit_hash)[:16]`. The first ingest path that densely populates `Edge.anchor_text`, `Belief.session_id`, and `DERIVED_FROM` edges in production data, closing the v1.0 limitation that the graph only grew on explicit `aelf onboard` / `aelf remember` calls. Lazy imports keep cold-start cost off the latency budget; commit-message bodies are capped at 4 KB before extraction. Non-blocking on every failure path — a hook problem may NEVER cause `git commit` to feel broken. Wired via `aelf setup --commit-ingest` (opt-in at v1.2; default flip pending production-corpus latency telemetry); `aelf unsetup --commit-ingest` strips it. New `aelf-commit-ingest` project script registered in `pyproject.toml`. Setup machinery generalises `_get_event_list(data, event, ...)` so the same builders cover UserPromptSubmit, Stop, and PostToolUse-with-matcher entries; `_build_entry` gains an optional `matcher` field for PreToolUse / PostToolUse shapes. 15 unit tests + 1 latency regression test (in-process p95 < 200 ms across 20 iterations on a fixture commit).
@@ -36,72 +35,7 @@ installable release; see the roadmap in [README.md](README.md).
 - **`agent_inferred → user_validated` promotion** ([docs/promotion_path.md](docs/promotion_path.md)). Implements the v1.1.0-designed promotion path. New `Belief.origin` schema column (`TEXT NOT NULL DEFAULT 'unknown'`) tags each belief with one of `user_stated`, `user_corrected`, `user_validated`, `agent_inferred`, `agent_remembered`, `document_recent`, `unknown`. Forward-compatible with v1.0/v1.1 stores: `ALTER TABLE` adds the column on first open, then a one-shot backfill flips locked rows to `user_stated` and correction rows to `user_corrected` (everything else stays `unknown` rather than retroactively claim `agent_inferred`). Producers tag origin explicitly: `scan_repo` writes `agent_inferred` on every onboard belief; `aelf lock` and the MCP `aelf:lock` write `user_stated`. New `aelfrice.promotion` module exposes `promote(store, belief_id)` and `devalidate(store, belief_id)` — provenance flip only, no math change (alpha/beta/lock_level/type unchanged). Each call writes one zero-valence audit row to `feedback_history` tagged `promotion:user_validated` or `promotion:revert_to_agent_inferred`. Idempotent; refuses locked beliefs and `user_stated` rows with a clear "demote first" message. New `aelf validate <belief_id> [--source LABEL]` CLI subcommand and `aelf:validate` MCP tool. `aelf demote` extended one-tier-per-call: drops a lock if locked, else flips `user_validated` → `agent_inferred`. The contradiction tie-breaker grows from three to five precedence classes (`user_stated > user_corrected > user_validated > document_recent > agent_inferred`); `precedence_class()` reads `belief.origin` first, with `lock_level=user` short-circuiting to `user_stated` regardless of origin so the v1.0.1 lock-always-wins invariant holds. `unknown` and `agent_remembered` fall through to `document_recent` (honest unknown bucket). 33 new tests across `tests/test_promotion.py`, `tests/test_contradiction.py`, `tests/test_cli.py`, and `tests/test_mcp_server.py`.
 - **`docs/HARNESS_INTEGRATION.md`** ([docs/HARNESS_INTEGRATION.md](docs/HARNESS_INTEGRATION.md)). User-facing operational guide for running aelfrice alongside Claude Code's auto-memory. Documents three coexistence modes (default coexistence after `aelf setup --transcript-ingest`; aelfrice-canonical with a `~/.claude/CLAUDE.md` edit; aelfrice-only after disabling auto-memory) plus a migration recipe (`aelf onboard ~/.claude/projects/<slug>/memory`) for moving accumulated `.md` content into aelfrice as `agent_inferred` beliefs. Rewrites [docs/LIMITATIONS.md § harness conflict](docs/LIMITATIONS.md) to point at the v1.2.0 hook mitigation rather than the v1.0/v1.1 manual `CLAUDE.md` edit.
 - **SessionStart hook**. New `aelfrice.hook.session_start()` entry point reads the SessionStart JSON payload (drained for protocol; no fields used at MVP), retrieves L0 locked beliefs via `retrieve()` with empty query, and emits an `<aelfrice-baseline>` block to stdout. Fires once per Claude Code session, before any user message, so the agent enters the session with durable user-asserted ground truth already in context. Distinct tags from UserPromptSubmit's `<aelfrice-memory>` so the model can tell channels apart: baseline = "stuff that's always true," memory = "stuff related to this prompt." Honors the non-blocking hook contract (returns 0 on every failure path; empty store / no locked beliefs / empty stdin / malformed payload all silent). Wires `install_session_start_hook` / `uninstall_session_start_hook` / `resolve_session_start_hook_command` in `aelfrice.setup` mirroring the UserPromptSubmit pair (idempotent, atomic-write, basename-match). Three event channels (UserPromptSubmit, transcript-ingest, SessionStart) coexist in the same `settings.json` without disturbing each other. New `--session-start` flag on `aelf setup` / `aelf unsetup` and new `aelf-session-start-hook` console script.
-
-## [1.2.0a0] - 2026-04-27
-
-Alpha pre-release. **Context rebuilder MVP** lands as an opt-in
-`PreCompact` hook that surfaces aelfrice retrieval results before
-Claude Code runs its default summarization. Augment-mode only --
-the harness still runs its own compaction afterward, so this is
-additive context, not a replacement.
-
-This is a vertical slice. Several quality dimensions are deferred
-until the supporting infrastructure ships (transcript ingest at
-v1.2.0, posterior-weighted ranking at v1.3+, triple-extracted
-queries, session-scoped retrieval). The alpha is for measurement
-and feedback, not for setting the v1.x default.
-
-### Added
-
-- `aelfrice.context_rebuilder.rebuild()`: pure function taking a
-  list of recent turns and an open `MemoryStore`, returns the
-  formatted `<aelfrice-rebuild>` XML block with L0 locked beliefs
-  and L1 BM25 hits. Per-token union retrieval works around the
-  public store's AND-only FTS5 semantics. Deterministic given
-  identical inputs (eval-harness contract).
-- Two transcript adapters: `read_recent_turns_aelfrice` for the
-  canonical `<root>/.git/aelfrice/transcripts/turns.jsonl` log
-  (per-turn ingest format from the v1.2.0 transcript-ingest spec)
-  and `read_recent_turns_claude_transcript` as a best-effort
-  fallback for Claude Code's internal per-session JSONL.
-- `pre_compact()` hook entry-point in `aelfrice.hook`: reads the
-  PreCompact JSON payload, locates a transcript (canonical
-  preferred, Claude-internal fallback), invokes `rebuild()`,
-  writes the block to stdout. Honors the non-blocking hook
-  contract (returns 0 on every failure path).
-- `aelf-pre-compact-hook` console script entry registered for
-  `settings.json` hook entries.
-- `install_pre_compact_hook` / `uninstall_pre_compact_hook` /
-  `resolve_pre_compact_hook_command`: same idempotency,
-  atomic-write, and basename-match semantics as the existing
-  UserPromptSubmit pair. Two events coexist in the same
-  `settings.json` without disturbing each other.
-- `aelf setup --rebuilder` flag: also installs the PreCompact hook
-  alongside the UserPromptSubmit hook.
-- `aelf rebuild` CLI subcommand (with `--transcript`, `--n`,
-  `--budget`): manually emits the rebuild block to stdout for
-  inspection. Required surface for spec acceptance criterion 5
-  (manual mode ships before threshold-mode auto-triggers).
-- Matching `rebuild.md` slash command shipped in
-  `src/aelfrice/slash_commands/`.
-
-### Deferred (named here so users know they are coming)
-
-- **Session-scoped retrieval.** The schema's `session_id` field is
-  not yet populated end-to-end. The MVP retrieves globally.
-- **Triple-extractor query construction.** The MVP concatenates
-  recent turn text and per-token-unions over the result. A
-  triple-extracted query will replace this once the extractor
-  ships.
-- **Posterior-weighted ranking.** The MVP uses the public BM25
-  ranker. The Bayesian-weighted ranker is a v1.3+ candidate.
-- **Suppress-mode coordination with the harness.** The MVP runs in
-  augment mode only. Suppress-mode lands once eval-harness fidelity
-  calibration justifies it.
-- **Default trigger threshold.** Augment-mode means the trigger is
-  whatever Claude Code's default PreCompact firing is; the rebuilder
-  emits on every PreCompact. Per-session-state trigger tuning is
-  v1.3+.
+- **Context rebuilder MVP** ([#109](https://github.com/robotrocketscience/aelfrice/pull/109)). Originally shipped under the v1.2.0a0 alpha pre-release; now folded into v1.2.0 final. New `aelfrice.context_rebuilder.rebuild()` pure function takes a list of recent turns and an open `MemoryStore` and returns the formatted `<aelfrice-rebuild>` XML block with L0 locked beliefs + L1 BM25 hits via per-token union retrieval (works around the public store's AND-only FTS5 semantics). Two transcript adapters (`read_recent_turns_aelfrice` for canonical turns.jsonl, `read_recent_turns_claude_transcript` as fallback). `pre_compact()` hook entry-point in `aelfrice.hook` reads the PreCompact payload, locates a transcript, runs `rebuild()`, writes the block to stdout — non-blocking on every failure path. New `aelf-pre-compact-hook` console script + `install_pre_compact_hook` / `uninstall_pre_compact_hook` / `resolve_pre_compact_hook_command` setup pair. `aelf setup --rebuilder` installs the PreCompact hook alongside the UserPromptSubmit hook. `aelf rebuild` CLI subcommand (with `--transcript`, `--n`, `--budget`) manually emits the rebuild block. Augment-mode only at v1.2.0; suppress-mode coordination, posterior-weighted ranking, triple-extracted queries, session-scoped retrieval, and per-session-state trigger tuning all deferred to v1.3+.
 
 ## [1.1.0] - 2026-04-27
 
@@ -539,8 +473,8 @@ Foundation milestone — store, models, config.
 - Initial repo scaffold: pyproject, README, GitHub Actions workflows,
   scan configs (commit `67b4343`).
 
-[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v1.2.0a0...HEAD
-[1.2.0a0]: https://github.com/robotrocketscience/aelfrice/compare/v1.1.0...v1.2.0a0
+[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/robotrocketscience/aelfrice/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.1...v1.0.2

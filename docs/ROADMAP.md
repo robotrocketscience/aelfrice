@@ -20,7 +20,7 @@ This is a rebuild, not a port. Structural issues that survived agentmemory are b
 | **v1.0.1** | shipped | launch fix-up — hook→retrieval wiring, onboard noise, `aelf --version` |
 | **v1.0.2** | shipped | per-project install routing, `aelf doctor`, release-docs CI gate |
 | **v1.1.0** | shipped | project identity, edges→threads, status/health split, `aelf migrate`, git-recency onboard |
-| **v1.2.0** | planned | commit-ingest hook, triple-extraction port, harness-integration doc |
+| **v1.2.0** | shipped | auto-capture pipeline, `user_validated` promotion, triple extractor, ingest-enrichment schema, `--batch` JSONL ingest, CLI consolidation, `INEDIBLE` per-file opt-out |
 | **v1.3.0** | planned | retrieval wave — entity index + BFS multi-hop + LLM classification |
 | **v1.4.0** | planned | context rebuilder — automatic PreCompact-driven retrieval-curated context |
 | **v2.0.0** | planned | feature parity with the earlier research line + full benchmark reproducibility |
