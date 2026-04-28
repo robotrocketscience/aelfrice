@@ -111,7 +111,9 @@ class ReplayResult:
     clear_injected_at: int | None
     full_replay_baseline_tokens: int
     rebuild_block_tokens: int
-    turns: list[ReplayTurnResult] = field(default_factory=list)
+    turns: list[ReplayTurnResult] = field(
+        default_factory=lambda: [],  # typed-empty for pyright strict
+    )
 
     def to_dict(self) -> dict[str, object]:
         """JSON-serializable view used by `__main__`."""
