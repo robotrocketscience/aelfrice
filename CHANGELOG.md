@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Pre-`1.0.0` releases are atomic milestones building toward the first
 installable release; see the roadmap in [README.md](README.md).
 
+## [Unreleased]
+
+### Added
+
+- **`aelf project-warm <path>`** ([#137](https://github.com/robotrocketscience/aelfrice/issues/137)). Hidden CwdChanged-hook entry point. Resolves a path to a project root (git work-tree via `git rev-parse --show-toplevel` — worktrees correctly resolve to the worktree, not the main checkout — or first ancestor with a `.aelfrice/projects/<id>/` provisioned layout) and pre-loads the project's SQLite + OS file-cache pages so the next `aelf` invocation hits warm storage. Idempotent + 60s-debounced via a unix-ts sentinel at `~/.aelfrice/projects/<id>/.last_warm`. Deny-glob defaults catch `/tmp/**`, `/var/folders/**`, `~/Downloads/**`, `~/Desktop/**`; configurable via `~/.aelfrice/config.json` (`project_warm.deny_globs`). The CLI surface is silent on every code path — unknown projects, denied paths, debounced calls, and any unexpected exception all return exit 0 with empty stdout. The companion `~/.claude/hooks/aelfrice-cwd-warm.sh` lives in the HOME repo and is out of scope for this release. New module `aelfrice.project_warm` exposes `resolve_project_root`, `warm_project`, `warm_path`, `WarmResult`, `ProjectRef`, `WarmConfig`. 19 deterministic unit tests cover the full matrix.
+
 ## [1.2.0] - 2026-04-28
 
 Major release. Auto-capture pipeline (transcript-ingest, commit-ingest, SessionStart hooks), the v1.1.0-designed `agent_inferred → user_validated` promotion path, the triple extractor, ingest-enrichment schema, batch-ingest of historical Claude Code JSONLs, the harness-integration guide, the `INEDIBLE` per-file privacy opt-out, and the v1.3-planned CLI consolidation rolled forward into this release. 16 PRs landed since v1.1.0. Folds in everything that shipped under the v1.2.0a0 alpha (#109) — that pre-release is now superseded; users should upgrade directly to 1.2.0.

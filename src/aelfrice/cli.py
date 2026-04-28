@@ -19,6 +19,7 @@ Commands:
   uninstall                        tear down aelfrice locally + handle DB
   statusline                       emit Claude Code statusline snippet
   bench                            run the v0.9.0-rc benchmark harness
+  project-warm <path>              CwdChanged hook entry — pre-load the project's belief cache
 
 DB path resolves from AELFRICE_DB environment variable when set,
 otherwise from <git-common-dir>/aelfrice/memory.db when cwd is inside
@@ -79,6 +80,10 @@ from aelfrice.lifecycle import (
     read_cache as _read_update_cache,
     uninstall as _lifecycle_uninstall,
     upgrade_advice,
+)
+from aelfrice.project_warm import (
+    DEFAULT_DEBOUNCE_SECONDS as _PROJECT_WARM_DEBOUNCE,
+    warm_path as _warm_path,
 )
 from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
@@ -654,6 +659,26 @@ def _resolve_settings_path(args: argparse.Namespace) -> Path:
         Path(args.project_root) if args.project_root is not None else None
     )
     return default_settings_path(_effective_scope(args), project_root=project_root)
+
+
+def _cmd_project_warm(args: argparse.Namespace, out: object) -> int:
+    """Hook entry-point: pre-load the project's SQLite + OS page cache.
+
+    Called by the CwdChanged hook (HOME repo) on every cd. Silent
+    no-op for unknown paths, denied paths, and the debounce window —
+    we never block, never error, and never write to stdout. The hook
+    fires fan-out across many cd events and any noise on stdout would
+    leak into Claude Code's session log.
+    """
+    del out  # silent path
+    debounce = args.debounce if args.debounce is not None else _PROJECT_WARM_DEBOUNCE
+    try:
+        _warm_path(Path(args.path), debounce_seconds=debounce)
+    except Exception:  # noqa: BLE001
+        # The hook fan-out semantics demand "never propagate". A
+        # broken warm should never block the user's prompt.
+        return 0
+    return 0
 
 
 def _cmd_setup(args: argparse.Namespace, out: object) -> int:
@@ -2021,6 +2046,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="(synthetic only) retrieval depth for hit@k (default 5)",
     )
     p_bench.set_defaults(func=_cmd_bench)
+
+    # Hidden: invoked by the CwdChanged hook (HOME repo). Pre-loads the
+    # active project's SQLite + OS page caches so the next aelf call
+    # pays only the second-hit cost. Silent no-op for unknown / denied
+    # paths, debounced to 60s per project. Issue #137.
+    p_project_warm = sub.add_parser("project-warm", help=argparse.SUPPRESS)
+    p_project_warm.add_argument(
+        "path", help="path to warm; resolved to a project root by aelfrice",
+    )
+    p_project_warm.add_argument(
+        "--debounce", type=int, default=None,
+        help=(
+            "override the debounce window in seconds "
+            f"(default {_PROJECT_WARM_DEBOUNCE})"
+        ),
+    )
+    p_project_warm.set_defaults(func=_cmd_project_warm)
 
     return parser
 
