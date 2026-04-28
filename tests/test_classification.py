@@ -124,7 +124,7 @@ def test_what_in_middle_of_sentence_is_not_a_question() -> None:
     assert r.persist is True
 
 
-# --- Requirement classification (user source only) -----------------------
+# --- Requirement classification (any source; deflated for non-user) -----
 
 
 def test_user_must_keyword_classifies_requirement() -> None:
@@ -137,11 +137,18 @@ def test_user_mandatory_classifies_requirement() -> None:
     assert r.belief_type == BELIEF_REQUIREMENT
 
 
-def test_non_user_must_does_not_classify_requirement() -> None:
-    """Document text uses 'must' descriptively. Restrict requirement
-    classification to user-sourced content."""
+def test_non_user_must_classifies_requirement_with_deflated_prior() -> None:
+    """#226 fix: doc/ast/git-sourced requirement keywords classify as
+    BELIEF_REQUIREMENT (not factual). False-positive risk is handled by
+    the source-prior deflation lowering alpha, not by suppressing
+    classification entirely. Pre-fix the scanner produced zero
+    requirement counts because every onboard candidate carried a
+    non-user source."""
     r = classify_sentence("you must restart the daemon", "doc")
-    assert r.belief_type != BELIEF_REQUIREMENT
+    assert r.belief_type == BELIEF_REQUIREMENT
+    # Deflation kicks in: alpha < user-source alpha
+    user_r = classify_sentence("you must restart the daemon", "user")
+    assert r.alpha < user_r.alpha
 
 
 def test_requirement_uses_high_alpha_prior_for_user() -> None:
@@ -149,7 +156,7 @@ def test_requirement_uses_high_alpha_prior_for_user() -> None:
     assert r.alpha == TYPE_PRIORS[BELIEF_REQUIREMENT][0]
 
 
-# --- Correction classification (user source only) ------------------------
+# --- Correction classification (any source; deflated for non-user) ------
 
 
 def test_user_correction_phrasing_classifies_correction() -> None:
@@ -157,11 +164,15 @@ def test_user_correction_phrasing_classifies_correction() -> None:
     assert r.belief_type == BELIEF_CORRECTION
 
 
-def test_non_user_correction_phrasing_does_not_classify_correction() -> None:
-    """Document scans contain correction-shaped phrasings without being
-    actual user corrections; the detector is restricted to user sources."""
+def test_non_user_correction_phrasing_classifies_correction_with_deflated_prior() -> None:
+    """#226 fix: doc-sourced correction phrasings classify as
+    BELIEF_CORRECTION. The deflated prior at non-user sources handles
+    the false-positive risk that the previous user-only gate was trying
+    to address."""
     r = classify_sentence("we discussed this; do not amend commits", "doc")
-    assert r.belief_type != BELIEF_CORRECTION
+    assert r.belief_type == BELIEF_CORRECTION
+    user_r = classify_sentence("we discussed this; do not amend commits", "user")
+    assert r.alpha < user_r.alpha
 
 
 # --- Preference classification (any source) ------------------------------

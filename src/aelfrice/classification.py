@@ -210,11 +210,17 @@ def classify_sentence(text: str, source: str) -> ClassificationResult:
             pending_classification=True,
         )
 
-    # 3. User-sourced requirement (must, mandatory, hard rule, ...)
-    #    Document text uses the same keywords descriptively; restrict
-    #    requirement classification to user sources to reduce false
-    #    positives during onboarding scans.
-    if source == USER_SOURCE and _has_any(text_lower, _REQUIREMENT_KEYWORDS):
+    # 3. Requirement keywords (must, mandatory, hard rule, ...)
+    #    Originally gated on `source == USER_SOURCE` to suppress
+    #    document-text false positives. Per #226: that gate caused
+    #    every onboard-extracted requirement (source = `doc:…`,
+    #    `ast:…`, `git:…`) to mis-classify, producing zero
+    #    requirement counts on the labeled corpus. The
+    #    source-prior-deflation in `get_source_adjusted_prior`
+    #    already lowers alpha for non-user sources, so the
+    #    false-positive risk is handled at the scoring layer
+    #    rather than by gating classification.
+    if _has_any(text_lower, _REQUIREMENT_KEYWORDS):
         alpha, beta = get_source_adjusted_prior(BELIEF_REQUIREMENT, source)
         return ClassificationResult(
             belief_type=BELIEF_REQUIREMENT,
@@ -224,18 +230,20 @@ def classify_sentence(text: str, source: str) -> ClassificationResult:
             pending_classification=True,
         )
 
-    # 4. User-sourced correction (per the no-LLM detector).
-    if source == USER_SOURCE:
-        cresult = detect_correction(text)
-        if cresult.is_correction:
-            alpha, beta = get_source_adjusted_prior(BELIEF_CORRECTION, source)
-            return ClassificationResult(
-                belief_type=BELIEF_CORRECTION,
-                alpha=alpha,
-                beta=beta,
-                persist=True,
-                pending_classification=True,
-            )
+    # 4. Correction (per the no-LLM detector). Same #226 reasoning
+    #    — the user-only gate suppressed onboard-extracted
+    #    corrections; deflated alpha at non-user sources handles
+    #    the false-positive concern.
+    cresult = detect_correction(text)
+    if cresult.is_correction:
+        alpha, beta = get_source_adjusted_prior(BELIEF_CORRECTION, source)
+        return ClassificationResult(
+            belief_type=BELIEF_CORRECTION,
+            alpha=alpha,
+            beta=beta,
+            persist=True,
+            pending_classification=True,
+        )
 
     # 5. Preference keywords (any source).
     if _has_any(text_lower, _PREFERENCE_KEYWORDS):
