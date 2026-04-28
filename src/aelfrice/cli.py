@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -68,6 +69,11 @@ from aelfrice.models import (
 )
 from aelfrice import __version__ as _AELFRICE_VERSION
 from aelfrice.benchmark import run_benchmark, seed_corpus
+from aelfrice.classification import (
+    HostClassification,
+    accept_classifications,
+    start_onboard_session,
+)
 from aelfrice.doctor import diagnose, format_report
 from aelfrice.llm_classifier import (
     ENV_API_KEY as _LLM_ENV_API_KEY,
@@ -343,7 +349,151 @@ def _resolve_llm_flag(args: argparse.Namespace) -> bool | None:
     return True  # any other value: opt-in
 
 
+def _cmd_onboard_emit_candidates(args: argparse.Namespace, out: object) -> int:
+    """Run the scanner+filter pipeline, persist a PENDING onboard session,
+    and print a JSON payload the host can hand to a classifier subagent.
+    No network call. No LLM gates. Pure local IO.
+    """
+    if not args.path:
+        print(
+            "aelf onboard --emit-candidates: <path> is required.",
+            file=sys.stderr,
+        )
+        return 2
+    repo_path = Path(args.path)
+    store = _open_store()
+    try:
+        result = start_onboard_session(store, repo_path)
+    finally:
+        store.close()
+    payload = {
+        "session_id": result.session_id,
+        "n_already_present": result.n_already_present,
+        "sentences": [
+            {"index": s.index, "text": s.text, "source": s.source}
+            for s in result.sentences
+        ],
+    }
+    print(json.dumps(payload), file=out)  # type: ignore[arg-type]
+    return 0
+
+
+def _cmd_onboard_accept_classifications(
+    args: argparse.Namespace, out: object
+) -> int:
+    """Apply host-supplied classifications to a pending onboard session.
+    Reads `[{index, belief_type, persist}, ...]` JSON from a file or
+    stdin (`-`), calls accept_classifications, prints a JSON summary.
+    No network call.
+    """
+    session_id = getattr(args, "session_id", None)
+    if not session_id:
+        print(
+            "aelf onboard --accept-classifications: --session-id is required.",
+            file=sys.stderr,
+        )
+        return 2
+    src = getattr(args, "classifications_file", None)
+    if not src:
+        print(
+            "aelf onboard --accept-classifications: "
+            "--classifications-file is required (use '-' for stdin).",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        if src == "-":
+            raw = sys.stdin.read()
+        else:
+            raw = Path(src).read_text(encoding="utf-8")
+    except OSError as exc:
+        print(
+            f"aelf onboard --accept-classifications: cannot read {src}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(
+            f"aelf onboard --accept-classifications: invalid JSON in {src}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    if not isinstance(data, list):
+        print(
+            "aelf onboard --accept-classifications: expected a JSON array "
+            "of {index, belief_type, persist} objects.",
+            file=sys.stderr,
+        )
+        return 1
+    classifications: list[HostClassification] = []
+    for d in data:
+        if not isinstance(d, dict):
+            print(
+                "aelf onboard --accept-classifications: array entries must "
+                "be objects with index/belief_type/persist keys.",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            classifications.append(
+                HostClassification(
+                    index=int(d["index"]),
+                    belief_type=str(d["belief_type"]),
+                    persist=bool(d["persist"]),
+                )
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            print(
+                f"aelf onboard --accept-classifications: bad entry {d}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+    store = _open_store()
+    try:
+        try:
+            result = accept_classifications(store, session_id, classifications)
+        except ValueError as exc:
+            print(
+                f"aelf onboard --accept-classifications: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+    finally:
+        store.close()
+    print(
+        json.dumps(
+            {
+                "session_id": result.session_id,
+                "inserted": result.inserted,
+                "skipped_non_persisting": result.skipped_non_persisting,
+                "skipped_existing": result.skipped_existing,
+                "skipped_unclassified": result.skipped_unclassified,
+            }
+        ),
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
 def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
+    # --emit-candidates / --accept-classifications: low-level entry
+    # points used by the /aelf:onboard slash command to drive the
+    # polymorphic onboard handshake from a Claude Code session via
+    # Haiku Task subagents (no API key, no network from this CLI).
+    if getattr(args, "emit_candidates", False):
+        return _cmd_onboard_emit_candidates(args, out)
+    if getattr(args, "accept_classifications", False):
+        return _cmd_onboard_accept_classifications(args, out)
+
+    if not args.path:
+        print(
+            "aelf onboard: <path> is required (unless using "
+            "--accept-classifications). See `aelf onboard --help`.",
+            file=sys.stderr,
+        )
+        return 2
     path = Path(args.path)
 
     # --revoke-consent: remove sentinel and exit; no scan, no network.
@@ -362,11 +512,20 @@ def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
     cfg = _load_llm_config(path)
     flag = _resolve_llm_flag(args)
     enabled = _llm_resolve_enabled(flag=flag, config_enabled=cfg.enabled)
+    # Explicit opt-in is the CLI flag. When `enabled=True` came only
+    # from the post-v1.5 default (no flag, no explicit config-disable),
+    # we treat missing SDK / missing API key / non-TTY consent as soft
+    # failures and fall back to the regex classifier silently.
     dry_run = bool(getattr(args, "dry_run", False))
+    # Explicit opt-in is the CLI flag, OR --dry-run (which only makes
+    # sense as a preview of the LLM path; soft-falling to regex would
+    # silently ignore the user's intent).
+    is_explicit_opt_in = (flag is True) or dry_run
 
     if not enabled:
-        # Default-OFF path: regex classifier, no LLM imports, zero
-        # network. This is what `aelf onboard <path>` has always done.
+        # Explicit opt-out: regex classifier, no LLM imports, zero
+        # network. Reachable via --llm-classify=false or
+        # [onboard.llm].enabled = false in .aelfrice.toml.
         if dry_run:
             print(
                 "aelf: --dry-run requires --llm-classify; "
@@ -380,14 +539,15 @@ def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
     gate = _llm_check_gates(
         enabled=enabled,
         model=cfg.model,
+        treat_missing_as_soft=not is_explicit_opt_in,
     )
     if not gate.pass_all:
         if gate.exit_code is not None:
             if gate.message:
                 print(gate.message, file=sys.stderr)
             return gate.exit_code
-        # Defensive: enabled=True with pass_all=False and exit_code=None
-        # means a configuration we don't recognise; fall back to regex.
+        # Soft-fall (default-derived path with missing SDK / key, or
+        # an unrecognised configuration). Run the regex onboard.
         return _run_regex_onboard(args, out)
 
     # Gate 4: consent. --dry-run skips the prompt AND the network.
@@ -404,12 +564,23 @@ def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
         else:
             prompt = _llm_prompt_for_consent()
             if not prompt.accepted:
-                print(
-                    f"aelf: --llm-classify aborted ({prompt.reason}); "
-                    "no network call.",
-                    file=sys.stderr,
-                )
-                return 1
+                if is_explicit_opt_in:
+                    print(
+                        f"aelf: --llm-classify aborted ({prompt.reason}); "
+                        "no network call.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                # Default-derived consent rejection (or non-TTY) →
+                # silent fall-through to regex onboard. The user did
+                # not actively opt in; failing here would be hostile.
+                if prompt.reason != "non-tty":
+                    print(
+                        "aelf: LLM classification declined; "
+                        "falling back to regex classifier.",
+                        file=sys.stderr,
+                    )
+                return _run_regex_onboard(args, out)
             _llm_write_sentinel(sentinel, model=cfg.model)
 
     # Dry-run: print candidates without contacting the network.
@@ -2001,7 +2172,50 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "the schema and worked examples."
         ),
     )
-    p_onboard.add_argument("path", help="path to a project directory")
+    p_onboard.add_argument(
+        "path",
+        nargs="?",
+        default=None,
+        help=(
+            "path to a project directory. Required for the default flow "
+            "and for --emit-candidates; omitted for --accept-classifications."
+        ),
+    )
+    p_onboard.add_argument(
+        "--emit-candidates",
+        dest="emit_candidates",
+        action="store_true",
+        help=(
+            "extract candidates, persist a PENDING onboard session, "
+            "and print {session_id, n_already_present, sentences[]} as "
+            "JSON to stdout. No network. Used by /aelf:onboard."
+        ),
+    )
+    p_onboard.add_argument(
+        "--accept-classifications",
+        dest="accept_classifications",
+        action="store_true",
+        help=(
+            "apply host-supplied classifications to a pending onboard "
+            "session. Requires --session-id and --classifications-file. "
+            "No network. Used by /aelf:onboard."
+        ),
+    )
+    p_onboard.add_argument(
+        "--session-id",
+        dest="session_id",
+        default=None,
+        help="session id returned by --emit-candidates",
+    )
+    p_onboard.add_argument(
+        "--classifications-file",
+        dest="classifications_file",
+        default=None,
+        help=(
+            "JSON file with [{index, belief_type, persist}, ...] entries. "
+            "Use '-' to read from stdin."
+        ),
+    )
     p_onboard.add_argument(
         "--llm-classify",
         dest="llm_classify",

@@ -8,10 +8,46 @@ Cross-references: [ROADMAP.md § v1.3.0](ROADMAP.md#v130--retrieval-wave),
 [`src/aelfrice/scanner.py`](../src/aelfrice/scanner.py),
 [CONFIG.md](CONFIG.md), [COMMANDS.md](COMMANDS.md#memory-operations).
 
-Status: design only. No code lands in this commit. The implementation
-PR may diverge in detail; this memo locks the load-bearing decisions
-(opt-in surface, network boundary, fallback semantics, telemetry
-surface, acceptance criteria).
+Status: shipped opt-in at v1.3.0; default-on at v1.5.0 via host-driven
+classification through the `/aelf:onboard` slash command (no API key
+required). The original v1.3.0 design below is unchanged — the
+direct-API path (`aelf onboard --llm-classify`) remains the
+API-key-user fallback. The v1.5.0 default-on flow is layered on top
+via two additive CLI flags (`--emit-candidates` /
+`--accept-classifications`) that wrap the existing polymorphic
+handshake in [`classification.py`](../src/aelfrice/classification.py)
+without changing it. Implementation tracking issue:
+[#238](https://github.com/robotrocketscience/aelfrice/issues/238).
+
+### v1.5.0 host-driven classification (slash-command flow)
+
+The typical aelfrice user already runs an LLM host. Demanding a
+separate `ANTHROPIC_API_KEY` to opt into LLM classification kept the
+higher-quality path out of reach for that population. v1.5.0 makes
+`/aelf:onboard` orchestrate the four-class classifier through the
+host's own Task dispatch against the cheapest model in its stack:
+
+1. `uv run aelf onboard <path> --emit-candidates` — persists a
+   PENDING `onboard_sessions` row, prints
+   `{session_id, n_already_present, sentences[]}` as JSON. No
+   network.
+2. The host batches the `sentences[]` (≤ 50 per batch) and dispatches
+   one Task per batch with the four-class classification template.
+   Each batch returns
+   `[{index, belief_type, persist}, ...]`.
+3. `uv run aelf onboard --accept-classifications --session-id <id>
+   --classifications-file -` — reads the aggregated classifications
+   from stdin, applies them via `accept_classifications`, prints an
+   `AcceptOnboardResult` JSON summary. No network.
+
+`--no-subagents` (or absence of the host's Task tool) falls through
+to the deterministic regex classifier. The four-gate boundary policy
+in § 4 below applies only to the direct-API path; the host-driven
+path makes zero direct calls to `https://api.anthropic.com/` from
+the aelfrice CLI itself.
+
+### v1.3.0 design memo (unchanged)
+
 
 ## 1. Motivation
 

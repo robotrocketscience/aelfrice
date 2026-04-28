@@ -99,11 +99,20 @@ class LLMConfig:
     """Resolved configuration for the LLM-classify path.
 
     `enabled` is the resolution of CLI flag + config block + default
-    OFF (see `resolve_enabled`). `max_tokens` is the per-run cap;
+    ON (see `resolve_enabled`). `max_tokens` is the per-run cap;
     0 disables. `model` is the Anthropic model id; pinned by default.
+
+    Default flipped from OFF to ON in v1.5.0: the regex classifier
+    misses ~12pp of macro-F1 on real-world prose vs Haiku, and the
+    onboard cost is one-time and sub-dollar. Users who want strict
+    offline onboard set `[onboard.llm].enabled = false` or pass
+    `--llm-classify=false`. When `enabled` resolves to True via the
+    default (no flag, no config) and the SDK or API key is missing,
+    onboard falls back to the regex path silently — see `check_gates`
+    `treat_missing_as_soft`.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     max_tokens: int = DEFAULT_MAX_TOKENS
     model: str = DEFAULT_MODEL
 
@@ -126,14 +135,14 @@ class LLMConfig:
         """
         serr: IO[str] = stderr if stderr is not None else sys.stderr
 
-        enabled = section.get("enabled", False)
+        enabled = section.get("enabled", True)
         if not isinstance(enabled, bool):
             print(
                 f"aelfrice llm_classifier: ignoring [onboard.llm] enabled "
                 f"(expected bool, got {type(enabled).__name__})",
                 file=serr,
             )
-            enabled = False
+            enabled = True
 
         max_tokens_raw = section.get("max_tokens", DEFAULT_MAX_TOKENS)
         if (
@@ -173,11 +182,11 @@ def resolve_enabled(
 ) -> bool:
     """Resolve CLI flag + config block to a single boolean.
 
-    Order (per spec § 3.4):
+    Order (per spec § 3.4, post-v1.5 default flip):
       1. `--llm-classify=false` on CLI → off.
       2. `--llm-classify` (or `=true`) on CLI → on.
-      3. `[onboard.llm].enabled = true` in `.aelfrice.toml` → on.
-      4. Default → off.
+      3. `[onboard.llm].enabled = false` in `.aelfrice.toml` → off.
+      4. Default (no flag, no explicit config) → on.
 
     `flag` semantics: `None` means the user did not pass the flag,
     `True` means `--llm-classify` was set, `False` means
@@ -326,23 +335,48 @@ def is_sentinel_valid(
 
 
 _PROMPT_TEXT: Final[str] = (
-    "aelf onboard --llm-classify\n"
+    "aelf onboard: LLM classification (one-time, per project)\n"
     "\n"
-    "This will send sentences extracted from the files under the\n"
-    "scanned path (paragraphs from .md/.rst/.txt/.adoc files, git\n"
-    "commit subjects, Python docstrings) plus their `source` strings\n"
-    "(e.g., doc:README.md:p3) to Anthropic's API for classification.\n"
-    "The content of those candidates will leave your machine.\n"
+    "aelfrice classifies candidate beliefs using Claude Haiku at\n"
+    "onboard time. This is a ONE-TIME call, only during this\n"
+    "`aelf onboard` run. The day-to-day retrieval and storage\n"
+    "pipelines stay 100% local (SQLite + FTS5, no network).\n"
     "\n"
-    "aelfrice will NOT send: file contents beyond the extracted\n"
-    "candidate, env vars, working directory paths, hostnames, git\n"
-    "remotes, git author email, files marked INEDIBLE, or anything\n"
-    "outside the extracted candidate text.\n"
+    "Cost. Pinned model is claude-haiku-4-5. A typical project\n"
+    "(a few hundred prose paragraphs + commit subjects + Python\n"
+    "docstrings) classifies for well under $0.10 at list price.\n"
+    "On a Claude Pro / Max plan this is invisible against your\n"
+    "usage allowance.\n"
     "\n"
-    "You can audit what would be sent with:\n"
+    "What gets sent to Anthropic's API:\n"
+    "  - Sentences extracted from .md/.rst/.txt/.adoc paragraphs\n"
+    "  - git commit subjects\n"
+    "  - Python docstrings\n"
+    "  - the `source` label for each candidate (e.g.,\n"
+    "    doc:README.md:p3) so the classifier sees its provenance\n"
+    "\n"
+    "What does NOT get sent:\n"
+    "  - file contents beyond the extracted candidate\n"
+    "  - env vars, working-directory paths, hostnames\n"
+    "  - git remote URLs, git author email\n"
+    "  - files marked INEDIBLE\n"
+    "  - anything outside the extracted candidate text\n"
+    "\n"
+    "Why default-on. The regex classifier misses ~12pp of macro-F1\n"
+    "vs Haiku on real prose, which translates to noticeably worse\n"
+    "retrieval quality from day one. Default-on means you get the\n"
+    "good classifier without thinking about it; default-off meant\n"
+    "most users never flipped it.\n"
+    "\n"
+    "Audit before you accept:\n"
     "  aelf onboard <path> --llm-classify --dry-run\n"
+    "(prints the exact candidate list without contacting the network)\n"
     "\n"
-    "Continue? [y/N]: "
+    "To skip the LLM and onboard with regex only:\n"
+    "  aelf onboard <path> --llm-classify=false\n"
+    "or set `[onboard.llm].enabled = false` in .aelfrice.toml.\n"
+    "\n"
+    "Continue with LLM classification? [y/N]: "
 )
 
 
@@ -439,6 +473,7 @@ def check_gates(
     home: Path | None = None,
     model: str = DEFAULT_MODEL,
     sdk_check: "Any" = None,
+    treat_missing_as_soft: bool = False,
 ) -> GateResult:
     """Run all four gates in order. Return GateResult.
 
@@ -449,10 +484,18 @@ def check_gates(
     that returns True/False, otherwise the live `import anthropic`
     is attempted.
 
+    `treat_missing_as_soft` controls the handling of gates 1 and 2
+    (SDK installed, API key set) when they fail. The CLI passes
+    `True` when `enabled=True` came from the post-v1.5 default
+    rather than an explicit `--llm-classify` flag — in that case the
+    user did not opt in deliberately, so a missing SDK or API key
+    should silently fall back to the regex classifier instead of
+    exiting 1. Explicit opt-in (CLI flag) keeps the fail-fast path.
+
     Order (per spec § 3, § 4):
-      0. enabled? else default OFF, fall through to regex (no exit).
-      1. anthropic SDK importable? else exit 1 with install hint.
-      2. ANTHROPIC_API_KEY set? else exit 1 with hint.
+      0. enabled? else fall through to regex (no exit).
+      1. anthropic SDK importable? else exit 1 (or soft-fall).
+      2. ANTHROPIC_API_KEY set? else exit 1 (or soft-fall).
       3. (already covered by `enabled`).
       4. consent sentinel valid? else prompt is the caller's job
          (gate-check returns `accepted_consent=False`); the prompt
@@ -462,6 +505,10 @@ def check_gates(
         return GateResult(pass_all=False, exit_code=None, message=None)
 
     if not _anthropic_importable(sdk_check):
+        if treat_missing_as_soft:
+            return GateResult(
+                pass_all=False, exit_code=None, message=None,
+            )
         return GateResult(
             pass_all=False,
             exit_code=1,
@@ -473,6 +520,10 @@ def check_gates(
 
     e = env if env is not None else os.environ
     if not e.get(ENV_API_KEY):
+        if treat_missing_as_soft:
+            return GateResult(
+                pass_all=False, exit_code=None, message=None,
+            )
         return GateResult(
             pass_all=False,
             exit_code=1,
