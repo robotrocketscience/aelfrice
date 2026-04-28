@@ -1,18 +1,40 @@
 # Context rebuilder
 
-**Status:** spec.
-**Target milestone:** v1.4.0 (new milestone — slot is post-v1.3.0
-retrieval wave so the partial Bayesian-weighted ranker is real
-when the rebuilder ships).
+**Status:** v1.4.0 implementation landed (issue
+[#139](https://github.com/robotrocketscience/aelfrice/issues/139));
+suppress mode parked for v2.x.
+**Target milestone:** v1.4.0 (post-v1.3.0 retrieval wave; the
+entity-index L2.5 tier is what `retrieve()` returns under the
+rebuilder hood).
 **Dependencies (hard):**
 - [transcript_ingest.md](transcript_ingest.md) (v1.2.0) — without a
   transcript log to query, this feature has nothing to read.
 - v1.2.0 ingest enrichment — `session_id` must be a real field for
   session-scoped retrieval to work.
 **Dependencies (soft, quality-gating):**
-- v1.3.0 partial Bayesian-weighted ranking — without
-  posterior-weighted ranking, the rebuilder is BM25-only and the
-  "right" beliefs may not float to the top.
+- v1.3.x partial Bayesian-weighted ranking (issue #146) — when it
+  lands, posterior weighting flows through the rebuilder
+  automatically because the rebuilder calls `retrieve()` as a
+  black box. No follow-up code change in `context_rebuilder.py`
+  required.
+
+## What shipped at v1.4.0 vs. what's still parked
+
+| Acceptance criterion | v1.4.0 |
+|---|---|
+| `aelf setup --rebuilder` installs the PreCompact hook idempotently | Shipped (v1.2.0a0; carried forward) |
+| Hook contract: exit 0 on every failure, never block | Shipped |
+| Empty transcript / missing store: silent exit 0 | Shipped |
+| Reproducible: same inputs → byte-identical `additionalContext` | Shipped (regression test in `tests/test_context_rebuilder_hook.py`) |
+| Median latency ≤ 200 ms on a 10k-belief store | Shipped (regression test); measured ~2 ms on a workstation |
+| Locked + session-scoped + retrieve() hits in that order | Shipped via `rebuild_v14()` |
+| `[rebuilder] turn_window_n` / `token_budget` in `.aelfrice.toml` | Shipped (defaults 50 / 4000) |
+| Augment-mode coordination with the harness | Shipped |
+| `additionalContext` JSON envelope on stdout | Shipped |
+| Manual fire via `aelf rebuild` | Shipped (drives the same `rebuild_v14()` codepath) |
+| Suppress-mode coordination with the harness | **Parked for v2.x** |
+| Threshold-mode trigger calibration | Parked (manual / harness-driven only at v1.4.0) |
+| Continuation-fidelity eval harness | Scaffolding shipped at v1.3 (#136); fidelity scoring is #138 |
 - v1.2.0 triple-extraction port — better edge structure on the
   transcript ingest path produces better recall on the rebuild
   query.
@@ -132,44 +154,50 @@ required for the seed.
 `N` is a config key. Initial value: 10 (5 user, 5 assistant).
 Eval-tunable.
 
-### Rebuild algorithm
+### Rebuild algorithm (as shipped at v1.4.0)
 
 ```python
-def rebuild(
-    transcript_path: Path,
+def rebuild_v14(
+    recent_turns: list[RecentTurn],
     store: MemoryStore,
     *,
-    n_recent_turns: int,
-    token_budget: int,
-    session_id: str | None,
+    token_budget: int = DEFAULT_REBUILDER_TOKEN_BUDGET,
 ) -> str:
-    """Build a context block to inject as the new session start.
+    """v1.4 rebuild: L0 + session-scoped + L2.5/L1 via retrieve().
 
-    Returns a string that goes into Claude Code's hook
-    additionalContext. Must be deterministic given the same inputs
-    so eval-harness runs are reproducible.
+    Stage 1: build a query string from the recent turns.
+        Entity extraction + triple extraction (no LLM) over the
+        concatenated turn text. The downstream retrieve() path
+        runs L2.5 entity lookup on this string and L1 BM25 over
+        its tokens; both benefit from a high-signal query.
+
+    Stage 2: pull the live session id off the most recent turn that
+        carries one. Beliefs whose `session_id` matches are
+        surfaced as a dedicated tier between L0 and L2.5/L1.
+
+    Stage 3: call retrieve() once. retrieve() returns L0 + L2.5 +
+        L1 in that order; we already have L0 from
+        list_locked_beliefs() and rebuild it ourselves so the
+        session-scoped tier slots in the right place.
+
+    Stage 4: pack. Locked first (never trimmed), then
+        session-scoped (capped at token_budget), then the L2.5/L1
+        tail returned by retrieve() with budget honoured. Output
+        is the formatted XML block.
     """
-    recent = read_tail(transcript_path, n=n_recent_turns)
-
-    # Stage 1: seed the query. Triple-extract entities + intents
-    # from the recent turns; build a query string from them.
-    triples = extract_triples_batch(recent)
-    query = triples_to_query(triples)
-
-    # Stage 2: retrieve.
-    hits = store.retrieve(
-        query=query,
-        token_budget=token_budget,
-        # Session-scoped beliefs always pull. Cross-session
-        # beliefs ranked by L1 BM25 / posterior.
-        session_filter=session_id,
-        include_locked=True,  # L0 always in
-    )
-
-    # Stage 3: pack. Locked first, then session-scoped, then
-    # the open BM25 / posterior tail. Truncate at budget.
-    return format_context_block(hits, recent_turns=recent)
 ```
+
+The `pre_compact()` hook in `aelfrice.hook` reads the JSON payload
+from stdin, locates a transcript (canonical `turns.jsonl` first,
+the harness's transcript_path as fallback), drives `rebuild_v14`,
+and writes the result through `emit_pre_compact_envelope()` —
+which wraps the block in
+`{"hookSpecificOutput": {"hookEventName": "PreCompact",
+"additionalContext": "<aelfrice-rebuild>...</aelfrice-rebuild>"}}`.
+
+The new `aelfrice.context_rebuilder.main` is also wired as a
+console-script-callable; either entry point produces identical
+output for identical inputs.
 
 ### Output format
 

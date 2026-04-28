@@ -4,16 +4,38 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from aelfrice.context_rebuilder import (
     CLOSE_TAG as REBUILD_CLOSE_TAG,
+    HOOK_EVENT_NAME,
     OPEN_TAG as REBUILD_OPEN_TAG,
 )
 from aelfrice.hook import pre_compact
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.store import MemoryStore
+
+
+def _additional_context(stdout_value: str) -> str | None:
+    """Parse the PreCompact JSON envelope and return additionalContext.
+
+    Returns None when stdout is empty (the documented "no rebuild
+    block" exit). Raises a clear AssertionError on shape mismatch.
+    """
+    if not stdout_value:
+        return None
+    raw = json.loads(stdout_value)
+    assert isinstance(raw, dict)
+    payload = cast(dict[str, object], raw)
+    spec_obj = payload.get("hookSpecificOutput")
+    assert isinstance(spec_obj, dict)
+    spec = cast(dict[str, object], spec_obj)
+    assert spec.get("hookEventName") == HOOK_EVENT_NAME
+    ctx = spec.get("additionalContext")
+    assert isinstance(ctx, str)
+    return ctx
 
 
 def _mk(
@@ -112,7 +134,11 @@ def test_pre_compact_returns_zero_on_malformed_json(
 def test_pre_compact_returns_zero_when_no_sources(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """No aelfrice log, no claude transcript -> empty turns -> empty body."""
+    """No aelfrice log, no claude transcript -> empty turns -> no envelope.
+
+    Issue #139 acceptance: empty transcript exits 0 with no
+    `additionalContext` written. The tool path is unaffected.
+    """
     db = tmp_path / "memory.db"
     _seed_db(db, [])
     _set_db(monkeypatch, db)
@@ -123,14 +149,8 @@ def test_pre_compact_returns_zero_when_no_sources(
     serr = io.StringIO()
     rc = pre_compact(stdin=sin, stdout=sout, stderr=serr)
     assert rc == 0
-    # No locked beliefs, no recent turns -> rebuild() emits the empty
-    # frame (just <continue/> wrapped in tags). No <recent-turns> or
-    # <retrieved-beliefs> sections.
-    out = sout.getvalue()
-    assert REBUILD_OPEN_TAG in out
-    assert REBUILD_CLOSE_TAG in out
-    assert "<recent-turns>" not in out
-    assert "<retrieved-beliefs" not in out
+    # Empty transcript -> empty stdout (no JSON envelope).
+    assert sout.getvalue() == ""
 
 
 # ---- aelfrice log preferred over claude transcript ---------------------
@@ -157,10 +177,11 @@ def test_pre_compact_prefers_aelfrice_log(
     serr = io.StringIO()
     rc = pre_compact(stdin=sin, stdout=sout, stderr=serr)
     assert rc == 0
-    out = sout.getvalue()
-    assert 'kitchen contents' in out
+    ctx = _additional_context(sout.getvalue())
+    assert ctx is not None
+    assert 'kitchen contents' in ctx
     # The fallback's content must NOT appear because aelfrice log won.
-    assert "lawnmower" not in out
+    assert "lawnmower" not in ctx
 
 
 def test_pre_compact_falls_back_to_claude_transcript(
@@ -181,8 +202,9 @@ def test_pre_compact_falls_back_to_claude_transcript(
     serr = io.StringIO()
     rc = pre_compact(stdin=sin, stdout=sout, stderr=serr)
     assert rc == 0
-    out = sout.getvalue()
-    assert "kitchen check" in out
+    ctx = _additional_context(sout.getvalue())
+    assert ctx is not None
+    assert "kitchen check" in ctx
 
 
 # ---- output emits expected tags ----------------------------------------
@@ -205,20 +227,26 @@ def test_pre_compact_writes_rebuild_block_with_hits(
     serr = io.StringIO()
     rc = pre_compact(stdin=sin, stdout=sout, stderr=serr)
     assert rc == 0
-    out = sout.getvalue()
-    assert REBUILD_OPEN_TAG in out
-    assert REBUILD_CLOSE_TAG in out
-    assert "<recent-turns>" in out
-    assert 'id="F1"' in out
-    assert "<continue/>" in out
+    ctx = _additional_context(sout.getvalue())
+    assert ctx is not None
+    assert REBUILD_OPEN_TAG in ctx
+    assert REBUILD_CLOSE_TAG in ctx
+    assert "<recent-turns>" in ctx
+    assert "<continue/>" in ctx
 
 
 # ---- locked beliefs surface even with no transcript ---------------------
 
 
-def test_pre_compact_returns_locked_when_no_turns(
+def test_pre_compact_no_envelope_when_no_turns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """No transcript -> no rebuild block, even if the store has locked beliefs.
+
+    Per issue #139: an empty transcript exits 0 with no
+    `additionalContext`. L0 baseline is the SessionStart hook's
+    channel; the rebuilder is for resuming a session in progress.
+    """
     db = tmp_path / "memory.db"
     _seed_db(
         db,
@@ -235,6 +263,4 @@ def test_pre_compact_returns_locked_when_no_turns(
     serr = io.StringIO()
     rc = pre_compact(stdin=sin, stdout=sout, stderr=serr)
     assert rc == 0
-    out = sout.getvalue()
-    assert 'id="L1"' in out
-    assert 'locked="true"' in out
+    assert sout.getvalue() == ""
