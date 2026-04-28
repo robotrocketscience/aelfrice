@@ -71,6 +71,30 @@ def test_snippet_includes_upgrade_command() -> None:
     assert statusline.ICON in out
 
 
+def test_suppressed_when_running_version_caught_up() -> None:
+    s = _fresh(latest="1.4.0")
+    assert statusline.format_snippet(s, env={}, installed="1.4.0") == ""
+
+
+def test_suppressed_when_running_version_ahead_of_cache() -> None:
+    s = _fresh(latest="1.4.0")
+    assert statusline.format_snippet(s, env={}, installed="1.5.0") == ""
+
+
+def test_visible_when_running_version_behind_cache() -> None:
+    s = _fresh(latest="1.5.0")
+    out = statusline.format_snippet(s, env={}, installed="1.4.0")
+    assert out != ""
+    assert "1.5.0" in out
+
+
+def test_visible_when_installed_unknown() -> None:
+    s = _fresh(latest="1.5.0")
+    out = statusline.format_snippet(s, env={}, installed="")
+    assert out != ""
+    assert "1.5.0" in out
+
+
 def test_render_reads_cache(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     p = tmp_path / "cache.json"
     lifecycle._write_cache(_fresh("1.5.0"), p)
