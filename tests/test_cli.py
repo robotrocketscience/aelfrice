@@ -219,6 +219,93 @@ def test_demote_already_unlocked_exits_zero_with_message(
     assert "not locked" in out
 
 
+# --- validate (v1.2) ----------------------------------------------------
+
+
+def _seed_agent_inferred(db: Path, content: str) -> str:
+    """Insert one agent_inferred belief and return its id."""
+    from aelfrice.models import (
+        BELIEF_FACTUAL,
+        LOCK_NONE,
+        ORIGIN_AGENT_INFERRED,
+        Belief,
+    )
+
+    s = MemoryStore(str(db))
+    bid = "abc123def456"
+    try:
+        s.insert_belief(Belief(
+            id=bid, content=content, content_hash="h",
+            alpha=1.0, beta=1.0, type=BELIEF_FACTUAL,
+            lock_level=LOCK_NONE, locked_at=None,
+            demotion_pressure=0,
+            created_at="2026-04-26T00:00:00Z",
+            last_retrieved_at=None,
+            origin=ORIGIN_AGENT_INFERRED,
+        ))
+    finally:
+        s.close()
+    return bid
+
+
+def test_validate_promotes_agent_inferred_to_user_validated(
+    isolated_db: Path,
+) -> None:
+    bid = _seed_agent_inferred(isolated_db, "Python is a programming language")
+    code, out = _run("validate", bid)
+    assert code == 0
+    assert "validated" in out
+    assert "agent_inferred -> user_validated" in out
+    s = MemoryStore(str(isolated_db))
+    try:
+        b = s.get_belief(bid)
+        assert b is not None
+        from aelfrice.models import ORIGIN_USER_VALIDATED
+        assert b.origin == ORIGIN_USER_VALIDATED
+    finally:
+        s.close()
+
+
+def test_validate_unknown_id_exits_nonzero(isolated_db: Path) -> None:
+    code, _ = _run("validate", "ghost")
+    assert code == 1
+
+
+def test_validate_locked_belief_exits_nonzero(isolated_db: Path) -> None:
+    _run("lock", "we always sign commits with ssh")
+    s = MemoryStore(str(isolated_db))
+    try:
+        bid = s.list_locked_beliefs()[0].id
+    finally:
+        s.close()
+    code, _ = _run("validate", bid)
+    assert code == 1
+
+
+def test_validate_idempotent_already_validated(isolated_db: Path) -> None:
+    bid = _seed_agent_inferred(isolated_db, "x")
+    _run("validate", bid)
+    code, out = _run("validate", bid)
+    assert code == 0
+    assert "already validated" in out
+
+
+def test_demote_devalidates_user_validated_belief(isolated_db: Path) -> None:
+    bid = _seed_agent_inferred(isolated_db, "x")
+    _run("validate", bid)
+    code, out = _run("demote", bid)
+    assert code == 0
+    assert "devalidated" in out
+    s = MemoryStore(str(isolated_db))
+    try:
+        b = s.get_belief(bid)
+        assert b is not None
+        from aelfrice.models import ORIGIN_AGENT_INFERRED
+        assert b.origin == ORIGIN_AGENT_INFERRED
+    finally:
+        s.close()
+
+
 # --- feedback -----------------------------------------------------------
 
 

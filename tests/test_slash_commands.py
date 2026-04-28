@@ -25,6 +25,7 @@ EXPECTED_COMMANDS = (
     "lock",
     "locked",
     "demote",
+    "validate",
     "resolve",
     "feedback",
     "stats",
