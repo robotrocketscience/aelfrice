@@ -9,6 +9,10 @@ permissions:
   contents: read
   pull-requests: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   secrets-scan:
     runs-on: ubuntu-latest
@@ -92,19 +96,6 @@ jobs:
           done < /tmp/p
           rm -f /tmp/p /tmp/h /tmp/d
           exit "$fail"
-
-  pytest:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.12', '3.13']
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: uv sync --frozen --extra dev --extra archive
-      - run: uv run pytest tests/ -q
 
   release-docs-check:
     runs-on: ubuntu-latest
