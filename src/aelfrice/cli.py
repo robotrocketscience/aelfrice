@@ -114,6 +114,7 @@ from aelfrice.setup import (
     SEARCH_TOOL_BASH_SCRIPT_NAME,
     SEARCH_TOOL_SCRIPT_NAME,
     SESSION_START_HOOK_SCRIPT_NAME,
+    SLASH_COMMANDS_DIR_DEFAULT,
     SettingsScope,
     TRANSCRIPT_LOGGER_SCRIPT_NAME,
     clean_dangling_shims,
@@ -124,6 +125,7 @@ from aelfrice.setup import (
     install_search_tool_hook,
     install_pre_compact_hook,
     install_session_start_hook,
+    install_slash_commands,
     install_statusline,
     install_transcript_ingest_hooks,
     install_user_prompt_submit_hook,
@@ -139,6 +141,7 @@ from aelfrice.setup import (
     uninstall_search_tool_hook,
     uninstall_pre_compact_hook,
     uninstall_session_start_hook,
+    uninstall_slash_commands,
     uninstall_statusline,
     uninstall_transcript_ingest_hooks,
     uninstall_user_prompt_submit_hook,
@@ -1294,6 +1297,26 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 f"{'y' if stb_rm.removed == 1 else 'ies'} from {stb_rm.path}",
                 file=out,  # type: ignore[arg-type]
             )
+    slash_dest = getattr(args, "slash_commands_dir", None)
+    slash_dest_path = Path(slash_dest) if slash_dest else None
+    sc_result = install_slash_commands(slash_dest_path)
+    if sc_result.written:
+        print(
+            f"installed {len(sc_result.written)} slash command(s) in "
+            f"{sc_result.dest_dir}: {', '.join(sc_result.written)}",
+            file=out,  # type: ignore[arg-type]
+        )
+    if sc_result.pruned:
+        print(
+            f"removed {len(sc_result.pruned)} stale slash command(s) from "
+            f"{sc_result.dest_dir}: {', '.join(sc_result.pruned)}",
+            file=out,  # type: ignore[arg-type]
+        )
+    if not sc_result.written and not sc_result.pruned:
+        print(
+            f"slash commands already up to date in {sc_result.dest_dir}",
+            file=out,  # type: ignore[arg-type]
+        )
     _print_setup_next_step(out)
     _print_setup_jsonl_history_hint(out)
     return 0
@@ -1489,6 +1512,15 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
                 f"{'y' if stb_result.removed == 1 else 'ies'} from {stb_result.path}",
                 file=out,  # type: ignore[arg-type]
             )
+    slash_dest = getattr(args, "slash_commands_dir", None)
+    slash_dest_path = Path(slash_dest) if slash_dest else None
+    usc_result = uninstall_slash_commands(slash_dest_path)
+    if usc_result.pruned:
+        print(
+            f"removed {len(usc_result.pruned)} slash command(s) from "
+            f"{usc_result.dest_dir}: {', '.join(usc_result.pruned)}",
+            file=out,  # type: ignore[arg-type]
+        )
     return 0
 
 

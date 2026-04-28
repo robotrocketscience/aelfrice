@@ -43,12 +43,13 @@ write to a sibling tempfile and `os.replace` it into place.
 """
 from __future__ import annotations
 
+import importlib.resources
 import json
 import os
 import shutil
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal, cast, overload
 
@@ -56,6 +57,11 @@ SettingsScope = Literal["user", "project"]
 
 USER_SETTINGS_PATH: Final[Path] = Path.home() / ".claude" / "settings.json"
 PROJECT_SETTINGS_RELPATH: Final[Path] = Path(".claude") / "settings.json"
+SLASH_COMMANDS_DIR_DEFAULT: Final[Path] = (
+    Path.home() / ".claude" / "commands" / "aelf"
+)
+_SLASH_COMMANDS_PACKAGE: Final[str] = "aelfrice"
+_SLASH_COMMANDS_SUBDIR: Final[str] = "slash_commands"
 _HOOK_SCRIPT_NAME: Final[str] = "aelf-hook"
 _PRE_COMPACT_HOOK_SCRIPT_NAME: Final[str] = "aelf-pre-compact-hook"
 # Legacy / pre-pipx shim locations we will silently clean up if they
@@ -1058,6 +1064,149 @@ def uninstall_statusline(
         _atomic_write(settings_path, data)
         return StatuslineUninstallResult(path=settings_path, mode="unwrapped")
     return StatuslineUninstallResult(path=settings_path, mode="absent")
+
+
+# --- Slash-commands installer -------------------------------------------
+
+
+def _bundled_slash_files() -> dict[str, str]:
+    """Return a mapping of filename -> text for every bundled slash command.
+
+    Uses importlib.resources so the files are readable whether the package
+    is installed as a wheel (zip), an editable install, or a plain source
+    tree.  The source of truth is the filesystem under
+    `src/aelfrice/slash_commands/`; hatchling ships those files verbatim
+    in the wheel.
+    """
+    pkg = importlib.resources.files(_SLASH_COMMANDS_PACKAGE).joinpath(
+        _SLASH_COMMANDS_SUBDIR
+    )
+    result: dict[str, str] = {}
+    for entry in pkg.iterdir():
+        name = entry.name
+        if not name.endswith(".md"):
+            continue
+        text = entry.read_text(encoding="utf-8")
+        result[name] = text
+    return result
+
+
+@dataclass(frozen=True)
+class SlashCommandsResult:
+    """Outcome of `install_slash_commands` or `uninstall_slash_commands`.
+
+    `dest_dir` is the directory that was inspected/written.
+    `written` lists files that were created or overwritten.
+    `already` lists files that were already present and identical (no-op).
+    `pruned` lists files that were removed because they are not in the
+    canonical bundle (orphan cleanup).
+    """
+    dest_dir: Path
+    written: tuple[str, ...]
+    already: tuple[str, ...]
+    pruned: tuple[str, ...]
+
+
+def install_slash_commands(
+    dest_dir: Path | None = None,
+) -> SlashCommandsResult:
+    """Write all bundled /aelf:* slash-command files into `dest_dir`.
+
+    Default `dest_dir` is `~/.claude/commands/aelf/`.
+
+    Idempotency: if a file on disk already matches the bundled content
+    byte-for-byte, it is left alone and reported under `already`.  Any
+    `.md` file in `dest_dir` that is NOT in the canonical bundle is
+    removed (orphan pruning — handles renames such as `stats.md` ->
+    `status.md`).
+
+    Atomicity: each file is written to a sibling `.tmp` file and then
+    `os.replace`d into place, matching the settings-json write pattern.
+    """
+    target = dest_dir if dest_dir is not None else SLASH_COMMANDS_DIR_DEFAULT
+    bundle = _bundled_slash_files()
+
+    written: list[str] = []
+    already: list[str] = []
+    pruned: list[str] = []
+
+    target.mkdir(parents=True, exist_ok=True)
+
+    # Write (or skip) bundled files.
+    for name, text in sorted(bundle.items()):
+        dest_file = target / name
+        if dest_file.exists():
+            existing = dest_file.read_text(encoding="utf-8")
+            if existing == text:
+                already.append(name)
+                continue
+        # Atomic write: temp + replace.
+        encoded = text.encode("utf-8")
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=name + ".", suffix=".tmp", dir=str(target)
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(encoded)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, dest_file)
+        except Exception:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            raise
+        written.append(name)
+
+    # Prune orphans: .md files present in dest_dir but not in the bundle.
+    for md in sorted(target.glob("*.md")):
+        if md.name not in bundle:
+            try:
+                md.unlink()
+            except OSError:
+                pass
+            else:
+                pruned.append(md.name)
+
+    return SlashCommandsResult(
+        dest_dir=target,
+        written=tuple(written),
+        already=tuple(already),
+        pruned=tuple(pruned),
+    )
+
+
+def uninstall_slash_commands(
+    dest_dir: Path | None = None,
+) -> SlashCommandsResult:
+    """Remove all bundled /aelf:* slash-command files from `dest_dir`.
+
+    Only removes files whose names match the canonical bundle; user files
+    with other names are left alone.  Returns `pruned` listing every file
+    that was deleted.  `written` and `already` are always empty.
+    """
+    target = dest_dir if dest_dir is not None else SLASH_COMMANDS_DIR_DEFAULT
+    bundle = _bundled_slash_files()
+
+    pruned: list[str] = []
+
+    if target.is_dir():
+        for name in sorted(bundle):
+            f = target / name
+            if f.exists():
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+                else:
+                    pruned.append(name)
+
+    return SlashCommandsResult(
+        dest_dir=target,
+        written=(),
+        already=(),
+        pruned=tuple(pruned),
+    )
 
 
 # --- internal helpers ---------------------------------------------------
