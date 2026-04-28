@@ -216,6 +216,21 @@ _SCHEMA: tuple[str, ...] = (
     "ON ingest_log(source_kind, source_path)",
     "CREATE INDEX IF NOT EXISTS idx_ingest_log_session "
     "ON ingest_log(session_id)",
+    # v2.0 #205 ingest_log version vectors. Mirrors the #204 pattern
+    # so federation reconcile (v3) treats log rows as first-class
+    # replication units. Local-write rule applies: vv[local_scope] +=
+    # 1 on every record_ingest. Backfill stamps {local_scope: 1} on
+    # every pre-existing log row at first v2.0 open.
+    """
+    CREATE TABLE IF NOT EXISTS log_versions (
+        log_id   TEXT NOT NULL,
+        scope_id TEXT NOT NULL,
+        counter  INTEGER NOT NULL,
+        PRIMARY KEY (log_id, scope_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_log_versions_log "
+    "ON log_versions(log_id)",
 )
 
 # Marker key for the entity-index one-shot backfill. Empty value =
@@ -235,6 +250,12 @@ SCHEMA_META_LOCAL_SCOPE_ID: Final[str] = "local_scope_id"
 # completion; absence triggers the backfill on next open.
 SCHEMA_META_VERSION_VECTOR_BACKFILL: Final[str] = (
     "version_vector_backfill_complete"
+)
+# v2.0 #205. Marker for the one-shot backfill that stamps
+# `{local_scope: 1}` on every pre-existing ingest_log row when a v2.0
+# binary first opens a store with the new ingest_log table populated.
+SCHEMA_META_LOG_VERSION_VECTOR_BACKFILL: Final[str] = (
+    "log_version_vector_backfill_complete"
 )
 
 # v1.0 -> v1.2 column additions. Each ALTER runs after _SCHEMA. ALTERs
@@ -470,6 +491,9 @@ class MemoryStore:
         # `{local_scope: 1}` on every pre-existing belief and edge
         # the first time a v1.5+ binary opens this DB. Idempotent.
         self._maybe_backfill_version_vectors()
+        # v2.0 #205 ingest_log version-vector backfill. Same shape
+        # as #204 but for the parallel-write log table. Idempotent.
+        self._maybe_backfill_log_version_vectors()
 
     def close(self) -> None:
         self._conn.close()
@@ -550,6 +574,33 @@ class MemoryStore:
             (belief_id, self._local_scope_id),
         )
 
+    def _bump_log_version(self, log_id: str) -> None:
+        """Increment `log_versions[log_id, local_scope_id]` by 1.
+
+        v2.0 #205. Mirrors `_bump_belief_version` so ingest_log rows
+        carry the same federation-replication primitive as beliefs and
+        edges.
+        """
+        self._conn.execute(
+            "INSERT INTO log_versions (log_id, scope_id, counter) "
+            "VALUES (?, ?, 1) "
+            "ON CONFLICT(log_id, scope_id) "
+            "DO UPDATE SET counter = counter + 1",
+            (log_id, self._local_scope_id),
+        )
+
+    def get_log_version_vector(self, log_id: str) -> dict[str, int]:
+        """Return `{scope_id: counter}` for one ingest_log row.
+
+        Empty dict for rows that pre-date the v2.0 backfill (until the
+        next open triggers it). v2.0 #205.
+        """
+        cur = self._conn.execute(
+            "SELECT scope_id, counter FROM log_versions WHERE log_id = ?",
+            (log_id,),
+        )
+        return {str(r["scope_id"]): int(r["counter"]) for r in cur.fetchall()}
+
     def _bump_edge_version(self, src: str, dst: str, type_: str) -> None:
         """Increment `edge_versions[(src, dst, type), local_scope_id]`."""
         self._conn.execute(
@@ -618,6 +669,31 @@ class MemoryStore:
             datetime.now(timezone.utc).isoformat(),
         )
         return belief_inserted + edge_inserted
+
+    def _maybe_backfill_log_version_vectors(self) -> int:
+        """Stamp `{local_scope: 1}` on every pre-existing ingest_log row.
+
+        v2.0 #205. Same shape as `_maybe_backfill_version_vectors`:
+        idempotent via the schema-meta marker. Runs once when a v2.0
+        binary first opens a store that already has ingest_log rows
+        but no log_versions entries (e.g. after the parallel-write
+        phase ships and stores accumulate log rows before federation).
+        """
+        if self.get_schema_meta(SCHEMA_META_LOG_VERSION_VECTOR_BACKFILL):
+            return 0
+        scope = self._local_scope_id
+        cur = self._conn.execute(
+            "INSERT OR IGNORE INTO log_versions (log_id, scope_id, counter) "
+            "SELECT id, ?, 1 FROM ingest_log",
+            (scope,),
+        )
+        inserted = cur.rowcount or 0
+        self._conn.commit()
+        self.set_schema_meta(
+            SCHEMA_META_LOG_VERSION_VECTOR_BACKFILL,
+            datetime.now(timezone.utc).isoformat(),
+        )
+        return inserted
 
     def list_belief_ids(self) -> list[str]:
         """All belief ids in insertion-time order. Used by the v1.3
@@ -1156,6 +1232,7 @@ class MemoryStore:
                 classifier_version, rule_set_hash, session_id,
             ),
         )
+        self._bump_log_version(log_id)
         self._conn.commit()
         return log_id
 

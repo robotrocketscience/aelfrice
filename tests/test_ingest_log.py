@@ -303,6 +303,48 @@ def test_nonempty_stale_ingest_log_is_left_alone(tmp_path: Path) -> None:
         MemoryStore(str(db))
 
 
+def test_record_ingest_stamps_version_vector(store: MemoryStore) -> None:
+    """Hypothesis: every record_ingest call writes one row to log_versions
+    keyed (log_id, local_scope_id) with counter == 1. Mirrors #204
+    behavior on beliefs/edges. Falsifiable if the VV is missing or
+    counter != 1 for a single-write log row."""
+    log_id = store.record_ingest(
+        source_kind=INGEST_SOURCE_FILESYSTEM, raw_text="x",
+    )
+    vv = store.get_log_version_vector(log_id)
+    assert len(vv) == 1
+    assert list(vv.values()) == [1]
+
+
+def test_log_version_backfill_stamps_existing_rows(tmp_path: Path) -> None:
+    """Hypothesis: opening a store that already contains ingest_log rows
+    without log_versions entries triggers a one-shot backfill that
+    stamps `{local_scope: 1}` on each row. Falsifiable if any
+    pre-existing log row remains without a version vector after open."""
+    import sqlite3
+    db = tmp_path / "backfill.db"
+    s = MemoryStore(str(db))
+    log_id = s.record_ingest(
+        source_kind=INGEST_SOURCE_FILESYSTEM, raw_text="x",
+    )
+    # Manually nuke the version row + the backfill marker to simulate
+    # a store that pre-dates the v2.0 backfill.
+    s._conn.execute("DELETE FROM log_versions WHERE log_id = ?", (log_id,))  # pyright: ignore[reportPrivateUsage]
+    s._conn.execute(  # pyright: ignore[reportPrivateUsage]
+        "DELETE FROM schema_meta WHERE key = 'log_version_vector_backfill_complete'"
+    )
+    s._conn.commit()  # pyright: ignore[reportPrivateUsage]
+    s.close()
+    # Re-open should backfill.
+    s2 = MemoryStore(str(db))
+    try:
+        vv = s2.get_log_version_vector(log_id)
+        assert len(vv) == 1
+        assert list(vv.values()) == [1]
+    finally:
+        s2.close()
+
+
 def test_count_ingest_log_increments_per_record(store: MemoryStore) -> None:
     """Hypothesis: each successful record_ingest call adds exactly one
     row. Falsifiable by any count drift."""
