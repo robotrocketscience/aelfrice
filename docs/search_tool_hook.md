@@ -322,11 +322,18 @@ The v1.2.x hook ships matcher `Grep|Glob` only (this doc §
 Design). The carryover question from the 2026-04-27 design
 discussion was whether to extend to `Bash` for shell commands
 that carry the same search intent (`grep`, `rg`, `find`, `fd`).
+A second carryover (issue-comment, 2026-04-28) extends the same
+allowlist surface to **git history search** (`git log --grep`,
+`git log -S` / `-G`, `git log -- <path>`, `git grep`,
+`git blame`, `git show <rev>:<path>`): same retrieval intent,
+same allowlist discipline, same telemetry surface — folded into
+this section rather than split into a sibling spec.
 
 **Decision: extend to a narrow allowlist of search-shaped Bash
-commands behind a separate opt-in flag.** Default-OFF at v1.5.0;
-default-on flip is gated on telemetry showing the latency and
-injection-noise budgets hold (§ AC3 below).
+commands (filesystem + git history) behind a separate opt-in
+flag.** Default-OFF at v1.5.0; default-on flip is gated on
+telemetry showing the latency and injection-noise budgets hold
+(§ AC3 below).
 
 ### Allowlist
 
@@ -340,6 +347,12 @@ command matches one of:
 | `ack` | Grep | first non-flag positional after the pattern recogniser |
 | `find` | Glob | argument to `-name` / `-iname` if present, else skip |
 | `fd` / `fdfind` | Glob | first non-flag positional after the pattern recogniser |
+| `git log --grep=<pat>` | Grep | value of `--grep` |
+| `git log -S<str>` / `-G<re>` | Grep | string / regex argument to `-S` / `-G` (pickaxe) |
+| `git log -- <path>...` | Glob | path tokens after the `--` separator |
+| `git grep <pat> [<rev>]` | Grep | first non-flag positional after `git grep` |
+| `git blame <path>` | Glob | path argument |
+| `git show <rev>:<path>` | Glob | path component of the `<rev>:<path>` argument |
 
 `ls <path>` is **explicitly excluded.** The "what's here" reflex
 fires too frequently and the path token rarely carries belief-
@@ -348,6 +361,12 @@ worthy intent. Reconsider after telemetry on the v1.5.0 surface.
 `cd`, `cat`, `head`, `tail`, `wc`, `sort`, `uniq`, and any pipe
 to such are **excluded.** They are state changes, output
 manipulation, or aggregation — none carry retrieval intent.
+
+Bare `git log` (no `--grep` / `-S` / `-G` / path), `git diff`,
+and `git status` are **excluded.** History scroll, comparison,
+and state — no query token. The git allowlist is intentionally
+narrower than `git`'s subcommand surface; reconsider after
+v1.5.x telemetry.
 
 Anything not in the allowlist silent-skips. There is no
 fall-through to "match all Bash."
@@ -371,6 +390,27 @@ Each allowlisted command is its own micro-parser. The parser:
 For `find`, the rule is stricter: the parser ONLY emits a query
 when an `-name` or `-iname` argument is present. `find . -type f`
 contributes no signal and is silent-skipped.
+
+The `git` family is a two-token prefix (`git <subcommand>`) and
+each subcommand parser is its own entry; `git` alone never
+matches. Per-subcommand rules:
+
+- `git log`: emit a query only if (a) `--grep=<pat>` is present
+  (extract `<pat>`), (b) `-S<str>` or `-G<re>` is present
+  (extract the trailing argument; supports both joined `-Sfoo`
+  and split `-S foo` forms), or (c) a `--` separator is followed
+  by one or more path tokens (extract the joined path tokens as
+  the query, capped at the first 5 to bound FTS5 cost). If none
+  of (a-c) match, silent-skip.
+- `git grep <pat> [<rev>]`: extract the first non-flag positional
+  after `git grep` as the query. A trailing `<rev>` token is
+  ignored (still a query of `<pat>` only).
+- `git blame <path> [...]`: extract the first non-flag positional
+  as the query. Ignore `-L`, `-w`, etc.
+- `git show <arg>`: emit a query only when `<arg>` matches
+  `<rev>:<path>` (the `:` separator is required); extract the
+  path segment. Bare `git show <rev>` or `git show <rev> <path>`
+  silent-skips — too ambiguous for a deterministic parser.
 
 Pipelines, command substitutions, redirections, here-docs, and
 shell control flow (`for`, `while`, `if`) abort the parser:
@@ -488,24 +528,37 @@ either, both, or neither.
    property test that randomly generated non-allowlisted
    commands never fire.
 2. Per-command query extraction is exact for the documented
-   shape (e.g., `grep -r foo src/` → `"foo"`). Each command has
-   ≥ 5 unit tests in `tests/test_search_tool_hook_bash.py`
-   covering: bare invocation, with flags, with flag values, with
-   pipelines (must skip), with command substitution (must skip).
+   shape (e.g., `grep -r foo src/` → `"foo"`,
+   `git log --grep=foo` → `"foo"`,
+   `git log -Sfoo` → `"foo"`,
+   `git log -- src/x.py` → `"src/x.py"`,
+   `git grep foo HEAD~3` → `"foo"`,
+   `git blame src/x.py` → `"src/x.py"`,
+   `git show abc123:src/x.py` → `"src/x.py"`).
+   Each command has ≥ 5 unit tests in
+   `tests/test_search_tool_hook_bash.py` covering: bare
+   invocation (or skip-on-bare for `git log`/`git show`), with
+   flags, with flag values, with pipelines (must skip), with
+   command substitution (must skip).
 3. Default-on flip is gated on telemetry showing latency p95
    ≤ 200 ms AND injection-noise rate ≤ 30 % over a documented
    sample size (≥ 200 fires from a representative corpus).
    Until both clear, default stays OFF.
 4. Allowlist is narrow: no fall-through to "match all Bash". A
    regression test asserts that an unmodified `bash -c 'something'`
-   payload never produces an `additionalContext` block.
+   payload never produces an `additionalContext` block, and that
+   bare `git log` / `git diff` / `git status` invocations
+   silent-skip.
 5. Per-turn fire cap (3) holds: a payload that triggers four
    allowlisted fires within one `session_id` produces three
    `additionalContext` blocks and one silent skip.
 6. Hook output for the Bash matcher carries `source="bash:<cmd>"`
-   and the truncated `cmd` attribute. Hook output for the
-   v1.2.x Grep|Glob matcher is unchanged (no `source`
-   attribute).
+   and the truncated `cmd` attribute. For the git family the
+   `<cmd>` value is the joined two-token subcommand
+   (`bash:git-log`, `bash:git-grep`, `bash:git-blame`,
+   `bash:git-show`) so per-source telemetry distinguishes
+   subcommands. Hook output for the v1.2.x Grep|Glob matcher is
+   unchanged (no `source` attribute).
 7. `aelf setup --search-tool-bash` writes the hook config and
    `aelf setup --no-search-tool-bash` removes it. Idempotent in
    both directions, independent of the v1.2.x flag.
