@@ -78,18 +78,22 @@ from aelfrice.lifecycle import (
 from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
 from aelfrice.setup import (
+    COMMIT_INGEST_SCRIPT_NAME,
     SettingsScope,
     TRANSCRIPT_LOGGER_SCRIPT_NAME,
     clean_dangling_shims,
     default_settings_path,
     detect_default_scope,
+    install_commit_ingest_hook,
     install_pre_compact_hook,
     install_statusline,
     install_transcript_ingest_hooks,
     install_user_prompt_submit_hook,
+    resolve_commit_ingest_command,
     resolve_hook_command,
     resolve_pre_compact_hook_command,
     resolve_transcript_logger_command,
+    uninstall_commit_ingest_hook,
     uninstall_pre_compact_hook,
     uninstall_statusline,
     uninstall_transcript_ingest_hooks,
@@ -622,6 +626,23 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 f"(command={pc_command!r}) [v1.1 rebuilder alpha]",
                 file=out,  # type: ignore[arg-type]
             )
+    if getattr(args, "commit_ingest", False):
+        ci_command = resolve_commit_ingest_command(scope)
+        ci_result = install_commit_ingest_hook(
+            path, command=ci_command, timeout=args.timeout,
+        )
+        if ci_result.already_present:
+            print(
+                f"commit-ingest hook already installed in {ci_result.path} "
+                f"(command={ci_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed commit-ingest PostToolUse hook in {ci_result.path} "
+                f"(command={ci_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
     return 0
 
 
@@ -689,6 +710,21 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
             f"restored prior statusline command in {sl.path}",
             file=out,  # type: ignore[arg-type]
         )
+    if getattr(args, "commit_ingest", False):
+        ci_result = uninstall_commit_ingest_hook(
+            path, command_basename=COMMIT_INGEST_SCRIPT_NAME,
+        )
+        if ci_result.removed == 0:
+            print(
+                f"no commit-ingest hook in {ci_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"removed {ci_result.removed} commit-ingest entr"
+                f"{'y' if ci_result.removed == 1 else 'ies'} from {ci_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
     return 0
 
 
@@ -1344,6 +1380,15 @@ def build_parser() -> argparse.ArgumentParser:
             "hooks. Augment-mode only at v1.2.0a0."
         ),
     )
+    p_setup.add_argument(
+        "--commit-ingest", dest="commit_ingest", action="store_true",
+        help=(
+            "additionally wire the PostToolUse:Bash hook so each "
+            "successful `git commit` runs the triple extractor on its "
+            "commit message and persists the resulting beliefs and "
+            "edges under a session derived from git context."
+        ),
+    )
     p_setup.set_defaults(func=_cmd_setup)
 
     p_uninstall = sub.add_parser(
@@ -1435,6 +1480,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_unsetup.add_argument(
         "--rebuilder", action="store_true",
         help="also remove the rebuilder PreCompact hook entry.",
+    )
+    p_unsetup.add_argument(
+        "--commit-ingest", dest="commit_ingest", action="store_true",
+        help="also remove the PostToolUse:Bash commit-ingest entry.",
     )
     p_unsetup.set_defaults(func=_cmd_unsetup)
 

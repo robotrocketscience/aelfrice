@@ -549,6 +549,94 @@ def uninstall_transcript_ingest_hooks(
     return TranscriptIngestUninstallResult(path=settings_path, removed=removed)
 
 
+# --- Commit-ingest hook (v1.2+) -----------------------------------------
+
+COMMIT_INGEST_EVENT: Final[str] = "PostToolUse"
+COMMIT_INGEST_MATCHER: Final[str] = "Bash"
+COMMIT_INGEST_SCRIPT_NAME: Final[str] = "aelf-commit-ingest"
+
+
+def resolve_commit_ingest_command(scope: SettingsScope) -> str:
+    """Pick the absolute aelf-commit-ingest path for `scope`.
+
+    Same routing primitive as `resolve_hook_command`: project scope
+    pins to the venv next to sys.executable; user scope prefers
+    $PATH (typically a pipx install).
+    """
+    venv_bin = _venv_bin_dir()
+    venv_hook = _executable_in_dir(venv_bin, COMMIT_INGEST_SCRIPT_NAME)
+    path_hook_str = shutil.which(COMMIT_INGEST_SCRIPT_NAME)
+    path_hook = Path(path_hook_str) if path_hook_str else None
+    if scope == "project":
+        chosen = venv_hook or path_hook
+    else:
+        chosen = path_hook or venv_hook
+    if chosen is None:
+        return COMMIT_INGEST_SCRIPT_NAME
+    return str(chosen)
+
+
+def install_commit_ingest_hook(
+    settings_path: Path, *, command: str, timeout: int | None = None,
+) -> InstallResult:
+    """Add a PostToolUse:matcher=Bash hook entry running `command`.
+
+    Idempotent against the same `command`. Coexists with other Bash-
+    matcher PostToolUse entries — appending only after confirming no
+    matching entry already exists for the same command.
+    """
+    if not command:
+        raise ValueError("command must be a non-empty string")
+    data = _load_settings(settings_path)
+    entries = _get_event_list(data, COMMIT_INGEST_EVENT, create=True)
+    if _find_entry_index(entries, command) is not None:
+        return InstallResult(
+            path=settings_path, installed=False, already_present=True,
+        )
+    entries.append(_build_entry(
+        command=command, timeout=timeout, status_message=None,
+        matcher=COMMIT_INGEST_MATCHER,
+    ))
+    _atomic_write(settings_path, data)
+    return InstallResult(
+        path=settings_path, installed=True, already_present=False,
+    )
+
+
+def uninstall_commit_ingest_hook(
+    settings_path: Path, *,
+    command: str | None = None,
+    command_basename: str | None = None,
+) -> UninstallResult:
+    """Strip PostToolUse entries matching `command` or `command_basename`.
+
+    Pass exactly one of the two. Other PostToolUse entries (other
+    matchers, other tools) are left alone.
+    """
+    if command is None and command_basename is None:
+        raise ValueError("provide command or command_basename")
+    if command is not None and command_basename is not None:
+        raise ValueError("command and command_basename are mutually exclusive")
+    if not settings_path.exists():
+        return UninstallResult(path=settings_path, removed=0)
+    data = _load_settings(settings_path)
+    entries = _get_event_list(data, COMMIT_INGEST_EVENT, create=False)
+    if entries is None:
+        return UninstallResult(path=settings_path, removed=0)
+    before = len(entries)
+    if command is not None:
+        kept = [e for e in entries if not _entry_matches(e, command)]
+    else:
+        assert command_basename is not None
+        kept = [e for e in entries if not _entry_matches_basename(e, command_basename)]
+    removed = before - len(kept)
+    if removed == 0:
+        return UninstallResult(path=settings_path, removed=0)
+    entries[:] = kept
+    _atomic_write(settings_path, data)
+    return UninstallResult(path=settings_path, removed=removed)
+
+
 # --- Statusline auto-wiring ---------------------------------------------
 
 
@@ -708,7 +796,8 @@ def _get_event_list(
     """Return `data['hooks'][event]` as a list, optionally creating it.
 
     Generic over event name so the same machinery can wire
-    UserPromptSubmit, Stop, PreCompact, PostCompact, etc.
+    UserPromptSubmit, Stop, PreCompact, PostCompact, PreToolUse,
+    PostToolUse, etc.
     """
     hooks_obj = data.get(_HOOKS_KEY)
     if hooks_obj is None:
@@ -733,7 +822,11 @@ def _get_event_list(
 
 
 def _build_entry(
-    *, command: str, timeout: int | None, status_message: str | None
+    *,
+    command: str,
+    timeout: int | None,
+    status_message: str | None,
+    matcher: str | None = None,
 ) -> dict[str, object]:
     inner: dict[str, object] = {
         _TYPE_KEY: _HOOK_TYPE_COMMAND,
@@ -743,7 +836,13 @@ def _build_entry(
         inner[_TIMEOUT_KEY] = timeout
     if status_message is not None:
         inner[_STATUS_MESSAGE_KEY] = status_message
-    return {_INNER_HOOKS_KEY: [inner]}
+    entry: dict[str, object] = {_INNER_HOOKS_KEY: [inner]}
+    if matcher is not None:
+        # PreToolUse / PostToolUse entries gate the inner hooks on a
+        # tool-name matcher. UserPromptSubmit / Stop / PreCompact /
+        # PostCompact entries omit the field entirely.
+        entry["matcher"] = matcher
+    return entry
 
 
 def _find_entry_index(
