@@ -617,9 +617,19 @@ def _do_search(
     cwd = cwd_obj if isinstance(cwd_obj, str) else None
 
     # Lazy imports: cold-start cost is paid only when we actually search.
-    from aelfrice.cli import db_path  # noqa: PLC0415  # pyright: ignore[reportPrivateUsage]
-    from aelfrice.retrieval import retrieve  # noqa: PLC0415
-    from aelfrice.store import MemoryStore  # noqa: PLC0415
+    # Guard against stale installs missing a runtime dep (issue #236).
+    try:
+        from aelfrice.cli import db_path  # noqa: PLC0415  # pyright: ignore[reportPrivateUsage]
+        from aelfrice.retrieval import retrieve  # noqa: PLC0415
+        from aelfrice.store import MemoryStore  # noqa: PLC0415
+    except ImportError as _ie:
+        missing = getattr(_ie, "name", None) or str(_ie)
+        import sys as _sys  # noqa: PLC0415
+        print(
+            f"aelf-hook: install incomplete (missing {missing}); skipping",
+            file=_sys.stderr,
+        )
+        return
 
     p = db_path(cwd=cwd) if _db_path_accepts_cwd(db_path) else db_path()
     if str(p) != ":memory:" and not p.exists():

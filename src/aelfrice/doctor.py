@@ -27,8 +27,11 @@ warnings:
 """
 from __future__ import annotations
 
+import importlib
+import importlib.metadata
 import json
 import os
+import re
 import shlex
 import shutil
 from dataclasses import dataclass, field
@@ -203,6 +206,11 @@ class DoctorReport:
     search_tool_telemetry_path: Path | None = None
     # True when the file existed but was malformed (ValueError from read).
     search_tool_telemetry_corrupt: bool = False
+    # Runtime deps declared in pyproject.toml that are not importable
+    # in the current environment (issue #236: stale uv tool env).
+    missing_runtime_deps: list[str] = field(
+        default_factory=lambda: cast(list[str], [])
+    )
 
     @property
     def broken(self) -> list[CommandFinding]:
@@ -265,6 +273,7 @@ def diagnose(
     )
     report.hook_failures_log = log_path
     report.hook_failures_tail = _tail_log(log_path, _HOOK_FAILURES_TAIL)
+    report.missing_runtime_deps = _check_runtime_deps()
     if known_cli_subcommands is not None:
         slash_dir = (
             slash_commands_dir if slash_commands_dir is not None
@@ -342,6 +351,42 @@ def _scan_orphan_slash_commands(
             continue
         orphans.append(sub)
     return orphans
+
+
+def _check_runtime_deps() -> list[str]:
+    """Return the names of declared runtime deps that are not importable.
+
+    Reads the installed package metadata for 'aelfrice' via
+    importlib.metadata, parses each PEP 508 requirement to extract the
+    top-level distribution name, converts it to an import name (hyphens
+    to underscores), and tries importing it. Returns sorted list of
+    missing import names.
+
+    Swallows all errors so doctor never crashes on unusual envs.
+    """
+    try:
+        reqs = importlib.metadata.requires("aelfrice") or []
+    except importlib.metadata.PackageNotFoundError:
+        return []
+    missing: list[str] = []
+    # Only check unconditional (non-extra) deps.
+    _extra_re = re.compile(r'extra\s*==', re.IGNORECASE)
+    for req_str in reqs:
+        # Skip extras / optional deps (lines with '; extra ==' marker).
+        if _extra_re.search(req_str):
+            continue
+        # Extract the distribution name: first token before any version
+        # specifier or environment marker.
+        dist_name = re.split(r'[\s;>=<!(\[]', req_str)[0].strip()
+        if not dist_name:
+            continue
+        # Normalise dist name to import name: hyphens -> underscores.
+        import_name = dist_name.replace("-", "_")
+        try:
+            importlib.import_module(import_name)
+        except ImportError:
+            missing.append(dist_name)
+    return sorted(missing)
 
 
 def _scan_settings(path: Path) -> list[CommandFinding]:
@@ -534,6 +579,9 @@ def format_report(report: DoctorReport) -> str:
         )
         # Still render the telemetry section if a path is available.
         _format_telemetry_section(report, lines)
+        # #236: render the missing-dep block too — the install-broken
+        # case is exactly when settings.json may be absent.
+        _format_missing_runtime_deps_section(report, lines)
         return "\n".join(lines)
     for scope, path in report.scopes_scanned:
         lines.append(f"scanned {scope}: {path}")
@@ -593,7 +641,23 @@ def format_report(report: DoctorReport) -> str:
             "feature is available, or remove the stale slash file."
         )
     _format_telemetry_section(report, lines)
+    _format_missing_runtime_deps_section(report, lines)
     return "\n".join(lines)
+
+
+def _format_missing_runtime_deps_section(
+    report: DoctorReport, lines: list[str],
+) -> None:
+    """Append the [FAIL] missing-runtime-dep block (#236) to `lines`."""
+    if not report.missing_runtime_deps:
+        return
+    lines.append("")
+    for dep in report.missing_runtime_deps:
+        lines.append(f"[FAIL] missing runtime dep: {dep}")
+    lines.append(
+        "fix: reinstall aelfrice to pull in all declared deps: "
+        "`uv tool upgrade aelfrice` or `pip install --upgrade aelfrice`"
+    )
 
 
 def _format_telemetry_section(report: DoctorReport, lines: list[str]) -> None:
