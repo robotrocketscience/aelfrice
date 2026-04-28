@@ -50,14 +50,18 @@ aelf setup                                        # auto-detect scope + path
 aelf setup --scope user                            # force user-scope (~/.claude/settings.json)
 aelf setup --scope project --project-root .        # force project-scope (.claude/settings.json)
 aelf setup --no-statusline                         # hook only, no statusline
-aelf unsetup                                       # remove both
+aelf setup --commit-ingest                         # opt in to commit-message ingest (v1.2+)
+aelf unsetup                                       # remove the prompt hook + statusline
+aelf unsetup --commit-ingest                       # also remove the commit-ingest hook
 aelf doctor                                        # verify hook commands resolve
 ```
 
-Idempotent. `aelf setup` wires two things:
+Idempotent. `aelf setup` wires two things by default:
 
 1. **`UserPromptSubmit` hook** (`aelf-hook`). Reads each prompt payload, runs retrieval, emits an `<aelfrice-memory>...</aelfrice-memory>` block above the prompt. Every failure mode exits 0 with no output — the hook can't block a prompt.
 2. **`statusLine` notifier** (`aelf statusline`). Prints an orange one-line update banner in the Claude Code statusbar **only when an update is available**, empty otherwise. Reads the cached PyPI check; never makes network calls. Banner disappears automatically once you've upgraded.
+
+`--commit-ingest` (v1.2+) additionally wires a `PostToolUse:Bash` entry to the `aelf-commit-ingest` entry point. After every successful `git commit`, the hook parses the commit message, runs the triple extractor on the prose, and persists the resulting beliefs and edges under a session id derived as `sha256(branch + ":" + commit_hash)[:16]` (stable across re-fires; idempotent against the same commit). Median-latency budget is 30 ms; the hook bails non-blockingly on every failure mode so a `git commit` never feels broken. Opt-in at v1.2; default-flip candidate at v1.3 once production-corpus latency telemetry confirms the budget holds.
 
 ### How `aelf setup` picks scope and command path
 
