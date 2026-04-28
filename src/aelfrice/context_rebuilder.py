@@ -147,14 +147,23 @@ calibrated threshold. The threshold-mode default value is set by
 opts in via `[rebuilder] trigger_mode = "threshold"`.
 """
 
-DEFAULT_THRESHOLD_FRACTION: Final[float] = 0.7
+DEFAULT_THRESHOLD_FRACTION: Final[float] = 0.6
 """Calibrated default fraction for `trigger_mode = "threshold"`.
 
 Sourced from the eval-harness calibration in
-`benchmarks/context_rebuilder/calibration_v1_4_0.json` (run on the
-bundled synthetic fixture sweeping 0.5/0.6/0.7/0.8/0.9). 0.7
-maximizes continuation_fidelity within the documented token-cost
-band. See `docs/context_rebuilder.md § Threshold calibration`.
+`benchmarks/context-rebuilder/calibration_v1_4_0.json` (run on the
+bundled synthetic fixture sweeping 0.5/0.6/0.7/0.8/0.9). 0.6
+maximizes the **token-efficient** continuation-fidelity proxy
+(fidelity / token_budget_ratio) within the documented token-cost
+band, with ties broken on lowest threshold (earlier firing catches
+drift sooner). See `docs/context_rebuilder.md § Threshold
+calibration` for the full sweep table and rationale.
+
+This value is fixture-bound -- a v1.5.x re-calibration on a
+captured corpus may move it. Production users opting into
+`trigger_mode = "threshold"` should re-run calibration on a
+representative session and override via
+`[rebuilder] threshold_fraction = X` in `.aelfrice.toml`.
 """
 
 # --- Format constants -----------------------------------------------------

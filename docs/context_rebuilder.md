@@ -31,9 +31,11 @@ rebuilder hood).
 | `[rebuilder] turn_window_n` / `token_budget` in `.aelfrice.toml` | Shipped (defaults 50 / 4000) |
 | Augment-mode coordination with the harness | Shipped |
 | `additionalContext` JSON envelope on stdout | Shipped |
-| Manual fire via `aelf rebuild` | Shipped (drives the same `rebuild_v14()` codepath) |
+| Manual fire via `aelf rebuild` / `/aelf:rebuild` | Shipped (#141) |
+| Trigger modes — manual + threshold | Shipped (#141; default `manual`) |
+| Threshold default sourced from calibration data | Shipped (#141; `benchmarks/context-rebuilder/calibration_v1_4_0.json`) |
+| Trigger mode — dynamic | Investigated at v1.4 (#141); see § Dynamic mode below |
 | Suppress-mode coordination with the harness | **Parked for v2.x** |
-| Threshold-mode trigger calibration | Parked (manual / harness-driven only at v1.4.0) |
 | Continuation-fidelity eval harness | Scaffolding shipped at v1.3 (#136); fidelity scoring is #138 |
 - v1.2.0 triple-extraction port — better edge structure on the
   transcript ingest path produces better recall on the rebuild
@@ -121,26 +123,111 @@ Three failure modes the rebuilder is designed to fix:
 
 ### Trigger policy
 
-Three trigger modes, configured via `.aelfrice.toml` (the project
-config file introduced in v1.1.0; the rebuilder adds new keys):
+Three trigger modes are defined; two ship at v1.4.0, one is
+investigated separately. Configured via `.aelfrice.toml`:
 
-- **`threshold`** (default): fire when the harness's pre-compaction
-  signal indicates context is at or above a configured fraction of
-  the model's window. Default fraction is set from eval-harness
-  calibration data, not hardcoded; an initial guess of 70% is used
-  during early calibration runs.
-- **`dynamic`**: fire based on a derived metric (e.g.,
-  rolling-window entropy of new beliefs per turn — when the agent
-  stops introducing new entities, working state is small enough to
-  rebuild safely). Implementation gated on eval-harness evidence
-  that the dynamic metric tracks continuation quality. May not
-  ship in v1.4.0.
-- **`manual`**: fire only on explicit `/aelf-rebuild` slash command
-  invocation. Useful for users who don't trust auto-trigger and
-  for the rebuilder's own QA.
+```toml
+[rebuilder]
+# v1.4 ship default. The PreCompact hook no-ops unless the user
+# explicitly fires the rebuilder via `aelf rebuild` or
+# `/aelf:rebuild`. Opt into auto-firing by switching to
+# `trigger_mode = "threshold"`.
+trigger_mode = "manual"
+
+# Calibrated default from
+# benchmarks/context-rebuilder/calibration_v1_4_0.json. Only
+# consulted when `trigger_mode = "threshold"`. The actual gate is
+# Claude Code's own PreCompact firing; this value documents the
+# operating point and is the reproducible source-of-truth for the
+# default.
+threshold_fraction = 0.6
+```
+
+- **`manual`** *(default at v1.4.0)*: PreCompact hook never fires
+  the rebuild block. Only explicit invocations
+  (`aelf rebuild` / `/aelf:rebuild`) emit a block. This is the
+  ship default until production telemetry confirms threshold-mode
+  is safe to default-on.
+- **`threshold`**: PreCompact hook fires when called by Claude
+  Code's harness. The harness's own threshold gating is the trigger
+  signal; `threshold_fraction` documents the *calibrated operating
+  point* and is the reproducible source-of-truth for the default
+  value (re-derive via `python -m benchmarks.context_rebuilder.calibrate`).
+- **`dynamic`**: heuristic-driven trigger (rate of context growth,
+  entity-density delta). See § Dynamic mode below for the v1.4
+  ship-or-park decision.
 
 Whatever the trigger, the hook contract is the same: exit 0 in
 under 50ms even if ingest is in progress in the background.
+
+### Threshold calibration
+
+The `threshold_fraction` default is **sourced from the eval
+harness, not picked by hand**. Re-run via:
+
+```bash
+python -m benchmarks.context_rebuilder.calibrate \
+    benchmarks/context-rebuilder/fixtures/synthetic/debugging_session_001.jsonl \
+    --out benchmarks/context-rebuilder/calibration_v1_4_0.json
+```
+
+The script sweeps thresholds 0.5 / 0.6 / 0.7 / 0.8 / 0.9 against
+the bundled synthetic fixture, seeds an in-memory store with one
+belief per pre-clear assistant turn, calls `rebuild_v14()` at a
+compressed `token_budget` (200 — tighter than the production 4000
+so the retrieved-beliefs section actually has to choose what to
+surface), and scores each post-clear assistant turn by **content-
+overlap** (fraction of `>=4-char` lowercase tokens from the
+original answer that appear in the rebuild block's
+`<retrieved-beliefs>` section).
+
+The proxy is honest about what it measures: "what fraction of the
+original answer's content tokens does the rebuild block surface?"
+— the load-bearing precondition for the agent to be able to
+reconstruct the answer. It is reproducible, deterministic, no LLM,
+no network — same constraints as the v1.4.0 `exact` continuation-
+fidelity scorer.
+
+Sweep table (committed at
+`benchmarks/context-rebuilder/calibration_v1_4_0.json`):
+
+| `threshold_fraction` | `clear_at` | n post-clear | rebuild tokens | full-replay tokens | ratio | fidelity | efficiency |
+|---|---|---|---|---|---|---|---|
+| 0.5 | 8 | 4 | 641 | 657 | 0.976 | 0.051 | 0.052 |
+| **0.6** | **9** | **3** | **668** | **657** | **1.017** | **0.068** | **0.067** |
+| 0.7 | 11 | 2 | 756 | 657 | 1.151 | 0.069 | 0.060 |
+| 0.8 | 12 | 2 | 851 | 657 | 1.295 | 0.069 | 0.054 |
+| 0.9 | 14 | 1 | 938 | 657 | 1.428 | 0.095 | 0.067 |
+
+`efficiency = continuation_fidelity / token_budget_ratio`.
+
+**Choice rule** (deterministic, encoded in `_choose_threshold`):
+
+1. Filter to points with `token_budget_ratio <= 1.5` (band).
+2. Among those, take points with the highest efficiency, rounded
+   to 3 decimals so cosmetically-tied points are treated as tied.
+3. Tie-break by lowest `threshold_fraction` (earlier firing
+   catches drift sooner).
+
+At v1.4.0 the band-filter passes all five points; the highest
+rounded efficiency is 0.067, tied between 0.6 and 0.9; lowest-
+threshold tie-break picks **0.6**.
+
+This value is fixture-bound. The synthetic fixture is small (16
+turns) so absolute fidelity numbers are noisy — what matters is
+the *ranking* across thresholds, which is stable. A v1.5.x re-
+calibration on a captured corpus may move the chosen value.
+Production users opting into `trigger_mode = "threshold"` should
+re-run calibration on a representative session and override via
+`[rebuilder] threshold_fraction = X` in `.aelfrice.toml`.
+
+### Dynamic mode
+
+See `benchmarks/context_rebuilder/dynamic_probe.py` for the v1.4
+ship-or-park investigation; the result and rationale land in the
+companion documentation when the probe lands. Setting
+`trigger_mode = "dynamic"` at v1.4 logs a "parked v1.5" trace and
+no-ops the hook unless the probe verdict changes.
 
 ### What the hook reads
 
