@@ -140,6 +140,101 @@ def test_diagnose_inspects_script_under_interpreter(
     assert "gone.sh" in report.broken[0].program
 
 
+def test_diagnose_inspects_script_through_silent_failure_wrapper(
+    tmp_path: Path,
+) -> None:
+    """Issue #113: a stale `bash <missing>.sh 2>/dev/null || true`
+    hook silently skipped past doctor because the shell-meta check
+    short-circuited before we extracted the script path. We now
+    extract the script even when the wrapper appears."""
+    user_path = tmp_path / "settings.json"
+    missing = tmp_path / "hook-aelf-search.sh"
+    _write_settings(user_path, {
+        "hooks": {
+            "PostToolUse": [{
+                "matcher": "Grep|Glob",
+                "hooks": [{
+                    "type": "command",
+                    "command": f"bash {missing} 2>/dev/null || true",
+                    "timeout": 5,
+                }],
+            }],
+        },
+    })
+    report = diagnose(
+        user_settings=user_path, project_root=tmp_path / "noproj"
+    )
+    assert len(report.broken) == 1, report.findings
+    assert "hook-aelf-search.sh" in report.broken[0].program
+    assert report.broken[0].silent_failure is True
+
+
+def test_diagnose_flags_silent_failure_pattern_on_resolved_script(
+    tmp_path: Path,
+) -> None:
+    """Even when the script exists, the wrapper itself is the
+    anti-feature (issue #114). Surface a soft warning."""
+    bin_dir = tmp_path / "bin"
+    hook = _exec(bin_dir / "ok-script.sh")
+    user_path = tmp_path / "settings.json"
+    _write_settings(user_path, {
+        "hooks": {
+            "PostToolUse": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": f"bash {hook} 2>/dev/null || true",
+                }],
+            }],
+        },
+    })
+    report = diagnose(
+        user_settings=user_path, project_root=tmp_path / "noproj"
+    )
+    assert report.broken == []
+    assert len(report.silent_failure) == 1
+    rendered = format_report(report)
+    assert "silent-failure pattern" in rendered
+
+
+def test_diagnose_surfaces_recent_hook_failures(tmp_path: Path) -> None:
+    """When ~/.aelfrice/logs/hook-failures.log exists, doctor tails
+    it into the report (issue #114)."""
+    user_path = tmp_path / "settings.json"
+    _write_settings(user_path, {"hooks": {}})
+    log = tmp_path / "hook-failures.log"
+    log.write_text(
+        "\n".join([
+            "2026-04-27T22:00:00 hook-aelf-search: file not found",
+            "2026-04-27T22:01:00 hook-aelf-search: file not found",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    report = diagnose(
+        user_settings=user_path,
+        project_root=tmp_path / "noproj",
+        hook_failures_log=log,
+    )
+    assert len(report.hook_failures_tail) == 2
+    rendered = format_report(report)
+    assert "recent hook failures" in rendered
+    assert "hook-aelf-search" in rendered
+
+
+def test_diagnose_no_log_no_section(tmp_path: Path) -> None:
+    """Missing log → no log block in the report (no false noise)."""
+    user_path = tmp_path / "settings.json"
+    _write_settings(user_path, {"hooks": {}})
+    report = diagnose(
+        user_settings=user_path,
+        project_root=tmp_path / "noproj",
+        hook_failures_log=tmp_path / "no-log.log",
+    )
+    assert report.hook_failures_tail == ()
+    rendered = format_report(report)
+    assert "recent hook failures" not in rendered
+
+
 def test_doctor_cli_exit_1_when_broken(tmp_path: Path) -> None:
     user_path = tmp_path / "settings.json"
     _write_settings(user_path, {
