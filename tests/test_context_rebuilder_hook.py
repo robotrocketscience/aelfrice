@@ -338,6 +338,7 @@ def test_ac3_two_fires_produce_byte_identical_additional_context(
 # --- AC4: latency on synthetic 10k-belief store ---------------------------
 
 
+@pytest.mark.timeout(60)
 def test_ac4_median_latency_under_200ms_on_10k_belief_store(
     tmp_path: Path,
 ) -> None:
@@ -348,6 +349,12 @@ def test_ac4_median_latency_under_200ms_on_10k_belief_store(
     issue's "regression test" requirement, since hook envelope cost
     and disk read cost are not what the latency budget targets.
 
+    The 10k-belief seed phase itself can take 10-20 s on slow CI
+    runners (each insert_belief() commits independently and runs the
+    entity-index trigger), so the per-test timeout is bumped to 60 s.
+    The thing being measured -- the rebuild_v14 hot path -- still
+    completes in milliseconds, which is what we assert.
+
     Skipped when AELFRICE_SKIP_LATENCY=1 so a slow CI runner doesn't
     flake; the headline 10k-belief number is also reproduced by the
     eval harness in benchmarks/context-rebuilder/.
@@ -357,7 +364,10 @@ def test_ac4_median_latency_under_200ms_on_10k_belief_store(
     if os.environ.get("AELFRICE_SKIP_LATENCY") == "1":
         pytest.skip("latency test disabled via AELFRICE_SKIP_LATENCY")
 
-    store = MemoryStore(str(tmp_path / "m.db"))
+    # In-memory DB so the 10k-row seed isn't paying disk-fsync per
+    # row; the rebuild_v14 hot path under test is read-only and
+    # behaves the same against an in-memory and on-disk store.
+    store = MemoryStore(":memory:")
     try:
         # Seed 10k beliefs; mix of identifiers and prose so both L1
         # FTS5 and L2.5 entity index see realistic content.
