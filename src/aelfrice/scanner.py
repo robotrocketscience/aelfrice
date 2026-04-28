@@ -73,10 +73,18 @@ class SentenceCandidate:
     - source: stable identifier for the origin (e.g. `doc:README.md`,
       `git:commit:abcdef`, `ast:src/foo.py:bar`); read by the
       classifier and stored on the Belief for provenance
+    - commit_date: ISO-8601 author date of the most recent commit that
+      touched the source file (or, for `git:commit:*` candidates, the
+      commit's own date). `None` for files outside any git work-tree
+      and for files with no commit history (newly added, untracked).
+      v1.1.0 git-recency feature: when set, scan_repo uses this as
+      `belief.created_at` so the existing decay mechanism penalises
+      pre-migration content from old branches.
     """
 
     text: str
     source: str
+    commit_date: str | None = None
 
 
 def scan_repo(
@@ -121,10 +129,19 @@ def scan_repo(
         else NoiseConfig.discover(root)
     )
 
+    # v1.1.0 git-recency: one git invocation produces a map of
+    # {relative-path: most-recent-author-date}. Extractors enrich each
+    # SentenceCandidate with the matching commit_date so the eventual
+    # belief gets `created_at = commit_date` instead of wall-clock now.
+    # Files outside git, untracked files, and the entire fallback when
+    # git is unavailable all yield commit_date=None and the wall-clock
+    # path applies as before.
+    recency = _build_file_recency_map(root)
+
     candidates: list[SentenceCandidate] = []
-    candidates.extend(extract_filesystem(root))
+    candidates.extend(extract_filesystem(root, recency=recency))
     candidates.extend(extract_git_log(root))
-    candidates.extend(extract_ast(root))
+    candidates.extend(extract_ast(root, recency=recency))
 
     inserted = 0
     skipped_existing = 0
@@ -143,6 +160,7 @@ def scan_repo(
         if store.get_belief(belief_id) is not None:
             skipped_existing += 1
             continue
+        created_at = candidate.commit_date or timestamp
         store.insert_belief(Belief(
             id=belief_id,
             content=candidate.text,
@@ -153,7 +171,7 @@ def scan_repo(
             lock_level=LOCK_NONE,
             locked_at=None,
             demotion_pressure=0,
-            created_at=timestamp,
+            created_at=created_at,
             last_retrieved_at=None,
         ))
         inserted += 1
@@ -260,6 +278,67 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _build_file_recency_map(root: Path) -> dict[str, str]:
+    """Return `{relative-path: most-recent-author-date-iso}` for every
+    file in the git work-tree.
+
+    Walks `git log --name-only --pretty=format:%aI` once. Output is
+    pairs of `<iso-date>` lines followed by a blank line followed by
+    one or more `<file>` lines, separated by blank lines between
+    commits. Newer commits come first; we record the first date seen
+    for each file (which is the most recent).
+
+    Returns an empty dict when:
+    - `root` is not a directory
+    - `root` is not a git work-tree
+    - `git` binary is missing or rev-parse fails or times out
+
+    Pure stdlib subprocess. One fork per `scan_repo` call regardless of
+    file count.
+    """
+    if not root.exists() or not root.is_dir():
+        return {}
+    if not (root / ".git").exists():
+        return {}
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "log",
+                "--name-only",
+                "--pretty=format:%aI",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_LOG_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0:
+        return {}
+
+    out: dict[str, str] = {}
+    current_date: str | None = None
+    for raw in result.stdout.splitlines():
+        line = raw.rstrip()
+        if not line:
+            continue
+        # ISO-8601 author date starts with a 4-digit year; file paths
+        # never do. Cheap classifier without re-parsing the format.
+        if len(line) >= 10 and line[0:4].isdigit() and line[4] == "-":
+            current_date = line
+            continue
+        if current_date is None:
+            continue
+        # First-seen wins (newer commits come first). Don't overwrite.
+        if line not in out:
+            out[line] = current_date
+    return out
+
+
 def extract_git_log(
     root: Path,
     limit: int = _GIT_LOG_DEFAULT_LIMIT,
@@ -290,7 +369,7 @@ def extract_git_log(
                 "-C",
                 str(root),
                 "log",
-                "--format=%H%x09%s",
+                "--format=%H%x09%aI%x09%s",
                 "-n",
                 str(limit),
             ],
@@ -307,9 +386,10 @@ def extract_git_log(
 
     candidates: list[SentenceCandidate] = []
     for line in result.stdout.splitlines():
-        if "\t" not in line:
+        parts = line.split("\t", 2)
+        if len(parts) != 3:
             continue
-        sha, _, subject = line.partition("\t")
+        sha, iso_date, subject = parts
         subject = subject.strip()
         if not subject:
             continue
@@ -317,6 +397,7 @@ def extract_git_log(
             SentenceCandidate(
                 text=subject,
                 source=f"git:commit:{sha[:7]}",
+                commit_date=iso_date or None,
             )
         )
     return candidates
@@ -403,7 +484,11 @@ def _extract_from_module(
     return out
 
 
-def extract_ast(root: Path) -> list[SentenceCandidate]:
+def extract_ast(
+    root: Path,
+    *,
+    recency: dict[str, str] | None = None,
+) -> list[SentenceCandidate]:
     """Walk .py files under root and extract docstrings as candidates.
 
     Three sources only — module docstrings, top-level function
@@ -419,7 +504,13 @@ def extract_ast(root: Path) -> list[SentenceCandidate]:
       `ast:<rel-path>:module`
       `ast:<rel-path>:func:<name>`
       `ast:<rel-path>:class:<name>`
+
+    `recency` maps relative-path -> ISO-8601 author date of the most
+    recent commit that touched the file. When provided and the file
+    has an entry, every candidate from that file is tagged with the
+    matching `commit_date` so scan_repo writes it as `belief.created_at`.
     """
+    rec = recency or {}
     candidates: list[SentenceCandidate] = []
     for path in _iter_py_files(root):
         try:
@@ -431,17 +522,31 @@ def extract_ast(root: Path) -> list[SentenceCandidate]:
         except SyntaxError:
             continue
         rel = path.relative_to(root).as_posix()
-        candidates.extend(_extract_from_module(tree, rel))
+        commit_date = rec.get(rel)
+        for c in _extract_from_module(tree, rel):
+            if commit_date is not None:
+                c.commit_date = commit_date
+            candidates.append(c)
     return candidates
 
 
-def extract_filesystem(root: Path) -> list[SentenceCandidate]:
+def extract_filesystem(
+    root: Path,
+    *,
+    recency: dict[str, str] | None = None,
+) -> list[SentenceCandidate]:
     """Walk `root` and emit one candidate per doc paragraph.
 
     Pure-stdlib, deterministic for any stable input tree. Handles
     missing/non-directory roots gracefully (returns empty list).
     Source string format: `doc:<relative_path>:p<paragraph-index>`.
+
+    `recency` maps relative-path -> ISO-8601 author date of the most
+    recent commit that touched the file. When provided and the file
+    has an entry, every candidate from that file is tagged with the
+    matching `commit_date` so scan_repo writes it as `belief.created_at`.
     """
+    rec = recency or {}
     candidates: list[SentenceCandidate] = []
     if not root.exists() or not root.is_dir():
         return candidates
@@ -452,11 +557,13 @@ def extract_filesystem(root: Path) -> list[SentenceCandidate]:
         except (PermissionError, OSError):
             continue
         rel = path.relative_to(root).as_posix()
+        commit_date = rec.get(rel)
         for idx, para in enumerate(_split_paragraphs(text)):
             candidates.append(
                 SentenceCandidate(
                     text=para,
                     source=f"doc:{rel}:p{idx}",
+                    commit_date=commit_date,
                 )
             )
     return candidates
