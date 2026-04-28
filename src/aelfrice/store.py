@@ -1051,6 +1051,42 @@ class MemoryStore:
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
 
+    def find_orphan_beliefs(self, *, max_n: int | None = None) -> list[Belief]:
+        """Return beliefs that have no classified type and no feedback signal.
+
+        Orphan definition (two signals, both must be true):
+          1. type = 'unknown' OR type IS NULL — never successfully typed by
+             onboard or ingest.
+          2. alpha + beta < 2 — never received any feedback event
+             (the default prior is alpha=1, beta=1, so sum=2 means
+             completely untouched; any feedback pushes the sum above 2).
+
+        Additional signals (entity_index miss, zero non-CONTAINS edges) are
+        planned as future extensions once #143 and edge-type auditing land.
+
+        `max_n` caps the result set. When None, all orphans are returned.
+        Callers that want a per-run limit (--max N on the CLI) pass it here
+        rather than slicing afterwards, so the SQL does the limiting.
+        """
+        limit_clause = f"LIMIT {int(max_n)}" if max_n is not None else ""
+        cur = self._conn.execute(
+            f"""
+            SELECT * FROM beliefs
+            WHERE (type = 'unknown' OR type IS NULL)
+              AND (alpha + beta) < 2
+            ORDER BY created_at ASC
+            {limit_clause}
+            """
+        )
+        return [_row_to_belief(r) for r in cur.fetchall()]
+
+    def count_beliefs_by_type(self) -> dict[str, int]:
+        """Return a mapping of belief type → count across all beliefs."""
+        cur = self._conn.execute(
+            "SELECT type, COUNT(*) AS n FROM beliefs GROUP BY type ORDER BY type"
+        )
+        return {str(r["type"]): int(r["n"]) for r in cur.fetchall()}
+
     # --- Auditor queries (used by aelf health) ---------------------------
 
     def count_orphan_edges(self) -> int:
