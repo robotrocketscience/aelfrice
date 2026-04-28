@@ -10,6 +10,10 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`project-warm`: sentinel debounce keyed off git-common-dir, not worktree path** ([#161](https://github.com/robotrocketscience/aelfrice/issues/161)). Previously `_project_id` was derived from `git rev-parse --show-toplevel`, giving each worktree of the same repo a distinct sentinel under `~/.aelfrice/projects/<id>/.last_warm`. Two worktrees of one repo share a single DB (via `git-common-dir`), so they should share one sentinel. `resolve_project_root` now calls `git rev-parse --path-format=absolute --show-toplevel --git-common-dir` in a single subprocess and keys `ProjectRef.id` off the git-common-dir while keeping `ProjectRef.root` as the worktree working directory (for `os.chdir` in `_warm_store`). New test `test_resolve_project_root_worktrees_share_id` verifies that two worktrees of one repo produce identical `ProjectRef.id` values.
+
 ### Added
 
 - **`aelf session-delta --id <session_id>`** ([#140](https://github.com/robotrocketscience/aelfrice/issues/140)). Hidden SessionEnd-hook entry point. New module `aelfrice.telemetry` exposes `compute_session_delta(store, session_id, *, telemetry_path, now) -> dict` (pure function) and `emit_session_delta(session_id, *, store, path, now) -> None` (append to file). The writer reads beliefs tagged with `session_id` to compute per-session deltas (`beliefs_created`, `corrections_detected`, `feedback_given`, `velocity_items_per_hour`, `velocity_tier`, `duration_seconds`), snapshots the current store state for the `beliefs` and `graph` blocks, and computes 7-day and 30-day rolling-window rollups by walking the existing `telemetry.jsonl` tail. Schema matches the v=1 format already produced by the HOME-repo hook. Missing or empty `--id` is a stderr-warn no-op (exit 0) so hook failures never surface as broken shell sessions. Idle sessions (zero beliefs) still emit a zero-row so `len(telemetry.jsonl)` equals session count. `window_7` / `window_30` rollups now reflect real per-session activity instead of being static. 10 new tests in `tests/test_telemetry_session_delta.py`.
