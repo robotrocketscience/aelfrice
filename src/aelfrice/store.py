@@ -149,6 +149,28 @@ _SCHEMA: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_belief_corroborations_belief_id "
     "ON belief_corroborations(belief_id)",
+    # v1.6.0 deferred_feedback_queue (#191). One row per surfaced
+    # belief from `retrieve()`; processed by the `aelf sweep-feedback`
+    # CLI subcommand after T_grace elapses. status transitions:
+    # 'enqueued' -> 'applied' (no contradiction in grace window) or
+    # 'cancelled' (explicit feedback / contradiction within grace).
+    # event_type is open-ended so future signals (search exposure,
+    # MCP tool reads) can ride the same sweeper. ON DELETE CASCADE
+    # keeps the queue consistent if a belief is deleted.
+    """
+    CREATE TABLE IF NOT EXISTS deferred_feedback_queue (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        belief_id    TEXT    NOT NULL REFERENCES beliefs(id) ON DELETE CASCADE,
+        enqueued_at  TEXT    NOT NULL,
+        event_type   TEXT    NOT NULL,
+        applied_at   TEXT,
+        status       TEXT    NOT NULL DEFAULT 'enqueued'
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_dfq_status_enq "
+    "ON deferred_feedback_queue(status, enqueued_at)",
+    "CREATE INDEX IF NOT EXISTS idx_dfq_belief "
+    "ON deferred_feedback_queue(belief_id)",
     "CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src)",
     "CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst)",
     "CREATE INDEX IF NOT EXISTS idx_feedback_belief ON feedback_history(belief_id)",
