@@ -1,0 +1,56 @@
+{
+  "chosen": {
+    "rationale": "max efficiency (fidelity/ratio = 0.067) at fidelity 0.068, ratio 1.017, within token-cost band (<= 1.5); ties broken on lowest threshold (earlier firing catches drift sooner).",
+    "threshold_fraction": 0.6
+  },
+  "fixture": "benchmarks/context-rebuilder/fixtures/synthetic/debugging_session_001.jsonl",
+  "method": "entity-recovery-proxy",
+  "n_turns": 16,
+  "sweep": [
+    {
+      "clear_at": 8,
+      "continuation_fidelity": 0.050808,
+      "full_replay_baseline_tokens": 657,
+      "n_post_clear_assistant_turns": 4,
+      "rebuild_block_tokens": 641,
+      "threshold_fraction": 0.5,
+      "token_budget_ratio": 0.975647
+    },
+    {
+      "clear_at": 9,
+      "continuation_fidelity": 0.067744,
+      "full_replay_baseline_tokens": 657,
+      "n_post_clear_assistant_turns": 3,
+      "rebuild_block_tokens": 668,
+      "threshold_fraction": 0.6,
+      "token_budget_ratio": 1.016743
+    },
+    {
+      "clear_at": 11,
+      "continuation_fidelity": 0.069358,
+      "full_replay_baseline_tokens": 657,
+      "n_post_clear_assistant_turns": 2,
+      "rebuild_block_tokens": 756,
+      "threshold_fraction": 0.7,
+      "token_budget_ratio": 1.150685
+    },
+    {
+      "clear_at": 12,
+      "continuation_fidelity": 0.069358,
+      "full_replay_baseline_tokens": 657,
+      "n_post_clear_assistant_turns": 2,
+      "rebuild_block_tokens": 851,
+      "threshold_fraction": 0.8,
+      "token_budget_ratio": 1.295282
+    },
+    {
+      "clear_at": 14,
+      "continuation_fidelity": 0.095238,
+      "full_replay_baseline_tokens": 657,
+      "n_post_clear_assistant_turns": 1,
+      "rebuild_block_tokens": 938,
+      "threshold_fraction": 0.9,
+      "token_budget_ratio": 1.427702
+    }
+  ]
+}
