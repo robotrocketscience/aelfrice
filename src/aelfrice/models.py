@@ -52,6 +52,28 @@ LOCK_USER: Final[str] = "user"
 
 LOCK_LEVELS: Final[frozenset[str]] = frozenset({LOCK_NONE, LOCK_USER})
 
+# --- Origin (provenance tier, v1.2+) ---
+# Wire-format strings; appear in feedback_history.source for promotion
+# events. Do not rename without a migration. Tier ordering matches
+# contradiction.py precedence numbering.
+ORIGIN_USER_STATED: Final[str] = "user_stated"
+ORIGIN_USER_CORRECTED: Final[str] = "user_corrected"
+ORIGIN_USER_VALIDATED: Final[str] = "user_validated"
+ORIGIN_AGENT_INFERRED: Final[str] = "agent_inferred"
+ORIGIN_AGENT_REMEMBERED: Final[str] = "agent_remembered"
+ORIGIN_DOCUMENT_RECENT: Final[str] = "document_recent"
+ORIGIN_UNKNOWN: Final[str] = "unknown"
+
+ORIGINS: Final[frozenset[str]] = frozenset({
+    ORIGIN_USER_STATED,
+    ORIGIN_USER_CORRECTED,
+    ORIGIN_USER_VALIDATED,
+    ORIGIN_AGENT_INFERRED,
+    ORIGIN_AGENT_REMEMBERED,
+    ORIGIN_DOCUMENT_RECENT,
+    ORIGIN_UNKNOWN,
+})
+
 # --- Onboard-session states ---
 # A polymorphic onboard handshake passes through exactly two persisted
 # states: `pending` after `start_onboard_session` records the scanner
@@ -73,12 +95,19 @@ class Belief:
 
     Fields: id, content, content_hash, alpha, beta, type, lock_level,
     locked_at, demotion_pressure, created_at, last_retrieved_at,
-    session_id.
+    session_id, origin.
 
     `session_id` (v1.2+) tags the belief with the ingest session that
     inserted it. Optional: ingest paths that don't open a session
     leave it None and downstream session-coherent retrieval simply
     does not fire on those rows.
+
+    `origin` (v1.2+) is the provenance tier for the contradiction
+    tie-breaker. Defaults to `unknown` for forward compatibility with
+    v1.0/v1.1 stores; first-startup migration backfills locked beliefs
+    to `user_stated` and correction beliefs to `user_corrected`. New
+    inserts should pass an explicit value (scanner: `agent_inferred`;
+    lock: `user_stated`).
     """
 
     id: str
@@ -93,6 +122,7 @@ class Belief:
     created_at: str
     last_retrieved_at: str | None
     session_id: str | None = None
+    origin: str = ORIGIN_UNKNOWN
 
 
 ANCHOR_TEXT_MAX_LEN: Final[int] = 1000
