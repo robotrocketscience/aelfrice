@@ -26,16 +26,11 @@ EXPECTED_COMMANDS = (
     "search",
     "lock",
     "locked",
-    "demote",
-    "validate",
-    "resolve",
-    "feedback",
     "status",
     "doctor",
     "setup",
     "upgrade",
     "uninstall",
-    "ingest-transcript",
     "rebuild",
 )
 
@@ -102,6 +97,7 @@ def test_no_extra_files_in_slash_commands_dir() -> None:
 HIDDEN_SUBCOMMANDS = frozenset({
     "statusline", "bench", "regime", "migrate", "unsetup",
     "health", "stats", "project-warm", "session-delta",
+    "demote", "validate", "resolve", "feedback", "ingest-transcript",
 })
 
 
