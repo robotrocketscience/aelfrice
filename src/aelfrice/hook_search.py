@@ -103,6 +103,7 @@ def record_retrieval(
     """
     serr: IO[str] = stderr if stderr is not None else sys.stderr
     written: int = 0
+    stamped_ids: list[str] = []
     for b in beliefs:
         try:
             apply_feedback(
@@ -113,6 +114,16 @@ def record_retrieval(
                 propagate=False,
             )
             written += 1
+            stamped_ids.append(b.id)
         except Exception:  # non-blocking: log and continue
+            traceback.print_exc(file=serr)
+    # Mirror the audit row to beliefs.last_retrieved_at so downstream
+    # consumers (decay moderation, recency-aware ranking, telemetry) get
+    # an O(1) read instead of having to join feedback_history. Same
+    # best-effort posture as the loop above.
+    if stamped_ids:
+        try:
+            store.stamp_retrieved(stamped_ids)
+        except Exception:
             traceback.print_exc(file=serr)
     return written

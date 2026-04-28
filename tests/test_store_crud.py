@@ -120,3 +120,46 @@ def test_fts5_search_after_update_reflects_new_content() -> None:
     s.update_belief(b)
     assert s.search_beliefs("cats") == []
     assert {h.id for h in s.search_beliefs("dogs")} == {"b1"}
+
+
+# --- stamp_retrieved (issue #222) ----------------------------------------
+
+
+def test_stamp_retrieved_populates_column() -> None:
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk_belief("b1"))
+    s.insert_belief(_mk_belief("b2"))
+    n = s.stamp_retrieved(["b1", "b2"])
+    assert n == 2
+    assert s.get_belief("b1").last_retrieved_at is not None  # type: ignore[union-attr]
+    assert s.get_belief("b2").last_retrieved_at is not None  # type: ignore[union-attr]
+
+
+def test_stamp_retrieved_uses_explicit_ts_when_given() -> None:
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk_belief("b1"))
+    s.stamp_retrieved(["b1"], ts="2026-04-28T12:00:00Z")
+    assert s.get_belief("b1").last_retrieved_at == "2026-04-28T12:00:00Z"  # type: ignore[union-attr]
+
+
+def test_stamp_retrieved_empty_input_is_noop() -> None:
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk_belief("b1"))
+    assert s.stamp_retrieved([]) == 0
+    assert s.get_belief("b1").last_retrieved_at is None  # type: ignore[union-attr]
+
+
+def test_stamp_retrieved_silently_skips_missing_ids() -> None:
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk_belief("b1"))
+    n = s.stamp_retrieved(["b1", "ghost"])
+    assert n == 1
+    assert s.get_belief("b1").last_retrieved_at is not None  # type: ignore[union-attr]
+
+
+def test_stamp_retrieved_overwrites_prior_timestamp() -> None:
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk_belief("b1"))
+    s.stamp_retrieved(["b1"], ts="2026-04-28T01:00:00Z")
+    s.stamp_retrieved(["b1"], ts="2026-04-28T02:00:00Z")
+    assert s.get_belief("b1").last_retrieved_at == "2026-04-28T02:00:00Z"  # type: ignore[union-attr]

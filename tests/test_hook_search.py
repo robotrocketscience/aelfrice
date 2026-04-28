@@ -202,6 +202,48 @@ def test_search_for_prompt_record_failure_does_not_block_read() -> None:
     assert written == 0
 
 
+# --- last_retrieved_at mirror (issue #222) -------------------------------
+
+
+def test_record_retrieval_stamps_last_retrieved_at() -> None:
+    """Per #222: feedback_history write must mirror to beliefs.last_retrieved_at
+    so downstream consumers don't have to join the audit log."""
+    s = _seed(_mk("b1"), _mk("b2"), _mk("b3"))
+    record_retrieval(s, [s.get_belief("b1"), s.get_belief("b2")])  # type: ignore[list-item]
+    assert s.get_belief("b1").last_retrieved_at is not None  # type: ignore[union-attr]
+    assert s.get_belief("b2").last_retrieved_at is not None  # type: ignore[union-attr]
+    assert s.get_belief("b3").last_retrieved_at is None  # type: ignore[union-attr]
+
+
+def test_record_retrieval_stamp_skips_failed_writes() -> None:
+    """Beliefs whose apply_feedback failed must NOT get the recency stamp."""
+    s = _seed(_mk("b1"), _mk("b2"))
+    ghost = _mk("ghost")
+    err = io.StringIO()
+    record_retrieval(
+        s, [s.get_belief("b1"), ghost, s.get_belief("b2")], stderr=err,  # type: ignore[list-item]
+    )
+    assert s.get_belief("b1").last_retrieved_at is not None  # type: ignore[union-attr]
+    assert s.get_belief("b2").last_retrieved_at is not None  # type: ignore[union-attr]
+    assert s.get_belief("ghost") is None
+
+
+def test_record_retrieval_empty_input_does_not_stamp() -> None:
+    s = _seed(_mk("b1"))
+    record_retrieval(s, [])
+    assert s.get_belief("b1").last_retrieved_at is None  # type: ignore[union-attr]
+
+
+def test_search_for_prompt_stamps_returned_hits() -> None:
+    s = _seed(_mk("b1", "the quick brown fox"), _mk("b2", "unrelated"))
+    hits = search_for_prompt(s, "quick fox")
+    hit_ids = {h.id for h in hits}
+    assert "b1" in hit_ids
+    assert s.get_belief("b1").last_retrieved_at is not None  # type: ignore[union-attr]
+    if "b2" not in hit_ids:
+        assert s.get_belief("b2").last_retrieved_at is None  # type: ignore[union-attr]
+
+
 # --- Locked beliefs are still recorded -----------------------------------
 
 
