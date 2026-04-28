@@ -22,9 +22,9 @@ This is a rebuild, not a port. Structural issues that survived the research line
 | **v1.2.x** | planned | search-tool `PreToolUse` hook — memory-first context on Grep/Glob |
 | **v1.3.0** | shipped | retrieval wave — entity index (L2.5), BFS multi-hop (L3), LLM-Haiku onboard classifier (opt-in), partial posterior-weighted ranking |
 | **v1.4.0** | shipped | context rebuilder — PreCompact retrieval-curated continuation (augment mode); manual + threshold trigger; continuation-fidelity scorer (exact-match) |
-| **v1.5.0** | planned | retrieval plumbing — composition tracker, BM25F anchor text, search-tool matcher extension, dynamic-trigger revisit |
+| **v1.5.0** | shipped | retrieval plumbing — composition plumbing + telemetry, BM25F anchor text, search-tool Bash matcher, v3 federation version-vector schema, dynamic-trigger re-park |
 | **v1.6.0** | planned | graph signal wave — signed Laplacian + eigenbasis, heat kernel authority, posterior-weighted ranking (full), Plate FFT HRR primitives |
-| **v1.7.0** | planned | structural retrieval lane — HRR bind/probe, `uri_baki` post-rank adjuster retest |
+| **v1.7.0** | planned | structural retrieval lane + composition default-on flip — HRR bind/probe, `uri_baki` post-rank adjuster retest, benchmark-gate default-on flip (#154) |
 | **v2.0.0** | planned | feature parity with the research line + benchmark reproducibility |
 
 ## What shipped
