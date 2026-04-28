@@ -512,3 +512,53 @@ def test_version_flag_short_circuits_required_subcommand() -> None:
     with pytest.raises(SystemExit) as excinfo:
         main(argv=["--version"])
     assert excinfo.value.code == 0
+
+
+# --- ingest-transcript --batch / --since (issue #115) --------------
+
+
+def test_ingest_transcript_batch_walks_directory(
+    tmp_path: Path, isolated_db: Path,
+) -> None:
+    """`aelf ingest-transcript --batch DIR` ingests every JSONL."""
+    import json as _json
+    a = tmp_path / "session-a.jsonl"
+    a.parent.mkdir(parents=True, exist_ok=True)
+    a.write_text(
+        _json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": "We use SQLite."},
+            "sessionId": "S1",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    code, out = _run("ingest-transcript", "--batch", str(tmp_path))
+    assert code == 0
+    assert "files_walked=1" in out
+    assert "files_ingested=1" in out
+
+
+def test_ingest_transcript_batch_missing_dir_exits_one(
+    tmp_path: Path, isolated_db: Path,
+) -> None:
+    code, _ = _run("ingest-transcript", "--batch", str(tmp_path / "nope"))
+    assert code == 1
+
+
+def test_ingest_transcript_since_invalid_date_exits_one(
+    tmp_path: Path, isolated_db: Path,
+) -> None:
+    """A non-ISO --since string must be rejected up front."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    code, _ = _run(
+        "ingest-transcript", "--batch", str(tmp_path),
+        "--since", "yesterday",
+    )
+    assert code == 1
+
+
+def test_ingest_transcript_no_path_no_batch_exits_one(
+    isolated_db: Path,
+) -> None:
+    code, _ = _run("ingest-transcript")
+    assert code == 1

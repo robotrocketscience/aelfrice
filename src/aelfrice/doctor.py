@@ -125,6 +125,14 @@ class DoctorReport:
     )
     hook_failures_log: Path | None = None
     hook_failures_tail: tuple[str, ...] = ()
+    # Slash commands installed under ~/.claude/commands/aelf/ that
+    # name a subcommand the running `aelf` CLI does not implement
+    # (issue #115 acceptance: surface the gap so a user on a branch
+    # without a feature still sees the slash file but knows it'll
+    # error out).
+    orphan_slash_commands: list[str] = field(
+        default_factory=lambda: cast(list[str], [])
+    )
 
     @property
     def broken(self) -> list[CommandFinding]:
@@ -143,11 +151,18 @@ class DoctorReport:
         return [f for f in self.findings if f.silent_failure]
 
 
+SLASH_COMMANDS_DIR_DEFAULT: Final[Path] = (
+    Path.home() / ".claude" / "commands" / "aelf"
+)
+
+
 def diagnose(
     *,
     user_settings: Path | None = None,
     project_root: Path | None = None,
     hook_failures_log: Path | None = None,
+    slash_commands_dir: Path | None = None,
+    known_cli_subcommands: frozenset[str] | None = None,
 ) -> DoctorReport:
     """Walk user and project settings.json, return a DoctorReport.
 
@@ -155,7 +170,11 @@ def diagnose(
     project_root -> Path.cwd() (only scanned if .claude/settings.json
     exists there). When the file at `hook_failures_log` (default
     `~/.aelfrice/logs/hook-failures.log`) exists and is non-empty,
-    the last few lines are surfaced in the report.
+    the last few lines are surfaced in the report. When
+    `known_cli_subcommands` is provided, doctor additionally checks
+    the slash-commands directory (default `~/.claude/commands/aelf/`)
+    for files naming subcommands the running CLI does not implement
+    (issue #115).
     """
     user_path = user_settings if user_settings is not None else USER_SETTINGS_PATH
     project_path = (
@@ -173,6 +192,14 @@ def diagnose(
     )
     report.hook_failures_log = log_path
     report.hook_failures_tail = _tail_log(log_path, _HOOK_FAILURES_TAIL)
+    if known_cli_subcommands is not None:
+        slash_dir = (
+            slash_commands_dir if slash_commands_dir is not None
+            else SLASH_COMMANDS_DIR_DEFAULT
+        )
+        report.orphan_slash_commands = _scan_orphan_slash_commands(
+            slash_dir, known_cli_subcommands,
+        )
     return report
 
 
@@ -189,6 +216,25 @@ def _tail_log(path: Path, n: int) -> tuple[str, ...]:
         return ()
     lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
     return tuple(lines[-n:])
+
+
+def _scan_orphan_slash_commands(
+    slash_dir: Path, known: frozenset[str],
+) -> list[str]:
+    """Return slash-command basenames whose CLI subcommand is missing.
+
+    Ignores `aelf-*` files that wrap meta commands (none ship today
+    but reserved). Returns sorted basenames so the CLI report stable.
+    """
+    if not slash_dir.is_dir():
+        return []
+    orphans: list[str] = []
+    for md in sorted(slash_dir.glob("*.md")):
+        sub = md.stem  # `ingest-transcript.md` -> `ingest-transcript`
+        if sub in known:
+            continue
+        orphans.append(sub)
+    return orphans
 
 
 def _scan_settings(path: Path) -> list[CommandFinding]:
@@ -425,4 +471,16 @@ def format_report(report: DoctorReport) -> str:
         )
         for entry in report.hook_failures_tail:
             lines.append(f"  {entry}")
+    if report.orphan_slash_commands:
+        lines.append("")
+        lines.append(
+            "slash commands installed but missing from the active CLI "
+            "(running them will print 'invalid choice' errors):"
+        )
+        for sub in report.orphan_slash_commands:
+            lines.append(f"  - /aelf:{sub}  (no `aelf {sub}` subcommand)")
+        lines.append(
+            "fix: upgrade aelfrice (`aelf upgrade`) so the slash file's "
+            "feature is available, or remove the stale slash file."
+        )
     return "\n".join(lines)

@@ -57,6 +57,20 @@ aelf migrate --from /alt/path/memory.db --apply  # source override
 
 `aelf migrate` opens the source DB read-only (SQLite `mode=ro` URI) so it can never accidentally write back. Idempotent on re-run. Project-mention filtering (default) restricts the copy to beliefs whose content references the active project's name; `--all` skips the filter.
 
+### Batch ingest of historical sessions
+
+If you have prior Claude Code sessions sitting at `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`, you can backfill them into the active project's belief store with a single batch invocation (added in v1.2.0+; issue [#115](https://github.com/robotrocketscience/aelfrice/issues/115)):
+
+```bash
+cd <project-root>
+aelf ingest-transcript --batch ~/.claude/projects/                     # ingest everything
+aelf ingest-transcript --batch ~/.claude/projects/ --since 2026-01-01   # only mtime ≥ cutoff
+```
+
+Auto-detects the JSONL format on a per-line basis: handles both aelfrice's own transcript-logger `turns.jsonl` archives and Claude Code's internal session logs. Idempotent — re-running on the same directory inserts zero new beliefs because `ingest_turn` dedupes per `(source, sentence)`. `aelf setup` prints a one-line hint with the file count and the exact batch command when historical JSONLs are detected during install.
+
+> **Privacy trade-off.** Session JSONLs may contain pasted secrets, API keys, conversation transcripts, customer data, or anything else you typed at Claude Code in the past. Batch ingestion brings all of that into the local belief graph at `<repo>/.git/aelfrice/memory.db` — same machine, same disk, never leaves the host (no telemetry, no network call), but it does end up in a queryable index. There is no PII scrubber wired into the v1.2 ingest path; secret-stripping during ingestion is a v1.3+ task. Until then, **review the JSONLs before running `--batch` against any directory you wouldn't want re-emitted via retrieval.** Use `--since` to scope to recent sessions if older logs predate your secret-handling discipline.
+
 ## Wire into Claude Code
 
 ```bash
