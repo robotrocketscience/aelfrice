@@ -103,6 +103,67 @@ def diagnose_search_tool_telemetry(
     )
 
 
+# ---------------------------------------------------------------------------
+# UserPromptSubmit telemetry section (#218 AC4)
+# ---------------------------------------------------------------------------
+
+USER_PROMPT_SUBMIT_TELEMETRY_SUBPATH: Final[str] = (
+    "aelfrice/telemetry/user_prompt_submit.jsonl"
+)
+
+
+@dataclass(frozen=True)
+class UserPromptSubmitTelemetryStats:
+    """Rolling statistics derived from the UserPromptSubmit telemetry file.
+
+    `fire_count` is the total number of records in the ring buffer.
+    `p50_chars` and `p95_chars` are the 50th- and 95th-percentile
+    injection size in characters. `median_collapse_rate` is the median
+    ratio of n_returned / n_unique_content_hashes across all records
+    (1.0 means no duplicates seen).
+    """
+
+    fire_count: int
+    p50_chars: float
+    p95_chars: float
+    median_collapse_rate: float
+
+
+def diagnose_user_prompt_submit_telemetry(
+    telemetry_path: Path,
+) -> UserPromptSubmitTelemetryStats | None:
+    """Read the UserPromptSubmit telemetry ring buffer and return rolling stats.
+
+    Returns `None` when the file does not exist or is empty. Raises
+    `ValueError` when the file exists but contains malformed JSON.
+    """
+    from aelfrice.hook import read_user_prompt_submit_telemetry  # noqa: PLC0415
+
+    records = read_user_prompt_submit_telemetry(telemetry_path)
+    if not records:
+        return None
+
+    chars: list[float] = sorted(
+        float(r.get("total_chars", 0)) for r in records
+    )
+    collapse_rates: list[float] = []
+    for r in records:
+        n_ret = int(r.get("n_returned", 0))
+        n_uniq = int(r.get("n_unique_content_hashes", 0))
+        if n_uniq > 0:
+            collapse_rates.append(n_ret / n_uniq)
+        else:
+            collapse_rates.append(1.0)
+    collapse_rates.sort()
+
+    return UserPromptSubmitTelemetryStats(
+        fire_count=len(records),
+        p50_chars=_percentile(chars, 50),
+        p95_chars=_percentile(chars, 95),
+        median_collapse_rate=_percentile(collapse_rates, 50),
+    )
+
+
 def _load_settings_json(path: Path) -> dict[str, object]:
     """Read settings.json. Empty / nonexistent files are treated as {}."""
     if not path.exists():
@@ -206,6 +267,10 @@ class DoctorReport:
     search_tool_telemetry_path: Path | None = None
     # True when the file existed but was malformed (ValueError from read).
     search_tool_telemetry_corrupt: bool = False
+    # #218 AC4: user_prompt_submit_hook telemetry stats.
+    user_prompt_submit_telemetry: UserPromptSubmitTelemetryStats | None = None
+    user_prompt_submit_telemetry_path: Path | None = None
+    user_prompt_submit_telemetry_corrupt: bool = False
     # Runtime deps declared in pyproject.toml that are not importable
     # in the current environment (issue #236: stale uv tool env).
     missing_runtime_deps: list[str] = field(
@@ -242,6 +307,7 @@ def diagnose(
     slash_commands_dir: Path | None = None,
     known_cli_subcommands: frozenset[str] | None = None,
     search_tool_telemetry_path: Path | None = None,
+    user_prompt_submit_telemetry_path: Path | None = None,
 ) -> DoctorReport:
     """Walk user and project settings.json, return a DoctorReport.
 
@@ -255,7 +321,8 @@ def diagnose(
     for files naming subcommands the running CLI does not implement
     (issue #115). When `search_tool_telemetry_path` is provided (or
     derivable from the project root's git-common-dir), the
-    search_tool_hook telemetry section is populated.
+    search_tool_hook telemetry section is populated. Similarly for
+    `user_prompt_submit_telemetry_path` (#218 AC4).
     """
     user_path = user_settings if user_settings is not None else USER_SETTINGS_PATH
     project_path = (
@@ -285,24 +352,43 @@ def diagnose(
     # v1.5.0 #155 AC8: populate search_tool_hook telemetry section.
     tel_path = search_tool_telemetry_path
     if tel_path is None:
-        # Derive from the project root if available.
         resolved_root = project_root if project_root is not None else Path.cwd()
-        tel_path = _derive_telemetry_path(resolved_root)
+        tel_path = _derive_telemetry_path(
+            resolved_root, SEARCH_TOOL_TELEMETRY_SUBPATH,
+        )
     if tel_path is not None:
         report.search_tool_telemetry_path = tel_path
         try:
             report.search_tool_telemetry = diagnose_search_tool_telemetry(tel_path)
         except ValueError:
             report.search_tool_telemetry_corrupt = True
+    # #218 AC4: populate user_prompt_submit_hook telemetry section.
+    ups_tel_path = user_prompt_submit_telemetry_path
+    if ups_tel_path is None:
+        resolved_root = project_root if project_root is not None else Path.cwd()
+        ups_tel_path = _derive_telemetry_path(
+            resolved_root, USER_PROMPT_SUBMIT_TELEMETRY_SUBPATH,
+        )
+    if ups_tel_path is not None:
+        report.user_prompt_submit_telemetry_path = ups_tel_path
+        try:
+            report.user_prompt_submit_telemetry = (
+                diagnose_user_prompt_submit_telemetry(ups_tel_path)
+            )
+        except ValueError:
+            report.user_prompt_submit_telemetry_corrupt = True
     return report
 
 
-def _derive_telemetry_path(project_root: Path) -> Path | None:
-    """Best-effort: locate the telemetry file next to the project's DB.
+def _derive_telemetry_path(
+    project_root: Path,
+    subpath: str = SEARCH_TOOL_TELEMETRY_SUBPATH,
+) -> Path | None:
+    """Best-effort: locate a telemetry file under the project's git-common-dir.
 
-    Uses `aelfrice.cli.db_path` when available to mirror the hook's own
-    path resolution. Falls back to None (skips the section) if the
-    import fails or the function raises.
+    `subpath` is appended to the git-common-dir (e.g.
+    `aelfrice/telemetry/search_tool_hook.jsonl`). Falls back to None if
+    the git invocation fails or the project is not in a git repo.
     """
     try:
         import subprocess  # noqa: PLC0415
@@ -314,7 +400,7 @@ def _derive_telemetry_path(project_root: Path) -> Path | None:
         if result.returncode != 0 or not result.stdout.strip():
             return None
         git_common = Path(result.stdout.strip()).resolve()
-        return git_common / SEARCH_TOOL_TELEMETRY_SUBPATH
+        return git_common / subpath
     except Exception:
         return None
 
@@ -577,8 +663,9 @@ def format_report(report: DoctorReport) -> str:
         lines.append(
             "no settings.json found at user or project scope -- nothing to check"
         )
-        # Still render the telemetry section if a path is available.
+        # Still render the telemetry sections if paths are available.
         _format_telemetry_section(report, lines)
+        _format_user_prompt_submit_telemetry_section(report, lines)
         # #236: render the missing-dep block too — the install-broken
         # case is exactly when settings.json may be absent.
         _format_missing_runtime_deps_section(report, lines)
@@ -641,6 +728,7 @@ def format_report(report: DoctorReport) -> str:
             "feature is available, or remove the stale slash file."
         )
     _format_telemetry_section(report, lines)
+    _format_user_prompt_submit_telemetry_section(report, lines)
     _format_missing_runtime_deps_section(report, lines)
     return "\n".join(lines)
 
@@ -682,4 +770,31 @@ def _format_telemetry_section(report: DoctorReport, lines: list[str]) -> None:
         lines.append(
             f"  noise rate:  {st.noise_rate:.1%} "
             f"(fires with zero L0+L1 hits)"
+        )
+
+
+def _format_user_prompt_submit_telemetry_section(
+    report: DoctorReport, lines: list[str],
+) -> None:
+    """Append the user_prompt_submit_hook telemetry block to `lines` (#218 AC4)."""
+    if report.user_prompt_submit_telemetry_path is None:
+        return
+    lines.append("")
+    lines.append("user_prompt_submit_hook telemetry:")
+    lines.append(f"  file: {report.user_prompt_submit_telemetry_path}")
+    if report.user_prompt_submit_telemetry_corrupt:
+        lines.append(
+            "  status: CORRUPT — file exists but contains malformed JSON; "
+            "delete it to reset the ring buffer."
+        )
+    elif report.user_prompt_submit_telemetry is None:
+        lines.append("  no fires recorded")
+    else:
+        st = report.user_prompt_submit_telemetry
+        lines.append(f"  fires: {st.fire_count}")
+        lines.append(f"  injection size p50: {st.p50_chars:.0f} chars")
+        lines.append(f"  injection size p95: {st.p95_chars:.0f} chars")
+        lines.append(
+            f"  dedup collapse rate (median): {st.median_collapse_rate:.2f}x "
+            f"(n_returned / n_unique_hashes; 1.0 = no duplicates)"
         )
