@@ -1,12 +1,13 @@
 ---
 name: aelf:status
-description: Alias for `aelf:health` — runs the structural auditor.
+description: Show summary counts — beliefs, threads, locks, and feedback events.
 allowed-tools:
   - Bash
 ---
 <objective>
-`aelf status` is an alias for `aelf health`. Same output, same exit
-codes. Use whichever name fits your muscle memory.
+Quick snapshot: how much memory has aelfrice accumulated?
+For the structural auditor (orphan threads, FTS5 sync, locked
+contradictions) use `aelf:doctor` with the `graph` subcommand.
 </objective>
 
 <process>
