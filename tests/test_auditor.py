@@ -11,11 +11,15 @@ from pathlib import Path
 import pytest
 
 from aelfrice.auditor import (
+    CHECK_CORPUS_VOLUME,
     CHECK_FTS_SYNC,
     CHECK_LOCKED_CONTRADICTS,
     CHECK_ORPHAN_EDGES,
+    CORPUS_MIN_DEFAULT,
+    CORPUS_MIN_PROJECT_AGE_DAYS,
     SEVERITY_FAIL,
     SEVERITY_INFO,
+    SEVERITY_WARN,
     audit,
 )
 from aelfrice.models import (
@@ -199,3 +203,60 @@ def test_audit_metrics_include_avg_confidence(store: MemoryStore) -> None:
     report = audit(store)
     # alpha=1.0, beta=0.5 → posterior mean 0.667
     assert 0.6 <= report.metrics["avg_confidence"] <= 0.7
+
+
+# --- corpus_volume check (issue #116) -------------------------------
+
+
+def test_corpus_volume_warns_on_low_count_in_old_project(
+    store: MemoryStore,
+) -> None:
+    """Established project (>7d) with few beliefs gets a warn finding."""
+    a = _belief("aaaa")
+    store.insert_belief(a)
+    report = audit(store, corpus_min=50, project_age_days=30)
+    f = _find(report, CHECK_CORPUS_VOLUME)
+    assert f.severity == SEVERITY_WARN
+    assert f.count == 1
+    assert "aelf onboard" in f.detail
+
+
+def test_corpus_volume_silent_on_brand_new_project(
+    store: MemoryStore,
+) -> None:
+    """Project under threshold age never warns even with empty store."""
+    report = audit(store, corpus_min=50, project_age_days=2)
+    f = _find(report, CHECK_CORPUS_VOLUME)
+    assert f.severity == SEVERITY_INFO
+    assert f.count == 0
+
+
+def test_corpus_volume_silent_when_age_unknown(store: MemoryStore) -> None:
+    """No git, no commits, etc → never warn (we cannot tell)."""
+    report = audit(store, corpus_min=50, project_age_days=None)
+    f = _find(report, CHECK_CORPUS_VOLUME)
+    assert f.severity == SEVERITY_INFO
+
+
+def test_corpus_volume_passes_when_threshold_met(
+    store: MemoryStore,
+) -> None:
+    for i in range(5):
+        store.insert_belief(_belief(f"b{i:03d}"))
+    report = audit(store, corpus_min=3, project_age_days=30)
+    f = _find(report, CHECK_CORPUS_VOLUME)
+    assert f.severity == SEVERITY_INFO
+    assert f.count == 5
+
+
+def test_corpus_volume_does_not_affect_failed_flag(
+    store: MemoryStore,
+) -> None:
+    """The check is informational; never flips report.failed."""
+    report = audit(store, corpus_min=50, project_age_days=30)
+    assert report.failed is False
+
+
+def test_corpus_volume_default_threshold_is_50() -> None:
+    assert CORPUS_MIN_DEFAULT == 50
+    assert CORPUS_MIN_PROJECT_AGE_DAYS == 7

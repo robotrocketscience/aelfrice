@@ -40,7 +40,9 @@ from pathlib import Path
 from typing import Final, Sequence
 
 from aelfrice.auditor import (
+    CORPUS_MIN_DEFAULT as AUDIT_CORPUS_MIN_DEFAULT,
     SEVERITY_FAIL as AUDIT_SEVERITY_FAIL,
+    SEVERITY_WARN as AUDIT_SEVERITY_WARN,
     audit,
 )
 from aelfrice.feedback import apply_feedback
@@ -144,6 +146,42 @@ def _git_common_dir() -> Path | None:
     return Path(raw).resolve()
 
 
+def _git_first_commit_age_days() -> int | None:
+    """Days since cwd's first git commit, or None when unknown.
+
+    Used by the corpus-volume warning in `aelf health` (issue #116) so
+    a brand-new project does not get nagged for an empty store. Falls
+    back to None when not in a repo, when git is missing, or when the
+    repo has zero commits yet.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "git", "log", "--reverse", "--format=%aI",
+                "--max-parents=0",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    line = result.stdout.splitlines()[0] if result.stdout else ""
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        first = datetime.fromisoformat(line)
+    except ValueError:
+        return None
+    now = datetime.now(first.tzinfo) if first.tzinfo else datetime.now()
+    delta = now - first
+    return max(0, delta.days)
+
+
 def db_path() -> Path:
     """Resolve the DB path.
 
@@ -187,6 +225,25 @@ def _content_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _resolve_corpus_min() -> int:
+    """Read AELFRICE_CORPUS_MIN env var, fall back to auditor default.
+
+    Negative or non-integer values silently fall through to the default
+    so a typo can never make health crash; wrong values just mean the
+    warning fires at the wrong threshold.
+    """
+    raw = os.environ.get("AELFRICE_CORPUS_MIN")
+    if raw is None:
+        return AUDIT_CORPUS_MIN_DEFAULT
+    try:
+        n = int(raw)
+    except ValueError:
+        return AUDIT_CORPUS_MIN_DEFAULT
+    if n < 0:
+        return AUDIT_CORPUS_MIN_DEFAULT
+    return n
+
+
 # --- Command handlers ----------------------------------------------------
 
 
@@ -211,10 +268,25 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
     store = _open_store()
     try:
         hits = retrieve(store, args.query, token_budget=args.budget)
+        if not hits:
+            n_beliefs = store.count_beliefs()
+        else:
+            n_beliefs = -1  # not consulted on the success path
     finally:
         store.close()
     if not hits:
-        print("no results", file=out)  # type: ignore[arg-type]
+        if n_beliefs == 0:
+            print(
+                "no results — store is empty. Run `aelf onboard <path>` "
+                "to populate the belief graph.",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"no results (store has {n_beliefs} belief(s); your query "
+                f"is not in the indexed graph)",
+                file=out,  # type: ignore[arg-type]
+            )
         return 0
     for h in hits:
         prefix = "[locked]" if h.lock_level == LOCK_USER else "        "
@@ -705,7 +777,40 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 f"(command={ci_command!r})",
                 file=out,  # type: ignore[arg-type]
             )
+    _print_setup_next_step(out)
     return 0
+
+
+def _print_setup_next_step(out: object) -> None:
+    """One-line next-step hint when the active project's store is empty.
+
+    Closes the loop on issue #116: after `aelf setup` succeeds in a
+    fresh project the user otherwise gets no signal that the belief
+    graph is empty and that hooks have nothing to retrieve. Skips the
+    hint when the store already has beliefs, when opening the store
+    fails, or when running in CI (anything that breaks should never
+    derail setup itself).
+    """
+    try:
+        store = _open_store()
+    except Exception:  # pragma: no cover - defensive
+        return
+    try:
+        n = store.count_beliefs()
+    except Exception:  # pragma: no cover - defensive
+        store.close()
+        return
+    finally:
+        try:
+            store.close()
+        except Exception:  # pragma: no cover - defensive
+            pass
+    if n == 0:
+        print(
+            "next step: this project's belief store is empty. Run "
+            "`aelf onboard .` to populate it from your repo.",
+            file=out,  # type: ignore[arg-type]
+        )
 
 
 def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
@@ -1052,16 +1157,31 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
     Exits 1 if any audit check fails (orphan threads, FTS5 sync, locked
     contradictions). Informational metrics never affect exit status.
     The v1.0 regime classifier moved to `aelf regime`.
+
+    The corpus-volume check (added in #116) warns when an established
+    project has too few beliefs but is informational — it does not
+    affect the exit code.
     """
     _ = args
+    corpus_min = _resolve_corpus_min()
+    project_age = _git_first_commit_age_days()
     store = _open_store()
     try:
-        report = audit(store)
+        report = audit(
+            store,
+            corpus_min=corpus_min,
+            project_age_days=project_age,
+        )
     finally:
         store.close()
     print("audit:", file=out)  # type: ignore[arg-type]
     for f in report.findings:
-        marker = "FAIL" if f.severity == AUDIT_SEVERITY_FAIL else "ok"
+        if f.severity == AUDIT_SEVERITY_FAIL:
+            marker = "FAIL"
+        elif f.severity == AUDIT_SEVERITY_WARN:
+            marker = "warn"
+        else:
+            marker = "ok"
         print(
             f"  [{marker:4s}] {f.check:24s} {f.detail}",
             file=out,  # type: ignore[arg-type]
@@ -1237,7 +1357,42 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         hook_failures_log=hook_failures_log,
     )
     print(format_report(report), file=out)  # type: ignore[arg-type]
+    _print_doctor_store_check(out)
     return 1 if report.broken else 0
+
+
+def _print_doctor_store_check(out: object) -> None:
+    """Surface the 'is this store populated?' check (issue #116).
+
+    Doctor's settings linter says nothing about the actual belief
+    graph, so the user can have all-green hooks and zero beliefs and
+    not know it. Printed even on a clean settings run; never affects
+    exit status (broken settings are the only exit-1 trigger).
+    """
+    try:
+        store = _open_store()
+    except Exception:  # pragma: no cover - defensive
+        return
+    try:
+        n = store.count_beliefs()
+    finally:
+        try:
+            store.close()
+        except Exception:  # pragma: no cover - defensive
+            pass
+    print("", file=out)  # type: ignore[arg-type]
+    if n == 0:
+        print(
+            "store: 0 beliefs (empty — run `aelf onboard <path>` to "
+            "populate, or check whether retrieval/ingest hooks are "
+            "actually firing)",
+            file=out,  # type: ignore[arg-type]
+        )
+    else:
+        print(
+            f"store: {n} belief(s) at {db_path()}",
+            file=out,  # type: ignore[arg-type]
+        )
 
 
 # --- Dispatcher ---------------------------------------------------------

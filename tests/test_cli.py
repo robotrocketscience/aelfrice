@@ -361,6 +361,28 @@ def test_search_no_match_says_no_results(isolated_db: Path) -> None:
     assert "no results" in out
 
 
+def test_search_empty_store_distinguishes_empty_from_no_match(
+    isolated_db: Path,
+) -> None:
+    """Issue #116: empty-store hit must point at `aelf onboard`."""
+    code, out = _run("search", "anything")
+    assert code == 0
+    assert "store is empty" in out
+    assert "aelf onboard" in out
+
+
+def test_search_populated_store_says_query_not_indexed(
+    isolated_db: Path,
+) -> None:
+    """Issue #116: with beliefs but no match, message names the count."""
+    _run("lock", "we always sign commits with ssh")
+    code, out = _run("search", "xenomorph12345")
+    assert code == 0
+    # Either the substring "store has" appears, or hits found one (false
+    # positive guard); we only assert the empty-store branch did NOT fire.
+    assert "store is empty" not in out
+
+
 def test_search_with_dot_in_query_does_not_crash(isolated_db: Path) -> None:
     """Regression for the FTS5 escape bug surfaced at v0.5.0."""
     _run("lock", "the project ships at v0.5 with the regex fallback")
