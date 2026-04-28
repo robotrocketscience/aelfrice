@@ -103,17 +103,16 @@ def test_placeholder_flag_set_to_false_no_warning(tmp_path: Path) -> None:
 
 
 def test_placeholder_flags_constant_lists_unwired_lanes() -> None:
-    """`PLACEHOLDER_FLAGS` contains only the lanes still unwired.
+    """`PLACEHOLDER_FLAGS` shrinks as each placeholder lane wires up.
 
-    `use_heat_kernel` was a placeholder at v1.5.0 but the heat-kernel
-    scorer (#150) ships the lane, so the flag exits the placeholder
-    set as soon as the wiring lands. Updating this test in lockstep
-    with that move is the intentional drift guard.
+    `use_heat_kernel` (#150) and `use_hrr_structural` (#152) ship
+    the wiring, so each flag exits the placeholder set when its
+    lane lands. Updating this test in lockstep with each move is
+    the intentional drift guard.
     """
     assert set(PLACEHOLDER_FLAGS) == {
         "use_signed_laplacian",
         "use_posterior_ranking",
-        "use_hrr_structural",
     }
 
 

@@ -121,7 +121,6 @@ HRR_STRUCTURAL_FLAG: Final[str] = "use_hrr_structural"
 PLACEHOLDER_FLAGS: Final[tuple[str, ...]] = (
     SIGNED_LAPLACIAN_FLAG,
     POSTERIOR_RANKING_FLAG,
-    HRR_STRUCTURAL_FLAG,
 )
 
 # Env var override. Set to "0", "false", or "no" to force-disable
@@ -140,6 +139,8 @@ ENV_BFS: Final[str] = "AELFRICE_BFS"
 ENV_BM25F: Final[str] = "AELFRICE_BM25F"
 # v1.7.0 heat-kernel env override. Tri-state like ENV_BM25F.
 ENV_HEAT_KERNEL: Final[str] = "AELFRICE_HEAT_KERNEL"
+# v1.7.0 HRR structural-query env override. Tri-state like ENV_BM25F.
+ENV_HRR_STRUCTURAL: Final[str] = "AELFRICE_HRR_STRUCTURAL"
 # v1.3.0 posterior-weight env override. Float-typed; "0.0" is the
 # only value that fully disables (collapsing to BM25-only ordering).
 # Empty / non-numeric values fall through to the next precedence
@@ -254,6 +255,21 @@ def _env_heat_kernel_override() -> bool | None:
     truthy/falsy value, else None. Symmetric to `_env_bm25f_override`.
     """
     raw = os.environ.get(ENV_HEAT_KERNEL)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def _env_hrr_structural_override() -> bool | None:
+    """Return True/False if AELFRICE_HRR_STRUCTURAL is set to a
+    recognised truthy/falsy value, else None. Symmetric to
+    `_env_bm25f_override`."""
+    raw = os.environ.get(ENV_HRR_STRUCTURAL)
     if raw is None:
         return None
     norm = raw.strip().lower()
@@ -490,6 +506,37 @@ def resolve_use_bm25f_anchors(
     if explicit is not None:
         return explicit
     toml_value = _read_toml_flag_for(BM25F_FLAG, start)
+    if toml_value is not None:
+        return toml_value
+    return False
+
+
+def is_hrr_structural_enabled(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the HRR structural-query lane flag (#152).
+
+    Precedence (first decisive wins):
+      1. AELFRICE_HRR_STRUCTURAL env var (truthy / falsy normalised).
+      2. Explicit `explicit` kwarg from the caller.
+      3. `[retrieval] use_hrr_structural` in `.aelfrice.toml`.
+      4. Default: False — the structural lane ships behind the flag;
+         the composition tracker (#154) flips the default after the
+         benchmark gate.
+
+    Reuses `HRR_STRUCTURAL_FLAG` (the placeholder constant from
+    #232). Now that the lane has shipped, the flag is no longer in
+    `PLACEHOLDER_FLAGS` so `warn_placeholder_flags()` does not flag
+    it as unwired.
+    """
+    env = _env_hrr_structural_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    toml_value = _read_toml_flag_for(HRR_STRUCTURAL_FLAG, start)
     if toml_value is not None:
         return toml_value
     return False
