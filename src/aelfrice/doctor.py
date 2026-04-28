@@ -38,6 +38,68 @@ from typing import Final, Literal, cast
 from aelfrice.setup import PROJECT_SETTINGS_RELPATH, USER_SETTINGS_PATH
 
 
+# ---------------------------------------------------------------------------
+# Search-tool telemetry section (v1.5.0 #155 AC8)
+# ---------------------------------------------------------------------------
+
+SEARCH_TOOL_TELEMETRY_SUBPATH: Final[str] = (
+    "aelfrice/telemetry/search_tool_hook.jsonl"
+)
+
+
+@dataclass(frozen=True)
+class SearchToolTelemetryStats:
+    """Rolling statistics derived from the Bash matcher telemetry file.
+
+    `fire_count` is the total number of records in the ring buffer.
+    `p50_ms` and `p95_ms` are the 50th- and 95th-percentile latency
+    in milliseconds over the buffer. `noise_rate` is the fraction of
+    fires that returned zero L0 + L1 results (0.0 – 1.0).
+    """
+    fire_count: int
+    p50_ms: float
+    p95_ms: float
+    noise_rate: float
+
+
+def _percentile(sorted_values: list[float], pct: float) -> float:
+    """Nearest-rank percentile on a sorted list. Returns 0.0 for empty."""
+    if not sorted_values:
+        return 0.0
+    idx = max(0, int(len(sorted_values) * pct / 100.0) - 1)
+    return sorted_values[idx]
+
+
+def diagnose_search_tool_telemetry(
+    telemetry_path: Path,
+) -> SearchToolTelemetryStats | None:
+    """Read the Bash matcher telemetry ring buffer and return rolling stats.
+
+    Returns `None` when the file does not exist or is empty (caller
+    prints the "no fires recorded" sentinel). Raises `ValueError` when
+    the file exists but contains malformed JSON (real corruption).
+    """
+    from aelfrice.hook_search_tool import read_telemetry  # noqa: PLC0415
+
+    records = read_telemetry(telemetry_path)  # propagates ValueError on corruption
+    if not records:
+        return None
+
+    latencies: list[float] = sorted(
+        float(r.get("latency_ms", 0.0)) for r in records
+    )
+    noise_count = sum(
+        1 for r in records
+        if int(r.get("injected_l0", 0)) == 0 and int(r.get("injected_l1", 0)) == 0
+    )
+    return SearchToolTelemetryStats(
+        fire_count=len(records),
+        p50_ms=_percentile(latencies, 50),
+        p95_ms=_percentile(latencies, 95),
+        noise_rate=noise_count / len(records),
+    )
+
+
 def _load_settings_json(path: Path) -> dict[str, object]:
     """Read settings.json. Empty / nonexistent files are treated as {}."""
     if not path.exists():
@@ -133,6 +195,14 @@ class DoctorReport:
     orphan_slash_commands: list[str] = field(
         default_factory=lambda: cast(list[str], [])
     )
+    # v1.5.0 #155 AC8: search_tool_hook telemetry stats.
+    # None  → telemetry section not requested or telemetry file absent.
+    # SearchToolTelemetryStats → computed stats from the ring buffer.
+    search_tool_telemetry: SearchToolTelemetryStats | None = None
+    # Path to the telemetry file that was (or would be) read.
+    search_tool_telemetry_path: Path | None = None
+    # True when the file existed but was malformed (ValueError from read).
+    search_tool_telemetry_corrupt: bool = False
 
     @property
     def broken(self) -> list[CommandFinding]:
@@ -163,6 +233,7 @@ def diagnose(
     hook_failures_log: Path | None = None,
     slash_commands_dir: Path | None = None,
     known_cli_subcommands: frozenset[str] | None = None,
+    search_tool_telemetry_path: Path | None = None,
 ) -> DoctorReport:
     """Walk user and project settings.json, return a DoctorReport.
 
@@ -174,7 +245,9 @@ def diagnose(
     `known_cli_subcommands` is provided, doctor additionally checks
     the slash-commands directory (default `~/.claude/commands/aelf/`)
     for files naming subcommands the running CLI does not implement
-    (issue #115).
+    (issue #115). When `search_tool_telemetry_path` is provided (or
+    derivable from the project root's git-common-dir), the
+    search_tool_hook telemetry section is populated.
     """
     user_path = user_settings if user_settings is not None else USER_SETTINGS_PATH
     project_path = (
@@ -200,7 +273,41 @@ def diagnose(
         report.orphan_slash_commands = _scan_orphan_slash_commands(
             slash_dir, known_cli_subcommands,
         )
+    # v1.5.0 #155 AC8: populate search_tool_hook telemetry section.
+    tel_path = search_tool_telemetry_path
+    if tel_path is None:
+        # Derive from the project root if available.
+        resolved_root = project_root if project_root is not None else Path.cwd()
+        tel_path = _derive_telemetry_path(resolved_root)
+    if tel_path is not None:
+        report.search_tool_telemetry_path = tel_path
+        try:
+            report.search_tool_telemetry = diagnose_search_tool_telemetry(tel_path)
+        except ValueError:
+            report.search_tool_telemetry_corrupt = True
     return report
+
+
+def _derive_telemetry_path(project_root: Path) -> Path | None:
+    """Best-effort: locate the telemetry file next to the project's DB.
+
+    Uses `aelfrice.cli.db_path` when available to mirror the hook's own
+    path resolution. Falls back to None (skips the section) if the
+    import fails or the function raises.
+    """
+    try:
+        import subprocess  # noqa: PLC0415
+        result = subprocess.run(
+            ["git", "-C", str(project_root),
+             "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True, text=True, check=False, timeout=5,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        git_common = Path(result.stdout.strip()).resolve()
+        return git_common / SEARCH_TOOL_TELEMETRY_SUBPATH
+    except Exception:
+        return None
 
 
 def _tail_log(path: Path, n: int) -> tuple[str, ...]:
@@ -425,6 +532,8 @@ def format_report(report: DoctorReport) -> str:
         lines.append(
             "no settings.json found at user or project scope -- nothing to check"
         )
+        # Still render the telemetry section if a path is available.
+        _format_telemetry_section(report, lines)
         return "\n".join(lines)
     for scope, path in report.scopes_scanned:
         lines.append(f"scanned {scope}: {path}")
@@ -483,4 +592,30 @@ def format_report(report: DoctorReport) -> str:
             "fix: upgrade aelfrice (`aelf upgrade`) so the slash file's "
             "feature is available, or remove the stale slash file."
         )
+    _format_telemetry_section(report, lines)
     return "\n".join(lines)
+
+
+def _format_telemetry_section(report: DoctorReport, lines: list[str]) -> None:
+    """Append the search_tool_hook telemetry block to `lines` (in-place)."""
+    if report.search_tool_telemetry_path is None:
+        return
+    lines.append("")
+    lines.append("search_tool_hook telemetry:")
+    lines.append(f"  file: {report.search_tool_telemetry_path}")
+    if report.search_tool_telemetry_corrupt:
+        lines.append(
+            "  status: CORRUPT — file exists but contains malformed JSON; "
+            "delete it to reset the ring buffer."
+        )
+    elif report.search_tool_telemetry is None:
+        lines.append("  no fires recorded")
+    else:
+        st = report.search_tool_telemetry
+        lines.append(f"  fires: {st.fire_count}")
+        lines.append(f"  latency p50: {st.p50_ms:.1f} ms")
+        lines.append(f"  latency p95: {st.p95_ms:.1f} ms")
+        lines.append(
+            f"  noise rate:  {st.noise_rate:.1%} "
+            f"(fires with zero L0+L1 hits)"
+        )
