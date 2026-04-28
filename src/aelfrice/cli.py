@@ -1188,8 +1188,13 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
     user_settings = (
         Path(args.user_settings) if args.user_settings else None
     )
+    hook_failures_log = (
+        Path(args.hook_failures_log) if args.hook_failures_log else None
+    )
     report = diagnose(
-        user_settings=user_settings, project_root=project_root
+        user_settings=user_settings,
+        project_root=project_root,
+        hook_failures_log=hook_failures_log,
     )
     print(format_report(report), file=out)  # type: ignore[arg-type]
     return 1 if report.broken else 0
@@ -1372,6 +1377,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_doctor.add_argument(
         "--project-root", default=None,
         help="override project root for project-scope check (default: cwd)",
+    )
+    p_doctor.add_argument(
+        "--hook-failures-log", default=None,
+        help=(
+            "override the hook-failures log path doctor tails "
+            "(default: ~/.aelfrice/logs/hook-failures.log)"
+        ),
     )
     p_doctor.set_defaults(func=_cmd_doctor)
 

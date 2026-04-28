@@ -9,10 +9,21 @@ command: when Claude Code spawns this, will the OS find an executable?
 The check is deliberately lossy: we extract the first whitespace token,
 treat it as a program path or name, and verify either that the
 absolute path exists and is executable OR that the bare name resolves
-via $PATH. Shell-pipe constructs are skipped (we cannot statically
-prove a `bash -c "..."` is healthy without running it). The point is
-to catch the common breakage -- a stale absolute path or a bare name
-nothing on $PATH supplies -- which is what bit issue #81.
+via $PATH. Shell-pipe constructs are skipped only when we cannot
+identify a script path -- a `bash /abs/path.sh ...` wrapper is
+inspected by extracting the script path even if `||`, `;`, etc.
+appear later (issue #113: a stale `bash <missing>.sh 2>/dev/null
+|| true` hook was silently skipped instead of flagged broken).
+
+In addition to existence checks the report surfaces two soft
+warnings:
+
+* commands that wrap a script in the silent-failure pattern
+  (`2>/dev/null || true`), which hides infrastructure failures from
+  the user (issue #114);
+* recent entries in `~/.aelfrice/logs/hook-failures.log`, the file
+  hook bash wrappers should redirect stderr into instead of dropping
+  it on the floor.
 """
 from __future__ import annotations
 
@@ -51,7 +62,9 @@ _COMMAND_KEY: Final[str] = "command"
 _HOOK_TYPE_COMMAND: Final[str] = "command"
 
 # Tokens that signal "this is a shell expression, do not try to verify
-# the first program statically." We just record these as 'skipped'.
+# the first program statically." We record these as 'skipped' UNLESS
+# the command starts with a known interpreter and a script path can be
+# extracted (handled separately).
 _SHELL_INDICATORS: Final[tuple[str, ...]] = ("|", "&&", "||", "`", "$(", ";")
 
 # Interpreters whose first non-flag argument is the script we should
@@ -59,6 +72,21 @@ _SHELL_INDICATORS: Final[tuple[str, ...]] = ("|", "&&", "||", "`", "$(", ";")
 _SCRIPT_INTERPRETERS: Final[frozenset[str]] = frozenset(
     {"bash", "sh", "zsh", "python", "python3"}
 )
+
+# Substring marker for the silent-failure pattern: `bash foo
+# 2>/dev/null || true` swallows every category of script breakage.
+# We surface a soft warning when a hook command contains this, even
+# if the underlying script resolves -- the pattern itself is the
+# anti-feature (issue #114).
+_SILENT_FAILURE_MARKER: Final[str] = "2>/dev/null || true"
+
+# Where setup-installed bash hook wrappers should append stderr.
+# `aelf doctor` reads (but does not create) this path.
+HOOK_FAILURES_LOG: Final[Path] = (
+    Path.home() / ".aelfrice" / "logs" / "hook-failures.log"
+)
+# How many trailing lines of the hook-failures log to surface.
+_HOOK_FAILURES_TAIL: Final[int] = 10
 
 
 @dataclass(frozen=True)
@@ -71,6 +99,11 @@ class CommandFinding:
       * 'ok'      - program resolves to an existing executable.
       * 'broken'  - program does not resolve.
       * 'skipped' - command contains shell metacharacters; cannot statically verify.
+
+    `silent_failure` is True when the command contains the
+    `2>/dev/null || true` wrapper that hides script breakage from the
+    user. Reported even when status is 'ok' (the wrapper itself is the
+    anti-feature; issue #114).
     """
     settings_path: Path
     location: str
@@ -78,6 +111,7 @@ class CommandFinding:
     program: str
     status: Literal["ok", "broken", "skipped"]
     detail: str = ""
+    silent_failure: bool = False
 
 
 @dataclass
@@ -89,6 +123,8 @@ class DoctorReport:
     findings: list[CommandFinding] = field(
         default_factory=lambda: cast(list[CommandFinding], [])
     )
+    hook_failures_log: Path | None = None
+    hook_failures_tail: tuple[str, ...] = ()
 
     @property
     def broken(self) -> list[CommandFinding]:
@@ -102,17 +138,24 @@ class DoctorReport:
     def skipped_count(self) -> int:
         return sum(1 for f in self.findings if f.status == "skipped")
 
+    @property
+    def silent_failure(self) -> list[CommandFinding]:
+        return [f for f in self.findings if f.silent_failure]
+
 
 def diagnose(
     *,
     user_settings: Path | None = None,
     project_root: Path | None = None,
+    hook_failures_log: Path | None = None,
 ) -> DoctorReport:
     """Walk user and project settings.json, return a DoctorReport.
 
     Defaults: user_settings -> ~/.claude/settings.json,
     project_root -> Path.cwd() (only scanned if .claude/settings.json
-    exists there).
+    exists there). When the file at `hook_failures_log` (default
+    `~/.aelfrice/logs/hook-failures.log`) exists and is non-empty,
+    the last few lines are surfaced in the report.
     """
     user_path = user_settings if user_settings is not None else USER_SETTINGS_PATH
     project_path = (
@@ -125,7 +168,27 @@ def diagnose(
     if project_path.exists():
         report.scopes_scanned.append(("project", project_path))
         report.findings.extend(_scan_settings(project_path))
+    log_path = (
+        hook_failures_log if hook_failures_log is not None else HOOK_FAILURES_LOG
+    )
+    report.hook_failures_log = log_path
+    report.hook_failures_tail = _tail_log(log_path, _HOOK_FAILURES_TAIL)
     return report
+
+
+def _tail_log(path: Path, n: int) -> tuple[str, ...]:
+    """Return the trailing `n` non-empty lines of `path` (empty if missing).
+
+    Read errors swallow to empty -- doctor is diagnostic, not authoritative.
+    """
+    try:
+        if not path.exists():
+            return ()
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ()
+    lines = [ln.rstrip() for ln in text.splitlines() if ln.strip()]
+    return tuple(lines[-n:])
 
 
 def _scan_settings(path: Path) -> list[CommandFinding]:
@@ -196,28 +259,26 @@ def _inspect_command(
 ) -> CommandFinding:
     """Categorise a single command string."""
     stripped = command.strip()
+    silent = _SILENT_FAILURE_MARKER in stripped
     if not stripped:
         return CommandFinding(
             settings_path=settings_path, location=location,
             command=command, program="",
             status="broken",
             detail="empty command string",
-        )
-    if any(tok in stripped for tok in _SHELL_INDICATORS):
-        return CommandFinding(
-            settings_path=settings_path, location=location,
-            command=command, program="",
-            status="skipped",
-            detail="contains shell metacharacters; not statically checked",
+            silent_failure=silent,
         )
     try:
         tokens = shlex.split(stripped)
     except ValueError:
+        # Unparseable as shell tokens -- only safe to skip when no
+        # interpreter+script is recognisable from a token prefix.
         return CommandFinding(
             settings_path=settings_path, location=location,
             command=command, program="",
             status="broken",
             detail="command is not parseable as shell tokens",
+            silent_failure=silent,
         )
     if not tokens:
         return CommandFinding(
@@ -225,24 +286,42 @@ def _inspect_command(
             command=command, program="",
             status="broken",
             detail="no program token",
+            silent_failure=silent,
         )
     program = tokens[0]
     interpreter_basename = Path(program).name
+    has_shell_meta = any(tok in stripped for tok in _SHELL_INDICATORS)
     if interpreter_basename in _SCRIPT_INTERPRETERS:
-        # `bash /abs/path.sh ...` -- the script itself is the thing
-        # most likely to vanish. Prefer to report on the script, not
-        # bash. Fall back to plain interpreter check when there is no
-        # absolute-path argument.
+        # `bash /abs/path.sh 2>/dev/null || true` -- check the script
+        # path even when shell metas appear later. The script vanishing
+        # is the failure mode we care about (issue #113); the wrapper
+        # is just noise around it.
         for tok in tokens[1:]:
             if tok.startswith("-"):
                 continue
-            if "/" in tok:
-                return _check_path(
+            if "/" in tok and not _is_shell_meta_token(tok):
+                finding = _check_path(
                     settings_path, location, command, tok
                 )
+                if silent:
+                    finding = _with_silent_failure(finding)
+                return finding
+            if _is_shell_meta_token(tok):
+                # First non-flag token is shell-meta (e.g. `bash &&
+                # foo`). Fall through to the generic skip.
+                break
             break  # first non-flag, non-path argument: stop scanning
+    if has_shell_meta:
+        return CommandFinding(
+            settings_path=settings_path, location=location,
+            command=command, program="",
+            status="skipped",
+            detail="contains shell metacharacters; not statically checked",
+            silent_failure=silent,
+        )
     if "/" in program:
-        return _check_path(settings_path, location, command, program)
+        finding = _check_path(settings_path, location, command, program)
+        return _with_silent_failure(finding) if silent else finding
     # Bare name -- $PATH lookup.
     resolved = shutil.which(program)
     if resolved is None:
@@ -250,10 +329,25 @@ def _inspect_command(
             settings_path=settings_path, location=location,
             command=command, program=program, status="broken",
             detail=f"{program!r} not on $PATH",
+            silent_failure=silent,
         )
     return CommandFinding(
         settings_path=settings_path, location=location,
         command=command, program=program, status="ok",
+        silent_failure=silent,
+    )
+
+
+def _is_shell_meta_token(tok: str) -> bool:
+    return tok in {"|", "||", "&&", ";", "&", "`"}
+
+
+def _with_silent_failure(f: CommandFinding) -> CommandFinding:
+    """Return a copy of `f` with silent_failure=True (frozen dataclass)."""
+    return CommandFinding(
+        settings_path=f.settings_path, location=f.location,
+        command=f.command, program=f.program, status=f.status,
+        detail=f.detail, silent_failure=True,
     )
 
 
@@ -308,4 +402,27 @@ def format_report(report: DoctorReport) -> str:
             "fix: run 'aelf setup' from the project venv to rewrite the "
             "hook command, or edit the affected settings.json by hand."
         )
+    if report.silent_failure:
+        lines.append("")
+        lines.append(
+            "silent-failure pattern (`2>/dev/null || true`) hides script "
+            "breakage from you:"
+        )
+        for f in report.silent_failure:
+            lines.append(
+                f"  - {f.settings_path}:{f.location}"
+            )
+            lines.append(f"      command:  {f.command}")
+        lines.append(
+            "fix: rewrite the hook command to redirect stderr to "
+            f"{HOOK_FAILURES_LOG} (use `>>` not `>`), or remove the "
+            "wrapper entirely if the script is meant to surface errors."
+        )
+    if report.hook_failures_tail:
+        lines.append("")
+        lines.append(
+            f"recent hook failures ({report.hook_failures_log}):"
+        )
+        for entry in report.hook_failures_tail:
+            lines.append(f"  {entry}")
     return "\n".join(lines)

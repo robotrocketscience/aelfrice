@@ -10,6 +10,10 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`aelf doctor` now flags hooks that wrap a script in `2>/dev/null || true`** ([#113](https://github.com/robotrocketscience/aelfrice/issues/113), [#114](https://github.com/robotrocketscience/aelfrice/issues/114)). Previously the shell-meta heuristic short-circuited before extracting the script path, so a stale `bash /abs/path.sh 2>/dev/null || true` hook entry — like the one #113 reproduces against the long-deleted `hook-aelf-search.sh` — was reported as `skipped` instead of `broken`. The check now extracts the script path even with a trailing wrapper and reports it as broken when the file is missing. Hooks using the silent-failure pattern are additionally surfaced as a soft warning regardless of whether the underlying script resolves, with a fix-hint pointing at `~/.aelfrice/logs/hook-failures.log`. Doctor also now tails that log when present, so future bash hook wrappers that redirect stderr into it have a discovery path back to the user.
+
 ### Added (toward v1.2.0 final)
 
 - **Ingest enrichment schema** ([docs/ingest_enrichment.md](docs/ingest_enrichment.md)). Three coupled additions: `DERIVED_FROM` edge type (valence 0.5, mirrors `CITES`); `anchor_text TEXT` column on `edges` carrying the citing belief's own phrasing of the relationship, capped at 1000 characters at the dataclass boundary; `session_id TEXT` column on `beliefs` plus a real `sessions` table (`MemoryStore.create_session` / `complete_session` go from no-op stubs to persisting). `ingest_turn` now writes `session_id` end-to-end. Forward-compatible with v1.0 stores: `ALTER TABLE` adds the columns on first open and is idempotent on re-open. The `idx_beliefs_session` index is sequenced after the migration so a v1.0 store can open at all. Producers that populate the new fields densely are the v1.2.0 transcript-ingest, commit-ingest, and triple-extraction paths.
