@@ -63,6 +63,14 @@ dev = [
 mcp = [
     "fastmcp>=0.2.0",
 ]
+onboard-llm = [
+    # Required only for `aelf onboard --llm-classify` (or
+    # `[onboard.llm].enabled = true`). The default install does NOT
+    # pull anthropic; the import is local to the call site so a
+    # default install has no `anthropic` symbol resolvable at any
+    # module load. Boundary policy: docs/llm_classifier.md § 4.
+    "anthropic>=0.40",
+]
 archive = [
     # Required only for `aelf uninstall --archive`: AES-128-CBC + HMAC
     # via Fernet, with a scrypt-derived key from a user-supplied password.
