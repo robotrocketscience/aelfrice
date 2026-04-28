@@ -44,7 +44,7 @@ Same operations are available as MCP tools and Claude Code slash commands. Full 
 | v1.0.1 | **shipped** | launch fix-up — hook→retrieval wiring, onboard noise, `aelf --version` |
 | v1.0.2 | **shipped** | per-project install routing, `aelf doctor`, release-docs CI gate |
 | v1.0.3 | **shipped** | contradiction tie-breaker + `aelf resolve`, onboard perf regression, CONFIG.md |
-| v1.1.0 | planned | project identity (`.git/aelfrice/`), edges→threads, status/health split |
+| v1.1.0 | **shipped** | project identity (`.git/aelfrice/`), edges→threads, status/health split, `aelf migrate`, git-recency onboard |
 | v1.2.0 | planned | commit-ingest hook, triple-extraction port, harness-integration doc |
 | v1.3 | planned | retrieval wave — entity index + BFS multi-hop + LLM classification |
 | v2.0 | planned | feature parity with the earlier research line + full benchmark reproducibility |

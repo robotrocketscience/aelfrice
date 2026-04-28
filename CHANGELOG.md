@@ -10,15 +10,44 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-04-27
+
+Minor release: project identity, structural auditor, onboarding
+git-recency, legacy-DB migration tool, design memo for the v1.2.0
+promotion path, worktree concurrency tests, and the `edges → threads`
+user-facing rename. Eight PRs landed between v1.0.3 and v1.1.0.
+
+### Added
+
+- **Per-project DB resolution** ([#88](https://github.com/robotrocketscience/aelfrice/issues/88), PR [#96](https://github.com/robotrocketscience/aelfrice/pull/96)). v1.0.x stored everything in a single global `~/.aelfrice/memory.db`. v1.1.0 introduces a resolution chain in `cli.db_path()`: `$AELFRICE_DB` (override) → `<git-common-dir>/aelfrice/memory.db` (when `cwd` is in a git work-tree; resolved via `git rev-parse --path-format=absolute --git-common-dir`, so worktrees of one repo share one DB) → `~/.aelfrice/memory.db` (legacy fallback for non-git dirs). `.git/` is not git-tracked — the brain graph never crosses the git boundary. New `_git_common_dir()` helper shells out to `git rev-parse` and returns `None` gracefully when git is unavailable. No new runtime dependencies.
+- **`aelfrice.auditor` module + rewritten `aelf health`** ([#90](https://github.com/robotrocketscience/aelfrice/issues/90), PR [#100](https://github.com/robotrocketscience/aelfrice/pull/100)). `audit(store) -> AuditReport` runs three mechanical structural checks: `orphan_threads` (edges whose src/dst no longer exists), `fts_sync` (`beliefs_fts` row count vs `beliefs`), `locked_contradicts` (pairs of locked beliefs joined by CONTRADICTS). `aelf health` exits 1 if any check fails. Informational metrics (counts, average confidence, credal gap, thread counts by type) print alongside but don't affect exit. The v1.0 regime classifier is preserved as a separate `aelf regime` command (always exit 0).
+- **`aelf status`** ([#90](https://github.com/robotrocketscience/aelfrice/issues/90)). Alias for `aelf health` per lab `COMMAND_DESIGN.md`. Same handler, same exit codes.
+- **`aelf regime`** ([#90](https://github.com/robotrocketscience/aelfrice/issues/90)). New command preserving the v1.0 regime classifier output (`supersede` / `ignore` / `mixed` / `insufficient_data`).
+- **Store API additions** for the auditor: `count_orphan_edges()`, `count_fts_rows()`, `list_locked_contradicts_pairs()`, `count_edges_by_type()`. Read-only.
+- **`aelf migrate`** ([#93](https://github.com/robotrocketscience/aelfrice/issues/93), PR [#104](https://github.com/robotrocketscience/aelfrice/pull/104)). One-shot copy from the legacy global `~/.aelfrice/memory.db` into the active project's resolved DB. Reads source via SQLite `mode=ro` URI (rejects writes at the SQLite layer). Default project-mention filter (belief content references the absolute project root); `--all` overrides. Edges follow only when both endpoints land. Dry-run by default; `--apply` writes. `--from PATH` overrides the source. Idempotent. Never deletes from the source. New module `aelfrice.migrate` with `default_legacy_db_path()` and `migrate(...) -> MigrateReport`.
+- **`PRAGMA busy_timeout=5000`** in `MemoryStore.__init__` ([#89](https://github.com/robotrocketscience/aelfrice/issues/89), PR [#102](https://github.com/robotrocketscience/aelfrice/pull/102)). Required for safe multi-worktree access where two processes share one `.git/aelfrice/memory.db`. Without it, the second writer hits `database is locked` immediately instead of waiting.
+- **Worktree concurrency test suite** at `tests/test_worktree_concurrency.py` ([#89](https://github.com/robotrocketscience/aelfrice/issues/89)). Five tests: WAL-on regression, busy_timeout regression, two-worktree DB-path identity, concurrent multi-process write correctness (40 beliefs across 2 spawn processes), and a three-round repeat to catch flakes.
+- **Onboard git-recency weighting (Tier 2)** ([#94](https://github.com/robotrocketscience/aelfrice/issues/94), PR [#103](https://github.com/robotrocketscience/aelfrice/pull/103)). Scanner records the most-recent author date of the commit that touched each source file, then `scan_repo` writes that as `belief.created_at` so the existing decay mechanism (already in `scoring.py` at v1.0) penalises stale prose. New `_build_file_recency_map(root)` makes ONE `git log --name-only --pretty=format:%aI` call per scan and returns `{relative-path: most-recent-iso-date}`. `SentenceCandidate` gains an optional `commit_date: str | None = None` field. `extract_filesystem` and `extract_ast` accept the recency map and stamp candidates from recency-known files; `extract_git_log` carries each commit's own author date. Files outside git, untracked files, and the entire fallback when git is unavailable continue to use wall-clock `now`. No new ranking math.
+- **`docs/promotion_path.md`** ([#95](https://github.com/robotrocketscience/aelfrice/issues/95), PR [#101](https://github.com/robotrocketscience/aelfrice/pull/101)). Design memo for the v1.2.0 `agent_inferred → user_validated` promotion path. Recommends adding `origin TEXT NOT NULL DEFAULT 'unknown'` to `beliefs` (v1.1.0 schema bump deferred to v1.2.0 implementation alongside the command), conservative backfill, flag-only flip mechanism (preserve `α/β` and `lock_level`), `aelf validate <belief_id>` CLI surface mirroring `aelf demote`, tie-breaker slot between `user_corrected` and `document_recent`, zero-valence audit row tagged `source='promotion:user_validated'`. 10 open TBDs explicitly enumerated.
+- **`aelf` CLI grew from 12 to 19 subcommands.** Added: `health` (rewritten), `status` (alias), `regime`, `migrate`. Slash commands: `health.md` rewritten, new `status.md`, `regime.md`, `migrate.md`.
+- **MCP `aelf:stats` returns `threads` key.** Same integer value as `edges`. `edges` retained for one minor.
+- **MCP `aelf:health.features.thread_per_belief` field.** Same value as `edge_per_belief`. `edge_per_belief` retained for one minor.
+
 ### Changed
 
-- **`edges` → `threads` user-facing rename ([#92](https://github.com/robotrocketscience/aelfrice/issues/92)).** All user-facing surfaces (CLI output labels in `aelf stats` / `aelf health`; slash command descriptions; COMMANDS.md / MCP.md prose) now use "threads". The internal SQLite schema, the `Edge` Python dataclass, and the `EDGE_*` type constants are unchanged. The auditor's `metrics` dict keys (`threads`, `threads_supports`, `threads_contradicts`, …) follow the rename.
+- **`edges` → `threads` user-facing rename** ([#92](https://github.com/robotrocketscience/aelfrice/issues/92), PR [#105](https://github.com/robotrocketscience/aelfrice/pull/105)). All user-facing surfaces — CLI output labels (`aelf stats`, `aelf health`, `aelf migrate`), slash command descriptions, COMMANDS.md / MCP.md prose, auditor finding strings — now use "threads". The internal SQLite `edges` table, the `Edge` Python dataclass, and the `EDGE_*` type constants are unchanged. The auditor's `metrics` dict keys (`threads`, `threads_supports`, `threads_contradicts`, …) follow the rename. Schema docs (ARCHITECTURE.md, design memos) keep `edge` / `Edge` because they describe internals.
+- **Project-identity narrative reconciled** ([#99](https://github.com/robotrocketscience/aelfrice/pull/99)). Re-applies the framing fix dropped from #87's squash and sweeps post-#96 docs: ARCHITECTURE.md / COMMANDS.md / INSTALL.md § Database / PRIVACY.md / LIMITATIONS § Project identity all describe the new resolution chain. PRIVACY.md drops "to share across machines: sync the file" and links to LIMITATIONS § Sharing or sync of brain-graph content. INSTALL.md uninstall section uses "resolved DB path" language and a `cli.db_path()`-discovering verification command.
 
 ### Deprecated
 
 - **MCP `aelf:stats` JSON: `edges` key.** v1.1.0 emits both `edges` and `threads` with the same integer value. **`edges` is removed in v1.2.0.** Clients should migrate to `threads` now.
 - **MCP `aelf:health.features.edge_per_belief` key.** v1.1.0 emits both `edge_per_belief` and `thread_per_belief` with the same value. `edge_per_belief` is removed in v1.2.0.
 - **`aelfrice.auditor.CHECK_ORPHAN_EDGES` constant.** Kept as a deprecated alias of `CHECK_ORPHAN_THREADS` for v1.0 importer compatibility. Removed in v1.2.0.
+
+### Documentation
+
+- **Local-only contract locked** ([#87](https://github.com/robotrocketscience/aelfrice/pull/87)). LIMITATIONS.md gains "Sharing or sync of brain-graph content" under "Out of scope by design" with privacy/determinism/audit rationale. ROADMAP.md "Non-goals" adds "Brain-graph sharing, sync, or export between users / machines / projects." `.aelfrice/seed.md`, `.aelfrice.toml` cross-machine identity, and v2.0 cross-project shared store are removed from the roadmap. Bootstrap recipe for new clones is `aelf onboard .`.
+- **`docs/promotion_path.md`** linked from ROADMAP § v1.2.0 and LIMITATIONS § Onboarding.
 
 ## [1.0.3] - 2026-04-27
 
@@ -417,7 +446,8 @@ Foundation milestone — store, models, config.
 - Initial repo scaffold: pyproject, README, GitHub Actions workflows,
   scan configs (commit `67b4343`).
 
-[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.0...v1.0.1

@@ -19,7 +19,7 @@ This is a rebuild, not a port. Structural issues that survived agentmemory are b
 | v0.1 – v1.0 | shipped | core memory, CLI, MCP, hook wiring, synthetic benchmark, PyPI publish |
 | **v1.0.1** | shipped | launch fix-up — hook→retrieval wiring, onboard noise, `aelf --version` |
 | **v1.0.2** | shipped | per-project install routing, `aelf doctor`, release-docs CI gate |
-| **v1.1.0** | planned | project identity, edges→threads, status/health split |
+| **v1.1.0** | shipped | project identity, edges→threads, status/health split, `aelf migrate`, git-recency onboard |
 | **v1.2.0** | planned | commit-ingest hook, triple-extraction port, harness-integration doc |
 | **v1.3.0** | planned | retrieval wave — entity index + BFS multi-hop + LLM classification |
 | **v1.4.0** | planned | context rebuilder — automatic PreCompact-driven retrieval-curated context |
@@ -49,14 +49,16 @@ Second patch. Two threads:
 
 ## v1.1.0 — project identity and cosmetic surface
 
-- **Per-project DB resolution.** v1.0.x shipped a single global DB at `~/.aelfrice/memory.db` shared across every project on the machine. v1.1.0 lands a resolution chain: `$AELFRICE_DB` (override) → `<git-common-dir>/aelfrice/memory.db` (when `cwd` is inside a git work-tree) → `~/.aelfrice/memory.db` (non-git fallback). Worktrees of one repo share one DB via the git-common-dir. `.git/` is not git-tracked — the brain graph never crosses the git boundary. Shipped at [#88](https://github.com/robotrocketscience/aelfrice/issues/88).
-- **`aelf migrate` from legacy global store.** One-shot copy from `~/.aelfrice/memory.db` (the v1.0 single global DB) into the active project's `.git/aelfrice/memory.db`. Dry-run by default; `--apply` writes. Idempotent.
-- **Worktree concurrency tests.** Multiple worktrees of the same repo share one `.git/aelfrice/memory.db` without corruption under WAL mode.
-- **`aelf health` rewritten as diagnostic auditor.** Replaces the v1.0 regime classifier output (preserved as `aelf regime`). Reports credal gap, orphan beliefs, edge type counts, feedback coverage, FTS5 sync, locked-belief contradictions. Exits 1 on structural failures (orphan edges, FTS5 mismatch, locked-belief contradictions); informational metrics stay exit 0. `aelf status` aliases `aelf health` per lab COMMAND_DESIGN convention.
-- **`edges` → `threads`.** User-facing rename in CLI output and MCP tool descriptions. Internal schema is unchanged.
-- **Onboard git-recency weighting.** Scanner records source file's most-recent git commit date as `belief.created_at`, so the existing decay mechanism penalises pre-migration content from old branches.
-- **`agent_inferred` → `user_validated` promotion path.** Designed in v1.1.0 ([docs/promotion_path.md](promotion_path.md), [#95](https://github.com/robotrocketscience/aelfrice/issues/95)); implemented in v1.2.0.
-- **Query result cache.** A bounded LRU cache wrapping `aelfrice.retrieval.retrieve()`, keyed on a canonicalized form of `(query, token_budget, l1_limit)` and invalidated on every store mutation. Skips a full L0+L1 pass when an agent loop re-issues the same query. Spec: [`lru_query_cache.md`](lru_query_cache.md).
+Minor release. Eight PRs landed between v1.0.3 and v1.1.0. See [CHANGELOG § v1.1.0](../CHANGELOG.md) for the full surface.
+
+- ✅ **Per-project DB resolution.** v1.0.x shipped a single global DB at `~/.aelfrice/memory.db` shared across every project on the machine. v1.1.0 lands a resolution chain: `$AELFRICE_DB` (override) → `<git-common-dir>/aelfrice/memory.db` (when `cwd` is inside a git work-tree) → `~/.aelfrice/memory.db` (non-git fallback). Worktrees of one repo share one DB via the git-common-dir. `.git/` is not git-tracked — the brain graph never crosses the git boundary. Shipped at [#88](https://github.com/robotrocketscience/aelfrice/issues/88) / PR [#96](https://github.com/robotrocketscience/aelfrice/pull/96).
+- ✅ **`aelf migrate` from legacy global store.** One-shot copy from `~/.aelfrice/memory.db` (the v1.0 single global DB) into the active project's `.git/aelfrice/memory.db`. Dry-run by default; `--apply` writes. `--all` skips the project-mention filter. Idempotent. PR [#104](https://github.com/robotrocketscience/aelfrice/pull/104).
+- ✅ **Worktree concurrency tests + `busy_timeout=5000`.** Multiple worktrees share one `.git/aelfrice/memory.db` without corruption under WAL mode + the new busy_timeout. PR [#102](https://github.com/robotrocketscience/aelfrice/pull/102).
+- ✅ **`aelf health` rewritten as diagnostic auditor.** Replaces the v1.0 regime classifier output (preserved as `aelf regime`). Reports credal gap, orphan threads, thread type counts, feedback coverage, FTS5 sync, locked-belief contradictions. Exits 1 on structural failures (orphan threads, FTS5 mismatch, locked-belief contradictions); informational metrics stay exit 0. `aelf status` aliases `aelf health`. PR [#100](https://github.com/robotrocketscience/aelfrice/pull/100).
+- ✅ **`edges` → `threads` user-facing rename.** All user-facing surfaces use "threads"; internal schema, `Edge` dataclass, and `EDGE_*` type constants unchanged. MCP `aelf:stats` emits both `edges` and `threads` keys for one minor; `edges` removed in v1.2.0. PR [#105](https://github.com/robotrocketscience/aelfrice/pull/105).
+- ✅ **Onboard git-recency weighting.** Scanner records source file's most-recent git commit date as `belief.created_at`, so the existing decay mechanism penalises pre-migration content from old branches. One `git log --name-only --pretty=format:%aI` call per scan. PR [#103](https://github.com/robotrocketscience/aelfrice/pull/103).
+- ✅ **`agent_inferred` → `user_validated` promotion path designed.** [docs/promotion_path.md](promotion_path.md) — schema bump, conservative backfill, flag-only flip mechanism, `aelf validate` surface, tie-breaker slot. Implementation lands in v1.2.0. PR [#101](https://github.com/robotrocketscience/aelfrice/pull/101).
+- **Query result cache.** A bounded LRU cache wrapping `aelfrice.retrieval.retrieve()`, keyed on a canonicalized form of `(query, token_budget, l1_limit)` and invalidated on every store mutation. Skips a full L0+L1 pass when an agent loop re-issues the same query. Spec: [`lru_query_cache.md`](lru_query_cache.md). Shipped pre-v1.1.0 in [#69](https://github.com/robotrocketscience/aelfrice/pull/69).
 
 ## v1.2.0 — auto-capture and triple extraction
 
