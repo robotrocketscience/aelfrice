@@ -22,6 +22,12 @@ The CLI scanner walks three sources: prose files (`*.md`, `*.rst`, `*.txt`, `*.a
 
 Classification on the CLI path is regex-based. Higher-quality classification requires the MCP `aelf:onboard` polymorphic flow, which routes through the host LLM.
 
+## BFS multi-hop temporal coherence
+
+The v1.3.0 BFS multi-hop expansion (see [bfs_multihop.md](bfs_multihop.md)) resolves each hop to the globally latest serial of its target belief independently. For audit-shaped queries ("what did the agent believe at the time it made this decision?") this can surface a chain whose intermediate hops postdate the seed's session — a fidelity loss against a corpus where supersessions accumulated after the seed was written.
+
+The default retrieval mode (recall, not audit) is correctly served by latest-serial-per-hop. The temporal-coherence fix is targeted at v2.0.0 alongside the published-numbers reproducibility harness; the spec § Open question: temporal coherence documents why deferring is the right call for v1.3.
+
 ## Sharp edges
 
 - **Locks are durable.** Fresh lock = `(α, β) = (9.0, 0.5)`. Five independent contradicting feedback events are required to auto-demote. If you lock a wrong rule and correct it only once or twice, the lock keeps winning. `aelf demote <id>` drops it immediately.
