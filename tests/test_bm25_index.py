@@ -10,7 +10,7 @@ Coverage map (AC numbers from the issue body):
 - AC5     — `test_score_latency_under_5ms_n50k` (gated on --run-perf)
 - AC7     — `test_serialize_roundtrip_deterministic`
 
-Plus L1-lane integration tests for the `bm25f_enabled` opt-in plumb
+Plus L1-lane integration tests for the `use_bm25f_anchors` opt-in plumb
 into `retrieve()`, and a rebuild-on-mutation test for the
 `BM25IndexCache` invalidation hookup.
 
@@ -272,9 +272,9 @@ def test_cache_rebuilds_on_store_mutation() -> None:
     assert idx_b.belief_ids == ["b1", "b2"]
 
 
-def test_retrieve_with_bm25f_enabled_returns_anchor_recovered_belief() -> None:
-    """retrieve(..., bm25f_enabled=True) surfaces a vocab-shifted
-    belief that the FTS5 path with bm25f_enabled=False does not."""
+def test_retrieve_with_use_bm25f_anchors_returns_anchor_recovered_belief() -> None:
+    """retrieve(..., use_bm25f_anchors=True) surfaces a vocab-shifted
+    belief that the FTS5 path with use_bm25f_anchors=False does not."""
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("citer1", "neural networks discussion"))
     s.insert_belief(_mk("citer2", "more neural networks reading"))
@@ -287,24 +287,24 @@ def test_retrieve_with_bm25f_enabled_returns_anchor_recovered_belief() -> None:
         ))
 
     bm25f_hits = {b.id for b in retrieve(
-        s, "neural networks", bm25f_enabled=True,
+        s, "neural networks", use_bm25f_anchors=True,
     )}
     fts_hits = {b.id for b in retrieve(
-        s, "neural networks", bm25f_enabled=False,
+        s, "neural networks", use_bm25f_anchors=False,
     )}
     assert "shifted" in bm25f_hits
     assert "shifted" not in fts_hits
 
 
 def test_retrieve_default_off_byte_identical_to_pre_v15_path() -> None:
-    """Default-off contract: with bm25f_enabled unset (None), the
-    output equals the explicit bm25f_enabled=False path. Guards
+    """Default-off contract: with use_bm25f_anchors unset (None), the
+    output equals the explicit use_bm25f_anchors=False path. Guards
     against accidental flip in a future commit."""
     s = MemoryStore(":memory:")
     for i in range(8):
         s.insert_belief(_mk(f"b{i}", f"token{i} content blob"))
     default = [b.id for b in retrieve(s, "token3 content")]
     explicit_off = [b.id for b in retrieve(
-        s, "token3 content", bm25f_enabled=False,
+        s, "token3 content", use_bm25f_anchors=False,
     )]
     assert default == explicit_off
