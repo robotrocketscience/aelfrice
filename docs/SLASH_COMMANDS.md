@@ -4,12 +4,7 @@ Fifteen markdown files in `src/aelfrice/slash_commands/`, tracking the v1.2.0 CL
 
 Slash files are not shipped for hidden CLI subcommands (`bench`, `feedback`, `health`, `migrate`, `project-warm`, `regime`, `session-delta`, `stats`, `statusline`, `unsetup`). Those subcommands stay callable from the CLI for scripting, hook entry-points, and back-compat aliases — they're just not surfaced as slashes.
 
-Manual install:
-
-```bash
-mkdir -p ~/.claude/commands/aelf
-cp src/aelfrice/slash_commands/*.md ~/.claude/commands/aelf/
-```
+`aelf setup` installs all slash-command files automatically into `~/.claude/commands/aelf/` and prunes any stale files left behind by renames (e.g. `stats.md` after the v1.2.0 rename to `status.md`). Re-running `aelf setup` after an upgrade is sufficient to keep the set current.
 
 ## Reference
 
