@@ -24,9 +24,19 @@ from __future__ import annotations
 import json
 import sys
 import traceback
+from pathlib import Path
 from typing import IO, Final, cast
 
 from aelfrice.cli import db_path
+from aelfrice.context_rebuilder import (
+    DEFAULT_N_RECENT_TURNS,
+    DEFAULT_TOKEN_BUDGET,
+    RecentTurn,
+    find_aelfrice_log,
+    read_recent_turns_aelfrice,
+    read_recent_turns_claude_transcript,
+    rebuild,
+)
 from aelfrice.hook_search import search_for_prompt
 from aelfrice.models import LOCK_USER, Belief
 from aelfrice.store import MemoryStore
@@ -42,6 +52,8 @@ the same context window.
 OPEN_TAG: Final[str] = "<aelfrice-memory>"
 CLOSE_TAG: Final[str] = "</aelfrice-memory>"
 _PROMPT_KEY: Final[str] = "prompt"
+_TRANSCRIPT_PATH_KEY: Final[str] = "transcript_path"
+_CWD_KEY: Final[str] = "cwd"
 
 
 def user_prompt_submit(
@@ -133,9 +145,116 @@ def _open_store() -> MemoryStore:
     return MemoryStore(str(p))
 
 
+def pre_compact(
+    *,
+    stdin: IO[str] | None = None,
+    stdout: IO[str] | None = None,
+    stderr: IO[str] | None = None,
+    n_recent_turns: int = DEFAULT_N_RECENT_TURNS,
+    token_budget: int = DEFAULT_TOKEN_BUDGET,
+) -> int:
+    """Run the PreCompact hook. Always returns 0.
+
+    Reads a Claude Code PreCompact JSON payload from `stdin`, locates
+    a transcript log (canonical aelfrice turns.jsonl preferred,
+    Claude Code internal transcript as fallback), runs the
+    context-rebuilder against it, and writes the rebuild block to
+    `stdout`. Hook contract: never block, never raise.
+
+    Payload fields used:
+      * `cwd` -- working directory; used to find <cwd>/.git/aelfrice/
+        transcripts/turns.jsonl (the canonical log).
+      * `transcript_path` -- absolute path to Claude Code's per-session
+        transcript JSONL. Used as fallback when the canonical log is
+        absent (typical pre-transcript_ingest setup).
+
+    With augment-mode coordination (the only mode v1.1.0a0 ships),
+    Claude Code will still run its default summarization after this
+    hook emits. The rebuild block is therefore additive context, not
+    a replacement.
+    """
+    sin = stdin if stdin is not None else sys.stdin
+    sout = stdout if stdout is not None else sys.stdout
+    serr = stderr if stderr is not None else sys.stderr
+    try:
+        raw = sin.read()
+        payload = _parse_pre_compact_payload(raw)
+        if payload is None:
+            return 0
+        recent = _read_recent_for_pre_compact(payload, n_recent_turns)
+        body = _rebuild_and_format(recent, token_budget)
+        if body:
+            sout.write(body)
+    except Exception:  # non-blocking: surface but do not fail
+        traceback.print_exc(file=serr)
+    return 0
+
+
+def _parse_pre_compact_payload(raw: str) -> dict[str, object] | None:
+    """Return the parsed payload dict, or None on any malformedness."""
+    if not raw.strip():
+        return None
+    try:
+        payload = json.loads(raw)  # pyright: ignore[reportAny]
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return cast(dict[str, object], payload)
+
+
+def _read_recent_for_pre_compact(
+    payload: dict[str, object], n_recent_turns: int
+) -> list[RecentTurn]:
+    """Locate a transcript and read its tail.
+
+    Resolution order:
+      1. <payload.cwd>/.git/aelfrice/transcripts/turns.jsonl -- the
+         canonical aelfrice log written by the per-turn UserPromptSubmit/
+         Stop hooks once transcript_ingest ships. Preferred when
+         present.
+      2. <payload.transcript_path> -- Claude Code's internal per-session
+         transcript JSONL. Fallback for the alpha while transcript_ingest
+         is unshipped.
+      3. Empty list -- both sources missing or unreadable.
+    """
+    cwd_obj = payload.get(_CWD_KEY)
+    if isinstance(cwd_obj, str) and cwd_obj.strip():
+        try:
+            cwd = Path(cwd_obj)
+            log_path = find_aelfrice_log(cwd)
+        except OSError:
+            log_path = None
+        if log_path is not None and log_path.exists():
+            return read_recent_turns_aelfrice(log_path, n=n_recent_turns)
+    tp_obj = payload.get(_TRANSCRIPT_PATH_KEY)
+    if isinstance(tp_obj, str) and tp_obj.strip():
+        tp = Path(tp_obj)
+        if tp.exists():
+            return read_recent_turns_claude_transcript(
+                tp, n=n_recent_turns
+            )
+    return []
+
+
+def _rebuild_and_format(
+    recent: list[RecentTurn], token_budget: int
+) -> str:
+    store = _open_store()
+    try:
+        return rebuild(recent, store, token_budget=token_budget)
+    finally:
+        store.close()
+
+
 def main() -> int:
     """Entry point for `python -m aelfrice.hook`."""
     return user_prompt_submit()
+
+
+def main_pre_compact() -> int:
+    """Entry point for the PreCompact hook console script."""
+    return pre_compact()
 
 
 if __name__ == "__main__":

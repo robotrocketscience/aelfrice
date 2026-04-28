@@ -10,7 +10,7 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
-### Added (toward v1.2.0)
+### Added (toward v1.2.0 final)
 
 - **Ingest enrichment schema** ([docs/ingest_enrichment.md](docs/ingest_enrichment.md)). Three coupled additions: `DERIVED_FROM` edge type (valence 0.5, mirrors `CITES`); `anchor_text TEXT` column on `edges` carrying the citing belief's own phrasing of the relationship, capped at 1000 characters at the dataclass boundary; `session_id TEXT` column on `beliefs` plus a real `sessions` table (`MemoryStore.create_session` / `complete_session` go from no-op stubs to persisting). `ingest_turn` now writes `session_id` end-to-end. Forward-compatible with v1.0 stores: `ALTER TABLE` adds the columns on first open and is idempotent on re-open. The `idx_beliefs_session` index is sequenced after the migration so a v1.0 store can open at all. Producers that populate the new fields densely are the v1.2.0 transcript-ingest, commit-ingest, and triple-extraction paths.
 - **Triple extractor** ([docs/triple_extractor.md](docs/triple_extractor.md)). New `aelfrice.triple_extractor` module with `extract_triples(text) -> list[Triple]` (pure regex over a fixed pattern bank — six relation families covering `SUPPORTS`, `CITES`, `CONTRADICTS`, `SUPERSEDES`, `RELATES_TO`, `DERIVED_FROM`, with active and passive forms) and `ingest_triples(store, triples, session_id=None) -> IngestResult` (resolves subject/object beliefs by content-hash lookup, creating with the project default prior when missing; inserts edges with `anchor_text` populated from the citing prose; idempotent on re-run; self-edges dropped). All triple-derived beliefs share a canonical id space via the `triple` source label, so the same noun phrase resolves to the same belief id across every extraction call site. Stdlib-only; no LLM, no POS tagger, no embedding. Reusable by every v1.x prose-ingesting caller — the v1.2.0 commit-ingest hook, transcript-ingest, manual `aelf remember` calls, and the v1.3.0 entity-index path. 38 tests cover the per-pattern templates, negative cases, anchor-text substring guarantee, idempotency, session_id propagation, and self-edge handling.
@@ -20,6 +20,72 @@ installable release; see the roadmap in [README.md](README.md).
 - **`aelf setup --transcript-ingest`** wires the four logger hook events to the new `aelf-transcript-logger` entry point. Idempotent. `aelf unsetup --transcript-ingest` strips them. The flag is opt-in at v1.2.0.
 - **`aelf-transcript-logger` project script** registered in `pyproject.toml`.
 - Slash command `aelf:ingest-transcript`.
+
+## [1.2.0a0] - 2026-04-27
+
+Alpha pre-release. **Context rebuilder MVP** lands as an opt-in
+`PreCompact` hook that surfaces aelfrice retrieval results before
+Claude Code runs its default summarization. Augment-mode only --
+the harness still runs its own compaction afterward, so this is
+additive context, not a replacement.
+
+This is a vertical slice. Several quality dimensions are deferred
+until the supporting infrastructure ships (transcript ingest at
+v1.2.0, posterior-weighted ranking at v1.3+, triple-extracted
+queries, session-scoped retrieval). The alpha is for measurement
+and feedback, not for setting the v1.x default.
+
+### Added
+
+- `aelfrice.context_rebuilder.rebuild()`: pure function taking a
+  list of recent turns and an open `MemoryStore`, returns the
+  formatted `<aelfrice-rebuild>` XML block with L0 locked beliefs
+  and L1 BM25 hits. Per-token union retrieval works around the
+  public store's AND-only FTS5 semantics. Deterministic given
+  identical inputs (eval-harness contract).
+- Two transcript adapters: `read_recent_turns_aelfrice` for the
+  canonical `<root>/.git/aelfrice/transcripts/turns.jsonl` log
+  (per-turn ingest format from the v1.2.0 transcript-ingest spec)
+  and `read_recent_turns_claude_transcript` as a best-effort
+  fallback for Claude Code's internal per-session JSONL.
+- `pre_compact()` hook entry-point in `aelfrice.hook`: reads the
+  PreCompact JSON payload, locates a transcript (canonical
+  preferred, Claude-internal fallback), invokes `rebuild()`,
+  writes the block to stdout. Honors the non-blocking hook
+  contract (returns 0 on every failure path).
+- `aelf-pre-compact-hook` console script entry registered for
+  `settings.json` hook entries.
+- `install_pre_compact_hook` / `uninstall_pre_compact_hook` /
+  `resolve_pre_compact_hook_command`: same idempotency,
+  atomic-write, and basename-match semantics as the existing
+  UserPromptSubmit pair. Two events coexist in the same
+  `settings.json` without disturbing each other.
+- `aelf setup --rebuilder` flag: also installs the PreCompact hook
+  alongside the UserPromptSubmit hook.
+- `aelf rebuild` CLI subcommand (with `--transcript`, `--n`,
+  `--budget`): manually emits the rebuild block to stdout for
+  inspection. Required surface for spec acceptance criterion 5
+  (manual mode ships before threshold-mode auto-triggers).
+- Matching `rebuild.md` slash command shipped in
+  `src/aelfrice/slash_commands/`.
+
+### Deferred (named here so users know they are coming)
+
+- **Session-scoped retrieval.** The schema's `session_id` field is
+  not yet populated end-to-end. The MVP retrieves globally.
+- **Triple-extractor query construction.** The MVP concatenates
+  recent turn text and per-token-unions over the result. A
+  triple-extracted query will replace this once the extractor
+  ships.
+- **Posterior-weighted ranking.** The MVP uses the public BM25
+  ranker. The Bayesian-weighted ranker is a v1.3+ candidate.
+- **Suppress-mode coordination with the harness.** The MVP runs in
+  augment mode only. Suppress-mode lands once eval-harness fidelity
+  calibration justifies it.
+- **Default trigger threshold.** Augment-mode means the trigger is
+  whatever Claude Code's default PreCompact firing is; the rebuilder
+  emits on every PreCompact. Per-session-state trigger tuning is
+  v1.3+.
 
 ## [1.1.0] - 2026-04-27
 
@@ -457,7 +523,8 @@ Foundation milestone — store, models, config.
 - Initial repo scaffold: pyproject, README, GitHub Actions workflows,
   scan configs (commit `67b4343`).
 
-[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v1.2.0a0...HEAD
+[1.2.0a0]: https://github.com/robotrocketscience/aelfrice/compare/v1.1.0...v1.2.0a0
 [1.1.0]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.1...v1.0.2

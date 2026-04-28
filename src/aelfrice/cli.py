@@ -83,11 +83,14 @@ from aelfrice.setup import (
     clean_dangling_shims,
     default_settings_path,
     detect_default_scope,
+    install_pre_compact_hook,
     install_statusline,
     install_transcript_ingest_hooks,
     install_user_prompt_submit_hook,
     resolve_hook_command,
+    resolve_pre_compact_hook_command,
     resolve_transcript_logger_command,
+    uninstall_pre_compact_hook,
     uninstall_statusline,
     uninstall_transcript_ingest_hooks,
     uninstall_user_prompt_submit_hook,
@@ -97,6 +100,7 @@ from aelfrice.store import MemoryStore
 DEFAULT_DB_DIR: Final[Path] = Path.home() / ".aelfrice"
 DEFAULT_DB_FILENAME: Final[str] = "memory.db"
 DEFAULT_HOOK_COMMAND: Final[str] = "aelf-hook"
+DEFAULT_PRE_COMPACT_HOOK_COMMAND: Final[str] = "aelf-pre-compact-hook"
 _FEEDBACK_VALENCES: Final[dict[str, float]] = {"used": 1.0, "harmful": -1.0}
 _LOCK_ID_LEN: Final[int] = 16
 _VALID_SCOPES: Final[tuple[SettingsScope, ...]] = ("user", "project")
@@ -204,6 +208,48 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
     for h in hits:
         prefix = "[locked]" if h.lock_level == LOCK_USER else "        "
         print(f"{prefix} {h.id}: {h.content}", file=out)  # type: ignore[arg-type]
+    return 0
+
+
+def _cmd_rebuild(args: argparse.Namespace, out: object) -> int:
+    """Manual rebuild for the v1.1 alpha (spec acceptance criterion 5).
+
+    Reads recent turns from the canonical aelfrice transcript log if
+    present, otherwise from a Claude Code internal transcript path
+    given by --transcript. Prints the rebuild block to stdout. Useful
+    for inspecting what the PreCompact hook would emit without
+    triggering the actual hook.
+    """
+    from aelfrice.context_rebuilder import (
+        DEFAULT_N_RECENT_TURNS,
+        DEFAULT_TOKEN_BUDGET,
+        find_aelfrice_log,
+        read_recent_turns_aelfrice,
+        read_recent_turns_claude_transcript,
+        rebuild,
+    )
+
+    n = args.n if args.n is not None else DEFAULT_N_RECENT_TURNS
+    budget = args.budget if args.budget is not None else DEFAULT_TOKEN_BUDGET
+
+    transcript_arg: str | None = args.transcript
+    if transcript_arg:
+        recent = read_recent_turns_claude_transcript(
+            Path(transcript_arg), n=n
+        )
+    else:
+        log_path = find_aelfrice_log(Path.cwd())
+        if log_path is not None and log_path.exists():
+            recent = read_recent_turns_aelfrice(log_path, n=n)
+        else:
+            recent = []
+
+    store = _open_store()
+    try:
+        block = rebuild(recent, store, token_budget=budget)
+    finally:
+        store.close()
+    print(block, file=out, end="")  # type: ignore[arg-type]
     return 0
 
 
@@ -556,6 +602,26 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 f"statusLine command manually.",
                 file=out,  # type: ignore[arg-type]
             )
+    if getattr(args, "rebuilder", False):
+        pc_command = resolve_pre_compact_hook_command(scope)
+        pc_result = install_pre_compact_hook(
+            path,
+            command=pc_command,
+            timeout=args.timeout,
+            status_message=args.status_message,
+        )
+        if pc_result.already_present:
+            print(
+                f"PreCompact hook already installed in {pc_result.path} "
+                f"(command={pc_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed PreCompact hook in {pc_result.path} "
+                f"(command={pc_command!r}) [v1.1 rebuilder alpha]",
+                file=out,  # type: ignore[arg-type]
+            )
     return 0
 
 
@@ -597,6 +663,21 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
                     f"{'y' if n == 1 else 'ies'} from {ti_result.path}",
                     file=out,  # type: ignore[arg-type]
                 )
+    if getattr(args, "rebuilder", False):
+        pc_result = uninstall_pre_compact_hook(
+            path, command_basename="aelf-pre-compact-hook",
+        )
+        if pc_result.removed == 0:
+            print(
+                f"no rebuilder PreCompact hook in {pc_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"removed {pc_result.removed} rebuilder PreCompact entr"
+                f"{'y' if pc_result.removed == 1 else 'ies'} from {pc_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
     sl = uninstall_statusline(path)
     if sl.mode == "removed":
         print(
@@ -1079,6 +1160,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_search.set_defaults(func=_cmd_search)
 
+    p_rebuild = sub.add_parser(
+        "rebuild",
+        help=(
+            "v1.1 alpha: manually emit the context-rebuild block to "
+            "stdout (what the PreCompact hook would produce)"
+        ),
+    )
+    p_rebuild.add_argument(
+        "--transcript", default=None,
+        help=(
+            "path to a Claude Code session JSONL to read recent turns "
+            "from. Default: walk upward from cwd for "
+            ".git/aelfrice/transcripts/turns.jsonl."
+        ),
+    )
+    p_rebuild.add_argument(
+        "--n", type=int, default=None,
+        help="number of recent turns to seed the query (default: 10)",
+    )
+    p_rebuild.add_argument(
+        "--budget", type=int, default=None,
+        help="token budget for the rebuild block (default: 2000)",
+    )
+    p_rebuild.set_defaults(func=_cmd_rebuild)
+
     p_lock = sub.add_parser("lock", help="insert (or upgrade) a user-locked belief")
     p_lock.add_argument("statement", help="belief text to lock as ground truth")
     p_lock.set_defaults(func=_cmd_lock)
@@ -1230,6 +1336,14 @@ def build_parser() -> argparse.ArgumentParser:
             "log and ingested at compaction boundaries."
         ),
     )
+    p_setup.add_argument(
+        "--rebuilder", action="store_true",
+        help=(
+            "ALSO install the PreCompact hook for the v1.2 context "
+            "rebuilder (alpha). Idempotent; coexists with all other "
+            "hooks. Augment-mode only at v1.2.0a0."
+        ),
+    )
     p_setup.set_defaults(func=_cmd_setup)
 
     p_uninstall = sub.add_parser(
@@ -1317,6 +1431,10 @@ def build_parser() -> argparse.ArgumentParser:
             "also remove the four transcript-logger entries "
             "(UserPromptSubmit, Stop, PreCompact, PostCompact)."
         ),
+    )
+    p_unsetup.add_argument(
+        "--rebuilder", action="store_true",
+        help="also remove the rebuilder PreCompact hook entry.",
     )
     p_unsetup.set_defaults(func=_cmd_unsetup)
 
