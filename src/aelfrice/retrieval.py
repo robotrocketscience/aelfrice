@@ -487,6 +487,84 @@ def resolve_use_bm25f_anchors(
     return False
 
 
+_PLACEHOLDER_WARNED: set[str] = set()
+
+
+@dataclass(frozen=True)
+class LaneTelemetry:
+    """Per-lane counters from the most recent `retrieve()` /
+    `retrieve_with_tiers()` call. v1.5.0 #154 surface; consumed
+    by `aelf doctor` and the v1.6+ benchmark gates.
+
+    Counts are post-dedupe (a belief that L0 surfaced is not
+    counted again by L2.5 or L1). `bm25f_used` records whether
+    the BM25F sparse-matvec lane was the L1 implementation
+    (True) or the FTS5 path (False) for the call.
+    """
+
+    locked: int = 0
+    l25: int = 0
+    l1: int = 0
+    bfs: int = 0
+    bm25f_used: bool = False
+    posterior_weight: float = 0.0
+
+
+# Per-process snapshot of the most recent retrieval call. Test-
+# friendly and zero-overhead (one assignment per retrieve()).
+# Not thread-safe; callers that share a store across threads
+# should consume the per-call return values from
+# `retrieve_with_tiers` instead.
+_LAST_TELEMETRY: LaneTelemetry = LaneTelemetry()
+
+
+def last_lane_telemetry() -> LaneTelemetry:
+    """Return the LaneTelemetry of the most recent retrieve() call
+    in this process. Used by `aelf doctor` and benchmark gates."""
+    return _LAST_TELEMETRY
+
+
+def warn_placeholder_flags(start: Path | None = None) -> list[str]:
+    """Read every `[retrieval] use_<lane>` placeholder flag from
+    `.aelfrice.toml` and emit a stderr warning per flag set to
+    True. Returns the list of placeholder names that were warned
+    on (mostly for the test suite; callers can ignore the return
+    value).
+
+    Placeholder flags correspond to retrieval lanes that are
+    spec'd by #154 but ship across v1.6 / v1.7 (signed Laplacian,
+    heat kernel, posterior-full, HRR structural). Setting a
+    placeholder True at v1.5.0 is a no-op; the warning tells the
+    user the flag was recognised but the lane is not yet wired.
+
+    Fail-soft: an unreadable / malformed TOML produces no warning.
+    The intent is a forward-compat receipt, not a config gate.
+    """
+    warned: list[str] = []
+    for flag in PLACEHOLDER_FLAGS:
+        if flag in _PLACEHOLDER_WARNED:
+            continue
+        value = _read_toml_flag_for(flag, start)
+        if value is True:
+            print(
+                f"aelfrice retrieval: [{RETRIEVAL_SECTION}] {flag} = true "
+                f"recognised but the corresponding lane has not yet "
+                f"shipped (v1.5.0 placeholder; tracked under #154). "
+                f"No-op until the owning component lands.",
+                file=sys.stderr,
+            )
+            _PLACEHOLDER_WARNED.add(flag)
+            warned.append(flag)
+    return warned
+
+
+def _reset_placeholder_warnings() -> None:
+    """Test-only helper: clear the once-per-process warning set so
+    a test that toggles a placeholder flag and re-invokes the
+    warner sees the warning again. Not part of the public API."""
+    _PLACEHOLDER_WARNED.clear()
+
+
 def is_bfs_enabled(
     explicit: bool | None = None,
     *,
@@ -695,10 +773,15 @@ def retrieve(
     seeds from being re-surfaced; we additionally guard against
     overlap with L1 hits the seeds didn't include).
     """
+    global _LAST_TELEMETRY
     enabled = is_entity_index_enabled(entity_index_enabled)
     bfs_on = is_bfs_enabled(bfs_enabled)
     bm25f_on = resolve_use_bm25f_anchors(use_bm25f_anchors)
     weight = resolve_posterior_weight(posterior_weight)
+    # v1.5.0 #154: emit one stderr line per placeholder lane the
+    # user has set True in `.aelfrice.toml`. Fail-soft, once-per-
+    # process per flag.
+    warn_placeholder_flags()
 
     locked: list[Belief] = store.list_locked_beliefs()
     locked_ids: set[str] = {b.id for b in locked}
@@ -785,6 +868,14 @@ def retrieve(
                 out.append(hop.belief)
                 seen_ids.add(hop.belief.id)
                 used += cost
+    _LAST_TELEMETRY = LaneTelemetry(
+        locked=len(locked),
+        l25=len(l25),
+        l1=len(l1_packed),
+        bfs=len(out) - len(locked) - len(l25) - len(l1_packed),
+        bm25f_used=bm25f_on,
+        posterior_weight=weight,
+    )
     return out
 
 
@@ -821,10 +912,12 @@ def retrieve_with_tiers(
     BFS is off / produced nothing / bfs hits collide with prior
     tiers).
     """
+    global _LAST_TELEMETRY
     enabled = is_entity_index_enabled(entity_index_enabled)
     bfs_on = is_bfs_enabled(bfs_enabled)
     bm25f_on = resolve_use_bm25f_anchors(use_bm25f_anchors)
     weight = resolve_posterior_weight(posterior_weight)
+    warn_placeholder_flags()
 
     locked: list[Belief] = store.list_locked_beliefs()
     locked_ids_list: list[str] = [b.id for b in locked]
@@ -903,6 +996,14 @@ def retrieve_with_tiers(
                 bfs_chains.append(list(hop.path))
                 seen_ids.add(hop.belief.id)
                 used += cost
+    _LAST_TELEMETRY = LaneTelemetry(
+        locked=len(locked_ids_list),
+        l25=len(l25_ids_list),
+        l1=len(l1_ids_list),
+        bfs=len(bfs_chains),
+        bm25f_used=bm25f_on,
+        posterior_weight=weight,
+    )
     return out, locked_ids_list, l25_ids_list, l1_ids_list, bfs_chains
 
 
