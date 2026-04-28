@@ -2,124 +2,152 @@
 
 # aelfrice
 
-> Bayesian memory for AI coding agents. Local-only. Auditable.
+> Lock the rules your AI agent keeps forgetting. SQLite on your laptop. Auditable.
 
 [![PyPI](https://img.shields.io/pypi/v/aelfrice.svg)](https://pypi.org/project/aelfrice/)
 [![Python](https://img.shields.io/pypi/pyversions/aelfrice.svg)](https://pypi.org/project/aelfrice/)
 [![License](https://img.shields.io/pypi/l/aelfrice.svg)](LICENSE)
 [![CI](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml/badge.svg)](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml)
-[![Staging Gate](https://github.com/robotrocketscience/aelfrice/actions/workflows/staging-gate.yml/badge.svg)](https://github.com/robotrocketscience/aelfrice/actions/workflows/staging-gate.yml)
-[![Downloads](https://img.shields.io/pypi/dm/aelfrice.svg)](https://pypi.org/project/aelfrice/)
 
-> [!NOTE]
-> v1.0 ships the surface — local SQLite store, retrieval, the `apply_feedback` endpoint, the onboarding scanner, the CLI, an MCP server, Claude Code wiring, and a reproducible benchmark harness. **Retrieval ranking is BM25-only at v1.0** — feedback updates the math but doesn't yet move ranking. v1.1.0 added per-project DBs (one DB per `.git/`), `aelf migrate` from the legacy global store, and renamed `edges` → `threads` in user-facing surfaces. The v1.x line wires posterior into ranking and closes [known issues](docs/LIMITATIONS.md#known-issues-at-v10).
+You correct your agent. *"Got it,"* it says. Next session, same mistake.
 
-You had a doc with the conversation. You re-explained your stack last session. You wrote a runbook the agent didn't read. The notes you keep adding don't actually keep your agent from forgetting — they just give you more to maintain.
-
-aelfrice is a small SQLite-backed memory that the agent can't skip. Lock the rules you don't want forgotten. Onboard a project once. Every prompt thereafter gets the relevant slice injected before the agent answers.
-
-```
-No GPU. No network. No telemetry. No cloud.
-SQLite at ~/.aelfrice/memory.db. That's the whole runtime.
-```
-
-Every retrieval result is traceable to the beliefs and rules that produced it. Every state of the system is reproducible from its write log. We are not aware of another agent-memory system that combines bit-level reproducibility, named-rule traceability, write-log historical reconstruction, and audit comprehensible to a non-technical reviewer as a single system property. See [PHILOSOPHY § Determinism is the property](docs/PHILOSOPHY.md#determinism-is-the-property).
-
-## 60 seconds
+aelfrice gives the agent a memory you can lock down. You write the rule once. It gets injected into every prompt thereafter. No cross-references for the agent to skip, no markdown files to maintain.
 
 ```bash
-$ pip install aelfrice
-$ aelf onboard .
-$ aelf lock "Never push directly to main; use scripts/publish.sh"
-$ aelf setup        # wires the UserPromptSubmit hook into Claude Code
+pip install aelfrice
+aelf onboard .
+aelf lock "never push directly to main; use scripts/publish.sh"
+aelf setup       # wire the UserPromptSubmit hook into Claude Code
 ```
 
-Upgrading from v1.0.x? Run `aelf migrate` to copy beliefs from the legacy global DB at `~/.aelfrice/memory.db` into your project's per-project store at `<repo>/.git/aelfrice/memory.db` (dry-run by default; add `--apply` to write).
+Restart Claude Code. The next prompt that mentions "push" will already have your rule attached.
 
-Same operations are available as MCP tools and Claude Code slash commands. Full demo: [docs/QUICKSTART.md](docs/QUICKSTART.md).
+---
+
+## What it does
+
+When you submit a prompt in Claude Code, aelfrice's `UserPromptSubmit` hook fires before the model sees your message. It runs a two-layer search:
+
+```
+L0: locked beliefs   -> rules you marked permanent (always returned)
+L1: FTS5 keyword     -> SQLite full-text search, BM25-ranked
+```
+
+The matching beliefs come back as an `<aelfrice-memory>` block prepended to your prompt. The agent reads it as part of the prompt — it doesn't have to remember to check a file.
+
+```text
+<aelfrice-memory>
+[locked] never push directly to main; use scripts/publish.sh
+[locked] commits must be SSH-signed with ~/.ssh/id_rrs
+         the publish script runs gitleaks before tagging
+</aelfrice-memory>
+
+push the release
+```
+
+Default budget is 2,000 tokens per prompt. Locked beliefs always go first; the rest is BM25-ranked and truncated to fit.
+
+---
+
+## What it remembers
+
+| You run | It stores |
+|---|---|
+| `aelf lock "never commit .env files"` | Permanent rule. Returned on every retrieval. |
+| `aelf onboard .` | Walks the project — git log, README headings, code structure — and ingests structural facts. |
+| `aelf feedback <id> used` | Bayesian feedback. Strengthens the belief's posterior. |
+| `aelf feedback <id> harmful` | Weakens it. After enough independent harmfuls, locks auto-demote. |
+
+Each belief carries a `(α, β)` Beta-Bernoulli posterior. `α / (α+β)` is the confidence. Locks short-circuit decay; everything else fades over time so stale beliefs eventually drop out of retrieval.
+
+```bash
+aelf stats
+# beliefs:    142   locked: 8   threads: 67
+# feedback:   31    avg_confidence: 0.71
+```
+
+---
+
+## Why files don't solve this
+
+The standard workaround for "agent keeps forgetting" is more files: `STATE.md`, `DECISIONS.md`, a CLAUDE.md with cross-references to runbooks. Every cross-reference is a bet that the agent will read the file, find the right section, and follow what it says.
+
+The failure modes are predictable. The agent reads the rule and runs `git push` anyway. Cross-references break silently after compaction. State files rot the moment you forget to update them. Each new failure mode begets another file.
+
+aelfrice replaces the chain with a mechanism. The hook injects matched beliefs *as part of your prompt*, before the agent sees it. Nothing voluntary. Nothing the agent can skip.
+
+| Manual approach | What breaks | aelfrice |
+|---|---|---|
+| Rules in CLAUDE.md | Agent reads them, doesn't follow them | Injected per-prompt, not per-session |
+| Cross-references | Agent skips or reads the wrong section | Matched beliefs injected directly |
+| Hand-maintained state files | One missed update breaks the chain | State is the SQLite DB; no manual sync |
+
+---
+
+## Determinism is the property
+
+Every retrieval is reproducible bit-for-bit from the write log and the code. No embeddings, no learned re-rankers, no LLM in the retrieval path. *"Why did this rule surface for this query?"* has a finite answer that bottoms out in named beliefs created by named user actions at named timestamps.
+
+That property is what makes aelfrice usable in regulated contexts. It's also what costs you fuzzy semantic recall — that's a deliberate trade. See [PHILOSOPHY.md](docs/PHILOSOPHY.md).
+
+---
+
+## Your data stays yours
+
+- **100% local.** SQLite at `<repo>/.git/aelfrice/memory.db`. No network calls in the retrieval path.
+- **No telemetry.** No accounts, no signup, no phone-home.
+- **No GPU, no vector DB.** Stdlib + SQLite. The optional `[mcp]` extra adds `fastmcp`. That's it.
+- **Per-project isolation.** Beliefs from project A cannot leak into project B (they live in different `.git/` directories).
+- **Removable.** `aelf uninstall --archive backup.aenc` encrypts the DB to a file, then deletes it. Or `--purge` for a full wipe.
+
+[docs/PRIVACY.md](docs/PRIVACY.md) for verifiable specifics.
+
+---
+
+## What's in the box
+
+| Surface | Count | Where |
+|---|---|---|
+| CLI subcommands | 22 | `aelf <subcommand>` — see [COMMANDS](docs/COMMANDS.md) |
+| MCP tools | 9 | called by the agent automatically — see [MCP](docs/MCP.md) |
+| Slash commands | 22 | `/aelf:*` in Claude Code — see [SLASH_COMMANDS](docs/SLASH_COMMANDS.md) |
+| Hook events | 4 | UserPromptSubmit, PreCompact, Stop, PostToolUse (opt-in) |
+
+The CLI, MCP, and slash command surfaces are 1:1 wrappers over the same library. Anything you can do in one, you can do in the others.
+
+---
 
 ## Roadmap
 
-| | Status | |
+| Version | Status | Theme |
 |---|---|---|
-| v0.1 – v1.0 | **shipped** | core memory, CLI, MCP, hook wiring, synthetic benchmark, PyPI publish |
-| v1.0.1 | **shipped** | launch fix-up — hook→retrieval wiring, onboard noise, `aelf --version` |
-| v1.0.2 | **shipped** | per-project install routing, `aelf doctor`, release-docs CI gate |
-| v1.0.3 | **shipped** | contradiction tie-breaker + `aelf resolve`, onboard perf regression, CONFIG.md |
-| v1.1.0 | **shipped** | project identity (`.git/aelfrice/`), edges→threads, status/health split, `aelf migrate`, git-recency onboard |
-| v1.2.0 | **shipped** | auto-capture pipeline (transcript-ingest, commit-ingest, SessionStart), `agent_inferred → user_validated` promotion, triple extractor, ingest-enrichment schema, `--batch` JSONL ingest, CLI consolidation, `INEDIBLE` per-file opt-out |
+| v1.0.x | shipped | core memory, CLI, MCP, hook wiring, install routing |
+| v1.1.0 | shipped | per-project DBs (`.git/aelfrice/`), `aelf migrate`, `edges`→`threads` rename, `aelf health` rewrite |
+| v1.2.0 | shipped | auto-capture pipeline (transcript-ingest, commit-ingest, SessionStart), `agent_inferred → user_validated` promotion, triple extractor, `--batch` JSONL ingest, CLI consolidation, `INEDIBLE` per-file opt-out |
 | v1.3 | planned | retrieval wave — entity index + BFS multi-hop + LLM classification |
-| v2.0 | planned | feature parity with the earlier research line + full benchmark reproducibility |
+| v2.0 | planned | feature parity with the original research line + benchmark reproducibility |
 
-Per-version detail with deliverables, recovery inventory, and structural-fix rationale: [docs/ROADMAP.md](docs/ROADMAP.md). Per-issue tracking: [docs/LIMITATIONS.md](docs/LIMITATIONS.md#known-issues-at-v10).
+Per-version detail: [docs/ROADMAP.md](docs/ROADMAP.md). Open issues: [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
-## Install
+---
 
-```bash
-pip install aelfrice                # core (zero runtime deps)
-pip install "aelfrice[mcp]"         # add MCP server
-pip install "aelfrice[archive]"     # add encrypted DB archive on uninstall
-aelf --version                       # confirm install
-aelf setup                           # wire hook + statusline into Claude Code
-aelf doctor                          # verify hook commands resolve
-aelf health                          # confirm wiring + store init
+## Documentation
+
+- **Getting started:** [Install](docs/INSTALL.md) · [Quickstart](docs/QUICKSTART.md)
+- **Reference:** [Commands](docs/COMMANDS.md) · [MCP](docs/MCP.md) · [Slash commands](docs/SLASH_COMMANDS.md) · [Config](docs/CONFIG.md)
+- **Background:** [Architecture](docs/ARCHITECTURE.md) · [Philosophy](docs/PHILOSOPHY.md) · [Privacy](docs/PRIVACY.md) · [Limitations](docs/LIMITATIONS.md)
+- **Development:** [Releasing](docs/RELEASING.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+
+## Citation
+
+```bibtex
+@software{aelfrice2026,
+  author = {robotrocketscience},
+  title  = {aelfrice: deterministic Bayesian memory for AI coding agents},
+  year   = {2026},
+  url    = {https://github.com/robotrocketscience/aelfrice},
+  license = {MIT}
+}
 ```
 
-`aelf setup` wires two things into Claude Code's `settings.json`:
-
-1. The **UserPromptSubmit hook** (`aelf-hook`) which injects relevant beliefs into every Claude Code prompt.
-2. The **statusline notifier** (`aelf statusline`) which shows an orange `⬆ aelfrice X.Y.Z available, run: aelf upgrade` banner *only* when an update is pending. When you're up to date the banner is empty and your statusline looks unchanged.
-
-`aelf setup` auto-routes the install per-project: when run from a project venv it writes `<project>/.claude/settings.json` pointing at `<project>/.venv/bin/aelf-hook`; when run outside any project it writes `~/.claude/settings.json` pointing at the first `aelf-hook` on `$PATH` (typically a `pipx`-installed global). Explicit `--scope user|project` overrides.
-
-If you already have a custom `statusLine` configured, `aelf setup` composes its snippet onto the end of your command (preserving your bar). If your existing command uses pipes, here-docs, `&&`, backticks, or backslashes it's left untouched and you get a one-line hint about manual composition.
-
-`--no-statusline` opts out of the auto-wire if you want hook-only.
-
-[docs/INSTALL.md](docs/INSTALL.md) covers Codex wiring, generic MCP hosts, and troubleshooting.
-
-## Upgrade
-
-```bash
-aelf upgrade           # prints the right pip-upgrade line for your env
-aelf upgrade --check   # yes/no, no command line printed
-```
-
-`aelf upgrade` detects venv vs pipx vs system and tells you the exact line. It does **not** execute pip itself: replacing the running package mid-process is unreliable on Windows and can leave a broken interpreter. You run the line.
-
-When an update is available the output also includes the published wheel SHA-256 plus the PyPI release URL so you can hash-pin the install if you want.
-
-The orange statusline banner appears automatically when an update is pending and disappears once you're up to date — no manual refresh needed.
-
-Opt out of the update notifier at any time with `export AELF_NO_UPDATE_CHECK=1`.
-
-## Uninstall
-
-aelfrice has an explicit teardown command. You **must** pick exactly one disposition for the brain-graph DB:
-
-```bash
-aelf uninstall --keep-db       # leave the resolved DB alone (safe)
-aelf uninstall --archive ~/aelf-backup.aenc   # encrypt then delete
-aelf uninstall --purge         # permanently delete (redundant gates fire)
-pip uninstall aelfrice         # finally, remove the wheel
-```
-
-Verify removal:
-
-```bash
-aelf --version 2>&1 | grep -q "aelfrice" || echo "removed"
-```
-
-Details:
-
-- **`--keep-db`** — DB preserved. Default also runs `unsetup` (removes hook + statusline). Pass `--keep-hook` to keep those too.
-- **`--archive PATH`** — DB encrypted (AES-128-CBC + HMAC via Fernet, scrypt-derived key) to PATH, then original deleted. Password is read interactively (twice, must match) or via `--password-stdin`. Recover later with `python -c "from aelfrice.lifecycle import decrypt_archive; open('out.db','wb').write(decrypt_archive('PATH','pw'))"`. Requires `pip install 'aelfrice[archive]'`.
-- **`--purge`** — Permanently deletes the DB. Three gates fire before deletion: (1) the flag must be passed explicitly, (2) you must type `PURGE` verbatim, (3) a final `[y/N]` confirmation. `--yes` skips the prompts but does **not** auto-pass `--purge`.
-
-[docs/INSTALL.md](docs/INSTALL.md#uninstall) has the full uninstall reference including archive-recovery details.
-
-## Docs
-
-[QUICKSTART](docs/QUICKSTART.md) · [COMMANDS](docs/COMMANDS.md) · [MCP](docs/MCP.md) · [SLASH_COMMANDS](docs/SLASH_COMMANDS.md) · [ARCHITECTURE](docs/ARCHITECTURE.md) · [CONFIG](docs/CONFIG.md) · [PHILOSOPHY](docs/PHILOSOPHY.md) · [PRIVACY](docs/PRIVACY.md) · [LIMITATIONS](docs/LIMITATIONS.md) · [CHANGELOG](CHANGELOG.md)
-
-[CONTRIBUTING](CONTRIBUTING.md) · [SECURITY](SECURITY.md) · [CITATION](CITATION.cff) · [MIT](LICENSE)
+[MIT](LICENSE)

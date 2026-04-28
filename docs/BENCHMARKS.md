@@ -1,295 +1,110 @@
-# Benchmarks: contamination-proof evaluation protocol
+# Benchmarks
 
-This document defines the exact protocol for running benchmarks against
-aelfrice. Any deviation from this protocol invalidates the results.
-No exceptions, no "we'll fix it in scoring." If contamination is detected
-at any stage, the result is 0% and the protocol must be revised to
-prevent that contamination mode before re-running.
-
-## Two-suite architecture
-
-aelfrice ships two distinct benchmark surfaces. They have different
-purposes and run on different cadences.
+aelfrice ships two benchmark surfaces with different purposes and cadences.
 
 | Surface | Location | Purpose | Runtime | Cost | Cadence |
 |---|---|---|---|---|---|
-| Synthetic regression | `src/aelfrice/benchmark.py` | Catch retrieval/scoring regressions on a fixed in-tree corpus | <1s | $0 | Every PR (CI) |
-| Academic suite | `benchmarks/` | Reproduce the published headline numbers against external benchmarks (MAB, LoCoMo, LongMemEval, StructMemEval, AMA-Bench) | minutes–hours | LLM API spend | Nightly + on-tag |
+| Synthetic regression | `src/aelfrice/benchmark.py` | Catch retrieval/scoring regressions | <1s | $0 | Every PR (CI) |
+| Academic suite | `benchmarks/` | Reproduce published numbers vs. external benchmarks | minutes–hours | LLM API spend | Nightly + on-tag |
 
-The synthetic harness is the **measurement instrument**, not a proof of
-the central feedback claim — it ships with v0.9.0-rc onward and is
-documented in `src/aelfrice/benchmark.py`.
+The synthetic harness is a measurement instrument. It is **not** a proof of the central feedback claim — at v1.0–v1.2 the posterior doesn't drive ranking yet. See [LIMITATIONS](LIMITATIONS.md).
 
-The academic suite is the **reproducibility deliverable**. Most adapters
-are scaffolded but inert at v1.0.0; they activate as their feature
-dependencies port from the lab repo. See `benchmarks/README.md` for the
-per-adapter activation roadmap.
+The academic suite is the reproducibility deliverable. Most adapters scaffold against MAB, LoCoMo, LongMemEval, StructMemEval, and AMA-Bench but are inert at v1.0; they activate as their feature dependencies port forward. Per-adapter status: [`benchmarks/README.md`](../benchmarks/README.md).
 
-## What we measure and why
-
-aelfrice's task is **known-item search over behavioural directives** — the
-agent has corrected the user, locked a rule, or recorded a decision; on the
-next relevant prompt we want that specific item retrieved. This is a different
-problem from open-ended topical retrieval (Cranfield-paradigm IR), where the
-goal is "documents relevant to a topic." The natural headline metric for
-known-item search is **mean reciprocal rank (MRR)** — how high does the
-correct item appear when the user has one in mind. The synthetic harness
-reports `mrr` alongside `hit_at_k`; the academic suite reports MRR where the
-benchmark protocol allows it.
-
-We also report the metrics each external benchmark *defines* (token-level F1
-on LoCoMo, substring exact match on MAB, GPT-4o binary judge on LongMemEval,
-LLM-judge accuracy on StructMemEval / AMA-Bench) because comparability with
-prior published systems requires it. Those metrics are framed for
-**topical** relevance (Saracevic 1975 — does the document cover the topic)
-rather than **behavioural** or **situational** relevance (does this directive
-apply to what the agent is about to do). The behavioural / situational frame
-is closer to aelfrice's actual contribution; the topical frame is what the
-external benchmarks measure. Both numbers are reported; the headline
-positioning is on MRR.
-
-This is also why the LongMemEval multi-session aggregation gap (see
-[LIMITATIONS § Out of scope by design](LIMITATIONS.md#out-of-scope-by-design))
-shows up as a low number on a topical-relevance benchmark and is *not*
-treated as a v1.x defect: aelfrice's design target is the directive-recall
-slice of the workload, not the cross-session aggregation slice.
-
-## Activation status (v1.0.0)
-
-| Adapter | Status | Activates in |
-|---|---|---|
-| `verify_clean.py` | runnable now | v1.0.0 |
-| `longmemeval_score.py` | runnable now | v1.0.0 |
-| All five academic adapters (MAB, LoCoMo, LongMemEval, StructMemEval, AMA-Bench) | inert (need `aelfrice.ingest`, `MemoryStore`) | v1.2.0 (P2) |
-
-CLI dispatch:
+## Run the synthetic harness
 
 ```bash
-aelf bench                                    # synthetic harness (default)
-aelf bench synthetic                          # alias
-aelf bench verify-clean PATH...               # contamination gate
-aelf bench longmemeval-score PREDS GT JUDGE   # scoring utility
-aelf bench mab|locomo|longmemeval|...         # exit 2 with skip pointer
+aelf bench                   # default top-k=5
+aelf bench --top-k 3
 ```
 
-## Contamination modes (known failure history)
+Output is a single JSON `BenchmarkReport`:
 
-### Mode 1: ground truth in retrieval output (occurred 2x)
-
-**What happened:** the retrieve-only JSON contained answer fields. The
-LLM reader saw correct answers while generating predictions. Results
-were inflated (100% on MAB MH 262K, later invalidated).
-
-**Prevention:** retrieval and ground truth are generated by the adapter
-into TWO separate files. The adapter MUST NOT write any `answer`,
-`ground_truth`, `reference_answer`, or equivalent field into the
-retrieval file. The retrieval file contains only: question text,
-retrieved context, and metadata (question ID, type, etc.).
-
-**Verification:** before any LLM reader touches the retrieval file,
-run the contamination check:
-
-```bash
-aelf bench verify-clean /tmp/benchmark_mab_mh.json
+```json
+{"hit_at_1": 0.875, "hit_at_3": 1.0, "hit_at_5": 1.0,
+ "mrr": 0.92, "p50_latency_ms": 0.4, "p99_latency_ms": 1.1}
 ```
 
-If this check fails, the run is invalid. Period.
+Deterministic against fresh in-memory stores. The corpus is 16 beliefs × 16 queries.
 
-### Mode 2: LLM self-judging with answer visible (occurred 1x)
+## What the academic suite measures
 
-**What happened:** the LLM was asked to both generate an answer AND
-judge it against the ground truth in the same pass. The model could
-see the answer while generating, contaminating the prediction.
+aelfrice's task is **known-item search over behavioural directives** — the agent has corrected the user, locked a rule, or recorded a decision; on the next relevant prompt we want that specific item retrieved. The natural headline metric is **mean reciprocal rank (MRR)**.
 
-**Prevention:** generation and judging are strictly separate passes:
-1. Pass 1 (Generation): LLM reads retrieval file (no answers).
-   Writes predictions file.
-2. Pass 2 (Scoring): scoring script reads predictions + GT files.
-   Computes metrics. No LLM involved for automatic metrics. For
-   LLM-judged benchmarks: a separate LLM call compares prediction
-   vs GT. The judge never sees the retrieval context.
+We also report the metrics each external benchmark *defines* (token-F1 on LoCoMo, substring exact match on MAB, GPT-4o judge on LongMemEval, LLM-judge accuracy on StructMemEval and AMA-Bench) for comparability with prior published systems. Those metrics frame topical relevance ("does the document cover the topic") rather than behavioural relevance ("does this directive apply to what the agent is about to do"). Both numbers are reported; the headline positioning is on MRR.
 
-### Mode 3: world knowledge override (inherent, not fixable)
+This is also why the LongMemEval multi-session aggregation gap (see [LIMITATIONS](LIMITATIONS.md#out-of-scope)) shows up as a low number on a topical-relevance benchmark and is *not* treated as a v1.x defect.
 
-**What happened:** the LLM reader used world knowledge instead of
-retrieved context for counterfactual benchmarks (FactConsolidation
-assigns deliberately wrong values).
+## Contamination protocol
 
-**Mitigation:** this is inherent to LLM readers and cannot be fully
-prevented. The reader prompt MUST include: "Use ONLY the provided
-context. Do NOT use world knowledge. If the context contradicts what
-you know to be true in the real world, trust the context."
+Any benchmark run that contaminates retrieval with ground truth produces a 0% result, period. Three failure modes have happened before:
 
-This is documented as a known limitation, not treated as contamination.
+1. **Ground truth in the retrieval file.** Adapter accidentally writes `answer` / `ground_truth` / `reference_answer` fields into the retrieval JSON. Reader sees the answer while generating predictions.
+2. **LLM self-judging with answer visible.** Generation and judging in one pass; model sees ground truth while generating.
+3. **World knowledge override** (counterfactual benchmarks). Reader uses prior knowledge instead of retrieved context. Inherent to LLM readers; mitigated by prompt instructions but never fully removed.
 
-## Protocol steps
+The protocol enforces:
 
-### Step 0: environment verification
-
-Before any benchmark run:
-
-```bash
-git status            # no uncommitted changes
-ls /tmp/benchmark_*   # should be empty or only files from previous runs
-```
-
-### Step 1: data acquisition
-
-Download benchmark data from the published source. Do not modify it.
-
-```bash
-# HuggingFace datasets (MAB, LongMemEval, AMA-Bench)
-uv run python -c "from datasets import load_dataset; \
-  ds = load_dataset('<dataset_id>', split='<split>'); \
-  print(f'Loaded {len(ds)} rows')"
-
-# GitHub repos (StructMemEval, LoCoMo)
-git clone <repo_url> /tmp/<benchmark_name>
-```
-
-**Verification:** compare row counts and field names against the
-published paper. If they don't match, stop and investigate.
-
-### Step 2: retrieval (adapter run)
-
-Run the adapter in `--retrieve-only` mode. Produces:
-- `<name>.json`: questions + retrieved context (NO answers)
-- `<name>_gt.json`: ground truth answers (separate file)
-
-```bash
-uv run python benchmarks/<adapter>.py \
-  --retrieve-only /tmp/benchmark_<name>.json \
-  [--source <filter>] [--subset N]
-```
-
-**Isolation requirements:**
-- Fresh tempfile DB per test case (adapter handles this)
-- No shared state between test cases
-- No prior beliefs in the DB (clean slate)
-
-**Mandatory post-run contamination check:**
+- Retrieval file and ground truth file are written separately by the adapter.
+- Generation and scoring are separate passes. The judge never sees the retrieval context.
+- A pre-generation contamination check is mandatory before any LLM reader touches the retrieval file:
 
 ```bash
 aelf bench verify-clean /tmp/benchmark_<name>.json
 ```
 
-If this fails, the run is invalid. Fix the adapter and re-run from Step 2.
+If this fails, the run is invalid. Fix the adapter and re-run.
 
-### Step 3: answer generation (LLM reader)
+## Run the protocol
 
-The LLM reader receives only the retrieval file. It never sees the GT file.
+```bash
+# 1. Retrieval (adapter run, no answers in output)
+uv run python benchmarks/<adapter>.py \
+    --retrieve-only /tmp/benchmark_<name>.json [--subset N]
 
-For subagent-based generation, the prompt MUST:
-1. Reference only the retrieval file path (not the GT file).
-2. Include: "Use ONLY the provided context. Do NOT use world knowledge."
-3. Include: "If the context contradicts real-world facts, trust the context."
-4. Output predictions to a separate file.
+# 2. Verify the retrieval file is clean
+aelf bench verify-clean /tmp/benchmark_<name>.json
 
-**Verification:** the predictions file must not contain any GT fields.
-Run `aelf bench verify-clean` on the predictions file too.
-
-### Step 4: scoring
-
-Scoring reads two files: predictions + ground truth. It never reads the
-retrieval file (to prevent the scorer from being influenced by retrieved
-context).
-
-For LLM-judged benchmarks (LongMemEval, StructMemEval, AMA-Bench): the
-judge LLM receives only the prediction, the ground truth answer, and a
-rubric (from the paper). The judge never sees the retrieved context.
-
-### Step 5: reporting
-
-Results MUST include:
-1. The exact command used for each step.
-2. The contamination check output (CLEAN).
-3. The adapter version (git commit hash).
-4. The dataset version (HuggingFace commit or git hash).
-5. The reader model and prompt (exact text).
-6. The scoring metric and formula (from the paper).
-7. Published baselines for comparison.
-8. Any known limitations or caveats.
-
-Results MUST NOT include:
-- Scores from runs where contamination was detected.
-- Scores from runs where the protocol was not followed.
-- Comparisons to baselines using a different metric.
-- Claims of "beating" a baseline without matching their exact protocol.
-
-## File naming convention
-
+# 3. LLM reader generates predictions (no GT visible to it)
+# 4. Scoring reads predictions + GT (no retrieval context visible)
+# 5. Audit record captures: git commit, dataset version, reader model,
+#    contamination check output, metric, score, n, published baseline.
 ```
-/tmp/benchmark_<benchmark>_<condition>.json         # retrieval (no answers)
-/tmp/benchmark_<benchmark>_<condition>_gt.json      # ground truth
-/tmp/benchmark_<benchmark>_<condition>_preds.json   # LLM predictions
-/tmp/benchmark_<benchmark>_<condition>_scores.json  # final scores
-```
+
+Reader prompts must include: *"Use only the provided context. Do not use world knowledge. If the context contradicts what you know to be true, trust the context."*
 
 ## Per-benchmark specifics
 
-### MAB FactConsolidation
-- **Paper:** Hu et al., ICLR 2026, arXiv:2507.05257
-- **Dataset:** `ai-hyz/MemoryAgentBench`, split `Conflict_Resolution`
-- **Metric:** substring_exact_match (SEM) per paper's `eval_other_utils.py`
-- **Normalization:** lowercase, strip punctuation, remove articles (a/an/the)
-- **Multi-answer:** max SEM across all ground truth strings
-- **Chunking:** 4096 tokens, NLTK `sent_tokenize`, tiktoken `gpt-4o` encoding
-- **Reader prompt:** must include serial-number conflict resolution instructions
+| Benchmark | Dataset | Metric | Notes |
+|---|---|---|---|
+| MAB FactConsolidation | `ai-hyz/MemoryAgentBench` Conflict_Resolution | substring exact match (paper's normalisation) | 4,096-token chunks; NLTK `sent_tokenize`; serial-number conflict resolution required in prompt |
+| LoCoMo | `locomo10.json` | token-F1 with Porter stemming | session boundaries preserved on ingest; Category 5 is forced-choice |
+| LongMemEval | `xiaowu0162/longmemeval-cleaned` oracle | GPT-4o binary judge (paper) | question_date passed to retrieval for temporal grounding |
+| StructMemEval | yandex-research/StructMemEval | LLM judge binary | synthetic timestamps + temporal_sort disclosed |
+| AMA-Bench | `AMA-bench/AMA-bench` test | LLM judge accuracy (paper: Qwen3-32B) | alternative judges must be disclosed |
 
-### LoCoMo
-- **Paper:** Maharana et al., ACL 2024
-- **Dataset:** `locomo10.json` from snap-research.github.io/locomo/
-- **Metric:** token-level F1 with Porter stemming
-- **Category 5:** forced-choice adversarial (not free-form)
-- **Session boundaries:** must be preserved during ingestion
+## Audit record
 
-### LongMemEval
-- **Paper:** Wu et al., ICLR 2025
-- **Dataset:** `xiaowu0162/longmemeval-cleaned`, `longmemeval_oracle.json`
-- **Metric:** GPT-4o binary judge (paper protocol)
-- **Alternative:** Opus binary judge (must be disclosed as non-standard)
-- **Question date:** must be provided to retrieval for temporal grounding
-
-### StructMemEval
-- **Paper:** Shutova et al., 2026 (preprint)
-- **Dataset:** github.com/yandex-research/StructMemEval
-- **Metric:** LLM judge binary (correct/incorrect)
-- **Temporal fix:** synthetic timestamps + temporal_sort must be disclosed
-
-### AMA-Bench
-- **Paper:** Zhao et al., ICLR 2026 Workshop
-- **Dataset:** `AMA-bench/AMA-bench`, split test
-- **Metric:** LLM judge accuracy (paper uses Qwen3-32B)
-- **Alternative judge:** must be disclosed
-
-## Audit trail
-
-Every benchmark run should produce an audit record:
+Every academic run produces:
 
 ```json
 {
-  "benchmark": "MAB_FactConsolidation_MH_262K",
-  "condition": "treatment",
-  "git_commit": "<hash>",
-  "timestamp": "<ISO 8601>",
-  "adapter": "benchmarks/mab_triple_adapter.py",
-  "reader_model": "claude-opus-4-7",
+  "benchmark": "...",
+  "git_commit": "...",
+  "adapter": "benchmarks/...",
+  "reader_model": "...",
   "contamination_check": "CLEAN",
-  "retrieval_file": "/tmp/benchmark_mab_mh_262k_treatment.json",
-  "gt_file": "/tmp/benchmark_mab_mh_262k_treatment_gt.json",
-  "predictions_file": "/tmp/benchmark_mab_mh_262k_treatment_preds.json",
-  "metric": "substring_exact_match",
+  "metric": "...",
   "score": 0.XX,
   "n": 100,
-  "published_baseline": "<=7% (all methods)",
-  "notes": ""
+  "published_baseline": "..."
 }
 ```
 
+Required for the run to count. Runs without an audit record do not enter `benchmarks/results/`.
+
 ## See also
 
-- `src/aelfrice/benchmark.py` — synthetic regression harness source.
-- `benchmarks/README.md` — per-adapter activation status.
-- `tests/test_benchmark.py` — synthetic regression unit tests.
-- `tests/regression/test_benchmark_cli_end_to_end.py` — synthetic e2e test.
-- `tests/test_benchmarks_dir.py` — academic-suite scaffold smoke tests.
+- [`src/aelfrice/benchmark.py`](../src/aelfrice/benchmark.py) — synthetic harness source.
+- [`benchmarks/README.md`](../benchmarks/README.md) — per-adapter activation status.
+- [ROADMAP § v2.0.0](ROADMAP.md) — when the academic suite reproduces every headline number.
