@@ -10,6 +10,10 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+### Added (toward v1.2.0)
+
+- **Triple extractor** ([docs/triple_extractor.md](docs/triple_extractor.md)). New `aelfrice.triple_extractor` module with `extract_triples(text) -> list[Triple]` (pure regex over a fixed pattern bank — six relation families covering `SUPPORTS`, `CITES`, `CONTRADICTS`, `SUPERSEDES`, `RELATES_TO`, `DERIVED_FROM`, with active and passive forms) and `ingest_triples(store, triples, session_id=None) -> IngestResult` (resolves subject/object beliefs by content-hash lookup, creating with the project default prior when missing; inserts edges with `anchor_text` populated from the citing prose; idempotent on re-run; self-edges dropped). All triple-derived beliefs share a canonical id space via the `triple` source label, so the same noun phrase resolves to the same belief id across every extraction call site. Stdlib-only; no LLM, no POS tagger, no embedding. Reusable by every v1.x prose-ingesting caller — the v1.2.0 commit-ingest hook, transcript-ingest, manual `aelf remember` calls, and the v1.3.0 entity-index path. 38 tests cover the per-pattern templates, negative cases, anchor-text substring guarantee, idempotency, session_id propagation, and self-edge handling.
+
 ## [1.1.0] - 2026-04-27
 
 Minor release: project identity, structural auditor, onboarding
