@@ -2,13 +2,13 @@
 
 What aelfrice doesn't do yet. Tracked openly.
 
-## The big one: feedback doesn't drive ranking
+## The big one: feedback doesn't drive ranking (lifted at v1.3.0, partially)
 
-`apply_feedback` updates `(α, β)` and writes an audit row. The posterior mean is exposed via `aelf stats` and the MCP. But L1 retrieval still orders hits by `bm25(beliefs_fts)` alone, not by posterior.
-
-Concretely: marking a belief `harmful` weakens its math, but the next retrieval that matches its keywords will still surface it. Ranking that consumes the posterior lands in the v1.3 retrieval wave.
+Through v1.2.x: `apply_feedback` updates `(α, β)` and writes an audit row. The posterior mean is exposed via `aelf stats` and the MCP. But L1 retrieval orders hits by `bm25(beliefs_fts)` alone, not by posterior. Marking a belief `harmful` weakens its math, but the next retrieval that matches its keywords still surfaces it.
 
 The benchmark harness ships at v1.0 as the measurement instrument. It is not yet a proof of the feedback claim.
+
+**At v1.3.0:** ranking begins to consume the posterior. L1 score becomes `log(bm25) + 0.5 * log(posterior_mean)`; locked beliefs (L0) bypass scoring as before; the cache invalidates correctly through the existing store-mutation hook. **Partial** because the full feedback-into-ranking eval — 10-round MRR uplift, ECE calibration, BM25F + heat-kernel composition — lands at v2.0.0. See [`docs/bayesian_ranking.md`](bayesian_ranking.md) for the v1.3 contract.
 
 ## No semantic similarity
 
