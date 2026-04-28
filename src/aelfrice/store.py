@@ -289,6 +289,10 @@ class MemoryStore:
             self._conn.execute(stmt)
         self._conn.commit()
         self._invalidation_callbacks: list[Callable[[], None]] = []
+        # v1.3 entity-index one-shot backfill. Skipped on a v1.3-fresh
+        # store (no rows in beliefs yet) — the marker just stamps to
+        # the current time so the next open is a no-op. Idempotent.
+        self._maybe_backfill_entity_index()
 
     def close(self) -> None:
         self._conn.close()
@@ -503,6 +507,59 @@ class MemoryStore:
         )
         row = cur.fetchone()
         return int(row["n"]) if row else 0
+
+    def _maybe_backfill_entity_index(self) -> int:
+        """One-shot backfill of belief_entities for pre-v1.3 stores.
+
+        First open of a v1.3+ binary against any store (fresh or
+        legacy) finds no `entity_backfill_complete` row in
+        `schema_meta` and re-extracts entities for every existing
+        belief. Idempotent: subsequent opens see the stamped marker
+        and short-circuit. Re-running by dropping the marker also
+        no-ops because `INSERT OR IGNORE` skips duplicates against
+        the composite PK.
+
+        Returns the number of new rows inserted (0 on a stamped
+        store; positive on the first run against a non-empty
+        legacy store; 0 on a fresh v1.3 store).
+        """
+        if self.get_schema_meta(SCHEMA_META_ENTITY_BACKFILL):
+            return 0
+        from aelfrice.entity_extractor import extract_entities
+        ids = self.list_belief_ids()
+        inserted = 0
+        for bid in ids:
+            cur = self._conn.execute(
+                "SELECT content FROM beliefs WHERE id = ?", (bid,)
+            )
+            row = cur.fetchone()
+            if row is None:
+                continue
+            content = str(row["content"])
+            entities = extract_entities(content)
+            if not entities:
+                continue
+            rows = [
+                (bid, e.lower, e.raw, e.kind, e.span_start, e.span_end)
+                for e in entities
+            ]
+            cur2 = self._conn.executemany(
+                "INSERT OR IGNORE INTO belief_entities "
+                "(belief_id, entity_lower, entity_raw, kind, "
+                "span_start, span_end) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            if cur2.rowcount > 0:
+                inserted += cur2.rowcount
+        # Stamp the marker even on an empty-store run so later opens
+        # short-circuit. The value is the ISO timestamp of the run;
+        # health.py surfaces it as `entity_index_backfilled_at`.
+        self.set_schema_meta(
+            SCHEMA_META_ENTITY_BACKFILL,
+            datetime.now(timezone.utc).isoformat(),
+        )
+        return inserted
 
     def belief_entities_for(self, belief_id: str) -> list[tuple[str, str, str]]:
         """List of (entity_lower, entity_raw, kind) for one belief.
