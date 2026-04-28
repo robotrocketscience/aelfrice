@@ -47,6 +47,17 @@ Second patch. Two threads:
 - **Per-project install routing + `aelf doctor`.** `aelf setup` auto-detects scope (`project` if `cwd/.venv` matches the active interpreter, else `user`) and writes an absolute `aelf-hook` path so one machine can route per-project venvs to their own hook alongside a global `pipx`-installed fallback without bare-name `$PATH` collisions. `aelf doctor` is a settings linter that scans user- and project-scope `settings.json` for hook + statusline commands whose program token doesn't resolve, exits `1` on findings so it can gate CI. Closes [#81](https://github.com/robotrocketscience/aelfrice/issues/81).
 - **Release-docs CI gate + post-release docs sweep.** The v1.0.1 cut shipped to PyPI with the README roadmap row still saying `v1.0.1 | next`. New `staging-gate.yml` `release-docs-check` job enforces, on any version-bump PR, that `CHANGELOG.md` has the matching `[X.Y.Z]` section + compare-link footnote and that `README.md` has no roadmap row marking the released version as `next` / `planned`. New `post-release-docs-issue.yml` opens a tracking issue on `release.published` for second-order docs the gate can't verify (RELEASING.md test counts, ROADMAP.md narrative).
 
+## v1.0.3 — contradiction tie-breaker + onboard perf + CONFIG.md
+
+Third patch. Three feature PRs and a docs PR landed between v1.0.2 and v1.0.3, surfaced to PyPI as v1.0.3. See [CHANGELOG § v1.0.3](../CHANGELOG.md#103---2026-04-27) for the full surface.
+
+- **Contradiction tie-breaker.** New `aelfrice.contradiction` module (`resolve_contradiction`, `find_unresolved_contradictions`, `auto_resolve_all_contradictions`). When the graph holds a `CONTRADICTS` edge, the tie-breaker picks a winner via precedence (`user_stated > user_corrected > document_recent`; ties broken by recency, then id), creates a `SUPERSEDES` edge from winner to loser, and writes a `feedback_history` audit row tagged `source='contradiction_tiebreaker:<rule>'`. v1.0.x collapses to three precedence classes; the fourth `agent_inferred` class needs a `Belief.origin` field that lands in v1.1.0. PR [#75](https://github.com/robotrocketscience/aelfrice/pull/75).
+- **`aelf resolve` CLI subcommand (12th).** Sweeps unresolved `CONTRADICTS` edges and runs the tie-breaker on each. Matching `slash_commands/resolve.md`; the 1:1 CLI ↔ slash invariant is preserved at 12/12. PR [#75](https://github.com/robotrocketscience/aelfrice/pull/75).
+- **Onboard performance regression test.** `tests/regression/test_onboard_perf_50k_loc.py` asserts `scan_repo` finishes in under 60s on a synthetic ~55k-LOC project (250 .py + 60 doc files), held against the `:memory:` store. Current measured time ~0.8s on Apple Silicon; the 60s budget is a regression alarm, not a target. PR [#76](https://github.com/robotrocketscience/aelfrice/pull/76).
+- **`docs/CONFIG.md`.** Power-user reference for `.aelfrice.toml` — full schema, worked examples, and what each setting affects. Linked from the noise-filter LIMITATIONS entry, the onboard CLI help, and ARCHITECTURE.md. PR [#74](https://github.com/robotrocketscience/aelfrice/pull/74).
+
+Release cut: PR [#97](https://github.com/robotrocketscience/aelfrice/pull/97).
+
 ## v1.1.0 — project identity and cosmetic surface
 
 Minor release. Eight PRs landed between v1.0.3 and v1.1.0. See [CHANGELOG § v1.1.0](../CHANGELOG.md) for the full surface.
