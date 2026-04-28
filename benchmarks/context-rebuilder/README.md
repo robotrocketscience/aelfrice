@@ -18,36 +18,125 @@ Two layers ship in this directory:
 
 [i136]: https://github.com/robotrocketscience/aelfrice/issues/136
 
-## What v1.4.0 scaffolding measures (and what it does NOT)
+## What v1.4.0 measures
 
-The scaffolding is a *harness shape*, not a *fidelity scorer*. Two
-metrics are captured per replay turn:
+Three metrics travel together in the harness JSON output -- the
+v1.4 ship-gate set:
 
-* **`token_budget_delta`** -- signed cumulative-token delta:
-  `rebuilt_cumulative - full_cumulative`. Pre-clear: 0. At the clear
-  turn: `rebuild_block_tokens - pre_clear_baseline`. Post-clear: the
-  rebuild's saving (typically negative).
-* **`hook_latency_ms`** -- wall-clock from "PreCompact hook fires"
-  to "rebuild block emitted", in milliseconds. Monotonic
-  non-negative by construction (`time.monotonic()` floor at 0.0).
+* **`token_budget_delta`** (per turn) -- signed cumulative-token
+  delta: `rebuilt_cumulative - full_cumulative`. Pre-clear: 0. At
+  the clear turn: `rebuild_block_tokens - pre_clear_baseline`.
+  Post-clear: the rebuild's saving (typically negative).
+* **`hook_latency_ms`** (per turn) -- wall-clock from "PreCompact
+  hook fires" to "rebuild block emitted", in milliseconds.
+  Monotonic non-negative by construction (`time.monotonic()` floor
+  at 0.0).
+* **`continuation_fidelity`** (per replay) -- aggregate
+  answer-match score in [0, 1]. Compares each post-clear
+  assistant turn's answer against the original session's answer
+  at the same turn (the ground truth). Aggregates per-turn binary
+  match scores via mean. Landed in [#138][i138].
 
-What the scaffolding does **NOT** do:
+What the v1.4.0 harness still does **NOT** do:
 
-* **Continuation-fidelity scoring.** That's [#138][i138] (separate
-  issue). The scaffolding only verifies the harness *runs*.
-  Answer-match logic, LLM-judge integration, and the "did the
-  agent continue correctly" headline number all land with #138.
-* **Real tokenization.** The scaffolding uses the same 4-chars/token
+* **Real tokenization.** The harness uses the same 4-chars/token
   heuristic as `aelfrice.context_rebuilder._CHARS_PER_TOKEN`. A
-  real tokenizer (tiktoken or model-specific) lands alongside the
-  fidelity scorer.
-* **Real rebuilder integration.** The scaffolding measures the
-  *shape* of the latency channel; the synthetic clear injects a
-  fixed-overhead rebuild block. Calling
-  `aelfrice.context_rebuilder.rebuild()` on a real store happens
-  in #138.
+  real tokenizer (tiktoken or model-specific) is parked for v1.5.x.
+* **Real rebuilder integration.** The synthetic clear still
+  injects a fixed-overhead rebuild block. Calling
+  `aelfrice.context_rebuilder.rebuild()` on a real store and
+  feeding the agent's actual post-clear answers into the scorer
+  is [#139][i139] -- the rebuilder hook itself.
 
 [i138]: https://github.com/robotrocketscience/aelfrice/issues/138
+[i139]: https://github.com/robotrocketscience/aelfrice/issues/139
+
+## Continuation-fidelity scoring (#138)
+
+### Method shipped at v1.4.0: `exact`
+
+Per-turn comparison of normalized answer text. Normalization (in
+order): NFC, lowercase, whitespace-collapse, strip. Per-turn match
+is binary (1 or 0); aggregate is the mean over post-clear
+assistant turns.
+
+Why `exact` for v1.4.0:
+
+* **Deterministic.** Same fixture + same answers -> identical
+  score, byte for byte, on every machine.
+* **Reproducible.** No model call, no embeddings, no clock.
+* **No network.** Zero outbound calls; CI never blocks on
+  network state.
+* **Cheap.** O(n) on turn count.
+
+### Known false-positive modes (`exact` says "match", true fidelity is lower)
+
+* **Regression-shaped restatement.** Original = "v1.2.0 shipped
+  the alpha rebuilder"; post-clear = same string -- but the agent
+  silently re-derived the working state from prior turns and the
+  spec's "working-state loss" failure mode is invisible.
+* **Quoted-from-rebuild.** The `<aelfrice-rebuild>` block already
+  quotes the original verbatim; the agent regurgitates rather than
+  reasons. `exact` scores it 1.0; the failure goes uncaught.
+
+### Known false-negative modes (`exact` says "miss", true fidelity is higher)
+
+* **Paraphrase / re-ordering.** Semantic match, different surface
+  form. `exact` rejects.
+* **Trailing differences.** Post-clear answer adds a clarifying
+  sentence; strict equality rejects.
+* **Numeric formatting.** "32 tokens" vs "thirty-two tokens" --
+  same fact, different surface form.
+
+These modes are documented (not hidden) so v1.4.x calibration runs
+can correlate the per-task-type fidelity numbers with the failure
+modes the spec calls out
+([`docs/context_rebuilder.md` § Failure modes][spec]).
+
+[spec]: ../../docs/context_rebuilder.md
+
+### Why LLM-judge is parked
+
+LLM-judge introduces an eval-time outbound call -- acceptable per
+spec § Open ("eval is not the runtime path") but not the v1.4.0
+default. CI green would couple to network state. Embedding
+similarity adds a heavyweight optional dep
+(sentence-transformers or similar) and the LLM-judge path
+subsumes its accuracy. Both are deferred to v1.5.x.
+
+### Method toggle
+
+Pick the method via `--score-method`:
+
+```bash
+uv run python -m benchmarks.context_rebuilder.replay \
+    benchmarks/context-rebuilder/fixtures/synthetic/debugging_session_001.jsonl \
+    --clear-at 8 \
+    --score-method exact          # the v1.4.0 default
+```
+
+`--score-method embedding` and `--score-method llm-judge` exit 2
+with a `NotImplementedError` pointing at #138 and the spec issue.
+The literal-string surface (in `score.ScoreMethod`) accepts the
+parked names so a future PR can wire them in without changing the
+public signature.
+
+### Vacuous cases
+
+* **No clear injected.** `clear_injected_at is None`. There is no
+  notion of "post-clear" without a clear; score = 1.0 with
+  `n_post_clear_assistant_turns = 0`. This is the perfect-replay
+  baseline.
+* **Clear at last turn.** No post-clear answers exist; score =
+  1.0 with `n = 0`. We pick 1.0 over `NaN` so dashboards stay
+  numeric; `n` lets callers detect "no measurement happened".
+
+### Reproducibility
+
+Same fixture + same `post_clear_answers` -> identical score, byte
+for byte, on every machine. Pinned by
+`tests/test_continuation_fidelity_scorer.py::test_score_is_reproducible_across_runs`
+and `::test_score_is_reproducible_with_explicit_answers`.
 
 ## How to run
 
@@ -98,13 +187,23 @@ hit the same argparse surface.
       "cleared": false
     },
     ...
-  ]
+  ],
+  "continuation_fidelity": {
+    "score": 1.0,
+    "method": "exact",
+    "n_post_clear_assistant_turns": 4,
+    "per_turn": [1, 1, 1, 1]
+  }
 }
 ```
 
-Every turn record carries `token_budget_delta` and `hook_latency_ms`
--- the two scaffolding metrics. `cleared` is `true` for exactly the
-turn at which `--clear-at` fired (if any).
+Every turn record carries `token_budget_delta` and
+`hook_latency_ms`. The top-level `continuation_fidelity` sub-object
+carries the v1.4 answer-match score; together with
+`rebuild_block_tokens` (token-cost surface) and per-turn
+`hook_latency_ms`, the JSON ships all three v1.4 ship-gate
+metrics. `cleared` is `true` for exactly the turn at which
+`--clear-at` fired (if any).
 
 ## Layout
 
@@ -119,12 +218,13 @@ benchmarks/
       synthetic/
         debugging_session_001.jsonl (~16-turn synthetic transcript)
     results/                        (per-run JSON; gitignored)
-  context_rebuilder/                (v1.4.0 scaffolding package)
+  context_rebuilder/                (v1.4.0 harness package)
     __init__.py
     __main__.py                     (CLI surface)
     replay.py                       (transcript replay loader)
     inject.py                       (midpoint-clear injection)
     measure.py                      (token + latency primitives)
+    score.py                        (continuation-fidelity scorer)
 ```
 
 The hyphenated `context-rebuilder/` and underscored
@@ -182,7 +282,15 @@ These remain open for the fidelity scorer (#138):
 * **#136 -- harness scaffolding:** SHIPPED in v1.4.0. Replay
   loader, midpoint-clear injection, token + latency measurement,
   CLI entry, synthetic fixture, 26 deterministic unit tests.
-* **#138 -- continuation-fidelity scorer:** in progress. Adds
-  answer-match logic on top of this scaffolding; produces the
+* **#138 -- continuation-fidelity scorer:** SHIPPED in v1.4.0.
+  `exact`-method scorer in `score.py`, wired into the harness
+  JSON output, 20 deterministic acceptance tests in
+  `tests/test_continuation_fidelity_scorer.py`. Produces the
   headline-fidelity number against the synthetic corpus.
-* **#141 -- threshold-mode calibration:** waits on #138.
+  `embedding` / `llm-judge` methods parked for v1.5.x.
+* **#139 -- rebuilder hook integration:** waits on real
+  agent-output capture; will replace the synthetic
+  fixed-overhead block with `aelfrice.context_rebuilder.rebuild()`
+  and feed the agent's actual post-clear answers into the
+  scorer's `post_clear_answers` parameter.
+* **#141 -- threshold-mode calibration:** waits on #139.
