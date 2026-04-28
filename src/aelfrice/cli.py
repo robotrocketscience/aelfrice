@@ -1556,7 +1556,13 @@ class _SuppressSubparsersFormatter(argparse.HelpFormatter):
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aelf",
-        description="Bayesian memory designed for feedback-driven learning.",
+        description=(
+            "Persistent memory for AI agents. Set up once, stays out of "
+            "your way. The subcommands below are the everyday surface; "
+            "advanced verbs (diagnostics, archive/uninstall, hook entry-"
+            "points) are hidden from --help. See docs/COMMANDS.md for the "
+            "complete reference."
+        ),
         formatter_class=_SuppressSubparsersFormatter,
     )
     parser.add_argument(
@@ -1565,7 +1571,11 @@ def build_parser() -> argparse.ArgumentParser:
         version=f"aelf {_AELFRICE_VERSION}",
         help="print the installed aelfrice version and exit",
     )
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub = parser.add_subparsers(
+        dest="cmd",
+        required=True,
+        metavar="<command>",
+    )
 
     p_onboard = sub.add_parser(
         "onboard",
@@ -1620,23 +1630,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_locked.set_defaults(func=_cmd_locked)
 
+    # Hidden: belief lifecycle inverse of `lock` / `validate`. Power-user.
     p_demote = sub.add_parser(
         "demote",
-        help=(
-            "demote a belief one tier: lock_level=user -> none, or "
-            "origin=user_validated -> agent_inferred. v1.2: "
-            "demote a validated belief to revert promotion."
-        ),
+        help=argparse.SUPPRESS,
     )
     p_demote.add_argument("belief_id", help="id of the belief to demote")
     p_demote.set_defaults(func=_cmd_demote)
 
+    # Hidden: weaker than `aelf lock`; rarely needed at the CLI surface.
     p_validate = sub.add_parser(
         "validate",
-        help=(
-            "promote an onboard belief to origin=user_validated. "
-            "v1.2: an explicit acknowledgement weaker than 'aelf lock'."
-        ),
+        help=argparse.SUPPRESS,
     )
     p_validate.add_argument(
         "belief_id", help="id of the belief to validate",
@@ -1650,9 +1655,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_validate.set_defaults(func=_cmd_validate)
 
+    # Hidden: contradiction-resolution maintenance verb. `aelf doctor` flags
+    # when a run is needed; users rarely invoke it directly.
     p_resolve = sub.add_parser(
         "resolve",
-        help="resolve unresolved CONTRADICTS threads via the v1.0.1 tie-breaker",
+        help=argparse.SUPPRESS,
         epilog=(
             "Picks a winner per precedence (user_stated > user_corrected "
             "> document_recent; ties broken by recency, then id) and "
@@ -1664,7 +1671,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_resolve.set_defaults(func=_cmd_resolve)
 
-    p_feedback = sub.add_parser("feedback", help="apply one feedback event")
+    # Hidden: agents emit feedback automatically via the MCP path. Manual
+    # invocation is rare.
+    p_feedback = sub.add_parser("feedback", help=argparse.SUPPRESS)
     p_feedback.add_argument("belief_id", help="id of the belief")
     p_feedback.add_argument("signal", choices=["used", "harmful"],
                              help="feedback signal sign")
@@ -1713,14 +1722,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_migrate.set_defaults(func=_cmd_migrate)
 
+    # Hidden: spawned by the transcript-logger hook on rotation. Manual
+    # invocation is for batch backfill of historical JSONL — power-user only.
     p_ingest_transcript = sub.add_parser(
         "ingest-transcript",
-        help=(
-            "ingest one or many JSONL turn-logs into the active project's "
-            "DB. Spawned by the transcript-logger PreCompact hook on "
-            "rotation; also runnable manually for replay or batch import "
-            "of historical Claude Code session logs."
-        ),
+        help=argparse.SUPPRESS,
     )
     p_ingest_transcript.add_argument(
         "path", nargs="?", default=None,
@@ -1845,13 +1851,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_setup.set_defaults(func=_cmd_setup)
 
+    # Hidden: install lifecycle, surfaced by docs not by --help.
     p_uninstall = sub.add_parser(
         "uninstall",
-        help=(
-            "tear down aelfrice locally: pick exactly one of --keep-db / "
-            "--purge / --archive PATH for the brain-graph DB. Also runs "
-            "unsetup unless --keep-hook is given."
-        ),
+        help=argparse.SUPPRESS,
     )
     p_uninstall.add_argument(
         "--keep-db", action="store_true",
@@ -1896,9 +1899,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_statusline = sub.add_parser("statusline", help=argparse.SUPPRESS)
     p_statusline.set_defaults(func=_cmd_statusline)
 
+    # Hidden: the orange statusline banner already prompts users when an
+    # update is pending — direct CLI invocation is auxiliary.
     p_upgrade = sub.add_parser(
         "upgrade",
-        help="print the right pip-upgrade command for this install context",
+        help=argparse.SUPPRESS,
     )
     p_upgrade.add_argument(
         "--check", action="store_true",
