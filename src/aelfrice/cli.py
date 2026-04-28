@@ -919,6 +919,41 @@ def _print_migrate_report(report: MigrateReport, out: object) -> None:
         )
 
 
+def _cmd_ingest_transcript(args: argparse.Namespace, out: object) -> int:
+    """Ingest a turns.jsonl file into the active project's DB.
+
+    Used by:
+      - The transcript-logger PreCompact hook, which spawns this
+        command detached on rotation.
+      - Manual recovery / replay (`aelf ingest-transcript PATH`).
+
+    Returns 0 on success or empty file. Returns 1 only if the path
+    does not exist; an empty / malformed file is reported but not
+    an error (the hook needs idempotency on edge cases).
+    """
+    from aelfrice.ingest import ingest_jsonl
+
+    path = Path(args.path)
+    if not path.is_file():
+        print(f"ingest-transcript: {path} not found", file=sys.stderr)
+        return 1
+    store = _open_store()
+    try:
+        result = ingest_jsonl(store, path, source_label=args.source_label)
+    finally:
+        store.close()
+    print(
+        f"ingest-transcript: {path.name} "
+        f"lines={result.lines_read} "
+        f"turns={result.turns_ingested} "
+        f"beliefs={result.beliefs_inserted} "
+        f"edges={result.edges_inserted} "
+        f"skipped={result.skipped_lines}",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
 def _cmd_regime(args: argparse.Namespace, out: object) -> int:
     """Print the v1.0 regime classifier output (supersede / ignore / mixed).
 
@@ -1088,6 +1123,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip the confirmation prompt under --apply",
     )
     p_migrate.set_defaults(func=_cmd_migrate)
+
+    p_ingest_transcript = sub.add_parser(
+        "ingest-transcript",
+        help=(
+            "ingest a turns.jsonl file into the active project's DB. "
+            "Spawned by the transcript-logger PreCompact hook on rotation; "
+            "also runnable manually for replay."
+        ),
+    )
+    p_ingest_transcript.add_argument(
+        "path", help="path to a turns.jsonl file (typically under .git/aelfrice/transcripts/archive/)",
+    )
+    p_ingest_transcript.add_argument(
+        "--source-label", default="transcript",
+        help="source label written on every belief (default: 'transcript')",
+    )
+    p_ingest_transcript.set_defaults(func=_cmd_ingest_transcript)
 
     p_doctor = sub.add_parser(
         "doctor",
