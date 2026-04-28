@@ -1,23 +1,13 @@
 """Ingest pipeline: split a conversation turn into sentences,
 classify each, and insert classified sentences as beliefs.
 
-This module is a deliberate **shim**, not a literal port of lab
-v2.0.0's ingest pipeline. The public v1.0.0 schema does not model
-observations, sessions, evidence, or audit logs as separate
-tables; lab v2.0.0 does. Rather than invert v1.0.0's deliberate
-slim-down, ingest_turn here lowers conversation turns directly to
-the existing `beliefs` table via the public classification API
-(`classify_sentence`, one sentence at a time) instead of lab's
-`classify_sentences_offline` batch path.
-
-The signature is kept compatible with the lab adapters in
-`benchmarks/` so they import successfully without modification:
+The signature is compatible with the lab adapters in `benchmarks/`:
 
     ingest_turn(store, text, source, session_id, created_at, source_id)
 
-`session_id` and `source_id` are accepted but not persisted at
-v1.0.x. They reappear as belief metadata when (or if) the schema
-gains source-tracking columns.
+`session_id` is persisted on every belief inserted under the call
+(v1.2+). `source_id` is still accepted for adapter parity but
+remains unpersisted pending its own schema slot.
 """
 from __future__ import annotations
 
@@ -52,7 +42,7 @@ def ingest_turn(
     store: MemoryStore,
     text: str,
     source: str,
-    session_id: str | None = None,  # noqa: ARG001
+    session_id: str | None = None,
     created_at: str | None = None,
     source_id: str = "",  # noqa: ARG001
 ) -> int:
@@ -69,8 +59,13 @@ def ingest_turn(
     classification returns `persist=False` (questions, empty text) are
     skipped.
 
-    `session_id` and `source_id` are accepted for adapter parity with
-    lab v2.0.0 but are not stored at v1.0.x.
+    When `session_id` is provided it is written to `beliefs.session_id`
+    on every newly inserted row (v1.2+). Calls without a session leave
+    the column NULL — downstream session-coherent retrieval skips
+    NULL rows, no false positives on legacy data.
+
+    `source_id` is still accepted for adapter parity but is not yet
+    persisted.
 
     Returns the number of beliefs inserted (or that would have been
     inserted if not already present).
@@ -100,6 +95,7 @@ def ingest_turn(
             demotion_pressure=0,
             created_at=ts,
             last_retrieved_at=None,
+            session_id=session_id,
         )
         store.insert_belief(belief)
         inserted += 1

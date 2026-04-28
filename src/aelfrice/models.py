@@ -72,7 +72,13 @@ class Belief:
     """A unit of memory with Bayesian confidence and lock state.
 
     Fields: id, content, content_hash, alpha, beta, type, lock_level,
-    locked_at, demotion_pressure, created_at, last_retrieved_at.
+    locked_at, demotion_pressure, created_at, last_retrieved_at,
+    session_id.
+
+    `session_id` (v1.2+) tags the belief with the ingest session that
+    inserted it. Optional: ingest paths that don't open a session
+    leave it None and downstream session-coherent retrieval simply
+    does not fire on those rows.
     """
 
     id: str
@@ -86,6 +92,7 @@ class Belief:
     demotion_pressure: int
     created_at: str
     last_retrieved_at: str | None
+    session_id: str | None = None
 
 
 ANCHOR_TEXT_MAX_LEN: Final[int] = 1000
