@@ -362,11 +362,20 @@ def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
     cfg = _load_llm_config(path)
     flag = _resolve_llm_flag(args)
     enabled = _llm_resolve_enabled(flag=flag, config_enabled=cfg.enabled)
+    # Explicit opt-in is the CLI flag. When `enabled=True` came only
+    # from the post-v1.5 default (no flag, no explicit config-disable),
+    # we treat missing SDK / missing API key / non-TTY consent as soft
+    # failures and fall back to the regex classifier silently.
     dry_run = bool(getattr(args, "dry_run", False))
+    # Explicit opt-in is the CLI flag, OR --dry-run (which only makes
+    # sense as a preview of the LLM path; soft-falling to regex would
+    # silently ignore the user's intent).
+    is_explicit_opt_in = (flag is True) or dry_run
 
     if not enabled:
-        # Default-OFF path: regex classifier, no LLM imports, zero
-        # network. This is what `aelf onboard <path>` has always done.
+        # Explicit opt-out: regex classifier, no LLM imports, zero
+        # network. Reachable via --llm-classify=false or
+        # [onboard.llm].enabled = false in .aelfrice.toml.
         if dry_run:
             print(
                 "aelf: --dry-run requires --llm-classify; "
@@ -380,14 +389,15 @@ def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
     gate = _llm_check_gates(
         enabled=enabled,
         model=cfg.model,
+        treat_missing_as_soft=not is_explicit_opt_in,
     )
     if not gate.pass_all:
         if gate.exit_code is not None:
             if gate.message:
                 print(gate.message, file=sys.stderr)
             return gate.exit_code
-        # Defensive: enabled=True with pass_all=False and exit_code=None
-        # means a configuration we don't recognise; fall back to regex.
+        # Soft-fall (default-derived path with missing SDK / key, or
+        # an unrecognised configuration). Run the regex onboard.
         return _run_regex_onboard(args, out)
 
     # Gate 4: consent. --dry-run skips the prompt AND the network.
@@ -404,12 +414,23 @@ def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
         else:
             prompt = _llm_prompt_for_consent()
             if not prompt.accepted:
-                print(
-                    f"aelf: --llm-classify aborted ({prompt.reason}); "
-                    "no network call.",
-                    file=sys.stderr,
-                )
-                return 1
+                if is_explicit_opt_in:
+                    print(
+                        f"aelf: --llm-classify aborted ({prompt.reason}); "
+                        "no network call.",
+                        file=sys.stderr,
+                    )
+                    return 1
+                # Default-derived consent rejection (or non-TTY) →
+                # silent fall-through to regex onboard. The user did
+                # not actively opt in; failing here would be hostile.
+                if prompt.reason != "non-tty":
+                    print(
+                        "aelf: LLM classification declined; "
+                        "falling back to regex classifier.",
+                        file=sys.stderr,
+                    )
+                return _run_regex_onboard(args, out)
             _llm_write_sentinel(sentinel, model=cfg.model)
 
     # Dry-run: print candidates without contacting the network.

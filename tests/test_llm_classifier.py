@@ -153,12 +153,15 @@ def test_default_install_no_flag_no_config_makes_zero_outbound_calls(
     memdb: MemoryStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Acceptance § 9.1.
+    """Acceptance § 9.1 (post-v1.5 default-on, soft-fallback path).
 
-    With no --llm-classify, no [onboard.llm].enabled, and a default
-    install: scan_repo must NOT touch the Anthropic SDK. Inject a
-    tripwire SDK whose constructor raises; the test passes only if
-    the tripwire is never reached.
+    Default `aelf onboard <path>` resolves enabled=True (post-v1.5
+    flip). Because the user did not explicitly opt in (no
+    --llm-classify flag), gates 1 and 2 are run in soft-fallback mode:
+    if the [onboard-llm] extra is not installed, or ANTHROPIC_API_KEY
+    is not set, onboard silently falls back to the regex classifier
+    instead of exiting 1. The tripwire below proves no Anthropic call
+    is made on the soft-fallback path even when the API key is set.
     """
     # Provide a tripwire SDK module to llm_classifier — if any code
     # path tries to import it via our test-injection seam, it will
@@ -336,7 +339,7 @@ def test_consent_prompt_emitted_on_first_run_and_n_aborts_before_network(
         ["onboard", str(repo), "--llm-classify"], out=io.StringIO(),
     )
     assert rc == 1
-    assert "Continue?" in fake_stderr.getvalue()
+    assert "Continue with LLM classification?" in fake_stderr.getvalue()
     # Sentinel not written.
     assert not llm.sentinel_path().exists()
 
@@ -963,15 +966,17 @@ def test_parse_response_drops_per_candidate_invalid_origin() -> None:
     assert out == []
 
 
-def test_dry_run_without_llm_classify_flag_exits_1(
+def test_dry_run_without_api_key_exits_1(
     tmp_home: Path,
     repo: Path,
     memdb: MemoryStore,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """--dry-run without opt-in resolved is a usage error (the regex
-    path has nothing to dry-run).
+    """`--dry-run` is treated as explicit opt-in to the LLM path
+    (post-v1.5 default-on flip). Without `ANTHROPIC_API_KEY`, gate 2
+    fails fast with the install hint, exit 1.
     """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     rc = cli_module.main(
         ["onboard", str(repo), "--dry-run"], out=io.StringIO(),
     )
