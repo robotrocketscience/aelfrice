@@ -45,15 +45,17 @@ _SCHEMA: tuple[str, ...] = (
         locked_at           TEXT,
         demotion_pressure   INTEGER NOT NULL DEFAULT 0,
         created_at          TEXT NOT NULL,
-        last_retrieved_at   TEXT
+        last_retrieved_at   TEXT,
+        session_id          TEXT
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS edges (
-        src     TEXT NOT NULL,
-        dst     TEXT NOT NULL,
-        type    TEXT NOT NULL,
-        weight  REAL NOT NULL,
+        src         TEXT NOT NULL,
+        dst         TEXT NOT NULL,
+        type        TEXT NOT NULL,
+        weight      REAL NOT NULL,
+        anchor_text TEXT,
         PRIMARY KEY (src, dst, type)
     )
     """,
@@ -84,6 +86,15 @@ _SCHEMA: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst)",
     "CREATE INDEX IF NOT EXISTS idx_feedback_belief ON feedback_history(belief_id)",
     "CREATE INDEX IF NOT EXISTS idx_onboard_state ON onboard_sessions(state)",
+)
+
+# v1.0 -> v1.2 column additions. Each runs after _SCHEMA. Idempotent:
+# a duplicate-column OperationalError on a v1.2-fresh DB is caught and
+# ignored. A v1.0 store opened by v1.2 picks up both columns; a v1.2
+# store reopened sees the columns already and skips.
+_MIGRATIONS: tuple[str, ...] = (
+    "ALTER TABLE beliefs ADD COLUMN session_id TEXT",
+    "ALTER TABLE edges ADD COLUMN anchor_text TEXT",
 )
 
 
@@ -127,11 +138,14 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
 
 
 def _row_to_edge(row: sqlite3.Row) -> Edge:
+    # row["anchor_text"] safe: v1.2 migration guarantees the column on
+    # any store this code instantiates. Legacy rows return None.
     return Edge(
         src=row["src"],
         dst=row["dst"],
         type=row["type"],
         weight=row["weight"],
+        anchor_text=row["anchor_text"],
     )
 
 
@@ -175,6 +189,15 @@ class MemoryStore:
         self._conn.execute("PRAGMA foreign_keys=ON")
         for stmt in _SCHEMA:
             self._conn.execute(stmt)
+        for stmt in _MIGRATIONS:
+            try:
+                self._conn.execute(stmt)
+            except sqlite3.OperationalError as e:
+                # "duplicate column name: X" — column already present
+                # (either from CREATE TABLE on a fresh v1.2 DB or from
+                # a previous migration pass). Anything else re-raises.
+                if "duplicate column name" not in str(e):
+                    raise
         self._conn.commit()
         self._invalidation_callbacks: list[Callable[[], None]] = []
 
@@ -476,8 +499,9 @@ class MemoryStore:
 
     def insert_edge(self, e: Edge) -> None:
         self._conn.execute(
-            "INSERT INTO edges (src, dst, type, weight) VALUES (?, ?, ?, ?)",
-            (e.src, e.dst, e.type, e.weight),
+            "INSERT INTO edges (src, dst, type, weight, anchor_text) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (e.src, e.dst, e.type, e.weight, e.anchor_text),
         )
         self._conn.commit()
         self._fire_invalidation()
@@ -492,8 +516,9 @@ class MemoryStore:
 
     def update_edge(self, e: Edge) -> None:
         self._conn.execute(
-            "UPDATE edges SET weight = ? WHERE src = ? AND dst = ? AND type = ?",
-            (e.weight, e.src, e.dst, e.type),
+            "UPDATE edges SET weight = ?, anchor_text = ? "
+            "WHERE src = ? AND dst = ? AND type = ?",
+            (e.weight, e.anchor_text, e.src, e.dst, e.type),
         )
         self._conn.commit()
         self._fire_invalidation()

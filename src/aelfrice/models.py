@@ -88,14 +88,32 @@ class Belief:
     last_retrieved_at: str | None
 
 
+ANCHOR_TEXT_MAX_LEN: Final[int] = 1000
+"""Soft cap on edge anchor_text. Real anchor text is short prose
+(20-200 chars). Cap protects against pathological writes; callers
+truncate with a warning rather than reject."""
+
+
 @dataclass
 class Edge:
-    """A typed, weighted directed link between two beliefs."""
+    """A typed, weighted directed link between two beliefs.
+
+    `anchor_text` is the citing belief's own phrasing of the
+    relationship (e.g. "the WAL discussion" on a CITES edge). Set
+    by ingest paths that have access to source prose at edge-
+    creation time; left None on programmatic / bulk inserts.
+    Truncated to ANCHOR_TEXT_MAX_LEN characters on construction.
+    """
 
     src: str
     dst: str
     type: str
     weight: float
+    anchor_text: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.anchor_text is not None and len(self.anchor_text) > ANCHOR_TEXT_MAX_LEN:
+            self.anchor_text = self.anchor_text[:ANCHOR_TEXT_MAX_LEN]
 
 
 @dataclass
