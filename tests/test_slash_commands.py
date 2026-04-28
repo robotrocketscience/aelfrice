@@ -98,6 +98,7 @@ HIDDEN_SUBCOMMANDS = frozenset({
     "statusline", "bench", "regime", "migrate", "unsetup",
     "health", "stats", "project-warm", "session-delta",
     "demote", "validate", "resolve", "feedback", "ingest-transcript",
+    "sweep-feedback",
 })
 
 
