@@ -9,7 +9,7 @@ This is the reference for power users whose project has a documentation idiom or
 A single optional TOML file at the root of a project (or any ancestor). It exposes two power-user surfaces:
 
 - `[noise]` — onboard-time belief filter. Changes how `aelf onboard` ingests beliefs; nothing else.
-- `[retrieval]` (v1.3+) — retrieval-time tier toggles. At v1.3.0 there are two knobs: the entity-index (L2.5) flag and the BFS multi-hop (L3) flag.
+- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. At v1.3.0 there are three knobs: the entity-index (L2.5) flag, the BFS multi-hop (L3) flag, and `posterior_weight` for partial Bayesian-weighted L1 ranking.
 
 Locks, hooks, MCP tools, and the Bayesian feedback math are not affected.
 
@@ -49,6 +49,14 @@ entity_index_enabled = true
 # max_depth=2, nodes_per_hop=16, total_budget_nodes=32, and a
 # 0.10 path-score floor; shares the unified token budget.
 bfs_enabled = false
+
+# v1.3+. Default 0.5. Posterior-weighted ranking on the L1 BM25
+# tier: score = log(-bm25) + posterior_weight * log(posterior_mean).
+# Set to 0.0 to reproduce v1.0.x BM25-only ordering byte-for-byte.
+# AELFRICE_POSTERIOR_WEIGHT env var overrides; explicit kwargs on
+# retrieve() / retrieve_v2() override TOML in turn. Locked beliefs
+# (L0) bypass scoring entirely.
+posterior_weight = 0.5
 
 [onboard.llm]
 # v1.3.0+. Opt in to the LLM-Haiku classifier at onboard time.
@@ -173,6 +181,30 @@ When disabled (TOML `false`, or `AELFRICE_ENTITY_INDEX=0`, or explicit `entity_i
 Precedence (first decisive wins): env var `AELFRICE_ENTITY_INDEX=0` > explicit Python kwarg > TOML > default `true`.
 
 The on-write index is always populated regardless of this flag — disabling only affects reads. Re-enabling sees an up-to-date index without a backfill pass.
+
+### `posterior_weight`
+
+Float ≥ 0, default `0.5` at v1.3.0. Combines the L1 BM25 score with the Beta-Bernoulli posterior mean log-additively:
+
+```
+score = log(-bm25_raw) + posterior_weight * log(posterior_mean(α, β))
+```
+
+`-bm25_raw` flips SQLite FTS5's signed score to positive (smaller-magnitude-negative is better in SQLite; we negate before taking `log`). `posterior_mean(α, β) = α / (α+β)` reuses the existing scoring helper — Jeffreys prior, reads `0.5` for unobserved beliefs.
+
+Behaviour at the boundaries:
+
+- **`0.0`** — score collapses to `log(-bm25_raw)`, byte-identical to v1.0.x `ORDER BY bm25(beliefs_fts)` ordering. Use for diff-tooling and bisection.
+- **`0.5`** (default) — synthetic-graph optimum from the v1.3 calibration. Posterior moves rank without overwhelming BM25.
+- **`> 1.0`** — posterior dominates; high-confidence beliefs surface even on weak keyword matches. Useful when feedback density is high and BM25 noise is the limiting factor.
+
+Locked beliefs (L0) bypass scoring entirely; the weight only reranks the L1 BM25 candidate set. L2.5 entity-index hits and L3 BFS expansions are unaffected.
+
+Precedence (first decisive wins): env var `AELFRICE_POSTERIOR_WEIGHT=<float>` > explicit Python kwarg `posterior_weight=<float>` on `retrieve()` / `retrieve_v2()` > TOML `[retrieval] posterior_weight` > default `0.5`.
+
+Negative values clamp to `0.0`. Non-numeric env values trace to stderr and fall through. The cache key is extended with the resolved weight (rounded to four decimals), so two callers passing different weights against the same store do not collide on a shared `RetrievalCache`.
+
+The full feedback-into-ranking eval — 10-round MRR uplift, ECE calibration, BM25F + heat-kernel composition — lands at v2.0.0. See [`docs/bayesian_ranking.md`](bayesian_ranking.md) for the v1.3 contract and the rejected-alternatives analysis.
 
 ### `bfs_enabled`
 
