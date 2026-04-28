@@ -8,7 +8,7 @@ on:
 permissions:
   id-token: write
   attestations: write
-  contents: read
+  contents: write  # write needed for `gh release create` below
 
 jobs:
   publish:
@@ -16,6 +16,8 @@ jobs:
     environment: pypi
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so --generate-notes can diff against the prior tag
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --frozen --extra dev --extra archive
       - run: uv run pytest tests/ -q
@@ -24,3 +26,16 @@ jobs:
         with:
           subject-path: 'dist/*'
       - uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists; skipping"
+            exit 0
+          fi
+          gh release create "$tag" \
+            --title "$tag" \
+            --generate-notes \
+            --verify-tag
