@@ -646,6 +646,12 @@ SEARCH_TOOL_EVENT: Final[str] = "PreToolUse"
 SEARCH_TOOL_MATCHER: Final[str] = "Grep|Glob"
 SEARCH_TOOL_SCRIPT_NAME: Final[str] = "aelf-search-tool-hook"
 
+SEARCH_TOOL_BASH_MATCHER: Final[str] = "Bash"
+# The Bash matcher reuses the same entry-point script as the Grep|Glob hook;
+# both matchers route into aelfrice.hook_search_tool:main which dispatches
+# on tool_name internally.
+SEARCH_TOOL_BASH_SCRIPT_NAME: Final[str] = "aelf-search-tool-hook"
+
 
 def resolve_search_tool_command(scope: SettingsScope) -> str:
     """Pick the absolute aelf-search-tool-hook path for `scope`.
@@ -720,6 +726,106 @@ def uninstall_search_tool_hook(
     else:
         assert command_basename is not None
         kept = [e for e in entries if not _entry_matches_basename(e, command_basename)]
+    removed = before - len(kept)
+    if removed == 0:
+        return UninstallResult(path=settings_path, removed=0)
+    entries[:] = kept
+    _atomic_write(settings_path, data)
+    return UninstallResult(path=settings_path, removed=removed)
+
+
+def resolve_search_tool_bash_command(scope: SettingsScope) -> str:
+    """Pick the absolute aelf-search-tool-hook path for the Bash matcher.
+
+    The Bash-matcher PreToolUse hook reuses the same script as the
+    Grep|Glob hook (aelf-search-tool-hook). Both matchers dispatch
+    internally on tool_name. Resolution rules mirror resolve_search_tool_command.
+    """
+    return _resolve_script(SEARCH_TOOL_BASH_SCRIPT_NAME, scope)
+
+
+def install_search_tool_bash_hook(
+    settings_path: Path, *, command: str, timeout: int | None = None,
+) -> InstallResult:
+    """Add a PreToolUse:matcher=Bash hook entry running `command`.
+
+    Idempotent: a second call with the same `command` and a Bash matcher
+    already present is a no-op. Coexists with the Grep|Glob search-tool
+    entry — both hooks may share the same command string (the script
+    dispatches on tool_name internally) and will be stored as separate
+    entries distinguished by their `matcher` field.
+
+    The Bash matcher uses a separate hook entry (different matcher field)
+    from the Grep|Glob matcher so they can be installed / removed
+    independently per the v1.5.0 spec (§ AC7).
+    """
+    if not command:
+        raise ValueError("command must be a non-empty string")
+    data = _load_settings(settings_path)
+    entries = _get_event_list(data, SEARCH_TOOL_EVENT, create=True)
+    # Idempotency check: look for an existing entry with the same command
+    # AND matcher="Bash". An entry with the same command under Grep|Glob
+    # is a different hook and must not be conflated.
+    already = any(
+        e.get("matcher") == SEARCH_TOOL_BASH_MATCHER
+        and _entry_matches(e, command)
+        for e in entries
+    )
+    if already:
+        return InstallResult(
+            path=settings_path, installed=False, already_present=True,
+        )
+    entries.append(_build_entry(
+        command=command, timeout=timeout, status_message=None,
+        matcher=SEARCH_TOOL_BASH_MATCHER,
+    ))
+    _atomic_write(settings_path, data)
+    return InstallResult(
+        path=settings_path, installed=True, already_present=False,
+    )
+
+
+def uninstall_search_tool_bash_hook(
+    settings_path: Path, *,
+    command: str | None = None,
+    command_basename: str | None = None,
+) -> UninstallResult:
+    """Strip PreToolUse Bash-matcher entries matching `command` or `command_basename`.
+
+    Pass exactly one of the two. Other PreToolUse entries (Grep|Glob or
+    other matchers) are left alone. Since the Bash and Grep|Glob hooks
+    share the same script name, uninstall_search_tool_bash_hook only
+    removes entries whose matcher field is "Bash" — entries with
+    matcher="Grep|Glob" are unaffected.
+    """
+    if command is None and command_basename is None:
+        raise ValueError("provide command or command_basename")
+    if command is not None and command_basename is not None:
+        raise ValueError("command and command_basename are mutually exclusive")
+    if not settings_path.exists():
+        return UninstallResult(path=settings_path, removed=0)
+    data = _load_settings(settings_path)
+    entries = _get_event_list(data, SEARCH_TOOL_EVENT, create=False)
+    if entries is None:
+        return UninstallResult(path=settings_path, removed=0)
+    before = len(entries)
+    if command is not None:
+        kept = [
+            e for e in entries
+            if not (
+                e.get("matcher") == SEARCH_TOOL_BASH_MATCHER
+                and _entry_matches(e, command)
+            )
+        ]
+    else:
+        assert command_basename is not None
+        kept = [
+            e for e in entries
+            if not (
+                e.get("matcher") == SEARCH_TOOL_BASH_MATCHER
+                and _entry_matches_basename(e, command_basename)
+            )
+        ]
     removed = before - len(kept)
     if removed == 0:
         return UninstallResult(path=settings_path, removed=0)
