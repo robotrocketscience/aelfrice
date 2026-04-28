@@ -17,7 +17,7 @@ from __future__ import annotations
 import secrets
 import sqlite3
 from datetime import datetime, timezone
-from typing import Callable, Final, Iterable
+from typing import Callable, Final, Iterable, Iterator
 
 from aelfrice.models import (
     EDGE_VALENCE,
@@ -1021,6 +1021,14 @@ class MemoryStore:
             "SELECT * FROM edges WHERE src = ?", (src,)
         )
         return [_row_to_edge(r) for r in cur.fetchall()]
+
+    def iter_all_edges(self) -> Iterator[Edge]:
+        """Stream every edge in the store. Ordering is insertion order
+        (sqlite ROWID). Used by graph-wide builders such as the signed
+        Laplacian eigenbasis (#149)."""
+        cur = self._conn.execute("SELECT * FROM edges")
+        for r in cur:
+            yield _row_to_edge(r)
 
     def iter_incoming_anchor_text(self) -> Iterable[tuple[str, str]]:
         """Yield `(dst_belief_id, anchor_text)` for every edge whose
