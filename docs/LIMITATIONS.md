@@ -59,7 +59,7 @@ Tracked openly. Each item is mapped to its target version below.
 
 **Workaround today.** To make the `aelfrice` MCP the canonical write path, edit your `~/.claude/CLAUDE.md` to remove or rephrase the auto-memory harness directive, and rely on `aelf remember` (CLI) or the MCP `aelf:remember` tool for new beliefs. This is a user-side configuration change; `aelfrice` does not attempt to override the harness in code.
 
-**Tracked.** v1.2 will publish `docs/HARNESS_INTEGRATION.md` with a documented procedure for users who want the MCP to be canonical without manually editing `CLAUDE.md`.
+**v1.2.0 mitigation.** The transcript-ingest, commit-ingest, and SessionStart hooks (all opt-in via `aelf setup --transcript-ingest --commit-ingest --session-start`) write to aelfrice from normal session activity without involving the auto-memory directive. The two stores coexist as parallel pipelines; aelfrice is no longer starved of fresh inputs. See [HARNESS_INTEGRATION.md](HARNESS_INTEGRATION.md) for the three coexistence modes (default coexistence, aelfrice-canonical, aelfrice-only) and a migration recipe for moving existing `~/.claude/projects/<slug>/memory/*.md` content into aelfrice via `aelf onboard`.
 
 ## Deferred to v1.3 / v2.0 (with evidence required)
 
