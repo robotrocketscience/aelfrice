@@ -1,14 +1,20 @@
 # pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUnknownParameterType=false, reportMissingTypeStubs=false, reportOptionalSubscript=false, reportAttributeAccessIssue=false, reportGeneralTypeIssues=false, reportConstantRedefinition=false, reportArgumentType=false
-"""Signed normalized Laplacian + offline eigenbasis builder (#149).
+"""Signed normalized Laplacian + heat-kernel authority scoring (#149, #150).
 
 Constructs the signed normalized Laplacian
 ``L = I - D_abs^(-1/2) W_sym D_abs^(-1/2)``
 over the typed edge graph (Kunegis 2010), where ``CONTRADICTS`` /
 ``SUPERSEDES`` count as negative-weight edges and the supportive edge
 families as positive. The top-K=200 eigenpairs of ``L`` are the offline
-foundation consumed by the heat-kernel authority signal (#150). This
-module ships only the builder + serialization; no integration into
-``retrieve()``.
+foundation consumed by the heat-kernel authority signal.
+
+#150 adds the per-query heat kernel ``exp(-tL)`` evaluated through the
+precomputed eigenbasis: ``U @ diag(exp(-t*Λ)) @ U.T @ seeds``. Two
+matvecs against the ``(n, K)`` eigenbasis, no per-call eigendecomp.
+``seeds_from_bm25`` builds the L1-normalized seed vector from BM25 top-K
+hits; ``apply_broker_attenuation`` dampens scores by per-belief broker
+confidence (``α/(α+β)``); ``combine_log_scores`` is the log-additive
+ranking formula ``log(BM25F) + 1.0 * log(heat_safe) + 0.5 * log(post)``.
 
 All construction is offline — no query-time cost. Rebuild is wired to
 the same store-mutation invalidation callback that ``RetrievalCache``
@@ -176,6 +182,172 @@ def load_eigenbasis(
     if "belief_ids" in z.files:
         bids = [str(x) for x in z["belief_ids"].tolist()]
     return z["eigvals"], z["eigvecs"], bids
+
+
+# --- #150 heat kernel scoring -------------------------------------------
+
+# Bandwidth `t` for `exp(-tL)`. t=8 is the synthetic-graph optimum at
+# K=200 for the authority-scoring task; smaller t localizes scoring to
+# immediate neighborhood, larger t smooths globally. Ships as default.
+DEFAULT_HEAT_BANDWIDTH: Final[float] = 8.0
+
+# BM25 seed top-K. The heat kernel propagates a sparse seed distribution
+# through the eigenbasis; only the highest-BM25 beliefs are seeded.
+DEFAULT_BM25_SEED_TOP_K: Final[int] = 25
+
+# Lower clamp for `heat_kernel_safe`. Negative or near-zero scores
+# (signed-Laplacian heat can dip below zero through CONTRADICTS edges)
+# are floored before the log to avoid `-inf` propagating into the
+# log-additive score combination.
+HEAT_SCORE_FLOOR: Final[float] = 1e-9
+
+# Default mixing weights for the log-additive ranking formula
+# (#150 spec § "Algorithm").
+DEFAULT_HEAT_KERNEL_WEIGHT: Final[float] = 1.0
+DEFAULT_POSTERIOR_LOG_WEIGHT: Final[float] = 0.5
+
+
+def heat_kernel_score(
+    eigvals: np.ndarray,
+    eigvecs: np.ndarray,
+    seeds: np.ndarray,
+    t: float = DEFAULT_HEAT_BANDWIDTH,
+) -> np.ndarray:
+    """Apply the heat kernel ``exp(-tL)`` to a seed vector via the
+    precomputed eigenbasis.
+
+    ``eigvals`` shape ``(K,)``; ``eigvecs`` shape ``(N, K)``; ``seeds``
+    shape ``(N,)``. Returns ``(N,)``: per-belief authority scores.
+
+    Equivalent to ``U @ diag(exp(-t*Λ)) @ U.T @ seeds`` but written as
+    two matvecs to avoid materializing the ``(N, N)`` dense kernel.
+    Cost: ``O(N * K)`` per call; at ``N=50k, K=200`` that is ~7-8 ms in
+    BLAS-backed numpy on commodity hardware (#150 AC5).
+    """
+    if eigvecs.size == 0:
+        return np.zeros((eigvecs.shape[0],), dtype=np.float64)
+    proj = eigvecs.T @ seeds
+    filt = np.exp(-t * eigvals) * proj
+    return eigvecs @ filt
+
+
+def heat_kernel_safe(
+    scores: np.ndarray, floor: float = HEAT_SCORE_FLOOR,
+) -> np.ndarray:
+    """Clamp heat-kernel scores to ``>= floor`` for safe ``log()``.
+
+    Signed-Laplacian heat propagates negative authority through
+    ``CONTRADICTS`` edges, so raw scores can be negative or zero on
+    disconnected components. The log-additive ranking formula
+    needs strictly positive inputs; the floor preserves ranking
+    monotonicity (anything ≤ floor maps to the same minimum) while
+    avoiding ``-inf``.
+    """
+    return np.maximum(scores, floor)
+
+
+def seeds_from_bm25(
+    bm25_scores: np.ndarray, top_k: int = DEFAULT_BM25_SEED_TOP_K,
+) -> np.ndarray:
+    """Build an L1-normalized seed vector from a BM25 score array.
+
+    ``bm25_scores`` shape ``(N,)`` — one BM25 score per belief in the
+    eigenbasis row order. Returns a dense ``(N,)`` vector with at most
+    ``min(top_k, nnz)`` non-zero entries (the top-`top_k` BM25 scores)
+    and L1 norm 1.0. Zero / negative BM25 scores are excluded — only
+    strictly positive scores seed the kernel.
+
+    Returns the all-zero vector when no seed has positive score
+    (caller should detect and skip the heat-kernel pass; see #150
+    spec § "Algorithm").
+    """
+    n = bm25_scores.shape[0]
+    out = np.zeros(n, dtype=np.float64)
+    if n == 0 or top_k <= 0:
+        return out
+    positive = bm25_scores > 0
+    if not np.any(positive):
+        return out
+    # argpartition is O(N); we only need the top_k indices, not a full
+    # sort. Tie-breaking is arbitrary among equal scores — matches the
+    # spec's "weighted by BM25 score" loose ordering.
+    pos_idx = np.flatnonzero(positive)
+    k = min(top_k, pos_idx.size)
+    top_local = np.argpartition(-bm25_scores[pos_idx], k - 1)[:k]
+    top = pos_idx[top_local]
+    weights = bm25_scores[top]
+    total = float(weights.sum())
+    if total <= 0.0:
+        return out
+    out[top] = weights / total
+    return out
+
+
+def apply_broker_attenuation(
+    scores: np.ndarray,
+    store: "MemoryStore",
+    belief_ids: list[str],
+) -> np.ndarray:
+    """Multiply each per-belief authority score by the recipient's
+    broker confidence ``α / (α + β)``.
+
+    ``scores[i]`` corresponds to ``belief_ids[i]``. Beliefs whose
+    ``α + β`` is zero contribute factor 0 (no evidence ⇒ no broker
+    confidence). Missing beliefs contribute factor 1.0 (passthrough)
+    — defensive for index/store skew during a rebuild.
+
+    The store-side ``propagate_valence`` already applies broker
+    attenuation through multi-hop edge traversal. The eigenbasis-
+    based heat kernel folds the multi-hop propagation into the
+    spectral filter, so per-belief broker scaling on the OUTPUT is
+    the right shape — it dampens scores accruing into low-confidence
+    targets without re-walking the graph at query time.
+    """
+    if scores.size == 0:
+        return scores
+    factors = np.ones_like(scores, dtype=np.float64)
+    for i, bid in enumerate(belief_ids):
+        b = store.get_belief(bid)
+        if b is None:
+            continue
+        denom = b.alpha + b.beta
+        factors[i] = (b.alpha / denom) if denom > 0 else 0.0
+    return scores * factors
+
+
+def combine_log_scores(
+    bm25f: float,
+    heat: float,
+    posterior: float | None = None,
+    *,
+    heat_weight: float = DEFAULT_HEAT_KERNEL_WEIGHT,
+    posterior_weight: float = DEFAULT_POSTERIOR_LOG_WEIGHT,
+    heat_floor: float = HEAT_SCORE_FLOOR,
+) -> float:
+    """Combine BM25F, heat-kernel, and posterior scores log-additively.
+
+    Formula (#150 spec § "Score combination"):
+        score = log(BM25F) + heat_weight * log(heat_safe(heat))
+                           + posterior_weight * log(posterior_or_1)
+
+    ``posterior=None`` collapses the third term (``log(1) = 0``),
+    matching the spec's "defaults to 1.0 when no posterior data
+    exists" contract. ``bm25f <= 0`` raises — BM25F is non-negative
+    by construction and a non-positive value is a caller bug worth
+    surfacing rather than silently flooring.
+    """
+    if bm25f <= 0.0:
+        raise ValueError(f"bm25f must be > 0; got {bm25f}")
+    safe_heat = max(heat, heat_floor)
+    safe_post = posterior if (posterior is not None and posterior > 0.0) else 1.0
+    return (
+        float(np.log(bm25f))
+        + heat_weight * float(np.log(safe_heat))
+        + posterior_weight * float(np.log(safe_post))
+    )
+
+
+# --- Eigenbasis cache ---------------------------------------------------
 
 
 @dataclass
