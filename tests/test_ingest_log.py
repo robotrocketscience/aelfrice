@@ -410,6 +410,92 @@ def test_ingest_triples_writes_log_row_per_new_belief(
         assert all(r["session_id"] == "commit-abcdef" for r in rows)
 
 
+def test_mcp_lock_writes_log_row(store: MemoryStore) -> None:
+    """Hypothesis: tool_lock (MCP `remember`) writes one log row with
+    source_kind=mcp_remember on first creation, none on re-lock.
+    Falsifiable by missing log row OR duplicate log row on re-lock."""
+    from aelfrice.mcp_server import tool_lock
+    tool_lock(store, statement="atomic commits beat batched commits")
+    n_after_first = store.count_ingest_log()
+    assert n_after_first == 1
+    rows = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+        "SELECT source_kind FROM ingest_log"
+    ).fetchall()
+    assert rows[0]["source_kind"] == "mcp_remember"
+    # Re-lock should NOT add a new log row (canonical row unchanged).
+    tool_lock(store, statement="atomic commits beat batched commits")
+    assert store.count_ingest_log() == n_after_first
+
+
+def test_cli_lock_writes_log_row(tmp_path: Path) -> None:
+    """Hypothesis: the `aelf lock` CLI command writes one log row with
+    source_kind=cli_remember. Falsifiable by missing or wrong-kind row."""
+    import os
+    import sys
+    from aelfrice.cli import main as cli_main
+    db = tmp_path / "cli.db"
+    env_db = os.environ.get("AELFRICE_DB")
+    os.environ["AELFRICE_DB"] = str(db)
+    try:
+        rc = cli_main(["lock", "the deploy uses uv only"])
+        assert rc == 0
+    finally:
+        if env_db is None:
+            os.environ.pop("AELFRICE_DB", None)
+        else:
+            os.environ["AELFRICE_DB"] = env_db
+    s = MemoryStore(str(db))
+    try:
+        rows = s._conn.execute(  # pyright: ignore[reportPrivateUsage]
+            "SELECT source_kind, raw_text FROM ingest_log"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["source_kind"] == "cli_remember"
+        assert rows[0]["raw_text"] == "the deploy uses uv only"
+    finally:
+        s.close()
+    _ = sys  # keep import for parallel-test dependency-checkers
+
+
+def test_accept_classifications_writes_log_row_per_new_belief(
+    tmp_path: Path,
+) -> None:
+    """Hypothesis: every belief inserted by accept_classifications has
+    one matching log row with source_kind=filesystem. Falsifiable by
+    any orphan belief or wrong source_kind."""
+    from aelfrice.classification import (
+        HostClassification,
+        accept_classifications,
+        start_onboard_session,
+    )
+    from aelfrice.models import BELIEF_FACTUAL
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text(
+        "This project must use uv for environment management.\n\n"
+        "We always prefer atomic commits over batched commits.\n"
+    )
+    s = MemoryStore(":memory:")
+    try:
+        result = start_onboard_session(s, repo, now="2026-04-26T00:00:00Z")
+        cls = [
+            HostClassification(index=cand.index, belief_type=BELIEF_FACTUAL,
+                               persist=True)
+            for cand in result.sentences
+        ]
+        accept_classifications(
+            s, result.session_id, cls, now="2026-04-26T01:00:00Z",
+        )
+        ids = s.list_belief_ids()
+        assert ids
+        for belief_id in ids:
+            rows = s.iter_ingest_log_for_belief(belief_id)
+            assert rows
+            assert all(r["source_kind"] == "filesystem" for r in rows)
+    finally:
+        s.close()
+
+
 def test_scan_repo_writes_log_row_per_new_belief(
     tmp_path: Path,
 ) -> None:

@@ -60,6 +60,7 @@ from aelfrice.health import (
 )
 from aelfrice.models import (
     BELIEF_FACTUAL,
+    INGEST_SOURCE_CLI_REMEMBER,
     LOCK_NONE,
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
@@ -795,6 +796,13 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
         existing = store.get_belief(bid)
         now = _utc_now_iso()
         if existing is None:
+            # v2.0 #205 parallel-write.
+            store.record_ingest(
+                source_kind=INGEST_SOURCE_CLI_REMEMBER,
+                raw_text=args.statement,
+                derived_belief_ids=[bid],
+                ts=now,
+            )
             store.insert_belief(Belief(
                 id=bid,
                 content=args.statement,
