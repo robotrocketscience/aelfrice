@@ -43,6 +43,20 @@ SQLite. Resolution order:
 
 Pin per-project (overriding the chain) with `export AELFRICE_DB=/abs/path/.aelfrice.db` — handy via direnv.
 
+### Migrating from v1.0.x
+
+If you ran v1.0.x you have a single global DB at `~/.aelfrice/memory.db`. v1.1.0+ resolves per-project under `.git/aelfrice/memory.db`. `aelf migrate` ports beliefs forward (added in v1.1.0, [PR #104](https://github.com/robotrocketscience/aelfrice/pull/104)):
+
+```bash
+cd <project-root>
+aelf migrate              # dry-run; reports what would copy
+aelf migrate --apply      # actually copy filtered beliefs into the project DB
+aelf migrate --apply --all  # copy every belief from the legacy global DB
+aelf migrate --from /alt/path/memory.db --apply  # source override
+```
+
+`aelf migrate` opens the source DB read-only (SQLite `mode=ro` URI) so it can never accidentally write back. Idempotent on re-run. Project-mention filtering (default) restricts the copy to beliefs whose content references the active project's name; `--all` skips the filter.
+
 ## Wire into Claude Code
 
 ```bash

@@ -16,7 +16,7 @@ How to cut a new version. Maintainer reference.
 5. Update README roadmap status.
 6. Run locally:
    ```bash
-   uv run pytest tests/ -x -q                # ~530 passing at v1.0.0
+   uv run pytest tests/ -x -q                # ~810 passing at v1.0.2 / ~1090 at v1.1.0
    uv run pyright src/                        # strict
    uv run aelf --help                         # spot-check CLI
    uv build                                   # wheels build clean
