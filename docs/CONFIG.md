@@ -1,224 +1,135 @@
 # Configuration: `.aelfrice.toml`
 
-Most users never need this file. aelfrice is designed to work silently in the background, keeping LLM sessions current with the project's ground truth. The defaults are tuned so that `pip install aelfrice && aelf onboard .` does the right thing for almost every project.
+Most users never need this file. The defaults are tuned so `pip install aelfrice && aelf onboard .` does the right thing.
 
-This document is for the case where the defaults are *not* doing the right thing — when a project has a documentation idiom or naming convention that the default filter mishandles, when a power user wants finer control over what enters the belief store, or when a contributor is debugging onboarding behaviour. If that's not you, close this tab and let the agent do its job.
+This is the reference for power users whose project has a documentation idiom or naming convention the default filter mishandles.
 
----
+## What it does
 
-## What is `.aelfrice.toml`?
+A single optional TOML file at the root of a project (or any ancestor). It changes how `aelf onboard` ingests beliefs — nothing else. Retrieval, hooks, MCP tools, locks, and the Bayesian feedback math are not affected.
 
-A single optional TOML file at the root of a project (or any ancestor directory). Editing it changes how `aelf onboard` ingests beliefs — nothing else. Retrieval, the hook, MCP tools, locks, and the Bayesian feedback math are not affected by anything in this file.
+`scan_repo` walks up from the scan root looking for `.aelfrice.toml`. The first one found wins. The walk stops at the filesystem root — there is no global / per-user config.
 
-If the file does not exist, aelfrice ships with safe defaults; this is the recommended state for almost all projects.
-
-## Where it lives
-
-`scan_repo` (the function backing `aelf onboard`) walks up from the scan root, checking each directory for `.aelfrice.toml`, until it finds one or reaches the filesystem root. The first file found wins.
-
-This means:
-
-- A project with `.aelfrice.toml` at its top directory is configured for any onboard run inside that project.
-- A nested subproject can shadow its parent by placing its own `.aelfrice.toml` inside the subproject directory.
-- A user without the file gets the default behaviour, which is the v1.0 ship behaviour.
-
-The walk stops at filesystem root. There is no global / per-user `.aelfrice.toml` — configuration is per-project (or per-ancestor-of-project) on purpose, so checking out a different repo cannot silently inherit unrelated config.
+If the file does not exist, the noise filter uses defaults. That is the recommended state.
 
 ## Schema
-
-The file has one table at v1.0.1: `[noise]`. Future versions add more (project identity, store path, etc. — see [ROADMAP](ROADMAP.md)). Unknown keys and unknown tables are ignored, so this file is forward-compatible.
 
 ```toml
 # .aelfrice.toml
 [noise]
-# Turn off any of the four built-in categories. Each disabled
-# category will not contribute to skipped_noise; its content
-# may still be filtered out by the classifier or by other
-# categories. Subset of: headings | checklists | fragments | license
+# Turn off any of: headings | checklists | fragments | license
 disable = []
 
-# Below this many whitespace tokens, treat a paragraph as a
-# fragment and drop it. The default catches stubs and labels
-# while leaving real prose alone. Lower this if your project
-# has many terse beliefs you want to keep ("lock fast",
-# "prefer composition"). Set to 0 to disable the check.
+# Drop paragraphs with fewer than this many whitespace tokens.
+# Default 4. Set to 0 to disable the fragment check entirely.
 min_words = 4
 
-# Drop paragraphs that contain any of these whole words. Match
-# is case-insensitive and word-bounded — adding "jso" drops
-# paragraphs containing the standalone token "jso" but NOT
-# "json", "jsonify", or "jsodb". Use this for initials,
-# codenames, internal jargon you don't want surfacing in
-# retrieval.
+# Drop paragraphs containing any of these whole words.
+# Word-bounded, case-insensitive. "jso" does NOT match "json".
 exclude_words = []
 
-# Drop paragraphs that contain any of these substrings. Match
-# is case-insensitive but otherwise literal — punctuation and
-# whitespace inside the phrase are matched verbatim. Use this
-# for status flags, header strings, or templated lines you
-# always want filtered.
+# Drop paragraphs containing any of these substrings.
+# Literal substring match, case-insensitive.
 exclude_phrases = []
 ```
 
-## What each key does and what it affects
+Unknown keys and unknown tables are ignored; the file is forward-compatible.
+
+## Keys
 
 ### `disable`
 
-A list naming the built-in noise categories you want to turn off.
-
-| Token | What it disables | What you'll see |
+| Token | Disables | Effect |
 |---|---|---|
-| `headings` | The "every line is a markdown heading" filter. Pure heading blocks like `# Section\n## Subsection` will pass through. | Markdown headings in your docs become belief candidates. The classifier may still drop them as low-content; if not, expect short labels in your store. |
-| `checklists` | The "every line is `- [ ]`" filter. Pure task-list blocks pass through. | TODO list items become belief candidates. Useful only if your TODO entries actually contain durable behavioural rules. |
-| `fragments` | The `min_words` short-paragraph filter. | Short labels like `INSTRUCTIONS:`, `DRAFT`, terse one-liners pass to the classifier. |
-| `license` | The seven-signature license-preamble filter. | LICENSE.md text and equivalent files become belief candidates. Most projects do not want this; aelfrice deliberately drops legal boilerplate to keep the store about your code. |
+| `headings` | the "every line is a markdown heading" filter | pure heading blocks pass through |
+| `checklists` | the "every line is `- [ ]`" filter | task-list items become belief candidates |
+| `fragments` | the `min_words` short-paragraph filter | short labels like `DRAFT` pass to the classifier |
+| `license` | the seven-signature license-preamble filter | LICENSE.md text becomes belief candidates |
 
-A category disabled here is silent — `ScanResult.skipped_noise` will not count anything from that category, and the candidate flows through to classification. Other categories still fire normally.
-
-Unrecognised tokens are silently ignored. Typos (`fragmints`, `lisence`) do not turn the whole filter off; the misnamed category remains enabled.
+A disabled category is silent — `ScanResult.skipped_noise` will not count anything from it. Other categories still fire. Unrecognised tokens are silently ignored.
 
 ### `min_words`
 
-Integer, default `4`. Any paragraph with fewer than this many whitespace-separated tokens is dropped as a fragment.
+Integer, default `4`. Paragraphs shorter than this are dropped.
 
-| Setting | Behaviour | When to use |
-|---|---|---|
-| `4` (default) | Drops 0–3-word paragraphs. | Most projects. |
-| `3` or lower | Lets 3-word and shorter beliefs through. | Projects that lock terse rules ("prefer composition", "no global state", "fail loud"). |
-| `0` | Disables the fragment check entirely. | Mostly for debugging. Equivalent to `disable = ["fragments"]`. |
-| Negative | Clamped to 0 silently. | — |
+| Setting | Use when |
+|---|---|
+| `4` (default) | Most projects. |
+| `3` or lower | You lock terse rules ("prefer composition", "no global state"). |
+| `0` | Disables the check entirely. |
 
-A non-integer value (string, float, `true`, etc.) is rejected with a warning to stderr and the default of 4 is used.
+A non-integer value is rejected with a stderr warning; default applies.
 
 ### `exclude_words`
 
-A list of strings, default `[]`. Each string is treated as a whole word and matched case-insensitively.
-
-The matching uses word boundaries: a word like `"jso"` matches the standalone token `jso` (or `jso.`, `jso,`, `jso-files` — anywhere `jso` is followed by a non-letter / non-digit / non-underscore). It does *not* match `json`, `jsonify`, `jsodb`, or any longer alphanumeric run that contains `jso` as a substring.
-
-This is the right choice for:
-
-- **Initials / contributor names.** Adding `["jso"]` filters paragraphs naming that contributor without breaking docs that mention `json`.
-- **Codenames.** Internal project codenames you'd rather not surface to the LLM.
-- **Status keywords.** `["DRAFT", "WIP"]` drops paragraphs flagged as work-in-progress.
-
-Empty strings in the list are skipped (would otherwise match every paragraph). Non-string entries are skipped with a warning.
+List of whole-word matches. Word boundaries: `"jso"` matches the standalone token but not `json`, `jsonify`, etc. Useful for initials, codenames, status keywords.
 
 ### `exclude_phrases`
 
-A list of strings, default `[]`. Each string is matched case-insensitively as a literal substring anywhere in the paragraph. Punctuation and whitespace inside the phrase are matched verbatim.
+List of literal substring matches. Case-insensitive but otherwise verbatim. Useful for templated header lines (`Last updated:`, `Generated by`) and inline status flags (`TODO:`, `FIXME`).
 
-This is the right choice for:
-
-- **Templated header lines.** `["Last updated:", "Generated on"]` drops paragraphs that are auto-stamped boilerplate.
-- **Inline status flags.** `["TODO:", "FIXME"]` drops paragraphs that contain a development marker mid-text.
-- **Multi-word fixed strings** that don't follow word-boundary semantics.
-
-The trade-off vs. `exclude_words`: phrase match is literal substring, no word boundaries. `["foo"]` here would drop a paragraph containing `foobar`. If that's not what you want, use `exclude_words` instead.
-
-## When a change takes effect
-
-Edits to `.aelfrice.toml` apply on the next `aelf onboard` run. They do **not** retroactively re-filter beliefs that are already in your store — once a belief is in the database, it stays there until you `aelf demote` or `aelf delete` it (the latter lands in v2.0). This is intentional: the config controls ingestion, not retention.
-
-If you want to remove existing noise from a store, the cleanest path is:
-
-```bash
-rm "$(python -c 'from aelfrice.cli import db_path; print(db_path())')"  # resolves to .git/aelfrice/memory.db inside a repo, ~/.aelfrice/memory.db otherwise, or AELFRICE_DB if set
-aelf onboard /path/to/project   # re-onboard with new config
-```
-
-Project-level locks, manually inserted beliefs, and feedback history will be lost. For a less destructive cleanup, query the store directly with `sqlite3` and `DELETE` rows that match the noise pattern you've added.
-
-## What this file does NOT do
-
-- **Does not affect retrieval.** The `[noise]` table only runs at onboard time. Once a belief is in the store, retrieval (BM25, L0 locks, the hook) treats it identically regardless of how or whether the noise filter would have flagged it.
-- **Does not affect `aelf lock`, `aelf remember`, or the MCP `aelf:remember` tool.** Manually-asserted beliefs bypass the noise filter — you're explicitly saying "this matters."
-- **Does not affect the harness conflict.** The Claude Code auto-memory write path is governed by the harness directive in `~/.claude/CLAUDE.md`, not by this file. See [LIMITATIONS § Harness conflict](LIMITATIONS.md#harness-conflict--claude-code-auto-memory-write-path).
-- **Does not affect classifier behaviour.** Candidates that pass the noise filter go to `aelfrice.classification.classify_sentence`, which has its own (non-configurable at v1.0.1) rules for `persist=False`. If a candidate is being dropped and you don't expect it to, check `ScanResult.skipped_non_persisting` before blaming `[noise]`.
-- **Does not retroactively re-filter.** See above.
-- **Does not redefine the four categories.** You can disable them, not modify what they match. To filter on a custom rule, use `exclude_words` or `exclude_phrases`. If you need true regex semantics, you have to extend the module — that is a deliberate constraint, not an oversight.
-- **Does not load from `pyproject.toml`, environment variables, or CLI flags.** Single surface, single file.
+The trade-off vs. `exclude_words`: phrase match is a literal substring, no word boundaries. `["foo"]` here would drop a paragraph containing `foobar`.
 
 ## Worked examples
 
-### Filter a contributor's initials without breaking `json` mentions
-
 ```toml
+# Filter a contributor's initials without breaking `json` mentions
 [noise]
 exclude_words = ["jso"]
 ```
 
-Drops paragraphs naming the contributor `jso`. Leaves docs about `json`, `jsonify`, etc. untouched.
-
-### Let terse beliefs through on a dense rule project
-
 ```toml
+# Let terse beliefs through on a dense rule project
 [noise]
 min_words = 2
 ```
 
-Two-word beliefs ("lock fast", "fail loud") and longer pass; one-word labels ("DRAFT", "INSTRUCTIONS:") still drop.
-
-### Filter templated boilerplate that the default doesn't catch
-
 ```toml
+# Filter templated boilerplate the default doesn't catch
 [noise]
-exclude_phrases = [
-    "Last updated:",
-    "Generated by tool-x",
-    "DO NOT EDIT",
-]
+exclude_phrases = ["Last updated:", "Generated by tool-x", "DO NOT EDIT"]
 ```
 
-These signatures are project-specific and the default filter doesn't know about them. Adding them here keeps the store free of the auto-stamped lines.
-
-### Disable a category for a license-heavy project
-
 ```toml
+# License-heavy project (a legal-tech tool, an OSS-compliance app)
 [noise]
 disable = ["license"]
 ```
 
-Useful if your project's documentation discusses licenses substantively (a legal-tech project, an OSS-compliance tool). The default would filter genuine prose containing the license preamble phrases; disabling lets it through.
+## When changes apply
 
-### Combine all four
+Edits apply on the next `aelf onboard` run. They do not retroactively re-filter beliefs already in the store — config controls ingestion, not retention.
 
-```toml
-[noise]
-disable = ["headings"]
-min_words = 3
-exclude_words = ["jso", "internal-codename"]
-exclude_phrases = ["TODO:", "FIXME"]
+To remove existing noise: drop and re-onboard.
+
+```bash
+rm "$(python -c 'from aelfrice.cli import db_path; print(db_path())')"
+aelf onboard /path/to/project
 ```
 
-A power user with strong opinions. Keeps headings (maybe their docs use heading-only paragraphs as semantic markers), tightens the fragment threshold, filters internal terminology, and drops dev-marker lines. All four take effect simultaneously.
+Locks, manually inserted beliefs, and feedback history will be lost. For a less destructive cleanup, query the store with `sqlite3` and `DELETE` rows that match.
 
-## Defaults reference
+## What this file does not do
 
-If you write `[noise]` with no fields, you get the v1.0.1 ship behaviour — same as not having a config file at all:
+- Does not affect retrieval. The filter only runs at onboard time.
+- Does not affect `aelf lock` or `aelf:lock`. Manually-asserted beliefs bypass the noise filter.
+- Does not redefine the four built-in categories. You can disable them, not modify what they match. Use `exclude_words` / `exclude_phrases` for custom rules.
+- Does not load from `pyproject.toml`, env vars, or CLI flags.
 
-| Field | Default |
+## Resilience
+
+If the file is malformed, unreadable, or contains wrong-typed values, the filter degrades silently to defaults rather than failing the onboard. Failures trace to stderr.
+
+| Failure | Behaviour |
 |---|---|
-| `disable` | `[]` (all four categories enabled) |
-| `min_words` | `4` |
-| `exclude_words` | `[]` |
-| `exclude_phrases` | `[]` |
-
-## Resilience contract
-
-If `.aelfrice.toml` is malformed (invalid TOML), unreadable (permission error), or contains wrong-typed values for known fields, the noise filter degrades silently to defaults rather than failing the onboard run. Failures are traced to stderr so a power user debugging can see them; a casual user is not blocked.
-
-Specifically:
-
-- Malformed TOML → defaults loaded, `malformed TOML in <path>: <error>` to stderr.
-- Wrong-typed field (e.g. `min_words = "three"`) → that field defaults, `ignoring [noise] <field>` to stderr; other fields still load.
-- Non-string entry in a string-list field → that entry skipped with a warning, list still loads.
-- Unknown field → silently ignored (forward-compat for future schema additions).
-- Missing file → defaults loaded, no warning.
+| Malformed TOML | defaults loaded, `malformed TOML in <path>` to stderr |
+| Wrong-typed field | that field defaults, `ignoring [noise] <field>` to stderr |
+| Non-string entry in a list field | that entry skipped, list still loads |
+| Unknown field | silently ignored (forward-compat) |
+| Missing file | defaults loaded, no warning |
 
 ## See also
 
-- [COMMANDS § `aelf onboard`](COMMANDS.md) — the CLI surface.
-- [ARCHITECTURE § Modules](ARCHITECTURE.md) — `noise_filter.py` placement in the module map.
-- [LIMITATIONS § Onboarding](LIMITATIONS.md) — what's still on the v1.x horizon for onboard behaviour.
-- The module docstring in `src/aelfrice/noise_filter.py` — same schema, slightly more terse, with the regex internals exposed for contributors.
+- [COMMANDS § `onboard`](COMMANDS.md) — the CLI surface.
+- [ARCHITECTURE § Modules](ARCHITECTURE.md) — where `noise_filter.py` sits.
+- [LIMITATIONS § Onboarding scope](LIMITATIONS.md) — what's still on the horizon for onboard behaviour.

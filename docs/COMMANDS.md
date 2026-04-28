@@ -1,52 +1,68 @@
-# CLI Reference
+# Commands
 
-Nineteen subcommands. The first eight (retrieval/feedback) are also available as MCP tools and Claude Code slash commands. The lifecycle commands (`setup`/`unsetup`/`upgrade`/`uninstall`/`statusline`/`doctor`/`migrate`) and `bench` are CLI-only.
-
-DB resolves from `$AELFRICE_DB` (override), then `<git-common-dir>/aelfrice/memory.db` when `cwd` is in a git work-tree, then `~/.aelfrice/memory.db` as the non-git fallback. `.git/` is not git-tracked — the brain graph never crosses the git boundary.
+Twenty-two CLI subcommands. The retrieval/feedback ones are also exposed as MCP tools (see [MCP](MCP.md)) and slash commands (see [SLASH_COMMANDS](SLASH_COMMANDS.md)). Lifecycle commands (`setup`, `doctor`, `migrate`, `upgrade`, `uninstall`, etc.) are CLI-only.
 
 ```
 aelf <subcommand> [args] [options]
+aelf --help
+aelf --version
 ```
 
-## Reference
+DB resolves from `$AELFRICE_DB`, then `<git-common-dir>/aelfrice/memory.db` when `cwd` is in a git work-tree, then `~/.aelfrice/memory.db` as the non-git fallback.
 
-| Command | Args | Behaviour |
-|---|---|---|
-| `onboard <path>` | `path` | Walk filesystem (`.md/.rst/.txt/.adoc`), git log, Python AST. Classify candidates, insert non-duplicates. Power users can tune the noise filter via a `.aelfrice.toml` at the project root — see [CONFIG.md](CONFIG.md). |
-| `search <query> [--budget N]` | `query`, `--budget` (default 2000) | L0 locked + L1 FTS5 BM25, token-budgeted. |
-| `lock <statement>` | `statement` | Insert at `(α, β) = (9.0, 0.5)` with `lock_level=user`. Idempotent — re-lock of identical text upgrades existing. |
-| `locked [--pressured]` | `--pressured` | List locks. With flag, only those with `demotion_pressure > 0`. |
-| `demote <belief_id>` | `belief_id` | `lock_level → none`, `locked_at → null`, `demotion_pressure → 0`. Belief itself remains. |
-| `resolve` | — | Sweep unresolved CONTRADICTS threads. For each pair, pick a winner per precedence (`user_stated > user_corrected > document_recent`; ties broken by recency, then by id) and create a SUPERSEDES thread from winner to loser. Writes one `feedback_history` row per resolution with `source='contradiction_tiebreaker:<rule>'`. Idempotent. |
-| `feedback <belief_id> <used\|harmful> [--source S]` | id, signal, optional source | `used` ⇒ α += 1. `harmful` ⇒ β += 1. Positive feedback flowing through outbound CONTRADICTS threads to user-locks bumps their `demotion_pressure`; ≥ 5 ⇒ auto-demote. |
-| `stats` | — | beliefs / threads / locked / feedback_events counts. |
-| `health` | — | Structural auditor (v1.1.0): three checks fire — orphan threads, FTS5 sync drift, locked-belief CONTRADICTS pairs. Each finding prints `[ok  ]` or `[FAIL]`. Exit 1 if any failure, 0 otherwise. Informational metrics (counts, average confidence, credal gap, thread counts by type) print alongside but don't affect exit. |
-| `status` | — | Alias for `health`. Same output, same exit codes. |
-| `regime` | — | v1.0 regime classifier preserved as a separate command. One of `supersede`, `ignore`, `mixed`, `insufficient_data`. Informational only; always exits 0. |
-| `migrate [--from PATH] [--apply] [--all] [--yes]` | — | Copy beliefs from the legacy global DB (default: `~/.aelfrice/memory.db`) into the active project's resolved DB. Dry-run by default — `--apply` writes. Filter copies only beliefs whose content references the absolute project root path; `--all` skips the filter. Edges follow only when both endpoints land. Reads source via SQLite `mode=ro` URI; never deletes from the source. Idempotent. |
-| `doctor [--user-settings P] [--project-root D]` | — | Verify hook + statusline commands in user and project `settings.json` resolve to executables. Reports broken absolute paths and bare names not on `$PATH`. Special-cases `bash /script.sh` to inspect the script. Exits `1` on any broken finding. |
-| `setup [--scope user\|project] [--project-root D] [--settings-path P] [--command C] [--timeout N] [--status-message M] [--no-statusline]` | various | Install `UserPromptSubmit` hook + `statusLine` notifier in Claude Code `settings.json`. Defaults: `--scope` auto-detects `project` if `cwd/.venv` matches `sys.prefix` else `user`; `--command` auto-resolves to absolute `aelf-hook` (project venv for project scope, `$PATH` for user scope). Also silently removes legacy dangling `/usr/local/bin/aelf{,-hook}` symlinks. Idempotent + atomic. |
-| `unsetup` (same scope flags, `--command`) | — | Remove the hook + our statusline contribution. Default `--command` matches every entry whose program basename is `aelf-hook`, so a bare-name install and an absolute-path install are both cleaned by the same call. Composed statuslines are surgically unwrapped to restore the original command. |
-| `upgrade [--check]` | — | Print the right pip-upgrade command for the running env (venv → `pip install --upgrade`, pipx → `pipx upgrade`, system → `pip install --user --upgrade`). When an update is available, also prints the wheel SHA-256 + PyPI release URL for hash-pinned installs. `--check` suppresses the command line. |
-| `uninstall (--keep-db \| --purge \| --archive PATH) [--password-stdin] [--yes] [--keep-hook] [--settings-path P]` | one disposition flag required | Tear down aelfrice. Disposition modes are mutually exclusive. `--purge` requires typing `PURGE` then `[y/N]` unless `--yes` is passed. `--archive` requires `pip install 'aelfrice[archive]'`. By default also runs `unsetup`; `--keep-hook` opts out. Tail message points at `pip uninstall aelfrice` for wheel removal. |
-| `statusline` | — | Emit the orange update-banner snippet (or empty when no update is pending). Reads cache only, no network. Composes onto an existing statusline via shell `;`. Color: truecolor → 256-color → basic, NO_COLOR honoured. |
-| `bench [--db PATH] [--top-k N]` | — | Run the deterministic 16-belief × 16-query benchmark. Print a single JSON `BenchmarkReport`: `hit_at_1` / `hit_at_3` / `hit_at_5` / `mrr` + `p50_latency_ms` / `p99_latency_ms`. |
-| `--version` (root flag) | — | Print `aelfrice X.Y.Z` and exit. |
+## Memory operations
 
-## Output format
+| Command | What it does |
+|---|---|
+| `onboard <path>` | Walk filesystem, git log, Python AST. Classify candidates, insert non-duplicates. Tunable via `.aelfrice.toml` — see [CONFIG](CONFIG.md). |
+| `search <query> [--budget N]` | L0 locked + L1 FTS5 BM25, token-budgeted (default 2,000). Distinguishes "store empty" from "no match". |
+| `lock <statement>` | Insert at `(α, β) = (9.0, 0.5)` with `lock_level=user`. Idempotent — re-lock upgrades existing. |
+| `locked [--pressured]` | List locks. With `--pressured`, only those with `demotion_pressure > 0`. |
+| `demote <belief_id>` | Drop a user lock. Belief itself remains. |
+| `validate <belief_id> [--source user_validated]` | Promote an `agent_inferred` belief to a user-validated origin (v1.2+). |
+| `feedback <belief_id> <used\|harmful> [--source S]` | `used` ⇒ α += 1; `harmful` ⇒ β += 1. Harmful feedback through outbound `CONTRADICTS` threads to user-locks bumps their demotion_pressure; ≥5 ⇒ auto-demote. |
+| `resolve` | Sweep unresolved `CONTRADICTS` threads. Picks a winner per precedence (`user_stated > user_corrected > document_recent`) and inserts a `SUPERSEDES` thread. Idempotent. |
 
-Human-readable on stdout (CLI), JSON on stdout (`bench`). Errors on stderr.
+## Diagnostics
 
-Exit codes: `0` = success or no-op, `1` = invalid argument or belief not found, `>1` = uncaught exception.
+| Command | What it does |
+|---|---|
+| `stats` | Belief / thread / lock / feedback counts. |
+| `health` | Structural auditor: orphan threads, FTS5 sync, locked contradictions, corpus volume. Exits 1 on structural failure; corpus-volume warnings are informational. |
+| `status` | Alias for `health`. |
+| `regime` | The v1.0 regime classifier output (`supersede` / `ignore` / `mixed` / `insufficient_data`). Informational; always exits 0. |
+| `doctor` | Verify hook + statusline commands resolve. Inspects `bash <script>` wrappers, flags `2>/dev/null \|\| true` patterns. Surfaces empty-store warning. Exits 1 on broken hooks. |
+| `bench [--top-k N]` | Run the deterministic 16-belief × 16-query benchmark. Prints a JSON `BenchmarkReport`. |
+
+## Lifecycle
+
+| Command | What it does |
+|---|---|
+| `setup` | Install the `UserPromptSubmit` hook + statusline notifier. Auto-detects scope (`project` if `cwd/.venv` matches the active interpreter, else `user`). Idempotent + atomic. Optional flags: `--transcript-ingest`, `--commit-ingest`, `--session-start`, `--rebuilder`. |
+| `unsetup` | Remove the hook and our statusline contribution. Composed statuslines are surgically unwrapped. Mirrors `setup` flags. |
+| `upgrade [--check]` | Print the pip-upgrade command for the active env (venv / pipx / system). Includes wheel SHA-256 for hash-pinned installs. Does not run pip. |
+| `uninstall (--keep-db \| --archive PATH \| --purge)` | Tear down aelfrice. One disposition flag required. `--purge` has three confirmation gates. `--archive` writes a Fernet-encrypted file then deletes the original. |
+| `migrate [--from P] [--apply] [--all]` | Port beliefs from the legacy global DB into the active project's per-project DB. Dry-run by default. Read-only on the source. |
+| `statusline` | Emit the update-banner snippet (or empty). Reads cache only, no network. |
+| `ingest-transcript [PATH \| --batch DIR] [--since DATE]` | Ingest one `turns.jsonl` file or batch-walk a directory. Auto-detects aelfrice and Claude Code formats. Idempotent. |
+| `rebuild [--transcript PATH] [--n N] [--budget N]` | Manual context-rebuilder run (alpha; normally fires on `PreCompact`). Prints the rebuild block to stdout. |
+
+## Output and exit codes
+
+- Human-readable on stdout. Errors on stderr.
+- `bench` prints JSON.
+- Exit codes: `0` = success or no-op, `1` = bad argument / belief not found / structural audit failure, `>1` = uncaught exception.
 
 ## Defaults that matter
 
-- Lock initial prior: `(9.0, 0.5)`
-- Decay target: Jeffreys prior `(0.5, 0.5)`
-- Half-lives: factual 14d / requirement 30d / preference 12w / correction 24w
-- Demotion threshold: 5 contradicting events
-- Search token budget: 2000
-- Valence propagation: BFS, max 3 hops, threshold 0.05
-- Benchmark hit-depth: top-5 (override with `--top-k`)
+| Constant | Value |
+|---|---|
+| Lock initial prior | `(α, β) = (9.0, 0.5)` |
+| Decay target | Jeffreys prior `(0.5, 0.5)` |
+| Half-lives | factual 14d, requirement 30d, preference 12w, correction 24w |
+| Demotion threshold | 5 contradicting events |
+| Retrieval token budget | 2,000 |
+| Valence propagation | BFS, max 3 hops, threshold 0.05 |
+| Benchmark hit-depth | top-5 |
 
 All exposed as module-level constants in `aelfrice.feedback`, `aelfrice.scoring`, `aelfrice.retrieval`. See [ARCHITECTURE](ARCHITECTURE.md).

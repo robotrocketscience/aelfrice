@@ -1,13 +1,17 @@
-# MCP Tool Reference
+# MCP
 
-aelfrice exposes the same eight retrieval/feedback operations as the CLI through a [Model Context Protocol](https://modelcontextprotocol.io) server. `setup`/`unsetup` are CLI-only.
+aelfrice exposes nine memory tools through a [Model Context Protocol](https://modelcontextprotocol.io) server. The agent calls them mid-turn; you don't have to invoke them yourself.
+
+Lifecycle commands (`setup`, `unsetup`, `migrate`, `doctor`, `upgrade`, `uninstall`) are CLI-only.
+
+## Install + run
 
 ```bash
-uv sync --extra mcp
-uv run python -m aelfrice.mcp_server
+pip install "aelfrice[mcp]"
+uv run python -m aelfrice.mcp_server     # or just `aelf-mcp` after install
 ```
 
-Host config (Claude Code, Codex, any MCP host):
+Host config — Claude Code, Codex, any MCP-capable host:
 
 ```json
 {
@@ -27,35 +31,42 @@ Tools register under the `aelf:` namespace.
 | Tool | Required | Optional | Returns |
 |---|---|---|---|
 | `aelf:onboard` | — | `path`, `session_id`, `classifications` | polymorphic — see below |
-| `aelf:search` | `query` | `budget` (default 2000) | `{kind, n_hits, hits[]}` |
+| `aelf:search` | `query` | `budget` (default 2,000) | `{kind, n_hits, hits[]}` |
 | `aelf:lock` | `statement` | — | `{kind, id, action}` |
 | `aelf:locked` | — | `pressured` | `{kind, n, locked[]}` |
 | `aelf:demote` | `belief_id` | — | `{kind, id, demoted}` |
+| `aelf:validate` | `belief_id` | `source` (default `user_validated`) | `{kind, id, origin, source}` |
 | `aelf:feedback` | `belief_id`, `signal` | `source` | `{kind, id, signal, prior_alpha, new_alpha, prior_beta, new_beta, pressured_locks, demoted_locks}` |
-| `aelf:stats` | — | — | `{kind, beliefs, edges, threads, locked, feedback_events, onboard_sessions_total}` — `threads` is the v1.1.0 alias for `edges` (same integer value); `edges` is **deprecated** and removed in v1.2.0. |
-| `aelf:health` | — | — | `{kind, regime, description, classification_confidence?, features?}` — `features` includes both `edge_per_belief` and `thread_per_belief` (same value) for the v1.1.0 deprecation window; `edge_per_belief` removed in v1.2.0. |
+| `aelf:stats` | — | — | `{kind, beliefs, threads, locked, feedback_events, ...}` |
+| `aelf:health` | — | — | `{kind, regime, description, classification_confidence?, features?}` |
+
+`signal` is `"used"` or `"harmful"`. Validation promotes an `agent_inferred` belief to a user-validated origin tier (v1.2+).
 
 ## `aelf:onboard` polymorphism
 
-Three input shapes dispatched by which fields the caller supplied:
+Three input shapes, dispatched by which fields the caller supplied:
 
 | Input | Phase | Returns |
 |---|---|---|
 | `{path}` | start | `{kind: "onboard.session_started", session_id, sentences[]}` for the host LLM to classify |
-| `{session_id, classifications}` | finish | `{kind: "onboard.session_completed", inserted, skipped_*}` after host posts back classifications |
+| `{session_id, classifications}` | finish | `{kind: "onboard.session_completed", inserted, skipped_*}` |
 | `{}` | status | `{kind: "onboard.status", n_pending, pending_session_ids}` |
 
-Unlike the CLI's regex-based `scan_repo`, the MCP onboard uses the host LLM for higher-quality classification.
+Unlike the CLI's synchronous regex `scan_repo`, the MCP onboard uses the host LLM for higher-quality classification.
 
-## Pure handlers (testing)
+## Pure handlers
+
+Every tool is a pure function `(store, **kwargs) -> dict`. You can call them in tests without `fastmcp`:
 
 ```python
-from aelfrice.store import Store
+from aelfrice.store import MemoryStore
 from aelfrice.mcp_server import tool_search, tool_lock
 
-store = Store(":memory:")
-tool_lock(store, statement="Never push directly to main")
+store = MemoryStore(":memory:")
+tool_lock(store, statement="never push directly to main")
 tool_search(store, query="push", budget=500)
 ```
 
-No `fastmcp` dependency needed for handler-level use.
+## Backward compatibility
+
+`aelf:stats` and `aelf:health` emit both `edges` (the v1.0 schema name) and `threads` (the v1.1.0 user-facing name) with the same integer value during the v1.1.0 deprecation window. `edges` and `edge_per_belief` are removed in v1.2.0; clients should migrate to `threads` and `thread_per_belief`.

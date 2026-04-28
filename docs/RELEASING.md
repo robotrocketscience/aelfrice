@@ -16,10 +16,10 @@ How to cut a new version. Maintainer reference.
 5. Update README roadmap status.
 6. Run locally:
    ```bash
-   uv run pytest tests/ -x -q                # ~810 passing at v1.0.2 / ~1090 at v1.1.0
-   uv run pyright src/                        # strict
-   uv run aelf --help                         # spot-check CLI
-   uv build                                   # wheels build clean
+   uv run pytest tests/ -x -q     # ~1,150 passing at v1.2 (track the actual count in CI)
+   uv run pyright src/             # strict
+   uv run aelf --help              # spot-check CLI
+   uv build                        # wheels build clean
    ```
 7. Open PR `release: vX.Y.Z`. Body = CHANGELOG entries.
 8. `staging-gate` must be green: gitleaks, PII pattern scan, history audit, pytest matrix.
