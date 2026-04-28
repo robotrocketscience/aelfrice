@@ -112,6 +112,25 @@ What the research line had, when each piece returns:
 | Type-aware compression | v2.0.0 |
 | Doc / semantic linker | v2.0.0 |
 | `wonder` / `reason` / `core` / `unlock` / `delete` / `confirm` | v2.0.0 |
+| Multi-axis uncertainty substrate (`UncertaintyVector`) | v2.0.0 (substrate for `wonder`; decision pending) |
+| Speculative / causal edge types (`SPECULATES`, `DEPENDS_ON`, `RESOLVES`, `HIBERNATED`) | v2.0.0 (with `wonder`) |
+| Directive-detection + compliance-audit + selective-injection triad | v2.0.0 candidate |
+| Sentiment-from-prose feedback | v2.0.0 candidate |
+| Near-duplicate audit (`aelf doctor dedup`) | v1.x candidate |
+| Multi-model belief classifier (SIGNAL/NOISE/STALE/CONTESTED) | v2.0.0 candidate |
+| Automatic CONTRADICTS detection (semantic-divergence) | v1.x candidate |
+
+The four "candidate" lines are the orphaned research-line capabilities from the agentmemory parity audit — neither shipping today nor previously listed on this roadmap. They land if and only if a benchmark or experiment justifies the inclusion (per the validation discipline below); otherwise they stay parked.
+
+### Deliberately not on this list
+
+The research line also shipped the following capabilities that aelfrice does **not** plan to recover:
+
+- **Research-artifact provenance metadata** (`produced_at` / `method` / `sample_size` / `data_source` / `independently_validated` per belief) and the **rigor-tier** classification layer (`hypothesis` / `simulated` / `empirically_tested` / `validated`). Motivated in the research line by a case study where a new agent miscalibrated project maturity from raw completion counts. aelfrice v1 stores provenance via the `Belief.origin` enum (7 source-tier values) only; epistemic-rigor metadata is **not** on the v2.0 surface. If status reporting needs this signal it lands as a separate feature with its own benchmark, not as a schema-wide migration.
+- **Session-velocity tracking** (items/hour decay scaling). v1 ships per-belief decay with type-specific half-lives; velocity-scaled decay is the research-line refinement and is parked.
+- **Calibrated status reporting** that surfaces rigor-tier distribution and velocity context to a new agent. Depends on the two items above.
+- **Cross-project shared scopes** via SQLite ATTACH. Subsumed by the Multi-project query non-goal in [LIMITATIONS § Sharing, sync, or federation](LIMITATIONS.md). Named here so the research-line term ("shared scopes") doesn't read as an oversight.
+- **Obsidian vault export** and **vault-as-source-of-truth** storage. Rejected at v1: SQLite is the source of truth, per-project isolation is a hard property. Subsumed by the same federation non-goal.
 
 ## Compatibility
 
