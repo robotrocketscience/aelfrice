@@ -107,3 +107,8 @@ include = ["src/aelfrice", "tests"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 reportMissingTypeStubs = false
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.409",
+]
