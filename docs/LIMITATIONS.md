@@ -20,6 +20,8 @@ This is a deliberate scope choice, not a roadmap item. Adding embeddings would b
 
 The CLI scanner walks three sources: prose files (`*.md`, `*.rst`, `*.txt`, `*.adoc`), `git log`, and Python AST. Not yet wired: JavaScript / TypeScript / Rust / Go ASTs.
 
+The research line shipped a wider set of extractors — citation-ref scanning across markdown bodies, test↔implementation linkage from filename and import patterns, and a directive detector that captured imperative user statements as TODO beliefs. v1.x does not ship these; the directive-detection path in particular has architectural implications (it would land alongside the violation-detection tier of [PHILOSOPHY § What we can and can't guarantee](PHILOSOPHY.md#what-we-can-and-cant-guarantee)) and is parked for v2.0.
+
 Classification on the CLI path defaults to regex-based priors. Higher-quality classification is available via two paths:
 - **MCP `aelf:onboard`** polymorphic flow, which routes through the host LLM.
 - **`aelf onboard --llm-classify`** (v1.3+, default-off) — routes through Claude Haiku directly. Requires `ANTHROPIC_API_KEY`. Four consent gates enforce the privacy boundary. See [llm_classifier.md](llm_classifier.md).
@@ -33,7 +35,9 @@ The default retrieval mode (recall, not audit) is correctly served by latest-ser
 ## Sharp edges
 
 - **Locks are durable.** Fresh lock = `(α, β) = (9.0, 0.5)`. Five independent contradicting feedback events are required to auto-demote. If you lock a wrong rule and correct it only once or twice, the lock keeps winning. `aelf demote <id>` drops it immediately.
-- **`CONTRADICTS` edges drive demotion pressure.** The regex classifier rarely produces them, so demotion pressure accumulates only from manual feedback unless you wire commit-ingest or transcript-ingest.
+- **`CONTRADICTS` edges drive demotion pressure.** The regex classifier rarely produces them, so demotion pressure accumulates only from manual feedback unless you wire commit-ingest or transcript-ingest. Note that this means the README-level "catches contradictions and flags them" claim is shipped *partially* at v1.x: contradiction **resolution** (`aelf resolve`, the tie-breaker that picks a winner given a CONTRADICTS edge) is in v1.0; contradiction **detection** (the post-insert semantic-divergence detector that creates those edges automatically) is deferred. Until detection lands, contradiction-flagging surfaces only on edges produced by the triple extractor's six explicit relation-family regexes.
+- **Natural-language sentiment is not captured automatically.** Saying "ok good" or "no that's wrong" in chat does **not** strengthen or weaken the beliefs the agent just used. Feedback at v1.x requires explicit `aelf feedback <id> used|harmful` (CLI) or the equivalent MCP `aelf:feedback` call. The implicit-from-prose sentiment loop described in research-line marketing copy is a deferred capability, not a v1.x feature.
+- **Confidence drops below 0.5 do not auto-flag.** A belief whose posterior drifts under the prior is not surfaced as a warning at v1.x. The only automatic state change driven by negative evidence is locked-belief demotion-pressure (≥5 contradictions → auto-demote). To find drifting beliefs, query `aelf stats` directly.
 - **Jeffreys prior reads as 0.5.** A belief with no feedback reports posterior mean exactly `0.5`. That means "no evidence yet," not "coin-flip true."
 - **`aelf onboard` is non-incremental on duplicates.** Re-runs are idempotent; existing beliefs are not re-scored or refreshed.
 - **No bulk operations.** No batch lock, no `delete <pattern>`, no merge.

@@ -141,7 +141,33 @@ What the research line had, when each piece returns:
 | HRR vocabulary bridge | v2.0.0 |
 | Type-aware compression | v2.0.0 |
 | Doc / semantic linker | v2.0.0 |
-| `wonder` / `reason` / `core` / `unlock` / `delete` / `confirm` | v2.0.0 |
+| Graph-traversal store methods (`expand_graph`, `get_neighbors`, `edge_exists`) | v1.5 or v1.6 (substrate for `wonder` + `reason`; ships ahead of v2.0) |
+| `ingest_turn(bulk=)` parameter | v2.0.0 ([#194](https://github.com/robotrocketscience/aelfrice/issues/194); mechanical, post-`wonder_ingest` port) |
+| `scoring.uncertainty_score(α, β)` | v2.0.0 ([#195](https://github.com/robotrocketscience/aelfrice/issues/195); conditional on substrate decision) |
+| Multi-axis uncertainty substrate (`UncertaintyVector`) | v2.0.0 substrate decision ([#196](https://github.com/robotrocketscience/aelfrice/issues/196); load-bearing — blocks `wonder` + `reason`) |
+| Speculative-belief schema migration (3 columns + 1 belief type + 2 edge types) | v2.0.0 (depends on #196) |
+| Speculative / causal edge types (`SPECULATES`, `DEPENDS_ON`, `RESOLVES`, `HIBERNATED`) | v2.0.0 (with `wonder`) |
+| `wonder` (gap-analysis frontend) | v2.0.0 (depends on substrate + graph-traversal) |
+| `wonder_ingest` + `wonder_gc` (speculative-belief lifecycle) | v2.0.0 (depends on substrate) |
+| `reason` (graph-walk reasoning) | v2.0.0 (depends on graph-traversal) |
+| `core` / `unlock` / `delete` / `confirm` (CLI surface) | v2.0.0 |
+| Directive-detection + compliance-audit + selective-injection triad | v2.0.0 candidate ([#199](https://github.com/robotrocketscience/aelfrice/issues/199)) |
+| Sentiment-from-prose feedback | v2.0.0 candidate ([#193](https://github.com/robotrocketscience/aelfrice/issues/193)) |
+| Near-duplicate audit (`aelf doctor dedup`) | v1.x candidate ([#197](https://github.com/robotrocketscience/aelfrice/issues/197)) |
+| Multi-model belief classifier (SIGNAL/NOISE/STALE/CONTESTED) | v2.0.0 candidate ([#198](https://github.com/robotrocketscience/aelfrice/issues/198)) |
+| Automatic CONTRADICTS detection (semantic-divergence) | v1.x candidate ([#201](https://github.com/robotrocketscience/aelfrice/issues/201)) |
+
+The four "candidate" lines are the orphaned research-line capabilities from the agentmemory parity audit — neither shipping today nor previously listed on this roadmap. They land if and only if a benchmark or experiment justifies the inclusion (per the validation discipline below); otherwise they stay parked.
+
+### Deliberately not on this list
+
+The research line also shipped the following capabilities that aelfrice does **not** plan to recover:
+
+- **Research-artifact provenance metadata** (`produced_at` / `method` / `sample_size` / `data_source` / `independently_validated` per belief) and the **rigor-tier** classification layer (`hypothesis` / `simulated` / `empirically_tested` / `validated`). Motivated in the research line by a case study where a new agent miscalibrated project maturity from raw completion counts. aelfrice v1 stores provenance via the `Belief.origin` enum (7 source-tier values) only; epistemic-rigor metadata is **not** on the v2.0 surface. If status reporting needs this signal it lands as a separate feature with its own benchmark, not as a schema-wide migration.
+- **Session-velocity tracking** (items/hour decay scaling). v1 ships per-belief decay with type-specific half-lives; velocity-scaled decay is the research-line refinement and is parked.
+- **Calibrated status reporting** that surfaces rigor-tier distribution and velocity context to a new agent. Depends on the two items above.
+- **Cross-project shared scopes** via SQLite ATTACH. Subsumed by the Multi-project query non-goal in [LIMITATIONS § Sharing, sync, or federation](LIMITATIONS.md). Named here so the research-line term ("shared scopes") doesn't read as an oversight.
+- **Obsidian vault export** and **vault-as-source-of-truth** storage. Rejected at v1: SQLite is the source of truth, per-project isolation is a hard property. Subsumed by the same federation non-goal.
 
 ## Compatibility
 
