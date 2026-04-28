@@ -26,7 +26,7 @@ Two complementary changes:
 
 The standard FTS5 BM25 path in `aelfrice.store.search_beliefs`
 remains the default L1 lane at v1.5.0. `BM25Index` lands as an
-**opt-in alternative** behind the `bm25f_enabled` flag in
+**opt-in alternative** behind the `use_bm25f_anchors` flag in
 `aelfrice.retrieval`. Default-on flip is gated on a benchmark
 follow-up after v1.5.x telemetry — see #154 for the composition
 tracker that handles that flip.

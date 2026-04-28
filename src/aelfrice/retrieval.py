@@ -103,8 +103,35 @@ BFS_FLAG: Final[str] = "bfs_enabled"
 POSTERIOR_WEIGHT_FLAG: Final[str] = "posterior_weight"
 # v1.5.0 BM25F flag. Default-OFF: FTS5 BM25 stays the L1 path until a
 # benchmark gate (#154 composition tracker) flips the default. Opt-in
-# via the kwarg, AELFRICE_BM25F=1, or `[retrieval] bm25f_enabled = true`.
-BM25F_FLAG: Final[str] = "bm25f_enabled"
+# via the kwarg, AELFRICE_BM25F=1, or `[retrieval] use_bm25f_anchors = true`.
+BM25F_FLAG: Final[str] = "use_bm25f_anchors"
+
+# v1.5.0 #154 composition-tracker placeholder flags. None of these
+# correspond to wired lanes yet — the components ship across
+# v1.6 / v1.7 (signed Laplacian + heat kernel + posterior-full at
+# v1.6; HRR structural at v1.7). Listed here so:
+#
+#   1. `.aelfrice.toml` keys can be set ahead of the components
+#      shipping without producing "unknown key" warnings.
+#   2. The flag-resolution code path is identical to the live
+#      `use_bm25f_anchors` flag, so wiring a lane in a v1.6+ PR
+#      is a one-line edit at the consumption site.
+#
+# Each placeholder is silently default-OFF. Setting one to True at
+# v1.5.0 is a no-op with a single stderr warning that the lane
+# has not yet shipped — same fail-soft posture as the rest of the
+# config surface.
+SIGNED_LAPLACIAN_FLAG: Final[str] = "use_signed_laplacian"
+HEAT_KERNEL_FLAG: Final[str] = "use_heat_kernel"
+POSTERIOR_RANKING_FLAG: Final[str] = "use_posterior_ranking"
+HRR_STRUCTURAL_FLAG: Final[str] = "use_hrr_structural"
+
+PLACEHOLDER_FLAGS: Final[tuple[str, ...]] = (
+    SIGNED_LAPLACIAN_FLAG,
+    HEAT_KERNEL_FLAG,
+    POSTERIOR_RANKING_FLAG,
+    HRR_STRUCTURAL_FLAG,
+)
 
 # Env var override. Set to "0", "false", or "no" to force-disable
 # the index. Unset / any other value falls through to the TOML
@@ -431,7 +458,7 @@ def is_entity_index_enabled(
     return True
 
 
-def is_bm25f_enabled(
+def resolve_use_bm25f_anchors(
     explicit: bool | None = None,
     *,
     start: Path | None = None,
@@ -441,7 +468,7 @@ def is_bm25f_enabled(
     Precedence (first decisive wins):
       1. AELFRICE_BM25F env var (truthy / falsy normalised).
       2. Explicit `explicit` kwarg from the caller.
-      3. `[retrieval] bm25f_enabled` in `.aelfrice.toml`.
+      3. `[retrieval] use_bm25f_anchors` in `.aelfrice.toml`.
       4. Default: False (v1.5.0 default-OFF).
 
     The default-off contract means the v1.4 FTS5 path remains
@@ -458,6 +485,84 @@ def is_bm25f_enabled(
     if toml_value is not None:
         return toml_value
     return False
+
+
+_PLACEHOLDER_WARNED: set[str] = set()
+
+
+@dataclass(frozen=True)
+class LaneTelemetry:
+    """Per-lane counters from the most recent `retrieve()` /
+    `retrieve_with_tiers()` call. v1.5.0 #154 surface; consumed
+    by `aelf doctor` and the v1.6+ benchmark gates.
+
+    Counts are post-dedupe (a belief that L0 surfaced is not
+    counted again by L2.5 or L1). `bm25f_used` records whether
+    the BM25F sparse-matvec lane was the L1 implementation
+    (True) or the FTS5 path (False) for the call.
+    """
+
+    locked: int = 0
+    l25: int = 0
+    l1: int = 0
+    bfs: int = 0
+    bm25f_used: bool = False
+    posterior_weight: float = 0.0
+
+
+# Per-process snapshot of the most recent retrieval call. Test-
+# friendly and zero-overhead (one assignment per retrieve()).
+# Not thread-safe; callers that share a store across threads
+# should consume the per-call return values from
+# `retrieve_with_tiers` instead.
+_LAST_TELEMETRY: LaneTelemetry = LaneTelemetry()
+
+
+def last_lane_telemetry() -> LaneTelemetry:
+    """Return the LaneTelemetry of the most recent retrieve() call
+    in this process. Used by `aelf doctor` and benchmark gates."""
+    return _LAST_TELEMETRY
+
+
+def warn_placeholder_flags(start: Path | None = None) -> list[str]:
+    """Read every `[retrieval] use_<lane>` placeholder flag from
+    `.aelfrice.toml` and emit a stderr warning per flag set to
+    True. Returns the list of placeholder names that were warned
+    on (mostly for the test suite; callers can ignore the return
+    value).
+
+    Placeholder flags correspond to retrieval lanes that are
+    spec'd by #154 but ship across v1.6 / v1.7 (signed Laplacian,
+    heat kernel, posterior-full, HRR structural). Setting a
+    placeholder True at v1.5.0 is a no-op; the warning tells the
+    user the flag was recognised but the lane is not yet wired.
+
+    Fail-soft: an unreadable / malformed TOML produces no warning.
+    The intent is a forward-compat receipt, not a config gate.
+    """
+    warned: list[str] = []
+    for flag in PLACEHOLDER_FLAGS:
+        if flag in _PLACEHOLDER_WARNED:
+            continue
+        value = _read_toml_flag_for(flag, start)
+        if value is True:
+            print(
+                f"aelfrice retrieval: [{RETRIEVAL_SECTION}] {flag} = true "
+                f"recognised but the corresponding lane has not yet "
+                f"shipped (v1.5.0 placeholder; tracked under #154). "
+                f"No-op until the owning component lands.",
+                file=sys.stderr,
+            )
+            _PLACEHOLDER_WARNED.add(flag)
+            warned.append(flag)
+    return warned
+
+
+def _reset_placeholder_warnings() -> None:
+    """Test-only helper: clear the once-per-process warning set so
+    a test that toggles a placeholder flag and re-invokes the
+    warner sees the warning again. Not part of the public API."""
+    _PLACEHOLDER_WARNED.clear()
 
 
 def is_bfs_enabled(
@@ -544,13 +649,13 @@ def _l1_hits(
     *,
     l1_limit: int,
     posterior_weight: float,
-    bm25f_enabled: bool = False,
+    use_bm25f_anchors: bool = False,
     bm25f_cache: BM25IndexCache | None = None,
 ) -> list[Belief]:
     """Run L1: FTS5 BM25 search (default) or BM25F sparse-matvec
     (v1.5.0 opt-in), optionally reranked by partial-Bayesian score.
 
-    `bm25f_enabled = True` swaps the FTS5 lane for `BM25Index.score`
+    `use_bm25f_anchors = True` swaps the FTS5 lane for `BM25Index.score`
     over the augmented (content + W * incoming-anchor) document set.
     The posterior rerank still applies on top of the BM25F score.
     The cache is rebuilt on store mutation via the BM25IndexCache
@@ -560,11 +665,11 @@ def _l1_hits(
     v1.0.x byte-identical contract. BM25F + posterior_weight = 0.0
     returns the BM25F top-K in score-descending, tie-break id-ASC
     order — the byte-identical guarantee against FTS5 only holds
-    when bm25f_enabled is False.
+    when use_bm25f_anchors is False.
 
     `posterior_weight > 0` reranks via `partial_bayesian_score`.
     """
-    if bm25f_enabled:
+    if use_bm25f_anchors:
         # The cache lazy-builds the index on first call and is
         # invalidated by store mutations. The rerank below uses the
         # raw BM25F score in the same `bm25_raw` slot the FTS5 path
@@ -627,7 +732,7 @@ def retrieve(
     bfs_total_budget_nodes: int = BFS_DEFAULT_TOTAL_BUDGET_NODES,
     bfs_min_path_score: float = BFS_DEFAULT_MIN_PATH_SCORE,
     posterior_weight: float | None = None,
-    bm25f_enabled: bool | None = None,
+    use_bm25f_anchors: bool | None = None,
     bm25f_cache: BM25IndexCache | None = None,
 ) -> list[Belief]:
     """Return L0 locked + L2.5 entity + L1 BM25 + L3 BFS expansions.
@@ -668,10 +773,15 @@ def retrieve(
     seeds from being re-surfaced; we additionally guard against
     overlap with L1 hits the seeds didn't include).
     """
+    global _LAST_TELEMETRY
     enabled = is_entity_index_enabled(entity_index_enabled)
     bfs_on = is_bfs_enabled(bfs_enabled)
-    bm25f_on = is_bm25f_enabled(bm25f_enabled)
+    bm25f_on = resolve_use_bm25f_anchors(use_bm25f_anchors)
     weight = resolve_posterior_weight(posterior_weight)
+    # v1.5.0 #154: emit one stderr line per placeholder lane the
+    # user has set True in `.aelfrice.toml`. Fail-soft, once-per-
+    # process per flag.
+    warn_placeholder_flags()
 
     locked: list[Belief] = store.list_locked_beliefs()
     locked_ids: set[str] = {b.id for b in locked}
@@ -713,7 +823,7 @@ def retrieve(
         raw_l1: list[Belief] = _l1_hits(
             store, query,
             l1_limit=l1_limit, posterior_weight=weight,
-            bm25f_enabled=bm25f_on, bm25f_cache=bm25f_cache,
+            use_bm25f_anchors=bm25f_on, bm25f_cache=bm25f_cache,
         )
         l1 = [
             b for b in raw_l1
@@ -758,6 +868,14 @@ def retrieve(
                 out.append(hop.belief)
                 seen_ids.add(hop.belief.id)
                 used += cost
+    _LAST_TELEMETRY = LaneTelemetry(
+        locked=len(locked),
+        l25=len(l25),
+        l1=len(l1_packed),
+        bfs=len(out) - len(locked) - len(l25) - len(l1_packed),
+        bm25f_used=bm25f_on,
+        posterior_weight=weight,
+    )
     return out
 
 
@@ -777,7 +895,7 @@ def retrieve_with_tiers(
     bfs_total_budget_nodes: int = BFS_DEFAULT_TOTAL_BUDGET_NODES,
     bfs_min_path_score: float = BFS_DEFAULT_MIN_PATH_SCORE,
     posterior_weight: float | None = None,
-    bm25f_enabled: bool | None = None,
+    use_bm25f_anchors: bool | None = None,
     bm25f_cache: BM25IndexCache | None = None,
 ) -> tuple[
     list[Belief], list[str], list[str], list[str], list[list[str]],
@@ -794,10 +912,12 @@ def retrieve_with_tiers(
     BFS is off / produced nothing / bfs hits collide with prior
     tiers).
     """
+    global _LAST_TELEMETRY
     enabled = is_entity_index_enabled(entity_index_enabled)
     bfs_on = is_bfs_enabled(bfs_enabled)
-    bm25f_on = is_bm25f_enabled(bm25f_enabled)
+    bm25f_on = resolve_use_bm25f_anchors(use_bm25f_anchors)
     weight = resolve_posterior_weight(posterior_weight)
+    warn_placeholder_flags()
 
     locked: list[Belief] = store.list_locked_beliefs()
     locked_ids_list: list[str] = [b.id for b in locked]
@@ -831,7 +951,7 @@ def retrieve_with_tiers(
         raw_l1: list[Belief] = _l1_hits(
             store, query,
             l1_limit=l1_limit, posterior_weight=weight,
-            bm25f_enabled=bm25f_on, bm25f_cache=bm25f_cache,
+            use_bm25f_anchors=bm25f_on, bm25f_cache=bm25f_cache,
         )
         l1 = [
             b for b in raw_l1
@@ -876,6 +996,14 @@ def retrieve_with_tiers(
                 bfs_chains.append(list(hop.path))
                 seen_ids.add(hop.belief.id)
                 used += cost
+    _LAST_TELEMETRY = LaneTelemetry(
+        locked=len(locked_ids_list),
+        l25=len(l25_ids_list),
+        l1=len(l1_ids_list),
+        bfs=len(bfs_chains),
+        bm25f_used=bm25f_on,
+        posterior_weight=weight,
+    )
     return out, locked_ids_list, l25_ids_list, l1_ids_list, bfs_chains
 
 
@@ -939,7 +1067,7 @@ def retrieve_v2(
         bfs_total_budget_nodes=bfs_total_budget_nodes,
         bfs_min_path_score=bfs_min_path_score,
         posterior_weight=posterior_weight,
-        bm25f_enabled=use_bm25f,
+        use_bm25f_anchors=use_bm25f,
         bm25f_cache=bm25f_cache,
     )
     if include_locked:
@@ -1006,7 +1134,7 @@ class RetrievalCache:
         entity_index_enabled: bool | None = None,
         bfs_enabled: bool | None = None,
         posterior_weight: float | None = None,
-        bm25f_enabled: bool | None = None,
+        use_bm25f_anchors: bool | None = None,
         bm25f_cache: BM25IndexCache | None = None,
     ) -> list[Belief]:
         """Cached `retrieve()`. Identical contract to the free function.
@@ -1031,7 +1159,7 @@ class RetrievalCache:
             entity_index_enabled,
             bfs_enabled,
             key_weight,
-            bm25f_enabled,
+            use_bm25f_anchors,
         )
         cached = self._entries.get(key)
         if cached is not None:
@@ -1043,7 +1171,7 @@ class RetrievalCache:
             entity_index_enabled=entity_index_enabled,
             bfs_enabled=bfs_enabled,
             posterior_weight=posterior_weight,
-            bm25f_enabled=bm25f_enabled,
+            use_bm25f_anchors=use_bm25f_anchors,
             bm25f_cache=bm25f_cache,
         )
         self._entries[key] = list(result)
