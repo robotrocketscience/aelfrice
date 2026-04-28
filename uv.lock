@@ -34,6 +34,11 @@ mcp = [
     { name = "fastmcp" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pyright" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "cryptography", marker = "extra == 'archive'", specifier = ">=42.0" },
@@ -47,6 +52,9 @@ requires-dist = [
     { name = "tiktoken", marker = "extra == 'benchmarks'", specifier = ">=0.7" },
 ]
 provides-extras = ["dev", "mcp", "archive", "benchmarks"]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pyright", specifier = ">=1.1.409" }]
 
 [[package]]
 name = "aiofile"
