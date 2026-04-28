@@ -1,6 +1,6 @@
 # Limitations
 
-aelfrice at v1.0 ships the surface but has gaps the v1.x line is closing. Library, CLI, MCP server, and benchmark harness are stable (~530 tests passing). The end-to-end Claude Code injection path and the feedback-into-retrieval loop are partially complete.
+aelfrice at v1.0 ships the surface but has gaps the v1.x line is closing. Library, CLI, MCP server, and benchmark harness are stable (~530 tests passing at v1.0; ~1090 at v1.1.0). The end-to-end Claude Code injection path and the feedback-into-retrieval loop are partially complete.
 
 ## Known issues at v1.0
 
@@ -28,7 +28,7 @@ Tracked openly. Each item is mapped to its target version below.
 
 - ✅ **Noise filter wired into synchronous onboard (v1.0.1).** New `aelfrice.noise_filter.is_noise(text, config)` predicate runs on every candidate before classification. Drops markdown heading blocks, checklist blocks, three-word fragments, and license-header boilerplate (seven canonical signatures). `ScanResult.skipped_noise` reports how many candidates were filtered per scan. A paragraph that *mixes* heading-or-checklist with prose is preserved — only pure structural runs are filtered. Power-user configurable via a single `.aelfrice.toml` file at the project root (or any ancestor) — full schema, worked examples, and what each setting affects in [CONFIG.md](CONFIG.md). No regex anywhere in the user-facing schema.
 - ✅ **Onboard performance regression test (v1.0.1).** New `tests/regression/test_onboard_perf_50k_loc.py` generates a synthetic ~55k-LOC project (250 .py files of 200 lines + 60 .md/.rst/.txt docs of 50 lines + 10 `__init__.py` files) and asserts `scan_repo` finishes in under 60s wall clock. Marked `regression` so the default fast suite runs it; per-test `timeout(120)` overrides the default 5s pytest timeout. Held against the `:memory:` store so disk-write contention does not skew the measurement. Current measured time: ~0.8s on Apple Silicon — the budget is a regression alarm, not a target.
-- **No git-recency weighting.** Pre-migration content from old branches surfaces as first-class beliefs. v1.1.0.
+- ✅ **Onboard git-recency weighting (v1.1.0, [#94](https://github.com/robotrocketscience/aelfrice/issues/94)).** Scanner records each source file's most-recent git commit date as the belief's `created_at`, so the existing decay mechanism penalises pre-migration content from old branches without a separate ranking pass. One `git log --name-only --pretty=format:%aI` call per scan. PR [#103](https://github.com/robotrocketscience/aelfrice/pull/103).
 - **No promotion path from `agent_inferred` to `user_validated`.** Beliefs from onboard stay `agent_inferred` unless explicitly locked. Designed in v1.1.0 ([promotion_path.md](promotion_path.md), [#95](https://github.com/robotrocketscience/aelfrice/issues/95)); implemented in v1.2.0.
 
 ### Feedback semantics — v1.0.1
@@ -42,7 +42,7 @@ Tracked openly. Each item is mapped to its target version below.
 ### Cosmetic — v1.1.0
 
 - ✅ **`edges` → `threads` user-facing rename (v1.1.0, [#92](https://github.com/robotrocketscience/aelfrice/issues/92)).** All user-facing surfaces (CLI output labels, slash command descriptions, COMMANDS.md, MCP.md prose) now use `threads`. The internal SQLite schema, the `Edge` Python dataclass, and the `EDGE_*` type constants are unchanged. The MCP `aelf:stats` tool emits **both** `edges` and `threads` keys with the same integer value for the v1.1.0 deprecation window; `edges` is removed in v1.2.0. Same for `aelf:health.features.edge_per_belief` / `thread_per_belief`. Clients should migrate to `threads` now. The `auditor.CHECK_ORPHAN_EDGES` constant is kept as a deprecated alias of `CHECK_ORPHAN_THREADS` for v1.0 importer compatibility; removed in v1.2.0.
-- **`aelf health` and `aelf status` are aliased.** v1.1.0 splits them: `status` = counts snapshot, `health` = real graph auditor (orphan edges, isolated clusters, FTS5 sync, locked-belief contradictions, decay anomalies).
+- ✅ **`aelf health` rewritten as graph auditor (v1.1.0, [#100](https://github.com/robotrocketscience/aelfrice/pull/100)).** `health` now runs a real auditor (orphan threads, FTS5 sync, locked-belief contradictions; corpus-volume warning added in [#116](https://github.com/robotrocketscience/aelfrice/issues/116)) and exits 1 on structural failures so CI can gate on it. The v1.0 regime classifier is preserved as `aelf regime`. `aelf status` is an alias for `aelf health` (not a separate "counts snapshot" — that responsibility lives in `aelf stats`).
 
 ### Auto-capture — v1.2.0
 

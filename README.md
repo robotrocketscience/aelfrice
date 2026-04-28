@@ -12,7 +12,7 @@
 [![Downloads](https://img.shields.io/pypi/dm/aelfrice.svg)](https://pypi.org/project/aelfrice/)
 
 > [!NOTE]
-> v1.0 ships the surface — local SQLite store, retrieval, the `apply_feedback` endpoint, the onboarding scanner, an 11-command CLI, an MCP server, Claude Code wiring, and a reproducible benchmark harness. **Retrieval ranking is BM25-only at v1.0** — feedback updates the math but doesn't yet move ranking. The v1.x line wires posterior into ranking and closes [known issues](docs/LIMITATIONS.md#known-issues-at-v10).
+> v1.0 ships the surface — local SQLite store, retrieval, the `apply_feedback` endpoint, the onboarding scanner, the CLI, an MCP server, Claude Code wiring, and a reproducible benchmark harness. **Retrieval ranking is BM25-only at v1.0** — feedback updates the math but doesn't yet move ranking. v1.1.0 added per-project DBs (one DB per `.git/`), `aelf migrate` from the legacy global store, and renamed `edges` → `threads` in user-facing surfaces. The v1.x line wires posterior into ranking and closes [known issues](docs/LIMITATIONS.md#known-issues-at-v10).
 
 You had a doc with the conversation. You re-explained your stack last session. You wrote a runbook the agent didn't read. The notes you keep adding don't actually keep your agent from forgetting — they just give you more to maintain.
 
@@ -33,6 +33,8 @@ $ aelf onboard .
 $ aelf lock "Never push directly to main; use scripts/publish.sh"
 $ aelf setup        # wires the UserPromptSubmit hook into Claude Code
 ```
+
+Upgrading from v1.0.x? Run `aelf migrate` to copy beliefs from the legacy global DB at `~/.aelfrice/memory.db` into your project's per-project store at `<repo>/.git/aelfrice/memory.db` (dry-run by default; add `--apply` to write).
 
 Same operations are available as MCP tools and Claude Code slash commands. Full demo: [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
