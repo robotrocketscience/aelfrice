@@ -137,6 +137,12 @@ Non-blocking contract: every failure path exits 0 with no stdout. A hook problem
 
 All opt-in via `aelf setup --<flag>`. All non-blocking.
 
+The `PostToolUseFailure:<tool_name>` event-name namespace inside
+`~/.aelfrice/hook-activity.jsonl` is reserved for raw tool-failure
+observation produced by a HOME-side hook (tracked separately). See
+[hook_activity_schema](hook_activity_schema.md) for the field schema
+and the consumer-side dedupe-by-fingerprint warning.
+
 ## Tests
 
 | Layer | Marker | Coverage |
