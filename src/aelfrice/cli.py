@@ -2093,7 +2093,8 @@ def _cmd_doctor_classify_orphans(
 
     An orphan is a belief where BOTH of the following are true:
       - type = 'unknown' (never successfully typed by onboard/ingest)
-      - alpha + beta < 2 (no feedback event has ever been applied)
+      - alpha + beta <= 2 (untouched prior is alpha=1, beta=1; any
+        feedback event pushes the sum above 2)
 
     Reuses the same `classify_batch` path as `aelf onboard
     --llm-classify`; no new LLM client is introduced.
