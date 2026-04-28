@@ -27,6 +27,65 @@ def test_imperative_signal_does_not_fire_mid_sentence() -> None:
     assert "imperative" not in r.signals
 
 
+# --- #225: extended anchors fire from any sentence position -----------
+
+
+def test_imperative_signal_fires_on_supersedes_anchor() -> None:
+    """The previous-instruction-supersedes pattern (correction-class)
+    fires the imperative gate regardless of sentence position. Pre-#225
+    this was a one-signal-shy miss and the utterance never reached the
+    correction threshold."""
+    r = detect_correction("the previous instruction supersedes commit-co-author")
+    assert "imperative" in r.signals
+
+
+def test_imperative_signal_fires_on_no_longer_anchor() -> None:
+    r = detect_correction("we no longer rely on the staging gate workflow")
+    assert "imperative" in r.signals
+
+
+def test_imperative_signal_fires_on_the_previous_anchor() -> None:
+    r = detect_correction("the previous default does not apply here")
+    assert "imperative" in r.signals
+
+
+def test_imperative_signal_fires_on_instead_anchor() -> None:
+    r = detect_correction("we will use uv instead of pip")
+    assert "imperative" in r.signals
+
+
+def test_imperative_signal_fires_on_actually_anchor() -> None:
+    r = detect_correction("actually the deploy target is staging")
+    assert "imperative" in r.signals
+
+
+def test_imperative_signal_fires_on_must_not_anchor() -> None:
+    """Requirement-class anchor: must not / cannot / fails if."""
+    r = detect_correction("commits must not be force-pushed to main")
+    assert "imperative" in r.signals
+
+
+def test_imperative_signal_fires_on_cannot_anchor() -> None:
+    r = detect_correction("the staging gate cannot be bypassed")
+    assert "imperative" in r.signals
+
+
+def test_imperative_signal_fires_on_fails_if_anchor() -> None:
+    r = detect_correction("the build fails if dependencies are stale")
+    assert "imperative" in r.signals
+
+
+def test_supersedes_with_negation_reaches_correction_threshold() -> None:
+    """End-to-end: an utterance that was a one-signal miss pre-#225
+    now crosses CORRECTION_SIGNAL_THRESHOLD."""
+    r = detect_correction(
+        "the previous instruction supersedes — do not amend commits"
+    )
+    assert r.is_correction is True
+    assert "imperative" in r.signals
+    assert "negation" in r.signals
+
+
 def test_always_never_signal_fires_on_always() -> None:
     r = detect_correction("always run tests before pushing")
     assert "always_never" in r.signals

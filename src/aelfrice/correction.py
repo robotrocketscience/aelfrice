@@ -27,6 +27,24 @@ _IMPERATIVE_RE: re.Pattern[str] = re.compile(
     r"leave|report|copy|stop|always|never|we are|calls|5k)\b"
 )
 
+# #225: anchor patterns matched anywhere in the sentence. The original
+# `_IMPERATIVE_RE` only matched at the start, so utterances like
+# "the previous instruction supersedes …" or "do not amend commits"
+# never tripped the imperative gate, leaving correction-class and
+# requirement-class candidates one signal short of the
+# `CORRECTION_SIGNAL_THRESHOLD` floor. Counting these as distinct
+# imperative-class anchors recovers +12pp macro-F1 on the labeled
+# correction corpus (lab campaign R0', 2026-04-28). The split into
+# three sub-patterns keeps the existing leading-imperative semantics
+# intact while letting the new anchors fire from any sentence
+# position.
+_CORRECTION_ANCHOR_RE: re.Pattern[str] = re.compile(
+    r"\b(supersedes|no longer|the previous|instead|actually)\b"
+)
+_REQUIREMENT_ANCHOR_RE: re.Pattern[str] = re.compile(
+    r"\b(must not|cannot|fails if)\b"
+)
+
 _DECLARATIVE_RE: re.Pattern[str] = re.compile(
     r"(?:is|are|needs to be|should be|must be) "
     r"(?:the|a|an|\d|only|always)"
@@ -112,7 +130,11 @@ def detect_correction(text: str) -> CorrectionResult:
     text_lower: str = text.lower().strip()
     signals: list[str] = []
 
-    if _IMPERATIVE_RE.match(text_lower):
+    if (
+        _IMPERATIVE_RE.match(text_lower)
+        or _CORRECTION_ANCHOR_RE.search(text_lower)
+        or _REQUIREMENT_ANCHOR_RE.search(text_lower)
+    ):
         signals.append("imperative")
 
     if any(term in text_lower for term in _ALWAYS_NEVER_TERMS):
