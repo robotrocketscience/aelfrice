@@ -100,7 +100,7 @@ def test_no_extra_files_in_slash_commands_dir() -> None:
 # callable indefinitely as scripting / hook entry points.
 HIDDEN_SUBCOMMANDS = frozenset({
     "rebuild", "statusline", "bench", "regime", "migrate", "unsetup",
-    "health", "stats",
+    "health", "stats", "project-warm",
 })
 
 
