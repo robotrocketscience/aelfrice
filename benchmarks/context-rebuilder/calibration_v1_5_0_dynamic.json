@@ -1,0 +1,46 @@
+{
+  "aggregate_rationale": "no fixtures found in corpus directory. Lab-side captured corpus was empty at v1.5 ship-gate; re-run is deferred to v1.5.x per issue #188 dependency clause. Synthetic fixture run (see calibration_v1_4_0.json) confirms the same park verdict.",
+  "aggregate_verdict": "park",
+  "corpus": "<lab-side>",
+  "method": "corpus-mode dynamic_probe.py --corpus-label",
+  "n_fixtures": 0,
+  "fixture_results": [],
+  "synthetic_reference": {
+    "candidates": [
+      {
+        "clear_at": 15,
+        "continuation_fidelity": 1.0,
+        "fire_rule": "fire at first turn whose 4-turn rolling per-turn token average exceeds 1.5x the fixture-wide median per-turn token count",
+        "full_replay_baseline_tokens": 657,
+        "n_post_clear_assistant_turns": 0,
+        "name": "rate_of_growth",
+        "rebuild_block_tokens": 960,
+        "token_budget_ratio": 1.461187
+      },
+      {
+        "clear_at": 4,
+        "continuation_fidelity": 0.082407,
+        "fire_rule": "fire at first turn (after warmup of 4 turns) whose new-entity count drops below max(1, 0.5 * fixture-median new-entity count)",
+        "full_replay_baseline_tokens": 657,
+        "n_post_clear_assistant_turns": 6,
+        "name": "entity_density_delta",
+        "rebuild_block_tokens": 448,
+        "token_budget_ratio": 0.681887
+      }
+    ],
+    "fixture": "benchmarks/context-rebuilder/fixtures/synthetic/debugging_session_001.jsonl",
+    "n_turns": 16,
+    "rationale": "no candidate clears the v1.4 ship-gate (>= 0.05 absolute fidelity at same-or-lower token cost). Measurements: rate_of_growth fid_delta=+0.9323, ratio=1.461 vs threshold 1.017, entity_density_delta fid_delta=+0.0147, ratio=0.682 vs threshold 1.017. Parked for v1.5; see docs/context_rebuilder.md § Dynamic mode (parked v1.5).",
+    "threshold_reference": {
+      "clear_at": 9,
+      "continuation_fidelity": 0.067744,
+      "fire_rule": "clear_at = floor(n_turns * 0.6)",
+      "full_replay_baseline_tokens": 657,
+      "n_post_clear_assistant_turns": 3,
+      "name": "threshold_0.6",
+      "rebuild_block_tokens": 668,
+      "token_budget_ratio": 1.016743
+    },
+    "verdict": "park"
+  }
+}

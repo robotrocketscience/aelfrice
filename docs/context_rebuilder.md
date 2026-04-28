@@ -280,6 +280,45 @@ combining rate-of-growth with absolute context size, may clear
 the gate at v1.5.x. The v1.4 measurement is recorded so that
 re-investigation has a baseline to beat.
 
+#### v1.5 captured-corpus revisit (issue #188) — outcome: re-park
+
+The v1.5 revisit ran `dynamic_probe.py` in corpus mode
+(`--corpus <lab-side> --corpus-label "<lab-side>"`) against the
+lab-side captured-corpus fixture set. The lab corpus was empty at
+the v1.5 ship-gate (no captured `turns.jsonl` files existed under
+the corpus directory). Per issue #188 dependency clause — "The
+issue does not ship until they do; if they don't exist by v1.5
+ship-gate, defer to v1.5.x" — the probe returned zero fixtures
+(`n_fixtures = 0`) and the aggregate verdict is **park**.
+
+The synthetic-fixture re-run (included as `synthetic_reference` in
+`benchmarks/context-rebuilder/calibration_v1_5_0_dynamic.json`)
+confirmed the v1.4 measurements are unchanged:
+
+| Candidate | fidelity | ratio | fidelity delta | passes gate? |
+|---|---|---|---|---|
+| rate-of-growth | 1.0 (vacuous) | 1.461 | +0.932 | No — ratio > 1.017 |
+| entity-density-delta | 0.082 | 0.682 | +0.015 | No — delta < 0.05 |
+
+**Outcome 2 (re-park).** Neither candidate clears the bar on
+synthetic; no captured-corpus data was available to contradict
+this. The `parked v1.5` log line and no-op hook behaviour are
+preserved. A v1.6.x re-investigation should first populate the
+lab-side corpus, then re-run:
+
+```bash
+python -m benchmarks.context_rebuilder.dynamic_probe \
+    --corpus <lab-side-path> \
+    --corpus-label "<lab-side>" \
+    --out benchmarks/context-rebuilder/calibration_v1_6_0_dynamic.json
+```
+
+The `--corpus` flag (added in this PR) accepts a directory of
+`*.jsonl` files and aggregates the verdict across all fixtures,
+superseding the single-fixture positional-arg interface for
+multi-file corpus runs. Single-fixture mode continues to work
+unchanged for synthetic reproducibility.
+
 ### What the hook reads
 
 The hook needs the most recent N turns of the conversation to

@@ -1,8 +1,8 @@
-"""Dynamic-mode trigger investigation for v1.4 (issue #141).
+"""Dynamic-mode trigger investigation for v1.4/v1.5 (issues #141, #188).
 
-Measures two heuristic-driven trigger candidates against the same
-synthetic fixture used for threshold-mode calibration. The output
-is **the evidence** for the v1.4 ship-or-park decision.
+Measures two heuristic-driven trigger candidates against a fixture or
+directory of fixtures. The output is **the evidence** for the v1.4/v1.5
+ship-or-park decision.
 
 Spec gate: "Dynamic mode ships only if its fidelity delta beats
 the threshold default by a documented margin (≥ 5% absolute
@@ -30,6 +30,23 @@ downstream tooling can compare apples-to-apples.
 If a future v1.5.x investigation finds a candidate that clears the
 gate, this module is the place to extend; the threshold-mode
 calibration acts as the baseline-to-beat.
+
+CLI modes
+---------
+Single-fixture mode (positional ``fixture`` arg)
+    Run against one ``turns.jsonl`` file; emit a single
+    ``DynamicProbeResult`` JSON object.
+
+Corpus mode (``--corpus DIR``)
+    Run against every ``turns.jsonl`` found directly under ``DIR``
+    (non-recursive). Emit a JSON object whose top-level keys are
+    ``fixture_results`` (list of per-fixture ``DynamicProbeResult``
+    dicts), ``corpus`` (the ``DIR`` path or ``<lab-side>`` when
+    scrubbed), ``n_fixtures``, and ``aggregate_verdict`` (``"ship"``
+    if any fixture yields a winning candidate, ``"park"`` otherwise).
+    The corpus path is intentionally kept separate from individual
+    fixture paths so callers can scrub it to ``"<lab-side>"`` without
+    touching per-result structure.
 """
 from __future__ import annotations
 
@@ -301,6 +318,53 @@ def probe(fixture: Path) -> DynamicProbeResult:
     )
 
 
+def probe_corpus(
+    corpus_dir: Path,
+    *,
+    corpus_label: str | None = None,
+) -> dict[str, object]:
+    """Run the probe against every ``turns.jsonl`` in *corpus_dir*.
+
+    Returns a JSON-serialisable dict with keys:
+    - ``corpus`` — the corpus path (use ``corpus_label`` to override,
+      e.g. to scrub to ``"<lab-side>"`` before committing).
+    - ``n_fixtures`` — number of fixtures found and run.
+    - ``fixture_results`` — list of ``DynamicProbeResult.to_dict()``
+      for each fixture.
+    - ``aggregate_verdict`` — ``"ship"`` if any fixture produced a
+      winning candidate; ``"park"`` otherwise.
+    - ``aggregate_rationale`` — human-readable summary.
+    """
+    fixtures = sorted(corpus_dir.glob("*.jsonl"))
+    results: list[DynamicProbeResult] = []
+    for f in fixtures:
+        results.append(probe(f))
+    label = corpus_label if corpus_label is not None else str(corpus_dir)
+    ship_count = sum(1 for r in results if r.verdict == "ship")
+    if results and ship_count > 0:
+        agg_verdict = "ship"
+        agg_rationale = (
+            f"{ship_count}/{len(results)} fixture(s) produced a candidate "
+            f"clearing the ship gate."
+        )
+    elif results:
+        agg_verdict = "park"
+        agg_rationale = (
+            f"0/{len(results)} fixture(s) produced a candidate clearing "
+            f"the ship gate."
+        )
+    else:
+        agg_verdict = "park"
+        agg_rationale = "no fixtures found in corpus directory."
+    return {
+        "corpus": label,
+        "n_fixtures": len(results),
+        "fixture_results": [r.to_dict() for r in results],
+        "aggregate_verdict": agg_verdict,
+        "aggregate_rationale": agg_rationale,
+    }
+
+
 # --- CLI ------------------------------------------------------------------
 
 
@@ -308,14 +372,43 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m benchmarks.context_rebuilder.dynamic_probe",
         description=(
-            "Dynamic-mode trigger investigation for v1.4. Measures "
-            "two heuristic candidates and emits a JSON verdict."
+            "Dynamic-mode trigger investigation for v1.4/v1.5 (#141, #188). "
+            "Measures two heuristic candidates and emits a JSON verdict. "
+            "Pass a single ``fixture`` positional arg or ``--corpus DIR`` "
+            "to run against all *.jsonl files in a directory."
+        ),
+    )
+    # Mutually exclusive: single fixture OR corpus directory.
+    group = p.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "fixture",
+        nargs="?",
+        type=Path,
+        default=None,
+        help=(
+            "Path to a single turns.jsonl fixture "
+            "(mutually exclusive with --corpus)."
+        ),
+    )
+    group.add_argument(
+        "--corpus",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Directory containing *.jsonl fixtures. "
+            "Run against all fixtures found; emit aggregate JSON. "
+            "Mutually exclusive with the positional fixture arg."
         ),
     )
     p.add_argument(
-        "fixture",
-        type=Path,
-        help="Path to a synthetic turns.jsonl fixture.",
+        "--corpus-label",
+        default=None,
+        metavar="LABEL",
+        help=(
+            "Override the corpus path in output JSON (e.g. '<lab-side>'). "
+            "Only meaningful with --corpus."
+        ),
     )
     p.add_argument(
         "--out",
@@ -337,10 +430,18 @@ def main(
     _ = stderr  # reserved for future error reporting
     parser = _build_parser()
     args = parser.parse_args(argv)
-    fixture: Path = args.fixture  # type: ignore[assignment]
     out_path: Path | None = args.out  # type: ignore[assignment]
-    result = probe(fixture)
-    payload = json.dumps(result.to_dict(), indent=2, sort_keys=True)
+
+    if args.corpus is not None:
+        corpus_dir: Path = args.corpus  # type: ignore[assignment]
+        corpus_label: str | None = args.corpus_label
+        result_obj = probe_corpus(corpus_dir, corpus_label=corpus_label)
+        payload = json.dumps(result_obj, indent=2, sort_keys=True)
+    else:
+        fixture: Path = args.fixture  # type: ignore[assignment]
+        result = probe(fixture)
+        payload = json.dumps(result.to_dict(), indent=2, sort_keys=True)
+
     if out_path is not None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(payload + "\n", encoding="utf-8")
