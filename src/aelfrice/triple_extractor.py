@@ -39,6 +39,7 @@ from aelfrice.models import (
     EDGE_SUPERSEDES,
     EDGE_SUPPORTS,
     LOCK_NONE,
+    ORIGIN_AGENT_INFERRED,
     Belief,
     Edge,
 )
@@ -278,6 +279,7 @@ def _resolve_or_create_belief(
         created_at=_now_iso(),
         last_retrieved_at=None,
         session_id=session_id,
+        origin=ORIGIN_AGENT_INFERRED,
     )
     store.insert_belief(belief)
     created_ids.append(bid)

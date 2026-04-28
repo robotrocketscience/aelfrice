@@ -70,6 +70,23 @@ def test_no_session_id_leaves_field_null() -> None:
         store.close()
 
 
+def test_origin_stamped_agent_inferred() -> None:
+    """Beliefs created by triple-extraction land with
+    origin=agent_inferred, not the model default. Regression for #224."""
+    store = MemoryStore(":memory:")
+    try:
+        triples = extract_triples("the new index supports faster queries")
+        ingest_triples(store, triples)
+        rows = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+            "SELECT origin FROM beliefs"
+        ).fetchall()
+        assert rows
+        for row in rows:
+            assert row["origin"] == "agent_inferred"
+    finally:
+        store.close()
+
+
 def test_self_edge_skipped() -> None:
     """A triple whose subject and object normalize to the same phrase
     must not produce an edge."""
