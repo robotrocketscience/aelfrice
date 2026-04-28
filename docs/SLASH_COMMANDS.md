@@ -2,7 +2,7 @@
 
 Fifteen markdown files in `src/aelfrice/slash_commands/`, tracking the v1.2.0 CLI consolidation plus the v1.4.0 `rebuild` promotion. After `aelf setup`, they appear as `/aelf:*` in Claude Code. Each is a thin wrapper over the CLI — `/aelf:foo` invokes `aelf foo` against the active project's DB.
 
-Slash files are not shipped for hidden CLI subcommands (`bench`, `health`, `migrate`, `regime`, `stats`, `statusline`, `unsetup`). Those subcommands stay callable from the CLI for scripting, hook entry-points, and back-compat aliases — they're just not surfaced as slashes.
+Slash files are not shipped for hidden CLI subcommands (`bench`, `feedback`, `health`, `migrate`, `project-warm`, `regime`, `session-delta`, `stats`, `statusline`, `unsetup`). Those subcommands stay callable from the CLI for scripting, hook entry-points, and back-compat aliases — they're just not surfaced as slashes.
 
 Manual install:
 

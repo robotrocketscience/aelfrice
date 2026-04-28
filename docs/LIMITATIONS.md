@@ -20,7 +20,9 @@ This is a deliberate scope choice, not a roadmap item. Adding embeddings would b
 
 The CLI scanner walks three sources: prose files (`*.md`, `*.rst`, `*.txt`, `*.adoc`), `git log`, and Python AST. Not yet wired: JavaScript / TypeScript / Rust / Go ASTs.
 
-Classification on the CLI path is regex-based. Higher-quality classification requires the MCP `aelf:onboard` polymorphic flow, which routes through the host LLM.
+Classification on the CLI path defaults to regex-based priors. Higher-quality classification is available via two paths:
+- **MCP `aelf:onboard`** polymorphic flow, which routes through the host LLM.
+- **`aelf onboard --llm-classify`** (v1.3+, default-off) — routes through Claude Haiku directly. Requires `ANTHROPIC_API_KEY`. Four consent gates enforce the privacy boundary. See [llm_classifier.md](llm_classifier.md).
 
 ## BFS multi-hop temporal coherence
 

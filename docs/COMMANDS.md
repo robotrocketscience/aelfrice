@@ -1,6 +1,6 @@
 # Commands
 
-Twenty-three CLI subcommands. The retrieval/feedback ones are also exposed as MCP tools (see [MCP](MCP.md)) and slash commands (see [SLASH_COMMANDS](SLASH_COMMANDS.md)). Lifecycle commands (`setup`, `doctor`, `migrate`, `upgrade`, `uninstall`, etc.) are CLI-only.
+Twenty-four CLI subcommands. The retrieval/feedback ones are also exposed as MCP tools (see [MCP](MCP.md)) and slash commands (see [SLASH_COMMANDS](SLASH_COMMANDS.md)). Lifecycle commands (`setup`, `doctor`, `migrate`, `upgrade`, `uninstall`, etc.) are CLI-only.
 
 ```
 aelf <subcommand> [args] [options]
@@ -14,7 +14,7 @@ DB resolves from `$AELFRICE_DB`, then `<git-common-dir>/aelfrice/memory.db` when
 
 | Command | What it does |
 |---|---|
-| `onboard <path>` | Walk filesystem, git log, Python AST. Classify candidates, insert non-duplicates. Tunable via `.aelfrice.toml` — see [CONFIG](CONFIG.md). |
+| `onboard <path>` | Walk filesystem, git log, Python AST. Classify candidates, insert non-duplicates. Tunable via `.aelfrice.toml` — see [CONFIG](CONFIG.md). Optional flags (v1.3+): `--llm-classify` (route through Haiku classifier; default-off, requires `ANTHROPIC_API_KEY`), `--dry-run` (preview candidates without inserting; requires `--llm-classify`), `--revoke-consent` (remove the stored consent sentinel and exit). |
 | `search <query> [--budget N]` | L0 locked + L2.5 entity-index (v1.3+) + L1 FTS5 BM25, token-budgeted (default 2,400 at v1.3+, 2,000 prior). L2.5 default-on; disable via `[retrieval] entity_index_enabled = false` in `.aelfrice.toml` or `AELFRICE_ENTITY_INDEX=0` in the env. Distinguishes "store empty" from "no match". |
 | `lock <statement>` | Insert at `(α, β) = (9.0, 0.5)` with `lock_level=user`. Idempotent — re-lock upgrades existing. |
 | `locked [--pressured]` | List locks. With `--pressured`, only those with `demotion_pressure > 0`. |
@@ -48,6 +48,10 @@ DB resolves from `$AELFRICE_DB`, then `<git-common-dir>/aelfrice/memory.db` when
 | `rebuild [--transcript PATH] [--n N] [--budget N]` | Manual context-rebuilder run (alpha; normally fires on `PreCompact`). Prints the rebuild block to stdout. |
 | `project-warm <path> [--debounce N]` | CwdChanged hook entry point. Resolves `<path>` to a project root (git work-tree or `~/.aelfrice/projects/<id>/`-provisioned ancestor), pre-loads the SQLite + OS page cache, and writes a sentinel under `~/.aelfrice/projects/<id>/.last_warm`. Silent no-op for unknown paths, denied paths (default deny: `/tmp/**`, `/var/folders/**`, `~/Downloads/**`, `~/Desktop/**` — override via `~/.aelfrice/config.json` `project_warm.deny_globs`), and any call inside the 60-second debounce window. Always exits 0; never writes to stdout. |
 | `session-delta [--id ID] [--telemetry-path PATH]` | **Advanced/hidden.** SessionEnd hook entry point. Computes per-session deltas (beliefs created, corrections detected, feedback given, velocity) from beliefs tagged with `--id` in the active store, combines with a current store snapshot (beliefs/graph blocks) and rolling-window rollups from the existing `telemetry.jsonl`, and appends one v=1 JSON row to `PATH` (default `~/.aelfrice/telemetry.jsonl`). Missing or empty `--id` is a silent no-op (stderr warning, exit 0). Idle sessions with zero beliefs still emit a row so `len(telemetry.jsonl)` equals session count. Not shown in `aelf --help`. |
+
+## Help flags
+
+`aelf --help` shows the everyday surface (visible subcommands). `aelf --help --advanced` (or `aelf --advanced`) shows the full surface including hidden subcommands (`bench`, `feedback`, `health`, `migrate`, `project-warm`, `regime`, `session-delta`, `stats`, `statusline`, `unsetup`). The `--advanced` flag was wired in v1.4 (PR #174).
 
 ## Output and exit codes
 
