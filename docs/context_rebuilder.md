@@ -34,7 +34,7 @@ rebuilder hood).
 | Manual fire via `aelf rebuild` / `/aelf:rebuild` | Shipped (#141) |
 | Trigger modes — manual + threshold | Shipped (#141; default `manual`) |
 | Threshold default sourced from calibration data | Shipped (#141; `benchmarks/context-rebuilder/calibration_v1_4_0.json`) |
-| Trigger mode — dynamic | Investigated at v1.4 (#141); see § Dynamic mode below |
+| Trigger mode — dynamic | **Parked for v1.5** (#141; see § Dynamic mode (parked v1.5) below) |
 | Suppress-mode coordination with the harness | **Parked for v2.x** |
 | Continuation-fidelity eval harness | Scaffolding shipped at v1.3 (#136); fidelity scoring is #138 |
 - v1.2.0 triple-extraction port — better edge structure on the
@@ -153,9 +153,13 @@ threshold_fraction = 0.6
   signal; `threshold_fraction` documents the *calibrated operating
   point* and is the reproducible source-of-truth for the default
   value (re-derive via `python -m benchmarks.context_rebuilder.calibrate`).
-- **`dynamic`**: heuristic-driven trigger (rate of context growth,
-  entity-density delta). See § Dynamic mode below for the v1.4
-  ship-or-park decision.
+- **`dynamic`** *(parked v1.5)*: heuristic-driven trigger (rate of
+  context growth, entity-density delta). Investigated at v1.4 but
+  did **not** clear the spec's "beats threshold by ≥ 5% absolute
+  fidelity at same-or-lower token cost" gate — see § Dynamic mode
+  (parked v1.5) below for the measurements. Setting
+  `trigger_mode = "dynamic"` at v1.4 logs a "parked" trace and
+  no-ops the hook.
 
 Whatever the trigger, the hook contract is the same: exit 0 in
 under 50ms even if ingest is in progress in the background.
@@ -221,13 +225,60 @@ Production users opting into `trigger_mode = "threshold"` should
 re-run calibration on a representative session and override via
 `[rebuilder] threshold_fraction = X` in `.aelfrice.toml`.
 
-### Dynamic mode
+### Dynamic mode (parked v1.5)
 
-See `benchmarks/context_rebuilder/dynamic_probe.py` for the v1.4
-ship-or-park investigation; the result and rationale land in the
-companion documentation when the probe lands. Setting
-`trigger_mode = "dynamic"` at v1.4 logs a "parked v1.5" trace and
-no-ops the hook unless the probe verdict changes.
+Spec gate: "Dynamic mode ships only if its fidelity delta beats
+the threshold default by a documented margin (≥ 5% absolute
+fidelity at same-or-lower token cost). Otherwise: park to v1.5."
+
+Two heuristic candidates were measured by
+`benchmarks/context_rebuilder/dynamic_probe.py` against the same
+synthetic fixture used for threshold calibration. Reproduce via:
+
+```bash
+python -m benchmarks.context_rebuilder.dynamic_probe \
+    benchmarks/context-rebuilder/fixtures/synthetic/debugging_session_001.jsonl
+```
+
+**Reference point:** threshold-mode at `threshold_fraction = 0.6`
+(the v1.4 calibrated default) — fires at content-turn 9, fidelity
+**0.0677**, token ratio **1.017**.
+
+**Candidate 1 — rate-of-context-growth.** Fire at the first turn
+whose 4-turn rolling per-turn token average exceeds 1.5× the
+fixture-wide median per-turn token count. Rationale: catches
+moments of rapid working-state expansion. On the 16-turn fixture
+the rule never trips (the fixture is balanced) and the trigger
+falls back to the last turn (15). Resulting fidelity is vacuously
+1.0 (zero post-clear assistant turns, by the documented vacuous-
+case convention) but the token ratio (**1.461**) **exceeds** the
+threshold-mode reference (**1.017**), so it fails the "same-or-
+lower token cost" half of the gate.
+
+**Candidate 2 — entity-density-delta.** Fire at the first turn
+(after a 4-turn warmup) whose new-entity count drops below
+`max(1, 0.5 × fixture-median new-entity count)`. Rationale: the
+rebuilder's job is easier once the agent has stopped introducing
+new state. On the same fixture the rule fires at content-turn 4 —
+*earlier* than threshold-mode — at fidelity **0.0824** and a lower
+token ratio (**0.682**). Fidelity delta vs. threshold-mode:
+**+0.0147 absolute**, well below the **+0.05 spec gate**.
+
+**Verdict — park.** Neither candidate clears the v1.4 ship-gate.
+Per the spec's "either ships with evidence OR parks with
+documented evidence" clause, dynamic mode is **parked for v1.5**.
+Setting `trigger_mode = "dynamic"` at v1.4 logs a `parked v1.5`
+trace to stderr and no-ops the hook (matching the manual-mode
+no-op pathway). The implementation lives at
+`benchmarks/context_rebuilder/dynamic_probe.py` so a v1.5.x
+re-investigation can build on the same proxy metric and fixture
+seeding code without re-deriving them.
+
+The investigation is intentionally narrow. A captured-corpus
+re-run with a richer entity-density signal, or a hybrid trigger
+combining rate-of-growth with absolute context size, may clear
+the gate at v1.5.x. The v1.4 measurement is recorded so that
+re-investigation has a baseline to beat.
 
 ### What the hook reads
 
