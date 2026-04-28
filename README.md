@@ -87,11 +87,11 @@ aelfrice replaces the chain with a mechanism. The hook injects matched beliefs *
 
 ---
 
-## Determinism is the property
+## Determinism
 
-Every retrieval is reproducible bit-for-bit from the write log and the code. No embeddings, no learned re-rankers, no LLM in the retrieval path. *"Why did this rule surface for this query?"* has a finite answer that bottoms out in named beliefs created by named user actions at named timestamps.
+Same store + same query gives the same beliefs. The retrieval path is stdlib + SQLite — no embeddings, no learned re-rankers, no LLM — so every result traces back to a specific belief and the user action that wrote it.
 
-That property is what makes aelfrice usable in regulated contexts. It's also what costs you fuzzy semantic recall — that's a deliberate trade. See [PHILOSOPHY.md](docs/PHILOSOPHY.md).
+Tradeoff: no fuzzy semantic recall. See [PHILOSOPHY.md](docs/PHILOSOPHY.md).
 
 ---
 
