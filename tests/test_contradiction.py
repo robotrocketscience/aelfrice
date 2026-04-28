@@ -9,9 +9,11 @@ import pytest
 
 from aelfrice.contradiction import (
     CLASS_NAMES,
+    PRECEDENCE_AGENT_INFERRED,
     PRECEDENCE_DOCUMENT_RECENT,
     PRECEDENCE_USER_CORRECTED,
     PRECEDENCE_USER_STATED,
+    PRECEDENCE_USER_VALIDATED,
     SOURCE_PREFIX,
     auto_resolve_all_contradictions,
     find_unresolved_contradictions,
@@ -26,6 +28,8 @@ from aelfrice.models import (
     EDGE_SUPERSEDES,
     LOCK_NONE,
     LOCK_USER,
+    ORIGIN_AGENT_INFERRED,
+    ORIGIN_USER_VALIDATED,
     Belief,
     Edge,
 )
@@ -39,6 +43,7 @@ def _mk(
     lock: str = LOCK_NONE,
     locked_at: str | None = None,
     created_at: str = "2026-04-26T00:00:00Z",
+    origin: str = "unknown",
 ) -> Belief:
     return Belief(
         id=bid,
@@ -52,6 +57,7 @@ def _mk(
         demotion_pressure=0,
         created_at=created_at,
         last_retrieved_at=None,
+        origin=origin,
     )
 
 
@@ -91,6 +97,32 @@ def test_locked_correction_is_user_stated_not_corrected() -> None:
     assert precedence_class(b) == PRECEDENCE_USER_STATED
 
 
+def test_user_validated_origin_maps_to_user_validated_class() -> None:
+    b = _mk("X", origin=ORIGIN_USER_VALIDATED)
+    assert precedence_class(b) == PRECEDENCE_USER_VALIDATED
+    assert precedence_class_name(b) == "user_validated"
+
+
+def test_agent_inferred_origin_maps_to_agent_inferred_class() -> None:
+    b = _mk("X", origin=ORIGIN_AGENT_INFERRED)
+    assert precedence_class(b) == PRECEDENCE_AGENT_INFERRED
+    assert precedence_class_name(b) == "agent_inferred"
+
+
+def test_unknown_origin_falls_through_to_document_recent() -> None:
+    """v1.0/v1.1 absorption — unknown is treated as document_recent."""
+    b = _mk("X", origin="unknown")
+    assert precedence_class(b) == PRECEDENCE_DOCUMENT_RECENT
+
+
+def test_lock_short_circuits_user_validated_origin() -> None:
+    """A locked belief tagged user_validated still resolves as user_stated.
+    Locks always win regardless of the origin string."""
+    b = _mk("X", lock=LOCK_USER, locked_at="2026-04-26T01:00:00Z",
+            origin=ORIGIN_USER_VALIDATED)
+    assert precedence_class(b) == PRECEDENCE_USER_STATED
+
+
 # --- _pick_winner via resolve_contradiction -----------------------------
 
 
@@ -123,6 +155,46 @@ def test_user_corrected_beats_document_recent() -> None:
     result = resolve_contradiction(s, "A", "B")
     assert result.winner_id == "A"
     assert result.rule_fired == "user_corrected_beats_document_recent"
+
+
+def test_user_corrected_beats_user_validated() -> None:
+    a = _mk("A", btype=BELIEF_CORRECTION)
+    b = _mk("B", origin=ORIGIN_USER_VALIDATED)
+    s = _seed(a, b)
+    s.insert_edge(Edge(src="A", dst="B", type=EDGE_CONTRADICTS, weight=1.0))
+    result = resolve_contradiction(s, "A", "B")
+    assert result.winner_id == "A"
+    assert result.rule_fired == "user_corrected_beats_user_validated"
+
+
+def test_user_validated_beats_document_recent() -> None:
+    a = _mk("A", origin=ORIGIN_USER_VALIDATED)
+    b = _mk("B")  # origin=unknown -> document_recent
+    s = _seed(a, b)
+    s.insert_edge(Edge(src="A", dst="B", type=EDGE_CONTRADICTS, weight=1.0))
+    result = resolve_contradiction(s, "A", "B")
+    assert result.winner_id == "A"
+    assert result.rule_fired == "user_validated_beats_document_recent"
+
+
+def test_user_validated_beats_agent_inferred() -> None:
+    a = _mk("A", origin=ORIGIN_USER_VALIDATED)
+    b = _mk("B", origin=ORIGIN_AGENT_INFERRED)
+    s = _seed(a, b)
+    s.insert_edge(Edge(src="A", dst="B", type=EDGE_CONTRADICTS, weight=1.0))
+    result = resolve_contradiction(s, "A", "B")
+    assert result.winner_id == "A"
+    assert result.rule_fired == "user_validated_beats_agent_inferred"
+
+
+def test_document_recent_beats_agent_inferred() -> None:
+    a = _mk("A")  # unknown -> document_recent
+    b = _mk("B", origin=ORIGIN_AGENT_INFERRED)
+    s = _seed(a, b)
+    s.insert_edge(Edge(src="A", dst="B", type=EDGE_CONTRADICTS, weight=1.0))
+    result = resolve_contradiction(s, "A", "B")
+    assert result.winner_id == "A"
+    assert result.rule_fired == "document_recent_beats_agent_inferred"
 
 
 def test_argument_order_does_not_affect_outcome() -> None:
