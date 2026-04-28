@@ -194,3 +194,163 @@ def test_source_label_passed_through(tmp_path: Path) -> None:
         assert r2.beliefs_inserted >= 1
     finally:
         store.close()
+
+
+# --- Claude Code internal JSONL format (issue #115) ----------------
+
+
+def test_ingest_claude_code_session_string_content(tmp_path: Path) -> None:
+    """Claude Code v1.x session lines: type=user, message.content is str."""
+    p = tmp_path / "session.jsonl"
+    _write_jsonl(p, [
+        {
+            "type": "user",
+            "message": {"role": "user", "content": "we use SQLite for storage."},
+            "sessionId": "claude-S1",
+            "timestamp": "2026-04-27T00:00:00Z",
+            "cwd": "/path/proj",
+        },
+    ])
+    store = MemoryStore(":memory:")
+    try:
+        r = ingest_jsonl(store, p)
+        assert r.turns_ingested == 1
+        assert r.beliefs_inserted >= 1
+    finally:
+        store.close()
+
+
+def test_ingest_claude_code_v2_content_array(tmp_path: Path) -> None:
+    """Claude Code v2 shape: message.content is [{type:text,text:...}]."""
+    p = tmp_path / "session.jsonl"
+    _write_jsonl(p, [
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Pi is 3.14."},
+                    {"type": "tool_use", "id": "x"},
+                    {"type": "text", "text": "And the project uses SQLite."},
+                ],
+            },
+            "sessionId": "claude-S2",
+            "timestamp": "2026-04-27T00:00:00Z",
+        },
+    ])
+    store = MemoryStore(":memory:")
+    try:
+        r = ingest_jsonl(store, p)
+        assert r.turns_ingested == 1
+        assert r.beliefs_inserted >= 1
+    finally:
+        store.close()
+
+
+def test_ingest_claude_code_skips_snapshots_and_tool_results(
+    tmp_path: Path,
+) -> None:
+    """File-history snapshots, tool results, and meta lines all skip."""
+    p = tmp_path / "session.jsonl"
+    _write_jsonl(p, [
+        {"type": "file-history-snapshot", "messageId": "x"},
+        {"type": "tool-result", "result": "ok"},
+        {
+            "type": "user",
+            "message": {"role": "user", "content": "Real text. We use SQLite."},
+            "sessionId": "S",
+        },
+    ])
+    store = MemoryStore(":memory:")
+    try:
+        r = ingest_jsonl(store, p)
+        assert r.turns_ingested == 1
+        assert r.skipped_lines == 2
+    finally:
+        store.close()
+
+
+# --- ingest_jsonl_dir batch + since (issue #115) -------------------
+
+
+def test_ingest_dir_walks_recursive(tmp_path: Path) -> None:
+    from aelfrice.ingest import ingest_jsonl_dir
+
+    a = tmp_path / "p1" / "s1.jsonl"
+    b = tmp_path / "p2" / "deep" / "s2.jsonl"
+    _write_jsonl(a, [
+        {"role": "user", "text": "Pi equals 3.14.", "session_id": "S1"},
+    ])
+    _write_jsonl(b, [
+        {
+            "type": "user",
+            "message": {"role": "user", "content": "We use SQLite for storage."},
+            "sessionId": "S2",
+        },
+    ])
+    store = MemoryStore(":memory:")
+    try:
+        r = ingest_jsonl_dir(store, tmp_path)
+        assert r.files_walked == 2
+        assert r.files_ingested == 2
+        assert r.turns_ingested == 2
+    finally:
+        store.close()
+
+
+def test_ingest_dir_since_filters_by_mtime(tmp_path: Path) -> None:
+    from datetime import datetime
+
+    from aelfrice.ingest import ingest_jsonl_dir
+
+    old = tmp_path / "old.jsonl"
+    new = tmp_path / "new.jsonl"
+    _write_jsonl(old, [
+        {"role": "user", "text": "Pi equals 3.14.", "session_id": "S1"},
+    ])
+    _write_jsonl(new, [
+        {"role": "user", "text": "We use SQLite.", "session_id": "S2"},
+    ])
+    # Force `old` to look one year older.
+    import os
+    old_mtime = datetime(2025, 1, 1).timestamp()
+    os.utime(old, (old_mtime, old_mtime))
+
+    store = MemoryStore(":memory:")
+    try:
+        cutoff = datetime(2025, 6, 1)
+        r = ingest_jsonl_dir(store, tmp_path, since=cutoff)
+        assert r.files_walked == 2
+        assert r.files_ingested == 1  # only `new`
+        assert r.files_skipped_age == 1
+    finally:
+        store.close()
+
+
+def test_ingest_dir_missing_directory_returns_zeros(tmp_path: Path) -> None:
+    from aelfrice.ingest import ingest_jsonl_dir
+
+    store = MemoryStore(":memory:")
+    try:
+        r = ingest_jsonl_dir(store, tmp_path / "no-such-dir")
+        assert r.files_walked == 0
+        assert r.files_ingested == 0
+    finally:
+        store.close()
+
+
+def test_ingest_dir_idempotent_on_rerun(tmp_path: Path) -> None:
+    from aelfrice.ingest import ingest_jsonl_dir
+
+    a = tmp_path / "s.jsonl"
+    _write_jsonl(a, [
+        {"role": "user", "text": "Pi equals 3.14.", "session_id": "S"},
+    ])
+    store = MemoryStore(":memory:")
+    try:
+        r1 = ingest_jsonl_dir(store, tmp_path)
+        r2 = ingest_jsonl_dir(store, tmp_path)
+        assert r1.beliefs_inserted >= 1
+        assert r2.beliefs_inserted == 0  # second run is a no-op insert-wise
+    finally:
+        store.close()

@@ -257,6 +257,53 @@ def test_doctor_cli_exit_1_when_broken(tmp_path: Path) -> None:
     assert "broken" in buf.getvalue()
 
 
+def test_diagnose_flags_orphan_slash_command(tmp_path: Path) -> None:
+    """A slash file naming a subcommand the CLI doesn't have is an
+    orphan (issue #115)."""
+    user_path = tmp_path / "settings.json"
+    _write_settings(user_path, {"hooks": {}})
+    slash_dir = tmp_path / "commands" / "aelf"
+    slash_dir.mkdir(parents=True)
+    (slash_dir / "ingest-transcript.md").write_text("# slash", encoding="utf-8")
+    (slash_dir / "search.md").write_text("# slash", encoding="utf-8")
+    report = diagnose(
+        user_settings=user_path, project_root=tmp_path / "noproj",
+        slash_commands_dir=slash_dir,
+        known_cli_subcommands=frozenset({"search"}),
+    )
+    assert report.orphan_slash_commands == ["ingest-transcript"]
+    rendered = format_report(report)
+    assert "/aelf:ingest-transcript" in rendered
+    assert "no `aelf ingest-transcript` subcommand" in rendered
+
+
+def test_diagnose_no_orphan_slash_when_all_match(tmp_path: Path) -> None:
+    user_path = tmp_path / "settings.json"
+    _write_settings(user_path, {"hooks": {}})
+    slash_dir = tmp_path / "commands" / "aelf"
+    slash_dir.mkdir(parents=True)
+    (slash_dir / "search.md").write_text("# slash", encoding="utf-8")
+    report = diagnose(
+        user_settings=user_path, project_root=tmp_path / "noproj",
+        slash_commands_dir=slash_dir,
+        known_cli_subcommands=frozenset({"search", "stats"}),
+    )
+    assert report.orphan_slash_commands == []
+
+
+def test_diagnose_skips_slash_check_when_known_not_provided(
+    tmp_path: Path,
+) -> None:
+    """Backwards-compat: doctor's settings linter still runs without
+    being asked to verify slash commands."""
+    user_path = tmp_path / "settings.json"
+    _write_settings(user_path, {"hooks": {}})
+    report = diagnose(
+        user_settings=user_path, project_root=tmp_path / "noproj",
+    )
+    assert report.orphan_slash_commands == []
+
+
 def test_doctor_cli_exit_0_when_clean(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

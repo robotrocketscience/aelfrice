@@ -778,6 +778,7 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 file=out,  # type: ignore[arg-type]
             )
     _print_setup_next_step(out)
+    _print_setup_jsonl_history_hint(out)
     return 0
 
 
@@ -811,6 +812,40 @@ def _print_setup_next_step(out: object) -> None:
             "`aelf onboard .` to populate it from your repo.",
             file=out,  # type: ignore[arg-type]
         )
+
+
+_CLAUDE_PROJECTS_DIR: Final[Path] = Path.home() / ".claude" / "projects"
+
+
+def _print_setup_jsonl_history_hint(out: object) -> None:
+    """One-line hint when historical Claude Code JSONLs exist on disk.
+
+    Issue #115: a fresh aelf setup gives no signal that the user
+    already has hundreds of session logs sitting unindexed at
+    `~/.claude/projects/`. Surface the count + the batch-ingest
+    invocation so they can choose to backfill.
+
+    Quietly does nothing when the directory is missing or empty.
+    Capped at counting up to 1000 files to keep setup fast.
+    """
+    if not _CLAUDE_PROJECTS_DIR.is_dir():
+        return
+    count = 0
+    for _ in _CLAUDE_PROJECTS_DIR.glob("**/*.jsonl"):
+        count += 1
+        if count >= 1000:
+            break
+    if count == 0:
+        return
+    suffix = "+" if count >= 1000 else ""
+    print(
+        f"hint: {_CLAUDE_PROJECTS_DIR} has {count}{suffix} historical "
+        f"session JSONL(s). To ingest them retroactively: "
+        f"`aelf ingest-transcript --batch {_CLAUDE_PROJECTS_DIR}` "
+        f"(see docs/INSTALL.md § Batch ingest of historical sessions "
+        f"for the privacy trade-off).",
+        file=out,  # type: ignore[arg-type]
+    )
 
 
 def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
@@ -1272,19 +1307,33 @@ def _print_migrate_report(report: MigrateReport, out: object) -> None:
 
 
 def _cmd_ingest_transcript(args: argparse.Namespace, out: object) -> int:
-    """Ingest a turns.jsonl file into the active project's DB.
+    """Ingest one or many JSONL turn-logs into the active project's DB.
 
-    Used by:
-      - The transcript-logger PreCompact hook, which spawns this
-        command detached on rotation.
-      - Manual recovery / replay (`aelf ingest-transcript PATH`).
+    Three call shapes:
+      - `aelf ingest-transcript PATH` — single-file ingest. Used by
+        the transcript-logger PreCompact hook (detached spawn on
+        rotation) and by manual recovery / replay.
+      - `aelf ingest-transcript --batch DIR` — recurse into DIR for
+        every `*.jsonl` and ingest each. Handles the v1.2.0
+        transcript-logger format AND the Claude Code internal
+        session-log format under `~/.claude/projects/` (issue #115).
+      - `aelf ingest-transcript --batch DIR --since YYYY-MM-DD` —
+        same, but skip files whose mtime is older than the cutoff.
 
-    Returns 0 on success or empty file. Returns 1 only if the path
-    does not exist; an empty / malformed file is reported but not
-    an error (the hook needs idempotency on edge cases).
+    Returns 0 on success or empty input. Returns 1 only when the
+    explicit single-file `path` does not exist or `--batch` resolves
+    to a non-existent directory.
     """
-    from aelfrice.ingest import ingest_jsonl
+    from aelfrice.ingest import ingest_jsonl, ingest_jsonl_dir
 
+    if args.batch:
+        return _cmd_ingest_transcript_batch(args, out, ingest_jsonl_dir)
+    if not args.path:
+        print(
+            "ingest-transcript: provide PATH or --batch DIR",
+            file=sys.stderr,
+        )
+        return 1
     path = Path(args.path)
     if not path.is_file():
         print(f"ingest-transcript: {path} not found", file=sys.stderr)
@@ -1296,6 +1345,56 @@ def _cmd_ingest_transcript(args: argparse.Namespace, out: object) -> int:
         store.close()
     print(
         f"ingest-transcript: {path.name} "
+        f"lines={result.lines_read} "
+        f"turns={result.turns_ingested} "
+        f"beliefs={result.beliefs_inserted} "
+        f"edges={result.edges_inserted} "
+        f"skipped={result.skipped_lines}",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
+def _cmd_ingest_transcript_batch(
+    args: argparse.Namespace, out: object, ingest_dir,
+) -> int:
+    """Helper: handle the `--batch DIR [--since DATE]` path.
+
+    Split out so the single-file path stays simple. The `since` parse
+    is intentionally lenient — accepts `YYYY-MM-DD` and full ISO
+    timestamps; anything else is rejected up-front.
+    """
+    directory = Path(args.batch)
+    if not directory.is_dir():
+        print(
+            f"ingest-transcript: --batch directory {directory} not found",
+            file=sys.stderr,
+        )
+        return 1
+    cutoff: datetime | None = None
+    if args.since:
+        try:
+            cutoff = datetime.fromisoformat(args.since)
+        except ValueError:
+            print(
+                f"ingest-transcript: --since must be ISO date or "
+                f"timestamp; got {args.since!r}",
+                file=sys.stderr,
+            )
+            return 1
+    store = _open_store()
+    try:
+        result = ingest_dir(
+            store, directory,
+            since=cutoff, source_label=args.source_label,
+        )
+    finally:
+        store.close()
+    print(
+        f"ingest-transcript --batch {directory}: "
+        f"files_walked={result.files_walked} "
+        f"files_ingested={result.files_ingested} "
+        f"files_skipped_age={result.files_skipped_age} "
         f"lines={result.lines_read} "
         f"turns={result.turns_ingested} "
         f"beliefs={result.beliefs_inserted} "
@@ -1342,7 +1441,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
     """Diagnose hook + statusline command resolution in settings.json files.
 
     Exit 0 when nothing is broken, exit 1 when at least one broken
-    command is found. CI-friendly.
+    command is found. CI-friendly. Slash-command orphans (issue
+    #115) are informational and never affect exit status.
     """
     project_root = Path(args.project_root) if args.project_root else None
     user_settings = (
@@ -1351,10 +1451,12 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
     hook_failures_log = (
         Path(args.hook_failures_log) if args.hook_failures_log else None
     )
+    known_subs = _known_cli_subcommands()
     report = diagnose(
         user_settings=user_settings,
         project_root=project_root,
         hook_failures_log=hook_failures_log,
+        known_cli_subcommands=known_subs,
     )
     print(format_report(report), file=out)  # type: ignore[arg-type]
     _print_doctor_store_check(out)
@@ -1393,6 +1495,23 @@ def _print_doctor_store_check(out: object) -> None:
             f"store: {n} belief(s) at {db_path()}",
             file=out,  # type: ignore[arg-type]
         )
+
+
+def _known_cli_subcommands() -> frozenset[str]:
+    """Snapshot of the subcommands the running `aelf` parser knows.
+
+    Re-introspecting the parser keeps doctor honest as new
+    subcommands land — the source of truth is `build_parser()`,
+    not a hardcoded list. Issue #115 acceptance: a slash file
+    naming a subcommand the parser doesn't know is the "stale
+    slash file" we want to flag.
+    """
+    parser = build_parser()
+    out: set[str] = set()
+    for action in parser._actions:  # pyright: ignore[reportPrivateUsage]
+        if isinstance(action, argparse._SubParsersAction):  # pyright: ignore[reportPrivateUsage]
+            out.update(action.choices.keys())
+    return frozenset(out)
 
 
 # --- Dispatcher ---------------------------------------------------------
@@ -1570,13 +1689,34 @@ def build_parser() -> argparse.ArgumentParser:
     p_ingest_transcript = sub.add_parser(
         "ingest-transcript",
         help=(
-            "ingest a turns.jsonl file into the active project's DB. "
-            "Spawned by the transcript-logger PreCompact hook on rotation; "
-            "also runnable manually for replay."
+            "ingest one or many JSONL turn-logs into the active project's "
+            "DB. Spawned by the transcript-logger PreCompact hook on "
+            "rotation; also runnable manually for replay or batch import "
+            "of historical Claude Code session logs."
         ),
     )
     p_ingest_transcript.add_argument(
-        "path", help="path to a turns.jsonl file (typically under .git/aelfrice/transcripts/archive/)",
+        "path", nargs="?", default=None,
+        help=(
+            "path to one turns.jsonl file (typically under "
+            ".git/aelfrice/transcripts/archive/). Mutually exclusive "
+            "with --batch."
+        ),
+    )
+    p_ingest_transcript.add_argument(
+        "--batch", default=None,
+        help=(
+            "ingest every *.jsonl under DIR (recursive). Handles both "
+            "transcript-logger turns.jsonl and Claude Code session "
+            "JSONLs at ~/.claude/projects/. Mutually exclusive with PATH."
+        ),
+    )
+    p_ingest_transcript.add_argument(
+        "--since", default=None,
+        help=(
+            "with --batch, skip files whose mtime is older than this "
+            "cutoff. Accepts YYYY-MM-DD or full ISO timestamp."
+        ),
     )
     p_ingest_transcript.add_argument(
         "--source-label", default="transcript",
