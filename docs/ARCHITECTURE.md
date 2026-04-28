@@ -100,6 +100,8 @@ Trim L1 from tail until sum(estimated_tokens) ≤ token_budget
 
 Token estimate: `(len(content) + 3) // 4`. Empty query: L0 only. L0 always wins overflow.
 
+The v1.3.0 retrieval wave inserts an L2.5 entity-index tier between L0 and L1 — spec lives at [entity_index.md](entity_index.md).
+
 ## Onboarding
 
 `scan_repo(store, path)`:
