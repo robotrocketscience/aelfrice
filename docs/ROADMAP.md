@@ -24,7 +24,7 @@ This is a rebuild, not a port. Structural issues that survived the research line
 | **v1.4.0** | planned | context rebuilder — PreCompact retrieval-curated continuation |
 | **v1.5.0** | planned | retrieval plumbing — composition tracker, BM25F anchor text, search-tool matcher extension, dynamic-trigger revisit |
 | **v1.6.0** | planned | graph signal wave — signed Laplacian + eigenbasis, heat kernel authority, posterior-weighted ranking (full) |
-| **v1.7.0** | planned | structural retrieval lane — HRR bind/probe, Twiddler relevance-aware retest |
+| **v1.7.0** | planned | structural retrieval lane — HRR bind/probe, `uri_baki` post-rank adjuster retest |
 | **v2.0.0** | planned | feature parity with the research line + benchmark reproducibility |
 
 ## What shipped
@@ -105,7 +105,7 @@ Hard prerequisite: v1.5 #154 composition tracker (heat kernel and posterior-full
 ### v1.7.0 — structural retrieval lane and research retests
 
 - **HRR structural-query lane (bind/probe over outgoing edges)** ([#152](https://github.com/robotrocketscience/aelfrice/issues/152)). A separate retrieval lane, not a projection — naive HRR projection into BM25 ranking was rejected at -0.10 NDCG (R9 in the bake-off). Bind/probe over outgoing edges is the structural-query path that survives. Persists `id_vec` per belief; `enable_hrr` config flag default-off until any belief has HRR vectors written.
-- **Twiddler post-rank retest with relevance-aware locked set** ([#153](https://github.com/robotrocketscience/aelfrice/issues/153)). Random-pinned Twiddlers scored -0.05 NDCG in the bake-off due to R12 methodology bug (random pinning drowned signal). Relevance-aware retest decides whether the lane is dead or just needed a fairer eval. Research item; ships only if the retest beats the BM25F + heat-kernel + posterior baseline.
+- **`uri_baki` post-rank adjuster retest with relevance-aware locked set** ([#153](https://github.com/robotrocketscience/aelfrice/issues/153)). Named after Uri and Baki, the two Fire Aelfmaidens in Gene Wolfe's *The Wizard Knight* (2004) — bound attendants who operate after the main action to tilt outcomes for their bound knight. Locked-floor (Uri's protection), supersession demote (Baki's undermining), recency decay (the Aelfrice time-tilt). The pattern is publicly described as Google's "Twiddler" in Pandu Nayak's DOJ testimony (October 2023) and the May 2024 Content Warehouse API leak; aelfrice uses neutral naming to avoid trading on Google's term-of-art. A prior random-pinned synthetic regressed -0.05 NDCG due to a methodology bug (random pinning drowned signal). The relevance-aware retest uses `Belief.lock_state` and decides whether the lane is dead or just needed a fairer eval. Research item; ships only if the retest beats the BM25F + heat-kernel + posterior baseline.
 
 ### v2.0.0 — feature parity and reproducibility
 
