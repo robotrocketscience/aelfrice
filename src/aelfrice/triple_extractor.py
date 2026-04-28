@@ -38,6 +38,7 @@ from aelfrice.models import (
     EDGE_RELATES_TO,
     EDGE_SUPERSEDES,
     EDGE_SUPPORTS,
+    INGEST_SOURCE_GIT,
     LOCK_NONE,
     ORIGIN_AGENT_INFERRED,
     Belief,
@@ -266,6 +267,18 @@ def _resolve_or_create_belief(
             session_id=session_id,
         )
         return bid
+    ts = _now_iso()
+    # v2.0 #205 parallel-write: log the raw phrase before materialization.
+    # source_kind=git because the commit-ingest path emits triples from
+    # commit messages; source_path is unknown at this layer (callers
+    # have it). Future commits could thread the commit SHA through.
+    store.record_ingest(
+        source_kind=INGEST_SOURCE_GIT,
+        raw_text=phrase,
+        derived_belief_ids=[bid],
+        session_id=session_id,
+        ts=ts,
+    )
     belief = Belief(
         id=bid,
         content=_normalize_phrase(phrase),
@@ -276,7 +289,7 @@ def _resolve_or_create_belief(
         lock_level=LOCK_NONE,
         locked_at=None,
         demotion_pressure=0,
-        created_at=_now_iso(),
+        created_at=ts,
         last_retrieved_at=None,
         session_id=session_id,
         origin=ORIGIN_AGENT_INFERRED,
