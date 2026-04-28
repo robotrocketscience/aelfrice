@@ -87,11 +87,11 @@ aelfrice replaces the chain with a mechanism. The hook injects matched beliefs *
 
 ---
 
-## Determinism is the property
+## Determinism
 
-Every retrieval is reproducible bit-for-bit from the write log and the code. No embeddings, no learned re-rankers, no LLM in the retrieval path. *"Why did this rule surface for this query?"* has a finite answer that bottoms out in named beliefs created by named user actions at named timestamps.
+Same store + same query gives the same beliefs. The retrieval path is stdlib + SQLite — no embeddings, no learned re-rankers, no LLM — so every result traces back to a specific belief and the user action that wrote it.
 
-That property is what makes aelfrice usable in regulated contexts. It's also what costs you fuzzy semantic recall — that's a deliberate trade. See [PHILOSOPHY.md](docs/PHILOSOPHY.md).
+Tradeoff: no fuzzy semantic recall. See [PHILOSOPHY.md](docs/PHILOSOPHY.md).
 
 ---
 
@@ -134,8 +134,8 @@ The same operations are also available as MCP tools and `/aelf:*` slash commands
 | v1.1.0 | shipped | per-project DBs (`.git/aelfrice/`), `aelf migrate`, `edges`→`threads` rename, `aelf health` rewrite |
 | v1.2.0 | shipped | auto-capture pipeline (transcript-ingest, commit-ingest, SessionStart), `agent_inferred → user_validated` promotion, triple extractor, `--batch` JSONL ingest, CLI consolidation, `INEDIBLE` per-file opt-out |
 | v1.2.x | planned | search-tool `PreToolUse` hook — memory-first context on Grep/Glob |
-| v1.3 | planned | retrieval wave — entity index + BFS multi-hop + LLM classification + posterior-weighted ranking |
-| v1.4 | planned | context rebuilder — PreCompact retrieval-curated continuation |
+| v1.3 | shipped | retrieval wave — entity index (L2.5), BFS multi-hop (L3), LLM-Haiku onboard classifier (opt-in), partial Bayesian-weighted ranking |
+| v1.4 | shipped | context rebuilder — PreCompact retrieval-curated continuation (augment mode); manual + threshold trigger; continuation-fidelity scorer (exact-match) |
 | v2.0 | planned | feature parity with the original research line + benchmark reproducibility. v2.0's component issues (#148–#154) will land incrementally across v1.5+ minor versions; final v2.0 tag is the reproducibility cut. |
 
 Per-version detail: [docs/ROADMAP.md](docs/ROADMAP.md). Open issues: [docs/LIMITATIONS.md](docs/LIMITATIONS.md).

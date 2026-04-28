@@ -10,6 +10,8 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-04-28
+
 ### Added
 
 - **Conventional-commit prefix enforcement in CI + PR-body issue-link advisory** ([#169](https://github.com/robotrocketscience/aelfrice/issues/169), [#170](https://github.com/robotrocketscience/aelfrice/issues/170)). Two new jobs added to `.github/workflows/staging-gate.yml`. `commit-msg-prefix` iterates every commit in the PR range (`base..head`) and calls `scripts/check-commit-msg.py --subject <subject>` for each; the job fails if any commit has an invalid prefix — `Merge` and `Revert` auto-subjects are exempt. `scripts/check-commit-msg.py` is also wired as a local `commit-msg` hook via `.githooks/commit-msg`; run `sh scripts/setup-hooks.sh` once after cloning to install it. `pr-body-issue-link` checks whether the PR body contains a GitHub auto-close keyword (`Closes #N`, `Fixes #N`, `Resolves #N`, etc.) or an opt-out marker (`<!-- no-issue -->`); the job always exits 0 — it is advisory only, emitting a `::warning::` annotation when neither pattern is found. 29 deterministic unit tests in `tests/test_check_commit_msg.py` cover the prefix validator.
@@ -40,6 +42,14 @@ installable release; see the roadmap in [README.md](README.md).
 - **`aelf session-delta --id <session_id>`** ([#140](https://github.com/robotrocketscience/aelfrice/issues/140)). Hidden SessionEnd-hook entry point. New module `aelfrice.telemetry` exposes `compute_session_delta(store, session_id, *, telemetry_path, now) -> dict` (pure function) and `emit_session_delta(session_id, *, store, path, now) -> None` (append to file). The writer reads beliefs tagged with `session_id` to compute per-session deltas (`beliefs_created`, `corrections_detected`, `feedback_given`, `velocity_items_per_hour`, `velocity_tier`, `duration_seconds`), snapshots the current store state for the `beliefs` and `graph` blocks, and computes 7-day and 30-day rolling-window rollups by walking the existing `telemetry.jsonl` tail. Schema matches the v=1 format already produced by the HOME-repo hook. Missing or empty `--id` is a stderr-warn no-op (exit 0) so hook failures never surface as broken shell sessions. Idle sessions (zero beliefs) still emit a zero-row so `len(telemetry.jsonl)` equals session count. `window_7` / `window_30` rollups now reflect real per-session activity instead of being static. 10 new tests in `tests/test_telemetry_session_delta.py`.
 
 - **`aelf project-warm <path>`** ([#137](https://github.com/robotrocketscience/aelfrice/issues/137)). Hidden CwdChanged-hook entry point. Resolves a path to a project root (git work-tree via `git rev-parse --show-toplevel` — worktrees correctly resolve to the worktree, not the main checkout — or first ancestor with a `.aelfrice/projects/<id>/` provisioned layout) and pre-loads the project's SQLite + OS file-cache pages so the next `aelf` invocation hits warm storage. Idempotent + 60s-debounced via a unix-ts sentinel at `~/.aelfrice/projects/<id>/.last_warm`. Deny-glob defaults catch `/tmp/**`, `/var/folders/**`, `~/Downloads/**`, `~/Desktop/**`; configurable via `~/.aelfrice/config.json` (`project_warm.deny_globs`). The CLI surface is silent on every code path — unknown projects, denied paths, debounced calls, and any unexpected exception all return exit 0 with empty stdout. The companion `~/.claude/hooks/aelfrice-cwd-warm.sh` lives in the HOME repo and is out of scope for this release. New module `aelfrice.project_warm` exposes `resolve_project_root`, `warm_project`, `warm_path`, `WarmResult`, `ProjectRef`, `WarmConfig`. 19 deterministic unit tests cover the full matrix.
+
+### Performance
+
+- **`update-check`: TTL shortened from 24h to 6h** ([#172](https://github.com/robotrocketscience/aelfrice/issues/172)). Default update-check TTL drops from 24 hours to 6 hours so users on a daily cadence notice new releases sooner without overwhelming the version-manifest endpoint. Existing TTL override paths are unchanged.
+
+### CI
+
+- **GitHub Actions burn reduction — concurrency + dedup pytest + uv cache** ([#184](https://github.com/robotrocketscience/aelfrice/pull/184)). Three structural CI tweaks landed together. (1) `concurrency` group + `cancel-in-progress: true` on both `CI` and `Staging Gate` workflows so rapid-push streaks no longer run superseded jobs to completion. (2) Drop the duplicate `pytest 3.12 + 3.13` matrix from `Staging Gate` — pytest now runs only on `CI`; `Staging Gate` keeps its unique jobs (gitleaks, pattern-scan, history-scan, release-docs-check, commit-msg-prefix, pr-body-issue-link). (3) `enable-cache: true` on `setup-uv`, keyed on `uv.lock`, so pytest legs hit a warm uv cache on most pushes. Net effect: ~50% fewer pytest jobs per PR push; sharply lower wall-clock on cache hits. Branch-protection note for the post-public-flip required-checks list: use `CI / pytest`, since `Staging Gate / pytest` no longer exists.
 
 ## [1.2.0] - 2026-04-28
 
@@ -506,7 +516,8 @@ Foundation milestone — store, models, config.
 - Initial repo scaffold: pyproject, README, GitHub Actions workflows,
   scan configs (commit `67b4343`).
 
-[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/robotrocketscience/aelfrice/compare/v1.2.0...v1.4.0
 [1.2.0]: https://github.com/robotrocketscience/aelfrice/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.3...v1.1.0
 [1.0.3]: https://github.com/robotrocketscience/aelfrice/compare/v1.0.2...v1.0.3
