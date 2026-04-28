@@ -21,11 +21,17 @@ flows here automatically.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import sys
+import tempfile
+import tomllib
 import traceback
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Final, cast
+from typing import IO, Any, Final, cast
 
 try:
     from aelfrice.cli import db_path
@@ -78,6 +84,200 @@ _PROMPT_KEY: Final[str] = "prompt"
 _TRANSCRIPT_PATH_KEY: Final[str] = "transcript_path"
 _CWD_KEY: Final[str] = "cwd"
 
+# ---------------------------------------------------------------------------
+# Per-hook configuration (#218 AC6)
+# ---------------------------------------------------------------------------
+
+_UPS_SECTION: Final[str] = "user_prompt_submit_hook"
+_COLLAPSE_KEY: Final[str] = "collapse_duplicate_hashes"
+_CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
+
+
+@dataclass(frozen=True)
+class UserPromptSubmitConfig:
+    """Configuration for the UserPromptSubmit hook.
+
+    All fields default to their OFF/safe value so missing config degrades
+    gracefully. Loaded from `.aelfrice.toml [user_prompt_submit_hook]`
+    by `load_user_prompt_submit_config()`.
+    """
+
+    collapse_duplicate_hashes: bool = False
+
+
+def load_user_prompt_submit_config(
+    start: Path | None = None,
+    *,
+    stderr: IO[str] | None = None,
+) -> UserPromptSubmitConfig:
+    """Walk up from `start` looking for `.aelfrice.toml`.
+
+    Returns the resolved `[user_prompt_submit_hook]` config. Missing
+    file / missing section / malformed TOML / wrong-typed values all
+    degrade to defaults with a stderr trace; never raises.
+    """
+    serr: IO[str] = stderr if stderr is not None else sys.stderr
+    current = (start if start is not None else Path.cwd()).resolve()
+    seen: set[Path] = set()
+    while current not in seen:
+        seen.add(current)
+        candidate = current / _CONFIG_FILENAME
+        if candidate.is_file():
+            try:
+                raw = candidate.read_bytes()
+            except OSError as exc:
+                print(
+                    f"aelfrice hook: cannot read {candidate}: {exc}",
+                    file=serr,
+                )
+                return UserPromptSubmitConfig()
+            try:
+                parsed: dict[str, Any] = tomllib.loads(
+                    raw.decode("utf-8", errors="replace"),
+                )
+            except tomllib.TOMLDecodeError as exc:
+                print(
+                    f"aelfrice hook: malformed TOML in {candidate}: {exc}",
+                    file=serr,
+                )
+                return UserPromptSubmitConfig()
+            section_obj: Any = parsed.get(_UPS_SECTION, {})
+            if not isinstance(section_obj, dict):
+                return UserPromptSubmitConfig()
+            section = cast(dict[str, Any], section_obj)
+            collapse_obj: Any = section.get(_COLLAPSE_KEY, False)
+            if not isinstance(collapse_obj, bool):
+                print(
+                    f"aelfrice hook: ignoring [{_UPS_SECTION}] "
+                    f"{_COLLAPSE_KEY} in {candidate} (expected bool)",
+                    file=serr,
+                )
+                collapse_obj = False
+            return UserPromptSubmitConfig(
+                collapse_duplicate_hashes=collapse_obj,
+            )
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return UserPromptSubmitConfig()
+
+
+def _dedup_by_content_hash(hits: list[Belief]) -> list[Belief]:
+    """Return hits with duplicate content hashes removed (first occurrence wins)."""
+    seen_hashes: set[str] = set()
+    result: list[Belief] = []
+    for h in hits:
+        digest = hashlib.sha1(h.content.encode()).hexdigest()
+        if digest not in seen_hashes:
+            seen_hashes.add(digest)
+            result.append(h)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Telemetry ring buffer (#218 AC1-3)
+# ---------------------------------------------------------------------------
+
+TELEMETRY_RING_CAP: Final[int] = 1000
+"""Maximum entries retained in the UserPromptSubmit telemetry JSONL."""
+
+TELEMETRY_SUBPATH: Final[str] = (
+    "aelfrice/telemetry/user_prompt_submit.jsonl"
+)
+"""Path fragment appended to the git-common-dir to form the telemetry path."""
+
+_QUERY_TELEMETRY_CAP: Final[int] = 500
+"""Maximum characters of the prompt stored in the telemetry record."""
+
+
+def _telemetry_path_for_db(db_path_val: Path) -> Path:
+    """Derive the UserPromptSubmit telemetry path from the DB path.
+
+    The DB lives at `<git-common-dir>/aelfrice/memory.db`. The telemetry
+    file lives at `<git-common-dir>/aelfrice/telemetry/user_prompt_submit.jsonl`.
+    """
+    return db_path_val.parent / "telemetry" / "user_prompt_submit.jsonl"
+
+
+def _append_telemetry(
+    telemetry_path: Path,
+    record: dict[str, object],
+    *,
+    stderr: IO[str] | None = None,
+) -> None:
+    """Append one telemetry record to the JSONL ring buffer. Fail-soft.
+
+    Uses read-all → trim → rewrite-atomically (tempfile + os.replace).
+    If the write fails for any reason (read-only, disk-full, missing
+    parent), traces one line to stderr and continues.
+    """
+    try:
+        telemetry_path.parent.mkdir(parents=True, exist_ok=True)
+        if telemetry_path.exists():
+            lines = [
+                ln
+                for ln in telemetry_path.read_text(encoding="utf-8").splitlines()
+                if ln.strip()
+            ]
+        else:
+            lines = []
+        lines.append(json.dumps(record))
+        if len(lines) > TELEMETRY_RING_CAP:
+            lines = lines[-TELEMETRY_RING_CAP:]
+        payload = "\n".join(lines) + "\n"
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=telemetry_path.name + ".",
+            suffix=".tmp",
+            dir=str(telemetry_path.parent),
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, telemetry_path)
+        except Exception:
+            if tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
+            raise
+    except Exception as exc:
+        serr = stderr if stderr is not None else sys.stderr
+        print(
+            f"aelfrice: telemetry write failed (non-fatal): {exc}",
+            file=serr,
+        )
+
+
+def read_user_prompt_submit_telemetry(
+    path: Path,
+) -> list[dict[str, object]]:
+    """Read the UserPromptSubmit JSONL ring buffer at `path`.
+
+    Returns [] when the file is missing or empty. Raises `ValueError`
+    when the file exists but a line is not valid JSON (corruption).
+    Lines that are valid JSON but not objects are silently skipped.
+    """
+    if not path.exists():
+        return []
+    records: list[dict[str, object]] = []
+    text = path.read_text(encoding="utf-8")
+    for i, line in enumerate(text.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"telemetry file {path} line {i + 1} is not valid JSON: {exc}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            continue
+        records.append(cast(dict[str, object], parsed))
+    return records
+
 
 def user_prompt_submit(
     *,
@@ -121,12 +321,66 @@ def user_prompt_submit(
             if token_budget is not None
             else DEFAULT_HOOK_TOKEN_BUDGET
         )
-        body = _retrieve_and_format(prompt, budget)
-        if body:
+        config = load_user_prompt_submit_config(stderr=serr)
+        hits = _retrieve(prompt, budget)
+        if hits:
+            # AC1 telemetry: record pre-collapse counts.
+            n_returned = len(hits)
+            unique_hashes = {
+                hashlib.sha1(h.content.encode()).hexdigest()
+                for h in hits
+            }
+            n_unique = len(unique_hashes)
+            n_l0 = sum(1 for h in hits if h.lock_level == LOCK_USER)
+            n_l1 = n_returned - n_l0
+            # AC6: optional dedup before formatting.
+            if config.collapse_duplicate_hashes:
+                hits = _dedup_by_content_hash(hits)
+            # total_chars measured post-collapse (what is actually injected).
+            total_chars = sum(len(h.content) for h in hits)
+            body = _format_hits(hits)
             sout.write(body)
+            # AC1: append telemetry record for fires that produce a block.
+            _write_telemetry(
+                prompt=prompt,
+                n_returned=n_returned,
+                n_unique_content_hashes=n_unique,
+                n_l0=n_l0,
+                n_l1=n_l1,
+                total_chars=total_chars,
+                stderr=serr,
+            )
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     return 0
+
+
+def _write_telemetry(
+    *,
+    prompt: str,
+    n_returned: int,
+    n_unique_content_hashes: int,
+    n_l0: int,
+    n_l1: int,
+    total_chars: int,
+    stderr: IO[str] | None = None,
+) -> None:
+    """Build and append a telemetry record. Fail-soft."""
+    try:
+        p = db_path()
+        tel_path = _telemetry_path_for_db(p)
+    except Exception:
+        return
+    record: dict[str, object] = {
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "query": prompt[:_QUERY_TELEMETRY_CAP],
+        "n_returned": n_returned,
+        "n_unique_content_hashes": n_unique_content_hashes,
+        "n_l0": n_l0,
+        "n_l1": n_l1,
+        "total_chars": total_chars,
+    }
+    _append_telemetry(tel_path, record, stderr=stderr)
 
 
 def _extract_prompt(raw: str) -> str | None:
@@ -147,15 +401,19 @@ def _extract_prompt(raw: str) -> str | None:
     return prompt
 
 
-def _retrieve_and_format(prompt: str, token_budget: int) -> str:
+def _retrieve(prompt: str, token_budget: int) -> list[Belief]:
+    """Run retrieval for the given prompt and return the raw hit list.
+
+    Separating retrieval from formatting lets callers inspect the hits
+    (for telemetry, optional dedup, etc.) before the string is built.
+    Returns an empty list when the store is absent or retrieval yields
+    nothing.
+    """
     store = _open_store()
     try:
-        hits = search_for_prompt(store, prompt, token_budget=token_budget)
+        return search_for_prompt(store, prompt, token_budget=token_budget)
     finally:
         store.close()
-    if not hits:
-        return ""
-    return _format_hits(hits)
 
 
 def _format_hits(hits: list[Belief]) -> str:
