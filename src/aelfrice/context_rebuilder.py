@@ -110,6 +110,52 @@ CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 REBUILDER_SECTION: Final[str] = "rebuilder"
 TURN_WINDOW_KEY: Final[str] = "turn_window_n"
 TOKEN_BUDGET_KEY: Final[str] = "token_budget"
+TRIGGER_MODE_KEY: Final[str] = "trigger_mode"
+THRESHOLD_FRACTION_KEY: Final[str] = "threshold_fraction"
+
+# --- v1.4.0 trigger-mode constants (issue #141) ---------------------------
+
+TRIGGER_MODE_MANUAL: Final[str] = "manual"
+TRIGGER_MODE_THRESHOLD: Final[str] = "threshold"
+TRIGGER_MODE_DYNAMIC: Final[str] = "dynamic"
+
+VALID_TRIGGER_MODES: Final[tuple[str, ...]] = (
+    TRIGGER_MODE_MANUAL,
+    TRIGGER_MODE_THRESHOLD,
+    TRIGGER_MODE_DYNAMIC,
+)
+"""Allowed values for `[rebuilder] trigger_mode` in `.aelfrice.toml`.
+
+`manual`:    PreCompact hook never fires the rebuild block; only
+             explicit invocations (`aelf rebuild` / `/aelf:rebuild`)
+             produce output. Default at v1.4.0.
+`threshold`: PreCompact hook fires when called by Claude Code's
+             harness; the harness's own threshold gating is the
+             trigger. The `threshold_fraction` documents the
+             calibrated operating point.
+`dynamic`:   Heuristic-driven trigger. Parked at v1.4.0 -- see
+             `docs/context_rebuilder.md § Dynamic mode (parked)`.
+             Setting this raises a clear error in the hook path.
+"""
+
+DEFAULT_TRIGGER_MODE: Final[str] = TRIGGER_MODE_MANUAL
+"""Ship-default trigger mode at v1.4.0.
+
+Manual is the default until production telemetry confirms the
+calibrated threshold. The threshold-mode default value is set by
+`benchmarks/context_rebuilder/calibration_v1_4_0.json`; the user
+opts in via `[rebuilder] trigger_mode = "threshold"`.
+"""
+
+DEFAULT_THRESHOLD_FRACTION: Final[float] = 0.7
+"""Calibrated default fraction for `trigger_mode = "threshold"`.
+
+Sourced from the eval-harness calibration in
+`benchmarks/context_rebuilder/calibration_v1_4_0.json` (run on the
+bundled synthetic fixture sweeping 0.5/0.6/0.7/0.8/0.9). 0.7
+maximizes continuation_fidelity within the documented token-cost
+band. See `docs/context_rebuilder.md § Threshold calibration`.
+"""
 
 # --- Format constants -----------------------------------------------------
 
@@ -282,13 +328,26 @@ def emit_pre_compact_envelope(block: str) -> str:
 class RebuilderConfig:
     """Resolved `[rebuilder]` section of `.aelfrice.toml`.
 
-    Both fields default to the v1.4 module-level defaults; either may
-    be overridden in a project-local `.aelfrice.toml`. Malformed values
+    All fields default to the v1.4 module-level defaults; any may be
+    overridden in a project-local `.aelfrice.toml`. Malformed values
     fall back to the default with a stderr trace, matching the
     `noise_filter`/`retrieval` config-resolution convention.
+
+    v1.4 (issue #141) adds two trigger-mode fields:
+
+    * `trigger_mode`  -- one of `manual`, `threshold`, `dynamic`.
+                         Default `manual`. `dynamic` is parked at
+                         v1.4 and raises in the hook path.
+    * `threshold_fraction` -- float in (0.0, 1.0]; default 0.7 from
+                              calibration. Documents the operating
+                              point at which threshold-mode is tuned;
+                              the actual gate is the harness's own
+                              PreCompact firing.
     """
     turn_window_n: int = DEFAULT_TURN_WINDOW_N
     token_budget: int = DEFAULT_REBUILDER_TOKEN_BUDGET
+    trigger_mode: str = DEFAULT_TRIGGER_MODE
+    threshold_fraction: float = DEFAULT_THRESHOLD_FRACTION
 
 
 def load_rebuilder_config(start: Path | None = None) -> RebuilderConfig:
@@ -331,6 +390,12 @@ def load_rebuilder_config(start: Path | None = None) -> RebuilderConfig:
             b_obj: Any = section.get(
                 TOKEN_BUDGET_KEY, DEFAULT_REBUILDER_TOKEN_BUDGET,
             )
+            mode_obj: Any = section.get(
+                TRIGGER_MODE_KEY, DEFAULT_TRIGGER_MODE,
+            )
+            frac_obj: Any = section.get(
+                THRESHOLD_FRACTION_KEY, DEFAULT_THRESHOLD_FRACTION,
+            )
             if isinstance(n_obj, bool) or not isinstance(n_obj, int) or n_obj <= 0:
                 print(
                     f"aelfrice rebuilder: ignoring [{REBUILDER_SECTION}] "
@@ -351,8 +416,38 @@ def load_rebuilder_config(start: Path | None = None) -> RebuilderConfig:
                 b_resolved = DEFAULT_REBUILDER_TOKEN_BUDGET
             else:
                 b_resolved = b_obj
+            if (
+                not isinstance(mode_obj, str)
+                or mode_obj not in VALID_TRIGGER_MODES
+            ):
+                print(
+                    f"aelfrice rebuilder: ignoring [{REBUILDER_SECTION}] "
+                    f"{TRIGGER_MODE_KEY} in {candidate} "
+                    f"(expected one of {VALID_TRIGGER_MODES})",
+                    file=serr,
+                )
+                mode_resolved = DEFAULT_TRIGGER_MODE
+            else:
+                mode_resolved = mode_obj
+            if (
+                isinstance(frac_obj, bool)
+                or not isinstance(frac_obj, (int, float))
+                or not (0.0 < float(frac_obj) <= 1.0)
+            ):
+                print(
+                    f"aelfrice rebuilder: ignoring [{REBUILDER_SECTION}] "
+                    f"{THRESHOLD_FRACTION_KEY} in {candidate} "
+                    f"(expected float in (0.0, 1.0])",
+                    file=serr,
+                )
+                frac_resolved = DEFAULT_THRESHOLD_FRACTION
+            else:
+                frac_resolved = float(frac_obj)
             return RebuilderConfig(
-                turn_window_n=n_resolved, token_budget=b_resolved,
+                turn_window_n=n_resolved,
+                token_budget=b_resolved,
+                trigger_mode=mode_resolved,
+                threshold_fraction=frac_resolved,
             )
         if current.parent == current:
             break
@@ -793,6 +888,21 @@ def main(
         cwd = Path(cwd_str) if cwd_str else Path.cwd()
 
         config = load_rebuilder_config(cwd)
+
+        # v1.4 trigger-mode gating (issue #141). Manual + dynamic
+        # short-circuit before any retrieval or transcript work.
+        # See `aelfrice.hook.pre_compact` for the same gate; both
+        # entry points must agree.
+        if config.trigger_mode == TRIGGER_MODE_MANUAL:
+            return 0
+        if config.trigger_mode == TRIGGER_MODE_DYNAMIC:
+            print(
+                "aelfrice rebuilder: trigger_mode='dynamic' is parked "
+                "at v1.4, ships v1.5; falling back to no-op. See "
+                "docs/context_rebuilder.md § Dynamic mode (parked v1.5).",
+                file=serr,
+            )
+            return 0
 
         recent = _read_recent_for_pre_compact(payload, config.turn_window_n)
         if not recent:

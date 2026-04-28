@@ -1991,8 +1991,14 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     p_search.set_defaults(func=_cmd_search)
 
-    # Hidden: PreCompact hook driver. Humans rarely invoke directly.
-    p_rebuild = sub.add_parser("rebuild", help=argparse.SUPPRESS)
+    # v1.4 (#141): user-facing manual trigger for the context
+    # rebuilder. Promoted from hidden to visible because manual mode
+    # is now the default `trigger_mode` at v1.4.0; the slash command
+    # `/aelf:rebuild` and direct `aelf rebuild` are how users fire it.
+    p_rebuild = sub.add_parser(
+        "rebuild",
+        help="manually fire the context rebuilder (manual trigger)",
+    )
     p_rebuild.add_argument(
         "--transcript", default=None,
         help=(

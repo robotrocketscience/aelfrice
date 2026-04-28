@@ -29,6 +29,9 @@ from typing import IO, Final, cast
 
 from aelfrice.cli import db_path
 from aelfrice.context_rebuilder import (
+    TRIGGER_MODE_DYNAMIC,
+    TRIGGER_MODE_MANUAL,
+    TRIGGER_MODE_THRESHOLD,
     RecentTurn,
     emit_pre_compact_envelope,
     find_aelfrice_log,
@@ -208,6 +211,27 @@ def pre_compact(
             else Path.cwd()
         )
         config = load_rebuilder_config(cwd)
+        # v1.4 trigger-mode gating (issue #141).
+        # `manual` -> hook never fires; only explicit invocations
+        #             (`aelf rebuild` / `/aelf:rebuild`) emit a block.
+        # `threshold` -> fire as below; the harness's own PreCompact
+        #                trigger is the gate. `threshold_fraction`
+        #                documents the calibrated operating point.
+        # `dynamic` -> parked at v1.4 (see docs/context_rebuilder.md
+        #              § Dynamic mode (parked v1.5)). Log + no-op.
+        mode = config.trigger_mode
+        if mode == TRIGGER_MODE_MANUAL:
+            return 0
+        if mode == TRIGGER_MODE_DYNAMIC:
+            print(
+                "aelfrice rebuilder: trigger_mode='dynamic' is parked "
+                "at v1.4, ships v1.5; falling back to no-op. See "
+                "docs/context_rebuilder.md § Dynamic mode (parked v1.5).",
+                file=serr,
+            )
+            return 0
+        # mode == TRIGGER_MODE_THRESHOLD
+        assert mode == TRIGGER_MODE_THRESHOLD
         n = (
             n_recent_turns
             if n_recent_turns is not None

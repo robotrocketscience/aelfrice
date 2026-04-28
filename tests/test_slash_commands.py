@@ -36,6 +36,7 @@ EXPECTED_COMMANDS = (
     "upgrade",
     "uninstall",
     "ingest-transcript",
+    "rebuild",
 )
 
 
@@ -99,7 +100,7 @@ def test_no_extra_files_in_slash_commands_dir() -> None:
 # minor and are deleted at v1.4 (`health`, `stats`); the rest stay
 # callable indefinitely as scripting / hook entry points.
 HIDDEN_SUBCOMMANDS = frozenset({
-    "rebuild", "statusline", "bench", "regime", "migrate", "unsetup",
+    "statusline", "bench", "regime", "migrate", "unsetup",
     "health", "stats", "project-warm", "session-delta",
 })
 

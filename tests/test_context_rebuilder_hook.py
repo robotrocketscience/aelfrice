@@ -95,6 +95,19 @@ def _aelfrice_log(cwd: Path, lines: list[dict[str, object]]) -> Path:
     return p
 
 
+def _write_threshold_config(cwd: Path) -> None:
+    """Write a `.aelfrice.toml` opting into trigger_mode='threshold'.
+
+    The v1.4 ship default is `manual` (issue #141) -- the PreCompact
+    hook no-ops unless the user opts in. Tests that exercise the
+    hook's auto-fire path therefore need this opt-in fixture.
+    """
+    cwd.mkdir(parents=True, exist_ok=True)
+    (cwd / ".aelfrice.toml").write_text(
+        '[rebuilder]\ntrigger_mode = "threshold"\n', encoding="utf-8",
+    )
+
+
 def _payload(
     *,
     cwd: Path | None = None,
@@ -163,6 +176,7 @@ def test_ac1_envelope_carries_locked_session_scoped_and_l1(
     _set_db(monkeypatch, db)
     cwd = tmp_path / "repo"
     (cwd / ".git").mkdir(parents=True)
+    _write_threshold_config(cwd)
     _aelfrice_log(cwd, [
         {
             "role": "user",
@@ -247,6 +261,7 @@ def test_ac2_empty_transcript_emits_no_additional_context(
     _set_db(monkeypatch, db)
     cwd = tmp_path / "repo"
     (cwd / ".git").mkdir(parents=True)
+    _write_threshold_config(cwd)
     # Create the dir but leave turns.jsonl absent.
     (cwd / ".git" / "aelfrice" / "transcripts").mkdir(parents=True)
     sin = io.StringIO(_payload(cwd=cwd))
@@ -266,6 +281,7 @@ def test_ac2_missing_store_emits_no_additional_context(
     _set_db(monkeypatch, db)
     cwd = tmp_path / "repo"
     (cwd / ".git").mkdir(parents=True)
+    _write_threshold_config(cwd)
     _aelfrice_log(cwd, [
         {"role": "user", "text": "anything"},
         {"role": "assistant", "text": "anything"},
@@ -288,6 +304,7 @@ def test_ac2_module_main_entry_point_also_silent_on_missing_store(
     _set_db(monkeypatch, db)
     cwd = tmp_path / "repo"
     (cwd / ".git").mkdir(parents=True)
+    _write_threshold_config(cwd)
     _aelfrice_log(cwd, [{"role": "user", "text": "hi"}])
     sin = io.StringIO(_payload(cwd=cwd))
     sout = io.StringIO()
@@ -316,6 +333,7 @@ def test_ac3_two_fires_produce_byte_identical_additional_context(
     _set_db(monkeypatch, db)
     cwd = tmp_path / "repo"
     (cwd / ".git").mkdir(parents=True)
+    _write_threshold_config(cwd)
     _aelfrice_log(cwd, [
         {"role": "user", "text": "explain L2.5 entity index"},
         {"role": "assistant", "text": "BM25 vs entity-index ranking"},
