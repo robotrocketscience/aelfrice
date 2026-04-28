@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 from typing import Final
 
-from aelfrice.lifecycle import UpdateStatus, read_cache
+from aelfrice.lifecycle import UpdateStatus, installed_version, is_newer, read_cache
 
 # CSS orange #FFA500 in truecolor, 256-color 208 (#FF8700), basic 33.
 ANSI_RESET: Final[str] = "\x1b[0m"
@@ -65,6 +65,7 @@ def format_snippet(
     status: UpdateStatus,
     *,
     env: dict[str, str] | None = None,
+    installed: str | None = None,
 ) -> str:
     """Return the statusline snippet for the given cache status.
 
@@ -72,8 +73,20 @@ def format_snippet(
     returns 'COLOR_ON⬆ aelfrice X.Y.Z available, run: aelf upgrade
     COLOR_OFF │ '. The trailing ' │ ' is the GSD-style separator
     so the snippet composes naturally as a leading badge.
+
+    Self-correcting: even when the cache says update_available=True,
+    the banner is suppressed if the running interpreter is already at
+    or ahead of status.latest.  This prevents the banner from
+    persisting after an out-of-band upgrade that has not yet triggered
+    a fresh PyPI check.  The ``installed`` parameter overrides the
+    running version for testing; when omitted, installed_version() is
+    called.  If installed_version() returns "" (lookup failure) the
+    banner is shown, preserving the default-visible safe fallback.
     """
     if not status.update_available or not status.latest:
+        return ""
+    running = installed if installed is not None else installed_version()
+    if running and not is_newer(status.latest, running):
         return ""
     color_on = _pick_color(env)
     color_off = ANSI_RESET if color_on else ""
