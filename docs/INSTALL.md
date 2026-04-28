@@ -51,8 +51,10 @@ aelf setup --scope user                            # force user-scope (~/.claude
 aelf setup --scope project --project-root .        # force project-scope (.claude/settings.json)
 aelf setup --no-statusline                         # hook only, no statusline
 aelf setup --transcript-ingest                     # opt in to live conversation capture (v1.2+)
+aelf setup --commit-ingest                         # opt in to commit-message ingest (v1.2+)
 aelf unsetup                                       # remove the prompt hook + statusline
 aelf unsetup --transcript-ingest                   # remove the transcript-logger hooks too
+aelf unsetup --commit-ingest                       # also remove the commit-ingest hook
 aelf doctor                                        # verify hook commands resolve
 ```
 
@@ -62,6 +64,8 @@ Idempotent. `aelf setup` wires two things by default:
 2. **`statusLine` notifier** (`aelf statusline`). Prints an orange one-line update banner in the Claude Code statusbar **only when an update is available**, empty otherwise. Reads the cached PyPI check; never makes network calls. Banner disappears automatically once you've upgraded.
 
 `--transcript-ingest` (v1.2+) additionally wires four hook events (`UserPromptSubmit`, `Stop`, `PreCompact`, `PostCompact`) to the `aelf-transcript-logger` entry point. Each conversation turn lands as one JSONL line in `<git-common-dir>/aelfrice/transcripts/turns.jsonl`; `PreCompact` rotates the log into a sibling `archive/` directory and spawns `aelf ingest-transcript` detached so the turns enter the brain graph as session-tagged beliefs with `DERIVED_FROM` edges between consecutive turns. Sub-10ms per-turn budget; non-blocking on every failure path. Storage stays under `.git/`, which git does not track — transcripts never cross the git boundary. Opt-in at v1.2; the default may flip on once disk-footprint and latency telemetry are in.
+
+`--commit-ingest` (v1.2+) additionally wires a `PostToolUse:Bash` entry to the `aelf-commit-ingest` entry point. After every successful `git commit`, the hook parses the commit message, runs the triple extractor on the prose, and persists the resulting beliefs and edges under a session id derived as `sha256(branch + ":" + commit_hash)[:16]` (stable across re-fires; idempotent against the same commit). Median-latency budget is 30 ms; the hook bails non-blockingly on every failure mode so a `git commit` never feels broken. Opt-in at v1.2; default-flip candidate at v1.3 once production-corpus latency telemetry confirms the budget holds.
 
 ### How `aelf setup` picks scope and command path
 
