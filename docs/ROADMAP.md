@@ -64,7 +64,7 @@ Pulled forward from v1.3.0 to validate the `PreToolUse` retrieval surface ahead 
 
 This is the release where retrieval moves beyond BM25-only.
 
-- **Entity-index retrieval.** L2.5 entity-index ports forward, including the regex extraction patterns.
+- **Entity-index retrieval.** L2.5 entity-index ports forward, including the regex extraction patterns. Spec: [entity_index.md](entity_index.md).
 - **BFS multi-hop graph traversal.** Edge-type-weighted graph walks layered on top of FTS5 hits. Bounded depth, bounded budget.
 - **LLM-classification onboard path.** Haiku-backed classifier as an opt-in alternative to the regex classifier.
 - **Posterior-weighted ranking (partial).** Retrieval scoring begins to incorporate `α / (α+β)` on top of BM25. Full feedback-into-ranking eval lands at v2.0.0.
