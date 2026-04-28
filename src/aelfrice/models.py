@@ -28,15 +28,20 @@ EDGE_CITES: Final[str] = "CITES"
 EDGE_CONTRADICTS: Final[str] = "CONTRADICTS"
 EDGE_SUPERSEDES: Final[str] = "SUPERSEDES"
 EDGE_RELATES_TO: Final[str] = "RELATES_TO"
+EDGE_DERIVED_FROM: Final[str] = "DERIVED_FROM"
 
 # Edge-type valence multipliers for propagation.
 # Positive = propagate same sign; negative = invert; 0.0 = no propagation.
+# DERIVED_FROM mirrors CITES (0.5): both indicate B's content depends on A,
+# distinct because DERIVED_FROM carries stronger contextual coupling
+# (sibling becomes stale if A is superseded).
 EDGE_VALENCE: Final[dict[str, float]] = {
     EDGE_SUPPORTS: 1.0,
     EDGE_CITES: 0.5,
     EDGE_CONTRADICTS: -0.5,
     EDGE_SUPERSEDES: 0.0,
     EDGE_RELATES_TO: 0.3,
+    EDGE_DERIVED_FROM: 0.5,
 }
 
 EDGE_TYPES: Final[frozenset[str]] = frozenset(EDGE_VALENCE.keys())
@@ -67,7 +72,13 @@ class Belief:
     """A unit of memory with Bayesian confidence and lock state.
 
     Fields: id, content, content_hash, alpha, beta, type, lock_level,
-    locked_at, demotion_pressure, created_at, last_retrieved_at.
+    locked_at, demotion_pressure, created_at, last_retrieved_at,
+    session_id.
+
+    `session_id` (v1.2+) tags the belief with the ingest session that
+    inserted it. Optional: ingest paths that don't open a session
+    leave it None and downstream session-coherent retrieval simply
+    does not fire on those rows.
     """
 
     id: str
@@ -81,16 +92,35 @@ class Belief:
     demotion_pressure: int
     created_at: str
     last_retrieved_at: str | None
+    session_id: str | None = None
+
+
+ANCHOR_TEXT_MAX_LEN: Final[int] = 1000
+"""Soft cap on edge anchor_text. Real anchor text is short prose
+(20-200 chars). Cap protects against pathological writes; callers
+truncate with a warning rather than reject."""
 
 
 @dataclass
 class Edge:
-    """A typed, weighted directed link between two beliefs."""
+    """A typed, weighted directed link between two beliefs.
+
+    `anchor_text` is the citing belief's own phrasing of the
+    relationship (e.g. "the WAL discussion" on a CITES edge). Set
+    by ingest paths that have access to source prose at edge-
+    creation time; left None on programmatic / bulk inserts.
+    Truncated to ANCHOR_TEXT_MAX_LEN characters on construction.
+    """
 
     src: str
     dst: str
     type: str
     weight: float
+    anchor_text: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.anchor_text is not None and len(self.anchor_text) > ANCHOR_TEXT_MAX_LEN:
+            self.anchor_text = self.anchor_text[:ANCHOR_TEXT_MAX_LEN]
 
 
 @dataclass

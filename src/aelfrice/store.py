@@ -45,15 +45,17 @@ _SCHEMA: tuple[str, ...] = (
         locked_at           TEXT,
         demotion_pressure   INTEGER NOT NULL DEFAULT 0,
         created_at          TEXT NOT NULL,
-        last_retrieved_at   TEXT
+        last_retrieved_at   TEXT,
+        session_id          TEXT
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS edges (
-        src     TEXT NOT NULL,
-        dst     TEXT NOT NULL,
-        type    TEXT NOT NULL,
-        weight  REAL NOT NULL,
+        src         TEXT NOT NULL,
+        dst         TEXT NOT NULL,
+        type        TEXT NOT NULL,
+        weight      REAL NOT NULL,
+        anchor_text TEXT,
         PRIMARY KEY (src, dst, type)
     )
     """,
@@ -80,10 +82,35 @@ _SCHEMA: tuple[str, ...] = (
         completed_at    TEXT
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS sessions (
+        id              TEXT PRIMARY KEY,
+        started_at      TEXT NOT NULL,
+        completed_at    TEXT,
+        model           TEXT,
+        project_context TEXT
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src)",
     "CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst)",
     "CREATE INDEX IF NOT EXISTS idx_feedback_belief ON feedback_history(belief_id)",
     "CREATE INDEX IF NOT EXISTS idx_onboard_state ON onboard_sessions(state)",
+)
+
+# v1.0 -> v1.2 column additions. Each ALTER runs after _SCHEMA. ALTERs
+# are idempotent: a duplicate-column OperationalError on a v1.2-fresh
+# DB is caught and ignored. The CREATE INDEX after the ALTERs
+# references a column that exists only post-migration; placing it here
+# (rather than in _SCHEMA) is what lets a v1.0 store open at all.
+_MIGRATIONS: tuple[str, ...] = (
+    "ALTER TABLE beliefs ADD COLUMN session_id TEXT",
+    "ALTER TABLE edges ADD COLUMN anchor_text TEXT",
+)
+
+# Indexes that depend on migrated columns. Run after _MIGRATIONS so
+# they see the post-ALTER schema.
+_POST_MIGRATION_INDEXES: tuple[str, ...] = (
+    "CREATE INDEX IF NOT EXISTS idx_beliefs_session ON beliefs(session_id)",
 )
 
 
@@ -123,15 +150,29 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
         demotion_pressure=row["demotion_pressure"],
         created_at=row["created_at"],
         last_retrieved_at=row["last_retrieved_at"],
+        session_id=row["session_id"],
+    )
+
+
+def _row_to_session(row: sqlite3.Row) -> Session:
+    return Session(
+        id=row["id"],
+        started_at=row["started_at"],
+        completed_at=row["completed_at"],
+        model=row["model"],
+        project_context=row["project_context"],
     )
 
 
 def _row_to_edge(row: sqlite3.Row) -> Edge:
+    # row["anchor_text"] safe: v1.2 migration guarantees the column on
+    # any store this code instantiates. Legacy rows return None.
     return Edge(
         src=row["src"],
         dst=row["dst"],
         type=row["type"],
         weight=row["weight"],
+        anchor_text=row["anchor_text"],
     )
 
 
@@ -175,6 +216,17 @@ class MemoryStore:
         self._conn.execute("PRAGMA foreign_keys=ON")
         for stmt in _SCHEMA:
             self._conn.execute(stmt)
+        for stmt in _MIGRATIONS:
+            try:
+                self._conn.execute(stmt)
+            except sqlite3.OperationalError as e:
+                # "duplicate column name: X" — column already present
+                # (either from CREATE TABLE on a fresh v1.2 DB or from
+                # a previous migration pass). Anything else re-raises.
+                if "duplicate column name" not in str(e):
+                    raise
+        for stmt in _POST_MIGRATION_INDEXES:
+            self._conn.execute(stmt)
         self._conn.commit()
         self._invalidation_callbacks: list[Callable[[], None]] = []
 
@@ -206,13 +258,13 @@ class MemoryStore:
             INSERT INTO beliefs (
                 id, content, content_hash, alpha, beta, type,
                 lock_level, locked_at, demotion_pressure,
-                created_at, last_retrieved_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, last_retrieved_at, session_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 b.id, b.content, b.content_hash, b.alpha, b.beta, b.type,
                 b.lock_level, b.locked_at, b.demotion_pressure,
-                b.created_at, b.last_retrieved_at,
+                b.created_at, b.last_retrieved_at, b.session_id,
             ),
         )
         self._conn.execute(
@@ -243,13 +295,14 @@ class MemoryStore:
                 locked_at = ?,
                 demotion_pressure = ?,
                 created_at = ?,
-                last_retrieved_at = ?
+                last_retrieved_at = ?,
+                session_id = ?
             WHERE id = ?
             """,
             (
                 b.content, b.content_hash, b.alpha, b.beta, b.type,
                 b.lock_level, b.locked_at, b.demotion_pressure,
-                b.created_at, b.last_retrieved_at, b.id,
+                b.created_at, b.last_retrieved_at, b.session_id, b.id,
             ),
         )
         self._conn.execute("DELETE FROM beliefs_fts WHERE id = ?", (b.id,))
@@ -476,8 +529,9 @@ class MemoryStore:
 
     def insert_edge(self, e: Edge) -> None:
         self._conn.execute(
-            "INSERT INTO edges (src, dst, type, weight) VALUES (?, ?, ?, ?)",
-            (e.src, e.dst, e.type, e.weight),
+            "INSERT INTO edges (src, dst, type, weight, anchor_text) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (e.src, e.dst, e.type, e.weight, e.anchor_text),
         )
         self._conn.commit()
         self._fire_invalidation()
@@ -492,8 +546,9 @@ class MemoryStore:
 
     def update_edge(self, e: Edge) -> None:
         self._conn.execute(
-            "UPDATE edges SET weight = ? WHERE src = ? AND dst = ? AND type = ?",
-            (e.weight, e.src, e.dst, e.type),
+            "UPDATE edges SET weight = ?, anchor_text = ? "
+            "WHERE src = ? AND dst = ? AND type = ?",
+            (e.weight, e.anchor_text, e.src, e.dst, e.type),
         )
         self._conn.commit()
         self._fire_invalidation()
@@ -658,28 +713,51 @@ class MemoryStore:
         model: str | None = None,
         project_context: str | None = None,
     ) -> Session:
-        """Create an ephemeral Session handle for grouping ingest calls.
+        """Open an ingest session and persist it to the sessions table.
 
-        The public v1.0.0 schema does not persist sessions; this returns
-        a Session dataclass with a fresh id but does not write to any
-        table. Academic-suite adapters use the id to tag belief metadata
-        (and call complete_session at the end of a logical group).
+        Returns a Session handle whose `id` callers pass to ingest_turn /
+        ingest_jsonl as `session_id` to tag every belief inserted under
+        the session. Pair with `complete_session(id)` at the end of a
+        logical group; orphaned sessions are harmless.
+
+        Per the open question in docs/ingest_enrichment.md the session
+        row is written immediately rather than lazily on first belief
+        insert; the rare empty-session row is left to future GC.
         """
-        return Session(
+        s = Session(
             id=secrets.token_hex(16),
             started_at=datetime.now(timezone.utc).isoformat(),
             completed_at=None,
             model=model,
             project_context=project_context,
         )
+        self._conn.execute(
+            """
+            INSERT INTO sessions (id, started_at, completed_at, model, project_context)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (s.id, s.started_at, s.completed_at, s.model, s.project_context),
+        )
+        self._conn.commit()
+        return s
 
-    def complete_session(self, session_id: str) -> None:  # noqa: ARG002
-        """No-op terminator paired with create_session.
+    def complete_session(self, session_id: str) -> None:
+        """Stamp the session row with completed_at. Idempotent.
 
-        Public v1.0.0 does not persist session lifecycle; this exists so
-        adapters porting from lab v2.0.0 do not need conditional logic.
-        Lab v2.0.0 uses this entry point to write completed_at, summary,
-        and velocity metrics; that behavior lands when (or if) the
-        sessions table ports to public.
+        A second call on an already-completed session refreshes the
+        timestamp rather than failing. Calls on unknown ids are silent
+        no-ops (the UPDATE matches zero rows) — this matches the
+        spec's idempotency requirement.
         """
-        return None
+        self._conn.execute(
+            "UPDATE sessions SET completed_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), session_id),
+        )
+        self._conn.commit()
+
+    def get_session(self, session_id: str) -> Session | None:
+        cur = self._conn.execute(
+            "SELECT * FROM sessions WHERE id = ?", (session_id,)
+        )
+        row = cur.fetchone()
+        return _row_to_session(row) if row else None
