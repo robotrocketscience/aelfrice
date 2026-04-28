@@ -198,6 +198,26 @@ def test_accept_inserts_one_belief_per_persisting_classification(
     assert outcome.inserted == len(result.sentences)
 
 
+def test_accept_stamps_origin_agent_inferred(
+    store: MemoryStore, tmp_path: Path
+) -> None:
+    """Beliefs from accept_classifications land with origin=agent_inferred,
+    not the model default ORIGIN_UNKNOWN. Regression for #224."""
+    _populate_repo(tmp_path)
+    result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
+    cls = [
+        HostClassification(index=s.index, belief_type=BELIEF_FACTUAL, persist=True)
+        for s in result.sentences
+    ]
+    accept_classifications(store, result.session_id, cls, now="2026-04-26T01:00:00Z")
+    ids = store.list_belief_ids()
+    assert ids, "expected at least one belief inserted"
+    rows = [store.get_belief(b) for b in ids]
+    assert all(r is not None and r.origin == "agent_inferred" for r in rows), (
+        f"unexpected origins: {sorted({r.origin for r in rows if r})}"
+    )
+
+
 def test_accept_skips_non_persisting_classifications(
     store: MemoryStore, tmp_path: Path
 ) -> None:
