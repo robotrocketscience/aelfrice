@@ -303,17 +303,63 @@ def test_stats_after_lock_shows_one_belief_one_locked(isolated_db: Path) -> None
     assert lines.get("locked") == "1"
 
 
-# --- health -------------------------------------------------------------
+# --- health (v1.1.0 auditor) -------------------------------------------
 
 
-def test_health_on_empty_db_reports_insufficient_data(isolated_db: Path) -> None:
+def test_health_on_empty_db_passes_audit(isolated_db: Path) -> None:
+    """Empty store: no findings can fire. Exit 0."""
     code, out = _run("health")
+    assert code == 0
+    assert "audit:" in out
+    assert "[ok  ]" in out  # at least one ok line
+
+
+def test_health_emits_metrics_section(isolated_db: Path) -> None:
+    code, out = _run("health")
+    assert code == 0
+    assert "metrics:" in out
+    assert "beliefs" in out
+
+
+def test_health_points_at_aelf_regime_for_classifier(isolated_db: Path) -> None:
+    code, out = _run("health")
+    assert code == 0
+    assert "aelf regime" in out
+
+
+def test_status_aliases_health(isolated_db: Path) -> None:
+    """`aelf status` produces the same output as `aelf health`."""
+    code_h, out_h = _run("health")
+    code_s, out_s = _run("status")
+    assert code_h == code_s == 0
+    assert out_h == out_s
+
+
+def test_health_exits_nonzero_when_audit_fails(isolated_db: Path) -> None:
+    """Forcing an FTS5 drift makes `aelf health` exit 1."""
+    _run("lock", "rule for the failing case")
+    s = MemoryStore(str(isolated_db))
+    try:
+        s._conn.execute("DELETE FROM beliefs_fts")  # type: ignore[attr-defined]
+        s._conn.commit()  # type: ignore[attr-defined]
+    finally:
+        s.close()
+    code, out = _run("health")
+    assert code == 1
+    assert "FAIL" in out
+
+
+# --- regime (v1.0 classifier preserved) --------------------------------
+
+
+def test_regime_on_empty_db_reports_insufficient_data(isolated_db: Path) -> None:
+    code, out = _run("regime")
     assert code == 0
     assert "insufficient_data" in out
 
 
-def test_health_output_contains_brain_mode_label(isolated_db: Path) -> None:
-    code, out = _run("health")
+def test_regime_output_contains_brain_mode_label(isolated_db: Path) -> None:
+    code, out = _run("regime")
     assert code == 0
     assert "brain mode" in out
 

@@ -37,13 +37,14 @@ One-directional imports — lower in the table imports from higher.
 | `classification.py` | `TYPE_PRIORS` + regex fallback. Polymorphic onboard state machine. |
 | `noise_filter.py` | `is_noise(text, config)` — drops markdown heading blocks, checklist blocks, three-word fragments, and license boilerplate before classification. `NoiseConfig` dataclass + `.aelfrice.toml` discovery via `discover()` walk-up. Power-user surface documented in [CONFIG.md](CONFIG.md). |
 | `scanner.py` | `scan_repo` — filesystem + git log + Python AST extractors, noise filter, classification, persistence. Idempotent against `content_hash`. |
-| `health.py` | Regime classifier (`insufficient_data` / `early-onboarding` / `steady` / `lock-heavy` / `over-confident`) over confidence, mass, lock density, edge density. |
+| `health.py` | v1.0 regime classifier (`supersede` / `ignore` / `mixed` / `insufficient_data`) over confidence, mass, lock density, edge density. Exposed via `aelf regime` since v1.1.0. |
+| `auditor.py` | v1.1.0 structural auditor: three mechanical checks (orphan edges, FTS5 sync drift, locked-belief CONTRADICTS pairs) plus informational metrics (counts, avg confidence, credal gap, edge type breakdown). Backs `aelf health` (exit 1 on any failed check). Pure read-only. |
 | `benchmark.py` | `seed_corpus(store)` + `run_benchmark(store, *, aelfrice_version, top_k=5)` — deterministic 16-belief × 16-query synthetic harness. Frozen `BenchmarkReport` with `hit_at_1` / `hit_at_3` / `hit_at_5` / `mrr` + `p50_latency_ms` / `p99_latency_ms`. |
-| `cli.py` | argparse 12-subcommand CLI (added `aelf resolve` at v1.0.1 alongside the contradiction tie-breaker). DB resolves from `$AELFRICE_DB` (override), then `<git-common-dir>/aelfrice/memory.db` when `cwd` is in a git work-tree, then `~/.aelfrice/memory.db` as the non-git fallback (v1.1.0). `.git/` is not git-tracked, so the brain graph never crosses the git boundary. Entry: `aelf`. |
+| `cli.py` | argparse 14-subcommand CLI (`aelf health` rewritten + `aelf status` alias + `aelf regime` added at v1.1.0). DB resolves from `$AELFRICE_DB` (override), then `<git-common-dir>/aelfrice/memory.db` when `cwd` is in a git work-tree, then `~/.aelfrice/memory.db` as the non-git fallback (v1.1.0). `.git/` is not git-tracked, so the brain graph never crosses the git boundary. Entry: `aelf`. |
 | `mcp_server.py` | FastMCP server, 8 tools. `[mcp]` optional extra. |
 | `setup.py` | Idempotent install/uninstall of the Claude Code `UserPromptSubmit` hook. Atomic write via tempfile + `os.replace`. |
 | `hook.py` | `aelfrice.hook:main` — process Claude Code spawns when the hook fires. Reads JSON from stdin, calls `retrieve()`, emits `<aelfrice-memory>...</aelfrice-memory>` on stdout. Non-blocking by contract. Entry: `aelf-hook`. |
-| `slash_commands/` | 11 markdown files, 1:1 with CLI subcommands. |
+| `slash_commands/` | One markdown file per CLI subcommand surfaced as a slash command. |
 
 ## Data model
 
