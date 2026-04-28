@@ -1,8 +1,9 @@
 # Search-tool hook
 
 **Status:** spec.
-**Target milestone:** v1.3.0 (named on the public roadmap as
-"search-tool `PreToolUse` hook for memory-first context retrieval").
+**Target milestone:** v1.2.x patch (pulled forward from v1.3.0 — it ships
+independently of the v1.3 retrieval wave and validates the `PreToolUse`
+retrieval surface ahead of the bigger work). Default-on candidate at v1.3.0.
 **Dependencies:** stdlib only. Consumes the v1.0 retrieval pipeline
 ([`aelfrice.retrieval.retrieve`](../src/aelfrice/retrieval.py)) and
 the v1.1.0 per-project DB resolution
@@ -252,10 +253,10 @@ on fresh install: opt-in (consistency with v1.2.0 hook surface).
 
 ## Out of scope
 
-- LLM-augmented query expansion. v1.3.0 ships the mechanical
+- LLM-augmented query expansion. v1.2.x ships the mechanical
   token-OR-join only. Smarter query rewriting (synonyms, entity
-  extraction) is a v1.4+ candidate.
-- Read tool / WebFetch / WebSearch matching. v1.3.0 ships
+  extraction) is a v1.3+ candidate (entity-index lands in v1.3.0).
+- Read tool / WebFetch / WebSearch matching. v1.2.x ships
   `Grep|Glob` only — those are the two tools whose `tool_input`
   cleanly maps to a search query. Other matchers can be added once
   the hook surface is validated in production.
@@ -265,8 +266,8 @@ on fresh install: opt-in (consistency with v1.2.0 hook surface).
   cache reuse, but cache lifetime across hook invocations is non-
   trivial and is deferred until production data shows a hit rate
   worth pursuing.
-- Confidence threshold filtering. v1.3.0 emits all matched beliefs
-  (subject to `l1_limit=10`); a min-confidence floor is a v1.4+
+- Confidence threshold filtering. v1.2.x emits all matched beliefs
+  (subject to `l1_limit=10`); a min-confidence floor is a v1.3+
   candidate once the format is validated.
 
 ## What unblocks when this lands
@@ -289,12 +290,12 @@ The hook closes the gap on the agent-search code path.
 ## Open questions
 
 - Should `aelf setup --search-tool` be the default on install at
-  v1.3.0, or stay opt-in like v1.2.0's commit-ingest? Recommendation:
-  opt-in at v1.3.0; flip to default-on at v1.4.0 once a representative
+  v1.2.x, or stay opt-in like v1.2.0's commit-ingest? Recommendation:
+  opt-in at v1.2.x; flip to default-on at v1.3.0 once a representative
   corpus shows the latency budget holds in the wild.
 - Should the matcher set extend to `Read` (file path → search the
   store for beliefs about that file)? The `tool_input.file_path`
-  surface differs enough that v1.3.0 keeps `Grep|Glob` only and
+  surface differs enough that v1.2.x keeps `Grep|Glob` only and
   defers the Read variant. Worth reserving the design space.
 - Token-budget tuning: 600 was picked to roughly half the default
   user-prompt budget. Worth measuring real-world injection size
