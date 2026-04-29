@@ -38,14 +38,15 @@ jobs:
             [[ "$p" =~ ^# ]] && continue
             head_hits=$(grep -Ec "$p" /tmp/h || true)
             diff_hits=$(grep -Ec "$p" /tmp/d || true)
-            # awk: track current commit hash and current diff path; on regex hit, print "<hash> <path-or-meta>"
-            ctx=$(awk -v pat="$p" '
-              /^commit [0-9a-f]{40}/ { commit=substr($2,1,12); path="<commit-meta>"; next }
-              /^diff --git / { path="<diff-header>"; next }
-              /^\+\+\+ b\// { path=substr($0,7); next }
-              /^--- a\// { next }
-              { if (match($0, pat)) print commit " " path }
-            ' /tmp/d | sort -u | head -10 | awk "{printf \"%s; \", \$0}")
+            # grep -nE finds the matching line numbers; awk maps each to (commit, path) context
+            hit_lines=$(grep -nE "$p" /tmp/d 2>/dev/null | cut -d: -f1 | head -20 | tr "\n" " ")
+            ctx=$(awk -v lines="$hit_lines" '
+              BEGIN { n=split(lines, L, " "); for(i=1;i<=n;i++) want[L[i]]=1; commit="?"; path="?" }
+              /^commit [0-9a-f]{40}/ { commit=substr($2,1,12); path="<commit-meta>" }
+              /^diff --git / { path="<diff-header>" }
+              /^\+\+\+ b\// { path=substr($0,7) }
+              { if (NR in want) print commit " " path }
+            ' /tmp/d | sort -u | head -10 | tr "\n" "|")
             if [ "$head_hits" -gt 0 ] || [ "$diff_hits" -gt 0 ]; then
               echo "pattern #${idx}: head_hits=${head_hits} diff_hits=${diff_hits} ctx=[${ctx}]"
             fi
