@@ -77,8 +77,10 @@ from aelfrice.derivation import DerivationInput, derive
 from aelfrice.doctor import (
     classify_orphans as _classify_orphans,
     diagnose,
+    format_orphan_feedback_report as _format_orphan_feedback_report,
     format_orphan_report as _format_orphan_report,
     format_report,
+    gc_orphan_feedback as _gc_orphan_feedback,
 )
 from aelfrice.llm_classifier import (
     ENV_API_KEY as _LLM_ENV_API_KEY,
@@ -2054,6 +2056,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
     """
     if getattr(args, "classify_orphans", False):
         return _cmd_doctor_classify_orphans(args, out)
+    if getattr(args, "gc_orphan_feedback", False):
+        return _cmd_doctor_gc_orphan_feedback(args, out)
     scope = getattr(args, "scope", None)
     exit_code = 0
     if scope in (None, "hooks"):
@@ -2146,6 +2150,26 @@ def _cmd_doctor_classify_orphans(
         store.close()
 
     print(_format_orphan_report(orphan_report), file=out)  # type: ignore[arg-type]
+    return 0
+
+
+def _cmd_doctor_gc_orphan_feedback(
+    args: argparse.Namespace, out: object
+) -> int:
+    """Garbage-collect `feedback_history` rows whose belief_id no
+    longer resolves in `beliefs` (issue #223).
+
+    Default is dry-run (count only). With `--apply`, deletes the
+    orphan rows. Bypasses the hooks/graph checks; never touches
+    LLMs.
+    """
+    apply = bool(getattr(args, "apply", False))
+    store = _open_store()
+    try:
+        report = _gc_orphan_feedback(store, dry_run=not apply)
+    finally:
+        store.close()
+    print(_format_orphan_feedback_report(report), file=out)  # type: ignore[arg-type]
     return 0
 
 
@@ -2616,6 +2640,29 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "with --classify-orphans: cap the number of beliefs "
             "classified per run. No cap by default; recommended: 500 "
             "for large stores to bound per-run cost."
+        ),
+    )
+    p_doctor.add_argument(
+        "--gc-orphan-feedback",
+        dest="gc_orphan_feedback",
+        action="store_true",
+        default=False,
+        help=(
+            "find feedback_history rows whose belief_id no longer "
+            "resolves in beliefs (issue #223 residue from pre-#283 "
+            "re-ingest) and report the count. Bypasses the "
+            "hooks/graph checks. Combine with --apply to delete the "
+            "orphan rows; default is dry-run."
+        ),
+    )
+    p_doctor.add_argument(
+        "--apply",
+        dest="apply",
+        action="store_true",
+        default=False,
+        help=(
+            "with --gc-orphan-feedback: actually delete the orphan "
+            "rows (default: dry-run)."
         ),
     )
     p_doctor.set_defaults(func=_cmd_doctor)

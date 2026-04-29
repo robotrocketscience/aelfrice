@@ -1561,6 +1561,52 @@ class MemoryStore:
             return 0
         return int(row["n"])
 
+    def count_orphan_feedback_events(self) -> int:
+        """Count `feedback_history` rows whose belief_id no longer
+        exists in `beliefs` (issue #223).
+
+        Pre-#283 re-ingest could create a fresh belief_id for the same
+        content_hash and let the old row be deleted while leaving its
+        feedback_history rows behind. The UNIQUE content_hash
+        constraint and `insert_or_corroborate` plug the source going
+        forward; this counter surfaces the residue still in user DBs.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM feedback_history fh
+            LEFT JOIN beliefs b ON fh.belief_id = b.id
+            WHERE b.id IS NULL
+            """
+        )
+        row = cur.fetchone()
+        if row is None:
+            return 0
+        return int(row["n"])
+
+    def delete_orphan_feedback_events(self) -> int:
+        """Delete `feedback_history` rows whose belief_id no longer
+        resolves in `beliefs`. Returns the number deleted. Issue #223.
+
+        Destructive — caller is responsible for confirmation. The audit
+        trail for the deleted rows is unrecoverable: the original
+        belief content is already gone and feedback_history stores
+        only `belief_id`, not `content_hash`.
+        """
+        cur = self._conn.execute(
+            """
+            DELETE FROM feedback_history
+            WHERE belief_id IN (
+                SELECT fh.belief_id
+                FROM feedback_history fh
+                LEFT JOIN beliefs b ON fh.belief_id = b.id
+                WHERE b.id IS NULL
+            )
+            """
+        )
+        self._conn.commit()
+        return cur.rowcount if cur.rowcount is not None else 0
+
     # --- Belief corroborations (v1.5+, #190) -----------------------------
 
     def insert_or_corroborate(
