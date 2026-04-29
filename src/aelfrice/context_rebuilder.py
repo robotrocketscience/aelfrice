@@ -60,10 +60,13 @@ summarize."
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import sys
 import tomllib
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final, IO, cast
 
@@ -112,6 +115,25 @@ TURN_WINDOW_KEY: Final[str] = "turn_window_n"
 TOKEN_BUDGET_KEY: Final[str] = "token_budget"
 TRIGGER_MODE_KEY: Final[str] = "trigger_mode"
 THRESHOLD_FRACTION_KEY: Final[str] = "threshold_fraction"
+
+# --- Rebuild diagnostic log constants (#288 phase-1a) --------------------
+
+REBUILD_LOG_SECTION: Final[str] = "rebuild_log"
+REBUILD_LOG_ENABLED_KEY: Final[str] = "enabled"
+REBUILD_LOG_ENV: Final[str] = "AELFRICE_REBUILD_LOG"
+REBUILD_LOG_DIRNAME: Final[str] = "rebuild_logs"
+REBUILD_LOG_MAX_BYTES: Final[int] = 5 * 1024 * 1024
+"""Per-session rebuild_log file size cap (5 MB). On crossing the cap,
+append a final `{"truncated": true, ...}` row and stop further writes."""
+DEFAULT_REBUILD_LOG_ENABLED: Final[bool] = True
+"""Rebuild diagnostic log is default-on. Opt out via
+`AELFRICE_REBUILD_LOG=0` env var or `[rebuild_log] enabled = false`
+in `.aelfrice.toml`."""
+
+# Module-level per-path truncation state. Once a session-file crosses
+# the 5 MB cap and the sentinel is written, we track it here so we
+# avoid stat()-on-every-call for the rest of the process lifetime.
+_rebuild_log_truncated: dict[Path, bool] = {}
 
 # --- v1.4.0 trigger-mode constants (issue #141) ---------------------------
 
@@ -369,6 +391,7 @@ class RebuilderConfig:
     token_budget: int = DEFAULT_REBUILDER_TOKEN_BUDGET
     trigger_mode: str = DEFAULT_TRIGGER_MODE
     threshold_fraction: float = DEFAULT_THRESHOLD_FRACTION
+    rebuild_log_enabled: bool = DEFAULT_REBUILD_LOG_ENABLED
 
 
 def load_rebuilder_config(start: Path | None = None) -> RebuilderConfig:
@@ -464,11 +487,30 @@ def load_rebuilder_config(start: Path | None = None) -> RebuilderConfig:
                 frac_resolved = DEFAULT_THRESHOLD_FRACTION
             else:
                 frac_resolved = float(frac_obj)
+            # [rebuild_log] section
+            log_section_obj: Any = parsed.get(REBUILD_LOG_SECTION, {})
+            log_enabled_resolved: bool = DEFAULT_REBUILD_LOG_ENABLED
+            if isinstance(log_section_obj, dict):
+                log_section = cast(dict[str, Any], log_section_obj)
+                log_enabled_obj: Any = log_section.get(
+                    REBUILD_LOG_ENABLED_KEY, DEFAULT_REBUILD_LOG_ENABLED,
+                )
+                if isinstance(log_enabled_obj, bool):
+                    log_enabled_resolved = log_enabled_obj
+                else:
+                    print(
+                        f"aelfrice rebuilder: ignoring "
+                        f"[{REBUILD_LOG_SECTION}] "
+                        f"{REBUILD_LOG_ENABLED_KEY} in {candidate} "
+                        f"(expected bool)",
+                        file=serr,
+                    )
             return RebuilderConfig(
                 turn_window_n=n_resolved,
                 token_budget=b_resolved,
                 trigger_mode=mode_resolved,
                 threshold_fraction=frac_resolved,
+                rebuild_log_enabled=log_enabled_resolved,
             )
         if current.parent == current:
             break
@@ -653,6 +695,195 @@ def _session_scoped_hits(
             continue
         out.append(b)
     return out
+
+
+# --- Rebuild diagnostic log helpers (#288 phase-1a) -----------------------
+
+
+def _rebuild_log_disabled_via_env() -> bool:
+    """Honour `AELFRICE_REBUILD_LOG=0` opt-out.
+
+    Only the literal string ``'0'`` disables; any other value (or the
+    variable being absent) leaves the default-on behaviour intact.
+    """
+    val = os.environ.get(REBUILD_LOG_ENV)
+    if val is None:
+        return False
+    return val.strip() == "0"
+
+
+def _rebuild_log_dir_for_db(db_path_val: Path) -> Path:
+    """Derive the rebuild_log directory from the brain-graph DB path.
+
+    The DB lives at ``<git-common-dir>/aelfrice/memory.db``.  The per-
+    session JSONL files live at
+    ``<git-common-dir>/aelfrice/rebuild_logs/<session_id>.jsonl``.
+    Mirrors the pattern used by ``_telemetry_path_for_db`` in
+    ``hook.py``.
+    """
+    return db_path_val.parent / REBUILD_LOG_DIRNAME
+
+
+def _recent_turns_hash(recent_turns: list[RecentTurn]) -> str:
+    """SHA-256 hex of the concatenated recent-turn ``text`` fields joined
+    with ``\\n``.
+
+    Hash-only per spec §Layer 1: storing the content itself would
+    double storage and introduce a privacy surface.
+    """
+    combined = "\n".join(t.text for t in recent_turns)
+    return hashlib.sha256(combined.encode("utf-8")).hexdigest()
+
+
+def _extracted_entities_for_log(
+    recent_turns: list[RecentTurn],
+) -> list[str]:
+    """Return the entity strings surfaced into the retrieval query.
+
+    Mirrors ``_query_for_recent_turns`` so the log records the actual
+    entities the rebuilder saw.
+    """
+    if not recent_turns:
+        return []
+    full_text = "\n".join(t.text for t in recent_turns if t.text)
+    if not full_text.strip():
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for ent in extract_entities(
+        full_text, max_entities=DEFAULT_QUERY_ENTITY_CAP,
+    ):
+        key = ent.lower
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(ent.raw)
+    return out
+
+
+def _belief_lock_level_for_log(b: Belief) -> str:
+    """Map internal lock_level to the spec's ``lock_level`` field value.
+
+    Returns ``"user"`` for L0 locks, ``"none"`` otherwise.
+    """
+    return b.lock_level if b.lock_level == LOCK_USER else "none"
+
+
+def _empty_scores() -> dict[str, float | None]:
+    """Per-belief score block with all fields null.
+
+    ``bm25`` and ``posterior_mean`` are not yet exposed by the current
+    ``retrieve()`` signature; ``reranker`` and ``final`` land under
+    #289/#291.  Shape is locked here so phase-1b operator data is
+    forward-compatible with phase-2.
+
+    TODO(#289): replace with ``retrieve_scored()`` results once that
+    refactor lands.
+    """
+    return {
+        "bm25": None,
+        "posterior_mean": None,
+        "reranker": None,
+        "final": None,
+    }
+
+
+def _build_rebuild_log_record(
+    recent_turns: list[RecentTurn],
+    session_id: str | None,
+    candidates: list[dict[str, object]],
+    pack_summary: dict[str, int],
+    *,
+    now_fn: Any = None,
+) -> dict[str, object]:
+    """Build one Layer 1 record dict.
+
+    ``now_fn`` is a zero-argument callable returning a ``datetime``
+    (used for deterministic test injection).  Defaults to
+    ``datetime.now(timezone.utc)``.
+    """
+    if now_fn is not None:
+        ts_dt: datetime = now_fn()
+    else:
+        ts_dt = datetime.now(timezone.utc)
+    ts = ts_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    extracted_query = _query_for_recent_turns(recent_turns)
+    return {
+        "ts": ts,
+        "session_id": session_id,
+        "input": {
+            "recent_turns_hash": _recent_turns_hash(recent_turns),
+            "n_recent_turns": len(recent_turns),
+            "extracted_query": extracted_query,
+            "extracted_entities": _extracted_entities_for_log(recent_turns),
+            # Intent classification is not part of the v1.4 rebuild
+            # path; null until #291 query-understanding lands.
+            "extracted_intent": None,
+        },
+        "candidates": candidates,
+        "pack_summary": pack_summary,
+    }
+
+
+def _append_rebuild_log_record(
+    log_path: Path,
+    record: dict[str, object],
+    *,
+    stderr: IO[str] | None = None,
+) -> None:
+    """Append one JSON record to the per-session rebuild_log JSONL.
+
+    Fail-soft: any I/O error traces one line to stderr and never
+    raises.  Enforces the 5 MB per-session cap: when the next record
+    would cause the file to exceed the cap, writes a final
+    ``{"truncated": true, ...}`` sentinel row instead and marks the
+    path in ``_rebuild_log_truncated`` so subsequent calls skip the
+    file entirely without stat()-ing it again.
+
+    Mirrors the fail-soft contract of ``_append_telemetry`` in
+    ``hook.py``.
+    """
+    serr = stderr if stderr is not None else sys.stderr
+    try:
+        # Fast-path: already truncated in this process run.
+        if _rebuild_log_truncated.get(log_path):
+            return
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(
+            record, separators=(",", ":"), ensure_ascii=False,
+        ) + "\n"
+        encoded = line.encode("utf-8")
+        try:
+            current_size = log_path.stat().st_size
+        except FileNotFoundError:
+            current_size = 0
+        if current_size >= REBUILD_LOG_MAX_BYTES:
+            # File crossed the cap in a previous process run.
+            _rebuild_log_truncated[log_path] = True
+            return
+        if current_size + len(encoded) > REBUILD_LOG_MAX_BYTES:
+            marker = json.dumps(
+                {
+                    "truncated": True,
+                    "ts": datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ",
+                    ),
+                    "reason": "size_cap_5mb",
+                },
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ) + "\n"
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(marker)
+            _rebuild_log_truncated[log_path] = True
+            return
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception as exc:
+        print(
+            f"aelfrice: rebuild_log write failed (non-fatal): {exc}",
+            file=serr,
+        )
 
 
 # --- Format helpers --------------------------------------------------------
