@@ -67,10 +67,22 @@ from aelfrice.bfs_multihop import (
 )
 from aelfrice.bm25 import BM25IndexCache
 from aelfrice.entity_extractor import extract_entities
+from aelfrice.graph_spectral import (
+    DEFAULT_BM25_SEED_TOP_K,
+    DEFAULT_HEAT_BANDWIDTH,
+    DEFAULT_HEAT_KERNEL_WEIGHT,
+    DEFAULT_POSTERIOR_LOG_WEIGHT,
+    HEAT_SCORE_FLOOR,
+    GraphEigenbasisCache,
+    combine_log_scores,
+    heat_kernel_score,
+    seeds_from_bm25,
+)
 from aelfrice.models import LOCK_NONE, Belief
 from aelfrice.scoring import (
     DEFAULT_POSTERIOR_WEIGHT,
     partial_bayesian_score,
+    posterior_mean,
 )
 from aelfrice.store import MemoryStore
 
@@ -729,6 +741,49 @@ def _l25_hits(
     return out
 
 
+def _heat_by_id(
+    cache: GraphEigenbasisCache,
+    bm25_pos_by_id: dict[str, float],
+) -> dict[str, float] | None:
+    """Run one heat-kernel propagation pass and return per-belief
+    authority scores keyed by belief id.
+
+    `cache` must already hold a non-stale eigenbasis (caller checks
+    `cache.is_stale()` and `cache.eigvals is not None`). `bm25_pos_by_id`
+    is a `{belief_id: bm25_pos}` slice of the L1 hits, where `bm25_pos`
+    is the same positive-relevance magnitude used by
+    `partial_bayesian_score` (FTS5 path passes `-bm25_raw`; BM25F path
+    passes `raw` directly).
+
+    Returns `None` when the cache rows don't intersect the L1 hit set
+    (every L1 belief was inserted after the eigenbasis build) or when
+    the seed sum is zero — caller falls back to the heat-off path. The
+    explicit None signal lets the caller short-circuit the matvec when
+    propagation is guaranteed to be a no-op.
+    """
+    import numpy as np
+
+    if cache.eigvals is None or cache.eigvecs is None or not cache.belief_ids:
+        return None
+    n = len(cache.belief_ids)
+    bm25_arr = np.zeros(n, dtype=np.float64)
+    hit_indices: list[int] = []
+    for i, bid in enumerate(cache.belief_ids):
+        v = bm25_pos_by_id.get(bid)
+        if v is not None and v > 0.0:
+            bm25_arr[i] = v
+            hit_indices.append(i)
+    if not hit_indices:
+        return None
+    seeds = seeds_from_bm25(bm25_arr, top_k=DEFAULT_BM25_SEED_TOP_K)
+    if not float(seeds.sum()) > 0.0:
+        return None
+    heat = heat_kernel_score(
+        cache.eigvals, cache.eigvecs, seeds, t=DEFAULT_HEAT_BANDWIDTH,
+    )
+    return {bid: float(heat[i]) for i, bid in enumerate(cache.belief_ids)}
+
+
 def _l1_hits(
     store: MemoryStore,
     query: str,
@@ -737,6 +792,8 @@ def _l1_hits(
     posterior_weight: float,
     use_bm25f_anchors: bool = False,
     bm25f_cache: BM25IndexCache | None = None,
+    eigenbasis_cache: GraphEigenbasisCache | None = None,
+    heat_kernel_on: bool = False,
 ) -> list[Belief]:
     """Run L1: FTS5 BM25 search (default) or BM25F sparse-matvec
     (v1.5.0 opt-in), optionally reranked by partial-Bayesian score.
@@ -754,7 +811,25 @@ def _l1_hits(
     when use_bm25f_anchors is False.
 
     `posterior_weight > 0` reranks via `partial_bayesian_score`.
+
+    `heat_kernel_on` (v1.7.0): when True AND `eigenbasis_cache` holds a
+    non-stale eigenbasis whose `belief_ids` intersect the L1 hit set,
+    the rerank uses `combine_log_scores(bm25, heat, posterior_mean)`
+    instead of `partial_bayesian_score`. Heat propagation cost is the
+    `eigvecs.T @ seeds` matvec (~7-8 ms at N=50k, K=200; see
+    docs/bayesian_ranking.md § "Heat-kernel cost"). When the cache is
+    None, stale, empty, or carries no overlap with the L1 hit ids, the
+    path degrades to `partial_bayesian_score` — byte-identical to the
+    heat-off contract. AC4 / AC8 of #151 are preserved by this fall-
+    through.
     """
+    heat_active = (
+        heat_kernel_on
+        and eigenbasis_cache is not None
+        and not eigenbasis_cache.is_stale()
+        and eigenbasis_cache.eigvals is not None
+    )
+
     if use_bm25f_anchors:
         # The cache lazy-builds the index on first call and is
         # invalidated by store mutations. The rerank below uses the
@@ -770,31 +845,68 @@ def _l1_hits(
             if b is None:
                 continue
             beliefs.append((b, raw))
-        if posterior_weight == 0.0:
+        if posterior_weight == 0.0 and not heat_active:
             return [b for b, _ in beliefs]
+        # BM25F scores are non-negative; the rerank uses `raw` as the
+        # positive-magnitude relevance signal directly (the FTS5 path
+        # has to negate first because SQLite returns smaller-negative
+        # for stronger matches; BM25F doesn't).
+        bm25_pos_by_id: dict[str, float] = {b.id: float(raw) for b, raw in beliefs}
+        heat_map = (
+            _heat_by_id(eigenbasis_cache, bm25_pos_by_id)  # type: ignore[arg-type]
+            if heat_active else None
+        )
         keyed: list[tuple[float, str, Belief]] = []
         for b, raw in beliefs:
-            # BM25F scores are non-negative; partial_bayesian_score
-            # was written for FTS5's negative bm25 convention. Pass
-            # `-raw` so the log-additive composition treats higher
-            # raw scores as more relevant, matching the FTS5 path.
-            s = partial_bayesian_score(
-                -raw, b.alpha, b.beta, posterior_weight,
-            )
+            if heat_map is not None:
+                s = combine_log_scores(
+                    bm25f=max(float(raw), 1e-9),
+                    heat=heat_map.get(b.id, HEAT_SCORE_FLOOR),
+                    posterior=posterior_mean(b.alpha, b.beta),
+                    heat_weight=DEFAULT_HEAT_KERNEL_WEIGHT,
+                    posterior_weight=(
+                        posterior_weight if posterior_weight > 0.0
+                        else DEFAULT_POSTERIOR_LOG_WEIGHT
+                    ),
+                )
+            else:
+                s = partial_bayesian_score(
+                    -raw, b.alpha, b.beta, posterior_weight,
+                )
             keyed.append((s, b.id, b))
         keyed.sort(key=lambda x: (-x[0], x[1]))
         return [b for _, _, b in keyed]
 
-    if posterior_weight == 0.0:
+    if posterior_weight == 0.0 and not heat_active:
         return store.search_beliefs(query, limit=l1_limit)
     scored = store.search_beliefs_scored(query, limit=l1_limit)
     if not scored:
         return []
+    # FTS5 path: bm25_raw is non-positive (SQLite convention). Negate
+    # to get a positive relevance magnitude, same convention used by
+    # `partial_bayesian_score` internally.
+    bm25_pos_by_id = {b.id: max(-bm25_raw, 1e-9) for b, bm25_raw in scored}
+    heat_map = (
+        _heat_by_id(eigenbasis_cache, bm25_pos_by_id)  # type: ignore[arg-type]
+        if heat_active else None
+    )
     keyed: list[tuple[float, str, Belief]] = []
     for b, bm25_raw in scored:
-        s = partial_bayesian_score(
-            bm25_raw, b.alpha, b.beta, posterior_weight,
-        )
+        if heat_map is not None:
+            s = combine_log_scores(
+                bm25f=max(-bm25_raw, 1e-9),
+                heat=heat_map.get(b.id, HEAT_SCORE_FLOOR),
+                posterior=posterior_mean(b.alpha, b.beta),
+                heat_weight=DEFAULT_HEAT_KERNEL_WEIGHT,
+                posterior_weight=(
+                    posterior_weight if posterior_weight > 0.0
+                    else DEFAULT_POSTERIOR_LOG_WEIGHT
+                ),
+            )
+        else:
+            s = partial_bayesian_score(
+                bm25_raw, b.alpha, b.beta, posterior_weight,
+            )
         keyed.append((s, b.id, b))
     # Higher score = more relevant. Tie-break on id ASC for
     # determinism (matches the convention in bfs_multihop and L2.5).
@@ -820,6 +932,8 @@ def retrieve(
     posterior_weight: float | None = None,
     use_bm25f_anchors: bool | None = None,
     bm25f_cache: BM25IndexCache | None = None,
+    heat_kernel_enabled: bool | None = None,
+    eigenbasis_cache: GraphEigenbasisCache | None = None,
 ) -> list[Belief]:
     """Return L0 locked + L2.5 entity + L1 BM25 + L3 BFS expansions.
 
@@ -864,6 +978,7 @@ def retrieve(
     bfs_on = is_bfs_enabled(bfs_enabled)
     bm25f_on = resolve_use_bm25f_anchors(use_bm25f_anchors)
     weight = resolve_posterior_weight(posterior_weight)
+    heat_on = is_heat_kernel_enabled(heat_kernel_enabled)
     # v1.5.0 #154: emit one stderr line per placeholder lane the
     # user has set True in `.aelfrice.toml`. Fail-soft, once-per-
     # process per flag.
@@ -910,6 +1025,7 @@ def retrieve(
             store, query,
             l1_limit=l1_limit, posterior_weight=weight,
             use_bm25f_anchors=bm25f_on, bm25f_cache=bm25f_cache,
+            eigenbasis_cache=eigenbasis_cache, heat_kernel_on=heat_on,
         )
         l1 = [
             b for b in raw_l1
@@ -983,6 +1099,8 @@ def retrieve_with_tiers(
     posterior_weight: float | None = None,
     use_bm25f_anchors: bool | None = None,
     bm25f_cache: BM25IndexCache | None = None,
+    heat_kernel_enabled: bool | None = None,
+    eigenbasis_cache: GraphEigenbasisCache | None = None,
 ) -> tuple[
     list[Belief], list[str], list[str], list[str], list[list[str]],
 ]:
@@ -1003,6 +1121,7 @@ def retrieve_with_tiers(
     bfs_on = is_bfs_enabled(bfs_enabled)
     bm25f_on = resolve_use_bm25f_anchors(use_bm25f_anchors)
     weight = resolve_posterior_weight(posterior_weight)
+    heat_on = is_heat_kernel_enabled(heat_kernel_enabled)
     warn_placeholder_flags()
 
     locked: list[Belief] = store.list_locked_beliefs()
@@ -1038,6 +1157,7 @@ def retrieve_with_tiers(
             store, query,
             l1_limit=l1_limit, posterior_weight=weight,
             use_bm25f_anchors=bm25f_on, bm25f_cache=bm25f_cache,
+            eigenbasis_cache=eigenbasis_cache, heat_kernel_on=heat_on,
         )
         l1 = [
             b for b in raw_l1
