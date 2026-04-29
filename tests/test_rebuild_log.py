@@ -2,12 +2,18 @@
 
 Phase 1a instrumentation: per-rebuild JSONL written by rebuild_v14().
 
-This file covers the write helpers and config plumbing added in the
-first atomic commit.  Integration tests (rebuild_v14() wiring) are
-added in the second atomic commit that wires the helper into the
-packing loop.
+Covers:
+  - Schema validity (every Layer 1 field, sha256 hash, ISO8601-Z ts)
+  - Determinism: clock injection via now_fn kwarg
+  - 5 MB size cap: truncated sentinel + no writes after cap
+  - Env opt-out: AELFRICE_REBUILD_LOG=0 (env-var helper + integration)
+  - TOML opt-out: [rebuild_log] enabled = false
+  - Fail-soft: simulated OSError on append -> error to stderr, no raise
+  - Default-on: one record per rebuild_v14() with non-empty candidates
+  - Empty-candidate skip: no write when no beliefs returned
+  - Decision tracking: content_hash_collision_with:<id> drop reason
 
-Covers in this commit:
+Covers in first commit (helpers only):
   - Schema validity (every Layer 1 field, sha256 hash, ISO8601-Z ts)
   - Determinism: clock injection via now_fn kwarg
   - 5 MB size cap: truncated sentinel + no writes after cap
@@ -35,7 +41,45 @@ from aelfrice.context_rebuilder import (
     _rebuild_log_disabled_via_env,
     _rebuild_log_truncated,
     load_rebuilder_config,
+    rebuild_v14,
 )
+from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
+from aelfrice.store import MemoryStore
+
+
+# ---- integration helpers -----------------------------------------------
+
+
+def _mk(
+    bid: str,
+    content: str,
+    *,
+    lock_level: str = LOCK_NONE,
+    locked_at: str | None = None,
+    content_hash: str | None = None,
+    session_id: str | None = None,
+) -> Belief:
+    return Belief(
+        id=bid,
+        content=content,
+        content_hash=content_hash if content_hash is not None else f"h_{bid}",
+        alpha=1.0,
+        beta=1.0,
+        type=BELIEF_FACTUAL,
+        lock_level=lock_level,
+        locked_at=locked_at,
+        demotion_pressure=0,
+        created_at="2026-04-28T00:00:00Z",
+        last_retrieved_at=None,
+        session_id=session_id,
+    )
+
+
+def _seed(db_path: Path, beliefs: list[Belief]) -> MemoryStore:
+    store = MemoryStore(str(db_path))
+    for b in beliefs:
+        store.insert_belief(b)
+    return store
 
 
 # ---- schema validity ---------------------------------------------------
@@ -320,3 +364,306 @@ def test_append_rebuild_log_fail_soft_on_io_error(
     err = io.StringIO()
     _append_rebuild_log_record(log_path, {"x": 1}, stderr=err)
     assert "rebuild_log write failed" in err.getvalue()
+
+
+# ---- integration: rebuild_v14 wiring ----------------------------------
+
+
+def test_rebuild_v14_writes_one_record_per_invocation(
+    tmp_path: Path,
+) -> None:
+    """rebuild_v14() with a non-empty candidate set writes exactly one
+    JSONL row to rebuild_log_path."""
+    store = _seed(
+        tmp_path / "m.db",
+        [_mk(
+            "L1", "kitchen sink content",
+            lock_level=LOCK_USER,
+            locked_at="2026-04-28T00:00:00Z",
+        )],
+    )
+    log_path = tmp_path / "rebuild_logs" / "sess.jsonl"
+    try:
+        block = rebuild_v14(
+            [RecentTurn(role="user", text="kitchen contents")],
+            store,
+            rebuild_log_path=log_path,
+            session_id_for_log="sess",
+        )
+    finally:
+        store.close()
+
+    assert "<aelfrice-rebuild>" in block
+    assert log_path.exists()
+    lines = [ln for ln in log_path.read_text().splitlines() if ln.strip()]
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["session_id"] == "sess"
+    assert "candidates" in record
+    assert len(record["candidates"]) >= 1
+    assert "pack_summary" in record
+
+
+def test_rebuild_v14_no_log_when_candidate_set_empty(
+    tmp_path: Path,
+) -> None:
+    """With no beliefs and no turns, no log file is written."""
+    store = MemoryStore(str(tmp_path / "empty.db"))
+    log_path = tmp_path / "rebuild_logs" / "sess.jsonl"
+    try:
+        rebuild_v14(
+            [],
+            store,
+            rebuild_log_path=log_path,
+            session_id_for_log="sess",
+        )
+    finally:
+        store.close()
+    assert not log_path.exists()
+
+
+def test_rebuild_v14_env_opt_out_no_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AELFRICE_REBUILD_LOG=0 prevents rebuild_v14 from writing the log."""
+    monkeypatch.setenv(REBUILD_LOG_ENV, "0")
+    store = _seed(
+        tmp_path / "m.db",
+        [_mk("L1", "some content", lock_level=LOCK_USER,
+              locked_at="2026-04-28T00:00:00Z")],
+    )
+    log_path = tmp_path / "rebuild_logs" / "sess.jsonl"
+    try:
+        rebuild_v14(
+            [RecentTurn(role="user", text="query")],
+            store,
+            rebuild_log_path=log_path,
+            session_id_for_log="sess",
+        )
+    finally:
+        store.close()
+    assert not log_path.exists()
+
+
+def test_rebuild_v14_respects_rebuild_log_enabled_false(
+    tmp_path: Path,
+) -> None:
+    """rebuild_log_enabled=False kwarg suppresses the write."""
+    store = _seed(
+        tmp_path / "m.db",
+        [_mk("L1", "x", lock_level=LOCK_USER,
+              locked_at="2026-04-28T00:00:00Z")],
+    )
+    log_path = tmp_path / "rebuild_logs" / "sess.jsonl"
+    try:
+        rebuild_v14(
+            [RecentTurn(role="user", text="something")],
+            store,
+            rebuild_log_path=log_path,
+            session_id_for_log="sess",
+            rebuild_log_enabled=False,
+        )
+    finally:
+        store.close()
+    assert not log_path.exists()
+
+
+def test_rebuild_v14_fail_soft_when_log_dir_unwritable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed log write does not break the rebuild; block is returned."""
+    store = _seed(
+        tmp_path / "m.db",
+        [_mk(
+            "L1", "kitchen bananas", lock_level=LOCK_USER,
+            locked_at="2026-04-28T00:00:00Z",
+        )],
+    )
+    log_path = tmp_path / "rebuild_logs" / "sess.jsonl"
+    _rebuild_log_truncated.pop(log_path, None)
+
+    def boom_mkdir(*args: object, **kwargs: object) -> None:
+        raise OSError("simulated permission denied")
+
+    monkeypatch.setattr(Path, "mkdir", boom_mkdir)
+    try:
+        block = rebuild_v14(
+            [RecentTurn(role="user", text="kitchen contents")],
+            store,
+            rebuild_log_path=log_path,
+            session_id_for_log="sess",
+        )
+    finally:
+        store.close()
+    assert "<aelfrice-rebuild>" in block
+    assert not log_path.exists()
+
+
+def test_rebuild_log_decision_content_hash_collision(
+    tmp_path: Path,
+) -> None:
+    """A belief dropped due to content_hash dedup records reason
+    'content_hash_collision_with:<first_belief_id>'.
+
+    Simulates the pre-#219 scenario where two beliefs share a
+    content_hash by inserting the duplicate row via raw SQL (bypassing
+    the UNIQUE constraint that the current store enforces).  The dedup
+    path in rebuild_v14 exists precisely for stores migrated before #219;
+    this test exercises that branch.
+
+    Uses a query that exactly matches the content text, and a shared
+    content_hash across a locked belief (first) and a session-scoped
+    belief (dupe).  The session-scoped belief appears in session_hits
+    and is dropped with content_hash_collision_with:first.
+    """
+    import sqlite3  # noqa: PLC0415
+
+    shared_hash = "shared_hash_value"
+    db_path = tmp_path / "m.db"
+
+    # Bootstrap via MemoryStore so schema + migrations run.
+    bootstrap = _seed(
+        db_path,
+        [
+            _mk(
+                "first", "dedup collision content",
+                lock_level=LOCK_USER,
+                locked_at="2026-04-28T00:00:00Z",
+                content_hash=shared_hash,
+            ),
+        ],
+    )
+    bootstrap.close()
+
+    # SQLite does not support DROP CONSTRAINT, so we recreate the table
+    # without the UNIQUE constraint on content_hash to insert the dupe.
+    # This simulates pre-#219 stores with duplicate content_hash rows.
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "CREATE TABLE beliefs_tmp AS SELECT * FROM beliefs"
+        )
+        conn.execute("DROP TABLE beliefs")
+        conn.execute(
+            """
+            CREATE TABLE beliefs (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                alpha REAL NOT NULL DEFAULT 1.0,
+                beta REAL NOT NULL DEFAULT 1.0,
+                type TEXT NOT NULL DEFAULT 'unknown',
+                lock_level TEXT NOT NULL DEFAULT 'none',
+                locked_at TEXT,
+                demotion_pressure INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                last_retrieved_at TEXT,
+                session_id TEXT,
+                origin TEXT NOT NULL DEFAULT 'unknown',
+                hibernation_score REAL,
+                activation_condition TEXT
+            )
+            """
+        )
+        conn.execute("INSERT INTO beliefs SELECT * FROM beliefs_tmp")
+        # Insert a session-scoped dupe with the same content_hash.
+        conn.execute(
+            """
+            INSERT INTO beliefs
+            (id, content, content_hash, alpha, beta, type,
+             lock_level, locked_at, demotion_pressure,
+             created_at, last_retrieved_at, session_id, origin,
+             hibernation_score, activation_condition)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "dupe", "dedup collision content", shared_hash,
+                1.0, 1.0, "factual",
+                "none", None, 0,
+                "2026-04-28T00:00:01Z", None, "sess_collision",
+                "unknown", None, None,
+            ),
+        )
+        conn.execute("DROP TABLE beliefs_tmp")
+        # Register the dupe in the FTS index.
+        conn.execute(
+            "INSERT INTO beliefs_fts (id, content) VALUES (?, ?)",
+            ("dupe", "dedup collision content"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = MemoryStore(str(db_path))
+    log_path = tmp_path / "rebuild_logs" / "sess.jsonl"
+    try:
+        rebuild_v14(
+            [RecentTurn(
+                role="user",
+                text="dedup collision",
+                session_id="sess_collision",
+            )],
+            store,
+            rebuild_log_path=log_path,
+            session_id_for_log="sess_collision",
+        )
+    finally:
+        store.close()
+
+    assert log_path.exists()
+    lines = [ln for ln in log_path.read_text().splitlines() if ln.strip()]
+    assert lines, "expected at least one log record"
+    record = json.loads(lines[0])
+    candidates = record["candidates"]
+
+    dropped = [c for c in candidates if c["decision"] == "dropped"]
+    assert dropped, (
+        f"expected at least one dropped candidate; all candidates: {candidates}"
+    )
+    collision_drops = [
+        c for c in dropped
+        if isinstance(c.get("reason"), str)
+        and c["reason"].startswith("content_hash_collision_with:")
+    ]
+    assert collision_drops, (
+        f"expected content_hash_collision_with:<id> drop reason; "
+        f"got dropped candidates: {dropped}"
+    )
+    assert "first" in collision_drops[0]["reason"]
+
+
+def test_rebuild_log_decision_packed_beliefs_appear_once(
+    tmp_path: Path,
+) -> None:
+    """A session-scoped belief that also surfaces in non_locked_hits
+    must appear at most once as 'packed' in the candidates list."""
+    store = _seed(
+        tmp_path / "m.db",
+        [_mk("s1", "session belief text", session_id="mysess")],
+    )
+    log_path = tmp_path / "rebuild_logs" / "s.jsonl"
+    try:
+        rebuild_v14(
+            [RecentTurn(role="user", text="session belief text",
+                        session_id="mysess")],
+            store,
+            rebuild_log_path=log_path,
+            session_id_for_log="mysess",
+        )
+    finally:
+        store.close()
+
+    if not log_path.exists():
+        return  # empty candidate set is valid
+
+    lines = [ln for ln in log_path.read_text().splitlines() if ln.strip()]
+    if not lines:
+        return
+    record = json.loads(lines[0])
+    packed_ids = [
+        c["belief_id"] for c in record["candidates"]
+        if c["decision"] == "packed"
+    ]
+    assert len(packed_ids) == len(set(packed_ids)), (
+        f"belief packed more than once: {packed_ids}"
+    )

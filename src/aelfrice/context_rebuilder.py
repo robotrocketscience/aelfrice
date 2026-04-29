@@ -264,6 +264,9 @@ def rebuild_v14(
     store: MemoryStore,
     *,
     token_budget: int = DEFAULT_REBUILDER_TOKEN_BUDGET,
+    rebuild_log_path: Path | None = None,
+    session_id_for_log: str | None = None,
+    rebuild_log_enabled: bool = DEFAULT_REBUILD_LOG_ENABLED,
 ) -> str:
     """v1.4 rebuild: L0 + session-scoped + L2.5/L1 via `retrieve()`.
 
@@ -279,6 +282,12 @@ def rebuild_v14(
          latest recent_turn's `session_id` (if any).
       3. L2.5 + L1 hits from `retrieve()`, in retrieve()'s native
          order, deduplicated against L0 + session-scoped.
+
+    When `rebuild_log_path` is provided and `rebuild_log_enabled` is
+    True (and `AELFRICE_REBUILD_LOG` != '0'), one Layer 1 JSONL record
+    is appended for every invocation that produces a non-empty
+    candidate set.  The write is fail-soft -- any I/O error traces to
+    stderr and never breaks the rebuild.
 
     Pure function. Deterministic given the same inputs and store
     contents -- the regression test for issue #139 relies on this.
@@ -316,29 +325,131 @@ def rebuild_v14(
     # subsequent tiers skip any hash already packed.
     used: int = sum(_estimate_belief_tokens(b) for b in locked)
     out: list[Belief] = list(locked)
-    seen_hashes: set[str] = {b.content_hash for b in locked}
+
+    # #288 phase-1a: map content_hash -> first belief_id that claimed it.
+    # Used to produce content_hash_collision_with:<id> drop reasons.
+    hash_to_first_id: dict[str, str] = {b.content_hash: b.id for b in locked}
+    seen_hashes: set[str] = set(hash_to_first_id)
+
+    # Per-candidate log tracking.  Each entry is a dict matching the
+    # Layer 1 schema's candidates[] shape.
+    log_candidates: list[dict[str, object]] = []
+    n_dropped_by_dedup = 0
+    n_dropped_by_budget = 0
+    budget_exceeded_session = False
+    budget_exceeded_non_locked = False
+
+    for b in locked:
+        log_candidates.append({
+            "belief_id": b.id,
+            "rank": len(log_candidates) + 1,
+            "scores": _empty_scores(),
+            "lock_level": _belief_lock_level_for_log(b),
+            "decision": "packed",
+            "reason": None,
+        })
 
     for b in session_hits:
+        decision: str
+        reason: str | None
         if b.content_hash in seen_hashes:
-            continue
-        cost = _estimate_belief_tokens(b)
-        if used + cost > token_budget:
-            break
-        out.append(b)
-        used += cost
-        seen_hashes.add(b.content_hash)
+            decision = "dropped"
+            reason = f"content_hash_collision_with:{hash_to_first_id[b.content_hash]}"
+            n_dropped_by_dedup += 1
+        elif budget_exceeded_session:
+            decision = "dropped"
+            reason = "budget_exhausted"
+            n_dropped_by_budget += 1
+        else:
+            cost = _estimate_belief_tokens(b)
+            if used + cost > token_budget:
+                budget_exceeded_session = True
+                decision = "dropped"
+                reason = "budget_exhausted"
+                n_dropped_by_budget += 1
+            else:
+                out.append(b)
+                used += cost
+                hash_to_first_id[b.content_hash] = b.id
+                seen_hashes.add(b.content_hash)
+                decision = "packed"
+                reason = None
+        log_candidates.append({
+            "belief_id": b.id,
+            "rank": len(log_candidates) + 1,
+            "scores": _empty_scores(),
+            "lock_level": _belief_lock_level_for_log(b),
+            "decision": decision,
+            "reason": reason,
+        })
 
     for b in non_locked_hits:
         if b.id in session_ids:
-            continue  # already surfaced above
-        if b.content_hash in seen_hashes:
+            # Already surfaced as a session candidate above; skip from
+            # the non_locked_hits pass to avoid double-recording.
             continue
-        cost = _estimate_belief_tokens(b)
-        if used + cost > token_budget:
-            break
-        out.append(b)
-        used += cost
-        seen_hashes.add(b.content_hash)
+        decision_nl: str
+        reason_nl: str | None
+        if b.content_hash in seen_hashes:
+            decision_nl = "dropped"
+            reason_nl = f"content_hash_collision_with:{hash_to_first_id[b.content_hash]}"
+            n_dropped_by_dedup += 1
+        elif budget_exceeded_non_locked:
+            decision_nl = "dropped"
+            reason_nl = "budget_exhausted"
+            n_dropped_by_budget += 1
+        else:
+            cost = _estimate_belief_tokens(b)
+            if used + cost > token_budget:
+                budget_exceeded_non_locked = True
+                decision_nl = "dropped"
+                reason_nl = "budget_exhausted"
+                n_dropped_by_budget += 1
+            else:
+                out.append(b)
+                used += cost
+                hash_to_first_id[b.content_hash] = b.id
+                seen_hashes.add(b.content_hash)
+                decision_nl = "packed"
+                reason_nl = None
+        log_candidates.append({
+            "belief_id": b.id,
+            "rank": len(log_candidates) + 1,
+            "scores": _empty_scores(),
+            "lock_level": _belief_lock_level_for_log(b),
+            "decision": decision_nl,
+            "reason": reason_nl,
+        })
+
+    # Write the Layer 1 diagnostic log. Only fires when the candidate
+    # set is non-empty (per spec). Fail-soft: any I/O error traces to
+    # stderr and never breaks the rebuild.
+    if (
+        rebuild_log_enabled
+        and not _rebuild_log_disabled_via_env()
+        and rebuild_log_path is not None
+        and log_candidates
+    ):
+        n_packed = sum(
+            1 for c in log_candidates if c["decision"] == "packed"
+        )
+        total_chars_packed = sum(len(b.content) for b in out)
+        pack_summary: dict[str, int] = {
+            "n_candidates": len(log_candidates),
+            "n_packed": n_packed,
+            # Floor logic lands under #289; report 0 until then.
+            "n_dropped_by_floor": 0,
+            "n_dropped_by_dedup": n_dropped_by_dedup,
+            "n_dropped_by_budget": n_dropped_by_budget,
+            "total_chars_packed": total_chars_packed,
+        }
+        record = _build_rebuild_log_record(
+            recent_turns=recent_turns,
+            session_id=session_id_for_log,
+            candidates=log_candidates,
+            pack_summary=pack_summary,
+        )
+        _append_rebuild_log_record(rebuild_log_path, record)
 
     return _format_block(
         recent_turns, out, session_ids, token_budget=token_budget,
