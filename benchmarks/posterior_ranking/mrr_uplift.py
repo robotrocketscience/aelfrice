@@ -20,11 +20,13 @@ from __future__ import annotations
 
 import math
 import random
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
 from aelfrice.feedback import apply_feedback
+from aelfrice.graph_spectral import GraphEigenbasisCache
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
 from aelfrice.retrieval import retrieve
 from aelfrice.store import MemoryStore
@@ -97,6 +99,9 @@ def _mrr_for_belief(
     query: str,
     known_content: str,
     top_k: int = DEFAULT_TOP_K,
+    *,
+    eigenbasis_cache: GraphEigenbasisCache | None = None,
+    heat_kernel: bool = False,
 ) -> float:
     """Return 1/rank of the known belief in the retrieve() results (0 if absent)."""
     results: list[Belief] = retrieve(
@@ -106,6 +111,8 @@ def _mrr_for_belief(
         entity_index_enabled=False,
         bfs_enabled=False,
         posterior_weight=None,  # use default 0.5
+        heat_kernel_enabled=heat_kernel,
+        eigenbasis_cache=eigenbasis_cache,
     )
     for rank, belief in enumerate(results, start=1):
         if belief.content == known_content:
@@ -145,6 +152,8 @@ def run_single_seed(
     seed: int,
     top_k: int = DEFAULT_TOP_K,
     threshold: float = DEFAULT_MRR_THRESHOLD,
+    *,
+    heat_kernel: bool = False,
 ) -> MRRUpliftResult:
     """Run the 10-round MRR uplift evaluator for one seed.
 
@@ -160,18 +169,42 @@ def run_single_seed(
     if n_fixtures == 0:
         raise ValueError("fixtures must not be empty")
 
+    # Per-seed throwaway temp dir for the eigenbasis .npz files when
+    # heat_kernel is on. Cache files are rebuilt after every feedback
+    # round (store mutation invalidates them); the cleanup is handled
+    # by the TemporaryDirectory at function exit.
+    _tmp_dir = tempfile.TemporaryDirectory(prefix="aelf_pr_eb_")
+    _tmp_path = Path(_tmp_dir.name)
+
     # Build stores once; share across rounds.
-    stores_ids: list[tuple[MemoryStore, str, dict[str, object]]] = []
-    for fx in fixtures:
+    stores_ids: list[tuple[MemoryStore, str, dict[str, object], GraphEigenbasisCache | None]] = []
+    for idx, fx in enumerate(fixtures):
         store, known_id = _build_store(fx, seed)
-        stores_ids.append((store, known_id, fx))
+        cache: GraphEigenbasisCache | None = None
+        if heat_kernel:
+            cache = GraphEigenbasisCache(
+                store=store, path=_tmp_path / f"eb_{seed}_{idx}.npz",
+            )
+            cache.build()
+        stores_ids.append((store, known_id, fx, cache))
+
+    def _refresh_caches() -> None:
+        if not heat_kernel:
+            return
+        for st, _kid, _fx, cache in stores_ids:
+            if cache is not None and cache.is_stale():
+                cache.build()
 
     def _mean_mrr(round_idx: int) -> float:
         """Compute mean MRR across all fixtures for the current store state."""
         del round_idx  # round tracked externally; store state is what matters
+        _refresh_caches()
         total = 0.0
-        for st, _kid, fx in stores_ids:
-            total += _mrr_for_belief(st, str(fx["query"]), str(fx["known_belief_content"]), top_k)
+        for st, _kid, fx, cache in stores_ids:
+            total += _mrr_for_belief(
+                st, str(fx["query"]), str(fx["known_belief_content"]), top_k,
+                eigenbasis_cache=cache, heat_kernel=heat_kernel,
+            )
         return total / n_fixtures
 
     mrr_0 = _mean_mrr(0)
@@ -181,8 +214,9 @@ def run_single_seed(
     any_regression = False
 
     for _rnd in range(N_ROUNDS):
+        _refresh_caches()
         # Apply synthetic feedback to each fixture's store.
-        for st, known_id, fx in stores_ids:
+        for st, known_id, fx, cache in stores_ids:
             query = str(fx["query"])
             known_content = str(fx["known_belief_content"])
             results: list[Belief] = retrieve(
@@ -192,6 +226,8 @@ def run_single_seed(
                 entity_index_enabled=False,
                 bfs_enabled=False,
                 posterior_weight=None,
+                heat_kernel_enabled=heat_kernel,
+                eigenbasis_cache=cache,
             )
             top1 = results[0] if results else None
             if top1 is not None and top1.content == known_content:
@@ -216,8 +252,9 @@ def run_single_seed(
     passed = (uplift >= threshold) and (not any_regression)
 
     # Close stores.
-    for st, _, _ in stores_ids:
+    for st, _, _, _ in stores_ids:
         st.close()
+    _tmp_dir.cleanup()
 
     return MRRUpliftResult(
         mrr_0=mrr_0,
@@ -235,6 +272,8 @@ def run_multi_seed(
     threshold: float = DEFAULT_MRR_THRESHOLD,
     top_k: int = DEFAULT_TOP_K,
     base_seed: int = 0,
+    *,
+    heat_kernel: bool = False,
 ) -> MultiSeedReport:
     """Run the uplift evaluator across n_seeds seeds.
 
@@ -244,7 +283,10 @@ def run_multi_seed(
     results: list[MRRUpliftResult] = []
     for i in range(n_seeds):
         seed = base_seed + i
-        r = run_single_seed(fixtures, seed=seed, top_k=top_k, threshold=threshold)
+        r = run_single_seed(
+            fixtures, seed=seed, top_k=top_k, threshold=threshold,
+            heat_kernel=heat_kernel,
+        )
         results.append(r)
 
     uplifts = [r.mrr_uplift for r in results]

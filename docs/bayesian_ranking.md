@@ -190,6 +190,52 @@ This spec ships partial. The remaining v2.0.0 work, tracked separately:
 
 These are the items #151's full claim covers. After this spec PR opens, #151 should be re-scoped to the above set, with the v1.3 posterior term itself acknowledged as shipped under #146.
 
+## Heat-kernel composition (Slice 2)
+
+Slice 2 of #151 adds a third log-additive term — a graph authority signal computed from the signed-Laplacian heat kernel `exp(-tL)`. The composed score is:
+
+```
+score(q, b) = log(BM25(q, b))
+            + heat_weight    * log(heat_kernel_safe(q, b))
+            + posterior_weight * log(posterior_mean(b))
+```
+
+where `heat_kernel_safe(q, b)` is the per-belief heat propagation seeded from the top-K BM25 hits, clamped at `HEAT_SCORE_FLOOR = 1e-9`. Default mixing weights are `heat_weight = 1.0` and `posterior_weight = 0.5` (`graph_spectral.combine_log_scores`).
+
+### Feature flag (default-OFF)
+
+The composition is gated behind `is_heat_kernel_enabled()`, which resolves with precedence env > kwarg > TOML > False:
+
+- `AELFRICE_HEAT_KERNEL=1` (env override)
+- `retrieve(..., heat_kernel_enabled=True)` (kwarg)
+- `[retrieval] use_heat_kernel = true` in `.aelfrice.toml`
+
+The flag stays default-OFF in v1.x. When the flag is OFF, the heat term is not constructed — `retrieve()` is byte-identical to the Slice 1 (BM25 + posterior) path.
+
+### Cost
+
+The dominant per-query cost is the eigenbasis matvec `eigvecs.T @ seeds` followed by `eigvecs @ filt`, which is O(N · K). At N=50k, K=200 the wall-clock is ~7-8 ms in BLAS-backed numpy on commodity hardware. With the flag OFF the per-query overhead is unmeasurable (≤ 1 ms — no spectral work happens). AC6 of #151 was renegotiated to ≤ 10 ms heat-on / ≤ 1 ms heat-off to reflect this real cost.
+
+### Graceful degrade
+
+Three graceful-degrade paths fall back byte-identically to the heat-off contract:
+
+1. No `eigenbasis_cache` passed (caller didn't construct one).
+2. `cache.is_stale()` — store mutation invalidated the cache; offline rebuild is a separate (#149) entry point.
+3. `cache.eigvals is None` — never built, or every L1 hit was inserted after the last build.
+
+In each case the rerank reverts to `partial_bayesian_score(bm25, alpha, beta, posterior_weight)`. Newly-inserted beliefs missing from `cache.belief_ids` get `HEAT_SCORE_FLOOR` for the heat term — the floor preserves rankability without invented authority signal.
+
+### Bench wedge
+
+`aelf bench posterior-residual --heat-kernel` runs the MRR + ECE harness with the flag flipped on. Each per-seed `retrieve()` gets a fresh `GraphEigenbasisCache` built against that seed's in-memory store and rebuilt on stale (the synthetic feedback stream mutates the store after every round). Without `--heat-kernel`, output is byte-identical to today.
+
+### What Slice 2 still doesn't ship
+
+- Eigenbasis offline build CLI (#149).
+- Heat-weight sweep — `heat_weight = 1.0` is the spec default, no calibration exposed yet.
+- Real-feedback retest once captured telemetry passes the corpus-size threshold.
+
 ## References
 
 - Issue [#146](https://github.com/robotrocketscience/aelfrice/issues/146) — partial Bayesian-weighted ranking, v1.3 milestone.

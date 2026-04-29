@@ -1098,6 +1098,10 @@ def _cmd_bench(args: argparse.Namespace, out: object) -> int:
         _pr_parser.add_argument(
             "--json", dest="pr_json", action="store_true",
         )
+        _pr_parser.add_argument(
+            "--heat-kernel", dest="pr_heat_kernel", action="store_true",
+            help="enable heat-kernel composition in retrieve() (slice 2 of #151)",
+        )
         _pr_ns, _ = _pr_parser.parse_known_args(args.rest)
         from pathlib import Path as _Path
         _default_fixtures = (
@@ -1115,6 +1119,7 @@ def _cmd_bench(args: argparse.Namespace, out: object) -> int:
             n_seeds=_pr_ns.pr_seeds,
             mrr_threshold=_pr_ns.pr_mrr_threshold,
             ece_threshold=_pr_ns.pr_ece_threshold,
+            heat_kernel=_pr_ns.pr_heat_kernel,
         )
 
         if _pr_ns.pr_json:
