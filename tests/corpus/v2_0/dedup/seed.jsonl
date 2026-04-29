@@ -1,0 +1,3 @@
+{"id": "dedup-seed-001", "seed": true, "belief_a": "The user's primary editor is Vim.", "belief_b": "User uses Vim as their main editor.", "label": "duplicate", "provenance": "schema-anchor", "labeller_note": "Same fact, paraphrased."}
+{"id": "dedup-seed-002", "seed": true, "belief_a": "The user's primary editor is Vim.", "belief_b": "The user prefers Vim for quick edits.", "label": "near-duplicate", "provenance": "schema-anchor", "labeller_note": "Overlapping but b adds a use-case qualifier a does not."}
+{"id": "dedup-seed-003", "seed": true, "belief_a": "The user's primary editor is Vim.", "belief_b": "The project uses Python 3.12.", "label": "distinct", "provenance": "schema-anchor", "labeller_note": "Unrelated facts."}
