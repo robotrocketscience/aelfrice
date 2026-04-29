@@ -1236,6 +1236,44 @@ class MemoryStore:
 
     # --- Belief corroborations (v1.5+, #190) -----------------------------
 
+    def insert_or_corroborate(
+        self,
+        b: Belief,
+        *,
+        source_type: str,
+        session_id: str | None = None,
+        source_path_hash: str | None = None,
+    ) -> tuple[str, bool]:
+        """Insert belief or corroborate existing one with same content_hash.
+
+        Returns (belief_id, was_inserted). On a content_hash hit the
+        existing belief row is unchanged and record_corroboration is
+        called to record the re-assertion signal. On a miss insert_belief
+        is called and (b.id, True) is returned.
+
+        `source_type` must be in CORROBORATION_SOURCE_TYPES; ValueError
+        is raised immediately on an unknown value so the caller's test
+        suite catches misconfigured mappings early.
+        """
+        # Validate source_type up-front so the error surfaces at the
+        # call site, not inside record_corroboration after the lookup.
+        if source_type not in CORROBORATION_SOURCE_TYPES:
+            raise ValueError(
+                f"Unknown source_type {source_type!r}. "
+                f"Must be one of {sorted(CORROBORATION_SOURCE_TYPES)}"
+            )
+        existing = self.get_belief_by_content_hash(b.content_hash)
+        if existing is not None:
+            self.record_corroboration(
+                existing.id,
+                source_type=source_type,
+                session_id=session_id,
+                source_path_hash=source_path_hash,
+            )
+            return (existing.id, False)
+        self.insert_belief(b)
+        return (b.id, True)
+
     def record_corroboration(
         self,
         belief_id: str,
