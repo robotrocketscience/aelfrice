@@ -335,7 +335,7 @@ with recommendation 3 (min-score threshold).
 `$AELFRICE_DB` is set to a global path), `db_path()` returns the
 global `~/.aelfrice/memory.db`. All sessions across all projects then
 share the same corpus, which explains the cross-domain contamination
-(alpha-seek tables, trivia snippets surfacing on aelfrice coding
+(unrelated-project tables, trivia snippets surfacing on aelfrice coding
 tasks).
 
 **Fix:** expose the `cwd` from the `UserPromptSubmit` payload and pass
@@ -363,7 +363,7 @@ the cwd is inside a git repo.
 only by token budget, not by a relevance floor. On a 20 k-belief store
 the bottom of the ranked list may have very low BM25 scores (i.e.,
 beliefs that share only common words with the query). These are the
-most likely source of cross-domain "alpha-seek table" hits surfacing
+most likely source of cross-domain unrelated-project hits surfacing
 on unrelated coding tasks.
 
 **Fix:** add an optional `min_bm25_score: float | None = None`
