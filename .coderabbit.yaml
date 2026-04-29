@@ -24,8 +24,9 @@ reviews:
     - path: "src/aelfrice/store.py"
       instructions: |
         This is the canonical write path for beliefs/edges. Flag any new
-        SQL that bypasses the broker-confidence attenuation (see
-        store.py:443) or writes outside a transaction.
+        SQL that bypasses broker-confidence attenuation (the
+        BrokerConfidence application in the belief-write helpers) or
+        writes outside a transaction.
     - path: "tests/**"
       instructions: |
         Tests must hit a real SQLite DB, not mocks. Flag any introduction
