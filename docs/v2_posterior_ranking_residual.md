@@ -2,7 +2,7 @@
 
 Spec for issue [#151](https://github.com/robotrocketscience/aelfrice/issues/151). Cascade addendum to [`bayesian_ranking.md`](bayesian_ranking.md). Defines the v2.0 work that closes the residual after the v1.3 partial shipped under [#146](https://github.com/robotrocketscience/aelfrice/issues/146).
 
-Status: spec, no implementation. Recommendation included; decision is the user's.
+**Status (2026-04-29):** Slices 1 and 2 shipped via #306 (eval harness — MRR uplift + ECE) and #310 (heat-kernel composition into log-additive ranking score). Slice 3 (per-corpus weight sweep) is the remaining residual. Sections below preserve the original spec; per-slice status tags reflect what landed.
 
 ## What's being decided
 
@@ -27,7 +27,7 @@ After this issue ships, the v1.3 partial-Bayesian claim becomes a full posterior
 
 **Ship at v2.0 in three independent slices, in order: (1) eval harness first, (2) heat-kernel composition once #150 lands, (3) weight sweep last.** The eval harness is a docs-and-bench change with no production-path risk; the composition is a one-line addition to the score equation; the sweep ships only after the eval harness can measure the deltas it produces.
 
-### Slice 1 — eval harness (`benchmarks/posterior_ranking/`)
+### Slice 1 — eval harness (`benchmarks/posterior_ranking/`) — **shipped (#306)**
 
 Two scorers and one runner. All deterministic, fixture-driven, no live store dependency.
 
@@ -55,7 +55,7 @@ benchmarks/posterior_ranking/
 
 **Why this slice ships first:** it produces the numbers every later decision needs. Without it the heat-kernel composition lands blind and the weight sweep has nothing to optimize against.
 
-### Slice 2 — heat-kernel composition (`scoring.py`, `retrieval.py`)
+### Slice 2 — heat-kernel composition (`scoring.py`, `retrieval.py`) — **shipped (#310)**
 
 One change to the score equation:
 
@@ -71,7 +71,7 @@ Cold-belief neutrality survives because `log(heat_kernel_safe)` is bounded and `
 
 **Out of scope for slice 2:** the actual heat-kernel scorer (#150). This slice is the integration; it lands in the same release as #150 or in the release after, gated by whether #150 has shipped.
 
-### Slice 3 — per-corpus weight sweep (`benchmarks/posterior_ranking/sweep.py`)
+### Slice 3 — per-corpus weight sweep (`benchmarks/posterior_ranking/sweep.py`) — **residual**
 
 CLI: `aelf bench --posterior-residual --sweep λ=0.0:1.0:0.1`.
 
