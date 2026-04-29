@@ -155,8 +155,14 @@ def test_setup_then_invoke_hook_then_unsetup_round_trip(
         f"missing open tag; stdout={proc.stdout!r}"
     )
     assert CLOSE_TAG in proc.stdout
-    assert "[locked] L1: the user pinned this as ground truth" in proc.stdout
-    assert "F1: the kitchen is full of bananas" in proc.stdout
+    assert (
+        '<belief id="L1" lock="user">'
+        "the user pinned this as ground truth</belief>"
+    ) in proc.stdout
+    assert (
+        '<belief id="F1" lock="none">'
+        "the kitchen is full of bananas</belief>"
+    ) in proc.stdout
 
     code, output = _run_cli(
         "unsetup",
