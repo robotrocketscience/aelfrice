@@ -43,7 +43,7 @@ _SCHEMA: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS beliefs (
         id                  TEXT PRIMARY KEY,
         content             TEXT NOT NULL,
-        content_hash        TEXT NOT NULL,
+        content_hash        TEXT NOT NULL UNIQUE,
         alpha               REAL NOT NULL,
         beta                REAL NOT NULL,
         type                TEXT NOT NULL,
@@ -272,6 +272,10 @@ SCHEMA_META_LEGACY_LOG_SYNTH: Final[str] = "legacy_log_synth_complete"
 # belief before the UNIQUE constraint is applied. ISO timestamp on
 # completion.
 SCHEMA_META_CONTENT_HASH_DEDUP_COMPLETE: Final[str] = "content_hash_dedup_complete"
+# #219 content_hash UNIQUE. Set after the table-swap that adds
+# UNIQUE(content_hash) to the beliefs table. Fresh stores skip the
+# swap because their _SCHEMA already includes the constraint.
+SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED: Final[str] = "content_hash_unique_applied"
 
 # v1.0 -> v1.2 column additions. Each ALTER runs after _SCHEMA. ALTERs
 # are idempotent: a duplicate-column OperationalError on a v1.2-fresh
@@ -524,6 +528,9 @@ class MemoryStore:
         # #219 content_hash dedup. Must run BEFORE the table-swap that
         # adds UNIQUE(content_hash) so we eliminate all duplicates first.
         self._maybe_consolidate_content_hash_duplicates()
+        # #219 UNIQUE(content_hash). Table-swap migration; runs once
+        # after the dedup pass guarantees no duplicates remain.
+        self._maybe_apply_content_hash_unique()
 
     def close(self) -> None:
         self._conn.close()
@@ -1016,6 +1023,103 @@ class MemoryStore:
             datetime.now(timezone.utc).isoformat(),
         )
         return len(all_dupe_ids)
+
+    def _maybe_apply_content_hash_unique(self) -> bool:
+        """One-shot table-swap that adds UNIQUE(content_hash) to beliefs.
+
+        #219. SQLite does not support ALTER TABLE ADD CONSTRAINT, so we
+        use the standard rename/create/copy/drop pattern:
+
+          1. CREATE TABLE beliefs_new (... UNIQUE(content_hash)).
+          2. INSERT INTO beliefs_new SELECT * FROM beliefs.
+          3. DROP TABLE beliefs.
+          4. ALTER TABLE beliefs_new RENAME TO beliefs.
+          5. Recreate all indexes that were on beliefs.
+
+        Precondition: _maybe_consolidate_content_hash_duplicates must
+        have already run (no duplicate content_hash rows exist). If a
+        UNIQUE violation occurs the transaction rolls back and the
+        error propagates — it means the consolidation pass was skipped
+        or did not complete, which is a programming error.
+
+        Fresh stores skip this migration because _SCHEMA already
+        includes UNIQUE(content_hash). Idempotent via
+        SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED marker.
+
+        Returns True if the swap ran, False if it was already applied.
+        """
+        if self.get_schema_meta(SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED):
+            return False
+
+        # Check whether the constraint already exists (e.g. fresh store
+        # created with the new _SCHEMA that includes UNIQUE).
+        idx_cur = self._conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='beliefs'"
+        )
+        row = idx_cur.fetchone()
+        if row and "UNIQUE" in str(row["sql"]):
+            # Fresh store — constraint already present; just stamp marker.
+            self.set_schema_meta(
+                SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED,
+                datetime.now(timezone.utc).isoformat(),
+            )
+            return False
+
+        # Build CREATE TABLE DDL from the existing beliefs table.
+        # Using PRAGMA table_info avoids parsing the sqlite_master DDL
+        # string and correctly handles extra columns added by ALTER TABLE
+        # on legacy stores (e.g. hibernation_score, activation_condition).
+        col_info = self._conn.execute(
+            "PRAGMA table_info(beliefs)"
+        ).fetchall()
+        col_defs: list[str] = []
+        col_names: list[str] = []
+        for col in col_info:
+            cname = str(col["name"])
+            ctype = str(col["type"])
+            notnull = " NOT NULL" if col["notnull"] else ""
+            dflt = f" DEFAULT {col['dflt_value']}" if col["dflt_value"] is not None else ""
+            pk = " PRIMARY KEY" if col["pk"] else ""
+            unique = " UNIQUE" if cname == "content_hash" else ""
+            col_defs.append(f"    {cname} {ctype}{pk}{unique}{notnull}{dflt}")
+            col_names.append(cname)
+
+        create_sql = (
+            "CREATE TABLE beliefs_new (\n"
+            + ",\n".join(col_defs)
+            + "\n)"
+        )
+
+        col_list = ", ".join(col_names)
+
+        with self._conn:
+            # Drop any leftover temp table from a failed previous attempt.
+            self._conn.execute("DROP TABLE IF EXISTS beliefs_new")
+            self._conn.execute(create_sql)
+            self._conn.execute(
+                f"INSERT INTO beliefs_new ({col_list}) "
+                f"SELECT {col_list} FROM beliefs"
+            )
+            self._conn.execute("DROP TABLE beliefs")
+            self._conn.execute(
+                "ALTER TABLE beliefs_new RENAME TO beliefs"
+            )
+            # Recreate indexes that were on the original beliefs table.
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_beliefs_session "
+                "ON beliefs(session_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_beliefs_origin "
+                "ON beliefs(origin)"
+            )
+
+        self.set_schema_meta(
+            SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED,
+            datetime.now(timezone.utc).isoformat(),
+        )
+        return True
 
     def list_belief_ids(self) -> list[str]:
         """All belief ids in insertion-time order. Used by the v1.3
