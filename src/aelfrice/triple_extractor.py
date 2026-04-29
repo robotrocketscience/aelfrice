@@ -23,14 +23,13 @@ corpus needs broader patterns.
 """
 from __future__ import annotations
 
-import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Final
 
+from aelfrice.derivation import DerivationInput, derive
 from aelfrice.models import (
-    BELIEF_FACTUAL,
     CORROBORATION_SOURCE_COMMIT_INGEST,
     EDGE_CITES,
     EDGE_CONTRADICTS,
@@ -39,9 +38,6 @@ from aelfrice.models import (
     EDGE_SUPERSEDES,
     EDGE_SUPPORTS,
     INGEST_SOURCE_GIT,
-    LOCK_NONE,
-    ORIGIN_AGENT_INFERRED,
-    Belief,
     Edge,
 )
 from aelfrice.store import MemoryStore
@@ -57,8 +53,6 @@ TRIPLE_BELIEF_SOURCE: Final[str] = "triple"
 beliefs. Sharing a source label across all triple ingest sites means
 the same noun phrase always resolves to the same belief id — even
 across different commits, transcripts, or call sites."""
-
-_BELIEF_ID_HEX_LEN: Final[int] = 16
 
 
 @dataclass(frozen=True)
@@ -223,25 +217,6 @@ def extract_triples(text: str) -> list[Triple]:
 # --- Ingest ---------------------------------------------------------------
 
 
-def _belief_id_for_phrase(phrase: str) -> str:
-    """Stable id from sha256(TRIPLE_BELIEF_SOURCE \\x00 normalized).
-
-    Same phrase => same id, regardless of the extraction call site.
-    Different from `ingest._belief_id` (which keys per-sentence per-
-    source) because triple-derived beliefs need a single canonical
-    id space across all extraction sites.
-    """
-    normalized = _normalize_phrase(phrase).lower()
-    h = hashlib.sha256(
-        f"{TRIPLE_BELIEF_SOURCE}\x00{normalized}".encode("utf-8")
-    ).hexdigest()
-    return h[:_BELIEF_ID_HEX_LEN]
-
-
-def _content_hash(content: str) -> str:
-    return hashlib.sha256(_normalize_phrase(content).lower().encode("utf-8")).hexdigest()
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -258,7 +233,17 @@ def _resolve_or_create_belief(
     When the belief already exists (same id = same normalised phrase),
     a corroboration row is recorded so the re-assertion is observable.
     """
-    bid = _belief_id_for_phrase(phrase)
+    # derive() id-scheme matches _belief_id_for_phrase; compute once.
+    ts = _now_iso()
+    out = derive(DerivationInput(
+        raw_text=phrase,
+        source_kind=INGEST_SOURCE_GIT,
+        session_id=session_id,
+        ts=ts,
+    ))
+    # INGEST_SOURCE_GIT always produces a belief (no classifier skip).
+    assert out.belief is not None
+    bid = out.belief.id
     existing = store.get_belief(bid)
     if existing is not None:
         store.record_corroboration(
@@ -267,7 +252,6 @@ def _resolve_or_create_belief(
             session_id=session_id,
         )
         return bid
-    ts = _now_iso()
     # v2.0 #205 parallel-write: log the raw phrase before materialization.
     # source_kind=git because the commit-ingest path emits triples from
     # commit messages; source_path is unknown at this layer (callers
@@ -279,22 +263,7 @@ def _resolve_or_create_belief(
         session_id=session_id,
         ts=ts,
     )
-    belief = Belief(
-        id=bid,
-        content=_normalize_phrase(phrase),
-        content_hash=_content_hash(phrase),
-        alpha=1.0,
-        beta=1.0,
-        type=BELIEF_FACTUAL,
-        lock_level=LOCK_NONE,
-        locked_at=None,
-        demotion_pressure=0,
-        created_at=ts,
-        last_retrieved_at=None,
-        session_id=session_id,
-        origin=ORIGIN_AGENT_INFERRED,
-    )
-    store.insert_belief(belief)
+    store.insert_belief(out.belief)
     created_ids.append(bid)
     return bid
 
