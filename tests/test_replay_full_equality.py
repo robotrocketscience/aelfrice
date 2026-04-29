@@ -596,3 +596,23 @@ def test_cli_doctor_replay_output_format(
     assert "canonical_orphan:" in text
     # Drift section present.
     assert "drift" in text.lower()
+
+
+def test_cli_doctor_replay_negative_max_drift_clamped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hypothesis: a negative `--max-drift` value is clamped to zero, so a
+    clean store still exits 0. Falsifiable by exit code != 0."""
+    import io
+    from aelfrice.cli import main
+
+    db = str(tmp_path / "brain.db")
+    monkeypatch.setenv("AELFRICE_DB", db)
+
+    s = MemoryStore(db)
+    _ingest(s, _FACTUAL_SENTENCE)
+    s.close()
+
+    out = io.StringIO()
+    rc = main(["doctor", "--replay", "--max-drift", "-1"], out=out)
+    assert rc == 0

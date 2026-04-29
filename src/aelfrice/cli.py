@@ -2255,7 +2255,7 @@ def _cmd_doctor_replay(args: argparse.Namespace, out: object) -> int:
     _print_replay_report(report, out)
 
     drift_total = report.mismatched + report.derived_orphan
-    threshold = max_drift if max_drift is not None else 0
+    threshold = max(0, max_drift) if max_drift is not None else 0
     return 0 if drift_total <= threshold else 1
 
 
