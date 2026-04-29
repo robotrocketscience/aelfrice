@@ -67,24 +67,33 @@ jobs:
 
   history-scan:
     runs-on: ubuntu-latest
+    env:
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Fetch all branches
+      - name: Fetch base ref
         run: |
-          git fetch --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          git fetch --no-tags origin "$BASE_REF"
       - name: Decode patterns
         env:
           PATTERNS: ${{ secrets.SCAN_RULES_B64 }}
         run: |
           set -euo pipefail
           echo "$PATTERNS" | base64 -d > /tmp/p
-      - name: Scan history
+      - name: Scan PR-incoming history
         run: |
           set -euo pipefail
-          git log --all --remotes='origin/*' --format='%H%n%an%n%ae%n%cn%n%ce%n%s%n%b' > /tmp/h
-          git log --all --remotes='origin/*' -p > /tmp/d
+          # Discretion is a property of incoming changes, not of code that
+          # already shipped to main. Scope the scan to commits this PR adds
+          # on top of the merge base, so a legitimate identifier merged via
+          # an earlier PR cannot retroactively block every subsequent PR.
+          merge_base="$(git merge-base "origin/${BASE_REF}" "$HEAD_SHA")"
+          range="${merge_base}..${HEAD_SHA}"
+          git log "$range" --format='%H%n%an%n%ae%n%cn%n%ce%n%s%n%b' > /tmp/h
+          git log "$range" -p > /tmp/d
           fail=0
           while IFS= read -r p; do
             [ -z "$p" ] && continue
