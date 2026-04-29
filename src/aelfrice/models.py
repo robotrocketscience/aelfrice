@@ -133,7 +133,7 @@ class Belief:
 
     Fields: id, content, content_hash, alpha, beta, type, lock_level,
     locked_at, demotion_pressure, created_at, last_retrieved_at,
-    session_id, origin.
+    session_id, origin, hibernation_score, activation_condition.
 
     `session_id` (v1.2+) tags the belief with the ingest session that
     inserted it. Optional: ingest paths that don't open a session
@@ -146,6 +146,13 @@ class Belief:
     to `user_stated` and correction beliefs to `user_corrected`. New
     inserts should pass an explicit value (scanner: `agent_inferred`;
     lock: `user_stated`).
+
+    `hibernation_score` and `activation_condition` (v2.0 #196) are the
+    storage half of the hibernation lifecycle ratified in
+    docs/substrate_decision.md. Both nullable; `None` means the belief
+    is active. `activation_condition` is JSON-encoded TEXT when set.
+    Behavior (when to set, when to wake, predicate evaluator) is a
+    follow-up issue; this commit only locks in the round-trip shape.
     """
 
     id: str
@@ -162,6 +169,8 @@ class Belief:
     session_id: str | None = None
     origin: str = ORIGIN_UNKNOWN
     corroboration_count: int = 0
+    hibernation_score: float | None = None
+    activation_condition: str | None = None
 
 
 ANCHOR_TEXT_MAX_LEN: Final[int] = 1000

@@ -52,7 +52,9 @@ _SCHEMA: tuple[str, ...] = (
         created_at          TEXT NOT NULL,
         last_retrieved_at   TEXT,
         session_id          TEXT,
-        origin              TEXT NOT NULL DEFAULT 'unknown'
+        origin              TEXT NOT NULL DEFAULT 'unknown',
+        hibernation_score   REAL,
+        activation_condition TEXT
     )
     """,
     """
@@ -274,6 +276,12 @@ _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE beliefs ADD COLUMN session_id TEXT",
     "ALTER TABLE edges ADD COLUMN anchor_text TEXT",
     "ALTER TABLE beliefs ADD COLUMN origin TEXT NOT NULL DEFAULT 'unknown'",
+    # v2.0 #196 hibernation lifecycle columns. Both nullable; behavior
+    # is deferred to a follow-up issue. Storage round-trip only at this
+    # commit. activation_condition is JSON-encoded TEXT (predicate
+    # language ratified at substrate_decision.md § Decision asks #4).
+    "ALTER TABLE beliefs ADD COLUMN hibernation_score REAL",
+    "ALTER TABLE beliefs ADD COLUMN activation_condition TEXT",
 )
 
 # Indexes that depend on migrated columns. Run after _MIGRATIONS so
@@ -339,6 +347,8 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
         session_id=row["session_id"],
         origin=row["origin"],
         corroboration_count=corroboration_count,
+        hibernation_score=row["hibernation_score"],
+        activation_condition=row["activation_condition"],
     )
 
 
@@ -798,13 +808,15 @@ class MemoryStore:
             INSERT INTO beliefs (
                 id, content, content_hash, alpha, beta, type,
                 lock_level, locked_at, demotion_pressure,
-                created_at, last_retrieved_at, session_id, origin
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, last_retrieved_at, session_id, origin,
+                hibernation_score, activation_condition
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 b.id, b.content, b.content_hash, b.alpha, b.beta, b.type,
                 b.lock_level, b.locked_at, b.demotion_pressure,
                 b.created_at, b.last_retrieved_at, b.session_id, b.origin,
+                b.hibernation_score, b.activation_condition,
             ),
         )
         self._conn.execute(
