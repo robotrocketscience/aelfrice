@@ -25,12 +25,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final
 
-from aelfrice.classification import classify_sentence
+from aelfrice.derivation import DerivationInput, derive
 from aelfrice.inedible import is_inedible
 from aelfrice.models import (
     INGEST_SOURCE_FILESYSTEM,
     LOCK_NONE,
-    ORIGIN_AGENT_INFERRED,
     Belief,
 )
 from aelfrice.noise_filter import NoiseConfig, is_noise
@@ -206,7 +205,7 @@ def scan_repo(
     # Two-pass when an llm_router is supplied: first collect the
     # noise-filtered candidates, then route them all through the
     # batched LLM call. Single-pass when no router (default OFF):
-    # the regex path is unchanged from v1.0.
+    # derive() handles the regex-classify path inline.
     filtered: list[SentenceCandidate] = []
     for candidate in candidates:
         if is_noise(candidate.text, cfg):
@@ -214,64 +213,85 @@ def scan_repo(
             continue
         filtered.append(candidate)
 
-    routes: list[LLMRoute]
+    routes: list[LLMRoute] | None = None
     if llm_router is not None:
         routes = llm_router.classify(filtered)
-    else:
-        routes = [_route_from_regex(c) for c in filtered]
-
-    if len(routes) != len(filtered):
-        # The router contract requires one-route-per-candidate
-        # in input order. A length mismatch is a programming
-        # error, not a user-visible state.
-        raise RuntimeError(
-            f"llm_router.classify returned {len(routes)} routes for "
-            f"{len(filtered)} candidates"
-        )
-
-    for candidate, route in zip(filtered, routes):
-        if not route.persist:
-            skipped_non_persisting += 1
-            continue
-        belief_id = _derive_belief_id(candidate.text, candidate.source)
-        if store.get_belief(belief_id) is not None:
-            skipped_existing += 1
-            continue
-        created_at = candidate.commit_date or timestamp
-        # v2.0 #205 parallel-write: log the raw classifier input
-        # before materializing the belief. derived_belief_ids is
-        # known up-front because belief_id is deterministic on
-        # (source, text).
-        store.record_ingest(
-            source_kind=INGEST_SOURCE_FILESYSTEM,
-            source_path=candidate.source,
-            raw_text=candidate.text,
-            derived_belief_ids=[belief_id],
-            ts=created_at,
-        )
-        store.insert_belief(Belief(
-            id=belief_id,
-            content=candidate.text,
-            content_hash=_content_hash(candidate.text),
-            alpha=route.alpha,
-            beta=route.beta,
-            type=route.belief_type,
-            lock_level=LOCK_NONE,
-            locked_at=None,
-            demotion_pressure=0,
-            created_at=created_at,
-            last_retrieved_at=None,
-            origin=route.origin,
-        ))
-        inserted += 1
-        # Audit row for fallback insertions (spec § 7.2 step 3).
-        if route.audit_source is not None:
-            store.insert_feedback_event(
-                belief_id=belief_id,
-                valence=0.0,
-                source=route.audit_source,
-                created_at=timestamp,
+        if len(routes) != len(filtered):
+            # The router contract requires one-route-per-candidate
+            # in input order. A length mismatch is a programming
+            # error, not a user-visible state.
+            raise RuntimeError(
+                f"llm_router.classify returned {len(routes)} routes for "
+                f"{len(filtered)} candidates"
             )
+
+    for idx, candidate in enumerate(filtered):
+        created_at = candidate.commit_date or timestamp
+
+        if routes is not None:
+            # LLM-classify path: router already derived type/origin/alpha/beta.
+            route = routes[idx]
+            if not route.persist:
+                skipped_non_persisting += 1
+                continue
+            belief_id = _derive_belief_id(candidate.text, candidate.source)
+            if store.get_belief(belief_id) is not None:
+                skipped_existing += 1
+                continue
+            store.record_ingest(
+                source_kind=INGEST_SOURCE_FILESYSTEM,
+                source_path=candidate.source,
+                raw_text=candidate.text,
+                derived_belief_ids=[belief_id],
+                ts=created_at,
+            )
+            store.insert_belief(Belief(
+                id=belief_id,
+                content=candidate.text,
+                content_hash=_content_hash(candidate.text),
+                alpha=route.alpha,
+                beta=route.beta,
+                type=route.belief_type,
+                lock_level=LOCK_NONE,
+                locked_at=None,
+                demotion_pressure=0,
+                created_at=created_at,
+                last_retrieved_at=None,
+                origin=route.origin,
+            ))
+            inserted += 1
+            # Audit row for fallback insertions (spec § 7.2 step 3).
+            if route.audit_source is not None:
+                store.insert_feedback_event(
+                    belief_id=belief_id,
+                    valence=0.0,
+                    source=route.audit_source,
+                    created_at=timestamp,
+                )
+        else:
+            # Regex path: delegate belief derivation to pure derive().
+            out = derive(DerivationInput(
+                raw_text=candidate.text,
+                source_kind=INGEST_SOURCE_FILESYSTEM,
+                source_path=candidate.source,
+                ts=created_at,
+            ))
+            if out.belief is None:
+                skipped_non_persisting += 1
+                continue
+            belief_id = out.belief.id
+            if store.get_belief(belief_id) is not None:
+                skipped_existing += 1
+                continue
+            store.record_ingest(
+                source_kind=INGEST_SOURCE_FILESYSTEM,
+                source_path=candidate.source,
+                raw_text=candidate.text,
+                derived_belief_ids=[belief_id],
+                ts=created_at,
+            )
+            store.insert_belief(out.belief)
+            inserted += 1
 
     return ScanResult(
         inserted=inserted,
@@ -279,24 +299,6 @@ def scan_repo(
         skipped_non_persisting=skipped_non_persisting,
         total_candidates=len(candidates),
         skipped_noise=skipped_noise,
-    )
-
-
-def _route_from_regex(candidate: SentenceCandidate) -> LLMRoute:
-    """Build an LLMRoute from the regex `classify_sentence` output.
-
-    Default-ON path used when no LLM router is supplied. Origin is
-    fixed at ORIGIN_AGENT_INFERRED (legacy v1.0/v1.2 behaviour);
-    fixing this is the LLM-classify path's job, not the regex path.
-    """
-    result = classify_sentence(candidate.text, candidate.source)
-    return LLMRoute(
-        belief_type=result.belief_type,
-        origin=ORIGIN_AGENT_INFERRED,
-        persist=result.persist,
-        alpha=result.alpha,
-        beta=result.beta,
-        audit_source=None,
     )
 
 
