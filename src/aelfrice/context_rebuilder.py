@@ -287,24 +287,36 @@ def rebuild_v14(
     session_ids: set[str] = {b.id for b in session_hits}
 
     # Pack, accounting tokens. L0 always survives.
+    # Output-level content_hash dedup (#281): different belief_ids can
+    # share a content_hash (re-ingest before #219, multi-source ingest,
+    # or any future dedup gap). Without this, the rebuild block can
+    # surface 10+ identical lines. Locked wins (it's prepended whole);
+    # subsequent tiers skip any hash already packed.
     used: int = sum(_estimate_belief_tokens(b) for b in locked)
     out: list[Belief] = list(locked)
+    seen_hashes: set[str] = {b.content_hash for b in locked}
 
     for b in session_hits:
+        if b.content_hash in seen_hashes:
+            continue
         cost = _estimate_belief_tokens(b)
         if used + cost > token_budget:
             break
         out.append(b)
         used += cost
+        seen_hashes.add(b.content_hash)
 
     for b in non_locked_hits:
         if b.id in session_ids:
             continue  # already surfaced above
+        if b.content_hash in seen_hashes:
+            continue
         cost = _estimate_belief_tokens(b)
         if used + cost > token_budget:
             break
         out.append(b)
         used += cost
+        seen_hashes.add(b.content_hash)
 
     return _format_block(
         recent_turns, out, session_ids, token_budget=token_budget,
