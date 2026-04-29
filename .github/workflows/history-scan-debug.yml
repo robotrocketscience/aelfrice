@@ -1,0 +1,51 @@
+name: History Scan Debug (#272)
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  history-scan-debug:
+    if: startsWith(github.head_ref, 'ci/issue-272')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch all branches
+        run: git fetch --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
+      - name: Decode patterns
+        env:
+          PATTERNS: ${{ secrets.SCAN_RULES_B64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PATTERNS:-}" ]; then echo "::error::SCAN_RULES_B64 not configured"; exit 1; fi
+          echo "$PATTERNS" | base64 -d > /tmp/p
+          [ -s /tmp/p ] || { echo "::error::empty"; exit 1; }
+      - name: Diagnose history hits
+        run: |
+          set -euo pipefail
+          git log --all --remotes='origin/*' --format='%H%n%an%n%ae%n%cn%n%ce%n%s%n%b' > /tmp/h
+          git log --all --remotes='origin/*' -p > /tmp/d
+          idx=0
+          while IFS= read -r p; do
+            idx=$((idx+1))
+            [ -z "$p" ] && continue
+            [[ "$p" =~ ^# ]] && continue
+            # head/body hits: count only, no paths
+            head_hits=$(grep -Ec "$p" /tmp/h || true)
+            # diff hits: extract unique file paths from preceding "+++ b/<path>" markers
+            diff_hits=$(grep -Ec "$p" /tmp/d || true)
+            files=$(awk -v pat="$p" '
+              /^\+\+\+ b\// { f=substr($0,7); next }
+              { if (match($0, pat)) print f }
+            ' /tmp/d | sort -u | head -20 | tr "\n" "," | sed "s/,$//")
+            if [ "$head_hits" -gt 0 ] || [ "$diff_hits" -gt 0 ]; then
+              echo "pattern #${idx}: head_hits=${head_hits} diff_hits=${diff_hits} files=[${files}]"
+            fi
+          done < /tmp/p
+          rm -f /tmp/p /tmp/h /tmp/d
