@@ -548,16 +548,21 @@ def test_reachability_check_flags_orphan_beliefs(
     assert not report.all_reachable
 
 
-def test_full_equality_replay_not_implemented_in_v2_0_slice(
+def test_full_equality_replay_implemented_in_v2x(
     store: MemoryStore,
 ) -> None:
-    """Hypothesis: replay_full_equality is wired but explicitly not
-    implemented in this slice (v2.x deliverable). Falsifiable if the
-    function silently claims success."""
+    """Hypothesis: replay_full_equality is fully implemented (#262).
+    An empty store returns implemented=True with all-zero counts.
+    Falsifiable if implemented is False or any counter is non-zero."""
     from aelfrice.replay import replay_full_equality
     report = replay_full_equality(store)
-    assert report.implemented is False
+    assert report.implemented is True
     assert report.excluded_legacy_unknown == 0
+    assert report.total_log_rows == 0
+    assert report.matched == 0
+    assert report.mismatched == 0
+    assert report.derived_orphan == 0
+    assert report.canonical_orphan == 0
 
 
 def test_ingest_latency_within_budget(store: MemoryStore) -> None:
