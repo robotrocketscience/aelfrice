@@ -3,8 +3,6 @@ name: release-drafter
 on:
   push:
     branches: [main]
-  pull_request:
-    types: [opened, reopened, synchronize, edited, labeled, unlabeled]
   workflow_dispatch:
 
 permissions:
