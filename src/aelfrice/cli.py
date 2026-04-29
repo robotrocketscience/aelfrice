@@ -1068,6 +1068,83 @@ def _cmd_bench(args: argparse.Namespace, out: object) -> int:
             return 2
         return longmemeval_score.score(args.rest[0], args.rest[1], args.rest[2])
 
+    if target == "posterior-residual":
+        try:
+            from benchmarks.posterior_ranking import run as _pr_run
+        except ModuleNotFoundError:
+            print(
+                "aelf bench posterior-residual requires the source tree "
+                "(benchmarks/ is dev-only and not shipped in the wheel). "
+                "Clone the repo and run from the repo root.",
+                file=out,  # type: ignore[arg-type]
+            )
+            return 2
+        # The bench subparser uses nargs=REMAINDER for `rest`, which swallows
+        # all tokens including named flags. Parse posterior-residual flags
+        # here rather than via argparse pre-declared args.
+        import argparse as _ap
+        _pr_parser = _ap.ArgumentParser(
+            prog="aelf bench posterior-residual",
+            add_help=False,
+        )
+        _pr_parser.add_argument("--fixtures", dest="pr_fixtures", default=None)
+        _pr_parser.add_argument("--seeds", dest="pr_seeds", type=int, default=5)
+        _pr_parser.add_argument(
+            "--mrr-threshold", dest="pr_mrr_threshold", type=float, default=0.05,
+        )
+        _pr_parser.add_argument(
+            "--ece-threshold", dest="pr_ece_threshold", type=float, default=0.10,
+        )
+        _pr_parser.add_argument(
+            "--json", dest="pr_json", action="store_true",
+        )
+        _pr_ns, _ = _pr_parser.parse_known_args(args.rest)
+        from pathlib import Path as _Path
+        _default_fixtures = (
+            _Path(__file__).parent.parent.parent
+            / "benchmarks"
+            / "posterior_ranking"
+            / "fixtures"
+            / "default.jsonl"
+        )
+        _fixtures_path = (
+            _Path(_pr_ns.pr_fixtures) if _pr_ns.pr_fixtures else _default_fixtures
+        )
+        result = _pr_run.run(
+            _fixtures_path,
+            n_seeds=_pr_ns.pr_seeds,
+            mrr_threshold=_pr_ns.pr_mrr_threshold,
+            ece_threshold=_pr_ns.pr_ece_threshold,
+        )
+
+        if _pr_ns.pr_json:
+            from dataclasses import asdict as _asdict
+            print(
+                json.dumps({
+                    "mrr": _asdict(result["mrr"]),
+                    "ece": _asdict(result["ece"]),
+                    "overall_pass": result["overall_pass"],
+                }, indent=2),
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            mrr = result["mrr"]
+            ece = result["ece"]
+            print(
+                f"posterior-residual eval\n"
+                f"  MRR uplift:  {mrr.mean_uplift:+.4f}  "
+                f"(±2σ: [{mrr.uplift_lo:+.4f}, {mrr.uplift_hi:+.4f}])  "
+                f"threshold={mrr.pass_threshold:+.2f}  "
+                f"{'PASS' if mrr.passed else 'FAIL'}\n"
+                f"  ECE:         {ece.ece:.4f}  "
+                f"threshold={ece.pass_threshold:.2f}  "
+                f"n={ece.n_total}  "
+                f"{'PASS' if ece.passed else 'FAIL'}\n"
+                f"  overall:     {'PASS' if result['overall_pass'] else 'FAIL'}",
+                file=out,  # type: ignore[arg-type]
+            )
+        return 0 if result["overall_pass"] else 1
+
     if target in _BENCH_INERT_TARGETS:
         phase = _BENCH_INERT_TARGETS[target]
         print(
@@ -1082,7 +1159,7 @@ def _cmd_bench(args: argparse.Namespace, out: object) -> int:
     print(
         f"aelf bench: unknown target {target!r}.\n"
         f"Known targets: synthetic (default), verify-clean, "
-        f"longmemeval-score, "
+        f"longmemeval-score, posterior-residual, "
         f"{', '.join(sorted(_BENCH_INERT_TARGETS))}.",
         file=out,  # type: ignore[arg-type]
     )
@@ -2887,6 +2964,32 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_bench.add_argument(
         "--top-k", type=int, default=5,
         help="(synthetic only) retrieval depth for hit@k (default 5)",
+    )
+    # posterior-residual flags (Slice 1 of #151 eval harness).
+    p_bench.add_argument(
+        "--fixtures", dest="pr_fixtures", default=None, metavar="PATH",
+        help=(
+            "(posterior-residual) path to a JSONL fixture file. "
+            "Default: benchmarks/posterior_ranking/fixtures/default.jsonl"
+        ),
+    )
+    p_bench.add_argument(
+        "--seeds", dest="pr_seeds", type=int, default=None, metavar="N",
+        help="(posterior-residual) number of random seeds for multi-seed MRR run (default 5)",
+    )
+    p_bench.add_argument(
+        "--mrr-threshold", dest="pr_mrr_threshold", type=float, default=None,
+        metavar="F",
+        help="(posterior-residual) MRR uplift pass threshold (default 0.05)",
+    )
+    p_bench.add_argument(
+        "--ece-threshold", dest="pr_ece_threshold", type=float, default=None,
+        metavar="F",
+        help="(posterior-residual) ECE pass threshold (default 0.10)",
+    )
+    p_bench.add_argument(
+        "--json", dest="pr_json", action="store_true",
+        help="(posterior-residual) emit machine-readable JSON instead of human-readable text",
     )
     p_bench.set_defaults(func=_cmd_bench)
 
