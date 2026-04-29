@@ -24,6 +24,7 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_TYPES,
     EDGE_VALENCE,
     INGEST_SOURCE_KINDS,
+    INGEST_SOURCE_LEGACY_UNKNOWN,
     ONBOARD_STATE_COMPLETED,
     ONBOARD_STATE_PENDING,
     Belief,
@@ -257,6 +258,12 @@ SCHEMA_META_VERSION_VECTOR_BACKFILL: Final[str] = (
 SCHEMA_META_LOG_VERSION_VECTOR_BACKFILL: Final[str] = (
     "log_version_vector_backfill_complete"
 )
+# v2.x #263. Marker for the one-shot migration that synthesizes a
+# `source_kind=legacy_unknown` ingest_log row for every pre-v2.0 belief
+# (i.e. beliefs with no log row pointing at them when the migration
+# runs). ISO timestamp on completion; absence triggers the migration on
+# next open.
+SCHEMA_META_LEGACY_LOG_SYNTH: Final[str] = "legacy_log_synth_complete"
 
 # v1.0 -> v1.2 column additions. Each ALTER runs after _SCHEMA. ALTERs
 # are idempotent: a duplicate-column OperationalError on a v1.2-fresh
@@ -491,6 +498,10 @@ class MemoryStore:
         # `{local_scope: 1}` on every pre-existing belief and edge
         # the first time a v1.5+ binary opens this DB. Idempotent.
         self._maybe_backfill_version_vectors()
+        # v2.x #263 legacy log synthesis. Must run BEFORE the log
+        # version-vector backfill so synthesized rows are included in
+        # the backfill's INSERT OR IGNORE pass on the same open.
+        self._maybe_synthesize_legacy_log_rows()
         # v2.0 #205 ingest_log version-vector backfill. Same shape
         # as #204 but for the parallel-write log table. Idempotent.
         self._maybe_backfill_log_version_vectors()
@@ -691,6 +702,84 @@ class MemoryStore:
         self._conn.commit()
         self.set_schema_meta(
             SCHEMA_META_LOG_VERSION_VECTOR_BACKFILL,
+            datetime.now(timezone.utc).isoformat(),
+        )
+        return inserted
+
+    def _maybe_synthesize_legacy_log_rows(self) -> int:
+        """One-shot migration: synthesize a `source_kind=legacy_unknown`
+        ingest_log row for every belief that has no log row pointing at it.
+
+        v2.x #263. Pre-v2.0 stores accumulate beliefs through ingest
+        paths that pre-date the parallel-write log; those beliefs have
+        no `derived_belief_ids` coverage and are flagged as orphans by
+        the reachability check. This migration backfills exactly one
+        synthesized row per orphan belief, using:
+          - ts          = belief.created_at
+          - raw_text    = belief.content
+          - session_id  = belief.session_id (NULL when absent)
+          - source_path = NULL
+          - derived_belief_ids = [belief.id]
+          - all other nullable columns = NULL
+
+        Idempotent: the `SCHEMA_META_LEGACY_LOG_SYNTH` marker is stamped
+        on completion; subsequent opens short-circuit on the marker and
+        return 0 without touching any rows.
+
+        Must run BEFORE `_maybe_backfill_log_version_vectors` in `__init__`
+        so the synthesized rows get their version-vector stamp on the same
+        open.
+
+        Returns the number of synthesized rows inserted.
+        """
+        if self.get_schema_meta(SCHEMA_META_LEGACY_LOG_SYNTH):
+            return 0
+        # Find beliefs whose id does not appear in any
+        # derived_belief_ids JSON array. json_each is available in
+        # SQLite ≥ 3.38 (standard in Python 3.12+). The subquery
+        # builds the set of covered belief ids from all log rows.
+        cur = self._conn.execute(
+            """
+            SELECT b.id, b.content, b.created_at, b.session_id
+            FROM beliefs b
+            WHERE b.id NOT IN (
+                SELECT je.value
+                FROM ingest_log il, json_each(il.derived_belief_ids) je
+                WHERE il.derived_belief_ids IS NOT NULL
+            )
+            """
+        )
+        orphan_rows = cur.fetchall()
+        inserted = 0
+        for row in orphan_rows:
+            belief_id = str(row["id"])
+            log_id = ulid()
+            ts = str(row["created_at"])
+            raw_text = str(row["content"])
+            session_id = row["session_id"]
+            self._conn.execute(
+                """
+                INSERT INTO ingest_log (
+                    id, ts, source_kind, source_path, raw_text, raw_meta,
+                    derived_belief_ids, derived_edge_ids,
+                    classifier_version, rule_set_hash, session_id
+                )
+                VALUES (?, ?, ?, NULL, ?, NULL, ?, NULL, NULL, NULL, ?)
+                """,
+                (
+                    log_id,
+                    ts,
+                    INGEST_SOURCE_LEGACY_UNKNOWN,
+                    raw_text,
+                    json.dumps([belief_id]),
+                    session_id,
+                ),
+            )
+            self._bump_log_version(log_id)
+            inserted += 1
+        self._conn.commit()
+        self.set_schema_meta(
+            SCHEMA_META_LEGACY_LOG_SYNTH,
             datetime.now(timezone.utc).isoformat(),
         )
         return inserted
