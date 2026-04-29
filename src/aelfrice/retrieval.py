@@ -1078,6 +1078,25 @@ def retrieve(
         bm25f_used=bm25f_on,
         posterior_weight=weight,
     )
+
+    # v1.6.0 #191: enqueue one retrieval_exposure row per surfaced
+    # belief for the deferred-feedback sweeper. Default-on; opt-out
+    # via [implicit_feedback] enqueue_on_retrieve = false. Fail-soft:
+    # any DB error here is logged but never breaks retrieval.
+    if out:
+        try:
+            from aelfrice.deferred_feedback import (
+                enqueue_retrieval_exposures,
+                is_enqueue_on_retrieve_enabled,
+            )
+            if is_enqueue_on_retrieve_enabled():
+                enqueue_retrieval_exposures(store, [b.id for b in out])
+        except Exception as exc:  # noqa: BLE001 - retrieval must never raise
+            print(
+                f"aelfrice retrieval: deferred-feedback enqueue failed: {exc}",
+                file=sys.stderr,
+            )
+
     return out
 
 

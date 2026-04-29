@@ -2379,6 +2379,67 @@ def _print_doctor_store_check(out: object) -> None:
         )
 
 
+def _cmd_sweep_feedback(args: argparse.Namespace, out: object) -> int:
+    """Process the deferred-feedback queue (#191).
+
+    Applies +epsilon to the alpha of each belief whose retrieval-
+    exposure row has cleared its grace window without a contradicting
+    explicit-feedback event. Cancels rows where an explicit signal
+    landed within the grace window. Idempotent.
+
+    Exits 0 unless `--strict` is passed and an exception escapes.
+    Without `--strict`, errors are logged to stderr and the command
+    exits 0 so the subcommand is safe to wire into cron.
+    """
+    from aelfrice.deferred_feedback import (
+        resolve_epsilon,
+        resolve_grace_seconds,
+        sweep_deferred_feedback,
+    )
+
+    grace = (
+        int(args.grace_seconds)
+        if args.grace_seconds is not None
+        else resolve_grace_seconds()
+    )
+    eps = (
+        float(args.epsilon)
+        if args.epsilon is not None
+        else resolve_epsilon()
+    )
+    limit = int(args.limit) if args.limit is not None else 10_000
+
+    store = _open_store()
+    try:
+        result = sweep_deferred_feedback(
+            store,
+            grace_seconds=grace,
+            epsilon=eps,
+            limit=limit,
+        )
+    except Exception as exc:  # noqa: BLE001 - cron-safe by default
+        print(f"aelf sweep-feedback: {exc}", file=sys.stderr)
+        if getattr(args, "strict", False):
+            return 1
+        return 0
+    finally:
+        try:
+            store.close()
+        except Exception:  # pragma: no cover
+            pass
+
+    print(
+        f"sweep-feedback: applied={result.applied} "
+        f"cancelled={result.cancelled} "
+        f"skipped_no_belief={result.skipped_no_belief} "
+        f"pending_in_grace={result.pending_unmet_grace} "
+        f"epsilon={result.epsilon_used} "
+        f"grace_seconds={result.grace_seconds_used}",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
 def _cmd_session_delta(args: argparse.Namespace, out: object) -> int:
     """Compute per-session telemetry and append one v=1 row.
 
@@ -2883,6 +2944,41 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_doctor.set_defaults(func=_cmd_doctor)
+
+    p_sweep_feedback = sub.add_parser(
+        "sweep-feedback",
+        help=(
+            "process deferred retrieval-exposure feedback queue (#191): "
+            "apply +epsilon to beliefs whose grace window elapsed without "
+            "a contradicting explicit signal"
+        ),
+    )
+    p_sweep_feedback.add_argument(
+        "--grace-seconds", type=int, default=None,
+        help=(
+            "override grace window in seconds. Default: "
+            "AELFRICE_IMPLICIT_FEEDBACK_GRACE_SECONDS env > "
+            "[implicit_feedback] grace_window_seconds in .aelfrice.toml > "
+            "1800"
+        ),
+    )
+    p_sweep_feedback.add_argument(
+        "--epsilon", type=float, default=None,
+        help=(
+            "override per-row alpha increment. Default: "
+            "AELFRICE_IMPLICIT_FEEDBACK_EPSILON env > "
+            "[implicit_feedback] epsilon in .aelfrice.toml > 0.05"
+        ),
+    )
+    p_sweep_feedback.add_argument(
+        "--limit", type=int, default=None,
+        help="max queue rows to process per invocation (default 10000)",
+    )
+    p_sweep_feedback.add_argument(
+        "--strict", action="store_true",
+        help="exit non-zero on any exception (default: log + exit 0 for cron)",
+    )
+    p_sweep_feedback.set_defaults(func=_cmd_sweep_feedback)
 
     p_setup = sub.add_parser(
         "setup",
