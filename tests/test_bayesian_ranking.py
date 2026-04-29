@@ -491,3 +491,76 @@ def test_bm25_floor_is_strictly_positive_and_small() -> None:
     not to contaminate any real BM25 score (~1e-6 typical)."""
     assert PARTIAL_BAYESIAN_BM25_FLOOR > 0.0
     assert PARTIAL_BAYESIAN_BM25_FLOOR < 1e-6
+
+
+# --- Heat-kernel composition (#151 slice 2) -----------------------------
+
+
+def test_heat_kernel_default_one_is_neutral() -> None:
+    """Default heat_kernel=1.0 contributes log(1)=0 — score must
+    match the pre-slice-2 contract for every (bm25, posterior)."""
+    for bm25_raw in (-3.0, -1.0, -0.001, 0.0):
+        for pw in (0.0, 0.5, 1.0):
+            base = partial_bayesian_score(bm25_raw, 1.0, 1.0, pw)
+            with_default = partial_bayesian_score(
+                bm25_raw, 1.0, 1.0, pw, heat_kernel=1.0,
+            )
+            assert with_default == base
+
+
+def test_heat_kernel_log_additive_at_unit_weight() -> None:
+    """At heat_kernel_weight=1.0 the heat term adds log(heat_kernel)
+    on top of the bm25+posterior baseline."""
+    bm25_raw, alpha, beta, pw = -1.0, 2.0, 1.0, 0.5
+    heat = 0.4
+    base = partial_bayesian_score(bm25_raw, alpha, beta, pw)
+    composed = partial_bayesian_score(
+        bm25_raw, alpha, beta, pw, heat_kernel=heat,
+    )
+    assert abs(composed - (base + math.log(heat))) < 1e-12
+
+
+def test_heat_kernel_weight_zero_collapses_term() -> None:
+    """heat_kernel_weight=0.0 must drop the heat term regardless
+    of heat_kernel value — same byte path as heat_kernel=1.0."""
+    bm25_raw, alpha, beta, pw = -2.0, 1.5, 1.5, 0.5
+    base = partial_bayesian_score(bm25_raw, alpha, beta, pw)
+    weighted = partial_bayesian_score(
+        bm25_raw, alpha, beta, pw,
+        heat_kernel=0.01, heat_kernel_weight=0.0,
+    )
+    assert weighted == base
+
+
+def test_heat_kernel_floor_prevents_log_zero() -> None:
+    """A pathological heat_kernel <= 0 must be floored to
+    PARTIAL_BAYESIAN_BM25_FLOOR rather than raising or producing
+    -inf. Defence-in-depth: graph_spectral.heat_kernel_safe is the
+    primary guard, this floor is the second."""
+    score_zero = partial_bayesian_score(
+        -1.0, 1.0, 1.0, posterior_weight=0.0, heat_kernel=0.0,
+    )
+    score_neg = partial_bayesian_score(
+        -1.0, 1.0, 1.0, posterior_weight=0.0, heat_kernel=-0.5,
+    )
+    expected = math.log(1.0) + math.log(PARTIAL_BAYESIAN_BM25_FLOOR)
+    assert abs(score_zero - expected) < 1e-12
+    assert abs(score_neg - expected) < 1e-12
+
+
+def test_heat_kernel_monotone_in_authority() -> None:
+    """For fixed bm25/posterior, higher heat-kernel authority must
+    yield a strictly higher composed score (assuming weight > 0).
+    This is what makes graph-central beliefs rank above peripheral
+    ones with the same lexical match."""
+    bm25_raw, alpha, beta = -1.0, 1.0, 1.0
+    s_low = partial_bayesian_score(
+        bm25_raw, alpha, beta, posterior_weight=0.0, heat_kernel=0.1,
+    )
+    s_mid = partial_bayesian_score(
+        bm25_raw, alpha, beta, posterior_weight=0.0, heat_kernel=0.5,
+    )
+    s_high = partial_bayesian_score(
+        bm25_raw, alpha, beta, posterior_weight=0.0, heat_kernel=2.0,
+    )
+    assert s_low < s_mid < s_high

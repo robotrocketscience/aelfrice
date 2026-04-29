@@ -168,10 +168,17 @@ def partial_bayesian_score(
     alpha: float,
     beta: float,
     posterior_weight: float = DEFAULT_POSTERIOR_WEIGHT,
+    heat_kernel: float = 1.0,
+    heat_kernel_weight: float = 1.0,
 ) -> float:
-    """v1.3 partial Bayesian-weighted retrieval score.
+    """v1.3 partial Bayesian-weighted retrieval score, optionally
+    composed with a heat-kernel authority term (#151 slice 2).
 
-    `score = log(max(-bm25_raw, EPS)) + posterior_weight * log(posterior_mean)`
+    Full formula::
+
+        score = log(max(-bm25_raw, EPS))
+              + heat_kernel_weight * log(max(heat_kernel, EPS))
+              + posterior_weight   * log(posterior_mean)
 
     `bm25_raw` is FTS5's signed score (non-positive: SQLite returns
     smaller-magnitude-negative for stronger matches). We negate to
@@ -179,9 +186,18 @@ def partial_bayesian_score(
     (`PARTIAL_BAYESIAN_BM25_FLOOR`) prevents `log(0)` for non-
     matches without contaminating any real-match ordering.
 
-    `posterior_weight = 0.0` collapses the second term to zero and
-    makes the score a monotone function of `-bm25_raw` — byte-
-    identical to v1.0.x `ORDER BY bm25(beliefs_fts)`.
+    `heat_kernel` is the per-belief authority score from
+    ``graph_spectral.heat_kernel_score``. It MUST be a strictly
+    positive value already passed through ``heat_kernel_safe`` (the
+    floor here is identical, defence-in-depth). The default ``1.0``
+    makes ``log(1) == 0``, so callers that have no eigenbasis
+    available pay no cost and produce byte-identical scores to the
+    pre-slice-2 contract.
+
+    `posterior_weight = 0.0` AND ``heat_kernel == 1.0`` collapses
+    the score to ``log(-bm25_raw)``, monotone with ``-bm25_raw``
+    ascending — byte-identical to v1.0.x ``ORDER BY
+    bm25(beliefs_fts)``.
 
     `posterior_mean` reuses the existing module-level helper, which
     returns `α / (α + β)` (Jeffreys prior, reads 0.5 for unobserved
@@ -192,12 +208,15 @@ def partial_bayesian_score(
     sort-descending callers).
     """
     relevance_pos = max(-bm25_raw, PARTIAL_BAYESIAN_BM25_FLOOR)
-    log_bm25 = math.log(relevance_pos)
+    score = math.log(relevance_pos)
+    if heat_kernel != 1.0 and heat_kernel_weight != 0.0:
+        heat_safe = max(heat_kernel, PARTIAL_BAYESIAN_BM25_FLOOR)
+        score += heat_kernel_weight * math.log(heat_safe)
     if posterior_weight == 0.0:
-        return log_bm25
+        return score
     p = posterior_mean(alpha, beta)
     # `posterior_mean` returns 0.5 in the degenerate (alpha+beta<=0)
     # case, so `p > 0` is guaranteed; floor defensively for the
     # pathological `alpha = 0` operator-fed case to avoid `log(0)`.
     p_safe = p if p > 0.0 else PARTIAL_BAYESIAN_BM25_FLOOR
-    return log_bm25 + posterior_weight * math.log(p_safe)
+    return score + posterior_weight * math.log(p_safe)
