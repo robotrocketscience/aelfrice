@@ -566,7 +566,11 @@ def pre_compact(
         p = db_path()
         if str(p) != ":memory:" and not p.exists():
             return 0
-        body = _rebuild_and_format(recent, budget)
+        body = _rebuild_and_format(
+            recent,
+            budget,
+            rebuild_log_enabled=config.rebuild_log_enabled,
+        )
         if body:
             sout.write(emit_pre_compact_envelope(body))
     except Exception:  # non-blocking: surface but do not fail
@@ -622,11 +626,39 @@ def _read_recent_for_pre_compact(
 
 
 def _rebuild_and_format(
-    recent: list[RecentTurn], token_budget: int
+    recent: list[RecentTurn],
+    token_budget: int,
+    *,
+    rebuild_log_enabled: bool = True,
 ) -> str:
+    """Open the store and run the v1.4 rebuild.
+
+    #288 phase-1a: also derive the per-session rebuild_log path from
+    the brain-graph DB location and plumb it into `rebuild_v14`. Log
+    writing is fail-soft inside `rebuild_v14` itself; we only decline
+    to compute a path when there's no on-disk store or no session id
+    to key the file on.
+    """
+    from aelfrice.context_rebuilder import (  # noqa: PLC0415
+        _latest_session_id,
+        _rebuild_log_dir_for_db,
+    )
+
     store = _open_store()
+    p = db_path()
+    sid = _latest_session_id(recent)
+    log_path: Path | None = None
+    if str(p) != ":memory:" and sid:
+        log_path = _rebuild_log_dir_for_db(p) / f"{sid}.jsonl"
     try:
-        return rebuild_v14(recent, store, token_budget=token_budget)
+        return rebuild_v14(
+            recent,
+            store,
+            token_budget=token_budget,
+            rebuild_log_path=log_path,
+            rebuild_log_enabled=rebuild_log_enabled,
+            session_id_for_log=sid,
+        )
     finally:
         store.close()
 
