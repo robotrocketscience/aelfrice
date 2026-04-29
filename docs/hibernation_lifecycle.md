@@ -221,7 +221,7 @@ Once this memo is ratified, the implementation is roughly three PRs:
    predicate evaluation, and the two sweeper entry points. Pytest
    coverage of the trigger conjunction, the grammar (round-trip,
    unknown-key rejection, every clause matched/missed), the wake
-   path. ~queen-tier implementation, ~rook-tier tests.
+   path. Implementation needs design judgment; tests are mechanical.
 2. `aelf doctor --hibernate` flag wiring + retrieval-pipeline filter
    + `UserPromptSubmit` `wake_pass` invocation. Touches the existing
    doctor CLI and `hook.py`.
