@@ -468,3 +468,131 @@ def test_has_drift_false_when_legacy_backfill_only(store: MemoryStore) -> None:
     assert report.matched == 1
     assert report.has_drift is False
 
+
+
+# ---------------------------------------------------------------------------
+# CLI integration
+# ---------------------------------------------------------------------------
+
+
+def test_cli_doctor_replay_exit_0_clean_store(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hypothesis: `aelf doctor --replay` exits 0 on a store with no drift.
+    Falsifiable by any non-zero exit code."""
+    import io
+    from aelfrice.cli import main
+
+    db = str(tmp_path / "brain.db")
+    monkeypatch.setenv("AELFRICE_DB", db)
+
+    # Ingest a belief so total_log_rows >= 1.
+    s = MemoryStore(db)
+    _ingest(s, _FACTUAL_SENTENCE)
+    s.close()
+
+    out = io.StringIO()
+    rc = main(["doctor", "--replay"], out=out)
+    assert rc == 0
+
+
+def test_cli_doctor_replay_exit_1_on_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hypothesis: `aelf doctor --replay` exits 1 when mismatched > 0.
+    Falsifiable by exit code 0."""
+    import io
+    from aelfrice.cli import main
+
+    db = str(tmp_path / "brain.db")
+    monkeypatch.setenv("AELFRICE_DB", db)
+
+    s = MemoryStore(db)
+    bid = _ingest(s, _FACTUAL_SENTENCE)
+    s._conn.execute(
+        "UPDATE beliefs SET content_hash = 'CORRUPTED' WHERE id = ?", (bid,)
+    )
+    s._conn.commit()
+    s.close()
+
+    out = io.StringIO()
+    rc = main(["doctor", "--replay"], out=out)
+    assert rc == 1
+
+
+def test_cli_doctor_replay_max_drift_exit_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hypothesis: `aelf doctor --replay --max-drift 5` exits 0 when
+    mismatched + derived_orphan <= 5.
+    Falsifiable by exit code != 0."""
+    import io
+    from aelfrice.cli import main
+
+    db = str(tmp_path / "brain.db")
+    monkeypatch.setenv("AELFRICE_DB", db)
+
+    s = MemoryStore(db)
+    # Create 3 mismatches.
+    for i in range(3):
+        raw = f"The server process {i} listens on port {8000 + i} by default."
+        inp = DerivationInput(
+            raw_text=raw,
+            source_kind=INGEST_SOURCE_FILESYSTEM,
+            source_path="test:source",
+            ts=_TS,
+        )
+        out_d = derive(inp)
+        if out_d.belief is None:
+            continue
+        b = out_d.belief
+        s.record_ingest(
+            source_kind=INGEST_SOURCE_FILESYSTEM,
+            source_path="test:source",
+            raw_text=raw,
+            derived_belief_ids=[b.id],
+            ts=_TS,
+        )
+        s.insert_belief(b)
+        s._conn.execute(
+            "UPDATE beliefs SET content_hash = 'BAD' || id WHERE id = ?", (b.id,)
+        )
+    s._conn.commit()
+    s.close()
+
+    out = io.StringIO()
+    rc = main(["doctor", "--replay", "--max-drift", "5"], out=out)
+    assert rc == 0
+
+
+def test_cli_doctor_replay_output_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hypothesis: `aelf doctor --replay` prints one summary line per bucket
+    and a drift section when drift > 0.
+    Falsifiable by missing expected output lines."""
+    import io
+    from aelfrice.cli import main
+
+    db = str(tmp_path / "brain.db")
+    monkeypatch.setenv("AELFRICE_DB", db)
+
+    s = MemoryStore(db)
+    bid = _ingest(s, _FACTUAL_SENTENCE)
+    s._conn.execute(
+        "UPDATE beliefs SET content_hash = 'CORRUPTED' WHERE id = ?", (bid,)
+    )
+    s._conn.commit()
+    s.close()
+
+    buf = io.StringIO()
+    main(["doctor", "--replay"], out=buf)
+    text = buf.getvalue()
+
+    # Summary lines present.
+    assert "matched:" in text
+    assert "mismatched:" in text
+    assert "derived_orphan:" in text
+    assert "canonical_orphan:" in text
+    # Drift section present.
+    assert "drift" in text.lower()

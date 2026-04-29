@@ -2118,6 +2118,57 @@ def _cmd_regime(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _print_replay_report(
+    report: object,
+    out: object,
+) -> None:
+    """Print a human-readable summary of a FullEqualityReport.
+
+    Format (stable — tests pin specific lines):
+
+        replay full-equality report
+        ---------------------------
+        log rows considered:       <n>
+        excluded (legacy_unknown): <n>
+        matched:                   <n>
+        mismatched:                <n>
+        derived_orphan:            <n>
+        canonical_orphan:          <n>
+        legacy_origin_backfill:    <n>
+        feedback_derived_edges:    <n>   (informational)
+
+    If drift > 0, a "drift examples" section follows with one sub-block
+    per non-empty bucket.
+    """
+    from aelfrice.replay import FullEqualityReport
+    assert isinstance(report, FullEqualityReport)
+    lines = [
+        "replay full-equality report",
+        "---------------------------",
+        f"log rows considered:       {report.total_log_rows}",
+        f"excluded (legacy_unknown): {report.excluded_legacy_unknown}",
+        f"matched:                   {report.matched}",
+        f"mismatched:                {report.mismatched}",
+        f"derived_orphan:            {report.derived_orphan}",
+        f"canonical_orphan:          {report.canonical_orphan}",
+        f"legacy_origin_backfill:    {report.legacy_origin_backfill}",
+        f"feedback_derived_edges:    {report.feedback_derived_edges}"
+        "   (informational)",
+    ]
+    for line in lines:
+        print(line, file=out)  # type: ignore[arg-type]
+
+    if report.has_drift:
+        print("", file=out)  # type: ignore[arg-type]
+        print("drift examples:", file=out)  # type: ignore[arg-type]
+        for bucket, examples in report.drift_examples.items():
+            if not examples:
+                continue
+            print(f"  [{bucket}]", file=out)  # type: ignore[arg-type]
+            for ex in examples:
+                print(f"    {ex}", file=out)  # type: ignore[arg-type]
+
+
 def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
     """Diagnose hooks + brain-graph health.
 
@@ -2131,6 +2182,11 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
     (issue #206); it bypasses the hooks/graph checks entirely and exits
     after printing the cost/distribution report.
 
+    `--replay` routes to the v2.x full-equality probe (#262); it
+    bypasses the hooks/graph checks and exits after printing the report.
+    Exit 0 if ``mismatched + derived_orphan == 0`` (or <= ``--max-drift``
+    when that flag is set); exit 1 otherwise.
+
     Exit 1 if any structural failure fires in either subcheck;
     informational warnings never trip exit. The v1.2 deprecated alias
     `aelf health` routes here with scope='graph' implicitly via
@@ -2140,6 +2196,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_classify_orphans(args, out)
     if getattr(args, "gc_orphan_feedback", False):
         return _cmd_doctor_gc_orphan_feedback(args, out)
+    if getattr(args, "replay", False):
+        return _cmd_doctor_replay(args, out)
     scope = getattr(args, "scope", None)
     exit_code = 0
     if scope in (None, "hooks"):
@@ -2168,6 +2226,37 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         if graph_exit != 0:
             exit_code = graph_exit
     return exit_code
+
+
+def _cmd_doctor_replay(args: argparse.Namespace, out: object) -> int:
+    """Run the v2.x full-equality replay probe (#262).
+
+    Called from `_cmd_doctor` when ``--replay`` is set.  Opens the
+    store, runs `replay_full_equality`, prints the report, and returns
+    0 or 1 based on drift counts and the ``--max-drift`` threshold.
+    """
+    from aelfrice.replay import replay_full_equality, FullEqualityReport
+
+    max_drift: int | None = getattr(args, "max_drift", None)
+    drift_examples: int = int(getattr(args, "drift_examples", 10) or 10)
+    replay_scope: str = getattr(args, "replay_scope", "all") or "all"
+
+    store = _open_store()
+    try:
+        report = replay_full_equality(
+            store,
+            max_drift=max_drift,
+            drift_examples=drift_examples,
+            scope=replay_scope,  # type: ignore[arg-type]
+        )
+    finally:
+        store.close()
+
+    _print_replay_report(report, out)
+
+    drift_total = report.mismatched + report.derived_orphan
+    threshold = max_drift if max_drift is not None else 0
+    return 0 if drift_total <= threshold else 1
 
 
 def _cmd_doctor_classify_orphans(
@@ -2745,6 +2834,51 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help=(
             "with --gc-orphan-feedback: actually delete the orphan "
             "rows (default: dry-run)."
+        ),
+    )
+    p_doctor.add_argument(
+        "--replay",
+        dest="replay",
+        action="store_true",
+        default=False,
+        help=(
+            "run the v2.x full-equality replay probe (#262): re-derive "
+            "every non-legacy ingest_log row and compare to canonical "
+            "beliefs. Exits 0 when mismatched + derived_orphan == 0 "
+            "(or <= --max-drift N). Bypasses the hooks/graph checks."
+        ),
+    )
+    p_doctor.add_argument(
+        "--max-drift",
+        dest="max_drift",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "with --replay: exit 0 when mismatched + derived_orphan <= N "
+            "instead of requiring exactly 0."
+        ),
+    )
+    p_doctor.add_argument(
+        "--drift-examples",
+        dest="drift_examples",
+        type=int,
+        default=10,
+        metavar="N",
+        help=(
+            "with --replay: maximum representative cases to capture per "
+            "drift bucket (default: 10)."
+        ),
+    )
+    p_doctor.add_argument(
+        "--replay-scope",
+        dest="replay_scope",
+        choices=("all", "since-v2"),
+        default="all",
+        help=(
+            "with --replay: 'all' (default) walks every non-legacy "
+            "ingest_log row; 'since-v2' is equivalent post-#263 migration "
+            "(exists for forward compatibility)."
         ),
     )
     p_doctor.set_defaults(func=_cmd_doctor)
