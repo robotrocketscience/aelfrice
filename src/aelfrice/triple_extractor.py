@@ -252,6 +252,17 @@ def _resolve_or_create_belief(
             session_id=session_id,
         )
         return bid
+    # Cross-source duplicate: same phrase already stored under a
+    # different source_kind. Return the canonical id so callers wire
+    # edges to it instead of creating a parallel row. See #254.
+    cross = store.get_belief_by_content_hash(out.belief.content_hash)
+    if cross is not None:
+        store.record_corroboration(
+            cross.id,
+            source_type=CORROBORATION_SOURCE_COMMIT_INGEST,
+            session_id=session_id,
+        )
+        return cross.id
     # v2.0 #205 parallel-write: log the raw phrase before materialization.
     # source_kind=git because the commit-ingest path emits triples from
     # commit messages; source_path is unknown at this layer (callers

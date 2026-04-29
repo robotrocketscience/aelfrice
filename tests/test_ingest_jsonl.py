@@ -187,11 +187,14 @@ def test_source_label_passed_through(tmp_path: Path) -> None:
     ])
     store = MemoryStore(":memory:")
     try:
-        # Different source labels produce distinct belief ids -> two writes.
+        # Different source labels share content_hash, so the second
+        # ingest dedups against the canonical row from the first
+        # (issue #254). The first call still inserts; the second
+        # records a corroboration and inserts nothing.
         r1 = ingest_jsonl(store, p, source_label="conv-A")
         r2 = ingest_jsonl(store, p, source_label="conv-B")
         assert r1.beliefs_inserted >= 1
-        assert r2.beliefs_inserted >= 1
+        assert r2.beliefs_inserted == 0
     finally:
         store.close()
 

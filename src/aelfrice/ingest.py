@@ -135,6 +135,20 @@ def _ingest_turn_ids(
                     session_id=session_id,
                 )
             continue
+        # Cross-source duplicate: same content already stored under a
+        # different (source, text) pair (e.g. transcript-ingest then
+        # commit-ingest of the same sentence). Record a corroboration
+        # against the canonical id and skip insert. Without this check
+        # the schema admits N rows per content_hash; see #254.
+        existing = store.get_belief_by_content_hash(out.belief.content_hash)
+        if existing is not None:
+            if not bulk:
+                store.record_corroboration(
+                    existing.id,
+                    source_type=CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+                    session_id=session_id,
+                )
+            continue
         # v2.0 #205 parallel-write: log the classifier input before
         # materializing the belief. belief_id is deterministic on
         # (source, sentence) so derived_belief_ids is known up-front.
