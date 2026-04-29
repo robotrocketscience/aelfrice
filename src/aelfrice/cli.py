@@ -75,7 +75,12 @@ from aelfrice.classification import (
     accept_classifications,
     start_onboard_session,
 )
-from aelfrice.doctor import diagnose, format_report
+from aelfrice.doctor import (
+    classify_orphans as _classify_orphans,
+    diagnose,
+    format_orphan_report as _format_orphan_report,
+    format_report,
+)
 from aelfrice.llm_classifier import (
     ENV_API_KEY as _LLM_ENV_API_KEY,
     LLMAuthError as _LLMAuthError,
@@ -2048,11 +2053,17 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
                    locked contradictions).
       - None     → run both (default).
 
+    `--classify-orphans` routes to the targeted reclassification pass
+    (issue #206); it bypasses the hooks/graph checks entirely and exits
+    after printing the cost/distribution report.
+
     Exit 1 if any structural failure fires in either subcheck;
     informational warnings never trip exit. The v1.2 deprecated alias
     `aelf health` routes here with scope='graph' implicitly via
     `_cmd_health`.
     """
+    if getattr(args, "classify_orphans", False):
+        return _cmd_doctor_classify_orphans(args, out)
     scope = getattr(args, "scope", None)
     exit_code = 0
     if scope in (None, "hooks"):
@@ -2081,6 +2092,71 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         if graph_exit != 0:
             exit_code = graph_exit
     return exit_code
+
+
+def _cmd_doctor_classify_orphans(
+    args: argparse.Namespace, out: object
+) -> int:
+    """Run the targeted Haiku reclassification pass for orphan beliefs.
+
+    An orphan is a belief where BOTH of the following are true:
+      - type = 'unknown' (never successfully typed by onboard/ingest)
+      - alpha + beta <= 2 (untouched prior is alpha=1, beta=1; any
+        feedback event pushes the sum above 2)
+
+    Reuses the same `classify_batch` path as `aelf onboard
+    --llm-classify`; no new LLM client is introduced.
+
+    With --dry-run: count and display orphans + before-distribution
+    without making any LLM calls or DB writes.
+    """
+    dry_run = bool(getattr(args, "dry_run", False))
+    max_n_raw = getattr(args, "max", None)
+    max_n: int | None = int(max_n_raw) if max_n_raw is not None else None
+
+    # Gates: SDK importable, API key set.
+    gate = _llm_check_gates(enabled=True, model=_LLMConfig.default().model)
+    if not gate.pass_all and not dry_run:
+        if gate.exit_code is not None:
+            if gate.message:
+                print(gate.message, file=sys.stderr)
+            return gate.exit_code
+
+    api_key = os.environ.get(_LLM_ENV_API_KEY, "")
+    if not api_key and not dry_run:
+        print(
+            f"aelf: {_LLM_ENV_API_KEY} not set; --classify-orphans requires it. "
+            "Pass --dry-run to count orphans without making LLM calls.",
+            file=sys.stderr,
+        )
+        return 1
+
+    cfg = _LLMConfig.default()
+    store = _open_store()
+    try:
+        orphan_report = _classify_orphans(
+            store,
+            api_key=api_key,
+            model=cfg.model,
+            max_tokens=cfg.max_tokens,
+            max_n=max_n,
+            dry_run=dry_run,
+        )
+    except _LLMAuthError as exc:
+        print(
+            f"aelf: Anthropic auth failure ({exc}). No beliefs updated. "
+            f"Verify {_LLM_ENV_API_KEY}.",
+            file=sys.stderr,
+        )
+        return 1
+    except _LLMTokenCapExceeded as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+
+    print(_format_orphan_report(orphan_report), file=out)  # type: ignore[arg-type]
+    return 0
 
 
 def _print_doctor_store_check(out: object) -> None:
@@ -2512,6 +2588,44 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help=(
             "override the hook-failures log path doctor tails "
             "(default: ~/.aelfrice/logs/hook-failures.log)"
+        ),
+    )
+    p_doctor.add_argument(
+        "--classify-orphans",
+        dest="classify_orphans",
+        action="store_true",
+        default=False,
+        help=(
+            "find beliefs with type='unknown' and no feedback signal "
+            "(alpha+beta <= 2), then re-classify them via Haiku batch. "
+            "Requires ANTHROPIC_API_KEY and the [onboard-llm] extra "
+            "(pip install aelfrice[onboard-llm]). "
+            "Bypasses the hooks/graph checks. "
+            "Combine with --dry-run to count orphans without LLM calls. "
+            "Combine with --max N to cap classifications per run "
+            "(recommended: 500 for large stores)."
+        ),
+    )
+    p_doctor.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        default=False,
+        help=(
+            "with --classify-orphans: print orphan count and "
+            "before-distribution without making LLM calls or DB writes."
+        ),
+    )
+    p_doctor.add_argument(
+        "--max",
+        dest="max",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "with --classify-orphans: cap the number of beliefs "
+            "classified per run. No cap by default; recommended: 500 "
+            "for large stores to bound per-run cost."
         ),
     )
     p_doctor.set_defaults(func=_cmd_doctor)

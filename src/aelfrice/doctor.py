@@ -24,6 +24,12 @@ warnings:
 * recent entries in `~/.aelfrice/logs/hook-failures.log`, the file
   hook bash wrappers should redirect stderr into instead of dropping
   it on the floor.
+
+`aelf doctor --classify-orphans` (issue #206) finds beliefs whose
+`type` was never resolved (type = 'unknown') AND that have never
+received any feedback (alpha + beta <= 2 — the untouched prior), then
+re-classifies them through the same Haiku batch path used by
+`aelf onboard --llm-classify`.
 """
 from __future__ import annotations
 
@@ -36,9 +42,12 @@ import shlex
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 from aelfrice.setup import PROJECT_SETTINGS_RELPATH, USER_SETTINGS_PATH
+
+if TYPE_CHECKING:
+    from aelfrice.store import MemoryStore
 
 
 # ---------------------------------------------------------------------------
@@ -798,3 +807,225 @@ def _format_user_prompt_submit_telemetry_section(
             f"  dedup collapse rate (median): {st.median_collapse_rate:.2f}x "
             f"(n_returned / n_unique_hashes; 1.0 = no duplicates)"
         )
+
+
+# ---------------------------------------------------------------------------
+# classify-orphans pass (issue #206)
+# ---------------------------------------------------------------------------
+
+# Approximate Haiku pricing as of 2025-Q1.  Used only for the cost
+# estimate in the CLI report; not invoiced, not sent to Anthropic.
+_HAIKU_INPUT_COST_PER_TOKEN: Final[float] = 0.80 / 1_000_000   # $0.80 / MTok
+_HAIKU_OUTPUT_COST_PER_TOKEN: Final[float] = 4.00 / 1_000_000  # $4.00 / MTok
+
+
+@dataclass
+class OrphanRunReport:
+    """Summary of one `classify_orphans` pass.
+
+    `orphans_found` is the raw count before `max_n` is applied.
+    `classified` is the number updated in the store.
+    `skipped` is orphans whose LLM result was invalid or non-persisting.
+    `dry_run` flags whether any DB writes occurred.
+    `type_dist_before` and `type_dist_after` are {type: count} snapshots.
+    `telemetry` is the raw Haiku token accounting.
+    """
+
+    orphans_found: int = 0
+    classified: int = 0
+    skipped: int = 0
+    dry_run: bool = False
+    type_dist_before: dict[str, int] = field(default_factory=dict)
+    type_dist_after: dict[str, int] = field(default_factory=dict)
+    # BatchTelemetry is imported lazily below; store raw token counts here.
+    input_tokens: int = 0
+    output_tokens: int = 0
+    requests: int = 0
+    fallbacks: int = 0
+    model: str = ""
+
+
+def classify_orphans(
+    store: "MemoryStore",
+    *,
+    api_key: str,
+    model: str,
+    max_tokens: int,
+    max_n: int | None = None,
+    dry_run: bool = False,
+    sdk_module: object = None,
+) -> OrphanRunReport:
+    """Find un-typed low-confidence beliefs and re-classify via Haiku batch.
+
+    Orphan definition (both signals required):
+      - type = 'unknown' OR type IS NULL  (never successfully typed)
+      - alpha + beta <= 2                  (no feedback ever applied)
+
+    The function reuses `aelfrice.llm_classifier.classify_batch` — the
+    same path `aelf onboard --llm-classify` uses.  No new LLM client is
+    introduced.
+
+    When `dry_run=True` the orphan set is found and counted but neither
+    network calls nor DB writes are made.
+
+    `max_n` caps classifications per run. Recommended: 500 per run when
+    the store is large; None (the default) processes all orphans.
+    """
+    from aelfrice.llm_classifier import (  # local to avoid circular imports
+        BatchTelemetry,
+        CandidateInput,
+        classify_batch,
+    )
+    from aelfrice.models import ORIGIN_AGENT_INFERRED
+
+    report = OrphanRunReport(dry_run=dry_run, model=model)
+    report.type_dist_before = store.count_beliefs_by_type()
+
+    # Count total orphans before applying max_n.
+    all_orphans = store.find_orphan_beliefs()
+    report.orphans_found = len(all_orphans)
+
+    # Apply max_n cap for the actual processing set.
+    to_process = all_orphans[:max_n] if max_n is not None else all_orphans
+
+    if dry_run or not to_process:
+        # Dry-run: report pre-snapshot only; no network, no writes.
+        return report
+
+    # Build classifier inputs from the orphan beliefs.  Use the belief id
+    # as the source tag so parse failures are traceable.
+    inputs = [
+        CandidateInput(index=i, text=b.content, source=b.id)
+        for i, b in enumerate(to_process)
+    ]
+
+    batch = classify_batch(
+        inputs,
+        api_key=api_key,
+        model=model,
+        max_tokens=max_tokens,
+        sdk_module=sdk_module,  # type: ignore[arg-type]
+    )
+
+    # Accumulate telemetry.
+    tel: BatchTelemetry = batch.telemetry
+    report.input_tokens = tel.input_tokens
+    report.output_tokens = tel.output_tokens
+    report.requests = tel.requests
+    report.fallbacks = tel.fallbacks
+
+    # Auth failure: propagate so CLI can exit 1.
+    if batch.auth_error is not None:
+        from aelfrice.llm_classifier import LLMAuthError  # noqa: PLC0415
+        raise LLMAuthError(batch.auth_error)
+
+    # Token cap: propagate so CLI can exit 1.
+    if batch.token_cap_exceeded:
+        from aelfrice.llm_classifier import LLMTokenCapExceeded  # noqa: PLC0415
+        raise LLMTokenCapExceeded(
+            consumed=batch.token_cap_consumed,
+            cap=max_tokens,
+        )
+
+    # When the whole batch fell back to regex, skip_all — the regex
+    # fallback path is designed for scan_repo's fresh-insert flow, not
+    # for updating existing beliefs with already-set prior weights.
+    if batch.fallback_used:
+        report.skipped = len(to_process)
+        report.type_dist_after = store.count_beliefs_by_type()
+        return report
+
+    # Apply valid classifications back to the store.
+    by_index: dict[int, object] = {c.index: c for c in batch.classifications}
+    for i, belief in enumerate(to_process):
+        cls_any = by_index.get(i)
+        if cls_any is None:
+            report.skipped += 1
+            continue
+        from aelfrice.llm_classifier import CandidateClassification  # noqa: PLC0415
+        cls: CandidateClassification = cls_any  # type: ignore[assignment]
+        if not cls.persist:
+            report.skipped += 1
+            continue
+        # Update only the type and origin fields; leave alpha/beta, lock,
+        # demotion_pressure, and timestamps intact so prior work is not lost.
+        updated = _belief_with_type(belief, cls.belief_type, ORIGIN_AGENT_INFERRED)
+        store.update_belief(updated)
+        report.classified += 1
+
+    report.type_dist_after = store.count_beliefs_by_type()
+    return report
+
+
+def _belief_with_type(
+    b: "object", new_type: str, new_origin: str
+) -> "object":
+    """Return a copy of `b` (a Belief) with `type` and `origin` replaced.
+
+    Uses dataclasses.replace-style reconstruction so we don't depend on
+    Belief being mutable.  The import is local to keep the doctor module
+    importable without triggering the full models chain at top level.
+    """
+    from aelfrice.models import Belief  # noqa: PLC0415
+    belief: Belief = b  # type: ignore[assignment]
+    return Belief(
+        id=belief.id,
+        content=belief.content,
+        content_hash=belief.content_hash,
+        alpha=belief.alpha,
+        beta=belief.beta,
+        type=new_type,
+        lock_level=belief.lock_level,
+        locked_at=belief.locked_at,
+        demotion_pressure=belief.demotion_pressure,
+        created_at=belief.created_at,
+        last_retrieved_at=belief.last_retrieved_at,
+        session_id=belief.session_id,
+        origin=new_origin,
+    )
+
+
+def format_orphan_report(report: OrphanRunReport) -> str:
+    """Render an OrphanRunReport as a human-readable string for the CLI."""
+    lines: list[str] = []
+    prefix = "[dry-run] " if report.dry_run else ""
+    lines.append(f"{prefix}classify-orphans: {report.orphans_found} orphan(s) found")
+    if report.dry_run:
+        lines.append(
+            "(dry-run: no LLM calls made, no DB writes performed)"
+        )
+    else:
+        lines.append(
+            f"  classified: {report.classified}  "
+            f"skipped: {report.skipped}"
+        )
+    lines.append("")
+    lines.append("type distribution before:")
+    _append_type_dist(lines, report.type_dist_before)
+    if not report.dry_run:
+        lines.append("")
+        lines.append("type distribution after:")
+        _append_type_dist(lines, report.type_dist_after)
+        lines.append("")
+        total_tokens = report.input_tokens + report.output_tokens
+        cost = (
+            report.input_tokens * _HAIKU_INPUT_COST_PER_TOKEN
+            + report.output_tokens * _HAIKU_OUTPUT_COST_PER_TOKEN
+        )
+        lines.append(
+            f"tokens: input={report.input_tokens} "
+            f"output={report.output_tokens} "
+            f"total={total_tokens} "
+            f"requests={report.requests} "
+            f"fallbacks={report.fallbacks}"
+        )
+        lines.append(f"estimated cost: ${cost:.4f} (model={report.model})")
+    return "\n".join(lines)
+
+
+def _append_type_dist(lines: list[str], dist: dict[str, int]) -> None:
+    if not dist:
+        lines.append("  (empty)")
+        return
+    for t, n in sorted(dist.items()):
+        lines.append(f"  {t}: {n}")
