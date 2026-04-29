@@ -1,0 +1,77 @@
+name: auto-rebase-open-prs
+
+# When main moves, attempt to rebase every open PR onto the new main and
+# force-push. Clean rebases land silently. Conflicts get the PR a comment
+# and a `merge-conflict` label so the author/reviewer sees it.
+#
+# This is the "auto-fresh" half of the parallel-session workflow. The other
+# half is `~/.claude/scripts/aelf-pr-open.sh`, which prevents stale-at-open.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Rebase open PRs onto main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          # JSON: [{number, headRefName, baseRefName}]
+          prs=$(gh pr list --state open --base main \
+                  --json number,headRefName,baseRefName \
+                  --jq '.[] | @base64')
+
+          for row in $prs; do
+              data=$(echo "$row" | base64 -d)
+              num=$(echo "$data"   | jq -r .number)
+              head=$(echo "$data"  | jq -r .headRefName)
+              echo "=== PR #$num: $head ==="
+
+              git fetch origin "$head" --quiet || { echo "  fetch failed, skip"; continue; }
+              git checkout -B "$head" "origin/$head"
+
+              if git merge-base --is-ancestor origin/main HEAD; then
+                  echo "  already on top of main, skip"
+                  continue
+              fi
+
+              if git rebase origin/main; then
+                  echo "  rebase clean, force-push"
+                  if git push --force-with-lease origin "$head"; then
+                      gh pr edit "$num" --remove-label merge-conflict 2>/dev/null || true
+                  else
+                      echo "  push rejected (concurrent update); will retry on next main push"
+                      git rebase --abort 2>/dev/null || true
+                  fi
+              else
+                  echo "  rebase has conflicts, flag PR"
+                  git rebase --abort
+                  gh pr edit "$num" --add-label merge-conflict 2>/dev/null || true
+                  gh pr comment "$num" --body \
+"Auto-rebase onto main failed: conflicts. Resolve locally:
+\`\`\`
+git fetch origin && git checkout $head && git rebase origin/main
+# resolve, then
+git push --force-with-lease
+\`\`\`" 2>/dev/null || true
+              fi
+          done
