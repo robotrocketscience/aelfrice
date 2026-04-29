@@ -284,6 +284,234 @@ def _append_telemetry(
         )
 
 
+# ---------------------------------------------------------------------------
+# Per-turn audit log (#280 mitigation 3)
+# ---------------------------------------------------------------------------
+
+AUDIT_DEFAULT_MAX_BYTES: Final[int] = 10 * 1024 * 1024
+"""Default size cap before rotation (10 MB). Overridable via .aelfrice.toml."""
+
+AUDIT_PROMPT_PREFIX_CAP: Final[int] = 200
+"""Maximum characters of the user prompt stored in an audit record."""
+
+AUDIT_FILENAME: Final[str] = "hook_audit.jsonl"
+"""Live audit log filename, sibling of memory.db under <git-common-dir>/aelfrice/."""
+
+AUDIT_ROTATED_SUFFIX: Final[str] = ".1"
+"""Single-slot rotation suffix. Rollover renames hook_audit.jsonl -> hook_audit.jsonl.1."""
+
+_AUDIT_SECTION: Final[str] = "hook_audit"
+_AUDIT_ENABLED_KEY: Final[str] = "enabled"
+_AUDIT_MAX_BYTES_KEY: Final[str] = "max_bytes"
+_AUDIT_ENV_DISABLE: Final[str] = "AELFRICE_HOOK_AUDIT"
+
+AUDIT_HOOK_USER_PROMPT_SUBMIT: Final[str] = "user_prompt_submit"
+AUDIT_HOOK_SESSION_START: Final[str] = "session_start"
+
+
+@dataclass(frozen=True)
+class HookAuditConfig:
+    """Resolved configuration for the per-turn hook audit log.
+
+    `enabled` defaults True (audit-on) per #280 ratification — the surface
+    is monitored unless the operator explicitly opts out via env var or
+    TOML. `max_bytes` controls when the live file is rotated.
+    """
+
+    enabled: bool = True
+    max_bytes: int = AUDIT_DEFAULT_MAX_BYTES
+
+
+def load_hook_audit_config(
+    start: Path | None = None,
+    *,
+    env: dict[str, str] | None = None,
+    stderr: IO[str] | None = None,
+) -> HookAuditConfig:
+    """Resolve the [hook_audit] config.
+
+    Resolution order:
+    1. `AELFRICE_HOOK_AUDIT=0` env var → disabled (overrides TOML).
+    2. Walk up from `start` looking for `.aelfrice.toml`; first hit wins.
+    3. Default (enabled=True, max_bytes=AUDIT_DEFAULT_MAX_BYTES).
+
+    Missing file / missing section / malformed TOML / wrong-typed values
+    all degrade to the safe default with a stderr trace; never raises.
+    """
+    serr: IO[str] = stderr if stderr is not None else sys.stderr
+    env_map = env if env is not None else dict(os.environ)
+    env_val = env_map.get(_AUDIT_ENV_DISABLE)
+    if env_val is not None and env_val.strip() == "0":
+        return HookAuditConfig(enabled=False)
+    current = (start if start is not None else Path.cwd()).resolve()
+    seen: set[Path] = set()
+    while current not in seen:
+        seen.add(current)
+        candidate = current / _CONFIG_FILENAME
+        if candidate.is_file():
+            try:
+                raw = candidate.read_bytes()
+            except OSError as exc:
+                print(
+                    f"aelfrice hook: cannot read {candidate}: {exc}",
+                    file=serr,
+                )
+                return HookAuditConfig()
+            try:
+                parsed: dict[str, Any] = tomllib.loads(
+                    raw.decode("utf-8", errors="replace"),
+                )
+            except tomllib.TOMLDecodeError as exc:
+                print(
+                    f"aelfrice hook: malformed TOML in {candidate}: {exc}",
+                    file=serr,
+                )
+                return HookAuditConfig()
+            section_obj: Any = parsed.get(_AUDIT_SECTION, {})
+            if not isinstance(section_obj, dict):
+                return HookAuditConfig()
+            section = cast(dict[str, Any], section_obj)
+            enabled_obj: Any = section.get(_AUDIT_ENABLED_KEY, True)
+            if not isinstance(enabled_obj, bool):
+                print(
+                    f"aelfrice hook: ignoring [{_AUDIT_SECTION}] "
+                    f"{_AUDIT_ENABLED_KEY} in {candidate} (expected bool)",
+                    file=serr,
+                )
+                enabled_obj = True
+            max_bytes_obj: Any = section.get(
+                _AUDIT_MAX_BYTES_KEY, AUDIT_DEFAULT_MAX_BYTES,
+            )
+            if not isinstance(max_bytes_obj, int) or max_bytes_obj <= 0:
+                if not (
+                    isinstance(max_bytes_obj, int)
+                    and max_bytes_obj == AUDIT_DEFAULT_MAX_BYTES
+                ):
+                    print(
+                        f"aelfrice hook: ignoring [{_AUDIT_SECTION}] "
+                        f"{_AUDIT_MAX_BYTES_KEY} in {candidate} "
+                        f"(expected positive int)",
+                        file=serr,
+                    )
+                max_bytes_obj = AUDIT_DEFAULT_MAX_BYTES
+            return HookAuditConfig(
+                enabled=enabled_obj,
+                max_bytes=max_bytes_obj,
+            )
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return HookAuditConfig()
+
+
+def _audit_path_for_db(db_path_val: Path) -> Path:
+    """Derive the audit log path from the DB path. Sibling of memory.db."""
+    return db_path_val.parent / AUDIT_FILENAME
+
+
+def _append_audit(
+    audit_path: Path,
+    record: dict[str, object],
+    max_bytes: int,
+    *,
+    stderr: IO[str] | None = None,
+) -> None:
+    """Append one record to the audit JSONL. Rotate if size cap exceeded.
+
+    Append-then-rotate semantics: the record always lands. If, after
+    writing, the live file exceeds `max_bytes`, it is renamed to
+    `<path>.1` (overwriting any prior `.1`) and a fresh empty file is
+    started for the next call. Single-slot rotation by spec; no archive.
+
+    Fail-soft: any I/O error is logged to stderr and swallowed.
+    """
+    try:
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(record) + "\n"
+        with open(audit_path, "a", encoding="utf-8") as f:
+            f.write(line)
+            f.flush()
+            os.fsync(f.fileno())
+        if audit_path.stat().st_size > max_bytes:
+            rotated = audit_path.with_name(
+                audit_path.name + AUDIT_ROTATED_SUFFIX,
+            )
+            os.replace(audit_path, rotated)
+    except Exception as exc:
+        serr = stderr if stderr is not None else sys.stderr
+        print(
+            f"aelfrice: hook audit write failed (non-fatal): {exc}",
+            file=serr,
+        )
+
+
+def _write_hook_audit_record(
+    *,
+    hook: str,
+    prompt: str,
+    rendered_block: str,
+    n_beliefs: int,
+    n_locked: int,
+    session_id: str | None = None,
+    config: HookAuditConfig | None = None,
+    stderr: IO[str] | None = None,
+) -> None:
+    """Build and append a hook-audit record. Fail-soft.
+
+    No-op when audit is disabled by config. The record captures the
+    full rendered block so a reviewer can see *exactly* what the hook
+    injected on a given turn — distinct from telemetry, which records
+    counts only.
+    """
+    cfg = config if config is not None else load_hook_audit_config(stderr=stderr)
+    if not cfg.enabled:
+        return
+    try:
+        p = db_path()
+        audit_path = _audit_path_for_db(p)
+    except Exception:
+        return
+    record: dict[str, object] = {
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "hook": hook,
+        "prompt_prefix": prompt[:AUDIT_PROMPT_PREFIX_CAP],
+        "rendered_block": rendered_block,
+        "n_beliefs": n_beliefs,
+        "n_locked": n_locked,
+    }
+    if session_id is not None:
+        record["session_id"] = session_id
+    _append_audit(audit_path, record, cfg.max_bytes, stderr=stderr)
+
+
+def read_hook_audit(path: Path) -> list[dict[str, object]]:
+    """Read the hook audit JSONL at `path`. Returns [] when missing.
+
+    Raises ValueError on any non-JSON line (corruption). Lines that are
+    valid JSON but not objects are silently skipped, matching the
+    telemetry reader.
+    """
+    if not path.exists():
+        return []
+    records: list[dict[str, object]] = []
+    text = path.read_text(encoding="utf-8")
+    for i, line in enumerate(text.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"audit file {path} line {i + 1} is not valid JSON: {exc}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            continue
+        records.append(cast(dict[str, object], parsed))
+    return records
+
+
 def read_user_prompt_submit_telemetry(
     path: Path,
 ) -> list[dict[str, object]]:
@@ -350,6 +578,7 @@ def user_prompt_submit(
         prompt = _extract_prompt(raw)
         if prompt is None:
             return 0
+        session_id = _extract_session_id(raw)
         budget = (
             token_budget
             if token_budget is not None
@@ -384,6 +613,16 @@ def user_prompt_submit(
                 total_chars=total_chars,
                 stderr=serr,
             )
+            # #280 mitigation 3: per-turn audit of the rendered block.
+            _write_hook_audit_record(
+                hook=AUDIT_HOOK_USER_PROMPT_SUBMIT,
+                prompt=prompt,
+                rendered_block=body,
+                n_beliefs=len(hits),
+                n_locked=sum(1 for h in hits if h.lock_level == LOCK_USER),
+                session_id=session_id,
+                stderr=serr,
+            )
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     return 0
@@ -415,6 +654,29 @@ def _write_telemetry(
         "total_chars": total_chars,
     }
     _append_telemetry(tel_path, record, stderr=stderr)
+
+
+def _extract_session_id(raw: str) -> str | None:
+    """Best-effort extraction of `session_id` from a hook payload.
+
+    The harness's UserPromptSubmit and SessionStart payloads include a
+    `session_id` field; use it if present and a string. Returns None
+    on any parse failure or missing field — purely informational, no
+    raise.
+    """
+    if not raw.strip():
+        return None
+    try:
+        payload = json.loads(raw)  # pyright: ignore[reportAny]
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    payload_typed = cast(dict[str, object], payload)
+    sid = payload_typed.get("session_id")
+    if isinstance(sid, str) and sid:
+        return sid
+    return None
 
 
 def _extract_prompt(raw: str) -> str | None:
@@ -699,20 +961,33 @@ def session_start(
         )
         return 0
     try:
-        # Drain stdin so the hook protocol is honored even though we
-        # do not consume any fields.
+        # Drain stdin so the hook protocol is honored. We do read the
+        # session_id from the payload (best-effort) for audit-log
+        # cross-reference; no other fields are consumed.
+        raw = ""
         try:
-            _ = sin.read()
+            raw = sin.read()
         except Exception:
             pass
+        session_id = _extract_session_id(raw)
         budget = (
             token_budget
             if token_budget is not None
             else DEFAULT_SESSION_START_TOKEN_BUDGET
         )
-        body = _retrieve_and_format_baseline(budget)
+        hits, body = _retrieve_baseline_with_block(budget)
         if body:
             sout.write(body)
+            # #280 mitigation 3: per-turn audit of the rendered block.
+            _write_hook_audit_record(
+                hook=AUDIT_HOOK_SESSION_START,
+                prompt="",
+                rendered_block=body,
+                n_beliefs=len(hits),
+                n_locked=sum(1 for h in hits if h.lock_level == LOCK_USER),
+                session_id=session_id,
+                stderr=serr,
+            )
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     return 0
@@ -726,14 +1001,27 @@ def _retrieve_and_format_baseline(token_budget: int) -> str:
     retrieve()'s budget logic, which leaves L0 untrimmed even when
     the locked set alone exceeds the budget.
     """
+    _, body = _retrieve_baseline_with_block(token_budget)
+    return body
+
+
+def _retrieve_baseline_with_block(
+    token_budget: int,
+) -> tuple[list[Belief], str]:
+    """Retrieve baseline hits and the rendered block in one call.
+
+    Returns ([], "") when retrieval yields nothing. Used by both the
+    legacy formatter wrapper and the session_start hook (which needs
+    the hit list for audit-record counts).
+    """
     store = _open_store()
     try:
         hits = retrieve(store, "", token_budget=token_budget)
     finally:
         store.close()
     if not hits:
-        return ""
-    return _format_baseline_hits(hits)
+        return ([], "")
+    return (hits, _format_baseline_hits(hits))
 
 
 def _format_baseline_hits(hits: list[Belief]) -> str:
