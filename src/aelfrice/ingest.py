@@ -63,6 +63,8 @@ def ingest_turn(
     session_id: str | None = None,
     created_at: str | None = None,
     source_id: str = "",  # noqa: ARG001
+    *,
+    bulk: bool = False,
 ) -> int:
     """Ingest a single conversation turn.
 
@@ -85,12 +87,24 @@ def ingest_turn(
     `source_id` is still accepted for adapter parity but is not yet
     persisted.
 
+    `bulk` (v1.6+, keyword-only) signals the call is part of a
+    multi-turn batch (e.g. a research-line `wonder_ingest` pipeline).
+    When True, per-turn side effects that are redundant inside a batch
+    are skipped: currently `store.record_corroboration` for duplicate
+    sentences. The canonical `beliefs` row and the `ingest_log` write
+    (the v2.0 source-of-truth ingest record) are always produced —
+    `bulk=True` produces the same final belief state as `bulk=False`
+    for the same input sequence; only the corroboration audit table
+    differs. Reserved for future per-turn-cost reductions as new side
+    effects land. Default-off preserves current behavior.
+
     Returns the number of beliefs inserted (or that would have been
     inserted if not already present).
     """
     return len(_ingest_turn_ids(
         store=store, text=text, source=source,
         session_id=session_id, created_at=created_at,
+        bulk=bulk,
     ))
 
 
@@ -100,6 +114,8 @@ def _ingest_turn_ids(
     source: str,
     session_id: str | None = None,
     created_at: str | None = None,
+    *,
+    bulk: bool = False,
 ) -> list[str]:
     """Internal variant of ingest_turn returning the inserted belief ids.
 
@@ -122,11 +138,15 @@ def _ingest_turn_ids(
         if store.get_belief(belief_id) is not None:
             # Exact (source, sentence) duplicate: record a corroboration
             # so re-assertions are observable. Canonical row unchanged.
-            store.record_corroboration(
-                belief_id,
-                source_type=CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
-                session_id=session_id,
-            )
+            # bulk=True skips this — corroboration noise is uninteresting
+            # in batch ingest and is the only currently-redundant per-turn
+            # side effect.
+            if not bulk:
+                store.record_corroboration(
+                    belief_id,
+                    source_type=CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+                    session_id=session_id,
+                )
             continue
         # v2.0 #205 parallel-write: log the classifier input before
         # materializing the belief. belief_id is deterministic on
