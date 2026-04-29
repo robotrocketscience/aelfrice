@@ -60,10 +60,13 @@ summarize."
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import sys
 import tomllib
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final, IO, cast
 
@@ -112,6 +115,21 @@ TURN_WINDOW_KEY: Final[str] = "turn_window_n"
 TOKEN_BUDGET_KEY: Final[str] = "token_budget"
 TRIGGER_MODE_KEY: Final[str] = "trigger_mode"
 THRESHOLD_FRACTION_KEY: Final[str] = "threshold_fraction"
+
+# --- Rebuild diagnostic log (#288 phase-1a) ------------------------------
+
+REBUILD_LOG_SECTION: Final[str] = "rebuild_log"
+REBUILD_LOG_ENABLED_KEY: Final[str] = "enabled"
+REBUILD_LOG_ENV: Final[str] = "AELFRICE_REBUILD_LOG"
+REBUILD_LOG_DIRNAME: Final[str] = "rebuild_logs"
+REBUILD_LOG_MAX_BYTES: Final[int] = 5 * 1024 * 1024
+"""Per-session rebuild_log file size cap. On reach, append a final
+`{"truncated": true, ...}` row and stop writing further records to
+that file."""
+DEFAULT_REBUILD_LOG_ENABLED: Final[bool] = True
+"""Rebuild diagnostic log is default-on. Opt out via the
+`AELFRICE_REBUILD_LOG=0` env var or `[rebuild_log] enabled = false`
+in `.aelfrice.toml`."""
 
 # --- v1.4.0 trigger-mode constants (issue #141) ---------------------------
 
@@ -242,6 +260,9 @@ def rebuild_v14(
     store: MemoryStore,
     *,
     token_budget: int = DEFAULT_REBUILDER_TOKEN_BUDGET,
+    rebuild_log_path: Path | None = None,
+    rebuild_log_enabled: bool = DEFAULT_REBUILD_LOG_ENABLED,
+    session_id_for_log: str | None = None,
 ) -> str:
     """v1.4 rebuild: L0 + session-scoped + L2.5/L1 via `retrieve()`.
 
@@ -295,28 +316,132 @@ def rebuild_v14(
     used: int = sum(_estimate_belief_tokens(b) for b in locked)
     out: list[Belief] = list(locked)
     seen_hashes: set[str] = {b.content_hash for b in locked}
+    hash_to_packed_id: dict[str, str] = {b.content_hash: b.id for b in locked}
+
+    # #288 phase-1a: track per-candidate decision metadata so the
+    # rebuild_log records every belief the rebuilder considered, not
+    # just those it packed. Order: L0, then session-scoped, then L2.5/L1.
+    log_candidates: list[dict[str, object]] = []
+    n_dropped_by_dedup = 0
+    n_dropped_by_budget = 0
+    budget_exceeded_session = False
+    budget_exceeded_non_locked = False
+
+    for b in locked:
+        log_candidates.append(
+            {
+                "belief_id": b.id,
+                "rank": len(log_candidates) + 1,
+                "scores": _empty_scores(),
+                "lock_level": _belief_lock_level_for_log(b),
+                "decision": "packed",
+                "reason": None,
+            }
+        )
 
     for b in session_hits:
+        decision: str
+        reason: str | None
         if b.content_hash in seen_hashes:
-            continue
-        cost = _estimate_belief_tokens(b)
-        if used + cost > token_budget:
-            break
-        out.append(b)
-        used += cost
-        seen_hashes.add(b.content_hash)
+            decision = "dropped"
+            reason = (
+                f"content_hash_collision_with:{hash_to_packed_id[b.content_hash]}"
+            )
+            n_dropped_by_dedup += 1
+        elif budget_exceeded_session:
+            decision = "dropped"
+            reason = "budget_exceeded"
+            n_dropped_by_budget += 1
+        else:
+            cost = _estimate_belief_tokens(b)
+            if used + cost > token_budget:
+                budget_exceeded_session = True
+                decision = "dropped"
+                reason = "budget_exceeded"
+                n_dropped_by_budget += 1
+            else:
+                out.append(b)
+                used += cost
+                seen_hashes.add(b.content_hash)
+                hash_to_packed_id[b.content_hash] = b.id
+                decision = "packed"
+                reason = None
+        log_candidates.append(
+            {
+                "belief_id": b.id,
+                "rank": len(log_candidates) + 1,
+                "scores": _empty_scores(),
+                "lock_level": _belief_lock_level_for_log(b),
+                "decision": decision,
+                "reason": reason,
+            }
+        )
 
     for b in non_locked_hits:
         if b.id in session_ids:
-            continue  # already surfaced above
+            continue  # already surfaced above as a session candidate
+        decision2: str
+        reason2: str | None
         if b.content_hash in seen_hashes:
-            continue
-        cost = _estimate_belief_tokens(b)
-        if used + cost > token_budget:
-            break
-        out.append(b)
-        used += cost
-        seen_hashes.add(b.content_hash)
+            decision2 = "dropped"
+            reason2 = (
+                f"content_hash_collision_with:{hash_to_packed_id[b.content_hash]}"
+            )
+            n_dropped_by_dedup += 1
+        elif budget_exceeded_non_locked:
+            decision2 = "dropped"
+            reason2 = "budget_exceeded"
+            n_dropped_by_budget += 1
+        else:
+            cost = _estimate_belief_tokens(b)
+            if used + cost > token_budget:
+                budget_exceeded_non_locked = True
+                decision2 = "dropped"
+                reason2 = "budget_exceeded"
+                n_dropped_by_budget += 1
+            else:
+                out.append(b)
+                used += cost
+                seen_hashes.add(b.content_hash)
+                hash_to_packed_id[b.content_hash] = b.id
+                decision2 = "packed"
+                reason2 = None
+        log_candidates.append(
+            {
+                "belief_id": b.id,
+                "rank": len(log_candidates) + 1,
+                "scores": _empty_scores(),
+                "lock_level": _belief_lock_level_for_log(b),
+                "decision": decision2,
+                "reason": reason2,
+            }
+        )
+
+    if (
+        rebuild_log_enabled
+        and not _rebuild_log_disabled_via_env()
+        and rebuild_log_path is not None
+        and log_candidates
+    ):
+        n_packed = sum(
+            1 for c in log_candidates if c["decision"] == "packed"
+        )
+        total_chars_packed = sum(len(b.content) for b in out)
+        pack_summary: dict[str, int] = {
+            "n_candidates": len(log_candidates),
+            "n_packed": n_packed,
+            "n_dropped_by_floor": 0,
+            "n_dropped_by_dedup": n_dropped_by_dedup,
+            "n_dropped_by_budget": n_dropped_by_budget,
+            "total_chars_packed": total_chars_packed,
+        }
+        record = _build_rebuild_log_record(
+            recent_turns=recent_turns,
+            session_id=session_id_for_log,
+            candidates=log_candidates,
+            pack_summary=pack_summary,
+        )
+        _append_rebuild_log_record(rebuild_log_path, record)
 
     return _format_block(
         recent_turns, out, session_ids, token_budget=token_budget,
@@ -369,6 +494,7 @@ class RebuilderConfig:
     token_budget: int = DEFAULT_REBUILDER_TOKEN_BUDGET
     trigger_mode: str = DEFAULT_TRIGGER_MODE
     threshold_fraction: float = DEFAULT_THRESHOLD_FRACTION
+    rebuild_log_enabled: bool = DEFAULT_REBUILD_LOG_ENABLED
 
 
 def load_rebuilder_config(start: Path | None = None) -> RebuilderConfig:
@@ -464,11 +590,29 @@ def load_rebuilder_config(start: Path | None = None) -> RebuilderConfig:
                 frac_resolved = DEFAULT_THRESHOLD_FRACTION
             else:
                 frac_resolved = float(frac_obj)
+            log_section_obj: Any = parsed.get(REBUILD_LOG_SECTION, {})
+            log_enabled_resolved: bool = DEFAULT_REBUILD_LOG_ENABLED
+            if isinstance(log_section_obj, dict):
+                log_section = cast(dict[str, Any], log_section_obj)
+                log_enabled_obj: Any = log_section.get(
+                    REBUILD_LOG_ENABLED_KEY, DEFAULT_REBUILD_LOG_ENABLED,
+                )
+                if isinstance(log_enabled_obj, bool):
+                    log_enabled_resolved = log_enabled_obj
+                else:
+                    print(
+                        f"aelfrice rebuilder: ignoring "
+                        f"[{REBUILD_LOG_SECTION}] "
+                        f"{REBUILD_LOG_ENABLED_KEY} in {candidate} "
+                        f"(expected bool)",
+                        file=serr,
+                    )
             return RebuilderConfig(
                 turn_window_n=n_resolved,
                 token_budget=b_resolved,
                 trigger_mode=mode_resolved,
                 threshold_fraction=frac_resolved,
+                rebuild_log_enabled=log_enabled_resolved,
             )
         if current.parent == current:
             break
@@ -653,6 +797,161 @@ def _session_scoped_hits(
             continue
         out.append(b)
     return out
+
+
+# --- Rebuild diagnostic log (#288 phase-1a) -------------------------------
+
+
+def _rebuild_log_disabled_via_env() -> bool:
+    """Honour `AELFRICE_REBUILD_LOG=0` opt-out. Any other value -> not
+    disabled. Missing var -> not disabled (default-on)."""
+    val = os.environ.get(REBUILD_LOG_ENV)
+    if val is None:
+        return False
+    return val.strip() == "0"
+
+
+def _rebuild_log_dir_for_db(db_path_val: Path) -> Path:
+    """Derive the rebuild_log directory from the brain-graph DB path.
+
+    The DB lives at `<git-common-dir>/aelfrice/memory.db`; the per-
+    session JSONL files live at
+    `<git-common-dir>/aelfrice/rebuild_logs/<session_id>.jsonl`.
+    """
+    return db_path_val.parent / REBUILD_LOG_DIRNAME
+
+
+def _recent_turns_hash(recent_turns: list[RecentTurn]) -> str:
+    """SHA-256 of the concatenated recent-turn `text` fields, no
+    separator. Spec § Layer 1."""
+    h = hashlib.sha256()
+    for t in recent_turns:
+        h.update(t.text.encode("utf-8"))
+    return h.hexdigest()
+
+
+def _extracted_entities_for_log(
+    recent_turns: list[RecentTurn],
+) -> list[str]:
+    """Return the extracted entities surfaced into the retrieval query,
+    deduplicated case-insensitively. Mirrors `_query_for_recent_turns`
+    so the log records the actual entities the rebuilder saw."""
+    if not recent_turns:
+        return []
+    full_text = "\n".join(t.text for t in recent_turns if t.text)
+    if not full_text.strip():
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for ent in extract_entities(
+        full_text, max_entities=DEFAULT_QUERY_ENTITY_CAP,
+    ):
+        key = ent.lower
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(ent.raw)
+    return out
+
+
+def _belief_lock_level_for_log(b: Belief) -> str:
+    """Map the internal lock_level enum to the spec's "lock_level"
+    field. Spec uses "user" for L0 locks and "none" otherwise; the
+    internal model already uses these strings, so this is a passthrough
+    that also normalises any unexpected value to "none"."""
+    return b.lock_level if b.lock_level == LOCK_USER else "none"
+
+
+def _empty_scores() -> dict[str, float | None]:
+    """Per-belief score block. None where the field is not computed
+    in the rebuilder's current code path; the floor / reranker / final
+    composite land in the #289-#291 follow-ups under the #286 redesign
+    tree. The log shape is locked here so phase-1b operator data is
+    forward-compatible with phase-2 fixes."""
+    return {
+        "bm25": None,
+        "posterior_mean": None,
+        "reranker": None,
+        "final": None,
+    }
+
+
+def _build_rebuild_log_record(
+    recent_turns: list[RecentTurn],
+    session_id: str | None,
+    candidates: list[dict[str, object]],
+    pack_summary: dict[str, int],
+) -> dict[str, object]:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    extracted_query = _query_for_recent_turns(recent_turns)
+    return {
+        "ts": ts,
+        "session_id": session_id,
+        "input": {
+            "recent_turns_hash": _recent_turns_hash(recent_turns),
+            "n_recent_turns": len(recent_turns),
+            "extracted_query": extracted_query,
+            "extracted_entities": _extracted_entities_for_log(recent_turns),
+            # Intent classification is not part of the v1.4 rebuild
+            # path; null until #291 query-understanding lands.
+            "extracted_intent": None,
+        },
+        "candidates": candidates,
+        "pack_summary": pack_summary,
+    }
+
+
+def _append_rebuild_log_record(
+    log_path: Path,
+    record: dict[str, object],
+    *,
+    stderr: IO[str] | None = None,
+) -> None:
+    """Append one JSON record to the per-session rebuild_log JSONL.
+
+    Fail-soft: any I/O error traces one line to stderr and never
+    raises. Enforces the 5 MB per-session cap by appending a final
+    `{"truncated": true, ...}` row when the next record would exceed
+    the cap, then refusing further writes to that file.
+    """
+    serr = stderr if stderr is not None else sys.stderr
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(
+            record, separators=(",", ":"), ensure_ascii=False,
+        ) + "\n"
+        encoded = line.encode("utf-8")
+        try:
+            current_size = log_path.stat().st_size
+        except FileNotFoundError:
+            current_size = 0
+        if current_size >= REBUILD_LOG_MAX_BYTES:
+            # Already at/past cap; nothing to write. The truncated
+            # marker was emitted on the run that crossed the cap.
+            return
+        if current_size + len(encoded) > REBUILD_LOG_MAX_BYTES:
+            marker = json.dumps(
+                {
+                    "truncated": True,
+                    "ts": datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ",
+                    ),
+                    "reason": "size_cap",
+                    "cap_bytes": REBUILD_LOG_MAX_BYTES,
+                },
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ) + "\n"
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(marker)
+            return
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception as exc:
+        print(
+            f"aelfrice: rebuild_log write failed (non-fatal): {exc}",
+            file=serr,
+        )
 
 
 # --- Format helpers --------------------------------------------------------
@@ -938,9 +1237,23 @@ def main(
             return 0
 
         store = MemoryStore(str(p))
+        # #288 phase-1a: route the rebuild_log alongside the brain-
+        # graph DB. Disabled when the store is in-memory (no on-disk
+        # location to write to) or when the operator opted out.
+        sid_for_log = _latest_session_id(recent)
+        log_path: Path | None = None
+        if str(p) != ":memory:" and sid_for_log:
+            log_path = (
+                _rebuild_log_dir_for_db(p) / f"{sid_for_log}.jsonl"
+            )
         try:
             block = rebuild_v14(
-                recent, store, token_budget=config.token_budget,
+                recent,
+                store,
+                token_budget=config.token_budget,
+                rebuild_log_path=log_path,
+                rebuild_log_enabled=config.rebuild_log_enabled,
+                session_id_for_log=sid_for_log,
             )
         finally:
             store.close()
