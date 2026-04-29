@@ -249,6 +249,110 @@ def test_ac1_pure_rebuild_v14_orders_locked_then_session_then_l1(
     assert a < b
 
 
+# --- #281: output-level content_hash dedup --------------------------------
+#
+# Note on test setup: #283 added UNIQUE(content_hash) on beliefs, so two
+# rows with the same content_hash can no longer be inserted via the store
+# API. The dedup loop in rebuild_v14 is a defense-in-depth safety net for
+# (a) legacy stores opened before the consolidation migration runs, and
+# (b) the case where retrieve() and list_locked_beliefs() both surface
+# the same belief id (different rows for the same logical belief in the
+# returned lists). To exercise the dedup branch without violating the
+# UNIQUE constraint, we monkeypatch the retrieval seams to inject
+# duplicate Belief objects that don't actually live in the store.
+
+
+def test_issue_281_dedup_collapses_duplicates_in_retrieved_lists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same content_hash returned multiple times surfaces once."""
+    store = MemoryStore(str(tmp_path / "m.db"))
+    try:
+        dups = [
+            Belief(
+                id=f"dup{i:02d}",
+                content="graceful degradation: warn and continue",
+                content_hash="SHARED_HASH",
+                alpha=1.0, beta=1.0, type=BELIEF_FACTUAL,
+                lock_level=LOCK_NONE, locked_at=None,
+                demotion_pressure=0,
+                created_at="2026-04-26T00:00:00Z",
+                last_retrieved_at=None,
+            )
+            for i in range(10)
+        ]
+        monkeypatch.setattr(
+            store, "list_locked_beliefs", lambda: [],
+        )
+        monkeypatch.setattr(
+            "aelfrice.context_rebuilder.retrieve",
+            lambda *a, **kw: dups,
+        )
+        monkeypatch.setattr(
+            "aelfrice.context_rebuilder._session_scoped_hits",
+            lambda *a, **kw: [],
+        )
+        block = rebuild_v14(
+            [RecentTurn(role="user", text="graceful degradation")],
+            store,
+        )
+    finally:
+        store.close()
+    appearances = sum(
+        1 for i in range(10) if f'id="dup{i:02d}"' in block
+    )
+    assert appearances == 1, (
+        f"expected 1 surviving dup, got {appearances}"
+    )
+
+
+def test_issue_281_locked_takes_precedence_over_dup_l1_hits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a locked belief shares content_hash with an L1 hit, locked
+    wins and the L1 hit is skipped (not appended below)."""
+    store = MemoryStore(str(tmp_path / "m.db"))
+    try:
+        locked = Belief(
+            id="LCK", content="kitchen has bananas",
+            content_hash="H1",
+            alpha=1.0, beta=1.0, type=BELIEF_FACTUAL,
+            lock_level=LOCK_USER,
+            locked_at="2026-04-26T00:00:00Z",
+            demotion_pressure=0,
+            created_at="2026-04-26T00:00:00Z",
+            last_retrieved_at=None,
+        )
+        l1_dup = Belief(
+            id="L1A", content="kitchen has bananas",
+            content_hash="H1",
+            alpha=1.0, beta=1.0, type=BELIEF_FACTUAL,
+            lock_level=LOCK_NONE, locked_at=None,
+            demotion_pressure=0,
+            created_at="2026-04-26T00:00:00Z",
+            last_retrieved_at=None,
+        )
+        monkeypatch.setattr(
+            store, "list_locked_beliefs", lambda: [locked],
+        )
+        monkeypatch.setattr(
+            "aelfrice.context_rebuilder.retrieve",
+            lambda *a, **kw: [locked, l1_dup],
+        )
+        monkeypatch.setattr(
+            "aelfrice.context_rebuilder._session_scoped_hits",
+            lambda *a, **kw: [],
+        )
+        block = rebuild_v14(
+            [RecentTurn(role="user", text="kitchen contents")],
+            store,
+        )
+    finally:
+        store.close()
+    assert 'id="LCK"' in block
+    assert 'id="L1A"' not in block
+
+
 # --- AC2: empty transcript / missing store --------------------------------
 
 
