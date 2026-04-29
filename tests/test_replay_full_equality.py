@@ -616,3 +616,38 @@ def test_cli_doctor_replay_negative_max_drift_clamped(
     out = io.StringIO()
     rc = main(["doctor", "--replay", "--max-drift", "-1"], out=out)
     assert rc == 0
+
+
+def test_cli_doctor_replay_drift_examples_zero_preserved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hypothesis: explicit `--drift-examples 0` produces a report with no
+    example entries even when drift is present. Falsifiable by any
+    `[bucket]` sub-block appearing in the output."""
+    import io
+    from aelfrice.cli import main
+
+    db = str(tmp_path / "brain.db")
+    monkeypatch.setenv("AELFRICE_DB", db)
+
+    s = MemoryStore(db)
+    bid = _ingest(s, _FACTUAL_SENTENCE)
+    s._conn.execute(
+        "UPDATE beliefs SET content_hash = 'CORRUPTED' WHERE id = ?", (bid,)
+    )
+    s._conn.commit()
+    s.close()
+
+    buf = io.StringIO()
+    rc = main(
+        ["doctor", "--replay", "--drift-examples", "0", "--max-drift", "999"],
+        out=buf,
+    )
+    text = buf.getvalue()
+
+    # Drift exists but no per-bucket example sub-block was emitted.
+    assert rc == 0
+    assert "mismatched:" in text
+    assert "[mismatched]" not in text
+    assert "[derived_orphan]" not in text
+    assert "[canonical_orphan]" not in text

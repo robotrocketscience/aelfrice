@@ -2238,7 +2238,8 @@ def _cmd_doctor_replay(args: argparse.Namespace, out: object) -> int:
     from aelfrice.replay import replay_full_equality, FullEqualityReport
 
     max_drift: int | None = getattr(args, "max_drift", None)
-    drift_examples: int = int(getattr(args, "drift_examples", 10) or 10)
+    _de_raw = getattr(args, "drift_examples", None)
+    drift_examples: int = 10 if _de_raw is None else int(_de_raw)
     replay_scope: str = getattr(args, "replay_scope", "all") or "all"
 
     store = _open_store()
