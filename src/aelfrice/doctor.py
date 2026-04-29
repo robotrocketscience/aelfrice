@@ -1029,3 +1029,69 @@ def _append_type_dist(lines: list[str], dist: dict[str, int]) -> None:
         return
     for t, n in sorted(dist.items()):
         lines.append(f"  {t}: {n}")
+
+
+# ---------------------------------------------------------------------------
+# gc-orphan-feedback pass (issue #223)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class OrphanFeedbackReport:
+    """Summary of one `gc_orphan_feedback` pass.
+
+    `orphans_found` is the number of `feedback_history` rows whose
+    `belief_id` no longer resolves in `beliefs`. `deleted` is the
+    number actually removed (zero on dry-run).
+    """
+
+    orphans_found: int = 0
+    deleted: int = 0
+    dry_run: bool = True
+
+
+def gc_orphan_feedback(
+    store: "MemoryStore",
+    *,
+    dry_run: bool = True,
+) -> OrphanFeedbackReport:
+    """Identify and (with `dry_run=False`) delete `feedback_history`
+    rows whose `belief_id` no longer resolves in `beliefs`. Issue #223.
+
+    Pre-#283 re-ingest could leave a feedback row pointing at a
+    deleted belief: the same content_hash got a fresh belief_id, the
+    old row was dropped, but feedback_history kept the dangling
+    reference. The mechanism is plugged going forward by the UNIQUE
+    `content_hash` constraint plus `insert_or_corroborate`; this
+    pass cleans the residue.
+
+    Recovery is not attempted: feedback_history stores only
+    `belief_id`, not `content_hash`, so the original target's content
+    is unrecoverable. The pass deletes rather than re-links.
+
+    `dry_run=True` (the default) counts without modifying the store.
+    """
+    report = OrphanFeedbackReport(dry_run=dry_run)
+    report.orphans_found = store.count_orphan_feedback_events()
+    if dry_run or report.orphans_found == 0:
+        return report
+    report.deleted = store.delete_orphan_feedback_events()
+    return report
+
+
+def format_orphan_feedback_report(report: OrphanFeedbackReport) -> str:
+    """Human-readable rendering of `gc_orphan_feedback` output."""
+    lines: list[str] = []
+    lines.append(
+        f"orphan feedback rows: {report.orphans_found}"
+    )
+    if report.dry_run:
+        if report.orphans_found == 0:
+            lines.append("nothing to do.")
+        else:
+            lines.append(
+                "dry-run; re-run with --apply to delete these rows."
+            )
+    else:
+        lines.append(f"deleted: {report.deleted}")
+    return "\n".join(lines)
