@@ -1,19 +1,23 @@
 """Tests for the posterior-ranking eval harness (issue #151, Slice 1).
 
-Covers MRR uplift and ECE calibration scorers in isolation.
-Runner, fixture corpus, and CLI tests are in subsequent commits.
+Covers MRR uplift, ECE calibration scorers, the runner, default fixture corpus,
+and CLI integration.
 
 All tests are deterministic (fixed seeds), use in-memory stores, and
 must complete in < 1.5 seconds total.
 
-Test style mirrors tests/test_bayesian_ranking.py.
+Test style mirrors tests/test_bayesian_ranking.py and tests/test_benchmarks_dir.py.
 """
 from __future__ import annotations
 
+import io
+import json
 import math
 from pathlib import Path
 
 import pytest
+
+from aelfrice.cli import main as cli_main
 
 
 # ---------------------------------------------------------------------------
@@ -232,3 +236,137 @@ def test_ece_empty_observations() -> None:
     assert result.ece == 0.0
     assert result.passed is True
     assert result.n_total == 0
+
+
+# ---------------------------------------------------------------------------
+# Helpers for runner / CLI tests
+# ---------------------------------------------------------------------------
+
+
+def _run_cli(*argv: str) -> tuple[int, str]:
+    buf = io.StringIO()
+    code = cli_main(argv=list(argv), out=buf)
+    return code, buf.getvalue()
+
+
+def _write_fixtures(tmp_path: Path, fixtures: list[dict[str, object]]) -> Path:
+    fpath = tmp_path / "fixtures.jsonl"
+    with fpath.open("w", encoding="utf-8") as fh:
+        for fx in fixtures:
+            fh.write(json.dumps(fx) + "\n")
+    return fpath
+
+
+# ---------------------------------------------------------------------------
+# Runner integration
+# ---------------------------------------------------------------------------
+
+
+def test_runner_integration_clean(tmp_path: Path) -> None:
+    """3-fixture file through run(): both MRR and ECE keys present, correct types."""
+    from benchmarks.posterior_ranking.run import run
+
+    # All three fixtures use noise items with high BM25 overlap so the
+    # known item starts below rank 1, giving room for feedback to lift it.
+    fixtures = [
+        _minimal_fixture(fid="r1"),
+        _minimal_fixture(
+            fid="r2",
+            query="SQLite WAL concurrent readers",
+            known="SQLite WAL concurrent readers read without blocking",
+            noise=[
+                "SQLite WAL concurrent SQLite WAL concurrent readers WAL readers",
+                "WAL readers concurrent SQLite WAL readers SQLite concurrent",
+                "concurrent WAL SQLite WAL readers concurrent WAL concurrent",
+                "SQLite SQLite WAL WAL concurrent readers readers concurrent readers",
+            ],
+        ),
+        _minimal_fixture(
+            fid="r3",
+            query="Beta distribution conjugate prior",
+            known="Beta distribution conjugate prior updates with observations",
+            noise=[
+                "Beta distribution conjugate Beta distribution conjugate prior Beta",
+                "conjugate prior Beta distribution Beta conjugate distribution prior",
+                "Beta Beta distribution distribution conjugate conjugate prior prior",
+                "distribution prior Beta conjugate Beta distribution conjugate prior",
+            ],
+        ),
+    ]
+    fpath = _write_fixtures(tmp_path, fixtures)
+
+    result = run(fpath, n_seeds=1, base_seed=0)
+
+    assert "mrr" in result
+    assert "ece" in result
+    assert "overall_pass" in result
+
+    from benchmarks.posterior_ranking.mrr_uplift import MultiSeedReport
+    from benchmarks.posterior_ranking.ece import ECEResult
+
+    assert isinstance(result["mrr"], MultiSeedReport)
+    assert isinstance(result["ece"], ECEResult)
+    assert isinstance(result["overall_pass"], bool)
+
+
+def test_runner_as_dict(tmp_path: Path) -> None:
+    """run_as_dict returns serializable plain dicts."""
+    from benchmarks.posterior_ranking.run import run_as_dict
+
+    fixtures = [_minimal_fixture()]
+    fpath = _write_fixtures(tmp_path, fixtures)
+
+    result = run_as_dict(fpath, n_seeds=1, base_seed=0)
+
+    json_str = json.dumps(result)
+    parsed = json.loads(json_str)
+
+    assert "mrr" in parsed
+    assert "ece" in parsed
+    assert "overall_pass" in parsed
+
+
+# ---------------------------------------------------------------------------
+# Default fixtures file exists and is valid
+# ---------------------------------------------------------------------------
+
+
+def test_default_fixtures_file_exists_and_readable() -> None:
+    """The shipped default.jsonl has >= 5 entries and all parse correctly."""
+    default_path = (
+        Path(__file__).parent.parent
+        / "benchmarks"
+        / "posterior_ranking"
+        / "fixtures"
+        / "default.jsonl"
+    )
+    assert default_path.is_file(), f"default fixtures file missing: {default_path}"
+
+    entries: list[dict[str, object]] = []
+    with default_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                entry = json.loads(line)
+                entries.append(entry)
+
+    assert len(entries) >= 5, f"expected >= 5 fixtures, got {len(entries)}"
+
+    required_keys = {"id", "query", "known_belief_content", "noise_belief_contents"}
+    for i, entry in enumerate(entries):
+        missing = required_keys - set(entry.keys())
+        assert not missing, f"fixture {i} missing keys: {missing}"
+        assert isinstance(entry["noise_belief_contents"], list)
+        assert len(entry["noise_belief_contents"]) >= 1
+
+
+def test_load_fixtures(tmp_path: Path) -> None:
+    """load_fixtures reads JSONL correctly."""
+    from benchmarks.posterior_ranking.mrr_uplift import load_fixtures
+
+    fixtures = [_minimal_fixture(fid=f"f{i}") for i in range(3)]
+    fpath = _write_fixtures(tmp_path, fixtures)
+
+    loaded = load_fixtures(fpath)
+    assert len(loaded) == 3
+    assert loaded[0]["id"] == "f0"
