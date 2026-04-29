@@ -66,9 +66,9 @@ Two-process race producing the same belief: `INSERT OR IGNORE` on `(content_hash
 - [ ] **Confirm edges in the same pass.** Alternative is a separate edge-derivation pass for parallelism / locality. Single-pass is simpler; defer the split until benchmarks force it.
 - [ ] **Worker-only insert enforcement timing.** This issue makes direct `insert_belief()` *unused* outside the worker. #265 makes it *forbidden* (raises). Confirm the split — keeping the assertion gated on #265's feature flag means this issue stays additive and bisectable.
 
-## Why queen
+## Why this is judgment-scope
 
-The four judgment calls above are the queen work. The body the issue lists at ~400 LOC code + ~300 LOC tests is achievable only if these are settled before implementation; otherwise the worker grows a recovery-mode flag matrix and the test suite balloons.
+The four decisions above are the design work. The body the issue lists at ~400 LOC code + ~300 LOC tests is achievable only if these are settled before implementation; otherwise the worker grows a recovery-mode flag matrix and the test suite balloons.
 
 ## Downstream impact
 

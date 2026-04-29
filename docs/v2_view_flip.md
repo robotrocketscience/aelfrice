@@ -58,9 +58,9 @@ For a belief that has α/β diverging from prior because of feedback: append `fe
 - [ ] **Confirm explain semantics for the legacy cohort** — print the stub honestly rather than fabricate. Recommendation: yes; the alternative ("hide the legacy rows from explain output") would mask the migration boundary.
 - [ ] **`WRITE_LOG_AUTHORITATIVE` config name and surface.** Env var is fine for ops; should it also be a `.aelfrice.toml` key for project-level pinning? Recommendation: both — env var wins if both are set.
 
-## Why queen
+## Why this is judgment-scope
 
-The risk model for this issue is what makes it queen. Implementation is bounded (~250 LOC + ~250 LOC tests); the calls above are the bet — soak length, rebuild semantics, and the flag's surface are user-visible commitments that will be hard to revise once shipped.
+The risk model for this issue is what makes it judgment-heavy. Implementation is bounded (~250 LOC + ~250 LOC tests); the calls above are the bet — soak length, rebuild semantics, and the flag's surface are user-visible commitments that will be hard to revise once shipped.
 
 ## Downstream impact
 

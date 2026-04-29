@@ -43,9 +43,9 @@ A canonical belief and a derived belief are **shape-equal** iff:
 - [ ] **Scope of the legacy backfill cohort.** When `replay_full_equality` runs on a store with `legacy_unknown` rows, those rows are excluded from `total_log_rows`. Beliefs whose only log row is `legacy_unknown` are excluded from `canonical_orphan`. This is the right call but should be ratified — it does mean the probe is silent about pre-v2.0 ingest correctness.
 - [ ] **Drift example sample size.** Recommendation: up to 10 representative cases per drift bucket, raw_text truncated to 200 chars. Configurable.
 
-## Why queen
+## Why this is judgment-scope
 
-The judgment calls above are the queen-tier work. Once equality is contracted, implementation is mechanical (~150 LOC code + ~250 LOC tests).
+The decisions above are the design work. Once equality is contracted, implementation is mechanical (~150 LOC code + ~250 LOC tests).
 
 ## Downstream impact
 
