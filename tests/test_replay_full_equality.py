@@ -651,3 +651,32 @@ def test_cli_doctor_replay_drift_examples_zero_preserved(
     assert "[mismatched]" not in text
     assert "[derived_orphan]" not in text
     assert "[canonical_orphan]" not in text
+
+
+def test_cli_doctor_replay_canonical_orphan_only_exits_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hypothesis: a belief whose only ingest_log row is legacy_unknown is a
+    canonical_orphan, which is informational-only; `aelf doctor --replay`
+    must exit 0. Falsifiable by exit code != 0."""
+    import io
+    from aelfrice.cli import main
+
+    db = str(tmp_path / "brain.db")
+    monkeypatch.setenv("AELFRICE_DB", db)
+
+    s = MemoryStore(db)
+    b = _make_belief(_FACTUAL_SENTENCE)
+    s.insert_belief(b)
+    s.record_ingest(
+        source_kind=INGEST_SOURCE_LEGACY_UNKNOWN,
+        source_path=None,
+        raw_text=_FACTUAL_SENTENCE,
+        derived_belief_ids=[b.id],
+        ts=_TS,
+    )
+    s.close()
+
+    out = io.StringIO()
+    rc = main(["doctor", "--replay"], out=out)
+    assert rc == 0
