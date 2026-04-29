@@ -10,3 +10,4 @@ build/
 *.db
 *.db-wal
 *.db-shm
+telemetry/
