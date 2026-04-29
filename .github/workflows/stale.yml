@@ -1,0 +1,35 @@
+name: stale
+
+on:
+  schedule:
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close Stale Issues
+        uses: actions/stale@b5d41d4e1d5dceea10e7104786b73624c18a190f # v10.2.0
+        with:
+          days-before-issue-stale: 60
+          days-before-issue-close: 14
+          days-before-pr-stale: 30
+          days-before-pr-close: 7
+          stale-issue-label: stale
+          stale-pr-label: stale
+          exempt-issue-labels: "bench-gated,spec-ready,v2.0,v2.x,pinned"
+          exempt-pr-labels: "WIP,blocked,pinned"
+          stale-issue-message: |
+            This issue has had no activity in 60 days. It will close in 14 days
+            unless updated. Add the `pinned` label to keep it open indefinitely.
+          stale-pr-message: |
+            This PR has had no activity in 30 days. It will close in 7 days
+            unless updated. Add the `pinned` label to keep it open.
+          close-issue-message: "Closing as stale. Reopen if still relevant."
+          close-pr-message: "Closing as stale. Reopen if still relevant."
+          operations-per-run: 100
