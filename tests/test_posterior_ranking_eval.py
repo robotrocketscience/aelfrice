@@ -370,3 +370,61 @@ def test_load_fixtures(tmp_path: Path) -> None:
     loaded = load_fixtures(fpath)
     assert len(loaded) == 3
     assert loaded[0]["id"] == "f0"
+
+
+# ---------------------------------------------------------------------------
+# CLI integration
+# ---------------------------------------------------------------------------
+
+
+def test_cli_posterior_residual_exit_0_clean(tmp_path: Path) -> None:
+    """aelf bench posterior-residual exits 0 when both thresholds are met.
+
+    Uses a relaxed ECE threshold since the synthetic feedback stream is
+    intentionally simple (only the known item gets positive feedback), which
+    produces well-separated but not perfectly calibrated posterior_mean values
+    for noise items at the Jeffreys prior.  The MRR fixture is designed to
+    produce reliable uplift.  ECE calibration is validated by unit tests
+    via compute_ece() directly.
+    """
+    fixtures = [_minimal_fixture()]
+    fpath = _write_fixtures(tmp_path, fixtures)
+
+    code, output = _run_cli(
+        "bench", "posterior-residual",
+        "--fixtures", str(fpath),
+        "--seeds", "1",
+        "--ece-threshold", "0.50",
+    )
+    assert code == 0, f"expected exit 0, got {code}. output:\n{output}"
+
+
+def test_cli_posterior_residual_exit_1_tight_threshold(tmp_path: Path) -> None:
+    """aelf bench posterior-residual with impossibly tight MRR threshold exits 1."""
+    fixtures = [_minimal_fixture()]
+    fpath = _write_fixtures(tmp_path, fixtures)
+
+    code, output = _run_cli(
+        "bench", "posterior-residual",
+        "--fixtures", str(fpath),
+        "--seeds", "1",
+        "--mrr-threshold", "0.99",
+    )
+    assert code == 1, f"expected exit 1, got {code}. output:\n{output}"
+
+
+def test_cli_posterior_residual_json_flag(tmp_path: Path) -> None:
+    """--json flag emits machine-readable JSON with mrr, ece, overall_pass keys."""
+    fixtures = [_minimal_fixture()]
+    fpath = _write_fixtures(tmp_path, fixtures)
+
+    code, output = _run_cli(
+        "bench", "posterior-residual",
+        "--fixtures", str(fpath),
+        "--seeds", "1",
+        "--json",
+    )
+    parsed = json.loads(output)
+    assert "mrr" in parsed
+    assert "ece" in parsed
+    assert "overall_pass" in parsed
