@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Final
 
-from aelfrice.classification import classify_sentence
+from aelfrice.classification import classify_sentence, get_source_adjusted_prior
 from aelfrice.models import (
     BELIEF_FACTUAL,
     INGEST_SOURCE_CLI_REMEMBER,
@@ -66,6 +66,10 @@ class DerivationInput:
     ts: str = ""            # ISO-8601; empty string -> utc-now
     classifier_version: str | None = None
     rule_set_hash: str | None = None
+    # Optional pre-classified type from a host LLM (polymorphic onboard
+    # handshake). When set, `derive()` skips `classify_sentence` and uses
+    # this type to look up the source-adjusted prior.
+    override_belief_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -214,6 +218,30 @@ def derive(inp: DerivationInput) -> DerivationOutput:
 
     # 3. Classifier paths (filesystem, python_ast, etc.) ------------------
     source = inp.source_path or inp.source_kind
+
+    if inp.override_belief_type is not None:
+        # Host-LLM-classified path (polymorphic onboard handshake): the
+        # caller has already determined the belief type; skip regex
+        # classify_sentence and look up the source-adjusted prior directly.
+        alpha, beta = get_source_adjusted_prior(inp.override_belief_type, source)
+        bid = _belief_id(raw, source)
+        belief = Belief(
+            id=bid,
+            content=raw,
+            content_hash=_content_hash(raw),
+            alpha=alpha,
+            beta=beta,
+            type=inp.override_belief_type,
+            lock_level=LOCK_NONE,
+            locked_at=None,
+            demotion_pressure=0,
+            created_at=ts,
+            last_retrieved_at=None,
+            session_id=inp.session_id,
+            origin=ORIGIN_AGENT_INFERRED,
+        )
+        return DerivationOutput(belief=belief, edges=[])
+
     result = classify_sentence(raw, source)
     if not result.persist:
         return DerivationOutput(
