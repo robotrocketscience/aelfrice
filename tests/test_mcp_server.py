@@ -59,7 +59,7 @@ def _put_belief(
     b = Belief(
         id=id,
         content=content,
-        content_hash="hh",
+        content_hash=f"hh-{id}",
         alpha=alpha,
         beta=beta,
         type=BELIEF_FACTUAL,

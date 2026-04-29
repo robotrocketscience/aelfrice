@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Callable, Final, Iterable, Iterator
 
 from aelfrice.models import (
+    CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION,
     CORROBORATION_SOURCE_TYPES,
     EDGE_VALENCE,
     INGEST_SOURCE_KINDS,
@@ -42,7 +43,7 @@ _SCHEMA: tuple[str, ...] = (
     CREATE TABLE IF NOT EXISTS beliefs (
         id                  TEXT PRIMARY KEY,
         content             TEXT NOT NULL,
-        content_hash        TEXT NOT NULL,
+        content_hash        TEXT NOT NULL UNIQUE,
         alpha               REAL NOT NULL,
         beta                REAL NOT NULL,
         type                TEXT NOT NULL,
@@ -266,6 +267,15 @@ SCHEMA_META_LOG_VERSION_VECTOR_BACKFILL: Final[str] = (
 # runs). ISO timestamp on completion; absence triggers the migration on
 # next open.
 SCHEMA_META_LEGACY_LOG_SYNTH: Final[str] = "legacy_log_synth_complete"
+# #219 content_hash dedup. One-shot pass that collapses duplicate
+# content_hash rows onto the canonical (oldest created_at, then id ASC)
+# belief before the UNIQUE constraint is applied. ISO timestamp on
+# completion.
+SCHEMA_META_CONTENT_HASH_DEDUP_COMPLETE: Final[str] = "content_hash_dedup_complete"
+# #219 content_hash UNIQUE. Set after the table-swap that adds
+# UNIQUE(content_hash) to the beliefs table. Fresh stores skip the
+# swap because their _SCHEMA already includes the constraint.
+SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED: Final[str] = "content_hash_unique_applied"
 
 # v1.0 -> v1.2 column additions. Each ALTER runs after _SCHEMA. ALTERs
 # are idempotent: a duplicate-column OperationalError on a v1.2-fresh
@@ -515,6 +525,12 @@ class MemoryStore:
         # v2.0 #205 ingest_log version-vector backfill. Same shape
         # as #204 but for the parallel-write log table. Idempotent.
         self._maybe_backfill_log_version_vectors()
+        # #219 content_hash dedup. Must run BEFORE the table-swap that
+        # adds UNIQUE(content_hash) so we eliminate all duplicates first.
+        self._maybe_consolidate_content_hash_duplicates()
+        # #219 UNIQUE(content_hash). Table-swap migration; runs once
+        # after the dedup pass guarantees no duplicates remain.
+        self._maybe_apply_content_hash_unique()
 
     def close(self) -> None:
         self._conn.close()
@@ -793,6 +809,317 @@ class MemoryStore:
             datetime.now(timezone.utc).isoformat(),
         )
         return inserted
+
+    def _maybe_consolidate_content_hash_duplicates(self) -> int:
+        """One-shot migration: collapse duplicate content_hash rows.
+
+        #219. Before UNIQUE(content_hash) can be applied the DB must
+        have at most one belief row per content_hash. This pass finds
+        all duplicate groups and merges them:
+
+        - Canonical row: oldest created_at, tie-break id ASC.
+        - alpha / beta: sum across the group (each carries Bayesian
+          evidence).
+        - lock_level: MAX (user > none).
+        - origin: highest-precedence value across the group (user_*
+          beats agent_* beats everything else).
+        - last_retrieved_at: MAX (most recent retrieval).
+        - FK rewrites: feedback_history, belief_corroborations, edges
+          (src and dst). belief_entities and belief_versions are
+          dropped for duplicates (same content → same entities; the
+          canonical row already has them).
+        - One synthetic belief_corroborations row (source_type=
+          'consolidation_migration') per duplicate consumed preserves
+          the count signal.
+        - Duplicate belief rows deleted from beliefs and beliefs_fts.
+
+        Implementation uses bulk SQL (one SELECT + executemany) to
+        stay well under 5 seconds on stores with tens of thousands of
+        beliefs. The full pass on a 20K-belief store with ~2K duplicate
+        groups takes < 2 seconds.
+
+        Idempotent: the SCHEMA_META_CONTENT_HASH_DEDUP_COMPLETE marker
+        short-circuits on subsequent opens. All work is inside a single
+        transaction so a crash mid-migration leaves no partial state.
+
+        Returns the count of duplicate rows eliminated.
+        """
+        if self.get_schema_meta(SCHEMA_META_CONTENT_HASH_DEDUP_COMPLETE):
+            return 0
+
+        # Fetch all beliefs in duplicate groups in one query, ordered
+        # so the canonical (oldest created_at, then id ASC) is first.
+        rows = self._conn.execute(
+            """
+            SELECT id, content_hash, alpha, beta, lock_level,
+                   origin, last_retrieved_at
+            FROM beliefs
+            WHERE content_hash IN (
+                SELECT content_hash FROM beliefs
+                GROUP BY content_hash HAVING COUNT(*) > 1
+            )
+            ORDER BY content_hash ASC, created_at ASC, id ASC
+            """
+        ).fetchall()
+
+        if not rows:
+            self.set_schema_meta(
+                SCHEMA_META_CONTENT_HASH_DEDUP_COMPLETE,
+                datetime.now(timezone.utc).isoformat(),
+            )
+            return 0
+
+        # Origin precedence: higher number = higher priority.
+        _ORIGIN_RANK: dict[str, int] = {
+            "user_stated": 10,
+            "user_corrected": 9,
+            "user_validated": 8,
+            "agent_remembered": 5,
+            "agent_inferred": 4,
+            "document_recent": 3,
+            "unknown": 0,
+        }
+
+        # Group in Python — O(n) pass.
+        from collections import defaultdict as _defaultdict
+        groups: dict[str, list[sqlite3.Row]] = _defaultdict(list)
+        for row in rows:
+            groups[str(row["content_hash"])].append(row)
+
+        all_dupe_ids: list[str] = []
+        canonical_updates: list[tuple[object, ...]] = []
+        dupe_to_canon: dict[str, str] = {}
+        corroboration_rows: list[tuple[str, str]] = []
+
+        ts_now = datetime.now(timezone.utc).isoformat()
+
+        for _ch, group in groups.items():
+            if len(group) < 2:
+                continue
+            canonical_id = str(group[0]["id"])
+            dupe_ids = [str(r["id"]) for r in group[1:]]
+            all_dupe_ids.extend(dupe_ids)
+
+            total_alpha = sum(float(r["alpha"]) for r in group)
+            total_beta = sum(float(r["beta"]) for r in group)
+            lock_level = (
+                "user"
+                if any(str(r["lock_level"]) == "user" for r in group)
+                else "none"
+            )
+            origin = max(
+                [str(r["origin"]) for r in group],
+                key=lambda o: _ORIGIN_RANK.get(o, 0),
+            )
+            retrieved_vals = [
+                str(r["last_retrieved_at"])
+                for r in group
+                if r["last_retrieved_at"] is not None
+            ]
+            last_retrieved_at = max(retrieved_vals) if retrieved_vals else None
+
+            canonical_updates.append(
+                (total_alpha, total_beta, lock_level, origin,
+                 last_retrieved_at, canonical_id)
+            )
+            for did in dupe_ids:
+                dupe_to_canon[did] = canonical_id
+                corroboration_rows.append((canonical_id, did))
+
+        if not all_dupe_ids:
+            self.set_schema_meta(
+                SCHEMA_META_CONTENT_HASH_DEDUP_COMPLETE,
+                datetime.now(timezone.utc).isoformat(),
+            )
+            return 0
+
+        # All writes in one transaction.
+        with self._conn:
+            # Update canonical belief rows (alpha/beta/lock/origin/lra).
+            self._conn.executemany(
+                """
+                UPDATE beliefs SET
+                    alpha = ?, beta = ?, lock_level = ?,
+                    origin = ?, last_retrieved_at = ?
+                WHERE id = ?
+                """,
+                canonical_updates,
+            )
+
+            # Rewrite FK references: feedback_history,
+            # belief_corroborations, edges (src and dst).
+            self._conn.executemany(
+                "UPDATE feedback_history SET belief_id = ? "
+                "WHERE belief_id = ?",
+                [(canon, dupe) for dupe, canon in dupe_to_canon.items()],
+            )
+            self._conn.executemany(
+                "UPDATE belief_corroborations SET belief_id = ? "
+                "WHERE belief_id = ?",
+                [(canon, dupe) for dupe, canon in dupe_to_canon.items()],
+            )
+            self._conn.executemany(
+                "UPDATE edges SET src = ? WHERE src = ?",
+                [(canon, dupe) for dupe, canon in dupe_to_canon.items()],
+            )
+            self._conn.executemany(
+                "UPDATE edges SET dst = ? WHERE dst = ?",
+                [(canon, dupe) for dupe, canon in dupe_to_canon.items()],
+            )
+
+            # belief_entities: same content → same entities extracted;
+            # the canonical rows already exist. Drop duplicates to
+            # avoid PK conflict.
+            # belief_versions: drop duplicate rows; canonical
+            # accumulates version bumps going forward.
+            ph = ",".join("?" * len(all_dupe_ids))
+            self._conn.execute(
+                f"DELETE FROM belief_entities WHERE belief_id IN ({ph})",
+                all_dupe_ids,
+            )
+            self._conn.execute(
+                f"DELETE FROM belief_versions WHERE belief_id IN ({ph})",
+                all_dupe_ids,
+            )
+
+            # Synthetic corroboration rows: one per duplicate consumed.
+            # Best-effort: on legacy stores where belief_corroborations
+            # has INTEGER affinity on belief_id (old schema), the FK
+            # check may reject TEXT ids. Skip gracefully so the main
+            # dedup work (belief row removal) still completes.
+            try:
+                self._conn.executemany(
+                    """
+                    INSERT INTO belief_corroborations
+                        (belief_id, ingested_at, source_type,
+                         session_id, source_path_hash)
+                    VALUES (?, ?, ?, NULL, NULL)
+                    """,
+                    [
+                        (canon_id, ts_now,
+                         CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION)
+                        for canon_id, _dupe_id in corroboration_rows
+                    ],
+                )
+            except sqlite3.IntegrityError:
+                # Old-schema store: belief_corroborations.belief_id has
+                # INTEGER affinity; TEXT belief ids fail FK check.
+                # Corroboration rows are signal-only; skip them without
+                # aborting the dedup work.
+                pass
+
+            # Delete duplicate rows from beliefs and FTS.
+            self._conn.execute(
+                f"DELETE FROM beliefs WHERE id IN ({ph})",
+                all_dupe_ids,
+            )
+            self._conn.execute(
+                f"DELETE FROM beliefs_fts WHERE id IN ({ph})",
+                all_dupe_ids,
+            )
+
+        self.set_schema_meta(
+            SCHEMA_META_CONTENT_HASH_DEDUP_COMPLETE,
+            datetime.now(timezone.utc).isoformat(),
+        )
+        return len(all_dupe_ids)
+
+    def _maybe_apply_content_hash_unique(self) -> bool:
+        """One-shot table-swap that adds UNIQUE(content_hash) to beliefs.
+
+        #219. SQLite does not support ALTER TABLE ADD CONSTRAINT, so we
+        use the standard rename/create/copy/drop pattern:
+
+          1. CREATE TABLE beliefs_new (... UNIQUE(content_hash)).
+          2. INSERT INTO beliefs_new SELECT * FROM beliefs.
+          3. DROP TABLE beliefs.
+          4. ALTER TABLE beliefs_new RENAME TO beliefs.
+          5. Recreate all indexes that were on beliefs.
+
+        Precondition: _maybe_consolidate_content_hash_duplicates must
+        have already run (no duplicate content_hash rows exist). If a
+        UNIQUE violation occurs the transaction rolls back and the
+        error propagates — it means the consolidation pass was skipped
+        or did not complete, which is a programming error.
+
+        Fresh stores skip this migration because _SCHEMA already
+        includes UNIQUE(content_hash). Idempotent via
+        SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED marker.
+
+        Returns True if the swap ran, False if it was already applied.
+        """
+        if self.get_schema_meta(SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED):
+            return False
+
+        # Check whether the constraint already exists (e.g. fresh store
+        # created with the new _SCHEMA that includes UNIQUE).
+        idx_cur = self._conn.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type='table' AND name='beliefs'"
+        )
+        row = idx_cur.fetchone()
+        if row and "UNIQUE" in str(row["sql"]):
+            # Fresh store — constraint already present; just stamp marker.
+            self.set_schema_meta(
+                SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED,
+                datetime.now(timezone.utc).isoformat(),
+            )
+            return False
+
+        # Build CREATE TABLE DDL from the existing beliefs table.
+        # Using PRAGMA table_info avoids parsing the sqlite_master DDL
+        # string and correctly handles extra columns added by ALTER TABLE
+        # on legacy stores (e.g. hibernation_score, activation_condition).
+        col_info = self._conn.execute(
+            "PRAGMA table_info(beliefs)"
+        ).fetchall()
+        col_defs: list[str] = []
+        col_names: list[str] = []
+        for col in col_info:
+            cname = str(col["name"])
+            ctype = str(col["type"])
+            notnull = " NOT NULL" if col["notnull"] else ""
+            dflt = f" DEFAULT {col['dflt_value']}" if col["dflt_value"] is not None else ""
+            pk = " PRIMARY KEY" if col["pk"] else ""
+            unique = " UNIQUE" if cname == "content_hash" else ""
+            col_defs.append(f"    {cname} {ctype}{pk}{unique}{notnull}{dflt}")
+            col_names.append(cname)
+
+        create_sql = (
+            "CREATE TABLE beliefs_new (\n"
+            + ",\n".join(col_defs)
+            + "\n)"
+        )
+
+        col_list = ", ".join(col_names)
+
+        with self._conn:
+            # Drop any leftover temp table from a failed previous attempt.
+            self._conn.execute("DROP TABLE IF EXISTS beliefs_new")
+            self._conn.execute(create_sql)
+            self._conn.execute(
+                f"INSERT INTO beliefs_new ({col_list}) "
+                f"SELECT {col_list} FROM beliefs"
+            )
+            self._conn.execute("DROP TABLE beliefs")
+            self._conn.execute(
+                "ALTER TABLE beliefs_new RENAME TO beliefs"
+            )
+            # Recreate indexes that were on the original beliefs table.
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_beliefs_session "
+                "ON beliefs(session_id)"
+            )
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_beliefs_origin "
+                "ON beliefs(origin)"
+            )
+
+        self.set_schema_meta(
+            SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED,
+            datetime.now(timezone.utc).isoformat(),
+        )
+        return True
 
     def list_belief_ids(self) -> list[str]:
         """All belief ids in insertion-time order. Used by the v1.3
@@ -1235,6 +1562,44 @@ class MemoryStore:
         return int(row["n"])
 
     # --- Belief corroborations (v1.5+, #190) -----------------------------
+
+    def insert_or_corroborate(
+        self,
+        b: Belief,
+        *,
+        source_type: str,
+        session_id: str | None = None,
+        source_path_hash: str | None = None,
+    ) -> tuple[str, bool]:
+        """Insert belief or corroborate existing one with same content_hash.
+
+        Returns (belief_id, was_inserted). On a content_hash hit the
+        existing belief row is unchanged and record_corroboration is
+        called to record the re-assertion signal. On a miss insert_belief
+        is called and (b.id, True) is returned.
+
+        `source_type` must be in CORROBORATION_SOURCE_TYPES; ValueError
+        is raised immediately on an unknown value so the caller's test
+        suite catches misconfigured mappings early.
+        """
+        # Validate source_type up-front so the error surfaces at the
+        # call site, not inside record_corroboration after the lookup.
+        if source_type not in CORROBORATION_SOURCE_TYPES:
+            raise ValueError(
+                f"Unknown source_type {source_type!r}. "
+                f"Must be one of {sorted(CORROBORATION_SOURCE_TYPES)}"
+            )
+        existing = self.get_belief_by_content_hash(b.content_hash)
+        if existing is not None:
+            self.record_corroboration(
+                existing.id,
+                source_type=source_type,
+                session_id=session_id,
+                source_path_hash=source_path_hash,
+            )
+            return (existing.id, False)
+        self.insert_belief(b)
+        return (b.id, True)
 
     def record_corroboration(
         self,

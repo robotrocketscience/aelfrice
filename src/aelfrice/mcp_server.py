@@ -218,8 +218,13 @@ def tool_lock(store: MemoryStore, *, statement: str) -> dict[str, Any]:
             derived_belief_ids=[bid],
             ts=now,
         )
-        store.insert_belief(out.belief)
-        return {"kind": "lock.created", "id": bid, "action": "locked"}
+        actual_id, was_inserted = store.insert_or_corroborate(
+            out.belief,
+            source_type=CORROBORATION_SOURCE_MCP_REMEMBER,
+        )
+        if was_inserted:
+            return {"kind": "lock.created", "id": actual_id, "action": "locked"}
+        return {"kind": "lock.corroborated", "id": actual_id, "action": "corroborated"}
     existing.lock_level = LOCK_USER
     existing.locked_at = now
     existing.demotion_pressure = 0

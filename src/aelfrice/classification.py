@@ -40,6 +40,7 @@ from aelfrice.models import (
     BELIEF_PREFERENCE,
     BELIEF_REQUIREMENT,
     BELIEF_TYPES,
+    CORROBORATION_SOURCE_FILESYSTEM_INGEST,
     INGEST_SOURCE_FILESYSTEM,
     ONBOARD_STATE_PENDING,
     OnboardSession,
@@ -519,8 +520,12 @@ def accept_classifications(
             derived_belief_ids=[bid],
             ts=timestamp,
         )
-        store.insert_belief(out.belief)
-        inserted += 1
+        _, was_inserted = store.insert_or_corroborate(
+            out.belief,
+            source_type=CORROBORATION_SOURCE_FILESYSTEM_INGEST,
+        )
+        if was_inserted:
+            inserted += 1
 
     store.complete_onboard_session(session_id, timestamp)
     return AcceptOnboardResult(

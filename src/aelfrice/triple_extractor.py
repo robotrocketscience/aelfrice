@@ -263,9 +263,14 @@ def _resolve_or_create_belief(
         session_id=session_id,
         ts=ts,
     )
-    store.insert_belief(out.belief)
-    created_ids.append(bid)
-    return bid
+    actual_id, was_inserted = store.insert_or_corroborate(
+        out.belief,
+        source_type=CORROBORATION_SOURCE_COMMIT_INGEST,
+        session_id=session_id,
+    )
+    if was_inserted:
+        created_ids.append(actual_id)
+    return actual_id
 
 
 def ingest_triples(

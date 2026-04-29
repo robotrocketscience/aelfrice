@@ -268,13 +268,19 @@ def test_different_source_types_record_distinctly() -> None:
 
 
 def test_source_type_enum_covers_all_variants() -> None:
-    """CORROBORATION_SOURCE_TYPES contains exactly the four documented
-    values."""
+    """CORROBORATION_SOURCE_TYPES contains all documented values.
+
+    Updated for #219: filesystem_ingest, cli_remember, and
+    consolidation_migration added to support cross-source dedup.
+    """
     expected = {
         "commit_ingest",
         "transcript_ingest",
         "mcp_remember",
         "hook_ingest",
+        "filesystem_ingest",
+        "cli_remember",
+        "consolidation_migration",
     }
     assert CORROBORATION_SOURCE_TYPES == expected
 

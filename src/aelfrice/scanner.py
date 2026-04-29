@@ -28,6 +28,7 @@ from typing import Final
 from aelfrice.derivation import DerivationInput, derive
 from aelfrice.inedible import is_inedible
 from aelfrice.models import (
+    CORROBORATION_SOURCE_FILESYSTEM_INGEST,
     INGEST_SOURCE_FILESYSTEM,
     LOCK_NONE,
     Belief,
@@ -245,21 +246,25 @@ def scan_repo(
                 derived_belief_ids=[belief_id],
                 ts=created_at,
             )
-            store.insert_belief(Belief(
-                id=belief_id,
-                content=candidate.text,
-                content_hash=_content_hash(candidate.text),
-                alpha=route.alpha,
-                beta=route.beta,
-                type=route.belief_type,
-                lock_level=LOCK_NONE,
-                locked_at=None,
-                demotion_pressure=0,
-                created_at=created_at,
-                last_retrieved_at=None,
-                origin=route.origin,
-            ))
-            inserted += 1
+            _, was_inserted = store.insert_or_corroborate(
+                Belief(
+                    id=belief_id,
+                    content=candidate.text,
+                    content_hash=_content_hash(candidate.text),
+                    alpha=route.alpha,
+                    beta=route.beta,
+                    type=route.belief_type,
+                    lock_level=LOCK_NONE,
+                    locked_at=None,
+                    demotion_pressure=0,
+                    created_at=created_at,
+                    last_retrieved_at=None,
+                    origin=route.origin,
+                ),
+                source_type=CORROBORATION_SOURCE_FILESYSTEM_INGEST,
+            )
+            if was_inserted:
+                inserted += 1
             # Audit row for fallback insertions (spec § 7.2 step 3).
             if route.audit_source is not None:
                 store.insert_feedback_event(
@@ -290,8 +295,12 @@ def scan_repo(
                 derived_belief_ids=[belief_id],
                 ts=created_at,
             )
-            store.insert_belief(out.belief)
-            inserted += 1
+            _, was_inserted = store.insert_or_corroborate(
+                out.belief,
+                source_type=CORROBORATION_SOURCE_FILESYSTEM_INGEST,
+            )
+            if was_inserted:
+                inserted += 1
 
     return ScanResult(
         inserted=inserted,

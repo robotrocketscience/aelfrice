@@ -58,6 +58,7 @@ from aelfrice.health import (
     regime_description,
 )
 from aelfrice.models import (
+    CORROBORATION_SOURCE_CLI_REMEMBER,
     INGEST_SOURCE_CLI_REMEMBER,
     LOCK_NONE,
     LOCK_USER,
@@ -804,8 +805,14 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
                 derived_belief_ids=[bid],
                 ts=now,
             )
-            store.insert_belief(derived.belief)
-            print(f"locked: {bid}", file=out)  # type: ignore[arg-type]
+            actual_id, was_inserted = store.insert_or_corroborate(
+                derived.belief,
+                source_type=CORROBORATION_SOURCE_CLI_REMEMBER,
+            )
+            if was_inserted:
+                print(f"locked: {actual_id}", file=out)  # type: ignore[arg-type]
+            else:
+                print(f"locked: {actual_id} (corroborated existing)", file=out)  # type: ignore[arg-type]
         else:
             existing.lock_level = LOCK_USER
             existing.locked_at = now
