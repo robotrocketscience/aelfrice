@@ -72,9 +72,8 @@ def test_session_start_emits_locked_beliefs(
     out = sout.getvalue()
     assert out.startswith(SESSION_START_OPEN_TAG + "\n")
     assert SESSION_START_CLOSE_TAG in out
-    assert "L1: user is jonsobol" in out
-    assert "L2: primary db is sqlite" in out
-    assert "[locked]" in out
+    assert '<belief id="L1" lock="user">user is jonsobol</belief>' in out
+    assert '<belief id="L2" lock="user">primary db is sqlite</belief>' in out
 
 
 def test_session_start_skips_unlocked_beliefs(
