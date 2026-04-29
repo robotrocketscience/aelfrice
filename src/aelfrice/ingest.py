@@ -146,8 +146,17 @@ def _ingest_turn_ids(
             session_id=session_id,
             ts=ts,
         )
-        store.insert_belief(out.belief)
-        inserted.append(belief_id)
+        # Cross-source dedup: same content from a different source
+        # produces the same content_hash but a different belief_id.
+        # insert_or_corroborate records a corroboration row on hit
+        # instead of silently inserting a duplicate belief row.
+        actual_id, was_inserted = store.insert_or_corroborate(
+            out.belief,
+            source_type=CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+            session_id=session_id,
+        )
+        if was_inserted:
+            inserted.append(actual_id)
     return inserted
 
 

@@ -187,11 +187,21 @@ def test_source_label_passed_through(tmp_path: Path) -> None:
     ])
     store = MemoryStore(":memory:")
     try:
-        # Different source labels produce distinct belief ids -> two writes.
+        # First ingest inserts the belief; second ingest from a different
+        # source label hits the same content_hash and records a corroboration
+        # instead of inflating a duplicate row (#219 dedup fix).
         r1 = ingest_jsonl(store, p, source_label="conv-A")
         r2 = ingest_jsonl(store, p, source_label="conv-B")
         assert r1.beliefs_inserted >= 1
-        assert r2.beliefs_inserted >= 1
+        # Second ingest deduplicates by content_hash -> 0 new rows.
+        assert r2.beliefs_inserted == 0
+        # Corroboration row recorded for the re-assertion.
+        belief_ids = store.list_belief_ids()
+        assert len(belief_ids) >= 1
+        total_corroborations = sum(
+            store.count_corroborations(bid) for bid in belief_ids
+        )
+        assert total_corroborations >= 1
     finally:
         store.close()
 
