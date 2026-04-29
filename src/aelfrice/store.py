@@ -1039,6 +1039,38 @@ class MemoryStore:
             out.append((_row_to_belief(r), score))
         return out
 
+    # --- Retrieval recency -----------------------------------------------
+
+    def stamp_retrieved(
+        self,
+        belief_ids: Iterable[str],
+        ts: str | None = None,
+    ) -> int:
+        """Mark beliefs as retrieved at `ts` (defaults to UTC now).
+
+        Single batched UPDATE; ids not present in the table are silently
+        skipped (UPDATE matches zero rows). Returns the number of rows
+        actually updated. Empty input is a no-op returning 0.
+
+        This is the belief-side mirror of feedback_history writes for
+        retrieval-driven feedback. The retrieval-audit-loop spec
+        (v1.0.1 #127) requires both: feedback_history records the event,
+        last_retrieved_at gives downstream consumers (decay moderation,
+        recency-aware ranking, telemetry) an O(1) read.
+        """
+        ids = [bid for bid in belief_ids if bid]
+        if not ids:
+            return 0
+        if ts is None:
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        placeholders = ",".join("?" * len(ids))
+        cur = self._conn.execute(
+            f"UPDATE beliefs SET last_retrieved_at = ? WHERE id IN ({placeholders})",
+            (ts, *ids),
+        )
+        self._conn.commit()
+        return cur.rowcount or 0
+
     # --- Feedback history ------------------------------------------------
 
     def insert_feedback_event(
