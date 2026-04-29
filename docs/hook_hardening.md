@@ -2,9 +2,19 @@
 
 ## Status
 
-**Spec — proposing for ratification.** No code change in this memo.
-Implementation is roughly two PRs after ratification: framing + tag
-contract change (small) and audit-log capture (small).
+**Partially shipped.**
+
+| Layer | State | Reference |
+|---|---|---|
+| Spec memo (this doc) | Landed | PR #292 |
+| Mitigation 1 — framing-tag contract | Landed | `_FRAMING_HEADER`, `<belief id=… lock=…>` inner element in `src/aelfrice/hook.py` (`_format_hits`, `_format_baseline_hits`) |
+| Mitigation 2 — render-time belief-content escape | Landed | `_escape_for_hook_block` in `src/aelfrice/hook.py` |
+| Mitigation 3 — per-turn audit log (`hook_audit.jsonl`) | Outstanding | Tracked in this section as PR2 |
+
+The decision-asks below (lines 232-242) were tacitly ratified for
+mitigations 1+2 by the implementation landing alongside this doc. The
+mitigation-3 default-on / 10 MB / single-rotation contract remains the
+ratified shape for the outstanding PR2.
 
 ## Problem
 
