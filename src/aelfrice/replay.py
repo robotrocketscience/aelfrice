@@ -128,6 +128,21 @@ class FullEqualityReport:
 
     @property
     def has_drift(self) -> bool:
+        """True iff the canonical store disagrees with re-derived ingest log.
+
+        Drift is the union of `mismatched` (canonical exists but a non-origin
+        field differs) and `derived_orphan` (replay produced a belief id that
+        is not in the canonical store).
+
+        `canonical_orphan` is informational-only and does NOT count toward
+        drift: it flags beliefs that exist in the canonical store but have no
+        non-legacy log row (pre-#205 inserts and legacy_unknown-only rows).
+        These are expected during the v2.x migration window and reporting
+        them as drift would produce false positives.
+
+        `legacy_origin_backfill` and `feedback_derived_edges` are also
+        informational and never trigger drift.
+        """
         return self.mismatched > 0 or self.derived_orphan > 0
 
 
@@ -293,6 +308,8 @@ def replay_full_equality(
     # --- Canonical orphans -------------------------------------------------
     # A canonical belief is an orphan when every log row pointing at it is
     # legacy_unknown (or there are no log rows at all, pre-#205).
+    # TODO(perf): replace N+1 iteration with set-based store query — see
+    # follow-up issue.
     belief_ids = store.list_belief_ids()
     canonical_orphan = 0
     examples_canonical_orphan: list[dict] = []  # type: ignore[type-arg]
