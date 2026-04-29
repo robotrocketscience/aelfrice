@@ -1,0 +1,51 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":semanticCommitTypeAll(build)",
+    ":dependencyDashboard",
+    "schedule:weekly"
+  ],
+  "timezone": "America/New_York",
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 3,
+  "prHourlyLimit": 2,
+  "rangeStrategy": "pin",
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 5am on monday"]
+  },
+  "packageRules": [
+    {
+      "description": "Group all non-major GitHub Actions bumps into one PR per week",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "github-actions (non-major)",
+      "schedule": ["before 5am on monday"]
+    },
+    {
+      "description": "Group all non-major Python deps into one PR per week",
+      "matchManagers": ["pep621"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "python deps (non-major)",
+      "schedule": ["before 5am on monday"]
+    },
+    {
+      "description": "Major bumps get their own PR for explicit review",
+      "matchUpdateTypes": ["major"],
+      "addLabels": ["major-bump"],
+      "automerge": false
+    },
+    {
+      "description": "Pin GitHub Actions to commit SHA per security guidance",
+      "matchManagers": ["github-actions"],
+      "pinDigests": true
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": ["security"],
+    "automerge": false
+  },
+  "osvVulnerabilityAlerts": true
+}
