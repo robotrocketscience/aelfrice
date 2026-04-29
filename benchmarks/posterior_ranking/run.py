@@ -15,6 +15,7 @@ The synthetic feedback stream is defined as follows:
 """
 from __future__ import annotations
 
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ from benchmarks.posterior_ranking.mrr_uplift import (
     run_multi_seed,
 )
 from aelfrice.feedback import apply_feedback
+from aelfrice.graph_spectral import GraphEigenbasisCache
 from aelfrice.models import Belief
 from aelfrice.retrieval import retrieve
 
@@ -43,6 +45,8 @@ def _build_ece_observations(
     fixtures: list[dict[str, object]],
     seed: int,
     top_k: int = DEFAULT_TOP_K,
+    *,
+    heat_kernel: bool = False,
 ) -> list[dict[str, object]]:
     """Replay the synthetic feedback stream and collect ECE observations.
 
@@ -60,13 +64,25 @@ def _build_ece_observations(
     """
     observations: list[dict[str, object]] = []
 
-    for fx in fixtures:
+    _tmp_dir = tempfile.TemporaryDirectory(prefix="aelf_pr_ece_eb_")
+    _tmp_path = Path(_tmp_dir.name)
+
+    for idx, fx in enumerate(fixtures):
         store, known_id = _build_store(fx, seed)
         query = str(fx["query"])
         known_content = str(fx["known_belief_content"])
 
+        cache: GraphEigenbasisCache | None = None
+        if heat_kernel:
+            cache = GraphEigenbasisCache(
+                store=store, path=_tmp_path / f"eb_{seed}_{idx}.npz",
+            )
+            cache.build()
+
         # Round 0 is baseline (no feedback yet); include it.
         for _rnd in range(N_ROUNDS + 1):
+            if heat_kernel and cache is not None and cache.is_stale():
+                cache.build()
             results: list[Belief] = retrieve(
                 store,
                 query,
@@ -74,6 +90,8 @@ def _build_ece_observations(
                 entity_index_enabled=False,
                 bfs_enabled=False,
                 posterior_weight=None,
+                heat_kernel_enabled=heat_kernel,
+                eigenbasis_cache=cache,
             )
 
             top1 = results[0] if results else None
@@ -104,6 +122,7 @@ def _build_ece_observations(
 
         store.close()
 
+    _tmp_dir.cleanup()
     return observations
 
 
@@ -114,6 +133,8 @@ def run(
     ece_threshold: float = DEFAULT_ECE_THRESHOLD,
     top_k: int = DEFAULT_TOP_K,
     base_seed: int = 0,
+    *,
+    heat_kernel: bool = False,
 ) -> dict[str, Any]:
     """Run both MRR uplift and ECE scorers against a fixture file.
 
@@ -137,10 +158,13 @@ def run(
         threshold=mrr_threshold,
         top_k=top_k,
         base_seed=base_seed,
+        heat_kernel=heat_kernel,
     )
 
     # Collect ECE observations using seed 0 (deterministic reference).
-    observations = _build_ece_observations(fixtures, seed=base_seed, top_k=top_k)
+    observations = _build_ece_observations(
+        fixtures, seed=base_seed, top_k=top_k, heat_kernel=heat_kernel,
+    )
     ece_result: ECEResult = compute_ece_from_stores(observations, threshold=ece_threshold)
 
     overall_pass = mrr_report.passed and ece_result.passed
@@ -159,6 +183,8 @@ def run_as_dict(
     ece_threshold: float = DEFAULT_ECE_THRESHOLD,
     top_k: int = DEFAULT_TOP_K,
     base_seed: int = 0,
+    *,
+    heat_kernel: bool = False,
 ) -> dict[str, Any]:
     """Same as run() but serializes dataclasses to plain dicts for JSON output."""
     result = run(
@@ -168,6 +194,7 @@ def run_as_dict(
         ece_threshold=ece_threshold,
         top_k=top_k,
         base_seed=base_seed,
+        heat_kernel=heat_kernel,
     )
     return {
         "mrr": asdict(result["mrr"]),
