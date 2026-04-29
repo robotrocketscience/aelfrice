@@ -26,6 +26,7 @@ from aelfrice.graph_spectral import (
     build_signed_adjacency,
     build_signed_normalized_laplacian,
     compute_eigenbasis,
+    heat_kernel_for_candidates,
     load_eigenbasis,
     save_eigenbasis,
 )
@@ -309,3 +310,53 @@ def test_eigsolve_under_budget_n10k(request: pytest.FixtureRequest) -> None:
     assert eigvecs.shape == (n, DEFAULT_K)
     # Generous bound — spec says ~4s; allow 30s for noisy hosts.
     assert elapsed < 30.0
+
+
+# --- heat_kernel_for_candidates (#151 slice 2) -----------------------------
+
+
+def test_heat_kernel_for_candidates_returns_per_belief_scores(
+    tmp_path: Path,
+) -> None:
+    s = _toy_store()
+    cache = GraphEigenbasisCache(store=s, path=tmp_path / "eb.npz", k=4)
+    cache.build()
+    candidates = [("b1", 2.0), ("b2", 1.5), ("b5", 0.5)]
+    scores = heat_kernel_for_candidates(cache, candidates)
+    # Every present candidate gets a score
+    assert set(scores.keys()) == {"b1", "b2", "b5"}
+    # Floored, so all entries are strictly positive
+    assert all(v > 0.0 for v in scores.values())
+
+
+def test_heat_kernel_for_candidates_skips_unknown_ids(tmp_path: Path) -> None:
+    """Beliefs not in the eigenbasis row order are silently skipped
+    (the scoring layer will use the neutral 1.0 default for them)."""
+    s = _toy_store()
+    cache = GraphEigenbasisCache(store=s, path=tmp_path / "eb.npz", k=4)
+    cache.build()
+    candidates = [("b1", 1.0), ("b_missing", 1.0)]
+    scores = heat_kernel_for_candidates(cache, candidates)
+    assert "b1" in scores
+    assert "b_missing" not in scores
+
+
+def test_heat_kernel_for_candidates_empty_when_stale(tmp_path: Path) -> None:
+    s = _toy_store()
+    cache = GraphEigenbasisCache(store=s, path=tmp_path / "eb.npz", k=4)
+    cache.build()
+    s.insert_belief(_mk("b6"))  # invalidates cache
+    assert cache.is_stale()
+    scores = heat_kernel_for_candidates(cache, [("b1", 1.0)])
+    assert scores == {}
+
+
+def test_heat_kernel_for_candidates_empty_inputs(tmp_path: Path) -> None:
+    s = _toy_store()
+    cache = GraphEigenbasisCache(store=s, path=tmp_path / "eb.npz", k=4)
+    cache.build()
+    assert heat_kernel_for_candidates(cache, []) == {}
+    # All candidates have zero / negative seed weight → no seeds → {}
+    assert heat_kernel_for_candidates(
+        cache, [("b1", 0.0), ("b2", -1.0)],
+    ) == {}

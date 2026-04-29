@@ -67,6 +67,10 @@ from aelfrice.bfs_multihop import (
 )
 from aelfrice.bm25 import BM25IndexCache
 from aelfrice.entity_extractor import extract_entities
+from aelfrice.graph_spectral import (
+    GraphEigenbasisCache,
+    heat_kernel_for_candidates,
+)
 from aelfrice.models import LOCK_NONE, Belief
 from aelfrice.scoring import (
     DEFAULT_POSTERIOR_WEIGHT,
@@ -737,6 +741,7 @@ def _l1_hits(
     posterior_weight: float,
     use_bm25f_anchors: bool = False,
     bm25f_cache: BM25IndexCache | None = None,
+    eigenbasis_cache: GraphEigenbasisCache | None = None,
 ) -> list[Belief]:
     """Run L1: FTS5 BM25 search (default) or BM25F sparse-matvec
     (v1.5.0 opt-in), optionally reranked by partial-Bayesian score.
@@ -770,7 +775,14 @@ def _l1_hits(
             if b is None:
                 continue
             beliefs.append((b, raw))
-        if posterior_weight == 0.0:
+        # Heat-kernel slice 2 (#151): if the eigenbasis is available
+        # and the lane is opted in, compute per-candidate authority
+        # scores from the BM25F-positive seed set.
+        heat_scores = _heat_kernel_lookup(
+            eigenbasis_cache,
+            [(b.id, raw) for b, raw in beliefs],
+        )
+        if posterior_weight == 0.0 and not heat_scores:
             return [b for b, _ in beliefs]
         keyed: list[tuple[float, str, Belief]] = []
         for b, raw in beliefs:
@@ -780,26 +792,56 @@ def _l1_hits(
             # raw scores as more relevant, matching the FTS5 path.
             s = partial_bayesian_score(
                 -raw, b.alpha, b.beta, posterior_weight,
+                heat_kernel=heat_scores.get(b.id, 1.0),
             )
             keyed.append((s, b.id, b))
         keyed.sort(key=lambda x: (-x[0], x[1]))
         return [b for _, _, b in keyed]
 
-    if posterior_weight == 0.0:
+    if posterior_weight == 0.0 and eigenbasis_cache is None:
         return store.search_beliefs(query, limit=l1_limit)
     scored = store.search_beliefs_scored(query, limit=l1_limit)
     if not scored:
         return []
+    heat_scores = _heat_kernel_lookup(
+        eigenbasis_cache,
+        # FTS5 bm25 is negative; the seed builder needs positive
+        # relevance magnitudes, so pass `-bm25_raw`.
+        [(b.id, -bm25_raw) for b, bm25_raw in scored],
+    )
+    if posterior_weight == 0.0 and not heat_scores:
+        # Caller asked for a pure-BM25 ordering and the heat-kernel
+        # lane produced nothing — preserve the v1.0.x byte-identical
+        # contract. Re-fetch via the stable search_beliefs path so
+        # tie-breaking matches the BM25-only baseline exactly.
+        return store.search_beliefs(query, limit=l1_limit)
     keyed: list[tuple[float, str, Belief]] = []
     for b, bm25_raw in scored:
         s = partial_bayesian_score(
             bm25_raw, b.alpha, b.beta, posterior_weight,
+            heat_kernel=heat_scores.get(b.id, 1.0),
         )
         keyed.append((s, b.id, b))
     # Higher score = more relevant. Tie-break on id ASC for
     # determinism (matches the convention in bfs_multihop and L2.5).
     keyed.sort(key=lambda x: (-x[0], x[1]))
     return [b for _, _, b in keyed]
+
+
+def _heat_kernel_lookup(
+    cache: GraphEigenbasisCache | None,
+    candidates: list[tuple[str, float]],
+) -> dict[str, float]:
+    """Resolve heat-kernel scores for L1 candidates if the lane is
+    enabled and the eigenbasis is ready. Returns ``{}`` whenever the
+    lane should be a no-op (flag off, no cache, stale cache, empty
+    candidates) — the caller treats absence as "no contribution".
+    """
+    if cache is None or not candidates:
+        return {}
+    if not is_heat_kernel_enabled():
+        return {}
+    return heat_kernel_for_candidates(cache, candidates)
 
 
 def retrieve(
@@ -820,6 +862,7 @@ def retrieve(
     posterior_weight: float | None = None,
     use_bm25f_anchors: bool | None = None,
     bm25f_cache: BM25IndexCache | None = None,
+    eigenbasis_cache: GraphEigenbasisCache | None = None,
 ) -> list[Belief]:
     """Return L0 locked + L2.5 entity + L1 BM25 + L3 BFS expansions.
 
@@ -910,6 +953,7 @@ def retrieve(
             store, query,
             l1_limit=l1_limit, posterior_weight=weight,
             use_bm25f_anchors=bm25f_on, bm25f_cache=bm25f_cache,
+            eigenbasis_cache=eigenbasis_cache,
         )
         l1 = [
             b for b in raw_l1
@@ -983,6 +1027,7 @@ def retrieve_with_tiers(
     posterior_weight: float | None = None,
     use_bm25f_anchors: bool | None = None,
     bm25f_cache: BM25IndexCache | None = None,
+    eigenbasis_cache: GraphEigenbasisCache | None = None,
 ) -> tuple[
     list[Belief], list[str], list[str], list[str], list[list[str]],
 ]:
@@ -1038,6 +1083,7 @@ def retrieve_with_tiers(
             store, query,
             l1_limit=l1_limit, posterior_weight=weight,
             use_bm25f_anchors=bm25f_on, bm25f_cache=bm25f_cache,
+            eigenbasis_cache=eigenbasis_cache,
         )
         l1 = [
             b for b in raw_l1

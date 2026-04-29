@@ -564,3 +564,90 @@ def test_heat_kernel_monotone_in_authority() -> None:
         bm25_raw, alpha, beta, posterior_weight=0.0, heat_kernel=2.0,
     )
     assert s_low < s_mid < s_high
+
+
+# --- retrieve() with eigenbasis_cache (#151 slice 2) ----------------------
+
+
+def test_retrieve_no_eigenbasis_cache_is_byte_identical() -> None:
+    """Without an eigenbasis_cache the L1 path must produce the
+    same belief sequence as the pre-slice-2 contract — even when
+    AELFRICE_HEAT_KERNEL=1 is set. The lane silently no-ops when
+    no cache is available."""
+    import os
+    from aelfrice.retrieval import _reset_placeholder_warnings
+    _reset_placeholder_warnings()
+    s = _equal_bm25_store()
+    baseline = retrieve(s, "widget", token_budget=10_000, posterior_weight=0.5)
+    prior = os.environ.pop("AELFRICE_HEAT_KERNEL", None)
+    os.environ["AELFRICE_HEAT_KERNEL"] = "1"
+    try:
+        flagged = retrieve(
+            s, "widget", token_budget=10_000, posterior_weight=0.5,
+        )
+    finally:
+        if prior is None:
+            os.environ.pop("AELFRICE_HEAT_KERNEL", None)
+        else:
+            os.environ["AELFRICE_HEAT_KERNEL"] = prior
+    assert [b.id for b in flagged] == [b.id for b in baseline]
+
+
+def test_retrieve_eigenbasis_cache_threaded_through(
+    tmp_path: Path,
+) -> None:
+    """Smoke test: retrieve() accepts eigenbasis_cache, builds it,
+    enables the heat-kernel flag, and returns a non-empty L1 with
+    no exceptions. The actual reranking is exercised by the
+    scoring-level tests above; this confirms wiring."""
+    import os
+    from aelfrice.graph_spectral import GraphEigenbasisCache
+    s = _equal_bm25_store()
+    cache = GraphEigenbasisCache(store=s, path=tmp_path / "eb.npz", k=3)
+    cache.build()
+    prior = os.environ.pop("AELFRICE_HEAT_KERNEL", None)
+    os.environ["AELFRICE_HEAT_KERNEL"] = "1"
+    try:
+        out = retrieve(
+            s, "widget",
+            token_budget=10_000, posterior_weight=0.5,
+            eigenbasis_cache=cache,
+        )
+    finally:
+        if prior is None:
+            os.environ.pop("AELFRICE_HEAT_KERNEL", None)
+        else:
+            os.environ["AELFRICE_HEAT_KERNEL"] = prior
+    assert len(out) == 5
+    assert {b.id for b in out} == {
+        "a_fiv", "b_fou", "c_thr", "d_two", "e_one",
+    }
+
+
+def test_retrieve_heat_kernel_flag_off_ignores_cache(
+    tmp_path: Path,
+) -> None:
+    """When the heat-kernel flag is off, supplying an eigenbasis
+    cache must not change ordering vs the no-cache baseline. Same
+    determinism guarantee as the other off-by-default lanes."""
+    import os
+    from aelfrice.graph_spectral import GraphEigenbasisCache
+    s = _equal_bm25_store()
+    cache = GraphEigenbasisCache(store=s, path=tmp_path / "eb.npz", k=3)
+    cache.build()
+    prior = os.environ.pop("AELFRICE_HEAT_KERNEL", None)
+    os.environ["AELFRICE_HEAT_KERNEL"] = "0"
+    try:
+        with_cache = retrieve(
+            s, "widget", token_budget=10_000, posterior_weight=0.5,
+            eigenbasis_cache=cache,
+        )
+        without_cache = retrieve(
+            s, "widget", token_budget=10_000, posterior_weight=0.5,
+        )
+    finally:
+        if prior is None:
+            os.environ.pop("AELFRICE_HEAT_KERNEL", None)
+        else:
+            os.environ["AELFRICE_HEAT_KERNEL"] = prior
+    assert [b.id for b in with_cache] == [b.id for b in without_cache]

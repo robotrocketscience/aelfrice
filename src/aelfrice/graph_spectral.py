@@ -347,6 +347,63 @@ def combine_log_scores(
     )
 
 
+def heat_kernel_for_candidates(
+    cache: "GraphEigenbasisCache",
+    candidates: list[tuple[str, float]],
+    *,
+    t: float = DEFAULT_HEAT_BANDWIDTH,
+    seed_top_k: int = DEFAULT_BM25_SEED_TOP_K,
+    floor: float = HEAT_SCORE_FLOOR,
+) -> dict[str, float]:
+    """Compute per-belief heat-kernel authority scores for the
+    given L1 candidate set, seeded by the candidates' BM25 scores.
+
+    ``candidates`` is the L1 hit list as ``(belief_id, bm25_pos)``
+    pairs where ``bm25_pos`` is the positive relevance magnitude
+    (i.e. ``-bm25_raw`` for FTS5, raw score for BM25F). Seeds are
+    placed only at candidate positions in the eigenbasis row order;
+    beliefs not in the eigenbasis are skipped (the heat-kernel lane
+    silently degrades to a neutral 1.0 contribution at the scoring
+    layer for those).
+
+    Returns ``dict[belief_id, heat_kernel_score]`` for every
+    candidate that has a row in the eigenbasis. Scores are floored
+    via ``heat_kernel_safe`` so callers can ``log()`` directly.
+
+    Returns ``{}`` if the cache is stale, the eigenbasis is unbuilt,
+    or no candidate has a positive seed score — the caller should
+    treat absence as "no heat-kernel contribution available" and
+    fall back to the neutral default.
+
+    Cost: O(N * K) for the two matvecs plus O(C log C) for the seed
+    top-K selection (C = len(candidates)). At N=50k, K=200, C=64
+    this is ~7-8ms on commodity hardware (#150 AC5).
+    """
+    if cache.is_stale() or cache.eigvals is None or cache.eigvecs is None:
+        return {}
+    if cache.belief_ids is None or not candidates:
+        return {}
+    id_to_row: dict[str, int] = {bid: i for i, bid in enumerate(cache.belief_ids)}
+    n = len(cache.belief_ids)
+    bm25_full = np.zeros(n, dtype=np.float64)
+    present: list[str] = []
+    for bid, bm25_pos in candidates:
+        row = id_to_row.get(bid)
+        if row is None:
+            continue
+        if bm25_pos > 0.0:
+            bm25_full[row] = bm25_pos
+            present.append(bid)
+    if not present:
+        return {}
+    seeds = seeds_from_bm25(bm25_full, top_k=seed_top_k)
+    if not np.any(seeds):
+        return {}
+    raw = heat_kernel_score(cache.eigvals, cache.eigvecs, seeds, t=t)
+    safe = heat_kernel_safe(raw, floor=floor)
+    return {bid: float(safe[id_to_row[bid]]) for bid in present}
+
+
 # --- Eigenbasis cache ---------------------------------------------------
 
 
