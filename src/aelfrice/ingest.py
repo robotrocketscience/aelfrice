@@ -16,40 +16,22 @@ structure is recoverable downstream by the v1.4.0 context rebuilder.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
-from aelfrice.classification import classify_sentence
+from aelfrice.derivation import DerivationInput, derive
 from aelfrice.extraction import extract_sentences
 from aelfrice.models import (
     ANCHOR_TEXT_MAX_LEN,
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     EDGE_DERIVED_FROM,
     INGEST_SOURCE_FILESYSTEM,
-    LOCK_NONE,
-    ORIGIN_AGENT_INFERRED,
-    Belief,
     Edge,
 )
 from aelfrice.store import MemoryStore
-
-_BELIEF_ID_HEX_LEN: int = 16
-
-
-def _belief_id(text: str, source: str) -> str:
-    """Stable id derived from (source, text). Matches the scheme used
-    by classification._derive_belief_id and scanner._derive_belief_id
-    so re-ingesting an identical (text, source) pair is idempotent."""
-    h = hashlib.sha256(f"{source}\x00{text}".encode("utf-8")).hexdigest()
-    return h[:_BELIEF_ID_HEX_LEN]
-
-
-def _content_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _now_utc_iso() -> str:
@@ -130,11 +112,16 @@ def _ingest_turn_ids(
     ts = created_at or _now_utc_iso()
     inserted: list[str] = []
     for sentence in sentences:
-        result = classify_sentence(sentence, source)
-        if not result.persist:
+        out = derive(DerivationInput(
+            raw_text=sentence,
+            source_kind=INGEST_SOURCE_FILESYSTEM,
+            source_path=source,
+            session_id=session_id,
+            ts=ts,
+        ))
+        if out.belief is None:
             continue
-        belief_id = _belief_id(sentence, source)
-        ch = _content_hash(sentence)
+        belief_id = out.belief.id
         if store.get_belief(belief_id) is not None:
             # Exact (source, sentence) duplicate: record a corroboration
             # so re-assertions are observable. Canonical row unchanged.
@@ -159,22 +146,7 @@ def _ingest_turn_ids(
             session_id=session_id,
             ts=ts,
         )
-        belief = Belief(
-            id=belief_id,
-            content=sentence,
-            content_hash=ch,
-            alpha=result.alpha,
-            beta=result.beta,
-            type=result.belief_type,
-            lock_level=LOCK_NONE,
-            locked_at=None,
-            demotion_pressure=0,
-            created_at=ts,
-            last_retrieved_at=None,
-            session_id=session_id,
-            origin=ORIGIN_AGENT_INFERRED,
-        )
-        store.insert_belief(belief)
+        store.insert_belief(out.belief)
         inserted.append(belief_id)
     return inserted
 

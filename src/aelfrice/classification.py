@@ -41,10 +41,7 @@ from aelfrice.models import (
     BELIEF_REQUIREMENT,
     BELIEF_TYPES,
     INGEST_SOURCE_FILESYSTEM,
-    LOCK_NONE,
     ONBOARD_STATE_PENDING,
-    ORIGIN_AGENT_INFERRED,
-    Belief,
     OnboardSession,
 )
 
@@ -485,6 +482,10 @@ def accept_classifications(
     skipped_existing = 0
     skipped_unclassified = 0
 
+    # Lazy import: derivation imports classify_sentence from this module;
+    # importing at module-load would form a cycle.
+    from aelfrice.derivation import DerivationInput, derive  # noqa: PLC0415
+
     for sd in sentences_data:
         idx = int(sd["index"])
         text = str(sd["text"])
@@ -496,11 +497,20 @@ def accept_classifications(
         if not c.persist:
             skipped_non_persisting += 1
             continue
-        bid = _derive_belief_id(text, source)
+        out = derive(DerivationInput(
+            raw_text=text,
+            source_kind=INGEST_SOURCE_FILESYSTEM,
+            source_path=source,
+            ts=timestamp,
+            override_belief_type=c.belief_type,
+        ))
+        # override_belief_type always produces a belief (persist=True
+        # is the caller's responsibility; checked above).
+        assert out.belief is not None
+        bid = out.belief.id
         if store.get_belief(bid) is not None:
             skipped_existing += 1
             continue
-        alpha, beta = get_source_adjusted_prior(c.belief_type, source)
         # v2.0 #205 parallel-write: log the host-classified text.
         store.record_ingest(
             source_kind=INGEST_SOURCE_FILESYSTEM,
@@ -509,22 +519,7 @@ def accept_classifications(
             derived_belief_ids=[bid],
             ts=timestamp,
         )
-        store.insert_belief(
-            Belief(
-                id=bid,
-                content=text,
-                content_hash=_content_hash(text),
-                alpha=alpha,
-                beta=beta,
-                type=c.belief_type,
-                lock_level=LOCK_NONE,
-                locked_at=None,
-                demotion_pressure=0,
-                created_at=timestamp,
-                last_retrieved_at=None,
-                origin=ORIGIN_AGENT_INFERRED,
-            )
-        )
+        store.insert_belief(out.belief)
         inserted += 1
 
     store.complete_onboard_session(session_id, timestamp)

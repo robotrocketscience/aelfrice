@@ -34,7 +34,6 @@ caller supplied.
 """
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final, Sequence
@@ -45,6 +44,7 @@ from aelfrice.classification import (
     start_onboard_session,
 )
 from aelfrice.cli import db_path
+from aelfrice.derivation import DerivationInput, derive
 from aelfrice.feedback import apply_feedback
 from aelfrice.health import (
     REGIME_INSUFFICIENT_DATA,
@@ -52,21 +52,18 @@ from aelfrice.health import (
     regime_description,
 )
 from aelfrice.models import (
-    BELIEF_FACTUAL,
     CORROBORATION_SOURCE_MCP_REMEMBER,
     INGEST_SOURCE_MCP_REMEMBER,
     LOCK_NONE,
     LOCK_USER,
     ORIGIN_USER_STATED,
     ORIGIN_USER_VALIDATED,
-    Belief,
 )
 from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
 from aelfrice.store import MemoryStore
 
 _FEEDBACK_VALENCES: Final[dict[str, float]] = {"used": 1.0, "harmful": -1.0}
-_LOCK_ID_LEN: Final[int] = 16
 
 
 # --- Helpers -----------------------------------------------------------
@@ -74,14 +71,6 @@ _LOCK_ID_LEN: Final[int] = 16
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _lock_id_for(content: str) -> str:
-    return hashlib.sha256(f"lock\x00{content}".encode("utf-8")).hexdigest()[:_LOCK_ID_LEN]
-
-
-def _content_hash(content: str) -> str:
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def _ensure_parent_dir(path: Path) -> None:
@@ -211,9 +200,16 @@ def tool_search(
 
 
 def tool_lock(store: MemoryStore, *, statement: str) -> dict[str, Any]:
-    bid = _lock_id_for(statement)
-    existing = store.get_belief(bid)
     now = _utc_now_iso()
+    out = derive(DerivationInput(
+        raw_text=statement,
+        source_kind=INGEST_SOURCE_MCP_REMEMBER,
+        ts=now,
+    ))
+    # mcp_remember always produces a belief.
+    assert out.belief is not None
+    bid = out.belief.id
+    existing = store.get_belief(bid)
     if existing is None:
         # v2.0 #205 parallel-write: log the user-stated raw text.
         store.record_ingest(
@@ -222,20 +218,7 @@ def tool_lock(store: MemoryStore, *, statement: str) -> dict[str, Any]:
             derived_belief_ids=[bid],
             ts=now,
         )
-        store.insert_belief(Belief(
-            id=bid,
-            content=statement,
-            content_hash=_content_hash(statement),
-            alpha=9.0,
-            beta=0.5,
-            type=BELIEF_FACTUAL,
-            lock_level=LOCK_USER,
-            locked_at=now,
-            demotion_pressure=0,
-            created_at=now,
-            last_retrieved_at=None,
-            origin=ORIGIN_USER_STATED,
-        ))
+        store.insert_belief(out.belief)
         return {"kind": "lock.created", "id": bid, "action": "locked"}
     existing.lock_level = LOCK_USER
     existing.locked_at = now

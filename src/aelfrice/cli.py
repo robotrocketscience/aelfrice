@@ -32,7 +32,6 @@ pyproject.toml maps to `main()`.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import subprocess
@@ -59,14 +58,12 @@ from aelfrice.health import (
     regime_description,
 )
 from aelfrice.models import (
-    BELIEF_FACTUAL,
     INGEST_SOURCE_CLI_REMEMBER,
     LOCK_NONE,
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
     ORIGIN_USER_STATED,
     ORIGIN_USER_VALIDATED,
-    Belief,
 )
 from aelfrice import __version__ as _AELFRICE_VERSION
 from aelfrice.benchmark import run_benchmark, seed_corpus
@@ -75,6 +72,7 @@ from aelfrice.classification import (
     accept_classifications,
     start_onboard_session,
 )
+from aelfrice.derivation import DerivationInput, derive
 from aelfrice.doctor import (
     classify_orphans as _classify_orphans,
     diagnose,
@@ -160,7 +158,6 @@ DEFAULT_DB_FILENAME: Final[str] = "memory.db"
 DEFAULT_HOOK_COMMAND: Final[str] = "aelf-hook"
 DEFAULT_PRE_COMPACT_HOOK_COMMAND: Final[str] = "aelf-pre-compact-hook"
 _FEEDBACK_VALENCES: Final[dict[str, float]] = {"used": 1.0, "harmful": -1.0}
-_LOCK_ID_LEN: Final[int] = 16
 _VALID_SCOPES: Final[tuple[SettingsScope, ...]] = ("user", "project")
 
 
@@ -260,14 +257,6 @@ def _open_store() -> MemoryStore:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _lock_id_for(content: str) -> str:
-    return hashlib.sha256(f"lock\x00{content}".encode("utf-8")).hexdigest()[:_LOCK_ID_LEN]
-
-
-def _content_hash(content: str) -> str:
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def _resolve_corpus_min() -> int:
@@ -797,9 +786,16 @@ def _cmd_rebuild(args: argparse.Namespace, out: object) -> int:
 def _cmd_lock(args: argparse.Namespace, out: object) -> int:
     store = _open_store()
     try:
-        bid = _lock_id_for(args.statement)
-        existing = store.get_belief(bid)
         now = _utc_now_iso()
+        derived = derive(DerivationInput(
+            raw_text=args.statement,
+            source_kind=INGEST_SOURCE_CLI_REMEMBER,
+            ts=now,
+        ))
+        # cli_remember always produces a belief.
+        assert derived.belief is not None
+        bid = derived.belief.id
+        existing = store.get_belief(bid)
         if existing is None:
             # v2.0 #205 parallel-write.
             store.record_ingest(
@@ -808,20 +804,7 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
                 derived_belief_ids=[bid],
                 ts=now,
             )
-            store.insert_belief(Belief(
-                id=bid,
-                content=args.statement,
-                content_hash=_content_hash(args.statement),
-                alpha=9.0,
-                beta=0.5,
-                type=BELIEF_FACTUAL,
-                lock_level=LOCK_USER,
-                locked_at=now,
-                demotion_pressure=0,
-                created_at=now,
-                last_retrieved_at=None,
-                origin=ORIGIN_USER_STATED,
-            ))
+            store.insert_belief(derived.belief)
             print(f"locked: {bid}", file=out)  # type: ignore[arg-type]
         else:
             existing.lock_level = LOCK_USER
