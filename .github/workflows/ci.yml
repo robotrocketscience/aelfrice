@@ -18,6 +18,9 @@ jobs:
       matrix:
         python-version: ['3.12', '3.13']
     steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:

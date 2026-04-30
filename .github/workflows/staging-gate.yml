@@ -17,6 +17,9 @@ jobs:
   secrets-scan:
     runs-on: ubuntu-latest
     steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -28,6 +31,9 @@ jobs:
   pattern-scan:
     runs-on: ubuntu-latest
     steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
       - uses: actions/checkout@v4
       - name: Decode patterns
         env:
@@ -71,6 +77,9 @@ jobs:
       BASE_REF: ${{ github.event.pull_request.base.ref }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -109,6 +118,9 @@ jobs:
   release-docs-check:
     runs-on: ubuntu-latest
     steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -163,6 +175,9 @@ jobs:
   commit-msg-prefix:
     runs-on: ubuntu-latest
     steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -207,6 +222,9 @@ jobs:
   pr-body-issue-link:
     runs-on: ubuntu-latest
     steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
       - name: Check PR body for issue link
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
