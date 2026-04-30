@@ -13,8 +13,10 @@ def test_contradiction_detector_against_corpus(aelfrice_corpus_root: Path) -> No
     rows = load_corpus_module(aelfrice_corpus_root, "contradiction")
     try:
         from aelfrice import relationship_detector  # type: ignore[attr-defined]
-    except ImportError:
-        pytest.skip("contradiction detector not yet implemented (#201)")
+    except ModuleNotFoundError as exc:
+        if exc.name in {"aelfrice", "aelfrice.relationship_detector"}:
+            pytest.skip("contradiction detector not yet implemented (#201)")
+        raise
 
     correct = 0
     for row in rows:

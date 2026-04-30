@@ -44,6 +44,22 @@ def aelfrice_corpus_root() -> Path:
     return root
 
 
+@pytest.fixture(autouse=True)
+def _skip_bench_gated_without_corpus(request: pytest.FixtureRequest) -> None:
+    """Autouse guard: any test marked `bench_gated` skips when corpus is absent.
+
+    Backstops the `aelfrice_corpus_root` fixture for marker-only tests that
+    forget to request it explicitly.
+    """
+    if "bench_gated" not in request.keywords:
+        return
+    if _corpus_root() is None:
+        pytest.skip(
+            f"{CORPUS_ENV_VAR} not set or not a directory; "
+            "skipping bench-gate test (lab corpus absent)"
+        )
+
+
 def load_corpus_module(root: Path, module: str) -> list[dict]:
     """Load every `*.jsonl` row under `root/<module>/`. Skip if empty."""
     mod_dir = root / module

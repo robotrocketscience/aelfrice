@@ -13,8 +13,10 @@ def test_promotion_trigger_against_corpus(aelfrice_corpus_root: Path) -> None:
     rows = load_corpus_module(aelfrice_corpus_root, "promotion_trigger")
     try:
         from aelfrice import promotion_trigger  # type: ignore[attr-defined]
-    except ImportError:
-        pytest.skip("promotion_trigger rule not yet implemented (#229)")
+    except ModuleNotFoundError as exc:
+        if exc.name in {"aelfrice", "aelfrice.promotion_trigger"}:
+            pytest.skip("promotion_trigger rule not yet implemented (#229)")
+        raise
 
     correct = 0
     for row in rows:

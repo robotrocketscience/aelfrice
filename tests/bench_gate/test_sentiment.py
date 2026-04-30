@@ -13,8 +13,10 @@ def test_sentiment_detector_against_corpus(aelfrice_corpus_root: Path) -> None:
     rows = load_corpus_module(aelfrice_corpus_root, "sentiment")
     try:
         from aelfrice import sentiment  # type: ignore[attr-defined]
-    except ImportError:
-        pytest.skip("sentiment detector not yet implemented (#193)")
+    except ModuleNotFoundError as exc:
+        if exc.name in {"aelfrice", "aelfrice.sentiment"}:
+            pytest.skip("sentiment detector not yet implemented (#193)")
+        raise
 
     correct = 0
     for row in rows:

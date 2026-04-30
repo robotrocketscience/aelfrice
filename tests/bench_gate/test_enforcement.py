@@ -13,8 +13,10 @@ def test_enforcement_detector_against_corpus(aelfrice_corpus_root: Path) -> None
     rows = load_corpus_module(aelfrice_corpus_root, "enforcement")
     try:
         from aelfrice import enforcement  # type: ignore[attr-defined]
-    except ImportError:
-        pytest.skip("enforcement detector not yet implemented (#199)")
+    except ModuleNotFoundError as exc:
+        if exc.name in {"aelfrice", "aelfrice.enforcement"}:
+            pytest.skip("enforcement detector not yet implemented (#199)")
+        raise
 
     correct = 0
     for row in rows:
