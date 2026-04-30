@@ -1,0 +1,103 @@
+name: auto-rebase-open-prs
+
+# When main moves, attempt to rebase every open PR onto the new main and
+# force-push. Clean rebases land silently. Conflicts get the PR a comment
+# and a `merge-conflict` label so the author/reviewer sees it.
+#
+# This is the "auto-fresh" half of the multi-author PR workflow. The other
+# half is `~/.claude/scripts/aelf-pr-open.sh`, which prevents stale-at-open.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Only one rebase pass at a time; queued runs collapse so we don't fight
+# ourselves with overlapping force-pushes.
+concurrency:
+  group: auto-rebase-open-prs
+  cancel-in-progress: false
+
+jobs:
+  rebase:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Rebase open PRs onto main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+          # JSON: [{number, headRefName, baseRefName, headRepositoryOwner, isCrossRepository, labels}]
+          # --limit 1000 disables default pagination (30) so every open PR is processed.
+          prs=$(gh pr list --state open --base main --limit 1000 \
+                  --json number,headRefName,isCrossRepository,labels \
+                  --jq '.[] | @base64')
+
+          for row in $prs; do
+              data=$(echo "$row" | base64 -d)
+              num=$(echo "$data"   | jq -r .number)
+              head=$(echo "$data"  | jq -r .headRefName)
+              cross=$(echo "$data" | jq -r .isCrossRepository)
+              has_conflict_label=$(echo "$data" | jq -r '[.labels[].name] | index("merge-conflict") != null')
+              echo "=== PR #$num: $head (fork=$cross) ==="
+
+              # Skip fork PRs — we can't force-push to forks via GITHUB_TOKEN.
+              if [ "$cross" = "true" ]; then
+                  echo "  fork PR, skip"
+                  continue
+              fi
+
+              git fetch origin "$head" --quiet || { echo "  fetch failed, skip"; continue; }
+              git checkout -B "$head" "origin/$head"
+
+              if git merge-base --is-ancestor origin/main HEAD; then
+                  echo "  already on top of main, skip"
+                  continue
+              fi
+
+              if git rebase origin/main; then
+                  echo "  rebase clean, force-push"
+                  if git push --force-with-lease origin "$head"; then
+                      gh pr edit "$num" --remove-label merge-conflict 2>/dev/null || true
+                  else
+                      echo "  push rejected (concurrent update); will retry on next main push"
+                      git rebase --abort 2>/dev/null || true
+                  fi
+              else
+                  echo "  rebase has conflicts, flag PR"
+                  git rebase --abort
+                  gh pr edit "$num" --add-label merge-conflict 2>/dev/null || true
+                  # Only post the explainer the first time the label is applied;
+                  # avoids spamming long-lived conflicted PRs on every main push.
+                  if [ "$has_conflict_label" = "false" ]; then
+                      body_file=$(mktemp)
+                      {
+                          echo 'Auto-rebase onto main failed: conflicts. Resolve locally:'
+                          echo '```'
+                          echo "git fetch origin && git checkout '$head' && git rebase origin/main"
+                          echo '# resolve, then'
+                          echo 'git push --force-with-lease'
+                          echo '```'
+                      } > "$body_file"
+                      gh pr comment "$num" --body-file "$body_file" 2>/dev/null || true
+                      rm -f "$body_file"
+                  else
+                      echo "  conflict label already present, skip comment"
+                  fi
+              fi
+          done
