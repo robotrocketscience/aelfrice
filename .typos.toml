@@ -1,0 +1,19 @@
+[default]
+extend-ignore-identifiers-re = [
+    "[A-Fa-f0-9]{7,}",
+]
+
+[files]
+extend-exclude = [
+    "*.lock",
+    "uv.lock",
+    "telemetry/",
+    ".obsidian/",
+    "tests/data/**",
+    "benchmarks/data/**",
+    "CHANGELOG.md",
+]
+
+[default.extend-words]
+aelfrice = "aelfrice"
+aelf = "aelf"
