@@ -125,6 +125,29 @@ pythonVersion = "3.12"
 typeCheckingMode = "strict"
 reportMissingTypeStubs = false
 
+[tool.deptry]
+known_first_party = ["aelfrice", "benchmarks"]
+
+[tool.deptry.per_rule_ignores]
+# DEP002: declared but not imported by src/. These are dev/test/bench-only
+# but live in [project.dependencies] for now; reorganizing into PEP 735
+# groups is tracked as a follow-up issue.
+DEP002 = [
+    "pytest",
+    "pytest-timeout",
+    "pyright",
+    "nltk",
+    "tiktoken",
+    "datasets",
+    "huggingface_hub",
+]
+# DEP001: `benchmarks` is the in-repo top-level package imported via the
+# pytest pythonpath shim; not a PyPI dependency.
+DEP001 = ["benchmarks"]
+# DEP003: tomli is the Py 3.10 fallback for stdlib tomllib in
+# src/aelfrice/deferred_feedback.py. Drops when Py 3.10 support drops.
+DEP003 = ["tomli"]
+
 [dependency-groups]
 dev = [
     "pyright>=1.1.409",
