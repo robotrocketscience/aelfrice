@@ -15,6 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0  # full history so --generate-notes can diff against the prior tag
