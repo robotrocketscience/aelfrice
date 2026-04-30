@@ -45,6 +45,7 @@ The default retrieval mode (recall, not audit) is correctly served by latest-ser
 - **No edit.** A wrong belief is corrected by inserting a new one with a `SUPERSEDES` edge; the original stays.
 - **No graph viz.** Inspect with `sqlite3 "$(python -c 'from aelfrice.cli import db_path; print(db_path())')"`.
 - **JSONL batch ingest has no PII scrubber.** `aelf ingest-transcript --batch ~/.claude/projects/` will pull whatever you typed in chat into the local belief graph. Review before backfilling.
+- **Hook framing relies on the model honoring the trust boundary.** The `UserPromptSubmit` hook ships three structural defenses (framing tag, render-time tag-substring escape, per-turn audit log — see [hook_hardening.md](hook_hardening.md) and [PHILOSOPHY § Trust boundary at the hook surface](PHILOSOPHY.md#trust-boundary-at-the-hook-surface)). What it cannot do is force the model to verify session artifacts named in user-turn text adjacent to the block, or guarantee the model treats `<belief>`-wrapped content as data rather than instruction. A model that ignores the framing is a model-layer failure, not a hook-layer one. The `hook_audit.jsonl` log is the recovery surface — it records what was injected so a human can review after the fact.
 
 ## Out of scope
 

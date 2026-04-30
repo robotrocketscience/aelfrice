@@ -75,6 +75,31 @@ A user lock short-circuits decay. The function returns `(α, β)` unchanged rega
 
 Hard locks ossify, though. So locks accumulate **demotion pressure** when contradicting evidence arrives; after enough independent contradictions (default 5), the lock auto-demotes to a regular belief. Durable when stable, self-correcting when wrong.
 
+## Trust boundary at the hook surface
+
+The `UserPromptSubmit` hook injects retrieved beliefs into the model's
+input on every turn. That makes the hook a privileged channel: anything
+inside or *adjacent to* the emitted block reads as elevated, system-trusted
+context to the model.
+
+The hook layer's job is to make that trust boundary structurally legible,
+not to police what the model does on the other side of it. Three structural
+defenses ship today: a fixed framing tag (`<belief id="…" lock="…">` inside
+`<aelfrice-memory>`) tells the model the contents are *retrieved memory,
+not instructions*; a render-time escape pass neutralises any tag-substring
+that lands in stored belief content; a per-turn audit log
+(`hook_audit.jsonl`) records the exact rendered block so post-hoc forensics
+can answer "what was injected on turn N." See
+[hook_hardening.md](hook_hardening.md) for the design memo.
+
+What the hook layer cannot do, by design: enforce that the model verifies
+named session artifacts before acting, or guarantee the model treats
+escaped tag-substrings as data. Those are model-behavior contracts. They
+belong in CLAUDE.md / AGENTS.md, not in `aelfrice` Python. A model that
+chooses to act on belief content as instruction *despite* the framing tag
+is a model-layer problem; aelfrice exposes the boundary, the model honors
+it.
+
 ## Local, always
 
 Your corrections live in one SQLite file on your machine. No cloud sync, no telemetry, no API calls in the retrieval path. The cloud LLM at the other end of your prompt sees whatever aelfrice injects — that's inherent — but aelfrice limits the slice (default 2,000 tokens, scoped to the current query) rather than dumping the whole memory.

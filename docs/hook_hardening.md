@@ -2,19 +2,29 @@
 
 ## Status
 
-**Partially shipped.**
+**Shipped.** All three ratified mitigations have landed; #280 closes
+on this PR.
 
 | Layer | State | Reference |
 |---|---|---|
 | Spec memo (this doc) | Landed | PR #292 |
 | Mitigation 1 — framing-tag contract | Landed | `_FRAMING_HEADER`, `<belief id=… lock=…>` inner element in `src/aelfrice/hook.py` (`_format_hits`, `_format_baseline_hits`) |
 | Mitigation 2 — render-time belief-content escape | Landed | `_escape_for_hook_block` in `src/aelfrice/hook.py` |
-| Mitigation 3 — per-turn audit log (`hook_audit.jsonl`) | Outstanding | Tracked in this section as PR2 |
+| Mitigation 3 — per-turn audit log (`hook_audit.jsonl`) | Landed | PR #314 — `_write_hook_audit_record` and `[hook_audit]` config in `src/aelfrice/hook.py`; tests in `tests/test_hook_audit.py` |
 
-The decision-asks below (lines 232-242) were tacitly ratified for
-mitigations 1+2 by the implementation landing alongside this doc. The
-mitigation-3 default-on / 10 MB / single-rotation contract remains the
-ratified shape for the outstanding PR2.
+The decision-asks below (lines 240-252) were ratified for all three
+mitigations by the implementations landing in #292 and #314.
+
+The two suggestions from the original #280 body that this memo
+declined — **reference-existence check protocol** (a model-behavior
+contract, not a hook-layer one) and **hook-side allowlist for belief
+shapes** (foot-gun: any regex strict enough to block attacks would
+also drop legitimate beliefs; render-time escape is the right shape)
+— remain declined. See `Recommendation summary` below for reasoning.
+The model-behavior side of "reference-existence check" is captured
+as a residual-risk note in `LIMITATIONS.md` and a trust-boundary
+paragraph in `PHILOSOPHY.md`, per the spec's own implementation
+tracker (lines 273-276).
 
 ## Problem
 
