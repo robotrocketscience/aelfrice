@@ -4,7 +4,7 @@ name: auto-rebase-open-prs
 # force-push. Clean rebases land silently. Conflicts get the PR a comment
 # and a `merge-conflict` label so the author/reviewer sees it.
 #
-# This is the "auto-fresh" half of the parallel-session workflow. The other
+# This is the "auto-fresh" half of the multi-author PR workflow. The other
 # half is `~/.claude/scripts/aelf-pr-open.sh`, which prevents stale-at-open.
 
 on:
