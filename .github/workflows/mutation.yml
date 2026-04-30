@@ -1,0 +1,42 @@
+name: mutation
+
+on:
+  schedule:
+    - cron: '0 8 * * 0'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutmut:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - run: uv sync --frozen --extra dev --extra archive
+      - name: Install mutmut
+        run: uv pip install mutmut
+      - name: Run mutation tests
+        id: mutmut
+        run: |
+          uv run mutmut run --paths-to-mutate=src/aelfrice --tests-dir=tests || true
+          uv run mutmut results > mutation-report.txt
+          cat mutation-report.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: mutation-report.txt
+          retention-days: 30
