@@ -14,6 +14,12 @@ reviews:
     enabled: true
     drafts: false
     base_branches: ["main"]
+    # Skip auto-review on PR types where bot review adds no signal: pure docs
+    # changes and release/version-bump PRs. Sourcery still runs on these.
+    # Manual `@coderabbitai review` always works regardless of these filters.
+    ignore_title_keywords:
+      - "docs:"
+      - "release:"
   path_filters:
     - "!.planning/**"
     - "!docs/research/**"
