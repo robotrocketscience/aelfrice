@@ -116,6 +116,7 @@ strict_markers = true
 markers = [
     "regression: cumulative integration scenarios run alongside the unit suite",
     "uat: v1.0 acceptance-criteria tests, run as the final pre-tag gate",
+    "bench_gated: v2.0 bench-gate harness (#319) — skips when AELFRICE_CORPUS_ROOT is unset",
 ]
 
 [tool.pyright]
