@@ -1,8 +1,20 @@
 # v2.0 evaluation corpus — schema (#307)
 
 Six bench-gated v2.0 modules ship/no-ship on positive impact against a labeled
-corpus. This directory holds that corpus. The harness in #288 reads it; the
-modules in #193, #197, #199, #201, #228, #229 are evaluated against it.
+corpus. This directory holds that corpus. The bench-gate harness (#319) reads it
+via `AELFRICE_CORPUS_ROOT`; the modules in #193, #197, #199, #201, #228, #229
+are evaluated against it. (#288 is the **rebuilder**-precision harness — a
+different consumer.)
+
+## Mounting on the lab side
+
+Corpus content lives in the private lab repo only. Public CI runs with the
+env var unset; bench-gate tests skip cleanly. Lab runs:
+
+```bash
+export AELFRICE_CORPUS_ROOT="$HOME/projects/aelfrice-lab/tests/corpus/v2_0"
+./scripts/run_bench_gate.sh
+```
 
 ## Layout
 
