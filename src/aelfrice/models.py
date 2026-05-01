@@ -81,7 +81,6 @@ ORIGINS: Final[frozenset[str]] = frozenset({
 CORROBORATION_SOURCE_COMMIT_INGEST: Final[str] = "commit_ingest"
 CORROBORATION_SOURCE_TRANSCRIPT_INGEST: Final[str] = "transcript_ingest"
 CORROBORATION_SOURCE_MCP_REMEMBER: Final[str] = "mcp_remember"
-CORROBORATION_SOURCE_HOOK_INGEST: Final[str] = "hook_ingest"
 # filesystem_ingest: scanner / onboard paths that read local files
 # (not git history). Distinct from transcript_ingest (conversation
 # turns) and commit_ingest (git history).
@@ -100,7 +99,6 @@ CORROBORATION_SOURCE_TYPES: Final[frozenset[str]] = frozenset({
     CORROBORATION_SOURCE_COMMIT_INGEST,
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     CORROBORATION_SOURCE_MCP_REMEMBER,
-    CORROBORATION_SOURCE_HOOK_INGEST,
     CORROBORATION_SOURCE_FILESYSTEM_INGEST,
     CORROBORATION_SOURCE_CLI_REMEMBER,
     CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION,

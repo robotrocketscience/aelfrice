@@ -15,7 +15,6 @@ from aelfrice.ingest import ingest_turn
 from aelfrice.models import (
     BELIEF_FACTUAL,
     CORROBORATION_SOURCE_COMMIT_INGEST,
-    CORROBORATION_SOURCE_HOOK_INGEST,
     CORROBORATION_SOURCE_MCP_REMEMBER,
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     CORROBORATION_SOURCE_TYPES,
@@ -249,19 +248,17 @@ def test_different_source_types_record_distinctly() -> None:
         store.record_corroboration("b1", source_type=CORROBORATION_SOURCE_TRANSCRIPT_INGEST)
         store.record_corroboration("b1", source_type=CORROBORATION_SOURCE_COMMIT_INGEST)
         store.record_corroboration("b1", source_type=CORROBORATION_SOURCE_MCP_REMEMBER)
-        store.record_corroboration("b1", source_type=CORROBORATION_SOURCE_HOOK_INGEST)
 
-        assert store.count_corroborations("b1") == 4
+        assert store.count_corroborations("b1") == 3
 
         rows = store.list_corroborations("b1")
-        assert len(rows) == 4
+        assert len(rows) == 3
         # rows are (ingested_at, source_type, session_id, source_path_hash)
         recorded_types = {r[1] for r in rows}
         assert recorded_types == {
             CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
             CORROBORATION_SOURCE_COMMIT_INGEST,
             CORROBORATION_SOURCE_MCP_REMEMBER,
-            CORROBORATION_SOURCE_HOOK_INGEST,
         }
     finally:
         store.close()
@@ -277,7 +274,6 @@ def test_source_type_enum_covers_all_variants() -> None:
         "commit_ingest",
         "transcript_ingest",
         "mcp_remember",
-        "hook_ingest",
         "filesystem_ingest",
         "cli_remember",
         "consolidation_migration",
