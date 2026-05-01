@@ -27,5 +27,5 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - run: uv sync --frozen --extra dev --extra archive
+      - run: uv sync --frozen --group dev --extra archive
       - run: uv run pytest tests/ -q

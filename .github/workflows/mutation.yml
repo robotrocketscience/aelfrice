@@ -26,7 +26,7 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - run: uv sync --frozen --extra dev --extra archive
+      - run: uv sync --frozen --group dev --extra archive
       - name: Install mutmut
         run: uv pip install mutmut
       - name: Run mutation tests

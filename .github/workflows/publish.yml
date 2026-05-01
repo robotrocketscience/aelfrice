@@ -22,7 +22,7 @@ jobs:
         with:
           fetch-depth: 0  # full history so --generate-notes can diff against the prior tag
       - uses: astral-sh/setup-uv@v5
-      - run: uv sync --frozen --extra dev --extra archive
+      - run: uv sync --frozen --group dev --extra archive
       - run: uv run pytest tests/ -q
       - run: uv build
       - uses: actions/attest-build-provenance@v1
