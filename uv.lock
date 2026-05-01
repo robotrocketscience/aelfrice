@@ -29,11 +29,6 @@ benchmarks = [
     { name = "nltk" },
     { name = "tiktoken" },
 ]
-dev = [
-    { name = "pyright" },
-    { name = "pytest" },
-    { name = "pytest-timeout" },
-]
 mcp = [
     { name = "fastmcp" },
 ]
@@ -44,6 +39,8 @@ onboard-llm = [
 [package.dev-dependencies]
 dev = [
     { name = "pyright" },
+    { name = "pytest" },
+    { name = "pytest-timeout" },
 ]
 
 [package.metadata]
@@ -55,16 +52,17 @@ requires-dist = [
     { name = "huggingface-hub", marker = "extra == 'benchmarks'", specifier = ">=0.20" },
     { name = "nltk", marker = "extra == 'benchmarks'", specifier = ">=3.9" },
     { name = "numpy", specifier = ">=2.0" },
-    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.409" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3" },
     { name = "scipy", specifier = ">=1.11" },
     { name = "tiktoken", marker = "extra == 'benchmarks'", specifier = ">=0.7" },
 ]
-provides-extras = ["dev", "mcp", "onboard-llm", "archive", "benchmarks"]
+provides-extras = ["mcp", "onboard-llm", "archive", "benchmarks"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pyright", specifier = ">=1.1.409" }]
+dev = [
+    { name = "pyright", specifier = ">=1.1.409" },
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-timeout", specifier = ">=2.3" },
+]
 
 [[package]]
 name = "aiofile"
