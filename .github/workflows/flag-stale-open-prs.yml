@@ -1,7 +1,7 @@
 name: flag-stale-open-prs
 
 # When main moves, label every open PR whose branch is behind main as
-# `merge-conflict` and post a one-time rebase prompt. Authors rebase
+# `attn:merge-conflict` and post a one-time rebase prompt. Authors rebase
 # locally and force-push (preserving their signatures).
 #
 # Why not auto-rebase: the workflow runs as `github-actions[bot]`, which
@@ -55,7 +55,7 @@ jobs:
               num=$(echo "$data"   | jq -r .number)
               head=$(echo "$data"  | jq -r .headRefName)
               cross=$(echo "$data" | jq -r .isCrossRepository)
-              has_conflict_label=$(echo "$data" | jq -r '[.labels[].name] | index("merge-conflict") != null')
+              has_conflict_label=$(echo "$data" | jq -r '[.labels[].name] | index("attn:merge-conflict") != null')
               echo "=== PR #$num: $head (fork=$cross) ==="
 
               # Skip fork PRs — we don't manage their branches.
@@ -70,13 +70,13 @@ jobs:
                   echo "  already on top of main, skip"
                   # Clear stale label if the author has caught up.
                   if [ "$has_conflict_label" = "true" ]; then
-                      gh pr edit "$num" --remove-label merge-conflict 2>/dev/null || true
+                      gh pr edit "$num" --remove-label attn:merge-conflict 2>/dev/null || true
                   fi
                   continue
               fi
 
               echo "  behind main, flag for manual rebase"
-              gh pr edit "$num" --add-label merge-conflict 2>/dev/null || true
+              gh pr edit "$num" --add-label attn:merge-conflict 2>/dev/null || true
 
               # Only post the prompt the first time the label is applied;
               # avoids spamming long-lived stale PRs on every main push.
