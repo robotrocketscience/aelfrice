@@ -43,10 +43,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import IO, Any, Final
 
-try:
-    import tomllib
-except ImportError:  # pragma: no cover - py < 3.11 fallback path
-    import tomli as tomllib  # type: ignore[no-redef]
+import tomllib
 
 from aelfrice.store import MemoryStore
 
