@@ -265,3 +265,50 @@ def test_inserted_belief_demotion_pressure_zero(tmp_path: Path) -> None:
     scan_repo(s, tmp_path)
     b = s.search_beliefs("regex")[0]
     assert b.demotion_pressure == 0
+
+
+# --- session_id propagation (#192) -------------------------------------
+
+
+def test_scan_repo_tags_beliefs_with_synthetic_session_id(tmp_path: Path) -> None:
+    """Every belief inserted by scan_repo carries a non-null session_id."""
+    (tmp_path / "README.md").write_text(
+        "the project ships only the regex fallback at v0.5",
+        encoding="utf-8",
+    )
+    s = MemoryStore(":memory:")
+    scan_repo(s, tmp_path)
+    rows = s.search_beliefs("regex")
+    assert rows, "scan_repo did not insert any belief from the fixture"
+    for b in rows:
+        assert b.session_id is not None and b.session_id != ""
+
+
+def test_scan_repo_explicit_session_id_propagates(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text(
+        "the project ships only the regex fallback at v0.5",
+        encoding="utf-8",
+    )
+    s = MemoryStore(":memory:")
+    scan_repo(s, tmp_path, session_id="explicit-test-sid")
+    rows = s.search_beliefs("regex")
+    assert rows
+    for b in rows:
+        assert b.session_id == "explicit-test-sid"
+
+
+def test_scan_repo_synthetic_id_stable_for_same_root_and_now(
+    tmp_path: Path,
+) -> None:
+    """Two scans of the same tree at the same `now` produce the same sid."""
+    (tmp_path / "README.md").write_text(
+        "the project ships only the regex fallback at v0.5",
+        encoding="utf-8",
+    )
+    s1 = MemoryStore(":memory:")
+    s2 = MemoryStore(":memory:")
+    scan_repo(s1, tmp_path, now="2026-05-02T00:00:00+00:00")
+    scan_repo(s2, tmp_path, now="2026-05-02T00:00:00+00:00")
+    sid1 = s1.search_beliefs("regex")[0].session_id
+    sid2 = s2.search_beliefs("regex")[0].session_id
+    assert sid1 is not None and sid1 == sid2

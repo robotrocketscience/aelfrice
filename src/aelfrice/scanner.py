@@ -142,6 +142,19 @@ class LLMRoute:
     audit_source: str | None = None
 
 
+def _derive_scan_session_id(root: Path, timestamp: str) -> str:
+    """Synthetic session_id for filesystem scans.
+
+    Stable across two scans of the same tree at the same timestamp; the
+    timestamp differs per invocation so each scan run gets its own id.
+    Mirrors `hook_commit_ingest._derive_session_id` in shape (16-hex
+    sha256 prefix) so downstream consumers can treat all session_id
+    values uniformly.
+    """
+    raw = f"scan:{root}:{timestamp}".encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
 def scan_repo(
     store: MemoryStore,
     root: Path,
@@ -149,6 +162,7 @@ def scan_repo(
     *,
     noise_config: NoiseConfig | None = None,
     llm_router: LLMRouter | None = None,
+    session_id: str | None = None,
 ) -> ScanResult:
     """Run all three extractors on `root`, classify each candidate, and
     insert persistable results as Beliefs in the store.
@@ -179,6 +193,9 @@ def scan_repo(
     input tree + clock supplied via `now`.
     """
     timestamp = now if now is not None else _utc_now_iso()
+    sid = session_id if session_id is not None else _derive_scan_session_id(
+        root, timestamp,
+    )
     cfg: NoiseConfig = (
         noise_config
         if noise_config is not None
@@ -245,6 +262,7 @@ def scan_repo(
                 source_path=candidate.source,
                 raw_text=candidate.text,
                 derived_belief_ids=[belief_id],
+                session_id=sid,
                 ts=created_at,
             )
             _, was_inserted = store.insert_or_corroborate(
@@ -260,6 +278,7 @@ def scan_repo(
                     demotion_pressure=0,
                     created_at=created_at,
                     last_retrieved_at=None,
+                    session_id=sid,
                     origin=route.origin,
                     retention_class=retention_class_for_source(
                         INGEST_SOURCE_FILESYSTEM,
@@ -284,6 +303,7 @@ def scan_repo(
                 source_kind=INGEST_SOURCE_FILESYSTEM,
                 source_path=candidate.source,
                 ts=created_at,
+                session_id=sid,
             ))
             if out.belief is None:
                 skipped_non_persisting += 1
@@ -297,6 +317,7 @@ def scan_repo(
                 source_path=candidate.source,
                 raw_text=candidate.text,
                 derived_belief_ids=[belief_id],
+                session_id=sid,
                 ts=created_at,
             )
             _, was_inserted = store.insert_or_corroborate(
