@@ -136,12 +136,29 @@ here) can reap files older than 30 days.
 fail-soft contract as `_write_telemetry` in `hook.py:358` —
 any I/O error is logged to stderr and never breaks the rebuild.
 
-**Where the write hook lives.** Inside `rebuild()` in
-`context_rebuilder.py`, immediately after the candidate list is
-finalized but before the rendered block is returned. Writing from
-the rebuilder (not the hook caller) means the log captures every
-rebuild call site, including the PreCompact path and any future
-direct caller, not only `UserPromptSubmit`.
+**Where the write hook lives.** Two call sites:
+
+1. Inside `rebuild_v14()` in `context_rebuilder.py`, immediately
+   after the candidate list is finalized but before the rendered
+   block is returned. Catches the PreCompact path and any future
+   direct `rebuild_v14` caller.
+2. Inside `user_prompt_submit()` in `hook.py`, after content-hash
+   dedup, via the `record_user_prompt_submit_log` helper in
+   `context_rebuilder.py`. Catches the high-frequency UPS retrieval
+   path, which calls `search_for_prompt` directly and never reaches
+   `rebuild_v14`.
+
+Both call sites share the schema, the `_append_rebuild_log_record`
+writer, the size cap, and the env / TOML opt-out. UPS records carry
+a synthetic single-turn `RecentTurn` derived from the prompt; the
+on-disk record shape is identical to the PreCompact one.
+
+The original spec assumed all rebuild call sites went through
+`rebuild_v14`, so phase-1a wired only that path. The UPS path
+bypasses `rebuild_v14` entirely (`search_for_prompt` →
+`retrieve()` returns the final hit list, no rebuild block built),
+so a phase-1a-only ship produced empty logs under normal session
+load — phase-1b was unreachable until UPS was wired.
 
 ### Layer 2: fixed-corpus precision harness
 
