@@ -1,6 +1,6 @@
 # Commands
 
-Twenty-four CLI subcommands. The retrieval/feedback ones are also exposed as MCP tools (see [MCP](MCP.md)) and slash commands (see [SLASH_COMMANDS](SLASH_COMMANDS.md)). Lifecycle commands (`setup`, `doctor`, `migrate`, `upgrade`, `uninstall`, etc.) are CLI-only.
+Twenty-six CLI subcommands. The retrieval/feedback ones are also exposed as MCP tools (see [MCP](MCP.md)) and slash commands (see [SLASH_COMMANDS](SLASH_COMMANDS.md)). Lifecycle commands (`setup`, `doctor`, `migrate`, `upgrade`, `uninstall`, etc.) are CLI-only.
 
 ```
 aelf <subcommand> [args] [options]
@@ -14,7 +14,7 @@ DB resolves from `$AELFRICE_DB`, then `<git-common-dir>/aelfrice/memory.db` when
 
 | Command | What it does |
 |---|---|
-| `onboard <path>` | Walk filesystem, git log, Python AST. Classify candidates, insert non-duplicates. Tunable via `.aelfrice.toml` — see [CONFIG](CONFIG.md). Optional flags (v1.3+): `--llm-classify` (route through Haiku classifier; default-off, requires `ANTHROPIC_API_KEY`), `--dry-run` (preview candidates without inserting; requires `--llm-classify`), `--revoke-consent` (remove the stored consent sentinel and exit). |
+| `onboard <path>` | Walk filesystem, git log, Python AST. Classify candidates, insert non-duplicates. Tunable via `.aelfrice.toml` — see [CONFIG](CONFIG.md). v1.5.1+ default-on host-driven LLM classification (#238): `[onboard.llm].enabled = true` by default, routed through the host model's Task tool — no API key required. Soft-fallback to the deterministic regex classifier when no host Task tool is reachable. Direct-API path: `--llm-classify` (requires the API-key install extra; retains legacy fail-fast install-hint). Other flags: `--emit-candidates` / `--accept-classifications` (low-level handshake driving the host-driven classifier; documented in [llm_classifier.md](llm_classifier.md)), `--dry-run` (preview candidates without inserting), `--revoke-consent` (remove the stored consent sentinel and exit). |
 | `search <query> [--budget N]` | L0 locked + L2.5 entity-index (v1.3+) + L1 FTS5 BM25, token-budgeted (default 2,400 at v1.3+, 2,000 prior). L2.5 default-on; disable via `[retrieval] entity_index_enabled = false` in `.aelfrice.toml` or `AELFRICE_ENTITY_INDEX=0` in the env. Distinguishes "store empty" from "no match". |
 | `lock <statement>` | Insert at `(α, β) = (9.0, 0.5)` with `lock_level=user`. Idempotent — re-lock upgrades existing. |
 | `locked [--pressured]` | List locks. With `--pressured`, only those with `demotion_pressure > 0`. |
@@ -31,8 +31,10 @@ DB resolves from `$AELFRICE_DB`, then `<git-common-dir>/aelfrice/memory.db` when
 | `health` | Structural auditor: orphan threads, FTS5 sync, locked contradictions, corpus volume. Exits 1 on structural failure; corpus-volume warnings are informational. |
 | `status` | Alias for `health`. |
 | `regime` | The v1.0 regime classifier output (`supersede` / `ignore` / `mixed` / `insufficient_data`). Informational; always exits 0. |
-| `doctor` | Verify hook + statusline commands resolve. Inspects `bash <script>` wrappers, flags `2>/dev/null \|\| true` patterns. Surfaces empty-store warning. Exits 1 on broken hooks. |
+| `doctor` | Verify hook + statusline commands resolve. Inspects `bash <script>` wrappers, flags `2>/dev/null \|\| true` patterns. Surfaces empty-store warning. Exits 1 on broken hooks. v1.6+ flags: `--gc-orphan-feedback` (delete `feedback_history` rows whose `belief_id` no longer exists, #223); `--promote-retention` (one-shot reclassification pass over low-prior beliefs based on accumulated retrieval / corroboration evidence, #290 phase-3). |
 | `bench [--top-k N]` | Run the deterministic 16-belief × 16-query benchmark. Prints a JSON `BenchmarkReport`. |
+| `tail [--full] [--since DUR] [--filter EXPR]` | (v1.6+) Live-tail the per-turn hook audit log. `tail -f`-style pretty-printer over `<git-common-dir>/aelfrice/hook_audit.jsonl`. Default one-line summary per fire (timestamp, session, n_locked, latency, prompt prefix); `--full` switches to the full rendered block. See [hook-injection-audit.md](hook-injection-audit.md). |
+| `sweep-feedback` | (v1.6+) Run the deferred-feedback sweeper once (#191). Observes which retrieved beliefs are referenced by the host's continuation and emits implicit posterior-feedback events into `feedback_history`. Default-on background path; this verb forces a one-shot pass. |
 
 ## Lifecycle
 
@@ -51,7 +53,7 @@ DB resolves from `$AELFRICE_DB`, then `<git-common-dir>/aelfrice/memory.db` when
 
 ## Help flags
 
-`aelf --help` shows the everyday surface (visible subcommands). `aelf --help --advanced` (or `aelf --advanced`) shows the full surface including hidden subcommands (`bench`, `feedback`, `health`, `migrate`, `project-warm`, `regime`, `session-delta`, `stats`, `statusline`, `unsetup`). The `--advanced` flag was wired in v1.4 (PR #174).
+`aelf --help` shows the everyday surface (visible subcommands). `aelf --help --advanced` (or `aelf --advanced`) shows the full surface including hidden subcommands (`bench`, `feedback`, `health`, `migrate`, `project-warm`, `regime`, `session-delta`, `stats`, `statusline`, `sweep-feedback`, `unsetup`). The `--advanced` flag was wired in v1.4 (PR #174).
 
 ## Output and exit codes
 
@@ -67,7 +69,7 @@ DB resolves from `$AELFRICE_DB`, then `<git-common-dir>/aelfrice/memory.db` when
 | Decay target | Jeffreys prior `(0.5, 0.5)` |
 | Half-lives | factual 14d, requirement 30d, preference 12w, correction 24w |
 | Demotion threshold | 5 contradicting events |
-| Retrieval token budget | 2,000 |
+| Retrieval token budget | 2,400 (`DEFAULT_TOKEN_BUDGET` in `aelfrice.retrieval`; was 2,000 prior to v1.3) |
 | Valence propagation | BFS, max 3 hops, threshold 0.05 |
 | Benchmark hit-depth | top-5 |
 
