@@ -90,23 +90,31 @@ def test_aelf_bench_synthetic_target_explicit_runs_synthetic() -> None:
     assert report["corpus_size"] == 16
 
 
-def test_aelf_bench_verify_clean_dispatches_to_module(tmp_path: Path) -> None:
-    clean_file = tmp_path / "r.json"
-    clean_file.write_text(json.dumps([{"id": "q1", "question": "?"}]))
-    code, _ = _run_cli("bench", "verify-clean", str(clean_file))
-    assert code == 0
-
-
-def test_aelf_bench_verify_clean_no_args_exits_2() -> None:
+def test_aelf_bench_verify_clean_target_redirects_to_module() -> None:
+    """The dev-only target now points users at `python -m benchmarks.verify_clean`."""
     code, output = _run_cli("bench", "verify-clean")
     assert code == 2
-    assert "usage" in output.lower()
+    assert "python -m benchmarks.verify_clean" in output
 
 
-def test_aelf_bench_longmemeval_score_no_args_exits_2() -> None:
+def test_aelf_bench_longmemeval_score_target_redirects_to_module() -> None:
     code, output = _run_cli("bench", "longmemeval-score")
     assert code == 2
-    assert "usage" in output.lower()
+    assert "python -m benchmarks.longmemeval_score" in output
+
+
+def test_aelf_bench_posterior_residual_target_redirects_to_module() -> None:
+    code, output = _run_cli("bench", "posterior-residual")
+    assert code == 2
+    assert "python -m benchmarks.posterior_ranking" in output
+
+
+def test_aelf_bench_unknown_target_lists_moved_dev_targets() -> None:
+    code, output = _run_cli("bench", "no-such-target")
+    assert code == 2
+    assert "verify-clean" in output
+    assert "longmemeval-score" in output
+    assert "posterior-residual" in output
 
 
 def test_benchmarks_package_imports() -> None:

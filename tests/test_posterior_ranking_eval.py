@@ -10,14 +10,11 @@ Test style mirrors tests/test_bayesian_ranking.py and tests/test_benchmarks_dir.
 """
 from __future__ import annotations
 
-import io
 import json
 import math
 from pathlib import Path
 
 import pytest
-
-from aelfrice.cli import main as cli_main
 
 
 # ---------------------------------------------------------------------------
@@ -239,14 +236,8 @@ def test_ece_empty_observations() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Helpers for runner / CLI tests
+# Helpers for runner tests
 # ---------------------------------------------------------------------------
-
-
-def _run_cli(*argv: str) -> tuple[int, str]:
-    buf = io.StringIO()
-    code = cli_main(argv=list(argv), out=buf)
-    return code, buf.getvalue()
 
 
 def _write_fixtures(tmp_path: Path, fixtures: list[dict[str, object]]) -> Path:
@@ -373,56 +364,68 @@ def test_load_fixtures(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# CLI integration
+# python -m benchmarks.posterior_ranking — module entry point
 # ---------------------------------------------------------------------------
 
 
-def test_cli_posterior_residual_exit_0_clean(tmp_path: Path) -> None:
-    """aelf bench posterior-residual exits 0 when both thresholds are met.
+def _run_module(*argv: str, capsys: pytest.CaptureFixture[str]) -> tuple[int, str]:
+    from benchmarks.posterior_ranking.__main__ import main as _module_main
+
+    code = _module_main(list(argv))
+    captured = capsys.readouterr()
+    return code, captured.out
+
+
+def test_module_posterior_residual_exit_0_clean(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`python -m benchmarks.posterior_ranking` exits 0 when both thresholds met.
 
     Uses a relaxed ECE threshold since the synthetic feedback stream is
     intentionally simple (only the known item gets positive feedback), which
     produces well-separated but not perfectly calibrated posterior_mean values
-    for noise items at the Jeffreys prior.  The MRR fixture is designed to
-    produce reliable uplift.  ECE calibration is validated by unit tests
-    via compute_ece() directly.
+    for noise items at the Jeffreys prior.
     """
     fixtures = [_minimal_fixture()]
     fpath = _write_fixtures(tmp_path, fixtures)
 
-    code, output = _run_cli(
-        "bench", "posterior-residual",
+    code, output = _run_module(
         "--fixtures", str(fpath),
         "--seeds", "1",
         "--ece-threshold", "0.50",
+        capsys=capsys,
     )
     assert code == 0, f"expected exit 0, got {code}. output:\n{output}"
 
 
-def test_cli_posterior_residual_exit_1_tight_threshold(tmp_path: Path) -> None:
-    """aelf bench posterior-residual with impossibly tight MRR threshold exits 1."""
+def test_module_posterior_residual_exit_1_tight_threshold(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Impossibly tight MRR threshold exits 1."""
     fixtures = [_minimal_fixture()]
     fpath = _write_fixtures(tmp_path, fixtures)
 
-    code, output = _run_cli(
-        "bench", "posterior-residual",
+    code, output = _run_module(
         "--fixtures", str(fpath),
         "--seeds", "1",
         "--mrr-threshold", "0.99",
+        capsys=capsys,
     )
     assert code == 1, f"expected exit 1, got {code}. output:\n{output}"
 
 
-def test_cli_posterior_residual_json_flag(tmp_path: Path) -> None:
+def test_module_posterior_residual_json_flag(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """--json flag emits machine-readable JSON with mrr, ece, overall_pass keys."""
     fixtures = [_minimal_fixture()]
     fpath = _write_fixtures(tmp_path, fixtures)
 
-    code, output = _run_cli(
-        "bench", "posterior-residual",
+    code, output = _run_module(
         "--fixtures", str(fpath),
         "--seeds", "1",
         "--json",
+        capsys=capsys,
     )
     parsed = json.loads(output)
     assert "mrr" in parsed
