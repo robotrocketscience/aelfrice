@@ -381,7 +381,7 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
     corroboration_count = int(row["corroboration_count"]) if "corroboration_count" in keys else 0
     # retention_class column added in v1.6 (#290). Pre-migration rows
     # don't have it — fall back to RETENTION_UNKNOWN. The store __init__
-    # runs the ALTER on open, so this branch is mainly for SELECTs that
+    # runs the ALTER on open, so this branch is mainly for queries that
     # project a custom column list excluding the new column.
     retention_class = (
         row["retention_class"] if "retention_class" in keys
