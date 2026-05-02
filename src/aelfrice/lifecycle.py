@@ -403,6 +403,112 @@ def upgrade_advice() -> UpgradeAdvice:
     )
 
 
+# --- Multi-install detection -------------------------------------------
+
+
+@dataclass(frozen=True)
+class InstallSite:
+    """A reachable aelfrice install location on disk.
+
+    `kind` is one of 'uv_tool', 'pipx', 'user_local_bin'. `path` is the
+    install root (uv_tool/pipx) or the executable path (user_local_bin).
+    `on_path` is True when this site's executable is what `aelf` resolves
+    to on PATH — i.e. the install the user gets when they type `aelf`.
+    """
+
+    kind: str
+    path: Path
+    on_path: bool
+
+
+def _which_all_aelf() -> list[Path]:
+    """Return every `aelf` executable reachable on PATH, in PATH order.
+
+    POSIX-only. We walk PATH ourselves rather than rely on `which -a`,
+    which is not portable across shells. Skips non-files and
+    non-executables.
+    """
+    seen: set[Path] = set()
+    out: list[Path] = []
+    raw = os.environ.get("PATH", "")
+    for entry in raw.split(os.pathsep):
+        if not entry:
+            continue
+        candidate = Path(entry) / "aelf"
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            seen.add(resolved)
+            out.append(candidate)
+    return out
+
+
+def _path_is_under(child: Path, parent: Path) -> bool:
+    """True if `child` is `parent` or a descendant. Symlink-resolved."""
+    try:
+        child_r = child.resolve()
+        parent_r = parent.resolve()
+    except OSError:
+        return False
+    try:
+        child_r.relative_to(parent_r)
+        return True
+    except ValueError:
+        return False
+
+
+def detect_reachable_installs() -> list[InstallSite]:
+    """Best-effort enumeration of aelfrice installs visible on this system.
+
+    Detection is purely filesystem + PATH inspection — no shelling out.
+    Returns an empty list on any failure (e.g. unreadable home dir).
+
+    Signals checked:
+      - ~/.local/share/uv/tools/aelfrice/  → uv_tool
+      - ~/.local/pipx/venvs/aelfrice/      → pipx
+      - any `aelf` on PATH whose resolved path is NOT under the above
+        roots                              → user_local_bin
+    """
+    sites: list[InstallSite] = []
+    try:
+        home = Path.home()
+    except (OSError, RuntimeError):
+        return sites
+
+    path_aelf_resolved: set[Path] = set()
+    for exe in _which_all_aelf():
+        try:
+            path_aelf_resolved.add(exe.resolve())
+        except OSError:
+            continue
+
+    uv_root = home / ".local" / "share" / "uv" / "tools" / PACKAGE_NAME
+    if uv_root.exists():
+        on_path = any(
+            _path_is_under(p, uv_root) for p in path_aelf_resolved
+        )
+        sites.append(InstallSite(kind="uv_tool", path=uv_root, on_path=on_path))
+
+    pipx_root = home / ".local" / "pipx" / "venvs" / PACKAGE_NAME
+    if pipx_root.exists():
+        on_path = any(
+            _path_is_under(p, pipx_root) for p in path_aelf_resolved
+        )
+        sites.append(InstallSite(kind="pipx", path=pipx_root, on_path=on_path))
+
+    known_roots = [uv_root, pipx_root]
+    for exe in path_aelf_resolved:
+        if any(_path_is_under(exe, root) for root in known_roots):
+            continue
+        sites.append(InstallSite(kind="user_local_bin", path=exe, on_path=True))
+
+    return sites
+
+
 # --- Uninstall ----------------------------------------------------------
 
 ARCHIVE_MAGIC: Final[bytes] = b"AELFENC1"  # 8 bytes, format identifier
