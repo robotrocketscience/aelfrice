@@ -105,6 +105,7 @@ from aelfrice.lifecycle import (
     clear_cache as _clear_update_cache,
     format_update_banner as _format_update_banner,
     is_disabled as _update_check_disabled,
+    detect_reachable_installs,
     is_newer,
     maybe_check_for_update_async,
     read_cache as _read_update_cache,
@@ -1798,6 +1799,36 @@ _UPGRADE_CONTEXT_NOTE: dict[str, str] = {
 }
 
 
+_INSTALL_SITE_LABEL: dict[str, str] = {
+    "uv_tool": "uv tool",
+    "pipx": "pipx",
+    "user_local_bin": "user-local",
+}
+
+
+def _format_multi_install_warning(
+    sites: list, active_context: str
+) -> list[str]:
+    """Format a multi-install warning block, or return [] if not warranted.
+
+    `sites` is the output of `lifecycle.detect_reachable_installs()`.
+    Warning fires only when more than one distinct site is detected.
+    """
+    if len(sites) < 2:
+        return []
+    lines = ["warning: multiple aelfrice installs detected:"]
+    for site in sites:
+        marker = " (on PATH)" if site.on_path else ""
+        label = _INSTALL_SITE_LABEL.get(site.kind, site.kind)
+        lines.append(f"  - {label}: {site.path}{marker}")
+    lines.append(
+        f"upgrading the active install ({active_context}) will not change "
+        "`which aelf` if a different install is on PATH."
+    )
+    lines.append("remove the stale install before upgrading.")
+    return lines
+
+
 def _cmd_upgrade(args: argparse.Namespace, out: object) -> int:
     """Print the right upgrade command for this install context.
 
@@ -1810,6 +1841,11 @@ def _cmd_upgrade(args: argparse.Namespace, out: object) -> int:
     a yes/no answer without copy-paste material.
     """
     advice = upgrade_advice()
+    multi_warning = _format_multi_install_warning(
+        detect_reachable_installs(), advice.context
+    )
+    for line in multi_warning:
+        print(line, file=out)  # type: ignore[arg-type]
     # Force a fresh sync check unless explicitly disabled. This is the
     # one CLI surface where the user has explicitly asked about updates,
     # so we ignore the cache TTL.
