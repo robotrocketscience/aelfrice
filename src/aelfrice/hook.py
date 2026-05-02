@@ -665,9 +665,21 @@ def user_prompt_submit(
             n_unique = len(unique_hashes)
             n_l0 = sum(1 for h in hits if h.lock_level == LOCK_USER)
             n_l1 = n_returned - n_l0
+            hits_pre_dedup = list(hits)
             # AC6: optional dedup before formatting.
             if config.collapse_duplicate_hashes:
                 hits = _dedup_by_content_hash(hits)
+            # #288 phase-1a extension: emit one rebuild_log row per
+            # UPS retrieval. Without this the high-frequency rebuild
+            # call site produces no log; phase-1b operator-week data
+            # collection depends on it.
+            _emit_user_prompt_submit_rebuild_log(
+                prompt=prompt,
+                session_id=session_id,
+                hits_pre_dedup=hits_pre_dedup,
+                hits_post_dedup=hits,
+                stderr=serr,
+            )
             # total_chars measured post-collapse (what is actually injected).
             total_chars = sum(len(h.content) for h in hits)
             body = _format_hits(hits)
@@ -699,6 +711,51 @@ def user_prompt_submit(
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     return 0
+
+
+def _emit_user_prompt_submit_rebuild_log(
+    *,
+    prompt: str,
+    session_id: str | None,
+    hits_pre_dedup: list[Belief],
+    hits_post_dedup: list[Belief],
+    stderr: IO[str] | None = None,
+) -> None:
+    """Append a phase-1a rebuild_log row for this UPS retrieval.
+
+    Fail-soft: any path-resolution or import failure traces one
+    line to stderr and never propagates. The rebuild_log is
+    diagnostic; a write error must not break the hook.
+    """
+    serr = stderr if stderr is not None else sys.stderr
+    try:
+        from aelfrice.context_rebuilder import (  # noqa: PLC0415
+            _rebuild_log_dir_for_db,
+            load_rebuilder_config,
+            record_user_prompt_submit_log,
+        )
+
+        if not session_id:
+            return
+        p = db_path()
+        if str(p) == ":memory:":
+            return
+        log_path = _rebuild_log_dir_for_db(p) / f"{session_id}.jsonl"
+        rebuilder_cfg = load_rebuilder_config()
+        record_user_prompt_submit_log(
+            prompt=prompt,
+            session_id=session_id,
+            hits_pre_dedup=hits_pre_dedup,
+            hits_post_dedup=hits_post_dedup,
+            log_path=log_path,
+            enabled=rebuilder_cfg.rebuild_log_enabled,
+            stderr=serr,
+        )
+    except Exception as exc:
+        print(
+            f"aelfrice: UPS rebuild_log emit failed (non-fatal): {exc}",
+            file=serr,
+        )
 
 
 def _write_telemetry(

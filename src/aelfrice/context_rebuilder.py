@@ -954,6 +954,105 @@ def _append_rebuild_log_record(
         )
 
 
+def record_user_prompt_submit_log(
+    *,
+    prompt: str,
+    session_id: str | None,
+    hits_pre_dedup: list[Belief],
+    hits_post_dedup: list[Belief],
+    log_path: Path | None,
+    enabled: bool = DEFAULT_REBUILD_LOG_ENABLED,
+    stderr: IO[str] | None = None,
+) -> None:
+    """Emit one rebuild_log row for a UserPromptSubmit retrieval.
+
+    Phase-1a wired the per-rebuild log only into ``rebuild_v14`` —
+    fired by ``PreCompact`` and rare. The high-frequency retrieval
+    path is ``user_prompt_submit``, which calls
+    ``hook_search.search_for_prompt`` directly. Without this hook,
+    an operator-week of normal use produces no rebuild_log rows and
+    phase-1b cannot accumulate data.
+
+    Schema is the same Layer-1 record the spec ratifies in
+    ``docs/rebuild_eval_harness.md``: synthesise a single
+    ``RecentTurn`` from the prompt so the existing
+    ``_build_rebuild_log_record`` machinery (hash, extracted_query,
+    extracted_entities) applies unchanged. Candidates are the
+    pre-dedup hit list; pre-dedup hits that survive content-hash
+    dedup are ``packed``, the rest are ``dropped`` with reason
+    ``content_hash_collision_with:<surviving_belief_id>``. Score
+    fields are ``None`` per ``_empty_scores`` — the BM25 / posterior
+    decomposition is not exposed at this call site, and locking the
+    schema in phase-1a means phase-2 ranker work fills the same
+    fields without a log-format migration.
+
+    No-op when ``enabled`` is False, when the env opt-out is set, or
+    when ``log_path`` is None / ``hits_pre_dedup`` is empty (mirrors
+    ``rebuild_v14``: no candidate set, no row).
+    """
+    if not enabled:
+        return
+    if _rebuild_log_disabled_via_env():
+        return
+    if log_path is None:
+        return
+    if not hits_pre_dedup:
+        return
+    surviving_ids: set[str] = {b.id for b in hits_post_dedup}
+    survivor_by_hash: dict[str, str] = {}
+    for b in hits_post_dedup:
+        survivor_by_hash.setdefault(
+            hashlib.sha1(b.content.encode("utf-8")).hexdigest(), b.id,
+        )
+    candidates: list[dict[str, object]] = []
+    n_dropped_by_dedup = 0
+    for rank, b in enumerate(hits_pre_dedup, start=1):
+        if b.id in surviving_ids:
+            decision = "packed"
+            reason: str | None = None
+        else:
+            decision = "dropped"
+            digest = hashlib.sha1(b.content.encode("utf-8")).hexdigest()
+            survivor = survivor_by_hash.get(digest)
+            reason = (
+                f"content_hash_collision_with:{survivor}"
+                if survivor
+                else "content_hash_collision"
+            )
+            n_dropped_by_dedup += 1
+        candidates.append({
+            "belief_id": b.id,
+            "rank": rank,
+            "scores": _empty_scores(),
+            "lock_level": _belief_lock_level_for_log(b),
+            "decision": decision,
+            "reason": reason,
+        })
+    pack_summary: dict[str, int] = {
+        "n_candidates": len(hits_pre_dedup),
+        "n_packed": len(hits_post_dedup),
+        # The UPS path has no visibility into floor / budget drops:
+        # ranking happens inside `retrieve()` and only the surviving
+        # set crosses the function boundary. Holding these at zero
+        # keeps the on-disk schema stable; phase-2 wiring will fill
+        # them when the ranker exposes its drop reasons.
+        "n_dropped_by_floor": 0,
+        "n_dropped_by_dedup": n_dropped_by_dedup,
+        "n_dropped_by_budget": 0,
+        "total_chars_packed": sum(len(b.content) for b in hits_post_dedup),
+    }
+    synthetic_turn = RecentTurn(
+        role="user", text=prompt, session_id=session_id,
+    )
+    record = _build_rebuild_log_record(
+        recent_turns=[synthetic_turn],
+        session_id=session_id,
+        candidates=candidates,
+        pack_summary=pack_summary,
+    )
+    _append_rebuild_log_record(log_path, record, stderr=stderr)
+
+
 # --- Format helpers --------------------------------------------------------
 
 
