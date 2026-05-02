@@ -134,9 +134,6 @@ DEP002 = [
     "datasets",
     "huggingface_hub",
 ]
-# DEP001: `benchmarks` is the in-repo top-level package imported via the
-# pytest pythonpath shim; not a PyPI dependency.
-DEP001 = ["benchmarks"]
 
 [dependency-groups]
 dev = [

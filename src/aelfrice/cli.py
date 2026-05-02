@@ -1033,123 +1033,18 @@ def _cmd_bench(args: argparse.Namespace, out: object) -> int:
         print(json.dumps(report.to_dict(), indent=2), file=out)  # type: ignore[arg-type]
         return 0
 
-    if target == "verify-clean":
-        try:
-            from benchmarks import verify_clean
-        except ModuleNotFoundError:
-            print(
-                "aelf bench verify-clean requires the source tree "
-                "(benchmarks/ is dev-only and not shipped in the wheel). "
-                "Clone the repo and run from the repo root.",
-                file=out,  # type: ignore[arg-type]
-            )
-            return 2
-        if not args.rest:
-            print("usage: aelf bench verify-clean PATH [PATH ...]", file=out)  # type: ignore[arg-type]
-            return 2
-        all_clean = True
-        for path in args.rest:
-            if not verify_clean.verify_file(path):
-                all_clean = False
-        return 0 if all_clean else 1
-
-    if target == "longmemeval-score":
-        try:
-            from benchmarks import longmemeval_score
-        except ModuleNotFoundError:
-            print(
-                "aelf bench longmemeval-score requires the source tree "
-                "(benchmarks/ is dev-only and not shipped in the wheel). "
-                "Clone the repo and run from the repo root.",
-                file=out,  # type: ignore[arg-type]
-            )
-            return 2
-        if len(args.rest) < 3:
-            print("usage: aelf bench longmemeval-score PREDS GT JUDGE", file=out)  # type: ignore[arg-type]
-            return 2
-        return longmemeval_score.score(args.rest[0], args.rest[1], args.rest[2])
-
-    if target == "posterior-residual":
-        try:
-            from benchmarks.posterior_ranking import run as _pr_run
-        except ModuleNotFoundError:
-            print(
-                "aelf bench posterior-residual requires the source tree "
-                "(benchmarks/ is dev-only and not shipped in the wheel). "
-                "Clone the repo and run from the repo root.",
-                file=out,  # type: ignore[arg-type]
-            )
-            return 2
-        # The bench subparser uses nargs=REMAINDER for `rest`, which swallows
-        # all tokens including named flags. Parse posterior-residual flags
-        # here rather than via argparse pre-declared args.
-        import argparse as _ap
-        _pr_parser = _ap.ArgumentParser(
-            prog="aelf bench posterior-residual",
-            add_help=False,
+    _DEV_TARGETS_MOVED: dict[str, str] = {
+        "verify-clean": "python -m benchmarks.verify_clean",
+        "longmemeval-score": "python -m benchmarks.longmemeval_score",
+        "posterior-residual": "python -m benchmarks.posterior_ranking",
+    }
+    if target in _DEV_TARGETS_MOVED:
+        print(
+            f"aelf bench {target} has moved. Run "
+            f"`{_DEV_TARGETS_MOVED[target]} ...` from a source checkout.",
+            file=out,  # type: ignore[arg-type]
         )
-        _pr_parser.add_argument("--fixtures", dest="pr_fixtures", default=None)
-        _pr_parser.add_argument("--seeds", dest="pr_seeds", type=int, default=5)
-        _pr_parser.add_argument(
-            "--mrr-threshold", dest="pr_mrr_threshold", type=float, default=0.05,
-        )
-        _pr_parser.add_argument(
-            "--ece-threshold", dest="pr_ece_threshold", type=float, default=0.10,
-        )
-        _pr_parser.add_argument(
-            "--json", dest="pr_json", action="store_true",
-        )
-        _pr_parser.add_argument(
-            "--heat-kernel", dest="pr_heat_kernel", action="store_true",
-            help="enable heat-kernel composition in retrieve() (slice 2 of #151)",
-        )
-        _pr_ns, _ = _pr_parser.parse_known_args(args.rest)
-        from pathlib import Path as _Path
-        _default_fixtures = (
-            _Path(__file__).parent.parent.parent
-            / "benchmarks"
-            / "posterior_ranking"
-            / "fixtures"
-            / "default.jsonl"
-        )
-        _fixtures_path = (
-            _Path(_pr_ns.pr_fixtures) if _pr_ns.pr_fixtures else _default_fixtures
-        )
-        result = _pr_run.run(
-            _fixtures_path,
-            n_seeds=_pr_ns.pr_seeds,
-            mrr_threshold=_pr_ns.pr_mrr_threshold,
-            ece_threshold=_pr_ns.pr_ece_threshold,
-            heat_kernel=_pr_ns.pr_heat_kernel,
-        )
-
-        if _pr_ns.pr_json:
-            from dataclasses import asdict as _asdict
-            print(
-                json.dumps({
-                    "mrr": _asdict(result["mrr"]),
-                    "ece": _asdict(result["ece"]),
-                    "overall_pass": result["overall_pass"],
-                }, indent=2),
-                file=out,  # type: ignore[arg-type]
-            )
-        else:
-            mrr = result["mrr"]
-            ece = result["ece"]
-            print(
-                f"posterior-residual eval\n"
-                f"  MRR uplift:  {mrr.mean_uplift:+.4f}  "
-                f"(±2σ: [{mrr.uplift_lo:+.4f}, {mrr.uplift_hi:+.4f}])  "
-                f"threshold={mrr.pass_threshold:+.2f}  "
-                f"{'PASS' if mrr.passed else 'FAIL'}\n"
-                f"  ECE:         {ece.ece:.4f}  "
-                f"threshold={ece.pass_threshold:.2f}  "
-                f"n={ece.n_total}  "
-                f"{'PASS' if ece.passed else 'FAIL'}\n"
-                f"  overall:     {'PASS' if result['overall_pass'] else 'FAIL'}",
-                file=out,  # type: ignore[arg-type]
-            )
-        return 0 if result["overall_pass"] else 1
+        return 2
 
     if target in _BENCH_INERT_TARGETS:
         phase = _BENCH_INERT_TARGETS[target]
@@ -1164,9 +1059,11 @@ def _cmd_bench(args: argparse.Namespace, out: object) -> int:
 
     print(
         f"aelf bench: unknown target {target!r}.\n"
-        f"Known targets: synthetic (default), verify-clean, "
-        f"longmemeval-score, posterior-residual, "
-        f"{', '.join(sorted(_BENCH_INERT_TARGETS))}.",
+        f"Known targets: synthetic (default), "
+        f"{', '.join(sorted(_BENCH_INERT_TARGETS))}.\n"
+        f"Dev-only benchmarks moved to "
+        f"`python -m benchmarks.<name>`: "
+        f"{', '.join(sorted(_DEV_TARGETS_MOVED))}.",
         file=out,  # type: ignore[arg-type]
     )
     return 2
