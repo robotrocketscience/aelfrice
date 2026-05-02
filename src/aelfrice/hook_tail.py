@@ -75,7 +75,7 @@ def parse_since(spec: str) -> timedelta:
     m = _SINCE_RE.match(spec)
     if m is None:
         raise ValueError(
-            f"--since must look like Ns / Nm / Nh / Nd (got {spec!r})"
+            f"--since must look like 30s / 5m / 2h / 1d (got {spec!r})"
         )
     n = int(m.group("n"))
     unit = m.group("unit")
