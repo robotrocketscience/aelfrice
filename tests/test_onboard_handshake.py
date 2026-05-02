@@ -314,3 +314,26 @@ def _derive_id_for_sentence(text: str, source: str) -> str:
     """Mirror classification._derive_belief_id for the precomputed-id test."""
     import hashlib
     return hashlib.sha256(f"{source}\x00{text}".encode("utf-8")).hexdigest()[:16]
+
+
+# --- session_id propagation (#192) -------------------------------------
+
+
+def test_accept_classifications_tags_beliefs_with_session_id(
+    store: MemoryStore, tmp_path: Path
+) -> None:
+    """Beliefs inserted via accept_classifications carry the onboard session_id."""
+    _populate_repo(tmp_path)
+    result = start_onboard_session(store, tmp_path, now="2026-04-26T00:00:00Z")
+    cls = [
+        HostClassification(index=s.index, belief_type=BELIEF_FACTUAL, persist=True)
+        for s in result.sentences
+    ]
+    outcome = accept_classifications(
+        store, result.session_id, cls, now="2026-04-26T01:00:00Z"
+    )
+    assert outcome.inserted > 0
+    for bid in store.list_belief_ids():
+        b = store.get_belief(bid)
+        assert b is not None
+        assert b.session_id == result.session_id

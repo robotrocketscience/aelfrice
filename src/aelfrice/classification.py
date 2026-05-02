@@ -503,6 +503,7 @@ def accept_classifications(
             source_kind=INGEST_SOURCE_FILESYSTEM,
             source_path=source,
             ts=timestamp,
+            session_id=session_id,
             override_belief_type=c.belief_type,
         ))
         # override_belief_type always produces a belief (persist=True
@@ -518,6 +519,7 @@ def accept_classifications(
             source_path=source,
             raw_text=text,
             derived_belief_ids=[bid],
+            session_id=session_id,
             ts=timestamp,
         )
         _, was_inserted = store.insert_or_corroborate(
