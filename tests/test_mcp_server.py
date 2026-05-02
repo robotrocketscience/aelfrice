@@ -133,6 +133,19 @@ def test_lock_creates_new_belief(store: MemoryStore) -> None:
     assert inserted.lock_level == LOCK_USER
 
 
+def test_lock_propagates_session_id_to_new_belief(store: MemoryStore) -> None:
+    """tool_lock with explicit session_id tags the inserted belief (#192)."""
+    out = tool_lock(
+        store,
+        statement="we always sign commits with ssh",
+        session_id="mcp-host-session-123",
+    )
+    assert out["action"] == "locked"
+    inserted = store.get_belief(out["id"])
+    assert inserted is not None
+    assert inserted.session_id == "mcp-host-session-123"
+
+
 def test_lock_upgrades_existing_unlocked_belief(store: MemoryStore) -> None:
     first = tool_lock(store, statement="claude is my friend")
     bid = first["id"]

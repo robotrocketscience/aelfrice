@@ -199,12 +199,18 @@ def tool_search(
     }
 
 
-def tool_lock(store: MemoryStore, *, statement: str) -> dict[str, Any]:
+def tool_lock(
+    store: MemoryStore,
+    *,
+    statement: str,
+    session_id: str | None = None,
+) -> dict[str, Any]:
     now = _utc_now_iso()
     out = derive(DerivationInput(
         raw_text=statement,
         source_kind=INGEST_SOURCE_MCP_REMEMBER,
         ts=now,
+        session_id=session_id,
     ))
     # mcp_remember always produces a belief.
     assert out.belief is not None
