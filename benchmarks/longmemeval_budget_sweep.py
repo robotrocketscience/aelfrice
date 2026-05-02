@@ -20,7 +20,7 @@ _BENCH_DIR: str = str(Path(__file__).resolve().parent)
 if _BENCH_DIR not in sys.path:
     sys.path.insert(0, _BENCH_DIR)
 
-from longmemeval_adapter import (  # type: ignore[import-untyped]
+from benchmarks.longmemeval_adapter import (  # type: ignore[import-untyped]
     LongMemEvalQuestion,
     load_from_huggingface,
     parse_questions,

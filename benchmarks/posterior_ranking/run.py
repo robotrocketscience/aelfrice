@@ -1,6 +1,6 @@
 """Posterior-ranking eval runner: wires MRR uplift + ECE against a fixture set.
 
-Entry point used by both tests and the `aelf bench posterior-residual` CLI.
+Entry point used by tests and `python -m benchmarks.posterior_ranking`.
 
 Usage:
     run(fixtures_path, n_seeds=5) -> dict with keys "mrr", "ece", "overall_pass"
