@@ -50,7 +50,7 @@ The protocol enforces:
 - A pre-generation contamination check is mandatory before any LLM reader touches the retrieval file:
 
 ```bash
-aelf bench verify-clean /tmp/benchmark_<name>.json
+python -m benchmarks.verify_clean /tmp/benchmark_<name>.json
 ```
 
 If this fails, the run is invalid. Fix the adapter and re-run.
@@ -63,7 +63,7 @@ uv run python benchmarks/<adapter>.py \
     --retrieve-only /tmp/benchmark_<name>.json [--subset N]
 
 # 2. Verify the retrieval file is clean
-aelf bench verify-clean /tmp/benchmark_<name>.json
+python -m benchmarks.verify_clean /tmp/benchmark_<name>.json
 
 # 3. LLM reader generates predictions (no GT visible to it)
 # 4. Scoring reads predictions + GT (no retrieval context visible)

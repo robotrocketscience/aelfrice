@@ -228,7 +228,7 @@ In each case the rerank reverts to `partial_bayesian_score(bm25, alpha, beta, po
 
 ### Bench wedge
 
-`aelf bench posterior-residual --heat-kernel` runs the MRR + ECE harness with the flag flipped on. Each per-seed `retrieve()` gets a fresh `GraphEigenbasisCache` built against that seed's in-memory store and rebuilt on stale (the synthetic feedback stream mutates the store after every round). Without `--heat-kernel`, output is byte-identical to today.
+`python -m benchmarks.posterior_ranking --heat-kernel` runs the MRR + ECE harness with the flag flipped on. Each per-seed `retrieve()` gets a fresh `GraphEigenbasisCache` built against that seed's in-memory store and rebuilt on stale (the synthetic feedback stream mutates the store after every round). Without `--heat-kernel`, output is byte-identical to today.
 
 ### What Slice 2 still doesn't ship
 

@@ -72,7 +72,7 @@ PYTHONPATH=. python benchmarks/longmemeval_adapter.py \
     --subset 3 --retrieve-only /tmp/lme_smoke.json
 
 # Verify no contamination in the retrieval file:
-PYTHONPATH=. aelf bench verify-clean /tmp/lme_smoke.json
+python -m benchmarks.verify_clean /tmp/lme_smoke.json
 ```
 
 ## Missing public-surface dependencies
@@ -95,10 +95,10 @@ These ports are scheduled in P2/P3/P4 of the v2.0.0 milestone plan
 
 ```bash
 # Contamination gate (verifies a retrieval file has no answer/gt leakage)
-uv run aelf bench verify-clean path/to/retrieval.json
+uv run python -m benchmarks.verify_clean path/to/retrieval.json
 
 # Score a LongMemEval predictions file (no aelfrice imports needed)
-uv run aelf bench longmemeval-score preds.json gt.json
+uv run python -m benchmarks.longmemeval_score preds.json gt.json
 ```
 
 Anything else exits 2 with a friendly pointer back to this file.
