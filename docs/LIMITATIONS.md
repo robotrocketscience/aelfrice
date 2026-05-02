@@ -8,7 +8,7 @@ Through v1.2.x: `apply_feedback` updates `(α, β)` and writes an audit row. The
 
 The benchmark harness ships at v1.0 as the measurement instrument. It is not yet a proof of the feedback claim.
 
-**At v1.3.0:** ranking begins to consume the posterior. L1 score becomes `log(bm25) + 0.5 * log(posterior_mean)`; locked beliefs (L0) bypass scoring as before; the cache invalidates correctly through the existing store-mutation hook. **Partial** because the full feedback-into-ranking eval — 10-round MRR uplift, ECE calibration, BM25F + heat-kernel composition — lands at v2.0.0. See [`docs/bayesian_ranking.md`](bayesian_ranking.md) for the v1.3 contract.
+**At v1.3.0:** ranking begins to consume the posterior. L1 score becomes `log(bm25) + 0.5 * log(posterior_mean)`; locked beliefs (L0) bypass scoring as before; the cache invalidates correctly through the existing store-mutation hook. **At v1.6.0:** the MRR-uplift + ECE-calibration eval harness ships at `benchmarks/posterior_ranking.py` and the heat-kernel composition wiring lands as a log-additive term in the ranking score (#151, #306, #310). Both ship default-OFF; the default-flip is gated on the harness clearing the MRR-uplift / ECE thresholds against the v2.0 corpus and lands at v1.7.0 (#154). See [`docs/bayesian_ranking.md`](bayesian_ranking.md) for the v1.3 contract.
 
 ## No semantic similarity
 
