@@ -44,6 +44,28 @@ def installed_aelf() -> Sequence[str]:
 
 
 @pytest.fixture
+def installed_console_script(
+    installed_aelf: Sequence[str],
+) -> "callable[[str], Sequence[str]]":  # type: ignore[name-defined]
+    """Resolve a sibling aelfrice console script (e.g. `aelf-commit-ingest`).
+
+    Console scripts declared in pyproject.toml all land in the same bin
+    directory regardless of install method (uv-tool, pipx, venv-pip), so
+    sibling resolution from `installed_aelf` is safe. The local
+    `uv run aelf` fallback maps to `uv run <name>` for parity.
+    """
+
+    def _resolve(name: str) -> Sequence[str]:
+        head = installed_aelf[0]
+        if head == "uv" and len(installed_aelf) >= 2 and installed_aelf[1] == "run":
+            return ("uv", "run", name)
+        sibling = Path(head).with_name(name)
+        return (str(sibling),)
+
+    return _resolve
+
+
+@pytest.fixture
 def aelf_run(
     installed_aelf: Sequence[str],
     ephemeral_db: Path,
