@@ -234,3 +234,128 @@ def test_upgrade_advice_routing(
     advice = lifecycle.upgrade_advice()
     assert advice.context == expected_context
     assert advice.command == expected_cmd_fragment
+
+
+# ---------------------------------------------------------------------------
+# detect_reachable_installs — multi-install warning (issue #345)
+# ---------------------------------------------------------------------------
+
+
+def _make_aelf_exe(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\nexit 0\n")
+    path.chmod(0o755)
+
+
+def test_reachable_installs_empty_when_nothing_installed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty_bin"))
+    assert lifecycle.detect_reachable_installs() == []
+
+
+def test_reachable_installs_single_uv_tool_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    uv_root = tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice"
+    uv_root.mkdir(parents=True)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty_bin"))
+    sites = lifecycle.detect_reachable_installs()
+    assert [(s.kind, s.on_path) for s in sites] == [("uv_tool", False)]
+
+
+def test_reachable_installs_uv_tool_on_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    uv_root = tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice"
+    uv_bin_dir = uv_root / "bin"
+    _make_aelf_exe(uv_bin_dir / "aelf")
+    monkeypatch.setenv("PATH", str(uv_bin_dir))
+    sites = lifecycle.detect_reachable_installs()
+    assert [(s.kind, s.on_path) for s in sites] == [("uv_tool", True)]
+
+
+def test_reachable_installs_dual_uv_tool_plus_user_local_bin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Repro from issue #318: uv-tool install + stale ~/.local/bin/aelf on PATH.
+
+    Both installs detected; the user_local_bin one is marked on_path,
+    the uv_tool one is not.
+    """
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    uv_root = tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice"
+    uv_root.mkdir(parents=True)
+    user_bin = tmp_path / ".local" / "bin"
+    _make_aelf_exe(user_bin / "aelf")
+    monkeypatch.setenv("PATH", str(user_bin))
+
+    sites = lifecycle.detect_reachable_installs()
+    by_kind = {s.kind: s for s in sites}
+    assert set(by_kind) == {"uv_tool", "user_local_bin"}
+    assert by_kind["uv_tool"].on_path is False
+    assert by_kind["user_local_bin"].on_path is True
+    assert by_kind["user_local_bin"].path == user_bin / "aelf"
+
+
+def test_reachable_installs_pipx_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    pipx_root = tmp_path / ".local" / "pipx" / "venvs" / "aelfrice"
+    pipx_root.mkdir(parents=True)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty_bin"))
+    sites = lifecycle.detect_reachable_installs()
+    assert [(s.kind, s.on_path) for s in sites] == [("pipx", False)]
+
+
+def test_format_multi_install_warning_silent_when_single(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from aelfrice import cli
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    uv_root = tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice"
+    uv_root.mkdir(parents=True)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty_bin"))
+    sites = lifecycle.detect_reachable_installs()
+    assert cli._format_multi_install_warning(sites, "uv_tool") == []
+
+
+def test_format_multi_install_warning_renders_when_multiple(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from aelfrice import cli
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    uv_root = tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice"
+    uv_root.mkdir(parents=True)
+    user_bin = tmp_path / ".local" / "bin"
+    _make_aelf_exe(user_bin / "aelf")
+    monkeypatch.setenv("PATH", str(user_bin))
+    sites = lifecycle.detect_reachable_installs()
+    lines = cli._format_multi_install_warning(sites, "uv_tool")
+    body = "\n".join(lines)
+    assert "warning: multiple aelfrice installs detected" in body
+    assert "uv tool:" in body
+    assert "user-local:" in body
+    assert "(on PATH)" in body
+    assert "(uv_tool)" in body
+
+
+def test_reachable_installs_path_aelf_under_uv_root_not_double_counted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An `aelf` exe living under the uv-tool root must not register as a
+    separate user_local_bin entry."""
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    uv_root = tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice"
+    uv_bin_dir = uv_root / "bin"
+    _make_aelf_exe(uv_bin_dir / "aelf")
+    monkeypatch.setenv("PATH", str(uv_bin_dir))
+    sites = lifecycle.detect_reachable_installs()
+    assert len(sites) == 1
+    assert sites[0].kind == "uv_tool"
