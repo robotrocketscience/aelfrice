@@ -26,6 +26,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import tomllib
 import traceback
 from dataclasses import dataclass
@@ -446,6 +447,48 @@ def _append_audit(
         )
 
 
+AUDIT_BELIEF_SNIPPET_CAP: Final[int] = 120
+"""Max chars of belief.content stored per-belief in the audit record's
+beliefs[] array. Full content is also recoverable from the rendered_block
+field; the snippet is for at-a-glance scanning in `aelf tail` output."""
+
+
+def _belief_snippet(content: str) -> str:
+    """First-line snippet capped at AUDIT_BELIEF_SNIPPET_CAP chars."""
+    head = content.split("\n", 1)[0]
+    if len(head) > AUDIT_BELIEF_SNIPPET_CAP:
+        head = head[:AUDIT_BELIEF_SNIPPET_CAP - 1] + "…"
+    return head
+
+
+def _serialize_belief_for_audit(b: "Belief") -> dict[str, object]:
+    """Project a Belief to the per-belief audit record shape (#321).
+
+    Lane mapping: locked beliefs (`lock_level == LOCK_USER`) are L0 —
+    the always-on user-asserted ground truth tier. Everything else
+    surfaced by retrieval is L1 (BM25 / L2.5 / L3 fold into one lane
+    here; downstream tiering can be re-derived from the rendered_block
+    if needed). Score is intentionally absent — `retrieve()` does not
+    propagate per-hit scores through to the hook caller, and adding
+    that plumbing was out of scope for #321.
+    """
+    locked = b.lock_level == LOCK_USER
+    alpha = float(b.alpha)
+    beta = float(b.beta)
+    denom = alpha + beta
+    posterior_mean = (alpha / denom) if denom > 0 else 0.0
+    return {
+        "id": b.id,
+        "lane": "L0" if locked else "L1",
+        "locked": locked,
+        "content_hash": b.content_hash,
+        "alpha": alpha,
+        "beta": beta,
+        "posterior_mean": posterior_mean,
+        "snippet": _belief_snippet(b.content),
+    }
+
+
 def _write_hook_audit_record(
     *,
     hook: str,
@@ -454,6 +497,8 @@ def _write_hook_audit_record(
     n_beliefs: int,
     n_locked: int,
     session_id: str | None = None,
+    beliefs: list["Belief"] | None = None,
+    latency_ms: int | None = None,
     config: HookAuditConfig | None = None,
     stderr: IO[str] | None = None,
 ) -> None:
@@ -463,6 +508,13 @@ def _write_hook_audit_record(
     full rendered block so a reviewer can see *exactly* what the hook
     injected on a given turn — distinct from telemetry, which records
     counts only.
+
+    #321 additive fields (all optional for backward compatibility):
+    `beliefs` — per-hit structured data (id/lane/locked/content_hash/
+    alpha/beta/posterior_mean/snippet); `latency_ms` — wall-clock around
+    retrieve+format; `tokens` — derived from `rendered_block` via the
+    same 4-chars-per-token estimator retrieval uses for budgeting.
+    Older readers ignore unknown fields.
     """
     cfg = config if config is not None else load_hook_audit_config(stderr=stderr)
     if not cfg.enabled:
@@ -479,10 +531,26 @@ def _write_hook_audit_record(
         "rendered_block": rendered_block,
         "n_beliefs": n_beliefs,
         "n_locked": n_locked,
+        "tokens": _audit_tokens_from_block(rendered_block),
     }
     if session_id is not None:
         record["session_id"] = session_id
+    if beliefs is not None:
+        record["beliefs"] = [_serialize_belief_for_audit(b) for b in beliefs]
+    if latency_ms is not None:
+        record["latency_ms"] = int(latency_ms)
     _append_audit(audit_path, record, cfg.max_bytes, stderr=stderr)
+
+
+def _audit_tokens_from_block(block: str) -> int:
+    """Estimate tokens in the rendered block.
+
+    Uses the same 4-chars-per-token estimator as
+    `aelfrice.retrieval._estimate_tokens` to keep audit-side counts
+    comparable with the budgeter that produced the block.
+    """
+    chars_per_token = 4.0
+    return int((len(block) + chars_per_token - 1) // chars_per_token)
 
 
 def read_hook_audit(path: Path) -> list[dict[str, object]]:
@@ -585,6 +653,7 @@ def user_prompt_submit(
             else DEFAULT_HOOK_TOKEN_BUDGET
         )
         config = load_user_prompt_submit_config(stderr=serr)
+        retrieve_start = time.monotonic()
         hits = _retrieve(prompt, budget)
         if hits:
             # AC1 telemetry: record pre-collapse counts.
@@ -602,6 +671,7 @@ def user_prompt_submit(
             # total_chars measured post-collapse (what is actually injected).
             total_chars = sum(len(h.content) for h in hits)
             body = _format_hits(hits)
+            latency_ms = int((time.monotonic() - retrieve_start) * 1000)
             sout.write(body)
             # AC1: append telemetry record for fires that produce a block.
             _write_telemetry(
@@ -614,6 +684,7 @@ def user_prompt_submit(
                 stderr=serr,
             )
             # #280 mitigation 3: per-turn audit of the rendered block.
+            # #321 additive fields: beliefs[], latency_ms, tokens.
             _write_hook_audit_record(
                 hook=AUDIT_HOOK_USER_PROMPT_SUBMIT,
                 prompt=prompt,
@@ -621,6 +692,8 @@ def user_prompt_submit(
                 n_beliefs=len(hits),
                 n_locked=sum(1 for h in hits if h.lock_level == LOCK_USER),
                 session_id=session_id,
+                beliefs=hits,
+                latency_ms=latency_ms,
                 stderr=serr,
             )
     except Exception:  # non-blocking: surface but do not fail
@@ -975,10 +1048,13 @@ def session_start(
             if token_budget is not None
             else DEFAULT_SESSION_START_TOKEN_BUDGET
         )
+        retrieve_start = time.monotonic()
         hits, body = _retrieve_baseline_with_block(budget)
         if body:
+            latency_ms = int((time.monotonic() - retrieve_start) * 1000)
             sout.write(body)
             # #280 mitigation 3: per-turn audit of the rendered block.
+            # #321 additive fields: beliefs[], latency_ms, tokens.
             _write_hook_audit_record(
                 hook=AUDIT_HOOK_SESSION_START,
                 prompt="",
@@ -986,6 +1062,8 @@ def session_start(
                 n_beliefs=len(hits),
                 n_locked=sum(1 for h in hits if h.lock_level == LOCK_USER),
                 session_id=session_id,
+                beliefs=hits,
+                latency_ms=latency_ms,
                 stderr=serr,
             )
     except Exception:  # non-blocking: surface but do not fail
