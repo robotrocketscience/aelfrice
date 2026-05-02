@@ -1005,10 +1005,14 @@ class MemoryStore:
             )
 
             # Synthetic corroboration rows: one per duplicate consumed.
-            # Best-effort: on legacy stores where belief_corroborations
-            # has INTEGER affinity on belief_id (old schema), the FK
-            # check may reject TEXT ids. Skip gracefully so the main
-            # dedup work (belief row removal) still completes.
+            # Best-effort: log and skip on IntegrityError rather than
+            # aborting the dedup work, but do not swallow silently —
+            # #336 (silent count-signal loss) was caused by an earlier
+            # blanket `except: pass` here combined with a CASCADE-on-
+            # DROP wipe in the unique-applying migration. The cascade
+            # bug is fixed in `_maybe_apply_content_hash_unique`; this
+            # except is retained only as a guard against unforeseen
+            # legacy-schema integrity failures.
             try:
                 self._conn.executemany(
                     """
@@ -1023,12 +1027,14 @@ class MemoryStore:
                         for canon_id, _dupe_id in corroboration_rows
                     ],
                 )
-            except sqlite3.IntegrityError:
-                # Old-schema store: belief_corroborations.belief_id has
-                # INTEGER affinity; TEXT belief ids fail FK check.
-                # Corroboration rows are signal-only; skip them without
-                # aborting the dedup work.
-                pass
+            except sqlite3.IntegrityError as err:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "consolidation-migration: synthetic corroboration "
+                    "insert failed (%d rows skipped): %s",
+                    len(corroboration_rows),
+                    err,
+                )
 
             # Delete duplicate rows from beliefs and FTS.
             self._conn.execute(
@@ -1115,27 +1121,46 @@ class MemoryStore:
 
         col_list = ", ".join(col_names)
 
-        with self._conn:
-            # Drop any leftover temp table from a failed previous attempt.
-            self._conn.execute("DROP TABLE IF EXISTS beliefs_new")
-            self._conn.execute(create_sql)
-            self._conn.execute(
-                f"INSERT INTO beliefs_new ({col_list}) "
-                f"SELECT {col_list} FROM beliefs"
-            )
-            self._conn.execute("DROP TABLE beliefs")
-            self._conn.execute(
-                "ALTER TABLE beliefs_new RENAME TO beliefs"
-            )
-            # Recreate indexes that were on the original beliefs table.
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_beliefs_session "
-                "ON beliefs(session_id)"
-            )
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_beliefs_origin "
-                "ON beliefs(origin)"
-            )
+        # Disable FK enforcement around the table swap. Without this,
+        # `DROP TABLE beliefs` fires `ON DELETE CASCADE` on
+        # belief_corroborations (and any other table referencing
+        # beliefs.id), wiping rows that the dedup migration just
+        # inserted. This is the SQLite-recommended pattern for
+        # schema-mutation migrations — see
+        # https://www.sqlite.org/lang_altertable.html#otheralter
+        # ("disable foreign key constraints with PRAGMA foreign_keys=OFF").
+        # Toggling foreign_keys must happen OUTSIDE any transaction,
+        # so the swap runs in its own explicit BEGIN/COMMIT.
+        self._conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            self._conn.execute("BEGIN")
+            try:
+                # Drop any leftover temp table from a failed previous attempt.
+                self._conn.execute("DROP TABLE IF EXISTS beliefs_new")
+                self._conn.execute(create_sql)
+                self._conn.execute(
+                    f"INSERT INTO beliefs_new ({col_list}) "
+                    f"SELECT {col_list} FROM beliefs"
+                )
+                self._conn.execute("DROP TABLE beliefs")
+                self._conn.execute(
+                    "ALTER TABLE beliefs_new RENAME TO beliefs"
+                )
+                # Recreate indexes that were on the original beliefs table.
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_beliefs_session "
+                    "ON beliefs(session_id)"
+                )
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_beliefs_origin "
+                    "ON beliefs(origin)"
+                )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+        finally:
+            self._conn.execute("PRAGMA foreign_keys=ON")
 
         self.set_schema_meta(
             SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED,

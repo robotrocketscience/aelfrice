@@ -329,3 +329,148 @@ def test_lock_level_precedence_user_wins(tmp_path: Path) -> None:
         assert canonical.lock_level == "user"
     finally:
         store.close()
+
+
+# ---------------------------------------------------------------------------
+# #336: synthetic corroborations survive the unique-applying migration
+# ---------------------------------------------------------------------------
+
+
+def _seed_duplicates_with_real_fk(path: str) -> None:
+    """Seed duplicates with the production FK on belief_corroborations.
+
+    Repros #336: the existing _seed_duplicates omits the
+    `REFERENCES beliefs(id) ON DELETE CASCADE` clause, so the cascade
+    that wipes corroborations during the unique-applying migration's
+    `DROP TABLE beliefs` never fires in tests. This helper mirrors the
+    real production legacy-store shape: `beliefs` without UNIQUE on
+    content_hash, `belief_corroborations` with the CASCADE FK.
+    """
+    con = sqlite3.connect(path)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys=ON")
+    con.executescript("""
+        CREATE TABLE beliefs (
+            id                  TEXT PRIMARY KEY,
+            content             TEXT NOT NULL,
+            content_hash        TEXT NOT NULL,
+            alpha               REAL NOT NULL,
+            beta                REAL NOT NULL,
+            type                TEXT NOT NULL,
+            lock_level          TEXT NOT NULL,
+            locked_at           TEXT,
+            demotion_pressure   INTEGER NOT NULL DEFAULT 0,
+            created_at          TEXT NOT NULL,
+            last_retrieved_at   TEXT,
+            session_id          TEXT,
+            origin              TEXT NOT NULL DEFAULT 'unknown'
+        );
+        CREATE VIRTUAL TABLE beliefs_fts
+            USING fts5(id UNINDEXED, content, tokenize='porter unicode61');
+        CREATE TABLE schema_meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE TABLE belief_corroborations (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            belief_id         TEXT    NOT NULL
+                REFERENCES beliefs(id) ON DELETE CASCADE,
+            ingested_at       TEXT    NOT NULL,
+            source_type       TEXT    NOT NULL,
+            session_id        TEXT,
+            source_path_hash  TEXT
+        );
+    """)
+    # Two duplicate groups — one with two rows, one with three.
+    rows = [
+        ("can-A", "alpha text", "hash-A", "2026-01-01T00:00:00Z"),
+        ("dup-A1", "alpha text", "hash-A", "2026-02-01T00:00:00Z"),
+        ("can-B", "beta text", "hash-B", "2026-01-01T00:00:00Z"),
+        ("dup-B1", "beta text", "hash-B", "2026-02-01T00:00:00Z"),
+        ("dup-B2", "beta text", "hash-B", "2026-03-01T00:00:00Z"),
+    ]
+    for bid, content, ch, created in rows:
+        con.execute(
+            "INSERT INTO beliefs (id, content, content_hash, alpha, beta, "
+            "type, lock_level, demotion_pressure, created_at, origin) "
+            "VALUES (?, ?, ?, 1.0, 1.0, 'factual', 'none', 0, ?, "
+            "'agent_remembered')",
+            (bid, content, ch, created),
+        )
+        con.execute(
+            "INSERT INTO beliefs_fts (id, content) VALUES (?, ?)",
+            (bid, content),
+        )
+    con.commit()
+    con.close()
+
+
+def test_synthetic_corroboration_survives_unique_migration(
+    tmp_path: Path,
+) -> None:
+    """#336 regression: synthetic corroboration rows must survive the
+    table-swap that adds UNIQUE(content_hash) to beliefs.
+
+    Without the foreign_keys=OFF guard around the swap, `DROP TABLE
+    beliefs` fires `ON DELETE CASCADE` on belief_corroborations, wiping
+    the rows the dedup migration just inserted. Symptom in production:
+    20,470 dupes deleted, 0 consolidation_migration corroboration rows.
+    """
+    db = str(tmp_path / "mem.db")
+    _seed_duplicates_with_real_fk(db)
+    store = MemoryStore(db)
+    try:
+        # Three duplicates were consumed (1 in group A, 2 in group B).
+        cur = store._conn.execute(  # type: ignore[reportPrivateUsage]
+            "SELECT belief_id, source_type FROM belief_corroborations "
+            "WHERE source_type='consolidation_migration' "
+            "ORDER BY belief_id"
+        )
+        rows = cur.fetchall()
+        assert len(rows) == 3, (
+            f"expected 3 consolidation_migration corroborations "
+            f"(one per duplicate consumed), got {len(rows)}"
+        )
+        # All point at canonical rows; no orphans.
+        canon_ids = {r["belief_id"] for r in rows}
+        assert canon_ids == {"can-A", "can-B"}
+    finally:
+        store.close()
+
+
+def test_pre_existing_corroborations_survive_unique_migration(
+    tmp_path: Path,
+) -> None:
+    """#336 regression: pre-existing live corroboration rows on the
+    canonical belief must also survive the unique-applying migration's
+    table swap. Verifies the cascade-on-DROP wipe is fully closed, not
+    just for consolidation_migration rows."""
+    db = str(tmp_path / "mem.db")
+    _seed_duplicates_with_real_fk(db)
+    # Pre-seed live corroboration rows on the eventual canonical row,
+    # before any MemoryStore open. Mirrors a store with prior ingest
+    # history that also needs the unique migration.
+    con = sqlite3.connect(db)
+    con.execute("PRAGMA foreign_keys=ON")
+    for i in range(5):
+        con.execute(
+            "INSERT INTO belief_corroborations "
+            "(belief_id, ingested_at, source_type) "
+            "VALUES ('can-A', ?, 'cli_remember')",
+            (f"2026-04-{i + 1:02d}T00:00:00Z",),
+        )
+    con.commit()
+    con.close()
+
+    store = MemoryStore(db)
+    try:
+        cur = store._conn.execute(  # type: ignore[reportPrivateUsage]
+            "SELECT COUNT(*) AS n FROM belief_corroborations "
+            "WHERE source_type='cli_remember'"
+        )
+        n = cur.fetchone()["n"]
+        assert n == 5, (
+            f"expected 5 pre-existing cli_remember rows to survive, got {n}"
+        )
+    finally:
+        store.close()
