@@ -1095,3 +1095,107 @@ def format_orphan_feedback_report(report: OrphanFeedbackReport) -> str:
     else:
         lines.append(f"deleted: {report.deleted}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# promote-retention pass (issue #290 phase-3)
+# ---------------------------------------------------------------------------
+
+# Promotion thresholds from docs/belief_retention_class.md §4.
+# A snapshot belief is promoted to ``fact`` once it has been
+# corroborated at least N times across at least M distinct sessions
+# with no inbound CONTRADICTS edge. Constants are module-level so
+# tests can reference the canonical values.
+PROMOTE_RETENTION_MIN_CORROBORATIONS: Final[int] = 3
+PROMOTE_RETENTION_MIN_SESSIONS: Final[int] = 2
+
+# Wire-format source string for the synthetic feedback_history row
+# written on promotion. Operators auditing feedback_history grep on
+# this; do not rename without a migration.
+FEEDBACK_SOURCE_RETENTION_PROMOTION: Final[str] = "retention_promotion"
+
+
+@dataclass
+class PromotionRunReport:
+    """Summary of one `promote_retention` pass.
+
+    `candidates_found` is the count of snapshot beliefs meeting the
+    corroboration / distinct-session / no-CONTRADICTS rule, before
+    `max_n` is applied. `promoted` is the number actually flipped to
+    `fact`. `dry_run` flags whether DB writes occurred.
+    """
+
+    candidates_found: int = 0
+    promoted: int = 0
+    dry_run: bool = False
+
+
+def promote_retention(
+    store: "MemoryStore",
+    *,
+    dry_run: bool = False,
+    max_n: int | None = None,
+    min_corroborations: int = PROMOTE_RETENTION_MIN_CORROBORATIONS,
+    min_sessions: int = PROMOTE_RETENTION_MIN_SESSIONS,
+) -> PromotionRunReport:
+    """Promote snapshot beliefs to ``fact`` once corroborated enough.
+
+    Per docs/belief_retention_class.md §4 a snapshot is promoted when
+    it has been re-asserted ``min_corroborations`` times across
+    ``min_sessions`` distinct sessions with no inbound CONTRADICTS
+    edge. Promotion writes two things per belief:
+
+      1. ``UPDATE beliefs SET retention_class = 'fact'`` via
+         ``store.set_retention_class``.
+      2. A synthetic ``feedback_history`` row with
+         ``source = 'retention_promotion'`` and ``valence = 0.0``.
+         The neutral valence keeps the Bayesian alpha/beta untouched;
+         the row exists for audit trail only.
+
+    ``dry_run=True`` returns the candidate count without mutating.
+    ``max_n`` caps how many candidates are promoted per run.
+    """
+    from datetime import datetime, timezone
+
+    report = PromotionRunReport(dry_run=dry_run)
+    candidates = store.find_promotable_snapshots(
+        min_corroborations=min_corroborations,
+        min_sessions=min_sessions,
+    )
+    report.candidates_found = len(candidates)
+
+    if dry_run or not candidates:
+        return report
+
+    to_promote = candidates[:max_n] if max_n is not None else candidates
+    ts = datetime.now(timezone.utc).isoformat()
+    for belief in to_promote:
+        store.set_retention_class(belief.id, "fact")
+        store.insert_feedback_event(
+            belief.id,
+            valence=0.0,
+            source=FEEDBACK_SOURCE_RETENTION_PROMOTION,
+            created_at=ts,
+        )
+        report.promoted += 1
+    return report
+
+
+def format_promotion_report(report: PromotionRunReport) -> str:
+    """Render a `PromotionRunReport` for the CLI."""
+    lines: list[str] = []
+    prefix = "[dry-run] " if report.dry_run else ""
+    lines.append(
+        f"{prefix}promote-retention: {report.candidates_found} "
+        f"snapshot(s) eligible for promotion"
+    )
+    if report.dry_run:
+        if report.candidates_found == 0:
+            lines.append("nothing to do.")
+        else:
+            lines.append(
+                "dry-run; re-run without --dry-run to promote these beliefs."
+            )
+    else:
+        lines.append(f"  promoted: {report.promoted}")
+    return "\n".join(lines)

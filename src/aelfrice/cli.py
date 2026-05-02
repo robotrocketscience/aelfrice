@@ -79,8 +79,10 @@ from aelfrice.doctor import (
     diagnose,
     format_orphan_feedback_report as _format_orphan_feedback_report,
     format_orphan_report as _format_orphan_report,
+    format_promotion_report as _format_promotion_report,
     format_report,
     gc_orphan_feedback as _gc_orphan_feedback,
+    promote_retention as _promote_retention,
 )
 from aelfrice.llm_classifier import (
     ENV_API_KEY as _LLM_ENV_API_KEY,
@@ -2129,6 +2131,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_classify_orphans(args, out)
     if getattr(args, "gc_orphan_feedback", False):
         return _cmd_doctor_gc_orphan_feedback(args, out)
+    if getattr(args, "promote_retention", False):
+        return _cmd_doctor_promote_retention(args, out)
     if getattr(args, "replay", False):
         return _cmd_doctor_replay(args, out)
     scope = getattr(args, "scope", None)
@@ -2275,6 +2279,33 @@ def _cmd_doctor_gc_orphan_feedback(
     finally:
         store.close()
     print(_format_orphan_feedback_report(report), file=out)  # type: ignore[arg-type]
+    return 0
+
+
+def _cmd_doctor_promote_retention(
+    args: argparse.Namespace, out: object
+) -> int:
+    """Promote snapshot beliefs to ``fact`` once corroborated enough
+    (issue #290 phase-3).
+
+    A snapshot is promoted when corroborated >= 3 times across >= 2
+    distinct sessions with no inbound CONTRADICTS edge. See
+    docs/belief_retention_class.md §4.
+
+    Opt-in by design (mirrors --classify-orphans from #206). Use
+    --dry-run to count candidates without mutating; --max N to cap
+    promotions per run. Bypasses the hooks/graph checks.
+    """
+    dry_run = bool(getattr(args, "dry_run", False))
+    max_n_raw = getattr(args, "max", None)
+    max_n: int | None = int(max_n_raw) if max_n_raw is not None else None
+
+    store = _open_store()
+    try:
+        report = _promote_retention(store, dry_run=dry_run, max_n=max_n)
+    finally:
+        store.close()
+    print(_format_promotion_report(report), file=out)  # type: ignore[arg-type]
     return 0
 
 
@@ -2832,7 +2863,9 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         default=False,
         help=(
             "with --classify-orphans: print orphan count and "
-            "before-distribution without making LLM calls or DB writes."
+            "before-distribution without making LLM calls or DB writes. "
+            "with --promote-retention: count promotable snapshots "
+            "without writing."
         ),
     )
     p_doctor.add_argument(
@@ -2844,7 +2877,22 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help=(
             "with --classify-orphans: cap the number of beliefs "
             "classified per run. No cap by default; recommended: 500 "
-            "for large stores to bound per-run cost."
+            "for large stores to bound per-run cost. "
+            "with --promote-retention: cap the number of beliefs "
+            "promoted per run."
+        ),
+    )
+    p_doctor.add_argument(
+        "--promote-retention",
+        dest="promote_retention",
+        action="store_true",
+        default=False,
+        help=(
+            "promote snapshot beliefs to 'fact' once corroborated >= 3 "
+            "times across >= 2 distinct sessions with no inbound "
+            "CONTRADICTS edge (issue #290 phase-3). Bypasses the "
+            "hooks/graph checks. Combine with --dry-run to count "
+            "candidates without writing."
         ),
     )
     p_doctor.add_argument(
