@@ -2112,6 +2112,75 @@ class MemoryStore:
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
 
+    def find_promotable_snapshots(
+        self, *, min_corroborations: int = 3, min_sessions: int = 2,
+        max_n: int | None = None,
+    ) -> list[Belief]:
+        """Return snapshot beliefs eligible for promotion to ``fact``.
+
+        Per docs/belief_retention_class.md §4 the promotion rule is:
+
+          retention_class = 'snapshot'
+          AND COUNT(corroborations) >= min_corroborations
+          AND COUNT(DISTINCT corroborations.session_id) >= min_sessions
+          AND no inbound CONTRADICTS edge targets the belief
+
+        ``session_id`` may be NULL on legacy corroboration rows (#192 T3
+        backfill not yet landed). NULLs are excluded from the distinct
+        count rather than treated as a single anonymous session — that
+        avoids letting one un-attributed re-ingest masquerade as
+        cross-session reuse.
+
+        ``max_n`` caps the result set; the SQL does the limiting so a
+        large store doesn't materialize the full candidate list.
+        """
+        limit_clause = f"LIMIT {int(max_n)}" if max_n is not None else ""
+        cur = self._conn.execute(
+            f"""
+            SELECT b.* FROM beliefs b
+            JOIN (
+                SELECT belief_id,
+                       COUNT(*) AS n_corr,
+                       COUNT(DISTINCT session_id) AS n_sess
+                FROM belief_corroborations
+                GROUP BY belief_id
+            ) bc ON bc.belief_id = b.id
+            WHERE b.retention_class = 'snapshot'
+              AND bc.n_corr >= ?
+              AND bc.n_sess >= ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM edges e
+                  WHERE e.dst = b.id AND e.type = 'CONTRADICTS'
+              )
+            ORDER BY b.created_at ASC
+            {limit_clause}
+            """,
+            (int(min_corroborations), int(min_sessions)),
+        )
+        return [_row_to_belief(r) for r in cur.fetchall()]
+
+    def set_retention_class(self, belief_id: str, retention_class: str) -> None:
+        """Targeted update of a belief's ``retention_class``.
+
+        Phase-3 promotion writes through this rather than ``update_belief``
+        because ``update_belief`` rewrites the full row (including FTS5 +
+        entity index) and does not currently carry ``retention_class`` in
+        its UPDATE clause. A focused setter avoids the broader surgery
+        and keeps the write atomic.
+        """
+        if retention_class not in RETENTION_CLASSES:
+            raise ValueError(
+                f"Unknown retention_class {retention_class!r}. "
+                f"Must be one of {sorted(RETENTION_CLASSES)}"
+            )
+        self._conn.execute(
+            "UPDATE beliefs SET retention_class = ? WHERE id = ?",
+            (retention_class, belief_id),
+        )
+        self._bump_belief_version(belief_id)
+        self._conn.commit()
+        self._fire_invalidation()
+
     def count_beliefs_by_type(self) -> dict[str, int]:
         """Return a mapping of belief type → count across all beliefs."""
         cur = self._conn.execute(
