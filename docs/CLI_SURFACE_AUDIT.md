@@ -1,5 +1,7 @@
 # CLI surface audit
 
+> **Historical (v1.3-era design memo).** This memo was written ahead of the v1.3.0 surface consolidation and is now several releases stale. The CLI has continued to evolve (v1.5.x added `aelf tail`, `sweep-feedback`, host-driven onboard classification; v1.6.0 finalised the hardening pass). For the current surface see [COMMANDS.md](COMMANDS.md). Kept here as the rationale trail behind the v1.3 visible/hidden split, not as a current spec.
+
 Status: design memo. No code changes implied by merging this file.
 Target milestone: v1.3.0 (consolidation; backwards-compat aliases for one minor).
 
