@@ -105,10 +105,10 @@ def test_three_paths_record_distinct_source_types(
     aelf_run("ingest-transcript", str(transcript))
 
     # Path 3: commit_ingest via the PostToolUse hook entry point. The
-    # hook reads a Claude Code Bash tool payload from stdin and runs
+    # hook reads a the host harness Bash tool payload from stdin and runs
     # `git log -1 --format=%B <hash>` against `cwd` to fetch the body.
     # `tiny_project` is a real git repo, so we land a fresh commit on
-    # it and shape a payload mirroring what Claude Code emits.
+    # it and shape a payload mirroring what the host harness emits.
     # The triple extractor needs at least one (subject, relation, object)
     # match in the message body, otherwise the hook short-circuits before
     # opening the store. Pattern: `<NP> <verb> <NP>` with a permitted
@@ -136,7 +136,7 @@ def test_three_paths_record_distinct_source_types(
     )
     short_hash = short_hash_proc.stdout.strip()
     # Synthesise the bracket-prefix line `[branch hash] subject` the
-    # hook expects in tool_response.stdout. Real Claude Code prints
+    # hook expects in tool_response.stdout. Real the host harness prints
     # this line after every successful `git commit`.
     fake_stdout = f"[main {short_hash}] {commit_msg}\n"
     payload = {
