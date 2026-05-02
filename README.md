@@ -49,7 +49,7 @@ The matching beliefs come back as an `<aelfrice-memory>` block prepended to your
 push the release
 ```
 
-Default budget is 2,000 tokens per prompt. Locked beliefs always go first; the rest is BM25-ranked and truncated to fit.
+Default budget is 2,400 tokens per prompt. Locked beliefs always go first; the rest is BM25-ranked and truncated to fit.
 
 ---
 
@@ -138,9 +138,9 @@ The same operations are also available as MCP tools and `/aelf:*` slash commands
 | v1.3 | shipped | retrieval wave — entity index (L2.5), BFS multi-hop (L3), LLM-Haiku onboard classifier (opt-in), partial Bayesian-weighted ranking |
 | v1.4 | shipped | context rebuilder — PreCompact retrieval-curated continuation (augment mode); manual + threshold trigger; continuation-fidelity scorer (exact-match) |
 | v1.5 | shipped | retrieval plumbing — composition plumbing + per-lane telemetry (#232), BM25F anchor text (#148), search-tool Bash matcher (#155), v3 federation version-vector schema (#204), v1.4 dynamic-trigger re-park (#188) |
-| v1.5.x | planned | default-on LLM-Haiku onboard via host-driven classification (#238) |
-| v1.6 | planned | graph signal wave — signed Laplacian + eigenbasis (#149, offline already merged), heat kernel authority (#150), posterior-weighted ranking full (#151), Plate FFT HRR primitives (#216) |
-| v1.7 | planned | structural retrieval lane + composition default-on flip — HRR bind/probe (#152), `uri_baki` post-rank adjuster retest (#153), benchmark-gate default-on flip (#154) |
+| v1.5.x | shipped | default-on host-driven LLM onboard classifier (#238, in v1.5.1) |
+| v1.6 | shipped | hardening + observability — hook-hardening framing-tag contract + audit log (#280, #297, #314), `aelf tail` (#321, #322), belief retention class (#290), rebuild diagnostic log (#288), posterior-ranking eval harness + heat-kernel composition (#151, #306, #310; default-flip still gated), deferred-feedback sweeper (#191, #256), v2.0 corpus public scaffold + bench-gate (#307, #311, #319, #320), `replay_full_equality` probe (#262, #304), `session_id` propagation (#192), reachable-install detection (#345) |
+| v1.7 | planned | graph signal wave + structural retrieval lane — signed Laplacian + eigenbasis (#149), heat kernel authority (#150), Plate FFT HRR primitives (#216), HRR bind/probe (#152), `uri_baki` post-rank adjuster retest (#153), benchmark-gate default-on flip (#154) |
 | v2.0 | planned | feature parity with the original research line + benchmark reproducibility. v2.0's component issues land incrementally across v1.5–v1.7; final v2.0 tag is the reproducibility cut. |
 
 Per-version detail: [docs/ROADMAP.md](docs/ROADMAP.md). Open issues: [docs/LIMITATIONS.md](docs/LIMITATIONS.md).

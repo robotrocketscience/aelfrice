@@ -23,8 +23,9 @@ This is a rebuild, not a port. Structural issues that survived the research line
 | **v1.3.0** | shipped | retrieval wave — entity index (L2.5), BFS multi-hop (L3), LLM-Haiku onboard classifier (opt-in), partial posterior-weighted ranking |
 | **v1.4.0** | shipped | context rebuilder — PreCompact retrieval-curated continuation (augment mode); manual + threshold trigger; continuation-fidelity scorer (exact-match) |
 | **v1.5.0** | shipped | retrieval plumbing — composition plumbing + telemetry, BM25F anchor text, search-tool Bash matcher, v3 federation version-vector schema, dynamic-trigger re-park |
-| **v1.6.0** | planned | graph signal wave — signed Laplacian + eigenbasis, heat kernel authority, posterior-weighted ranking (full), Plate FFT HRR primitives |
-| **v1.7.0** | planned | structural retrieval lane + composition default-on flip — HRR bind/probe, `uri_baki` post-rank adjuster retest, benchmark-gate default-on flip (#154) |
+| **v1.5.1** | shipped | corroboration tracking sibling table (#190); default-on host-driven LLM onboard classifier (#238) |
+| **v1.6.0** | shipped | hardening + observability — hook-hardening framing-tag contract + per-turn audit log, `aelf tail`, belief retention class, rebuild diagnostic log, posterior-ranking eval harness + heat-kernel composition (default-flip gated), deferred-feedback sweeper, v2.0 corpus public scaffold + bench-gate, `replay_full_equality` probe, `session_id` propagation, reachable-install detection |
+| **v1.7.0** | planned | graph signal wave + structural retrieval lane — signed Laplacian + eigenbasis (#149), heat kernel authority (#150), Plate FFT HRR primitives (#216), HRR bind/probe (#152), `uri_baki` post-rank adjuster retest (#153), benchmark-gate default-on flip (#154) |
 | **v2.0.0** | planned | feature parity with the research line + benchmark reproducibility |
 
 ## What shipped
@@ -62,7 +63,7 @@ The release where retrieval moves beyond BM25-only.
 - **Entity-index retrieval.** L2.5 entity-index, including the regex extraction patterns. Spec: [entity_index.md](entity_index.md).
 - **BFS multi-hop graph traversal.** Edge-type-weighted graph walks layered on top of FTS5 hits. Bounded depth, bounded budget. Spec: [bfs_multihop.md](bfs_multihop.md).
 - **LLM-classification onboard path.** Haiku-backed classifier as an opt-in alternative to the regex classifier. Default-off; opt in via `aelf onboard --llm-classify` or `[onboard.llm].enabled = true` in `.aelfrice.toml`. Boundary policy and prompt template in [llm_classifier.md](llm_classifier.md). PRIVACY note: first outbound call in the install path that transmits user content; see [PRIVACY § Optional outbound calls](PRIVACY.md#optional-outbound-calls).
-- **Posterior-weighted ranking (partial).** Retrieval scoring incorporates `α / (α+β)` on top of BM25, log-additively at weight 0.5. See [bayesian_ranking.md](bayesian_ranking.md) for the v1.3 contract. Full feedback-into-ranking eval — 10-round MRR uplift, ECE calibration, BM25F + heat-kernel composition — lands at v1.6.0 (#151) / re-runs for the canonical cut at v2.0.0.
+- **Posterior-weighted ranking (partial).** Retrieval scoring incorporates `α / (α+β)` on top of BM25, log-additively at weight 0.5. See [bayesian_ranking.md](bayesian_ranking.md) for the v1.3 contract. The MRR-uplift + ECE-calibration eval harness shipped at v1.6.0 (#151, #306) along with heat-kernel composition wiring (#310), both default-OFF; the default-flip lands at v1.7.0 once the harness clears thresholds against the v2.0 corpus, with a re-run for the canonical cut at v2.0.0.
 
 ### v1.4.0 — context rebuilder
 
@@ -75,6 +76,36 @@ Long-running sessions cheaper without a visible seam.
 
 Hard prerequisites: v1.2 transcript-ingest, v1.2 `session_id` schema. Alpha shipped in v1.2.0a0.
 
+### v1.5.0 — retrieval plumbing
+
+Composition gate first, then cheap retrieval wins. No new ranking math in this minor.
+
+- **Pipeline composition tracker — unified `retrieve()` with feature-flag gate** ([#154](https://github.com/robotrocketscience/aelfrice/issues/154)). One entry point, every retrieval feature behind a config flag, telemetry per lane. Prerequisite for the v1.7 graph wave: `retrieve()` must be the only path before heat kernel and posterior-full can ship safely behind defaults.
+- **Augmented BM25F (incoming-edge anchor text) + vectorized BM25 sparse matvec** ([#148](https://github.com/robotrocketscience/aelfrice/issues/148)). +0.06 NDCG @ +0 ms vs BM25 in the component bake-off — adopted since runtime cost is free.
+- **Search-tool hook — extend matcher beyond `Grep|Glob`** ([#155](https://github.com/robotrocketscience/aelfrice/issues/155)). Widens the `PreToolUse` matcher list now that telemetry from v1.2.x confirmed latency budget.
+- **v1.4 dynamic-trigger revisit** ([#188](https://github.com/robotrocketscience/aelfrice/issues/188)). The dynamic mode parked at v1.4 ship-gate got a second eval pass on captured-corpus calibration data; bar still wasn't met, parked again.
+
+### v1.5.1 — corroboration tracking + default-on host-driven onboard
+
+- **Belief corroboration tracking — sibling table + ingest recorder** ([#190](https://github.com/robotrocketscience/aelfrice/issues/190)). New `belief_corroborations` table records each re-ingest of identical content without disturbing the existing dedup contract. Phantom-prereqs T1 of the #190 session-tracking story (T2 = #191 sweeper, T3 = #192 session_id propagation, both at v1.6.0).
+- **Default-on host-driven LLM onboard classifier — no API key required** ([#238](https://github.com/robotrocketscience/aelfrice/issues/238)). `[onboard.llm].enabled` flips default `False → True` via the host model's own Task tool against the smallest model in its stack. Quality matches the v1.3.0 LLM-classifier ceiling; cost is sub-percent of a typical weekly host-plan allowance. Direct-API path (`aelf onboard --llm-classify`) remains the API-key fallback.
+
+### v1.6.0 — hardening, observability, retention
+
+A consolidation release rather than the originally-planned graph-signal wave. Ranking math (#149 / #150 / #216) was punted to v1.7 to land alongside #154's default-on flip; v1.6 instead absorbed the security-hardening surface that #280 surfaced and the observability + bench-gate scaffolding that the rebuild redesign (#288 / #289 / #291) needs.
+
+- **Hook-hardening Phase 1 — framing-tag contract + content escape for memory blocks** ([#280](https://github.com/robotrocketscience/aelfrice/issues/280), [#297](https://github.com/robotrocketscience/aelfrice/pull/297)). Closes the prompt-injection surface where ingested belief content could forge or close the `<aelfrice-memory>` framing tag.
+- **Hook-hardening mitigation 3 — per-turn audit log** ([#280](https://github.com/robotrocketscience/aelfrice/issues/280), [#314](https://github.com/robotrocketscience/aelfrice/pull/314)). `<git-common-dir>/aelfrice/hook_audit.jsonl` records the exact rendered hook block on every fire. 10 MB cap, single-slot rotation, fail-soft.
+- **`aelf tail` — live observability for hook injections** ([#321](https://github.com/robotrocketscience/aelfrice/issues/321), [#322](https://github.com/robotrocketscience/aelfrice/pull/322)). `tail -f`-style pretty-printer over the audit log. The audit record itself is extended with `beliefs[]`, `latency_ms`, `tokens`.
+- **Belief retention class + per-source aging policy** ([#290](https://github.com/robotrocketscience/aelfrice/issues/290)). Schema column on `beliefs`, per-ingest-source defaults wired into `derive()` and the scanner, promotion path via `aelf doctor --promote-retention`. Foundational layer for v2.0 aging / pruning; no automated retention-driven eviction yet.
+- **Rebuild diagnostic log — phase-1a write + phase-1c audit script** ([#288](https://github.com/robotrocketscience/aelfrice/issues/288), [#302](https://github.com/robotrocketscience/aelfrice/pull/302)). JSONL records under `<git-common-dir>/aelfrice/rebuild_logs/` capture prompt, retrieval candidates per lane, dedupe stats, pack-rate. Unblocks the operator-week of in-tree evidence collection that gates the rebuild-redesign calibration work in #289 / #291.
+- **Posterior-ranking eval harness + heat-kernel composition wiring** ([#151](https://github.com/robotrocketscience/aelfrice/issues/151), [#306](https://github.com/robotrocketscience/aelfrice/pull/306), [#310](https://github.com/robotrocketscience/aelfrice/pull/310)). `benchmarks/posterior_ranking.py` measures MRR uplift + ECE; heat-kernel composition is wired through `retrieve_v2` as a log-additive term. Default-flip is still gated on the harness clearing thresholds against the v2.0 corpus — full lane-default flip lands at v1.7.0 (#154).
+- **Deferred-feedback sweeper — implicit retrieval-driven posterior signal** ([#191](https://github.com/robotrocketscience/aelfrice/issues/191), [#256](https://github.com/robotrocketscience/aelfrice/pull/256)). String-overlap signal between retrieved beliefs and the host's continuation; emits `helped` / `noise` posterior events. Replaces the v1.5 explicit-only feedback path with a default-on implicit signal.
+- **v2.0 corpus public scaffold + bench-gate harness** ([#307](https://github.com/robotrocketscience/aelfrice/issues/307), [#311](https://github.com/robotrocketscience/aelfrice/pull/311), [#319](https://github.com/robotrocketscience/aelfrice/issues/319), [#320](https://github.com/robotrocketscience/aelfrice/pull/320)). Empty per-module directories under `tests/corpus/v2_0/` plus the bench-gate harness in `tests/bench_gate/`. Autouse `bench_gated` marker skips when `AELFRICE_CORPUS_ROOT` is unset, so public CI stays green while the labeled corpus lives in the lab repo.
+- **`replay_full_equality` probe — flip-readiness gate for #262** ([#262](https://github.com/robotrocketscience/aelfrice/issues/262), [#304](https://github.com/robotrocketscience/aelfrice/pull/304)). Walks the append-only `ingest_log` (#205), replays every row through `derive()`, asserts byte-equal equality against the live store. Sentinel for the v2.0 view-flip.
+- **Onboard / scanner / MCP `session_id` propagation to inserted beliefs** ([#192](https://github.com/robotrocketscience/aelfrice/issues/192)). Phantom-prereqs T3 of the #190 session-tracking story.
+- **Reachable-install detection + multi-install upgrade warning** ([#345](https://github.com/robotrocketscience/aelfrice/issues/345)). `aelf upgrade` enumerates every reachable install before upgrading, so users on multi-install machines see what they're about to update.
+
 ## Planned
 
 ### v1.2.x — search-tool hook (planned patch)
@@ -83,30 +114,17 @@ Pulled forward from v1.3.0 to validate the `PreToolUse` retrieval surface ahead 
 
 - **Search-tool `PreToolUse` hook** ([search_tool_hook.md](search_tool_hook.md)). Fires before `Grep` and `Glob` tool calls, lifts the agent's search query out of `tool_input.pattern`, runs the same query against the per-project belief store, and emits results as `additionalContext` so the agent sees them *before* the tool runs. First retrieval-shaped hook on the agent's *own* tool intent (the v1.0.1 `UserPromptSubmit` hook covers user-initiated retrieval; this covers agent-initiated). Opt-in via `aelf setup --search-tool` at v1.2.x; matcher extension to other tools tracked at #155 for v1.5.
 
-### v1.5.0 — retrieval plumbing
+### v1.7.0 — graph signal wave + structural retrieval lane
 
-Composition gate first, then cheap retrieval wins. No new ranking math in this minor; that's v1.6.
-
-- **Pipeline composition tracker — unified `retrieve()` with feature-flag gate** ([#154](https://github.com/robotrocketscience/aelfrice/issues/154)). One entry point, every retrieval feature behind a config flag, telemetry per lane. This is the prerequisite for the v1.6 graph wave: `retrieve()` must be the only path before heat kernel and posterior-full can ship safely behind defaults.
-- **Augmented BM25F (incoming-edge anchor text) + vectorized BM25 sparse matvec** ([#148](https://github.com/robotrocketscience/aelfrice/issues/148), merged on `main`). +0.06 NDCG @ +0 ms vs BM25 in the v1.6 component bake-off — adopt now since runtime cost is free.
-- **Search-tool hook — extend matcher beyond `Grep|Glob`** ([#155](https://github.com/robotrocketscience/aelfrice/issues/155)). Carryover from v1.3. Widens the `PreToolUse` matcher list once telemetry from v1.2.x confirms latency budget on the existing two.
-- **v1.4 dynamic-trigger revisit** ([#188](https://github.com/robotrocketscience/aelfrice/issues/188)). The dynamic mode parked at v1.4 ship-gate (no ≥ 5% absolute fidelity uplift over threshold on synthetic fixture) gets a second eval pass on captured-corpus calibration data. Keeps parking if the bar still isn't met.
-
-### v1.6.0 — graph signal wave
-
-The release where ranking moves beyond BM25 + L2.5 + BFS into graph-authority and full posterior-weighted territory.
+The release where ranking moves beyond BM25 + L2.5 + BFS into graph-authority and full posterior-weighted territory. Originally targeted at v1.6; lifted to v1.7 because the v1.6 cycle absorbed the hook-hardening + observability + retention surface ahead of it. The eval harness (#151) and heat-kernel composition wiring (#310) shipped at v1.6 in default-OFF form so the math could land in front of the bake-off; v1.7 flips the lane defaults once #154's gate criteria pass.
 
 - **Signed normalized Laplacian + offline eigenbasis (top-K=200) builder** ([#149](https://github.com/robotrocketscience/aelfrice/issues/149)). Offline-only build step; no runtime cost. Hard prerequisite for #150.
 - **Heat kernel authority signal via precomputed eigenbasis** ([#150](https://github.com/robotrocketscience/aelfrice/issues/150)). +0.41 NDCG @ +7.8 ms p50 on a 50k-belief store — biggest single retrieval gain in the bake-off. Ships default-on; latency stays inside the v1.2.x search-tool hook's 50 ms median budget.
-- **Posterior-weighted ranking via Beta-Bernoulli prior — full** ([#151](https://github.com/robotrocketscience/aelfrice/issues/151)). Closes the v1.3 partial. Log-additive, weight 0.5, with the 10-round MRR uplift eval and ECE calibration scorer that v1.3 deferred. The central feedback-into-ranking claim becomes fully testable here; v2.0 only re-runs it for the canonical reproducibility cut.
-- **Plate FFT HRR primitives — port to public repo** ([#216](https://github.com/robotrocketscience/aelfrice/issues/216)). Hard prerequisite for the v1.7 HRR structural-query lane (#152); lifted to v1.6 to land the math + tests ahead of the lane wiring.
-
-Hard prerequisite: v1.5 #154 composition tracker (heat kernel and posterior-full must ship behind the unified `retrieve()` entry point with telemetry per lane).
-
-### v1.7.0 — structural retrieval lane and research retests
-
+- **Plate FFT HRR primitives — port to public repo** ([#216](https://github.com/robotrocketscience/aelfrice/issues/216)). Hard prerequisite for the HRR structural-query lane (#152).
 - **HRR structural-query lane (bind/probe over outgoing edges)** ([#152](https://github.com/robotrocketscience/aelfrice/issues/152)). A separate retrieval lane, not a projection — naive HRR projection into BM25 ranking was rejected at -0.10 NDCG (R9 in the bake-off). Bind/probe over outgoing edges is the structural-query path that survives. Persists `id_vec` per belief; `enable_hrr` config flag default-off until any belief has HRR vectors written.
 - **`uri_baki` post-rank adjuster retest with relevance-aware locked set** ([#153](https://github.com/robotrocketscience/aelfrice/issues/153)). Named after Uri and Baki, the two Fire Aelfmaidens in Gene Wolfe's *The Wizard Knight* (2004) — bound attendants who operate after the main action to tilt outcomes for their bound knight. Locked-floor (Uri's protection), supersession demote (Baki's undermining), recency decay (the Aelfrice time-tilt). The pattern is publicly described as Google's "Twiddler" in Pandu Nayak's DOJ testimony (October 2023) and the May 2024 Content Warehouse API leak; aelfrice uses neutral naming to avoid trading on Google's term-of-art. A prior random-pinned synthetic regressed -0.05 NDCG due to a methodology bug (random pinning drowned signal). The relevance-aware retest uses `Belief.lock_state` and decides whether the lane is dead or just needed a fairer eval. Research item; ships only if the retest beats the BM25F + heat-kernel + posterior baseline.
+- **Posterior-weighted ranking — full default-flip** ([#151](https://github.com/robotrocketscience/aelfrice/issues/151)). Harness + composition shipped at v1.6.0 in default-OFF form. v1.7 flips the lane defaults once the harness clears the MRR-uplift / ECE thresholds against the v2.0 corpus.
+- **Benchmark-gate default-on flip** ([#154](https://github.com/robotrocketscience/aelfrice/issues/154)). Composition tracker shipped at v1.5.0 with the per-lane gate; v1.7 promotes the heat-kernel and posterior lanes from default-OFF to default-ON.
 
 ### v2.0.0 — feature parity and reproducibility
 
@@ -135,10 +153,10 @@ What the research line had, when each piece returns:
 | Entity-index retrieval | v1.3.0 |
 | BFS multi-hop graph traversal | v1.3.0 |
 | LLM-Haiku onboard classifier (opt-in) | v1.3.0 |
-| LLM-Haiku onboard classifier (default-on, host-driven) | v1.5.0 |
-| Posterior-weighted ranking | v1.3.0 (partial) / v1.6.0 (full) |
+| LLM onboard classifier (default-on, host-driven) | v1.5.1 |
+| Posterior-weighted ranking | v1.3.0 (partial) / v1.6.0 (eval harness + composition wiring, default-OFF) / v1.7.0 (default-flip) |
 | BM25F anchor-text + vectorized BM25 | v1.5.0 |
-| Signed Laplacian + heat-kernel authority | v1.6.0 |
+| Signed Laplacian + heat-kernel authority | v1.7.0 |
 | HRR structural-query lane | v1.7.0 |
 | HRR vocabulary bridge | v2.0.0 |
 | Type-aware compression | v2.0.0 |
