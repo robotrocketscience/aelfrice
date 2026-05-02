@@ -47,7 +47,7 @@ jobs:
         run: |
           case "${{ matrix.install-method }}" in
             uv-tool)   bin="$HOME/.local/bin/aelf" ;;
-            pipx)      bin="$HOME/.local/bin/aelf" ;;
+            pipx)      bin="$(pipx environment --value PIPX_BIN_DIR)/aelf" ;;
             venv-pip)  bin="$PWD/.e2e-venv/bin/aelf" ;;
           esac
           test -x "$bin" || { echo "::error::aelf binary not found at $bin"; exit 1; }
