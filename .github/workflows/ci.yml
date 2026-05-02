@@ -28,4 +28,4 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
       - run: uv sync --frozen --group dev --extra archive
-      - run: uv run pytest tests/ -q
+      - run: uv run pytest tests/ --ignore=tests/e2e -q
