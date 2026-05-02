@@ -28,6 +28,7 @@ from aelfrice.models import (
     ORIGIN_USER_STATED,
     Belief,
     Edge,
+    retention_class_for_source,
 )
 
 _BELIEF_ID_HEX_LEN: Final[int] = 16
@@ -192,6 +193,7 @@ def derive(inp: DerivationInput) -> DerivationOutput:
             last_retrieved_at=None,
             session_id=inp.session_id,
             origin=ORIGIN_USER_STATED,
+            retention_class=retention_class_for_source(inp.source_kind),
         )
         return DerivationOutput(belief=belief, edges=[])
 
@@ -213,6 +215,7 @@ def derive(inp: DerivationInput) -> DerivationOutput:
             last_retrieved_at=None,
             session_id=inp.session_id,
             origin=ORIGIN_AGENT_INFERRED,
+            retention_class=retention_class_for_source(inp.source_kind),
         )
         return DerivationOutput(belief=belief, edges=[])
 
@@ -239,6 +242,7 @@ def derive(inp: DerivationInput) -> DerivationOutput:
             last_retrieved_at=None,
             session_id=inp.session_id,
             origin=ORIGIN_AGENT_INFERRED,
+            retention_class=retention_class_for_source(inp.source_kind),
         )
         return DerivationOutput(belief=belief, edges=[])
 
@@ -265,5 +269,6 @@ def derive(inp: DerivationInput) -> DerivationOutput:
         last_retrieved_at=None,
         session_id=inp.session_id,
         origin=ORIGIN_AGENT_INFERRED,
+        retention_class=retention_class_for_source(inp.source_kind),
     )
     return DerivationOutput(belief=belief, edges=[])

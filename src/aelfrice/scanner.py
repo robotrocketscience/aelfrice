@@ -32,6 +32,7 @@ from aelfrice.models import (
     INGEST_SOURCE_FILESYSTEM,
     LOCK_NONE,
     Belief,
+    retention_class_for_source,
 )
 from aelfrice.noise_filter import NoiseConfig, is_noise
 from aelfrice.store import MemoryStore
@@ -260,6 +261,9 @@ def scan_repo(
                     created_at=created_at,
                     last_retrieved_at=None,
                     origin=route.origin,
+                    retention_class=retention_class_for_source(
+                        INGEST_SOURCE_FILESYSTEM,
+                    ),
                 ),
                 source_type=CORROBORATION_SOURCE_FILESYSTEM_INGEST,
             )

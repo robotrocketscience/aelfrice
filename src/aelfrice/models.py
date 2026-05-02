@@ -73,6 +73,33 @@ RETENTION_CLASSES: Final[frozenset[str]] = frozenset({
     RETENTION_UNKNOWN,
 })
 
+# Per-ingest-source defaults from docs/belief_retention_class.md § 2.
+# `transient` is never a default — it is operator-supplied only,
+# reserved for a future `aelf remember --transient` flag.
+# Sources outside this table fall back to RETENTION_UNKNOWN; use
+# retention_class_for_source() rather than reading directly.
+_RETENTION_DEFAULT_BY_SOURCE: Final[dict[str, str]] = {
+    "filesystem": RETENTION_FACT,
+    "git": RETENTION_FACT,
+    "python_ast": RETENTION_FACT,
+    "mcp_remember": RETENTION_FACT,
+    "cli_remember": RETENTION_FACT,
+    "feedback_loop_synthesis": RETENTION_SNAPSHOT,
+    "legacy_unknown": RETENTION_UNKNOWN,
+}
+
+
+def retention_class_for_source(source_kind: str) -> str:
+    """Return the default retention_class for a given ingest source_kind.
+
+    Phase-2 wiring for #290: every ingest path that constructs a Belief
+    asks here rather than hard-coding a value, so the spec table stays
+    the single source of truth. Unknown source_kinds (e.g. test
+    fixtures, future ingest paths not yet ratified) fall back to
+    RETENTION_UNKNOWN — safer than guessing.
+    """
+    return _RETENTION_DEFAULT_BY_SOURCE.get(source_kind, RETENTION_UNKNOWN)
+
 # --- Origin (provenance tier, v1.2+) ---
 # Wire-format strings; appear in feedback_history.source for promotion
 # events. Do not rename without a migration. Tier ordering matches
