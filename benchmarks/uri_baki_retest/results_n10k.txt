@@ -1,0 +1,16 @@
+N=10000  Q=200  locks(ra)=50  superseded=500
+
+condition                              NDCG@10  Δ vs base   ms/query
+----------------------------------------------------------------------
+baseline                                0.7656          —      1.016
+locked_floor[ra,q=0.5]                  0.7656    +0.0000      1.350
+locked_floor[ra,q=0.75]                 0.7656    +0.0000      1.271
+locked_floor[ra,q=0.9]                  0.7295    -0.0361      1.263
+locked_floor[random,q=0.5]              0.7656    +0.0000      1.287
+supersession_demote[f=0.7]              0.7645    -0.0011      1.303
+supersession_demote[f=0.5]              0.7684    +0.0028      1.314
+supersession_demote[f=0.25]             0.7684    +0.0028      1.286
+recency_decay[λ=0.00274]                0.7705    +0.0049      3.805
+recency_decay[λ=0.00556]                0.7518    -0.0138      3.736
+recency_decay[λ=0.01111]                0.7380    -0.0275      3.686
+combined[ra,q=0.5,f=0.5,λ=1/180]        0.7510    -0.0145      4.389
