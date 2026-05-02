@@ -32,6 +32,7 @@ EXPECTED_COMMANDS = (
     "upgrade",
     "uninstall",
     "rebuild",
+    "tail",
 )
 
 

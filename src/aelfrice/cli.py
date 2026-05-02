@@ -2395,6 +2395,45 @@ def _cmd_session_delta(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_tail(args: argparse.Namespace, out: object) -> int:
+    """Live-tail the per-turn hook audit log (#321).
+
+    Reads `<git-common-dir>/aelfrice/hook_audit.jsonl` (the per-turn
+    record store written by UserPromptSubmit and SessionStart on every
+    fire that produces an injection block) and emits a pretty-printed
+    stream. By default follows for new records; `--no-follow` reads the
+    current contents once and exits.
+    """
+    from aelfrice.hook_tail import parse_filter, parse_since, tail_audit
+
+    filters: list[tuple[str, str]] = []
+    raw_filters: list[str] | None = getattr(args, "filter", None)
+    if raw_filters:
+        for spec in raw_filters:
+            try:
+                filters.append(parse_filter(spec))
+            except ValueError as exc:
+                print(f"aelf tail: {exc}", file=sys.stderr)
+                return 2
+    since = None
+    raw_since: str | None = getattr(args, "since", None)
+    if raw_since:
+        try:
+            since = parse_since(raw_since)
+        except ValueError as exc:
+            print(f"aelf tail: {exc}", file=sys.stderr)
+            return 2
+    follow = not bool(getattr(args, "no_follow", False))
+    include_blob = not bool(getattr(args, "no_blob", False))
+    return tail_audit(
+        filters=filters,
+        since=since,
+        include_blob=include_blob,
+        follow=follow,
+        out=out,  # type: ignore[arg-type]
+    )
+
+
 def _known_cli_subcommands() -> frozenset[str]:
     """Snapshot of the subcommands the running `aelf` parser knows.
 
@@ -3196,6 +3235,35 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_session_delta.set_defaults(func=_cmd_session_delta)
+
+    p_tail = sub.add_parser(
+        "tail",
+        help="live-tail the per-turn hook injection audit log",
+    )
+    p_tail.add_argument(
+        "--filter", action="append", default=None, metavar="key=value",
+        help=(
+            "filter records: hook=user_prompt_submit | "
+            "hook=session_start | lane=L0 | lane=L1. Repeatable; all "
+            "filters must match (AND)."
+        ),
+    )
+    p_tail.add_argument(
+        "--since", default=None, metavar="DUR",
+        help=(
+            "backfill records from the last DUR (e.g. 30s, 5m, 2h, 1d) "
+            "before tailing live"
+        ),
+    )
+    p_tail.add_argument(
+        "--no-blob", dest="no_blob", action="store_true",
+        help="suppress per-belief snippet bodies (just header + ids)",
+    )
+    p_tail.add_argument(
+        "--no-follow", dest="no_follow", action="store_true",
+        help="dump current audit contents once and exit (no live tail)",
+    )
+    p_tail.set_defaults(func=_cmd_tail)
 
     return parser
 
