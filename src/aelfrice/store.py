@@ -28,6 +28,8 @@ from aelfrice.models import (
     INGEST_SOURCE_LEGACY_UNKNOWN,
     ONBOARD_STATE_COMPLETED,
     ONBOARD_STATE_PENDING,
+    RETENTION_CLASSES,
+    RETENTION_UNKNOWN,
     Belief,
     Edge,
     FeedbackEvent,
@@ -55,7 +57,16 @@ _SCHEMA: tuple[str, ...] = (
         session_id          TEXT,
         origin              TEXT NOT NULL DEFAULT 'unknown',
         hibernation_score   REAL,
-        activation_condition TEXT
+        activation_condition TEXT,
+        -- #290: orthogonal-to-type retention axis. CHECK constraint
+        -- enforces the four-value enum on fresh stores; migrated
+        -- stores rely on the python-side RETENTION_CLASSES frozenset
+        -- for validation (ALTER TABLE ADD COLUMN can't carry the
+        -- CHECK across SQLite versions reliably). 'unknown' is the
+        -- migration default; new writes pick one of the three live
+        -- values per docs/belief_retention_class.md § 2 defaults.
+        retention_class     TEXT NOT NULL DEFAULT 'unknown'
+            CHECK (retention_class IN ('fact', 'snapshot', 'transient', 'unknown'))
     )
     """,
     """
@@ -314,6 +325,10 @@ _MIGRATIONS: tuple[str, ...] = (
     # language ratified at substrate_decision.md § Decision asks #4).
     "ALTER TABLE beliefs ADD COLUMN hibernation_score REAL",
     "ALTER TABLE beliefs ADD COLUMN activation_condition TEXT",
+    # #290 retention class. CHECK constraint omitted — ALTER TABLE
+    # ADD COLUMN with a CHECK is brittle across SQLite versions.
+    # Python-side RETENTION_CLASSES validates inserts.
+    "ALTER TABLE beliefs ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'unknown'",
 )
 
 # Indexes that depend on migrated columns. Run after _MIGRATIONS so
@@ -364,6 +379,14 @@ def _escape_fts5_query(query: str) -> str:
 def _row_to_belief(row: sqlite3.Row) -> Belief:
     keys = row.keys()
     corroboration_count = int(row["corroboration_count"]) if "corroboration_count" in keys else 0
+    # retention_class column added in v1.6 (#290). Pre-migration rows
+    # don't have it — fall back to RETENTION_UNKNOWN. The store __init__
+    # runs the ALTER on open, so this branch is mainly for SELECTs that
+    # project a custom column list excluding the new column.
+    retention_class = (
+        row["retention_class"] if "retention_class" in keys
+        else RETENTION_UNKNOWN
+    )
     return Belief(
         id=row["id"],
         content=row["content"],
@@ -381,6 +404,7 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
         corroboration_count=corroboration_count,
         hibernation_score=row["hibernation_score"],
         activation_condition=row["activation_condition"],
+        retention_class=retention_class,
     )
 
 
@@ -1177,20 +1201,27 @@ class MemoryStore:
     # --- Belief CRUD ------------------------------------------------------
 
     def insert_belief(self, b: Belief) -> None:
+        if b.retention_class not in RETENTION_CLASSES:
+            raise ValueError(
+                f"invalid retention_class {b.retention_class!r}; "
+                f"must be one of {sorted(RETENTION_CLASSES)}"
+            )
         self._conn.execute(
             """
             INSERT INTO beliefs (
                 id, content, content_hash, alpha, beta, type,
                 lock_level, locked_at, demotion_pressure,
                 created_at, last_retrieved_at, session_id, origin,
-                hibernation_score, activation_condition
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                hibernation_score, activation_condition,
+                retention_class
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 b.id, b.content, b.content_hash, b.alpha, b.beta, b.type,
                 b.lock_level, b.locked_at, b.demotion_pressure,
                 b.created_at, b.last_retrieved_at, b.session_id, b.origin,
                 b.hibernation_score, b.activation_condition,
+                b.retention_class,
             ),
         )
         self._conn.execute(

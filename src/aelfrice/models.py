@@ -52,6 +52,27 @@ LOCK_USER: Final[str] = "user"
 
 LOCK_LEVELS: Final[frozenset[str]] = frozenset({LOCK_NONE, LOCK_USER})
 
+# --- Retention class (#290) ---
+# Orthogonal axis to `type`: type describes the *form* of a claim
+# (factual / correction / preference / requirement); retention_class
+# describes its *expected lifetime* (slow-aging fact, snapshot of
+# thought, transient debugging state). Wire-format strings; do not
+# rename without a migration. `unknown` exists only for the migration
+# window — new writes always pick one of the three live values per
+# the ingest-path defaults documented at
+# `docs/belief_retention_class.md` § 2.
+RETENTION_FACT: Final[str] = "fact"
+RETENTION_SNAPSHOT: Final[str] = "snapshot"
+RETENTION_TRANSIENT: Final[str] = "transient"
+RETENTION_UNKNOWN: Final[str] = "unknown"
+
+RETENTION_CLASSES: Final[frozenset[str]] = frozenset({
+    RETENTION_FACT,
+    RETENTION_SNAPSHOT,
+    RETENTION_TRANSIENT,
+    RETENTION_UNKNOWN,
+})
+
 # --- Origin (provenance tier, v1.2+) ---
 # Wire-format strings; appear in feedback_history.source for promotion
 # events. Do not rename without a migration. Tier ordering matches
@@ -185,6 +206,7 @@ class Belief:
     corroboration_count: int = 0
     hibernation_score: float | None = None
     activation_condition: str | None = None
+    retention_class: str = RETENTION_UNKNOWN
 
 
 ANCHOR_TEXT_MAX_LEN: Final[int] = 1000
