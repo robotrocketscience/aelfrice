@@ -6,11 +6,11 @@ with `beliefs[]`, `latency_ms`, and `tokens` fields).
 
 Why this layer is separate from `hook.py`: the writer side runs inside
 the UserPromptSubmit / SessionStart hook process and must stay
-import-cheap (every Claude Code prompt pays its import cost). The
-reader side is interactive and only loads when the operator runs
-`aelf tail`. Splitting keeps hook startup unburdened by formatting
-helpers and reduces the surface area that the hook's non-blocking
-contract has to defend.
+import-cheap (every host-prompt fire pays the import cost). The reader
+side is interactive and only loads when the operator runs `aelf tail`.
+Splitting keeps hook startup unburdened by formatting helpers and
+reduces the surface area that the hook's non-blocking contract has to
+defend.
 """
 from __future__ import annotations
 
