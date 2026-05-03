@@ -2,7 +2,9 @@
 
 Spec for issue [#199](https://github.com/robotrocketscience/aelfrice/issues/199). Substrate-cascade addendum to [`substrate_decision.md`](substrate_decision.md) (#196 ratified Option B).
 
-Status: spec, no implementation. **Recommendation: split the triad — ship H3 only at v2.0, defer H1 with a benchmark gate, drop H2.**
+Status: H3 implemented at v2.0 ([#373](https://github.com/robotrocketscience/aelfrice/issues/373)); H1 split + deferred + bench-gated ([#374](https://github.com/robotrocketscience/aelfrice/issues/374)); H2 dropped per § H2 below.
+
+**Reading 2 picked for the SessionStart-without-prompt ambiguity (#373):** locked-belief injection moves out of SessionStart entirely and into the per-turn UserPromptSubmit hook, where a real prompt exists to score against. The SessionStart payload contains no user prompt, so any session-boot relevance signal would be a guess. The legacy all-locked SessionStart behaviour is preserved behind `[user_prompt_submit_hook] inject_all_locked = true` in `.aelfrice.toml` — a single switch that also disables UPS L0 trimming, restoring the v1.x injection contract end-to-end with no data loss.
 
 ## What's being decided
 
@@ -48,11 +50,11 @@ If a future user actually needs compliance auditing, the right path is a separat
 - [ ] **H1 deferral language.** What evidence reopens H1? (Recommendation: ≥80% precision + ≥60% recall on a labeled sample of 200 coding prompts. If that bar isn't met, H1 stays deferred.)
 - [ ] **H2 drop confirmation.** Final decision: drop, not defer. Removing the temptation to revisit "just port the safe predicates" prevents incremental erosion of the security stance.
 
-## Downstream impact (recommended path)
+## Downstream impact (as shipped)
 
-- **H3 ships.** `hook.py:329-398` SessionStart injection becomes top-K instead of all-locked. New CLI: `aelf health` shows per-session injection counts. Test: a session with 50 locked beliefs and a "git commit" prompt should inject git-relevant beliefs, not all 50.
-- **H1 stays open.** Issue #199 splits; H1 issue gets `bench-gated` label.
-- **H2 closes as `wontfix`.** Documented in CHANGELOG.md notes for v2.0: "v2.0 deliberately ships without a compliance-audit predicate language; the research line's `enforcement.py` H2 is not ported. See [v2_enforcement.md § H2](v2_enforcement.md#h2-compliance-audit--drop)."
+- **H3 shipped at v2.0 (#373).** UserPromptSubmit applies top-K (default `locked_max_k = 5`) by query overlap × `posterior_mean(alpha, beta)`. SessionStart no longer emits a `<aelfrice-baseline>` block under the default; both halves of the legacy contract revive together via `[user_prompt_submit_hook] inject_all_locked = true`. Per-session injection counts are surfaced by `aelf tail` (live-tail of the per-turn audit log; each record carries `n_beliefs` and `n_locked`).
+- **H1 split + deferred (#374).** Bench gate: ≥80% precision + ≥60% recall on a labeled sample of 200 coding prompts before reopening.
+- **H2 dropped.** v2.0 ships without a compliance-audit predicate language; the research line's `enforcement.py` H2 is not ported. The `command_succeeds:cmd` predicate would have executed arbitrary shell from belief content, with no allowlist or sandbox.
 
 ## Provenance
 
