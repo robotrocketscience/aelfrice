@@ -26,6 +26,8 @@ EXPECTED_COMMANDS = (
     "search",
     "lock",
     "locked",
+    "unlock",
+    "promote",
     "status",
     "doctor",
     "setup",
