@@ -65,7 +65,7 @@ from aelfrice.bfs_multihop import (
     DEFAULT_TOTAL_BUDGET_NODES as BFS_DEFAULT_TOTAL_BUDGET_NODES,
     expand_bfs,
 )
-from aelfrice.bm25 import BM25IndexCache
+from aelfrice.bm25 import BM25IndexCache, tokenize as _bm25_tokenize
 from aelfrice.entity_extractor import extract_entities
 from aelfrice.graph_spectral import (
     DEFAULT_BM25_SEED_TOP_K,
@@ -214,6 +214,67 @@ def _estimate_tokens(text: str) -> int:
 
 def _belief_tokens(b: Belief) -> int:
     return _estimate_tokens(b.content)
+
+
+# --- L0 selective injection (#373 / #199 H3) -----------------------------
+
+# Default cap on locked beliefs injected per UPS turn. Matches the
+# research-line default in docs/v2_enforcement.md § H3.
+DEFAULT_LOCKED_MAX_K: Final[int] = 5
+
+
+def score_lock_against_query(
+    lock: Belief, query_terms: frozenset[str]
+) -> float:
+    """Score one locked belief against a tokenised query.
+
+    score = (# distinct query terms found in lock) * posterior_mean
+
+    Locks have saturated posteriors so the second factor is approximately
+    constant; the practical signal is term overlap. A score of 0 means
+    no query term appears in the lock content. Both factors are
+    non-negative so score is non-negative.
+    """
+    if not query_terms:
+        return 0.0
+    lock_terms = set(_bm25_tokenize(lock.content))
+    overlap = len(query_terms & lock_terms)
+    if overlap == 0:
+        return 0.0
+    return float(overlap) * float(lock.posterior_mean)
+
+
+def top_k_locks(
+    locks: list[Belief], query: str, k: int
+) -> list[Belief]:
+    """Return at most `k` locks ranked by query overlap × posterior_mean.
+
+    Determinism: ranking is `(score DESC, input-order ASC)`. Callers
+    pass `list_locked_beliefs()` output which is already deterministic
+    (`locked_at DESC, id ASC` per `MemoryStore.list_locked_beliefs`),
+    so the same `(locked_set_snapshot, query)` always produces the
+    same prefix.
+
+    `k <= 0` returns `[]`. `k >= len(locks)` returns all locks in their
+    relevance-ranked order. Empty / whitespace-only `query` returns
+    `locks[:k]` (no scoring possible — preserves locked_at order).
+    """
+    if k <= 0 or not locks:
+        return []
+    if not query.strip():
+        return list(locks[:k])
+    query_terms = frozenset(_bm25_tokenize(query))
+    if not query_terms:
+        return list(locks[:k])
+    # Stable sort with negative score → score DESC, original order ASC.
+    indexed = list(enumerate(locks))
+    indexed.sort(
+        key=lambda pair: (
+            -score_lock_against_query(pair[1], query_terms),
+            pair[0],
+        )
+    )
+    return [b for _, b in indexed[:k]]
 
 
 # --- Config flag resolution ----------------------------------------------
