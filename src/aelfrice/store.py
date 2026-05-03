@@ -1907,6 +1907,25 @@ class MemoryStore:
         cur = self._conn.execute("SELECT COUNT(*) AS n FROM ingest_log")
         return int(cur.fetchone()["n"])
 
+    def list_unstamped_ingest_log(self) -> list[dict[str, object]]:
+        """Return ingest_log rows whose `derived_belief_ids` is unstamped.
+
+        Used by the v2.x derivation worker (#264). A row is considered
+        unstamped when `derived_belief_ids` is SQL NULL — i.e. nothing
+        has materialized beliefs from it yet. An explicit JSON `[]`
+        means the worker visited the row but `derive()` produced no
+        belief; that is a stamped no-op and is NOT returned here.
+
+        Rows are returned in ULID order (== insertion / time order),
+        same shape as `get_ingest_log_entry`.
+        """
+        cur = self._conn.execute(
+            "SELECT * FROM ingest_log "
+            "WHERE derived_belief_ids IS NULL "
+            "ORDER BY id"
+        )
+        return [_ingest_row_to_dict(r) for r in cur.fetchall()]
+
     def iter_ingest_log_for_belief(
         self, belief_id: str,
     ) -> list[dict[str, object]]:
