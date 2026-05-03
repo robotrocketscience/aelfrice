@@ -301,3 +301,138 @@ class TestFormatAuditReport:
         assert "b1" in out
         assert "b2" in out
         assert "Clusters:" in out
+
+
+# --- TOML config loader -------------------------------------------------
+
+
+class TestLoadDedupConfig:
+    def test_no_config_returns_defaults(self, tmp_path) -> None:
+        from aelfrice.dedup import (
+            DEFAULT_JACCARD_MIN,
+            DEFAULT_LEVENSHTEIN_MIN,
+            DEFAULT_MAX_CANDIDATE_PAIRS,
+            load_dedup_config,
+        )
+        cfg = load_dedup_config(tmp_path)
+        assert cfg.jaccard_min == DEFAULT_JACCARD_MIN
+        assert cfg.levenshtein_min == DEFAULT_LEVENSHTEIN_MIN
+        assert cfg.max_candidate_pairs == DEFAULT_MAX_CANDIDATE_PAIRS
+
+    def test_well_formed_config_overrides(self, tmp_path) -> None:
+        from aelfrice.dedup import load_dedup_config
+        (tmp_path / ".aelfrice.toml").write_text(
+            "[dedup]\n"
+            "jaccard_min = 0.7\n"
+            "levenshtein_min = 0.9\n"
+            "max_candidate_pairs = 1000\n"
+        )
+        cfg = load_dedup_config(tmp_path)
+        assert cfg.jaccard_min == 0.7
+        assert cfg.levenshtein_min == 0.9
+        assert cfg.max_candidate_pairs == 1000
+
+    def test_out_of_range_falls_back(self, tmp_path) -> None:
+        from aelfrice.dedup import (
+            DEFAULT_JACCARD_MIN,
+            load_dedup_config,
+        )
+        (tmp_path / ".aelfrice.toml").write_text(
+            "[dedup]\njaccard_min = 1.5\n"
+        )
+        cfg = load_dedup_config(tmp_path)
+        assert cfg.jaccard_min == DEFAULT_JACCARD_MIN
+
+    def test_wrong_type_falls_back(self, tmp_path) -> None:
+        from aelfrice.dedup import (
+            DEFAULT_MAX_CANDIDATE_PAIRS,
+            load_dedup_config,
+        )
+        (tmp_path / ".aelfrice.toml").write_text(
+            '[dedup]\nmax_candidate_pairs = "lots"\n'
+        )
+        cfg = load_dedup_config(tmp_path)
+        assert cfg.max_candidate_pairs == DEFAULT_MAX_CANDIDATE_PAIRS
+
+    def test_malformed_toml_falls_back(self, tmp_path) -> None:
+        from aelfrice.dedup import DedupConfig, load_dedup_config
+        (tmp_path / ".aelfrice.toml").write_text(
+            "[dedup\nthis is not valid toml\n"
+        )
+        cfg = load_dedup_config(tmp_path)
+        assert cfg == DedupConfig()
+
+
+# --- CLI integration ----------------------------------------------------
+
+
+class TestCLIDoctorDedup:
+    def test_clean_store_exit_0(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import io
+        from aelfrice.cli import main
+
+        db = str(tmp_path / "brain.db")
+        monkeypatch.setenv("AELFRICE_DB", db)
+        s = MemoryStore(db)
+        _insert(s, "b1", "the cat sat on the mat")
+        _insert(s, "b2", "deploy via terraform")
+        s.close()
+
+        out = io.StringIO()
+        rc = main(["doctor", "--dedup"], out=out)
+        assert rc == 0
+        assert "aelf doctor dedup" in out.getvalue()
+        assert "No near-duplicates" in out.getvalue()
+
+    def test_finds_duplicate_via_cli(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import io
+        from aelfrice.cli import main
+
+        db = str(tmp_path / "brain.db")
+        monkeypatch.setenv("AELFRICE_DB", db)
+        s = MemoryStore(db)
+        _insert(s, "b1", "deploy via terraform on aws")
+        _insert(s, "b2", "deploy via terraform on aws.")
+        s.close()
+
+        out = io.StringIO()
+        rc = main(["doctor", "--dedup"], out=out)
+        assert rc == 0
+        text = out.getvalue()
+        assert "Duplicate pairs         : 1" in text
+        assert "b1" in text and "b2" in text
+
+    def test_threshold_overrides_via_flags(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import io
+        from aelfrice.cli import main
+
+        db = str(tmp_path / "brain.db")
+        monkeypatch.setenv("AELFRICE_DB", db)
+        s = MemoryStore(db)
+        # Pair fails at default but passes when both thresholds drop.
+        _insert(s, "b1", "do not push directly to main branch")
+        _insert(s, "b2", "never push directly to main branch")
+        s.close()
+
+        out_strict = io.StringIO()
+        rc1 = main(["doctor", "--dedup"], out=out_strict)
+        assert rc1 == 0
+        assert "Duplicate pairs         : 0" in out_strict.getvalue()
+
+        out_relaxed = io.StringIO()
+        rc2 = main(
+            [
+                "doctor", "--dedup",
+                "--dedup-jaccard", "0.5",
+                "--dedup-levenshtein", "0.7",
+            ],
+            out=out_relaxed,
+        )
+        assert rc2 == 0
+        assert "Duplicate pairs         : 1" in out_relaxed.getvalue()

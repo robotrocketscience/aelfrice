@@ -45,11 +45,20 @@ deferred behind the bench-gate per #197 ratification.
 """
 from __future__ import annotations
 
+import sys
+import tomllib
 from dataclasses import dataclass, field
-from typing import Final, Iterable
+from pathlib import Path
+from typing import Any, Final, IO, Iterable, cast
 
 from aelfrice.bm25 import tokenize
 from aelfrice.store import MemoryStore
+
+CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
+DEDUP_SECTION: Final[str] = "dedup"
+JACCARD_MIN_KEY: Final[str] = "jaccard_min"
+LEVENSHTEIN_MIN_KEY: Final[str] = "levenshtein_min"
+MAX_CANDIDATE_PAIRS_KEY: Final[str] = "max_candidate_pairs"
 
 # --- Defaults (research-line + #197 ratification) -----------------------
 
@@ -377,6 +386,119 @@ def dedup_audit(
         pairs=tuple(pairs),
         clusters=clusters,
     )
+
+
+@dataclass(frozen=True)
+class DedupConfig:
+    """Resolved `[dedup]` section of `.aelfrice.toml`.
+
+    All fields default to the module-level constants; any may be
+    overridden in a project-local `.aelfrice.toml`. Malformed values
+    fall back to the default with a stderr trace, matching the
+    `[rebuilder]` / `[implicit_feedback]` config-resolution
+    convention.
+    """
+    jaccard_min: float = DEFAULT_JACCARD_MIN
+    levenshtein_min: float = DEFAULT_LEVENSHTEIN_MIN
+    max_candidate_pairs: int = DEFAULT_MAX_CANDIDATE_PAIRS
+
+
+def _load_float_in_unit_interval(
+    section: dict[str, Any],
+    key: str,
+    default: float,
+    candidate: Path,
+    serr: IO[str],
+) -> float:
+    obj: Any = section.get(key, default)
+    if isinstance(obj, bool) or not isinstance(obj, (int, float)):
+        print(
+            f"aelfrice dedup: ignoring [{DEDUP_SECTION}] {key} in "
+            f"{candidate} (expected float in [0.0, 1.0])",
+            file=serr,
+        )
+        return default
+    val = float(obj)
+    if not 0.0 <= val <= 1.0:
+        print(
+            f"aelfrice dedup: ignoring [{DEDUP_SECTION}] {key} in "
+            f"{candidate} (expected float in [0.0, 1.0])",
+            file=serr,
+        )
+        return default
+    return val
+
+
+def load_dedup_config(start: Path | None = None) -> DedupConfig:
+    """Walk up from `start` looking for `.aelfrice.toml`.
+
+    Returns the resolved `[dedup]` config. Missing file / missing
+    section / malformed TOML / wrong-typed values all degrade to
+    defaults with a stderr trace; never raises.
+    """
+    serr: IO[str] = sys.stderr
+    current = (start if start is not None else Path.cwd()).resolve()
+    seen: set[Path] = set()
+    while current not in seen:
+        seen.add(current)
+        candidate = current / CONFIG_FILENAME
+        if candidate.is_file():
+            try:
+                raw = candidate.read_bytes()
+            except OSError as exc:
+                print(
+                    f"aelfrice dedup: cannot read {candidate}: {exc}",
+                    file=serr,
+                )
+                return DedupConfig()
+            try:
+                parsed: dict[str, Any] = tomllib.loads(
+                    raw.decode("utf-8", errors="replace"),
+                )
+            except tomllib.TOMLDecodeError as exc:
+                print(
+                    f"aelfrice dedup: malformed TOML in {candidate}: {exc}",
+                    file=serr,
+                )
+                return DedupConfig()
+            section_obj: Any = parsed.get(DEDUP_SECTION, {})
+            if not isinstance(section_obj, dict):
+                return DedupConfig()
+            section = cast(dict[str, Any], section_obj)
+            j_min = _load_float_in_unit_interval(
+                section, JACCARD_MIN_KEY, DEFAULT_JACCARD_MIN,
+                candidate, serr,
+            )
+            l_min = _load_float_in_unit_interval(
+                section, LEVENSHTEIN_MIN_KEY, DEFAULT_LEVENSHTEIN_MIN,
+                candidate, serr,
+            )
+            mp_obj: Any = section.get(
+                MAX_CANDIDATE_PAIRS_KEY, DEFAULT_MAX_CANDIDATE_PAIRS,
+            )
+            if (
+                isinstance(mp_obj, bool)
+                or not isinstance(mp_obj, int)
+                or mp_obj < 1
+            ):
+                print(
+                    f"aelfrice dedup: ignoring [{DEDUP_SECTION}] "
+                    f"{MAX_CANDIDATE_PAIRS_KEY} in {candidate} "
+                    f"(expected positive int)",
+                    file=serr,
+                )
+                mp_resolved = DEFAULT_MAX_CANDIDATE_PAIRS
+            else:
+                mp_resolved = mp_obj
+            return DedupConfig(
+                jaccard_min=j_min,
+                levenshtein_min=l_min,
+                max_candidate_pairs=mp_resolved,
+            )
+        if current.parent == current:
+            break
+        current = current.parent
+    return DedupConfig()
 
 
 def format_audit_report(report: DedupAuditReport) -> str:

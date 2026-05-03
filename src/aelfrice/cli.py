@@ -2135,6 +2135,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_promote_retention(args, out)
     if getattr(args, "replay", False):
         return _cmd_doctor_replay(args, out)
+    if getattr(args, "dedup", False):
+        return _cmd_doctor_dedup(args, out)
     scope = getattr(args, "scope", None)
     exit_code = 0
     if scope in (None, "hooks"):
@@ -2163,6 +2165,64 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         if graph_exit != 0:
             exit_code = graph_exit
     return exit_code
+
+
+def _cmd_doctor_dedup(args: argparse.Namespace, out: object) -> int:
+    """Run the v2.0 dedup audit (#197 R1).
+
+    Walks the store, finds near-duplicate belief pairs with Jaccard >=
+    `--dedup-jaccard` AND Levenshtein ratio >= `--dedup-levenshtein`,
+    and prints a clustered report. Read-only: no edges are inserted,
+    no beliefs are mutated. The write-path SUPERSEDES hook is the
+    bench-gated R2 deferred behind the corpus benchmark.
+
+    Exit 0 on success regardless of cluster count — clusters are
+    diagnostic, not failure conditions. Exit 1 only on store-open
+    errors.
+    """
+    from aelfrice.dedup import (
+        DedupConfig,
+        dedup_audit,
+        format_audit_report,
+        load_dedup_config,
+    )
+
+    config = load_dedup_config()
+    j_override = getattr(args, "dedup_jaccard", None)
+    l_override = getattr(args, "dedup_levenshtein", None)
+    mp_override = getattr(args, "dedup_max_pairs", None)
+    config = DedupConfig(
+        jaccard_min=(
+            float(j_override) if j_override is not None else config.jaccard_min
+        ),
+        levenshtein_min=(
+            float(l_override)
+            if l_override is not None
+            else config.levenshtein_min
+        ),
+        max_candidate_pairs=(
+            int(mp_override)
+            if mp_override is not None
+            else config.max_candidate_pairs
+        ),
+    )
+
+    store = _open_store()
+    try:
+        report = dedup_audit(
+            store,
+            jaccard_min=config.jaccard_min,
+            levenshtein_min=config.levenshtein_min,
+            max_candidate_pairs=config.max_candidate_pairs,
+        )
+    except ValueError as exc:
+        print(f"aelf doctor dedup: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+
+    print(format_audit_report(report), file=out)  # type: ignore[arg-type]
+    return 0
 
 
 def _cmd_doctor_replay(args: argparse.Namespace, out: object) -> int:
@@ -2961,6 +3021,55 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "with --replay: 'all' (default) walks every non-legacy "
             "ingest_log row; 'since-v2' is equivalent post-#263 migration "
             "(exists for forward compatibility)."
+        ),
+    )
+    p_doctor.add_argument(
+        "--dedup",
+        dest="dedup",
+        action="store_true",
+        default=False,
+        help=(
+            "find near-duplicate beliefs (Jaccard + Levenshtein gate) "
+            "and print clustered candidates (#197). Read-only: no edges "
+            "are inserted. Bypasses the hooks/graph checks. Tune via "
+            "--dedup-jaccard / --dedup-levenshtein / --dedup-max-pairs "
+            "or [dedup] in .aelfrice.toml."
+        ),
+    )
+    p_doctor.add_argument(
+        "--dedup-jaccard",
+        dest="dedup_jaccard",
+        type=float,
+        default=None,
+        metavar="F",
+        help=(
+            "with --dedup: override the Jaccard prefilter threshold "
+            "(0.0-1.0). Default: [dedup] jaccard_min in .aelfrice.toml > "
+            "0.8."
+        ),
+    )
+    p_doctor.add_argument(
+        "--dedup-levenshtein",
+        dest="dedup_levenshtein",
+        type=float,
+        default=None,
+        metavar="F",
+        help=(
+            "with --dedup: override the Levenshtein-ratio confirmation "
+            "threshold (0.0-1.0). Default: [dedup] levenshtein_min in "
+            ".aelfrice.toml > 0.85."
+        ),
+    )
+    p_doctor.add_argument(
+        "--dedup-max-pairs",
+        dest="dedup_max_pairs",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "with --dedup: cap reported duplicate pairs after Jaccard "
+            "prefilter; deterministic truncation by (id_a, id_b). "
+            "Default: [dedup] max_candidate_pairs in .aelfrice.toml > 5000."
         ),
     )
     p_doctor.set_defaults(func=_cmd_doctor)
