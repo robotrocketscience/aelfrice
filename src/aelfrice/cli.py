@@ -903,6 +903,31 @@ def _cmd_validate(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_unlock(args: argparse.Namespace, out: object) -> int:
+    """Drop a user-lock without touching origin. Inverse of `aelf lock`."""
+    from aelfrice.promotion import unlock
+
+    store = _open_store()
+    try:
+        try:
+            result = unlock(store, args.belief_id)
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        if result.already_unlocked:
+            print(f"already unlocked: {args.belief_id}", file=out)  # type: ignore[arg-type]
+            return 0
+        print(f"unlocked: {args.belief_id}", file=out)  # type: ignore[arg-type]
+    finally:
+        store.close()
+    return 0
+
+
+def _cmd_promote(args: argparse.Namespace, out: object) -> int:
+    """Promote agent_inferred -> user_validated. Alias of `aelf validate`."""
+    return _cmd_validate(args, out)
+
+
 def _cmd_resolve(args: argparse.Namespace, out: object) -> int:
     """Resolve all unresolved CONTRADICTS threads via the v1.0.1 tie-breaker."""
     _ = args
@@ -2902,6 +2927,31 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_validate.set_defaults(func=_cmd_validate)
+
+    # Explicit unlock — clears user-lock, writes lock:unlock audit row.
+    p_unlock = sub.add_parser(
+        "unlock",
+        help="drop a user-lock on a belief (writes audit row)",
+    )
+    p_unlock.add_argument("belief_id", help="id of the belief to unlock")
+    p_unlock.set_defaults(func=_cmd_unlock)
+
+    # promote: user-facing alias of validate. Same handler, same flags.
+    p_promote = sub.add_parser(
+        "promote",
+        help="promote an agent_inferred belief to user_validated (alias of validate)",
+    )
+    p_promote.add_argument(
+        "belief_id", help="id of the belief to promote",
+    )
+    p_promote.add_argument(
+        "--source", default="user_validated",
+        help=(
+            "audit-row source suffix; written as 'promotion:<source>' "
+            "in feedback_history. Defaults to 'user_validated'."
+        ),
+    )
+    p_promote.set_defaults(func=_cmd_promote)
 
     # Hidden: contradiction-resolution maintenance verb. `aelf doctor` flags
     # when a run is needed; users rarely invoke it directly.
