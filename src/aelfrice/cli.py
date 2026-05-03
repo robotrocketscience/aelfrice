@@ -2137,6 +2137,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_replay(args, out)
     if getattr(args, "dedup", False):
         return _cmd_doctor_dedup(args, out)
+    if getattr(args, "relationships", False):
+        return _cmd_doctor_relationships(args, out)
     scope = getattr(args, "scope", None)
     exit_code = 0
     if scope in (None, "hooks"):
@@ -2222,6 +2224,69 @@ def _cmd_doctor_dedup(args: argparse.Namespace, out: object) -> int:
         store.close()
 
     print(format_audit_report(report), file=out)  # type: ignore[arg-type]
+    return 0
+
+
+def _cmd_doctor_relationships(args: argparse.Namespace, out: object) -> int:
+    """Run the v2.0 semantic-relationship audit (#201).
+
+    Walks the store, classifies near-pair relationships
+    (``contradicts`` / ``refines``) by modality + quantifier signal
+    divergence, and prints a report. Read-only: no edges are inserted,
+    no beliefs are mutated. The write-path ``CONTRADICTS`` hook + new
+    ``POTENTIALLY_STALE`` edge type is the bench-gated R2 deferred
+    behind the corpus benchmark.
+
+    Exit 0 on success regardless of pair count — pairs are diagnostic,
+    not failure conditions. Exit 1 only on store-open errors.
+    """
+    from aelfrice.relationship_detector import (
+        RelationshipDetectorConfig,
+        format_audit_report,
+        load_relationship_detector_config,
+        relationships_audit,
+    )
+
+    config = load_relationship_detector_config()
+    j_override = getattr(args, "relationships_jaccard", None)
+    c_override = getattr(args, "relationships_confidence", None)
+    mp_override = getattr(args, "relationships_max_pairs", None)
+    config = RelationshipDetectorConfig(
+        jaccard_min=(
+            float(j_override) if j_override is not None else config.jaccard_min
+        ),
+        residual_overlap_min=config.residual_overlap_min,
+        confidence_min=(
+            float(c_override)
+            if c_override is not None
+            else config.confidence_min
+        ),
+        max_candidate_pairs=(
+            int(mp_override)
+            if mp_override is not None
+            else config.max_candidate_pairs
+        ),
+    )
+
+    store = _open_store()
+    try:
+        report = relationships_audit(
+            store,
+            jaccard_min=config.jaccard_min,
+            residual_overlap_min=config.residual_overlap_min,
+            confidence_min=config.confidence_min,
+            max_candidate_pairs=config.max_candidate_pairs,
+        )
+    except ValueError as exc:
+        print(f"aelf doctor relationships: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+
+    print(
+        format_audit_report(report, confidence_min=config.confidence_min),
+        file=out,  # type: ignore[arg-type]
+    )
     return 0
 
 
@@ -3070,6 +3135,61 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "with --dedup: cap reported duplicate pairs after Jaccard "
             "prefilter; deterministic truncation by (id_a, id_b). "
             "Default: [dedup] max_candidate_pairs in .aelfrice.toml > 5000."
+        ),
+    )
+    p_doctor.add_argument(
+        "--relationships",
+        dest="relationships",
+        action="store_true",
+        default=False,
+        help=(
+            "classify near-pair belief relationships "
+            "(contradicts/refines) by modality + quantifier signals "
+            "(#201). Read-only: no edges are inserted. Bypasses the "
+            "hooks/graph checks. Tune via --relationships-jaccard / "
+            "--relationships-confidence / --relationships-max-pairs "
+            "or [relationship_detector] in .aelfrice.toml."
+        ),
+    )
+    p_doctor.add_argument(
+        "--relationships-jaccard",
+        dest="relationships_jaccard",
+        type=float,
+        default=None,
+        metavar="F",
+        help=(
+            "with --relationships: minimum Jaccard token overlap "
+            "(0.0-1.0) for the candidate-pair prefilter (shared with "
+            "dedup). Default: [relationship_detector] jaccard_min in "
+            ".aelfrice.toml > 0.4."
+        ),
+    )
+    p_doctor.add_argument(
+        "--relationships-confidence",
+        dest="relationships_confidence",
+        type=float,
+        default=None,
+        metavar="F",
+        help=(
+            "with --relationships: score floor at which a "
+            "`contradicts` verdict is reported as auto-emit eligible "
+            "(for the deferred write-path hook). Sub-confidence pairs "
+            "still surface in the audit. Default: "
+            "[relationship_detector] confidence_min in .aelfrice.toml "
+            "> 0.5."
+        ),
+    )
+    p_doctor.add_argument(
+        "--relationships-max-pairs",
+        dest="relationships_max_pairs",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "with --relationships: cap reported pairs after Jaccard "
+            "prefilter; deterministic truncation by (id_a, id_b). "
+            "Default: [relationship_detector] max_candidate_pairs in "
+            ".aelfrice.toml > 5000."
         ),
     )
     p_doctor.set_defaults(func=_cmd_doctor)
