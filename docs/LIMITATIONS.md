@@ -41,6 +41,7 @@ The default retrieval mode (recall, not audit) is correctly served by latest-ser
 - **Confidence drops below 0.5 do not auto-flag.** A belief whose posterior drifts under the prior is not surfaced as a warning at v1.x. The only automatic state change driven by negative evidence is locked-belief demotion-pressure (≥5 contradictions → auto-demote). To find drifting beliefs, query `aelf stats` directly.
 - **Jeffreys prior reads as 0.5.** A belief with no feedback reports posterior mean exactly `0.5`. That means "no evidence yet," not "coin-flip true."
 - **`aelf onboard` is non-incremental on duplicates.** Re-runs are idempotent; existing beliefs are not re-scored or refreshed.
+- **Near-duplicates from different ingest paths persist.** `INSERT OR IGNORE` on `(source, sentence)` content_hash dedupes exact matches but not paraphrases (e.g. "don't push to main" locked + "never push directly to main" scanned both surface in retrieval). v2.0 ships `aelf doctor --dedup` (#197) — read-only audit that lists Jaccard + Levenshtein-confirmed duplicate clusters; the write-path SUPERSEDES hook is bench-gated and deferred behind the corpus benchmark.
 - **No bulk operations.** No batch lock, no `delete <pattern>`, no merge.
 - **No edit.** A wrong belief is corrected by inserting a new one with a `SUPERSEDES` edge; the original stays.
 - **No graph viz.** Inspect with `sqlite3 "$(python -c 'from aelfrice.cli import db_path; print(db_path())')"`.
