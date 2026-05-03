@@ -79,6 +79,24 @@ Resolution order:
 - `aelf demote` removes a lock immediately. The belief itself remains; you can also delete it via the store API.
 - Every Bayesian update goes through `apply_feedback` and writes one `feedback_history` audit row. Provenance is queryable.
 
+## Optional inbound prose inspection: `sentiment_from_prose` (v2.0+)
+
+When `[feedback] sentiment_from_prose = true` is set in `.aelfrice.toml` (or `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE=1` is set in the environment), aelfrice runs each user prompt the host hook surfaces through a 24-pattern regex bank ([`src/aelfrice/sentiment_feedback.py`](../src/aelfrice/sentiment_feedback.py)) and writes one `feedback_history` row per matched pattern, distributed across the previous turn's retrieved beliefs.
+
+**Default off.** Existing users see no behavior change.
+
+This is an *inbound* prose-inspection surface — aelfrice already received the prompt via the host hook to do retrieval. The new behavior is regex matching plus implicit Bayesian updates, not new data access.
+
+**What is read:** every user prompt the hook receives, capped at 200 characters (longer prompts skip detection on the assumption that they carry task content rather than feedback signal).
+
+**What is stored:** one `feedback_history` audit row per matched pattern, recording `(belief_id, valence, source="sentiment_inferred", created_at)`. The audit row carries the matched pattern id and substring; the full prompt text is **never** stored.
+
+**What leaves the machine:** nothing. Stdlib regex; no outbound calls. Same determinism contract as the rest of the runtime — same prompt produces same matches and same updates.
+
+**`aelf health` surfaces the state.** `aelf health` prints `sentiment-from-prose feedback: enabled (<N> matches)` when the feature is on, or `disabled` otherwise, so its effect is visible at a glance.
+
+To turn it off after enabling, remove the config line (or set `[feedback] sentiment_from_prose = false`). Already-applied feedback rows remain in `feedback_history` as audit history; deleting them requires direct store access.
+
 ## What aelfrice does not control
 
 The cloud LLM at the other end of your prompt sees whatever aelfrice injects. That's inherent to using a cloud LLM. Mitigations:
