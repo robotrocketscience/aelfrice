@@ -11,16 +11,11 @@ from tests.conftest import load_corpus_module
 @pytest.mark.bench_gated
 def test_sentiment_detector_against_corpus(aelfrice_corpus_root: Path) -> None:
     rows = load_corpus_module(aelfrice_corpus_root, "sentiment")
-    try:
-        from aelfrice import sentiment  # type: ignore[attr-defined]
-    except ModuleNotFoundError as exc:
-        if exc.name in {"aelfrice", "aelfrice.sentiment"}:
-            pytest.skip("sentiment detector not yet implemented (#193)")
-        raise
+    from aelfrice import sentiment_feedback
 
     correct = 0
     for row in rows:
-        predicted = sentiment.classify(row["user_message"])
+        predicted = sentiment_feedback.classify(row["user_message"])
         if predicted == row["label"]:
             correct += 1
     accuracy = correct / len(rows)
