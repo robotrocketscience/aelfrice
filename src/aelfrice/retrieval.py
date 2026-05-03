@@ -995,6 +995,7 @@ def retrieve(
     bm25f_cache: BM25IndexCache | None = None,
     heat_kernel_enabled: bool | None = None,
     eigenbasis_cache: GraphEigenbasisCache | None = None,
+    locked_max_k: int | None = None,
 ) -> list[Belief]:
     """Return L0 locked + L2.5 entity + L1 BM25 + L3 BFS expansions.
 
@@ -1046,6 +1047,12 @@ def retrieve(
     warn_placeholder_flags()
 
     locked: list[Belief] = store.list_locked_beliefs()
+    # #373 / #199 H3: selective L0 injection. When `locked_max_k` is set
+    # to a non-negative int, score the locked set against the query and
+    # keep only the top K. Caller passes None to opt out and get legacy
+    # all-locked behaviour (--inject-all fallback path).
+    if locked_max_k is not None and locked_max_k >= 0:
+        locked = top_k_locks(locked, query, locked_max_k)
     locked_ids: set[str] = {b.id for b in locked}
 
     # Backwards-compat: when the flag is off and the caller didn't
