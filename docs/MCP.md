@@ -36,13 +36,13 @@ Tools register under the `aelf:` namespace.
 | `aelf:locked` | — | `pressured` | `{kind, n, locked[]}` |
 | `aelf:demote` | `belief_id` | — | `{kind, id, demoted}` |
 | `aelf:unlock` | `belief_id` | — | `{kind, id, unlocked, audit_event_id?}` |
-| `aelf:validate` | `belief_id` | `source` (default `user_validated`) | `{kind, id, prior_origin, new_origin, audit_event_id?}` |
-| `aelf:promote` | `belief_id` | `source` (default `user_validated`) | `{kind, id, prior_origin, new_origin, audit_event_id?}` |
+| `aelf:validate` | `belief_id` | `source` (default `user_validated`) | `{kind, id, prior_origin, new_origin, audit_event_id?}` on success; `{kind: "validate.error", id, error}` on invalid request |
+| `aelf:promote` | `belief_id` | `source` (default `user_validated`) | same union as `aelf:validate` |
 | `aelf:feedback` | `belief_id`, `signal` | `source` | `{kind, id, signal, prior_alpha, new_alpha, prior_beta, new_beta, pressured_locks, demoted_locks}` |
 | `aelf:stats` | — | — | `{kind, beliefs, threads, locked, feedback_events, ...}` |
 | `aelf:health` | — | — | `{kind, regime, description, classification_confidence?, features?}` |
 
-`signal` is `"used"` or `"harmful"`. `aelf:unlock` drops a user-lock without touching origin and always writes a `lock:unlock` audit row; idempotent on already-unlocked beliefs. `aelf:promote` is a first-class alias of `aelf:validate` — identical semantics and return shape. Both `aelf:validate` and `aelf:promote` promote an `agent_inferred` belief to a user-validated origin tier (v1.2+).
+`signal` is `"used"` or `"harmful"`. `aelf:unlock` drops a user-lock without touching origin and writes a `lock:unlock` audit row when a lock is actually removed; idempotent on already-unlocked beliefs (no row written). `aelf:promote` is a first-class alias of `aelf:validate` — identical semantics and return shape. Both `aelf:validate` and `aelf:promote` promote an `agent_inferred` belief to a user-validated origin tier (v1.2+).
 
 ## `aelf:onboard` polymorphism
 
