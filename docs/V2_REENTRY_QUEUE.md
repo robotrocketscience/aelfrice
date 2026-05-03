@@ -25,7 +25,7 @@ Each row references its public spec memo and the GitHub issue that tracks re-ent
 - **Gate:** ≥3pp improvement on a classification-accuracy or onboard-quality `aelf bench` number, **and** a PRIVACY.md rewrite documenting per-provider trust surface and consent gate.
 - **Why deferred:** privacy regression (outbound to *N* providers vs. 1), determinism regression (non-deterministic by construction), *N×* per-onboard token cost, no published evidence that cross-model consensus measurably improves classification quality. Substrate-decision (#196 Option B) removed the strongest historical justification.
 
-### Directive detection (enforcement H1) — issue #199 sub-track
+### Directive detection (enforcement H1) — issue #374
 
 - **Spec:** [`docs/v2_enforcement.md`](v2_enforcement.md) § H1
 - **Disposition:** defer to v2.x. (H3 selective injection ships at v2.0; H2 compliance audit is dropped, not deferred.)
