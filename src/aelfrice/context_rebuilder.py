@@ -72,6 +72,14 @@ from typing import Any, Final, IO, cast
 
 from aelfrice.entity_extractor import extract_entities
 from aelfrice.models import LOCK_USER, Belief
+from aelfrice.query_understanding import (
+    DEFAULT_STRATEGY as DEFAULT_QUERY_STRATEGY,
+)
+from aelfrice.query_understanding import (
+    LEGACY_STRATEGY,
+    VALID_STRATEGIES,
+    transform_query,
+)
 from aelfrice.retrieval import retrieve
 from aelfrice.scoring import posterior_mean
 from aelfrice.store import MemoryStore
@@ -116,6 +124,7 @@ TURN_WINDOW_KEY: Final[str] = "turn_window_n"
 TOKEN_BUDGET_KEY: Final[str] = "token_budget"
 TRIGGER_MODE_KEY: Final[str] = "trigger_mode"
 THRESHOLD_FRACTION_KEY: Final[str] = "threshold_fraction"
+QUERY_STRATEGY_KEY: Final[str] = "query_strategy"
 
 # --- Rebuild diagnostic log (#288 phase-1a) ------------------------------
 
@@ -291,6 +300,7 @@ def rebuild_v14(
     session_id_for_log: str | None = None,
     floor_session: float = 0.0,
     floor_l1: float = 0.0,
+    query_strategy: str = LEGACY_STRATEGY,
 ) -> str:
     """v1.4 rebuild: L0 + session-scoped + L2.5/L1 via `retrieve()`.
 
@@ -326,13 +336,21 @@ def rebuild_v14(
     `DEFAULT_FLOOR_L1`) from `RebuilderConfig`, so operators get
     the floor end-to-end while existing tests and ad-hoc callers
     are unaffected.
+
+    v1.7 (#291 PR-2): `query_strategy` selects the query rewriter.
+    Default `legacy-bm25` is byte-identical to the v1.4 path.
+    `stack-r1-r3` opts into the ratified R1 entity-expansion + R3
+    per-store IDF-clip stack from `aelfrice.query_understanding`.
+    The default flip lands in PR-3 after a clean #288 phase-1b
+    operator-week.
     """
     locked: list[Belief] = store.list_locked_beliefs()
     locked_ids: set[str] = {b.id for b in locked}
 
     sid = _latest_session_id(recent_turns)
 
-    query = _query_for_recent_turns(recent_turns)
+    raw_query = _query_for_recent_turns(recent_turns)
+    query = transform_query(raw_query, store, query_strategy)
 
     # retrieve() returns L0 + L2.5 + L1 in that order. We already
     # have L0 from list_locked_beliefs(); we'll rebuild the
@@ -592,6 +610,12 @@ class RebuilderConfig:
     """v1.7 (#289 / #364) placeholder — operator-tunable via
     `[rebuild_floor] l1` in .aelfrice.toml. Calibration lands
     in a follow-up after #288 phase-1b."""
+    query_strategy: str = DEFAULT_QUERY_STRATEGY
+    """v1.7 (#291 PR-2) opt-in for the R1+R3 query-understanding
+    stack. `legacy-bm25` (default) is byte-identical to v1.4.
+    `stack-r1-r3` opts in. Operator-tunable via
+    `[rebuilder] query_strategy` in .aelfrice.toml. Default flip
+    lands in PR-3 after a clean #288 phase-1b operator-week."""
 
 
 def load_rebuilder_config(start: Path | None = None) -> RebuilderConfig:
@@ -743,6 +767,22 @@ def load_rebuilder_config(start: Path | None = None) -> RebuilderConfig:
                     )
                 else:
                     floor_l1_resolved = float(fl_obj)
+            qs_obj: Any = section.get(
+                QUERY_STRATEGY_KEY, DEFAULT_QUERY_STRATEGY,
+            )
+            if (
+                not isinstance(qs_obj, str)
+                or qs_obj not in VALID_STRATEGIES
+            ):
+                print(
+                    f"aelfrice rebuilder: ignoring [{REBUILDER_SECTION}] "
+                    f"{QUERY_STRATEGY_KEY} in {candidate} "
+                    f"(expected one of {sorted(VALID_STRATEGIES)})",
+                    file=serr,
+                )
+                qs_resolved = DEFAULT_QUERY_STRATEGY
+            else:
+                qs_resolved = qs_obj
             return RebuilderConfig(
                 turn_window_n=n_resolved,
                 token_budget=b_resolved,
@@ -751,6 +791,7 @@ def load_rebuilder_config(start: Path | None = None) -> RebuilderConfig:
                 rebuild_log_enabled=log_enabled_resolved,
                 floor_session=floor_session_resolved,
                 floor_l1=floor_l1_resolved,
+                query_strategy=qs_resolved,
             )
         if current.parent == current:
             break

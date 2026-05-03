@@ -964,6 +964,7 @@ def pre_compact(
             rebuild_log_enabled=config.rebuild_log_enabled,
             floor_session=config.floor_session,
             floor_l1=config.floor_l1,
+            query_strategy=config.query_strategy,
         )
         if body:
             sout.write(emit_pre_compact_envelope(body))
@@ -1026,6 +1027,7 @@ def _rebuild_and_format(
     rebuild_log_enabled: bool = True,
     floor_session: float = 0.0,
     floor_l1: float = 0.0,
+    query_strategy: str = "legacy-bm25",
 ) -> str:
     """Open the store and run the v1.4 rebuild.
 
@@ -1056,6 +1058,7 @@ def _rebuild_and_format(
             session_id_for_log=sid,
             floor_session=floor_session,
             floor_l1=floor_l1,
+            query_strategy=query_strategy,
         )
     finally:
         store.close()
