@@ -1846,9 +1846,82 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
             display = str(value)
         print(f"  {key:24s} {display}", file=out)  # type: ignore[arg-type]
     print("", file=out)  # type: ignore[arg-type]
+    sentiment_state, sentiment_count = _sentiment_from_prose_state()
+    if sentiment_state == "enabled":
+        print(
+            f"sentiment-from-prose feedback: enabled ({sentiment_count} matches)",
+            file=out,  # type: ignore[arg-type]
+        )
+    else:
+        print(
+            "sentiment-from-prose feedback: disabled",
+            file=out,  # type: ignore[arg-type]
+        )
+    print("", file=out)  # type: ignore[arg-type]
     print("run `aelf regime` for the v1.0 regime classifier.",
           file=out)  # type: ignore[arg-type]
     return 1 if report.failed else 0
+
+
+def _sentiment_from_prose_state() -> tuple[str, int]:
+    """Resolve enabled/disabled status for #193 sentiment-from-prose
+    feedback plus a count of `feedback_history` rows attributed to it.
+
+    Failures (missing config, missing DB, decode errors) degrade to
+    ("disabled", 0) without raising — keeps `aelf health` informational
+    and never causes it to exit non-zero on a config issue.
+    """
+    from aelfrice.sentiment_feedback import (
+        SENTIMENT_INFERRED_SOURCE,
+        is_enabled,
+    )
+    config_dict = _load_aelfrice_config_dict(Path.cwd())
+    enabled = is_enabled(config_dict)
+    if not enabled:
+        return ("disabled", 0)
+    try:
+        store = _open_store()
+    except Exception:  # noqa: BLE001
+        return ("enabled", 0)
+    try:
+        row = store._conn.execute(
+            "SELECT COUNT(*) FROM feedback_history WHERE source = ?",
+            (SENTIMENT_INFERRED_SOURCE,),
+        ).fetchone()
+        count = int(row[0]) if row is not None else 0
+    except Exception:  # noqa: BLE001
+        count = 0
+    finally:
+        store.close()
+    return ("enabled", count)
+
+
+def _load_aelfrice_config_dict(root: Path) -> dict[str, Any] | None:
+    """Walk up from `root` for `.aelfrice.toml`; return the parsed dict
+    or None on miss / parse failure. Mirrors `_load_llm_config` walk
+    semantics but returns the whole file rather than one section.
+    """
+    import tomllib
+
+    current = root.resolve() if root.exists() else root
+    seen: set[Path] = set()
+    candidate = current if current.is_dir() else current.parent
+    while candidate not in seen:
+        seen.add(candidate)
+        cfg_path = candidate / ".aelfrice.toml"
+        if cfg_path.is_file():
+            try:
+                raw = cfg_path.read_bytes()
+                parsed: Any = tomllib.loads(
+                    raw.decode("utf-8", errors="replace")
+                )
+            except (OSError, tomllib.TOMLDecodeError):
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        if candidate.parent == candidate:
+            return None
+        candidate = candidate.parent
+    return None
 
 
 def _cmd_migrate(args: argparse.Namespace, out: object) -> int:
