@@ -68,19 +68,15 @@ def search_for_prompt(
     token_budget: int = DEFAULT_TOKEN_BUDGET,
     *,
     stderr: IO[str] | None = None,
-    locked_max_k: int | None = None,
 ) -> list[Belief]:
     """Retrieve hits for a hook prompt and record them to feedback_history.
 
-    Wraps `retrieve(store, prompt, token_budget=..., locked_max_k=...)`
-    and, after the read, calls `record_retrieval` to write one audit row
-    per returned belief. `locked_max_k=None` (default) preserves the
-    legacy all-locked L0 layer; non-None engages the #373 / #199 H3
-    selective-injection path.
+    Wraps `retrieve(store, prompt, token_budget=...)` and, after the
+    read, calls `record_retrieval` to write one audit row per returned
+    belief.
     """
     hits: list[Belief] = retrieve(
         store, prompt, token_budget=token_budget,
-        locked_max_k=locked_max_k,
     )
     record_retrieval(store, hits, stderr=stderr)
     return hits
