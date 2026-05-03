@@ -80,8 +80,13 @@ def _aelfrice_log(cwd: Path, lines: list[dict[str, object]]) -> Path:
     # tests exercise the auto-fire path, so opt them into "threshold".
     cfg = cwd / ".aelfrice.toml"
     if not cfg.exists():
+        # Disable v1.7 (#364) relevance floor in tests by default;
+        # tests that exercise floor behavior set their own thresholds
+        # via this knob. Keeps pre-floor pre-compact tests valid
+        # without an audit of every weak-overlap query.
         cfg.write_text(
-            '[rebuilder]\ntrigger_mode = "threshold"\n',
+            '[rebuilder]\ntrigger_mode = "threshold"\n'
+            "[rebuild_floor]\nsession = 0.0\nl1 = 0.0\n",
             encoding="utf-8",
         )
     return p
@@ -168,7 +173,18 @@ def test_pre_compact_prefers_aelfrice_log(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db = tmp_path / "memory.db"
-    _seed_db(db, [_mk("F1", "kitchen has bananas")])
+    # v1.7 (#364) post-floor contract: rebuild_v14 returns "" when no
+    # candidate survives the floor and there are no locks. The fixture
+    # belief F1 is intentionally unrelated to the recent turn (FTS5 is
+    # not populated for in-memory inserts in this test path), so we
+    # lock it to exercise the L0-always-packs guarantee. The test's
+    # assertion is "the rebuild path picked the aelfrice log over the
+    # alternate transcript path", not "weak BM25 hit packs".
+    _seed_db(
+        db,
+        [_mk("F1", "kitchen contents",
+             lock_level=LOCK_USER, locked_at="2026-04-26T00:00:00Z")],
+    )
     _set_db(monkeypatch, db)
     cwd = tmp_path / "repo"
     (cwd / ".git").mkdir(parents=True)
@@ -197,13 +213,23 @@ def test_pre_compact_falls_back_to_claude_transcript(
 ) -> None:
     """No .git anywhere -> use transcript_path."""
     db = tmp_path / "memory.db"
-    _seed_db(db, [_mk("F1", "kitchen has bananas")])
+    # See test_pre_compact_prefers_aelfrice_log for the L0-lock rationale
+    # post v1.7 (#364) floor.
+    _seed_db(
+        db,
+        [_mk("F1", "kitchen check fixture",
+             lock_level=LOCK_USER, locked_at="2026-04-26T00:00:00Z")],
+    )
     _set_db(monkeypatch, db)
     no_git = tmp_path / "no_git"
     no_git.mkdir()
-    # v1.4 default trigger_mode is "manual"; opt into auto-fire.
+    # v1.4 default trigger_mode is "manual"; opt into auto-fire. Floor
+    # disabled so this test's assertion ("kitchen check" appears in
+    # rebuild output) is not gated on FTS5 indexing of the fixture.
     (no_git / ".aelfrice.toml").write_text(
-        '[rebuilder]\ntrigger_mode = "threshold"\n', encoding="utf-8",
+        '[rebuilder]\ntrigger_mode = "threshold"\n'
+        "[rebuild_floor]\nsession = 0.0\nl1 = 0.0\n",
+        encoding="utf-8",
     )
     transcript = tmp_path / "claude.jsonl"
     _claude_transcript(transcript, [
@@ -226,7 +252,15 @@ def test_pre_compact_writes_rebuild_block_with_hits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db = tmp_path / "memory.db"
-    _seed_db(db, [_mk("F1", "kitchen has bananas")])
+    # v1.7 (#364) post-floor contract: lock the fixture so the L0
+    # always-pack lane keeps the block emitted regardless of FTS5
+    # state. The assertion target is the block's structural tags,
+    # not retrieval quality.
+    _seed_db(
+        db,
+        [_mk("F1", "kitchen has bananas",
+             lock_level=LOCK_USER, locked_at="2026-04-26T00:00:00Z")],
+    )
     _set_db(monkeypatch, db)
     cwd = tmp_path / "repo"
     (cwd / ".git").mkdir(parents=True)

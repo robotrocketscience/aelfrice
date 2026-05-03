@@ -962,6 +962,8 @@ def pre_compact(
             recent,
             budget,
             rebuild_log_enabled=config.rebuild_log_enabled,
+            floor_session=config.floor_session,
+            floor_l1=config.floor_l1,
         )
         if body:
             sout.write(emit_pre_compact_envelope(body))
@@ -1022,6 +1024,8 @@ def _rebuild_and_format(
     token_budget: int,
     *,
     rebuild_log_enabled: bool = True,
+    floor_session: float = 0.0,
+    floor_l1: float = 0.0,
 ) -> str:
     """Open the store and run the v1.4 rebuild.
 
@@ -1050,6 +1054,8 @@ def _rebuild_and_format(
             rebuild_log_path=log_path,
             rebuild_log_enabled=rebuild_log_enabled,
             session_id_for_log=sid,
+            floor_session=floor_session,
+            floor_l1=floor_l1,
         )
     finally:
         store.close()

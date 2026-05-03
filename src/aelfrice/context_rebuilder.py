@@ -73,6 +73,7 @@ from typing import Any, Final, IO, cast
 from aelfrice.entity_extractor import extract_entities
 from aelfrice.models import LOCK_USER, Belief
 from aelfrice.retrieval import retrieve
+from aelfrice.scoring import posterior_mean
 from aelfrice.store import MemoryStore
 from aelfrice.triple_extractor import extract_triples
 
@@ -130,6 +131,31 @@ DEFAULT_REBUILD_LOG_ENABLED: Final[bool] = True
 """Rebuild diagnostic log is default-on. Opt out via the
 `AELFRICE_REBUILD_LOG=0` env var or `[rebuild_log] enabled = false`
 in `.aelfrice.toml`."""
+
+# --- Relevance floor (#289 / #364) ---------------------------------------
+
+REBUILD_FLOOR_SECTION: Final[str] = "rebuild_floor"
+REBUILD_FLOOR_SESSION_KEY: Final[str] = "session"
+REBUILD_FLOOR_L1_KEY: Final[str] = "l1"
+
+DEFAULT_FLOOR_SESSION: Final[float] = 0.10
+"""Soft floor for session-scoped (L2) hits. Beliefs from the current
+session have a high prior of relevance; reject only on near-zero
+composite scores. Placeholder per `docs/relevance_floor.md` §4 — the
+production value lands in a follow-up after #288 phase-1b
+calibration. Operator-tunable via `[rebuild_floor] session`."""
+
+DEFAULT_FLOOR_L1: Final[float] = 0.40
+"""Hard floor for L1 BM25 / L2.5 entity hits. Most candidates that
+fall below this composite score are off-topic for the recent-turn
+query. Placeholder per `docs/relevance_floor.md` §4. Operator-tunable
+via `[rebuild_floor] l1`."""
+
+FLOOR_SCORED_QUERY_LIMIT: Final[int] = 200
+"""Cap on `search_beliefs_scored()` rows pulled to derive bm25_raw
+for the floor's composite score. Generous enough to cover the
+retrieve()-returned candidate set in normal operation; bounded so a
+pathological store cannot turn the floor into an O(N) scan."""
 
 # --- v1.4.0 trigger-mode constants (issue #141) ---------------------------
 
@@ -263,6 +289,8 @@ def rebuild_v14(
     rebuild_log_path: Path | None = None,
     rebuild_log_enabled: bool = DEFAULT_REBUILD_LOG_ENABLED,
     session_id_for_log: str | None = None,
+    floor_session: float = 0.0,
+    floor_l1: float = 0.0,
 ) -> str:
     """v1.4 rebuild: L0 + session-scoped + L2.5/L1 via `retrieve()`.
 
@@ -282,6 +310,22 @@ def rebuild_v14(
     Pure function. Deterministic given the same inputs and store
     contents -- the regression test for issue #139 relies on this.
     Empty recent_turns: returns L0 only, block is still well-formed.
+
+    v1.7 (#289 / #364): per-lane relevance floor. L0 locked always
+    packs (no floor). Session-scoped (L2) packs above `floor_session`.
+    L1 / L2.5 packs above `floor_l1`. When all hits are floored out
+    AND no locks exist the function returns the empty string —
+    `rebuild_v14`'s "I don't know — say nothing" path. See
+    `docs/relevance_floor.md` for the composite-score formula and
+    the rationale for the split.
+
+    The function-signature defaults are `floor_session=0.0,
+    floor_l1=0.0` — backwards-compatible no-floor behavior for
+    direct callers. The production hook path threads the
+    placeholder values (`DEFAULT_FLOOR_SESSION`,
+    `DEFAULT_FLOOR_L1`) from `RebuilderConfig`, so operators get
+    the floor end-to-end while existing tests and ad-hoc callers
+    are unaffected.
     """
     locked: list[Belief] = store.list_locked_beliefs()
     locked_ids: set[str] = {b.id for b in locked}
@@ -307,6 +351,19 @@ def rebuild_v14(
     )
     session_ids: set[str] = {b.id for b in session_hits}
 
+    # v1.7 (#289 / #364): per-lane composite-score floor. Pull bm25_raw
+    # for every candidate via one extra FTS5 call; off-FTS5 candidates
+    # (entity-only, BFS, session-only) score with bm25_normalized=1.0
+    # so the floor decision rests on posterior_mean alone for them.
+    bm25_lookup: dict[str, float] = _bm25_lookup_for_query(store, query)
+
+    def _score_for(b: Belief) -> tuple[float, float | None]:
+        bm25_raw = bm25_lookup.get(b.id)
+        return (
+            floor_composite_score(bm25_raw, b.alpha, b.beta),
+            bm25_raw,
+        )
+
     # Pack, accounting tokens. L0 always survives.
     # Output-level content_hash dedup (#281): different belief_ids can
     # share a content_hash (re-ingest before #219, multi-source ingest,
@@ -324,6 +381,7 @@ def rebuild_v14(
     log_candidates: list[dict[str, object]] = []
     n_dropped_by_dedup = 0
     n_dropped_by_budget = 0
+    n_dropped_by_floor = 0
     budget_exceeded_session = False
     budget_exceeded_non_locked = False
 
@@ -342,12 +400,19 @@ def rebuild_v14(
     for b in session_hits:
         decision: str
         reason: str | None
+        composite, bm25_raw = _score_for(b)
         if b.content_hash in seen_hashes:
             decision = "dropped"
             reason = (
                 f"content_hash_collision_with:{hash_to_packed_id[b.content_hash]}"
             )
             n_dropped_by_dedup += 1
+        elif composite < floor_session:
+            decision = "dropped"
+            reason = (
+                f"below_floor_session:{composite:.4f}<{floor_session:.4f}"
+            )
+            n_dropped_by_floor += 1
         elif budget_exceeded_session:
             decision = "dropped"
             reason = "budget_exceeded"
@@ -370,7 +435,12 @@ def rebuild_v14(
             {
                 "belief_id": b.id,
                 "rank": len(log_candidates) + 1,
-                "scores": _empty_scores(),
+                "scores": {
+                    "bm25": bm25_raw,
+                    "posterior_mean": posterior_mean(b.alpha, b.beta),
+                    "reranker": None,
+                    "final": composite,
+                },
                 "lock_level": _belief_lock_level_for_log(b),
                 "decision": decision,
                 "reason": reason,
@@ -382,12 +452,17 @@ def rebuild_v14(
             continue  # already surfaced above as a session candidate
         decision2: str
         reason2: str | None
+        composite2, bm25_raw2 = _score_for(b)
         if b.content_hash in seen_hashes:
             decision2 = "dropped"
             reason2 = (
                 f"content_hash_collision_with:{hash_to_packed_id[b.content_hash]}"
             )
             n_dropped_by_dedup += 1
+        elif composite2 < floor_l1:
+            decision2 = "dropped"
+            reason2 = f"below_floor_l1:{composite2:.4f}<{floor_l1:.4f}"
+            n_dropped_by_floor += 1
         elif budget_exceeded_non_locked:
             decision2 = "dropped"
             reason2 = "budget_exceeded"
@@ -410,7 +485,12 @@ def rebuild_v14(
             {
                 "belief_id": b.id,
                 "rank": len(log_candidates) + 1,
-                "scores": _empty_scores(),
+                "scores": {
+                    "bm25": bm25_raw2,
+                    "posterior_mean": posterior_mean(b.alpha, b.beta),
+                    "reranker": None,
+                    "final": composite2,
+                },
                 "lock_level": _belief_lock_level_for_log(b),
                 "decision": decision2,
                 "reason": reason2,
@@ -430,7 +510,7 @@ def rebuild_v14(
         pack_summary: dict[str, int] = {
             "n_candidates": len(log_candidates),
             "n_packed": n_packed,
-            "n_dropped_by_floor": 0,
+            "n_dropped_by_floor": n_dropped_by_floor,
             "n_dropped_by_dedup": n_dropped_by_dedup,
             "n_dropped_by_budget": n_dropped_by_budget,
             "total_chars_packed": total_chars_packed,
@@ -442,6 +522,15 @@ def rebuild_v14(
             pack_summary=pack_summary,
         )
         _append_rebuild_log_record(rebuild_log_path, record)
+
+    # v1.7 (#289 / #364) silent path: when no candidate cleared any
+    # lane (no L0 locks, no above-floor session/L1), return "" so
+    # downstream callers do not inject an empty memory block. The
+    # PreCompact hook's `if body:` guard already drops the envelope
+    # on falsy output (hook.py L966), so empty input -> no
+    # additionalContext written.
+    if not out:
+        return ""
 
     return _format_block(
         recent_turns, out, session_ids, token_budget=token_budget,
@@ -495,6 +584,14 @@ class RebuilderConfig:
     trigger_mode: str = DEFAULT_TRIGGER_MODE
     threshold_fraction: float = DEFAULT_THRESHOLD_FRACTION
     rebuild_log_enabled: bool = DEFAULT_REBUILD_LOG_ENABLED
+    floor_session: float = DEFAULT_FLOOR_SESSION
+    """v1.7 (#289 / #364) placeholder — operator-tunable via
+    `[rebuild_floor] session` in .aelfrice.toml. Calibration lands
+    in a follow-up after #288 phase-1b."""
+    floor_l1: float = DEFAULT_FLOOR_L1
+    """v1.7 (#289 / #364) placeholder — operator-tunable via
+    `[rebuild_floor] l1` in .aelfrice.toml. Calibration lands
+    in a follow-up after #288 phase-1b."""
 
 
 def load_rebuilder_config(start: Path | None = None) -> RebuilderConfig:
@@ -607,12 +704,53 @@ def load_rebuilder_config(start: Path | None = None) -> RebuilderConfig:
                         f"(expected bool)",
                         file=serr,
                     )
+            floor_section_obj: Any = parsed.get(REBUILD_FLOOR_SECTION, {})
+            floor_session_resolved: float = DEFAULT_FLOOR_SESSION
+            floor_l1_resolved: float = DEFAULT_FLOOR_L1
+            if isinstance(floor_section_obj, dict):
+                floor_section = cast(dict[str, Any], floor_section_obj)
+                fs_obj: Any = floor_section.get(
+                    REBUILD_FLOOR_SESSION_KEY, DEFAULT_FLOOR_SESSION,
+                )
+                fl_obj: Any = floor_section.get(
+                    REBUILD_FLOOR_L1_KEY, DEFAULT_FLOOR_L1,
+                )
+                if (
+                    isinstance(fs_obj, bool)
+                    or not isinstance(fs_obj, (int, float))
+                    or float(fs_obj) < 0.0
+                ):
+                    print(
+                        f"aelfrice rebuilder: ignoring "
+                        f"[{REBUILD_FLOOR_SECTION}] "
+                        f"{REBUILD_FLOOR_SESSION_KEY} in {candidate} "
+                        f"(expected non-negative number)",
+                        file=serr,
+                    )
+                else:
+                    floor_session_resolved = float(fs_obj)
+                if (
+                    isinstance(fl_obj, bool)
+                    or not isinstance(fl_obj, (int, float))
+                    or float(fl_obj) < 0.0
+                ):
+                    print(
+                        f"aelfrice rebuilder: ignoring "
+                        f"[{REBUILD_FLOOR_SECTION}] "
+                        f"{REBUILD_FLOOR_L1_KEY} in {candidate} "
+                        f"(expected non-negative number)",
+                        file=serr,
+                    )
+                else:
+                    floor_l1_resolved = float(fl_obj)
             return RebuilderConfig(
                 turn_window_n=n_resolved,
                 token_budget=b_resolved,
                 trigger_mode=mode_resolved,
                 threshold_fraction=frac_resolved,
                 rebuild_log_enabled=log_enabled_resolved,
+                floor_session=floor_session_resolved,
+                floor_l1=floor_l1_resolved,
             )
         if current.parent == current:
             break
@@ -860,6 +998,67 @@ def _belief_lock_level_for_log(b: Belief) -> str:
     internal model already uses these strings, so this is a passthrough
     that also normalises any unexpected value to "none"."""
     return b.lock_level if b.lock_level == LOCK_USER else "none"
+
+
+def floor_composite_score(
+    bm25_raw: float | None, alpha: float, beta: float,
+) -> float:
+    """Composite floor score: `bm25_normalized * (0.5 + 0.5 * posterior_mean)`.
+
+    `bm25_raw` is SQLite's signed FTS5 score (smaller = better, ≤ 0
+    in normal cases). It is converted to `bm25_normalized` ∈ [0, 1]
+    via `min(-bm25_raw, 1.0) / 1.0` style clamping. `None` means the
+    candidate is not in the FTS5 hit set (e.g. L2.5 entity-only or
+    L3 BFS expansion); the floor gives such candidates the
+    benefit-of-doubt `bm25_normalized = 1.0` so the decision rests
+    on `posterior_mean`. Locked beliefs bypass the floor entirely;
+    callers should not call this for them.
+
+    Composite formula and clamp behavior pinned by
+    `docs/relevance_floor.md` §1. Coefficient 0.5/0.5 is the
+    placeholder split; tuning lands post-#288.
+    """
+    if bm25_raw is None:
+        bm25_normalized = 1.0
+    else:
+        # SQLite FTS5 returns a non-positive score; flip sign and
+        # clamp to [0, 1] against a unit baseline. Above-baseline
+        # raw scores saturate at 1.0 — the floor is about whether
+        # there is a signal at all, not how strong it is.
+        signed = -float(bm25_raw)
+        if signed <= 0.0:
+            bm25_normalized = 0.0
+        elif signed >= 1.0:
+            bm25_normalized = 1.0
+        else:
+            bm25_normalized = signed
+    pm = posterior_mean(alpha, beta)
+    return bm25_normalized * (0.5 + 0.5 * pm)
+
+
+def _bm25_lookup_for_query(
+    store: MemoryStore, query: str,
+) -> dict[str, float]:
+    """Return `{belief_id: bm25_raw}` for the query.
+
+    Used to score floor candidates against the same BM25 raw values
+    SQLite would return inside `retrieve()`. Off-FTS5 candidates
+    (entity index, BFS expansion, session-scoped) are absent from
+    the dict — callers should treat absence as "no FTS5 signal" and
+    pass `None` to `floor_composite_score`.
+
+    Empty / whitespace-only query: returns `{}`.
+    """
+    if not query or not query.strip():
+        return {}
+    try:
+        scored = store.search_beliefs_scored(
+            query, limit=FLOOR_SCORED_QUERY_LIMIT,
+        )
+    except Exception:  # pyright: ignore[reportBroadException]
+        # Floor must never block rebuild on a transient store error.
+        return {}
+    return {b.id: bm25_raw for b, bm25_raw in scored}
 
 
 def _empty_scores() -> dict[str, float | None]:
