@@ -335,6 +335,54 @@ def tool_validate(
     }
 
 
+def tool_unlock(store: MemoryStore, *, belief_id: str) -> dict[str, Any]:
+    """Drop a user-lock without touching origin.
+
+    Idempotent: calling on an already-unlocked belief returns
+    unlocked=False (no-op). Returns unlocked=True when the lock
+    was actually cleared. Always writes a lock:unlock audit row on
+    the active path.
+    """
+    from aelfrice.promotion import unlock
+
+    try:
+        result = unlock(store, belief_id)
+    except ValueError as e:
+        return {
+            "kind": "unlock.not_found",
+            "id": belief_id,
+            "unlocked": False,
+            "error": str(e),
+        }
+    if result.already_unlocked:
+        return {
+            "kind": "unlock.already",
+            "id": belief_id,
+            "unlocked": False,
+        }
+    return {
+        "kind": "unlock.unlocked",
+        "id": belief_id,
+        "unlocked": True,
+        "audit_event_id": result.audit_event_id,
+    }
+
+
+def tool_promote(
+    store: MemoryStore,
+    *,
+    belief_id: str,
+    source: str = "user_validated",
+) -> dict[str, Any]:
+    """Promote agent_inferred -> user_validated. Alias of tool_validate.
+
+    Exists as a first-class tool so MCP callers can use the more
+    intuitive name. Identical semantics and return shape to
+    tool_validate.
+    """
+    return tool_validate(store, belief_id=belief_id, source=source)
+
+
 def tool_feedback(
     store: MemoryStore,
     *,
@@ -500,6 +548,26 @@ def serve() -> None:
             store.close()
 
     @mcp.tool()
+    def aelf_unlock(belief_id: str) -> dict[str, Any]:
+        store = _open_default_store()
+        try:
+            return tool_unlock(store, belief_id=belief_id)
+        finally:
+            store.close()
+
+    @mcp.tool()
+    def aelf_promote(
+        belief_id: str, source: str = "user_validated",
+    ) -> dict[str, Any]:
+        store = _open_default_store()
+        try:
+            return tool_promote(
+                store, belief_id=belief_id, source=source,
+            )
+        finally:
+            store.close()
+
+    @mcp.tool()
     def aelf_feedback(
         belief_id: str, signal: str, source: str = "user",
     ) -> dict[str, Any]:
@@ -532,7 +600,8 @@ def serve() -> None:
     # themselves. They serve no runtime purpose.
     _registered = (
         aelf_onboard, aelf_search, aelf_lock, aelf_locked,
-        aelf_demote, aelf_validate, aelf_feedback, aelf_stats, aelf_health,
+        aelf_demote, aelf_validate, aelf_unlock, aelf_promote,
+        aelf_feedback, aelf_stats, aelf_health,
     )
     del _registered
 
