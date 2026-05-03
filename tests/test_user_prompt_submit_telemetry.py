@@ -190,7 +190,7 @@ def test_user_prompt_submit_writes_telemetry_record(
     tel = tmp_path / "user_prompt_submit.jsonl"
     hits = [_make_belief("alpha content"), _make_belief("beta content", LOCK_USER)]
 
-    monkeypatch.setattr("aelfrice.hook._retrieve", lambda prompt, budget: hits)
+    monkeypatch.setattr("aelfrice.hook._retrieve", lambda prompt, budget, **_: hits)
     monkeypatch.setattr(
         "aelfrice.hook._telemetry_path_for_db", lambda p: tel
     )
@@ -225,7 +225,7 @@ def test_user_prompt_submit_no_telemetry_when_empty_hits(
 
     tel = tmp_path / "user_prompt_submit.jsonl"
 
-    monkeypatch.setattr("aelfrice.hook._retrieve", lambda prompt, budget: [])
+    monkeypatch.setattr("aelfrice.hook._retrieve", lambda prompt, budget, **_: [])
     monkeypatch.setattr(
         "aelfrice.hook._telemetry_path_for_db", lambda p: tel
     )
@@ -253,7 +253,7 @@ def test_telemetry_query_capped_at_500_chars(
     long_prompt = "x" * 1000
     hits = [_make_belief("some content")]
 
-    monkeypatch.setattr("aelfrice.hook._retrieve", lambda prompt, budget: hits)
+    monkeypatch.setattr("aelfrice.hook._retrieve", lambda prompt, budget, **_: hits)
     monkeypatch.setattr("aelfrice.hook._telemetry_path_for_db", lambda p: tel)
     monkeypatch.setattr("aelfrice.hook.db_path", lambda: tmp_path / "memory.db")
     monkeypatch.setattr(

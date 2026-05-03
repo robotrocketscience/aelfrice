@@ -226,6 +226,13 @@ def test_session_start_writes_audit_record(
     _set_db(monkeypatch, db)
     monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
     monkeypatch.chdir(tmp_path)
+    # #373: under the v2.0 selective default SessionStart writes nothing
+    # (no body → no audit row). Opt into legacy mode to exercise the
+    # audit-contract path.
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[user_prompt_submit_hook]\ninject_all_locked = true\n",
+        encoding="utf-8",
+    )
     sin = io.StringIO(json.dumps({"session_id": "sess-start"}))
     sout = io.StringIO()
     rc = session_start(stdin=sin, stdout=sout)

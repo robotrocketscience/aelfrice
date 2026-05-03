@@ -187,7 +187,7 @@ def test_collapse_off_keeps_duplicates_in_output(
         _make_belief("duplicate text"),  # same as first
     ]
 
-    monkeypatch.setattr("aelfrice.hook._retrieve", lambda p, b: hits)
+    monkeypatch.setattr("aelfrice.hook._retrieve", lambda p, b, **_: hits)
     monkeypatch.setattr("aelfrice.hook._telemetry_path_for_db", lambda p: tel)
     monkeypatch.setattr("aelfrice.hook.db_path", lambda: tmp_path / "memory.db")
     monkeypatch.setattr(
@@ -221,7 +221,7 @@ def test_collapse_on_deduplicates_before_output(
         _make_belief("duplicate text"),  # same as first
     ]
 
-    monkeypatch.setattr("aelfrice.hook._retrieve", lambda p, b: hits)
+    monkeypatch.setattr("aelfrice.hook._retrieve", lambda p, b, **_: hits)
     monkeypatch.setattr("aelfrice.hook._telemetry_path_for_db", lambda p: tel)
     monkeypatch.setattr("aelfrice.hook.db_path", lambda: tmp_path / "memory.db")
     monkeypatch.setattr(
@@ -254,7 +254,7 @@ def test_telemetry_n_returned_is_pre_collapse(
         _make_belief("b"),
     ]
 
-    monkeypatch.setattr("aelfrice.hook._retrieve", lambda p, b: hits)
+    monkeypatch.setattr("aelfrice.hook._retrieve", lambda p, b, **_: hits)
     monkeypatch.setattr("aelfrice.hook._telemetry_path_for_db", lambda p: tel)
     monkeypatch.setattr("aelfrice.hook.db_path", lambda: tmp_path / "memory.db")
     monkeypatch.setattr(

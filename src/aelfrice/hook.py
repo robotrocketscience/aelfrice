@@ -1146,20 +1146,27 @@ def session_start(
     """Run the SessionStart hook. Always returns 0.
 
     Reads the SessionStart JSON payload from stdin (consumed for
-    protocol compatibility -- no fields are read from it at MVP) and
-    writes a baseline context block of L0 locked beliefs to stdout.
-    The block fires once per session, before any user message.
+    protocol compatibility — no fields besides session_id are
+    consumed) and emits the baseline context block to stdout. The
+    block fires once per session, before any user message.
 
-    Empty store / no locked beliefs: emit nothing (return 0). Per the
-    non-blocking hook contract, every failure path returns 0; internal
-    exceptions write to stderr and are otherwise swallowed.
+    v2.0 (#373 / #199 H3): under the default
+    `selective_locked_injection = true`, SessionStart emits NO
+    `<aelfrice-baseline>` block — locked beliefs route through the
+    per-turn UserPromptSubmit hook with prompt-scored top-K instead.
+    The SessionStart payload contains no user prompt, so any
+    SessionStart-time relevance signal would be a guess; deferring to
+    UPS lets the same locks be selected against the actual prompt.
 
-    Why locked-only: at session start there is no prompt to query
-    against, so BM25-driven L1 retrieval would have nothing to score.
-    L0 locked beliefs are the user-asserted ground truth that should
-    survive across every session regardless of context, which makes
-    them the correct content for an unconditional session-start
-    injection.
+    Backward-compat: setting `[user_prompt_submit_hook]
+    inject_all_locked = true` in `.aelfrice.toml` restores the
+    pre-v2.0 behaviour — SessionStart emits all locked beliefs as a
+    baseline block, and UPS does no L0 trimming. No data loss path.
+
+    Empty store / no locked beliefs / selective mode: emit nothing
+    (return 0). Per the non-blocking hook contract, every failure
+    path returns 0; internal exceptions write to stderr and are
+    otherwise swallowed.
     """
     sin = stdin if stdin is not None else sys.stdin
     sout = stdout if stdout is not None else sys.stdout
@@ -1186,6 +1193,11 @@ def session_start(
             if token_budget is not None
             else DEFAULT_SESSION_START_TOKEN_BUDGET
         )
+        # #373 / #199 H3: selective mode suppresses SessionStart locks
+        # entirely; locks reach the model through UPS top-K instead.
+        config = load_user_prompt_submit_config(stderr=serr)
+        if config.effective_locked_max_k() is not None:
+            return 0
         retrieve_start = time.monotonic()
         hits, body = _retrieve_baseline_with_block(budget)
         if body:

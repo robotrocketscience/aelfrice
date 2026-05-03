@@ -1,4 +1,11 @@
-"""SessionStart hook entry-point: payload protocol, L0-only retrieval, output."""
+"""SessionStart hook entry-point: payload protocol, output, v2.0 selective mode.
+
+v2.0 default (#373 / #199 H3): SessionStart emits no baseline block —
+locks reach the model via the per-turn UPS top-K path. The legacy
+all-locked SessionStart behaviour is preserved behind
+`[user_prompt_submit_hook] inject_all_locked = true` in
+`.aelfrice.toml`; the `_legacy_mode` fixture below exercises that path.
+"""
 from __future__ import annotations
 
 import io
@@ -13,6 +20,21 @@ from aelfrice.hook import (
 )
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.store import MemoryStore
+
+
+def _legacy_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Switch the config loader into legacy all-locked SessionStart.
+
+    Writes a `.aelfrice.toml` with `inject_all_locked = true` into
+    `tmp_path` and chdirs there so `load_user_prompt_submit_config`
+    discovers it on its parent-walk. Used by the v1.x-compat tests
+    below; selective-mode tests omit it and inherit the v2.0 default.
+    """
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[user_prompt_submit_hook]\ninject_all_locked = true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
 
 
 def _mk(
@@ -49,12 +71,43 @@ def _set_db(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
     monkeypatch.setenv("AELFRICE_DB", str(path))
 
 
-# ---- output: locked beliefs surface ------------------------------------
+# ---- v2.0 default: selective mode emits no baseline --------------------
 
 
-def test_session_start_emits_locked_beliefs(
+def test_session_start_selective_default_emits_nothing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """v2.0 default: SessionStart writes no baseline block even with locks.
+
+    Reading 2 of #373: locks route through the per-turn UPS path. The
+    SessionStart payload has no prompt, so no relevance signal exists
+    here — the hook returns early and stdout stays empty.
+    """
+    db = tmp_path / "memory.db"
+    _seed_db(
+        db,
+        [
+            _mk("L1", "user is jonsobol", LOCK_USER, "2026-04-26T00:00:00Z"),
+            _mk("L2", "primary db is sqlite", LOCK_USER, "2026-04-26T00:00:00Z"),
+        ],
+    )
+    _set_db(monkeypatch, db)
+    monkeypatch.chdir(tmp_path)  # no .aelfrice.toml — selective default
+    sin = io.StringIO("{}")
+    sout = io.StringIO()
+    serr = io.StringIO()
+    rc = session_start(stdin=sin, stdout=sout, stderr=serr)
+    assert rc == 0
+    assert sout.getvalue() == ""
+
+
+# ---- legacy all-locked SessionStart (inject_all_locked = true) ---------
+
+
+def test_session_start_legacy_emits_locked_beliefs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _legacy_mode(tmp_path, monkeypatch)
     db = tmp_path / "memory.db"
     _seed_db(
         db,
@@ -76,15 +129,11 @@ def test_session_start_emits_locked_beliefs(
     assert '<belief id="L2" lock="user">primary db is sqlite</belief>' in out
 
 
-def test_session_start_skips_unlocked_beliefs(
+def test_session_start_legacy_skips_unlocked_beliefs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """SessionStart MVP injects L0 locked beliefs only.
-
-    Empty query through retrieve() returns L0 only because FTS5 has
-    nothing to match against. Unlocked beliefs in the store must not
-    appear at session start.
-    """
+    """Legacy SessionStart still surfaces L0 only (empty query → no L1)."""
+    _legacy_mode(tmp_path, monkeypatch)
     db = tmp_path / "memory.db"
     _seed_db(
         db,
@@ -139,7 +188,13 @@ def test_session_start_returns_zero_on_empty_db(
 def test_session_start_returns_zero_on_empty_stdin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """SessionStart payload may be empty-ish; never block on it."""
+    """SessionStart payload may be empty-ish; never block on it.
+
+    Exercised under legacy mode so we still get a non-empty stdout to
+    prove the locked-belief surfaces independent of the (drained but
+    empty) payload.
+    """
+    _legacy_mode(tmp_path, monkeypatch)
     db = tmp_path / "memory.db"
     _seed_db(
         db,
@@ -155,10 +210,11 @@ def test_session_start_returns_zero_on_empty_stdin(
     assert "L1" in sout.getvalue()
 
 
-def test_session_start_does_not_emit_user_prompt_submit_tags(
+def test_session_start_legacy_does_not_emit_user_prompt_submit_tags(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Distinct tags so the model can tell channels apart."""
+    _legacy_mode(tmp_path, monkeypatch)
     db = tmp_path / "memory.db"
     _seed_db(
         db,
