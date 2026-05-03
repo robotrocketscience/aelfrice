@@ -10,4 +10,5 @@ build/
 *.db
 *.db-wal
 *.db-shm
+!tests/e2e/fixtures/*.db
 telemetry/
