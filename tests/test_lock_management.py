@@ -23,7 +23,7 @@ from aelfrice.models import (
     Belief,
 )
 from aelfrice.mcp_server import tool_demote, tool_promote, tool_unlock, tool_validate
-from aelfrice.promotion import SOURCE_LOCK_UNLOCK, UnlockResult, unlock
+from aelfrice.promotion import SOURCE_LOCK_UNLOCK, unlock
 from aelfrice.store import MemoryStore
 
 
