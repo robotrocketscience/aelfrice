@@ -50,6 +50,10 @@ MODULES: dict[str, tuple[set[str], dict[str, str]]] = {
         {"positive", "negative", "neutral"},
         {"user_message": "str"},
     ),
+    "directive_detection": (
+        {"directive", "not_directive"},
+        {"prompt": "str"},
+    ),
 }
 
 COMMON_REQUIRED = ("id", "provenance", "labeller_note", "label")

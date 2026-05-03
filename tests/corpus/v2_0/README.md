@@ -31,7 +31,9 @@ tests/corpus/v2_0/
 │   └── *.jsonl
 ├── promotion_trigger/                 #229
 │   └── *.jsonl
-└── sentiment/                         #193
+├── sentiment/                         #193
+│   └── *.jsonl
+└── directive_detection/               #374 (H1 split of #199)
     └── *.jsonl
 ```
 
@@ -62,6 +64,24 @@ required for **all** modules:
 | `wonder_consolidation` | `seed_belief` (string), `retrieved_neighbors` (list[string]) | `1`, `2`, `3`, `4`, `5` (phantom-quality rating) |
 | `promotion_trigger` | `belief_sequence` (list[string]) | `should_promote`, `should_not` |
 | `sentiment` | `user_message` (string) | `positive`, `negative`, `neutral` |
+| `directive_detection` | `prompt` (string) | `directive`, `not_directive` |
+
+### `directive_detection` re-entry gate (#374)
+
+Distinct from the other modules: this gate decides whether H1 of #199
+unblocks for implementation, not whether a shipped module continues to
+ship. Per `docs/v2_enforcement.md` § H1, H1 reopens for implementation
+when **all three** are true on a labeled sample of ≥ 200 coding prompts:
+
+- precision ≥ 0.80 (true-directive / predicted-directive)
+- recall ≥ 0.60 (true-directive / actual-directive)
+- sample published (this directory; synthetic-only per directory-of-origin
+  rules — real coding-prompt transcripts stay lab-side)
+
+If those numbers are not met, H1 stays deferred. The bench-gate test at
+`tests/bench_gate/test_directive_detection.py` evaluates the candidate
+detector at `src/aelfrice/directive_detector.py` against the labeled
+corpus.
 
 ## v0.1 acceptance (per #307)
 
