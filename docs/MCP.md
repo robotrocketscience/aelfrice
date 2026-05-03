@@ -1,6 +1,6 @@
 # MCP
 
-aelfrice exposes nine memory tools through a [Model Context Protocol](https://modelcontextprotocol.io) server. The agent calls them mid-turn; you don't have to invoke them yourself.
+aelfrice exposes eleven memory tools through a [Model Context Protocol](https://modelcontextprotocol.io) server. The agent calls them mid-turn; you don't have to invoke them yourself.
 
 Lifecycle commands (`setup`, `unsetup`, `migrate`, `doctor`, `upgrade`, `uninstall`) are CLI-only.
 
@@ -35,12 +35,14 @@ Tools register under the `aelf:` namespace.
 | `aelf:lock` | `statement` | — | `{kind, id, action}` |
 | `aelf:locked` | — | `pressured` | `{kind, n, locked[]}` |
 | `aelf:demote` | `belief_id` | — | `{kind, id, demoted}` |
-| `aelf:validate` | `belief_id` | `source` (default `user_validated`) | `{kind, id, origin, source}` |
+| `aelf:unlock` | `belief_id` | — | `{kind, id, unlocked, audit_event_id?}` |
+| `aelf:validate` | `belief_id` | `source` (default `user_validated`) | `{kind, id, prior_origin, new_origin, audit_event_id?}` |
+| `aelf:promote` | `belief_id` | `source` (default `user_validated`) | `{kind, id, prior_origin, new_origin, audit_event_id?}` |
 | `aelf:feedback` | `belief_id`, `signal` | `source` | `{kind, id, signal, prior_alpha, new_alpha, prior_beta, new_beta, pressured_locks, demoted_locks}` |
 | `aelf:stats` | — | — | `{kind, beliefs, threads, locked, feedback_events, ...}` |
 | `aelf:health` | — | — | `{kind, regime, description, classification_confidence?, features?}` |
 
-`signal` is `"used"` or `"harmful"`. Validation promotes an `agent_inferred` belief to a user-validated origin tier (v1.2+).
+`signal` is `"used"` or `"harmful"`. `aelf:unlock` drops a user-lock without touching origin and always writes a `lock:unlock` audit row; idempotent on already-unlocked beliefs. `aelf:promote` is a first-class alias of `aelf:validate` — identical semantics and return shape. Both `aelf:validate` and `aelf:promote` promote an `agent_inferred` belief to a user-validated origin tier (v1.2+).
 
 ## `aelf:onboard` polymorphism
 
