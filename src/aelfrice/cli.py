@@ -859,10 +859,8 @@ def _cmd_demote(args: argparse.Namespace, out: object) -> int:
             return 1
         # One tier per call: lock first, then user_validated.
         if belief.lock_level == LOCK_USER:
-            belief.lock_level = LOCK_NONE
-            belief.locked_at = None
-            belief.demotion_pressure = 0
-            store.update_belief(belief)
+            from aelfrice.promotion import unlock
+            unlock(store, args.belief_id)
             print(f"demoted: {args.belief_id}", file=out)  # type: ignore[arg-type]
             return 0
         if belief.origin == ORIGIN_USER_VALIDATED:

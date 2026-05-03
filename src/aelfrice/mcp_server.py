@@ -273,10 +273,8 @@ def tool_demote(store: MemoryStore, *, belief_id: str) -> dict[str, Any]:
             "error": "belief not found",
         }
     if belief.lock_level == LOCK_USER:
-        belief.lock_level = LOCK_NONE
-        belief.locked_at = None
-        belief.demotion_pressure = 0
-        store.update_belief(belief)
+        from aelfrice.promotion import unlock
+        unlock(store, belief_id)
         return {"kind": "demote.demoted", "id": belief_id, "demoted": True}
     if belief.origin == ORIGIN_USER_VALIDATED:
         from aelfrice.promotion import devalidate
