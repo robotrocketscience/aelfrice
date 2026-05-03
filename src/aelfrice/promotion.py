@@ -13,11 +13,16 @@ Reversibility lives in `cli._cmd_demote`: when given a
 back to `agent_inferred` and writes a `promotion:revert_to_agent_inferred`
 audit row.
 
-Audit row shape (every successful promote and devalidate):
+`unlock()` clears a user-lock without touching origin. It is the
+pure inverse of `aelf lock`. Writes a `lock:unlock` audit row.
+Idempotent — re-unlocking an already-unlocked belief is a no-op.
+
+Audit row shape (every successful promote, devalidate, and unlock):
   - belief_id = subject's id
   - valence   = 0.0  (replay-safe; ignored by feedback math)
   - source    = 'promotion:user_validated' or
-                'promotion:revert_to_agent_inferred'
+                'promotion:revert_to_agent_inferred' or
+                'lock:unlock'
   - created_at = ISO-8601 UTC, Z-suffixed
 """
 from __future__ import annotations
@@ -27,6 +32,7 @@ from datetime import datetime, timezone
 from typing import Final
 
 from aelfrice.models import (
+    LOCK_NONE,
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
     ORIGIN_USER_STATED,
@@ -38,6 +44,7 @@ SOURCE_PROMOTE_USER_VALIDATED: Final[str] = "promotion:user_validated"
 SOURCE_REVERT_TO_AGENT_INFERRED: Final[str] = (
     "promotion:revert_to_agent_inferred"
 )
+SOURCE_LOCK_UNLOCK: Final[str] = "lock:unlock"
 
 
 @dataclass(frozen=True)
@@ -53,6 +60,18 @@ class PromotionResult:
     new_origin: str
     audit_event_id: int | None
     already_validated: bool
+
+
+@dataclass(frozen=True)
+class UnlockResult:
+    """Outcome of one `unlock` call.
+
+    `audit_event_id` is None when `already_unlocked=True`
+    (idempotent path — no row is written).
+    """
+    belief_id: str
+    already_unlocked: bool
+    audit_event_id: int | None
 
 
 def _utc_now_iso() -> str:
@@ -173,4 +192,52 @@ def devalidate(
         new_origin=ORIGIN_AGENT_INFERRED,
         audit_event_id=audit_id,
         already_validated=False,
+    )
+
+
+def unlock(
+    store: MemoryStore,
+    belief_id: str,
+    *,
+    source_label: str = SOURCE_LOCK_UNLOCK,
+    now: str | None = None,
+) -> UnlockResult:
+    """Clear the user-lock on a belief. Pure inverse of `aelf lock`.
+
+    Does not touch origin — the belief's origin tier is unchanged.
+    Clears `lock_level`, `locked_at`, and `demotion_pressure`.
+
+    Idempotent: unlocking an already-unlocked belief is a no-op
+    (returns `already_unlocked=True`, writes no audit row).
+
+    Refusal cases (raise ValueError):
+      - belief not found
+
+    Writes a `lock:unlock` audit row on the active (non-idempotent)
+    path so the lock-management history is complete.
+    """
+    belief = store.get_belief(belief_id)
+    if belief is None:
+        raise ValueError(f"belief not found: {belief_id}")
+    if belief.lock_level != LOCK_USER:
+        return UnlockResult(
+            belief_id=belief_id,
+            already_unlocked=True,
+            audit_event_id=None,
+        )
+    belief.lock_level = LOCK_NONE
+    belief.locked_at = None
+    belief.demotion_pressure = 0
+    store.update_belief(belief)
+    timestamp = now if now is not None else _utc_now_iso()
+    audit_id = store.insert_feedback_event(
+        belief_id=belief_id,
+        valence=0.0,
+        source=source_label,
+        created_at=timestamp,
+    )
+    return UnlockResult(
+        belief_id=belief_id,
+        already_unlocked=False,
+        audit_event_id=audit_id,
     )
