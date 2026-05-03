@@ -125,6 +125,9 @@ _CWD_KEY: Final[str] = "cwd"
 
 _UPS_SECTION: Final[str] = "user_prompt_submit_hook"
 _COLLAPSE_KEY: Final[str] = "collapse_duplicate_hashes"
+_SELECTIVE_KEY: Final[str] = "selective_locked_injection"
+_LOCKED_MAX_K_KEY: Final[str] = "locked_max_k"
+_INJECT_ALL_KEY: Final[str] = "inject_all_locked"
 _CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 
 
@@ -132,12 +135,32 @@ _CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 class UserPromptSubmitConfig:
     """Configuration for the UserPromptSubmit hook.
 
-    All fields default to their OFF/safe value so missing config degrades
-    gracefully. Loaded from `.aelfrice.toml [user_prompt_submit_hook]`
-    by `load_user_prompt_submit_config()`.
+    Fields default to the v2.0 ship state. Loaded from
+    `.aelfrice.toml [user_prompt_submit_hook]` by
+    `load_user_prompt_submit_config()`.
+
+    `selective_locked_injection` (#373 / #199 H3): when True (default at
+    v2.0), the L0 locked layer is trimmed to top-`locked_max_k` by query
+    overlap × posterior_mean. `inject_all_locked = true` is the
+    documented fallback that restores legacy all-locked injection on
+    both UPS and SessionStart with no data loss.
     """
 
     collapse_duplicate_hashes: bool = False
+    selective_locked_injection: bool = True
+    locked_max_k: int = 5
+    inject_all_locked: bool = False
+
+    def effective_locked_max_k(self) -> int | None:
+        """Resolve the L0 cap to pass into `retrieve(locked_max_k=...)`.
+
+        Returns `None` when locks should NOT be trimmed (legacy all-locked
+        path). Returns a non-negative int otherwise. `inject_all_locked`
+        wins over `selective_locked_injection`.
+        """
+        if self.inject_all_locked or not self.selective_locked_injection:
+            return None
+        return max(0, int(self.locked_max_k))
 
 
 def load_user_prompt_submit_config(
@@ -188,8 +211,48 @@ def load_user_prompt_submit_config(
                     file=serr,
                 )
                 collapse_obj = False
+            defaults = UserPromptSubmitConfig()
+            selective_obj: Any = section.get(
+                _SELECTIVE_KEY, defaults.selective_locked_injection
+            )
+            if not isinstance(selective_obj, bool):
+                print(
+                    f"aelfrice hook: ignoring [{_UPS_SECTION}] "
+                    f"{_SELECTIVE_KEY} in {candidate} (expected bool)",
+                    file=serr,
+                )
+                selective_obj = defaults.selective_locked_injection
+            max_k_obj: Any = section.get(
+                _LOCKED_MAX_K_KEY, defaults.locked_max_k
+            )
+            # Reject bool-as-int; require non-negative int.
+            if (
+                isinstance(max_k_obj, bool)
+                or not isinstance(max_k_obj, int)
+                or max_k_obj < 0
+            ):
+                print(
+                    f"aelfrice hook: ignoring [{_UPS_SECTION}] "
+                    f"{_LOCKED_MAX_K_KEY} in {candidate} "
+                    f"(expected non-negative int)",
+                    file=serr,
+                )
+                max_k_obj = defaults.locked_max_k
+            inject_all_obj: Any = section.get(
+                _INJECT_ALL_KEY, defaults.inject_all_locked
+            )
+            if not isinstance(inject_all_obj, bool):
+                print(
+                    f"aelfrice hook: ignoring [{_UPS_SECTION}] "
+                    f"{_INJECT_ALL_KEY} in {candidate} (expected bool)",
+                    file=serr,
+                )
+                inject_all_obj = defaults.inject_all_locked
             return UserPromptSubmitConfig(
                 collapse_duplicate_hashes=collapse_obj,
+                selective_locked_injection=selective_obj,
+                locked_max_k=max_k_obj,
+                inject_all_locked=inject_all_obj,
             )
         parent = current.parent
         if parent == current:
@@ -654,7 +717,10 @@ def user_prompt_submit(
         )
         config = load_user_prompt_submit_config(stderr=serr)
         retrieve_start = time.monotonic()
-        hits = _retrieve(prompt, budget)
+        hits = _retrieve(
+            prompt, budget,
+            locked_max_k=config.effective_locked_max_k(),
+        )
         if hits:
             # AC1 telemetry: record pre-collapse counts.
             n_returned = len(hits)
@@ -827,17 +893,23 @@ def _extract_prompt(raw: str) -> str | None:
     return prompt
 
 
-def _retrieve(prompt: str, token_budget: int) -> list[Belief]:
+def _retrieve(
+    prompt: str,
+    token_budget: int,
+    *,
+    locked_max_k: int | None = None,
+) -> list[Belief]:
     """Run retrieval for the given prompt and return the raw hit list.
 
-    Separating retrieval from formatting lets callers inspect the hits
-    (for telemetry, optional dedup, etc.) before the string is built.
-    Returns an empty list when the store is absent or retrieval yields
-    nothing.
+    `locked_max_k` is forwarded to `retrieve()` for the L0 selective
+    injection path (#373); `None` preserves legacy all-locked behaviour.
     """
     store = _open_store()
     try:
-        return search_for_prompt(store, prompt, token_budget=token_budget)
+        return search_for_prompt(
+            store, prompt, token_budget=token_budget,
+            locked_max_k=locked_max_k,
+        )
     finally:
         store.close()
 
