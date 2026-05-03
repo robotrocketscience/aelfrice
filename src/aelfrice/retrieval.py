@@ -241,7 +241,9 @@ def score_lock_against_query(
     overlap = len(query_terms & lock_terms)
     if overlap == 0:
         return 0.0
-    return float(overlap) * float(lock.posterior_mean)
+    # Local import to keep retrieval -> scoring direction tree-shake clean.
+    from aelfrice.scoring import posterior_mean as _posterior_mean
+    return float(overlap) * _posterior_mean(lock.alpha, lock.beta)
 
 
 def top_k_locks(
