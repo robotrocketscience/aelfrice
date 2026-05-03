@@ -1,12 +1,17 @@
 name: E2E
 
-# End-to-end suite (#334). Step-1 trigger: PR opt-in via the `e2e` label
-# only. Step-4 of the rollout flips this to also run on push to main and
-# adds the `attn:e2e-failure` issue-opening step. See umbrella issue.
+# End-to-end suite (#334). Triggers:
+#  - PR opt-in via the `e2e` label (label / synchronize / reopened).
+#  - push to main (post-merge regression catch).
+# Failure surfacing (#370):
+#  - push:main fail → open issue tagged `attn:e2e-failure` referencing the SHA.
+#  - PR fail → add `attn:e2e-failure` label to the PR.
 
 on:
   pull_request:
     types: [labeled, synchronize, reopened]
+    branches: [main]
+  push:
     branches: [main]
 
 permissions:
@@ -18,7 +23,7 @@ concurrency:
 
 jobs:
   e2e:
-    if: contains(github.event.pull_request.labels.*.name, 'e2e')
+    if: github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'e2e')
     runs-on: ubuntu-latest
     timeout-minutes: 8
     strategy:
@@ -60,3 +65,41 @@ jobs:
         run: |
           uv sync --frozen --group dev
           uv run pytest tests/e2e/ -q --maxfail=3
+
+  surface-failure:
+    needs: e2e
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+      - name: Label PR on failure
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "attn:e2e-failure"
+      - name: Open issue on push:main failure
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          short_sha="${SHA:0:7}"
+          gh issue create \
+            --repo "$REPO" \
+            --title "e2e: failure on main @ ${short_sha}" \
+            --label "attn:e2e-failure" \
+            --body "E2E job failed on push to \`main\` at commit \`${SHA}\`.
+
+          **Failing run:** ${RUN_URL}
+
+          This issue was opened automatically by \`.github/workflows/e2e.yml\` (#370). Triage: investigate the failing matrix leg(s), open a fix PR, then close this issue. If the failure is environmental and not a code regression, label \`attn:e2e-flake\` and quarantine within one business day per #334."
