@@ -49,7 +49,7 @@ The matching beliefs come back as an `<aelfrice-memory>` block prepended to your
 push the release
 ```
 
-Default budget is 2,400 tokens per prompt. Locked beliefs always go first; the rest is BM25-ranked and truncated to fit.
+Default budget is 2,400 tokens per prompt. Locked beliefs are the always-injected pool — every lock ships on every prompt, in full, regardless of relevance score. **Lock count is your baseline-context budget knob:** if you've locked 200 things, every session opens with all 200, by your design. The non-locked pool (FTS/L1) is BM25-ranked and truncated to fit.
 
 ---
 

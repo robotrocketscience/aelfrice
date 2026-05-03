@@ -2,9 +2,9 @@
 
 Spec for issue [#199](https://github.com/robotrocketscience/aelfrice/issues/199). Substrate-cascade addendum to [`substrate_decision.md`](substrate_decision.md) (#196 ratified Option B).
 
-Status: H3 implemented at v2.0 ([#373](https://github.com/robotrocketscience/aelfrice/issues/373)); H1 split + deferred + bench-gated ([#374](https://github.com/robotrocketscience/aelfrice/issues/374)); H2 dropped per § H2 below.
+Status: H3 reframed and superseded by [#379](https://github.com/robotrocketscience/aelfrice/issues/379) (locked beliefs are the always-injected pool — see § Downstream impact below); H1 split + deferred + bench-gated ([#374](https://github.com/robotrocketscience/aelfrice/issues/374)); H2 dropped per § H2 below.
 
-**Reading 2 picked for the SessionStart-without-prompt ambiguity (#373):** locked-belief injection moves out of SessionStart entirely and into the per-turn UserPromptSubmit hook, where a real prompt exists to score against. The SessionStart payload contains no user prompt, so any session-boot relevance signal would be a guess. The legacy all-locked SessionStart behaviour is preserved behind `[user_prompt_submit_hook] inject_all_locked = true` in `.aelfrice.toml` — a single switch that also disables UPS L0 trimming, restoring the v1.x injection contract end-to-end with no data loss.
+**SessionStart-without-prompt ambiguity resolved by reframing (#379):** locked beliefs are the always-injected pool by definition. SessionStart emits all locks unconditionally; lock count IS the operator's baseline-context budget knob. Top-K selective injection still applies, but only to the *non-locked* retrieval surface (L1/L2.5/L3) at UserPromptSubmit, where the prompt exists to score against. The earlier #373 framing — top-K applied to the locked pool — silently revoked the user's lock assertion and is gone.
 
 ## What's being decided
 
@@ -52,7 +52,7 @@ If a future user actually needs compliance auditing, the right path is a separat
 
 ## Downstream impact (as shipped)
 
-- **H3 shipped at v2.0 (#373).** UserPromptSubmit applies top-K (default `locked_max_k = 5`) by query overlap × `posterior_mean(alpha, beta)`. SessionStart no longer emits a `<aelfrice-baseline>` block under the default; both halves of the legacy contract revive together via `[user_prompt_submit_hook] inject_all_locked = true`. Per-session injection counts are surfaced by `aelf tail` (live-tail of the per-turn audit log; each record carries `n_beliefs` and `n_locked`).
+- **H3 reframed and superseded by #379.** Locked beliefs are now defined as the always-injected pool — SessionStart emits every lock unconditionally and UserPromptSubmit ships every lock alongside the prompt-driven retrieval surface. There is no `selective_locked_injection`, `locked_max_k`, or `inject_all_locked` knob; the earlier #373 framing (top-K on the locked pool) is removed. Top-K selection still has a place, but on the non-locked retrieval pool (L1/L2.5/L3) only — that algorithm is tracked separately. Per-session injection counts are still surfaced by `aelf tail` (live-tail of the per-turn audit log; each record carries `n_beliefs` and `n_locked`).
 - **H1 split + deferred (#374).** Bench gate: ≥80% precision + ≥60% recall on a labeled sample of 200 coding prompts before reopening.
 - **H2 dropped.** v2.0 ships without a compliance-audit predicate language; the research line's `enforcement.py` H2 is not ported. The `command_succeeds:cmd` predicate would have executed arbitrary shell from belief content, with no allowlist or sandbox.
 

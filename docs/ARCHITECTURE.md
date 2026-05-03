@@ -90,6 +90,8 @@ Walk is 1-hop only. Multi-hop pressure is deferred.
 
 ## Retrieval
 
+L0 (locked beliefs) is the **always-injected pool**: every lock ships on every retrieval, in full, no scoring, no top-K. Lock count is the operator's baseline-context budget knob — if you lock 200 things, every retrieval opens with all 200, by design. Only the non-locked pool (L1/L2.5/L3) is subject to relevance ranking and budget trim.
+
 ```
 L0: store.list_locked()              always loaded; never trimmed
         ↓
