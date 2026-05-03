@@ -65,7 +65,7 @@ from aelfrice.bfs_multihop import (
     DEFAULT_TOTAL_BUDGET_NODES as BFS_DEFAULT_TOTAL_BUDGET_NODES,
     expand_bfs,
 )
-from aelfrice.bm25 import BM25IndexCache, tokenize as _bm25_tokenize
+from aelfrice.bm25 import BM25IndexCache
 from aelfrice.entity_extractor import extract_entities
 from aelfrice.graph_spectral import (
     DEFAULT_BM25_SEED_TOP_K,
@@ -214,69 +214,6 @@ def _estimate_tokens(text: str) -> int:
 
 def _belief_tokens(b: Belief) -> int:
     return _estimate_tokens(b.content)
-
-
-# --- L0 selective injection (#373 / #199 H3) -----------------------------
-
-# Default cap on locked beliefs injected per UPS turn. Matches the
-# research-line default in docs/v2_enforcement.md § H3.
-DEFAULT_LOCKED_MAX_K: Final[int] = 5
-
-
-def score_lock_against_query(
-    lock: Belief, query_terms: frozenset[str]
-) -> float:
-    """Score one locked belief against a tokenised query.
-
-    score = (# distinct query terms found in lock) * posterior_mean
-
-    Locks have saturated posteriors so the second factor is approximately
-    constant; the practical signal is term overlap. A score of 0 means
-    no query term appears in the lock content. Both factors are
-    non-negative so score is non-negative.
-    """
-    if not query_terms:
-        return 0.0
-    lock_terms = set(_bm25_tokenize(lock.content))
-    overlap = len(query_terms & lock_terms)
-    if overlap == 0:
-        return 0.0
-    # Local import to keep retrieval -> scoring direction tree-shake clean.
-    from aelfrice.scoring import posterior_mean as _posterior_mean
-    return float(overlap) * _posterior_mean(lock.alpha, lock.beta)
-
-
-def top_k_locks(
-    locks: list[Belief], query: str, k: int
-) -> list[Belief]:
-    """Return at most `k` locks ranked by query overlap × posterior_mean.
-
-    Determinism: ranking is `(score DESC, input-order ASC)`. Callers
-    pass `list_locked_beliefs()` output which is already deterministic
-    (`locked_at DESC, id ASC` per `MemoryStore.list_locked_beliefs`),
-    so the same `(locked_set_snapshot, query)` always produces the
-    same prefix.
-
-    `k <= 0` returns `[]`. `k >= len(locks)` returns all locks in their
-    relevance-ranked order. Empty / whitespace-only `query` returns
-    `locks[:k]` (no scoring possible — preserves locked_at order).
-    """
-    if k <= 0 or not locks:
-        return []
-    if not query.strip():
-        return list(locks[:k])
-    query_terms = frozenset(_bm25_tokenize(query))
-    if not query_terms:
-        return list(locks[:k])
-    # Stable sort with negative score → score DESC, original order ASC.
-    indexed = list(enumerate(locks))
-    indexed.sort(
-        key=lambda pair: (
-            -score_lock_against_query(pair[1], query_terms),
-            pair[0],
-        )
-    )
-    return [b for _, b in indexed[:k]]
 
 
 # --- Config flag resolution ----------------------------------------------
@@ -997,7 +934,6 @@ def retrieve(
     bm25f_cache: BM25IndexCache | None = None,
     heat_kernel_enabled: bool | None = None,
     eigenbasis_cache: GraphEigenbasisCache | None = None,
-    locked_max_k: int | None = None,
 ) -> list[Belief]:
     """Return L0 locked + L2.5 entity + L1 BM25 + L3 BFS expansions.
 
@@ -1048,13 +984,10 @@ def retrieve(
     # process per flag.
     warn_placeholder_flags()
 
+    # #379: locked beliefs are the always-injected pool. The locked
+    # set is never trimmed in retrieve(); top-K selection applies only
+    # to the non-locked retrieval surface (L1/L2.5/L3) below.
     locked: list[Belief] = store.list_locked_beliefs()
-    # #373 / #199 H3: selective L0 injection. When `locked_max_k` is set
-    # to a non-negative int, score the locked set against the query and
-    # keep only the top K. Caller passes None to opt out and get legacy
-    # all-locked behaviour (--inject-all fallback path).
-    if locked_max_k is not None and locked_max_k >= 0:
-        locked = top_k_locks(locked, query, locked_max_k)
     locked_ids: set[str] = {b.id for b in locked}
 
     # Backwards-compat: when the flag is off and the caller didn't
