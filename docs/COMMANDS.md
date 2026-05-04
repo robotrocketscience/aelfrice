@@ -1,6 +1,6 @@
 # Commands
 
-Twenty-six CLI subcommands. The retrieval/feedback ones are also exposed as MCP tools (see [MCP](MCP.md)) and slash commands (see [SLASH_COMMANDS](SLASH_COMMANDS.md)). Lifecycle commands (`setup`, `doctor`, `migrate`, `upgrade`, `uninstall`, etc.) are CLI-only.
+Twenty-eight CLI subcommands. The retrieval/feedback ones are also exposed as MCP tools (see [MCP](MCP.md)) and slash commands (see [SLASH_COMMANDS](SLASH_COMMANDS.md)). Lifecycle commands (`setup`, `doctor`, `migrate`, `upgrade`, `uninstall`, etc.) are CLI-only.
 
 ```
 aelf <subcommand> [args] [options]
@@ -24,6 +24,8 @@ DB resolves from `$AELFRICE_DB`, then `<git-common-dir>/aelfrice/memory.db` when
 | `validate <belief_id> [--source user_validated]` | Promote an `agent_inferred` belief to a user-validated origin (v1.2+). |
 | `feedback <belief_id> <used\|harmful> [--source S]` | `used` ⇒ α += 1; `harmful` ⇒ β += 1. Harmful feedback through outbound `CONTRADICTS` threads to user-locks bumps their demotion_pressure; ≥5 ⇒ auto-demote. |
 | `resolve` | Sweep unresolved `CONTRADICTS` threads. Picks a winner per precedence (`user_stated > user_corrected > document_recent`) and inserts a `SUPERSEDES` thread. Idempotent. |
+| `reason <query> [--seed-id ID]... [--k N] [--depth N] [--budget N] [--fanout N] [--json]` | (v2.0+, #389) Surface a reasoning chain over the belief graph. Default seeds: top-3 BM25 hits over `<query>`; `--seed-id` overrides (repeatable). Walks `expand_bfs` with terminal-tight defaults (depth=2, budget=10, fanout=8). Default output is an indented hop tree with edge-type breadcrumbs and path-scores; `--json` for tooling. Read-only over the graph. |
+| `wonder [--seed ID] [--top N] [--emit-phantoms] [--json]` | (v2.0+, #389) Surface consolidation candidates. Default seed: highest-degree non-locked belief (id-asc tiebreak); `--seed` overrides. Combines BFS path-score with `wonder_consolidation.score` token-overlap to rank candidates; suggested actions in `{merge, supersede, contradict, relate}`. `--emit-phantoms` prints `Phantom` JSON objects (constituent ids, generator, content, score) for offline review. **Phantom-store integration deferred to v2.x #229 lane** — `aelf wonder` does not write to the store in v2.0. |
 
 ## Diagnostics
 

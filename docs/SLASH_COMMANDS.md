@@ -1,6 +1,6 @@
 # Slash Commands
 
-Fifteen markdown files in `src/aelfrice/slash_commands/`, tracking the v1.2.0 CLI consolidation plus the v1.4.0 `rebuild` promotion. After `aelf setup`, they appear as `/aelf:*` in Claude Code. Each is a thin wrapper over the CLI — `/aelf:foo` invokes `aelf foo` against the active project's DB.
+Seventeen markdown files in `src/aelfrice/slash_commands/`, tracking the v1.2.0 CLI consolidation plus the v1.4.0 `rebuild` promotion. After `aelf setup`, they appear as `/aelf:*` in the host. Each is a thin wrapper over the CLI — `/aelf:foo` invokes `aelf foo` against the active project's DB.
 
 Slash files are not shipped for hidden CLI subcommands (`bench`, `feedback`, `health`, `migrate`, `project-warm`, `regime`, `session-delta`, `stats`, `statusline`, `unsetup`). Those subcommands stay callable from the CLI for scripting, hook entry-points, and back-compat aliases — they're just not surfaced as slashes.
 
@@ -25,6 +25,8 @@ Slash files are not shipped for hidden CLI subcommands (`bench`, `feedback`, `he
 | `/aelf:upgrade` | (none) — print pip-upgrade hint |
 | `/aelf:uninstall` | one of `--keep-db`, `--archive`, `--purge` |
 | `/aelf:rebuild` | (none) — manually fire the context rebuilder; v1.4.0+ |
+| `/aelf:reason` | keyword query — walks the belief graph from BM25-seeded starting points; v2.0+ (#389) |
+| `/aelf:wonder` | optional flags (`--top N`, `--seed ID`, `--emit-phantoms`) — surfaces consolidation candidates / phantom-belief suggestions; v2.0+ (#389), phantom-store integration deferred to v2.x |
 
 Behaviour matches the CLI exactly — see [COMMANDS](COMMANDS.md). The v1.1.0 `edges` → `threads` user-facing rename does not surface here; the program name remains `aelf`.
 
