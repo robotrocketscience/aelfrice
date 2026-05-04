@@ -16,11 +16,19 @@ once labelling is complete across all six modules. See
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 
+from aelfrice.relationship_detector import VERDICT_LABELS
+
 CORPUS_ROOT = Path(__file__).parent / "corpus" / "v2_0"
+
+# Synthetic provenance must follow `synthetic-vN.M` per the README carve-out
+# (`tests/corpus/v2_0/README.md` § v0.1 acceptance). The format guarantees
+# future re-labellers can pivot off the version suffix instead of free-text.
+SYNTHETIC_PROVENANCE_RE = re.compile(r"^synthetic-v\d+\.\d+$")
 
 
 # Module → (allowed labels, extra-required-fields-spec)
@@ -35,7 +43,9 @@ MODULES: dict[str, tuple[set[str], dict[str, str]]] = {
         {"user_directive": "str", "agent_output": "str"},
     ),
     "contradiction": (
-        {"contradicts", "refines", "unrelated"},
+        # Sourced from the detector to prevent drift between corpus schema
+        # and the runtime vocabulary in src/aelfrice/relationship_detector.py.
+        set(VERDICT_LABELS),
         {"belief_a": "str", "belief_b": "str"},
     ),
     "wonder_consolidation": (
@@ -159,6 +169,15 @@ def test_corpus_module_files_valid(module: str) -> None:
                 for field in COMMON_REQUIRED:
                     _check_field(row, field, "str", where)
 
+                # Synthetic provenance must follow `synthetic-vN.M`. README
+                # carve-out at tests/corpus/v2_0/README.md § v0.1 acceptance.
+                prov = row["provenance"]
+                if prov.startswith("synthetic"):
+                    assert SYNTHETIC_PROVENANCE_RE.match(prov), (
+                        f"{where}: synthetic provenance {prov!r} must match "
+                        f"`synthetic-vN.M` (e.g. 'synthetic-v0.1')"
+                    )
+
                 # Module-specific.
                 for field, spec in extra_spec.items():
                     _check_field(row, field, spec, where)
@@ -186,4 +205,23 @@ def test_corpus_root_readme_present() -> None:
     """The schema contract README must exist alongside the corpus."""
     assert (CORPUS_ROOT / "README.md").is_file(), (
         "tests/corpus/v2_0/README.md is required — it documents the schema"
+    )
+
+
+def test_synthetic_provenance_regex() -> None:
+    """`synthetic-vN.M` must accept versioned, reject sloppy variants."""
+    assert SYNTHETIC_PROVENANCE_RE.match("synthetic-v0.1")
+    assert SYNTHETIC_PROVENANCE_RE.match("synthetic-v12.34")
+    assert not SYNTHETIC_PROVENANCE_RE.match("synthetic")
+    assert not SYNTHETIC_PROVENANCE_RE.match("synthetic-v1")
+    assert not SYNTHETIC_PROVENANCE_RE.match("synthetic-foo")
+    assert not SYNTHETIC_PROVENANCE_RE.match("synthetic-v0.1-extra")
+
+
+def test_contradiction_labels_match_detector() -> None:
+    """Schema's contradiction allowed-labels must equal detector's runtime set."""
+    schema_labels, _ = MODULES["contradiction"]
+    assert schema_labels == set(VERDICT_LABELS), (
+        "MODULES['contradiction'] label set drifted from "
+        "aelfrice.relationship_detector.VERDICT_LABELS — re-import or update."
     )
