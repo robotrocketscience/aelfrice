@@ -3,6 +3,18 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    # #413 — docs-only PRs skip pytest. paths-ignore is a UNION filter:
+    # the workflow runs unless every changed file matches an ignored path.
+    # A mixed PR (e.g. src/foo.py + docs/x.md) still runs full CI.
+    # TODO(post-public-flip): once branch protection requires this check,
+    # migrate to a dorny/paths-filter detection job so the workflow always
+    # runs and reports a status, with downstream jobs gated by `if:`.
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/PULL_REQUEST_TEMPLATE.md'
 
 permissions:
   contents: read

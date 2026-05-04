@@ -5,6 +5,14 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # #413 — docs-only PRs skip CodeQL. The weekly schedule below still
+    # provides full-tree coverage. See ci.yml for the path-filter rationale.
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/PULL_REQUEST_TEMPLATE.md'
   schedule:
     - cron: '0 6 * * 2'
 

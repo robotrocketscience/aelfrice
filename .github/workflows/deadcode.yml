@@ -3,6 +3,13 @@ name: deadcode
 on:
   pull_request:
     branches: [main]
+    # #413 — docs-only PRs skip deptry. See ci.yml for the path-filter rationale.
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'LICENSE'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/PULL_REQUEST_TEMPLATE.md'
   push:
     branches: [main]
 
