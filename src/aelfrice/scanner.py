@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final
 
-from aelfrice.derivation import DerivationInput, derive
+from aelfrice.derivation_worker import run_worker
 from aelfrice.inedible import is_inedible
 from aelfrice.models import (
     CORROBORATION_SOURCE_FILESYSTEM_INGEST,
@@ -221,10 +221,22 @@ def scan_repo(
     skipped_non_persisting = 0
     skipped_noise = 0
 
+    # #264 part 2: regex path defers belief materialization to
+    # `derivation_worker.run_worker`. Each regex candidate appends one
+    # unstamped row to `ingest_log`; one worker invocation at end-of-scan
+    # stamps every row, dedup-or-corroborates against `beliefs`, and
+    # writes edges. Snapshot the canonical id set up front so we can
+    # back-fill scanner accounting from log entries after the worker
+    # runs (preserves the public ScanResult contract). The LLM path
+    # remains direct-write — its alpha/beta/origin/audit_source are not
+    # yet representable in `raw_meta` for the worker to reconstruct.
+    ids_before: set[str] = set(store.list_belief_ids())
+    regex_log_ids: list[str] = []
+
     # Two-pass when an llm_router is supplied: first collect the
     # noise-filtered candidates, then route them all through the
     # batched LLM call. Single-pass when no router (default OFF):
-    # derive() handles the regex-classify path inline.
+    # the regex path delegates to the derivation worker after the loop.
     filtered: list[SentenceCandidate] = []
     for candidate in candidates:
         if is_noise(candidate.text, cfg):
@@ -297,35 +309,61 @@ def scan_repo(
                     created_at=timestamp,
                 )
         else:
-            # Regex path: delegate belief derivation to pure derive().
-            out = derive(DerivationInput(
-                raw_text=candidate.text,
+            # Regex path: append one unstamped log row. The worker
+            # invocation after this loop calls derive() + writes the
+            # canonical belief via insert_or_corroborate + stamps the
+            # row. `call_site` disambiguates the corroboration audit
+            # since INGEST_SOURCE_FILESYSTEM is shared with other
+            # entry points (transcript ingest, hook commit ingest).
+            log_id = store.record_ingest(
                 source_kind=INGEST_SOURCE_FILESYSTEM,
                 source_path=candidate.source,
-                ts=created_at,
+                raw_text=candidate.text,
                 session_id=sid,
-            ))
-            if out.belief is None:
+                ts=created_at,
+                raw_meta={"call_site": CORROBORATION_SOURCE_FILESYSTEM_INGEST},
+            )
+            regex_log_ids.append(log_id)
+
+    # End-of-batch worker invocation. Idempotent: scans every unstamped
+    # row in the store, including any orphaned by a crashed prior scan.
+    # Ours are the rows we just appended; the worker derives, dedups,
+    # and stamps each with `derived_belief_ids`. Calling once per scan
+    # rather than per candidate keeps the cost O(unstamped) instead of
+    # O(unstamped × candidates).
+    if regex_log_ids:
+        run_worker(store)
+
+        # Back-fill scanner accounting from the stamped log rows. Three
+        # outcomes per log row, mirroring the pre-#264 inline branches:
+        #   - empty derived_belief_ids → derive() returned no belief
+        #     (persist=False) → skipped_non_persisting.
+        #   - derived id already in `ids_before` → known belief
+        #     corroborated → skipped_existing.
+        #   - derived id new since `ids_before` → inserted. Counted at
+        #     most once per id so two log rows that converge on the
+        #     same belief still report inserted=1.
+        seen_new: set[str] = set()
+        for log_id in regex_log_ids:
+            entry = store.get_ingest_log_entry(log_id)
+            if entry is None:
+                continue
+            ids = entry.get("derived_belief_ids")
+            if not isinstance(ids, list) or not ids:
                 skipped_non_persisting += 1
                 continue
-            belief_id = out.belief.id
-            if store.get_belief(belief_id) is not None:
-                skipped_existing += 1
-                continue
-            store.record_ingest(
-                source_kind=INGEST_SOURCE_FILESYSTEM,
-                source_path=candidate.source,
-                raw_text=candidate.text,
-                derived_belief_ids=[belief_id],
-                session_id=sid,
-                ts=created_at,
-            )
-            _, was_inserted = store.insert_or_corroborate(
-                out.belief,
-                source_type=CORROBORATION_SOURCE_FILESYSTEM_INGEST,
-            )
-            if was_inserted:
-                inserted += 1
+            for bid in ids:
+                if not isinstance(bid, str):
+                    continue
+                if bid in ids_before:
+                    skipped_existing += 1
+                elif bid not in seen_new:
+                    seen_new.add(bid)
+                    inserted += 1
+                else:
+                    # Same belief id already counted in this scan
+                    # (two regex log rows hashed to the same id).
+                    skipped_existing += 1
 
     return ScanResult(
         inserted=inserted,
