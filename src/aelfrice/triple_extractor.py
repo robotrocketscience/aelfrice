@@ -39,6 +39,7 @@ from aelfrice.models import (
     EDGE_SUPERSEDES,
     EDGE_SUPPORTS,
     EDGE_TEMPORAL_NEXT,
+    EDGE_TESTS,
     INGEST_SOURCE_GIT,
     Edge,
 )
@@ -168,6 +169,13 @@ _PATTERNS: Final[tuple[_RelationPattern, ...]] = (
     _build_pattern("comes after", EDGE_TEMPORAL_NEXT),
     _build_pattern("is after", EDGE_TEMPORAL_NEXT),
     _build_pattern("succeeds", EDGE_TEMPORAL_NEXT),
+    # TESTS: source = test belief, target = spec/claim under test.
+    # "tests" / "is a test for" / "is test of" / "covers" all express
+    # the same evidential relationship — the subject exercises the object.
+    _build_pattern("tests", EDGE_TESTS),
+    _build_pattern("is a test for", EDGE_TESTS),
+    _build_pattern("is test of", EDGE_TESTS),
+    _build_pattern("covers", EDGE_TESTS),
 )
 
 
