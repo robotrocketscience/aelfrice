@@ -24,6 +24,7 @@ from typing import cast
 
 from aelfrice.derivation_worker import run_worker
 from aelfrice.extraction import extract_sentences
+from aelfrice.session_resolution import resolve_session_id
 from aelfrice.models import (
     ANCHOR_TEXT_MAX_LEN,
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
@@ -81,10 +82,17 @@ def ingest_turn(
 
     Returns the number of beliefs inserted (or that would have been
     inserted if not already present).
+
+    When the caller omits `session_id`, the helper
+    :func:`aelfrice.session_resolution.resolve_session_id` reads
+    ``$AELF_SESSION_ID`` as the inference fallback (#192 Q1.a). If
+    neither is set, the call proceeds with a NULL session_id and
+    emits a one-shot stderr warn keyed on the entry-point name.
     """
     return len(_ingest_turn_ids(
         store=store, text=text, source=source,
-        session_id=session_id, created_at=created_at,
+        session_id=resolve_session_id(session_id, surface_name="ingest_turn"),
+        created_at=created_at,
         bulk=bulk,
     ))
 
