@@ -189,7 +189,8 @@ is the noisiest signal in the v1.2 ingest output).
 | `IMPLEMENTS`   | 0.65   | provenance     | "B implements A" — source is an implementation, target is the spec/claim being implemented. Slightly below DERIVED_FROM (0.70) because IMPLEMENTS is a more specific kind of derivation, but the dependency is almost as strong: an implementation becomes stale when its spec is superseded. Triple extractor produces `IMPLEMENTS` from "X implements Y" / "X is an implementation of Y" / "X realizes Y" / "X fulfills Y". **v2.0 ship-gate (#385):** the edge stays at weight 0.65 only while it clears a ≥+5pp BFS multi-hop hit@k uplift on the labeled `implements_edge/` corpus vs. the same fixture run with this entry zeroed; gate harness lives at `tests/bench_gate/test_bfs_multihop_implements.py`. Below-floor closes #385 as `wontfix`. |
 | `SUPPORTS`     | 0.60   | evidential     | "B argues for A" — supporting evidence is useful adjacent context but lower-priority than provenance or supersession. |
 | `CITES`        | 0.40   | referential    | "B mentions A" — weakest of the explicitly-relational edges. Per v1.0 `EDGE_VALENCE`, CITES is half of SUPPORTS for valence propagation; mirror that here. |
-| `RELATES_TO`   | 0.30   | informational  | The catch-all. Triple extractor produces `RELATES_TO` from "X relates to Y" / "X is related to Y" — the loosest relational verbs. Low weight, but non-zero so densely-connected `RELATES_TO` neighborhoods can still surface the *single* highest-`bm25` hit they reach. **v2.0 ship-gate (#383):** the edge stays at weight 0.30 only while it clears a ≥+5pp BFS multi-hop hit@k uplift on the labeled `bfs_relates_to/` corpus vs. the same fixture run with this entry zeroed; gate harness lives at `tests/bench_gate/test_bfs_multihop_relates_to.py`. Per #382 Decision A2 (operator ratification 2026-05-04) the universal +5pp bar replaced the umbrella's proposed +3pp floor — `RELATES_TO` is the most generic catch-all and has the highest over-fit risk among Track A edges. Below-floor closes #383 as `wontfix`. |
+| `RELATES_TO`      | 0.30   | informational  | The catch-all. Triple extractor produces `RELATES_TO` from "X relates to Y" / "X is related to Y" — the loosest relational verbs. Low weight, but non-zero so densely-connected `RELATES_TO` neighborhoods can still surface the *single* highest-`bm25` hit they reach. **v2.0 ship-gate (#383):** the edge stays at weight 0.30 only while it clears a ≥+5pp BFS multi-hop hit@k uplift on the labeled `bfs_relates_to/` corpus vs. the same fixture run with this entry zeroed; gate harness lives at `tests/bench_gate/test_bfs_multihop_relates_to.py`. Per #382 Decision A2 (operator ratification 2026-05-04) the universal +5pp bar replaced the umbrella's proposed +3pp floor — `RELATES_TO` is the most generic catch-all and has the highest over-fit risk among Track A edges. Below-floor closes #383 as `wontfix`. |
+| `TEMPORAL_NEXT`   | 0.25   | structural     | "B is the chronological successor of A" — pure structural adjacency with no evidential or argumentative content. Placed just below RELATES_TO (0.30) because RELATES_TO at least implies topical connection; temporal ordering does not. Non-zero so chains of temporally adjacent beliefs can still reach the single closest content hit. **v2.0 ship-gate (#386):** the edge stays at weight 0.25 only while it clears a ≥+5pp BFS multi-hop hit@k uplift on the labeled `temporal_next_edge/` corpus vs. the same fixture run with this entry zeroed; gate harness lives at `tests/bench_gate/test_bfs_multihop_temporal_next.py`. Per #382 Decision A2 the universal +5pp bar applies. Below-floor closes #386 as `wontfix`. |
 
 **Retroactive bench gate for `DERIVED_FROM` (#388).** `DERIVED_FROM` shipped
 at v1.2.0 as part of the ingest enrichment wave, before the #382 Track A
@@ -211,13 +212,14 @@ silently changing valence semantics.
 ```python
 # src/aelfrice/bfs_multihop.py
 BFS_EDGE_WEIGHTS: dict[str, float] = {
-    EDGE_SUPERSEDES:   0.90,
-    EDGE_CONTRADICTS:  0.85,
-    EDGE_DERIVED_FROM: 0.70,
-    EDGE_IMPLEMENTS:   0.65,
-    EDGE_SUPPORTS:     0.60,
-    EDGE_CITES:        0.40,
-    EDGE_RELATES_TO:   0.30,
+    EDGE_SUPERSEDES:    0.90,
+    EDGE_CONTRADICTS:   0.85,
+    EDGE_DERIVED_FROM:  0.70,
+    EDGE_IMPLEMENTS:    0.65,
+    EDGE_SUPPORTS:      0.60,
+    EDGE_CITES:         0.40,
+    EDGE_RELATES_TO:    0.30,
+    EDGE_TEMPORAL_NEXT: 0.25,
 }
 ```
 
