@@ -120,6 +120,7 @@ from aelfrice.project_warm import (
 )
 from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
+from aelfrice.session_resolution import resolve_session_id
 from aelfrice.setup import (
     COMMIT_INGEST_SCRIPT_NAME,
     SEARCH_TOOL_BASH_SCRIPT_NAME,
@@ -793,10 +794,15 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
     store = _open_store()
     try:
         now = _utc_now_iso()
+        sid = resolve_session_id(
+            getattr(args, "session_id", None),
+            surface_name="aelf lock",
+        )
         derived = derive(DerivationInput(
             raw_text=args.statement,
             source_kind=INGEST_SOURCE_CLI_REMEMBER,
             ts=now,
+            session_id=sid,
         ))
         # cli_remember always produces a belief.
         assert derived.belief is not None
@@ -808,11 +814,13 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
                 source_kind=INGEST_SOURCE_CLI_REMEMBER,
                 raw_text=args.statement,
                 derived_belief_ids=[bid],
+                session_id=sid,
                 ts=now,
             )
             actual_id, was_inserted = store.insert_or_corroborate(
                 derived.belief,
                 source_type=CORROBORATION_SOURCE_CLI_REMEMBER,
+                session_id=sid,
             )
             if was_inserted:
                 print(f"locked: {actual_id}", file=out)  # type: ignore[arg-type]
@@ -2894,6 +2902,14 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
 
     p_lock = sub.add_parser("lock", help="insert (or upgrade) a user-locked belief")
     p_lock.add_argument("statement", help="belief text to lock as ground truth")
+    p_lock.add_argument(
+        "--id", dest="session_id", default=None,
+        help=(
+            "session_id to stamp on the locked belief and ingest_log row. "
+            "Defaults to $AELF_SESSION_ID; warns to stderr and writes NULL "
+            "if neither is set (#192)."
+        ),
+    )
     p_lock.set_defaults(func=_cmd_lock)
 
     p_locked = sub.add_parser("locked", help="list locked beliefs")
