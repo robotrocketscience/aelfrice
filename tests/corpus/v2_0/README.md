@@ -41,7 +41,11 @@ tests/corpus/v2_0/
 │   └── *.jsonl
 ├── temporal_next_edge/                #386 (Track A edge: TEMPORAL_NEXT)
 │   └── *.jsonl
-└── tests_edge/                        #384 (Track A edge: TESTS)
+├── tests_edge/                        #384 (Track A edge: TESTS)
+│   └── *.jsonl
+├── reasoning/                         #389 (Track B: aelf reason)
+│   └── *.jsonl
+└── wonder_online/                     #389 (Track B: aelf wonder)
     └── *.jsonl
 ```
 
@@ -78,6 +82,8 @@ required for **all** modules:
 | `derived_from_edge` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_ids` (list[string]), `expected_hit_ids` (list[string]), `k` (int) | `graded` |
 | `temporal_next_edge` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_ids` (list[string]), `expected_hit_ids` (list[string]), `k` (int) | `graded` |
 | `tests_edge` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_ids` (list[string]), `expected_hit_ids` (list[string]), `k` (int) | `graded` |
+| `reasoning` | `query` (string), `beliefs` (list[obj]), `edges` (list[obj]), `expected_hit_ids` (list[string]), `baseline_search_only_top_k` (list[string]), `k` (int) | `graded` |
+| `wonder_online` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_id` (string), `expected_candidate_ids` (list[string]) | `graded` |
 
 ### `directive_detection` re-entry gate (#374)
 

@@ -114,6 +114,33 @@ MODULES: dict[str, tuple[set[str], dict[str, str]]] = {
             "k": "int",
         },
     ),
+    # #389 Track B — `aelf reason` ship gate. Same row structure as
+    # bfs_relates_to (the gate measures hit@k uplift over a graph) plus
+    # a `query` field for BM25 seed selection on the runtime path.
+    "reasoning": (
+        {"graded"},
+        {
+            "query": "str",
+            "beliefs": "list[belief]",
+            "edges": "list[edge]",
+            "expected_hit_ids": "list[str]",
+            "baseline_search_only_top_k": "list[str]",
+            "k": "int",
+        },
+    ),
+    # #389 Track B — `aelf wonder` ship gate. The on-line surface has a
+    # narrower contract: row supplies a graph + a seed + the set of
+    # belief ids the wonder pass should surface. No baseline arm — gate
+    # is recall@10 on rows where ≥1 expected candidate is in top-10.
+    "wonder_online": (
+        {"graded"},
+        {
+            "beliefs": "list[belief]",
+            "edges": "list[edge]",
+            "seed_id": "str",
+            "expected_candidate_ids": "list[str]",
+        },
+    ),
 }
 
 COMMON_REQUIRED = ("id", "provenance", "labeller_note", "label")
