@@ -61,6 +61,7 @@ from aelfrice.models import (
 )
 from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
+from aelfrice.session_resolution import resolve_session_id
 from aelfrice.store import MemoryStore
 
 _FEEDBACK_VALENCES: Final[dict[str, float]] = {"used": 1.0, "harmful": -1.0}
@@ -206,11 +207,12 @@ def tool_lock(
     session_id: str | None = None,
 ) -> dict[str, Any]:
     now = _utc_now_iso()
+    sid = resolve_session_id(session_id, surface_name="mcp aelf_lock")
     out = derive(DerivationInput(
         raw_text=statement,
         source_kind=INGEST_SOURCE_MCP_REMEMBER,
         ts=now,
-        session_id=session_id,
+        session_id=sid,
     ))
     # mcp_remember always produces a belief.
     assert out.belief is not None
@@ -222,11 +224,13 @@ def tool_lock(
             source_kind=INGEST_SOURCE_MCP_REMEMBER,
             raw_text=statement,
             derived_belief_ids=[bid],
+            session_id=sid,
             ts=now,
         )
         actual_id, was_inserted = store.insert_or_corroborate(
             out.belief,
             source_type=CORROBORATION_SOURCE_MCP_REMEMBER,
+            session_id=sid,
         )
         if was_inserted:
             return {"kind": "lock.created", "id": actual_id, "action": "locked"}
