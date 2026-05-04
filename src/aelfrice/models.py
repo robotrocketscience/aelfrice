@@ -130,6 +130,12 @@ ORIGIN_AGENT_INFERRED: Final[str] = "agent_inferred"
 ORIGIN_AGENT_REMEMBERED: Final[str] = "agent_remembered"
 ORIGIN_DOCUMENT_RECENT: Final[str] = "document_recent"
 ORIGIN_UNKNOWN: Final[str] = "unknown"
+# v2.0 #389 phantom-belief scaffolding: wonder-generated speculative
+# beliefs that have not been user-validated. Not in ORIGINS yet —
+# store-write integration deferred to a follow-up issue (#229
+# promotion-trigger lane). Constant lands now so the integration
+# sub-issue has the wire-format string to wire into.
+ORIGIN_SPECULATIVE: Final[str] = "speculative"
 
 ORIGINS: Final[frozenset[str]] = frozenset({
     ORIGIN_USER_STATED,
@@ -335,5 +341,25 @@ class Session:
     completed_at: str | None
     model: str | None
     project_context: str | None
+
+
+@dataclass(frozen=True)
+class Phantom:
+    """Wonder-generated speculative belief candidate (#389 scaffolding).
+
+    `aelf wonder` produces these in-memory; they are NOT inserted into
+    the store in v2.0. The integration sub-issue (#229 lane) wires
+    insertion via `Belief(..., origin=ORIGIN_SPECULATIVE)` plus a
+    `wonder_ingest` path, gc, and promotion trigger.
+
+    Until then, `Phantom` is the wire-format the on-line wonder surface
+    emits via `--emit-phantoms` JSON output. Downstream tooling can
+    accumulate phantoms across sessions for offline review.
+    """
+
+    constituent_belief_ids: tuple[str, ...]
+    generator: str
+    content: str
+    score: float
 
 
