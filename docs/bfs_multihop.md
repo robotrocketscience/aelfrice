@@ -77,12 +77,10 @@ structure for BFS to find non-trivial chains.
 - **Edge-weight calibration against MAB.** v1.3 ships the literature-
   default weights below; calibration delta is a v1.3.x patch if the
   benchmark indicates one is needed.
-- **New edge types.** The issue body lists `IMPLEMENTS` and
-  `THREADS_TO`; neither exists in `models.EDGE_TYPES`. `THREADS_TO`
-  is a v1.1.0 user-facing rename of the `edges` tab/key, not an edge
-  type. `IMPLEMENTS` is research-line vocabulary that has not ported.
-  This spec uses the actual v1.2 edge vocabulary (six types) and
-  flags the gap.
+- **New edge types.** The issue body listed `IMPLEMENTS` and
+  `THREADS_TO`; `THREADS_TO` is a v1.1.0 user-facing rename of the
+  `edges` tab/key, not an edge type, and remains out of scope.
+  `IMPLEMENTS` has now landed as a v2.0 Track A edge (#385).
 
 ## Algorithm
 
@@ -188,6 +186,7 @@ is the noisiest signal in the v1.2 ingest output).
 | `SUPERSEDES`   | 0.90   | decisional     | "B replaces A" — the most actionable adjacency. If the query hit A, the user almost certainly wants B. Highest weight. |
 | `CONTRADICTS`  | 0.85   | decisional     | "B disagrees with A" — surfacing it lets the agent flag the conflict instead of acting on a contradicted belief. Slightly below SUPERSEDES because contradictions are not always resolved (the v1.0.1 contradiction tie-breaker may not have fired yet). |
 | `DERIVED_FROM` | 0.70   | provenance     | "B's content depends on A" — strong contextual coupling, per the v1.2 ingest enrichment spec ("sibling becomes stale if A is superseded"). Following it surfaces parent decisions. |
+| `IMPLEMENTS`   | 0.65   | provenance     | "B implements A" — source is an implementation, target is the spec/claim being implemented. Slightly below DERIVED_FROM (0.70) because IMPLEMENTS is a more specific kind of derivation, but the dependency is almost as strong: an implementation becomes stale when its spec is superseded. Triple extractor produces `IMPLEMENTS` from "X implements Y" / "X is an implementation of Y" / "X realizes Y" / "X fulfills Y". **v2.0 ship-gate (#385):** the edge stays at weight 0.65 only while it clears a ≥+5pp BFS multi-hop hit@k uplift on the labeled `implements_edge/` corpus vs. the same fixture run with this entry zeroed; gate harness lives at `tests/bench_gate/test_bfs_multihop_implements.py`. Below-floor closes #385 as `wontfix`. |
 | `SUPPORTS`     | 0.60   | evidential     | "B argues for A" — supporting evidence is useful adjacent context but lower-priority than provenance or supersession. |
 | `CITES`        | 0.40   | referential    | "B mentions A" — weakest of the explicitly-relational edges. Per v1.0 `EDGE_VALENCE`, CITES is half of SUPPORTS for valence propagation; mirror that here. |
 | `RELATES_TO`   | 0.30   | informational  | The catch-all. Triple extractor produces `RELATES_TO` from "X relates to Y" / "X is related to Y" — the loosest relational verbs. Low weight, but non-zero so densely-connected `RELATES_TO` neighborhoods can still surface the *single* highest-`bm25` hit they reach. **v2.0 ship-gate (#383):** the edge stays at weight 0.30 only while it clears a ≥+5pp BFS multi-hop hit@k uplift on the labeled `bfs_relates_to/` corpus vs. the same fixture run with this entry zeroed; gate harness lives at `tests/bench_gate/test_bfs_multihop_relates_to.py`. Per #382 Decision A2 (operator ratification 2026-05-04) the universal +5pp bar replaced the umbrella's proposed +3pp floor — `RELATES_TO` is the most generic catch-all and has the highest over-fit risk among Track A edges. Below-floor closes #383 as `wontfix`. |
@@ -200,11 +199,12 @@ them separate prevents a benchmark-driven retrieval re-tune from
 silently changing valence semantics.
 
 ```python
-# src/aelfrice/retrieval.py
-BFS_EDGE_WEIGHTS: Final[dict[str, float]] = {
+# src/aelfrice/bfs_multihop.py
+BFS_EDGE_WEIGHTS: dict[str, float] = {
     EDGE_SUPERSEDES:   0.90,
     EDGE_CONTRADICTS:  0.85,
     EDGE_DERIVED_FROM: 0.70,
+    EDGE_IMPLEMENTS:   0.65,
     EDGE_SUPPORTS:     0.60,
     EDGE_CITES:        0.40,
     EDGE_RELATES_TO:   0.30,
@@ -607,4 +607,4 @@ output exactly — same beliefs, same order. BFS is gated.
 | BFS budget shared with L0/L1/L2.5 or separate?   | Shared. See [§ Budget allocation](#budget-allocation). |
 | Cache invalidation rule?                         | No cache-key change; v1.0.1 wipe-on-write covers it. See [§ Cache invalidation](#cache-invalidation). |
 | Default-on or default-off at v1.3?               | Default-off. Default-on candidate at v2.0 with benchmark uplift. |
-| `IMPLEMENTS` / `THREADS_TO` edge types?          | Out of scope — neither exists in `models.EDGE_TYPES`. v1.3 uses the actual six v1.2 edges. |
+| `IMPLEMENTS` edge type?                          | Shipped as a v2.0 Track A edge (#385) at weight 0.65. `THREADS_TO` remains out of scope. |
