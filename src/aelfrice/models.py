@@ -31,6 +31,7 @@ EDGE_RELATES_TO: Final[str] = "RELATES_TO"
 EDGE_DERIVED_FROM: Final[str] = "DERIVED_FROM"
 EDGE_IMPLEMENTS: Final[str] = "IMPLEMENTS"
 EDGE_TEMPORAL_NEXT: Final[str] = "TEMPORAL_NEXT"
+EDGE_TESTS: Final[str] = "TESTS"
 
 # Edge-type valence multipliers for propagation.
 # Positive = propagate same sign; negative = invert; 0.0 = no propagation.
@@ -47,6 +48,9 @@ EDGE_TEMPORAL_NEXT: Final[str] = "TEMPORAL_NEXT"
 # argumentative content, so valence is positive-but-small. Placed below
 # RELATES_TO (0.3) because temporal ordering carries even less
 # content-correlation than the catch-all relational edge.
+# TESTS (0.55): evidential edge — source is a test belief, target is the
+# spec/claim under test. Placed just below SUPPORTS (0.60) because a test
+# asserts coverage of a claim rather than directly arguing for it.
 EDGE_VALENCE: Final[dict[str, float]] = {
     EDGE_SUPPORTS: 1.0,
     EDGE_CITES: 0.5,
@@ -56,6 +60,7 @@ EDGE_VALENCE: Final[dict[str, float]] = {
     EDGE_DERIVED_FROM: 0.5,
     EDGE_IMPLEMENTS: 0.65,
     EDGE_TEMPORAL_NEXT: 0.2,
+    EDGE_TESTS: 0.55,
 }
 
 EDGE_TYPES: Final[frozenset[str]] = frozenset(EDGE_VALENCE.keys())
