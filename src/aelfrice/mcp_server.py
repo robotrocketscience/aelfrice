@@ -24,6 +24,7 @@ Tool surface (all under the `aelf:` namespace at the host):
   aelf:demote          {belief_id}                       -> demoted bool
   aelf:validate        {belief_id, source?}              -> origin promotion
   aelf:feedback        {belief_id, signal, source?}      -> updated priors
+  aelf:confirm         {belief_id, source?, note?}       -> affirmed priors
   aelf:stats           {}                                -> counts
   aelf:health          {}                                -> regime report
 
@@ -424,6 +425,57 @@ def tool_feedback(
     }
 
 
+_CONFIRM_VALENCE: Final[float] = 1.0
+_CONFIRM_SOURCE_DEFAULT: Final[str] = "user_confirmed"
+
+
+def tool_confirm(
+    store: MemoryStore,
+    *,
+    belief_id: str,
+    source: str = _CONFIRM_SOURCE_DEFAULT,
+    note: str = "",
+) -> dict[str, Any]:
+    """Affirm a belief: apply a unit positive valence via apply_feedback.
+
+    Records source as `user_confirmed` by default so confirm events are
+    distinguishable from generic `used` feedback in the history table.
+    `note` is an optional free-text annotation that appears in the return
+    payload for the caller's context; it is not persisted to the store.
+
+    The positive signal increments alpha, raising posterior_mean, and
+    activates the demotion-pressure walk on any contradicting user-locked
+    belief (same propagate=True default as apply_feedback).
+    """
+    try:
+        result = apply_feedback(
+            store=store,
+            belief_id=belief_id,
+            valence=_CONFIRM_VALENCE,
+            source=source,
+        )
+    except ValueError as exc:
+        return {
+            "kind": "confirm.unknown_belief",
+            "id": belief_id,
+            "error": str(exc),
+        }
+    payload: dict[str, Any] = {
+        "kind": "confirm.applied",
+        "id": belief_id,
+        "source": source,
+        "prior_alpha": result.prior_alpha,
+        "new_alpha": result.new_alpha,
+        "prior_beta": result.prior_beta,
+        "new_beta": result.new_beta,
+        "pressured_locks": result.pressured_locks,
+        "demoted_locks": result.demoted_locks,
+    }
+    if note:
+        payload["note"] = note
+    return payload
+
+
 def tool_stats(store: MemoryStore) -> dict[str, Any]:
     n_edges = store.count_edges()
     return {
@@ -471,7 +523,7 @@ def tool_health(store: MemoryStore) -> dict[str, Any]:
 
 
 def serve() -> None:
-    """Start a FastMCP server with the 8 tools registered.
+    """Start a FastMCP server with the 12 tools registered.
 
     Requires the `[mcp]` extra: `pip install aelfrice[mcp]`. Raises
     `RuntimeError` with an actionable message if `fastmcp` is missing.
@@ -584,6 +636,20 @@ def serve() -> None:
             store.close()
 
     @mcp.tool()
+    def aelf_confirm(
+        belief_id: str,
+        source: str = _CONFIRM_SOURCE_DEFAULT,
+        note: str = "",
+    ) -> dict[str, Any]:
+        store = _open_default_store()
+        try:
+            return tool_confirm(
+                store, belief_id=belief_id, source=source, note=note,
+            )
+        finally:
+            store.close()
+
+    @mcp.tool()
     def aelf_stats() -> dict[str, Any]:
         store = _open_default_store()
         try:
@@ -605,7 +671,7 @@ def serve() -> None:
     _registered = (
         aelf_onboard, aelf_search, aelf_lock, aelf_locked,
         aelf_demote, aelf_validate, aelf_unlock, aelf_promote,
-        aelf_feedback, aelf_stats, aelf_health,
+        aelf_feedback, aelf_confirm, aelf_stats, aelf_health,
     )
     del _registered
 
