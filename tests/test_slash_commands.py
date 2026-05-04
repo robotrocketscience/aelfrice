@@ -35,6 +35,9 @@ EXPECTED_COMMANDS = (
     "uninstall",
     "rebuild",
     "tail",
+    # v2.0 / Track B (#389) — graph-walk surfaces.
+    "reason",
+    "wonder",
 )
 
 
