@@ -1,0 +1,398 @@
+{
+  "aggregate": {
+    "jaccard": {
+      "RW|STS": 0.00101010101010101,
+      "RW|TC": 0.00012273668941801763,
+      "STS|TC": 0.002430008284692218
+    },
+    "majority_verdict": "defer",
+    "strategy_metrics": {
+      "RW": {
+        "confirmation_rate": 0.374,
+        "junk_rate": 0.626,
+        "mean_construction_cost": 3.0,
+        "n_phantoms": 50.0,
+        "retrieval_freq_per_cost": 0.9933333333333334
+      },
+      "STS": {
+        "confirmation_rate": 0.11200000000000002,
+        "junk_rate": 0.8879999999999999,
+        "mean_construction_cost": 2.0,
+        "n_phantoms": 50.0,
+        "retrieval_freq_per_cost": 1.0
+      },
+      "TC": {
+        "confirmation_rate": 0.2944197530896379,
+        "junk_rate": 0.705580246910362,
+        "mean_construction_cost": 3.0,
+        "n_phantoms": 6453.3,
+        "retrieval_freq_per_cost": 0.6666666666666666
+      }
+    },
+    "verdict_distribution": {
+      "defer": 10
+    }
+  },
+  "config": {
+    "feedback_budget": 16,
+    "h0_floor": 0.165,
+    "h0_null_rate": 0.065,
+    "n_atoms_per_topic": 25,
+    "n_sts_samples": 50,
+    "n_topics": 8,
+    "n_walks": 50,
+    "seeds": 10
+  },
+  "per_seed": [
+    {
+      "jaccard": {
+        "RW|STS": 0.0,
+        "RW|TC": 0.00015142337976983646,
+        "STS|TC": 0.0033419413641197025
+      },
+      "seed": 0,
+      "strategy_metrics": [
+        {
+          "confirmation_rate": 0.3,
+          "junk_rate": 0.7,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 0.9933333333333333,
+          "strategy": "RW"
+        },
+        {
+          "confirmation_rate": 0.2982456140350877,
+          "junk_rate": 0.7017543859649122,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 6555,
+          "retrieval_freq_per_cost": 0.6666666666666666,
+          "strategy": "TC"
+        },
+        {
+          "confirmation_rate": 0.1,
+          "junk_rate": 0.9,
+          "mean_construction_cost": 2.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 1.0,
+          "strategy": "STS"
+        }
+      ],
+      "verdict": "defer"
+    },
+    {
+      "jaccard": {
+        "RW|STS": 0.0,
+        "RW|TC": 0.00015610365282547612,
+        "STS|TC": 0.0020331560838285894
+      },
+      "seed": 1,
+      "strategy_metrics": [
+        {
+          "confirmation_rate": 0.44,
+          "junk_rate": 0.56,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 0.9933333333333333,
+          "strategy": "RW"
+        },
+        {
+          "confirmation_rate": 0.29416391379581563,
+          "junk_rate": 0.7058360862041844,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 6357,
+          "retrieval_freq_per_cost": 0.6666666666666666,
+          "strategy": "TC"
+        },
+        {
+          "confirmation_rate": 0.12,
+          "junk_rate": 0.88,
+          "mean_construction_cost": 2.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 1.0,
+          "strategy": "STS"
+        }
+      ],
+      "verdict": "defer"
+    },
+    {
+      "jaccard": {
+        "RW|STS": 0.0,
+        "RW|TC": 0.00014990256333383302,
+        "STS|TC": 0.003006614552014432
+      },
+      "seed": 2,
+      "strategy_metrics": [
+        {
+          "confirmation_rate": 0.26,
+          "junk_rate": 0.74,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 0.9933333333333333,
+          "strategy": "RW"
+        },
+        {
+          "confirmation_rate": 0.28057988523104804,
+          "junk_rate": 0.719420114768952,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 6622,
+          "retrieval_freq_per_cost": 0.6666666666666666,
+          "strategy": "TC"
+        },
+        {
+          "confirmation_rate": 0.18,
+          "junk_rate": 0.82,
+          "mean_construction_cost": 2.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 1.0,
+          "strategy": "STS"
+        }
+      ],
+      "verdict": "defer"
+    },
+    {
+      "jaccard": {
+        "RW|STS": 0.0,
+        "RW|TC": 0.00014716703458425313,
+        "STS|TC": 0.002507744505089246
+      },
+      "seed": 3,
+      "strategy_metrics": [
+        {
+          "confirmation_rate": 0.48,
+          "junk_rate": 0.52,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 0.9933333333333333,
+          "strategy": "RW"
+        },
+        {
+          "confirmation_rate": 0.2871331159205455,
+          "junk_rate": 0.7128668840794545,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 6746,
+          "retrieval_freq_per_cost": 0.6666666666666666,
+          "strategy": "TC"
+        },
+        {
+          "confirmation_rate": 0.16,
+          "junk_rate": 0.84,
+          "mean_construction_cost": 2.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 1.0,
+          "strategy": "STS"
+        }
+      ],
+      "verdict": "defer"
+    },
+    {
+      "jaccard": {
+        "RW|STS": 0.0,
+        "RW|TC": 0.0,
+        "STS|TC": 0.00218921032056294
+      },
+      "seed": 4,
+      "strategy_metrics": [
+        {
+          "confirmation_rate": 0.42,
+          "junk_rate": 0.58,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 1.0,
+          "strategy": "RW"
+        },
+        {
+          "confirmation_rate": 0.2913980185563768,
+          "junk_rate": 0.7086019814436232,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 6359,
+          "retrieval_freq_per_cost": 0.6666666666666666,
+          "strategy": "TC"
+        },
+        {
+          "confirmation_rate": 0.08,
+          "junk_rate": 0.92,
+          "mean_construction_cost": 2.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 1.0,
+          "strategy": "STS"
+        }
+      ],
+      "verdict": "defer"
+    },
+    {
+      "jaccard": {
+        "RW|STS": 0.0,
+        "RW|TC": 0.00015750511891636477,
+        "STS|TC": 0.0023677979479084454
+      },
+      "seed": 5,
+      "strategy_metrics": [
+        {
+          "confirmation_rate": 0.32,
+          "junk_rate": 0.68,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 0.9866666666666667,
+          "strategy": "RW"
+        },
+        {
+          "confirmation_rate": 0.3049206349206349,
+          "junk_rate": 0.6950793650793651,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 6300,
+          "retrieval_freq_per_cost": 0.6666666666666666,
+          "strategy": "TC"
+        },
+        {
+          "confirmation_rate": 0.12,
+          "junk_rate": 0.88,
+          "mean_construction_cost": 2.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 1.0,
+          "strategy": "STS"
+        }
+      ],
+      "verdict": "defer"
+    },
+    {
+      "jaccard": {
+        "RW|STS": 0.0,
+        "RW|TC": 0.0,
+        "STS|TC": 0.0028006846117939943
+      },
+      "seed": 6,
+      "strategy_metrics": [
+        {
+          "confirmation_rate": 0.36,
+          "junk_rate": 0.64,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 1.0,
+          "strategy": "RW"
+        },
+        {
+          "confirmation_rate": 0.2982017200938233,
+          "junk_rate": 0.7017982799061767,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 6395,
+          "retrieval_freq_per_cost": 0.6666666666666666,
+          "strategy": "TC"
+        },
+        {
+          "confirmation_rate": 0.1,
+          "junk_rate": 0.9,
+          "mean_construction_cost": 2.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 1.0,
+          "strategy": "STS"
+        }
+      ],
+      "verdict": "defer"
+    },
+    {
+      "jaccard": {
+        "RW|STS": 0.010101010101010102,
+        "RW|TC": 0.00015396458814472672,
+        "STS|TC": 0.0016962220508866615
+      },
+      "seed": 7,
+      "strategy_metrics": [
+        {
+          "confirmation_rate": 0.36,
+          "junk_rate": 0.64,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 0.9866666666666667,
+          "strategy": "RW"
+        },
+        {
+          "confirmation_rate": 0.3003412969283277,
+          "junk_rate": 0.6996587030716723,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 6446,
+          "retrieval_freq_per_cost": 0.6666666666666666,
+          "strategy": "TC"
+        },
+        {
+          "confirmation_rate": 0.06,
+          "junk_rate": 0.94,
+          "mean_construction_cost": 2.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 1.0,
+          "strategy": "STS"
+        }
+      ],
+      "verdict": "defer"
+    },
+    {
+      "jaccard": {
+        "RW|STS": 0.0,
+        "RW|TC": 0.00015743073047858942,
+        "STS|TC": 0.0017344686218858404
+      },
+      "seed": 8,
+      "strategy_metrics": [
+        {
+          "confirmation_rate": 0.44,
+          "junk_rate": 0.56,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 0.9933333333333333,
+          "strategy": "RW"
+        },
+        {
+          "confirmation_rate": 0.29541488180231634,
+          "junk_rate": 0.7045851181976837,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 6303,
+          "retrieval_freq_per_cost": 0.6666666666666666,
+          "strategy": "TC"
+        },
+        {
+          "confirmation_rate": 0.04,
+          "junk_rate": 0.96,
+          "mean_construction_cost": 2.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 1.0,
+          "strategy": "STS"
+        }
+      ],
+      "verdict": "defer"
+    },
+    {
+      "jaccard": {
+        "RW|STS": 0.0,
+        "RW|TC": 0.00015386982612709647,
+        "STS|TC": 0.0026222427888323305
+      },
+      "seed": 9,
+      "strategy_metrics": [
+        {
+          "confirmation_rate": 0.36,
+          "junk_rate": 0.64,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 0.9933333333333333,
+          "strategy": "RW"
+        },
+        {
+          "confirmation_rate": 0.2937984496124031,
+          "junk_rate": 0.7062015503875969,
+          "mean_construction_cost": 3.0,
+          "n_phantoms": 6450,
+          "retrieval_freq_per_cost": 0.6666666666666666,
+          "strategy": "TC"
+        },
+        {
+          "confirmation_rate": 0.16,
+          "junk_rate": 0.84,
+          "mean_construction_cost": 2.0,
+          "n_phantoms": 50,
+          "retrieval_freq_per_cost": 1.0,
+          "strategy": "STS"
+        }
+      ],
+      "verdict": "defer"
+    }
+  ]
+}
