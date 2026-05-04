@@ -35,7 +35,9 @@ tests/corpus/v2_0/
 │   └── *.jsonl
 ├── directive_detection/               #374 (H1 split of #199)
 │   └── *.jsonl
-└── bfs_relates_to/                    #383 (Track A edge: RELATES_TO)
+├── bfs_relates_to/                    #383 (Track A edge: RELATES_TO)
+│   └── *.jsonl
+└── derived_from_edge/                 #388 (Track A retroactive gate: DERIVED_FROM)
     └── *.jsonl
 ```
 
@@ -69,6 +71,7 @@ required for **all** modules:
 | `directive_detection` | `prompt` (string) | `directive`, `not_directive` |
 | `bfs_relates_to` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_ids` (list[string]), `expected_hit_ids` (list[string]), `k` (int) | `graded` |
 | `implements_edge` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_ids` (list[string]), `expected_hit_ids` (list[string]), `k` (int) | `graded` |
+| `derived_from_edge` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_ids` (list[string]), `expected_hit_ids` (list[string]), `k` (int) | `graded` |
 
 ### `directive_detection` re-entry gate (#374)
 
@@ -147,6 +150,41 @@ between the full-weights run and the `IMPLEMENTS=0` run. Threshold ≥0.05.
 Public-tree fixtures may live here (synthetic-only); real-traffic fixtures
 stay lab-side per directory-of-origin rules. The bench-gate test at
 `tests/bench_gate/test_bfs_multihop_implements.py` skips cleanly when the
+module dir is empty or has fewer rows than the floor below.
+
+### `derived_from_edge` ship gate (#388)
+
+Retroactive bench gate per #382 ratification. `DERIVED_FROM` was added
+pre-bench-gate (shipped at v1.2.0 as part of the ingest enrichment wave)
+and must now demonstrate the same **≥+5pp BFS multi-hop hit@k uplift on
+the fixture** vs. the same fixture run with `BFS_EDGE_WEIGHTS[DERIVED_FROM]`
+zeroed. Per #382 Decision A2, the universal +5pp bar applies retroactively;
+per A3 there is no audit-only escape hatch.
+
+`DERIVED_FROM` is wired schema-side (`models.EDGE_DERIVED_FROM`,
+`bfs_multihop.BFS_EDGE_WEIGHTS[DERIVED_FROM] = 0.70`,
+`triple_extractor` regex emit via "is derived from" / "is based on" /
+"extends" phrases) and remains in place while the gate is pending.
+
+Per-row shape is identical to `bfs_relates_to` and `implements_edge`:
+
+- `beliefs` — list of `{"id": str, "text": str}`.
+- `edges` — list of `{"src": str, "dst": str, "type": str, "weight": float}`.
+  Edge `type` must be one of the live `EDGE_TYPES`; rows should include
+  `DERIVED_FROM` edges to test that the edge adds hits beyond what stronger
+  edges already reach.
+- `seed_ids` — non-empty list of belief ids the BFS expands from.
+- `expected_hit_ids` — non-empty list of belief ids that should be reached
+  in the top-k expansion.
+- `k` — integer ≥ 1; the rank cutoff used to compute hit@k.
+
+Aggregation: hit-rate is `Σ |reached(row) ∩ expected_hit_ids(row)| /
+Σ |expected_hit_ids(row)|` across all rows; uplift is the difference
+between the full-weights run and the `DERIVED_FROM=0` run. Threshold ≥0.05.
+
+Public-tree fixtures may live here (synthetic-only); real-traffic fixtures
+stay lab-side per directory-of-origin rules. The bench-gate test at
+`tests/bench_gate/test_bfs_multihop_derived_from.py` skips cleanly when the
 module dir is empty or has fewer rows than the floor below.
 
 ## v0.1 acceptance (per #307)
