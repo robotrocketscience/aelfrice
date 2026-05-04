@@ -140,4 +140,7 @@ dev = [
     "pytest>=8.0",
     "pytest-timeout>=2.3",
     "pyright>=1.1.409",
+    # Property-based testing for replay-soak gate (#403). Pure Python,
+    # no GPU/network deps; consistent with the v1.x install promise.
+    "hypothesis>=6.100",
 ]
