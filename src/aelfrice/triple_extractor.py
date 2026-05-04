@@ -38,6 +38,7 @@ from aelfrice.models import (
     EDGE_RELATES_TO,
     EDGE_SUPERSEDES,
     EDGE_SUPPORTS,
+    EDGE_TEMPORAL_NEXT,
     INGEST_SOURCE_GIT,
     Edge,
 )
@@ -157,6 +158,16 @@ _PATTERNS: Final[tuple[_RelationPattern, ...]] = (
     _build_pattern("is an implementation of", EDGE_IMPLEMENTS),
     _build_pattern("realizes", EDGE_IMPLEMENTS),
     _build_pattern("fulfills", EDGE_IMPLEMENTS),
+    # TEMPORAL_NEXT: source = temporal successor, target = temporal predecessor.
+    # "follows" / "comes after" / "is after" / "succeeds" all express
+    # that the subject belief occurred or applies chronologically after
+    # the object belief. Patterns require multi-token verb phrases or
+    # unambiguous verbs to avoid over-firing on common prose ("after"
+    # alone, "next" alone, bare "follows" with a direct object).
+    _build_pattern("follows", EDGE_TEMPORAL_NEXT),
+    _build_pattern("comes after", EDGE_TEMPORAL_NEXT),
+    _build_pattern("is after", EDGE_TEMPORAL_NEXT),
+    _build_pattern("succeeds", EDGE_TEMPORAL_NEXT),
 )
 
 
