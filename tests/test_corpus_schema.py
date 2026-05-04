@@ -74,6 +74,16 @@ MODULES: dict[str, tuple[set[str], dict[str, str]]] = {
             "k": "int",
         },
     ),
+    "implements_edge": (
+        {"graded"},
+        {
+            "beliefs": "list[belief]",
+            "edges": "list[edge]",
+            "seed_ids": "list[str]",
+            "expected_hit_ids": "list[str]",
+            "k": "int",
+        },
+    ),
 }
 
 COMMON_REQUIRED = ("id", "provenance", "labeller_note", "label")

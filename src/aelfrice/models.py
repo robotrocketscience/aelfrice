@@ -29,12 +29,18 @@ EDGE_CONTRADICTS: Final[str] = "CONTRADICTS"
 EDGE_SUPERSEDES: Final[str] = "SUPERSEDES"
 EDGE_RELATES_TO: Final[str] = "RELATES_TO"
 EDGE_DERIVED_FROM: Final[str] = "DERIVED_FROM"
+EDGE_IMPLEMENTS: Final[str] = "IMPLEMENTS"
 
 # Edge-type valence multipliers for propagation.
 # Positive = propagate same sign; negative = invert; 0.0 = no propagation.
 # DERIVED_FROM mirrors CITES (0.5): both indicate B's content depends on A,
 # distinct because DERIVED_FROM carries stronger contextual coupling
 # (sibling becomes stale if A is superseded).
+# IMPLEMENTS (0.65): provenance-flavored — source is an implementation,
+# target is the spec/claim being implemented. Slightly below DERIVED_FROM
+# (0.70) because IMPLEMENTS is a more specific kind of derivation, but the
+# dependency is almost as strong: an implementation becomes stale when its
+# spec is superseded.
 EDGE_VALENCE: Final[dict[str, float]] = {
     EDGE_SUPPORTS: 1.0,
     EDGE_CITES: 0.5,
@@ -42,6 +48,7 @@ EDGE_VALENCE: Final[dict[str, float]] = {
     EDGE_SUPERSEDES: 0.0,
     EDGE_RELATES_TO: 0.3,
     EDGE_DERIVED_FROM: 0.5,
+    EDGE_IMPLEMENTS: 0.65,
 }
 
 EDGE_TYPES: Final[frozenset[str]] = frozenset(EDGE_VALENCE.keys())
