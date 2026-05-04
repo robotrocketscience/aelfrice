@@ -44,6 +44,14 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -e
+          # Refresh origin/main once per job. The runner captures
+          # origin/main via actions/checkout at job start; under
+          # concurrency.cancel-in-progress=false this run can be queued
+          # behind another, during which main may advance again. Without
+          # this fetch the is-ancestor check below uses a stale view of
+          # origin/main and re-flags PRs that are already on top of live
+          # main. See #418.
+          git fetch origin main --quiet
           # JSON: [{number, headRefName, isCrossRepository, labels}]
           # --limit 1000 disables default pagination so every open PR is processed.
           prs=$(gh pr list --state open --base main --limit 1000 \
