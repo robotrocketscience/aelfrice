@@ -201,6 +201,38 @@ jobs:
           exit "$fail"
 
   # ---------------------------------------------------------------------------
+  # #413 — PR-title conventional-commit prefix enforcement
+  #
+  # Mirrors `commit-msg-prefix` (which validates each commit subject) but
+  # checks the PR title.  PR titles drive several downstream behaviors:
+  # CodeRabbit's `ignore_title_keywords: ["docs:", "release:"]` filter, the
+  # release-drafter category mapping, and the squash-merge subject when one
+  # is used.  A missing prefix silently disables those filters; this job
+  # surfaces the mistake before CI burns time on a docs-only PR running
+  # full pytest.
+  #
+  # The prefix list is delegated to scripts/check-commit-msg.py so it stays
+  # in sync with `commit-msg-prefix` and CLAUDE.md.
+  # ---------------------------------------------------------------------------
+  pr-title-prefix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@v4
+      - name: Validate PR title prefix
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/check-commit-msg.py --subject "$PR_TITLE"; then
+            echo "::error::PR title must start with a conventional-commit prefix (feat:, fix:, docs:, etc.). See CLAUDE.md or scripts/check-commit-msg.py for the allowed list. Current title: $PR_TITLE"
+            exit 1
+          fi
+          echo "PR title has a valid conventional-commit prefix."
+
+  # ---------------------------------------------------------------------------
   # #170 — PR-body issue-link warning (non-blocking)
   #
   # Inspects the PR body for a GitHub auto-close keyword followed by an issue
