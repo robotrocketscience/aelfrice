@@ -379,17 +379,27 @@ def test_ingest_turn_writes_log_row_per_new_belief(
         assert all(r["session_id"] == "s-1" for r in rows)
 
 
-def test_ingest_turn_dedup_does_not_double_log(store: MemoryStore) -> None:
-    """Hypothesis: re-ingesting the same (source, sentence) skips the
-    belief insert AND skips the log row (dedup is idempotent on both).
-    Falsifiable if log count grows on the no-op second call."""
+def test_ingest_turn_dedup_writes_log_row_per_raw_input(
+    store: MemoryStore,
+) -> None:
+    """Hypothesis (post-#264 contract shift): the ingest log is the
+    canonical record of raw classifier inputs. Re-ingesting the same
+    (source, sentence) writes a NEW log row but does NOT add a duplicate
+    canonical belief — the derivation worker corroborates instead.
+    Falsifiable if log count is unchanged on the second call (old #205
+    contract) OR if a duplicate belief row appears."""
     from aelfrice.ingest import ingest_turn
     text = "The default port is 8080 for the dashboard service."
     ingest_turn(store, text, source="user")
     log_after_first = store.count_ingest_log()
+    beliefs_after_first = store.count_beliefs()
     ingest_turn(store, text, source="user")
     log_after_second = store.count_ingest_log()
-    assert log_after_first == log_after_second
+    beliefs_after_second = store.count_beliefs()
+    # Log row added for the re-ingest (canonical raw-input record).
+    assert log_after_second == log_after_first + 1
+    # Belief table unchanged — worker corroborates, not inserts.
+    assert beliefs_after_second == beliefs_after_first
 
 
 def test_ingest_triples_writes_log_row_per_new_belief(

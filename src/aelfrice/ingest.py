@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
-from aelfrice.derivation import DerivationInput, derive
+from aelfrice.derivation_worker import run_worker
 from aelfrice.extraction import extract_sentences
 from aelfrice.models import (
     ANCHOR_TEXT_MAX_LEN,
@@ -69,16 +69,15 @@ def ingest_turn(
     `source_id` is still accepted for adapter parity but is not yet
     persisted.
 
-    `bulk` (v1.6+, keyword-only) signals the call is part of a
-    multi-turn batch (e.g. a research-line `wonder_ingest` pipeline).
-    When True, per-turn side effects that are redundant inside a batch
-    are skipped: currently `store.record_corroboration` for duplicate
-    sentences. The canonical `beliefs` row and the `ingest_log` write
-    (the v2.0 source-of-truth ingest record) are always produced —
-    `bulk=True` produces the same final belief state as `bulk=False`
-    for the same input sequence; only the corroboration audit table
-    differs. Reserved for future per-turn-cost reductions as new side
-    effects land. Default-off preserves current behavior.
+    `bulk` (v1.6+, keyword-only) is now a no-op (kept for API parity).
+    Under #264 the entry point no longer owns dedup-or-corroborate
+    decisions — every raw sentence appends a row to `ingest_log` and
+    the derivation worker handles canonical-belief insert vs
+    corroborate via `insert_or_corroborate`. The pre-#264 bulk
+    fast-path that suppressed `record_corroboration` on duplicates is
+    gone; both `bulk=True` and `bulk=False` now produce identical
+    audit-table state. The keyword-only signature is preserved so
+    existing batch callers do not need to change.
 
     Returns the number of beliefs inserted (or that would have been
     inserted if not already present).
@@ -97,66 +96,59 @@ def _ingest_turn_ids(
     session_id: str | None = None,
     created_at: str | None = None,
     *,
-    bulk: bool = False,
+    bulk: bool = False,  # noqa: ARG001
 ) -> list[str]:
-    """Internal variant of ingest_turn returning the inserted belief ids.
+    """Internal variant of ingest_turn returning the derived belief ids.
 
-    `ingest_jsonl` uses the id list to wire DERIVED_FROM edges
-    between turns within a session. Public callers should use
-    `ingest_turn` (which discards the list and returns the count).
+    Under #264 the entry point's job collapses to: split the turn into
+    sentences, append one log row per sentence (unstamped), then invoke
+    the derivation worker once at end-of-batch. The worker handles
+    `derive()` + `insert_or_corroborate` + log-stamping. The returned
+    list is the per-sentence derived belief id (in input order, with
+    duplicates dropped) — `ingest_jsonl` uses the last entry to wire
+    DERIVED_FROM edges between consecutive turns within a session.
     """
     sentences = extract_sentences(text)
     if not sentences:
         return []
 
     ts = created_at or _now_utc_iso()
-    inserted: list[str] = []
+    # Snapshot the canonical belief set so we can identify which derived
+    # ids in this turn correspond to brand-new inserts (vs corroborations
+    # of already-known beliefs). Preserves the pre-#264 public contract
+    # that `ingest_turn` returns the count of newly-inserted beliefs.
+    ids_before: set[str] = set(store.list_belief_ids())
+
+    log_ids: list[str] = []
     for sentence in sentences:
-        out = derive(DerivationInput(
-            raw_text=sentence,
-            source_kind=INGEST_SOURCE_FILESYSTEM,
-            source_path=source,
-            session_id=session_id,
-            ts=ts,
-        ))
-        if out.belief is None:
-            continue
-        belief_id = out.belief.id
-        if store.get_belief(belief_id) is not None:
-            # Exact (source, sentence) duplicate: record a corroboration
-            # so re-assertions are observable. Canonical row unchanged.
-            # bulk=True skips this — corroboration noise is uninteresting
-            # in batch ingest and is the only currently-redundant per-turn
-            # side effect.
-            if not bulk:
-                store.record_corroboration(
-                    belief_id,
-                    source_type=CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
-                    session_id=session_id,
-                )
-            continue
-        # v2.0 #205 parallel-write: log the classifier input before
-        # materializing the belief. belief_id is deterministic on
-        # (source, sentence) so derived_belief_ids is known up-front.
-        store.record_ingest(
+        log_id = store.record_ingest(
             source_kind=INGEST_SOURCE_FILESYSTEM,
             source_path=source,
             raw_text=sentence,
-            derived_belief_ids=[belief_id],
             session_id=session_id,
             ts=ts,
+            raw_meta={"call_site": CORROBORATION_SOURCE_TRANSCRIPT_INGEST},
         )
-        # Cross-source dedup: same content from a different source
-        # produces the same content_hash but a different belief_id.
-        # insert_or_corroborate records a corroboration row on hit
-        # instead of silently inserting a duplicate belief row.
-        actual_id, was_inserted = store.insert_or_corroborate(
-            out.belief,
-            source_type=CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
-            session_id=session_id,
-        )
-        if was_inserted:
-            inserted.append(actual_id)
+        log_ids.append(log_id)
+
+    # Worker is idempotent and scans all unstamped rows; calling it once
+    # at end-of-turn is the per-batch invocation pattern from the spec.
+    run_worker(store)
+
+    inserted: list[str] = []
+    seen: set[str] = set()
+    for log_id in log_ids:
+        entry = store.get_ingest_log_entry(log_id)
+        if entry is None:
+            continue
+        ids = entry.get("derived_belief_ids") or []
+        if not isinstance(ids, list):
+            continue
+        for bid in ids:
+            if (isinstance(bid, str) and bid not in ids_before
+                    and bid not in seen):
+                seen.add(bid)
+                inserted.append(bid)
     return inserted
 
 
