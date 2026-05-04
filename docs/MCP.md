@@ -1,6 +1,6 @@
 # MCP
 
-aelfrice exposes eleven memory tools through a [Model Context Protocol](https://modelcontextprotocol.io) server. The agent calls them mid-turn; you don't have to invoke them yourself.
+aelfrice exposes twelve memory tools through a [Model Context Protocol](https://modelcontextprotocol.io) server. The agent calls them mid-turn; you don't have to invoke them yourself.
 
 Lifecycle commands (`setup`, `unsetup`, `migrate`, `doctor`, `upgrade`, `uninstall`) are CLI-only.
 
@@ -39,10 +39,22 @@ Tools register under the `aelf:` namespace.
 | `aelf:validate` | `belief_id` | `source` (default `user_validated`) | `{kind, id, prior_origin, new_origin, audit_event_id?}` on success; `{kind: "validate.error", id, error}` on invalid request |
 | `aelf:promote` | `belief_id` | `source` (default `user_validated`) | same union as `aelf:validate` |
 | `aelf:feedback` | `belief_id`, `signal` | `source` | `{kind, id, signal, prior_alpha, new_alpha, prior_beta, new_beta, pressured_locks, demoted_locks}` |
+| `aelf:confirm` | `belief_id` | `source` (default `user_confirmed`), `note` | `{kind, id, source, prior_alpha, new_alpha, prior_beta, new_beta, pressured_locks, demoted_locks, note?}` |
 | `aelf:stats` | — | — | `{kind, beliefs, threads, locked, feedback_events, ...}` |
 | `aelf:health` | — | — | `{kind, regime, description, classification_confidence?, features?}` |
 
 `signal` is `"used"` or `"harmful"`. `aelf:unlock` drops a user-lock without touching origin and writes a `lock:unlock` audit row when a lock is actually removed; idempotent on already-unlocked beliefs (no row written). `aelf:promote` is a first-class alias of `aelf:validate` — identical semantics and return shape. Both `aelf:validate` and `aelf:promote` promote an `agent_inferred` belief to a user-validated origin tier (v1.2+).
+
+`aelf:confirm` is a thin specialization of `aelf:feedback` that always applies a unit positive valence (+1.0). Use it when the model has independently verified a belief and wants to register that affirmation explicitly. The default `source` tag (`user_confirmed`) is distinct from the `used` source emitted by implicit retrieval feedback, so confirm events are queryable separately in the history table. The optional `note` field is a free-text annotation surfaced in the return payload only; it is not persisted.
+
+```json
+// Example
+{"tool": "aelf:confirm", "belief_id": "abc123", "note": "verified against project docs"}
+// Returns
+{"kind": "confirm.applied", "id": "abc123", "source": "user_confirmed",
+ "prior_alpha": 1.0, "new_alpha": 2.0, "prior_beta": 1.0, "new_beta": 1.0,
+ "pressured_locks": [], "demoted_locks": [], "note": "verified against project docs"}
+```
 
 ## `aelf:onboard` polymorphism
 
@@ -62,11 +74,12 @@ Every tool is a pure function `(store, **kwargs) -> dict`. You can call them in 
 
 ```python
 from aelfrice.store import MemoryStore
-from aelfrice.mcp_server import tool_search, tool_lock
+from aelfrice.mcp_server import tool_confirm, tool_search, tool_lock
 
 store = MemoryStore(":memory:")
 tool_lock(store, statement="never push directly to main")
 tool_search(store, query="push", budget=500)
+tool_confirm(store, belief_id="<id>", note="spot-checked correct")
 ```
 
 ## Backward compatibility
