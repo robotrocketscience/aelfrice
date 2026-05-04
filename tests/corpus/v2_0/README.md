@@ -60,7 +60,7 @@ required for **all** modules:
 |---|---|---|
 | `dedup` | `belief_a` (string), `belief_b` (string) | `duplicate`, `near-duplicate`, `distinct` |
 | `enforcement` | `user_directive` (string), `agent_output` (string) | `compliant`, `violated`, `n/a` |
-| `contradiction` | `belief_a` (string), `belief_b` (string) | `contradicts`, `compatible`, `unrelated` |
+| `contradiction` | `belief_a` (string), `belief_b` (string) | `contradicts`, `refines`, `unrelated` |
 | `wonder_consolidation` | `seed_belief` (string), `retrieved_neighbors` (list[string]) | `1`, `2`, `3`, `4`, `5` (phantom-quality rating) |
 | `promotion_trigger` | `belief_sequence` (list[string]) | `should_promote`, `should_not` |
 | `sentiment` | `user_message` (string) | `positive`, `negative`, `neutral` |
@@ -88,6 +88,13 @@ corpus.
 - ≥ 50 non-seed entries per module file (300 total).
 - Real examples only — no synthetic generation in v0.1. Synthetic scaffolding
   is permitted in v0.2 after #228 settles consolidation strategy.
+- **Carve-outs (synthetic-allowed at v0.1):** `directive_detection/` per #374
+  H1 re-entry rules, and `contradiction/` per #201 — the relationship
+  detector is a regex/heuristic over modality + quantifier axes where
+  controlled synthetic distribution is the cleanest way to exercise each
+  axis. Real examples are still preferred and may be mixed in; synthetic
+  rows must declare `provenance: "synthetic-vN.M"` so future re-labellers
+  can distinguish.
 - Schema validation runs in CI (see `tests/test_corpus_schema.py`).
 
 ## Validation

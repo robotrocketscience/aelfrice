@@ -35,7 +35,7 @@ MODULES: dict[str, tuple[set[str], dict[str, str]]] = {
         {"user_directive": "str", "agent_output": "str"},
     ),
     "contradiction": (
-        {"contradicts", "compatible", "unrelated"},
+        {"contradicts", "refines", "unrelated"},
         {"belief_a": "str", "belief_b": "str"},
     ),
     "wonder_consolidation": (
