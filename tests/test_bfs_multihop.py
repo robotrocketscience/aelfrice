@@ -58,6 +58,7 @@ from aelfrice.models import (
     EDGE_RELATES_TO,
     EDGE_SUPERSEDES,
     EDGE_SUPPORTS,
+    EDGE_TEMPORAL_NEXT,
     LOCK_NONE,
     Belief,
     Edge,
@@ -641,6 +642,7 @@ def test_edge_weights_match_spec() -> None:
         EDGE_SUPPORTS: 0.60,
         EDGE_CITES: 0.40,
         EDGE_RELATES_TO: 0.30,
+        EDGE_TEMPORAL_NEXT: 0.25,
     }
 
 

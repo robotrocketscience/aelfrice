@@ -37,6 +37,7 @@ from aelfrice.models import (
     EDGE_RELATES_TO,
     EDGE_SUPERSEDES,
     EDGE_SUPPORTS,
+    EDGE_TEMPORAL_NEXT,
     Belief,
     Edge,
 )
@@ -63,6 +64,7 @@ BFS_EDGE_WEIGHTS: dict[str, float] = {
     EDGE_SUPPORTS: 0.60,
     EDGE_CITES: 0.40,
     EDGE_RELATES_TO: 0.30,
+    EDGE_TEMPORAL_NEXT: 0.25,
 }
 
 

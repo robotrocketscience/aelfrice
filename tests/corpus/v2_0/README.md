@@ -37,7 +37,9 @@ tests/corpus/v2_0/
 │   └── *.jsonl
 ├── bfs_relates_to/                    #383 (Track A edge: RELATES_TO)
 │   └── *.jsonl
-└── derived_from_edge/                 #388 (Track A retroactive gate: DERIVED_FROM)
+├── derived_from_edge/                 #388 (Track A retroactive gate: DERIVED_FROM)
+│   └── *.jsonl
+└── temporal_next_edge/                #386 (Track A edge: TEMPORAL_NEXT)
     └── *.jsonl
 ```
 
@@ -72,6 +74,7 @@ required for **all** modules:
 | `bfs_relates_to` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_ids` (list[string]), `expected_hit_ids` (list[string]), `k` (int) | `graded` |
 | `implements_edge` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_ids` (list[string]), `expected_hit_ids` (list[string]), `k` (int) | `graded` |
 | `derived_from_edge` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_ids` (list[string]), `expected_hit_ids` (list[string]), `k` (int) | `graded` |
+| `temporal_next_edge` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_ids` (list[string]), `expected_hit_ids` (list[string]), `k` (int) | `graded` |
 
 ### `directive_detection` re-entry gate (#374)
 
@@ -185,6 +188,23 @@ between the full-weights run and the `DERIVED_FROM=0` run. Threshold ≥0.05.
 Public-tree fixtures may live here (synthetic-only); real-traffic fixtures
 stay lab-side per directory-of-origin rules. The bench-gate test at
 `tests/bench_gate/test_bfs_multihop_derived_from.py` skips cleanly when the
+module dir is empty or has fewer rows than the floor below.
+
+### `temporal_next_edge` ship gate (#386)
+
+Track A sub-issue of #382. The `TEMPORAL_NEXT` edge type is wired schema-side
+(`models.EDGE_TEMPORAL_NEXT`, `bfs_multihop.BFS_EDGE_WEIGHTS[TEMPORAL_NEXT] = 0.25`,
+`triple_extractor` regex emit) but does not ship until it demonstrates a
+**≥+5pp BFS multi-hop hit@k uplift on the fixture** vs. the same fixture
+run with `BFS_EDGE_WEIGHTS[TEMPORAL_NEXT]` zeroed. Per #382 Decision A2 the
+universal +5pp bar applies (same as all Track A edges).
+
+Per-row shape is identical to `bfs_relates_to`. Aggregation: same formula.
+Threshold ≥0.05.
+
+Public-tree fixtures may live here (synthetic-only); real-traffic fixtures
+stay lab-side per directory-of-origin rules. The bench-gate test at
+`tests/bench_gate/test_bfs_multihop_temporal_next.py` skips cleanly when the
 module dir is empty or has fewer rows than the floor below.
 
 ## v0.1 acceptance (per #307)
