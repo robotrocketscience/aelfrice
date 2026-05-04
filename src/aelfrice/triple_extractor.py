@@ -34,6 +34,7 @@ from aelfrice.models import (
     EDGE_CITES,
     EDGE_CONTRADICTS,
     EDGE_DERIVED_FROM,
+    EDGE_IMPLEMENTS,
     EDGE_RELATES_TO,
     EDGE_SUPERSEDES,
     EDGE_SUPPORTS,
@@ -149,6 +150,13 @@ _PATTERNS: Final[tuple[_RelationPattern, ...]] = (
     _build_pattern("is derived from", EDGE_DERIVED_FROM),
     _build_pattern("is based on", EDGE_DERIVED_FROM),
     _build_pattern("extends", EDGE_DERIVED_FROM),
+    # IMPLEMENTS: source = implementation, target = spec/claim being implemented.
+    # "implements" / "is an implementation of" / "realizes" / "fulfills" all
+    # express that the subject satisfies or concretizes the object spec.
+    _build_pattern("implements", EDGE_IMPLEMENTS),
+    _build_pattern("is an implementation of", EDGE_IMPLEMENTS),
+    _build_pattern("realizes", EDGE_IMPLEMENTS),
+    _build_pattern("fulfills", EDGE_IMPLEMENTS),
 )
 
 
