@@ -29,7 +29,6 @@ jobs:
             --no-progress
             --max-concurrency 4
             --accept 200,206,429
-            --exclude-mail
             './**/*.md'
             './**/*.rst'
           fail: false
