@@ -60,9 +60,7 @@ from aelfrice.health import (
 from aelfrice.models import (
     CORROBORATION_SOURCE_CLI_REMEMBER,
     INGEST_SOURCE_CLI_REMEMBER,
-    LOCK_NONE,
     LOCK_USER,
-    ORIGIN_AGENT_INFERRED,
     ORIGIN_USER_STATED,
     ORIGIN_USER_VALIDATED,
 )
@@ -102,13 +100,11 @@ from aelfrice.llm_classifier import (
 )
 from aelfrice.lifecycle import (
     PACKAGE_NAME as _PKG,
-    UpdateStatus,
     check_for_update,
     clear_cache as _clear_update_cache,
     format_update_banner as _format_update_banner,
     is_disabled as _update_check_disabled,
     detect_reachable_installs,
-    is_newer,
     maybe_check_for_update_async,
     read_cache as _read_update_cache,
     uninstall as _lifecycle_uninstall,
@@ -126,7 +122,7 @@ from aelfrice.setup import (
     SEARCH_TOOL_BASH_SCRIPT_NAME,
     SEARCH_TOOL_SCRIPT_NAME,
     SESSION_START_HOOK_SCRIPT_NAME,
-    SLASH_COMMANDS_DIR_DEFAULT,
+    SLASH_COMMANDS_DIR_DEFAULT,  # noqa: F401 — re-exported for monkeypatch in tests
     SettingsScope,
     TRANSCRIPT_LOGGER_SCRIPT_NAME,
     clean_dangling_shims,
@@ -2401,7 +2397,7 @@ def _cmd_doctor_replay(args: argparse.Namespace, out: object) -> int:
     store, runs `replay_full_equality`, prints the report, and returns
     0 or 1 based on drift counts and the ``--max-drift`` threshold.
     """
-    from aelfrice.replay import replay_full_equality, FullEqualityReport
+    from aelfrice.replay import replay_full_equality
 
     max_drift: int | None = getattr(args, "max_drift", None)
     _de_raw = getattr(args, "drift_examples", None)
