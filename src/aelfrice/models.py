@@ -30,6 +30,7 @@ EDGE_SUPERSEDES: Final[str] = "SUPERSEDES"
 EDGE_RELATES_TO: Final[str] = "RELATES_TO"
 EDGE_DERIVED_FROM: Final[str] = "DERIVED_FROM"
 EDGE_IMPLEMENTS: Final[str] = "IMPLEMENTS"
+EDGE_TEMPORAL_NEXT: Final[str] = "TEMPORAL_NEXT"
 
 # Edge-type valence multipliers for propagation.
 # Positive = propagate same sign; negative = invert; 0.0 = no propagation.
@@ -41,6 +42,11 @@ EDGE_IMPLEMENTS: Final[str] = "IMPLEMENTS"
 # (0.70) because IMPLEMENTS is a more specific kind of derivation, but the
 # dependency is almost as strong: an implementation becomes stale when its
 # spec is superseded.
+# TEMPORAL_NEXT (0.2): chronological-adjacency edge — source is the temporal
+# successor of target. Pure structural signal with no evidential or
+# argumentative content, so valence is positive-but-small. Placed below
+# RELATES_TO (0.3) because temporal ordering carries even less
+# content-correlation than the catch-all relational edge.
 EDGE_VALENCE: Final[dict[str, float]] = {
     EDGE_SUPPORTS: 1.0,
     EDGE_CITES: 0.5,
@@ -49,6 +55,7 @@ EDGE_VALENCE: Final[dict[str, float]] = {
     EDGE_RELATES_TO: 0.3,
     EDGE_DERIVED_FROM: 0.5,
     EDGE_IMPLEMENTS: 0.65,
+    EDGE_TEMPORAL_NEXT: 0.2,
 }
 
 EDGE_TYPES: Final[frozenset[str]] = frozenset(EDGE_VALENCE.keys())
