@@ -59,11 +59,17 @@ from aelfrice.health import (
 )
 from aelfrice.models import (
     CORROBORATION_SOURCE_CLI_REMEMBER,
+    EDGE_CONTRADICTS,
+    EDGE_SUPERSEDES,
+    EDGE_SUPPORTS,
     INGEST_SOURCE_CLI_REMEMBER,
     LOCK_USER,
     ORIGIN_USER_STATED,
     ORIGIN_USER_VALIDATED,
+    Phantom,
 )
+from aelfrice.bfs_multihop import expand_bfs
+from aelfrice import wonder_consolidation
 from aelfrice import __version__ as _AELFRICE_VERSION
 from aelfrice.benchmark import run_benchmark, seed_corpus
 from aelfrice.classification import (
@@ -734,6 +740,251 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
     for h in hits:
         prefix = "[locked]" if h.lock_level == LOCK_USER else "        "
         print(f"{prefix} {h.id}: {h.content}", file=out)  # type: ignore[arg-type]
+    return 0
+
+
+def _cmd_reason(args: argparse.Namespace, out: object) -> int:
+    """Surface a reasoning chain over the belief graph for a query.
+
+    Seeds: explicit `--seed-id` (repeatable) wins; otherwise top-k
+    `search_beliefs` BM25 hits over `args.query`. Walks `expand_bfs`
+    from those seeds with terminal-tight defaults and prints either
+    an indented hop tree (default) or JSON when `--json`.
+
+    Read-only: never writes to the store.
+    """
+    store = _open_store()
+    try:
+        seeds: list = []
+        if args.seed_id:
+            for sid in args.seed_id:
+                b = store.get_belief(sid)
+                if b is None:
+                    print(
+                        f"aelf reason: seed-id not found: {sid}",
+                        file=out,  # type: ignore[arg-type]
+                    )
+                    return 2
+                seeds.append(b)
+        else:
+            seeds = store.search_beliefs(args.query, limit=args.k)
+        if not seeds:
+            print(
+                "aelf reason: no seeds (empty store, or query didn't "
+                "match any indexed belief). Try --seed-id <id> to "
+                "force a starting point.",
+                file=out,  # type: ignore[arg-type]
+            )
+            return 0
+        hops = expand_bfs(
+            seeds,
+            store,
+            max_depth=args.depth,
+            nodes_per_hop=args.fanout,
+            total_budget=args.budget,
+        )
+    finally:
+        store.close()
+
+    if args.json:
+        import json
+        payload = {
+            "query": args.query,
+            "seeds": [
+                {"id": b.id, "content": b.content} for b in seeds
+            ],
+            "hops": [
+                {
+                    "id": h.belief.id,
+                    "content": h.belief.content,
+                    "score": h.score,
+                    "depth": h.depth,
+                    "path": h.path,
+                }
+                for h in hops
+            ],
+        }
+        print(json.dumps(payload, indent=2), file=out)  # type: ignore[arg-type]
+        return 0
+
+    print(f"query: {args.query}", file=out)  # type: ignore[arg-type]
+    print("seeds:", file=out)  # type: ignore[arg-type]
+    for b in seeds:
+        print(f"  {b.id}: {b.content}", file=out)  # type: ignore[arg-type]
+    if not hops:
+        print("(no expansions — seeds have no outbound edges within budget)", file=out)  # type: ignore[arg-type]
+        return 0
+    print("chain:", file=out)  # type: ignore[arg-type]
+    for h in hops:
+        indent = "  " * h.depth
+        path_str = " -> ".join(h.path) if h.path else ""
+        print(
+            f"{indent}[{h.score:.3f}] {h.belief.id}: {h.belief.content}",
+            file=out,  # type: ignore[arg-type]
+        )
+        if path_str:
+            print(f"{indent}  via {path_str}", file=out)  # type: ignore[arg-type]
+    return 0
+
+
+# Edge-type → suggested-action heuristic for `aelf wonder`. The path
+# the candidate was reached by hints at what relationship the user
+# might want to materialize. This is a *suggestion* surface only; no
+# edges are written by `aelf wonder` itself (#389 amendment 9 — store-
+# write integration deferred to v2.x #229 lane).
+_WONDER_ACTION_BY_EDGE: dict[str, str] = {
+    EDGE_SUPERSEDES: "supersede",
+    EDGE_CONTRADICTS: "contradict",
+    EDGE_SUPPORTS: "merge",
+}
+
+
+def _suggested_action_for(path: list[str]) -> str:
+    """Map a BFS edge-type path to a one-word suggested action.
+
+    Picks the highest-priority edge type seen on the path, with
+    fall-through to "relate" when none match. Priority order matches
+    `_WONDER_ACTION_BY_EDGE` insertion order.
+    """
+    for edge_type in path:
+        if edge_type in _WONDER_ACTION_BY_EDGE:
+            return _WONDER_ACTION_BY_EDGE[edge_type]
+    return "relate"
+
+
+def _wonder_pick_seed(store: MemoryStore) -> object | None:
+    """Deterministic seed picker: highest-degree non-locked belief.
+
+    Ties broken by `belief.id` ascending. Returns None when the store
+    has no non-locked beliefs (an empty store, or one where every
+    belief is locked).
+
+    Determinism is required so two runs against the same store
+    produce the same wonder output. We count outbound edges only
+    (matches BFS expansion direction).
+    """
+    best_id: str | None = None
+    best_degree = -1
+    for bid in store.list_belief_ids():
+        b = store.get_belief(bid)
+        if b is None or b.lock_level == LOCK_USER:
+            continue
+        degree = len(store.edges_from(bid))
+        if degree > best_degree or (
+            degree == best_degree
+            and best_id is not None
+            and bid < best_id
+        ):
+            best_degree = degree
+            best_id = bid
+    if best_id is None:
+        return None
+    return store.get_belief(best_id)
+
+
+def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
+    """Surface consolidation candidates and (optionally) emit phantoms.
+
+    Default behavior (#389 amendment 9): produces phantom-belief
+    *candidates* in-memory and prints the top-N as ranked rows. Does
+    NOT write to the store — phantom-store integration is deferred to
+    v2.x (issue #229 lane). When `--emit-phantoms` is set, the same
+    candidates are serialized as `Phantom` JSON objects to stdout for
+    downstream consumption.
+    """
+    store = _open_store()
+    try:
+        seed_b: object | None
+        if args.seed:
+            seed_b = store.get_belief(args.seed)
+            if seed_b is None:
+                print(
+                    f"aelf wonder: seed not found: {args.seed}",
+                    file=out,  # type: ignore[arg-type]
+                )
+                return 2
+        else:
+            seed_b = _wonder_pick_seed(store)
+        if seed_b is None:
+            print(
+                "aelf wonder: no eligible seeds (empty store or all "
+                "beliefs are locked). Use --seed <id> to force one.",
+                file=out,  # type: ignore[arg-type]
+            )
+            return 0
+        hops = expand_bfs([seed_b], store, max_depth=2, total_budget=args.top * 2)
+    finally:
+        store.close()
+
+    candidates: list[tuple] = []
+    for h in hops:
+        relatedness = wonder_consolidation.score(seed_b, h.belief)
+        # Combine BFS path-score with token-overlap relatedness.
+        # Multiplicative so both signals must be non-trivial for a
+        # candidate to rank high.
+        combined = h.score * (0.5 + 0.5 * relatedness)
+        action = _suggested_action_for(h.path)
+        candidates.append((combined, h, action, relatedness))
+    candidates.sort(key=lambda r: (-r[0], r[1].belief.id))
+    candidates = candidates[: args.top]
+
+    # TODO(v2.x #229 lane): wire phantom emission into store via
+    # store.insert_belief(Belief(..., origin=ORIGIN_SPECULATIVE)) plus
+    # a `wonder_ingest` corroboration row, then a `wonder_gc` 14d
+    # cleanup loop. For now phantoms are surfaced in-memory only;
+    # `--emit-phantoms` prints them as JSON for offline review.
+    phantoms = [
+        Phantom(
+            constituent_belief_ids=(seed_b.id, h.belief.id),  # type: ignore[union-attr]
+            generator="bfs+wonder_consolidation",
+            content=f"{seed_b.content} ⟷ {h.belief.content}",  # type: ignore[union-attr]
+            score=combined,
+        )
+        for combined, h, _, _ in candidates
+    ]
+
+    if args.emit_phantoms:
+        import json
+        payload = [
+            {
+                "constituent_belief_ids": list(p.constituent_belief_ids),
+                "generator": p.generator,
+                "content": p.content,
+                "score": p.score,
+            }
+            for p in phantoms
+        ]
+        print(json.dumps(payload, indent=2), file=out)  # type: ignore[arg-type]
+        return 0
+
+    if args.json:
+        import json
+        payload2 = {
+            "seed": {"id": seed_b.id, "content": seed_b.content},  # type: ignore[union-attr]
+            "candidates": [
+                {
+                    "candidate_id": h.belief.id,
+                    "score": combined,
+                    "relatedness": relatedness,
+                    "suggested_action": action,
+                    "path": h.path,
+                }
+                for combined, h, action, relatedness in candidates
+            ],
+        }
+        print(json.dumps(payload2, indent=2), file=out)  # type: ignore[arg-type]
+        return 0
+
+    print(f"seed: {seed_b.id}: {seed_b.content}", file=out)  # type: ignore[arg-type]
+    if not candidates:
+        print("(no candidates — seed has no outbound edges)", file=out)  # type: ignore[arg-type]
+        return 0
+    print(f"top {len(candidates)} consolidation candidate(s):", file=out)  # type: ignore[arg-type]
+    for combined, h, action, relatedness in candidates:
+        print(
+            f"  [{combined:.3f}] ({action}) {h.belief.id}: {h.belief.content}",
+            file=out,  # type: ignore[arg-type]
+        )
     return 0
 
 
@@ -2861,6 +3112,62 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="output token budget (default 2000)",
     )
     p_search.set_defaults(func=_cmd_search)
+
+    p_reason = sub.add_parser(
+        "reason",
+        help="surface a reasoning chain over the belief graph (#389)",
+    )
+    p_reason.add_argument("query", help="keyword query for seed selection")
+    p_reason.add_argument(
+        "--seed-id", action="append", default=[], dest="seed_id",
+        help="explicit seed belief id (repeatable; bypasses BM25 seed selection)",
+    )
+    p_reason.add_argument(
+        "--k", type=int, default=3,
+        help="BM25 seed fanout when --seed-id not given (default 3)",
+    )
+    p_reason.add_argument(
+        "--depth", type=int, default=2,
+        help="max BFS hop depth (default 2)",
+    )
+    p_reason.add_argument(
+        "--budget", type=int, default=10,
+        help="total expansion-node budget (default 10)",
+    )
+    p_reason.add_argument(
+        "--fanout", type=int, default=8,
+        help="max edges expanded per frontier entry (default 8)",
+    )
+    p_reason.add_argument(
+        "--json", action="store_true",
+        help="emit machine-readable JSON instead of indented hop tree",
+    )
+    p_reason.set_defaults(func=_cmd_reason)
+
+    p_wonder = sub.add_parser(
+        "wonder",
+        help="surface consolidation candidates / phantom beliefs (#389)",
+    )
+    p_wonder.add_argument(
+        "--seed", default=None,
+        help="explicit seed belief id (default: highest-degree non-locked)",
+    )
+    p_wonder.add_argument(
+        "--top", type=int, default=10,
+        help="number of consolidation candidates to surface (default 10)",
+    )
+    p_wonder.add_argument(
+        "--emit-phantoms", action="store_true", dest="emit_phantoms",
+        help=(
+            "emit candidates as Phantom JSON objects to stdout "
+            "(integration with store deferred to v2.x #229 lane)"
+        ),
+    )
+    p_wonder.add_argument(
+        "--json", action="store_true",
+        help="emit machine-readable JSON instead of human-readable rows",
+    )
+    p_wonder.set_defaults(func=_cmd_wonder)
 
     # v1.4 (#141): user-facing manual trigger for the context
     # rebuilder. Promoted from hidden to visible because manual mode
