@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Pre-`1.0.0` releases are atomic milestones building toward the first
 installable release; see the roadmap in [README.md](README.md).
 
+## [Unreleased]
+
+### Changed
+
+- **Differential CI gates for docs-only PRs** ([#413](https://github.com/robotrocketscience/aelfrice/issues/413)). `ci.yml` (pytest matrix), `deadcode.yml` (deptry), and `codeql.yml` (analyze) now skip on PRs whose changed files are entirely under `docs/`, `**/*.md`, `LICENSE`, `.github/ISSUE_TEMPLATE/**`, or `.github/PULL_REQUEST_TEMPLATE.md`. Mixed PRs still run full CI. The `staging-gate` security checks (gitleaks, PII pattern-scan, history-scan, release-docs-check, commit-msg-prefix, pr-body-issue-link) and `typos` always run regardless of paths. Net effect: a single-file docs PR drops from ~3 min of CI to ~30s. CodeQL still runs full-tree weekly via the existing schedule. After branch protection lands at the public flip, the path-filter approach migrates to a `dorny/paths-filter` detection job so required checks always report a status.
+
+### Added
+
+- **PR-title conventional-commit prefix gate** ([#413](https://github.com/robotrocketscience/aelfrice/issues/413)). New `pr-title-prefix` job in `staging-gate.yml` mirrors the existing `commit-msg-prefix` job but validates the PR title. Fails the PR if the title does not start with `feat:`, `fix:`, `docs:`, or another approved prefix. Prefix list is delegated to `scripts/check-commit-msg.py` so it stays in sync with commits and CLAUDE.md. Catches the silent failure mode where a missing `docs:` prefix disables CodeRabbit's `ignore_title_keywords` filter and runs unwanted bot review on a docs PR.
+
+- **Auto-`docs` label for docs-only PRs** ([#413](https://github.com/robotrocketscience/aelfrice/issues/413)). New `label-docs.yml` workflow inspects changed files via the API and applies (or removes) the `docs` label whenever the path set matches the docs-only globs above. Mirrors the path filters in the heavy gates so the label is a faithful indicator of which PRs skipped pytest / deptry / CodeQL.
+
 ## [1.6.0] - 2026-05-02
 
 ### Added
