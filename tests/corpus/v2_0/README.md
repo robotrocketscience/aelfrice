@@ -33,7 +33,9 @@ tests/corpus/v2_0/
 │   └── *.jsonl
 ├── sentiment/                         #193
 │   └── *.jsonl
-└── directive_detection/               #374 (H1 split of #199)
+├── directive_detection/               #374 (H1 split of #199)
+│   └── *.jsonl
+└── bfs_relates_to/                    #383 (Track A edge: RELATES_TO)
     └── *.jsonl
 ```
 
@@ -65,6 +67,7 @@ required for **all** modules:
 | `promotion_trigger` | `belief_sequence` (list[string]) | `should_promote`, `should_not` |
 | `sentiment` | `user_message` (string) | `positive`, `negative`, `neutral` |
 | `directive_detection` | `prompt` (string) | `directive`, `not_directive` |
+| `bfs_relates_to` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_ids` (list[string]), `expected_hit_ids` (list[string]), `k` (int) | `graded` |
 
 ### `directive_detection` re-entry gate (#374)
 
@@ -82,6 +85,38 @@ If those numbers are not met, H1 stays deferred. The bench-gate test at
 `tests/bench_gate/test_directive_detection.py` evaluates the candidate
 detector at `src/aelfrice/directive_detector.py` against the labeled
 corpus.
+
+### `bfs_relates_to` ship gate (#383)
+
+Track A sub-issue of #382. The `RELATES_TO` edge type is wired schema-side
+(`models.EDGE_RELATES_TO`, `bfs_multihop.BFS_EDGE_WEIGHTS[RELATES_TO] = 0.30`,
+`triple_extractor` regex emit) but does not ship until it demonstrates a
+**≥+5pp BFS multi-hop hit@k uplift on the fixture** vs. the same fixture
+run with `BFS_EDGE_WEIGHTS[RELATES_TO]` zeroed. Per #382 Decision A2 the
+universal +5pp bar replaces the umbrella's proposed +3pp floor; per A3 there
+is no audit-only escape hatch.
+
+Per-row shape:
+
+- `beliefs` — list of `{"id": str, "text": str}` (each id stable within the
+  row; harness wires them into a transient `MemoryStore`).
+- `edges` — list of `{"src": str, "dst": str, "type": str, "weight": float}`.
+  Edge `type` must be one of the live `EDGE_TYPES`; rows can mix edge types
+  to test that `RELATES_TO` paths add hits beyond what stronger edges already
+  reach.
+- `seed_ids` — non-empty list of belief ids the BFS expands from.
+- `expected_hit_ids` — non-empty list of belief ids that should be reached
+  in the top-k expansion.
+- `k` — integer ≥ 1; the rank cutoff used to compute hit@k.
+
+Aggregation: hit-rate is `Σ |reached(row) ∩ expected_hit_ids(row)| /
+Σ |expected_hit_ids(row)|` across all rows; uplift is the difference
+between the full-weights run and the `RELATES_TO=0` run. Threshold ≥0.05.
+
+Public-tree fixtures may live here (synthetic-only); real-traffic fixtures
+stay lab-side per directory-of-origin rules. The bench-gate test at
+`tests/bench_gate/test_bfs_multihop_relates_to.py` skips cleanly when the
+module dir is empty or has fewer rows than the floor below.
 
 ## v0.1 acceptance (per #307)
 

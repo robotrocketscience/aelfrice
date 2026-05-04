@@ -54,6 +54,16 @@ MODULES: dict[str, tuple[set[str], dict[str, str]]] = {
         {"directive", "not_directive"},
         {"prompt": "str"},
     ),
+    "bfs_relates_to": (
+        {"graded"},
+        {
+            "beliefs": "list[belief]",
+            "edges": "list[edge]",
+            "seed_ids": "list[str]",
+            "expected_hit_ids": "list[str]",
+            "k": "int",
+        },
+    ),
 }
 
 COMMON_REQUIRED = ("id", "provenance", "labeller_note", "label")
@@ -76,6 +86,48 @@ def _check_field(row: dict, field: str, spec: str, where: str) -> None:
         assert all(isinstance(x, str) and x for x in val), (
             f"{where}: field {field!r} must contain only non-empty strings"
         )
+    elif spec == "int":
+        assert isinstance(val, int) and not isinstance(val, bool) and val >= 1, (
+            f"{where}: field {field!r} must be int ≥ 1, got {val!r}"
+        )
+    elif spec == "list[belief]":
+        assert isinstance(val, list) and val, (
+            f"{where}: field {field!r} must be non-empty list of beliefs"
+        )
+        row_belief_ids: set[str] = set()
+        for i, b in enumerate(val):
+            assert isinstance(b, dict), (
+                f"{where}: {field}[{i}] must be object, got {type(b).__name__}"
+            )
+            bid = b.get("id")
+            btext = b.get("text")
+            assert isinstance(bid, str) and bid, (
+                f"{where}: {field}[{i}].id must be non-empty string"
+            )
+            assert isinstance(btext, str) and btext, (
+                f"{where}: {field}[{i}].text must be non-empty string"
+            )
+            assert bid not in row_belief_ids, (
+                f"{where}: {field}[{i}] duplicate belief id {bid!r}"
+            )
+            row_belief_ids.add(bid)
+    elif spec == "list[edge]":
+        assert isinstance(val, list) and val, (
+            f"{where}: field {field!r} must be non-empty list of edges"
+        )
+        for i, e in enumerate(val):
+            assert isinstance(e, dict), (
+                f"{where}: {field}[{i}] must be object, got {type(e).__name__}"
+            )
+            for k in ("src", "dst", "type"):
+                v = e.get(k)
+                assert isinstance(v, str) and v, (
+                    f"{where}: {field}[{i}].{k} must be non-empty string"
+                )
+            w = e.get("weight")
+            assert isinstance(w, (int, float)) and not isinstance(w, bool), (
+                f"{where}: {field}[{i}].weight must be number, got {w!r}"
+            )
     else:  # pragma: no cover - guard against typos in the spec table
         raise AssertionError(f"unknown field spec {spec!r}")
 
