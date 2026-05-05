@@ -5,11 +5,34 @@ name: Replay Soak Gate
 # `replay-soak / consecutive-green ≥ 7d`. Per the 2026-05-04
 # ratification, that name is added to the branch ruleset's
 # required_status_checks list (admin step, separate from this PR).
+#
+# Path scope: only fires on PRs that touch the derivation contract
+# surface (the actual #264 risk surface), the soak fixture, the soak
+# runner / streak scripts, or the soak workflows themselves. Out-of-
+# scope PRs (retrieval, BM25F, edge rerank, contradiction detector,
+# UX, docs) don't see this check at all — keeps the gate honest to
+# its stated intent rather than firing on every PR. Residual risk:
+# additive edits to `store.py` / `models.py` that touch the
+# derivation contract aren't soak-gated; the regular pytest matrix
+# (`replay_full_equality` tests) catches those, and any drift
+# surfaces on the next daily cron entry on main.
 
 on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
+    paths:
+      - 'src/aelfrice/derivation.py'
+      - 'src/aelfrice/derivation_worker.py'
+      - 'src/aelfrice/replay.py'
+      - 'src/aelfrice/ingest.py'
+      - 'src/aelfrice/scanner.py'
+      - 'tests/replay_soak_runner.py'
+      - 'tests/corpus/replay_soak/**'
+      - 'scripts/replay_soak_run.py'
+      - 'scripts/replay_soak_streak.py'
+      - '.github/workflows/replay-soak.yml'
+      - '.github/workflows/replay-soak-gate.yml'
 
 permissions:
   contents: read
