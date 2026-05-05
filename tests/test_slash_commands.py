@@ -115,6 +115,8 @@ HIDDEN_SUBCOMMANDS = frozenset({
     # `aelf upgrade` invocations don't break. The slash file ships
     # only under the canonical `upgrade-cmd` name.
     "upgrade",
+    # #440 — moved to EXPECTED_COMMANDS once slash file lands.
+    "delete",
 })
 
 

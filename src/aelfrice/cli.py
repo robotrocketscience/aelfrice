@@ -1196,6 +1196,54 @@ def _cmd_unlock(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_delete(args: argparse.Namespace, out: object) -> int:
+    """Hard-delete one belief from the store. Writes an audit row first (#440)."""
+    from aelfrice.models import LOCK_USER
+
+    store = _open_store()
+    try:
+        belief = store.get_belief(args.belief_id)
+        if belief is None:
+            print(f"belief not found: {args.belief_id}", file=sys.stderr)
+            return 1
+
+        if belief.lock_level == LOCK_USER and not args.force:
+            print(
+                "belief is locked (lock_level=user); use --force to delete anyway",
+                file=sys.stderr,
+            )
+            return 1
+
+        if not args.yes:
+            print(
+                f"about to delete belief {args.belief_id}:",
+                file=sys.stderr,
+            )
+            print(f'  "{belief.content}"', file=sys.stderr)
+            try:
+                answer = input(
+                    "type the first 8 characters of the id to confirm: "
+                )
+            except EOFError:
+                answer = ""
+            if answer != args.belief_id[:8]:
+                print("aborted: confirmation did not match", file=sys.stderr)
+                return 1
+
+        source = "user_deleted_force" if args.force else "user_deleted"
+        store.insert_feedback_event(
+            belief_id=args.belief_id,
+            valence=-1.0,
+            source=source,
+            created_at=_utc_now_iso(),
+        )
+        store.delete_belief(args.belief_id)
+        print(f"deleted: {args.belief_id}", file=out)  # type: ignore[arg-type]
+    finally:
+        store.close()
+    return 0
+
+
 def _cmd_confirm(args: argparse.Namespace, out: object) -> int:
     """Explicit user affirmation of a belief. Bumps Beta-Bernoulli alpha by 1.0."""
     from aelfrice.mcp_server import tool_confirm
@@ -3477,6 +3525,25 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     p_unlock.add_argument("belief_id", help="id of the belief to unlock")
     p_unlock.set_defaults(func=_cmd_unlock)
+
+    # Hard-delete: remove a belief and all its edges. Confirmation prompt by
+    # default; --yes to bypass. --force allows deletion of locked beliefs.
+    p_delete = sub.add_parser(
+        "delete",
+        help="hard-delete a belief from the store (writes audit row before cascade)",
+    )
+    p_delete.add_argument("belief_id", help="id of the belief to delete")
+    p_delete.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip the interactive confirmation prompt",
+    )
+    p_delete.add_argument(
+        "--force",
+        action="store_true",
+        help="allow deletion of beliefs with lock_level=user",
+    )
+    p_delete.set_defaults(func=_cmd_delete)
 
     # Explicit user affirmation — bumps Beta-Bernoulli alpha without freezing.
     p_confirm = sub.add_parser(
