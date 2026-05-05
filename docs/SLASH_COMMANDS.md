@@ -22,7 +22,7 @@ Slash files are not shipped for hidden CLI subcommands (`bench`, `feedback`, `he
 | `/aelf:doctor` | optional `[hooks\|graph]`, `--user-settings`, `--project-root` |
 | `/aelf:ingest-transcript` | path or `--batch DIR` |
 | `/aelf:setup` | optional `--scope`, `--command`, `--transcript-ingest`, etc. |
-| `/aelf:upgrade` | (none) — print pip-upgrade hint |
+| `/aelf:upgrade-cmd` | (none) — print install-method-aware upgrade command (renamed from `/aelf:upgrade` at #427 to read advisory) |
 | `/aelf:uninstall` | one of `--keep-db`, `--archive`, `--purge` |
 | `/aelf:rebuild` | (none) — manually fire the context rebuilder; v1.4.0+ |
 | `/aelf:reason` | keyword query — walks the belief graph from BM25-seeded starting points; v2.0+ (#389) |
