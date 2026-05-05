@@ -3,18 +3,14 @@ name: CI
 on:
   pull_request:
     branches: [main]
-    # #413 — docs-only PRs skip pytest. paths-ignore is a UNION filter:
-    # the workflow runs unless every changed file matches an ignored path.
-    # A mixed PR (e.g. src/foo.py + docs/x.md) still runs full CI.
-    # TODO(post-public-flip): once branch protection requires this check,
-    # migrate to a dorny/paths-filter detection job so the workflow always
-    # runs and reports a status, with downstream jobs gated by `if:`.
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - 'LICENSE'
-      - '.github/ISSUE_TEMPLATE/**'
-      - '.github/PULL_REQUEST_TEMPLATE.md'
+    # No paths-ignore: the workflow must always run so the
+    # `pytest (3.12)` and `pytest (3.13)` required status checks
+    # report on every PR — including docs-only ones. Path detection
+    # happens inside the job via `dorny/paths-filter`; non-code PRs
+    # short-circuit the install + test steps and report success.
+    # Per #413/#427 follow-up: replaces the previous `paths-ignore`
+    # filter that silently dropped the pytest check on docs-only PRs
+    # and blocked them under `required_status_checks`.
 
 permissions:
   contents: read
@@ -34,10 +30,25 @@ jobs:
         with:
           egress-policy: audit
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            code:
+              - 'src/**'
+              - 'tests/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - '.github/workflows/ci.yml'
+      - if: steps.filter.outputs.code == 'true'
+        uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - run: uv sync --frozen --group dev --extra archive
-      - run: uv run pytest tests/ --ignore=tests/e2e -q
+      - if: steps.filter.outputs.code == 'true'
+        run: uv sync --frozen --group dev --extra archive
+      - if: steps.filter.outputs.code == 'true'
+        run: uv run pytest tests/ --ignore=tests/e2e -q
+      - if: steps.filter.outputs.code != 'true'
+        run: echo "No code paths changed; reporting pass for docs-only PR."
