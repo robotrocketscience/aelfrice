@@ -1,4 +1,4 @@
-"""Semantic relationship detector (#201) — audit-only ship.
+"""Semantic relationship detector (#201) — audit + stale-edge writer.
 
 Stdlib-only port of the research-line `relationship_detector.py`.
 For two beliefs that share enough lexical overlap to be plausibly
@@ -17,13 +17,16 @@ Output verdict is one of:
 * ``unrelated`` — residual-content overlap below the relatedness
   floor.
 
-This module is the **detector**. The audit-only CLI surface
-(``aelf doctor relationships``) lives in ``cli.py``; the write-path
-hook that would actually insert ``CONTRADICTS`` edges and the new
-``POTENTIALLY_STALE`` edge type for sub-confidence pairs are the
-bench-gated R2 deferred behind the corpus benchmark per the #201
-ratification. ``SUPERSEDES`` is intentionally not produced here —
-that verdict is the dedup module's job (``aelf doctor dedup``).
+This module is the **detector** and the **POTENTIALLY_STALE edge
+writer** (#387). The audit-only CLI surface (``aelf doctor
+relationships``) lives in ``cli.py``; the write-path hook for
+``CONTRADICTS`` edges remains the bench-gated R2 deferred behind the
+corpus benchmark per the #201 ratification. The
+``POTENTIALLY_STALE`` writer ships here (#387) and is invoked via
+``aelf doctor --detect-stale``.
+
+``SUPERSEDES`` is intentionally not produced here — that verdict is
+the dedup module's job (``aelf doctor dedup``).
 
 Detection is regex / token-set heuristics — no LLM, no embedding.
 
@@ -619,6 +622,134 @@ def format_audit_report(
     return "\n".join(lines)
 
 
+# --- POTENTIALLY_STALE edge writer (#387) ---------------------------------
+
+
+@dataclass(frozen=True)
+class PotentiallyStaleWriteReport:
+    """Summary of one ``write_potentially_stale_edges`` run.
+
+    Fields:
+
+    ``n_pairs_audited``
+        Total number of ``contradicts`` pairs returned by the underlying
+        ``relationships_audit`` call (both high- and sub-confidence).
+
+    ``n_sub_confidence``
+        Pairs where ``score < confidence_min``.  These are the candidates
+        the writer acts on.
+
+    ``n_edges_written``
+        Pairs that produced a new POTENTIALLY_STALE edge this run.
+
+    ``n_edges_skipped_existing``
+        Pairs whose edge already existed (idempotency guard fired).
+
+    ``n_edges_skipped_self_pair``
+        Defensive counter — should always be 0; pairs where a == b.
+    """
+
+    n_pairs_audited: int
+    n_sub_confidence: int
+    n_edges_written: int
+    n_edges_skipped_existing: int
+    n_edges_skipped_self_pair: int
+
+
+def write_potentially_stale_edges(
+    store: "MemoryStore",
+    *,
+    jaccard_min: float = DEFAULT_JACCARD_MIN,
+    residual_overlap_min: float = DEFAULT_RESIDUAL_OVERLAP_MIN,
+    confidence_min: float = DEFAULT_CONFIDENCE_MIN,
+    max_candidate_pairs: int = DEFAULT_MAX_CANDIDATE_PAIRS,
+) -> PotentiallyStaleWriteReport:
+    """Emit POTENTIALLY_STALE edges for sub-confidence contradicting pairs.
+
+    For each ``contradicts`` pair whose score is strictly below
+    ``confidence_min``, insert one directed POTENTIALLY_STALE edge from
+    the **newer** belief to the **older** one. Direction semantics: the
+    newer belief casts doubt on the older one.
+
+    "Newer" is determined by lexicographic comparison of ``created_at``
+    ISO strings.  Ties are broken by lex ``id`` order (greater id = src).
+
+    The call is **idempotent**: before each insert the store is queried
+    for an existing edge of the same ``(src, dst, POTENTIALLY_STALE)``
+    triple; if found the pair is skipped without an error.
+
+    The writer is **stdlib-only** and makes no LLM or embedding calls.
+    It delegates candidate-pair detection entirely to
+    ``relationships_audit``, which preserves deterministic pair ordering
+    so repeated calls on identical store contents produce identical
+    insertion order.
+    """
+    from aelfrice.models import Edge, EDGE_POTENTIALLY_STALE
+
+    report = relationships_audit(
+        store,
+        jaccard_min=jaccard_min,
+        residual_overlap_min=residual_overlap_min,
+        confidence_min=confidence_min,
+        max_candidate_pairs=max_candidate_pairs,
+    )
+
+    n_audited = sum(1 for p in report.pairs if p.label == LABEL_CONTRADICTS)
+    sub_pairs = [
+        p for p in report.pairs
+        if p.label == LABEL_CONTRADICTS and p.score < confidence_min
+    ]
+    # `report.pairs` is already sorted by (belief_a_id, belief_b_id);
+    # preserve that order for deterministic insertion.
+
+    n_written = 0
+    n_skipped = 0
+    n_self = 0
+    for pair in sub_pairs:
+        a_id, b_id = pair.belief_a_id, pair.belief_b_id
+        if a_id == b_id:
+            n_self += 1
+            continue
+        a = store.get_belief(a_id)
+        b = store.get_belief(b_id)
+        if a is None or b is None:
+            # Pair references a deleted belief; skip silently.
+            continue
+        # Direction: newer (greater created_at, tie-break: greater id) → older.
+        if (a.created_at, a.id) > (b.created_at, b.id):
+            src_id, dst_id = a_id, b_id
+        else:
+            src_id, dst_id = b_id, a_id
+        if store.get_edge(src_id, dst_id, EDGE_POTENTIALLY_STALE) is not None:
+            n_skipped += 1
+            continue
+        store.insert_edge(
+            Edge(src=src_id, dst=dst_id, type=EDGE_POTENTIALLY_STALE, weight=1.0)
+        )
+        n_written += 1
+
+    return PotentiallyStaleWriteReport(
+        n_pairs_audited=n_audited,
+        n_sub_confidence=len(sub_pairs),
+        n_edges_written=n_written,
+        n_edges_skipped_existing=n_skipped,
+        n_edges_skipped_self_pair=n_self,
+    )
+
+
+def format_write_report(report: PotentiallyStaleWriteReport) -> str:
+    """Render a ``PotentiallyStaleWriteReport`` as a plain-text block."""
+    lines: list[str] = []
+    lines.append("aelf doctor --detect-stale")
+    lines.append("=" * 40)
+    lines.append(f"Contradicting pairs audited : {report.n_pairs_audited}")
+    lines.append(f"Sub-confidence pairs        : {report.n_sub_confidence}")
+    lines.append(f"Edges written               : {report.n_edges_written}")
+    lines.append(f"Edges skipped (existing)    : {report.n_edges_skipped_existing}")
+    lines.append(f"Edges skipped (self-pair)   : {report.n_edges_skipped_self_pair}")
+    return "\n".join(lines)
+
+
 __all__ = [
     "DEFAULT_CONFIDENCE_MIN",
     "DEFAULT_JACCARD_MIN",
@@ -628,6 +759,7 @@ __all__ = [
     "LABEL_REFINES",
     "LABEL_UNRELATED",
     "VERDICT_LABELS",
+    "PotentiallyStaleWriteReport",
     "RelationshipDetectorConfig",
     "RelationshipPair",
     "RelationshipVerdict",
@@ -637,6 +769,8 @@ __all__ = [
     "classify",
     "extract_signals",
     "format_audit_report",
+    "format_write_report",
     "load_relationship_detector_config",
     "relationships_audit",
+    "write_potentially_stale_edges",
 ]
