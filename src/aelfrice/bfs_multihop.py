@@ -34,6 +34,7 @@ from aelfrice.models import (
     EDGE_CONTRADICTS,
     EDGE_DERIVED_FROM,
     EDGE_IMPLEMENTS,
+    EDGE_POTENTIALLY_STALE,
     EDGE_RELATES_TO,
     EDGE_SUPERSEDES,
     EDGE_SUPPORTS,
@@ -67,6 +68,11 @@ BFS_EDGE_WEIGHTS: dict[str, float] = {
     EDGE_CITES: 0.40,
     EDGE_RELATES_TO: 0.30,
     EDGE_TEMPORAL_NEXT: 0.25,
+    # Marker edge — skipped during BFS expansion. Demotion happens in
+    # the rerank pass (`aelfrice.edge_rerank`), not here. Pinned at 0.0
+    # explicitly so the contract is reviewable rather than implicit
+    # via the `BFS_EDGE_WEIGHTS.get(..., 0.0)` default. See #421.
+    EDGE_POTENTIALLY_STALE: 0.0,
 }
 
 
