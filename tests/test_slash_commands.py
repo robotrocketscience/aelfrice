@@ -42,6 +42,8 @@ EXPECTED_COMMANDS = (
     # v2.0 / Track B (#389) — graph-walk surfaces.
     "reason",
     "wonder",
+    # v2.0 (#441) — explicit affirmation, sibling of unlock.
+    "confirm",
 )
 
 
