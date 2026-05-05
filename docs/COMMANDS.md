@@ -1,6 +1,6 @@
 # Commands
 
-Twenty-eight CLI subcommands. The retrieval/feedback ones are also exposed as MCP tools (see [MCP](MCP.md)) and slash commands (see [SLASH_COMMANDS](SLASH_COMMANDS.md)). Lifecycle commands (`setup`, `doctor`, `migrate`, `upgrade`, `uninstall`, etc.) are CLI-only.
+Twenty-nine CLI subcommands. The retrieval/feedback ones are also exposed as MCP tools (see [MCP](MCP.md)) and slash commands (see [SLASH_COMMANDS](SLASH_COMMANDS.md)). Lifecycle commands (`setup`, `doctor`, `migrate`, `upgrade`, `uninstall`, etc.) are CLI-only.
 
 ```
 aelf <subcommand> [args] [options]
@@ -22,6 +22,7 @@ DB resolves from `$AELFRICE_DB`, then `<git-common-dir>/aelfrice/memory.db` when
 | `demote <belief_id>` | Drop a user lock (one tier per call: lock first, then user_validated). Delegates to `unlock` for the lock-drop path so an audit row is always written. |
 | `promote <belief_id> [--source user_validated]` | Promote an `agent_inferred` belief to `user_validated`. Alias of `validate`; identical semantics and flags. |
 | `validate <belief_id> [--source user_validated]` | Promote an `agent_inferred` belief to a user-validated origin (v1.2+). |
+| `confirm <belief_id> [--source S] [--note TEXT]` | Explicit user affirmation: α += 1.0 with source `user_confirmed` (default). Writes to `feedback_history`. Note is printed on success but not persisted. Distinct from `lock` (no freeze) and from implicit retrieval feedback (`used` signal). MCP sibling: `aelf_confirm` (#390). |
 | `feedback <belief_id> <used\|harmful> [--source S]` | `used` ⇒ α += 1; `harmful` ⇒ β += 1. Harmful feedback through outbound `CONTRADICTS` threads to user-locks bumps their demotion_pressure; ≥5 ⇒ auto-demote. |
 | `resolve` | Sweep unresolved `CONTRADICTS` threads. Picks a winner per precedence (`user_stated > user_corrected > document_recent`) and inserts a `SUPERSEDES` thread. Idempotent. |
 | `reason <query> [--seed-id ID]... [--k N] [--depth N] [--budget N] [--fanout N] [--json]` | (v2.0+, #389) Surface a reasoning chain over the belief graph. Default seeds: top-3 BM25 hits over `<query>`; `--seed-id` overrides (repeatable). Walks `expand_bfs` with terminal-tight defaults (depth=2, budget=10, fanout=8). Default output is an indented hop tree with edge-type breadcrumbs and path-scores; `--json` for tooling. Read-only over the graph. |
