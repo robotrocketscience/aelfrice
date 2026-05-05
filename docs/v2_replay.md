@@ -59,8 +59,32 @@ The decisions above are the design work. Once equality is contracted, implementa
 - **Multi-rule-set replay** (replay against version N of the rule set). Same blocker.
 - **Auto-fix.** The probe reports drift; #265's view-flip is what corrects it.
 
+## Soak gate (operational definition — #403)
+
+The "≥1 week green" soak window is operationalized by an append-only
+JSONL status file `.replay-soak-status.json` at the repository root.
+The scheduled `replay-soak` workflow (`.github/workflows/replay-soak.yml`)
+appends one row per daily run with shape:
+
+```
+{date, sha, replay_full_equality_result, total_log_rows, mismatched, derived_orphan}
+```
+
+**Soak window satisfied** ≡ the tail of `.replay-soak-status.json`
+contains ≥ 7 consecutive rows where `mismatched + derived_orphan == 0`
+(`replay_full_equality_result == "pass"`). The PR check
+`replay-soak / consecutive-green ≥ 7d` enforces this.
+
+This is the canonical definition; any prior comment-text calendar
+arithmetic (e.g. "soak-locked through YYYY-MM-DD") is superseded.
+
+The fixture under `tests/corpus/replay_soak/v0.1/` is the public-side
+input — 60 hand-authored rows across the 6 non-`legacy_unknown` source
+kinds. The schema contract lives at
+[`tests/corpus/replay_soak/README.md`](../tests/corpus/replay_soak/README.md).
+
 ## Provenance
 
 - Source-of-truth: [`docs/design/write-log-as-truth.md`](design/write-log-as-truth.md) §§ "What changes under the proposed contract", "Smallest first step".
 - Substrate ratification: [`substrate_decision.md`](substrate_decision.md) (#196 Option B). Beta-Bernoulli's posterior drift behavior is what motivates shape-equality over bit-equality here.
-- Upstream chain: #205 (parallel-write phase, merged) → #261 (derivation function) → **#262 this issue** → #264 (worker) → #265 (view-flip).
+- Upstream chain: #205 (parallel-write phase, merged) → #261 (derivation function) → **#262 this issue** → #403 (soak gate operationalization) → #264 (worker) → #265 (view-flip).

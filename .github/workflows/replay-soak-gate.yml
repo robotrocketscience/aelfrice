@@ -1,0 +1,60 @@
+name: Replay Soak Gate
+
+# PR check that gates #264-touching merges on ≥7 consecutive green
+# soak runs (#403 deliverable C). The check name produced is
+# `replay-soak / consecutive-green ≥ 7d`. Per the 2026-05-04
+# ratification, that name is added to the branch ruleset's
+# required_status_checks list (admin step, separate from this PR).
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: replay-soak-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  consecutive-green:
+    name: 'consecutive-green ≥ 7d'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@v4
+        with:
+          # Need main's `.replay-soak-status.json`, not the PR branch's.
+          # The cron only writes on main, so PR branches by default don't
+          # carry fresh entries. Fetch main and read the file from there.
+          ref: main
+          fetch-depth: 1
+
+      - name: Compute streak
+        id: streak
+        run: |
+          set -euo pipefail
+          if [ ! -f .replay-soak-status.json ]; then
+            echo "::warning::.replay-soak-status.json does not exist on main yet; treating streak as 0"
+            n=0
+          else
+            n=$(python3 scripts/replay_soak_streak.py --quiet)
+          fi
+          echo "streak=$n" >> "$GITHUB_OUTPUT"
+          echo "::notice::replay-soak consecutive-green streak: $n"
+
+      - name: Enforce threshold
+        run: |
+          set -euo pipefail
+          n="${{ steps.streak.outputs.streak }}"
+          if [ "$n" -lt 7 ]; then
+            echo "::error::replay-soak streak is $n; threshold is 7. The soak gate blocks #264-touching merges. Wait for the daily cron on main to extend the green streak, or investigate the most recent fail entry."
+            exit 1
+          fi
+          echo "replay-soak streak $n ≥ 7 — gate satisfied"
