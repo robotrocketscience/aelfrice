@@ -40,6 +40,7 @@ from __future__ import annotations
 import io
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Final
 
 import numpy as np
@@ -54,9 +55,22 @@ from aelfrice.store import MemoryStore
 # which matches SQLite FTS5's `tokenize='porter unicode61'` behavior
 # closely enough that q="banana" against content "bananas" hits in
 # both lanes. Constructed once at module load (cheap) and shared
-# across `tokenize()` calls (the stemmer is stateless on each
-# `stemWord` call).
+# across `tokenize_stemmed()` calls.
 _PORTER_STEMMER = snowballstemmer.stemmer("porter")
+
+
+@lru_cache(maxsize=65_536)
+def _stem(token: str) -> str:
+    """LRU-memoised Porter stem.
+
+    snowballstemmer's `stemWord` is pure-Python and slow per-call
+    (~10-30 µs); at 10k+ beliefs the per-doc tokenisation dominates
+    the BM25Index build. Real corpora have small vocabulary
+    relative to total tokens (Zipfian), so a 64K-entry LRU has very
+    high hit rate after warm-up. Cache is module-global; reset on
+    process exit.
+    """
+    return _PORTER_STEMMER.stemWord(token)
 
 # Default weight for the incoming-anchor token stream, per the #148
 # spec. Synthetic-graph evaluation at N=50k under a 15%-vocab-shifted
@@ -123,7 +137,7 @@ def tokenize_stemmed(text: str) -> list[str]:
     if not text:
         return []
     return [
-        _PORTER_STEMMER.stemWord(m.group(0).lower())
+        _stem(m.group(0).lower())
         for m in _TOKEN_PATTERN.finditer(text)
     ]
 
