@@ -44,9 +44,19 @@ from typing import Final
 
 import numpy as np
 import scipy.sparse as sp
+import snowballstemmer
 
 from aelfrice.models import Belief
 from aelfrice.store import MemoryStore
+
+# v1.7.0 #154: Porter stemmer for FTS5 parity. snowballstemmer's
+# "porter" implementation is the original Porter (1980) algorithm,
+# which matches SQLite FTS5's `tokenize='porter unicode61'` behavior
+# closely enough that q="banana" against content "bananas" hits in
+# both lanes. Constructed once at module load (cheap) and shared
+# across `tokenize()` calls (the stemmer is stateless on each
+# `stemWord` call).
+_PORTER_STEMMER = snowballstemmer.stemmer("porter")
 
 # Default weight for the incoming-anchor token stream, per the #148
 # spec. Synthetic-graph evaluation at N=50k under a 15%-vocab-shifted
@@ -78,16 +88,44 @@ _SERIALIZE_VERSION: Final[int] = 1
 
 
 def tokenize(text: str) -> list[str]:
-    """Lowercase + Unicode-word tokenisation.
+    """Lowercase + Unicode-word tokenisation. No stemming.
 
-    Returned tokens are the canonical form used by `BM25Index.build`
-    and `BM25Index.score`. Two pieces of text that differ only in
-    case or punctuation tokenise identically. Empty / whitespace-only
-    input returns ``[]``.
+    Returned tokens are the canonical form used by callers that need
+    word-form-preserving tokens (e.g.,
+    `aelfrice.relationship_detector` matches against unstemmed
+    quantifier tokens like ``"always"`` and ``"rarely"``). Two pieces
+    of text that differ only in case or punctuation tokenise
+    identically. Empty / whitespace-only input returns ``[]``.
+
+    BM25 indexing uses `tokenize_stemmed()` instead — that's where
+    Porter stemming lives so `q="banana"` matches content `"bananas"`
+    on the BM25F path (FTS5 already stems).
     """
     if not text:
         return []
     return [m.group(0).lower() for m in _TOKEN_PATTERN.finditer(text)]
+
+
+def tokenize_stemmed(text: str) -> list[str]:
+    """Lowercase + Unicode-word tokenisation + Porter stemming.
+
+    Used by `BM25Index.build` and `BM25Index.score` so the BM25F
+    lane has FTS5-equivalent stemming. SQLite FTS5 uses Porter by
+    default; without stemming on the BM25F path,
+    `q="banana"` against content `"bananas"` would miss matches that
+    the legacy FTS5 lane catches. Added at v1.7.0 (#154) when the
+    default-on flip was prepared.
+
+    Non-BM25 callers (relationship_detector, scoring helpers, etc.)
+    that depend on word-form-preserving tokens should keep using
+    `tokenize()`; stemming is BM25-specific.
+    """
+    if not text:
+        return []
+    return [
+        _PORTER_STEMMER.stemWord(m.group(0).lower())
+        for m in _TOKEN_PATTERN.finditer(text)
+    ]
 
 
 @dataclass
@@ -185,9 +223,9 @@ class BM25Index:
         tokens_per_doc: list[list[str]] = []
         for bid in belief_ids:
             content = contents.get(bid, "")
-            doc_tokens = tokenize(content)
+            doc_tokens = tokenize_stemmed(content)
             for anchor in incoming.get(bid, ()):
-                anchor_tokens = tokenize(anchor)
+                anchor_tokens = tokenize_stemmed(anchor)
                 for _ in range(anchor_weight):
                     doc_tokens.extend(anchor_tokens)
             tokens_per_doc.append(doc_tokens)
@@ -275,7 +313,7 @@ class BM25Index:
             return []
         if self.tf.shape[0] == 0 or self.tf.shape[1] == 0:
             return []
-        q_tokens = tokenize(query)
+        q_tokens = tokenize_stemmed(query)
         if not q_tokens:
             return []
         # Build the query indicator * idf vector in dense form

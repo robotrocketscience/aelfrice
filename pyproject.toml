@@ -44,6 +44,13 @@ dependencies = [
     # longer stdlib-only. CHANGELOG records the change.
     "numpy>=2.0",
     "scipy>=1.11",
+    # v1.7.0 added snowballstemmer for BM25F tokenisation parity with
+    # FTS5's Porter stemmer (#154). Pure-Python, ~150 KB; deterministic
+    # for the English Porter algorithm. Required so `q="banana"`
+    # against content `"bananas"` matches in both lanes — flipping the
+    # BM25F default-on without it loses the stemming win FTS5 gives
+    # for free.
+    "snowballstemmer>=2.2",
 ]
 
 [project.urls]
