@@ -128,6 +128,22 @@ MODULES: dict[str, tuple[set[str], dict[str, str]]] = {
             "k": "int",
         },
     ),
+    # #421 — edge-type-keyed rerank consumer. Same graded-row shape as
+    # the Track A bench fixtures plus `stale_ids`: the subset of belief
+    # ids that have ≥1 ``POTENTIALLY_STALE`` incoming edge in the row's
+    # `edges` list. The bench gate measures ≥1pp@k drop in stale-tagged
+    # retrieval after the rerank pass vs. before.
+    "bfs_potentially_stale": (
+        {"graded"},
+        {
+            "beliefs": "list[belief]",
+            "edges": "list[edge]",
+            "seed_ids": "list[str]",
+            "expected_hit_ids": "list[str]",
+            "stale_ids": "list[str]",
+            "k": "int",
+        },
+    ),
     # #389 Track B — `aelf reason` ship gate. Same row structure as
     # bfs_relates_to (the gate measures hit@k uplift over a graph) plus
     # a `query` field for BM25 seed selection on the runtime path.

@@ -45,6 +45,8 @@ tests/corpus/v2_0/
 │   └── *.jsonl
 ├── retrieve_uplift/                   #154 (v1.7 default-on flip — per-flag NDCG@k)
 │   └── *.jsonl
+├── bfs_potentially_stale/             #421 (rerank-consumer demotion gate)
+│   └── *.jsonl
 ├── reasoning/                         #389 (Track B: aelf reason)
 │   └── *.jsonl
 └── wonder_online/                     #389 (Track B: aelf wonder)
@@ -85,6 +87,7 @@ required for **all** modules:
 | `temporal_next_edge` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_ids` (list[string]), `expected_hit_ids` (list[string]), `k` (int) | `graded` |
 | `tests_edge` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_ids` (list[string]), `expected_hit_ids` (list[string]), `k` (int) | `graded` |
 | `retrieve_uplift` | `query` (string), `beliefs` (list[obj]), `edges` (list[obj]), `expected_top_k` (list[string], **ordered**), `k` (int) | `graded` |
+| `bfs_potentially_stale` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_ids` (list[string]), `expected_hit_ids` (list[string]), `stale_ids` (list[string]), `k` (int) | `graded` |
 | `reasoning` | `query` (string), `beliefs` (list[obj]), `edges` (list[obj]), `expected_hit_ids` (list[string]), `baseline_search_only_top_k` (list[string]), `k` (int) | `graded` |
 | `wonder_online` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_id` (string), `expected_candidate_ids` (list[string]) | `graded` |
 
