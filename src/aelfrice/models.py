@@ -33,6 +33,16 @@ EDGE_IMPLEMENTS: Final[str] = "IMPLEMENTS"
 EDGE_TEMPORAL_NEXT: Final[str] = "TEMPORAL_NEXT"
 EDGE_TESTS: Final[str] = "TESTS"
 
+# Marker edge — semantically distinct from the relational edge types
+# above. POTENTIALLY_STALE tags a target belief as suspected stale; it
+# carries no propagation valence and is skipped during BFS expansion
+# (`BFS_EDGE_WEIGHTS[POTENTIALLY_STALE] = 0.0`). The consumer is the
+# edge-type-keyed rerank pass in `aelfrice.edge_rerank` (#421); the
+# producer is `aelf doctor` (#387). Deliberately NOT in `EDGE_TYPES`
+# or `EDGE_VALENCE` — those enumerate structural relational edges,
+# this is a tag.
+EDGE_POTENTIALLY_STALE: Final[str] = "POTENTIALLY_STALE"
+
 # Edge-type valence multipliers for propagation.
 # Positive = propagate same sign; negative = invert; 0.0 = no propagation.
 # DERIVED_FROM mirrors CITES (0.5): both indicate B's content depends on A,
