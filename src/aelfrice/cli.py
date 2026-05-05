@@ -6,6 +6,7 @@ Commands:
   lock <statement>                 insert (or upgrade) a user-locked belief
   locked [--pressured]             list locked beliefs
   demote <id>                      manually demote a lock to none
+  confirm <id> [--source S]        explicitly affirm a belief (bumps Beta-Bernoulli alpha)
   feedback <id> <used|harmful>     apply one Bayesian feedback event
   stats                            summary of belief / lock / history counts
   health                           structural auditor (orphan threads, FTS5 sync, locked contradictions)
@@ -1175,6 +1176,40 @@ def _cmd_unlock(args: argparse.Namespace, out: object) -> int:
         print(f"unlocked: {args.belief_id}", file=out)  # type: ignore[arg-type]
     finally:
         store.close()
+    return 0
+
+
+def _cmd_confirm(args: argparse.Namespace, out: object) -> int:
+    """Explicit user affirmation of a belief. Bumps Beta-Bernoulli alpha by 1.0."""
+    from aelfrice.mcp_server import tool_confirm
+
+    store = _open_store()
+    try:
+        result = tool_confirm(
+            store,
+            belief_id=args.belief_id,
+            source=args.source,
+            note=getattr(args, "note", "") or "",
+        )
+    finally:
+        store.close()
+
+    if result.get("kind") == "confirm.unknown_belief":
+        print(f"confirm error: {result['error']}", file=sys.stderr)
+        return 1
+
+    prior_alpha: float = result["prior_alpha"]
+    new_alpha: float = result["new_alpha"]
+    new_beta: float = result["new_beta"]
+    posterior_mean = new_alpha / (new_alpha + new_beta)
+    msg = (
+        f"confirmed {args.belief_id}: "
+        f"alpha {prior_alpha:.3f}->{new_alpha:.3f}, "
+        f"mean {posterior_mean:.3f}"
+    )
+    if result.get("note"):
+        msg += f" [{result['note']}]"
+    print(msg, file=out)  # type: ignore[arg-type]
     return 0
 
 
@@ -3273,6 +3308,27 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     p_unlock.add_argument("belief_id", help="id of the belief to unlock")
     p_unlock.set_defaults(func=_cmd_unlock)
+
+    # Explicit user affirmation — bumps Beta-Bernoulli alpha without freezing.
+    p_confirm = sub.add_parser(
+        "confirm",
+        help="affirm a belief: bumps posterior toward truth without locking it",
+    )
+    p_confirm.add_argument("belief_id", help="id of the belief to affirm")
+    p_confirm.add_argument(
+        "--source",
+        default="user_confirmed",
+        help=(
+            "source label written to feedback_history. "
+            "Defaults to 'user_confirmed'."
+        ),
+    )
+    p_confirm.add_argument(
+        "--note",
+        default="",
+        help="optional free-text annotation (printed on success, not persisted)",
+    )
+    p_confirm.set_defaults(func=_cmd_confirm)
 
     # promote: user-facing alias of validate. Same handler, same flags.
     p_promote = sub.add_parser(
