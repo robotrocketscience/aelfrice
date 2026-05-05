@@ -1,0 +1,94 @@
+name: Replay Soak
+
+# v2.x replay-equality soak gate (#403 deliverable A).
+#
+# Runs daily on `main` against the public v0.1 corpus under
+# `tests/corpus/replay_soak/v0.1/`. Appends one row to
+# `.replay-soak-status.json` (append-only JSONL, despite the .json
+# suffix) per the 2026-05-04 ratification on #403. The PR check that
+# enforces "≥ 7 consecutive green days" reads from this file (#403 C).
+
+on:
+  schedule:
+    # 04:00 UTC daily — well clear of GitHub Actions' typical hot
+    # window. Drift detection is timing-insensitive; once-a-day is
+    # the cadence ratification specified.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    # Manual trigger lets the operator force a soak entry mid-day
+    # after a #264-touching merge or a deliberate fixture change.
+
+permissions:
+  contents: write
+  # `contents: write` so the cron job can commit the status-file
+  # update back to `main`. PR runs do not need it; this workflow
+  # only runs on schedule + dispatch (no `pull_request` trigger).
+
+concurrency:
+  # Serialize across schedule + dispatch so two runs can't append
+  # to the status file at the same time. `cancel-in-progress: false`
+  # so a manual dispatch doesn't drop a scheduled run mid-flight.
+  group: replay-soak
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use the workflow token; default is read-only on schedule
+          # but `permissions.contents: write` above flips it.
+          persist-credentials: true
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dev group
+        run: uv sync --frozen --group dev
+
+      - name: Run replay-soak runner
+        id: soak
+        run: |
+          uv run python scripts/replay_soak_run.py
+        # Exit code 1 on drift; the workflow still commits the entry
+        # (the streak ends; the PR check reads the result). The job
+        # itself fails so an alert fires.
+        continue-on-error: true
+
+      - name: Show appended entry
+        run: |
+          tail -n 1 .replay-soak-status.json
+
+      - name: Commit status update
+        env:
+          # Bot identity for the audit-trail commits.
+          GIT_AUTHOR_NAME: aelfrice-soak-bot
+          GIT_AUTHOR_EMAIL: aelfrice-soak-bot@users.noreply.github.com
+          GIT_COMMITTER_NAME: aelfrice-soak-bot
+          GIT_COMMITTER_EMAIL: aelfrice-soak-bot@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          if git diff --quiet .replay-soak-status.json; then
+            echo "no soak-status delta to commit"
+            exit 0
+          fi
+          today=$(date -u +%Y-%m-%d)
+          git add .replay-soak-status.json
+          git commit -m "audit(replay-soak): ${today} entry"
+          git push origin HEAD:main
+
+      - name: Fail job if drift
+        if: steps.soak.outcome == 'failure'
+        run: |
+          echo "::error::replay-soak detected drift on the public fixture"
+          exit 1
