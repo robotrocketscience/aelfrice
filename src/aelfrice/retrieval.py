@@ -505,12 +505,20 @@ def resolve_use_bm25f_anchors(
       1. AELFRICE_BM25F env var (truthy / falsy normalised).
       2. Explicit `explicit` kwarg from the caller.
       3. `[retrieval] use_bm25f_anchors` in `.aelfrice.toml`.
-      4. Default: False (v1.5.0 default-OFF).
+      4. Default: True (v1.7.0 default-ON per #154 bench evidence).
 
-    The default-off contract means the v1.4 FTS5 path remains
-    byte-identical for callers that do not opt in. The composition
-    tracker (#154) flips the default at v1.5.x once benchmarks
-    confirm the quality lift on captured-corpus data.
+    The composition-tracker (#154) bench gate ran on the
+    `tests/corpus/v2_0/retrieve_uplift/v0_1.jsonl` lab fixture and
+    measured **+0.6650 NDCG@k uplift** for `use_bm25f_anchors=True`
+    versus the all-flags-off baseline (30 rows, 6 categories) under
+    Porter stemming. No regression on any row. See #154 for the
+    per-flag table; the stemming addition (#428) closed the
+    `q="banana"` vs content `"bananas"` gap that briefly blocked
+    the flip.
+
+    Callers that need the v1.5/v1.6 FTS5 path can still set
+    `AELFRICE_BM25F=0`, pass `use_bm25f_anchors=False`, or write
+    `[retrieval] use_bm25f_anchors = false` in `.aelfrice.toml`.
     """
     env = _env_bm25f_override()
     if env is not None:
@@ -520,7 +528,7 @@ def resolve_use_bm25f_anchors(
     toml_value = _read_toml_flag_for(BM25F_FLAG, start)
     if toml_value is not None:
         return toml_value
-    return False
+    return True
 
 
 def is_hrr_structural_enabled(

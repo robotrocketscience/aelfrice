@@ -97,13 +97,22 @@ def test_ac1_retrieve_and_retrieve_v2_accept_posterior_weight() -> None:
 
 
 def test_ac2_weight_zero_byte_identical_to_v10x() -> None:
-    """The most important regression test: at weight 0 the result
-    list is identical to what `store.search_beliefs(...)` returns
+    """At weight 0 AND with the legacy plain-BM25 (non-BM25F) path,
+    retrieve() result equals what `store.search_beliefs(...)` returns
     for the L1 portion. (L0 prefix is unaffected by weight.)
+
+    Per #154: BM25F is now the default lane (default-on flip at v1.7.0
+    ratified on +0.6650 NDCG@k uplift evidence post-stemming).
+    `use_bm25f_anchors=False` here pins the contract to the legacy
+    v1.0.x BM25 path so this regression test still asserts what it
+    was meant to assert.
     """
     s = _equal_bm25_store()
     direct = s.search_beliefs("widget", limit=50)
-    weighted = retrieve(s, "widget", token_budget=10_000, posterior_weight=0.0)
+    weighted = retrieve(
+        s, "widget", token_budget=10_000,
+        posterior_weight=0.0, use_bm25f_anchors=False,
+    )
     # The retrieve() output may include an L0 prefix; here the
     # store has no locked beliefs, so the lists must match
     # byte-for-byte.

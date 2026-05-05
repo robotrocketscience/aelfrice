@@ -116,13 +116,18 @@ def test_placeholder_flags_constant_lists_unwired_lanes() -> None:
     }
 
 
-def test_lane_telemetry_records_fts5_lane_by_default() -> None:
-    """A retrieve() call with no opt-in flag populates LaneTelemetry
-    with bm25f_used=False."""
+def test_lane_telemetry_records_fts5_lane_when_opted_out() -> None:
+    """Explicit `use_bm25f_anchors=False` populates LaneTelemetry with
+    bm25f_used=False — the legacy FTS5 path remains reachable.
+
+    Replaces the v1.5/v1.6 default-off check. Per #154 the default
+    flipped to ON at v1.7.0 on +0.6650 NDCG@k uplift evidence; this
+    test now asserts the opt-out path is intact.
+    """
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("b1", "alpha beta"))
     s.insert_belief(_mk("b2", "gamma delta"))
-    retrieve(s, "alpha")
+    retrieve(s, "alpha", use_bm25f_anchors=False)
     t = last_lane_telemetry()
     assert isinstance(t, LaneTelemetry)
     assert t.bm25f_used is False
@@ -131,8 +136,19 @@ def test_lane_telemetry_records_fts5_lane_by_default() -> None:
     assert t.locked == 0
 
 
+def test_lane_telemetry_records_bm25f_lane_by_default() -> None:
+    """Default-on contract (#154 v1.7.0): retrieve() with no explicit
+    flag populates LaneTelemetry with bm25f_used=True."""
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk("b1", "alpha beta"))
+    retrieve(s, "alpha")
+    t = last_lane_telemetry()
+    assert t.bm25f_used is True
+
+
 def test_lane_telemetry_records_bm25f_lane_when_opted_in() -> None:
-    """Setting use_bm25f_anchors=True flips the bm25f_used flag."""
+    """Setting use_bm25f_anchors=True keeps the bm25f_used flag on
+    (matches the default at v1.7.0+)."""
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("b1", "alpha beta"))
     retrieve(s, "alpha", use_bm25f_anchors=True)

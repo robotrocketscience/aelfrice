@@ -296,15 +296,22 @@ def test_retrieve_with_use_bm25f_anchors_returns_anchor_recovered_belief() -> No
     assert "shifted" not in fts_hits
 
 
-def test_retrieve_default_off_byte_identical_to_pre_v15_path() -> None:
-    """Default-off contract: with use_bm25f_anchors unset (None), the
-    output equals the explicit use_bm25f_anchors=False path. Guards
-    against accidental flip in a future commit."""
+def test_retrieve_default_on_byte_identical_to_explicit_on() -> None:
+    """Default-on contract (#154 v1.7.0): with use_bm25f_anchors unset
+    (None), the output equals the explicit use_bm25f_anchors=True path.
+
+    Replaces the v1.5/v1.6 default-off byte-identity check. Default
+    flipped on +0.6650 NDCG@k uplift evidence on the
+    `tests/corpus/v2_0/retrieve_uplift/v0_1.jsonl` lab fixture
+    post-stemming (see #154 comment 4380967901). Guards against
+    accidental flip-back in a future commit; the legacy FTS5 path
+    remains reachable via explicit `use_bm25f_anchors=False`.
+    """
     s = MemoryStore(":memory:")
     for i in range(8):
         s.insert_belief(_mk(f"b{i}", f"token{i} content blob"))
     default = [b.id for b in retrieve(s, "token3 content")]
-    explicit_off = [b.id for b in retrieve(
-        s, "token3 content", use_bm25f_anchors=False,
+    explicit_on = [b.id for b in retrieve(
+        s, "token3 content", use_bm25f_anchors=True,
     )]
-    assert default == explicit_off
+    assert default == explicit_on
