@@ -2318,6 +2318,17 @@ class MemoryStore:
         )
         return [_row_to_edge(r) for r in cur.fetchall()]
 
+    def edges_to(self, dst: str) -> list[Edge]:
+        """Return every edge whose `dst` is `dst`. Symmetric companion
+        to `edges_from`. Used by the edge-type-keyed rerank pass
+        (#421) to detect marker edges (e.g., POTENTIALLY_STALE)
+        targeting a surfaced belief.
+        """
+        cur = self._conn.execute(
+            "SELECT * FROM edges WHERE dst = ?", (dst,)
+        )
+        return [_row_to_edge(r) for r in cur.fetchall()]
+
     def iter_all_edges(self) -> Iterator[Edge]:
         """Stream every edge in the store. Ordering is insertion order
         (sqlite ROWID). Used by graph-wide builders such as the signed
