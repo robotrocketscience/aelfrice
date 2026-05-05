@@ -1,6 +1,6 @@
 # Commands
 
-Twenty-nine CLI subcommands. The retrieval/feedback ones are also exposed as MCP tools (see [MCP](MCP.md)) and slash commands (see [SLASH_COMMANDS](SLASH_COMMANDS.md)). Lifecycle commands (`setup`, `doctor`, `migrate`, `upgrade`, `uninstall`, etc.) are CLI-only.
+Thirty CLI subcommands. The retrieval/feedback ones are also exposed as MCP tools (see [MCP](MCP.md)) and slash commands (see [SLASH_COMMANDS](SLASH_COMMANDS.md)). Lifecycle commands (`setup`, `doctor`, `migrate`, `upgrade`, `uninstall`, etc.) are CLI-only.
 
 ```
 aelf <subcommand> [args] [options]
@@ -19,6 +19,7 @@ DB resolves from `$AELFRICE_DB`, then `<git-common-dir>/aelfrice/memory.db` when
 | `lock <statement>` | Insert at `(α, β) = (9.0, 0.5)` with `lock_level=user`. Idempotent — re-lock upgrades existing. |
 | `locked [--pressured]` | List locks. With `--pressured`, only those with `demotion_pressure > 0`. |
 | `unlock <belief_id>` | Drop a user-lock without changing origin. Idempotent. Writes a `lock:unlock` audit row. |
+| `delete <belief_id> [--yes] [--force]` | Hard-delete a belief: removes the belief row, FTS entry, edges (src and dst), and entity index rows. Writes one audit row to `feedback_history` (valence=-1.0, source=`user_deleted`) before the cascade so the forensic record survives. Confirmation prompt by default — prints belief content and requires the user to type the first 8 characters of the id; `--yes` skips the prompt. Refuses locked (`lock_level=user`) beliefs without `--force`; with `--force` the audit source becomes `user_deleted_force`. Exit 0 on success; exit 1 on not-found, locked-without-force, or prompt mismatch. |
 | `demote <belief_id>` | Drop a user lock (one tier per call: lock first, then user_validated). Delegates to `unlock` for the lock-drop path so an audit row is always written. |
 | `promote <belief_id> [--source user_validated]` | Promote an `agent_inferred` belief to `user_validated`. Alias of `validate`; identical semantics and flags. |
 | `validate <belief_id> [--source user_validated]` | Promote an `agent_inferred` belief to a user-validated origin (v1.2+). |
