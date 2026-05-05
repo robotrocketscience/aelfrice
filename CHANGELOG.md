@@ -10,6 +10,10 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-05-07
+
+Reproducibility cut. v2.0 closes the v1.5–v1.7 feature-parity wave with a single tagged release. No additional product surface beyond v1.7.0 — same wheel content, same retrieval defaults, same CLI surface. v2.0.0 is the canonical reproducibility tag for the v2.0 corpus + bench evidence cut: operators who want a stable pin for the BM25F default-on flip (#154, +0.6650 NDCG@k on the v0.1 retrieve_uplift fixture) plus the v1.7.0 detector wave (#264 worker refactor, #421/#387 edge-type rerank + stale writer, #422 value-comparison, #441 confirm, #197/#201 dedup + contradiction, #228 wonder-consolidation, #383-388 edge-type ship gates) should pin `aelfrice==2.0.0` rather than `aelfrice==1.7.0`. README roadmap rows for v1.7 and v2.0 both flip to `shipped` with this tag.
+
 ## [1.7.0] - 2026-05-07
 
 Two structural changes drive v1.7.0: BM25F anchor-text retrieval flips default-on, and every ingest entry point now routes through a single `derivation_worker` that treats the append-only `ingest_log` as the source of truth. On top of that lands the v2.0 detector wave (dedup, semantic contradiction, value-comparison, sentiment-from-prose, wonder-consolidation), four new CLI verbs (`reason`, `wonder`, `confirm`, `delete`), the `unlock`/`promote` lock-management surface, and a wave of edge-type ship gates.
@@ -677,7 +681,8 @@ Foundation milestone — store, models, config.
 - Initial repo scaffold: pyproject, README, GitHub Actions workflows,
   scan configs (commit `67b4343`).
 
-[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/robotrocketscience/aelfrice/compare/v1.7.0...v2.0.0
 [1.7.0]: https://github.com/robotrocketscience/aelfrice/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/robotrocketscience/aelfrice/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/robotrocketscience/aelfrice/compare/v1.5.0...v1.5.1
