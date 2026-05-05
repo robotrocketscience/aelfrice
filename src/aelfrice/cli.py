@@ -2544,6 +2544,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_dedup(args, out)
     if getattr(args, "relationships", False):
         return _cmd_doctor_relationships(args, out)
+    if getattr(args, "detect_stale", False):
+        return _cmd_doctor_detect_stale(args, out)
     scope = getattr(args, "scope", None)
     exit_code = 0
     if scope in (None, "hooks"):
@@ -2638,9 +2640,9 @@ def _cmd_doctor_relationships(args: argparse.Namespace, out: object) -> int:
     Walks the store, classifies near-pair relationships
     (``contradicts`` / ``refines``) by modality + quantifier signal
     divergence, and prints a report. Read-only: no edges are inserted,
-    no beliefs are mutated. The write-path ``CONTRADICTS`` hook + new
-    ``POTENTIALLY_STALE`` edge type is the bench-gated R2 deferred
-    behind the corpus benchmark.
+    no beliefs are mutated. The write-path ``CONTRADICTS`` hook remains
+    the bench-gated R2 deferred behind the corpus benchmark.
+    POTENTIALLY_STALE edges are written via ``--detect-stale`` (#387).
 
     Exit 0 on success regardless of pair count — pairs are diagnostic,
     not failure conditions. Exit 1 only on store-open errors.
@@ -2692,6 +2694,71 @@ def _cmd_doctor_relationships(args: argparse.Namespace, out: object) -> int:
         format_audit_report(report, confidence_min=config.confidence_min),
         file=out,  # type: ignore[arg-type]
     )
+    return 0
+
+
+def _cmd_doctor_detect_stale(args: argparse.Namespace, out: object) -> int:
+    """Emit POTENTIALLY_STALE edges for sub-confidence contradicting pairs (#387).
+
+    Runs ``write_potentially_stale_edges`` against the open store, which:
+
+    1. Calls ``relationships_audit`` to find all contradicting pairs.
+    2. Filters to sub-confidence pairs (score < ``confidence_min``).
+    3. For each such pair emits one POTENTIALLY_STALE edge from the newer
+       belief to the older one (newer = greater ``created_at``, tie-break
+       on lex ``id``).
+    4. Skips pairs whose edge already exists (idempotent).
+
+    Reuses ``--relationships-jaccard`` / ``--relationships-confidence`` /
+    ``--relationships-max-pairs`` overrides — semantics are shared with
+    ``--relationships``.
+
+    Exit 0 on success. Exit 1 only on store-open or threshold errors.
+    """
+    from aelfrice.relationship_detector import (
+        RelationshipDetectorConfig,
+        format_write_report,
+        load_relationship_detector_config,
+        write_potentially_stale_edges,
+    )
+
+    config = load_relationship_detector_config()
+    j_override = getattr(args, "relationships_jaccard", None)
+    c_override = getattr(args, "relationships_confidence", None)
+    mp_override = getattr(args, "relationships_max_pairs", None)
+    config = RelationshipDetectorConfig(
+        jaccard_min=(
+            float(j_override) if j_override is not None else config.jaccard_min
+        ),
+        residual_overlap_min=config.residual_overlap_min,
+        confidence_min=(
+            float(c_override)
+            if c_override is not None
+            else config.confidence_min
+        ),
+        max_candidate_pairs=(
+            int(mp_override)
+            if mp_override is not None
+            else config.max_candidate_pairs
+        ),
+    )
+
+    store = _open_store()
+    try:
+        write_report = write_potentially_stale_edges(
+            store,
+            jaccard_min=config.jaccard_min,
+            residual_overlap_min=config.residual_overlap_min,
+            confidence_min=config.confidence_min,
+            max_candidate_pairs=config.max_candidate_pairs,
+        )
+    except ValueError as exc:
+        print(f"aelf doctor --detect-stale: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+
+    print(format_write_report(write_report), file=out)  # type: ignore[arg-type]
     return 0
 
 
@@ -3705,6 +3772,18 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "prefilter; deterministic truncation by (id_a, id_b). "
             "Default: [relationship_detector] max_candidate_pairs in "
             ".aelfrice.toml > 5000."
+        ),
+    )
+    p_doctor.add_argument(
+        "--detect-stale",
+        dest="detect_stale",
+        action="store_true",
+        default=False,
+        help=(
+            "scan for sub-confidence contradicting pairs and emit "
+            "POTENTIALLY_STALE edges (#387). Direction: newer belief → "
+            "older belief. Idempotent. Stdlib only. Bypasses the "
+            "hooks/graph checks. Tunes share with --relationships."
         ),
     )
     p_doctor.set_defaults(func=_cmd_doctor)
