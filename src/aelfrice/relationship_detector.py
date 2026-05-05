@@ -234,12 +234,47 @@ def analyze(
     text_b: str,
     *,
     residual_overlap_min: float = DEFAULT_RESIDUAL_OVERLAP_MIN,
+    use_value_comparison: bool = False,
 ) -> RelationshipVerdict:
     """Classify the relationship between two belief texts.
 
     Pure function over the two strings. Read by the audit pass and by
     the bench gate at ``relationship_detector.classify``.
+
+    When ``use_value_comparison=True``, the typed-slot value-comparison
+    gate (#422) runs **before** the residual-overlap floor. If the
+    pair has at least one mutual-exclusion slot conflict, the verdict
+    is ``contradicts`` with a high score regardless of token overlap —
+    natural-language paraphrase is the failure mode that #201's R2
+    gate hit (recall 0.033) and the value-comparison gate
+    deliberately bypasses it. When the flag is ``False`` (the default)
+    behaviour is unchanged from the v1 detector.
     """
+    if use_value_comparison:
+        from aelfrice.value_compare import extract_values, find_conflicts
+        slots_a = extract_values(text_a)
+        slots_b = extract_values(text_b)
+        conflicts = find_conflicts(slots_a, slots_b)
+        if conflicts:
+            # Slot-conflict verdict bypasses the residual-overlap
+            # floor — the slot match itself is the relatedness
+            # signal. Score is fixed at 1.0 (highest confidence
+            # this gate emits) so the auto-emit policy in #422
+            # acceptance #3 can route on (conflicts present AND
+            # score >= floor).
+            kinds = sorted({c.kind for c in conflicts})
+            keys = sorted({c.key for c in conflicts})
+            rationale = "value_comparison:" + ",".join(
+                f"{kind}={key}" for kind, key in zip(kinds, keys)
+            ) if len(kinds) == len(keys) else (
+                "value_comparison:" + "+".join(kinds)
+            )
+            return RelationshipVerdict(
+                label=LABEL_CONTRADICTS,
+                score=1.0,
+                residual_overlap=0.0,
+                rationale=rationale,
+            )
     sa = extract_signals(text_a)
     sb = extract_signals(text_b)
     overlap = _residual_jaccard(sa.residual_content, sb.residual_content)
@@ -281,9 +316,22 @@ def analyze(
     )
 
 
-def classify(text_a: str, text_b: str) -> str:
-    """Bench-gate entry point: return the verdict label only."""
-    return analyze(text_a, text_b).label
+def classify(
+    text_a: str,
+    text_b: str,
+    *,
+    use_value_comparison: bool = False,
+) -> str:
+    """Bench-gate entry point: return the verdict label only.
+
+    When ``use_value_comparison=True``, the v3 typed-slot gate (#422)
+    runs ahead of the residual-overlap floor.
+    """
+    return analyze(
+        text_a,
+        text_b,
+        use_value_comparison=use_value_comparison,
+    ).label
 
 
 # --- Audit report types ------------------------------------------------
