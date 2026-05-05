@@ -92,5 +92,25 @@ when the corpus is unmounted.
 
 ## Producer side
 
-`POTENTIALLY_STALE` edges are produced by `aelf doctor` (#387) — the
-edge-writer is out of scope for #421. This module is the consumer.
+`POTENTIALLY_STALE` edges are produced by `aelf doctor --detect-stale`
+(#387), implemented in `aelfrice.relationship_detector.write_potentially_stale_edges`.
+
+**Staleness signal**: sub-confidence `contradicts` pairs from
+`relationship_detector.relationships_audit`. A pair qualifies when its
+`score < confidence_min` (default 0.5); high-confidence contradicting
+pairs are excluded — those belong to the deferred CONTRADICTS write-path
+(R2, #201).
+
+**Edge direction**: for each qualifying pair `(a, b)`, one POTENTIALLY_STALE
+edge is emitted with `src = newer belief`, `dst = older belief`. "Newer"
+is the belief with the lexicographically greater `created_at` ISO string;
+ties break on lex `id` order. Semantics: the newer belief casts doubt on
+the older one.
+
+**Idempotency**: a pre-insert `get_edge(src, dst, POTENTIALLY_STALE)` check
+skips pairs whose edge already exists. Repeated invocations on the same
+store are safe.
+
+**Tuning**: the same `--relationships-jaccard`, `--relationships-confidence`,
+and `--relationships-max-pairs` flags that tune `--relationships` apply to
+`--detect-stale` as well.
