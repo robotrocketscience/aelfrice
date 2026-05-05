@@ -114,6 +114,20 @@ MODULES: dict[str, tuple[set[str], dict[str, str]]] = {
             "k": "int",
         },
     ),
+    # #154 v1.7 default-on flip — per-flag NDCG@k uplift over a graded
+    # ranking. Same beliefs+edges shape as the BFS modules; expected
+    # output is an *ordered* list (top-relevant first) rather than a
+    # set, since NDCG cares about position.
+    "retrieve_uplift": (
+        {"graded"},
+        {
+            "query": "str",
+            "beliefs": "list[belief]",
+            "edges": "list[edge]",
+            "expected_top_k": "list[str]",
+            "k": "int",
+        },
+    ),
     # #389 Track B — `aelf reason` ship gate. Same row structure as
     # bfs_relates_to (the gate measures hit@k uplift over a graph) plus
     # a `query` field for BM25 seed selection on the runtime path.
