@@ -3,18 +3,16 @@ name: CI
 on:
   pull_request:
     branches: [main]
-    # #413 — docs-only PRs skip pytest. paths-ignore is a UNION filter:
-    # the workflow runs unless every changed file matches an ignored path.
-    # A mixed PR (e.g. src/foo.py + docs/x.md) still runs full CI.
-    # TODO(post-public-flip): once branch protection requires this check,
-    # migrate to a dorny/paths-filter detection job so the workflow always
-    # runs and reports a status, with downstream jobs gated by `if:`.
-    paths-ignore:
-      - 'docs/**'
-      - '**/*.md'
-      - 'LICENSE'
-      - '.github/ISSUE_TEMPLATE/**'
-      - '.github/PULL_REQUEST_TEMPLATE.md'
+  # Workflow runs on every PR so branch protection can rely on pytest
+  # checks reporting on every PR. The detect job uses dorny/paths-filter
+  # to short-circuit pytest when changes don't touch Python source/tests/
+  # deps; pytest is `skipped` (which branch protection accepts as
+  # satisfied) rather than `expected` / unregistered.
+  #
+  # Migration rationale (#413 → #426 lesson): paths-ignore caused branch
+  # protection to mark pytest as `expected` for docs-only PRs, blocking
+  # merge. The detection-job pattern always registers the check; the
+  # `if:` on pytest gates the WORK, not the registration.
 
 permissions:
   contents: read
@@ -24,7 +22,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          filters: |
+            python:
+              - 'src/**'
+              - 'tests/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - '.github/workflows/ci.yml'
+
   pytest:
+    needs: detect
+    if: needs.detect.outputs.python == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
