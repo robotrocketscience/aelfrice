@@ -28,13 +28,14 @@ jobs:
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           # Need main's `.replay-soak-status.json`, not the PR branch's.
           # The cron only writes on main, so PR branches by default don't
           # carry fresh entries. Fetch main and read the file from there.
           ref: main
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Compute streak
         id: streak
