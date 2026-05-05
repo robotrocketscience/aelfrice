@@ -45,6 +45,9 @@ EXPECTED_COMMANDS = (
     # v2.0 (#441) — explicit affirmation, sibling of unlock.
     "confirm",
     # v2.0 (#440) — hard-delete escape hatch with confirmation prompt.
+    # Registered here so test_no_extra_files_in_slash_commands_dir and
+    # test_slash_commands_match_visible_cli_subcommands both enforce the
+    # slash file exists and matches the CLI surface.
     "delete",
 )
 
