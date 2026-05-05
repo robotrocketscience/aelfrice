@@ -15,7 +15,7 @@ Commands:
   doctor                           verify hook commands resolve in settings.json
   setup                            install UserPromptSubmit hook in Claude Code
   unsetup                          remove UserPromptSubmit hook from Claude Code
-  upgrade                          print the right pip-upgrade command line
+  upgrade-cmd                      print the right pip-upgrade command line (renamed from `upgrade` at #427)
   uninstall                        tear down aelfrice locally + handle DB
   statusline                       emit Claude Code statusline snippet
   bench                            run the v0.9.0-rc benchmark harness
@@ -2006,6 +2006,25 @@ def _format_multi_install_warning(
     return lines
 
 
+def _cmd_upgrade_deprecated_alias(
+    args: argparse.Namespace, out: object
+) -> int:
+    """Deprecated `aelf upgrade` alias — emit warning then delegate.
+
+    The subcommand was renamed to `aelf upgrade-cmd` at #427 to read
+    advisory rather than imperative. The bare `upgrade` form keeps
+    working for one minor so existing scripts don't break; this
+    handler prepends a one-line stderr deprecation notice before
+    invoking the canonical handler.
+    """
+    print(
+        "warning: `aelf upgrade` was renamed to `aelf upgrade-cmd` (#427); "
+        "the bare alias will be removed in a future release.",
+        file=sys.stderr,
+    )
+    return _cmd_upgrade(args, out)
+
+
 def _cmd_upgrade(args: argparse.Namespace, out: object) -> int:
     """Print the right upgrade command for this install context.
 
@@ -3814,8 +3833,15 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
 
     # Hidden: the orange statusline banner already prompts users when an
     # update is pending — direct CLI invocation is auxiliary.
+    #
+    # Renamed `upgrade` -> `upgrade-cmd` at #427 to read advisory (the
+    # subcommand prints the upgrade command; it does NOT execute the
+    # upgrade itself, since replacing the running package is unreliable).
+    # `upgrade` stays as a deprecated alias for one minor — wired as a
+    # second parser whose `func` prepends a stderr deprecation notice
+    # before delegating to the canonical handler.
     p_upgrade = sub.add_parser(
-        "upgrade",
+        "upgrade-cmd",
         help=argparse.SUPPRESS,
     )
     p_upgrade.add_argument(
@@ -3823,6 +3849,16 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="only report status, do not print the upgrade command line",
     )
     p_upgrade.set_defaults(func=_cmd_upgrade)
+    # Deprecated alias. Identical args; func wraps with a stderr notice.
+    p_upgrade_alias = sub.add_parser(
+        "upgrade",
+        help=argparse.SUPPRESS,
+    )
+    p_upgrade_alias.add_argument(
+        "--check", action="store_true",
+        help="only report status, do not print the upgrade command line",
+    )
+    p_upgrade_alias.set_defaults(func=_cmd_upgrade_deprecated_alias)
 
     # Hidden: scriptable counterpart to setup. Humans use `aelf uninstall`.
     p_unsetup = sub.add_parser("unsetup", help=argparse.SUPPRESS)
@@ -4007,7 +4043,7 @@ def _add_hook_scope_args(parser: argparse.ArgumentParser) -> None:
 
 
 _UPDATE_CHECK_SKIP_CMDS: Final[frozenset[str]] = frozenset(
-    {"upgrade", "uninstall", "statusline"}
+    {"upgrade-cmd", "upgrade", "uninstall", "statusline"}
 )
 
 

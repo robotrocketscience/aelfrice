@@ -31,7 +31,11 @@ EXPECTED_COMMANDS = (
     "status",
     "doctor",
     "setup",
-    "upgrade",
+    # Renamed from `upgrade` -> `upgrade-cmd` at #427 to read advisory.
+    # The bare `upgrade` form lives on as a deprecated CLI subparser
+    # alias (see HIDDEN_SUBCOMMANDS) for one minor; the slash command
+    # ships only under the new name.
+    "upgrade-cmd",
     "uninstall",
     "rebuild",
     "tail",
@@ -105,6 +109,10 @@ HIDDEN_SUBCOMMANDS = frozenset({
     "health", "stats", "project-warm", "session-delta",
     "demote", "validate", "resolve", "feedback", "ingest-transcript",
     "sweep-feedback",
+    # #427 deprecated alias — kept callable for one minor so existing
+    # `aelf upgrade` invocations don't break. The slash file ships
+    # only under the canonical `upgrade-cmd` name.
+    "upgrade",
 })
 
 

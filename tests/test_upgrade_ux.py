@@ -154,6 +154,63 @@ def test_banner_shared_substring_in_statusline_and_cli(
 
 
 # ---------------------------------------------------------------------------
+# #427 — `aelf upgrade` deprecated alias for `aelf upgrade-cmd`
+# ---------------------------------------------------------------------------
+
+
+def test_upgrade_alias_warns_and_delegates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`aelf upgrade` (deprecated alias) emits a stderr deprecation
+    notice mentioning `upgrade-cmd` and delegates to the canonical
+    handler so existing scripts continue to function."""
+    import io
+
+    import aelfrice.cli as cli_mod
+
+    captured: dict[str, object] = {}
+
+    def _fake_canonical(args: object, out: object) -> int:
+        captured["args"] = args
+        captured["out"] = out
+        return 0
+
+    monkeypatch.setattr(cli_mod, "_cmd_upgrade", _fake_canonical)
+    buf = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", buf)
+
+    sentinel_args = object()
+    sentinel_out = object()
+    rc = cli_mod._cmd_upgrade_deprecated_alias(
+        sentinel_args, sentinel_out  # type: ignore[arg-type]
+    )
+
+    assert rc == 0
+    assert captured["args"] is sentinel_args
+    assert captured["out"] is sentinel_out
+    stderr_text = buf.getvalue()
+    assert "aelf upgrade" in stderr_text
+    assert "upgrade-cmd" in stderr_text
+    assert "#427" in stderr_text
+
+
+def test_upgrade_alias_registered_in_parser() -> None:
+    """Both `upgrade-cmd` (canonical) and `upgrade` (deprecated alias)
+    must be present as CLI subparsers so existing scripts still work."""
+    from aelfrice.cli import build_parser
+
+    parser = build_parser()
+    sub_actions = [
+        a
+        for a in parser._subparsers._actions  # type: ignore[union-attr]
+        if a.__class__.__name__ == "_SubParsersAction"
+    ]
+    cli_names = set(sub_actions[0].choices.keys())  # type: ignore[attr-defined]
+    assert "upgrade-cmd" in cli_names
+    assert "upgrade" in cli_names
+
+
+# ---------------------------------------------------------------------------
 # install-method detection — each branch
 # ---------------------------------------------------------------------------
 
