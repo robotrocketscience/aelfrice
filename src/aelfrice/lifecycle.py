@@ -289,16 +289,24 @@ def maybe_check_for_update_async(
 # --- Banner helper -------------------------------------------------------
 
 
-def format_update_banner(latest: str) -> str:
+def format_update_banner(
+    latest: str, *, command: str | None = None
+) -> str:
     """Return the plain (no ANSI) body text for an update-available banner.
 
     Single source of truth for the banner format. Both the statusline
     snippet and the CLI stderr notice derive their text from this
     function so the wording never drifts between the two surfaces.
 
-    Example: '⬆ /aelf:upgrade to v1.5.0'
+    `command` is the install-method-aware shell line the user actually
+    runs to upgrade. Defaults to ``upgrade_advice().command`` so callers
+    that don't care can omit it; tests inject a stable value.
+
+    Example: '⬆ aelfrice 1.5.0 — run: uv tool upgrade aelfrice'
     """
-    return f"⬆ /aelf:upgrade to v{latest}"
+    if command is None:
+        command = upgrade_advice().command
+    return f"⬆ aelfrice {latest} — run: {command}"
 
 
 # --- Upgrade advice -----------------------------------------------------

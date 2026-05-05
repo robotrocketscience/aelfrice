@@ -46,18 +46,54 @@ def test_installed_version_fallback_on_package_not_found(
 # ---------------------------------------------------------------------------
 
 
-def test_format_update_banner_text() -> None:
-    """Banner text matches the canonical shortened format."""
+def test_format_update_banner_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Banner embeds the install-method-aware command from upgrade_advice."""
+    monkeypatch.setattr(
+        lifecycle,
+        "upgrade_advice",
+        lambda: lifecycle.UpgradeAdvice(
+            command="uv tool upgrade aelfrice", context="uv_tool"
+        ),
+    )
     banner = lifecycle.format_update_banner("1.5.0")
-    assert banner == "⬆ /aelf:upgrade to v1.5.0"
+    assert banner == "⬆ aelfrice 1.5.0 — run: uv tool upgrade aelfrice"
 
 
-def test_format_update_banner_contains_slash_command() -> None:
-    assert "/aelf:upgrade" in lifecycle.format_update_banner("2.0.0")
+def test_format_update_banner_explicit_command_kwarg() -> None:
+    """Caller-supplied `command` overrides upgrade_advice() lookup."""
+    banner = lifecycle.format_update_banner(
+        "2.0.0", command="pipx upgrade aelfrice"
+    )
+    assert banner == "⬆ aelfrice 2.0.0 — run: pipx upgrade aelfrice"
 
 
-def test_statusline_snippet_uses_banner_helper() -> None:
+def test_format_update_banner_no_slash_command_advisory() -> None:
+    """Banner must not phrase a slash command as the upgrade action.
+
+    Regression for #427: the previous shape `'⬆ /aelf:upgrade to v…'`
+    read as an imperative pointing at a slash command that is itself
+    advisory, leading users to believe the slash command performed the
+    upgrade. The banner must surface the actual shell line instead.
+    """
+    banner = lifecycle.format_update_banner(
+        "1.5.0", command="uv tool upgrade aelfrice"
+    )
+    assert "/aelf:upgrade" not in banner
+
+
+def test_statusline_snippet_uses_banner_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """statusline.format_snippet embeds the output of format_update_banner."""
+    monkeypatch.setattr(
+        lifecycle,
+        "upgrade_advice",
+        lambda: lifecycle.UpgradeAdvice(
+            command="uv tool upgrade aelfrice", context="uv_tool"
+        ),
+    )
     status = lifecycle.UpdateStatus(
         update_available=True,
         installed="1.0.0",
@@ -77,11 +113,18 @@ def test_banner_shared_substring_in_statusline_and_cli(
 ) -> None:
     """Both call sites derive text from format_update_banner.
 
-    This test verifies they share the '/aelf:upgrade to v' substring,
+    This test verifies they share the 'aelfrice <ver> — run:' substring,
     ensuring the two surfaces can never drift from each other.
     """
     import io
 
+    monkeypatch.setattr(
+        lifecycle,
+        "upgrade_advice",
+        lambda: lifecycle.UpgradeAdvice(
+            command="uv tool upgrade aelfrice", context="uv_tool"
+        ),
+    )
     status = lifecycle.UpdateStatus(
         update_available=True,
         installed="1.0.0",
@@ -92,7 +135,7 @@ def test_banner_shared_substring_in_statusline_and_cli(
     # Statusline path. Pass installed="" so the running package version
     # does not auto-suppress the snippet.
     snippet = statusline.format_snippet(status, env={}, installed="")
-    assert "/aelf:upgrade to v" in snippet
+    assert "aelfrice 1.5.0 — run:" in snippet
 
     # CLI stderr banner path — monkeypatch the cache reader.
     import aelfrice.cli as cli_mod
@@ -107,7 +150,7 @@ def test_banner_shared_substring_in_statusline_and_cli(
     monkeypatch.setattr(sys, "stderr", buf)
     cli_mod._maybe_emit_update_banner("search")
     stderr_out = buf.getvalue()
-    assert "/aelf:upgrade to v" in stderr_out
+    assert "aelfrice 1.5.0 — run:" in stderr_out
 
 
 # ---------------------------------------------------------------------------

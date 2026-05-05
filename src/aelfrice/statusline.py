@@ -76,9 +76,11 @@ def format_snippet(
     """Return the statusline snippet for the given cache status.
 
     Empty when no update is pending. When an update is pending,
-    returns 'COLOR_ON⬆ aelfrice X.Y.Z available, run: aelf upgrade
+    returns 'COLOR_ON⬆ aelfrice X.Y.Z — run: <install-aware-cmd>
     COLOR_OFF │ '. The trailing ' │ ' is the GSD-style separator
-    so the snippet composes naturally as a leading badge.
+    so the snippet composes naturally as a leading badge. The
+    embedded shell command is `upgrade_advice().command` — see
+    `lifecycle.format_update_banner` for the single source of truth.
     """
     if not status.update_available or not status.latest:
         return ""
