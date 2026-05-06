@@ -421,20 +421,25 @@ def test_ingest_triples_writes_log_row_per_new_belief(
 
 
 def test_mcp_lock_writes_log_row(store: MemoryStore) -> None:
-    """Hypothesis: tool_lock (MCP `remember`) writes one log row with
-    source_kind=mcp_remember on first creation, none on re-lock.
-    Falsifiable by missing log row OR duplicate log row on re-lock."""
+    """Hypothesis (post-#264 contract): tool_lock writes one log row
+    per call with source_kind=mcp_remember (canonical raw-input record),
+    even on re-lock. The worker corroborates the canonical belief
+    instead of inserting a duplicate. Falsifiable if the second call
+    leaves log count unchanged (old #205 contract) OR if a duplicate
+    belief appears."""
     from aelfrice.mcp_server import tool_lock
     tool_lock(store, statement="atomic commits beat batched commits")
     n_after_first = store.count_ingest_log()
+    beliefs_after_first = store.count_beliefs()
     assert n_after_first == 1
     rows = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
         "SELECT source_kind FROM ingest_log"
     ).fetchall()
     assert rows[0]["source_kind"] == "mcp_remember"
-    # Re-lock should NOT add a new log row (canonical row unchanged).
+    # Re-lock appends a new log row; canonical belief is corroborated.
     tool_lock(store, statement="atomic commits beat batched commits")
-    assert store.count_ingest_log() == n_after_first
+    assert store.count_ingest_log() == n_after_first + 1
+    assert store.count_beliefs() == beliefs_after_first
 
 
 def test_cli_lock_writes_log_row(tmp_path: Path) -> None:
