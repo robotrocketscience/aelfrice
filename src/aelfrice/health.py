@@ -26,9 +26,10 @@ output can phrase the regime as "leaning X" rather than committing.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final
 
+from aelfrice.models import EDGE_POTENTIALLY_STALE, EDGE_TYPES
 from aelfrice.store import MemoryStore
 
 # E43: minimum belief count below which the classifier reports
@@ -74,6 +75,11 @@ class HealthFeatures:
     mass_mean: float
     lock_per_1000: float
     edge_per_belief: float
+    # Per-edge-type count breakdown; keys are every member of EDGE_TYPES ∪
+    # {EDGE_POTENTIALLY_STALE} so the shape is stable across stores (absent
+    # types appear with value 0).  Not fed into the regime classifier —
+    # additive observability field only.
+    edges_by_type: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -103,6 +109,20 @@ def _median(sorted_values: list[float]) -> float:
     return (sorted_values[n // 2 - 1] + sorted_values[n // 2]) / 2.0
 
 
+def _zero_padded_edge_counts(raw: dict[str, int]) -> dict[str, int]:
+    """Merge *raw* (SQL result, may omit zero-count types) into a dict
+    initialised over the full registry: EDGE_TYPES ∪ {EDGE_POTENTIALLY_STALE}.
+
+    POTENTIALLY_STALE is stored in the same `edges` table as the structural
+    edge types (confirmed in #387) so the single `count_edges_by_type` query
+    captures it automatically.
+    """
+    full: dict[str, int] = {t: 0 for t in EDGE_TYPES}
+    full[EDGE_POTENTIALLY_STALE] = 0
+    full.update(raw)
+    return full
+
+
 def compute_features(store: MemoryStore) -> HealthFeatures:
     """Roll up the store into the five-feature vector the classifier
     consumes. Pure function of the current store state.
@@ -111,6 +131,7 @@ def compute_features(store: MemoryStore) -> HealthFeatures:
     surface `insufficient_data`.
     """
     n_beliefs = store.count_beliefs()
+    edges_by_type = _zero_padded_edge_counts(store.count_edges_by_type())
     if n_beliefs == 0:
         return HealthFeatures(
             n_beliefs=0,
@@ -119,6 +140,7 @@ def compute_features(store: MemoryStore) -> HealthFeatures:
             mass_mean=0.0,
             lock_per_1000=0.0,
             edge_per_belief=0.0,
+            edges_by_type=edges_by_type,
         )
 
     pairs = store.alpha_beta_pairs()
@@ -135,6 +157,7 @@ def compute_features(store: MemoryStore) -> HealthFeatures:
         mass_mean=sum(masses) / n_beliefs,
         lock_per_1000=(n_locked / n_beliefs) * 1000.0,
         edge_per_belief=n_edges / n_beliefs,
+        edges_by_type=edges_by_type,
     )
 
 
