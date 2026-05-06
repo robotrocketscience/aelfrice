@@ -2562,6 +2562,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_relationships(args, out)
     if getattr(args, "detect_stale", False):
         return _cmd_doctor_detect_stale(args, out)
+    if getattr(args, "derive_pending", False):
+        return _cmd_doctor_derive_pending(args, out)
     scope = getattr(args, "scope", None)
     exit_code = 0
     if scope in (None, "hooks"):
@@ -2775,6 +2777,46 @@ def _cmd_doctor_detect_stale(args: argparse.Namespace, out: object) -> int:
         store.close()
 
     print(format_write_report(write_report), file=out)  # type: ignore[arg-type]
+    return 0
+
+
+def _cmd_doctor_derive_pending(
+    args: argparse.Namespace,  # noqa: ARG001
+    out: object,
+) -> int:
+    """Run the derivation worker over every unstamped ingest_log row (#264).
+
+    Manual escape hatch for the recover-by-replay crash semantics from
+    `docs/v2_derivation_worker.md`. If a worker died between batches and
+    left log rows with `derived_belief_ids IS NULL`, this sweep walks
+    them, derives, and stamps each.
+
+    Exit 0 on success regardless of how many rows were swept (zero is
+    the steady-state expectation, not an error). Exit 1 only on store
+    open / worker exception.
+    """
+    store = _open_store()
+    try:
+        before = len(store.list_unstamped_ingest_log())
+        report = run_worker(store)
+        after = len(store.list_unstamped_ingest_log())
+    except Exception as exc:  # pragma: no cover - surface and bail
+        print(f"aelf doctor --derive-pending: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    print(
+        "derive-pending sweep\n"
+        "--------------------\n"
+        f"unstamped before:    {before}\n"
+        f"rows scanned:        {report.rows_scanned}\n"
+        f"beliefs inserted:    {report.beliefs_inserted}\n"
+        f"beliefs corroborated:{report.beliefs_corroborated}\n"
+        f"rows stamped:        {report.rows_stamped}\n"
+        f"persist=False skips: {report.rows_skipped_no_belief}\n"
+        f"unstamped after:     {after}",
+        file=out,  # type: ignore[arg-type]
+    )
     return 0
 
 
@@ -3651,6 +3693,19 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "every non-legacy ingest_log row and compare to canonical "
             "beliefs. Exits 0 when mismatched + derived_orphan == 0 "
             "(or <= --max-drift N). Bypasses the hooks/graph checks."
+        ),
+    )
+    p_doctor.add_argument(
+        "--derive-pending",
+        dest="derive_pending",
+        action="store_true",
+        default=False,
+        help=(
+            "v2.x #264 manual sweep: invoke the derivation worker over "
+            "every unstamped ingest_log row (recover-by-replay escape "
+            "hatch when a prior batch crashed mid-stamp). Idempotent; "
+            "zero unstamped rows is the steady state. Bypasses the "
+            "hooks/graph checks."
         ),
     )
     p_doctor.add_argument(
