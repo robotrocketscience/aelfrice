@@ -70,6 +70,20 @@ The principled response is to add aggregative-query routing at the structural-an
 
 One DB at a time. Beliefs from project A do not surface in project B (different `.git/` directories). Use `AELFRICE_DB` to scope per-project explicitly.
 
+## Derivation worker (v2.x)
+
+The `ingest_log` → `beliefs` derivation worker (#264) is **synchronous and in-process** at v2.x. Every ingest entry point (`scan_repo`, `ingest_turn`, `accept_classifications`, `aelf lock`, MCP `aelf:lock`, `triple_extractor.ingest_triples`) appends one unstamped log row per raw input and invokes `run_worker(store)` once at end-of-batch in the same Python process. The "worker" name is aspirational — there is no daemon, no async queue, no background thread.
+
+What this implies for v2.x users:
+
+- **No async / daemon mode.** Long ingest batches block the caller. Async / daemon mode is parked for v3.
+- **Crash recovery requires an operator action.** If the process dies between `record_ingest` and `run_worker`, the canonical store is left with `ingest_log` rows whose `derived_belief_ids` is NULL. The next ingest call's end-of-batch worker pass picks them up automatically — but until then, `beliefs` is missing rows for those raw inputs. The escape hatch is `aelf doctor --derive-pending`, which forces a worker pass without requiring another ingest. Auto-derive-on-startup (so `_open_store` would do it implicitly on every CLI invocation) is the broader Decision-2 ratification from the slice plan and is deferred to a follow-up.
+- **Multi-rule-set re-derivation is not wired.** The worker uses the *current* rule set. Re-deriving every belief under a different classifier requires `aelf doctor --replay` + a manual rebuild from log; there is no `aelf doctor --rederive --rule-set <hash>` surface yet. (`aelf doctor --replay` is the drift detector, not the rebuild path.)
+- **Two non-canonical paths remain.** The scanner's LLM-classify path (`aelf onboard --llm-classify`, classifier_version-stamped) still writes to `beliefs` directly via the parallel-write pattern — its alpha/beta/origin/audit_source are not yet representable in `raw_meta` for the worker to reconstruct. The `aelf validate` / `aelf promote` lock-upgrade subpaths mutate `beliefs` directly (no log row) because they are not ingest events. `aelf doctor --replay` reports both as `canonical_orphan` and excludes them from the drift count — these are spec-allowed outliers, not bugs.
+- **`record_ingest + run_worker` is not wrapped in a single SQLite transaction.** Decision D1 in the slice plan calls for this (so a partial-stamp window after `record_ingest` returns and before `run_worker` finishes is closed). Today the two are sequential; SQLite's WAL + autocommit semantics mean an intervening writer between them sees the unstamped row briefly. The `--derive-pending` escape hatch + `--replay` drift detector together cover this; the explicit single-tx wrap is deferred behind operational evidence that the partial-stamp window matters in practice.
+
+The view-flip (#265) — making `beliefs` a derived view of `ingest_log` and stopping the parallel write — is the next step in the chain. Until that lands, both writes happen and are kept consistent by the worker.
+
 ## Compatibility
 
 - Python 3.12 or 3.13.
