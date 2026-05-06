@@ -33,7 +33,7 @@ DB resolves from `$AELFRICE_DB`, then `<git-common-dir>/aelfrice/memory.db` when
 | Command | What it does |
 |---|---|
 | `stats` | Belief / thread / lock / feedback counts. |
-| `health` | Structural auditor: orphan threads, FTS5 sync, locked contradictions, corpus volume. Exits 1 on structural failure; corpus-volume warnings are informational. |
+| `health [--json]` | Structural auditor: orphan threads, FTS5 sync, locked contradictions, corpus volume. Includes a per-edge-type count breakdown (sorted by count desc, then alphabetically); empty store prints `no edges yet`. `--json` emits `{"audit": {...}, "features": {"edges_by_type": {...}}}`. Exits 1 on structural failure; corpus-volume warnings are informational. |
 | `status` | Alias for `health`. |
 | `regime` | The v1.0 regime classifier output (`supersede` / `ignore` / `mixed` / `insufficient_data`). Informational; always exits 0. |
 | `doctor` | Verify hook + statusline commands resolve. Inspects `bash <script>` wrappers, flags `2>/dev/null \|\| true` patterns. Surfaces empty-store warning. Exits 1 on broken hooks. v1.6+ flags: `--gc-orphan-feedback` (delete `feedback_history` rows whose `belief_id` no longer exists, #223); `--promote-retention` (one-shot reclassification pass over low-prior beliefs based on accumulated retrieval / corroboration evidence, #290 phase-3). |
