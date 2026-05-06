@@ -46,6 +46,7 @@ from aelfrice.classification import (
 )
 from aelfrice.cli import db_path
 from aelfrice.derivation import DerivationInput, derive
+from aelfrice.derivation_worker import run_worker
 from aelfrice.feedback import apply_feedback
 from aelfrice.health import (
     REGIME_INSUFFICIENT_DATA,
@@ -55,7 +56,6 @@ from aelfrice.health import (
 from aelfrice.models import (
     CORROBORATION_SOURCE_MCP_REMEMBER,
     INGEST_SOURCE_MCP_REMEMBER,
-    LOCK_NONE,
     LOCK_USER,
     ORIGIN_USER_STATED,
     ORIGIN_USER_VALIDATED,
@@ -209,42 +209,54 @@ def tool_lock(
 ) -> dict[str, Any]:
     now = _utc_now_iso()
     sid = resolve_session_id(session_id, surface_name="mcp aelf_lock")
-    out = derive(DerivationInput(
+    # #264 slice 2: route through the derivation worker. The worker
+    # handles record_ingest -> derive -> insert_or_corroborate; the
+    # entry point only owns the re-lock semantic on an existing
+    # lock-id belief (worker would otherwise corroborate without
+    # touching lock_level / locked_at).
+    derived = derive(DerivationInput(
         raw_text=statement,
         source_kind=INGEST_SOURCE_MCP_REMEMBER,
         ts=now,
         session_id=sid,
     ))
     # mcp_remember always produces a belief.
-    assert out.belief is not None
-    bid = out.belief.id
-    existing = store.get_belief(bid)
-    if existing is None:
-        # v2.0 #205 parallel-write: log the user-stated raw text.
-        store.record_ingest(
-            source_kind=INGEST_SOURCE_MCP_REMEMBER,
-            raw_text=statement,
-            derived_belief_ids=[bid],
-            session_id=sid,
-            ts=now,
-        )
-        actual_id, was_inserted = store.insert_or_corroborate(
-            out.belief,
-            source_type=CORROBORATION_SOURCE_MCP_REMEMBER,
-            session_id=sid,
-        )
-        if was_inserted:
-            return {"kind": "lock.created", "id": actual_id, "action": "locked"}
+    assert derived.belief is not None
+    lock_bid = derived.belief.id
+    pre_existing_at_lock_id = store.get_belief(lock_bid) is not None
+    ids_before: set[str] = set(store.list_belief_ids())
+    log_id = store.record_ingest(
+        source_kind=INGEST_SOURCE_MCP_REMEMBER,
+        raw_text=statement,
+        session_id=sid,
+        ts=now,
+        raw_meta={"call_site": CORROBORATION_SOURCE_MCP_REMEMBER},
+    )
+    run_worker(store)
+    entry = store.get_ingest_log_entry(log_id)
+    derived_ids = entry.get("derived_belief_ids") if entry is not None else None
+    if not isinstance(derived_ids, list) or not derived_ids:
+        # mcp_remember always derives a belief; an empty list here means
+        # something is broken downstream. Surface as a kind we can grep.
+        return {"kind": "lock.error", "id": "", "action": "error"}
+    actual_id = str(derived_ids[0])
+    if pre_existing_at_lock_id and actual_id == lock_bid:
+        # Re-lock of an existing lock-id belief: apply lock-upgrade
+        # (worker's insert_or_corroborate just records corroboration).
+        existing = store.get_belief(actual_id)
+        if existing is not None:
+            existing.lock_level = LOCK_USER
+            existing.locked_at = now
+            existing.demotion_pressure = 0
+            existing.origin = ORIGIN_USER_STATED
+            store.update_belief(existing)
+        return {"kind": "lock.upgraded", "id": actual_id, "action": "upgraded"}
+    if actual_id in ids_before:
+        # content_hash collision with a different-source belief: the
+        # worker corroborated it; the original behavior returned
+        # `corroborated` without applying lock semantics, preserved here.
         return {"kind": "lock.corroborated", "id": actual_id, "action": "corroborated"}
-    existing.lock_level = LOCK_USER
-    existing.locked_at = now
-    existing.demotion_pressure = 0
-    existing.origin = ORIGIN_USER_STATED
-    store.update_belief(existing)
-    # Record a corroboration for the re-assertion so downstream
-    # consumers can count how often a belief was re-locked.
-    store.record_corroboration(bid, source_type=CORROBORATION_SOURCE_MCP_REMEMBER)
-    return {"kind": "lock.upgraded", "id": bid, "action": "upgraded"}
+    return {"kind": "lock.created", "id": actual_id, "action": "locked"}
 
 
 def tool_locked(
