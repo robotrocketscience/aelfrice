@@ -15,7 +15,11 @@ name: Replay Soak Gate
 # additive edits to `store.py` / `models.py` that touch the
 # derivation contract aren't soak-gated; the regular pytest matrix
 # (`replay_full_equality` tests) catches those, and any drift
-# surfaces on the next daily cron entry on main.
+# surfaces on the next daily cron entry on the soak branch.
+#
+# The soak file lives on the dedicated `replay-soak-status` branch
+# (#461), not `main` — the main ruleset blocks the cron's bot push.
+# This workflow checks out that branch to read the file.
 
 on:
   pull_request:
@@ -53,19 +57,38 @@ jobs:
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
-          # Need main's `.replay-soak-status.json`, not the PR branch's.
-          # The cron only writes on main, so PR branches by default don't
-          # carry fresh entries. Fetch main and read the file from there.
-          ref: main
+          # Read the soak file from the dedicated `replay-soak-status`
+          # branch (#461). The cron pushes there because the `main`
+          # ruleset rejects unsigned bot pushes; the dedicated branch
+          # is unconstrained and is the authoritative location.
+          ref: replay-soak-status
           fetch-depth: 1
           persist-credentials: false
+          # If the branch doesn't exist yet (fresh bootstrap window),
+          # checkout would fail; allow the workflow to continue and
+          # the streak script's missing-file path treats it as 0.
+          # Note: actions/checkout has no `continue-on-error` field;
+          # the orphan branch is bootstrapped before this workflow
+          # ever runs (operator one-shot at #461 PR merge).
+
+      - name: Fetch streak script from main
+        # `replay-soak-status` is an orphan content branch — only
+        # `.replay-soak-status.json` lives there. Pull the streak
+        # script out of `main` so we don't have to duplicate it on
+        # the status branch.
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main --depth=1
+          mkdir -p scripts
+          git show origin/main:scripts/replay_soak_streak.py > scripts/replay_soak_streak.py
+          chmod +x scripts/replay_soak_streak.py
 
       - name: Compute streak
         id: streak
         run: |
           set -euo pipefail
           if [ ! -f .replay-soak-status.json ]; then
-            echo "::warning::.replay-soak-status.json does not exist on main yet; treating streak as 0"
+            echo "::warning::.replay-soak-status.json does not exist on replay-soak-status yet; treating streak as 0"
             n=0
           else
             n=$(python3 scripts/replay_soak_streak.py --quiet)
@@ -78,7 +101,7 @@ jobs:
           set -euo pipefail
           n="${{ steps.streak.outputs.streak }}"
           if [ "$n" -lt 7 ]; then
-            echo "::error::replay-soak streak is $n; threshold is 7. The soak gate blocks #264-touching merges. Wait for the daily cron on main to extend the green streak, or investigate the most recent fail entry."
+            echo "::error::replay-soak streak is $n; threshold is 7. The soak gate blocks #264-touching merges. Wait for the daily cron to extend the green streak on replay-soak-status, or investigate the most recent fail entry."
             exit 1
           fi
           echo "replay-soak streak $n ≥ 7 — gate satisfied"
