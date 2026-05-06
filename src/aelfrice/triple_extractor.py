@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Final
 
-from aelfrice.derivation import DerivationInput, derive
+from aelfrice.derivation_worker import run_worker
 from aelfrice.models import (
     CORROBORATION_SOURCE_COMMIT_INGEST,
     EDGE_CITES,
@@ -248,58 +248,6 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _resolve_or_create_belief(
-    store: MemoryStore, phrase: str, *,
-    session_id: str | None,
-    created_ids: list[str],
-) -> str:
-    """Return the id of the belief representing `phrase`, creating
-    one with the project default prior (alpha=1.0, beta=1.0) if none
-    exists. The first creator within a call stamps `session_id`.
-
-    When the belief already exists (same id = same normalised phrase),
-    a corroboration row is recorded so the re-assertion is observable.
-    """
-    # derive() id-scheme matches _belief_id_for_phrase; compute once.
-    ts = _now_iso()
-    out = derive(DerivationInput(
-        raw_text=phrase,
-        source_kind=INGEST_SOURCE_GIT,
-        session_id=session_id,
-        ts=ts,
-    ))
-    # INGEST_SOURCE_GIT always produces a belief (no classifier skip).
-    assert out.belief is not None
-    bid = out.belief.id
-    existing = store.get_belief(bid)
-    if existing is not None:
-        store.record_corroboration(
-            bid,
-            source_type=CORROBORATION_SOURCE_COMMIT_INGEST,
-            session_id=session_id,
-        )
-        return bid
-    # v2.0 #205 parallel-write: log the raw phrase before materialization.
-    # source_kind=git because the commit-ingest path emits triples from
-    # commit messages; source_path is unknown at this layer (callers
-    # have it). Future commits could thread the commit SHA through.
-    store.record_ingest(
-        source_kind=INGEST_SOURCE_GIT,
-        raw_text=phrase,
-        derived_belief_ids=[bid],
-        session_id=session_id,
-        ts=ts,
-    )
-    actual_id, was_inserted = store.insert_or_corroborate(
-        out.belief,
-        source_type=CORROBORATION_SOURCE_COMMIT_INGEST,
-        session_id=session_id,
-    )
-    if was_inserted:
-        created_ids.append(actual_id)
-    return actual_id
-
-
 def ingest_triples(
     store: MemoryStore,
     triples: list[Triple],
@@ -315,30 +263,94 @@ def ingest_triples(
 
     Self-edges (subject and object resolve to the same id) are
     counted under `skipped_no_subject_or_object` and dropped.
+
+    #264 slice 2: subject + object beliefs are materialized via the
+    derivation worker. Triple-edges remain entry-point-owned because
+    they connect *pairs* of log rows (worker stamps per-row derived
+    edges only). Two-pass shape:
+      pass A — append one ingest_log row per phrase, remembering each
+        phrase's log_id and the relation/anchor that pairs them.
+      pass B — invoke run_worker(store) once. For each remembered
+        triple, read the stamped derived_belief_ids on the subject /
+        object log rows and insert the edge.
     """
     result = IngestResult()
+    if not triples:
+        return result
+
+    # Snapshot of canonical ids so we can flag fresh inserts via the
+    # post-worker walk. Within a single call, the worker may corroborate
+    # one log row's bid against an earlier same-phrase log row in this
+    # batch — both would resolve to the same actual_id, but only the
+    # first should count toward `new_beliefs`.
+    ids_before: set[str] = set(store.list_belief_ids())
+    ts = _now_iso()
+
+    # Pending edges: (subject_log_id, object_log_id, relation, anchor).
+    pending_edges: list[tuple[str, str, str, str]] = []
+    # Indices in `triples` we kept (skipped ones are already counted).
     for triple in triples:
         if not triple.subject or not triple.object:
             result.skipped_no_subject_or_object += 1
             continue
-        subj_id = _resolve_or_create_belief(
-            store, triple.subject,
-            session_id=session_id, created_ids=result.new_beliefs,
+        subj_log = store.record_ingest(
+            source_kind=INGEST_SOURCE_GIT,
+            raw_text=triple.subject,
+            session_id=session_id,
+            ts=ts,
+            raw_meta={"call_site": CORROBORATION_SOURCE_COMMIT_INGEST},
         )
-        obj_id = _resolve_or_create_belief(
-            store, triple.object,
-            session_id=session_id, created_ids=result.new_beliefs,
+        obj_log = store.record_ingest(
+            source_kind=INGEST_SOURCE_GIT,
+            raw_text=triple.object,
+            session_id=session_id,
+            ts=ts,
+            raw_meta={"call_site": CORROBORATION_SOURCE_COMMIT_INGEST},
         )
+        pending_edges.append(
+            (subj_log, obj_log, triple.relation, triple.anchor_text)
+        )
+
+    if pending_edges:
+        run_worker(store)
+
+    seen_new: set[str] = set()
+    for subj_log, obj_log, relation, anchor in pending_edges:
+        subj_id = _belief_id_from_log(store, subj_log)
+        obj_id = _belief_id_from_log(store, obj_log)
+        if subj_id is None or obj_id is None:
+            # Worker should have stamped both; absence is a bug worth
+            # surfacing. Skip the edge so we don't insert a dangling row.
+            result.skipped_no_subject_or_object += 1
+            continue
+        for bid in (subj_id, obj_id):
+            if bid not in ids_before and bid not in seen_new:
+                seen_new.add(bid)
+                result.new_beliefs.append(bid)
         if subj_id == obj_id:
             result.skipped_no_subject_or_object += 1
             continue
-        if store.get_edge(subj_id, obj_id, triple.relation) is not None:
+        if store.get_edge(subj_id, obj_id, relation) is not None:
             result.skipped_duplicate_edges += 1
             continue
         store.insert_edge(Edge(
             src=subj_id, dst=obj_id,
-            type=triple.relation, weight=1.0,
-            anchor_text=triple.anchor_text,
+            type=relation, weight=1.0,
+            anchor_text=anchor,
         ))
-        result.new_edges.append((subj_id, obj_id, triple.relation))
+        result.new_edges.append((subj_id, obj_id, relation))
     return result
+
+
+def _belief_id_from_log(store: MemoryStore, log_id: str) -> str | None:
+    """Read the worker-stamped belief id off a single log row, or None
+    when the row is absent / unstamped. Stamping shape: a non-empty
+    derived_belief_ids list whose first entry is the canonical bid."""
+    entry = store.get_ingest_log_entry(log_id)
+    if entry is None:
+        return None
+    ids = entry.get("derived_belief_ids")
+    if not isinstance(ids, list) or not ids:
+        return None
+    head = ids[0]
+    return head if isinstance(head, str) and head else None
