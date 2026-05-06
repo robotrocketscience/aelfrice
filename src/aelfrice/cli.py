@@ -56,6 +56,7 @@ from aelfrice.migrate import (
 from aelfrice.health import (
     REGIME_INSUFFICIENT_DATA,
     assess_health,
+    compute_features,
     regime_description,
 )
 from aelfrice.models import (
@@ -2160,8 +2161,12 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
     The corpus-volume check (added in #116) warns when an established
     project has too few beliefs but is informational — it does not
     affect the exit code.
+
+    --json: emit a single JSON object with keys "audit" and "features".
+    "features.edges_by_type" carries the per-edge-type count dict.
+    Exit code unchanged: 1 on auditor failure, 0 otherwise.
     """
-    _ = args
+    use_json = getattr(args, "json", False)
     corpus_min = _resolve_corpus_min()
     project_age = _git_first_commit_age_days()
     store = _open_store()
@@ -2171,8 +2176,35 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
             corpus_min=corpus_min,
             project_age_days=project_age,
         )
+        features = compute_features(store)
     finally:
         store.close()
+
+    if use_json:
+        # Serialise auditor findings + metrics as plain dicts; features via
+        # edges_by_type only (regime fields are not part of this contract).
+        findings_list = [
+            {
+                "check": f.check,
+                "severity": f.severity,
+                "count": f.count,
+                "detail": f.detail,
+            }
+            for f in report.findings
+        ]
+        payload = {
+            "audit": {
+                "findings": findings_list,
+                "metrics": dict(report.metrics),
+                "failed": report.failed,
+            },
+            "features": {
+                "edges_by_type": features.edges_by_type,
+            },
+        }
+        print(json.dumps(payload), file=out)  # type: ignore[arg-type]
+        return 1 if report.failed else 0
+
     print("audit:", file=out)  # type: ignore[arg-type]
     for f in report.findings:
         if f.severity == AUDIT_SEVERITY_FAIL:
@@ -2193,6 +2225,18 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
         else:
             display = str(value)
         print(f"  {key:24s} {display}", file=out)  # type: ignore[arg-type]
+    print("", file=out)  # type: ignore[arg-type]
+    # Per-edge-type breakdown (sorted by count desc, then alphabetically).
+    print("edges by type:", file=out)  # type: ignore[arg-type]
+    if not any(features.edges_by_type.values()):
+        print("  no edges yet", file=out)  # type: ignore[arg-type]
+    else:
+        sorted_entries = sorted(
+            features.edges_by_type.items(),
+            key=lambda kv: (-kv[1], kv[0]),
+        )
+        for edge_type, count in sorted_entries:
+            print(f"  {edge_type:24s} {count}", file=out)  # type: ignore[arg-type]
     print("", file=out)  # type: ignore[arg-type]
     sentiment_state, sentiment_count = _sentiment_from_prose_state()
     if sentiment_state == "enabled":
@@ -3513,6 +3557,12 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
 
     # Deprecated alias of `doctor graph`. Hidden from --help; deleted at v1.4.
     p_health = sub.add_parser("health", help=argparse.SUPPRESS)
+    p_health.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="emit JSON: {audit: {...}, features: {edges_by_type: {...}}}",
+    )
     p_health.set_defaults(func=_cmd_health)
 
     # Hidden: research output, not a daily verb.
