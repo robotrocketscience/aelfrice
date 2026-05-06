@@ -210,6 +210,9 @@ def replay_full_equality(
     )
     rows = cur.fetchall()
 
+    import json as _json  # noqa: PLC0415 - keep replay's stdlib footprint local
+    _META_OVERRIDE_BELIEF_TYPE = "override_belief_type"
+
     total_log_rows = len(rows)
     matched = 0
     mismatched = 0
@@ -229,15 +232,30 @@ def replay_full_equality(
         rule_set_hash = row["rule_set_hash"]
         log_row_id = str(row["id"])
 
+        # Reconstruct override_belief_type from raw_meta when present —
+        # mirrors derivation_worker._derivation_input_from_row so replay
+        # equality holds for #264 slice 2 host-classified onboard rows.
+        raw_meta_blob = row["raw_meta"]
+        override_belief_type: str | None = None
+        if raw_meta_blob:
+            try:
+                meta_obj = _json.loads(raw_meta_blob)
+            except _json.JSONDecodeError:
+                meta_obj = None
+            if isinstance(meta_obj, dict):
+                ov = meta_obj.get(_META_OVERRIDE_BELIEF_TYPE)
+                if isinstance(ov, str) and ov:
+                    override_belief_type = ov
         inp = DerivationInput(
             raw_text=raw_text,
             source_kind=source_kind,
             source_path=source_path if source_path is not None else None,
-            raw_meta=None,   # raw_meta is metadata only; derive() does not use it
+            raw_meta=None,   # raw_meta itself is unused by derive()
             session_id=session_id if session_id is not None else None,
             ts=ts,
             classifier_version=classifier_version if classifier_version is not None else None,
             rule_set_hash=rule_set_hash if rule_set_hash is not None else None,
+            override_belief_type=override_belief_type,
         )
 
         out = derive(inp)
