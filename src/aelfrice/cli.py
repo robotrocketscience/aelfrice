@@ -2565,6 +2565,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_relationships(args, out)
     if getattr(args, "detect_stale", False):
         return _cmd_doctor_detect_stale(args, out)
+    if getattr(args, "derive_pending", False):
+        return _cmd_doctor_derive_pending(args, out)
     scope = getattr(args, "scope", None)
     exit_code = 0
     if scope in (None, "hooks"):
@@ -2811,6 +2813,46 @@ def _cmd_doctor_replay(args: argparse.Namespace, out: object) -> int:
     drift_total = report.mismatched + report.derived_orphan
     threshold = max(0, max_drift) if max_drift is not None else 0
     return 0 if drift_total <= threshold else 1
+
+
+def _cmd_doctor_derive_pending(
+    args: argparse.Namespace, out: object,  # noqa: ARG001
+) -> int:
+    """Run the derivation worker over orphan ingest_log rows (#264).
+
+    Manual escape per the slice-2 plan: when the worker dies between
+    batches (e.g. process killed mid-`aelf onboard`), the next ingest
+    invocation would normally pick up the orphan rows on its own
+    end-of-batch worker pass — but until then the canonical store has
+    drift between `ingest_log` (rows present, derived_belief_ids NULL)
+    and `beliefs` (no row materialized). `aelf doctor --derive-pending`
+    forces the catch-up pass without requiring another ingest.
+
+    Idempotent: re-running over an already-stamped store no-ops every
+    row. Exit 0 when no unstamped rows remain after the run; exit 1
+    when the store still has orphan rows (caller should investigate
+    why `derive()` returned no belief for those raw inputs).
+    """
+    from aelfrice.derivation_worker import run_worker  # noqa: PLC0415
+
+    store = _open_store()
+    try:
+        before = len(store.list_unstamped_ingest_log())
+        result = run_worker(store)
+        after = len(store.list_unstamped_ingest_log())
+    finally:
+        store.close()
+
+    print("derive-pending report", file=out)  # type: ignore[arg-type]
+    print("---------------------", file=out)  # type: ignore[arg-type]
+    print(f"unstamped before:        {before}", file=out)  # type: ignore[arg-type]
+    print(f"rows scanned:            {result.rows_scanned}", file=out)  # type: ignore[arg-type]
+    print(f"beliefs inserted:        {result.beliefs_inserted}", file=out)  # type: ignore[arg-type]
+    print(f"beliefs corroborated:    {result.beliefs_corroborated}", file=out)  # type: ignore[arg-type]
+    print(f"rows stamped:            {result.rows_stamped}", file=out)  # type: ignore[arg-type]
+    print(f"rows skipped no belief:  {result.rows_skipped_no_belief}", file=out)  # type: ignore[arg-type]
+    print(f"unstamped after:         {after}", file=out)  # type: ignore[arg-type]
+    return 0 if after == 0 else 1
 
 
 def _cmd_doctor_classify_orphans(
@@ -3654,6 +3696,20 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "every non-legacy ingest_log row and compare to canonical "
             "beliefs. Exits 0 when mismatched + derived_orphan == 0 "
             "(or <= --max-drift N). Bypasses the hooks/graph checks."
+        ),
+    )
+    p_doctor.add_argument(
+        "--derive-pending",
+        dest="derive_pending",
+        action="store_true",
+        default=False,
+        help=(
+            "run the derivation worker over orphan ingest_log rows "
+            "(#264): the manual escape when an ingest batch's "
+            "end-of-batch worker pass died and left log rows with "
+            "NULL derived_belief_ids. Idempotent. Exits 0 if every "
+            "row is stamped after the run; exit 1 if any row remains "
+            "orphan. Bypasses the hooks/graph checks."
         ),
     )
     p_doctor.add_argument(
