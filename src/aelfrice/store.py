@@ -1722,6 +1722,21 @@ class MemoryStore:
                 source_path_hash=source_path_hash,
             )
             return (existing.id, False)
+        # Race / migration guard (#264): same id may already exist under
+        # a different content_hash — e.g. legacy migration backfilled
+        # the row with a precomputed hash, or a sibling session inserted
+        # between the get_belief_by_content_hash check above and our
+        # INSERT. Treat as corroboration of the id-collision row so the
+        # derivation worker never trips a UNIQUE constraint on id.
+        existing_by_id = self.get_belief(b.id)
+        if existing_by_id is not None:
+            self.record_corroboration(
+                existing_by_id.id,
+                source_type=source_type,
+                session_id=session_id,
+                source_path_hash=source_path_hash,
+            )
+            return (existing_by_id.id, False)
         self.insert_belief(b)
         return (b.id, True)
 
