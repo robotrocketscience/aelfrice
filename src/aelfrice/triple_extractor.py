@@ -248,58 +248,6 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _resolve_or_create_belief(
-    store: MemoryStore, phrase: str, *,
-    session_id: str | None,
-    created_ids: list[str],
-) -> str:
-    """Return the id of the belief representing `phrase`, creating
-    one with the project default prior (alpha=1.0, beta=1.0) if none
-    exists. The first creator within a call stamps `session_id`.
-
-    When the belief already exists (same id = same normalised phrase),
-    a corroboration row is recorded so the re-assertion is observable.
-    """
-    # derive() id-scheme matches _belief_id_for_phrase; compute once.
-    ts = _now_iso()
-    out = derive(DerivationInput(
-        raw_text=phrase,
-        source_kind=INGEST_SOURCE_GIT,
-        session_id=session_id,
-        ts=ts,
-    ))
-    # INGEST_SOURCE_GIT always produces a belief (no classifier skip).
-    assert out.belief is not None
-    bid = out.belief.id
-    existing = store.get_belief(bid)
-    if existing is not None:
-        store.record_corroboration(
-            bid,
-            source_type=CORROBORATION_SOURCE_COMMIT_INGEST,
-            session_id=session_id,
-        )
-        return bid
-    # v2.0 #205 parallel-write: log the raw phrase before materialization.
-    # source_kind=git because the commit-ingest path emits triples from
-    # commit messages; source_path is unknown at this layer (callers
-    # have it). Future commits could thread the commit SHA through.
-    store.record_ingest(
-        source_kind=INGEST_SOURCE_GIT,
-        raw_text=phrase,
-        derived_belief_ids=[bid],
-        session_id=session_id,
-        ts=ts,
-    )
-    actual_id, was_inserted = store.insert_or_corroborate(
-        out.belief,
-        source_type=CORROBORATION_SOURCE_COMMIT_INGEST,
-        session_id=session_id,
-    )
-    if was_inserted:
-        created_ids.append(actual_id)
-    return actual_id
-
-
 def ingest_triples(
     store: MemoryStore,
     triples: list[Triple],
@@ -307,28 +255,81 @@ def ingest_triples(
 ) -> IngestResult:
     """Persist `triples` to `store`. Idempotent.
 
-    For each triple:
-      1. Resolve / create the subject belief by content hash.
-      2. Resolve / create the object belief.
-      3. Insert an Edge(subject_id -> object_id, type=relation,
+    Under #264 slice 2 each unique phrase appends one unstamped
+    `ingest_log` row; a single `run_worker(store)` invocation at
+    end-of-batch materializes every referenced belief. Edges are
+    constructed against the worker-stamped canonical ids.
+
+    For each triple after the worker runs:
+      1. Resolve subject + object via the stamp on each phrase's
+         log row.
+      2. Insert an Edge(subject_id -> object_id, type=relation,
          anchor_text=triple.anchor_text). Skip if already present.
 
-    Self-edges (subject and object resolve to the same id) are
-    counted under `skipped_no_subject_or_object` and dropped.
+    Self-edges (subject and object resolve to the same id post-worker)
+    are counted under `skipped_no_subject_or_object` and dropped.
     """
+    from aelfrice.derivation_worker import run_worker  # noqa: PLC0415
+
     result = IngestResult()
+    if not triples:
+        return result
+
+    ts = _now_iso()
+    ids_before: set[str] = set(store.list_belief_ids())
+    # One log row per unique phrase. Convergent triples (same subject
+    # across multiple triples) reuse the log_id; the worker's content-
+    # hash UNIQUE path corroborates idempotently anyway, so the dedup
+    # here is just a record-keeping optimisation, not a correctness lever.
+    phrase_to_log_id: dict[str, str] = {}
+    for triple in triples:
+        if not triple.subject or not triple.object:
+            continue
+        for phrase in (triple.subject, triple.object):
+            if phrase in phrase_to_log_id:
+                continue
+            phrase_to_log_id[phrase] = store.record_ingest(
+                source_kind=INGEST_SOURCE_GIT,
+                raw_text=phrase,
+                session_id=session_id,
+                ts=ts,
+                raw_meta={"call_site": CORROBORATION_SOURCE_COMMIT_INGEST},
+            )
+
+    if phrase_to_log_id:
+        run_worker(store)
+
+    # Harvest worker output. `actual_id` may differ from the
+    # deterministically-derived bid when the worker resolves a content-
+    # hash collision against an existing belief from a different source.
+    phrase_to_actual_id: dict[str, str] = {}
+    for phrase, log_id in phrase_to_log_id.items():
+        entry = store.get_ingest_log_entry(log_id)
+        if entry is None:
+            continue
+        ids = entry.get("derived_belief_ids") or []
+        if not isinstance(ids, list) or not ids:
+            continue
+        actual_id = str(ids[0])
+        phrase_to_actual_id[phrase] = actual_id
+        if actual_id not in ids_before:
+            if actual_id not in result.new_beliefs:
+                result.new_beliefs.append(actual_id)
+            ids_before.add(actual_id)
+
     for triple in triples:
         if not triple.subject or not triple.object:
             result.skipped_no_subject_or_object += 1
             continue
-        subj_id = _resolve_or_create_belief(
-            store, triple.subject,
-            session_id=session_id, created_ids=result.new_beliefs,
-        )
-        obj_id = _resolve_or_create_belief(
-            store, triple.object,
-            session_id=session_id, created_ids=result.new_beliefs,
-        )
+        subj_id = phrase_to_actual_id.get(triple.subject)
+        obj_id = phrase_to_actual_id.get(triple.object)
+        if subj_id is None or obj_id is None:
+            # Worker did not stamp this phrase — derive() returned no
+            # belief, an unexpected state for INGEST_SOURCE_GIT. Surface
+            # under skipped_no_subject_or_object so the count is
+            # observable.
+            result.skipped_no_subject_or_object += 1
+            continue
         if subj_id == obj_id:
             result.skipped_no_subject_or_object += 1
             continue
