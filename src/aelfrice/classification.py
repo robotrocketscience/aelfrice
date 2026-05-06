@@ -483,9 +483,19 @@ def accept_classifications(
     skipped_existing = 0
     skipped_unclassified = 0
 
-    # Lazy import: derivation imports classify_sentence from this module;
-    # importing at module-load would form a cycle.
-    from aelfrice.derivation import DerivationInput, derive  # noqa: PLC0415
+    # Lazy import: derivation_worker -> derivation -> classification (this
+    # module). Importing at module load forms a cycle.
+    from aelfrice.derivation_worker import run_worker  # noqa: PLC0415
+
+    # #264 slice 2: route through the derivation worker. Each persisting
+    # sentence appends one ingest_log row carrying the host-decided
+    # `override_belief_type` and the `call_site` for the corroboration
+    # audit; one worker invocation at end-of-batch derives + writes
+    # canonical beliefs and stamps the rows. Snapshot the canonical id
+    # set so the post-worker count of newly-inserted beliefs matches the
+    # pre-#264 contract.
+    ids_before: set[str] = set(store.list_belief_ids())
+    persisting_log_ids: list[str] = []
 
     for sd in sentences_data:
         idx = int(sd["index"])
@@ -498,36 +508,39 @@ def accept_classifications(
         if not c.persist:
             skipped_non_persisting += 1
             continue
-        out = derive(DerivationInput(
-            raw_text=text,
-            source_kind=INGEST_SOURCE_FILESYSTEM,
-            source_path=source,
-            ts=timestamp,
-            session_id=session_id,
-            override_belief_type=c.belief_type,
-        ))
-        # override_belief_type always produces a belief (persist=True
-        # is the caller's responsibility; checked above).
-        assert out.belief is not None
-        bid = out.belief.id
-        if store.get_belief(bid) is not None:
-            skipped_existing += 1
-            continue
-        # v2.0 #205 parallel-write: log the host-classified text.
-        store.record_ingest(
+        log_id = store.record_ingest(
             source_kind=INGEST_SOURCE_FILESYSTEM,
             source_path=source,
             raw_text=text,
-            derived_belief_ids=[bid],
             session_id=session_id,
             ts=timestamp,
+            raw_meta={
+                "call_site": CORROBORATION_SOURCE_FILESYSTEM_INGEST,
+                "override_belief_type": c.belief_type,
+            },
         )
-        _, was_inserted = store.insert_or_corroborate(
-            out.belief,
-            source_type=CORROBORATION_SOURCE_FILESYSTEM_INGEST,
-        )
-        if was_inserted:
-            inserted += 1
+        persisting_log_ids.append(log_id)
+
+    if persisting_log_ids:
+        run_worker(store)
+        for log_id in persisting_log_ids:
+            entry = store.get_ingest_log_entry(log_id)
+            if entry is None:
+                continue
+            ids = entry.get("derived_belief_ids") or []
+            if not isinstance(ids, list):
+                continue
+            for bid in ids:
+                if not isinstance(bid, str):
+                    continue
+                if bid in ids_before:
+                    skipped_existing += 1
+                else:
+                    inserted += 1
+                    # Subsequent log rows that resolve to the same bid
+                    # in this batch should count as skipped_existing,
+                    # matching the pre-#264 per-iteration contract.
+                    ids_before.add(bid)
 
     store.complete_onboard_session(session_id, timestamp)
     return AcceptOnboardResult(
