@@ -28,7 +28,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Final
 
-from aelfrice.derivation import DerivationInput, derive
 from aelfrice.models import (
     CORROBORATION_SOURCE_COMMIT_INGEST,
     EDGE_CITES,
