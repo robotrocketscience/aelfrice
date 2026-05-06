@@ -1278,6 +1278,115 @@ def _cmd_confirm(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+_CORE_MIN_CORROBORATION: int = 2
+_CORE_MIN_POSTERIOR: float = 2.0 / 3.0
+_CORE_MIN_ALPHA_BETA: int = 4
+
+
+def _qualifies_core(b: object, args: argparse.Namespace) -> bool:
+    """Return True if belief b meets any non-lock core signal."""
+    alpha: float = b.alpha  # type: ignore[attr-defined]
+    beta: float = b.beta  # type: ignore[attr-defined]
+    corr: int = b.corroboration_count  # type: ignore[attr-defined]
+    if corr >= args.min_corroboration:
+        return True
+    ab = alpha + beta
+    if ab >= args.min_alpha_beta and (alpha / ab) >= args.min_posterior:
+        return True
+    return False
+
+
+def _emit_core(
+    locked: list[object],
+    candidates: list[object],
+    args: argparse.Namespace,
+    out: object,
+) -> None:
+    seen: set[str] = {b.id for b in locked}  # type: ignore[attr-defined]
+    unlocked = [b for b in candidates if b.id not in seen]  # type: ignore[attr-defined]
+
+    def _posterior(b: object) -> float:
+        a: float = b.alpha  # type: ignore[attr-defined]
+        bb: float = b.beta  # type: ignore[attr-defined]
+        return a / (a + bb)
+
+    unlocked.sort(key=lambda b: (-_posterior(b), b.id))  # type: ignore[attr-defined]
+    results = list(locked) + unlocked
+
+    if args.limit is not None:
+        results = results[: args.limit]
+
+    if not results:
+        print("no core beliefs", file=out)  # type: ignore[arg-type]
+        return
+
+    if args.json:
+        rows = []
+        for b in results:
+            signals: list[str] = []
+            if b.lock_level != "none":  # type: ignore[attr-defined]
+                signals.append("lock")
+            if b.corroboration_count >= args.min_corroboration:  # type: ignore[attr-defined]
+                signals.append("corroboration")
+            alpha: float = b.alpha  # type: ignore[attr-defined]
+            beta: float = b.beta  # type: ignore[attr-defined]
+            ab = alpha + beta
+            if ab >= args.min_alpha_beta and (alpha / ab) >= args.min_posterior:
+                signals.append("posterior")
+            rows.append({
+                "id": b.id,  # type: ignore[attr-defined]
+                "content": b.content,  # type: ignore[attr-defined]
+                "lock_level": b.lock_level,  # type: ignore[attr-defined]
+                "alpha": alpha,
+                "beta": beta,
+                "posterior_mean": round(alpha / ab, 3) if ab else 0.0,
+                "corroboration_count": b.corroboration_count,  # type: ignore[attr-defined]
+                "signals": sorted(set(signals)),
+            })
+        print(json.dumps(rows, indent=2), file=out)  # type: ignore[arg-type]
+        return
+
+    for b in results:
+        alpha = b.alpha  # type: ignore[attr-defined]
+        beta = b.beta  # type: ignore[attr-defined]
+        corr = b.corroboration_count  # type: ignore[attr-defined]
+        ab = alpha + beta
+        parts: list[str] = []
+        if b.lock_level != "none":  # type: ignore[attr-defined]
+            parts.append("LOCK")
+        if corr >= args.min_corroboration:
+            parts.append(f"CORR={corr}")
+        if ab >= args.min_alpha_beta and (alpha / ab) >= args.min_posterior:
+            parts.append(f"α={alpha:.1f}")
+            parts.append(f"β={beta:.1f}")
+            parts.append(f"μ={alpha / ab:.3f}")
+        tag = f" [{','.join(parts)}]" if parts else ""
+        print(f"{b.id}{tag}: {b.content}", file=out)  # type: ignore[arg-type, attr-defined]
+
+
+def _cmd_core(args: argparse.Namespace, out: object) -> int:
+    """Surface load-bearing beliefs: locked ∪ corroborated ∪ high-posterior.
+
+    Spec: docs/feature-aelf-core.md. No new store method — composition over
+    list_locked_beliefs(), list_belief_ids(), and get_belief().
+    """
+    store = _open_store()
+    try:
+        locked: list[object] = [] if args.no_locked else store.list_locked_beliefs()
+        candidates: list[object] = []
+        if not args.locked_only:
+            for bid in store.list_belief_ids():
+                b = store.get_belief(bid)
+                if b is None or b.lock_level != "none":
+                    continue
+                if _qualifies_core(b, args):
+                    candidates.append(b)
+    finally:
+        store.close()
+    _emit_core(locked, candidates, args, out)
+    return 0
+
+
 def _cmd_promote(args: argparse.Namespace, out: object) -> int:
     """Promote agent_inferred -> user_validated. Alias of `aelf validate`."""
     return _cmd_validate(args, out)
@@ -3492,6 +3601,45 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="only show locks with nonzero demotion_pressure",
     )
     p_locked.set_defaults(func=_cmd_locked)
+
+    # Read-only lens: load-bearing beliefs (locked ∪ corroborated ∪ high-posterior).
+    p_core = sub.add_parser(
+        "core",
+        help="surface load-bearing beliefs: locked ∪ corroborated ∪ high-posterior",
+    )
+    p_core.add_argument(
+        "--json", action="store_true", dest="json",
+        help="emit JSON list instead of text",
+    )
+    p_core.add_argument(
+        "--limit", type=int, default=None, metavar="N",
+        help="cap result count after filtering/sort",
+    )
+    p_core.add_argument(
+        "--min-corroboration", type=int, default=_CORE_MIN_CORROBORATION,
+        metavar="N",
+        help="corroboration_count threshold (default 2; 0 disables)",
+    )
+    p_core.add_argument(
+        "--min-posterior", type=float, default=_CORE_MIN_POSTERIOR,
+        metavar="FLOAT",
+        help="posterior-mean threshold (default 2/3; 0.0 disables)",
+    )
+    p_core.add_argument(
+        "--min-alpha-beta", type=int, default=_CORE_MIN_ALPHA_BETA,
+        metavar="N",
+        help="α+β co-gate for posterior signal (default 4)",
+    )
+    _core_excl = p_core.add_mutually_exclusive_group()
+    _core_excl.add_argument(
+        "--locked-only", action="store_true",
+        help="return only the locked subset",
+    )
+    _core_excl.add_argument(
+        "--no-locked", action="store_true",
+        help="suppress locked beliefs (surface corroboration/posterior only)",
+    )
+    p_core.set_defaults(func=_cmd_core)
 
     # Hidden: belief lifecycle inverse of `lock` / `validate`. Power-user.
     p_demote = sub.add_parser(
