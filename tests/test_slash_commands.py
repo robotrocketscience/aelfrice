@@ -49,6 +49,8 @@ EXPECTED_COMMANDS = (
     # test_slash_commands_match_visible_cli_subcommands both enforce the
     # slash file exists and matches the CLI surface.
     "delete",
+    # v2.0 (#439) — load-bearing belief lens (locked ∪ corroborated ∪ high-posterior).
+    "core",
 )
 
 
