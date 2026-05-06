@@ -7,6 +7,9 @@ deterministic regime_description framing (no alarm copy).
 """
 from __future__ import annotations
 
+import io
+import json
+
 from aelfrice.health import (
     MIN_BELIEFS,
     REGIME_IGNORE,
@@ -22,7 +25,17 @@ from aelfrice.health import (
 )
 from aelfrice.models import (
     BELIEF_FACTUAL,
+    EDGE_CITES,
+    EDGE_CONTRADICTS,
+    EDGE_DERIVED_FROM,
+    EDGE_IMPLEMENTS,
+    EDGE_POTENTIALLY_STALE,
+    EDGE_RELATES_TO,
+    EDGE_SUPERSEDES,
     EDGE_SUPPORTS,
+    EDGE_TEMPORAL_NEXT,
+    EDGE_TESTS,
+    EDGE_TYPES,
     LOCK_NONE,
     LOCK_USER,
     Belief,
@@ -344,3 +357,87 @@ def test_mixed_description_returned_for_mixed() -> None:
 def test_insufficient_data_description_directs_user_to_onboard() -> None:
     desc = regime_description(REGIME_INSUFFICIENT_DATA).lower()
     assert "onboard" in desc
+
+
+# --- edges_by_type: new field on HealthFeatures (#452) -------------------
+
+# Full registry that edges_by_type must enumerate.
+_FULL_EDGE_REGISTRY: frozenset[str] = EDGE_TYPES | {EDGE_POTENTIALLY_STALE}
+
+
+def test_empty_store_edges_by_type_zero_padded() -> None:
+    """Empty store: edges_by_type present with 0 for every registered type."""
+    s = MemoryStore(":memory:")
+    f = compute_features(s)
+    assert isinstance(f.edges_by_type, dict)
+    assert set(f.edges_by_type.keys()) == _FULL_EDGE_REGISTRY
+    assert all(v == 0 for v in f.edges_by_type.values())
+
+
+def test_seeded_store_edges_by_type_counts_correctly() -> None:
+    """Seeded store with one edge of each type: counts must be 1 each."""
+    s = MemoryStore(":memory:")
+    # Provide enough beliefs for all edges.
+    belief_ids = [f"b{i}" for i in range(20)]
+    for bid in belief_ids:
+        s.insert_belief(_mk(bid, 1.0, 1.0))
+
+    edge_iter = iter(zip(belief_ids, belief_ids[1:]))
+    one_of_each = [
+        (EDGE_SUPPORTS, *next(edge_iter)),
+        (EDGE_CITES, *next(edge_iter)),
+        (EDGE_CONTRADICTS, *next(edge_iter)),
+        (EDGE_SUPERSEDES, *next(edge_iter)),
+        (EDGE_RELATES_TO, *next(edge_iter)),
+        (EDGE_DERIVED_FROM, *next(edge_iter)),
+        (EDGE_IMPLEMENTS, *next(edge_iter)),
+        (EDGE_TEMPORAL_NEXT, *next(edge_iter)),
+        (EDGE_TESTS, *next(edge_iter)),
+        (EDGE_POTENTIALLY_STALE, *next(edge_iter)),
+    ]
+    for etype, src, dst in one_of_each:
+        s.insert_edge(Edge(src=src, dst=dst, type=etype, weight=1.0))
+
+    f = compute_features(s)
+    assert set(f.edges_by_type.keys()) == _FULL_EDGE_REGISTRY
+    for etype, _src, _dst in one_of_each:
+        assert f.edges_by_type[etype] == 1, f"expected 1 for {etype}"
+
+
+def test_edges_by_type_multiple_of_same_type() -> None:
+    """Multiple edges of one type sum correctly; others remain 0."""
+    s = MemoryStore(":memory:")
+    for i in range(5):
+        s.insert_belief(_mk(f"x{i}", 1.0, 1.0))
+    # Insert 3 SUPPORTS edges.
+    s.insert_edge(Edge(src="x0", dst="x1", type=EDGE_SUPPORTS, weight=1.0))
+    s.insert_edge(Edge(src="x1", dst="x2", type=EDGE_SUPPORTS, weight=1.0))
+    s.insert_edge(Edge(src="x2", dst="x3", type=EDGE_SUPPORTS, weight=1.0))
+    f = compute_features(s)
+    assert f.edges_by_type[EDGE_SUPPORTS] == 3
+    assert f.edges_by_type[EDGE_CITES] == 0
+
+
+def test_edges_by_type_not_in_per_feature_scores() -> None:
+    """edges_by_type must not appear in per_feature_scores (not a classifier input)."""
+    s = MemoryStore(":memory:")
+    for i in range(MIN_BELIEFS):
+        s.insert_belief(_mk(f"b{i}", 4.0, 1.0))
+    r = classify_regime(compute_features(s))
+    assert "edges_by_type" not in r.per_feature_scores
+
+
+def test_classify_regime_per_feature_scores_unchanged() -> None:
+    """Regime classifier still produces exactly the original five feature keys."""
+    expected_keys = {
+        "confidence_mean",
+        "confidence_median",
+        "mass_mean",
+        "lock_per_1000",
+        "edge_per_belief",
+    }
+    s = MemoryStore(":memory:")
+    for i in range(MIN_BELIEFS):
+        s.insert_belief(_mk(f"b{i}", 4.0, 1.0))
+    r = classify_regime(compute_features(s))
+    assert set(r.per_feature_scores.keys()) == expected_keys

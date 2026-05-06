@@ -9,13 +9,18 @@ property each, per the deterministic-atomic-short policy.
 from __future__ import annotations
 
 import io
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from aelfrice.cli import DEFAULT_DB_DIR, DEFAULT_DB_FILENAME, db_path, main
-from aelfrice.models import LOCK_USER
+from aelfrice.models import (
+    EDGE_POTENTIALLY_STALE,
+    EDGE_TYPES,
+    LOCK_USER,
+)
 from aelfrice.store import MemoryStore
 
 
@@ -495,6 +500,82 @@ def test_health_exits_nonzero_when_audit_fails(isolated_db: Path) -> None:
     code, out = _run("health")
     assert code == 1
     assert "FAIL" in out
+
+
+# --- aelf health per-edge-type block (#452) -----------------------------
+
+
+def test_health_emits_edges_by_type_block(isolated_db: Path) -> None:
+    """Text output includes the 'edges by type:' header."""
+    code, out = _run("health")
+    assert code == 0
+    assert "edges by type:" in out
+
+
+def test_health_empty_store_no_edges_yet(isolated_db: Path) -> None:
+    """Empty store: 'no edges yet' appears in the edge-type block."""
+    code, out = _run("health")
+    assert code == 0
+    assert "no edges yet" in out
+
+
+# --- aelf health --json shape contract (#452) ---------------------------
+
+_FULL_EDGE_REGISTRY: frozenset[str] = EDGE_TYPES | {EDGE_POTENTIALLY_STALE}
+
+
+def test_health_json_flag_produces_valid_json(isolated_db: Path) -> None:
+    """--json flag emits a single line of valid JSON."""
+    code, out = _run("health", "--json")
+    assert code == 0
+    data = json.loads(out)
+    assert isinstance(data, dict)
+
+
+def test_health_json_has_audit_and_features_keys(isolated_db: Path) -> None:
+    """JSON top-level keys are 'audit' and 'features'."""
+    _code, out = _run("health", "--json")
+    data = json.loads(out)
+    assert "audit" in data
+    assert "features" in data
+
+
+def test_health_json_features_edges_by_type_all_keys_present(
+    isolated_db: Path,
+) -> None:
+    """features.edges_by_type contains every key from EDGE_TYPES ∪ {POTENTIALLY_STALE}."""
+    _code, out = _run("health", "--json")
+    data = json.loads(out)
+    ebt = data["features"]["edges_by_type"]
+    assert set(ebt.keys()) == _FULL_EDGE_REGISTRY
+
+
+def test_health_json_features_edges_by_type_values_are_ints(
+    isolated_db: Path,
+) -> None:
+    """features.edges_by_type values are integers (not floats or strings)."""
+    _code, out = _run("health", "--json")
+    data = json.loads(out)
+    ebt = data["features"]["edges_by_type"]
+    for k, v in ebt.items():
+        assert isinstance(v, int), f"key {k!r} has non-int value {v!r}"
+
+
+def test_health_json_audit_has_findings_and_metrics(isolated_db: Path) -> None:
+    """audit block carries 'findings', 'metrics', and 'failed' keys."""
+    _code, out = _run("health", "--json")
+    data = json.loads(out)
+    audit = data["audit"]
+    assert "findings" in audit
+    assert "metrics" in audit
+    assert "failed" in audit
+
+
+def test_health_json_exit_code_mirrors_text(isolated_db: Path) -> None:
+    """--json exit code matches text mode (0 on clean store)."""
+    code_text, _ = _run("health")
+    code_json, _ = _run("health", "--json")
+    assert code_text == code_json == 0
 
 
 # --- regime (v1.0 classifier preserved) --------------------------------
