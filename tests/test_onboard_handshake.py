@@ -285,8 +285,14 @@ def test_accept_skips_existing_beliefs_inserted_after_session_started(
     # session A starts, session B starts and completes for the same
     # tree, A's accept must skip rather than collide.
     bid = _derive_id_for_sentence(s0.text, s0.source)
+    # Use the canonical content_hash so the race-belief looks identical
+    # to what derive() would produce — under the worker-routed path
+    # (#264 slice 2) classification appends a log row unconditionally
+    # and lets `insert_or_corroborate`'s content_hash UNIQUE constraint
+    # detect the prior insert.
+    from aelfrice.derivation import _content_hash  # noqa: PLC0415
     store.insert_belief(Belief(
-        id=bid, content=s0.text, content_hash="precomputed",
+        id=bid, content=s0.text, content_hash=_content_hash(s0.text),
         alpha=1.0, beta=1.0, type=BELIEF_FACTUAL,
         lock_level=LOCK_NONE, locked_at=None, demotion_pressure=0,
         created_at="2026-04-26T00:30:00Z", last_retrieved_at=None,
