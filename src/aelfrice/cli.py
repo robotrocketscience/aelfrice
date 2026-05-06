@@ -1046,6 +1046,13 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
             getattr(args, "session_id", None),
             surface_name="aelf lock",
         )
+        # #264 slice 2: route through the derivation worker, mirroring
+        # mcp_server.tool_lock. We pre-derive only to compute the
+        # prospective belief id for the re-lock semantic — the actual
+        # write goes through the worker so the canonical log records
+        # every `aelf lock` invocation.
+        from aelfrice.derivation_worker import run_worker  # noqa: PLC0415
+
         derived = derive(DerivationInput(
             raw_text=args.statement,
             source_kind=INGEST_SOURCE_CLI_REMEMBER,
@@ -1054,33 +1061,45 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
         ))
         # cli_remember always produces a belief.
         assert derived.belief is not None
-        bid = derived.belief.id
-        existing = store.get_belief(bid)
-        if existing is None:
-            # v2.0 #205 parallel-write.
-            store.record_ingest(
-                source_kind=INGEST_SOURCE_CLI_REMEMBER,
-                raw_text=args.statement,
-                derived_belief_ids=[bid],
-                session_id=sid,
-                ts=now,
-            )
-            actual_id, was_inserted = store.insert_or_corroborate(
-                derived.belief,
-                source_type=CORROBORATION_SOURCE_CLI_REMEMBER,
-                session_id=sid,
-            )
-            if was_inserted:
-                print(f"locked: {actual_id}", file=out)  # type: ignore[arg-type]
-            else:
-                print(f"locked: {actual_id} (corroborated existing)", file=out)  # type: ignore[arg-type]
+        lock_bid = derived.belief.id
+        pre_existing_at_lock_id = store.get_belief(lock_bid) is not None
+        ids_before: set[str] = set(store.list_belief_ids())
+        log_id = store.record_ingest(
+            source_kind=INGEST_SOURCE_CLI_REMEMBER,
+            raw_text=args.statement,
+            session_id=sid,
+            ts=now,
+            raw_meta={"call_site": CORROBORATION_SOURCE_CLI_REMEMBER},
+        )
+        run_worker(store)
+        entry = store.get_ingest_log_entry(log_id)
+        derived_ids = (
+            entry.get("derived_belief_ids") if entry is not None else None
+        )
+        if not isinstance(derived_ids, list) or not derived_ids:
+            # cli_remember always derives a belief; an empty stamp here
+            # means something is broken downstream.
+            print("lock failed: derivation produced no belief", file=sys.stderr)
+            return 1
+        actual_id = str(derived_ids[0])
+        if pre_existing_at_lock_id and actual_id == lock_bid:
+            # Re-lock of an existing lock-id belief: apply lock-upgrade
+            # (the worker's insert_or_corroborate just records corroboration).
+            existing = store.get_belief(actual_id)
+            if existing is not None:
+                existing.lock_level = LOCK_USER
+                existing.locked_at = now
+                existing.demotion_pressure = 0
+                existing.origin = ORIGIN_USER_STATED
+                store.update_belief(existing)
+            print(f"upgraded existing belief to lock: {actual_id}", file=out)  # type: ignore[arg-type]
+        elif actual_id in ids_before:
+            # content_hash collision with a different-source belief: the
+            # worker corroborated it; preserve pre-#264 'corroborated'
+            # output for parity with the prior CLI surface.
+            print(f"locked: {actual_id} (corroborated existing)", file=out)  # type: ignore[arg-type]
         else:
-            existing.lock_level = LOCK_USER
-            existing.locked_at = now
-            existing.demotion_pressure = 0
-            existing.origin = ORIGIN_USER_STATED
-            store.update_belief(existing)
-            print(f"upgraded existing belief to lock: {bid}", file=out)  # type: ignore[arg-type]
+            print(f"locked: {actual_id}", file=out)  # type: ignore[arg-type]
     finally:
         store.close()
     return 0
