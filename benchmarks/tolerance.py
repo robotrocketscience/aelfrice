@@ -142,7 +142,18 @@ def check_report(
     Extra leaves in `observed` not in `canonical` are silently ignored
     — the canonical JSON is the source of truth for which metrics
     matter.
+
+    `metric_overrides` defaults to canonical["metric_overrides"] if the
+    canonical JSON carries one. Explicitly-passed overrides take
+    precedence (used by tests).
     """
+    if metric_overrides is None:
+        cano_overrides = canonical.get("metric_overrides")
+        if isinstance(cano_overrides, dict):
+            metric_overrides = {
+                str(k): float(v) for k, v in cano_overrides.items()
+                if isinstance(v, (int, float)) and not isinstance(v, bool)
+            }
     cano_results = canonical.get("results", {})
     obs_results = observed.get("results", {})
     checks: list[BandCheck] = []

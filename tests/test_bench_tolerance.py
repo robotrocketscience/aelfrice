@@ -151,3 +151,28 @@ def test_load_report_accepts_v2(tmp_path):
     p.write_text(json.dumps({"schema_version": 2, "results": {}}))
     data = tolerance.load_report(p)
     assert data["schema_version"] == 2
+
+
+def test_check_report_reads_overrides_from_canonical():
+    """metric_overrides in canonical JSON applies when caller doesn't override."""
+    cano = _canonical({"mab": {"split_a": {"f1_avg": 0.5}}})
+    cano["metric_overrides"] = {"f1_avg": 0.20}  # ±20% → band [0.40, 0.60]
+    # Without override, ±7% → band [0.465, 0.535] — observed 0.58 is OUT.
+    # With ±20% → observed 0.58 is in-band, drift 80% of half-width → WARN.
+    obs = _canonical({"mab": {"split_a": {"f1_avg": 0.58}}})
+    checks = tolerance.check_report(cano, obs)
+    assert checks[0].band_kind == "override"
+    assert checks[0].verdict == Verdict.WARN  # in-band but high-drift
+    # Confirm without the override it would have FAILed.
+    cano2 = _canonical({"mab": {"split_a": {"f1_avg": 0.5}}})
+    checks2 = tolerance.check_report(cano2, obs)
+    assert checks2[0].verdict == Verdict.FAIL
+
+
+def test_explicit_overrides_take_precedence_over_canonical():
+    cano = _canonical({"mab": {"split_a": {"f1_avg": 0.5}}})
+    cano["metric_overrides"] = {"f1_avg": 0.20}
+    obs = _canonical({"mab": {"split_a": {"f1_avg": 0.58}}})
+    # Caller passes a tighter override (5%) — should override the canonical 20%.
+    checks = tolerance.check_report(cano, obs, metric_overrides={"f1_avg": 0.05})
+    assert checks[0].verdict == Verdict.FAIL
