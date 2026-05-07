@@ -12,6 +12,9 @@
 [![License](https://img.shields.io/pypi/l/aelfrice.svg)](LICENSE)
 [![CI](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml/badge.svg)](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml)
 [![OSSInsight](https://img.shields.io/badge/OSSInsight-analytics-blue)](https://ossinsight.io/analyze/robotrocketscience/aelfrice)
+<!-- bench-canonical-badge:start -->
+[![Reproducibility](https://img.shields.io/badge/reproducibility-pending%20first%20canonical%20run-lightgrey)](docs/v2_reproducibility_harness.md)
+<!-- bench-canonical-badge:end -->
 
 You correct your agent. *"Got it,"* it says. Next session, same mistake.
 
@@ -131,6 +134,16 @@ aelf setup / aelf doctor            # initial install + verification
 Everything else (deeper diagnostics, archive/uninstall, migration tools, hook entry-points called by Claude Code itself) is callable but not something you reach for in normal use. `aelf --help` shows the everyday surface; `aelf --help --advanced` lists the rest. Full reference: [COMMANDS](docs/COMMANDS.md).
 
 The same operations are also available as MCP tools and `/aelf:*` slash commands — same library underneath. See [MCP](docs/MCP.md) and [SLASH_COMMANDS](docs/SLASH_COMMANDS.md).
+
+---
+
+## Reproducibility
+
+`aelf bench all --canonical --out benchmarks/results/v2.0.0.json` reproduces every published headline number on a fresh clone within documented tolerance bands. The dispatcher subprocesses each academic-suite adapter (MAB, LoCoMo, LongMemEval, StructMemEval, AMA-Bench) at the canonical headline cut — full per the 2026-05-06 ratification on [#437](https://github.com/robotrocketscience/aelfrice/issues/437) — and merges the per-adapter results into one schema-v2 JSON.
+
+The `Bench Canonical` nightly cron runs the same harness daily on `main` and pushes the cron entry to a dedicated `bench-canonical-results` branch. Drift outside the per-metric tolerance band fails the workflow; drift inside the band emits a notice. The badge above flips to red on a band-busting regression and stays red until acknowledged.
+
+Detail: [docs/v2_reproducibility_harness.md](docs/v2_reproducibility_harness.md).
 
 ---
 
