@@ -87,7 +87,7 @@ def test_smoke_run_writes_schema_v2(tmp_path):
     assert data["label"] == "v2.0.0 smoke"
     assert "mab" in data["results"]
     assert "amabench" in data["results"]
-    assert data["results"]["mab"]["Conflict_Resolution"]["status"] == "ok"
+    assert data["results"]["mab"]["Conflict_Resolution"]["_status"] == "ok"
     assert data["results"]["mab"]["Conflict_Resolution"]["output"] == {"f1": 0.6}
 
 
@@ -129,8 +129,8 @@ def test_skipped_data_missing_propagates(tmp_path):
     )
     assert rc == 2
     data = json.loads(out.read_text())
-    assert data["results"]["amabench"]["_"]["status"] == "skipped_data_missing"
-    assert "data missing" in data["results"]["amabench"]["_"]["error_message"]
+    assert data["results"]["amabench"]["_"]["_status"] == "skipped_data_missing"
+    assert "data missing" in data["results"]["amabench"]["_"]["_error_message"]
 
 
 def test_error_overrides_skip(tmp_path):
@@ -216,5 +216,5 @@ def test_runner_crash_recorded_as_error(tmp_path):
     assert rc == 1
     data = json.loads(out.read_text())
     err = data["results"]["amabench"]["_"]
-    assert err["status"] == "error"
-    assert "boom" in err["error_message"]
+    assert err["_status"] == "error"
+    assert "boom" in err["_error_message"]

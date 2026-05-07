@@ -223,14 +223,17 @@ def _merge(results: list[InvocationResult]) -> dict[str, dict[str, Any]]:
     for r in results:
         adapter = r.invocation.adapter
         bucket = merged.setdefault(adapter, {})
+        # Dispatcher-level metadata uses underscore prefix so
+        # tolerance.check_report skips it during band walks. Only
+        # `output`'s leaves should land on the band-check path.
         payload: dict[str, Any] = {
-            "status": r.status,
-            "elapsed_sec": round(r.elapsed_sec, 3),
+            "_status": r.status,
+            "_elapsed_sec": round(r.elapsed_sec, 3),
         }
         if r.output is not None:
             payload["output"] = _strip_detail(r.output)
         if r.error_message:
-            payload["error_message"] = r.error_message
+            payload["_error_message"] = r.error_message
         if r.invocation.sub_key is None:
             # Single-invocation: payload becomes the adapter's record directly
             # (but keep the bucket dict shape so multi-invocation rows don't
