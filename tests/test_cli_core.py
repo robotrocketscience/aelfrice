@@ -146,10 +146,16 @@ def test_core_tag_block_posterior(isolated_db: Path) -> None:
 
 
 def test_core_json_parses(isolated_db: Path) -> None:
-    _seed_store(isolated_db)
+    b = _seed_store(isolated_db)
     _, out = _run("core", "--json")
     rows = json.loads(out)
     assert isinstance(rows, list)
+    # JSON output must apply the same core-filter as text mode:
+    # b-thin (μ=0.667, α+β=3) and b-prior (μ=0.5, α+β=2) are excluded
+    # at default thresholds.
+    row_ids = {row["id"] for row in rows}
+    assert b["b-thin"].id not in row_ids
+    assert b["b-prior"].id not in row_ids
 
 
 def test_core_json_signals_lock(isolated_db: Path) -> None:
