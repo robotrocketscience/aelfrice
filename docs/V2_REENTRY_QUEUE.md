@@ -28,6 +28,7 @@ Each row references its public spec memo and the GitHub issue that tracks re-ent
 ### Directive detection (enforcement H1) — issue #374
 
 - **Spec:** [`docs/v2_enforcement.md`](v2_enforcement.md) § H1
+- **Iteration spec:** [`docs/v2_directive_detection.md`](v2_directive_detection.md) (paths to clear the gate, given the candidate detector's measured P=0.664 / R=0.937 against lab corpus v0.1).
 - **Disposition:** defer to v2.x. (H3 selective injection ships at v2.0; H2 compliance audit is dropped, not deferred.)
 - **Gate:** ≥80% precision and ≥60% recall on a labeled sample of 200 coding prompts. Below that bar, the 29-verb regex's false-positive rate (e.g., "I never push to main when I'm tired" misclassified as a directive) pollutes the belief graph faster than the captured directives help.
 - **Why deferred:** high false-positive risk on coding prompts; no published precision/recall numbers from the research line; ~150 LOC + TODO lifecycle is meaningful surface to ship without evidence.
