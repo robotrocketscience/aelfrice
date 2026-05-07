@@ -178,6 +178,32 @@ def test_headline_cut_recorded(tmp_path):
         assert "big" in entry["args"]
 
 
+def test_per_question_detail_stripped_from_merged_output(tmp_path):
+    """The merged JSON drops `per_question` lists — they bloat the file
+    and aren't read by the band-check (#437 calibration finding 2026-05-06).
+    """
+    out = tmp_path / "stripped.json"
+    payload = {
+        "f1": 0.5, "exact_match": 0.3,
+        "per_question": [{"id": i, "score": 0.5} for i in range(2000)],
+    }
+    rc = bench_run.main_all(
+        out_path=out, canonical=False, smoke=True,
+        runner=_make_runner({"mab/Conflict_Resolution": payload,
+                             "amabench": payload}),
+        tmp_root=tmp_path / "tmp",
+    )
+    assert rc == 0
+    data = json.loads(out.read_text())
+    mab_out = data["results"]["mab"]["Conflict_Resolution"]["output"]
+    ama_out = data["results"]["amabench"]["_"]["output"]
+    assert "per_question" not in mab_out
+    assert "per_question" not in ama_out
+    # Summary metrics retained.
+    assert mab_out["f1"] == 0.5
+    assert ama_out["exact_match"] == 0.3
+
+
 def test_runner_crash_recorded_as_error(tmp_path):
     """If the runner raises, status=error and message captured."""
     def crashing_runner(cmd, out_path):

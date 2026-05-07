@@ -187,11 +187,37 @@ def _default_runner(cmd: list[str], out_path: Path) -> subprocess.CompletedProce
     return subprocess.run(cmd, capture_output=True, text=True, check=False)
 
 
+# Per-row detail fields stripped from the canonical output before
+# write. Keep them only in the in-memory output / sidecar; the
+# canonical JSON should hold summary metrics that change rarely, not
+# 6,000+ per-question rows that bloat the file to 37MB and dominate
+# every diff. Re-add a field to the keep set if a tolerance band
+# needs to read it directly.
+_DETAIL_FIELDS_TO_STRIP: frozenset[str] = frozenset({
+    "per_question",
+})
+
+
+def _strip_detail(output: Any) -> Any:
+    """Recursively remove per-row detail fields. Returns a new structure."""
+    if isinstance(output, dict):
+        return {
+            k: _strip_detail(v)
+            for k, v in output.items()
+            if k not in _DETAIL_FIELDS_TO_STRIP
+        }
+    if isinstance(output, list):
+        return [_strip_detail(v) for v in output]
+    return output
+
+
 def _merge(results: list[InvocationResult]) -> dict[str, dict[str, Any]]:
     """Fold per-invocation outputs into adapter-keyed map.
 
     Single-invocation adapters: results[adapter] = output.
     Multi-invocation adapters: results[adapter][sub_key] = output.
+    `per_question` (and similar per-row lists) are stripped — see
+    _DETAIL_FIELDS_TO_STRIP for rationale.
     """
     merged: dict[str, dict[str, Any]] = {}
     for r in results:
@@ -202,7 +228,7 @@ def _merge(results: list[InvocationResult]) -> dict[str, dict[str, Any]]:
             "elapsed_sec": round(r.elapsed_sec, 3),
         }
         if r.output is not None:
-            payload["output"] = r.output
+            payload["output"] = _strip_detail(r.output)
         if r.error_message:
             payload["error_message"] = r.error_message
         if r.invocation.sub_key is None:
