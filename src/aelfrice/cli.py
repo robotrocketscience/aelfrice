@@ -1517,11 +1517,28 @@ def _cmd_bench(args: argparse.Namespace, out: object) -> int:
     target = (args.target or "synthetic").lower()
 
     if target == "all":
+        import sys as _sys
         from pathlib import Path as _Path
-        from benchmarks import run as _bench_run
         if not getattr(args, "bench_out", None):
             print("aelf bench all: --out PATH is required.", file=out)  # type: ignore[arg-type]
             return 2
+        # `benchmarks/` is the top-level academic-suite directory; per
+        # pyproject.toml it is dev-only and not packaged in the wheel.
+        # The harness is therefore reachable only from a source
+        # checkout. Detect cwd, push onto sys.path, then import.
+        cwd = _Path.cwd()
+        if not (cwd / "benchmarks" / "run.py").exists():
+            print(
+                "aelf bench all: must be run from an aelfrice source "
+                "checkout (cwd has no benchmarks/run.py).\n"
+                "  git clone https://github.com/robotrocketscience/aelfrice && "
+                "cd aelfrice && uv sync && aelf bench all --out PATH",
+                file=out,  # type: ignore[arg-type]
+            )
+            return 2
+        if str(cwd) not in _sys.path:
+            _sys.path.insert(0, str(cwd))
+        from benchmarks import run as _bench_run
         adapters_filter: tuple[str, ...] | None = None
         if getattr(args, "bench_adapters", None):
             adapters_filter = tuple(
@@ -4408,10 +4425,6 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "longmemeval-score, mab, locomo, longmemeval, structmemeval, "
             "amabench, all. See benchmarks/README.md."
         ),
-    )
-    p_bench.add_argument(
-        "rest", nargs=argparse.REMAINDER,
-        help="target-specific arguments",
     )
     p_bench.add_argument(
         "--db", default=None,
