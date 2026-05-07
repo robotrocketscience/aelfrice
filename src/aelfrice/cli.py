@@ -1488,7 +1488,7 @@ _BENCH_INERT_TARGETS: Final[dict[str, str]] = {
     "longmemeval": "v1.2.0 (P2 — ingest pipeline port)",
     "structmemeval": "v1.2.0 (P2 — ingest pipeline port)",
     "amabench": "v1.2.0 (P2 — ingest pipeline port)",
-    "all": "v2.0.0 (full reproducibility milestone)",
+    # `all` is no longer inert — it dispatches via benchmarks.run.main_all().
 }
 
 
@@ -1499,10 +1499,15 @@ def _cmd_bench(args: argparse.Namespace, out: object) -> int:
     seed an in-memory store with a 16-belief corpus and score retrieval.
     Fully reproducible across runs (latency varies).
 
-    Academic-suite targets (mab, locomo, longmemeval, structmemeval,
-    amabench, all) are scaffolded in benchmarks/ but inert at v1.0.0;
-    they exit 2 with a pointer to benchmarks/README.md until their
-    feature dependencies (aelfrice.ingest, MemoryStore) port from lab.
+    `all`: dispatches to benchmarks.run.main_all() — the v2.0
+    reproducibility harness ratified 2026-05-06 (#437). Subprocess each
+    adapter at the canonical headline cut (full per the override),
+    merge into one schema-v2 JSON. Requires --out PATH.
+
+    Academic-suite single-name targets (mab, locomo, longmemeval,
+    structmemeval, amabench) are still scaffolded but inert at this
+    cut; invoke them directly with `python -m benchmarks.<name>_adapter`
+    until they get a sub-subcommand wrapper.
 
     Stdlib-only utilities exposed today:
       verify-clean PATH        contamination gate over a retrieval JSON
@@ -1510,6 +1515,24 @@ def _cmd_bench(args: argparse.Namespace, out: object) -> int:
     """
     import json
     target = (args.target or "synthetic").lower()
+
+    if target == "all":
+        from pathlib import Path as _Path
+        from benchmarks import run as _bench_run
+        if not getattr(args, "bench_out", None):
+            print("aelf bench all: --out PATH is required.", file=out)  # type: ignore[arg-type]
+            return 2
+        adapters_filter: tuple[str, ...] | None = None
+        if getattr(args, "bench_adapters", None):
+            adapters_filter = tuple(
+                a.strip() for a in args.bench_adapters.split(",") if a.strip()
+            )
+        return _bench_run.main_all(
+            out_path=_Path(args.bench_out),
+            canonical=bool(getattr(args, "bench_canonical", False)),
+            adapters=adapters_filter,
+            smoke=bool(getattr(args, "bench_smoke", False)),
+        )
 
     if target == "synthetic":
         db = ":memory:" if args.db is None else str(Path(args.db))
@@ -4426,6 +4449,26 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_bench.add_argument(
         "--json", dest="pr_json", action="store_true",
         help="(posterior-residual) emit machine-readable JSON instead of human-readable text",
+    )
+    # `aelf bench all` flags — reproducibility harness (#437).
+    p_bench.add_argument(
+        "--out", dest="bench_out", default=None, metavar="PATH",
+        help="(target=all) merged JSON report path. Required for target=all.",
+    )
+    p_bench.add_argument(
+        "--canonical", dest="bench_canonical", action="store_true",
+        help=(
+            "(target=all) assert run matches CANONICAL_INVOCATIONS and "
+            "write to v2.0.0.json. Mismatched cut → refused."
+        ),
+    )
+    p_bench.add_argument(
+        "--adapters", dest="bench_adapters", default=None, metavar="CSV",
+        help="(target=all) comma-separated filter (mab,locomo,...).",
+    )
+    p_bench.add_argument(
+        "--smoke", dest="bench_smoke", action="store_true",
+        help="(target=all) run SMOKE_INVOCATIONS instead of canonical.",
     )
     p_bench.set_defaults(func=_cmd_bench)
 
