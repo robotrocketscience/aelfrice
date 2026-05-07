@@ -1308,7 +1308,8 @@ def _emit_core(
     def _posterior(b: object) -> float:
         a: float = b.alpha  # type: ignore[attr-defined]
         bb: float = b.beta  # type: ignore[attr-defined]
-        return a / (a + bb)
+        ab = a + bb
+        return a / ab if ab > 0 else 0.0
 
     unlocked.sort(key=lambda b: (-_posterior(b), b.id))  # type: ignore[attr-defined]
     results = list(locked) + unlocked

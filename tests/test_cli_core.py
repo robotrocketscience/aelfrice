@@ -281,3 +281,28 @@ def test_core_disabled_posterior_and_corr_includes_all_nonprior(isolated_db: Pat
     b = _seed_store(isolated_db)
     _, out = _run("core", "--min-posterior", "0.0", "--min-alpha-beta", "0")
     assert b["b-thin"].id in out
+
+
+# --- scenario 9: defensive — α+β==0 must not crash sort ----------------------
+
+
+def test_core_zero_alpha_beta_does_not_crash(isolated_db: Path) -> None:
+    """Belief with alpha=beta=0 must not raise ZeroDivisionError in sort path."""
+    s = MemoryStore(str(isolated_db))
+    try:
+        s.insert_belief(
+            _make_belief("b0zeroab0000000000", "zero ab edge case", alpha=0.0, beta=0.0),
+        )
+        s.insert_belief(
+            _make_belief(
+                "b0postlive00000000",
+                "live posterior",
+                alpha=4.0,
+                beta=1.0,
+            ),
+        )
+    finally:
+        s.close()
+    code, out = _run("core")
+    assert code == 0
+    assert "b0postlive00000000" in out
