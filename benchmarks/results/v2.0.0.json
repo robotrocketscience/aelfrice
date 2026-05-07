@@ -1,0 +1,29 @@
+{
+  "schema_version": 2,
+  "label": "v2.0.0 canonical (skeleton — pending first calibration pass)",
+  "captured_at_utc": null,
+  "git_commit": null,
+  "aelfrice_version": "2.0.0",
+  "harness_version": "1",
+  "headline_cut": {
+    "mab": [
+      {"sub_key": "Conflict_Resolution", "args": ["--split", "Conflict_Resolution"]},
+      {"sub_key": "Test_Time_Learning", "args": ["--split", "Test_Time_Learning"]},
+      {"sub_key": "Long_Range_Understanding", "args": ["--split", "Long_Range_Understanding"]},
+      {"sub_key": "Accurate_Retrieval", "args": ["--split", "Accurate_Retrieval"]}
+    ],
+    "locomo": [{"sub_key": null, "args": []}],
+    "longmemeval": [{"sub_key": null, "args": []}],
+    "structmemeval": [
+      {"sub_key": "location", "args": ["--task", "location", "--bench", "big"]},
+      {"sub_key": "accounting", "args": ["--task", "accounting", "--bench", "big"]},
+      {"sub_key": "recommendations", "args": ["--task", "recommendations", "--bench", "big"]},
+      {"sub_key": "tree", "args": ["--task", "tree", "--bench", "big"]}
+    ],
+    "amabench": [{"sub_key": null, "args": []}]
+  },
+  "metric_overrides": {},
+  "results": {},
+  "_calibration_pass_required": true,
+  "_calibration_protocol": "scripts/calibrate_canonical.md (TBD) — operator runs `aelf bench all --canonical --out benchmarks/results/v2.0.0.json` three or more times against the full data dirs (HF datasets cached, /tmp/LoCoMo and /tmp/StructMemEval populated, ANTHROPIC_API_KEY set if LLM-judge metrics are in scope), takes the observed range × 1.5 as the per-metric override band, and replaces this skeleton with the result. The harness validates schema_version=2 on read, so a v1 file would be rejected."
+}
