@@ -54,15 +54,27 @@ def test_verify_clean_rejects_missing_file(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "target",
-    ["mab", "locomo", "longmemeval", "structmemeval", "amabench", "all"],
+    ["mab", "locomo", "longmemeval", "structmemeval", "amabench"],
 )
 def test_aelf_bench_inert_targets_exit_2_with_pointer(target: str) -> None:
     """Each scaffolded but not-yet-runnable target exits 2 with a
-    pointer to benchmarks/README.md so users know where to look."""
+    pointer to benchmarks/README.md so users know where to look.
+
+    `all` is no longer in this list — it dispatches via
+    benchmarks.run.main_all() per the v2.0 reproducibility harness
+    (#437). See test_aelf_bench_all_requires_out below.
+    """
     code, output = _run_cli("bench", target)
     assert code == 2
     assert "benchmarks/README.md" in output
     assert target in output
+
+
+def test_aelf_bench_all_requires_out() -> None:
+    """`aelf bench all` without --out exits 2 with a clear message (#437)."""
+    code, output = _run_cli("bench", "all")
+    assert code == 2
+    assert "--out PATH is required" in output
 
 
 def test_aelf_bench_unknown_target_exits_2() -> None:
