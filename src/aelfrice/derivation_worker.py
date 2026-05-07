@@ -40,7 +40,9 @@ Design properties:
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from typing import Final
 
 from aelfrice.derivation import DerivationInput, derive
 from aelfrice.models import (
@@ -73,6 +75,30 @@ _CORROBORATION_BY_SOURCE_KIND: dict[str, str] = {
 _META_CALL_SITE: str = "call_site"
 _META_OVERRIDE_BELIEF_TYPE: str = "override_belief_type"
 _META_SOURCE_PATH_HASH: str = "source_path_hash"
+
+# v2.x #265 view-flip flag. Default off. When on, `beliefs` becomes a
+# materialized view of `ingest_log` and direct `insert_belief()` calls
+# from outside the derivation worker raise. The flag itself is wired
+# here in PR-A and consumed by PR-B (insert_belief gating) + PR-C
+# (`aelf rebuild` re-derive). Reading inline matches the pattern used
+# by AELFRICE_BFS / AELFRICE_BM25F / AELFRICE_HEAT_KERNEL in retrieval.py.
+ENV_WRITE_LOG_AUTHORITATIVE: Final[str] = "AELFRICE_WRITE_LOG_AUTHORITATIVE"
+_ENV_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
+
+
+def is_write_log_authoritative(env: dict[str, str] | None = None) -> bool:
+    """Return True iff `AELFRICE_WRITE_LOG_AUTHORITATIVE` is set truthy.
+
+    Two-state (vs the tri-state pattern used by AELFRICE_BFS) because
+    no kwarg / TOML precedence layer exists for this flag — env is the
+    only signal. Default off; any unset / unrecognised value is off.
+    `env` is `os.environ`-like; `None` reads the live process env.
+    """
+    src = os.environ if env is None else env
+    raw = src.get(ENV_WRITE_LOG_AUTHORITATIVE)
+    if raw is None:
+        return False
+    return raw.strip().lower() in _ENV_TRUTHY
 
 
 @dataclass(frozen=True)
