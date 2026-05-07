@@ -2,7 +2,7 @@
 
 Spec for issue [#437](https://github.com/robotrocketscience/aelfrice/issues/437). The ship-gate for v2.0: on a fresh clone, `uv sync && aelf bench all` reproduces every published headline number within documented tolerance bands.
 
-Status: spec, no implementation. Recommendation included; decision is the user's.
+Status: **ratified 2026-05-06**. All eight design asks below resolved against the recommendations except #2 (headline cut), where the operator overrode "sized headline cut" with "full benchmarks (no sized cut)". See § Ratification at the bottom for the resolved set and the implications of the override.
 
 ## What's being decided
 
@@ -188,3 +188,45 @@ Estimated effort: ~250 LOC dispatcher + harness, ~150 LOC tests, ~80 LOC CI work
 - Existing baseline: `benchmarks/results/v1.2.0-pre.json` (schema_v1; supersedes-on-merge).
 - Existing adapters: `benchmarks/{mab,locomo,longmemeval,structmemeval,amabench}_adapter.py` — already consumed `aelfrice.ingest.ingest_turn` + `aelfrice.retrieval.retrieve_v2`; no API change needed for the harness.
 - Adjacent: #438 (correction-detection eval, nominally one of the suites this harness runs once it spec'd ratifies).
+
+## Ratification
+
+Ratified 2026-05-06 by the operator. Resolved set:
+
+| # | Decision | Choice | vs Recommendation |
+|---|----------|--------|-------------------|
+| 1 | CLI shape | `aelf bench` subcommand | Same |
+| 2 | What "all" means | **Full benchmarks (no sized cut)** | **Override**: spec recommended sized headline cut; operator picked full |
+| 3 | Schema version | `schema_version: 2` | Same |
+| 4 | Tolerance bands | Relative-with-floor (±X% per metric, ±2pp absolute floor) | Same |
+| 5 | CI shape | Two-tier: nightly canonical + PR smoke | Same |
+| 6 | Missing data dirs | Skip with `status: skipped_data_missing` (exit 2) | Same |
+| 7 | LLM-judge cadence | Manual local run (off by default in CI) | Same |
+| 8 | README badge | Static, committed by cron | Same |
+
+### Implications of the #2 override (full benchmarks)
+
+The original headline-cut table is superseded by:
+
+| Adapter | Cut | Notes |
+|---------|-----|-------|
+| MAB | All four splits, full | Same as spec |
+| LoCoMo | Full (all 10 conversations) | Spec said 10; full happens to be 10. No change. |
+| LongMemEval | Full dataset (not oracle subset) | **Increased** vs spec (oracle was the recommended cut) |
+| StructMemEval | `--bench big` across all 4 tasks | **~10× runtime** vs spec's `small_bench` |
+| AMA-Bench | Full 208 episodes | Same as spec |
+
+Cron runtime is multi-hour rather than the spec's tens of minutes. Trade-off: stronger reproducibility claim, no "we only validate a subset" caveat in the README.
+
+The PR-smoke tier (`aelf bench mab --subset 5 + amabench --max-episodes 5`) is unchanged — still ≤2 minutes wall-clock — because the override is about the canonical cron, not the smoke signal.
+
+### Implementation order
+
+1. Capture this ratification (this commit).
+2. Dispatcher: `benchmarks/run.py` + `_cmd_bench_all` extension to `src/aelfrice/cli.py`. Subprocess each adapter; never tight-couple to adapter internals.
+3. Tolerance module: `benchmarks/tolerance.py` — relative-with-floor, per-metric overrides, in-band/warn/fail classification.
+4. Tests for dispatcher and tolerance module.
+5. PR smoke: `tests/fixtures/bench_smoke/` pinned fixtures + `ci.yml` smoke job.
+6. Nightly cron: `.github/workflows/bench-canonical.yml` — pushes `v2.0.0-cron-<date>.json` to a `benchmark-results` branch (sidesteps the `main` branch ruleset; orthogonal to the cron-push problem in #461 which is for `replay-soak`).
+7. Docs: README badge + `## Reproducibility` section, `docs/COMMANDS.md` entry, `docs/LIMITATIONS.md` caveat removal.
+8. Skeleton `benchmarks/results/v2.0.0.json` (schema-v2) with TBD numbers; calibration pass (acceptance #2 from the issue body) is a separate operator action — `aelf bench all --canonical` run locally with all data dirs present.
