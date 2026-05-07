@@ -89,6 +89,35 @@ _WH_QUESTION_LEADING = re.compile(
     re.IGNORECASE,
 )
 
+# Path A intent-prefix filter (issue #374, ratified 2026-05-07). Imperative
+# coding-task verbs in head position read as one-shot session tasks
+# ("Refactor X so it never blocks", "Add a test that ensures …"), not durable
+# rules. They short-circuit to False even when a downstream imperative-verb
+# match would otherwise fire.
+_CODING_TASK_PREFIX_VERBS: tuple[str, ...] = (
+    "refactor", "add", "implement", "write", "create", "update",
+    "fix", "make", "build", "remove", "rename", "extract",
+    "merge", "split", "move", "delete",
+)
+_CODING_TASK_PREFIX_PATTERN = re.compile(
+    r"^\s*(?:" + "|".join(_CODING_TASK_PREFIX_VERBS) + r")\b",
+    re.IGNORECASE,
+)
+
+# Rule-marker connectives — re-enable directive classification when a
+# coding-task prefix is present but the sentence still encodes a durable rule
+# ("Refactor X so it never blocks as a rule"). Empty per the #374 ratification:
+# the prefix always wins on first iteration; expand only with corpus evidence.
+_RULE_MARKER_CONNECTIVES: tuple[str, ...] = ()
+_RULE_MARKER_PATTERN: re.Pattern[str] | None = (
+    re.compile(
+        r"\b(?:" + "|".join(re.escape(c) for c in _RULE_MARKER_CONNECTIVES) + r")\b",
+        re.IGNORECASE,
+    )
+    if _RULE_MARKER_CONNECTIVES
+    else None
+)
+
 
 def detect_directive(text: str) -> bool:
     """Return True if `text` reads as a durable imperative directive.
@@ -98,7 +127,8 @@ def detect_directive(text: str) -> bool:
       2. Questions (leading interrogative or trailing '?') → False.
       3. Reported-speech / habitual narration ("I never X when Y") → False.
       4. Hedged statements ("maybe", "I think", …) → False.
-      5. Otherwise: True iff any imperative verb appears.
+      5. Coding-task imperative prefix without a rule-marker connective → False.
+      6. Otherwise: True iff any imperative verb appears.
     """
     if not text or not text.strip():
         return False
@@ -111,4 +141,7 @@ def detect_directive(text: str) -> bool:
         return False
     if _HEDGE_PATTERN.search(stripped):
         return False
+    if _CODING_TASK_PREFIX_PATTERN.match(stripped):
+        if _RULE_MARKER_PATTERN is None or not _RULE_MARKER_PATTERN.search(stripped):
+            return False
     return _VERB_PATTERN.search(stripped) is not None
