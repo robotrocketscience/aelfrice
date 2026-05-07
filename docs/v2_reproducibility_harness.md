@@ -2,7 +2,7 @@
 
 Spec for issue [#437](https://github.com/robotrocketscience/aelfrice/issues/437). The ship-gate for v2.0: on a fresh clone, `uv sync && aelf bench all` reproduces every published headline number within documented tolerance bands.
 
-Status: **ratified 2026-05-06**. All eight design asks below resolved against the recommendations except #2 (headline cut), where the operator overrode "sized headline cut" with "full benchmarks (no sized cut)". See § Ratification at the bottom for the resolved set and the implications of the override.
+Status: **ratified 2026-05-06; first calibration pass 2026-05-07 (partial)**. All eight design asks below resolved against the recommendations except #2 (headline cut), where the operator overrode "sized headline cut" with "full benchmarks (no sized cut)". See § Ratification and § First calibration pass at the bottom.
 
 ## What's being decided
 
@@ -230,3 +230,35 @@ The PR-smoke tier (`aelf bench mab --subset 5 + amabench --max-episodes 5`) is u
 6. Nightly cron: `.github/workflows/bench-canonical.yml` — pushes `v2.0.0-cron-<date>.json` to a `benchmark-results` branch (sidesteps the `main` branch ruleset; orthogonal to the cron-push problem in #461 which is for `replay-soak`).
 7. Docs: README badge + `## Reproducibility` section, `docs/COMMANDS.md` entry, `docs/LIMITATIONS.md` caveat removal.
 8. Skeleton `benchmarks/results/v2.0.0.json` (schema-v2) with TBD numbers; calibration pass (acceptance #2 from the issue body) is a separate operator action — `aelf bench all --canonical` run locally with all data dirs present.
+
+## First calibration pass — 2026-05-07
+
+`aelf bench all --canonical` ran end-to-end at the full cut against the local source checkout. Total wall: ~33 min. 6 of 11 invocations succeeded, 5 failed.
+
+| Invocation | Status | Wall | Notes |
+|---|---|---|---|
+| `mab/Conflict_Resolution` | ok | 83s | f1 = 0.0065, substring_em = 0.7025, n=800 |
+| `mab/Test_Time_Learning` | ok | 452s | f1 = 0.0001, substring_em = 0.0929, n=700 |
+| `mab/Long_Range_Understanding` | ok | 540s | f1 = 0.1811, substring_em = 0.0234, n=171 |
+| `mab/Accurate_Retrieval` | ok | 542s | f1 = 0.0106, substring_em = 0.1530, n=2000 |
+| `locomo/_` | error | 1s | `/tmp/LoCoMo` data dir absent |
+| `longmemeval/_` | ok | 71s | retrieval-only (no LLM-judge); avg_beliefs/q=49.15, avg_latency=7.8 ms, n=500 |
+| `structmemeval/{location,accounting,recommendations,tree}` | error ×4 | <1s each | `/tmp/StructMemEval` absent — adapter exited 0 but wrote no JSON (open question: should the adapter exit 2 here per the ratified contract?) |
+| `amabench/_` | ok | 267s | 208 episodes / 2496 QA pairs ingested; per-question scoring not surfaced as summary metric (adapter-side aggregation gap) |
+
+The skeleton `benchmarks/results/v2.0.0.json` is replaced by the partial result; per-metric override bands (3+ runs × 1.5 spread) are **not** calibrated yet and stay at the relative-with-floor defaults until a follow-up multi-run pass.
+
+### Findings against the harness
+
+Three dispatcher-level fixes shipped in the same PR as a result of this pass:
+
+1. **Per-row `per_question` lists stripped from the merged JSON.** Raw output was 37 MB (6,667 rows across 6 adapters); summary is 6.5 KB. Per-row scores stay in the adapter's own `--output` write, not in the canonical contract.
+2. **Dispatcher metadata underscore-prefixed.** `_status` / `_elapsed_sec` / `_error_message` so `tolerance.check_report` skips them on the band walk. Without this, `_elapsed_sec` (varies every run) would FAIL every band-check by definition.
+3. **`benchmarks/` is dev-only** (per `pyproject.toml`); `aelf bench all` requires a source checkout. cli.py now detects cwd, pushes onto `sys.path`, and emits a clear pointer if invoked from an installed-only context.
+
+### Open from this pass (out of scope for first ship)
+
+- Adapters don't honor the `exit-code 2 = skipped_data_missing` contract from § External-dependency policy. Today `LoCoMo` exits 1 and `StructMemEval` exits 0-without-output. Per-adapter fix lands as small follow-ups.
+- AMA-Bench output exposes `total_episodes` / `total_qa` / `domain_counts` / `type_counts` but not aggregate F1 / EM. Adapter-side aggregation is the right place; harness can't compute it without scoring logic.
+- LongMemEval scoring requires the LLM-judge pass (`aelf bench score-judge --in <path>`); structural retrieval metrics are what the canonical captures today.
+- Local-machine error messages still leak absolute paths (sanitized on this commit by hand). CI runs from `/home/runner/...` so the cron path doesn't carry that risk; manual operator runs should sanitize before commit (or wire dispatcher-side path scrubbing as a follow-up).
