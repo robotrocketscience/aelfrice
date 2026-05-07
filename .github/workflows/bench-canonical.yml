@@ -1,0 +1,133 @@
+name: Bench Canonical
+
+# v2.0 reproducibility harness nightly cron (#437 deliverable C).
+#
+# Runs `aelf bench all` at the canonical headline cut (full per the
+# 2026-05-06 ratification — LongMemEval full, StructMemEval --bench
+# big, all 11 invocations). Writes the merged JSON to the dedicated
+# `bench-canonical-results` branch and band-checks against
+# `benchmarks/results/v2.0.0.json` from main.
+#
+# Why a dedicated branch (not `main`):
+# same rationale as `replay-soak.yml` after #461 — the `main` ruleset
+# blocks unsigned bot pushes and direct pushes. `bench-canonical-results`
+# is unconstrained, which lets the cron commit cron snapshots without
+# a long-lived signing key.
+#
+# Runtime budget: spec says multi-hour at the full cut. `timeout-minutes`
+# is 360 (6h) to leave headroom; the operator can tune down once a few
+# real cron entries land.
+
+on:
+  schedule:
+    # 05:00 UTC daily — staggered after `replay-soak` (04:00) so a
+    # single GitHub Actions runner pool doesn't see two long-running
+    # crons concurrent.
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+    # Manual trigger lets the operator force a cron entry mid-day
+    # after a deliberate canonical re-run.
+
+permissions:
+  contents: write
+  # `contents: write` so the cron can push to `bench-canonical-results`.
+
+concurrency:
+  group: bench-canonical
+  cancel-in-progress: false
+
+jobs:
+  canonical:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dev group
+        run: uv sync --frozen --group dev --extra archive
+
+      - name: Bootstrap bench-canonical-results worktree
+        run: |
+          set -euo pipefail
+          # Fetch the dedicated branch; create empty if first run.
+          if git ls-remote --exit-code origin bench-canonical-results > /dev/null 2>&1; then
+            git fetch origin bench-canonical-results:refs/remotes/origin/bench-canonical-results
+            git worktree add .bench-results-branch \
+              -B bench-canonical-results origin/bench-canonical-results
+          else
+            git worktree add --orphan -b bench-canonical-results .bench-results-branch
+            (cd .bench-results-branch && git rm -rf . 2>/dev/null || true)
+          fi
+
+      - name: Run aelf bench all --canonical
+        id: bench
+        run: |
+          set -euo pipefail
+          today=$(date -u +%Y-%m-%d)
+          out=".bench-results-branch/v2.0.0-cron-${today}.json"
+          # `--canonical` so the dispatcher refuses if the cut doesn't
+          # match CANONICAL_INVOCATIONS. The merged JSON's label still
+          # reads `v2.0.0 cron <ts>` (canonical-vs-cron is by filename,
+          # not by --canonical flag inside the run).
+          uv run aelf bench all --canonical --out "${out}"
+          echo "out=${out}" >> "$GITHUB_OUTPUT"
+        # Continue on band-check failure so we still commit the cron
+        # entry; `Band-check` step below sets the actual job status.
+        continue-on-error: true
+
+      - name: Band-check vs canonical
+        id: bandcheck
+        if: hashFiles(steps.bench.outputs.out) != ''
+        run: |
+          set -euo pipefail
+          uv run python -c "
+          import json, sys
+          from pathlib import Path
+          from benchmarks import tolerance
+          cano = tolerance.load_report(Path('benchmarks/results/v2.0.0.json'))
+          obs = tolerance.load_report(Path('${{ steps.bench.outputs.out }}'))
+          checks = tolerance.check_report(cano, obs)
+          overall, counts = tolerance.summarize(checks)
+          print(f'overall: {overall.value}; counts: {counts}')
+          for c in checks:
+              if c.verdict.value != 'pass':
+                  print(f'  {\"/\".join(c.path)}: {c.verdict.value} — {c.note}')
+          sys.exit(0 if overall.value == 'pass' else (1 if overall.value == 'fail' else 0))
+          "
+
+      - name: Commit + push to bench-canonical-results
+        env:
+          GIT_AUTHOR_NAME: aelfrice-bench-bot
+          GIT_AUTHOR_EMAIL: aelfrice-bench-bot@users.noreply.github.com
+          GIT_COMMITTER_NAME: aelfrice-bench-bot
+          GIT_COMMITTER_EMAIL: aelfrice-bench-bot@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          cd .bench-results-branch
+          if git status --porcelain | grep -q .; then
+            today=$(date -u +%Y-%m-%d)
+            git add -A
+            git commit -m "audit(bench-canonical): ${today} entry"
+            git push origin HEAD:bench-canonical-results
+          else
+            echo "no bench-canonical delta to commit"
+          fi
+
+      - name: Fail job if band-busting regression
+        if: steps.bandcheck.outcome == 'failure'
+        run: |
+          echo "::error::bench-canonical detected a band-busting regression vs benchmarks/results/v2.0.0.json"
+          exit 1
