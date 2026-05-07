@@ -3619,12 +3619,14 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_core.add_argument(
         "--min-corroboration", type=int, default=_CORE_MIN_CORROBORATION,
         metavar="N",
-        help="corroboration_count threshold (default 2; 0 disables)",
+        help="corroboration_count threshold (default 2; lower to widen "
+             "lens — 0 admits any non-negative count)",
     )
     p_core.add_argument(
         "--min-posterior", type=float, default=_CORE_MIN_POSTERIOR,
         metavar="FLOAT",
-        help="posterior-mean threshold (default 2/3; 0.0 disables)",
+        help="posterior-mean threshold (default 2/3; lower to widen "
+             "lens — 0.0 admits any belief that passes --min-alpha-beta)",
     )
     p_core.add_argument(
         "--min-alpha-beta", type=int, default=_CORE_MIN_ALPHA_BETA,
