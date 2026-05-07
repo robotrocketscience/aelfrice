@@ -13,7 +13,7 @@
 [![CI](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml/badge.svg)](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml)
 [![OSSInsight](https://img.shields.io/badge/OSSInsight-analytics-blue)](https://ossinsight.io/analyze/robotrocketscience/aelfrice)
 <!-- bench-canonical-badge:start -->
-[![Reproducibility](https://img.shields.io/badge/reproducibility-pending%20first%20canonical%20run-lightgrey)](docs/v2_reproducibility_harness.md)
+[![Reproducibility](https://img.shields.io/badge/reproducibility-partial%20%286%2F11%20adapters%29-yellow)](docs/v2_reproducibility_harness.md)
 <!-- bench-canonical-badge:end -->
 
 You correct your agent. *"Got it,"* it says. Next session, same mistake.
