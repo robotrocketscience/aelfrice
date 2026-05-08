@@ -298,9 +298,31 @@ Precedence (first decisive wins): env var `AELFRICE_HEAT_KERNEL=0`/`1` > explici
 
 ### `use_hrr_structural`
 
-Boolean, default `false`, opt-in. Enables the HRR structural-query lane (#152). Like `use_heat_kernel`, the lane is implemented and stays opt-in pending the #154 benchmark gate.
+Boolean, default `false`, opt-in. Enables the HRR structural-query lane (#152). Wired into `retrieve_v2` as a parallel routing branch (per spec: not blended with the textual lane). When on, `retrieve_v2` parses the query for a structural marker before any other rewrite or lane fans out:
 
-Precedence (first decisive wins): env var `AELFRICE_HRR_STRUCTURAL=0`/`1` > explicit Python kwarg > TOML `[retrieval] use_hrr_structural` > default `false`.
+```
+query string -> parse_structural_marker
+              hit:  HRRStructIndex.probe(kind, target_id) -> RetrievalResult
+              miss: textual lane (vocab-bridge rewrite, then BM25F + heat-kernel + BFS)
+```
+
+A marker is a leading uppercase edge-type token followed by `:` and a non-empty target belief id. Recognised kinds match `aelfrice.models.EDGE_TYPES` (currently `SUPPORTS`, `CITES`, `RELATES_TO`, `SUPERSEDES`, `CONTRADICTS`, `DERIVED_FROM`). Case-sensitive: `contradicts:b/abc` does not match and falls through to the textual lane on the literal string. Whitespace inside the target is preserved; leading/trailing whitespace on the query is stripped.
+
+Examples:
+
+| Query | Routes to | Returns |
+|---|---|---|
+| `CONTRADICTS:b/abc` | structural lane | beliefs whose outgoing edge of kind `CONTRADICTS` targets `b/abc`, ranked by HRR probe score |
+| `SUPPORTS:b/xyz` | structural lane | beliefs that `SUPPORTS` `b/xyz` |
+| `contradicts everything` | textual lane | BM25 over the literal string |
+| `CONTRADICTS: ` (empty target) | textual lane (marker rejected by regex) | BM25 over the literal string |
+| `CONTRADICTS:nonexistent_id` | textual lane (marker parsed but probe finds no edges) | BM25 over the literal string |
+
+On structural lane hit, locked beliefs (when `include_locked=True`) pin to the head of the result and bypass the budget per the existing public-API contract; HRR-ranked beliefs are appended in score-descending order until the token budget is exhausted. Beliefs already in the locked set are de-duped from the HRR tail.
+
+Long-running consumers should pass an explicit `hrr_struct_index_cache: HRRStructIndexCache | None` to amortise the per-belief HRR encode cost across queries. None falls through to a fresh build per call. The cache subscribes to the store's invalidation registry so any belief / edge mutation drops the index transparently.
+
+Precedence (first decisive wins): env var `AELFRICE_HRR_STRUCTURAL=0`/`1` > explicit Python kwarg `use_hrr_structural=<bool>` > TOML `[retrieval] use_hrr_structural` > default `false`. The default-on flip is gated on the #154 composition-tracker bench (currently 7/11 per #474).
 
 ### `use_type_aware_compression`
 
