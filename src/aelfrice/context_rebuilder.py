@@ -1529,9 +1529,7 @@ def main(
     trace to stderr (the bash hook wrapper appends stderr to
     `~/.aelfrice/logs/hook-failures.log`).
     """
-    # Imported here to avoid circular import at module load
-    # (cli imports context_rebuilder for `aelf rebuild`).
-    from aelfrice.cli import db_path  # noqa: PLC0415  # pyright: ignore[reportPrivateUsage]
+    from aelfrice.db_paths import db_path
 
     sin = stdin if stdin is not None else sys.stdin
     sout = stdout if stdout is not None else sys.stdout

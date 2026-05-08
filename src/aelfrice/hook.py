@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import IO, Any, Final, cast
 
 try:
-    from aelfrice.cli import db_path
+    from aelfrice.db_paths import db_path
     from aelfrice.context_rebuilder import (
         TRIGGER_MODE_DYNAMIC,
         TRIGGER_MODE_MANUAL,

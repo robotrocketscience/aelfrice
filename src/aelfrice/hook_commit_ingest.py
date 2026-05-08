@@ -183,7 +183,7 @@ def _do_ingest(payload: dict[str, object]) -> None:
     body = _truncate_for_extraction(body)
 
     # Lazy imports: cold-start cost is paid only when we actually ingest.
-    from aelfrice.cli import db_path  # noqa: PLC0415  # pyright: ignore[reportPrivateUsage]
+    from aelfrice.db_paths import db_path  # noqa: PLC0415
     from aelfrice.store import MemoryStore  # noqa: PLC0415
     from aelfrice.triple_extractor import (  # noqa: PLC0415
         extract_triples, ingest_triples,

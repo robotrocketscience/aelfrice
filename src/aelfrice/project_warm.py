@@ -300,7 +300,7 @@ def _warm_store(project_root: Path) -> None:
     Imports are local to keep the module light when the warming side is
     never invoked (e.g., on `aelf --version`).
     """
-    from aelfrice.cli import db_path  # noqa: PLC0415  # pyright: ignore[reportPrivateUsage]
+    from aelfrice.db_paths import db_path  # noqa: PLC0415
     from aelfrice.store import MemoryStore  # noqa: PLC0415
 
     # `db_path()` reads cwd-derived state; project_root is the right cwd.

@@ -260,7 +260,7 @@ def tail_audit(
     sink: IO[str] = out if out is not None else sys.stdout
     flt = filters if filters is not None else []
     if audit_path is None:
-        from aelfrice.cli import db_path
+        from aelfrice.db_paths import db_path
         audit_path = _audit_path_for_db(db_path())
     rotated = audit_path.with_name(audit_path.name + AUDIT_ROTATED_SUFFIX)
 

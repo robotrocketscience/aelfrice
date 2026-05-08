@@ -69,12 +69,9 @@ def transcripts_dir() -> Path:
     override = os.environ.get("AELFRICE_TRANSCRIPTS_DIR")
     if override:
         return Path(override)
-    # Reuse cli's git-common-dir resolver so transcripts and the brain
-    # graph share the same project-identity logic. Marked private in
-    # cli.py for now; a follow-up will lift it to a util module.
-    from aelfrice.cli import _git_common_dir  # noqa: PLC0415  # pyright: ignore[reportPrivateUsage]
+    from aelfrice.db_paths import _git_common_dir  # noqa: PLC0415
 
-    git_dir = _git_common_dir()  # pyright: ignore[reportPrivateUsage]
+    git_dir = _git_common_dir()
     if git_dir is not None:
         return git_dir / "aelfrice" / TRANSCRIPTS_SUBDIR
     return LEGACY_TRANSCRIPTS_DIR

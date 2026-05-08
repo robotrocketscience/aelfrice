@@ -476,7 +476,7 @@ def emit_session_delta(
 
     own_store = store is None
     if own_store:
-        from aelfrice.cli import _open_store  # pyright: ignore[reportPrivateUsage]
+        from aelfrice.db_paths import _open_store
         store = _open_store()
 
     try:

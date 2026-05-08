@@ -619,7 +619,7 @@ def _do_search(
     # Lazy imports: cold-start cost is paid only when we actually search.
     # Guard against stale installs missing a runtime dep (issue #236).
     try:
-        from aelfrice.cli import db_path  # noqa: PLC0415  # pyright: ignore[reportPrivateUsage]
+        from aelfrice.db_paths import db_path  # noqa: PLC0415
         from aelfrice.retrieval import retrieve  # noqa: PLC0415
         from aelfrice.store import MemoryStore  # noqa: PLC0415
     except ImportError as _ie:

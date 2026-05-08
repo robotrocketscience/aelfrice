@@ -44,7 +44,7 @@ from aelfrice.classification import (
     accept_classifications,
     start_onboard_session,
 )
-from aelfrice.cli import db_path
+from aelfrice.db_paths import db_path
 from aelfrice.derivation import DerivationInput, derive
 from aelfrice.derivation_worker import run_worker
 from aelfrice.feedback import apply_feedback

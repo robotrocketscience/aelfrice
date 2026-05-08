@@ -165,41 +165,20 @@ from aelfrice.setup import (
     uninstall_transcript_ingest_hooks,
     uninstall_user_prompt_submit_hook,
 )
+from aelfrice.db_paths import (
+    DEFAULT_DB_DIR,
+    DEFAULT_DB_FILENAME,
+    _ensure_parent_dir,
+    _git_common_dir,
+    _open_store,
+    db_path,
+)
 from aelfrice.store import MemoryStore
 
-DEFAULT_DB_DIR: Final[Path] = Path.home() / ".aelfrice"
-DEFAULT_DB_FILENAME: Final[str] = "memory.db"
 DEFAULT_HOOK_COMMAND: Final[str] = "aelf-hook"
 DEFAULT_PRE_COMPACT_HOOK_COMMAND: Final[str] = "aelf-pre-compact-hook"
 _FEEDBACK_VALENCES: Final[dict[str, float]] = {"used": 1.0, "harmful": -1.0}
 _VALID_SCOPES: Final[tuple[SettingsScope, ...]] = ("user", "project")
-
-
-def _git_common_dir() -> Path | None:
-    """Absolute path of cwd's git-common-dir, or None when not in a repo.
-
-    Two worktrees of one repo share a --git-common-dir, so resolving
-    against this gives them a single shared DB. Returns None when cwd
-    is outside any git work-tree, when the `git` binary is missing, or
-    when the rev-parse call fails for any reason — callers fall back to
-    the home-dir path.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    raw = result.stdout.strip()
-    if not raw:
-        return None
-    return Path(raw).resolve()
 
 
 def _git_first_commit_age_days() -> int | None:
@@ -236,37 +215,6 @@ def _git_first_commit_age_days() -> int | None:
     now = datetime.now(first.tzinfo) if first.tzinfo else datetime.now()
     delta = now - first
     return max(0, delta.days)
-
-
-def db_path() -> Path:
-    """Resolve the DB path.
-
-    Resolution order:
-    1. $AELFRICE_DB (explicit override; honoured even inside a git repo).
-    2. <git-common-dir>/aelfrice/memory.db when cwd is in a git work-tree.
-    3. ~/.aelfrice/memory.db (legacy global fallback for non-git dirs).
-
-    The DB stays under .git/, which git does not track — the brain
-    graph never crosses the git boundary.
-    """
-    override = os.environ.get("AELFRICE_DB")
-    if override:
-        return Path(override)
-    git_dir = _git_common_dir()
-    if git_dir is not None:
-        return git_dir / "aelfrice" / DEFAULT_DB_FILENAME
-    return DEFAULT_DB_DIR / DEFAULT_DB_FILENAME
-
-
-def _ensure_parent_dir(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-
-def _open_store() -> MemoryStore:
-    p = db_path()
-    if str(p) != ":memory:":
-        _ensure_parent_dir(p)
-    return MemoryStore(str(p))
 
 
 def _utc_now_iso() -> str:
