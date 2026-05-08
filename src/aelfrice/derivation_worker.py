@@ -45,6 +45,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from aelfrice.derivation import DerivationInput, RouteOverrides, derive
+from aelfrice.doc_linker import ANCHOR_INGEST, file_uri_from_path
 from aelfrice.models import (
     CORROBORATION_SOURCE_CLI_REMEMBER,
     CORROBORATION_SOURCE_COMMIT_INGEST,
@@ -298,6 +299,19 @@ def _process_row(
     for edge in out.edges:
         store.insert_edge(edge)
         derived_edge_ids.append((edge.src, edge.dst, edge.type))
+
+    # #435 doc-linker. When source_path is materialised on the ingest
+    # row, write a belief↔document anchor. Idempotent on (belief_id,
+    # doc_uri) at the storage layer, so re-derive of the same row is a
+    # no-op. Skip when source_path is None (transcript-ingest, lock /
+    # remember without --doc, etc.) per spec § "Linker invocation point".
+    if inp.source_path:
+        store.link_belief_to_document(
+            belief_id=actual_id,
+            doc_uri=file_uri_from_path(inp.source_path),
+            anchor_type=ANCHOR_INGEST,
+            position_hint=None,
+        )
 
     store.update_ingest_derived_ids(
         log_id,
