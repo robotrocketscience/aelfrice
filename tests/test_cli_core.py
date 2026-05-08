@@ -131,13 +131,13 @@ def test_core_tag_block_lock(isolated_db: Path) -> None:
 
 
 def test_core_tag_block_corr(isolated_db: Path) -> None:
-    b = _seed_store(isolated_db)
+    _seed_store(isolated_db)
     _, out = _run("core")
     assert "CORR=3" in out
 
 
 def test_core_tag_block_posterior(isolated_db: Path) -> None:
-    b = _seed_store(isolated_db)
+    _seed_store(isolated_db)
     _, out = _run("core")
     assert "μ=0.800" in out
 
