@@ -67,6 +67,7 @@ from aelfrice.bfs_multihop import (
     expand_bfs,
 )
 from aelfrice.bm25 import BM25IndexCache
+from aelfrice.compression import CompressedBelief, compress_for_retrieval
 from aelfrice.entity_extractor import extract_entities
 from aelfrice.graph_spectral import (
     DEFAULT_BM25_SEED_TOP_K,
@@ -79,7 +80,7 @@ from aelfrice.graph_spectral import (
     heat_kernel_score,
     seeds_from_bm25,
 )
-from aelfrice.models import LOCK_NONE, Belief
+from aelfrice.models import LOCK_NONE, LOCK_USER, Belief
 from aelfrice.scoring import (
     DEFAULT_POSTERIOR_WEIGHT,
     partial_bayesian_score,
@@ -130,6 +131,12 @@ SIGNED_LAPLACIAN_FLAG: Final[str] = "use_signed_laplacian"
 HEAT_KERNEL_FLAG: Final[str] = "use_heat_kernel"
 POSTERIOR_RANKING_FLAG: Final[str] = "use_posterior_ranking"
 HRR_STRUCTURAL_FLAG: Final[str] = "use_hrr_structural"
+# v2.1 #434 type-aware compression flag. Default-OFF at v2.0.0 until the
+# lab-side bench gate (A2 + A4 in docs/feature-type-aware-compression.md)
+# clears. ON populates RetrievalResult.compressed_beliefs with per-belief
+# CompressedBelief renderings; OFF leaves the field empty for byte-identical
+# behavior with v1.x adapters.
+TYPE_AWARE_COMPRESSION_FLAG: Final[str] = "use_type_aware_compression"
 
 PLACEHOLDER_FLAGS: Final[tuple[str, ...]] = (
     SIGNED_LAPLACIAN_FLAG,
@@ -154,6 +161,8 @@ ENV_BM25F: Final[str] = "AELFRICE_BM25F"
 ENV_HEAT_KERNEL: Final[str] = "AELFRICE_HEAT_KERNEL"
 # v1.7.0 HRR structural-query env override. Tri-state like ENV_BM25F.
 ENV_HRR_STRUCTURAL: Final[str] = "AELFRICE_HRR_STRUCTURAL"
+# v2.1 #434 type-aware compression env override. Tri-state.
+ENV_TYPE_AWARE_COMPRESSION: Final[str] = "AELFRICE_TYPE_AWARE_COMPRESSION"
 # v1.3.0 posterior-weight env override. Float-typed; "0.0" is the
 # only value that fully disables (collapsing to BM25-only ordering).
 # Empty / non-numeric values fall through to the next precedence
@@ -215,6 +224,13 @@ class RetrievalResult:
     entity_hits: list[str] = field(default_factory=lambda: [])
     locked_ids: list[str] = field(default_factory=lambda: [])
     l1_ids: list[str] = field(default_factory=lambda: [])
+    # v2.1 #434 type-aware compression. Populated when
+    # use_type_aware_compression resolves True. Same length and order as
+    # `beliefs` (parallel field — consumers that want compressed render
+    # read this; consumers that want raw Belief keep reading `beliefs`).
+    # Default-empty preserves byte-identical v1.x adapter behavior when
+    # the flag is OFF.
+    compressed_beliefs: list[CompressedBelief] = field(default_factory=lambda: [])
 
 
 def _estimate_tokens(text: str) -> int:
@@ -294,6 +310,21 @@ def _env_hrr_structural_override() -> bool | None:
     recognised truthy/falsy value, else None. Symmetric to
     `_env_bm25f_override`."""
     raw = os.environ.get(ENV_HRR_STRUCTURAL)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def _env_type_aware_compression_override() -> bool | None:
+    """Return True/False if AELFRICE_TYPE_AWARE_COMPRESSION is set to a
+    recognised truthy/falsy value, else None. Symmetric to
+    `_env_bm25f_override`."""
+    raw = os.environ.get(ENV_TYPE_AWARE_COMPRESSION)
     if raw is None:
         return None
     norm = raw.strip().lower()
@@ -700,6 +731,32 @@ def is_hrr_structural_enabled(
     if explicit is not None:
         return explicit
     toml_value = _read_toml_flag_for(HRR_STRUCTURAL_FLAG, start)
+    if toml_value is not None:
+        return toml_value
+    return False
+
+
+def resolve_use_type_aware_compression(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the type-aware compression flag (#434).
+
+    Precedence (first decisive wins):
+      1. AELFRICE_TYPE_AWARE_COMPRESSION env var (truthy / falsy normalised).
+      2. Explicit `explicit` kwarg from the caller.
+      3. `[retrieval] use_type_aware_compression` in `.aelfrice.toml`.
+      4. Default: False — ships behind the flag at v2.0.0; the bench gate
+         (A2 + A4 in docs/feature-type-aware-compression.md) flips the
+         default after lab-side benchmark evidence clears.
+    """
+    env = _env_type_aware_compression_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    toml_value = _read_toml_flag_for(TYPE_AWARE_COMPRESSION_FLAG, start)
     if toml_value is not None:
         return toml_value
     return False
@@ -1404,6 +1461,7 @@ def retrieve_v2(
     bm25f_cache: BM25IndexCache | None = None,
     temporal_sort: bool = False,
     temporal_half_life_seconds: float | None = None,
+    use_type_aware_compression: bool | None = None,
 ) -> RetrievalResult:
     """Lab-compatible retrieval wrapper for academic-suite adapters.
 
@@ -1473,12 +1531,21 @@ def retrieve_v2(
     if temporal_sort:
         half_life = resolve_temporal_half_life(temporal_half_life_seconds)
         beliefs = _apply_temporal_decay(beliefs, half_life)
+
+    compressed: list[CompressedBelief] = []
+    if resolve_use_type_aware_compression(use_type_aware_compression):
+        compressed = [
+            compress_for_retrieval(b, locked=(b.lock_level == LOCK_USER))
+            for b in beliefs
+        ]
+
     return RetrievalResult(
         beliefs=beliefs,
         entity_hits=l25_ids_list,
         locked_ids=locked_ids_list,
         l1_ids=l1_ids_list,
         bfs_chains=bfs_chains,
+        compressed_beliefs=compressed,
     )
 
 
