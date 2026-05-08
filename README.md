@@ -40,13 +40,11 @@ That's it. Your next prompt that mentions "push" already has the rule attached. 
 
 ## What it does
 
-When you submit a prompt in Claude Code, aelfrice's `UserPromptSubmit` hook fires before the model sees your message. It runs a layered retrieval:
+When you submit a prompt in Claude Code, aelfrice's `UserPromptSubmit` hook fires before the model sees your message. It runs a two-layer search:
 
 ```
-L0:   locked beliefs   -> rules you marked permanent (always returned)
-L2.5: entity index     -> deterministic proper-noun matches (default-on)
-L1:   FTS5 + BM25F     -> full-text + anchor-augmented BM25 (default-on since v1.7)
-L3:   BFS multi-hop    -> graph traversal over belief edges (opt-in)
+L0: locked beliefs   -> rules you marked permanent (always returned)
+L1: FTS5 keyword     -> SQLite full-text search, BM25-ranked
 ```
 
 The matching beliefs come back as an `<aelfrice-memory>` block prepended to your prompt. The agent reads it as part of the prompt — it doesn't have to remember to check a file.
@@ -61,7 +59,7 @@ The matching beliefs come back as an `<aelfrice-memory>` block prepended to your
 push the release
 ```
 
-Default budget is 2,400 tokens per prompt. Locked beliefs are the always-injected pool — every lock ships on every prompt, in full, regardless of relevance score. **Lock count is your baseline-context budget knob:** if you've locked 200 things, every session opens with all 200, by your design. The non-locked pool (L2.5 entity hits + L1 BM25F) is ranked and truncated to fit.
+Default budget is 2,400 tokens per prompt. Locked beliefs are the always-injected pool — every lock ships on every prompt, in full, regardless of relevance score. **Lock count is your baseline-context budget knob:** if you've locked 200 things, every session opens with all 200, by your design. The non-locked pool (FTS/L1) is BM25-ranked and truncated to fit.
 
 ---
 
