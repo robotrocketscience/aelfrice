@@ -9,7 +9,7 @@ This is the reference for power users whose project has a documentation idiom or
 A single optional TOML file at the root of a project (or any ancestor). It exposes two power-user surfaces:
 
 - `[noise]` — onboard-time belief filter. Changes how `aelf onboard` ingests beliefs; nothing else.
-- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. At v1.3.0 there are three knobs: the entity-index (L2.5) flag, the BFS multi-hop (L3) flag, and `posterior_weight` for partial Bayesian-weighted L1 ranking.
+- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, opt-in), `use_hrr_structural` (HRR structural-query lane, opt-in). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
 
 Locks, hooks, MCP tools, and the Bayesian feedback math are not affected.
 
@@ -57,6 +57,34 @@ bfs_enabled = false
 # retrieve() / retrieve_v2() override TOML in turn. Locked beliefs
 # (L0) bypass scoring entirely.
 posterior_weight = 0.5
+
+# v1.7+. Default `true` since v1.7.0 (#154 bench gate). Enables the
+# BM25F sparse-matvec L1 path that augments belief content with
+# anchor text (#142) under Porter-stemmed FTS5 indexing. Set to
+# false to fall back to the v1.5/v1.6 FTS5-BM25 path.
+# AELFRICE_BM25F=0 env var overrides.
+use_bm25f_anchors = true
+
+# v1.7+. Default `false`, opt-in. Enables the heat-kernel authority
+# scoring lane (#150). Lane is implemented but stays opt-in until
+# the composition tracker (#154) flips the default after the
+# real-corpus benchmark gate. AELFRICE_HEAT_KERNEL=1 env var
+# overrides.
+use_heat_kernel = false
+
+# v1.7+. Default `false`, opt-in. Enables the HRR structural-query
+# lane (#152). Lane is implemented but stays opt-in until the
+# composition tracker (#154) flips the default after the
+# benchmark gate. AELFRICE_HRR_STRUCTURAL=1 env var overrides.
+use_hrr_structural = false
+
+# Placeholder flags reserved by #154 — recognised so callers can
+# write forward-compat config, but their lanes have not yet
+# shipped. Setting either to true emits a one-shot stderr
+# deprecation warning via warn_placeholder_flags() and is
+# otherwise a no-op.
+# use_signed_laplacian = false
+# use_posterior_ranking = false
 
 [onboard.llm]
 # v1.3.0+; default flipped to true in v1.5.0 (#238). Host-driven
@@ -226,7 +254,37 @@ When disabled (the v1.3.0 default):
 
 Precedence (first decisive wins): env var `AELFRICE_BFS=1`/`0` > explicit Python kwarg > TOML > default `false`.
 
-The flag ships default-OFF at v1.3.0 because the literature-default edge weights have not yet been calibrated against the v1.2 corpus. A v1.3.x patch may re-tune them; a default-on flip is a v2.0 candidate once benchmark uplift is confirmed. See [bfs_multihop.md](bfs_multihop.md) for the full spec, including the temporal-coherence limitation carried forward to v2.0.
+The flag ships default-OFF at v1.3.0 because the literature-default edge weights have not yet been calibrated against the v1.2 corpus. A v1.3.x patch may re-tune them; the default-on flip is deferred until benchmark uplift is confirmed. See [bfs_multihop.md](bfs_multihop.md) for the full spec, including the temporal-coherence limitation.
+
+### `use_bm25f_anchors`
+
+Boolean, default `true` since v1.7.0 (#154 bench gate). Enables the BM25F sparse-matvec L1 path that augments belief content with anchor text (#142) under Porter-stemmed FTS5 indexing.
+
+When enabled (the v1.7.0+ default):
+- L1 retrieval uses the BM25F implementation in `retrieval.py`, indexing belief text alongside its anchor terms (entity mentions, source paths, identifier captures).
+- `LaneTelemetry.bm25f_used = True` for the call.
+- Composition-tracker (#154) bench measured **+0.6650 NDCG@k uplift** versus the all-flags-off baseline on the `tests/corpus/v2_0/retrieve_uplift/v0_1.jsonl` lab fixture (30 rows, 6 categories).
+
+When disabled:
+- L1 falls back to the v1.5/v1.6 FTS5-BM25 path. `LaneTelemetry.bm25f_used = False`.
+
+Precedence (first decisive wins): env var `AELFRICE_BM25F=0`/`1` > explicit Python kwarg `use_bm25f_anchors=<bool>` > TOML `[retrieval] use_bm25f_anchors` > default `true`.
+
+### `use_heat_kernel`
+
+Boolean, default `false`, opt-in. Enables the heat-kernel authority-scoring lane (#150). The lane is implemented but stays off by default until the composition tracker (#154) flips it after the real-corpus benchmark gate.
+
+Precedence (first decisive wins): env var `AELFRICE_HEAT_KERNEL=0`/`1` > explicit Python kwarg > TOML `[retrieval] use_heat_kernel` > default `false`.
+
+### `use_hrr_structural`
+
+Boolean, default `false`, opt-in. Enables the HRR structural-query lane (#152). Like `use_heat_kernel`, the lane is implemented and stays opt-in pending the #154 benchmark gate.
+
+Precedence (first decisive wins): env var `AELFRICE_HRR_STRUCTURAL=0`/`1` > explicit Python kwarg > TOML `[retrieval] use_hrr_structural` > default `false`.
+
+### Placeholder flags
+
+`use_signed_laplacian` and `use_posterior_ranking` are reserved by #154 but their owning lanes have not yet shipped. The flags are recognised by `warn_placeholder_flags()` so writing them in `.aelfrice.toml` does not error; setting either to `true` emits a one-shot stderr deprecation warning and is otherwise a no-op. Source of truth: `PLACEHOLDER_FLAGS` in `src/aelfrice/retrieval.py`.
 
 ## When changes apply
 
