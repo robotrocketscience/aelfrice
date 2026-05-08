@@ -63,7 +63,7 @@ Override with `--scope user|project` and `--command /abs/path/aelf-hook` when yo
 aelf doctor
 ```
 
-At v1.2.0 `aelf doctor` runs two checks back-to-back: hook resolution (every `command` in `settings.json` checked against `$PATH`; surfaces stale `bash <missing>.sh 2>/dev/null || true` wrappers from older installs) and the structural graph audit (orphan threads, FTS5 sync, locked-belief contradictions, corpus volume). Exits 1 on any structural failure so CI can gate on it. Empty store on a fresh project is normal — the corpus-volume warning only fires once the project is at least 7 days old.
+`aelf doctor` runs two checks back-to-back: hook resolution (every `command` in `settings.json` checked against `$PATH`; surfaces stale `bash <missing>.sh 2>/dev/null || true` wrappers from older installs) and the structural graph audit (orphan threads, FTS5 sync, locked-belief contradictions, corpus volume). Exits 1 on any structural failure so CI can gate on it. Empty store on a fresh project is normal — the corpus-volume warning only fires once the project is at least 7 days old.
 
 Scope to one half:
 
