@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -507,12 +508,26 @@ def main() -> None:
 
     # Load data
     print("Loading LongMemEval oracle dataset...")
-    if args.data is not None:
-        raw: list[dict[str, object]] = load_from_file(args.data)
-    else:
-        print(f"  Downloading from HuggingFace: {HF_DATASET}")
-        raw = load_from_huggingface()
+    try:
+        if args.data is not None:
+            raw: list[dict[str, object]] = load_from_file(args.data)
+        else:
+            print(f"  Downloading from HuggingFace: {HF_DATASET}")
+            raw = load_from_huggingface()
+    except FileNotFoundError as exc:
+        print(
+            f"LongMemEval data not found at {args.data}: {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     print(f"Loaded {len(raw)} questions")
+
+    if not raw:
+        print(
+            "No LongMemEval questions loaded.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     questions: list[LongMemEvalQuestion] = parse_questions(raw)
 

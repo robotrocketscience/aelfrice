@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -445,8 +446,11 @@ def main() -> None:
     print(f"Loaded {len(episodes)} episodes")
 
     if not episodes:
-        print("No episodes matched filters. Exiting.")
-        return
+        print(
+            "No episodes matched filters. Exiting.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     # Show domain distribution
     domain_dist: dict[str, int] = {}

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -504,8 +505,11 @@ def main() -> None:
     print(f"Loaded {len(cases)} cases")
 
     if not cases:
-        print("No cases found. Check --data path and --task/--bench options.")
-        return
+        print(
+            "No cases found. Check --data path and --task/--bench options.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     task_result: TaskResult = TaskResult(task=args.task)
 

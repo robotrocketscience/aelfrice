@@ -13,6 +13,7 @@ import argparse
 import json
 import re
 import string
+import sys
 import tempfile
 import time
 from collections import Counter
@@ -500,8 +501,22 @@ def main() -> None:
     args: argparse.Namespace = parser.parse_args()
 
     print("Loading LoCoMo dataset...")
-    conversations: list[LoCoMoConversation] = load_locomo(args.data)
+    try:
+        conversations: list[LoCoMoConversation] = load_locomo(args.data)
+    except FileNotFoundError as exc:
+        print(
+            f"LoCoMo data not found at {args.data}: {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     print(f"Loaded {len(conversations)} conversations")
+
+    if not conversations:
+        print(
+            f"No conversations loaded from {args.data}.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     if args.conversations is not None:
         conversations = conversations[:args.conversations]

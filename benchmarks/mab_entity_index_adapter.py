@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -280,12 +281,22 @@ def main() -> None:
     print(f"Loading MAB dataset split: {args.split}")
     if args.source:
         print(f"Filtering by source: {args.source}")
-    rows: list[MABRow] = load_mab_split(args.split, source_filter=args.source)
+    try:
+        rows: list[MABRow] = load_mab_split(args.split, source_filter=args.source)
+    except FileNotFoundError as exc:
+        print(
+            f"MAB data not found: {exc}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     print(f"Loaded {len(rows)} rows")
 
     if not rows:
-        print("No rows matched. Check --split and --source values.")
-        return
+        print(
+            "No rows matched. Check --split and --source values.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     if args.rows is not None:
         rows = rows[:args.rows]
