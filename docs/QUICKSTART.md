@@ -79,7 +79,7 @@ $ aelf feedback 91e02d3c harmful
 
 `used` bumps α; `harmful` bumps β. Five harmful events through `CONTRADICTS` edges to a lock auto-demote it.
 
-> The math is in place at v1.0–v1.2; ranking still uses BM25 only. Posterior weight in retrieval ordering lands in v1.3 — see [LIMITATIONS](LIMITATIONS.md).
+> Partial Bayesian re-rank shipped at v1.3; BM25F default-on at v1.7. See [LIMITATIONS](LIMITATIONS.md) for what's still partial.
 
 ## Next
 
