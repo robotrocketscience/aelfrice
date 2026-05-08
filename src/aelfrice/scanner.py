@@ -23,16 +23,13 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 from aelfrice.derivation_worker import run_worker
 from aelfrice.inedible import is_inedible
 from aelfrice.models import (
     CORROBORATION_SOURCE_FILESYSTEM_INGEST,
     INGEST_SOURCE_FILESYSTEM,
-    LOCK_NONE,
-    Belief,
-    retention_class_for_source,
 )
 from aelfrice.noise_filter import NoiseConfig, is_noise
 from aelfrice.store import MemoryStore
@@ -221,17 +218,22 @@ def scan_repo(
     skipped_non_persisting = 0
     skipped_noise = 0
 
-    # #264 part 2: regex path defers belief materialization to
-    # `derivation_worker.run_worker`. Each regex candidate appends one
+    # Both paths defer belief materialization to
+    # `derivation_worker.run_worker` (#264 part 2 for regex; #265 PR-B
+    # for the LLM-classify path). Each persistable candidate appends one
     # unstamped row to `ingest_log`; one worker invocation at end-of-scan
     # stamps every row, dedup-or-corroborates against `beliefs`, and
     # writes edges. Snapshot the canonical id set up front so we can
     # back-fill scanner accounting from log entries after the worker
-    # runs (preserves the public ScanResult contract). The LLM path
-    # remains direct-write — its alpha/beta/origin/audit_source are not
-    # yet representable in `raw_meta` for the worker to reconstruct.
+    # runs (preserves the public ScanResult contract).
+    #
+    # The LLM-vs-regex distinction lives in `raw_meta["route_overrides"]`:
+    # when present, the worker post-splices the router's
+    # type/origin/alpha/beta onto derive()'s output and emits the
+    # audit_source feedback row on insert. When absent, the worker runs
+    # the deterministic classifier and writes no audit row.
     ids_before: set[str] = set(store.list_belief_ids())
-    regex_log_ids: list[str] = []
+    log_ids: list[str] = []
 
     # Two-pass when an llm_router is supplied: first collect the
     # noise-filtered candidates, then route them all through the
@@ -258,72 +260,34 @@ def scan_repo(
 
     for idx, candidate in enumerate(filtered):
         created_at = candidate.commit_date or timestamp
-
+        raw_meta: dict[str, Any] = {
+            "call_site": CORROBORATION_SOURCE_FILESYSTEM_INGEST,
+        }
         if routes is not None:
-            # LLM-classify path: router already derived type/origin/alpha/beta.
             route = routes[idx]
             if not route.persist:
+                # persist=False is consumed before any state change —
+                # no log row, no worker work. Counted for visibility.
                 skipped_non_persisting += 1
                 continue
-            belief_id = _derive_belief_id(candidate.text, candidate.source)
-            if store.get_belief(belief_id) is not None:
-                skipped_existing += 1
-                continue
-            store.record_ingest(
-                source_kind=INGEST_SOURCE_FILESYSTEM,
-                source_path=candidate.source,
-                raw_text=candidate.text,
-                derived_belief_ids=[belief_id],
-                session_id=sid,
-                ts=created_at,
-            )
-            _, was_inserted = store.insert_or_corroborate(
-                Belief(
-                    id=belief_id,
-                    content=candidate.text,
-                    content_hash=_content_hash(candidate.text),
-                    alpha=route.alpha,
-                    beta=route.beta,
-                    type=route.belief_type,
-                    lock_level=LOCK_NONE,
-                    locked_at=None,
-                    demotion_pressure=0,
-                    created_at=created_at,
-                    last_retrieved_at=None,
-                    session_id=sid,
-                    origin=route.origin,
-                    retention_class=retention_class_for_source(
-                        INGEST_SOURCE_FILESYSTEM,
-                    ),
-                ),
-                source_type=CORROBORATION_SOURCE_FILESYSTEM_INGEST,
-            )
-            if was_inserted:
-                inserted += 1
-            # Audit row for fallback insertions (spec § 7.2 step 3).
+            overrides: dict[str, Any] = {
+                "belief_type": route.belief_type,
+                "origin": route.origin,
+                "alpha": route.alpha,
+                "beta": route.beta,
+            }
             if route.audit_source is not None:
-                store.insert_feedback_event(
-                    belief_id=belief_id,
-                    valence=0.0,
-                    source=route.audit_source,
-                    created_at=timestamp,
-                )
-        else:
-            # Regex path: append one unstamped log row. The worker
-            # invocation after this loop calls derive() + writes the
-            # canonical belief via insert_or_corroborate + stamps the
-            # row. `call_site` disambiguates the corroboration audit
-            # since INGEST_SOURCE_FILESYSTEM is shared with other
-            # entry points (transcript ingest, hook commit ingest).
-            log_id = store.record_ingest(
-                source_kind=INGEST_SOURCE_FILESYSTEM,
-                source_path=candidate.source,
-                raw_text=candidate.text,
-                session_id=sid,
-                ts=created_at,
-                raw_meta={"call_site": CORROBORATION_SOURCE_FILESYSTEM_INGEST},
-            )
-            regex_log_ids.append(log_id)
+                overrides["audit_source"] = route.audit_source
+            raw_meta["route_overrides"] = overrides
+        log_id = store.record_ingest(
+            source_kind=INGEST_SOURCE_FILESYSTEM,
+            source_path=candidate.source,
+            raw_text=candidate.text,
+            session_id=sid,
+            ts=created_at,
+            raw_meta=raw_meta,
+        )
+        log_ids.append(log_id)
 
     # End-of-batch worker invocation. Idempotent: scans every unstamped
     # row in the store, including any orphaned by a crashed prior scan.
@@ -331,7 +295,7 @@ def scan_repo(
     # and stamps each with `derived_belief_ids`. Calling once per scan
     # rather than per candidate keeps the cost O(unstamped) instead of
     # O(unstamped × candidates).
-    if regex_log_ids:
+    if log_ids:
         run_worker(store)
 
         # Back-fill scanner accounting from the stamped log rows. Three
@@ -344,7 +308,7 @@ def scan_repo(
         #     most once per id so two log rows that converge on the
         #     same belief still report inserted=1.
         seen_new: set[str] = set()
-        for log_id in regex_log_ids:
+        for log_id in log_ids:
             entry = store.get_ingest_log_entry(log_id)
             if entry is None:
                 continue
@@ -362,7 +326,7 @@ def scan_repo(
                     inserted += 1
                 else:
                     # Same belief id already counted in this scan
-                    # (two regex log rows hashed to the same id).
+                    # (two log rows hashed to the same id).
                     skipped_existing += 1
 
     return ScanResult(
@@ -428,8 +392,6 @@ _GIT_LOG_TIMEOUT_SECONDS: Final[float] = 5.0
 
 _PY_EXTENSION: Final[str] = ".py"
 
-_BELIEF_ID_HEX_LEN: Final[int] = 16
-
 
 @dataclass
 class ScanResult:
@@ -452,19 +414,6 @@ class ScanResult:
     skipped_non_persisting: int
     total_candidates: int
     skipped_noise: int = 0
-
-
-def _derive_belief_id(text: str, source: str) -> str:
-    """Deterministic id from (text, source). Re-running scan on the same
-    tree yields the same ids — that's how the orchestrator stays
-    idempotent without a separate dedupe table.
-    """
-    h = hashlib.sha256(f"{source}\x00{text}".encode("utf-8")).hexdigest()
-    return h[:_BELIEF_ID_HEX_LEN]
-
-
-def _content_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _utc_now_iso() -> str:

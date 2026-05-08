@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from aelfrice.derivation import DerivationInput, derive
+from aelfrice.derivation_worker import _route_overrides_from_raw_meta
 from aelfrice.models import INGEST_SOURCE_LEGACY_UNKNOWN
 from aelfrice.store import MemoryStore
 
@@ -232,11 +233,18 @@ def replay_full_equality(
         rule_set_hash = row["rule_set_hash"]
         log_row_id = str(row["id"])
 
-        # Reconstruct override_belief_type from raw_meta when present —
-        # mirrors derivation_worker._derivation_input_from_row so replay
-        # equality holds for #264 slice 2 host-classified onboard rows.
+        # Reconstruct override_belief_type and route_overrides from
+        # raw_meta when present — mirrors
+        # derivation_worker._derivation_input_from_row so replay equality
+        # holds for #264 slice 2 host-classified rows AND for #265 PR-B
+        # LLM-routed rows. `route_overrides` are frozen at ingest time
+        # per the memo at docs/design/v2_view_flip_scanner_call_site.md;
+        # replay must re-apply them verbatim, otherwise the canonical
+        # belief (which carries the router's fields) drifts from the
+        # re-derived shell (which would carry derive()'s defaults).
         raw_meta_blob = row["raw_meta"]
         override_belief_type: str | None = None
+        meta_obj: object | None = None
         if raw_meta_blob:
             try:
                 meta_obj = _json.loads(raw_meta_blob)
@@ -246,6 +254,9 @@ def replay_full_equality(
                 ov = meta_obj.get(_META_OVERRIDE_BELIEF_TYPE)
                 if isinstance(ov, str) and ov:
                     override_belief_type = ov
+        route_overrides = _route_overrides_from_raw_meta(
+            meta_obj if isinstance(meta_obj, dict) else None,
+        )
         inp = DerivationInput(
             raw_text=raw_text,
             source_kind=source_kind,
@@ -256,6 +267,7 @@ def replay_full_equality(
             classifier_version=classifier_version if classifier_version is not None else None,
             rule_set_hash=rule_set_hash if rule_set_hash is not None else None,
             override_belief_type=override_belief_type,
+            route_overrides=route_overrides,
         )
 
         out = derive(inp)
