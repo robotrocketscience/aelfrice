@@ -1,6 +1,6 @@
 # Feature spec: Intentional clustering (#436)
 
-**Status:** module shipped (`src/aelfrice/clustering.py`); retrieval-side wiring + bench-gate evidence are the next gates
+**Status:** wired into `retrieve_v2` behind `use_intentional_clustering` (default-OFF at v2.0.0); bench-gate evidence (A2) is the gate to flip the default
 **Issue:** #436
 **Recovery-inventory line:** [`docs/ROADMAP.md`](ROADMAP.md) — *"Intentional clustering | v2.0.0"*
 **Substrate prereqs:** edge graph (foundation), `dedup.DuplicateCluster` union-find pattern (`src/aelfrice/dedup.py:155-185`, shipped #197), heat kernel authority (#150, shipped v1.7.0), BFS multi-hop (#143, shipped v1.3.0)
