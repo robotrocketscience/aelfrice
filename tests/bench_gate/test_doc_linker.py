@@ -35,17 +35,15 @@ def test_doc_linker_uplift(aelfrice_corpus_root: Path) -> None:
     # for `with_doc_anchors` is written. Until then, the harness skips
     # so a corpus-mounted run still surfaces the wiring as PASS rather
     # than masking a missing scorer.
-    try:
-        from tests.retrieve_uplift_runner import (  # noqa: F401
-            run_doc_linker_uplift,
-        )
-    except ImportError:
-        pytest.skip(
+    runner_mod = pytest.importorskip(
+        "tests.retrieve_uplift_runner",
+        reason=(
             "doc-linker uplift runner not yet wired (operator gate; "
-            "spec § A2 — pending lab-side corpus + scorer)",
-        )
+            "spec § A2 — pending lab-side corpus + scorer)"
+        ),
+    )
 
-    results = run_doc_linker_uplift(rows)  # type: ignore[name-defined]
+    results = runner_mod.run_doc_linker_uplift(rows)
     detail = (
         f"  NDCG_anchors_off={results.mean_ndcg_off:.4f} "
         f"NDCG_anchors_on={results.mean_ndcg_on:.4f} "
