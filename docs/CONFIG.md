@@ -165,7 +165,7 @@ enabled = true
 max_tokens = 500_000
 ```
 
-Auth, model selection, and provider choice are NOT configurable here. `ANTHROPIC_API_KEY` is read only from the environment, never from this file. There is no provider abstraction layer; only Anthropic's Haiku is supported in v1.3.0.
+Auth, model selection, and provider choice are NOT configurable here. `ANTHROPIC_API_KEY` is read only from the environment, never from this file. There is no provider abstraction layer; Anthropic's Haiku is the only supported direct-API model.
 
 ## Worked examples
 
