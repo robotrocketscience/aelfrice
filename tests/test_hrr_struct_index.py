@@ -25,6 +25,7 @@ import pytest
 
 from aelfrice.hrr_index import (
     HRRStructIndex,
+    HRRStructIndexCache,
     _seed_from_path,
     parse_structural_marker,
 )
@@ -254,6 +255,35 @@ def test_save_load_round_trip(tmp_path: Path) -> None:
     a = idx.probe("CONTRADICTS", "b2", top_k=5)
     b = loaded.probe("CONTRADICTS", "b2", top_k=5)
     assert a == b
+
+
+# --- HRRStructIndexCache --------------------------------------------------
+
+
+def test_cache_lazy_build_then_reuse() -> None:
+    s = _toy_store()
+    cache = HRRStructIndexCache(store=s, dim=256, seed=7)
+    a = cache.get()
+    b = cache.get()
+    assert a is b, "second get() must return the cached instance"
+
+
+def test_cache_invalidates_on_store_mutation() -> None:
+    s = _toy_store()
+    cache = HRRStructIndexCache(store=s, dim=256, seed=7)
+    first = cache.get()
+    s.insert_belief(_mk("b6"))
+    second = cache.get()
+    assert first is not second, "store mutation must drop the cache"
+    assert "b6" in second.belief_ids
+
+
+def test_cache_explicit_invalidate_drops_index() -> None:
+    s = _toy_store()
+    cache = HRRStructIndexCache(store=s, dim=256, seed=7)
+    cache.get()
+    cache.invalidate()
+    assert cache._index is None
 
 
 # --- AC6 / AC7 (perf-gated) ----------------------------------------------

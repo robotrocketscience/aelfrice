@@ -19,7 +19,15 @@ A query parser (:func:`parse_structural_marker`) routes structural
 queries to this lane and falls through to the textual lane otherwise.
 
 Default-OFF at v1.7.0 behind ``use_hrr_structural`` per the #154
-composition tracker.
+composition tracker. Wired into :func:`aelfrice.retrieval.retrieve_v2`
+as a parallel routing branch that fires before vocab-bridge rewrite —
+on a structural-marker hit the textual lane is bypassed entirely;
+on miss the call falls through to BM25F + heat kernel as before.
+
+Long-running callers should pass an explicit
+:class:`HRRStructIndexCache` to amortise the build cost across
+queries. The cache subscribes to the store's invalidation registry
+so any belief / edge mutation drops the index transparently.
 """
 from __future__ import annotations
 
@@ -262,3 +270,41 @@ class HRRStructIndex:
             n: role_matrix[i] for i, n in enumerate(role_names)
         }
         return idx
+
+
+@dataclass
+class HRRStructIndexCache:
+    """Lazy, invalidation-aware wrapper around a single ``HRRStructIndex``.
+
+    Subscribes to the store's invalidation callback registry on
+    construction, so any belief / edge mutation drops the cached
+    index. The next ``get()`` rebuilds.
+
+    Mirrors :class:`aelfrice.vocab_bridge.VocabBridgeCache`. Per-
+    instance: two caches pointing at different stores never share
+    state. Thread safety is the caller's responsibility.
+    """
+
+    store: MemoryStore
+    dim: int = DEFAULT_DIM
+    store_path: str | None = None
+    seed: int | None = None
+    _index: HRRStructIndex | None = field(default=None, init=False, repr=False)
+    _subscribed: bool = field(default=False, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self._subscribed:
+            self.store.add_invalidation_callback(self.invalidate)
+            self._subscribed = True
+
+    def get(self) -> HRRStructIndex:
+        """Return the current index, building or rebuilding as needed."""
+        if self._index is None:
+            idx = HRRStructIndex(dim=self.dim)
+            idx.build(self.store, store_path=self.store_path, seed=self.seed)
+            self._index = idx
+        return self._index
+
+    def invalidate(self) -> None:
+        """Drop the cached index. Wired to the store mutation hook."""
+        self._index = None
