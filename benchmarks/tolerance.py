@@ -41,6 +41,12 @@ class Verdict(str, Enum):
     PASS = "pass"
     WARN = "warn"
     FAIL = "fail"
+    # v2.1 #479. The observed sub-result has `_status:
+    # skipped_data_missing`, meaning the adapter ran but its data dir
+    # was absent. The canonical metrics for this leaf simply cannot be
+    # computed; this is not a regression. summarize() treats SKIP as
+    # neither PASS nor FAIL — it ignores the leaf for the rollup.
+    SKIP = "skip"
 
 
 @dataclass(frozen=True)
@@ -109,6 +115,30 @@ def classify(
     return Verdict.PASS, ""
 
 
+def _ancestor_skipped(obs_results: Any, path: tuple[str, ...]) -> bool:
+    """Return True if any ancestor sub-result of `path` carries
+    `_status: skipped_data_missing` in `obs_results`.
+
+    Walks one prefix at a time. As soon as a level is missing or a
+    non-dict shows up, the answer is "no skip ancestor here" — the
+    enclosing logic falls through to the existing missing-leaf path.
+
+    Per #479: when an adapter sub-result is skipped because data was
+    absent, the canonical metrics nested under it are uncomputable
+    (not regressions); they collapse to Verdict.SKIP rather than FAIL.
+    """
+    cursor: Any = obs_results
+    for k in path:
+        if not isinstance(cursor, dict):
+            return False
+        if cursor.get("_status") == "skipped_data_missing":
+            return True
+        cursor = cursor.get(k)
+    if isinstance(cursor, dict) and cursor.get("_status") == "skipped_data_missing":
+        return True
+    return False
+
+
 def _walk_leaves(
     obj: Any, path: tuple[str, ...] = (),
 ) -> list[tuple[tuple[str, ...], float]]:
@@ -158,6 +188,17 @@ def check_report(
     obs_results = observed.get("results", {})
     checks: list[BandCheck] = []
     for path, cano_val in _walk_leaves(cano_results):
+        if _ancestor_skipped(obs_results, path):
+            checks.append(BandCheck(
+                path=path, canonical=cano_val, observed=float("nan"),
+                lower=cano_val, upper=cano_val, band_kind="skipped",
+                verdict=Verdict.SKIP,
+                note=(
+                    f"observed sub-result skipped (data missing) at "
+                    f"{'/'.join(path)}"
+                ),
+            ))
+            continue
         leaf = obs_results
         try:
             for k in path:
@@ -194,8 +235,15 @@ def check_report(
 
 
 def summarize(checks: list[BandCheck]) -> tuple[Verdict, dict[str, int]]:
-    """Roll up per-leaf verdicts to one overall verdict + counts."""
-    counts = {Verdict.PASS.value: 0, Verdict.WARN.value: 0, Verdict.FAIL.value: 0}
+    """Roll up per-leaf verdicts to one overall verdict + counts.
+
+    SKIP leaves (per #479) are tallied but do not raise the rollup
+    above PASS — they represent uncomputable metrics, not regressions.
+    """
+    counts = {
+        Verdict.PASS.value: 0, Verdict.WARN.value: 0,
+        Verdict.FAIL.value: 0, Verdict.SKIP.value: 0,
+    }
     for c in checks:
         counts[c.verdict.value] += 1
     if counts[Verdict.FAIL.value] > 0:
