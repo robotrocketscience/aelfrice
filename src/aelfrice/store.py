@@ -2443,16 +2443,6 @@ class MemoryStore:
 
         return applied
 
-    # --- Bulk helpers (used by tests / future modules) -------------------
-
-    def insert_beliefs(self, beliefs: Iterable[Belief]) -> None:
-        for b in beliefs:
-            self.insert_belief(b)
-
-    def insert_edges(self, edges: Iterable[Edge]) -> None:
-        for e in edges:
-            self.insert_edge(e)
-
     # --- Onboard sessions -------------------------------------------------
 
     def insert_onboard_session(self, s: OnboardSession) -> None:
