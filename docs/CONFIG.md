@@ -9,7 +9,7 @@ This is the reference for power users whose project has a documentation idiom or
 A single optional TOML file at the root of a project (or any ancestor). It exposes two power-user surfaces:
 
 - `[noise]` — onboard-time belief filter. Changes how `aelf onboard` ingests beliefs; nothing else.
-- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, opt-in), `use_hrr_structural` (HRR structural-query lane, opt-in), `use_type_aware_compression` (per-belief retention-class compression, opt-in since v2.1). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
+- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, opt-in), `use_hrr_structural` (HRR structural-query lane, opt-in), `use_type_aware_compression` (per-belief retention-class compression, opt-in since v2.1), `use_vocab_bridge` (HRR query-side vocabulary bridge, opt-in since v2.1). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
 
 Locks, hooks, MCP tools, and the Bayesian feedback math are not affected.
 
@@ -87,6 +87,16 @@ use_hrr_structural = false
 # default-OFF gate. AELFRICE_TYPE_AWARE_COMPRESSION=1 env var
 # overrides.
 use_type_aware_compression = false
+
+# v2.1 #433 HRR vocabulary bridge. When true, retrieve_v2 builds a
+# per-store VocabBridge over surface forms (anchor text + belief
+# content) and rewrites the query before lane fan-out, appending
+# canonical-entity tokens whose recovery cosine clears the noise
+# floor. Original tokens are preserved verbatim; the rewrite is
+# additive, never substitutive. Default-OFF until the lab-side
+# bench gate (A2 in docs/feature-hrr-vocab-bridge.md) clears.
+# AELFRICE_VOCAB_BRIDGE=1 env var overrides.
+use_vocab_bridge = false
 
 # Placeholder flags reserved by #154 — recognised so callers can
 # write forward-compat config, but their lanes have not yet
@@ -308,6 +318,23 @@ Compression is pure and deterministic — no store, clock, env, or random reads.
 When disabled (default), `compressed_beliefs` is empty and `beliefs` is byte-identical to the v1.x return shape.
 
 Precedence (first decisive wins): env var `AELFRICE_TYPE_AWARE_COMPRESSION=0`/`1` > explicit Python kwarg `use_type_aware_compression=<bool>` > TOML `[retrieval] use_type_aware_compression` > default `false`. The default-on flip is gated on the lab-side bench in `tests/bench_gate/test_compression_uplift.py` plus the pack-loop budget rewrite (follow-up).
+
+### `use_vocab_bridge`
+
+Boolean, default `false`, opt-in (v2.1+, #433). Enables the HRR vocabulary-bridge query rewrite. When on, `retrieve_v2` builds (or fetches a cached) `VocabBridge` over the per-project store and prepends the rewrite stage before lane fan-out:
+
+```
+query
+  -> [bridge.rewrite(query) if use_vocab_bridge else query]
+  -> retrieve() lane fan-out: BM25F + heat-kernel + HRR-structural + BFS
+  -> compose -> rank -> pack
+```
+
+The bridge is **not** a lane — it does not contribute scores. It harvests surface-form tokens from incoming anchor text (#148) and belief content (entity-extractor lane), constructs a single HRR composite per `(token, canonical)` pair, and at query time unbinds the query token to recover one or more canonical-entity strings via cleanup memory. Tokens that are themselves canonical self-recover and are appended once; tokens with no canonical above the noise floor (`1/sqrt(dim)`) drop. Original-query tokens are preserved verbatim — bridged candidates are appended, never substituted.
+
+`use_hrr` on `retrieve_v2` is a deprecated alias for `use_vocab_bridge` and survives one minor version. Lab v2.0.0 adapters that pass `use_hrr=True` route to the bridge automatically; new callers should use `use_vocab_bridge` directly.
+
+Precedence (first decisive wins): env var `AELFRICE_VOCAB_BRIDGE=0`/`1` > explicit Python kwarg `use_vocab_bridge=<bool>` > TOML `[retrieval] use_vocab_bridge` > default `false`. The default-on flip is gated on the lab-side bench in `tests/bench_gate/test_vocab_bridge_uplift.py` plus the strict A2 NDCG@k follow-up.
 
 ### Placeholder flags
 
