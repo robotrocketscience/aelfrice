@@ -16,7 +16,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Final
 
-from aelfrice.classification import classify_sentence, get_source_adjusted_prior
+from aelfrice.classification_core import (
+    classify_sentence,
+    get_source_adjusted_prior,
+)
 from aelfrice.models import (
     BELIEF_FACTUAL,
     INGEST_SOURCE_CLI_REMEMBER,
