@@ -14,7 +14,9 @@ suite locks that behaviour in from day one
 """
 from __future__ import annotations
 
+import inspect
 import json
+import os
 import secrets
 import sqlite3
 from datetime import datetime, timezone
@@ -37,6 +39,102 @@ from aelfrice.models import (
     Session,
 )
 from aelfrice.ulid import ulid
+
+# --- v2.x view-flip gate --------------------------------------------------
+#
+# When AELFRICE_WRITE_LOG_AUTHORITATIVE is on, `beliefs` becomes a
+# materialized view of `ingest_log` and direct `insert_belief()` calls
+# from outside the allowlist raise. The flag itself was wired in
+# derivation_worker.is_write_log_authoritative (#265 PR-A); store reads
+# os.environ inline to avoid a circular import (worker depends on store).
+#
+# Allowlist matches the ratification on PR #478:
+#   - aelfrice.derivation_worker  — the single canonical writer
+#   - aelfrice.wonder.simulator   — synthetic corpus seeder (test fixture)
+#   - aelfrice.benchmark          — benchmarking fixtures
+#   - aelfrice.migrate            — v1→v2 store migration; legacy_unknown
+#                                    rows are emitted by the migration tool
+#                                    itself, not through ingest_log
+#
+# Anything outside the allowlist must go through
+# `record_ingest` + `run_worker` so the write trail starts on the log.
+
+_ENV_WRITE_LOG_AUTHORITATIVE: Final[str] = "AELFRICE_WRITE_LOG_AUTHORITATIVE"
+_WLAUTH_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
+
+INSERT_BELIEF_ALLOWLIST: Final[frozenset[str]] = frozenset({
+    "aelfrice.derivation_worker",
+    "aelfrice.wonder.simulator",
+    "aelfrice.benchmark",
+    "aelfrice.migrate",
+})
+
+
+class WriteLogAuthorityViolation(RuntimeError):
+    """Raised when `MemoryStore.insert_belief` is called from outside
+    `INSERT_BELIEF_ALLOWLIST` while `AELFRICE_WRITE_LOG_AUTHORITATIVE`
+    is on. Indicates a code path that would write to `beliefs` without
+    a corresponding `ingest_log` row — the write trail invariant the
+    v2.x view-flip is designed to enforce.
+
+    Resolution: route the caller through `record_ingest` + `run_worker`
+    instead of calling `insert_belief` directly. Or, if the caller is a
+    legitimate fixture/migration site, add it to `INSERT_BELIEF_ALLOWLIST`
+    after design review.
+    """
+
+
+def _is_write_log_authoritative_inline() -> bool:
+    """Inline reader to avoid the store→derivation_worker→store cycle."""
+    raw = os.environ.get(_ENV_WRITE_LOG_AUTHORITATIVE)
+    if raw is None:
+        return False
+    return raw.strip().lower() in _WLAUTH_TRUTHY
+
+
+def _check_insert_belief_authority() -> None:
+    """Stack-walk gate for `insert_belief`.
+
+    No-op when the flag is off (production default at this commit).
+    When on, walks frames until it finds one outside `aelfrice.store`,
+    then checks that frame's module against `INSERT_BELIEF_ALLOWLIST`.
+    Raises `WriteLogAuthorityViolation` on a non-allowlisted caller.
+
+    `insert_or_corroborate` calls `insert_belief` internally; the walk
+    skips over `aelfrice.store` frames so the *true* caller (the worker
+    or another module) is what gets checked.
+    """
+    if not _is_write_log_authoritative_inline():
+        return
+    frame = inspect.currentframe()
+    if frame is None:  # platforms without frame inspection
+        return
+    # Skip our own frame plus any aelfrice.store frames (insert_belief,
+    # insert_or_corroborate, …). The first non-store frame is the
+    # true caller.
+    caller = frame.f_back
+    while caller is not None:
+        mod = caller.f_globals.get("__name__", "")
+        if not mod.startswith("aelfrice.store"):
+            if mod in INSERT_BELIEF_ALLOWLIST:
+                return
+            raise WriteLogAuthorityViolation(
+                f"insert_belief() called from {mod!r}; not in "
+                f"INSERT_BELIEF_ALLOWLIST {sorted(INSERT_BELIEF_ALLOWLIST)}. "
+                f"With AELFRICE_WRITE_LOG_AUTHORITATIVE on, only the "
+                f"derivation worker and three allowlisted fixture/"
+                f"migration modules may write to `beliefs` directly; "
+                f"all other callers must go through "
+                f"`record_ingest` + `run_worker`."
+            )
+        caller = caller.f_back
+    # No non-store frame found (shouldn't happen in practice). Fail
+    # closed — the caller is opaque, treat it as a violation.
+    raise WriteLogAuthorityViolation(
+        "insert_belief() called from an opaque caller; could not "
+        "identify the calling module while the write-log gate is on."
+    )
+
 
 # --- Schema ---------------------------------------------------------------
 
@@ -1201,6 +1299,7 @@ class MemoryStore:
     # --- Belief CRUD ------------------------------------------------------
 
     def insert_belief(self, b: Belief) -> None:
+        _check_insert_belief_authority()
         if b.retention_class not in RETENTION_CLASSES:
             raise ValueError(
                 f"invalid retention_class {b.retention_class!r}; "
