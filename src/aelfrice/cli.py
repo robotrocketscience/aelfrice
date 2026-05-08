@@ -65,6 +65,7 @@ from aelfrice.models import (
     EDGE_SUPERSEDES,
     EDGE_SUPPORTS,
     INGEST_SOURCE_CLI_REMEMBER,
+    LOCK_NONE,
     LOCK_USER,
     ORIGIN_USER_STATED,
     ORIGIN_USER_VALIDATED,
@@ -1325,7 +1326,7 @@ def _emit_core(
         rows = []
         for b in results:
             signals: list[str] = []
-            if b.lock_level != "none":  # type: ignore[attr-defined]
+            if b.lock_level != LOCK_NONE:  # type: ignore[attr-defined]
                 signals.append("lock")
             if b.corroboration_count >= args.min_corroboration:  # type: ignore[attr-defined]
                 signals.append("corroboration")
@@ -1353,7 +1354,7 @@ def _emit_core(
         corr = b.corroboration_count  # type: ignore[attr-defined]
         ab = alpha + beta
         parts: list[str] = []
-        if b.lock_level != "none":  # type: ignore[attr-defined]
+        if b.lock_level != LOCK_NONE:  # type: ignore[attr-defined]
             parts.append("LOCK")
         if corr >= args.min_corroboration:
             parts.append(f"CORR={corr}")
@@ -1378,7 +1379,7 @@ def _cmd_core(args: argparse.Namespace, out: object) -> int:
         if not args.locked_only:
             for bid in store.list_belief_ids():
                 b = store.get_belief(bid)
-                if b is None or b.lock_level != "none":
+                if b is None or b.lock_level != LOCK_NONE:
                     continue
                 if _qualifies_core(b, args):
                     candidates.append(b)
