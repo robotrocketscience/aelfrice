@@ -235,7 +235,7 @@ Precedence (first decisive wins): env var `AELFRICE_POSTERIOR_WEIGHT=<float>` > 
 
 Negative values clamp to `0.0`. Non-numeric env values trace to stderr and fall through. The cache key is extended with the resolved weight (rounded to four decimals), so two callers passing different weights against the same store do not collide on a shared `RetrievalCache`.
 
-The full feedback-into-ranking eval — 10-round MRR uplift, ECE calibration, BM25F + heat-kernel composition — lands at v2.0.0. See [`docs/bayesian_ranking.md`](bayesian_ranking.md) for the v1.3 contract and the rejected-alternatives analysis.
+BM25F-only L1 shipped default-on at v1.7.0 (see `use_bm25f_anchors`); the heat-kernel and HRR-structural lanes are implemented but stay opt-in pending the composition-tracker bench gate (#154). The full joint-composition eval — 10-round MRR uplift, ECE calibration, BM25F × heat-kernel × HRR-structural — is the unfinished v2.0.0+ work. See [`docs/bayesian_ranking.md`](bayesian_ranking.md) for the v1.3 contract and the rejected-alternatives analysis.
 
 ### `bfs_enabled`
 
