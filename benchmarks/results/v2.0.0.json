@@ -1,8 +1,8 @@
 {
-  "_calibration_notes": "First canonical pass 2026-05-07. 6 of 11 invocations succeeded (MAB \u00d74, LongMemEval, AMA-Bench); 5 failed due to missing /tmp/ data dirs (LoCoMo + StructMemEval \u00d74). Re-run those adapters after populating /tmp/LoCoMo and /tmp/StructMemEval. Per-metric override bands (3+ runs \u00d7 1.5 spread) not yet calibrated \u2014 first-run values are placeholders for the working adapters.",
-  "aelfrice_version": "1.6.0",
-  "captured_at_utc": "2026-05-07T02:10:35Z",
-  "git_commit": "bce8311",
+  "_calibration_notes": "Calibrated 2026-05-08 from 3 full canonical runs (11/11 ok each) on git_commit 9e3f8dee. Tolerance bands per spec: observed range x 1.5; metric_overrides left empty (defaults \u2014 F1 plus or minus 7%, EM plus or minus 10%, latency plus or minus 25%, fallback plus or minus 10%, absolute floor plus or minus 0.02 \u2014 cover observed variance. Across 3 runs, MAB and StructMemEval metrics are bit-deterministic; LongMemEval avg_latency_ms varied 5.55\u20136.04 ms (well inside default plus or minus 25%). Per-run inputs held in /tmp/v2.0.0-cal/run-{1,2,3}.json during calibration session.",
+  "aelfrice_version": "2.0.0",
+  "captured_at_utc": "2026-05-08T15:00:00Z",
+  "git_commit": "9e3f8dee2898d21ed5250618d86f84b3235caab4",
   "harness_version": "1",
   "headline_cut": {
     "amabench": [
@@ -92,12 +92,12 @@
       }
     ]
   },
-  "label": "v2.0.0 canonical (first calibration pass \u2014 partial)",
+  "label": "v2.0.0 canonical",
   "metric_overrides": {},
   "results": {
     "amabench": {
       "_": {
-        "_elapsed_sec": 266.921,
+        "_elapsed_sec": 189.73,
         "_status": "ok",
         "output": {
           "domain_counts": {
@@ -121,51 +121,61 @@
     },
     "locomo": {
       "_": {
-        "_elapsed_sec": 1.041,
-        "_error_message": "Traceback (most recent call last):\n  File \"<frozen runpy>\", line 198, in _run_module_as_main\n  File \"<frozen runpy>\", line 88, in _run_code\n  File \"$HOME/projects/aelfrice/benchmarks/locomo_adapter.py\", line 565, in <module>\n    main()\n    ~~~~^^\n  File \"$HOME/projects/aelfrice/benchmarks/locomo_adapter.py\", line 503, in main\n    conversations: list[LoCoMoConversation] = load_locomo(args.data)\n                                              ~~~~~~~~~~~^^^^^^^^^^^\n  File \"/Users",
-        "_status": "error"
+        "_elapsed_sec": 34.403,
+        "_status": "ok",
+        "output": {
+          "category_f1": {
+            "1": 0.1051,
+            "2": 0.0074,
+            "3": 0.008,
+            "4": 0.011,
+            "5": 0.0
+          },
+          "overall_f1": 0.0212,
+          "total_qa": 1986
+        }
       }
     },
     "longmemeval": {
       "_": {
-        "_elapsed_sec": 70.552,
+        "_elapsed_sec": 51.822,
         "_status": "ok",
         "output": {
           "avg_beliefs_per_query": 49.15,
-          "avg_latency_ms": 7.8,
+          "avg_latency_ms": 5.55,
           "category_stats": {
             "knowledge-update": {
               "avg_beliefs": 50.45,
-              "avg_latency_ms": 8.0,
+              "avg_latency_ms": 6.05,
               "count": 78
             },
             "multi-session": {
               "avg_beliefs": 50.51,
-              "avg_latency_ms": 10.43,
+              "avg_latency_ms": 7.19,
               "count": 133
             },
             "single-session-assistant": {
               "avg_beliefs": 38.93,
-              "avg_latency_ms": 2.9,
+              "avg_latency_ms": 2.06,
               "count": 56
             },
             "single-session-preference": {
               "avg_beliefs": 50.23,
-              "avg_latency_ms": 5.4,
+              "avg_latency_ms": 3.77,
               "count": 30
             },
             "single-session-user": {
               "avg_beliefs": 49.94,
-              "avg_latency_ms": 4.9,
+              "avg_latency_ms": 3.37,
               "count": 70
             },
             "temporal-reasoning": {
               "avg_beliefs": 50.68,
-              "avg_latency_ms": 9.16,
+              "avg_latency_ms": 6.64,
               "count": 133
             }
           },
-          "total_ingest_time_s": 61.63,
+          "total_ingest_time_s": 44.69,
           "total_ingest_turns": 10960,
           "total_questions": 500
         }
@@ -173,7 +183,7 @@
     },
     "mab": {
       "Accurate_Retrieval": {
-        "_elapsed_sec": 541.933,
+        "_elapsed_sec": 381.34,
         "_status": "ok",
         "output": {
           "exact_match": 0.0,
@@ -185,7 +195,7 @@
         }
       },
       "Conflict_Resolution": {
-        "_elapsed_sec": 83.214,
+        "_elapsed_sec": 60.041,
         "_status": "ok",
         "output": {
           "exact_match": 0.0,
@@ -197,7 +207,7 @@
         }
       },
       "Long_Range_Understanding": {
-        "_elapsed_sec": 540.45,
+        "_elapsed_sec": 385.399,
         "_status": "ok",
         "output": {
           "exact_match": 0.0,
@@ -209,7 +219,7 @@
         }
       },
       "Test_Time_Learning": {
-        "_elapsed_sec": 452.277,
+        "_elapsed_sec": 311.118,
         "_status": "ok",
         "output": {
           "exact_match": 0.0,
@@ -223,24 +233,56 @@
     },
     "structmemeval": {
       "accounting": {
-        "_elapsed_sec": 0.266,
-        "_error_message": "adapter exited 0 but did not write $TMPDIR/T/structmemeval_accounting.json",
-        "_status": "error"
+        "_elapsed_sec": 0.658,
+        "_status": "ok",
+        "output": {
+          "accuracy": 0.0,
+          "bench": "big",
+          "perfect_cases": 0,
+          "task": "accounting",
+          "total_cases": 15,
+          "total_correct": 0,
+          "total_queries": 15
+        }
       },
       "location": {
-        "_elapsed_sec": 0.406,
-        "_error_message": "adapter exited 0 but did not write $TMPDIR/T/structmemeval_location.json",
-        "_status": "error"
+        "_elapsed_sec": 1.526,
+        "_status": "ok",
+        "output": {
+          "accuracy": 0.9048,
+          "bench": "big",
+          "perfect_cases": 38,
+          "task": "location",
+          "total_cases": 42,
+          "total_correct": 38,
+          "total_queries": 42
+        }
       },
       "recommendations": {
-        "_elapsed_sec": 0.271,
-        "_error_message": "adapter exited 0 but did not write $TMPDIR/T/structmemeval_recommendations.json",
-        "_status": "error"
+        "_elapsed_sec": 14.803,
+        "_status": "ok",
+        "output": {
+          "accuracy": 0.154,
+          "bench": "big",
+          "perfect_cases": 0,
+          "task": "recommendations",
+          "total_cases": 84,
+          "total_correct": 170,
+          "total_queries": 1104
+        }
       },
       "tree": {
-        "_elapsed_sec": 0.266,
-        "_error_message": "adapter exited 0 but did not write $TMPDIR/T/structmemeval_tree.json",
-        "_status": "error"
+        "_elapsed_sec": 2.141,
+        "_status": "ok",
+        "output": {
+          "accuracy": 0.0,
+          "bench": "big",
+          "perfect_cases": 0,
+          "task": "tree",
+          "total_cases": 22,
+          "total_correct": 0,
+          "total_queries": 43
+        }
       }
     }
   },

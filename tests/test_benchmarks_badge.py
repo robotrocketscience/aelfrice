@@ -90,13 +90,22 @@ def test_skipped_counts_as_not_ok(tmp_path):
     assert text.startswith("reproducibility: ⚠️")
 
 
-def test_canonical_v200_partial(tmp_path):
-    """Sanity: today's checked-in canonical reports 6/11."""
+def test_canonical_v200_full_pass(tmp_path):
+    """Sanity: today's checked-in canonical reports 11/11 ok.
+
+    Was 6/11 during the partial first-pass calibration on 2026-05-07
+    (LoCoMo data missing + StructMemEval × 4 hitting the #473
+    temporal_sort kwarg bug). Calibrated to 11/11 on 2026-05-08 once
+    #473 shipped and /tmp/LoCoMo + /tmp/StructMemEval data dirs were
+    populated. Ratchets to detect regression — flip back to a partial
+    cut would surface here.
+    """
     canonical = Path(__file__).parent.parent / "benchmarks" / "results" / "v2.0.0.json"
     if not canonical.exists():
         pytest.skip("canonical baseline not present")
     text = badge.compute_badge_text(canonical, today="2026-05-08")
-    assert "6/11 ok" in text
+    assert "11/11 ok" in text
+    assert text.startswith("reproducibility: ✅")
 
 
 def test_zero_total_does_not_render_check(tmp_path):
