@@ -49,7 +49,9 @@ tests/corpus/v2_0/
 │   └── *.jsonl
 ├── reasoning/                         #389 (Track B: aelf reason)
 │   └── *.jsonl
-└── wonder_online/                     #389 (Track B: aelf wonder)
+├── wonder_online/                     #389 (Track B: aelf wonder)
+│   └── *.jsonl
+└── multi_fact/                        #436 (intentional clustering — multi-fact recall)
     └── *.jsonl
 ```
 
@@ -90,6 +92,7 @@ required for **all** modules:
 | `bfs_potentially_stale` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_ids` (list[string]), `expected_hit_ids` (list[string]), `stale_ids` (list[string]), `k` (int) | `graded` |
 | `reasoning` | `query` (string), `beliefs` (list[obj]), `edges` (list[obj]), `expected_hit_ids` (list[string]), `baseline_search_only_top_k` (list[string]), `k` (int) | `graded` |
 | `wonder_online` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_id` (string), `expected_candidate_ids` (list[string]) | `graded` |
+| `multi_fact` | `query` (string), `expected_belief_ids` (list[string]), `expected_clusters` (list[list[string]]), `n_clusters_required` (int), `tag` (string) | `graded` |
 
 ### `directive_detection` re-entry gate (#374)
 
@@ -238,6 +241,32 @@ Public-tree fixtures may live here (synthetic-only); real-traffic fixtures
 stay lab-side per directory-of-origin rules. The bench-gate test at
 `tests/bench_gate/test_bfs_multihop_tests.py` skips cleanly when the
 module dir is empty or has fewer rows than the floor below.
+
+### `multi_fact` ship gate (#436)
+
+Per `docs/feature-intentional-clustering.md` § A2 the intentional
+clustering module ships when the multi_fact corpus shows a strictly
+positive `cluster_coverage@k` uplift on `use_intentional_clustering=ON`
+versus OFF, with no `recall@k` regression. Public CI cannot run this —
+labelled rows live lab-side per the directory-of-origin rule.
+
+Per-row shape:
+
+- `query` — string. The retrieve_v2 input under test.
+- `expected_belief_ids` — non-empty list of belief ids the top-K must
+  contain.
+- `expected_clusters` — list of lists; each inner list is the labeller's
+  partition of `expected_belief_ids` into one cluster. Two beliefs in
+  the same inner list are "the same cluster" for the purposes of the
+  uplift metric.
+- `n_clusters_required` — the minimum number of distinct clusters that
+  must appear in the top-K for the row to count as "covered."
+- `tag` — one of `complementary`, `conjunctive`, `sequential`. Free
+  text describing the multi-fact relationship; used for per-tag
+  uplift slicing.
+
+The bench-gate test at `tests/bench_gate/test_intentional_clustering.py`
+skips cleanly when the module dir is empty.
 
 ## v0.1 acceptance (per #307)
 

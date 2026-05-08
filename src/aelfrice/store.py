@@ -2432,6 +2432,27 @@ class MemoryStore:
         )
         return [_row_to_edge(r) for r in cur.fetchall()]
 
+    def edges_for_beliefs(self, belief_ids: list[str]) -> list[Edge]:
+        """Batched edge fetch for clustering (#436).
+
+        Returns every edge whose `src` OR `dst` is in `belief_ids` —
+        the candidate-induced subgraph plus its boundary. The clusterer
+        filters down to the candidate-induced subgraph (both endpoints
+        in the candidate set); the boundary edges come along for free
+        because the SQL is one read.
+
+        Empty input → empty list (no SQL).
+        """
+        if not belief_ids:
+            return []
+        ph = ",".join("?" * len(belief_ids))
+        params = tuple(belief_ids) + tuple(belief_ids)
+        cur = self._conn.execute(
+            f"SELECT * FROM edges WHERE src IN ({ph}) OR dst IN ({ph})",
+            params,
+        )
+        return [_row_to_edge(r) for r in cur.fetchall()]
+
     def edges_to(self, dst: str) -> list[Edge]:
         """Return every edge whose `dst` is `dst`. Symmetric companion
         to `edges_from`. Used by the edge-type-keyed rerank pass

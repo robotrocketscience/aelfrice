@@ -171,6 +171,20 @@ MODULES: dict[str, tuple[set[str], dict[str, str]]] = {
             "expected_candidate_ids": "list[str]",
         },
     ),
+    # #436 intentional clustering. cluster_coverage@k uplift on the
+    # multi-fact corpus; expected_clusters partitions expected_belief_ids
+    # into the labeller's cluster groupings so the bench can distinguish
+    # "found two beliefs from one cluster" from "found two clusters."
+    "multi_fact": (
+        {"graded"},
+        {
+            "query": "str",
+            "expected_belief_ids": "list[str]",
+            "expected_clusters": "list[list_str]",
+            "n_clusters_required": "int",
+            "tag": "str",
+        },
+    ),
 }
 
 COMMON_REQUIRED = ("id", "provenance", "labeller_note", "label")
@@ -218,6 +232,17 @@ def _check_field(row: dict, field: str, spec: str, where: str) -> None:
                 f"{where}: {field}[{i}] duplicate belief id {bid!r}"
             )
             row_belief_ids.add(bid)
+    elif spec == "list[list_str]":
+        assert isinstance(val, list) and val, (
+            f"{where}: field {field!r} must be non-empty list of lists"
+        )
+        for i, inner in enumerate(val):
+            assert isinstance(inner, list) and inner, (
+                f"{where}: {field}[{i}] must be a non-empty list, got {inner!r}"
+            )
+            assert all(isinstance(x, str) and x for x in inner), (
+                f"{where}: {field}[{i}] must contain only non-empty strings"
+            )
     elif spec == "list[edge]":
         assert isinstance(val, list) and val, (
             f"{where}: field {field!r} must be non-empty list of edges"
