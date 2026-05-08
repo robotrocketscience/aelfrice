@@ -38,7 +38,7 @@ import re
 from dataclasses import dataclass
 from typing import Final
 
-from aelfrice.triple_extractor import NOUN_PHRASE_PATTERN
+from aelfrice.np_pattern import NOUN_PHRASE_PATTERN
 
 # --- Per-kind regexes ----------------------------------------------------
 

@@ -28,7 +28,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Final
 
+# `np_pattern` is a leaf module (no aelfrice imports) so
+# `entity_extractor` can share the NP regex without closing a
+# store ↔ extractors cycle through this module (#499).
 from aelfrice.derivation_worker import run_worker
+from aelfrice.np_pattern import NOUN_PHRASE_PATTERN, _NP
 from aelfrice.models import (
     CORROBORATION_SOURCE_COMMIT_INGEST,
     EDGE_CITES,
@@ -85,26 +89,6 @@ class IngestResult:
 
 
 # --- Pattern bank --------------------------------------------------------
-
-# A noun phrase is up to 5 word-tokens, optionally led by an article /
-# possessive. Word tokens permit dashes and underscores so identifiers
-# (`session_id`, `aelf-hook`) can be subjects/objects without being
-# split. The bound at 5 tokens keeps matches local — long sentences
-# rarely have a 6+ token noun phrase that the pattern would misread.
-_DET = (
-    r"(?:the|a|an|our|their|its|this|that|these|those|my|your|his|her)"
-)
-_TOKEN = r"[A-Za-z][\w-]*"
-_NP = (
-    rf"(?:(?:{_DET})\s+)?{_TOKEN}(?:\s+{_TOKEN}){{0,4}}"
-)
-
-# Public alias of the internal noun-phrase pattern. Re-exported so
-# downstream extractors (the v1.3.0 entity-index path) can compose
-# the same NP shape without reaching into the underscore name. The
-# string itself is what's exposed; consumers compile it themselves
-# with whatever flags they need.
-NOUN_PHRASE_PATTERN: Final[str] = _NP
 
 
 def _np(group_name: str) -> str:
