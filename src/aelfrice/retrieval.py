@@ -1438,6 +1438,7 @@ def retrieve_with_tiers(
     heat_kernel_enabled: bool | None = None,
     eigenbasis_cache: GraphEigenbasisCache | None = None,
     use_type_aware_compression: bool | None = None,
+    use_intentional_clustering: bool | None = None,
 ) -> tuple[
     list[Belief], list[str], list[str], list[str], list[list[str]],
 ]:
@@ -1458,6 +1459,14 @@ def retrieve_with_tiers(
     `rendered_tokens` rather than `_belief_tokens(b)`. Locks always
     render verbatim per the strategy table, so locked accounting is
     unchanged. Default-OFF preserves byte-identical output.
+
+    When `use_intentional_clustering` resolves True (#436 v2.0), the L1
+    score-ranked greedy fill is replaced with `pack_with_clusters` over
+    the candidate-induced edge subgraph; locked + L2.5 are pre-included
+    unchanged, BFS expansion runs after as before. Mutually exclusive
+    with `use_type_aware_compression` at v2.0.0 — the cluster pack
+    accounts in raw tokens, composing it with compressed cost is a v2.x
+    follow-up; passing both raises ValueError.
     """
     global _LAST_TELEMETRY
     enabled = is_entity_index_enabled(entity_index_enabled)
@@ -1468,6 +1477,17 @@ def retrieve_with_tiers(
     compress_on = resolve_use_type_aware_compression(
         use_type_aware_compression,
     )
+    cluster_on = resolve_use_intentional_clustering(
+        use_intentional_clustering,
+    )
+    if cluster_on and compress_on:
+        raise ValueError(
+            "use_intentional_clustering and use_type_aware_compression "
+            "are mutually exclusive at v2.0.0 — the cluster pack uses "
+            "raw token cost; composing it with compressed cost is a "
+            "v2.x follow-up. See docs/feature-intentional-clustering.md "
+            "§ Reconciliation vs. type-aware compression (#434).",
+        )
     warn_placeholder_flags()
 
     def _cost(b: Belief) -> int:
@@ -1524,14 +1544,39 @@ def retrieve_with_tiers(
     out: list[Belief] = list(locked) + list(l25)
     l1_ids_list: list[str] = []
     l1_packed: list[Belief] = []
-    for b in l1:
-        cost: int = _cost(b)
-        if used + cost > effective_budget:
-            break
-        out.append(b)
-        l1_packed.append(b)
-        used += cost
-        l1_ids_list.append(b.id)
+    if cluster_on and l1:
+        # Diversity-aware fill over the candidate-induced edge subgraph
+        # (#436). Rank-position-as-score: l1 is already sorted descending
+        # by the rerank, so position is a monotone proxy for score and
+        # only the ordering matters to cluster_candidates / Stage 1.
+        cluster_scores: dict[str, float] = {
+            b.id: float(len(l1) - i) for i, b in enumerate(l1)
+        }
+        l1_edges = store.edges_for_beliefs([b.id for b in l1])
+        clusters = cluster_candidates(
+            l1, cluster_scores, edges=l1_edges,
+            edge_weight_floor=DEFAULT_CLUSTER_EDGE_FLOOR,
+        )
+        l1_by_id: dict[str, Belief] = {b.id: b for b in l1}
+        l1_remaining_budget = max(0, effective_budget - used)
+        l1_packed = pack_with_clusters(
+            clusters, l1_by_id,
+            token_budget=l1_remaining_budget,
+            cluster_diversity_target=DEFAULT_CLUSTER_DIVERSITY_TARGET,
+        )
+        for b in l1_packed:
+            out.append(b)
+            used += _cost(b)
+            l1_ids_list.append(b.id)
+    else:
+        for b in l1:
+            cost: int = _cost(b)
+            if used + cost > effective_budget:
+                break
+            out.append(b)
+            l1_packed.append(b)
+            used += cost
+            l1_ids_list.append(b.id)
 
     bfs_chains: list[list[str]] = []
     if bfs_on and query.strip():
@@ -1590,6 +1635,7 @@ def retrieve_v2(
     use_type_aware_compression: bool | None = None,
     use_vocab_bridge: bool | None = None,
     vocab_bridge_cache: VocabBridgeCache | None = None,
+    use_intentional_clustering: bool | None = None,
 ) -> RetrievalResult:
     """Lab-compatible retrieval wrapper for academic-suite adapters.
 
@@ -1677,6 +1723,7 @@ def retrieve_v2(
         use_bm25f_anchors=use_bm25f,
         bm25f_cache=bm25f_cache,
         use_type_aware_compression=use_type_aware_compression,
+        use_intentional_clustering=use_intentional_clustering,
     )
     if include_locked:
         beliefs = out
