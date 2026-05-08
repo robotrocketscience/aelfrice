@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final, Sequence
 
+from aelfrice.doc_linker import ANCHOR_MANUAL, link_belief_to_document
 from aelfrice.auditor import (
     CORPUS_MIN_DEFAULT as AUDIT_CORPUS_MIN_DEFAULT,
     SEVERITY_FAIL as AUDIT_SEVERITY_FAIL,
@@ -1099,6 +1100,21 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
             print(f"locked: {actual_id} (corroborated existing)", file=out)  # type: ignore[arg-type]
         else:
             print(f"locked: {actual_id}", file=out)  # type: ignore[arg-type]
+
+        # #435 doc-linker manual anchor. Idempotent on (belief_id,
+        # doc_uri); subsequent lock --doc with the same URI is a no-op
+        # write. The lock entry-point passes source_path=None to the
+        # worker (cli_remember has no canonical document), so the
+        # ingest-time hook does NOT fire — manual is the only path that
+        # writes anchors here.
+        doc_uri = getattr(args, "doc_uri", None)
+        if doc_uri:
+            link_belief_to_document(
+                store,
+                actual_id,
+                doc_uri,
+                anchor_type=ANCHOR_MANUAL,
+            )
     finally:
         store.close()
     return 0
@@ -3665,6 +3681,14 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "session_id to stamp on the locked belief and ingest_log row. "
             "Defaults to $AELF_SESSION_ID; warns to stderr and writes NULL "
             "if neither is set (#192)."
+        ),
+    )
+    p_lock.add_argument(
+        "--doc", dest="doc_uri", default=None,
+        help=(
+            "optional doc URI to anchor on this belief (#435). Stored as "
+            "anchor_type='manual' on belief_documents; opaque to the "
+            "linker beyond non-empty (file:// or https:// recommended)."
         ),
     )
     p_lock.set_defaults(func=_cmd_lock)
