@@ -46,17 +46,15 @@ def test_clustering_ship_gate_runner_present(
     rows = load_corpus_module(aelfrice_corpus_root, "multi_fact")
     assert rows, "multi_fact corpus produced zero rows"
 
-    try:
-        from tests.retrieve_uplift_runner import (  # noqa: F401
-            run_clustering_uplift,
-        )
-    except ImportError:
-        pytest.skip(
+    runner_mod = pytest.importorskip(
+        "tests.retrieve_uplift_runner",
+        reason=(
             "intentional-clustering uplift runner not yet wired "
-            "(operator gate; spec § A2 + A3 — pending lab-side corpus + scorer)",
-        )
+            "(operator gate; spec § A2 + A3 — pending lab-side corpus + scorer)"
+        ),
+    )
 
-    results = run_clustering_uplift(rows)  # type: ignore[name-defined]
+    results = runner_mod.run_clustering_uplift(rows)
     assert results.cluster_coverage_uplift > 0, (
         "intentional clustering must show strictly positive cluster_coverage@k uplift\n"
         f"  ON={results.cluster_coverage_on:.4f} "
