@@ -1958,9 +1958,7 @@ class MemoryStore:
         IGNORE turns repeats into no-op writes. Returns the canonical
         (first-write) row regardless of whether this call inserted.
         """
-        # Imported here to avoid a module-level cycle: doc_linker imports
-        # MemoryStore via TYPE_CHECKING-only.
-        from aelfrice.doc_linker import ANCHOR_TYPES, DocAnchor
+        from aelfrice.doc_linker_types import ANCHOR_TYPES, DocAnchor
 
         if not doc_uri:
             raise ValueError("doc_uri must be non-empty")
@@ -1998,7 +1996,7 @@ class MemoryStore:
 
     def get_doc_anchors(self, belief_id: str) -> list["DocAnchor"]:  # noqa: F821
         """Return every anchor for one belief, ordered by `created_at` ASC."""
-        from aelfrice.doc_linker import DocAnchor
+        from aelfrice.doc_linker_types import DocAnchor
 
         cur = self._conn.execute(
             """
@@ -2030,7 +2028,7 @@ class MemoryStore:
         costs one indexed read per call rather than one per surfaced
         belief. Result dict has an entry for every requested id.
         """
-        from aelfrice.doc_linker import DocAnchor
+        from aelfrice.doc_linker_types import DocAnchor
 
         out: dict[str, list[DocAnchor]] = {bid: [] for bid in belief_ids}
         if not belief_ids:
