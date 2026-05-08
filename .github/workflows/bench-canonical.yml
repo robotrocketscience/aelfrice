@@ -114,6 +114,39 @@ jobs:
           sys.exit(0 if overall.value == 'pass' else (1 if overall.value == 'fail' else 0))
           "
 
+      - name: Compute badge text
+        # Renders the one-line badge from the merged JSON. Uses
+        # `benchmarks.badge` (unit-tested) so the workflow stays free
+        # of count logic. Output is stashed in $GITHUB_OUTPUT for the
+        # next step. Skips when bench errored — leaves the previous
+        # badge in place rather than rewriting to a stale 0/N line.
+        id: badge
+        if: steps.bench.outputs.out != ''
+        run: |
+          set -euo pipefail
+          text=$(uv run python -m benchmarks.badge "${{ steps.bench.outputs.out }}")
+          echo "text=${text}" >> "$GITHUB_OUTPUT"
+          echo "computed: ${text}"
+
+      - name: Sync README into bench-canonical-results worktree + rewrite badge
+        # Issue #477: badge in README on the bench-canonical-results
+        # branch is auto-rewritten on each cron run. main is not
+        # touched (operator cherry-picks if they want main current).
+        # README is copied from the main checkout each run so the
+        # bench-canonical-results branch never carries a stale README.
+        if: steps.badge.outputs.text != ''
+        run: |
+          set -euo pipefail
+          cp README.md .bench-results-branch/README.md
+          new="${{ steps.badge.outputs.text }}" awk '
+            BEGIN { in_block=0 }
+            /<!-- bench-canonical-badge:start -->/ { print; print ENVIRON["new"]; in_block=1; next }
+            /<!-- bench-canonical-badge:end -->/   { print; in_block=0; next }
+            in_block { next }
+            { print }
+          ' .bench-results-branch/README.md > .bench-results-branch/README.md.new
+          mv .bench-results-branch/README.md.new .bench-results-branch/README.md
+
       - name: Commit + push to bench-canonical-results
         env:
           GIT_AUTHOR_NAME: aelfrice-bench-bot
