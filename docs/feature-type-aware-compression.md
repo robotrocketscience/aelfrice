@@ -1,6 +1,6 @@
 # Feature spec: Type-aware compression (#434)
 
-**Status:** spec, no implementation
+**Status:** implemented behind default-OFF flag; pack-loop budget rewrite landed; lab bench A2 / A4 pending
 **Issue:** #434
 **Recovery-inventory line:** [`docs/ROADMAP.md`](ROADMAP.md) — *"Type-aware compression | v2.0.0"*
 **Substrate prereqs:** #290 (retention class column + per-source defaults, shipped v1.6.0), #141 (context rebuilder, shipped v1.4.0)
