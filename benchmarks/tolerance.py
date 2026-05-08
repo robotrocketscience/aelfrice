@@ -146,12 +146,18 @@ def _walk_leaves(
 
     Skips non-numeric leaves (strings, lists, None) silently — those
     aren't metrics. Skips keys starting with `_` (reserved for
-    metadata like `_status`, `_elapsed_sec`).
+    metadata like `_status`, `_elapsed_sec`) EXCEPT the bare `_`
+    sentinel: `benchmarks/run.py:241` uses `_` as the sub-bucket key
+    for single-invocation adapters (locomo, longmemeval, amabench),
+    so their `output.*` leaves live under
+    `results.<adapter>._.output.*` and must be walked. Recursion
+    re-filters at each level so metadata like `_status` nested
+    inside `_` still gets skipped.
     """
     leaves: list[tuple[tuple[str, ...], float]] = []
     if isinstance(obj, dict):
         for k, v in obj.items():
-            if isinstance(k, str) and k.startswith("_"):
+            if isinstance(k, str) and k.startswith("_") and k != "_":
                 continue
             leaves.extend(_walk_leaves(v, (*path, str(k))))
     elif isinstance(obj, (int, float)) and not isinstance(obj, bool):
