@@ -59,11 +59,14 @@ bfs_enabled = false
 posterior_weight = 0.5
 
 [onboard.llm]
-# v1.3.0+. Opt in to the LLM-Haiku classifier at onboard time.
-# Default: false. Requires the [onboard-llm] extra and the
-# ANTHROPIC_API_KEY env var. See docs/llm_classifier.md and
-# docs/PRIVACY.md § Optional outbound calls.
-enabled = false
+# v1.3.0+; default flipped to true in v1.5.0 (#238). Host-driven
+# classification routes through the host model's Task tool — no API
+# key required for the default path. The direct-API path (when the
+# host has no Task tool reachable) requires the [onboard-llm] extra
+# and the ANTHROPIC_API_KEY env var. To opt out entirely, set this
+# to false or pass --llm-classify=false. See docs/llm_classifier.md
+# and docs/PRIVACY.md § Optional outbound calls.
+enabled = true
 
 # Hard cap on total input+output tokens per onboard run.
 # Default: 200_000. Run aborts mid-stream if exceeded; already-
