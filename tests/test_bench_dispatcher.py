@@ -179,13 +179,16 @@ def test_headline_cut_recorded(tmp_path):
 
 
 def test_per_question_detail_stripped_from_merged_output(tmp_path):
-    """The merged JSON drops `per_question` lists — they bloat the file
-    and aren't read by the band-check (#437 calibration finding 2026-05-06).
+    """The merged JSON drops `per_question` and `per_case` lists — they bloat
+    the file and aren't read by the band-check (#437 calibration finding
+    2026-05-06; `per_case` added 2026-05-08 after structmemeval bloated the
+    canonical to 6.4 MB).
     """
     out = tmp_path / "stripped.json"
     payload = {
         "f1": 0.5, "exact_match": 0.3,
         "per_question": [{"id": i, "score": 0.5} for i in range(2000)],
+        "per_case": [{"case_id": f"c{i}", "accuracy": 1.0} for i in range(50)],
     }
     rc = bench_run.main_all(
         out_path=out, canonical=False, smoke=True,
@@ -199,6 +202,8 @@ def test_per_question_detail_stripped_from_merged_output(tmp_path):
     ama_out = data["results"]["amabench"]["_"]["output"]
     assert "per_question" not in mab_out
     assert "per_question" not in ama_out
+    assert "per_case" not in mab_out
+    assert "per_case" not in ama_out
     # Summary metrics retained.
     assert mab_out["f1"] == 0.5
     assert ama_out["exact_match"] == 0.3

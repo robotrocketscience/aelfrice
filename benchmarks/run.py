@@ -195,6 +195,7 @@ def _default_runner(cmd: list[str], out_path: Path) -> subprocess.CompletedProce
 # needs to read it directly.
 _DETAIL_FIELDS_TO_STRIP: frozenset[str] = frozenset({
     "per_question",
+    "per_case",
 })
 
 
