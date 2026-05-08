@@ -44,7 +44,7 @@ import os
 from dataclasses import dataclass
 from typing import Final
 
-from aelfrice.derivation import DerivationInput, derive
+from aelfrice.derivation import DerivationInput, RouteOverrides, derive
 from aelfrice.models import (
     CORROBORATION_SOURCE_CLI_REMEMBER,
     CORROBORATION_SOURCE_COMMIT_INGEST,
@@ -75,6 +75,19 @@ _CORROBORATION_BY_SOURCE_KIND: dict[str, str] = {
 _META_CALL_SITE: str = "call_site"
 _META_OVERRIDE_BELIEF_TYPE: str = "override_belief_type"
 _META_SOURCE_PATH_HASH: str = "source_path_hash"
+# #265 PR-B route_overrides sub-dict — group-keyed so the LLM-router's
+# per-candidate fields don't pollute the flat raw_meta namespace.
+_META_ROUTE_OVERRIDES: str = "route_overrides"
+_RO_BELIEF_TYPE: str = "belief_type"
+_RO_ORIGIN: str = "origin"
+_RO_ALPHA: str = "alpha"
+_RO_BETA: str = "beta"
+_RO_AUDIT_SOURCE: str = "audit_source"
+
+# Valence written on the worker-emitted audit row when an LLM route
+# carries an `audit_source`. Matches the scanner's pre-migration value
+# at scanner.py:307 — no semantic shift, just relocation.
+_AUDIT_VALENCE: float = 0.0
 
 # v2.x #265 view-flip flag. Default off. When on, `beliefs` becomes a
 # materialized view of `ingest_log` and direct `insert_belief()` calls
@@ -137,6 +150,46 @@ def _resolve_corroboration_source(row: dict[str, object]) -> str:
     )
 
 
+def _route_overrides_from_raw_meta(
+    raw_meta: dict[str, object] | None,
+) -> RouteOverrides | None:
+    """Reconstruct a `RouteOverrides` from `raw_meta["route_overrides"]`.
+
+    Returns `None` when the sub-dict is absent or malformed; the caller
+    treats `None` as "no override" and lets `derive()` run its
+    deterministic path. Strict on types (#265 ratification: schema is
+    fixed) — silently dropping a malformed sub-dict beats partial
+    application.
+    """
+    if not isinstance(raw_meta, dict):
+        return None
+    block = raw_meta.get(_META_ROUTE_OVERRIDES)
+    if not isinstance(block, dict):
+        return None
+    belief_type = block.get(_RO_BELIEF_TYPE)
+    origin = block.get(_RO_ORIGIN)
+    alpha = block.get(_RO_ALPHA)
+    beta = block.get(_RO_BETA)
+    if not (
+        isinstance(belief_type, str) and belief_type
+        and isinstance(origin, str) and origin
+        and isinstance(alpha, (int, float))
+        and isinstance(beta, (int, float))
+    ):
+        return None
+    audit_source = block.get(_RO_AUDIT_SOURCE)
+    return RouteOverrides(
+        belief_type=belief_type,
+        origin=origin,
+        alpha=float(alpha),
+        beta=float(beta),
+        audit_source=(
+            audit_source if isinstance(audit_source, str) and audit_source
+            else None
+        ),
+    )
+
+
 def _derivation_input_from_row(row: dict[str, object]) -> DerivationInput:
     raw_meta_obj = row.get("raw_meta")
     raw_meta: dict[str, object] | None = (
@@ -147,6 +200,7 @@ def _derivation_input_from_row(row: dict[str, object]) -> DerivationInput:
         ov = raw_meta.get(_META_OVERRIDE_BELIEF_TYPE)
         if isinstance(ov, str) and ov:
             override = ov
+    route_overrides = _route_overrides_from_raw_meta(raw_meta)
     source_path = row.get("source_path")
     session_id = row.get("session_id")
     classifier_version = row.get("classifier_version")
@@ -165,6 +219,7 @@ def _derivation_input_from_row(row: dict[str, object]) -> DerivationInput:
             rule_set_hash if isinstance(rule_set_hash, str) else None
         ),
         override_belief_type=override,
+        route_overrides=route_overrides,
     )
 
 
@@ -221,6 +276,23 @@ def _process_row(
         session_id=inp.session_id,
         source_path_hash=source_path_hash,
     )
+
+    # #265 PR-B: relocate scanner's post-insert audit row into the
+    # worker. Only fires when the LLM router stamped an `audit_source`
+    # AND the belief was newly inserted (matches scanner.py:301-310's
+    # `if was_inserted` guard intent — corroborations don't need a
+    # second audit row).
+    if (
+        was_inserted
+        and inp.route_overrides is not None
+        and inp.route_overrides.audit_source is not None
+    ):
+        store.insert_feedback_event(
+            belief_id=actual_id,
+            valence=_AUDIT_VALENCE,
+            source=inp.route_overrides.audit_source,
+            created_at=inp.ts,
+        )
 
     derived_edge_ids: list[tuple[str, str, str]] = []
     for edge in out.edges:

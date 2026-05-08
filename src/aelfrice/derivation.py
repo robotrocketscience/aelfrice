@@ -46,6 +46,34 @@ _TRIPLE_BELIEF_SOURCE: Final[str] = "triple"
 
 
 @dataclass(frozen=True)
+class RouteOverrides:
+    """LLM-router post-derivation splice (#265 PR-B).
+
+    The scanner's LLM-classify path produces a per-candidate decision
+    that the deterministic `derive()` cannot reconstruct from raw text.
+    Carrying these fields on the `DerivationInput` lets the worker apply
+    them as a post-derivation splice on the classifier-path output: the
+    `(type, origin, alpha, beta)` of the produced belief are replaced
+    with router-supplied values; everything else (id, content_hash,
+    edges) flows through `derive()` unchanged.
+
+    `audit_source` is not a `Belief` field. The worker inspects it
+    after insert and emits a `feedback_history` row when set and the
+    belief was newly inserted (not corroborated). Mirrors today's
+    direct-write scanner audit at `scanner.py:304-310`.
+
+    Frozen at ingest time per the #265 ratification: rebuilds replay
+    these values verbatim rather than re-rolling the LLM router.
+    """
+
+    belief_type: str
+    origin: str
+    alpha: float
+    beta: float
+    audit_source: str | None = None
+
+
+@dataclass(frozen=True)
 class DerivationInput:
     """Everything `derive()` needs; no store references.
 
@@ -71,6 +99,12 @@ class DerivationInput:
     # handshake). When set, `derive()` skips `classify_sentence` and uses
     # this type to look up the source-adjusted prior.
     override_belief_type: str | None = None
+    # Optional LLM-router post-derivation splice (#265 PR-B). Applied
+    # only on the classifier path (filesystem / python_ast). On the
+    # lock/remember and triple-extraction paths the deterministic
+    # output is the contract; route_overrides is silently ignored
+    # there.
+    route_overrides: RouteOverrides | None = None
 
 
 @dataclass(frozen=True)
@@ -242,6 +276,33 @@ def derive(inp: DerivationInput) -> DerivationOutput:
             last_retrieved_at=None,
             session_id=inp.session_id,
             origin=ORIGIN_AGENT_INFERRED,
+            retention_class=retention_class_for_source(inp.source_kind),
+        )
+        return DerivationOutput(belief=belief, edges=[])
+
+    if inp.route_overrides is not None:
+        # LLM-router path: skip the regex classifier entirely. The
+        # router has already produced (type, origin, alpha, beta);
+        # `derive()`'s job is to mint the deterministic id +
+        # content_hash and assemble the Belief shell. `persist=False`
+        # routes are filtered upstream (scanner.py) before reaching
+        # the worker, so we can assume persist=True here.
+        ro = inp.route_overrides
+        bid = _belief_id(raw, source)
+        belief = Belief(
+            id=bid,
+            content=raw,
+            content_hash=_content_hash(raw),
+            alpha=ro.alpha,
+            beta=ro.beta,
+            type=ro.belief_type,
+            lock_level=LOCK_NONE,
+            locked_at=None,
+            demotion_pressure=0,
+            created_at=ts,
+            last_retrieved_at=None,
+            session_id=inp.session_id,
+            origin=ro.origin,
             retention_class=retention_class_for_source(inp.source_kind),
         )
         return DerivationOutput(belief=belief, edges=[])
