@@ -1292,7 +1292,7 @@ def _qualifies_core(b: object, args: argparse.Namespace) -> bool:
     if corr >= args.min_corroboration:
         return True
     ab = alpha + beta
-    if ab >= args.min_alpha_beta and (alpha / ab) >= args.min_posterior:
+    if ab > 0 and ab >= args.min_alpha_beta and (alpha / ab) >= args.min_posterior:
         return True
     return False
 
@@ -1333,7 +1333,7 @@ def _emit_core(
             alpha: float = b.alpha  # type: ignore[attr-defined]
             beta: float = b.beta  # type: ignore[attr-defined]
             ab = alpha + beta
-            if ab >= args.min_alpha_beta and (alpha / ab) >= args.min_posterior:
+            if ab > 0 and ab >= args.min_alpha_beta and (alpha / ab) >= args.min_posterior:
                 signals.append("posterior")
             rows.append({
                 "id": b.id,  # type: ignore[attr-defined]
@@ -1358,7 +1358,7 @@ def _emit_core(
             parts.append("LOCK")
         if corr >= args.min_corroboration:
             parts.append(f"CORR={corr}")
-        if ab >= args.min_alpha_beta and (alpha / ab) >= args.min_posterior:
+        if ab > 0 and ab >= args.min_alpha_beta and (alpha / ab) >= args.min_posterior:
             parts.append(f"α={alpha:.1f}")
             parts.append(f"β={beta:.1f}")
             parts.append(f"μ={alpha / ab:.3f}")

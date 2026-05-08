@@ -312,3 +312,23 @@ def test_core_zero_alpha_beta_does_not_crash(isolated_db: Path) -> None:
     code, out = _run("core")
     assert code == 0
     assert "b0postlive00000000" in out
+
+
+def test_core_zero_alpha_beta_with_min_ab_zero_does_not_crash(
+    isolated_db: Path,
+) -> None:
+    """`--min-alpha-beta 0` must not enable the alpha/ab division on an α+β==0 belief.
+
+    The default test above passes only because `min_alpha_beta=4` short-circuits
+    the qualify check before the division. This variant exercises the actual
+    unguarded sites at the JSON and text emission paths.
+    """
+    s = MemoryStore(str(isolated_db))
+    try:
+        s.insert_belief(
+            _make_belief("b0zeroab0000000000", "zero ab edge case", alpha=0.0, beta=0.0),
+        )
+    finally:
+        s.close()
+    code, _ = _run("core", "--min-alpha-beta", "0")
+    assert code == 0
