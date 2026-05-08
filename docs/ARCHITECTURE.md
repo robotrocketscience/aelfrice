@@ -29,7 +29,7 @@ Imports are one-directional — modules lower in the table import from higher.
 | `models.py` | `Belief`, `Edge`, `FeedbackEvent`, `OnboardSession` dataclasses; type / lock / origin constants. No I/O. |
 | `scoring.py` | `posterior_mean`, `decay`, `relevance_combiner`. Type half-lives. Lock-floor short-circuit. Decay target: Jeffreys `(0.5, 0.5)`. |
 | `store.py` | SQLite WAL + FTS5 + CRUD. `propagate_valence` BFS with broker-confidence attenuation. |
-| `retrieval.py` | `retrieve(store, query, token_budget=2000)` — L0 locked + L2.5 entity-index (v1.3+) + L3 BFS multi-hop (v1.3+, default-off) + L1 FTS5 BM25 with Bayesian log-additive reranking (v1.3+). L0 never trimmed. |
+| `retrieval.py` | `retrieve(store, query, token_budget=2000)` — L0 locked + L2.5 entity-index (v1.3+) + L1 FTS5 BM25/BM25F (BM25F default-on since v1.7.0) with Bayesian log-additive reranking (v1.3+) + L3 BFS multi-hop (v1.3+, default-off) over the L0+L2.5+L1 seed set. L0 never trimmed. |
 | `feedback.py` | `apply_feedback(store, belief_id, valence, source)` — only Bayesian-update path. Writes `feedback_history`. Drives demotion-pressure + auto-demote. |
 | `contradiction.py` | `resolve_contradiction` — picks a winner per precedence, inserts `SUPERSEDES`, writes audit row. Backs `aelf resolve`. |
 | `correction.py` | No-LLM heuristic correction detector. |
@@ -97,10 +97,11 @@ L0: store.list_locked()              always loaded; never trimmed
         ↓
 L2.5: entity-index lookup (v1.3+)    NER-extracted entities → exact + stem match;
         ↓                             default-on; disable via [retrieval] entity_index_enabled = false
-L3: BFS multi-hop expansion (v1.3+)  edge-weighted graph walk from L0+L2.5 seeds;
-        ↓                             default-OFF; enable via [retrieval] bfs_enabled = true
-L1: FTS5 BM25 keyword search         limit l1_limit, query escaped;
+L1: FTS5 BM25 / BM25F                limit l1_limit, query escaped;
         ↓                             v1.3+: score = log(bm25) + 0.5*log(posterior_mean)
+                                      v1.7+: BM25F anchor-augmented sparse matvec, default-on (#148/#154)
+L3: BFS multi-hop expansion (v1.3+)  edge-weighted graph walk from L0+L2.5+L1 seed set;
+        ↓                             default-OFF; enable via [retrieval] bfs_enabled = true
 Dedupe L1+L2.5+L3 against L0 ids
         ↓
 Trim from tail until sum(estimated_tokens) ≤ token_budget
