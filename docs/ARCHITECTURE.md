@@ -193,12 +193,15 @@ and the harness's own summary land in the new context (augment mode)
 
 These land at v2.0 with evidence (a benchmark, an experiment, a clear case where the existing operations don't suffice):
 
-- HRR / sentence-transformer embeddings
+- Sentence-transformer embeddings (HRR primitives shipped at v1.7.0 as a structural lane, not a learned-embedding lane)
 - Cross-project knowledge federation
-- Full posterior-driven ranking eval (10-round MRR uplift, ECE calibration, BM25F + heat-kernel composition — v2.0.0; the partial Bayesian reranking shipped at v1.3.0)
+- Full composition tracker — 10-round MRR uplift, ECE calibration, BM25F × heat-kernel × HRR-structural composition eval (#154; v2.0.0+ work). The partial Bayesian reranking shipped at v1.3.0 and BM25F-only L1 shipped default-on at v1.7.0; the unfinished piece is the joint-composition bench gate that flips heat-kernel and HRR-structural defaults.
 
 The following were previously listed here and have since shipped:
 - Posterior-aware retrieval ranking → **shipped v1.3.0** (partial; [bayesian_ranking.md](bayesian_ranking.md))
 - BFS multi-hop graph retrieval → **shipped v1.3.0** ([bfs_multihop.md](bfs_multihop.md))
 - Entity index / NER → **shipped v1.3.0** ([entity_index.md](entity_index.md))
 - LLM in the hot path (optional onboard classifier) → **shipped v1.3.0** ([llm_classifier.md](llm_classifier.md))
+- BM25F anchor-text retrieval → **shipped v1.7.0**, default-on (#148/#154; +0.6650 NDCG@k uplift on the v0.1 retrieve_uplift fixture)
+- HRR primitives + structural lane → **shipped v1.7.0** ([feature-hrr-vocab-bridge.md](feature-hrr-vocab-bridge.md); opt-in, default-OFF pending composition tracker)
+- Heat-kernel authority scorer → **shipped v1.7.0** (opt-in, default-OFF pending composition tracker)
