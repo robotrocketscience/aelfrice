@@ -118,6 +118,10 @@ HIDDEN_SUBCOMMANDS = frozenset({
     "health", "stats", "project-warm", "session-delta",
     "demote", "validate", "resolve", "feedback", "ingest-transcript",
     "sweep-feedback",
+    # v2.1 (#475) — operator-side gate aggregator. CLI ships hidden;
+    # slash command shape (`/aelf:gate-list` vs `/aelf:gate`) is a
+    # separate ship.
+    "gate",
     # #427 deprecated alias — kept callable for one minor so existing
     # `aelf upgrade` invocations don't break. The slash file ships
     # only under the canonical `upgrade-cmd` name.

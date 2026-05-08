@@ -1492,6 +1492,38 @@ _BENCH_INERT_TARGETS: Final[dict[str, str]] = {
 }
 
 
+def _cmd_gate(args: argparse.Namespace, out: object) -> int:
+    """Aggregate open `gate:*` issues into a single screenful (#475).
+
+    `aelf gate list` (default verb) prints sections for `gate:ratify`,
+    `gate:prereq`, `gate:bench` (label `bench-gated`), `gate:license` —
+    one line per issue with ask-count + age for ratify, plain `#N title`
+    for the rest. `--json` emits the same structure as machine-readable
+    JSON for scripting.
+
+    Repo is auto-detected from cwd's git remote, the same model the rest
+    of the gh-driven tooling uses (aelf-claim.sh, aelf-scan.sh).
+    """
+    from aelfrice import gate_list as _gl
+    verb = (getattr(args, "gate_verb", None) or "list").lower()
+    if verb != "list":
+        print(
+            f"aelf gate: unknown verb {verb!r}. Known: list.",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 2
+    try:
+        report = _gl.collect()
+    except _gl.GhError as e:
+        print(f"aelf gate list: {e}", file=out)  # type: ignore[arg-type]
+        return 1
+    if getattr(args, "gate_json", False):
+        print(_gl.format_json(report), end="", file=out)  # type: ignore[arg-type]
+    else:
+        print(_gl.format_text(report), end="", file=out)  # type: ignore[arg-type]
+    return 0
+
+
 def _cmd_bench(args: argparse.Namespace, out: object) -> int:
     """Run a benchmark target.
 
@@ -4417,6 +4449,17 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
 
     # Hidden: CI regression target. Humans run via `python -m aelfrice.benchmark`
     # if needed.
+    p_gate = sub.add_parser("gate", help=argparse.SUPPRESS)
+    p_gate.add_argument(
+        "gate_verb", nargs="?", default="list",
+        help="verb: list (default). Future: ratify (read/write API).",
+    )
+    p_gate.add_argument(
+        "--json", dest="gate_json", action="store_true",
+        help="emit machine-readable JSON instead of plain text",
+    )
+    p_gate.set_defaults(func=_cmd_gate)
+
     p_bench = sub.add_parser("bench", help=argparse.SUPPRESS)
     p_bench.add_argument(
         "target", nargs="?", default=None,
