@@ -74,6 +74,7 @@ from aelfrice.clustering import (
     pack_with_clusters,
 )
 from aelfrice.compression import CompressedBelief, compress_for_retrieval
+from aelfrice.doc_linker import DocAnchor
 from aelfrice.vocab_bridge import VocabBridge, VocabBridgeCache
 from aelfrice.entity_extractor import extract_entities
 from aelfrice.graph_spectral import (
@@ -240,6 +241,12 @@ class RetrievalResult:
     last call. The benchmark adapter consumes it for the L0/L1/L2.5
     counts surface; default `[]` for backwards-compat with adapters
     that only inspect `beliefs`.
+
+    `doc_anchors` (#435) is a parallel list to `beliefs`: same length,
+    same order. `doc_anchors[i]` lists every `belief_documents` row for
+    `beliefs[i]`. Empty when the caller did not opt in via
+    `with_doc_anchors=True`; also empty for beliefs that have no
+    anchors.
     """
 
     beliefs: list[Belief]
@@ -248,6 +255,7 @@ class RetrievalResult:
     entity_hits: list[str] = field(default_factory=lambda: [])
     locked_ids: list[str] = field(default_factory=lambda: [])
     l1_ids: list[str] = field(default_factory=lambda: [])
+    doc_anchors: list[list[DocAnchor]] = field(default_factory=lambda: [])
     # v2.1 #434 type-aware compression. Populated when
     # use_type_aware_compression resolves True. Same length and order as
     # `beliefs` (parallel field — consumers that want compressed render
@@ -1636,6 +1644,7 @@ def retrieve_v2(
     use_vocab_bridge: bool | None = None,
     vocab_bridge_cache: VocabBridgeCache | None = None,
     use_intentional_clustering: bool | None = None,
+    with_doc_anchors: bool = False,
 ) -> RetrievalResult:
     """Lab-compatible retrieval wrapper for academic-suite adapters.
 
@@ -1740,6 +1749,16 @@ def retrieve_v2(
             for b in beliefs
         ]
 
+    # #435 doc-linker post-rank, pre-pack projection. Default OFF keeps
+    # the adapter wire bytes-identical for callers that don't opt in.
+    # When ON, one batched `belief_id IN (...)` SELECT joins anchors
+    # onto the result. Anchors are metadata for the consumer; they do
+    # NOT count against the token budget pack.
+    doc_anchors_list: list[list[DocAnchor]] = []
+    if with_doc_anchors and beliefs:
+        anchors_by_id = store.get_doc_anchors_batch([b.id for b in beliefs])
+        doc_anchors_list = [anchors_by_id.get(b.id, []) for b in beliefs]
+
     return RetrievalResult(
         beliefs=beliefs,
         entity_hits=l25_ids_list,
@@ -1747,6 +1766,7 @@ def retrieve_v2(
         l1_ids=l1_ids_list,
         bfs_chains=bfs_chains,
         compressed_beliefs=compressed,
+        doc_anchors=doc_anchors_list,
     )
 
 
