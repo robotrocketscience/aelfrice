@@ -68,6 +68,7 @@ from aelfrice.bfs_multihop import (
 )
 from aelfrice.bm25 import BM25IndexCache
 from aelfrice.compression import CompressedBelief, compress_for_retrieval
+from aelfrice.vocab_bridge import VocabBridge, VocabBridgeCache
 from aelfrice.entity_extractor import extract_entities
 from aelfrice.graph_spectral import (
     DEFAULT_BM25_SEED_TOP_K,
@@ -137,6 +138,11 @@ HRR_STRUCTURAL_FLAG: Final[str] = "use_hrr_structural"
 # CompressedBelief renderings; OFF leaves the field empty for byte-identical
 # behavior with v1.x adapters.
 TYPE_AWARE_COMPRESSION_FLAG: Final[str] = "use_type_aware_compression"
+# v2.1 #433 HRR vocabulary-bridge flag. Default-OFF at v2.0.0 until the
+# lab-side bench gate (A2 in docs/feature-hrr-vocab-bridge.md) clears.
+# When ON, retrieve_v2 builds (or fetches a cached) VocabBridge against
+# the store and rewrites the query before lane fan-out.
+VOCAB_BRIDGE_FLAG: Final[str] = "use_vocab_bridge"
 
 PLACEHOLDER_FLAGS: Final[tuple[str, ...]] = (
     SIGNED_LAPLACIAN_FLAG,
@@ -163,6 +169,8 @@ ENV_HEAT_KERNEL: Final[str] = "AELFRICE_HEAT_KERNEL"
 ENV_HRR_STRUCTURAL: Final[str] = "AELFRICE_HRR_STRUCTURAL"
 # v2.1 #434 type-aware compression env override. Tri-state.
 ENV_TYPE_AWARE_COMPRESSION: Final[str] = "AELFRICE_TYPE_AWARE_COMPRESSION"
+# v2.1 #433 vocabulary-bridge env override. Tri-state.
+ENV_VOCAB_BRIDGE: Final[str] = "AELFRICE_VOCAB_BRIDGE"
 # v1.3.0 posterior-weight env override. Float-typed; "0.0" is the
 # only value that fully disables (collapsing to BM25-only ordering).
 # Empty / non-numeric values fall through to the next precedence
@@ -310,6 +318,21 @@ def _env_hrr_structural_override() -> bool | None:
     recognised truthy/falsy value, else None. Symmetric to
     `_env_bm25f_override`."""
     raw = os.environ.get(ENV_HRR_STRUCTURAL)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def _env_vocab_bridge_override() -> bool | None:
+    """Return True/False if AELFRICE_VOCAB_BRIDGE is set to a recognised
+    truthy/falsy value, else None. Symmetric to
+    `_env_bm25f_override`."""
+    raw = os.environ.get(ENV_VOCAB_BRIDGE)
     if raw is None:
         return None
     norm = raw.strip().lower()
@@ -757,6 +780,32 @@ def resolve_use_type_aware_compression(
     if explicit is not None:
         return explicit
     toml_value = _read_toml_flag_for(TYPE_AWARE_COMPRESSION_FLAG, start)
+    if toml_value is not None:
+        return toml_value
+    return False
+
+
+def resolve_use_vocab_bridge(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the HRR vocabulary-bridge flag (#433).
+
+    Precedence (first decisive wins):
+      1. AELFRICE_VOCAB_BRIDGE env var (truthy / falsy normalised).
+      2. Explicit `explicit` kwarg from the caller.
+      3. `[retrieval] use_vocab_bridge` in `.aelfrice.toml`.
+      4. Default: False — ships behind the flag at v2.0.0; the bench gate
+         (A2 in docs/feature-hrr-vocab-bridge.md) flips the default
+         after lab-side benchmark evidence clears.
+    """
+    env = _env_vocab_bridge_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    toml_value = _read_toml_flag_for(VOCAB_BRIDGE_FLAG, start)
     if toml_value is not None:
         return toml_value
     return False
@@ -1448,7 +1497,7 @@ def retrieve_v2(
     query: str,
     budget: int = DEFAULT_TOKEN_BUDGET,
     include_locked: bool = True,
-    use_hrr: bool = False,  # noqa: ARG001
+    use_hrr: bool | None = None,
     use_bfs: bool | None = None,
     use_entity_index: bool | None = None,
     l1_limit: int = DEFAULT_L1_LIMIT,
@@ -1462,6 +1511,8 @@ def retrieve_v2(
     temporal_sort: bool = False,
     temporal_half_life_seconds: float | None = None,
     use_type_aware_compression: bool | None = None,
+    use_vocab_bridge: bool | None = None,
+    vocab_bridge_cache: VocabBridgeCache | None = None,
 ) -> RetrievalResult:
     """Lab-compatible retrieval wrapper for academic-suite adapters.
 
@@ -1471,9 +1522,21 @@ def retrieve_v2(
     - `budget` (lab kwarg) maps to `token_budget` (public kwarg).
     - `include_locked=False` filters out lock_level != LOCK_NONE post-retrieval
       (public always returns L0 first; this wrapper drops them on demand).
-    - `use_hrr` is accepted but no-op at v1.3.0 — the HRR vocabulary
-      bridge has not yet ported. Callers can pass it for forward-compat
-      without conditionals.
+    - `use_hrr` is a deprecated alias for `use_vocab_bridge` (#433).
+      Lab v2.0.0 adapters that pass `use_hrr=True` route to the
+      vocabulary bridge; new callers should use `use_vocab_bridge`
+      directly. The alias survives for one minor version.
+    - `use_vocab_bridge` (v2.1 #433) — when True, retrieve_v2 builds
+      (or fetches a cached) `VocabBridge` against the store and
+      rewrites the query before lane fan-out. Default-OFF until the
+      bench gate (A2 in docs/feature-hrr-vocab-bridge.md) clears.
+      Original-query tokens are preserved verbatim; canonical-entity
+      rewrites are appended, never substituted.
+    - `vocab_bridge_cache` (v2.1 #433) — explicit `VocabBridgeCache`
+      to reuse an already-built bridge. None falls through to a
+      fresh `VocabBridgeCache(store)` per call. Long-running
+      consumers should pass an explicit cache to amortise the
+      build cost across queries.
     - `use_bfs` (v1.3.0) maps to `retrieve()`'s `bfs_enabled` kwarg.
       None falls through to the default-OFF resolution (env / TOML
       / False at v1.3.0). Setting it True opts a single retrieve_v2
@@ -1504,6 +1567,19 @@ def retrieve_v2(
       `result.beliefs` (and stub diagnostics fields, plus the new
       v1.3 `entity_hits` and `bfs_chains`).
     """
+    # v2.1 #433 vocabulary-bridge query rewrite. Runs before lane
+    # fan-out so every lane sees the widened query string. The bridge
+    # appends canonical-entity rewrites; the original tokens are
+    # preserved verbatim, so a flag-OFF call is byte-identical to the
+    # pre-bridge behaviour. `use_hrr` is a deprecated alias.
+    bridge_explicit = use_vocab_bridge
+    if bridge_explicit is None and use_hrr is not None:
+        bridge_explicit = use_hrr
+    if resolve_use_vocab_bridge(bridge_explicit):
+        cache = vocab_bridge_cache or VocabBridgeCache(store)
+        bridge: VocabBridge = cache.get()
+        query = bridge.rewrite(query)
+
     (
         out,
         locked_ids_list,

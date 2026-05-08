@@ -363,3 +363,41 @@ class VocabBridge:
     def size(self) -> int:
         """Number of canonical entities in the bridge."""
         return len(self.canonicals)
+
+
+@dataclass
+class VocabBridgeCache:
+    """Lazy, invalidation-aware wrapper around a single ``VocabBridge``.
+
+    Subscribes to the store's invalidation callback registry on
+    construction, so any belief / edge mutation drops the cached
+    bridge. The next ``get()`` rebuilds.
+
+    Per-instance: two caches pointing at different stores never share
+    state. Thread safety is the caller's responsibility (matches the
+    contract of :class:`aelfrice.bm25.BM25IndexCache`).
+    """
+
+    store: MemoryStore
+    dim: int = DEFAULT_DIM
+    store_path: str | None = None
+    seed: int | None = None
+    _bridge: VocabBridge | None = field(default=None, init=False, repr=False)
+    _subscribed: bool = field(default=False, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not self._subscribed:
+            self.store.add_invalidation_callback(self.invalidate)
+            self._subscribed = True
+
+    def get(self) -> VocabBridge:
+        """Return the current bridge, building or rebuilding as needed."""
+        if self._bridge is None:
+            bridge = VocabBridge(dim=self.dim)
+            bridge.build(self.store, store_path=self.store_path, seed=self.seed)
+            self._bridge = bridge
+        return self._bridge
+
+    def invalidate(self) -> None:
+        """Drop the cached bridge. Wired to the store mutation hook."""
+        self._bridge = None
