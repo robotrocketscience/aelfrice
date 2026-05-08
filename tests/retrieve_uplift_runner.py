@@ -47,7 +47,11 @@ from aelfrice.models import (
     Belief,
     Edge,
 )
-from aelfrice.retrieval import retrieve
+from aelfrice.retrieval import (
+    DEFAULT_TOKEN_BUDGET,
+    retrieve,
+    retrieve_v2,
+)
 from aelfrice.store import MemoryStore
 
 _TS = "2026-05-05T00:00:00+00:00"
@@ -230,6 +234,137 @@ def run_per_flag_uplift(
                 mean_ndcg_on=on_total / n if n else 0.0,
             ))
     return out
+
+
+# ---------------------------------------------------------------------
+# Intentional clustering (#436) — multi_fact bench gate (spec § A2).
+#
+# Consumed by tests/bench_gate/test_intentional_clustering.py via
+# `pytest.importorskip("tests.retrieve_uplift_runner")` then
+# `runner_mod.run_clustering_uplift(rows)`. Activates on any
+# AELFRICE_CORPUS_ROOT pointing at a `multi_fact/*.jsonl` row set.
+#
+# Doc-linker (#435) symmetric runner intentionally NOT here — its A2
+# gate requires a downstream rerank that consumes the `with_doc_anchors`
+# projection to influence belief order, and that rerank has not shipped.
+# When it lands, the same shape applies (load rows → twin retrieve calls
+# → mean-NDCG uplift). Filed for a follow-up PR.
+# ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ClusteringUplift:
+    """Spec § A2 result shape for #436.
+
+    Bench-gate test asserts ``cluster_coverage_uplift > 0`` and
+    formats the OFF/ON/uplift triple in its failure message; recall@k
+    fields are reported alongside as the don't-degrade backstop.
+    """
+
+    n_rows: int
+    mean_recall_off: float
+    mean_recall_on: float
+    cluster_coverage_off: float
+    cluster_coverage_on: float
+
+    @property
+    def cluster_coverage_uplift(self) -> float:
+        return self.cluster_coverage_on - self.cluster_coverage_off
+
+    @property
+    def recall_uplift(self) -> float:
+        return self.mean_recall_on - self.mean_recall_off
+
+
+def _cluster_coverage_at_k(
+    returned: list[str],
+    expected_clusters: list[list[str]],
+    n_clusters_required: int,
+) -> float:
+    """Spec § A2: number of expected clusters represented in the top-K
+    divided by ``n_clusters_required``. A cluster is represented if
+    at least one of its expected member ids appears in the returned
+    top-K. Returns 0.0 when ``n_clusters_required`` is non-positive
+    (degenerate row; treated as zero-uplift signal)."""
+    if n_clusters_required <= 0:
+        return 0.0
+    rs = set(returned)
+    covered = sum(
+        1 for cluster in expected_clusters
+        if any(bid in rs for bid in cluster)
+    )
+    return covered / n_clusters_required
+
+
+def _recall_at_k(returned: list[str], expected: list[str]) -> float:
+    if not expected:
+        return 0.0
+    return len(set(returned) & set(expected)) / len(expected)
+
+
+# Tight enough that ~2 multi_fact beliefs at ~30-50 tokens each fit;
+# spec § A2 calls for "fixed budget that forces the pack to choose
+# between cluster representatives." Override via the CLI / programmatic
+# kwarg if a corpus has a different per-belief size.
+DEFAULT_MULTI_FACT_BUDGET: int = 100
+
+
+def run_clustering_uplift(
+    rows: list[dict],  # type: ignore[type-arg]
+    *,
+    budget: int = DEFAULT_MULTI_FACT_BUDGET,
+    k: int | None = None,
+) -> ClusteringUplift:
+    """Spec § A2 multi-fact uplift driver.
+
+    Per row: build a transient ``MemoryStore`` from the row's
+    ``beliefs`` + ``edges``, run ``retrieve_v2`` once with
+    ``use_intentional_clustering=False`` and once with ``=True`` at the
+    same ``budget``. ``k`` defaults to ``row['n_clusters_required']``
+    so the metric asks "did the top-K cover the required clusters."
+    """
+    n = len(rows)
+    if n == 0:
+        return ClusteringUplift(0, 0.0, 0.0, 0.0, 0.0)
+
+    rec_off = rec_on = cov_off = cov_on = 0.0
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_root = Path(tmp)
+        for row in rows:
+            row_k = k if k is not None else int(row.get("n_clusters_required", 2))
+            expected = list(row["expected_belief_ids"])
+            clusters = list(row["expected_clusters"])
+            required = int(row["n_clusters_required"])
+
+            for clustering_on in (False, True):
+                _db_counter[0] += 1
+                db = tmp_root / f"clust_{row['id']}_{int(clustering_on)}_{_db_counter[0]}.db"
+                store = MemoryStore(str(db))
+                try:
+                    _seed_store(store, row)
+                    result = retrieve_v2(
+                        store, row["query"],
+                        budget=budget,
+                        use_entity_index=False,
+                        use_intentional_clustering=clustering_on,
+                    )
+                    returned = [b.id for b in result.beliefs[:row_k]]
+                finally:
+                    store.close()
+                if clustering_on:
+                    rec_on += _recall_at_k(returned, expected)
+                    cov_on += _cluster_coverage_at_k(returned, clusters, required)
+                else:
+                    rec_off += _recall_at_k(returned, expected)
+                    cov_off += _cluster_coverage_at_k(returned, clusters, required)
+
+    return ClusteringUplift(
+        n_rows=n,
+        mean_recall_off=rec_off / n,
+        mean_recall_on=rec_on / n,
+        cluster_coverage_off=cov_off / n,
+        cluster_coverage_on=cov_on / n,
+    )
 
 
 def _format_table(results: list[FlagUplift]) -> str:
