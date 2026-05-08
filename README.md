@@ -45,7 +45,7 @@ When you submit a prompt in Claude Code, aelfrice's `UserPromptSubmit` hook fire
 ```
 L0:   locked beliefs   -> rules you marked permanent (always returned)
 L2.5: entity index     -> deterministic proper-noun matches (default-on)
-L1:   FTS5 + BM25F     -> full-text + anchor-augmented BM25 (default-on at v1.7)
+L1:   FTS5 + BM25F     -> full-text + anchor-augmented BM25 (default-on since v1.7)
 L3:   BFS multi-hop    -> graph traversal over belief edges (opt-in)
 ```
 
