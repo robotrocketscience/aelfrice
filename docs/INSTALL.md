@@ -72,7 +72,7 @@ aelf doctor hooks      # hook resolution only
 aelf doctor graph      # structural auditor only
 ```
 
-`aelf health` and `aelf stats` continue to work as back-compat aliases through v1.2.x; they are scheduled for deletion at v1.4. The canonical replacements are `aelf doctor graph` and `aelf status`.
+`aelf health` and `aelf stats` remain callable as back-compat aliases — hidden from default `--help` output but listed under `aelf --help --advanced`. The canonical replacements are `aelf doctor graph` and `aelf status`.
 
 ## 4. Onboard a project
 
