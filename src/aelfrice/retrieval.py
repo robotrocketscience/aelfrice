@@ -75,6 +75,11 @@ from aelfrice.clustering import (
 )
 from aelfrice.compression import CompressedBelief, compress_for_retrieval
 from aelfrice.doc_linker import DocAnchor
+from aelfrice.hrr_index import (
+    HRRStructIndex,
+    HRRStructIndexCache,
+    parse_structural_marker,
+)
 from aelfrice.vocab_bridge import VocabBridge, VocabBridgeCache
 from aelfrice.entity_extractor import extract_entities
 from aelfrice.graph_spectral import (
@@ -796,6 +801,72 @@ def is_hrr_structural_enabled(
     if toml_value is not None:
         return toml_value
     return False
+
+
+def _route_structural_query(
+    store: MemoryStore,
+    query: str,
+    cache: HRRStructIndexCache | None,
+    *,
+    top_k: int,
+    include_locked: bool,
+    budget: int,
+) -> RetrievalResult | None:
+    """Probe the HRR structural lane and pack results to budget.
+
+    Returns ``None`` when the query is not a structural marker, or
+    when the marker resolves to an unknown ``(kind, target)`` pair on
+    the index. The caller must fall through to the textual lane in
+    both cases — the structural lane is parallel, never blended.
+
+    On hit, locks (when ``include_locked=True``) are pinned at the
+    head of the result and bypass the budget per the existing public-
+    API contract; HRR-ranked beliefs are appended in score-descending
+    order until the budget is exhausted. Beliefs already present
+    among the locks are de-duped from the HRR tail so the locked
+    pin-to-head invariant is preserved.
+    """
+    parsed = parse_structural_marker(query)
+    if parsed is None:
+        return None
+    kind, target_id = parsed
+    idx: HRRStructIndex
+    if cache is None:
+        idx = HRRStructIndex()
+        idx.build(store)
+    else:
+        idx = cache.get()
+    hits = idx.probe(kind, target_id, top_k=top_k)
+    if not hits:
+        # Marker parsed but the (kind, target) pair is unknown to the
+        # index (no edges of that type touch target_id). Fall through
+        # so the caller can try the textual lane on the literal
+        # marker string — better than returning an empty result.
+        return None
+
+    locked: list[Belief] = (
+        list(store.list_locked_beliefs()) if include_locked else []
+    )
+    locked_ids: set[str] = {b.id for b in locked}
+    used: int = sum(_belief_tokens(b) for b in locked)
+    out: list[Belief] = list(locked)
+
+    for belief_id, _score in hits:
+        if belief_id in locked_ids:
+            continue
+        belief = store.get_belief(belief_id)
+        if belief is None:
+            continue
+        cost = _belief_tokens(belief)
+        if used + cost > budget:
+            break
+        out.append(belief)
+        used += cost
+
+    return RetrievalResult(
+        beliefs=out,
+        locked_ids=[b.id for b in locked],
+    )
 
 
 def resolve_use_type_aware_compression(
@@ -1644,6 +1715,8 @@ def retrieve_v2(
     use_vocab_bridge: bool | None = None,
     vocab_bridge_cache: VocabBridgeCache | None = None,
     use_intentional_clustering: bool | None = None,
+    use_hrr_structural: bool | None = None,
+    hrr_struct_index_cache: HRRStructIndexCache | None = None,
     with_doc_anchors: bool = False,
 ) -> RetrievalResult:
     """Lab-compatible retrieval wrapper for academic-suite adapters.
@@ -1695,10 +1768,39 @@ def retrieve_v2(
       the half-life when `temporal_sort=True`. None falls through to
       `resolve_temporal_half_life()`'s precedence chain. Ignored when
       `temporal_sort=False`.
+    - `use_hrr_structural` (#152) — when True AND the query parses as
+      a `<KIND>:<target_id>` structural marker, the HRR structural
+      lane fires and returns instead of the textual lane. Parallel,
+      not blended (per spec): on marker hit the BM25F + heat-kernel
+      stack is bypassed entirely; on miss the call falls through to
+      the textual lane unchanged. Default-OFF until the #437
+      reproducibility harness clears, per the #154 composition
+      tracker.
+    - `hrr_struct_index_cache` (#152) — explicit
+      `HRRStructIndexCache` to reuse an already-built index across
+      calls. None falls through to a fresh build per call.
+      Long-running consumers (interactive shells, bench harnesses)
+      should pass an explicit cache to amortise the per-belief HRR
+      encode cost.
     - Returns a `RetrievalResult` wrapper so adapters can read
       `result.beliefs` (and stub diagnostics fields, plus the new
       v1.3 `entity_hits` and `bfs_chains`).
     """
+    # v2.1 #152 HRR structural-query routing. Fires BEFORE the vocab-
+    # bridge rewrite so a `CONTRADICTS:b/abc` marker is not munged
+    # into bag-of-words rewrites. Returns early on marker hit;
+    # falls through on miss (non-marker query, marker-with-unknown-
+    # target, or flag OFF) so the textual lane handles the call.
+    if is_hrr_structural_enabled(use_hrr_structural):
+        struct_result = _route_structural_query(
+            store, query, hrr_struct_index_cache,
+            top_k=l1_limit,
+            include_locked=include_locked,
+            budget=budget,
+        )
+        if struct_result is not None:
+            return struct_result
+
     # v2.1 #433 vocabulary-bridge query rewrite. Runs before lane
     # fan-out so every lane sees the widened query string. The bridge
     # appends canonical-entity rewrites; the original tokens are
