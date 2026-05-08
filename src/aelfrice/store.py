@@ -366,6 +366,28 @@ _SCHEMA: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_log_versions_log "
     "ON log_versions(log_id)",
+    # v2.0 #435 doc linker. One row per (belief, doc_uri). PK gives
+    # idempotency on re-ingest of the same belief from the same source.
+    # ON DELETE CASCADE removes rows when a belief is hard-deleted (#440)
+    # — anchors are a derived projection of belief origin, not an audit
+    # trail (belief_corroborations #190 is the audit-trail sibling).
+    # `created_at` is REAL (unix seconds) — the linker is hot enough that
+    # we want numeric ordering rather than ISO-string comparison.
+    """
+    CREATE TABLE IF NOT EXISTS belief_documents (
+        belief_id     TEXT NOT NULL,
+        doc_uri       TEXT NOT NULL,
+        anchor_type   TEXT NOT NULL CHECK (anchor_type IN ('ingest', 'manual', 'derived')),
+        position_hint TEXT,
+        created_at    REAL NOT NULL,
+        PRIMARY KEY (belief_id, doc_uri),
+        FOREIGN KEY (belief_id) REFERENCES beliefs(id) ON DELETE CASCADE
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_belief_documents_belief_id "
+    "ON belief_documents(belief_id)",
+    "CREATE INDEX IF NOT EXISTS idx_belief_documents_doc_uri "
+    "ON belief_documents(doc_uri)",
 )
 
 # Marker key for the entity-index one-shot backfill. Empty value =
@@ -1912,6 +1934,128 @@ class MemoryStore:
             )
             for r in cur.fetchall()
         ]
+
+    # --- #435 doc linker --------------------------------------------------
+    #
+    # `belief_documents` rows are 1:1 with (belief_id, doc_uri) pairs.
+    # `INSERT OR IGNORE` collapses re-ingest of the same belief from the
+    # same source to the first-write row; `get_doc_anchors` returns the
+    # canonical row regardless of how many times the writer was called.
+    # See `aelfrice.doc_linker` for the public DocAnchor dataclass and
+    # spec contract; this module owns the SQL only.
+
+    def link_belief_to_document(
+        self,
+        *,
+        belief_id: str,
+        doc_uri: str,
+        anchor_type: str,
+        position_hint: str | None,
+    ) -> "DocAnchor":  # noqa: F821 — forward ref to avoid a circular import
+        """Persist one anchor row and return a `DocAnchor`.
+
+        Idempotent on `(belief_id, doc_uri)`: the table's PK + INSERT OR
+        IGNORE turns repeats into no-op writes. Returns the canonical
+        (first-write) row regardless of whether this call inserted.
+        """
+        # Imported here to avoid a module-level cycle: doc_linker imports
+        # MemoryStore via TYPE_CHECKING-only.
+        from aelfrice.doc_linker import ANCHOR_TYPES, DocAnchor
+
+        if not doc_uri:
+            raise ValueError("doc_uri must be non-empty")
+        if anchor_type not in ANCHOR_TYPES:
+            raise ValueError(
+                f"Unknown anchor_type {anchor_type!r}. "
+                f"Must be one of {sorted(ANCHOR_TYPES)}"
+            )
+        ts = datetime.now(timezone.utc).timestamp()
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO belief_documents
+                (belief_id, doc_uri, anchor_type, position_hint, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (belief_id, doc_uri, anchor_type, position_hint, ts),
+        )
+        self._conn.commit()
+        cur = self._conn.execute(
+            """
+            SELECT belief_id, doc_uri, anchor_type, position_hint, created_at
+            FROM belief_documents
+            WHERE belief_id = ? AND doc_uri = ?
+            """,
+            (belief_id, doc_uri),
+        )
+        row = cur.fetchone()
+        return DocAnchor(
+            belief_id=str(row["belief_id"]),
+            doc_uri=str(row["doc_uri"]),
+            anchor_type=str(row["anchor_type"]),
+            position_hint=row["position_hint"],
+            created_at=float(row["created_at"]),
+        )
+
+    def get_doc_anchors(self, belief_id: str) -> list["DocAnchor"]:  # noqa: F821
+        """Return every anchor for one belief, ordered by `created_at` ASC."""
+        from aelfrice.doc_linker import DocAnchor
+
+        cur = self._conn.execute(
+            """
+            SELECT belief_id, doc_uri, anchor_type, position_hint, created_at
+            FROM belief_documents
+            WHERE belief_id = ?
+            ORDER BY created_at ASC
+            """,
+            (belief_id,),
+        )
+        return [
+            DocAnchor(
+                belief_id=str(r["belief_id"]),
+                doc_uri=str(r["doc_uri"]),
+                anchor_type=str(r["anchor_type"]),
+                position_hint=r["position_hint"],
+                created_at=float(r["created_at"]),
+            )
+            for r in cur.fetchall()
+        ]
+
+    def get_doc_anchors_batch(
+        self,
+        belief_ids: list[str],
+    ) -> dict[str, list["DocAnchor"]]:  # noqa: F821
+        """Batched fetch keyed by `belief_id`. Empty list for ids without anchors.
+
+        Used by `retrieve(..., with_doc_anchors=True)` so the projection
+        costs one indexed read per call rather than one per surfaced
+        belief. Result dict has an entry for every requested id.
+        """
+        from aelfrice.doc_linker import DocAnchor
+
+        out: dict[str, list[DocAnchor]] = {bid: [] for bid in belief_ids}
+        if not belief_ids:
+            return out
+        ph = ",".join("?" * len(belief_ids))
+        cur = self._conn.execute(
+            f"""
+            SELECT belief_id, doc_uri, anchor_type, position_hint, created_at
+            FROM belief_documents
+            WHERE belief_id IN ({ph})
+            ORDER BY belief_id ASC, created_at ASC
+            """,
+            tuple(belief_ids),
+        )
+        for r in cur.fetchall():
+            out[str(r["belief_id"])].append(
+                DocAnchor(
+                    belief_id=str(r["belief_id"]),
+                    doc_uri=str(r["doc_uri"]),
+                    anchor_type=str(r["anchor_type"]),
+                    position_hint=r["position_hint"],
+                    created_at=float(r["created_at"]),
+                )
+            )
+        return out
 
     # --- Ingest log (v2.0, #205) -----------------------------------------
 
