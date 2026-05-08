@@ -47,8 +47,8 @@ Imports are one-directional — modules lower in the table import from higher.
 | `triple_extractor.py` | Pure-regex `(subject, relation, object)` extraction over six relation families. Used by commit-ingest and transcript-ingest. |
 | `context_rebuilder.py` | PreCompact alpha that surfaces aelfrice retrieval before Claude Code summarises. |
 | `benchmark.py` | Deterministic 16-belief × 16-query synthetic harness. Frozen `BenchmarkReport`. |
-| `cli.py` | argparse 24-subcommand CLI. Entry: `aelf`. |
-| `mcp_server.py` | FastMCP server, 9 tools. `[mcp]` optional extra. |
+| `cli.py` | argparse multi-subcommand CLI. Entry: `aelf`. Everyday surface in `aelf --help`; full surface (diagnostic, hook, lifecycle verbs) in `aelf --help --advanced`. |
+| `mcp_server.py` | FastMCP server, 12 tools. `[mcp]` optional extra. See [MCP](MCP.md) for the full tool list. |
 | `setup.py` | Idempotent install/uninstall of all hooks + statusline. Atomic write via tempfile + `os.replace`. |
 | `hook.py` | `aelfrice.hook:main` — process Claude Code spawns on each prompt. Reads stdin, calls `retrieve()`, emits `<aelfrice-memory>` on stdout. Non-blocking. Entry: `aelf-hook`. |
 | `slash_commands/` | One markdown file per CLI subcommand surfaced in `/aelf:*`. |
@@ -187,7 +187,7 @@ and the harness's own summary land in the new context (augment mode)
 | Property | default | Pre-registered invariants: Bayesian inertia, decay-required, lock-floor sharpness, token-budget invariant, broker-attenuation. |
 | Regression | `@pytest.mark.regression` | Cross-module scenarios: retrieval round-trip, feedback loop, onboarding, setup→hook→unsetup, `aelf bench` end-to-end. |
 
-`uv run pytest` (~1,414 tests at v1.3/v1.4, ~15s on Apple Silicon).
+`uv run pytest` (2,700+ tests at v2.0.0).
 
 ## Out of scope through v1.x
 
