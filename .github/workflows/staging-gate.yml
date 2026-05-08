@@ -29,6 +29,14 @@ jobs:
           GITLEAKS_CONFIG: .gitleaks.toml
 
   pattern-scan:
+    # Skip on dependabot PRs: GitHub does not pass repository Actions secrets
+    # to dependabot-triggered runs (supply-chain protection), so SCAN_RULES_B64
+    # is empty and this job has no patterns to scan against. Dependabot diffs
+    # only touch dependency manifests (pyproject.toml / uv.lock), which carry
+    # no PII vector worth gating on. Other staging-gate jobs (secrets-scan,
+    # history-scan, commit-msg-prefix, pr-body-issue-link) still run and
+    # provide the actual security gates for dep updates.
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
