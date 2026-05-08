@@ -22,45 +22,29 @@ Out of scope at v2.0.0 (per spec):
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
 
-if TYPE_CHECKING:
-    from aelfrice.store import MemoryStore
-
-ANCHOR_INGEST: Final[str] = "ingest"
-ANCHOR_MANUAL: Final[str] = "manual"
-ANCHOR_DERIVED: Final[str] = "derived"
-
-ANCHOR_TYPES: Final[frozenset[str]] = frozenset(
-    {ANCHOR_INGEST, ANCHOR_MANUAL, ANCHOR_DERIVED},
+# Types + constants live in the leaf module so `aelfrice.store` can read
+# the `DocAnchor` shape without closing a `doc_linker ↔ store` cycle
+# (see #501). Re-exported here for backward compatibility.
+from aelfrice.doc_linker_types import (
+    ANCHOR_DERIVED,
+    ANCHOR_INGEST,
+    ANCHOR_MANUAL,
+    ANCHOR_TYPES,
+    DocAnchor,
 )
 
-
-@dataclass(frozen=True)
-class DocAnchor:
-    """One stored anchor row from ``belief_documents``.
-
-    ``doc_uri`` is opaque to the linker. Recommended encodings at v2.0.0:
-
-    - ``file:///abs/path/to/source.py#Lstart-Lend`` — local-source ingest.
-    - ``https://host/path#fragment`` — external doc / web ingest.
-
-    Other forms are accepted; the linker only rejects empty input.
-
-    ``position_hint`` is a free-form string (e.g. ``"L42-L60"``,
-    ``"#section"``); ``None`` when the URI itself encodes the position or
-    no hint is available.
-
-    ``created_at`` is a unix timestamp (seconds since epoch).
-    """
-
-    belief_id: str
-    doc_uri: str
-    anchor_type: str
-    position_hint: str | None
-    created_at: float
+__all__ = (
+    "ANCHOR_DERIVED",
+    "ANCHOR_INGEST",
+    "ANCHOR_MANUAL",
+    "ANCHOR_TYPES",
+    "DocAnchor",
+    "file_uri_from_path",
+    "get_doc_anchors",
+    "link_belief_to_document",
+)
 
 
 def file_uri_from_path(
