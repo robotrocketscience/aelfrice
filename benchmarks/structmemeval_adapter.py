@@ -258,8 +258,10 @@ def ingest_case(store: MemoryStore, case: Case) -> int:
 def query_aelfrice(store: MemoryStore, question: str, budget: int = 2000) -> str:
     """Query aelfrice and return retrieved belief content.
 
-    Uses temporal_sort=True so beliefs are presented newest-first,
-    which helps the reader identify the current state vs historical states.
+    Uses temporal_sort=True (#473): post-rerank multiplicative half-life
+    decay on `created_at`, so recent beliefs are surfaced over older
+    historical states without a hard `created_at DESC` sort. Locked
+    (L0) beliefs stay pinned at the head and are not re-ordered.
     """
     result = retrieve(
         store=store,

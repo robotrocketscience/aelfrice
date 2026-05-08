@@ -53,6 +53,7 @@ import os
 import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Any, Final
 import sys
@@ -159,6 +160,17 @@ ENV_HRR_STRUCTURAL: Final[str] = "AELFRICE_HRR_STRUCTURAL"
 # layer (kwarg → TOML → DEFAULT_POSTERIOR_WEIGHT) and trace to
 # stderr. Same shape as `_read_toml_flag_for` tolerance.
 ENV_POSTERIOR_WEIGHT: Final[str] = "AELFRICE_POSTERIOR_WEIGHT"
+# v2.1 #473 temporal-decay half-life env override. Float seconds.
+# Empty / non-numeric values fall through (kwarg → TOML → default).
+ENV_TEMPORAL_HALF_LIFE: Final[str] = "AELFRICE_TEMPORAL_HALF_LIFE_SECONDS"
+# `[retrieval] temporal_half_life_seconds` TOML key (#473).
+TEMPORAL_HALF_LIFE_FLAG: Final[str] = "temporal_half_life_seconds"
+# v2.1 #473 default half-life: 7 days. Ratified A1=A by the operator
+# (issue #473 comment IC_kwDOSM7PXc8AAAABBokOsA). Conservative default
+# tunable via `[retrieval] temporal_half_life_seconds` in
+# `.aelfrice.toml`. A bench-evidence sweep harness is queued as a
+# follow-up issue (A3=A).
+DEFAULT_TEMPORAL_HALF_LIFE_SECONDS: Final[float] = 7.0 * 24.0 * 3600.0
 # Number of decimal places used to round `posterior_weight` before
 # inclusion in the cache key. Two callers passing weights that
 # differ by less than this granularity collapse to the same key.
@@ -469,6 +481,137 @@ def resolve_posterior_weight(
     if weight < 0.0:
         return 0.0
     return weight
+
+
+def _env_temporal_half_life() -> float | None:
+    """Return AELFRICE_TEMPORAL_HALF_LIFE_SECONDS as a positive float,
+    or None when unset / non-numeric / non-positive.
+
+    Non-numeric and non-positive values trace to stderr and fall through
+    (same fail-soft contract as `_env_posterior_weight`). A half-life of
+    zero or negative is structurally meaningless for an exponential
+    decay, so we reject rather than clamp.
+    """
+    raw = os.environ.get(ENV_TEMPORAL_HALF_LIFE)
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    try:
+        value = float(stripped)
+    except ValueError:
+        print(
+            f"aelfrice retrieval: ignoring {ENV_TEMPORAL_HALF_LIFE}={raw!r} "
+            f"(expected float)",
+            file=sys.stderr,
+        )
+        return None
+    if value <= 0.0:
+        print(
+            f"aelfrice retrieval: ignoring {ENV_TEMPORAL_HALF_LIFE}={raw!r} "
+            f"(must be > 0)",
+            file=sys.stderr,
+        )
+        return None
+    return value
+
+
+def resolve_temporal_half_life(
+    explicit: float | None = None,
+    *,
+    start: Path | None = None,
+) -> float:
+    """Resolve the temporal-decay half-life (seconds) per v2.1 #473:
+
+      1. AELFRICE_TEMPORAL_HALF_LIFE_SECONDS env var (positive float).
+      2. Explicit `explicit` kwarg from the caller.
+      3. `[retrieval] temporal_half_life_seconds` in `.aelfrice.toml`.
+      4. Default: DEFAULT_TEMPORAL_HALF_LIFE_SECONDS (7 days).
+
+    Non-positive values at any layer fall through to the next layer.
+    The decay is `2 ** (-age_seconds / half_life)` so half_life=0 is
+    undefined; treat it as missing.
+    """
+    env = _env_temporal_half_life()
+    if env is not None:
+        return env
+    if explicit is not None and explicit > 0.0:
+        return float(explicit)
+    toml_value = _read_toml_float_for(TEMPORAL_HALF_LIFE_FLAG, start)
+    if toml_value is not None and toml_value > 0.0:
+        return float(toml_value)
+    return DEFAULT_TEMPORAL_HALF_LIFE_SECONDS
+
+
+def _belief_age_seconds(b: Belief, now: datetime) -> float:
+    """Seconds between `now` and `b.created_at` (clamped at 0).
+
+    `created_at` is an ISO-8601 string (`datetime.now(timezone.utc)
+    .isoformat()` per `store.insert_belief`). Malformed timestamps fall
+    through as age=0 — no decay penalty rather than a hard crash. This
+    matches the rest of `retrieval.py`'s fail-soft posture on user data.
+    """
+    raw = b.created_at
+    if not raw:
+        return 0.0
+    try:
+        ts = datetime.fromisoformat(raw)
+    except ValueError:
+        return 0.0
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    delta = (now - ts).total_seconds()
+    return delta if delta > 0.0 else 0.0
+
+
+def _apply_temporal_decay(
+    beliefs: list[Belief],
+    half_life_seconds: float,
+    *,
+    now: datetime | None = None,
+) -> list[Belief]:
+    """Re-rank `beliefs` by an exponential recency decay.
+
+    Locked beliefs (lock_level != LOCK_NONE) are pinned at the head of
+    the output in their original relative order — L0 is user-asserted
+    ground truth and is never re-ordered by recency.
+
+    The remaining beliefs are scored by `(1 / (rank + 1)) * 2 ** (-age
+    / half_life)`, where `rank` is the belief's pre-decay position in
+    `beliefs` and `age` is the seconds since `created_at`. Sort is
+    stable on the proxy score: ties keep the upstream pipeline's order.
+
+    The proxy `1 / (rank + 1)` is a borderline design call (issue #473
+    closing comment): `retrieve_v2` does not surface per-belief scores
+    out of `retrieve_with_tiers`, so the wrapper has only the merged
+    order to work from. Treating rank-position as the proxy score keeps
+    the decay multiplicative on a meaningful baseline (1.0 at the head,
+    diminishing) while leaving the upstream pipeline as the score
+    authority.
+    """
+    if not beliefs or half_life_seconds <= 0.0:
+        return list(beliefs)
+    when = now if now is not None else datetime.now(timezone.utc)
+    locked: list[Belief] = []
+    rest: list[tuple[int, Belief]] = []
+    for i, b in enumerate(beliefs):
+        if b.lock_level != LOCK_NONE:
+            locked.append(b)
+        else:
+            rest.append((i, b))
+    if not rest:
+        return list(beliefs)
+
+    def keyfn(item: tuple[int, Belief]) -> float:
+        i, b = item
+        rank_score = 1.0 / float(i + 1)
+        age = _belief_age_seconds(b, when)
+        decay = 2.0 ** (-age / half_life_seconds)
+        return rank_score * decay
+
+    rest_sorted = sorted(rest, key=keyfn, reverse=True)
+    return locked + [b for _, b in rest_sorted]
 
 
 def is_entity_index_enabled(
@@ -1259,6 +1402,8 @@ def retrieve_v2(
     posterior_weight: float | None = None,
     use_bm25f: bool | None = None,
     bm25f_cache: BM25IndexCache | None = None,
+    temporal_sort: bool = False,
+    temporal_half_life_seconds: float | None = None,
 ) -> RetrievalResult:
     """Lab-compatible retrieval wrapper for academic-suite adapters.
 
@@ -1282,6 +1427,21 @@ def retrieve_v2(
     - `bfs_max_depth`, `bfs_nodes_per_hop`, `bfs_total_budget_nodes`,
       `bfs_min_path_score` — pass-through tuning knobs for the L3
       tier. Defaults match `bfs_multihop.DEFAULT_*`.
+    - `temporal_sort` (v2.1 #473) — when True, applies a multiplicative
+      half-life decay to the merged output as a final re-rank pass
+      (post-BM25F + posterior + edge-type rerank). Default False keeps
+      the v1.3-v1.7 ordering byte-identical for adapters that don't opt
+      in. Locked (L0) beliefs are pinned at the head and never re-
+      ordered. The decay is `2 ** (-age / half_life)` against
+      `created_at`. Half-life resolution: explicit kwarg →
+      `AELFRICE_TEMPORAL_HALF_LIFE_SECONDS` env →
+      `[retrieval] temporal_half_life_seconds` in `.aelfrice.toml` →
+      `DEFAULT_TEMPORAL_HALF_LIFE_SECONDS` (7 days, ratified per
+      issue #473 A1=A).
+    - `temporal_half_life_seconds` (v2.1 #473) — explicit override for
+      the half-life when `temporal_sort=True`. None falls through to
+      `resolve_temporal_half_life()`'s precedence chain. Ignored when
+      `temporal_sort=False`.
     - Returns a `RetrievalResult` wrapper so adapters can read
       `result.beliefs` (and stub diagnostics fields, plus the new
       v1.3 `entity_hits` and `bfs_chains`).
@@ -1310,6 +1470,9 @@ def retrieve_v2(
         beliefs = out
     else:
         beliefs = [b for b in out if b.lock_level == LOCK_NONE]
+    if temporal_sort:
+        half_life = resolve_temporal_half_life(temporal_half_life_seconds)
+        beliefs = _apply_temporal_decay(beliefs, half_life)
     return RetrievalResult(
         beliefs=beliefs,
         entity_hits=l25_ids_list,
