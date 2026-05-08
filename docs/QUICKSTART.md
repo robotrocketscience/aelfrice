@@ -36,7 +36,7 @@ $ aelf search "deploy to production"
          91e02d3c          scripts/publish.sh wraps gitleaks + PII scan + tag verify
 ```
 
-L0 (locked) is always returned first. L1 is BM25-ranked FTS5 hits, token-budgeted (default 2,000).
+L0 (locked) is always returned first. L1 is BM25-ranked FTS5 hits, token-budgeted (default 2,400).
 
 ## 4. Wire into Claude Code
 
