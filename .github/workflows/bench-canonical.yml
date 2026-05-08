@@ -90,7 +90,13 @@ jobs:
 
       - name: Band-check vs canonical
         id: bandcheck
-        if: hashFiles(steps.bench.outputs.out) != ''
+        # `hashFiles()` only accepts string literals (not expressions
+        # like `steps.bench.outputs.out`), so the previous form was
+        # silently always-empty and skipped the band-check on every
+        # run. Gate on the step output directly: when bench succeeded,
+        # `out` is set; when it errored under continue-on-error, `out`
+        # is unset.
+        if: steps.bench.outputs.out != ''
         run: |
           set -euo pipefail
           uv run python -c "
