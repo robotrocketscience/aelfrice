@@ -185,6 +185,20 @@ MODULES: dict[str, tuple[set[str], dict[str, str]]] = {
             "tag": "str",
         },
     ),
+    # #435 doc linker. NDCG@k uplift on a labelled query/belief/anchor
+    # fixture. `expected_belief_ids` floors the parity check (top-k must
+    # contain them in both runs); `expected_doc_uris` are the anchors
+    # written against those beliefs in the populated arm only.
+    "doc_linker": (
+        {"graded"},
+        {
+            "query": "str",
+            "beliefs": "list[belief]",
+            "expected_belief_ids": "list[str]",
+            "expected_doc_uris": "list[str]",
+            "k": "int",
+        },
+    ),
 }
 
 COMMON_REQUIRED = ("id", "provenance", "labeller_note", "label")

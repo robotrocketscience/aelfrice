@@ -1,6 +1,6 @@
 # Feature spec: Document / semantic linker (#435)
 
-**Status:** spec, no implementation
+**Status:** implementation shipped (PR for #435), bench-gate pending lab-side corpus
 **Issue:** #435
 **Recovery-inventory line:** [`docs/ROADMAP.md`](ROADMAP.md) — *"Doc / semantic linker | v2.0.0"*
 **Substrate prereqs:** belief schema (foundation), `ingest_log` (#205, v1.6.0), `belief_corroborations` (#190, v1.5.0), `DerivationInput.source_path` (`src/aelfrice/derivation.py:64`)

@@ -51,7 +51,9 @@ tests/corpus/v2_0/
 │   └── *.jsonl
 ├── wonder_online/                     #389 (Track B: aelf wonder)
 │   └── *.jsonl
-└── multi_fact/                        #436 (intentional clustering — multi-fact recall)
+├── multi_fact/                        #436 (intentional clustering — multi-fact recall)
+│   └── *.jsonl
+└── doc_linker/                        #435 (belief↔document anchor uplift)
     └── *.jsonl
 ```
 
@@ -93,6 +95,7 @@ required for **all** modules:
 | `reasoning` | `query` (string), `beliefs` (list[obj]), `edges` (list[obj]), `expected_hit_ids` (list[string]), `baseline_search_only_top_k` (list[string]), `k` (int) | `graded` |
 | `wonder_online` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_id` (string), `expected_candidate_ids` (list[string]) | `graded` |
 | `multi_fact` | `query` (string), `expected_belief_ids` (list[string]), `expected_clusters` (list[list[string]]), `n_clusters_required` (int), `tag` (string) | `graded` |
+| `doc_linker` | `query` (string), `beliefs` (list[obj]), `expected_belief_ids` (list[string]), `expected_doc_uris` (list[string]), `k` (int) | `graded` |
 
 ### `directive_detection` re-entry gate (#374)
 
@@ -267,6 +270,32 @@ Per-row shape:
 
 The bench-gate test at `tests/bench_gate/test_intentional_clustering.py`
 skips cleanly when the module dir is empty.
+
+### `doc_linker` ship gate (#435)
+
+Per `docs/feature-doc-linker.md` § A2 the doc linker ships when the
+labelled corpus shows a **strictly positive NDCG@k uplift** on
+`with_doc_anchors=True` between the anchors-populated case and the
+anchors-empty case (same query, same beliefs, anchors written vs not
+written). Public CI cannot run this — labelled `expected_doc_uris`
+content lives lab-side per the directory-of-origin rule.
+
+Per-row shape:
+
+- `query` — string. The retrieve_v2 input under test.
+- `beliefs` — list of `{"id": str, "text": str}` (each id stable within
+  the row; harness wires them into a transient `MemoryStore`).
+- `expected_belief_ids` — non-empty list of belief ids that should
+  appear in the top-k under both runs (parity floor).
+- `expected_doc_uris` — non-empty list of doc URIs to write against the
+  beliefs in the anchors-populated run only. Forms: `file:<rel>` or
+  `https://...` per spec § "Doc URI scheme".
+- `k` — integer ≥ 1; rank cutoff used to compute NDCG@k.
+
+Public-tree fixtures may live here (synthetic-only); real-traffic
+fixtures stay lab-side per directory-of-origin rules. The bench-gate
+test at `tests/bench_gate/test_doc_linker.py` skips cleanly when the
+module dir is empty.
 
 ## v0.1 acceptance (per #307)
 
