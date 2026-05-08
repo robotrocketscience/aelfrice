@@ -18,13 +18,20 @@ You correct your agent. *"Got it,"* it says. Next session, same mistake.
 aelfrice runs in the background and stops the forgetting. You write a rule once and it gets attached to every prompt thereafter — no cross-references for the agent to skip, no markdown files to maintain, nothing to remember to do.
 
 ```bash
-pip install aelfrice
-aelf onboard .
-aelf lock "never push directly to main; use scripts/publish.sh"
-aelf setup       # wire the hook into Claude Code
+pipx install aelfrice    # or: uv tool install aelfrice
+aelf setup               # wire the hook into your agent
+aelf onboard .           # scan the current project and ingest beliefs
 ```
 
-That's it. Restart Claude Code and your next prompt that mentions "push" already has the rule attached. From here on out aelfrice is invisible — no command to remember to run, no file to keep updated.
+Then add your first rule and restart your agent:
+
+```bash
+aelf lock "never push directly to main; use scripts/publish.sh"
+```
+
+That's it. Your next prompt that mentions "push" already has the rule attached. From here on out aelfrice is invisible — no command to remember to run, no file to keep updated.
+
+> The `aelf lock` line above is an example — substitute your own rule. Skip it entirely if you'd rather start with onboarded beliefs only and add locks as you go.
 
 ---
 
