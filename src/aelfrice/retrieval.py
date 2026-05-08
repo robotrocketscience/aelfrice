@@ -1380,6 +1380,7 @@ def retrieve_with_tiers(
     bm25f_cache: BM25IndexCache | None = None,
     heat_kernel_enabled: bool | None = None,
     eigenbasis_cache: GraphEigenbasisCache | None = None,
+    use_type_aware_compression: bool | None = None,
 ) -> tuple[
     list[Belief], list[str], list[str], list[str], list[list[str]],
 ]:
@@ -1394,6 +1395,12 @@ def retrieve_with_tiers(
     L3-tier expansion belief in `merged_output` (empty list when
     BFS is off / produced nothing / bfs hits collide with prior
     tiers).
+
+    When `use_type_aware_compression` resolves True (#434 v2.1), the
+    pack loops account for L2.5/L1/BFS beliefs at their compressed
+    `rendered_tokens` rather than `_belief_tokens(b)`. Locks always
+    render verbatim per the strategy table, so locked accounting is
+    unchanged. Default-OFF preserves byte-identical output.
     """
     global _LAST_TELEMETRY
     enabled = is_entity_index_enabled(entity_index_enabled)
@@ -1401,7 +1408,20 @@ def retrieve_with_tiers(
     bm25f_on = resolve_use_bm25f_anchors(use_bm25f_anchors)
     weight = resolve_posterior_weight(posterior_weight)
     heat_on = is_heat_kernel_enabled(heat_kernel_enabled)
+    compress_on = resolve_use_type_aware_compression(
+        use_type_aware_compression,
+    )
     warn_placeholder_flags()
+
+    def _cost(b: Belief) -> int:
+        """Per-belief pack cost. Compressed render when flag ON,
+        else raw token estimate. Locks render verbatim either way."""
+        if not compress_on:
+            return _belief_tokens(b)
+        cb = compress_for_retrieval(
+            b, locked=(b.lock_level == LOCK_USER),
+        )
+        return cb.rendered_tokens
 
     locked: list[Belief] = store.list_locked_beliefs()
     locked_ids_list: list[str] = [b.id for b in locked]
@@ -1443,12 +1463,12 @@ def retrieve_with_tiers(
             if b.id not in locked_ids and b.id not in l25_ids
         ]
 
-    used: int = locked_used + sum(_belief_tokens(b) for b in l25)
+    used: int = locked_used + sum(_cost(b) for b in l25)
     out: list[Belief] = list(locked) + list(l25)
     l1_ids_list: list[str] = []
     l1_packed: list[Belief] = []
     for b in l1:
-        cost: int = _belief_tokens(b)
+        cost: int = _cost(b)
         if used + cost > effective_budget:
             break
         out.append(b)
@@ -1474,7 +1494,7 @@ def retrieve_with_tiers(
             for hop in hops:
                 if hop.belief.id in seen_ids:
                     continue
-                cost = _belief_tokens(hop.belief)
+                cost = _cost(hop.belief)
                 if used + cost > effective_budget:
                     break
                 out.append(hop.belief)
@@ -1599,6 +1619,7 @@ def retrieve_v2(
         posterior_weight=posterior_weight,
         use_bm25f_anchors=use_bm25f,
         bm25f_cache=bm25f_cache,
+        use_type_aware_compression=use_type_aware_compression,
     )
     if include_locked:
         beliefs = out

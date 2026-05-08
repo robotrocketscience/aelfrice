@@ -188,3 +188,97 @@ def test_default_call_leaves_compressed_empty(
     s = _populate_store()
     result = retrieve_v2(s, "sqlite system")  # no kwarg, no env, default OFF
     assert result.compressed_beliefs == []
+
+
+# --- Pack-loop budget rewrite (#434 phase 2) ---------------------------
+#
+# With the flag ON, pack accounting consumes `cb.rendered_tokens` — so a
+# tight budget that fit only the fact-class belief at raw cost can now
+# admit the transient-class beliefs whose stub render is ~10 tokens each.
+
+
+def _populate_pack_widening_store() -> MemoryStore:
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk(
+        "F1",
+        "the system uses sqlite for persistence",
+        retention_class=RETENTION_FACT,
+    ))
+    for i in range(5):
+        s.insert_belief(_mk(
+            f"T{i}",
+            "scratch about sqlite system token " * 30,
+            retention_class=RETENTION_TRANSIENT,
+        ))
+    return s
+
+
+def test_pack_widens_when_flag_on(
+    _no_env_override: None, _isolated_cwd: Path
+) -> None:
+    s = _populate_pack_widening_store()
+    off = retrieve_v2(
+        s, "sqlite system",
+        budget=80,
+        use_entity_index=False,
+        use_type_aware_compression=False,
+    )
+    on = retrieve_v2(
+        s, "sqlite system",
+        budget=80,
+        use_entity_index=False,
+        use_type_aware_compression=True,
+    )
+    assert len(on.beliefs) > len(off.beliefs)
+
+
+def test_pack_byte_identical_when_flag_off(
+    _no_env_override: None, _isolated_cwd: Path
+) -> None:
+    """Flag OFF reproduces pre-#434-phase-2 selection at the same budget.
+
+    Two calls — explicit OFF vs default OFF — must agree byte-for-byte
+    on the merged belief id list. This is the byte-identity invariant
+    that makes the pack-loop change safe to land default-OFF.
+    """
+    s = _populate_pack_widening_store()
+    explicit_off = retrieve_v2(
+        s, "sqlite system",
+        budget=80,
+        use_entity_index=False,
+        use_type_aware_compression=False,
+    )
+    default_off = retrieve_v2(
+        s, "sqlite system",
+        budget=80,
+        use_entity_index=False,
+    )
+    assert [b.id for b in explicit_off.beliefs] \
+        == [b.id for b in default_off.beliefs]
+
+
+def test_pack_locked_unchanged_when_flag_on(
+    _no_env_override: None, _isolated_cwd: Path
+) -> None:
+    """Locks render verbatim, so locked accounting is identical OFF vs ON."""
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk(
+        "L1",
+        "user-pinned: sqlite is the chosen substrate. immutable.",
+        retention_class=RETENTION_SNAPSHOT,
+        lock_level=LOCK_USER,
+        locked_at="2026-05-08T00:00:00Z",
+    ))
+    off = retrieve_v2(
+        s, "sqlite",
+        use_entity_index=False,
+        use_type_aware_compression=False,
+    )
+    on = retrieve_v2(
+        s, "sqlite",
+        use_entity_index=False,
+        use_type_aware_compression=True,
+    )
+    assert [b.id for b in off.beliefs] == [b.id for b in on.beliefs]
+    # Locked render is verbatim under compression.
+    assert on.compressed_beliefs[0].strategy == STRATEGY_VERBATIM
