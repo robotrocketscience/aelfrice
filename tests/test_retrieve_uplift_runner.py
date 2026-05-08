@@ -58,6 +58,94 @@ def test_flag_uplift_dataclass_uplift_property() -> None:
     assert abs(fu.uplift - 0.15) < 1e-9
 
 
+def test_clustering_uplift_empty_input() -> None:
+    """Empty corpus: zero rows, zero uplift, no exceptions."""
+    from tests.retrieve_uplift_runner import (
+        ClusteringUplift,
+        run_clustering_uplift,
+    )
+    r = run_clustering_uplift([])
+    assert isinstance(r, ClusteringUplift)
+    assert r.n_rows == 0
+    assert r.cluster_coverage_uplift == 0.0
+    assert r.recall_uplift == 0.0
+
+
+def test_clustering_uplift_shape_contract() -> None:
+    """Bench-gate test reads .cluster_coverage_uplift /
+    .cluster_coverage_on / .cluster_coverage_off — verify the names
+    haven't drifted."""
+    from tests.retrieve_uplift_runner import ClusteringUplift
+    r = ClusteringUplift(
+        n_rows=2,
+        mean_recall_off=0.5,
+        mean_recall_on=0.75,
+        cluster_coverage_off=0.5,
+        cluster_coverage_on=1.0,
+    )
+    assert r.cluster_coverage_uplift == 0.5
+    assert r.recall_uplift == 0.25
+
+
+def test_clustering_uplift_runs_on_synthetic_row() -> None:
+    """One row → driver returns valid bounded metrics. Doesn't assert
+    a specific uplift sign — that's bench evidence the test can't
+    reproduce deterministically across rerank tuning."""
+    from tests.retrieve_uplift_runner import run_clustering_uplift
+    row = {
+        "id": "mf-test-001",
+        "query": "deploy and prerequisites",
+        "beliefs": [
+            {"id": "d1", "content": "deploy: install via pip then run setup"},
+            {"id": "d2", "content": "deploy: provisions a sqlite store"},
+            {"id": "p1", "content": "prereqs: python 3.13 required"},
+            {"id": "p2", "content": "prereqs: writable git directory"},
+        ],
+        "edges": [
+            {"src": "d1", "dst": "d2", "type": "SUPPORTS", "weight": 0.8},
+            {"src": "p1", "dst": "p2", "type": "SUPPORTS", "weight": 0.8},
+        ],
+        "expected_belief_ids": ["d1", "p1"],
+        "expected_clusters": [["d1", "d2"], ["p1", "p2"]],
+        "n_clusters_required": 2,
+    }
+    r = run_clustering_uplift([row])
+    assert r.n_rows == 1
+    for v in (
+        r.mean_recall_off, r.mean_recall_on,
+        r.cluster_coverage_off, r.cluster_coverage_on,
+    ):
+        assert 0.0 <= v <= 1.0
+
+
+def test_clustering_uplift_k_falls_back_to_n_clusters_required() -> None:
+    """When k is omitted, the driver uses row['n_clusters_required'].
+    Verify by explicitly varying k=1 vs default-K=3 and confirming the
+    metric arithmetic reflects the smaller K's narrower window."""
+    from tests.retrieve_uplift_runner import run_clustering_uplift
+    row = {
+        "id": "mf-test-002",
+        "query": "alpha beta gamma",
+        "beliefs": [
+            {"id": "a", "content": "alpha alpha alpha"},
+            {"id": "b", "content": "beta beta beta"},
+            {"id": "c", "content": "gamma gamma gamma"},
+        ],
+        "edges": [],
+        "expected_belief_ids": ["a", "b", "c"],
+        "expected_clusters": [["a"], ["b"], ["c"]],
+        "n_clusters_required": 3,
+    }
+    r_default = run_clustering_uplift([row], budget=10_000)
+    r_explicit_k1 = run_clustering_uplift([row], budget=10_000, k=1)
+    # K=3 (default from n_clusters_required) admits all three singleton
+    # clusters; K=1 admits only the top-ranked one → coverage = 1/3.
+    assert r_default.cluster_coverage_off == 1.0
+    assert r_default.cluster_coverage_on == 1.0
+    assert abs(r_explicit_k1.cluster_coverage_off - (1.0 / 3.0)) < 1e-9
+    assert abs(r_explicit_k1.cluster_coverage_on - (1.0 / 3.0)) < 1e-9
+
+
 def test_run_per_flag_uplift_covers_all_flags() -> None:
     """Hypothesis: the harness reports one row per registered flag.
     Falsifiable if a flag is silently dropped."""
