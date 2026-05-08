@@ -9,7 +9,7 @@ This is the reference for power users whose project has a documentation idiom or
 A single optional TOML file at the root of a project (or any ancestor). It exposes two power-user surfaces:
 
 - `[noise]` — onboard-time belief filter. Changes how `aelf onboard` ingests beliefs; nothing else.
-- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, opt-in), `use_hrr_structural` (HRR structural-query lane, opt-in). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
+- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, opt-in), `use_hrr_structural` (HRR structural-query lane, opt-in), `use_type_aware_compression` (per-belief retention-class compression, opt-in since v2.1). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
 
 Locks, hooks, MCP tools, and the Bayesian feedback math are not affected.
 
@@ -77,6 +77,16 @@ use_heat_kernel = false
 # composition tracker (#154) flips the default after the
 # benchmark gate. AELFRICE_HRR_STRUCTURAL=1 env var overrides.
 use_hrr_structural = false
+
+# v2.1+. Default `false`, opt-in. Enables type-aware compression
+# (#434) — populates RetrievalResult.compressed_beliefs with per-
+# belief renderings keyed by retention_class (snapshot → headline,
+# transient → stub, fact + locked → verbatim). The pack-loop budget
+# rewrite that turns the parallel field into recall@k uplift is a
+# follow-up; this flag at v2.1 just exposes the mechanism behind a
+# default-OFF gate. AELFRICE_TYPE_AWARE_COMPRESSION=1 env var
+# overrides.
+use_type_aware_compression = false
 
 # Placeholder flags reserved by #154 — recognised so callers can
 # write forward-compat config, but their lanes have not yet
@@ -281,6 +291,23 @@ Precedence (first decisive wins): env var `AELFRICE_HEAT_KERNEL=0`/`1` > explici
 Boolean, default `false`, opt-in. Enables the HRR structural-query lane (#152). Like `use_heat_kernel`, the lane is implemented and stays opt-in pending the #154 benchmark gate.
 
 Precedence (first decisive wins): env var `AELFRICE_HRR_STRUCTURAL=0`/`1` > explicit Python kwarg > TOML `[retrieval] use_hrr_structural` > default `false`.
+
+### `use_type_aware_compression`
+
+Boolean, default `false`, opt-in (v2.1+, #434). Populates `RetrievalResult.compressed_beliefs` with per-belief renderings dispatched by `belief.retention_class`:
+
+| Retention class | Locked | Unlocked | Notes |
+|---|---|---|---|
+| `fact` | verbatim | verbatim | Stable codebase state. |
+| `snapshot` | verbatim | **headline** | First sentence (split outside ``` fences) + `…`. |
+| `transient` | verbatim | **stub** | `[stub: belief={id} class=transient]` marker; full text via `store.get_belief(id)`. |
+| `unknown` | verbatim | verbatim | Migration safety. |
+
+Compression is pure and deterministic — no store, clock, env, or random reads. The `compressed_beliefs` field is parallel to `beliefs` (same length, same order); consumers that want the raw belief read `.beliefs[i]`, consumers that want the compressed render read `.compressed_beliefs[i].rendered`.
+
+When disabled (default), `compressed_beliefs` is empty and `beliefs` is byte-identical to the v1.x return shape.
+
+Precedence (first decisive wins): env var `AELFRICE_TYPE_AWARE_COMPRESSION=0`/`1` > explicit Python kwarg `use_type_aware_compression=<bool>` > TOML `[retrieval] use_type_aware_compression` > default `false`. The default-on flip is gated on the lab-side bench in `tests/bench_gate/test_compression_uplift.py` plus the pack-loop budget rewrite (follow-up).
 
 ### Placeholder flags
 
