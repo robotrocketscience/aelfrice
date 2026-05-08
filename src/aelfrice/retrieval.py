@@ -67,6 +67,12 @@ from aelfrice.bfs_multihop import (
     expand_bfs,
 )
 from aelfrice.bm25 import BM25IndexCache
+from aelfrice.clustering import (
+    DEFAULT_CLUSTER_DIVERSITY_TARGET,
+    DEFAULT_CLUSTER_EDGE_FLOOR,
+    cluster_candidates,
+    pack_with_clusters,
+)
 from aelfrice.compression import CompressedBelief, compress_for_retrieval
 from aelfrice.vocab_bridge import VocabBridge, VocabBridgeCache
 from aelfrice.entity_extractor import extract_entities
@@ -143,6 +149,14 @@ TYPE_AWARE_COMPRESSION_FLAG: Final[str] = "use_type_aware_compression"
 # When ON, retrieve_v2 builds (or fetches a cached) VocabBridge against
 # the store and rewrites the query before lane fan-out.
 VOCAB_BRIDGE_FLAG: Final[str] = "use_vocab_bridge"
+# v2.0 #436 intentional-clustering flag. Default-OFF at v2.0.0 until the
+# lab-side bench gate (A2 in docs/feature-intentional-clustering.md)
+# clears. When ON, the L1 pack loop is replaced with a diversity-aware
+# greedy fill that biases the top-K toward distinct graph-connected
+# clusters; locked + L2.5 are pre-included unchanged. Mutually exclusive
+# with use_type_aware_compression at v2.0.0 — the cluster pack uses raw
+# token cost, composing it with compressed cost is a v2.x follow-up.
+INTENTIONAL_CLUSTERING_FLAG: Final[str] = "use_intentional_clustering"
 
 PLACEHOLDER_FLAGS: Final[tuple[str, ...]] = (
     SIGNED_LAPLACIAN_FLAG,
@@ -171,6 +185,8 @@ ENV_HRR_STRUCTURAL: Final[str] = "AELFRICE_HRR_STRUCTURAL"
 ENV_TYPE_AWARE_COMPRESSION: Final[str] = "AELFRICE_TYPE_AWARE_COMPRESSION"
 # v2.1 #433 vocabulary-bridge env override. Tri-state.
 ENV_VOCAB_BRIDGE: Final[str] = "AELFRICE_VOCAB_BRIDGE"
+# v2.0 #436 intentional-clustering env override. Tri-state.
+ENV_INTENTIONAL_CLUSTERING: Final[str] = "AELFRICE_INTENTIONAL_CLUSTERING"
 # v1.3.0 posterior-weight env override. Float-typed; "0.0" is the
 # only value that fully disables (collapsing to BM25-only ordering).
 # Empty / non-numeric values fall through to the next precedence
@@ -348,6 +364,21 @@ def _env_type_aware_compression_override() -> bool | None:
     recognised truthy/falsy value, else None. Symmetric to
     `_env_bm25f_override`."""
     raw = os.environ.get(ENV_TYPE_AWARE_COMPRESSION)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def _env_intentional_clustering_override() -> bool | None:
+    """Return True/False if AELFRICE_INTENTIONAL_CLUSTERING is set to a
+    recognised truthy/falsy value, else None. Symmetric to
+    `_env_bm25f_override`."""
+    raw = os.environ.get(ENV_INTENTIONAL_CLUSTERING)
     if raw is None:
         return None
     norm = raw.strip().lower()
@@ -780,6 +811,32 @@ def resolve_use_type_aware_compression(
     if explicit is not None:
         return explicit
     toml_value = _read_toml_flag_for(TYPE_AWARE_COMPRESSION_FLAG, start)
+    if toml_value is not None:
+        return toml_value
+    return False
+
+
+def resolve_use_intentional_clustering(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the intentional-clustering flag (#436).
+
+    Precedence (first decisive wins):
+      1. AELFRICE_INTENTIONAL_CLUSTERING env var (truthy / falsy normalised).
+      2. Explicit `explicit` kwarg from the caller.
+      3. `[retrieval] use_intentional_clustering` in `.aelfrice.toml`.
+      4. Default: False — ships behind the flag at v2.0.0; the bench gate
+         (A2 in docs/feature-intentional-clustering.md) flips the default
+         after lab-side benchmark evidence clears.
+    """
+    env = _env_intentional_clustering_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    toml_value = _read_toml_flag_for(INTENTIONAL_CLUSTERING_FLAG, start)
     if toml_value is not None:
         return toml_value
     return False
