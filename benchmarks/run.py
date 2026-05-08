@@ -307,11 +307,17 @@ def main_all(
     """
     invocations = SMOKE_INVOCATIONS if smoke else CANONICAL_INVOCATIONS
     if adapters is not None:
+        # Capture the available-adapters list BEFORE filtering, so the
+        # error message can enumerate valid options. Building it from
+        # the post-filter `invocations` produces an empty list whenever
+        # the filter matched nothing — exactly when the user needs the
+        # enumeration most.
+        available = sorted({i.adapter for i in invocations})
         invocations = tuple(i for i in invocations if i.adapter in adapters)
         if not invocations:
             raise SystemExit(
                 f"no adapters matched filter {adapters!r}; "
-                "available: " + ", ".join(sorted({i.adapter for i in invocations}))
+                "available: " + ", ".join(available)
             )
     if canonical:
         # Cut-mismatch refusal applies whether or not --adapters was passed.
