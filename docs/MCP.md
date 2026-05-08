@@ -84,4 +84,4 @@ tool_confirm(store, belief_id="<id>", note="spot-checked correct")
 
 ## Backward compatibility
 
-`aelf:stats` and `aelf:health` emit both `edges` (the v1.0 schema name) and `threads` (the v1.1.0 user-facing name) with the same integer value during the v1.1.0 deprecation window. `edges` and `edge_per_belief` are removed in v1.2.0; clients should migrate to `threads` and `thread_per_belief`.
+`aelf:stats` and `aelf:health` still emit both the v1.0 schema names (`edges`, `edge_per_belief`) and the v1.1.0 user-facing names (`threads`, `thread_per_belief`) with the same integer value. The v1.2.0 removal slated in earlier docs has not landed — both forms are emitted as of v2.0.0. Prefer `threads` / `thread_per_belief` in new code; legacy clients on `edges` continue to work.
