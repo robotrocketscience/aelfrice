@@ -51,6 +51,9 @@ EXPECTED_COMMANDS = (
     "delete",
     # v2.0 (#439) — load-bearing belief lens (locked ∪ corroborated ∪ high-posterior).
     "core",
+    # v2.0 (#365 R4) — operator-facing relevance-calibration harness
+    # (P@K / ROC-AUC / Spearman ρ).
+    "eval",
 )
 
 
