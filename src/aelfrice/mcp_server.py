@@ -1,5 +1,5 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUntypedFunctionDecorator=false, reportUnusedFunction=false
-"""MCP server exposing the 9 user-visible tools.
+"""MCP server exposing the 12 user-visible tools.
 
 The same surface as the CLI, accessible from any host that speaks the
 Model Context Protocol. The handlers are pure Python — they take a
@@ -23,6 +23,8 @@ Tool surface (all under the `aelf:` namespace at the host):
   aelf:locked          {pressured?}                      -> locked beliefs
   aelf:demote          {belief_id}                       -> demoted bool
   aelf:validate        {belief_id, source?}              -> origin promotion
+  aelf:unlock          {belief_id}                       -> lock cleared
+  aelf:promote         {belief_id, source?}              -> alias of validate
   aelf:feedback        {belief_id, signal, source?}      -> updated priors
   aelf:confirm         {belief_id, source?, note?}       -> affirmed priors
   aelf:stats           {}                                -> counts
@@ -66,6 +68,30 @@ from aelfrice.session_resolution import resolve_session_id
 from aelfrice.store import MemoryStore
 
 _FEEDBACK_VALENCES: Final[dict[str, float]] = {"used": 1.0, "harmful": -1.0}
+
+
+# Server-level overview shown to host LLMs at registration time. Concise
+# on purpose — hosts that surface the instructions field treat it as a
+# hint, not a manual; per-tool docstrings carry the detail.
+_SERVER_INSTRUCTIONS: Final[str] = """\
+aelfrice exposes a local belief store: a small SQLite-backed memory of
+locked rules, validated facts, and decay-managed agent inferences for
+the current project. Tools fall into three groups:
+
+- READ (search, locked, stats, health): retrieve or summarize beliefs
+  before acting. Cheap, idempotent, no host approval needed.
+- WRITE (lock, validate, promote, unlock, feedback, confirm, onboard):
+  introduce or refine beliefs based on user signals. Idempotent where
+  marked; otherwise expect each call to shift posterior or audit state.
+- TIER (demote): the only destructively-flagged tool. Drops a lock or
+  devalidates a belief one tier; reversible only by re-locking with
+  fresh evidence.
+
+When unsure what already exists, call aelf_search before aelf_lock.
+When the user explicitly asserts a non-negotiable rule, prefer aelf_lock
+over aelf_confirm. All tools operate against the LOCAL store only — no
+network egress, no external APIs.
+"""
 
 
 # --- Helpers -----------------------------------------------------------
@@ -552,7 +578,10 @@ def serve() -> None:
         ) from exc
 
     _FastMCP: Any = _FastMCPCls
-    mcp: Any = _FastMCP(name="aelfrice")
+    mcp: Any = _FastMCP(
+        name="aelfrice",
+        instructions=_SERVER_INSTRUCTIONS,
+    )
 
     @mcp.tool(
         annotations={

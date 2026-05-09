@@ -91,6 +91,49 @@ def test_python_dash_m_mcp_server_module_resolves() -> None:
 # --- tool description coverage (FastMCP reads decorator-fn docstring) --
 
 
+def test_server_passes_instructions_to_fastmcp() -> None:
+    """The FastMCP constructor call inside serve() must pass an
+    `instructions=` argument so hosts get a server-level overview of the
+    tool surface. Static AST guard.
+    """
+    import ast
+    import aelfrice.mcp_server as mod
+
+    src = open(mod.__file__, "r", encoding="utf-8").read()
+    tree = ast.parse(src)
+
+    serve_fn = next(
+        (n for n in tree.body
+         if isinstance(n, ast.FunctionDef) and n.name == "serve"),
+        None,
+    )
+    assert serve_fn is not None
+
+    # Be lenient on which symbol invokes the constructor — search for any
+    # call passing `name=` with a string arg, which is fastmcp's signature.
+    constructor_calls = [
+        node for node in ast.walk(serve_fn)
+        if isinstance(node, ast.Call)
+        and any(kw.arg == "name" for kw in node.keywords)
+    ]
+    assert constructor_calls, "no FastMCP-style constructor call found in serve()"
+
+    have_instructions = [
+        c for c in constructor_calls
+        if any(kw.arg == "instructions" for kw in c.keywords)
+    ]
+    assert have_instructions, (
+        "FastMCP(...) constructor missing instructions= kwarg — host LLMs "
+        "will receive no server-level overview at registration time"
+    )
+
+    # Sanity: the module must define a non-empty _SERVER_INSTRUCTIONS.
+    assert hasattr(mod, "_SERVER_INSTRUCTIONS")
+    assert len(mod._SERVER_INSTRUCTIONS.strip()) > 100, (
+        "_SERVER_INSTRUCTIONS too short to be useful (< 100 chars stripped)"
+    )
+
+
 def test_every_decorated_aelf_tool_has_annotations() -> None:
     """Every @mcp.tool() must pass an `annotations={...}` dict with the
     four MCP behavioral hints. Hosts use these to gate dangerous tools
