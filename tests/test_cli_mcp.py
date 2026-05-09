@@ -91,6 +91,73 @@ def test_python_dash_m_mcp_server_module_resolves() -> None:
 # --- tool description coverage (FastMCP reads decorator-fn docstring) --
 
 
+def test_every_decorated_aelf_tool_has_annotations() -> None:
+    """Every @mcp.tool() must pass an `annotations={...}` dict with the
+    four MCP behavioral hints. Hosts use these to gate dangerous tools
+    (e.g. require approval for destructiveHint=True). An unannotated
+    tool defaults to destructiveHint=True and openWorldHint=True per
+    spec — the worst-of-both-worlds default.
+
+    Static AST guard: parse mcp_server.py, find every @mcp.tool() call
+    inside serve(), assert the call kwargs include 'annotations' and
+    that the annotations dict has all four required hint keys.
+    """
+    import ast
+    import aelfrice.mcp_server as mod
+
+    required_keys = {
+        "readOnlyHint",
+        "destructiveHint",
+        "idempotentHint",
+        "openWorldHint",
+    }
+
+    src = open(mod.__file__, "r", encoding="utf-8").read()
+    tree = ast.parse(src)
+
+    serve_fn = next(
+        (n for n in tree.body
+         if isinstance(n, ast.FunctionDef) and n.name == "serve"),
+        None,
+    )
+    assert serve_fn is not None
+
+    missing: list[str] = []
+    incomplete: list[tuple[str, set[str]]] = []
+    seen = 0
+    for node in ast.walk(serve_fn):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for dec in node.decorator_list:
+            if (isinstance(dec, ast.Call)
+                    and isinstance(dec.func, ast.Attribute)
+                    and dec.func.attr == "tool"):
+                seen += 1
+                ann_kw = next(
+                    (kw for kw in dec.keywords if kw.arg == "annotations"),
+                    None,
+                )
+                if ann_kw is None:
+                    missing.append(node.name)
+                    break
+                if not isinstance(ann_kw.value, ast.Dict):
+                    missing.append(node.name)
+                    break
+                hint_keys = {
+                    k.value for k in ann_kw.value.keys
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str)
+                }
+                if not required_keys.issubset(hint_keys):
+                    incomplete.append((node.name, required_keys - hint_keys))
+                break
+
+    assert seen >= 12, f"expected >=12 @mcp.tool decorators, found {seen}"
+    assert not missing, f"@mcp.tool decorators missing annotations=: {missing}"
+    assert not incomplete, (
+        f"@mcp.tool annotations missing required hint keys: {incomplete}"
+    )
+
+
 def test_every_decorated_aelf_tool_has_a_docstring() -> None:
     """FastMCP exposes the @mcp.tool-decorated function's docstring as the
     tool's `description`. An empty docstring means the host LLM gets no

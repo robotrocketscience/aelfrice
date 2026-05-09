@@ -554,7 +554,15 @@ def serve() -> None:
     _FastMCP: Any = _FastMCPCls
     mcp: Any = _FastMCP(name="aelfrice")
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "title": "Onboard project into the belief store",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        },
+    )
     def aelf_onboard(
         path: str | None = None,
         session_id: str | None = None,
@@ -592,7 +600,15 @@ def serve() -> None:
         finally:
             store.close()
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "title": "Search beliefs by query",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    )
     def aelf_search(
         query: str, budget: int = DEFAULT_TOKEN_BUDGET,
     ) -> dict[str, Any]:
@@ -619,7 +635,15 @@ def serve() -> None:
         finally:
             store.close()
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "title": "Lock a belief as ground truth",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    )
     def aelf_lock(statement: str) -> dict[str, Any]:
         """Lock a statement as user-asserted ground truth (L0).
 
@@ -642,7 +666,15 @@ def serve() -> None:
         finally:
             store.close()
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "title": "List user-locked beliefs",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    )
     def aelf_locked(pressured: bool = False) -> dict[str, Any]:
         """List all user-locked (L0) beliefs in the store.
 
@@ -665,7 +697,15 @@ def serve() -> None:
         finally:
             store.close()
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "title": "Demote a belief one tier",
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        },
+    )
     def aelf_demote(belief_id: str) -> dict[str, Any]:
         """Demote a belief one tier — drop a lock OR devalidate.
 
@@ -689,7 +729,15 @@ def serve() -> None:
         finally:
             store.close()
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "title": "Validate (promote) an agent-inferred belief",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    )
     def aelf_validate(
         belief_id: str, source: str = "user_validated",
     ) -> dict[str, Any]:
@@ -719,7 +767,15 @@ def serve() -> None:
         finally:
             store.close()
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "title": "Unlock a belief (clears L0 lock)",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    )
     def aelf_unlock(belief_id: str) -> dict[str, Any]:
         """Drop a user-lock without changing the belief's origin.
 
@@ -742,7 +798,15 @@ def serve() -> None:
         finally:
             store.close()
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "title": "Promote (validate) an agent-inferred belief",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    )
     def aelf_promote(
         belief_id: str, source: str = "user_validated",
     ) -> dict[str, Any]:
@@ -762,7 +826,15 @@ def serve() -> None:
         finally:
             store.close()
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "title": "Record feedback on a belief",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        },
+    )
     def aelf_feedback(
         belief_id: str, signal: str, source: str = "user",
     ) -> dict[str, Any]:
@@ -797,7 +869,15 @@ def serve() -> None:
         finally:
             store.close()
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "title": "Confirm a belief (positive valence)",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        },
+    )
     def aelf_confirm(
         belief_id: str,
         source: str = _CONFIRM_SOURCE_DEFAULT,
@@ -833,7 +913,15 @@ def serve() -> None:
         finally:
             store.close()
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "title": "Snapshot belief-store counts",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    )
     def aelf_stats() -> dict[str, Any]:
         """Return summary counts for the local belief store.
 
@@ -855,7 +943,15 @@ def serve() -> None:
         finally:
             store.close()
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations={
+            "title": "Classify store operating regime",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    )
     def aelf_health() -> dict[str, Any]:
         """Classify the store's current operating regime + describe it.
 
