@@ -129,16 +129,6 @@ The same operations are also available as MCP tools and `/aelf:*` slash commands
 
 ---
 
-## Reproducibility
-
-`aelf bench all --canonical --out benchmarks/results/v2.0.0.json` reproduces every published headline number on a fresh clone within documented tolerance bands. The dispatcher subprocesses each academic-suite adapter (MAB, LoCoMo, LongMemEval, StructMemEval, AMA-Bench) at the canonical headline cut — full per the 2026-05-06 ratification on [#437](https://github.com/robotrocketscience/aelfrice/issues/437) — and merges the per-adapter results into one schema-v2 JSON.
-
-The `Bench Canonical` nightly cron runs the same harness daily on `main` and pushes the cron entry to a dedicated `bench-canonical-results` branch. Drift outside the per-metric tolerance band fails the workflow; drift inside the band emits a notice. The badge above flips to red on a band-busting regression and stays red until acknowledged.
-
-Detail: [docs/v2_reproducibility_harness.md](docs/v2_reproducibility_harness.md).
-
----
-
 ## Roadmap
 
 | Version | Status | Theme |
