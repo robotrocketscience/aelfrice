@@ -469,6 +469,30 @@ def _path_is_under(child: Path, parent: Path) -> bool:
         return False
 
 
+def _running_interpreter_aelf() -> Path | None:
+    """Return the resolved `aelf` path inside the venv hosting the
+    running interpreter, if such a venv exists and contains the script.
+
+    Used to suppress false-positive `user_local_bin` reports when the
+    detector runs under `uv run` from a project tree: that mode
+    transiently prepends the project's `.venv/bin` to PATH, which would
+    otherwise look like a separate install on PATH.
+    """
+    import sys
+
+    base_prefix = getattr(sys, "base_prefix", sys.prefix)
+    if base_prefix == sys.prefix:
+        # Not running inside a venv; nothing to suppress.
+        return None
+    candidate = Path(sys.prefix) / "bin" / "aelf"
+    if not candidate.exists():
+        return None
+    try:
+        return candidate.resolve()
+    except OSError:
+        return None
+
+
 def detect_reachable_installs() -> list[InstallSite]:
     """Best-effort enumeration of aelfrice installs visible on this system.
 
@@ -480,6 +504,12 @@ def detect_reachable_installs() -> list[InstallSite]:
       - ~/.local/pipx/venvs/aelfrice/      → pipx
       - any `aelf` on PATH whose resolved path is NOT under the above
         roots                              → user_local_bin
+
+    The venv hosting the *currently-running* interpreter is excluded
+    from `user_local_bin` reporting. Under `uv run`, the project venv
+    is on PATH only because uv injected it; reporting it as a "second
+    install" when the user's persistent shell PATH doesn't include it
+    is a false positive.
     """
     sites: list[InstallSite] = []
     try:
@@ -508,9 +538,13 @@ def detect_reachable_installs() -> list[InstallSite]:
         )
         sites.append(InstallSite(kind="pipx", path=pipx_root, on_path=on_path))
 
+    running_aelf = _running_interpreter_aelf()
     known_roots = [uv_root, pipx_root]
     for exe in path_aelf_resolved:
         if any(_path_is_under(exe, root) for root in known_roots):
+            continue
+        if running_aelf is not None and exe == running_aelf:
+            # Suppress: this is the venv hosting us, not a separate install.
             continue
         sites.append(InstallSite(kind="user_local_bin", path=exe, on_path=True))
 

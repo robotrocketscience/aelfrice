@@ -401,6 +401,71 @@ def test_reachable_installs_dual_uv_tool_plus_user_local_bin(
     assert by_kind["user_local_bin"].path == user_bin / "aelf"
 
 
+def test_reachable_installs_suppresses_running_interpreter_venv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression for the false-positive triggered under `uv run`.
+
+    Scenario: running aelfrice from within a project venv via `uv run`,
+    PATH transiently includes the venv's bin dir, but the user's
+    persistent shell PATH doesn't. Without this suppression, the
+    detector reports `.venv/bin/aelf` as a separate `user_local_bin`
+    install — confusing the multi-install warning.
+
+    Falsifiable if a `user_local_bin` site is reported for the venv
+    that hosts sys.prefix.
+    """
+    import sys
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    uv_root = tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice"
+    uv_root.mkdir(parents=True)
+    # Simulate `uv run` activation: a project .venv whose bin/ has
+    # `aelf` and is on PATH, plus we point sys.prefix at it.
+    fake_venv = tmp_path / "project" / ".venv"
+    venv_bin = fake_venv / "bin"
+    _make_aelf_exe(venv_bin / "aelf")
+    monkeypatch.setenv("PATH", str(venv_bin))
+    monkeypatch.setattr(sys, "prefix", str(fake_venv))
+    monkeypatch.setattr(sys, "base_prefix", "/usr")  # any path != prefix
+
+    sites = lifecycle.detect_reachable_installs()
+    by_kind = {s.kind: s for s in sites}
+    # uv_tool is reported (directory exists), but no user_local_bin —
+    # the .venv/bin/aelf is the running interpreter's own and was
+    # suppressed.
+    assert "user_local_bin" not in by_kind, (
+        f"running-interpreter venv leaked into user_local_bin: {sites}"
+    )
+    assert "uv_tool" in by_kind
+
+
+def test_reachable_installs_does_not_suppress_when_not_in_venv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """When sys.prefix == sys.base_prefix (system Python, not a venv),
+    the suppression rule must NOT fire — a `user_local_bin` `aelf` on
+    PATH is still a real install report.
+    """
+    import sys
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    uv_root = tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice"
+    uv_root.mkdir(parents=True)
+    user_bin = tmp_path / ".local" / "bin"
+    _make_aelf_exe(user_bin / "aelf")
+    monkeypatch.setenv("PATH", str(user_bin))
+    # Not running in a venv.
+    monkeypatch.setattr(sys, "prefix", "/usr")
+    monkeypatch.setattr(sys, "base_prefix", "/usr")
+
+    sites = lifecycle.detect_reachable_installs()
+    by_kind = {s.kind: s for s in sites}
+    assert "user_local_bin" in by_kind, (
+        f"valid user-local install was suppressed: {sites}"
+    )
+
+
 def test_reachable_installs_pipx_root(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
