@@ -688,3 +688,10 @@ def serve() -> None:
     del _registered
 
     mcp.run()
+
+
+if __name__ == "__main__":  # pragma: no cover — exercised by `aelf mcp`
+    # `python -m aelfrice.mcp_server` is the fallback entry point for
+    # hosts that prefer module invocation over the `aelf mcp` console
+    # script. Both routes call serve() identically.
+    serve()
