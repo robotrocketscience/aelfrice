@@ -1596,6 +1596,83 @@ def _cmd_bench(args: argparse.Namespace, out: object) -> int:
     return 2
 
 
+def _cmd_eval(args: argparse.Namespace, out: object) -> int:
+    """Run the relevance-calibration harness (#365 R4 Phase B).
+
+    Reuses ``aelfrice.eval_harness`` to score a synthetic corpus of
+    ``(query, known_belief, noise_beliefs)`` fixtures and report
+    P@K / ROC-AUC / Spearman ρ. Default corpus is the public synthetic
+    fixture bundled with the wheel; ``--corpus PATH`` points at any
+    JSONL with the same row schema.
+
+    Determinism contract (#365 ship gate): same ``(corpus, --k, --seed)``
+    -> bytes-identical output across reruns.
+
+    Output formats:
+      default   human-readable text block (same shape as
+                ``audit_rebuild_log.py --calibrate-corpus``)
+      --json    one JSON object per run with the report fields
+                (machine-readable; intended for the R5 CI surface).
+
+    Exit codes:
+      0  report printed
+      1  corpus missing or empty
+      2  usage error (--k <= 0)
+    """
+    import json as _json
+
+    from aelfrice import eval_harness  # noqa: PLC0415
+
+    if args.eval_k <= 0:
+        print("aelf eval: --k must be positive", file=out)  # type: ignore[arg-type]
+        return 2
+
+    corpus_path: Path = args.eval_corpus or eval_harness.DEFAULT_CALIBRATION_CORPUS
+    if not corpus_path.is_file():
+        print(
+            f"aelf eval: calibration corpus not found: {corpus_path}",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 1
+
+    fixtures = eval_harness.load_calibration_fixtures(corpus_path)
+    if not fixtures:
+        print(
+            f"aelf eval: corpus is empty: {corpus_path}",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 1
+
+    report = eval_harness.run_calibration_on_fixtures(
+        fixtures, k=args.eval_k, seed=args.eval_seed,
+    )
+
+    if args.eval_json:
+        payload = {
+            "corpus": str(corpus_path),
+            "seed": args.eval_seed,
+            "k": report.k,
+            "n_queries": report.n_queries,
+            "n_truncated_queries": report.n_truncated_queries,
+            "n_observations": report.n_observations,
+            "p_at_k": report.p_at_k,
+            "roc_auc": report.roc_auc,
+            "spearman_rho": report.spearman_rho,
+        }
+        print(
+            _json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            file=out,  # type: ignore[arg-type]
+        )
+    else:
+        text = eval_harness.format_calibration_report(
+            report, corpus_path=corpus_path, seed=args.eval_seed,
+        )
+        # ``format_calibration_report`` already terminates with "\n";
+        # use ``end=""`` to avoid a double-newline trailing the block.
+        print(text, file=out, end="")  # type: ignore[arg-type]
+    return 0
+
+
 def _effective_scope(args: argparse.Namespace) -> SettingsScope:
     """Return the explicit `--scope` if given, else auto-detect."""
     scope = getattr(args, "scope", None)
@@ -4499,6 +4576,38 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="(target=all) run SMOKE_INVOCATIONS instead of canonical.",
     )
     p_bench.set_defaults(func=_cmd_bench)
+
+    # `aelf eval` — relevance-calibration harness (#365 R4 Phase B).
+    # Operator-facing alias of `audit_rebuild_log.py --calibrate-corpus`.
+    p_eval = sub.add_parser(
+        "eval",
+        help=(
+            "run relevance-calibration harness (P@K / ROC-AUC / "
+            "Spearman ρ) on a synthetic corpus"
+        ),
+    )
+    p_eval.add_argument(
+        "--corpus", dest="eval_corpus", default=None, type=Path,
+        metavar="PATH",
+        help=(
+            "JSONL corpus with (query, known_belief_content, "
+            "noise_belief_contents) rows. Default: bundled public "
+            "synthetic corpus."
+        ),
+    )
+    p_eval.add_argument(
+        "--k", dest="eval_k", type=int, default=10,
+        help="K for P@K (default 10).",
+    )
+    p_eval.add_argument(
+        "--seed", dest="eval_seed", type=int, default=0,
+        help="deterministic seed for noise-belief shuffle (default 0).",
+    )
+    p_eval.add_argument(
+        "--json", dest="eval_json", action="store_true",
+        help="emit machine-readable JSON instead of text block.",
+    )
+    p_eval.set_defaults(func=_cmd_eval)
 
     # Hidden: invoked by the CwdChanged hook (HOME repo). Pre-loads the
     # active project's SQLite + OS page caches so the next aelf call
