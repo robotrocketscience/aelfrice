@@ -27,6 +27,7 @@ from datasets import load_dataset  # type: ignore[import-untyped]
 from aelfrice.ingest import ingest_turn
 from aelfrice.retrieval import retrieve_v2 as retrieve  # v1.0.x lab-compat shim
 from aelfrice.store import MemoryStore
+from benchmarks.qa_scoring import score_multi_answer
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -244,6 +245,13 @@ class EpisodeResult:
     )
 
 
+_SCORE_KEYS: Final[tuple[str, ...]] = (
+    "exact_match",
+    "substring_exact_match",
+    "f1",
+)
+
+
 @dataclass
 class AggregateResult:
     """Aggregated benchmark results across episodes."""
@@ -261,6 +269,12 @@ class AggregateResult:
     )
     type_counts: dict[str, int] = field(
         default_factory=lambda: dict[str, int](),
+    )
+    # Per-metric score sums; mean = sum / total_qa. Per-type and
+    # per-domain breakdowns are computed at print/output time from
+    # per_question rows so we keep one source of truth.
+    score_sums: dict[str, float] = field(
+        default_factory=lambda: {k: 0.0 for k in _SCORE_KEYS},
     )
     per_question: list[dict[str, object]] = field(
         default_factory=lambda: list[dict[str, object]](),
@@ -290,8 +304,38 @@ def aggregate_results(results: list[EpisodeResult]) -> AggregateResult:
         for q in r.per_question:
             qt: str = str(q["qa_type"])
             agg.type_counts[qt] = agg.type_counts.get(qt, 0) + 1
+            for key in _SCORE_KEYS:
+                # Pre-#507 per_question rows have no score keys; treat
+                # them as missing rather than crashing the aggregator.
+                v = q.get(key)
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    agg.score_sums[key] += float(v)
 
     return agg
+
+
+def _accuracy_by_key(
+    rows: list[dict[str, object]], group_key: str,
+) -> dict[str, dict[str, float]]:
+    """Group rows by `group_key` and compute mean EM/SEM/F1 + count."""
+    by_group: dict[str, dict[str, float]] = {}
+    for q in rows:
+        g: str = str(q.get(group_key, "unknown"))
+        bucket = by_group.setdefault(
+            g, {**{k: 0.0 for k in _SCORE_KEYS}, "count": 0.0},
+        )
+        bucket["count"] += 1
+        for k in _SCORE_KEYS:
+            v = q.get(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                bucket[k] += float(v)
+    for g, bucket in by_group.items():
+        n: float = bucket["count"]
+        if n > 0:
+            for k in _SCORE_KEYS:
+                bucket[k] = round(bucket[k] / n, 4)
+        bucket["count"] = int(n)  # type: ignore[assignment]
+    return by_group
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +369,10 @@ def run_episode(
     t1: float = time.monotonic()
     for qa in episode.qa_pairs:
         context: str = query_aelfrice(store, qa.question, budget=budget)
+        # Deterministic correctness scorer per #507: substring-EM is
+        # the canonical metric (does retrieval surface the gold
+        # answer?), EM and F1 ride alongside as diagnostics.
+        scores: dict[str, float] = score_multi_answer(context, [qa.answer])
 
         result.total_qa += 1
         result.per_question.append({
@@ -336,6 +384,9 @@ def run_episode(
             "qa_type_name": QA_TYPE_NAMES.get(qa.qa_type, "unknown"),
             "question_uuid": qa.question_uuid,
             "context": context,
+            "exact_match": scores["exact_match"],
+            "substring_exact_match": scores["substring_exact_match"],
+            "f1": round(scores["f1"], 4),
         })
         result.ground_truth.append({
             "question_uuid": qa.question_uuid,
@@ -374,13 +425,33 @@ def print_results(agg: AggregateResult) -> None:
         qa_count: int = agg.domain_qa_counts.get(domain, 0)
         print(f"  {domain:25s}  episodes={ep_count:3d}  questions={qa_count:4d}")
 
+    # Overall correctness (deterministic, no LLM judge)
+    if agg.total_qa > 0:
+        em: float = agg.score_sums["exact_match"] / agg.total_qa
+        sem: float = agg.score_sums["substring_exact_match"] / agg.total_qa
+        f1: float = agg.score_sums["f1"] / agg.total_qa
+        print(f"\n{'- ' * 30}")
+        print("Overall correctness (deterministic):")
+        print(f"  Exact match:           {em:.4f} ({em * 100:.1f}%)")
+        print(f"  Substring exact match: {sem:.4f} ({sem * 100:.1f}%)")
+        print(f"  F1:                    {f1:.4f} ({f1 * 100:.1f}%)")
+
     # Per-QA-type breakdown
     print(f"\n{'- ' * 30}")
     print("Per-QA-type breakdown:")
+    type_acc: dict[str, dict[str, float]] = _accuracy_by_key(
+        agg.per_question, "qa_type",
+    )
     for qt in sorted(agg.type_counts.keys()):
         count: int = agg.type_counts[qt]
         name: str = QA_TYPE_NAMES.get(qt, "unknown")
-        print(f"  {qt}: {name:30s}  n={count}")
+        bucket = type_acc.get(qt, {})
+        sem_t: float = float(bucket.get("substring_exact_match", 0.0))
+        f1_t: float = float(bucket.get("f1", 0.0))
+        print(
+            f"  {qt}: {name:30s}  n={count:4d}  "
+            f"sub_em={sem_t:.4f}  f1={f1_t:.4f}"
+        )
 
     # Context length stats
     if agg.per_question:
@@ -503,11 +574,22 @@ def main() -> None:
 
     # Write detailed output
     if args.output:
+        # Overall correctness (means of per-question booleans / F1).
+        n_qa: int = agg.total_qa
+        overall: dict[str, float] = (
+            {k: round(agg.score_sums[k] / n_qa, 4) for k in _SCORE_KEYS}
+            if n_qa > 0 else {k: 0.0 for k in _SCORE_KEYS}
+        )
         output_data: dict[str, object] = {
             "total_episodes": agg.total_episodes,
             "total_qa": agg.total_qa,
             "domain_counts": agg.domain_counts,
             "type_counts": agg.type_counts,
+            "exact_match": overall["exact_match"],
+            "substring_exact_match": overall["substring_exact_match"],
+            "f1": overall["f1"],
+            "accuracy_by_type": _accuracy_by_key(agg.per_question, "qa_type"),
+            "accuracy_by_domain": _accuracy_by_key(agg.per_question, "domain"),
             "per_question": agg.per_question,
         }
         output_path: Path = Path(args.output)
