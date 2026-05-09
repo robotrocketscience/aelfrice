@@ -145,6 +145,10 @@ HIDDEN_SUBCOMMANDS = frozenset({
     # install-aware upgrade command). The imperative slash command
     # `/aelf:upgrade` calls it. CLI verb has no slash file of its own.
     "upgrade-cmd",
+    # FastMCP server entrypoint — `aelf mcp` runs the MCP server over
+    # stdio for host integration. Hidden because it's not a user-facing
+    # workflow verb; hosts wire it via their MCP server config.
+    "mcp",
 })
 
 
