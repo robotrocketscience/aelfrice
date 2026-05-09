@@ -39,7 +39,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Final, Sequence
+from typing import Annotated, Any, Final, Sequence
 
 from aelfrice.classification import (
     HostClassification,
@@ -589,6 +589,36 @@ def serve() -> None:
             "fastmcp is not installed. Install with: pip install aelfrice[mcp]"
         ) from exc
 
+    # pydantic is a transitive dep of fastmcp — import here, not at
+    # module top, to keep `aelfrice.mcp_server` importable when the
+    # [mcp] extra is absent (the test suite relies on this).
+    from pydantic import Field  # type: ignore[import-not-found]
+
+    # Reusable Field constraints. Defined inline so they share scope
+    # with the lazily-imported `Field` symbol; promoting them to module
+    # level would force pydantic at import time.
+    _BeliefId = Annotated[
+        str,
+        Field(
+            description=(
+                "Stable hash-prefix belief ID returned by aelf_search, "
+                "aelf_lock, or aelf_locked."
+            ),
+            min_length=1,
+            max_length=64,
+        ),
+    ]
+    _SourceLabel = Annotated[
+        str,
+        Field(
+            description=(
+                "Audit-row source suffix. Override only when a "
+                "non-canonical source is appropriate."
+            ),
+            max_length=128,
+        ),
+    ]
+
     _FastMCP: Any = _FastMCPCls
     mcp: Any = _FastMCP(
         name="aelfrice",
@@ -605,9 +635,39 @@ def serve() -> None:
         },
     )
     def aelf_onboard(
-        path: str | None = None,
-        session_id: str | None = None,
-        classifications: list[dict[str, Any]] | None = None,
+        path: Annotated[
+            str | None,
+            Field(
+                default=None,
+                description=(
+                    "Absolute filesystem path to the project root. Set to "
+                    "start an onboard session; leave None for the other "
+                    "two shapes."
+                ),
+                max_length=4096,
+            ),
+        ] = None,
+        session_id: Annotated[
+            str | None,
+            Field(
+                default=None,
+                description=(
+                    "Session ID returned by a prior path-shape call. Set "
+                    "with `classifications` to finalize."
+                ),
+                max_length=128,
+            ),
+        ] = None,
+        classifications: Annotated[
+            list[dict[str, Any]] | None,
+            Field(
+                default=None,
+                description=(
+                    "Host verdicts: each item {index: int, belief_type: "
+                    "str, persist: bool}. Required when session_id is set."
+                ),
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Polymorphic ingest entrypoint for a project's belief corpus.
 
@@ -651,7 +711,29 @@ def serve() -> None:
         },
     )
     def aelf_search(
-        query: str, budget: int = DEFAULT_TOKEN_BUDGET,
+        query: Annotated[
+            str,
+            Field(
+                description=(
+                    "Search string. Whitespace-separated terms; SQLite "
+                    "FTS5 syntax honored (NEAR, quoted phrases). "
+                    "Examples: 'release process', 'auth NEAR token'."
+                ),
+                min_length=1,
+                max_length=500,
+            ),
+        ],
+        budget: Annotated[
+            int,
+            Field(
+                description=(
+                    "Soft token budget for the response. Lower values "
+                    "trim hits aggressively."
+                ),
+                ge=1,
+                le=100_000,
+            ),
+        ] = DEFAULT_TOKEN_BUDGET,
     ) -> dict[str, Any]:
         """Retrieve beliefs matching a free-text query, ranked by BM25.
 
@@ -685,7 +767,20 @@ def serve() -> None:
             "openWorldHint": False,
         },
     )
-    def aelf_lock(statement: str) -> dict[str, Any]:
+    def aelf_lock(
+        statement: Annotated[
+            str,
+            Field(
+                description=(
+                    "The free-text claim to lock as ground truth. "
+                    "Treated verbatim; no rewriting. Example: 'All "
+                    "commits must be signed'."
+                ),
+                min_length=1,
+                max_length=2000,
+            ),
+        ],
+    ) -> dict[str, Any]:
         """Lock a statement as user-asserted ground truth (L0).
 
         Use when the user has explicitly stated a non-negotiable rule,
@@ -716,7 +811,18 @@ def serve() -> None:
             "openWorldHint": False,
         },
     )
-    def aelf_locked(pressured: bool = False) -> dict[str, Any]:
+    def aelf_locked(
+        pressured: Annotated[
+            bool,
+            Field(
+                description=(
+                    "If True, return only locks whose demotion_pressure "
+                    "> 0 (challenged by contradicting evidence). "
+                    "Default False returns all locks."
+                ),
+            ),
+        ] = False,
+    ) -> dict[str, Any]:
         """List all user-locked (L0) beliefs in the store.
 
         Use to show the user their current ground-truth set, or to find
@@ -747,7 +853,7 @@ def serve() -> None:
             "openWorldHint": False,
         },
     )
-    def aelf_demote(belief_id: str) -> dict[str, Any]:
+    def aelf_demote(belief_id: _BeliefId) -> dict[str, Any]:
         """Demote a belief one tier — drop a lock OR devalidate.
 
         For a user-locked (L0) belief: clears the lock to L1.
@@ -780,7 +886,8 @@ def serve() -> None:
         },
     )
     def aelf_validate(
-        belief_id: str, source: str = "user_validated",
+        belief_id: _BeliefId,
+        source: _SourceLabel = "user_validated",
     ) -> dict[str, Any]:
         """Promote agent_inferred → user_validated (no lock applied).
 
@@ -817,7 +924,7 @@ def serve() -> None:
             "openWorldHint": False,
         },
     )
-    def aelf_unlock(belief_id: str) -> dict[str, Any]:
+    def aelf_unlock(belief_id: _BeliefId) -> dict[str, Any]:
         """Drop a user-lock without changing the belief's origin.
 
         Idempotent: calling on an already-unlocked belief returns
@@ -849,7 +956,8 @@ def serve() -> None:
         },
     )
     def aelf_promote(
-        belief_id: str, source: str = "user_validated",
+        belief_id: _BeliefId,
+        source: _SourceLabel = "user_validated",
     ) -> dict[str, Any]:
         """Alias of aelf_validate. Identical semantics and return shape.
 
@@ -877,7 +985,19 @@ def serve() -> None:
         },
     )
     def aelf_feedback(
-        belief_id: str, signal: str, source: str = "user",
+        belief_id: _BeliefId,
+        signal: Annotated[
+            str,
+            Field(
+                description=(
+                    "Either 'used' (positive valence, +1) or 'harmful' "
+                    "(negative valence, -1). Other values return a "
+                    "bad_signal error without mutating."
+                ),
+                pattern=r"^(used|harmful)$",
+            ),
+        ],
+        source: _SourceLabel = "user",
     ) -> dict[str, Any]:
         """Record positive or negative feedback on a belief's usefulness.
 
@@ -920,9 +1040,18 @@ def serve() -> None:
         },
     )
     def aelf_confirm(
-        belief_id: str,
-        source: str = _CONFIRM_SOURCE_DEFAULT,
-        note: str = "",
+        belief_id: _BeliefId,
+        source: _SourceLabel = _CONFIRM_SOURCE_DEFAULT,
+        note: Annotated[
+            str,
+            Field(
+                description=(
+                    "Optional free-text annotation. Returned on the "
+                    "response payload but NOT persisted."
+                ),
+                max_length=2000,
+            ),
+        ] = "",
     ) -> dict[str, Any]:
         """Affirm an existing belief without locking it (bumps posterior).
 
