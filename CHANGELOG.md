@@ -14,6 +14,10 @@ installable release; see the roadmap in [README.md](README.md).
 
 - **`use_heat_kernel` and `use_hrr_structural` flip to default-on** ([#154](https://github.com/robotrocketscience/aelfrice/issues/154)). Both retrieval-lane flags shipped opt-in earlier (heat-kernel #150 in v1.6, HRR structural-query lane #152 in v1.7) pending the calibrated reproducibility-harness gate. That gate cleared at 11/11 via [PR #489](https://github.com/robotrocketscience/aelfrice/pull/489) closing #437, so the #154 composition tracker flips the defaults per its status banner. Precedence (env > kwarg > TOML > default) is unchanged; only the default values flip `False` → `True`. Reversible via `[retrieval] use_heat_kernel = false` / `use_hrr_structural = false` in `.aelfrice.toml` (or `AELFRICE_HEAT_KERNEL=0` / `AELFRICE_HRR_STRUCTURAL=0`) for parity with the v2.0.x ranking.
 
+### Fixed
+
+- **`aelf upgrade-cmd --check` emits the `run:` line on update-available** ([#522](https://github.com/robotrocketscience/aelfrice/issues/522), [PR #525](https://github.com/robotrocketscience/aelfrice/pull/525)). The `/aelf:upgrade` slash file shipped in v2.0.1 (#513) parses a `run: <command>` line out of `aelf upgrade-cmd --check` to know which install-method-aware command to execute. Pre-fix, the `--check` form short-circuited that line and the install-context note, so the slash file's parse step silently produced nothing on installs that had received the v2.0.1 slash bundle out-of-band against an older CLI. The `if not args.check` guard is removed; both `--check` and no-flags forms now emit identical output on update-available, and the "up to date" path is unchanged (no `run:` line, no asymmetry). Three regression tests cover the byte-for-byte agreement.
+
 ## [2.0.1] - 2026-05-09
 
 Patch release. Ships the `/aelf:upgrade` banner-persistence fix from [#513](https://github.com/robotrocketscience/aelfrice/pull/513) so users on v2.0.0 stop seeing the upgrade nag after upgrading.
