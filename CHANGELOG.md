@@ -10,6 +10,14 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-05-09
+
+Patch release. Ships the `/aelf:upgrade` banner-persistence fix from [#513](https://github.com/robotrocketscience/aelfrice/pull/513) so users on v2.0.0 stop seeing the upgrade nag after upgrading.
+
+### Fixed
+
+- **`/aelf:upgrade` banner persistence after upgrade** ([#513](https://github.com/robotrocketscience/aelfrice/pull/513)). Three changes make the upgrade UX imperative and clear the post-upgrade banner correctly: (1) `/aelf:upgrade-cmd` is renamed to `/aelf:upgrade` and rewritten as an imperative orchestrator that calls `aelf upgrade-cmd --check`, runs the install-aware command in Bash, then `aelf setup` (refresh slash bundle), then `aelf upgrade-cmd` (clear stale banner cache); (2) `detect_reachable_installs()` no longer false-positives the running interpreter's venv as a separate install under `uv run`, removing the spurious "multiple installs detected" warning; (3) the default update banner (`format_update_banner(latest)` with no `command` kwarg) now points at `/aelf:upgrade`. CLI surface unchanged: `aelf upgrade-cmd` (canonical advisory print) and `aelf upgrade` (deprecated alias) both still work.
+
 ## [2.0.0] - 2026-05-07
 
 Reproducibility cut. v2.0 closes the v1.5–v1.7 feature-parity wave with a single tagged release. No additional product surface beyond v1.7.0 — same wheel content, same retrieval defaults, same CLI surface. v2.0.0 is the canonical reproducibility tag for the v2.0 corpus + bench evidence cut: operators who want a stable pin for the BM25F default-on flip (#154, +0.6650 NDCG@k on the v0.1 retrieve_uplift fixture) plus the v1.7.0 detector wave (#264 worker refactor, #421/#387 edge-type rerank + stale writer, #422 value-comparison, #441 confirm, #197/#201 dedup + contradiction, #228 wonder-consolidation, #383-388 edge-type ship gates) should pin `aelfrice==2.0.0` rather than `aelfrice==1.7.0`. README roadmap rows for v1.7 and v2.0 both flip to `shipped` with this tag.
@@ -681,7 +689,8 @@ Foundation milestone — store, models, config.
 - Initial repo scaffold: pyproject, README, GitHub Actions workflows,
   scan configs (commit `67b4343`).
 
-[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v2.0.1...HEAD
+[2.0.1]: https://github.com/robotrocketscience/aelfrice/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/robotrocketscience/aelfrice/compare/v1.7.0...v2.0.0
 [1.7.0]: https://github.com/robotrocketscience/aelfrice/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/robotrocketscience/aelfrice/compare/v1.5.1...v1.6.0
