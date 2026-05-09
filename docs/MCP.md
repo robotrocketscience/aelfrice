@@ -2,23 +2,50 @@
 
 aelfrice exposes twelve memory tools through a [Model Context Protocol](https://modelcontextprotocol.io) server. The agent calls them mid-turn; you don't have to invoke them yourself.
 
-Lifecycle commands (`setup`, `unsetup`, `migrate`, `doctor`, `upgrade`, `uninstall`) are CLI-only.
+Lifecycle commands (`setup`, `unsetup`, `migrate`, `doctor`, `upgrade-cmd`, `uninstall`) are CLI-only.
 
 ## Install + run
 
+The MCP server ships in every install of aelfrice, but the FastMCP runtime is gated behind the `[mcp]` extra:
+
 ```bash
+# pip
 pip install "aelfrice[mcp]"
-uv run python -m aelfrice.mcp_server     # or just `aelf-mcp` after install
+
+# uv tool
+uv tool install --with fastmcp aelfrice
 ```
 
-Host config — Claude Code, Codex, any MCP-capable host:
+Two equivalent ways to start the server (both speak stdio):
+
+```bash
+aelf mcp                           # console-script entry (preferred)
+python -m aelfrice.mcp_server      # module-exec fallback
+```
+
+If `fastmcp` is missing, `aelf mcp` exits 1 with an actionable message (`error: fastmcp is not installed. Install with: pip install aelfrice[mcp]`) — no traceback, no half-started server.
+
+Host config — Claude Code, Codex, Claude Desktop, any MCP-capable host:
+
+```json
+{
+  "mcpServers": {
+    "aelfrice": {
+      "command": "aelf",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Working from a source checkout instead? Point the host at `uv` so it picks up the project's local interpreter:
 
 ```json
 {
   "mcpServers": {
     "aelfrice": {
       "command": "uv",
-      "args": ["run", "--project", "/abs/path/to/aelfrice", "python", "-m", "aelfrice.mcp_server"]
+      "args": ["run", "--project", "/abs/path/to/aelfrice", "aelf", "mcp"]
     }
   }
 }
