@@ -146,6 +146,73 @@ def test_clustering_uplift_k_falls_back_to_n_clusters_required() -> None:
     assert abs(r_explicit_k1.cluster_coverage_on - (1.0 / 3.0)) < 1e-9
 
 
+def test_doc_linker_uplift_empty_input() -> None:
+    from tests.retrieve_uplift_runner import run_doc_linker_uplift
+
+    r = run_doc_linker_uplift([])
+    assert r.n_rows == 0
+    assert r.mean_ndcg_off == 0.0
+    assert r.mean_ndcg_on == 0.0
+    assert r.uplift == 0.0
+
+
+def test_doc_linker_uplift_runs_on_synthetic_row() -> None:
+    """OFF/ON arms run end-to-end without raising; metrics are bounded
+    and the ON arm did write the row's anchors (verified by re-reading
+    via ``get_doc_anchors_batch`` after the driver completes is out of
+    scope here — the contract under test is shape + non-negative
+    metric, not that the projection influences ranking, which today it
+    does not)."""
+    from tests.retrieve_uplift_runner import run_doc_linker_uplift
+
+    row = {
+        "id": "doc-test-001",
+        "query": "memory store",
+        "k": 3,
+        "beliefs": [
+            {"id": "b1", "content": "the memory store persists beliefs"},
+            {"id": "b2", "content": "the configuration file lives at /etc"},
+            {"id": "b3", "content": "the memory store uses sqlite"},
+        ],
+        "edges": [],
+        "expected_top_k": ["b1", "b3"],
+        "anchors": [
+            {"belief_id": "b1", "doc_uri": "file:docs/store.md#L1-L40"},
+            {"belief_id": "b3", "doc_uri": "file:docs/store.md#L41-L80"},
+        ],
+    }
+    r = run_doc_linker_uplift([row])
+    assert r.n_rows == 1
+    assert 0.0 <= r.mean_ndcg_off <= 1.0
+    assert 0.0 <= r.mean_ndcg_on <= 1.0
+
+
+def test_doc_linker_uplift_no_anchors_means_zero_uplift() -> None:
+    """A row with empty ``anchors`` is the degenerate case: the OFF and
+    ON arms see identical store state, so ``uplift`` must be exactly 0
+    regardless of what the retriever returns. Falsifiable if the driver
+    accidentally treats ``anchors-ON`` differently from ``anchors-OFF``
+    when there are no anchors to write."""
+    from tests.retrieve_uplift_runner import run_doc_linker_uplift
+
+    row = {
+        "id": "doc-test-002",
+        "query": "alpha",
+        "k": 2,
+        "beliefs": [
+            {"id": "a", "content": "alpha alpha alpha"},
+            {"id": "b", "content": "beta beta beta"},
+        ],
+        "edges": [],
+        "expected_top_k": ["a"],
+        "anchors": [],
+    }
+    r = run_doc_linker_uplift([row])
+    assert r.n_rows == 1
+    assert r.mean_ndcg_off == r.mean_ndcg_on
+    assert r.uplift == 0.0
+
+
 def test_run_per_flag_uplift_covers_all_flags() -> None:
     """Hypothesis: the harness reports one row per registered flag.
     Falsifiable if a flag is silently dropped."""

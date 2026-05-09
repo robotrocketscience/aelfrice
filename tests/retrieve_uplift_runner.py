@@ -244,11 +244,14 @@ def run_per_flag_uplift(
 # `runner_mod.run_clustering_uplift(rows)`. Activates on any
 # AELFRICE_CORPUS_ROOT pointing at a `multi_fact/*.jsonl` row set.
 #
-# Doc-linker (#435) symmetric runner intentionally NOT here — its A2
-# gate requires a downstream rerank that consumes the `with_doc_anchors`
-# projection to influence belief order, and that rerank has not shipped.
-# When it lands, the same shape applies (load rows → twin retrieve calls
-# → mean-NDCG uplift). Filed for a follow-up PR.
+# Doc-linker (#435) symmetric runner lives further below
+# (`run_doc_linker_uplift`). It implements the spec § A2 contract:
+# anchors-OFF baseline (anchors NOT written) vs anchors-ON case
+# (anchors written via `link_belief_to_document`), both with
+# `with_doc_anchors=True`. Today the doc-anchor projection is read-only
+# (it does not influence ordering), so the gate reports flat uplift
+# until a downstream rerank lands; that is the correct gate-broken
+# signal — strictly-positive uplift is the ship trigger.
 # ---------------------------------------------------------------------
 
 
@@ -364,6 +367,132 @@ def run_clustering_uplift(
         mean_recall_on=rec_on / n,
         cluster_coverage_off=cov_off / n,
         cluster_coverage_on=cov_on / n,
+    )
+
+
+# ---------------------------------------------------------------------
+# Doc / semantic linker (#435) — doc_linker bench gate (spec § A2).
+#
+# Consumed by tests/bench_gate/test_doc_linker.py.
+# Row schema (`tests/corpus/v2_0/doc_linker/*.jsonl`):
+#
+#   {
+#     "id": "row-id",
+#     "query": "raw query string",
+#     "k": 10,
+#     "beliefs": [...],                     # seed beliefs (same shape as
+#                                            # other modules in this file)
+#     "edges": [...],                       # seed edges (optional)
+#     "expected_top_k": ["b1", "b2", ...],  # ground-truth ranking
+#     "anchors": [                          # written under anchors-ON
+#       {
+#         "belief_id": "b1",
+#         "doc_uri":   "file:docs/X.md",
+#         "anchor_type": "ingest",         # optional; defaults "ingest"
+#         "position_hint": null             # optional
+#       }
+#     ]
+#   }
+# ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DocLinkerUpliftResults:
+    """Spec § A2 result shape for #435.
+
+    Field names mirror ``FlagUplift`` so the bench-gate failure-message
+    formatter can read ``mean_ndcg_off`` / ``mean_ndcg_on`` / ``uplift``
+    without per-runner branching.
+    """
+
+    n_rows: int
+    mean_ndcg_off: float
+    mean_ndcg_on: float
+
+    @property
+    def uplift(self) -> float:
+        return self.mean_ndcg_on - self.mean_ndcg_off
+
+
+def _seed_doc_anchors(store: MemoryStore, row: dict) -> None:  # type: ignore[type-arg]
+    """Write each anchor in ``row['anchors']`` via the doc-linker module.
+
+    Using the public ``link_belief_to_document`` (not the raw store call)
+    keeps the gate honest: any ingest-time validation a future revision
+    adds (URI shape, anchor-type checks) is exercised here too.
+    """
+    from aelfrice.doc_linker import link_belief_to_document
+
+    for a in row.get("anchors", []):
+        link_belief_to_document(
+            store,
+            belief_id=a["belief_id"],
+            doc_uri=a["doc_uri"],
+            anchor_type=a.get("anchor_type", "ingest"),
+            position_hint=a.get("position_hint"),
+        )
+
+
+def run_doc_linker_uplift(
+    rows: list[dict],  # type: ignore[type-arg]
+) -> DocLinkerUpliftResults:
+    """Spec § A2 doc-linker uplift driver.
+
+    Per row, runs ``retrieve_v2`` twice with ``with_doc_anchors=True`` on
+    fresh stores: once without anchors written (the OFF arm) and once
+    with each row's ``anchors`` populated via ``link_belief_to_document``
+    (the ON arm). Same query, same seed beliefs/edges, same ``k``. NDCG@k
+    is scored against ``expected_top_k`` and averaged across rows.
+
+    The doc-anchor projection is read-only at v2.0.0 — it surfaces
+    ``DocAnchor`` rows alongside beliefs but does not influence ranking.
+    On a corpus where ranking is invariant to anchor presence, ``uplift``
+    will be ~0 and the bench gate's strict ``> 0`` assertion will fail.
+    That is the correct gate-broken signal until a downstream rerank
+    consumes the projection.
+    """
+    n = len(rows)
+    if n == 0:
+        return DocLinkerUpliftResults(0, 0.0, 0.0)
+
+    off_total = 0.0
+    on_total = 0.0
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_root = Path(tmp)
+        for row in rows:
+            k = _default_k(row)
+            expected = list(row.get("expected_top_k", []))
+
+            for anchors_on in (False, True):
+                _db_counter[0] += 1
+                db = (
+                    tmp_root
+                    / f"doc_{row['id']}_{int(anchors_on)}_{_db_counter[0]}.db"
+                )
+                store = MemoryStore(str(db))
+                try:
+                    _seed_store(store, row)
+                    if anchors_on:
+                        _seed_doc_anchors(store, row)
+                    result = retrieve_v2(
+                        store, row["query"],
+                        budget=DEFAULT_TOKEN_BUDGET,
+                        use_entity_index=False,
+                        with_doc_anchors=True,
+                    )
+                    returned = [b.id for b in result.beliefs[:k]]
+                finally:
+                    store.close()
+                ndcg = ndcg_at_k(returned, expected, k)
+                if anchors_on:
+                    on_total += ndcg
+                else:
+                    off_total += ndcg
+
+    return DocLinkerUpliftResults(
+        n_rows=n,
+        mean_ndcg_off=off_total / n,
+        mean_ndcg_on=on_total / n,
     )
 
 
