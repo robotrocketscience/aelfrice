@@ -65,12 +65,12 @@ posterior_weight = 0.5
 # AELFRICE_BM25F=0 env var overrides.
 use_bm25f_anchors = true
 
-# v1.7+. Default `false`, opt-in. Enables the heat-kernel authority
-# scoring lane (#150). Lane is implemented but stays opt-in until
-# the composition tracker (#154) flips the default after the
-# real-corpus benchmark gate. AELFRICE_HEAT_KERNEL=1 env var
-# overrides.
-use_heat_kernel = false
+# Default `true` since the #154 composition tracker flipped the
+# default after the #437 reproducibility-harness gate cleared at
+# 11/11. Enables the heat-kernel authority scoring lane (#150). Set
+# to `false` for parity with the pre-flip ranking.
+# AELFRICE_HEAT_KERNEL=0 env var overrides.
+use_heat_kernel = true
 
 # Default `true` since the #154 composition tracker flipped the
 # default after the #437 reproducibility-harness gate cleared at
@@ -293,9 +293,9 @@ Precedence (first decisive wins): env var `AELFRICE_BM25F=0`/`1` > explicit Pyth
 
 ### `use_heat_kernel`
 
-Boolean, default `false`, opt-in. Enables the heat-kernel authority-scoring lane (#150). The lane is implemented but stays off by default until the composition tracker (#154) flips it after the real-corpus benchmark gate.
+Boolean, default `true` since the #154 composition tracker flipped the default after the #437 reproducibility-harness gate cleared at 11/11. Enables the heat-kernel authority-scoring lane (#150). Set to `false` for parity with the v2.0.x ranking.
 
-Precedence (first decisive wins): env var `AELFRICE_HEAT_KERNEL=0`/`1` > explicit Python kwarg > TOML `[retrieval] use_heat_kernel` > default `false`.
+Precedence (first decisive wins): env var `AELFRICE_HEAT_KERNEL=0`/`1` > explicit Python kwarg > TOML `[retrieval] use_heat_kernel` > default `true`.
 
 ### `use_hrr_structural`
 

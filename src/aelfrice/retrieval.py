@@ -1038,9 +1038,10 @@ def is_heat_kernel_enabled(
       1. AELFRICE_HEAT_KERNEL env var (truthy / falsy normalised).
       2. Explicit `explicit` kwarg from the caller.
       3. `[retrieval] use_heat_kernel` in `.aelfrice.toml`.
-      4. Default: False — the lane is implemented but stays opt-in
-         until the composition tracker (#154) flips the default
-         after the real-corpus benchmark gate.
+      4. Default: True — the composition tracker (#154) flipped the
+         default after the #437 reproducibility-harness gate cleared
+         at 11/11. Opt out via the env var, kwarg, or TOML key for
+         parity with the pre-flip ranking.
 
     Reuses the `HEAT_KERNEL_FLAG` constant that #232 introduced as a
     placeholder. Now that the lane has shipped, the flag is no
@@ -1055,7 +1056,7 @@ def is_heat_kernel_enabled(
     toml_value = _read_toml_flag_for(HEAT_KERNEL_FLAG, start)
     if toml_value is not None:
         return toml_value
-    return False
+    return True
 
 
 def is_bfs_enabled(

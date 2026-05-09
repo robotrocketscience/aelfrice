@@ -253,11 +253,27 @@ def test_heat_kernel_latency_at_n_50k_under_10ms(
 # --- AC7 -----------------------------------------------------------------
 
 
-def test_use_heat_kernel_default_off() -> None:
+def test_use_heat_kernel_default_on() -> None:
+    """Per #154 the default flipped to ON after the #437 11/11 gate
+    cleared. No env, no kwarg, no toml → True."""
     from aelfrice.retrieval import is_heat_kernel_enabled
 
-    # No env, no kwarg, no toml → default False
-    assert is_heat_kernel_enabled() is False
+    assert is_heat_kernel_enabled() is True
+
+
+def test_use_heat_kernel_opt_out_paths_intact(tmp_path) -> None:
+    """The opt-out surface (kwarg, TOML key) remains reachable for
+    users who want the pre-flip ranking. Replaces the v1.7-era
+    default-off check."""
+    from aelfrice.retrieval import is_heat_kernel_enabled
+
+    # Explicit kwarg
+    assert is_heat_kernel_enabled(False) is False
+
+    # TOML key
+    cfg = tmp_path / ".aelfrice.toml"
+    cfg.write_text("[retrieval]\nuse_heat_kernel = false\n")
+    assert is_heat_kernel_enabled(start=tmp_path) is False
 
 
 # --- Bandwidth sanity ----------------------------------------------------
