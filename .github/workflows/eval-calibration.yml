@@ -1,0 +1,135 @@
+name: Eval Calibration
+
+# #365 R5 — Phase C: synthetic-corpus calibration as a status check.
+#
+# Runs `aelf eval --json` on the bundled public synthetic corpus
+# under default flags (--k 10 --seed 0), strips the path-dependent
+# `corpus` key, and asserts bytes-identical match against the pinned
+# baseline at benchmarks/posterior_ranking/baseline.json.
+#
+# Per #365 Q6: only the synthetic-corpus aggregate crosses the public
+# boundary. No live-data dependency, no operator stores. Live-corpus
+# calibration runs operator-side (R2/R3, lab repo).
+#
+# Surface:
+#   - PR-time: blocks merges that change metric output without a
+#     deliberate baseline update in the same PR.
+#   - Push-to-main: re-asserts post-merge so a green main is also a
+#     calibrated main. Step summary records the metric line for
+#     historical traceability.
+#
+# Determinism contract (#365 ship gate): same `(corpus, --k, --seed)`
+# → bytes-identical metrics across reruns.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/aelfrice/eval_harness.py'
+      - 'src/aelfrice/calibration_metrics.py'
+      - 'src/aelfrice/cli.py'
+      - 'benchmarks/posterior_ranking/**'
+      - '.github/workflows/eval-calibration.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eval-calibration-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  calibration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install
+        # Base + default groups only — `aelf eval` and the
+        # eval_harness module use stdlib + intra-package imports;
+        # no dev/archive extras are needed.
+        run: uv sync --frozen
+
+      - name: Run aelf eval against bundled synthetic corpus
+        id: eval
+        run: |
+          set -euo pipefail
+          out=$(uv run aelf eval --json | tail -n 1)
+          echo "raw=${out}"
+          # Strip the path-dependent `corpus` key, re-canonicalize.
+          observed=$(printf '%s' "${out}" | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          d.pop('corpus', None)
+          print(json.dumps(d, sort_keys=True, separators=(',', ':')))
+          ")
+          echo "observed=${observed}"
+          {
+            echo "observed<<EOF"
+            echo "${observed}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Assert match against pinned baseline
+        env:
+          OBSERVED: ${{ steps.eval.outputs.observed }}
+        run: |
+          set -euo pipefail
+          # Re-canonicalize the baseline file in case the checkout
+          # introduced whitespace drift; comparison is on canonical-form
+          # strings.
+          expected=$(python3 -c "
+          import json
+          d = json.load(open('benchmarks/posterior_ranking/baseline.json'))
+          print(json.dumps(d, sort_keys=True, separators=(',', ':')))
+          ")
+          if [ "${OBSERVED}" = "${expected}" ]; then
+            echo "::notice::synthetic-corpus calibration matches pinned baseline"
+            echo "metrics: ${OBSERVED}"
+          else
+            echo "::error::synthetic-corpus calibration drifted from pinned baseline"
+            echo "expected: ${expected}"
+            echo "observed: ${OBSERVED}"
+            echo "If the drift is intentional, regenerate baseline.json from"
+            echo "\`aelf eval --json\` (with the \`corpus\` key stripped) in"
+            echo "the same commit."
+            exit 1
+          fi
+
+      - name: Publish metrics to step summary
+        if: always()
+        env:
+          OBSERVED: ${{ steps.eval.outputs.observed }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## #365 R5 — synthetic-corpus calibration"
+            echo ""
+            echo "- run: \`${EVENT}\` on \`${REF}\` (\`${SHA}\`)"
+            echo "- corpus: bundled public synthetic (default.jsonl)"
+            echo "- flags: \`--k 10 --seed 0\`"
+            echo ""
+            echo "\`\`\`json"
+            echo "${OBSERVED}"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
