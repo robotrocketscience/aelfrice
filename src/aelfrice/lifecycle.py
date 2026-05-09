@@ -298,14 +298,18 @@ def format_update_banner(
     snippet and the CLI stderr notice derive their text from this
     function so the wording never drifts between the two surfaces.
 
-    `command` is the install-method-aware shell line the user actually
-    runs to upgrade. Defaults to ``upgrade_advice().command`` so callers
-    that don't care can omit it; tests inject a stable value.
+    `command` is the install-method-aware shell line the user could
+    run directly. When unset the banner points at the `/aelf:upgrade`
+    slash command (imperative orchestrator); when set, the banner
+    embeds the literal command for hosts that don't support slash
+    commands. Tests inject a stable value.
 
-    Example: '⬆ aelfrice 1.5.0 — run: uv tool upgrade aelfrice'
+    Examples:
+      '⬆ aelfrice 2.1.0 — run /aelf:upgrade'
+      '⬆ aelfrice 2.1.0 — run: uv tool upgrade aelfrice'  (command set)
     """
     if command is None:
-        command = upgrade_advice().command
+        return f"⬆ aelfrice {latest} — run /aelf:upgrade"
     return f"⬆ aelfrice {latest} — run: {command}"
 
 

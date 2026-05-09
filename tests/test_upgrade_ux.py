@@ -46,41 +46,39 @@ def test_installed_version_fallback_on_package_not_found(
 # ---------------------------------------------------------------------------
 
 
-def test_format_update_banner_text(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Banner embeds the install-method-aware command from upgrade_advice."""
-    monkeypatch.setattr(
-        lifecycle,
-        "upgrade_advice",
-        lambda: lifecycle.UpgradeAdvice(
-            command="uv tool upgrade aelfrice", context="uv_tool"
-        ),
-    )
+def test_format_update_banner_default_points_at_slash_command() -> None:
+    """Default (no `command` kwarg) banner points at /aelf:upgrade.
+
+    The slash command is now imperative — it actually does the upgrade
+    via Bash orchestration (see slash_commands/upgrade.md). Pointing
+    the banner at it gives users a single-action upgrade path: see
+    banner, type `/aelf:upgrade`, done.
+    """
     banner = lifecycle.format_update_banner("1.5.0")
-    assert banner == "⬆ aelfrice 1.5.0 — run: uv tool upgrade aelfrice"
+    assert banner == "⬆ aelfrice 1.5.0 — run /aelf:upgrade"
 
 
 def test_format_update_banner_explicit_command_kwarg() -> None:
-    """Caller-supplied `command` overrides upgrade_advice() lookup."""
+    """Caller-supplied `command` overrides the slash-command default
+    with the literal install-aware shell line.
+
+    Used by hosts that don't render slash commands (CLI stderr,
+    non-Claude MCP hosts, scripted call sites).
+    """
     banner = lifecycle.format_update_banner(
         "2.0.0", command="pipx upgrade aelfrice"
     )
     assert banner == "⬆ aelfrice 2.0.0 — run: pipx upgrade aelfrice"
 
 
-def test_format_update_banner_no_slash_command_advisory() -> None:
-    """Banner must not phrase a slash command as the upgrade action.
-
-    Regression for #427: the previous shape `'⬆ /aelf:upgrade to v…'`
-    read as an imperative pointing at a slash command that is itself
-    advisory, leading users to believe the slash command performed the
-    upgrade. The banner must surface the actual shell line instead.
-    """
+def test_format_update_banner_explicit_command_omits_slash_form() -> None:
+    """When the caller passes a literal command, the banner must NOT
+    fall back to the slash form (otherwise both would appear)."""
     banner = lifecycle.format_update_banner(
         "1.5.0", command="uv tool upgrade aelfrice"
     )
     assert "/aelf:upgrade" not in banner
+    assert "uv tool upgrade aelfrice" in banner
 
 
 def test_statusline_snippet_uses_banner_helper(
@@ -113,8 +111,10 @@ def test_banner_shared_substring_in_statusline_and_cli(
 ) -> None:
     """Both call sites derive text from format_update_banner.
 
-    This test verifies they share the 'aelfrice <ver> — run:' substring,
-    ensuring the two surfaces can never drift from each other.
+    This test verifies they share the 'aelfrice <ver> — run /aelf:upgrade'
+    substring, ensuring the two surfaces never drift from each other.
+    Both surfaces pass `format_update_banner(latest)` with no `command`
+    kwarg → both get the slash-command form.
     """
     import io
 
@@ -132,10 +132,12 @@ def test_banner_shared_substring_in_statusline_and_cli(
         checked=0.0,
         sha256=None,
     )
+    expected = "aelfrice 1.5.0 — run /aelf:upgrade"
+
     # Statusline path. Pass installed="" so the running package version
     # does not auto-suppress the snippet.
     snippet = statusline.format_snippet(status, env={}, installed="")
-    assert "aelfrice 1.5.0 — run:" in snippet
+    assert expected in snippet
 
     # CLI stderr banner path — monkeypatch the cache reader.
     import aelfrice.cli as cli_mod
@@ -150,7 +152,7 @@ def test_banner_shared_substring_in_statusline_and_cli(
     monkeypatch.setattr(sys, "stderr", buf)
     cli_mod._maybe_emit_update_banner("search")
     stderr_out = buf.getvalue()
-    assert "aelfrice 1.5.0 — run:" in stderr_out
+    assert expected in stderr_out
 
 
 # ---------------------------------------------------------------------------
