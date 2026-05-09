@@ -526,3 +526,89 @@ def test_reachable_installs_path_aelf_under_uv_root_not_double_counted(
     sites = lifecycle.detect_reachable_installs()
     assert len(sites) == 1
     assert sites[0].kind == "uv_tool"
+
+
+# ---------------------------------------------------------------------------
+# #522 — `aelf upgrade-cmd --check` must emit `run:` line on update available
+# ---------------------------------------------------------------------------
+
+
+def _run_upgrade_cmd_capturing(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    check: bool,
+    update_available: bool,
+) -> str:
+    """Drive _cmd_upgrade with a stubbed update status, return stdout."""
+    import argparse
+    import io
+
+    import aelfrice.cli as cli_mod
+
+    monkeypatch.setattr(
+        lifecycle,
+        "upgrade_advice",
+        lambda: lifecycle.UpgradeAdvice(
+            command="uv tool upgrade aelfrice", context="uv_tool"
+        ),
+    )
+    monkeypatch.setattr(
+        cli_mod, "detect_reachable_installs", lambda: ()
+    )
+    status = lifecycle.UpdateStatus(
+        update_available=update_available,
+        installed="2.0.0",
+        latest="2.0.1" if update_available else "2.0.0",
+        checked=0.0,
+        sha256="7f8a4311" if update_available else None,
+    )
+    monkeypatch.setattr(cli_mod, "check_for_update", lambda: status)
+    monkeypatch.setattr(cli_mod, "_read_update_cache", lambda: status)
+    monkeypatch.setattr(cli_mod, "_update_check_disabled", lambda: False)
+    monkeypatch.setattr(cli_mod, "_clear_update_cache", lambda: None)
+
+    buf = io.StringIO()
+    args = argparse.Namespace(check=check)
+    rc = cli_mod._cmd_upgrade(args, buf)
+    assert rc == 0
+    return buf.getvalue()
+
+
+def test_upgrade_cmd_check_emits_run_line_on_update_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#522: `aelf upgrade-cmd --check` must emit `run: <command>`
+    when an update is available, mirroring the no-flags form. The
+    /aelf:upgrade slash file (#513) parses the `run:` line and was
+    breaking on pre-2.0.1 CLIs that suppressed it under --check."""
+    out = _run_upgrade_cmd_capturing(
+        monkeypatch, check=True, update_available=True
+    )
+    assert "run: uv tool upgrade aelfrice" in out
+
+
+def test_upgrade_cmd_check_and_no_flags_match_on_update_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#522: the two forms agree byte-for-byte when an update is
+    available. Suppression-asymmetry was the original bug."""
+    check_out = _run_upgrade_cmd_capturing(
+        monkeypatch, check=True, update_available=True
+    )
+    no_flags_out = _run_upgrade_cmd_capturing(
+        monkeypatch, check=False, update_available=True
+    )
+    assert check_out == no_flags_out
+
+
+def test_upgrade_cmd_check_silent_run_line_on_no_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When no update is available, neither form prints a `run:` line.
+    Only the 'aelfrice is up to date' status fires. Guards against the
+    slash file misfiring on a current install."""
+    out = _run_upgrade_cmd_capturing(
+        monkeypatch, check=True, update_available=False
+    )
+    assert "run:" not in out
+    assert "aelfrice is up to date" in out

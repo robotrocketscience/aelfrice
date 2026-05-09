@@ -2390,9 +2390,13 @@ def _cmd_upgrade(args: argparse.Namespace, out: object) -> int:
     mid-process is unreliable on Windows and can leave the user with a
     broken interpreter. We tell the user the exact line; they run it.
 
-    --check: only print "up to date" / "update available" status,
-    suppress the upgrade command line. Useful for scripts that want
-    a yes/no answer without copy-paste material.
+    --check: previously suppressed the install-context note and the
+    `run:` line. As of #522 both forms emit identical output when an
+    update is available — the `/aelf:upgrade` slash file (#513)
+    parses the `run:` line, so the two forms must agree. Both the
+    no-flags form and `--check` print the version banner, the verify
+    block, the install-context note, and `run: <command>`. The exit
+    code is unchanged: 0 either way.
     """
     advice = upgrade_advice()
     multi_warning = _format_multi_install_warning(
@@ -2425,17 +2429,20 @@ def _cmd_upgrade(args: argparse.Namespace, out: object) -> int:
                 f"        https://pypi.org/project/{_PKG}/{status.latest}/",
                 file=out,  # type: ignore[arg-type]
             )
-        if not args.check:
-            note = _UPGRADE_CONTEXT_NOTE.get(advice.context, "")
-            if note:
-                print(
-                    f"({note})",
-                    file=out,  # type: ignore[arg-type]
-                )
+        # #522: emit the install-context note + `run:` line under both
+        # forms so the /aelf:upgrade slash file (#513) can parse `run:`
+        # whichever form it called. The pre-#522 `--check` short-circuit
+        # broke the slash on pre-2.0.1 CLIs that had the new bundle.
+        note = _UPGRADE_CONTEXT_NOTE.get(advice.context, "")
+        if note:
             print(
-                f"run: {advice.command}",
+                f"({note})",
                 file=out,  # type: ignore[arg-type]
             )
+        print(
+            f"run: {advice.command}",
+            file=out,  # type: ignore[arg-type]
+        )
         return 0
     # No update or unknown -- be explicit.
     if status.latest and not status.update_available:
