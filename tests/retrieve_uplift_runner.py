@@ -47,6 +47,11 @@ from aelfrice.models import (
     Belief,
     Edge,
 )
+from aelfrice.query_understanding import (
+    LEGACY_STRATEGY,
+    STACK_R1_R3_STRATEGY,
+    transform_query,
+)
 from aelfrice.retrieval import (
     DEFAULT_TOKEN_BUDGET,
     retrieve,
@@ -490,6 +495,114 @@ def run_doc_linker_uplift(
                     off_total += ndcg
 
     return DocLinkerUpliftResults(
+        n_rows=n,
+        mean_ndcg_off=off_total / n,
+        mean_ndcg_on=on_total / n,
+    )
+
+
+# ---------------------------------------------------------------------
+# Query-strategy (#291 / #527) — legacy-bm25 vs stack-r1-r3 bench gate.
+#
+# Consumed by tests/bench_gate/test_query_strategy.py.
+# Row schema (`tests/corpus/v2_0/query_strategy/*.jsonl`):
+#
+#   {
+#     "id": "row-id",
+#     "query": "raw query string",         # FTS5 MATCH input pre-rewrite
+#     "k": 10,
+#     "beliefs": [...],                     # seed beliefs (shared shape)
+#     "edges": [...],                       # seed edges (optional)
+#     "expected_top_k": ["b1", "b2", ...]   # ground-truth ranking
+#   }
+#
+# OFF arm: transform_query(raw, store, "legacy-bm25") -> raw query
+#          unchanged, retrieve(store, raw, ...).
+# ON arm:  transform_query(raw, store, "stack-r1-r3") -> R1 entity
+#          expand + R3 per-store IDF-quantile clip, retrieve(store,
+#          rewritten, ...).
+# ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class QueryStrategyUplift:
+    """#291 / #527 result shape.
+
+    Field names mirror ``FlagUplift`` / ``DocLinkerUpliftResults`` so the
+    bench-gate failure formatter reads ``mean_ndcg_off`` / ``mean_ndcg_on``
+    / ``uplift`` without per-runner branching.
+    """
+
+    n_rows: int
+    mean_ndcg_off: float
+    mean_ndcg_on: float
+
+    @property
+    def uplift(self) -> float:
+        return self.mean_ndcg_on - self.mean_ndcg_off
+
+
+def run_query_strategy_uplift(
+    rows: list[dict],  # type: ignore[type-arg]
+) -> QueryStrategyUplift:
+    """#291 § Mechanism / Bench gates query-strategy uplift driver.
+
+    Per row, runs ``retrieve()`` twice on a fresh seeded store:
+
+    * OFF arm — ``legacy-bm25`` (``transform_query`` passthrough; the raw
+      ``row['query']`` is the FTS5 MATCH input).
+    * ON arm  — ``stack-r1-r3`` (R1 capitalised-token entity expand →
+      R3 per-store IDF-quantile clip → joined whitespace term list).
+
+    Same seed beliefs/edges, same ``k``, same ``BASELINE_KWARGS`` to
+    ``retrieve()`` (so any future flag-default change in this module
+    affects both arms identically). NDCG@k is scored against
+    ``expected_top_k`` and averaged across rows.
+
+    Degenerate case: a row whose query has no capitalised tokens AND
+    whose tokens fall inside the per-store IDF quantile band produces
+    an identical transformed query for both strategies, so the OFF and
+    ON arms see identical retrieval state and ``uplift == 0`` by
+    construction. Falsifiable in the unit test at
+    ``tests/test_retrieve_uplift_runner.py``.
+    """
+    n = len(rows)
+    if n == 0:
+        return QueryStrategyUplift(0, 0.0, 0.0)
+
+    off_total = 0.0
+    on_total = 0.0
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_root = Path(tmp)
+        for row in rows:
+            k = _default_k(row)
+            expected = list(row.get("expected_top_k", []))
+
+            for strategy_on in (False, True):
+                _db_counter[0] += 1
+                strategy = (
+                    STACK_R1_R3_STRATEGY if strategy_on else LEGACY_STRATEGY
+                )
+                db = (
+                    tmp_root
+                    / f"qs_{row['id']}_{int(strategy_on)}_{_db_counter[0]}.db"
+                )
+                store = MemoryStore(str(db))
+                try:
+                    _seed_store(store, row)
+                    rewritten = transform_query(
+                        row["query"], store, strategy,
+                    )
+                    result_ids = _retrieve_ids(store, rewritten, k)
+                finally:
+                    store.close()
+                ndcg = ndcg_at_k(result_ids, expected, k)
+                if strategy_on:
+                    on_total += ndcg
+                else:
+                    off_total += ndcg
+
+    return QueryStrategyUplift(
         n_rows=n,
         mean_ndcg_off=off_total / n,
         mean_ndcg_on=on_total / n,
