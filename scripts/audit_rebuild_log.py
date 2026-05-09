@@ -43,14 +43,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import random
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
-
-if TYPE_CHECKING:
-    from aelfrice.calibration_metrics import CalibrationReport
+from typing import Iterable
 
 
 def _iter_records(path: Path) -> Iterable[dict]:
@@ -200,111 +196,28 @@ def _print_report(summary: dict, *, paths_read: int) -> None:
             print(f"  rank {rank:>2}: {summary['packed_ranks'][rank]}")
 
 
-DEFAULT_CALIBRATION_CORPUS = (
-    Path(__file__).resolve().parent.parent
-    / "benchmarks"
-    / "posterior_ranking"
-    / "fixtures"
-    / "default.jsonl"
-)
-DEFAULT_CALIBRATION_K = 10
-DEFAULT_CALIBRATION_SEED = 0
+# Calibration mode delegates to ``aelfrice.eval_harness`` (#365 R4 lift).
+# The script's CLI keeps its existing flags, exit codes, and stderr
+# wording; only the implementation moved.
+def _load_aelfrice_eval_harness():
+    """Lazy import so audit mode keeps working without the wheel."""
+    from aelfrice import eval_harness  # noqa: PLC0415
+    return eval_harness
+
+
+def _calibration_defaults() -> tuple[Path, int, int]:
+    eh = _load_aelfrice_eval_harness()
+    return eh.DEFAULT_CALIBRATION_CORPUS, eh.DEFAULT_K, eh.DEFAULT_SEED
 
 
 def _load_calibration_fixtures(path: Path) -> list[dict]:
-    """Load a JSONL calibration corpus.
-
-    Each line must decode to a dict carrying ``id``, ``query``,
-    ``known_belief_content``, and ``noise_belief_contents`` (a list).
-    Fixtures missing any required key, or with malformed JSON, are
-    silently skipped — same fail-soft posture as the audit reader.
-    """
-    out: list[dict] = []
-    text = path.read_text(encoding="utf-8")
-    required = ("id", "query", "known_belief_content", "noise_belief_contents")
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(row, dict):
-            continue
-        if not all(key in row for key in required):
-            continue
-        if not isinstance(row["noise_belief_contents"], list):
-            continue
-        out.append(row)
-    return out
+    """Back-compat alias for ``aelfrice.eval_harness.load_calibration_fixtures``."""
+    return _load_aelfrice_eval_harness().load_calibration_fixtures(path)
 
 
-def _build_calibration_store(fixture: dict, seed: int):
-    """Build a fresh in-memory ``MemoryStore`` for one fixture.
-
-    Imports `aelfrice` lazily and inserts one belief per content row
-    (one relevant + N noise). The noise order is shuffled with the
-    supplied seed so AUC / ρ aggregates are deterministic across
-    reruns at fixed seed (per the #365 ship gate).
-    """
-    from aelfrice.models import (  # noqa: PLC0415
-        BELIEF_FACTUAL,
-        LOCK_NONE,
-        Belief,
-    )
-    from aelfrice.store import MemoryStore  # noqa: PLC0415
-
-    store = MemoryStore(":memory:")
-    fid = str(fixture["id"])
-    known_content = str(fixture["known_belief_content"])
-    noise_contents = list(fixture["noise_belief_contents"])
-
-    def make_belief(bid: str, content: str) -> Belief:
-        return Belief(
-            id=bid,
-            content=content,
-            content_hash=f"h_{bid}",
-            alpha=0.5,
-            beta=0.5,
-            type=BELIEF_FACTUAL,
-            lock_level=LOCK_NONE,
-            locked_at=None,
-            demotion_pressure=0,
-            created_at="2026-01-01T00:00:00Z",
-            last_retrieved_at=None,
-        )
-
-    rng = random.Random(seed)
-    rng.shuffle(noise_contents)
-
-    store.insert_belief(make_belief(f"{fid}_known", known_content))
-    for i, nc in enumerate(noise_contents):
-        store.insert_belief(make_belief(f"{fid}_noise_{i}", nc))
-
-    return store
-
-
-def _run_calibration(
-    corpus_path: Path, k: int, seed: int,
-) -> int:
-    """Run the #365 R1 calibration harness against a synthetic corpus.
-
-    For each fixture in the corpus, build an in-memory store with one
-    relevant belief and N noise beliefs, run ``aelfrice.retrieval.retrieve``
-    against the query, and observe the rank of the relevant belief.
-    Aggregate (rank-as-score, is_relevant) observations across queries
-    and report P@K / ROC-AUC / Spearman ρ.
-    """
-    # Imported lazily so the audit-mode CLI does not need the package
-    # installed, only the calibrate path does.
-    from aelfrice.calibration_metrics import (  # noqa: PLC0415
-        CalibrationReport,
-        precision_at_k,
-        roc_auc,
-        spearman_rho,
-    )
-    from aelfrice.retrieval import retrieve  # noqa: PLC0415
-
+def _run_calibration(corpus_path: Path, k: int, seed: int) -> int:
+    """Run the #365 R1 calibration harness; print report or error."""
+    eh = _load_aelfrice_eval_harness()
     if not corpus_path.is_file():
         print(
             f"audit_rebuild_log: calibration corpus not found: "
@@ -313,7 +226,7 @@ def _run_calibration(
         )
         return 1
 
-    fixtures = _load_calibration_fixtures(corpus_path)
+    fixtures = eh.load_calibration_fixtures(corpus_path)
     if not fixtures:
         print(
             f"audit_rebuild_log: corpus is empty: {corpus_path}",
@@ -321,94 +234,17 @@ def _run_calibration(
         )
         return 1
 
-    p_at_k_values: list[float] = []
-    n_truncated = 0
-    pooled_scores: list[float] = []
-    pooled_labels: list[bool] = []
-
-    for fx in fixtures:
-        store = _build_calibration_store(fx, seed)
-        query = str(fx["query"])
-        known_content = str(fx["known_belief_content"])
-        n_candidates = 1 + len(fx["noise_belief_contents"])  # type: ignore[arg-type]
-
-        results = retrieve(
-            store,
-            query,
-            l1_limit=max(k, n_candidates),
-            entity_index_enabled=False,
-            bfs_enabled=False,
-            posterior_weight=None,
-        )
-
-        relevance_top_k = [b.content == known_content for b in results]
-        if len(relevance_top_k) < k:
-            n_truncated += 1
-        p_at_k_values.append(precision_at_k(relevance_top_k, k))
-
-        # Rank-as-score for AUC / ρ: top of the list maps to the
-        # highest score so AUC reads "score increases with relevance"
-        # naturally. Candidates the retriever did not surface get
-        # score 0 (lower than any returned), preserving the corpus's
-        # full positive/negative balance in the pooled observations.
-        for rank_idx, belief in enumerate(results):
-            pooled_scores.append(float(len(results) - rank_idx))
-            pooled_labels.append(belief.content == known_content)
-        retrieved_contents = {b.content for b in results}
-        for noise_content in fx["noise_belief_contents"]:  # type: ignore[union-attr]
-            if noise_content not in retrieved_contents:
-                pooled_scores.append(0.0)
-                pooled_labels.append(False)
-        if known_content not in retrieved_contents:
-            pooled_scores.append(0.0)
-            pooled_labels.append(True)
-
-        store.close()
-
-    avg_p_at_k = (
-        sum(p_at_k_values) / len(p_at_k_values) if p_at_k_values else 0.0
+    report = eh.run_calibration_on_fixtures(fixtures, k=k, seed=seed)
+    sys.stdout.write(
+        eh.format_calibration_report(
+            report, corpus_path=corpus_path, seed=seed,
+        ),
     )
-    auc = roc_auc(pooled_scores, pooled_labels)
-    rho = spearman_rho(
-        pooled_scores, [1.0 if x else 0.0 for x in pooled_labels],
-    )
-
-    report = CalibrationReport(
-        p_at_k=avg_p_at_k,
-        k=k,
-        n_queries=len(fixtures),
-        n_truncated_queries=n_truncated,
-        roc_auc=auc,
-        spearman_rho=rho,
-        n_observations=len(pooled_scores),
-    )
-    _print_calibration_report(report, corpus_path=corpus_path, seed=seed)
     return 0
 
 
-def _format_optional_float(value: float | None) -> str:
-    return f"{value:.4f}" if value is not None else "n/a (undefined)"
-
-
-def _print_calibration_report(
-    report: CalibrationReport, *, corpus_path: Path, seed: int,
-) -> None:
-    print(f"calibration harness — corpus {corpus_path.name}")
-    print(f"  n_queries:    {report.n_queries}")
-    print(f"  n_obs:        {report.n_observations}")
-    print(f"  seed:         {seed}")
-    if report.n_truncated_queries:
-        print(
-            f"  truncated:    {report.n_truncated_queries} "
-            f"(query returned <{report.k} candidates)"
-        )
-    print()
-    print(f"P@{report.k}:        {report.p_at_k:.4f}")
-    print(f"ROC-AUC:      {_format_optional_float(report.roc_auc)}")
-    print(f"Spearman ρ:   {_format_optional_float(report.spearman_rho)}")
-
-
 def main(argv: list[str] | None = None) -> int:
+    default_corpus, default_k, default_seed = _calibration_defaults()
     parser = argparse.ArgumentParser(
         description=(
             "Summarise rebuild_log JSONL files (phase-1c for #288), or "
@@ -429,32 +265,32 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--calibrate-corpus",
         nargs="?",
-        const=DEFAULT_CALIBRATION_CORPUS,
+        const=default_corpus,
         default=None,
         type=Path,
         metavar="PATH",
         help=(
             "Run the #365 R1 calibration harness against the supplied "
             "synthetic corpus (defaults to "
-            f"{DEFAULT_CALIBRATION_CORPUS.name} when no path is given)."
+            f"{default_corpus.name} when no path is given)."
         ),
     )
     parser.add_argument(
         "--k",
         type=int,
-        default=DEFAULT_CALIBRATION_K,
+        default=default_k,
         help=(
             "K for P@K in calibration mode "
-            f"(default {DEFAULT_CALIBRATION_K})."
+            f"(default {default_k})."
         ),
     )
     parser.add_argument(
         "--seed",
         type=int,
-        default=DEFAULT_CALIBRATION_SEED,
+        default=default_seed,
         help=(
             "Deterministic seed for noise-belief shuffle in "
-            f"calibration mode (default {DEFAULT_CALIBRATION_SEED})."
+            f"calibration mode (default {default_seed})."
         ),
     )
     args = parser.parse_args(argv)
