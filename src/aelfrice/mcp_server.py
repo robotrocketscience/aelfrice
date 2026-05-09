@@ -246,8 +246,20 @@ def tool_lock(
         ts=now,
         session_id=sid,
     ))
-    # mcp_remember always produces a belief.
-    assert derived.belief is not None
+    # mcp_remember always produces a belief; if it didn't, derivation
+    # broke (empty input post-strip, classifier dropped all spans, etc).
+    # Surface as a structured error rather than asserting — a crashing
+    # MCP tool is far worse host-UX than a kind we can read and grep.
+    if derived.belief is None:
+        return {
+            "kind": "lock.error",
+            "id": "",
+            "action": "error",
+            "error": (
+                "derivation produced no belief from the supplied "
+                "statement (likely empty after normalization)"
+            ),
+        }
     lock_bid = derived.belief.id
     pre_existing_at_lock_id = store.get_belief(lock_bid) is not None
     ids_before: set[str] = set(store.list_belief_ids())

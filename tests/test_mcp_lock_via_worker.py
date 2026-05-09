@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from aelfrice import mcp_server
+from aelfrice.derivation import DerivationOutput
 from aelfrice.mcp_server import tool_lock
 from aelfrice.models import LOCK_USER, ORIGIN_USER_STATED
 from aelfrice.replay import replay_full_equality
@@ -104,6 +106,32 @@ def test_replay_full_equality_passes_after_lock(store: MemoryStore) -> None:
     assert report.mismatched == 0
     assert report.derived_orphan == 0
     assert report.canonical_orphan == 0
+
+
+def test_lock_returns_structured_error_when_derivation_yields_no_belief(
+    store: MemoryStore,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hypothesis: when `derive()` returns DerivationOutput(belief=None)
+    (the classifier's persist=False path), tool_lock returns a
+    well-formed lock.error dict with a non-empty `error` field — NOT a
+    Python AssertionError that crashes the host's MCP tool surface.
+
+    Falsifiable by an unhandled exception, an empty error string, or
+    return shape diverging from the documented {kind, id, action, error}.
+    """
+    monkeypatch.setattr(
+        mcp_server,
+        "derive",
+        lambda inp: DerivationOutput(belief=None, skip_reason="empty"),
+    )
+    out = tool_lock(store, statement="anything; derive will reject it")
+    assert out["kind"] == "lock.error"
+    assert out["action"] == "error"
+    assert out["id"] == ""
+    assert isinstance(out.get("error"), str) and out["error"], (
+        "lock.error response missing populated `error` field"
+    )
 
 
 def test_lock_idempotent_on_canonical_state(store: MemoryStore) -> None:
