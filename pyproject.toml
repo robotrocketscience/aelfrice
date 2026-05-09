@@ -72,6 +72,13 @@ aelf-session-start-hook = "aelfrice.hook:main_session_start"
 [project.optional-dependencies]
 mcp = [
     "fastmcp>=0.2.0",
+    # Used directly via `from pydantic import Field` inside `serve()`
+    # for tool-parameter constraints (Annotated[..., Field(...)]).
+    # The import is lazy and gated to fastmcp availability, so pydantic
+    # only needs to be present when the [mcp] extra is installed —
+    # which is also when fastmcp pulls it in transitively. Declared
+    # explicitly to satisfy deptry DEP001.
+    "pydantic>=2",
 ]
 onboard-llm = [
     # Required only for `aelf onboard --llm-classify` (or

@@ -32,6 +32,7 @@ benchmarks = [
 ]
 mcp = [
     { name = "fastmcp" },
+    { name = "pydantic" },
 ]
 onboard-llm = [
     { name = "anthropic" },
@@ -54,6 +55,7 @@ requires-dist = [
     { name = "huggingface-hub", marker = "extra == 'benchmarks'", specifier = ">=0.20" },
     { name = "nltk", marker = "extra == 'benchmarks'", specifier = ">=3.9" },
     { name = "numpy", specifier = ">=2.0" },
+    { name = "pydantic", marker = "extra == 'mcp'", specifier = ">=2" },
     { name = "scipy", specifier = ">=1.11" },
     { name = "snowballstemmer", specifier = ">=2.2" },
     { name = "tiktoken", marker = "extra == 'benchmarks'", specifier = ">=0.7" },
