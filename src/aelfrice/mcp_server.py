@@ -560,6 +560,29 @@ def serve() -> None:
         session_id: str | None = None,
         classifications: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        """Polymorphic ingest entrypoint for a project's belief corpus.
+
+        Three input shapes drive the same tool. The host LLM picks shape
+        by which fields it supplies; pass nothing to inspect state.
+
+        Args:
+            path: Absolute filesystem path to the project root. When set,
+                starts an onboard session and returns the candidate
+                sentences for the host to classify (e.g. "/Users/me/proj").
+            session_id: An ID returned by a prior path-shape call. When
+                set, finalizes that session by accepting the host's
+                classifications.
+            classifications: List of host verdicts to accept; required
+                when session_id is set. Each item: {"index": int,
+                "belief_type": str, "persist": bool}.
+
+        Returns: dict with discriminating `kind`:
+          - "onboard.session_started": {session_id, n_already_present,
+            sentences:[{index, text, source}]}
+          - "onboard.session_completed": {session_id, inserted,
+            skipped_non_persisting, skipped_existing, skipped_unclassified}
+          - "onboard.status": {n_pending, pending_session_ids}
+        """
         store = _open_default_store()
         try:
             return tool_onboard(
@@ -573,6 +596,23 @@ def serve() -> None:
     def aelf_search(
         query: str, budget: int = DEFAULT_TOKEN_BUDGET,
     ) -> dict[str, Any]:
+        """Retrieve beliefs matching a free-text query, ranked by BM25.
+
+        Locked beliefs (L0) auto-load above BM25 hits (L1). Use this to
+        recall constraints, prior decisions, or facts the agent should
+        know before acting. Read-only; never mutates the store.
+
+        Args:
+            query: Search string. Whitespace-separated terms; SQLite
+                FTS5 syntax is honored (e.g. "auth NEAR token", quoted
+                phrases). Examples: "release process", "uv tool upgrade".
+            budget: Soft token budget for the response. Defaults to the
+                module's DEFAULT_TOKEN_BUDGET; lower values trim hits.
+
+        Returns: {"kind": "search.results", "n_hits": int,
+                  "hits": [{"id": str, "content": str,
+                            "lock_level": str, "type": str}, ...]}
+        """
         store = _open_default_store()
         try:
             return tool_search(store, query=query, budget=budget)
@@ -581,6 +621,21 @@ def serve() -> None:
 
     @mcp.tool()
     def aelf_lock(statement: str) -> dict[str, Any]:
+        """Lock a statement as user-asserted ground truth (L0).
+
+        Use when the user has explicitly stated a non-negotiable rule,
+        constraint, or fact that future sessions must respect. Re-locking
+        the same content refreshes the lock without creating a duplicate.
+        Mutates: creates or upgrades a belief.
+
+        Args:
+            statement: The free-text claim to lock. Treated verbatim;
+                no rewriting. Example: "All commits must be signed".
+
+        Returns: {"kind": one of [lock.created, lock.upgraded,
+                                  lock.corroborated, lock.error],
+                  "id": belief_id, "action": str}
+        """
         store = _open_default_store()
         try:
             return tool_lock(store, statement=statement)
@@ -589,6 +644,21 @@ def serve() -> None:
 
     @mcp.tool()
     def aelf_locked(pressured: bool = False) -> dict[str, Any]:
+        """List all user-locked (L0) beliefs in the store.
+
+        Use to show the user their current ground-truth set, or to find
+        candidates for unlock/demote. Read-only.
+
+        Args:
+            pressured: If True, return only locks whose demotion_pressure
+                is greater than zero (i.e. ones being challenged by
+                contradicting evidence). Default False returns all locks.
+
+        Returns: {"kind": "locked.list", "n": int,
+                  "locked": [{"id": str, "content": str,
+                              "demotion_pressure": int,
+                              "locked_at": str}, ...]}
+        """
         store = _open_default_store()
         try:
             return tool_locked(store, pressured=pressured)
@@ -597,6 +667,22 @@ def serve() -> None:
 
     @mcp.tool()
     def aelf_demote(belief_id: str) -> dict[str, Any]:
+        """Demote a belief one tier — drop a lock OR devalidate.
+
+        For a user-locked (L0) belief: clears the lock to L1.
+        For a user_validated belief: drops origin to agent_inferred.
+        For other beliefs: no-op. Mutates origin/lock fields.
+
+        Args:
+            belief_id: Stable hash-prefix ID returned by aelf_search,
+                aelf_lock, or aelf_locked.
+
+        Returns: {"kind": one of [demote.demoted, demote.devalidated,
+                                  demote.not_locked, demote.not_found],
+                  "id": belief_id, "demoted": bool,
+                  "tier": str (when devalidated),
+                  "error": str (when not_found)}
+        """
         store = _open_default_store()
         try:
             return tool_demote(store, belief_id=belief_id)
@@ -607,6 +693,24 @@ def serve() -> None:
     def aelf_validate(
         belief_id: str, source: str = "user_validated",
     ) -> dict[str, Any]:
+        """Promote agent_inferred → user_validated (no lock applied).
+
+        Use when the user explicitly confirms an agent-inferred claim is
+        correct, but does not want to lock it as ground truth. Writes
+        an audit row 'promotion:<source>'. Mutates origin field.
+
+        Args:
+            belief_id: ID of the agent_inferred belief to promote.
+            source: Audit-row source suffix; defaults to "user_validated".
+                Override only when a non-canonical source is appropriate
+                (e.g. an automated promotion pipeline).
+
+        Returns: {"kind": one of [validate.promoted, validate.already,
+                                  validate.error],
+                  "id": str, "prior_origin": str, "new_origin": str,
+                  "audit_event_id": int (when promoted),
+                  "error": str (when error)}
+        """
         store = _open_default_store()
         try:
             return tool_validate(
@@ -617,6 +721,21 @@ def serve() -> None:
 
     @mcp.tool()
     def aelf_unlock(belief_id: str) -> dict[str, Any]:
+        """Drop a user-lock without changing the belief's origin.
+
+        Idempotent: calling on an already-unlocked belief returns
+        unlocked=False. Always writes a 'lock:unlock' audit row when the
+        lock was actually cleared. Mutates lock_level from L0 to L1.
+
+        Args:
+            belief_id: ID of the locked belief to unlock.
+
+        Returns: {"kind": one of [unlock.unlocked, unlock.already,
+                                  unlock.not_found],
+                  "id": str, "unlocked": bool,
+                  "audit_event_id": int (when unlocked),
+                  "error": str (when not_found)}
+        """
         store = _open_default_store()
         try:
             return tool_unlock(store, belief_id=belief_id)
@@ -627,6 +746,14 @@ def serve() -> None:
     def aelf_promote(
         belief_id: str, source: str = "user_validated",
     ) -> dict[str, Any]:
+        """Alias of aelf_validate. Identical semantics and return shape.
+
+        Exposed under both names so callers can use whichever verb reads
+        more naturally for their use case ('promote' for tier transitions,
+        'validate' for verification flows).
+
+        Args, Returns: see aelf_validate.
+        """
         store = _open_default_store()
         try:
             return tool_promote(
@@ -639,6 +766,29 @@ def serve() -> None:
     def aelf_feedback(
         belief_id: str, signal: str, source: str = "user",
     ) -> dict[str, Any]:
+        """Record positive or negative feedback on a belief's usefulness.
+
+        Updates the Beta-Bernoulli posterior (alpha for 'used', beta for
+        'harmful'). Negative feedback also walks the contradiction graph
+        and increments demotion_pressure on supporting locks. Mutates
+        posterior + audit + (potentially) lock pressure.
+
+        Args:
+            belief_id: Target belief ID.
+            signal: Either "used" (positive valence, +1) or "harmful"
+                (negative valence, -1). Other values return a bad_signal
+                error without mutating.
+            source: Free-text label for the feedback origin. Defaults to
+                "user". Used for audit and provenance.
+
+        Returns: {"kind": one of [feedback.applied, feedback.bad_signal,
+                                  feedback.unknown_belief],
+                  "id": str, "signal": str,
+                  "prior_alpha": float, "new_alpha": float,
+                  "prior_beta": float, "new_beta": float,
+                  "pressured_locks": list[str], "demoted_locks": list[str],
+                  "error": str (on error variants)}
+        """
         store = _open_default_store()
         try:
             return tool_feedback(
@@ -653,6 +803,28 @@ def serve() -> None:
         source: str = _CONFIRM_SOURCE_DEFAULT,
         note: str = "",
     ) -> dict[str, Any]:
+        """Affirm an existing belief without locking it (bumps posterior).
+
+        Use when the user reviews a belief and says it's correct, but the
+        commitment is softer than aelf_lock would imply. Records source
+        as 'user_confirmed' by default so confirms are distinguishable
+        from generic 'used' feedback in the audit table. Mutates
+        posterior and may pressure contradicting locks.
+
+        Args:
+            belief_id: Target belief ID.
+            source: Audit source label. Default 'user_confirmed'.
+            note: Optional free-text annotation. Returned on the response
+                payload for the caller's context; NOT persisted.
+
+        Returns: {"kind": one of [confirm.applied, confirm.unknown_belief],
+                  "id": str, "source": str,
+                  "prior_alpha": float, "new_alpha": float,
+                  "prior_beta": float, "new_beta": float,
+                  "pressured_locks": list[str], "demoted_locks": list[str],
+                  "note": str (when supplied),
+                  "error": str (when unknown_belief)}
+        """
         store = _open_default_store()
         try:
             return tool_confirm(
@@ -663,6 +835,20 @@ def serve() -> None:
 
     @mcp.tool()
     def aelf_stats() -> dict[str, Any]:
+        """Return summary counts for the local belief store.
+
+        Cheap snapshot — no graph walk, no scoring. Use to verify the
+        store is populated, to gauge corpus size, or as a heartbeat.
+        Read-only.
+
+        Returns: {"kind": "stats.snapshot",
+                  "beliefs": int,
+                  "edges": int,    # v1.0 key (deprecated, removed v1.2)
+                  "threads": int,  # v1.1 key (forward-compatible alias)
+                  "locked": int,
+                  "feedback_events": int,
+                  "onboard_sessions_total": int}
+        """
         store = _open_default_store()
         try:
             return tool_stats(store)
@@ -671,6 +857,23 @@ def serve() -> None:
 
     @mcp.tool()
     def aelf_health() -> dict[str, Any]:
+        """Classify the store's current operating regime + describe it.
+
+        Runs the regime classifier over a small feature set (corpus size,
+        confidence stats, lock density, edge density). Use as a coarse
+        diagnostic before taking weighty mutating actions, or to drive
+        UX nudges (e.g. 'too few locks for this stage'). Read-only.
+
+        Returns: {"kind": "health.report",
+                  "regime": str,
+                  "description": str,
+                  "classification_confidence": float (omitted when
+                       insufficient data),
+                  "features": {n_beliefs, confidence_mean,
+                       confidence_median, mass_mean, lock_per_1000,
+                       edge_per_belief, thread_per_belief}
+                       (omitted when insufficient data)}
+        """
         store = _open_default_store()
         try:
             return tool_health(store)

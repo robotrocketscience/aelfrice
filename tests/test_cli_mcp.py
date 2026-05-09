@@ -88,6 +88,56 @@ def test_python_dash_m_mcp_server_module_resolves() -> None:
     assert spec.origin and spec.origin.endswith("mcp_server.py")
 
 
+# --- tool description coverage (FastMCP reads decorator-fn docstring) --
+
+
+def test_every_decorated_aelf_tool_has_a_docstring() -> None:
+    """FastMCP exposes the @mcp.tool-decorated function's docstring as the
+    tool's `description`. An empty docstring means the host LLM gets no
+    guidance on when/how to call the tool — discoverability collapses.
+
+    This is a static guard: parse mcp_server.py with `ast`, find every
+    `@mcp.tool()` decorator inside `serve()`, and assert the decorated
+    function has a non-empty docstring.
+    """
+    import ast
+    import aelfrice.mcp_server as mod
+
+    src = open(mod.__file__, "r", encoding="utf-8").read()
+    tree = ast.parse(src)
+
+    serve_fn = next(
+        (node for node in tree.body
+         if isinstance(node, ast.FunctionDef) and node.name == "serve"),
+        None,
+    )
+    assert serve_fn is not None, "serve() function not found in mcp_server.py"
+
+    decorated_fns: list[ast.FunctionDef] = []
+    for node in ast.walk(serve_fn):
+        if isinstance(node, ast.FunctionDef):
+            for dec in node.decorator_list:
+                # Match `@mcp.tool()` — Call whose func is Attribute(attr='tool')
+                if (isinstance(dec, ast.Call)
+                        and isinstance(dec.func, ast.Attribute)
+                        and dec.func.attr == "tool"):
+                    decorated_fns.append(node)
+                    break
+
+    assert len(decorated_fns) >= 12, (
+        f"expected at least 12 @mcp.tool functions, found {len(decorated_fns)}"
+    )
+
+    missing = [
+        fn.name for fn in decorated_fns
+        if not (ast.get_docstring(fn) or "").strip()
+    ]
+    assert not missing, (
+        f"@mcp.tool functions missing docstrings (host LLM sees no "
+        f"description): {missing}"
+    )
+
+
 # --- stdout discipline check (regression guard) -------------------------
 
 
