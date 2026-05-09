@@ -187,6 +187,47 @@ def test_locked_pressured_filter_includes_pressured(store: MemoryStore) -> None:
     assert out["n"] == 1
 
 
+def test_locked_pagination_default_returns_first_page(store: MemoryStore) -> None:
+    """Default limit pages cleanly when corpus exceeds the page size."""
+    for i in range(5):
+        tool_lock(store, statement=f"rule number {i}")
+    out = tool_locked(store, limit=3, offset=0)
+    assert out["n"] == 3
+    assert out["total"] == 5
+    assert out["offset"] == 0
+    assert out["has_more"] is True
+    assert out["next_offset"] == 3
+
+
+def test_locked_pagination_second_page_returns_remainder(store: MemoryStore) -> None:
+    for i in range(5):
+        tool_lock(store, statement=f"rule number {i}")
+    out = tool_locked(store, limit=3, offset=3)
+    assert out["n"] == 2
+    assert out["total"] == 5
+    assert out["offset"] == 3
+    assert out["has_more"] is False
+    assert out["next_offset"] is None
+
+
+def test_locked_pagination_clamps_oversize_limit(store: MemoryStore) -> None:
+    """Limit is clamped to _LOCKED_MAX_LIMIT (defensive against caller bugs)."""
+    from aelfrice.mcp_server import _LOCKED_MAX_LIMIT
+
+    tool_lock(store, statement="single")
+    out = tool_locked(store, limit=_LOCKED_MAX_LIMIT * 10, offset=0)
+    assert out["n"] == 1
+    assert out["total"] == 1
+
+
+def test_locked_pagination_negative_offset_clamped_to_zero(
+    store: MemoryStore,
+) -> None:
+    tool_lock(store, statement="x")
+    out = tool_locked(store, offset=-50)
+    assert out["offset"] == 0
+
+
 # --- demote ------------------------------------------------------------
 
 

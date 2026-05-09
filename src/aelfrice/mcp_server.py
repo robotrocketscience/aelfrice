@@ -297,15 +297,42 @@ def tool_lock(
     return {"kind": "lock.created", "id": actual_id, "action": "locked"}
 
 
+_LOCKED_DEFAULT_LIMIT: Final[int] = 50
+_LOCKED_MAX_LIMIT: Final[int] = 500
+
+
 def tool_locked(
-    store: MemoryStore, *, pressured: bool = False,
+    store: MemoryStore,
+    *,
+    pressured: bool = False,
+    limit: int = _LOCKED_DEFAULT_LIMIT,
+    offset: int = 0,
 ) -> dict[str, Any]:
+    """List user-locked beliefs with stable cursor pagination.
+
+    `limit` is clamped to [1, _LOCKED_MAX_LIMIT]; `offset` is clamped at
+    zero on the low end and unbounded on the high end (returning empty
+    when past the end). The full unpaginated count is returned as
+    `total` so callers know whether to keep paging.
+    """
     locked = store.list_locked_beliefs()
     if pressured:
         locked = [b for b in locked if b.demotion_pressure > 0]
+    total = len(locked)
+    # Clamp pagination args defensively — pure handler is callable
+    # outside the wrapper layer where Pydantic constraints aren't enforced.
+    safe_offset = max(0, offset)
+    safe_limit = max(1, min(limit, _LOCKED_MAX_LIMIT))
+    page = locked[safe_offset : safe_offset + safe_limit]
+    next_offset = safe_offset + len(page)
+    has_more = next_offset < total
     return {
         "kind": "locked.list",
-        "n": len(locked),
+        "n": len(page),
+        "total": total,
+        "offset": safe_offset,
+        "has_more": has_more,
+        "next_offset": next_offset if has_more else None,
         "locked": [
             {
                 "id": b.id,
@@ -313,7 +340,7 @@ def tool_locked(
                 "demotion_pressure": b.demotion_pressure,
                 "locked_at": b.locked_at,
             }
-            for b in locked
+            for b in page
         ],
     }
 
@@ -822,25 +849,57 @@ def serve() -> None:
                 ),
             ),
         ] = False,
+        limit: Annotated[
+            int,
+            Field(
+                description=(
+                    "Maximum number of locks to return in this page. "
+                    "Clamped to [1, 500]."
+                ),
+                ge=1,
+                le=_LOCKED_MAX_LIMIT,
+            ),
+        ] = _LOCKED_DEFAULT_LIMIT,
+        offset: Annotated[
+            int,
+            Field(
+                description=(
+                    "Number of locks to skip for pagination. Use the "
+                    "previous response's `next_offset` to keep paging."
+                ),
+                ge=0,
+            ),
+        ] = 0,
     ) -> dict[str, Any]:
-        """List all user-locked (L0) beliefs in the store.
+        """List user-locked (L0) beliefs with cursor pagination.
 
-        Use to show the user their current ground-truth set, or to find
-        candidates for unlock/demote. Read-only.
+        Use to show the user their current ground-truth set, to find
+        candidates for unlock/demote, or to walk a large lock corpus
+        page by page. Read-only.
 
         Args:
             pressured: If True, return only locks whose demotion_pressure
                 is greater than zero (i.e. ones being challenged by
                 contradicting evidence). Default False returns all locks.
+            limit: Page size. Default 50, max 500.
+            offset: Pagination offset. Pass `next_offset` from the prior
+                response to advance.
 
-        Returns: {"kind": "locked.list", "n": int,
+        Returns: {"kind": "locked.list",
+                  "n": int (count in this page),
+                  "total": int (count across all pages),
+                  "offset": int (echoed back),
+                  "has_more": bool,
+                  "next_offset": int | None,
                   "locked": [{"id": str, "content": str,
                               "demotion_pressure": int,
                               "locked_at": str}, ...]}
         """
         store = _open_default_store()
         try:
-            return tool_locked(store, pressured=pressured)
+            return tool_locked(
+                store, pressured=pressured, limit=limit, offset=offset,
+            )
         finally:
             store.close()
 
