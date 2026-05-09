@@ -4462,9 +4462,8 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_statusline.set_defaults(func=_cmd_statusline)
 
     # `aelf mcp`: start the FastMCP stdio server. Visible in --help so
-    # hosts (Claude Desktop / Claude Code) configuring an MCP entry can
-    # discover it; the [mcp] extra must be installed for it to actually
-    # run.
+    # MCP-capable hosts configuring a server entry can discover it;
+    # the [mcp] extra must be installed for it to actually run.
     p_mcp = sub.add_parser(
         "mcp",
         help="start the FastMCP stdio server (requires aelfrice[mcp])",

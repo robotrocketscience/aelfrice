@@ -25,7 +25,7 @@ python -m aelfrice.mcp_server      # module-exec fallback
 
 If `fastmcp` is missing, `aelf mcp` exits 1 with an actionable message (`error: fastmcp is not installed. Install with: pip install aelfrice[mcp]`) — no traceback, no half-started server.
 
-Host config — Claude Code, Codex, Claude Desktop, any MCP-capable host:
+Host config — any MCP-capable host:
 
 ```json
 {
