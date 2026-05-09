@@ -213,6 +213,75 @@ def test_doc_linker_uplift_no_anchors_means_zero_uplift() -> None:
     assert r.uplift == 0.0
 
 
+def test_query_strategy_uplift_empty_input() -> None:
+    from tests.retrieve_uplift_runner import run_query_strategy_uplift
+
+    r = run_query_strategy_uplift([])
+    assert r.n_rows == 0
+    assert r.mean_ndcg_off == 0.0
+    assert r.mean_ndcg_on == 0.0
+    assert r.uplift == 0.0
+
+
+def test_query_strategy_uplift_runs_on_synthetic_row() -> None:
+    """OFF/ON arms run end-to-end without raising; metrics are bounded.
+
+    The contract under test is shape + non-negative metric, not that
+    the rewrite influences ranking on this hand-crafted row — the
+    real-corpus uplift is the lab-side gate."""
+    from tests.retrieve_uplift_runner import run_query_strategy_uplift
+
+    row = {
+        "id": "qs-test-001",
+        "query": "MemoryStore persistence",
+        "k": 3,
+        "beliefs": [
+            {"id": "b1", "content": "the memory store persists beliefs"},
+            {"id": "b2", "content": "the configuration file lives at /etc"},
+            {"id": "b3", "content": "the memory store uses sqlite"},
+        ],
+        "edges": [],
+        "expected_top_k": ["b1", "b3"],
+    }
+    r = run_query_strategy_uplift([row])
+    assert r.n_rows == 1
+    assert 0.0 <= r.mean_ndcg_off <= 1.0
+    assert 0.0 <= r.mean_ndcg_on <= 1.0
+
+
+def test_query_strategy_uplift_lowercase_no_extremes_means_zero_uplift() -> None:
+    """Degenerate row: query has no capitalised tokens (R1 entity expand
+    is a no-op) and the per-store IDF distribution is uniform enough
+    that R3 quantile clipping doesn't drop or duplicate any term. In
+    that case ``transform_query`` returns the same string for both
+    strategies, so the OFF and ON arms see identical retrieval state
+    and ``uplift == 0`` by construction.
+
+    Falsifiable if the driver accidentally seeds the store differently
+    between arms or threads through a non-deterministic dependency.
+
+    A two-belief synthetic store with identical token counts puts every
+    query token at the IDF median, so the default 5%/95% quantile band
+    keeps every term at its baseline qf."""
+    from tests.retrieve_uplift_runner import run_query_strategy_uplift
+
+    row = {
+        "id": "qs-test-002",
+        "query": "alpha",
+        "k": 2,
+        "beliefs": [
+            {"id": "a", "content": "alpha"},
+            {"id": "b", "content": "beta"},
+        ],
+        "edges": [],
+        "expected_top_k": ["a"],
+    }
+    r = run_query_strategy_uplift([row])
+    assert r.n_rows == 1
+    assert r.mean_ndcg_off == r.mean_ndcg_on
+    assert r.uplift == 0.0
+
+
 def test_run_per_flag_uplift_covers_all_flags() -> None:
     """Hypothesis: the harness reports one row per registered flag.
     Falsifiable if a flag is silently dropped."""
