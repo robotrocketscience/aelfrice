@@ -545,8 +545,14 @@ def _run_upgrade_cmd_capturing(
 
     import aelfrice.cli as cli_mod
 
+    # Patch on `cli_mod`, not `lifecycle`: `cli.py` does
+    # `from aelfrice.lifecycle import upgrade_advice`, so the bound
+    # name in `cli_mod` is what `_cmd_upgrade` resolves. Patching
+    # `lifecycle` only worked locally on uv-tool installs where the
+    # real call happened to return the same value; CI runs in a venv
+    # and the venv branch fired instead.
     monkeypatch.setattr(
-        lifecycle,
+        cli_mod,
         "upgrade_advice",
         lambda: lifecycle.UpgradeAdvice(
             command="uv tool upgrade aelfrice", context="uv_tool"
