@@ -2,10 +2,10 @@
 
 # aelfrice
 
-> Persistent memory for AI agents.
+> Your AI stops forgetting your rules.
 > Set up once. Stays out of your way.
 >
-> _Local SQLite. Auditable. No GPU, no network._
+> _Local SQLite. No GPU, no network._
 
 [![PyPI](https://img.shields.io/pypi/v/aelfrice.svg)](https://pypi.org/project/aelfrice/)
 [![Python](https://img.shields.io/pypi/pyversions/aelfrice.svg)](https://pypi.org/project/aelfrice/)
