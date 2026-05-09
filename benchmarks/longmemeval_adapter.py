@@ -26,6 +26,7 @@ from typing import Final
 from aelfrice.ingest import ingest_turn
 from aelfrice.retrieval import retrieve_v2 as retrieve  # v1.0.x lab-compat shim
 from aelfrice.store import MemoryStore
+from benchmarks.qa_scoring import score_multi_answer
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -82,6 +83,13 @@ class LongMemEvalQuestion:
     answer_session_ids: list[str]
 
 
+_SCORE_KEYS: Final[tuple[str, ...]] = (
+    "exact_match",
+    "substring_exact_match",
+    "f1",
+)
+
+
 @dataclass
 class RetrievalResult:
     """Result of retrieval for one question."""
@@ -94,6 +102,9 @@ class RetrievalResult:
     retrieved_context: str
     num_beliefs: int
     retrieval_latency_ms: float
+    exact_match: float = 0.0
+    substring_exact_match: float = 0.0
+    f1: float = 0.0
 
 
 @dataclass
@@ -104,6 +115,9 @@ class CategoryStats:
     count: int = 0
     total_beliefs: int = 0
     total_latency_ms: float = 0.0
+    total_exact_match: float = 0.0
+    total_substring_exact_match: float = 0.0
+    total_f1: float = 0.0
 
     @property
     def avg_beliefs(self) -> float:
@@ -117,6 +131,24 @@ class CategoryStats:
             return 0.0
         return self.total_latency_ms / self.count
 
+    @property
+    def exact_match(self) -> float:
+        if self.count == 0:
+            return 0.0
+        return self.total_exact_match / self.count
+
+    @property
+    def substring_exact_match(self) -> float:
+        if self.count == 0:
+            return 0.0
+        return self.total_substring_exact_match / self.count
+
+    @property
+    def f1(self) -> float:
+        if self.count == 0:
+            return 0.0
+        return self.total_f1 / self.count
+
 
 @dataclass
 class BenchmarkResult:
@@ -127,6 +159,9 @@ class BenchmarkResult:
     total_latency_ms: float = 0.0
     total_ingest_turns: int = 0
     total_ingest_time_s: float = 0.0
+    total_exact_match: float = 0.0
+    total_substring_exact_match: float = 0.0
+    total_f1: float = 0.0
     category_stats: dict[str, CategoryStats] = field(
         default_factory=lambda: dict[str, CategoryStats](),
     )
@@ -145,6 +180,24 @@ class BenchmarkResult:
         if self.total_questions == 0:
             return 0.0
         return self.total_latency_ms / self.total_questions
+
+    @property
+    def exact_match(self) -> float:
+        if self.total_questions == 0:
+            return 0.0
+        return self.total_exact_match / self.total_questions
+
+    @property
+    def substring_exact_match(self) -> float:
+        if self.total_questions == 0:
+            return 0.0
+        return self.total_substring_exact_match / self.total_questions
+
+    @property
+    def f1(self) -> float:
+        if self.total_questions == 0:
+            return 0.0
+        return self.total_f1 / self.total_questions
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +402,16 @@ def run_question(
     )
     latency_ms: float = (time.monotonic() - t1) * 1000.0
 
+    # Score retrieved context against gold answer(s). LongMemEval lists
+    # multiple acceptable answer surfaces for some categories — fold
+    # via best-of multi-answer per #507.
+    gts: list[str] = (
+        [str(a) for a in question.answer]
+        if isinstance(question.answer, list)
+        else [str(question.answer)]
+    )
+    scores: dict[str, float] = score_multi_answer(context, gts)
+
     result: RetrievalResult = RetrievalResult(
         question_id=question.question_id,
         question_type=question.question_type,
@@ -358,6 +421,9 @@ def run_question(
         retrieved_context=context,
         num_beliefs=num_beliefs,
         retrieval_latency_ms=latency_ms,
+        exact_match=scores["exact_match"],
+        substring_exact_match=scores["substring_exact_match"],
+        f1=scores["f1"],
     )
     return result, ingest_turns, ingest_time
 
@@ -383,6 +449,9 @@ def run_benchmark(
             result.total_latency_ms += qr.retrieval_latency_ms
             result.total_ingest_turns += ingest_turns
             result.total_ingest_time_s += ingest_time
+            result.total_exact_match += qr.exact_match
+            result.total_substring_exact_match += qr.substring_exact_match
+            result.total_f1 += qr.f1
             result.per_question.append(qr)
 
             # Per-category stats
@@ -394,6 +463,9 @@ def run_benchmark(
             cat.count += 1
             cat.total_beliefs += qr.num_beliefs
             cat.total_latency_ms += qr.retrieval_latency_ms
+            cat.total_exact_match += qr.exact_match
+            cat.total_substring_exact_match += qr.substring_exact_match
+            cat.total_f1 += qr.f1
 
     return result
 
@@ -415,6 +487,13 @@ def print_results(result: BenchmarkResult) -> None:
     print(f"Avg query latency:    {result.avg_latency_ms:.1f}ms")
     print()
 
+    print(
+        f"Overall correctness (deterministic): "
+        f"EM={result.exact_match:.4f}  "
+        f"sub_EM={result.substring_exact_match:.4f}  "
+        f"F1={result.f1:.4f}"
+    )
+    print()
     print("Per-category retrieval stats:")
     for qtype in QUESTION_TYPES:
         cat: CategoryStats | None = result.category_stats.get(qtype)
@@ -423,7 +502,9 @@ def print_results(result: BenchmarkResult) -> None:
         print(
             f"  {qtype:30s}  n={cat.count:3d}  "
             f"avg_beliefs={cat.avg_beliefs:5.1f}  "
-            f"avg_latency={cat.avg_latency_ms:6.1f}ms"
+            f"avg_latency={cat.avg_latency_ms:6.1f}ms  "
+            f"sub_EM={cat.substring_exact_match:.4f}  "
+            f"F1={cat.f1:.4f}"
         )
     print()
 
@@ -572,11 +653,17 @@ def main() -> None:
             "avg_latency_ms": round(result.avg_latency_ms, 2),
             "total_ingest_turns": result.total_ingest_turns,
             "total_ingest_time_s": round(result.total_ingest_time_s, 2),
+            "exact_match": round(result.exact_match, 4),
+            "substring_exact_match": round(result.substring_exact_match, 4),
+            "f1": round(result.f1, 4),
             "category_stats": {
                 qtype: {
                     "count": cat.count,
                     "avg_beliefs": round(cat.avg_beliefs, 2),
                     "avg_latency_ms": round(cat.avg_latency_ms, 2),
+                    "exact_match": round(cat.exact_match, 4),
+                    "substring_exact_match": round(cat.substring_exact_match, 4),
+                    "f1": round(cat.f1, 4),
                 }
                 for qtype, cat in result.category_stats.items()
             },
@@ -588,6 +675,9 @@ def main() -> None:
                     "answer": qr.answer,
                     "num_beliefs": qr.num_beliefs,
                     "retrieval_latency_ms": round(qr.retrieval_latency_ms, 2),
+                    "exact_match": qr.exact_match,
+                    "substring_exact_match": qr.substring_exact_match,
+                    "f1": round(qr.f1, 4),
                 }
                 for qr in result.per_question
             ],
