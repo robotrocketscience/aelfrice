@@ -98,23 +98,15 @@ aelfrice replaces the chain with a mechanism. The hook injects matched beliefs *
 
 ---
 
-## Determinism
+## What you get for free
 
-Same store + same query gives the same beliefs. The retrieval path is stdlib + SQLite — no embeddings, no learned re-rankers, no LLM — so every result traces back to a specific belief and the user action that wrote it.
+Running in the background. No action required after `aelf setup`.
 
-Tradeoff: no fuzzy semantic recall. See [PHILOSOPHY.md](docs/PHILOSOPHY.md).
-
----
-
-## Your data stays yours
-
-- **100% local.** SQLite at `<repo>/.git/aelfrice/memory.db`. No network calls in the retrieval path.
-- **No telemetry.** No accounts, no signup, no phone-home.
-- **No GPU, no vector DB.** Stdlib + SQLite. The optional `[mcp]` extra adds `fastmcp`. That's it.
-- **Per-project isolation.** Beliefs from project A cannot leak into project B (they live in different `.git/` directories).
+- **Determinism.** Stdlib + SQLite. No embeddings, no learned re-rankers, no LLM in the retrieval path. Every result traces to the action that wrote it.
+- **Local-only.** SQLite at `<repo>/.git/aelfrice/memory.db`. No telemetry, no network calls, no accounts. Per-project isolation by construction. See [PRIVACY.md](docs/PRIVACY.md).
 - **Removable.** `aelf uninstall --archive backup.aenc` encrypts the DB to a file, then deletes it. Or `--purge` for a full wipe.
 
-[docs/PRIVACY.md](docs/PRIVACY.md) for verifiable specifics.
+Tradeoff: no fuzzy semantic recall. See [PHILOSOPHY.md](docs/PHILOSOPHY.md).
 
 ---
 
