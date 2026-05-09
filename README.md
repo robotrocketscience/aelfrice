@@ -129,24 +129,14 @@ The same operations are also available as MCP tools and `/aelf:*` slash commands
 
 ---
 
-## Roadmap
+## Status
 
-| Version | Status | Theme |
-|---|---|---|
-| v1.0.x | shipped | core memory, CLI, MCP, hook wiring, install routing |
-| v1.1.0 | shipped | per-project DBs (`.git/aelfrice/`), `aelf migrate`, `edges`→`threads` rename, `aelf health` rewrite |
-| v1.2.0 | shipped | auto-capture pipeline (transcript-ingest, commit-ingest, SessionStart), `agent_inferred → user_validated` promotion, triple extractor, `--batch` JSONL ingest, CLI consolidation, `INEDIBLE` per-file opt-out |
-| v1.2.x | planned | search-tool `PreToolUse` hook — memory-first context on Grep/Glob |
-| v1.3 | shipped | retrieval wave — entity index (L2.5), BFS multi-hop (L3), LLM-Haiku onboard classifier (opt-in), partial Bayesian-weighted ranking |
-| v1.4 | shipped | context rebuilder — PreCompact retrieval-curated continuation (augment mode); manual + threshold trigger; continuation-fidelity scorer (exact-match) |
-| v1.5 | shipped | retrieval plumbing — composition plumbing + per-lane telemetry (#232), BM25F anchor text (#148), search-tool Bash matcher (#155), v3 federation version-vector schema (#204), v1.4 dynamic-trigger re-park (#188) |
-| v1.5.x | shipped | default-on host-driven LLM onboard classifier (#238, in v1.5.1) |
-| v1.6 | shipped | hardening + observability — hook-hardening framing-tag contract + audit log (#280, #297, #314), `aelf tail` (#321, #322), belief retention class (#290), rebuild diagnostic log (#288), posterior-ranking eval harness + heat-kernel composition (#151, #306, #310; default-flip still gated), deferred-feedback sweeper (#191, #256), v2.0 corpus public scaffold + bench-gate (#307, #311, #319, #320), `replay_full_equality` probe (#262, #304), `session_id` propagation (#192), reachable-install detection (#345) |
-| v1.7 | shipped | graph signal wave + structural retrieval lane — signed Laplacian + eigenbasis (#149), heat kernel authority (#150), Plate FFT HRR primitives (#216), HRR bind/probe (#152), `uri_baki` post-rank adjuster retest (#153). BM25F anchor-text retrieval (#148) **default-on** at v1.7.0 per #154 bench evidence (+0.6650 NDCG@k uplift on the v0.1 retrieve_uplift fixture under Porter stemming). Heat-kernel authority (`use_heat_kernel`) and HRR structural (`use_hrr_structural`) are wired and ship behind opt-in `[retrieval]` flags in `.aelfrice.toml` — they stay default-OFF until the composition tracker (#154) bench gate flips them. Signed-Laplacian (`use_signed_laplacian`) and posterior-ranking (`use_posterior_ranking`) are still placeholder flags pending wiring. |
-| v2.0 | planned | feature parity with the original research line + benchmark reproducibility. v2.0's component issues land incrementally across v1.5–v1.7; final v2.0 tag is the reproducibility cut. |
-| v2.1 | planned | post-calibration retrieval-pipeline wave — view-flip (#265), bench-gated cluster (#197 dedup, #433 HRR vocab bridge, #434 type-aware compression, #435 doc/semantic linker, #436 intentional clustering), operator-gated query understanding (#291) + close-the-loop relevance (#365), and gate-commit follow-ups (smoke-fixture license (#311), badge cron-rewrite, dispatcher 3-state (#479), gate-list CLI (#475)). Tracker: [#474](https://github.com/robotrocketscience/aelfrice/issues/474). |
+Latest stable: **v1.7** — graph-signal retrieval lane (signed Laplacian, heat-kernel authority, Plate FFT HRR primitives), BM25F anchor-text retrieval default-on.
 
-Per-version detail: [docs/ROADMAP.md](docs/ROADMAP.md). Open issues: [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
+Next: **v2.0** — research-line parity + benchmark reproducibility cut.
+
+Per-version detail: [docs/ROADMAP.md](docs/ROADMAP.md).
+Open issues / known limits: [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
 ---
 
