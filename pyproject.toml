@@ -1,6 +1,6 @@
 [project]
 name = "aelfrice"
-version = "2.0.0"
+version = "2.0.1"
 description = "Persistent memory for AI agents. Set up once. Stays out of your way. Local SQLite, auditable, no GPU, no network."
 readme = "README.md"
 requires-python = ">=3.12"
