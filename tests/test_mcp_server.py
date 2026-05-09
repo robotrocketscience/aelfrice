@@ -228,6 +228,60 @@ def test_locked_pagination_negative_offset_clamped_to_zero(
     assert out["offset"] == 0
 
 
+# --- response_format markdown ------------------------------------------
+
+
+def test_search_markdown_returns_wrapped_payload(store: MemoryStore) -> None:
+    _put_belief(store, content="quick brown fox", id="bX")
+    out = tool_search(store, query="brown", response_format="markdown")
+    assert out["kind"] == "search.results.markdown"
+    assert out["format"] == "markdown"
+    assert isinstance(out["text"], str) and "Search results" in out["text"]
+    assert "bX" in out["text"]
+
+
+def test_search_json_default_unchanged(store: MemoryStore) -> None:
+    _put_belief(store, content="alpha")
+    out = tool_search(store, query="alpha")
+    assert out["kind"] == "search.results"
+    assert "format" not in out and "text" not in out
+
+
+def test_locked_markdown_includes_pressure_marker(store: MemoryStore) -> None:
+    bid = tool_lock(store, statement="never push to main")["id"]
+    b = store.get_belief(bid)
+    assert b is not None
+    b.demotion_pressure = 5
+    store.update_belief(b)
+    out = tool_locked(store, response_format="markdown")
+    assert out["kind"] == "locked.list.markdown"
+    assert "pressure=5" in out["text"]
+
+
+def test_stats_markdown_renders_counts(store: MemoryStore) -> None:
+    tool_lock(store, statement="rule 1")
+    tool_lock(store, statement="rule 2")
+    out = tool_stats(store, response_format="markdown")
+    assert out["kind"] == "stats.snapshot.markdown"
+    assert "# Aelfrice store snapshot" in out["text"]
+    assert "Locked: 2" in out["text"]
+
+
+def test_health_markdown_renders_regime(store: MemoryStore) -> None:
+    out = tool_health(store, response_format="markdown")
+    assert out["kind"] == "health.report.markdown"
+    assert "# Store regime:" in out["text"]
+
+
+def test_unknown_response_format_falls_through_to_json(store: MemoryStore) -> None:
+    """Defensive: an unrecognized response_format string returns JSON, not
+    a crash. The wrapper-layer Pydantic Field constraint blocks unknown
+    values, but the pure handler should be permissive (no exception)."""
+    _put_belief(store, content="anchor")
+    out = tool_search(store, query="anchor", response_format="xml")
+    assert out["kind"] == "search.results"  # JSON path, not markdown
+
+
 # --- demote ------------------------------------------------------------
 
 

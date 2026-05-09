@@ -112,6 +112,109 @@ def _open_default_store() -> MemoryStore:
     return MemoryStore(str(p))
 
 
+# --- Response formatting ------------------------------------------------
+#
+# Read-only tools accept `response_format = "json" | "markdown"`. JSON
+# (default) returns the structured dict the LLM can read natively.
+# Markdown returns a wrapped dict {kind: "<orig>.markdown", format,
+# text} where `text` is a human-readable rendering — useful when the
+# host surface displays raw tool output to the user without LLM
+# rephrasing.
+
+_RESPONSE_FORMAT_JSON: Final[str] = "json"
+_RESPONSE_FORMAT_MARKDOWN: Final[str] = "markdown"
+_RESPONSE_FORMATS: Final[frozenset[str]] = frozenset(
+    {_RESPONSE_FORMAT_JSON, _RESPONSE_FORMAT_MARKDOWN}
+)
+
+
+def _wrap_markdown(json_payload: dict[str, Any], text: str) -> dict[str, Any]:
+    """Wrap a markdown rendering with the JSON payload's metadata.
+
+    Always emits a stable shape so callers can branch on format:
+      {"kind": "<orig>.markdown", "format": "markdown", "text": str}
+    """
+    orig_kind = json_payload.get("kind", "unknown")
+    return {
+        "kind": f"{orig_kind}.markdown",
+        "format": "markdown",
+        "text": text,
+    }
+
+
+def _render_search_markdown(payload: dict[str, Any]) -> str:
+    hits = payload.get("hits", [])
+    if not hits:
+        return f"# Search results\n\nNo hits ({payload.get('n_hits', 0)})."
+    lines = [f"# Search results — {payload['n_hits']} hits", ""]
+    for h in hits:
+        lines.append(f"## {h['id']} ({h.get('lock_level', 'L?')}, {h.get('type', '?')})")
+        lines.append(h.get("content", "").strip() or "(empty content)")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_locked_markdown(payload: dict[str, Any]) -> str:
+    locked = payload.get("locked", [])
+    total = payload.get("total", payload.get("n", 0))
+    n = payload.get("n", 0)
+    offset = payload.get("offset", 0)
+    has_more = payload.get("has_more", False)
+    header = (
+        f"# Locked beliefs — page {offset // max(n, 1) + 1 if n else 1}, "
+        f"{n} of {total} shown"
+    )
+    if not locked:
+        return f"{header}\n\nNo locks found at offset {offset}.\n"
+    lines = [header, ""]
+    for b in locked:
+        pressure = b.get("demotion_pressure", 0)
+        suffix = f" (pressure={pressure})" if pressure > 0 else ""
+        lines.append(f"- **{b['id']}**{suffix}: {b.get('content', '').strip()}")
+    if has_more:
+        lines.append("")
+        lines.append(
+            f"…more available; pass `offset={payload.get('next_offset')}` to continue."
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_stats_markdown(payload: dict[str, Any]) -> str:
+    return (
+        "# Aelfrice store snapshot\n\n"
+        f"- Beliefs: {payload.get('beliefs', 0)}\n"
+        f"- Threads: {payload.get('threads', payload.get('edges', 0))}\n"
+        f"- Locked: {payload.get('locked', 0)}\n"
+        f"- Feedback events: {payload.get('feedback_events', 0)}\n"
+        f"- Onboard sessions (total): "
+        f"{payload.get('onboard_sessions_total', 0)}\n"
+    )
+
+
+def _render_health_markdown(payload: dict[str, Any]) -> str:
+    regime = payload.get("regime", "unknown")
+    desc = payload.get("description", "")
+    lines = [f"# Store regime: **{regime}**", "", desc, ""]
+    if "features" in payload:
+        f = payload["features"]
+        lines.extend([
+            "## Features",
+            f"- n_beliefs: {f.get('n_beliefs', 0)}",
+            f"- confidence_mean: {f.get('confidence_mean', 0):.3f}",
+            f"- confidence_median: {f.get('confidence_median', 0):.3f}",
+            f"- mass_mean: {f.get('mass_mean', 0):.3f}",
+            f"- lock_per_1000: {f.get('lock_per_1000', 0):.2f}",
+            f"- thread_per_belief: "
+            f"{f.get('thread_per_belief', f.get('edge_per_belief', 0)):.3f}",
+        ])
+    if "classification_confidence" in payload:
+        lines.append(
+            f"\n_Classifier confidence: "
+            f"{payload['classification_confidence']:.3f}_"
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
 # --- Pure tool handlers (test target) ----------------------------------
 #
 # Each `tool_*` is a pure function over (store, args) -> dict. Tests
@@ -209,10 +312,14 @@ def tool_onboard_sync(store: MemoryStore, *, path: str) -> dict[str, Any]:
 
 
 def tool_search(
-    store: MemoryStore, *, query: str, budget: int = DEFAULT_TOKEN_BUDGET,
+    store: MemoryStore,
+    *,
+    query: str,
+    budget: int = DEFAULT_TOKEN_BUDGET,
+    response_format: str = _RESPONSE_FORMAT_JSON,
 ) -> dict[str, Any]:
     hits = retrieve(store, query, token_budget=budget)
-    return {
+    payload: dict[str, Any] = {
         "kind": "search.results",
         "n_hits": len(hits),
         "hits": [
@@ -225,6 +332,9 @@ def tool_search(
             for h in hits
         ],
     }
+    if response_format == _RESPONSE_FORMAT_MARKDOWN:
+        return _wrap_markdown(payload, _render_search_markdown(payload))
+    return payload
 
 
 def tool_lock(
@@ -307,6 +417,7 @@ def tool_locked(
     pressured: bool = False,
     limit: int = _LOCKED_DEFAULT_LIMIT,
     offset: int = 0,
+    response_format: str = _RESPONSE_FORMAT_JSON,
 ) -> dict[str, Any]:
     """List user-locked beliefs with stable cursor pagination.
 
@@ -319,14 +430,12 @@ def tool_locked(
     if pressured:
         locked = [b for b in locked if b.demotion_pressure > 0]
     total = len(locked)
-    # Clamp pagination args defensively — pure handler is callable
-    # outside the wrapper layer where Pydantic constraints aren't enforced.
     safe_offset = max(0, offset)
     safe_limit = max(1, min(limit, _LOCKED_MAX_LIMIT))
     page = locked[safe_offset : safe_offset + safe_limit]
     next_offset = safe_offset + len(page)
     has_more = next_offset < total
-    return {
+    payload: dict[str, Any] = {
         "kind": "locked.list",
         "n": len(page),
         "total": total,
@@ -343,6 +452,9 @@ def tool_locked(
             for b in page
         ],
     }
+    if response_format == _RESPONSE_FORMAT_MARKDOWN:
+        return _wrap_markdown(payload, _render_locked_markdown(payload))
+    return payload
 
 
 def tool_demote(store: MemoryStore, *, belief_id: str) -> dict[str, Any]:
@@ -553,9 +665,13 @@ def tool_confirm(
     return payload
 
 
-def tool_stats(store: MemoryStore) -> dict[str, Any]:
+def tool_stats(
+    store: MemoryStore,
+    *,
+    response_format: str = _RESPONSE_FORMAT_JSON,
+) -> dict[str, Any]:
     n_edges = store.count_edges()
-    return {
+    payload: dict[str, Any] = {
         "kind": "stats.snapshot",
         "beliefs": store.count_beliefs(),
         # `edges` is the v1.0 key. v1.1.0 adds `threads` as the
@@ -567,9 +683,16 @@ def tool_stats(store: MemoryStore) -> dict[str, Any]:
         "feedback_events": store.count_feedback_events(),
         "onboard_sessions_total": store.count_onboard_sessions(),
     }
+    if response_format == _RESPONSE_FORMAT_MARKDOWN:
+        return _wrap_markdown(payload, _render_stats_markdown(payload))
+    return payload
 
 
-def tool_health(store: MemoryStore) -> dict[str, Any]:
+def tool_health(
+    store: MemoryStore,
+    *,
+    response_format: str = _RESPONSE_FORMAT_JSON,
+) -> dict[str, Any]:
     report = assess_health(store)
     payload: dict[str, Any] = {
         "kind": "health.report",
@@ -589,6 +712,8 @@ def tool_health(store: MemoryStore) -> dict[str, Any]:
             "edge_per_belief": report.features.edge_per_belief,
             "thread_per_belief": report.features.edge_per_belief,
         }
+    if response_format == _RESPONSE_FORMAT_MARKDOWN:
+        return _wrap_markdown(payload, _render_health_markdown(payload))
     return payload
 
 
@@ -643,6 +768,17 @@ def serve() -> None:
                 "non-canonical source is appropriate."
             ),
             max_length=128,
+        ),
+    ]
+    _ResponseFormat = Annotated[
+        str,
+        Field(
+            description=(
+                "'json' (default) returns the structured payload the "
+                "LLM reads natively. 'markdown' returns a wrapped dict "
+                "{kind, format, text} suitable for direct human display."
+            ),
+            pattern=r"^(json|markdown)$",
         ),
     ]
 
@@ -761,6 +897,7 @@ def serve() -> None:
                 le=100_000,
             ),
         ] = DEFAULT_TOKEN_BUDGET,
+        response_format: _ResponseFormat = _RESPONSE_FORMAT_JSON,
     ) -> dict[str, Any]:
         """Retrieve beliefs matching a free-text query, ranked by BM25.
 
@@ -781,7 +918,12 @@ def serve() -> None:
         """
         store = _open_default_store()
         try:
-            return tool_search(store, query=query, budget=budget)
+            return tool_search(
+                store,
+                query=query,
+                budget=budget,
+                response_format=response_format,
+            )
         finally:
             store.close()
 
@@ -870,6 +1012,7 @@ def serve() -> None:
                 ge=0,
             ),
         ] = 0,
+        response_format: _ResponseFormat = _RESPONSE_FORMAT_JSON,
     ) -> dict[str, Any]:
         """List user-locked (L0) beliefs with cursor pagination.
 
@@ -898,7 +1041,11 @@ def serve() -> None:
         store = _open_default_store()
         try:
             return tool_locked(
-                store, pressured=pressured, limit=limit, offset=offset,
+                store,
+                pressured=pressured,
+                limit=limit,
+                offset=offset,
+                response_format=response_format,
             )
         finally:
             store.close()
@@ -1151,7 +1298,9 @@ def serve() -> None:
             "openWorldHint": False,
         },
     )
-    def aelf_stats() -> dict[str, Any]:
+    def aelf_stats(
+        response_format: _ResponseFormat = _RESPONSE_FORMAT_JSON,
+    ) -> dict[str, Any]:
         """Return summary counts for the local belief store.
 
         Cheap snapshot — no graph walk, no scoring. Use to verify the
@@ -1168,7 +1317,7 @@ def serve() -> None:
         """
         store = _open_default_store()
         try:
-            return tool_stats(store)
+            return tool_stats(store, response_format=response_format)
         finally:
             store.close()
 
@@ -1181,7 +1330,9 @@ def serve() -> None:
             "openWorldHint": False,
         },
     )
-    def aelf_health() -> dict[str, Any]:
+    def aelf_health(
+        response_format: _ResponseFormat = _RESPONSE_FORMAT_JSON,
+    ) -> dict[str, Any]:
         """Classify the store's current operating regime + describe it.
 
         Runs the regime classifier over a small feature set (corpus size,
@@ -1201,7 +1352,7 @@ def serve() -> None:
         """
         store = _open_default_store()
         try:
-            return tool_health(store)
+            return tool_health(store, response_format=response_format)
         finally:
             store.close()
 
