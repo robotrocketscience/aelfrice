@@ -31,11 +31,12 @@ EXPECTED_COMMANDS = (
     "status",
     "doctor",
     "setup",
-    # Renamed from `upgrade` -> `upgrade-cmd` at #427 to read advisory.
-    # The bare `upgrade` form lives on as a deprecated CLI subparser
-    # alias (see HIDDEN_SUBCOMMANDS) for one minor; the slash command
-    # ships only under the new name.
-    "upgrade-cmd",
+    # Slash command name is `upgrade` (imperative — does the upgrade
+    # via Bash orchestration). The CLI verb stays `upgrade-cmd`
+    # (advisory: prints the install-aware command line); see
+    # HIDDEN_SUBCOMMANDS. The slash file invokes `aelf upgrade-cmd
+    # --check`, then runs the printed command, then `aelf setup`.
+    "upgrade",
     "uninstall",
     "rebuild",
     "tail",
@@ -98,8 +99,23 @@ def test_slash_command_has_description(cmd: str) -> None:
     assert len(m.group(1).strip()) >= 20, f"{cmd}.md description too short"
 
 
+# Slash files that invoke a *different* CLI verb than their name (or
+# orchestrate multiple CLI calls) are exempt from the strict
+# slash-name == cli-verb check. Each entry must justify why.
+_INVOKE_EXEMPT: dict[str, str] = {
+    # Imperative orchestrator: calls `aelf upgrade-cmd --check`, runs
+    # the printed install-aware upgrade command via Bash (separate
+    # process, no mid-process replacement), then `aelf setup` to
+    # refresh slash-command bundle, then `aelf upgrade-cmd` to clear
+    # the stale update-banner cache. No single `uv run aelf upgrade`.
+    "upgrade": "imperative orchestrator over upgrade-cmd + setup",
+}
+
+
 @pytest.mark.parametrize("cmd", EXPECTED_COMMANDS)
 def test_slash_command_invokes_matching_cli(cmd: str) -> None:
+    if cmd in _INVOKE_EXEMPT:
+        pytest.skip(f"{cmd} is exempt: {_INVOKE_EXEMPT[cmd]}")
     text = (_slash_dir() / f"{cmd}.md").read_text()
     assert f"uv run aelf {cmd}" in text, (
         f"{cmd}.md does not invoke `uv run aelf {cmd}`"
@@ -125,10 +141,10 @@ HIDDEN_SUBCOMMANDS = frozenset({
     # slash command shape (`/aelf:gate-list` vs `/aelf:gate`) is a
     # separate ship.
     "gate",
-    # #427 deprecated alias — kept callable for one minor so existing
-    # `aelf upgrade` invocations don't break. The slash file ships
-    # only under the canonical `upgrade-cmd` name.
-    "upgrade",
+    # `upgrade-cmd` is the advisory CLI verb (prints the
+    # install-aware upgrade command). The imperative slash command
+    # `/aelf:upgrade` calls it. CLI verb has no slash file of its own.
+    "upgrade-cmd",
 })
 
 

@@ -23,7 +23,7 @@ Slash files are not shipped for hidden CLI subcommands (`bench`, `feedback`, `he
 | `/aelf:doctor` | optional `[hooks\|graph]`, `--user-settings`, `--project-root` |
 | `/aelf:tail` | optional `--filter`, `--since`, `--no-follow` — live-tail the hook injection audit log |
 | `/aelf:setup` | optional `--scope`, `--command`, `--transcript-ingest`, etc. |
-| `/aelf:upgrade-cmd` | (none) — print install-method-aware upgrade command (renamed from `/aelf:upgrade` at #427 to read advisory) |
+| `/aelf:upgrade` | (none) — imperative upgrade. Detects install context, runs `uv tool upgrade aelfrice` (or pipx/pip equivalent) in Bash (separate process, no mid-process interpreter replacement), then `aelf setup` to refresh the slash-command bundle, then clears the stale update-banner cache. The advisory `aelf upgrade-cmd` CLI verb still exists for scripted use. |
 | `/aelf:uninstall` | one of `--keep-db`, `--archive`, `--purge` |
 | `/aelf:rebuild` | optional `--n N`, `--budget T`, `--transcript PATH` — manually fire the context rebuilder; v1.4.0+ |
 | `/aelf:reason` | keyword query — walks the belief graph from BM25-seeded starting points; v2.0+ (#389) |
