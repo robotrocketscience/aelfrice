@@ -18,11 +18,15 @@ Parallel to the textual lane (BM25F + heat kernel), not a competitor.
 A query parser (:func:`parse_structural_marker`) routes structural
 queries to this lane and falls through to the textual lane otherwise.
 
-Default-OFF at v1.7.0 behind ``use_hrr_structural`` per the #154
-composition tracker. Wired into :func:`aelfrice.retrieval.retrieve_v2`
-as a parallel routing branch that fires before vocab-bridge rewrite —
-on a structural-marker hit the textual lane is bypassed entirely;
-on miss the call falls through to BM25F + heat kernel as before.
+Default-ON behind ``use_hrr_structural`` per the #154 composition
+tracker, which flipped the default after the #437 reproducibility-
+harness gate cleared at 11/11. Wired into
+:func:`aelfrice.retrieval.retrieve_v2` as a parallel routing branch
+that fires before vocab-bridge rewrite — on a structural-marker hit
+the textual lane is bypassed entirely; on miss the call falls through
+to BM25F + heat kernel as before. Opt out via env var
+``AELFRICE_HRR_STRUCTURAL=0``, the kwarg, or
+``[retrieval] use_hrr_structural = false`` in ``.aelfrice.toml``.
 
 Long-running callers should pass an explicit
 :class:`HRRStructIndexCache` to amortise the build cost across

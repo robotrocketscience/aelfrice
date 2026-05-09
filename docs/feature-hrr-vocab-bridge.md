@@ -159,7 +159,7 @@ Composability: both can be on simultaneously. The bench-gate (below) verifies th
 
 ### vs. #152 — HRR structural-query lane
 
-`HRRStructIndex` (shipped v1.7.0, default-OFF behind `use_hrr_structural`) routes structural-marker queries (e.g. `"CONTRADICTS:b/abc"`) to a probe over the per-belief edge-structure index. It answers structural questions ("what beliefs contradict X?"). The vocabulary bridge sits one layer earlier — it does not route to a lane; it widens the query before any lane sees it. Both share the `aelfrice.hrr` algebra and the `dim=2048` default; they are cousins, not alternatives.
+`HRRStructIndex` (shipped v1.7.0, default-ON behind `use_hrr_structural` after the #154 default flipped on the #437 11/11 gate) routes structural-marker queries (e.g. `"CONTRADICTS:b/abc"`) to a probe over the per-belief edge-structure index. It answers structural questions ("what beliefs contradict X?"). The vocabulary bridge sits one layer earlier — it does not route to a lane; it widens the query before any lane sees it. Both share the `aelfrice.hrr` algebra and the `dim=2048` default; they are cousins, not alternatives.
 
 ---
 

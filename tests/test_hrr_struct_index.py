@@ -223,10 +223,27 @@ def test_probe_unknown_kind_or_target_returns_empty() -> None:
     assert idx.probe("CONTRADICTS", "does_not_exist") == []
 
 
-def test_use_hrr_structural_default_off() -> None:
+def test_use_hrr_structural_default_on() -> None:
+    """Per #154 the default flipped to ON after the #437 11/11 gate
+    cleared. No env, no kwarg, no toml → True."""
     from aelfrice.retrieval import is_hrr_structural_enabled
 
-    assert is_hrr_structural_enabled() is False
+    assert is_hrr_structural_enabled() is True
+
+
+def test_use_hrr_structural_opt_out_paths_intact(tmp_path: Path) -> None:
+    """The opt-out surface (env var, kwarg, TOML key) remains
+    reachable for users who want the pre-flip ranking. Replaces the
+    v1.7-era default-off check."""
+    from aelfrice.retrieval import is_hrr_structural_enabled
+
+    # Explicit kwarg
+    assert is_hrr_structural_enabled(False) is False
+
+    # TOML key
+    cfg = tmp_path / ".aelfrice.toml"
+    cfg.write_text("[retrieval]\nuse_hrr_structural = false\n")
+    assert is_hrr_structural_enabled(start=tmp_path) is False
 
 
 def test_probe_top_k_clamps_to_corpus_size() -> None:

@@ -72,11 +72,12 @@ use_bm25f_anchors = true
 # overrides.
 use_heat_kernel = false
 
-# v1.7+. Default `false`, opt-in. Enables the HRR structural-query
-# lane (#152). Lane is implemented but stays opt-in until the
-# composition tracker (#154) flips the default after the
-# benchmark gate. AELFRICE_HRR_STRUCTURAL=1 env var overrides.
-use_hrr_structural = false
+# Default `true` since the #154 composition tracker flipped the
+# default after the #437 reproducibility-harness gate cleared at
+# 11/11. Enables the HRR structural-query lane (#152). Set to
+# `false` for parity with the pre-flip ranking.
+# AELFRICE_HRR_STRUCTURAL=0 env var overrides.
+use_hrr_structural = true
 
 # v2.1+. Default `false`, opt-in. Enables type-aware compression
 # (#434) — populates RetrievalResult.compressed_beliefs with per-
@@ -298,7 +299,7 @@ Precedence (first decisive wins): env var `AELFRICE_HEAT_KERNEL=0`/`1` > explici
 
 ### `use_hrr_structural`
 
-Boolean, default `false`, opt-in. Enables the HRR structural-query lane (#152). Wired into `retrieve_v2` as a parallel routing branch (per spec: not blended with the textual lane). When on, `retrieve_v2` parses the query for a structural marker before any other rewrite or lane fans out:
+Boolean, default `true` since the #154 composition tracker flipped the default after the #437 reproducibility-harness gate cleared at 11/11. Enables the HRR structural-query lane (#152). Wired into `retrieve_v2` as a parallel routing branch (per spec: not blended with the textual lane). When on, `retrieve_v2` parses the query for a structural marker before any other rewrite or lane fans out:
 
 ```
 query string -> parse_structural_marker
@@ -322,7 +323,7 @@ On structural lane hit, locked beliefs (when `include_locked=True`) pin to the h
 
 Long-running consumers should pass an explicit `hrr_struct_index_cache: HRRStructIndexCache | None` to amortise the per-belief HRR encode cost across queries. None falls through to a fresh build per call. The cache subscribes to the store's invalidation registry so any belief / edge mutation drops the index transparently.
 
-Precedence (first decisive wins): env var `AELFRICE_HRR_STRUCTURAL=0`/`1` > explicit Python kwarg `use_hrr_structural=<bool>` > TOML `[retrieval] use_hrr_structural` > default `false`. The default-on flip is gated on the #154 composition-tracker bench (currently 7/11 per #474).
+Precedence (first decisive wins): env var `AELFRICE_HRR_STRUCTURAL=0`/`1` > explicit Python kwarg `use_hrr_structural=<bool>` > TOML `[retrieval] use_hrr_structural` > default `true`. The flip landed when the #437 reproducibility-harness reached 11/11 (see #154). Set the flag to `false` for parity with the v2.0.x ranking.
 
 ### `use_type_aware_compression`
 
