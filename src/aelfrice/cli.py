@@ -4385,8 +4385,8 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--session-start", dest="session_start",
         action=argparse.BooleanOptionalAction, default=True,
         help=(
-            "wire the SessionStart hook so each new Claude Code "
-            "session opens with L0 locked beliefs already injected. "
+            "wire the SessionStart hook so each new host session "
+            "opens with L0 locked beliefs already injected. "
             "Coexists with the UserPromptSubmit and transcript-ingest hooks. "
             "Default: ON. Pass --no-session-start to skip."
         ),

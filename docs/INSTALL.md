@@ -136,20 +136,39 @@ Auto-detects the JSONL format on a per-line basis (handles both aelfrice's trans
 
 ---
 
-## Optional hooks (v1.2+)
+## Hooks installed by `aelf setup`
 
-`aelf setup` wires only the `UserPromptSubmit` hook by default. The rest are opt-in:
+Bare `aelf setup` wires the v1.2.0 auto-capture pipeline alongside the read-side `UserPromptSubmit` retrieval hook:
+
+| Hook | Event(s) | Default | What it does |
+|---|---|---|---|
+| UserPromptSubmit retrieval | `UserPromptSubmit` | always | injects matched beliefs as `<aelfrice-memory>` block |
+| transcript-ingest | `UserPromptSubmit` + `Stop` + `PreCompact` + `PostCompact` | **on** | logs every turn to a per-project JSONL; PreCompact rotates the file and ingests it into beliefs/edges |
+| commit-ingest | `PostToolUse:Bash` | **on** | each successful `git commit` runs the triple extractor on the message |
+| session-start | `SessionStart` | **on** | new sessions open with L0 locked beliefs already injected |
+| rebuilder | `PreCompact` | off | retrieval-curated context rebuilder (augment-mode, v1.4 alpha) |
+| search-tool | `PreToolUse:Grep` / `Glob` | off | belief-store check before the agent's own search tool fires |
+
+Opt out per-hook:
 
 ```bash
-aelf setup --transcript-ingest      # turn-by-turn capture; PreCompact rotates and re-ingests
-aelf setup --commit-ingest          # PostToolUse:Bash hook ingests commit messages
-aelf setup --session-start          # SessionStart hook injects locked beliefs at session boot
-aelf setup --rebuilder              # PreCompact context rebuilder (alpha)
+aelf setup --no-transcript-ingest      # skip the four transcript-logger hooks
+aelf setup --no-commit-ingest          # skip the commit-message ingest hook
+aelf setup --no-session-start          # skip the SessionStart locked-belief injection
 ```
 
-Each is independently uninstallable: `aelf unsetup --transcript-ingest`, etc.
+Opt in to the off-by-default hooks:
+
+```bash
+aelf setup --rebuilder                 # PreCompact context rebuilder (alpha)
+aelf setup --search-tool               # PreToolUse:Grep|Glob memory-first search
+```
+
+`aelf unsetup` mirrors: bare invocation removes every default-on hook. `--no-*` flags suppress per-hook removal.
 
 All hooks are non-blocking. Every failure path returns exit 0 — a hook problem must never break a prompt or a commit.
+
+> **Privacy note.** Default-on transcript-ingest means every turn you type lands in the per-project SQLite DB on `PreCompact` rotation. The DB is local-only (no network, no telemetry — see § "Your data stays yours" in the README) but the JSONL has no PII scrubber. If you paste secrets, customer data, or anything you don't want indexed in chat, opt out with `--no-transcript-ingest` and use `aelf lock` / `aelf onboard` for explicit ingestion only.
 
 ---
 
