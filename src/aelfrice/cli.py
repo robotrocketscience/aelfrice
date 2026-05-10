@@ -1741,7 +1741,7 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
             f"(command={command!r})",
             file=out,  # type: ignore[arg-type]
         )
-    if getattr(args, "transcript_ingest", False):
+    if getattr(args, "transcript_ingest", True):
         ti_command = resolve_transcript_logger_command(scope)
         ti_result = install_transcript_ingest_hooks(
             path, command=ti_command, timeout=args.timeout,
@@ -1759,7 +1759,7 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 f"({', '.join(ti_result.already)}) in {ti_result.path}",
                 file=out,  # type: ignore[arg-type]
             )
-    if getattr(args, "session_start", False):
+    if getattr(args, "session_start", True):
         ss_command = resolve_session_start_hook_command(scope)
         ss_result = install_session_start_hook(
             path, command=ss_command, timeout=args.timeout,
@@ -1821,7 +1821,7 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 f"(command={pc_command!r})",
                 file=out,  # type: ignore[arg-type]
             )
-    if getattr(args, "commit_ingest", False):
+    if getattr(args, "commit_ingest", True):
         ci_command = resolve_commit_ingest_command(scope)
         ci_result = install_commit_ingest_hook(
             path, command=ci_command, timeout=args.timeout,
@@ -2000,7 +2000,7 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
             f"({match_label})",
             file=out,  # type: ignore[arg-type]
         )
-    if getattr(args, "session_start", False):
+    if getattr(args, "session_start", True):
         ss_result = uninstall_session_start_hook(
             path, command_basename=SESSION_START_HOOK_SCRIPT_NAME,
         )
@@ -2015,7 +2015,7 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
                 f"{'y' if ss_result.removed == 1 else 'ies'} from {ss_result.path}",
                 file=out,  # type: ignore[arg-type]
             )
-    if getattr(args, "transcript_ingest", False):
+    if getattr(args, "transcript_ingest", True):
         ti_result = uninstall_transcript_ingest_hooks(
             path, command_basename=TRANSCRIPT_LOGGER_SCRIPT_NAME,
         )
@@ -2057,7 +2057,7 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
             f"restored prior statusline command in {sl.path}",
             file=out,  # type: ignore[arg-type]
         )
-    if getattr(args, "commit_ingest", False):
+    if getattr(args, "commit_ingest", True):
         ci_result = uninstall_commit_ingest_hook(
             path, command_basename=COMMIT_INGEST_SCRIPT_NAME,
         )
@@ -4351,12 +4351,14 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="skip the auto-install of the update-notifier statusline snippet",
     )
     p_setup.add_argument(
-        "--transcript-ingest", dest="transcript_ingest", action="store_true",
+        "--transcript-ingest", dest="transcript_ingest",
+        action=argparse.BooleanOptionalAction, default=True,
         help=(
-            "additionally wire the four transcript-logger hooks "
+            "wire the four transcript-logger hooks "
             "(UserPromptSubmit, Stop, PreCompact, PostCompact) so live "
             "conversation turns are captured to the per-project transcripts "
-            "log and ingested at compaction boundaries."
+            "log and ingested at compaction boundaries. Default: ON. "
+            "Pass --no-transcript-ingest to skip."
         ),
     )
     p_setup.add_argument(
@@ -4369,20 +4371,24 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_setup.add_argument(
-        "--commit-ingest", dest="commit_ingest", action="store_true",
+        "--commit-ingest", dest="commit_ingest",
+        action=argparse.BooleanOptionalAction, default=True,
         help=(
-            "additionally wire the PostToolUse:Bash hook so each "
+            "wire the PostToolUse:Bash hook so each "
             "successful `git commit` runs the triple extractor on its "
             "commit message and persists the resulting beliefs and "
-            "edges under a session derived from git context."
+            "edges under a session derived from git context. Default: ON. "
+            "Pass --no-commit-ingest to skip."
         ),
     )
     p_setup.add_argument(
-        "--session-start", dest="session_start", action="store_true",
+        "--session-start", dest="session_start",
+        action=argparse.BooleanOptionalAction, default=True,
         help=(
-            "additionally wire the SessionStart hook so each new Claude Code "
+            "wire the SessionStart hook so each new Claude Code "
             "session opens with L0 locked beliefs already injected. "
-            "Coexists with the UserPromptSubmit and transcript-ingest hooks."
+            "Coexists with the UserPromptSubmit and transcript-ingest hooks. "
+            "Default: ON. Pass --no-session-start to skip."
         ),
     )
     p_setup.add_argument(
@@ -4518,10 +4524,12 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_unsetup.add_argument(
-        "--transcript-ingest", dest="transcript_ingest", action="store_true",
+        "--transcript-ingest", dest="transcript_ingest",
+        action=argparse.BooleanOptionalAction, default=True,
         help=(
-            "also remove the four transcript-logger entries "
-            "(UserPromptSubmit, Stop, PreCompact, PostCompact)."
+            "remove the four transcript-logger entries "
+            "(UserPromptSubmit, Stop, PreCompact, PostCompact). "
+            "Default: ON. Pass --no-transcript-ingest to leave them in place."
         ),
     )
     p_unsetup.add_argument(
@@ -4529,12 +4537,20 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="also remove the rebuilder PreCompact hook entry.",
     )
     p_unsetup.add_argument(
-        "--commit-ingest", dest="commit_ingest", action="store_true",
-        help="also remove the PostToolUse:Bash commit-ingest entry.",
+        "--commit-ingest", dest="commit_ingest",
+        action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "remove the PostToolUse:Bash commit-ingest entry. "
+            "Default: ON. Pass --no-commit-ingest to leave it in place."
+        ),
     )
     p_unsetup.add_argument(
-        "--session-start", dest="session_start", action="store_true",
-        help="also remove the SessionStart hook entry.",
+        "--session-start", dest="session_start",
+        action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "remove the SessionStart hook entry. Default: ON. "
+            "Pass --no-session-start to leave it in place."
+        ),
     )
     p_unsetup.add_argument(
         "--search-tool", dest="search_tool", action="store_true",
