@@ -153,7 +153,13 @@ def test_compressed_beliefs_populated_when_flag_on(
     _no_env_override: None, _isolated_cwd: Path
 ) -> None:
     s = _populate_store()
-    result = retrieve_v2(s, "sqlite system", use_type_aware_compression=True)
+    # use_intentional_clustering=False explicit: post-#436 default-flip,
+    # the clustering flag is default-on and would mutex with compression.
+    result = retrieve_v2(
+        s, "sqlite system",
+        use_type_aware_compression=True,
+        use_intentional_clustering=False,
+    )
     assert len(result.compressed_beliefs) == len(result.beliefs)
     # Same order, same belief ids.
     for b, cb in zip(result.beliefs, result.compressed_beliefs, strict=True):
@@ -164,7 +170,11 @@ def test_compression_strategy_dispatches_by_retention_class(
     _no_env_override: None, _isolated_cwd: Path
 ) -> None:
     s = _populate_store()
-    result = retrieve_v2(s, "sqlite system", use_type_aware_compression=True)
+    result = retrieve_v2(
+        s, "sqlite system",
+        use_type_aware_compression=True,
+        use_intentional_clustering=False,
+    )
     by_id = {cb.belief.id: cb for cb in result.compressed_beliefs}
     assert by_id["F1"].strategy == STRATEGY_VERBATIM
     assert by_id["S1"].strategy == STRATEGY_HEADLINE
@@ -177,6 +187,13 @@ def test_env_var_alone_enables_compression(
     monkeypatch: pytest.MonkeyPatch, _isolated_cwd: Path
 ) -> None:
     monkeypatch.setenv(ENV_TYPE_AWARE_COMPRESSION, "1")
+    # Post-#436 default-flip, AELFRICE_INTENTIONAL_CLUSTERING must also
+    # be disabled in this scope to satisfy the v2.0.0 mutex (the cluster
+    # pack accounts in raw tokens; composing it with compressed cost is
+    # tracked as a v2.x follow-up). The test still meaningfully exercises
+    # "env var alone enables compression" — it just makes the clustering
+    # env-disable explicit instead of relying on the (now-flipped) default.
+    monkeypatch.setenv("AELFRICE_INTENTIONAL_CLUSTERING", "0")
     s = _populate_store()
     result = retrieve_v2(s, "sqlite system")  # no explicit kwarg
     assert len(result.compressed_beliefs) == len(result.beliefs)
@@ -228,6 +245,7 @@ def test_pack_widens_when_flag_on(
         budget=80,
         use_entity_index=False,
         use_type_aware_compression=True,
+        use_intentional_clustering=False,
     )
     assert len(on.beliefs) > len(off.beliefs)
 
@@ -278,6 +296,7 @@ def test_pack_locked_unchanged_when_flag_on(
         s, "sqlite",
         use_entity_index=False,
         use_type_aware_compression=True,
+        use_intentional_clustering=False,
     )
     assert [b.id for b in off.beliefs] == [b.id for b in on.beliefs]
     # Locked render is verbatim under compression.
