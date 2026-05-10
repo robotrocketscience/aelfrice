@@ -312,7 +312,6 @@ def _retrieve_context(store: MemoryStore, question: str, budget: int = 2000) -> 
         query=question,
         budget=budget,
         include_locked=False,  # No locked beliefs in benchmark DB
-        use_hrr=True,
         use_bfs=True,
     )
     parts: list[str] = [b.content for b in result.beliefs]

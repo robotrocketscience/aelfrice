@@ -365,7 +365,6 @@ def query_aelfrice(
         query=query_text,
         budget=budget,
         include_locked=False,
-        use_hrr=True,
         use_bfs=True,
     )
     parts: list[str] = [b.content for b in result.beliefs]

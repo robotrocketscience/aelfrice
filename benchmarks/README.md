@@ -50,8 +50,9 @@ this version. This is the expected, documented behavior:
 
 - Public `retrieve()` is L0 (locked) + L1 (FTS5 BM25). No HRR
   vocabulary bridge, no BFS multi-hop chaining.
-- Adapters call `retrieve_v2(use_hrr=True, use_bfs=True)`; both
-  flags are accepted but no-op at v1.0.x.
+- Adapters call `retrieve_v2(use_bfs=True)`. The structural HRR
+  lane is on by default since v2.1; the legacy `use_hrr` alias was
+  removed in #536 and now raises `TypeError` if passed.
 - The LongMemEval paper itself reports BM25 session-level
   Recall@5 = 0.634 — the BM25-only failure mode is precedented.
 

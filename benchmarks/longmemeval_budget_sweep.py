@@ -90,7 +90,6 @@ def main() -> None:
                     budget=budget,
                     top_k=top_k,
                     include_locked=False,
-                    use_hrr=True,
                     use_bfs=True,
                 )
                 context: str = " ".join(b.content for b in result.beliefs)

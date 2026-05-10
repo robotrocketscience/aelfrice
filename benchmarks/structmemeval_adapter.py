@@ -269,7 +269,6 @@ def query_aelfrice(store: MemoryStore, question: str, budget: int = 2000) -> str
         query=question,
         budget=budget,
         include_locked=False,
-        use_hrr=True,
         use_bfs=True,
         temporal_sort=True,
     )

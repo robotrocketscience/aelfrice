@@ -87,7 +87,6 @@ def query_aelfrice_with_tiers(
         query=question,
         budget=budget,
         include_locked=False,
-        use_hrr=True,
         use_bfs=True,
         use_entity_index=True,
     )
