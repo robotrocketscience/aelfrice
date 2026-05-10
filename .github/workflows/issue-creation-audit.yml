@@ -1,0 +1,88 @@
+name: issue-creation-audit
+
+# #569 — flag new issues whose proposed surface already exists on main.
+# Closes the duplicate-issue gap that surfaced in #521 (VocabBridge filed
+# for substrate already shipped under #433). Posts a single audit comment
+# when ≥1 hit found; quiet on a clean body. Idempotent on edits via a
+# hash-stamped marker, and silenced on `audit-ack` reply.
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: issue-creation-audit-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          ref: main
+      - name: Run audit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/audit
+          # Body via env var (script-injection-safe).
+          printf '%s' "$ISSUE_BODY" > /tmp/audit/body.md
+
+          # Idempotency 1 — author replied `audit-ack`. Match comment bodies
+          # whose trimmed body equals `audit-ack` (case-insensitive); avoids
+          # false matches on bodies that mention "audit-ack" mid-paragraph.
+          if gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" \
+                --paginate --jq '.[].body' \
+              | awk 'BEGIN{IGNORECASE=1} {gsub(/^[ \t]+|[ \t\r]+$/, ""); if (tolower($0)=="audit-ack") {found=1; exit}} END{exit !found}'; then
+            echo "audit-ack reply detected; skipping."
+            exit 0
+          fi
+
+          # Run extractor against `origin/main`.
+          python3 scripts/issue_creation_audit.py \
+              --body-file /tmp/audit/body.md \
+              --main-ref origin/main \
+              > /tmp/audit/comment.md
+          if [ ! -s /tmp/audit/comment.md ]; then
+            echo "No hits."
+            exit 0
+          fi
+
+          # Hash from the new comment's marker line.
+          new_hash="$(grep -oE 'hits:[0-9a-f]{12}' /tmp/audit/comment.md | head -1 || true)"
+
+          # Idempotency 2 — find any prior audit comment by marker prefix.
+          existing="$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" \
+              --paginate --jq '[.[] | select(.body | startswith("<!-- aelf-audit-v1"))] | .[0]')"
+
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            existing_id="$(echo "$existing" | jq -r '.id')"
+            existing_hash="$(echo "$existing" | jq -r '.body' | grep -oE 'hits:[0-9a-f]{12}' | head -1 || true)"
+            if [ "$existing_hash" = "$new_hash" ]; then
+              echo "Marker comment with same hits already present (id=$existing_id); skipping."
+              exit 0
+            fi
+            # Hits changed — edit in place to keep one audit comment per issue.
+            jq -Rs '{body: .}' < /tmp/audit/comment.md > /tmp/audit/payload.json
+            gh api -X PATCH "repos/${REPO}/issues/comments/${existing_id}" --input /tmp/audit/payload.json >/dev/null
+            echo "Updated existing audit comment (id=$existing_id) with new hits ($new_hash)."
+            exit 0
+          fi
+
+          # Fresh post.
+          gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body-file /tmp/audit/comment.md
+          echo "Posted audit comment with hits=$new_hash."
