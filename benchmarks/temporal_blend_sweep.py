@@ -190,7 +190,7 @@ def _query_with_half_life(
             query=question,
             budget=budget,
             include_locked=False,
-            use_hrr=True,
+            use_hrr_structural=True,
             use_bfs=True,
             temporal_sort=False,
         )
@@ -200,7 +200,7 @@ def _query_with_half_life(
             query=question,
             budget=budget,
             include_locked=False,
-            use_hrr=True,
+            use_hrr_structural=True,
             use_bfs=True,
             temporal_sort=True,
             temporal_half_life_seconds=half_life_seconds,
