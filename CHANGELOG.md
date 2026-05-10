@@ -10,6 +10,10 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+### Performance
+
+- **`hrr.DEFAULT_DIM` flips 2048 → 512** ([#538](https://github.com/robotrocketscience/aelfrice/issues/538)). Aligns the HRR default dimensionality with the lab campaign R4 verdict ("adopt dim=512 default; dim=2048 escape hatch") that produced the spec at `docs/hrr_structural_query_lane.md`. ~4× memory footprint reduction for the structural-query lane: ~200 MB at N=50k vs the prior ~800 MB. Capacity per Plate's bound stays well above realistic per-belief role multiplicity (~57 retrievable bound pairs at dim=512 vs ~5 typical outgoing edges per belief). Set `dim=2048` explicitly via the `HRRStructIndex(dim=...)` kwarg for high-multiplicity corpora.
+
 ### Changed
 
 - **`use_heat_kernel` and `use_hrr_structural` flip to default-on** ([#154](https://github.com/robotrocketscience/aelfrice/issues/154)). Both retrieval-lane flags shipped opt-in earlier (heat-kernel #150 in v1.6, HRR structural-query lane #152 in v1.7) pending the calibrated reproducibility-harness gate. That gate cleared at 11/11 via [PR #489](https://github.com/robotrocketscience/aelfrice/pull/489) closing #437, so the #154 composition tracker flips the defaults per its status banner. Precedence (env > kwarg > TOML > default) is unchanged; only the default values flip `False` → `True`. Reversible via `[retrieval] use_heat_kernel = false` / `use_hrr_structural = false` in `.aelfrice.toml` (or `AELFRICE_HEAT_KERNEL=0` / `AELFRICE_HRR_STRUCTURAL=0`) for parity with the v2.0.x ranking.
