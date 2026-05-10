@@ -22,19 +22,26 @@ Expected row schema (``tests/corpus/v2_0/vocab_bridge/*.jsonl``):
   {
     "id": "row-id",
     "query": "raw query string passed to retrieve",
+    "k": 10,                                      # optional, default 10
     "store_beliefs": [
         {"id": "b1", "content": "...", "anchors": ["text", "..."]},
         ...
     ],
-    "expected_canonicals": ["sqlite", "python", "..."]
+    "expected_canonicals": ["sqlite", "python", "..."],
+    "expected_top_k": ["b1", "b2", ...]           # optional; A2 ship gate
   }
 
 `store_beliefs[i].anchors` is optional; when present, each anchor
 string is added as an inbound edge from a synthetic citing belief
 to seed the bridge with anchor-source surface forms (#148 parity).
 `expected_canonicals` is the set of canonical-entity tokens that
-the bridge SHOULD append for this query; the test asserts at least
-one is present in the rewritten output.
+the bridge SHOULD append for this query; the precondition test
+asserts at least one is present in the rewritten output.
+`expected_top_k` is the ground-truth belief-id ranking; the strict
+A2 ship gate (``test_vocab_bridge_ship_gate_runner_present``) runs
+``retrieve_v2`` with the bridge OFF then ON and asserts NDCG@k goes
+strictly up. Rows without ``expected_top_k`` are skipped by the
+ship gate but still exercised by the precondition gate.
 """
 from __future__ import annotations
 
@@ -132,4 +139,41 @@ def test_bridge_appends_at_least_one_expected_canonical(
         f"vocab_bridge appended ≥1 expected canonical on only "
         f"{n_hits}/{n_rows} rows ({coverage:.1%}); harvest/rewrite "
         f"regression suspected (was the surface-form pipeline broken?)"
+    )
+
+
+@pytest.mark.bench_gated
+def test_vocab_bridge_ship_gate_runner_present(
+    aelfrice_corpus_root: Path,
+) -> None:
+    """The full A2 NDCG@k ship gate runs from
+    ``tests.retrieve_uplift_runner.run_vocab_bridge_uplift``. This test
+    skips when the runner is absent or when no row carries
+    ``expected_top_k`` — the runner is the operator-side gate for
+    flipping ``use_vocab_bridge`` to default-on (#433 Phase 2).
+    """
+    rows = load_corpus_module(aelfrice_corpus_root, "vocab_bridge")
+    assert rows, "vocab_bridge corpus produced zero rows"
+
+    runner_mod = pytest.importorskip(
+        "tests.retrieve_uplift_runner",
+        reason=(
+            "vocab_bridge uplift runner not yet wired "
+            "(operator gate; spec § A2 — pending lab-side corpus + scorer)"
+        ),
+    )
+
+    if not any(r.get("expected_top_k") for r in rows):
+        pytest.skip(
+            "vocab_bridge corpus has no rows with expected_top_k; "
+            "annotate at least one row before this gate can fire"
+        )
+
+    results = runner_mod.run_vocab_bridge_uplift(rows)
+    assert results.uplift > 0, (
+        "use_vocab_bridge must show strictly positive NDCG@k uplift\n"
+        f"  ON={results.mean_ndcg_on:.4f} "
+        f"OFF={results.mean_ndcg_off:.4f} "
+        f"uplift={results.uplift:+.4f} "
+        f"n_rows={results.n_rows}"
     )
