@@ -19,9 +19,17 @@ subprocess separate from the running `aelf` — no mid-process replacement.
 <process>
 Step 1 — detect install context and pick the upgrade command.
 
-Run `aelf upgrade-cmd --check` to ask aelfrice itself what command would
-upgrade the active install. Parse the printed `run: <command>` line; if
-no update is available, print the "up to date" line verbatim and stop.
+Run `aelf upgrade-cmd` (no flags) to ask aelfrice itself what command
+would upgrade the active install. Parse the printed `run: <command>`
+line; if no update is available, print the "up to date" line verbatim
+and stop.
+
+Use the no-flag form deliberately. The `--check` form short-circuited
+the `run:` line on aelfrice ≤2.0.1 (#522 lands the symmetry fix in
+≥2.0.2), so users who first hit `/aelf:upgrade` against a pre-fix CLI
+got no parseable upgrade command and the slash silently did nothing
+(#530). The no-flag form has emitted `run:` on every released CLI
+since the subcommand existed, so it is the cross-version safe form.
 
 Step 2 — execute the upgrade.
 

@@ -58,7 +58,7 @@ sequenceDiagram
     SlashHost->>Slash: load upgrade slash script
 
     Note over Slash: Step 1 — detect install context
-    Slash->>CLI: aelf upgrade-cmd --check
+    Slash->>CLI: aelf upgrade-cmd
     CLI-->>Slash: prints "run: <command>" or "up to date"
     Slash->>Slash: parse printed line
     Slash->>User: if up-to-date, print message and stop
