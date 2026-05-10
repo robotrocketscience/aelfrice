@@ -58,7 +58,7 @@ Tools register under the `aelf:` namespace.
 | Tool | Required | Optional | Returns |
 |---|---|---|---|
 | `aelf:onboard` | — | `path`, `session_id`, `classifications` | polymorphic — see below |
-| `aelf:search` | `query` | `budget` (default 2,000) | `{kind, n_hits, hits[]}` |
+| `aelf:search` | `query` | `budget` (default 2,400) | `{kind, n_hits, hits[]}` |
 | `aelf:lock` | `statement` | — | `{kind, id, action}` |
 | `aelf:locked` | — | `pressured` | `{kind, n, locked[]}` |
 | `aelf:demote` | `belief_id` | — | `{kind, id, demoted}` |
