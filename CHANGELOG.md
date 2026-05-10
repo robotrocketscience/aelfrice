@@ -10,6 +10,10 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+### Added
+
+- **PR-size soft-cap advisory workflow** ([#602](https://github.com/robotrocketscience/aelfrice/issues/602)). New `.github/workflows/pr-size-soft-cap.yml` posts (and updates) a sticky `<!-- pr-size-soft-cap-v1 -->` comment on PRs whose `additions + deletions > 200` or `changed_files > 3`, suggesting a split. Quiet on PRs under both thresholds; the comment is removed automatically if a previously-flagged PR is shrunk back below the line. Authors apply `size:override` to opt out (large refactors / module removals / generated code). Concurrency-1 per PR number; cancels in-progress runs on new pushes so comment edits don't race. First half of the merge-thrash mitigation in #602 — addresses the conflict-probability axis (smaller PRs collide with fewer open branches). The serialization axis (label-driven merge-train) ships in a follow-up PR.
+
 ### Performance
 
 - **Update-check cache TTL: 6h → 15min** (`src/aelfrice/lifecycle.py:CACHE_TTL_SECONDS`). The PyPI version-check cache used to expire after six hours, so a freshly-published release could lag the user-visible "update available" banner by up to that long on a busy machine (longer on a quiet one — the check is gated behind the next CLI call or `UserPromptSubmit` hook fire). PyPI's JSON endpoint is CDN-cached and unauthenticated, so a 15-minute cadence is well within the polling-etiquette band and shrinks the worst-case banner-lag window from 6h to ~15min. Detached-subprocess + on-disk-cache architecture is unchanged.
