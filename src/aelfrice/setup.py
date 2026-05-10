@@ -437,6 +437,12 @@ TRANSCRIPT_LOGGER_SCRIPT_NAME: Final[str] = "aelf-transcript-logger"
 SESSION_START_EVENT_KEY: Final[str] = "SessionStart"
 SESSION_START_HOOK_SCRIPT_NAME: Final[str] = "aelf-session-start-hook"
 
+# #582: separate Stop entry for the session-end correction-lock prompt.
+# Distinct from aelf-transcript-logger which already wires onto Stop;
+# the two coexist as separate entries under the Stop event key.
+STOP_EVENT_KEY: Final[str] = "Stop"
+STOP_HOOK_SCRIPT_NAME: Final[str] = "aelf-stop-hook"
+
 
 def resolve_transcript_logger_command(scope: SettingsScope) -> str:
     """Pick the absolute aelf-transcript-logger path for `scope`.
@@ -923,6 +929,109 @@ def uninstall_session_start_hook(
         return UninstallResult(path=settings_path, removed=0)
     data = _load_settings(settings_path)
     entries = _get_event_list(data, SESSION_START_EVENT_KEY, create=False)
+    if entries is None:
+        return UninstallResult(path=settings_path, removed=0)
+    before = len(entries)
+    if command is not None:
+        kept = [e for e in entries if not _entry_matches(e, command)]
+    else:
+        assert command_basename is not None
+        kept = [
+            e for e in entries
+            if not _entry_matches_basename(e, command_basename)
+        ]
+    removed = before - len(kept)
+    if removed == 0:
+        return UninstallResult(path=settings_path, removed=0)
+    entries[:] = kept
+    _atomic_write(settings_path, data)
+    return UninstallResult(path=settings_path, removed=removed)
+
+
+# --- Stop hook wiring (#582) ------------------------------------------
+
+
+def resolve_stop_hook_command(scope: SettingsScope) -> str:
+    """Pick the absolute aelf-stop-hook path for `scope`.
+
+    Same routing primitive as resolve_session_start_hook_command: project
+    scope pins to the venv next to sys.executable; user scope prefers
+    $PATH.
+    """
+    venv_bin = _venv_bin_dir()
+    venv_hook = _executable_in_dir(venv_bin, STOP_HOOK_SCRIPT_NAME)
+    path_hook_str = shutil.which(STOP_HOOK_SCRIPT_NAME)
+    path_hook = Path(path_hook_str) if path_hook_str else None
+    if scope == "project":
+        chosen = venv_hook or path_hook
+    else:
+        chosen = path_hook or venv_hook
+    if chosen is None:
+        return STOP_HOOK_SCRIPT_NAME
+    return str(chosen)
+
+
+def install_stop_hook(
+    settings_path: Path,
+    *,
+    command: str,
+    timeout: int | None = None,
+    status_message: str | None = None,
+) -> InstallResult:
+    """Add a Stop hook entry running `command`. Idempotent.
+
+    Stop fires once per assistant-turn end. The aelfrice handler
+    enumerates correction-class beliefs created in the current session
+    that aren't yet user-locked and prompts the user to lock them so
+    they survive context resets (#582).
+
+    Coexists with the transcript-ingest Stop entry (which appends
+    assistant-turn rows to turns.jsonl); the two are separate entries
+    under the same Stop event key and never disturb each other.
+    """
+    if not command:
+        raise ValueError("command must be a non-empty string")
+    data = _load_settings(settings_path)
+    entries = _get_event_list(data, STOP_EVENT_KEY, create=True)
+    if _find_entry_index(entries, command) is not None:
+        return InstallResult(
+            path=settings_path, installed=False, already_present=True
+        )
+    entries.append(
+        _build_entry(
+            command=command, timeout=timeout, status_message=status_message
+        )
+    )
+    _atomic_write(settings_path, data)
+    return InstallResult(
+        path=settings_path, installed=True, already_present=False
+    )
+
+
+def uninstall_stop_hook(
+    settings_path: Path,
+    *,
+    command: str | None = None,
+    command_basename: str | None = None,
+) -> UninstallResult:
+    """Remove Stop entries matching `command` or `command_basename`.
+
+    Same exact/basename match semantics as
+    uninstall_session_start_hook. Returns removed=0 if the file does
+    not exist or has no matching entry.
+    """
+    if command is None and command_basename is None:
+        raise ValueError("provide command or command_basename")
+    if command is not None and command_basename is not None:
+        raise ValueError("command and command_basename are mutually exclusive")
+    if command is not None and not command:
+        raise ValueError("command must be a non-empty string")
+    if command_basename is not None and not command_basename:
+        raise ValueError("command_basename must be a non-empty string")
+    if not settings_path.exists():
+        return UninstallResult(path=settings_path, removed=0)
+    data = _load_settings(settings_path)
+    entries = _get_event_list(data, STOP_EVENT_KEY, create=False)
     if entries is None:
         return UninstallResult(path=settings_path, removed=0)
     before = len(entries)
