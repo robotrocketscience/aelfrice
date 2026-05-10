@@ -18,10 +18,24 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
+import sys
+import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
+
+# Allow `python benchmarks/context-rebuilder/eval_harness.py` to import
+# aelfrice and the benchmarks.context_rebuilder package. The hyphenated
+# parent directory blocks `python -m`, so a sys.path shim is the
+# alternative. Tests already get the repo root from pytest's testpaths
+# config and skip this branch as a no-op.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from aelfrice.ingest import ingest_jsonl  # noqa: E402
+from aelfrice.store import MemoryStore  # noqa: E402
 
 
 Mode = Literal["threshold-sweep", "budget-sweep", "dynamic", "regression"]
@@ -82,13 +96,41 @@ def load_corpus(corpus_dir: Path) -> list[TranscriptCase]:
     return cases
 
 
-def replay_to_fork(case: TranscriptCase) -> "object":
-    """Populate a fresh aelfrice store with turns 0..fork_turn-1.
+def replay_to_fork(case: TranscriptCase) -> MemoryStore:
+    """Populate a fresh in-memory aelfrice store with turns
+    0..fork_turn-1 from `case.path`.
 
-    Returns the store handle. TODO: wire to MemoryStore + ingest_jsonl
-    once docs/transcript_ingest.md ships.
+    Returns the store handle. Caller is responsible for closing it.
+
+    Lines are counted by file order — this matches the synthetic-fixture
+    convention where each line is one user/assistant turn. Compaction
+    markers and tool-result lines are passed through to ingest_jsonl,
+    which already skips them; they don't shift the fork boundary
+    relative to the underlying transcript file.
+
+    Implementation note: ingest_jsonl reads a file end-to-end, so we
+    write the first `fork_turn` lines to a tempfile and ingest that.
+    Modifying ingest_jsonl to take a line-count cap would couple the
+    production ingest path to harness internals; keeping the truncation
+    here is the lighter coupling.
     """
-    raise NotImplementedError("Wire to ingest_jsonl from transcript_ingest spec")
+    store = MemoryStore(":memory:")
+    if case.fork_turn <= 0:
+        return store
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".jsonl", delete=False, encoding="utf-8"
+    ) as tmp:
+        tmp_path = Path(tmp.name)
+        with case.path.open("r", encoding="utf-8") as src:
+            for i, line in enumerate(src):
+                if i >= case.fork_turn:
+                    break
+                tmp.write(line)
+    try:
+        ingest_jsonl(store, tmp_path, source_label="eval-harness")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+    return store
 
 
 def run_rebuilder(
