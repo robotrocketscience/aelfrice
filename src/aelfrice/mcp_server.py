@@ -66,6 +66,7 @@ from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
 from aelfrice.session_resolution import resolve_session_id
 from aelfrice.store import MemoryStore
+from aelfrice.wonder.dispatch import build_dispatch_payload
 
 _FEEDBACK_VALENCES: Final[dict[str, float]] = {"used": 1.0, "harmful": -1.0}
 
@@ -717,6 +718,34 @@ def tool_health(
     return payload
 
 
+def tool_wonder(
+    store: MemoryStore,
+    *,
+    query: str,
+    budget: int = 24,
+    depth: int = 2,
+    agent_count: int = 4,
+) -> dict[str, Any]:
+    """Subagent-dispatch wonder: gap analysis + research axes.
+
+    Wraps :func:`aelfrice.wonder.dispatch.build_dispatch_payload`. The
+    JSON-only return shape is what the skill layer consumes to fan out
+    parallel research subagents (one per axis); the resulting research
+    documents are intended to flow back through ``wonder_ingest``
+    (track C of umbrella #542).
+
+    Read-only: no writes to the store, no side-effects. Determinism
+    matches :func:`aelfrice.retrieval.retrieve` for the same store
+    snapshot and query.
+    """
+    payload = build_dispatch_payload(
+        store, query, budget=budget, depth=depth, agent_count=agent_count,
+    )
+    out: dict[str, Any] = {"kind": "wonder.axes"}
+    out.update(payload.to_dict())
+    return out
+
+
 # --- FastMCP registration (optional) -----------------------------------
 #
 # The fastmcp library is an optional [mcp] extra. Importing it lazily
@@ -1356,6 +1385,91 @@ def serve() -> None:
         finally:
             store.close()
 
+    @mcp.tool(
+        annotations={
+            "title": "Wonder: gap analysis + research axes",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    )
+    def aelf_wonder(
+        query: Annotated[
+            str,
+            Field(
+                description=(
+                    "Question or topic to analyse. The store is queried "
+                    "for known beliefs; gaps and unresolved contradictions "
+                    "are surfaced as research axes for parallel subagent "
+                    "dispatch."
+                ),
+                min_length=1,
+                max_length=500,
+            ),
+        ],
+        budget: Annotated[
+            int,
+            Field(
+                description=(
+                    "Maximum candidates pulled from retrieve(). Mapped to "
+                    "the L1 limit; bounds the candidate-set size for the "
+                    "uncertainty / contradiction sweeps."
+                ),
+                ge=1,
+                le=200,
+            ),
+        ] = 24,
+        depth: Annotated[
+            int,
+            Field(
+                description=(
+                    "BFS expansion depth for retrieve(). 0 disables BFS "
+                    "(direct hits only); higher values widen the candidate "
+                    "graph at the cost of more entries to weigh."
+                ),
+                ge=0,
+                le=4,
+            ),
+        ] = 2,
+        agent_count: Annotated[
+            int,
+            Field(
+                description=(
+                    "Hint for how many subagents the skill layer plans to "
+                    "fan out. Returned axes are capped at 6 regardless."
+                ),
+                ge=1,
+                le=8,
+            ),
+        ] = 4,
+    ) -> dict[str, Any]:
+        """Surface gap analysis + research axes for a query.
+
+        Read-only. Returns:
+
+          - `kind`: "wonder.axes"
+          - `gap_analysis`: {query, known_beliefs, high_uncertainty_beliefs,
+              unresolved_contradicts_pairs, query_term_coverage, gaps}
+          - `research_axes`: list of {name, description, search_hints,
+              gap_context} — 2 to 6 entries
+          - `agent_count`: int (echoed)
+          - `speculative_anchor_ids`: list[str] — the candidate-belief ids,
+              passed through for downstream `wonder_ingest` to use as
+              `RELATES_TO` targets when persisting research outputs
+
+        The skill layer (E4 of #542) is responsible for spawning agents
+        from the axes and routing their outputs through `wonder_ingest`.
+        """
+        store = _open_default_store()
+        try:
+            return tool_wonder(
+                store, query=query, budget=budget,
+                depth=depth, agent_count=agent_count,
+            )
+        finally:
+            store.close()
+
     # The decorator rebinds each name on `mcp`; the local references
     # below silence pyright's reportUnusedFunction for the bindings
     # themselves. They serve no runtime purpose.
@@ -1363,6 +1477,7 @@ def serve() -> None:
         aelf_onboard, aelf_search, aelf_lock, aelf_locked,
         aelf_demote, aelf_validate, aelf_unlock, aelf_promote,
         aelf_feedback, aelf_confirm, aelf_stats, aelf_health,
+        aelf_wonder,
     )
     del _registered
 

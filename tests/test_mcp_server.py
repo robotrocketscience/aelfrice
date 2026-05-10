@@ -581,3 +581,34 @@ def test_unused_classification_import_does_not_drift(
     # from the bare API show up in the MCP status response.
     out = tool_onboard(store)
     assert via_classification.session_id in out["pending_session_ids"]
+
+
+# --- wonder (#551) -----------------------------------------------------
+
+
+def test_wonder_returns_wonder_axes_kind(store: MemoryStore) -> None:
+    from aelfrice.mcp_server import tool_wonder
+    _put_belief(store, id="b-cats", content="cats are mammals that meow")
+    out = tool_wonder(store, query="cats")
+    assert out["kind"] == "wonder.axes"
+
+
+def test_wonder_payload_has_documented_keys(store: MemoryStore) -> None:
+    from aelfrice.mcp_server import tool_wonder
+    _put_belief(store, id="b-cats", content="cats are mammals that meow")
+    out = tool_wonder(store, query="cats", agent_count=3)
+    assert set(out.keys()) >= {
+        "kind", "gap_analysis", "research_axes",
+        "agent_count", "speculative_anchor_ids",
+    }
+    assert out["agent_count"] == 3
+    assert isinstance(out["research_axes"], list)
+    assert 2 <= len(out["research_axes"]) <= 6
+
+
+def test_wonder_empty_store_returns_always_on_axes(store: MemoryStore) -> None:
+    from aelfrice.mcp_server import tool_wonder
+    out = tool_wonder(store, query="cats")
+    names = [a["name"] for a in out["research_axes"]]
+    assert "domain_research" in names
+    assert "internal_gap_analysis" in names
