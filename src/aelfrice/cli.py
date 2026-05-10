@@ -134,6 +134,7 @@ from aelfrice.setup import (
     SEARCH_TOOL_SCRIPT_NAME,
     SESSION_START_HOOK_SCRIPT_NAME,
     SLASH_COMMANDS_DIR_DEFAULT,  # noqa: F401 — re-exported for monkeypatch in tests
+    STOP_HOOK_SCRIPT_NAME,
     SettingsScope,
     TRANSCRIPT_LOGGER_SCRIPT_NAME,
     clean_dangling_shims,
@@ -146,6 +147,7 @@ from aelfrice.setup import (
     install_session_start_hook,
     install_slash_commands,
     install_statusline,
+    install_stop_hook,
     install_transcript_ingest_hooks,
     install_user_prompt_submit_hook,
     resolve_commit_ingest_command,
@@ -154,6 +156,7 @@ from aelfrice.setup import (
     resolve_hook_command,
     resolve_pre_compact_hook_command,
     resolve_session_start_hook_command,
+    resolve_stop_hook_command,
     resolve_transcript_logger_command,
     uninstall_commit_ingest_hook,
     uninstall_search_tool_bash_hook,
@@ -162,6 +165,7 @@ from aelfrice.setup import (
     uninstall_session_start_hook,
     uninstall_slash_commands,
     uninstall_statusline,
+    uninstall_stop_hook,
     uninstall_transcript_ingest_hooks,
     uninstall_user_prompt_submit_hook,
 )
@@ -1869,6 +1873,24 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 f"(command={ss_command!r})",
                 file=out,  # type: ignore[arg-type]
             )
+    if getattr(args, "stop_hook", True):
+        st_command = resolve_stop_hook_command(scope)
+        st_result = install_stop_hook(
+            path, command=st_command, timeout=args.timeout,
+            status_message=args.status_message,
+        )
+        if st_result.already_present:
+            print(
+                f"Stop hook already installed in {st_result.path} "
+                f"(command={st_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed Stop hook in {st_result.path} "
+                f"(command={st_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
     if not args.no_statusline:
         sl = install_statusline(path)
         if sl.mode == "installed":
@@ -2105,6 +2127,21 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
             print(
                 f"removed {ss_result.removed} SessionStart entr"
                 f"{'y' if ss_result.removed == 1 else 'ies'} from {ss_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "stop_hook", True):
+        st_result = uninstall_stop_hook(
+            path, command_basename=STOP_HOOK_SCRIPT_NAME,
+        )
+        if st_result.removed == 0:
+            print(
+                f"no Stop hook in {st_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"removed {st_result.removed} Stop entr"
+                f"{'y' if st_result.removed == 1 else 'ies'} from {st_result.path}",
                 file=out,  # type: ignore[arg-type]
             )
     if getattr(args, "transcript_ingest", True):
@@ -4545,6 +4582,17 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_setup.add_argument(
+        "--stop-hook", dest="stop_hook",
+        action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "wire the Stop hook so each session-end prompts to lock any "
+            "correction-class beliefs created in this session "
+            "(see #582). Coexists with the transcript-ingest Stop entry. "
+            "Default: ON. Pass --no-stop-hook to skip. "
+            "Set AELF_AUTOLOCK_CORRECTIONS=1 to auto-lock instead of prompt."
+        ),
+    )
+    p_setup.add_argument(
         "--search-tool", dest="search_tool", action="store_true",
         help=(
             "additionally wire the PreToolUse:Grep|Glob hook so the agent's "
@@ -4703,6 +4751,14 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help=(
             "remove the SessionStart hook entry. Default: ON. "
             "Pass --no-session-start to leave it in place."
+        ),
+    )
+    p_unsetup.add_argument(
+        "--stop-hook", dest="stop_hook",
+        action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "remove the Stop hook entry (#582). Default: ON. "
+            "Pass --no-stop-hook to leave it in place."
         ),
     )
     p_unsetup.add_argument(
