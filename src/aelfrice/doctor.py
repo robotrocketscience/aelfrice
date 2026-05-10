@@ -285,6 +285,13 @@ class DoctorReport:
     missing_runtime_deps: list[str] = field(
         default_factory=lambda: cast(list[str], [])
     )
+    # Default-on auto-capture hook basenames (since v2.1, #529) that
+    # are absent from every scanned settings.json. Pre-v2.1 installs
+    # that ran `aelf setup` before the default flip end up here
+    # (#557): they have retrieval-only wiring and need a re-run.
+    missing_auto_capture_hooks: list[str] = field(
+        default_factory=lambda: cast(list[str], [])
+    )
 
     @property
     def broken(self) -> list[CommandFinding]:
@@ -350,6 +357,7 @@ def diagnose(
     report.hook_failures_log = log_path
     report.hook_failures_tail = _tail_log(log_path, _HOOK_FAILURES_TAIL)
     report.missing_runtime_deps = _check_runtime_deps()
+    report.missing_auto_capture_hooks = _check_auto_capture_hooks(report.findings)
     if known_cli_subcommands is not None:
         slash_dir = (
             slash_commands_dir if slash_commands_dir is not None
@@ -739,7 +747,64 @@ def format_report(report: DoctorReport) -> str:
     _format_telemetry_section(report, lines)
     _format_user_prompt_submit_telemetry_section(report, lines)
     _format_missing_runtime_deps_section(report, lines)
+    _format_missing_auto_capture_section(report, lines)
     return "\n".join(lines)
+
+
+# Default-on auto-capture hook basenames the v2.1 `aelf setup` wires
+# (#529 commit 3c27f45). Mirrors `setup.TRANSCRIPT_LOGGER_SCRIPT_NAME`,
+# `setup.COMMIT_INGEST_SCRIPT_NAME`, `setup.SESSION_START_HOOK_SCRIPT_NAME`.
+# Duplicated here to keep the doctor module dependency-free of setup's
+# install primitives; if the names drift, the test in
+# tests/test_doctor.py::test_auto_capture_basenames_match_setup catches it.
+_AUTO_CAPTURE_HOOK_BASENAMES: Final[tuple[str, ...]] = (
+    "aelf-transcript-logger",
+    "aelf-commit-ingest",
+    "aelf-session-start-hook",
+)
+
+
+def _check_auto_capture_hooks(
+    findings: list[CommandFinding],
+) -> list[str]:
+    """Return basenames of v2.1 default-on hooks absent from all scanned scopes.
+
+    A hook is "present" if any finding's command string contains the
+    basename. Substring match is intentional: the command may be a bare
+    basename (PATH-resolved pipx install) or an absolute path
+    (project venv); both should count as installed (#557).
+    """
+    missing: list[str] = []
+    for basename in _AUTO_CAPTURE_HOOK_BASENAMES:
+        if not any(basename in f.command for f in findings):
+            missing.append(basename)
+    return missing
+
+
+def _format_missing_auto_capture_section(
+    report: DoctorReport, lines: list[str],
+) -> None:
+    """Append the v2.1 auto-capture nag block (#557) to `lines`.
+
+    Quiet when no settings.json was scanned (the install-broken case
+    is already covered by the no-scopes-scanned message at line 1 of
+    format_report) or when every default-on hook is present.
+    """
+    if not report.scopes_scanned:
+        return
+    if not report.missing_auto_capture_hooks:
+        return
+    lines.append("")
+    lines.append(
+        "auto-capture hooks not installed (v2.1+, #529). missing: "
+        + ", ".join(report.missing_auto_capture_hooks)
+    )
+    lines.append(
+        "fix: re-run 'aelf setup' to wire transcript-ingest, "
+        "commit-ingest, and session-start (default-on since v2.1). "
+        "to opt out per-hook: `aelf setup --no-transcript-ingest "
+        "--no-commit-ingest --no-session-start`."
+    )
 
 
 def _format_missing_runtime_deps_section(

@@ -329,3 +329,130 @@ def test_doctor_cli_exit_0_when_clean(
     )
     assert code == 0
     assert "1 ok" in buf.getvalue()
+
+
+# --- v2.1 default-on auto-capture nag (#557) -----------------------------
+
+
+def test_diagnose_flags_missing_auto_capture_hooks_when_pre_v21(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pre-v2.1 install: settings has only the retrieval hook, none of
+    the three default-on auto-capture hooks. Report should list all
+    three as missing and the rendered output should print the re-run
+    nag."""
+    bin_dir = tmp_path / "bin"
+    retrieval_hook = _exec(bin_dir / "aelf-hook")
+    user_path = tmp_path / "settings.json"
+    _write_settings(user_path, {
+        "hooks": {
+            "UserPromptSubmit": [{
+                "hooks": [{"type": "command", "command": str(retrieval_hook)}],
+            }],
+        },
+    })
+    monkeypatch.setenv("PATH", str(bin_dir))
+    report = diagnose(
+        user_settings=user_path, project_root=tmp_path / "noproj"
+    )
+    assert report.missing_auto_capture_hooks == [
+        "aelf-transcript-logger",
+        "aelf-commit-ingest",
+        "aelf-session-start-hook",
+    ]
+    rendered = format_report(report)
+    assert "auto-capture hooks not installed" in rendered
+    assert "re-run 'aelf setup'" in rendered
+
+
+def test_diagnose_quiet_when_all_auto_capture_hooks_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fresh v2.1 install: all three default-on hooks present. No nag
+    line in the rendered report."""
+    bin_dir = tmp_path / "bin"
+    retrieval = _exec(bin_dir / "aelf-hook")
+    transcript = _exec(bin_dir / "aelf-transcript-logger")
+    commit_ingest = _exec(bin_dir / "aelf-commit-ingest")
+    session_start = _exec(bin_dir / "aelf-session-start-hook")
+    user_path = tmp_path / "settings.json"
+    _write_settings(user_path, {
+        "hooks": {
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": str(retrieval)}]},
+                {"hooks": [{"type": "command", "command": str(transcript)}]},
+            ],
+            "Stop": [
+                {"hooks": [{"type": "command", "command": str(transcript)}]},
+            ],
+            "PreCompact": [
+                {"hooks": [{"type": "command", "command": str(transcript)}]},
+            ],
+            "PostCompact": [
+                {"hooks": [{"type": "command", "command": str(transcript)}]},
+            ],
+            "PostToolUse": [{
+                "matcher": "Bash",
+                "hooks": [{"type": "command", "command": str(commit_ingest)}],
+            }],
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": str(session_start)}]},
+            ],
+        },
+    })
+    monkeypatch.setenv("PATH", str(bin_dir))
+    report = diagnose(
+        user_settings=user_path, project_root=tmp_path / "noproj"
+    )
+    assert report.missing_auto_capture_hooks == []
+    rendered = format_report(report)
+    assert "auto-capture hooks not installed" not in rendered
+
+
+def test_diagnose_partial_auto_capture_lists_only_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mixed install: transcript-logger present, the other two absent.
+    Only the absent two should appear in the missing list."""
+    bin_dir = tmp_path / "bin"
+    transcript = _exec(bin_dir / "aelf-transcript-logger")
+    user_path = tmp_path / "settings.json"
+    _write_settings(user_path, {
+        "hooks": {
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": str(transcript)}]},
+            ],
+        },
+    })
+    monkeypatch.setenv("PATH", str(bin_dir))
+    report = diagnose(
+        user_settings=user_path, project_root=tmp_path / "noproj"
+    )
+    assert report.missing_auto_capture_hooks == [
+        "aelf-commit-ingest",
+        "aelf-session-start-hook",
+    ]
+
+
+def test_diagnose_quiet_when_no_settings_scanned(tmp_path: Path) -> None:
+    """No settings.json at either scope → suppress the auto-capture
+    nag (the no-scopes-scanned message already covers that case)."""
+    report = diagnose(
+        user_settings=tmp_path / "missing-user.json",
+        project_root=tmp_path / "missing-project",
+    )
+    rendered = format_report(report)
+    assert "auto-capture hooks not installed" not in rendered
+
+
+def test_auto_capture_basenames_match_setup() -> None:
+    """Guardrail: doctor's hardcoded auto-capture basename list must
+    stay in sync with `aelfrice.setup`. If setup renames a script,
+    this test fires before the doctor check silently misses it."""
+    from aelfrice import setup
+    from aelfrice.doctor import _AUTO_CAPTURE_HOOK_BASENAMES
+    assert set(_AUTO_CAPTURE_HOOK_BASENAMES) == {
+        setup.TRANSCRIPT_LOGGER_SCRIPT_NAME,
+        setup.COMMIT_INGEST_SCRIPT_NAME,
+        setup.SESSION_START_HOOK_SCRIPT_NAME,
+    }
