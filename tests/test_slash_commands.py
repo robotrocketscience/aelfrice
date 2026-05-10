@@ -34,8 +34,10 @@ EXPECTED_COMMANDS = (
     # Slash command name is `upgrade` (imperative — does the upgrade
     # via Bash orchestration). The CLI verb stays `upgrade-cmd`
     # (advisory: prints the install-aware command line); see
-    # HIDDEN_SUBCOMMANDS. The slash file invokes `aelf upgrade-cmd
-    # --check`, then runs the printed command, then `aelf setup`.
+    # HIDDEN_SUBCOMMANDS. The slash file invokes `aelf upgrade-cmd`
+    # (no flags — the no-flag form has emitted `run:` on every
+    # released CLI; `--check` short-circuited it on ≤2.0.1, see #530),
+    # then runs the printed command, then `aelf setup`.
     "upgrade",
     "uninstall",
     "rebuild",
@@ -103,7 +105,7 @@ def test_slash_command_has_description(cmd: str) -> None:
 # orchestrate multiple CLI calls) are exempt from the strict
 # slash-name == cli-verb check. Each entry must justify why.
 _INVOKE_EXEMPT: dict[str, str] = {
-    # Imperative orchestrator: calls `aelf upgrade-cmd --check`, runs
+    # Imperative orchestrator: calls `aelf upgrade-cmd` (no flags), runs
     # the printed install-aware upgrade command via Bash (separate
     # process, no mid-process replacement), then `aelf setup` to
     # refresh slash-command bundle, then `aelf upgrade-cmd` to clear
@@ -127,6 +129,29 @@ def test_no_extra_files_in_slash_commands_dir() -> None:
     files = sorted(p.name for p in _slash_dir().iterdir() if p.is_file())
     expected = sorted(f"{c}.md" for c in EXPECTED_COMMANDS)
     assert files == expected
+
+
+def test_upgrade_slash_uses_no_flag_upgrade_cmd() -> None:
+    """`/aelf:upgrade` step 1 must use the no-flag form of `aelf
+    upgrade-cmd`, not `--check`.
+
+    Issue #530 / lesson from #522: pre-#522 CLIs (≤2.0.1) short-circuit
+    the `run:` line under `--check`. The slash file ships *with* the
+    CLI, so a v2.0.1 user's installed slash uses whatever form the v2.0.1
+    bundle had — and v2.0.1 shipped the slash that called `--check` and
+    the CLI that suppressed `run:` under `--check` together. To prevent
+    a recurrence (and to keep the slash robust against any future
+    flag-gated regression), step 1 must use the form that has emitted
+    `run:` on every released CLI: `aelf upgrade-cmd` with no flags.
+    """
+    text = (_slash_dir() / "upgrade.md").read_text()
+    assert "aelf upgrade-cmd --check" not in text, (
+        "/aelf:upgrade must not depend on `--check` for the `run:` line "
+        "(see #530); use the no-flag form instead."
+    )
+    assert "aelf upgrade-cmd" in text, (
+        "/aelf:upgrade step 1 must invoke `aelf upgrade-cmd`."
+    )
 
 
 # Subparsers intentionally hidden from --help at v1.3. Aliases live one
