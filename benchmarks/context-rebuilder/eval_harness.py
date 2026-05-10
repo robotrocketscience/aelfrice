@@ -347,7 +347,7 @@ def replay_post_fork(
     **No `run_dir` (v1.2.0 stub default).** Returns one placeholder dict
     per `case.eval_turns` with `actual=""`, `matched=False`,
     `reason=REPLAY_PENDING_REASON`. Threshold/budget-sweep modes get
-    valid latency + token-cost numbers without dispatching subagents.
+    valid latency + token-cost numbers without dispatching child tasks.
 
     **With `run_dir` (host-agent eval-replay, #600).** Writes
     `<run_dir>/replay_requests.jsonl` so an operator-driven dispatcher
