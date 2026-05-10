@@ -1,6 +1,6 @@
 {
   "_notes": "Sweep of temporal_half_life_seconds on StructMemEval temporal tasks (#487). half_life_seconds=null means no decay (temporal_sort=False, equivalent to inf). score=accuracy (fraction of queries where current state is present in retrieval). is_fixture=true when the inline two-row fixture was used instead of real corpus data.",
-  "generated_at_utc": "2026-05-10T06:18:17.223161+00:00",
+  "generated_at_utc": "2026-05-10T06:23:52.406700+00:00",
   "sweep_grid": [
     {
       "label": "1h",
@@ -41,8 +41,8 @@
   ],
   "bench": null,
   "verdict": {
-    "location": "supported",
-    "accounting": "supported"
+    "location": "fixture_only \u2014 harness wires correctly; no operator-quality evidence. Rerun with real StructMemEval corpus to ratify the 7-day default (clone Wangt-CN/StructMemEval and pass --data).",
+    "accounting": "fixture_only \u2014 harness wires correctly; no operator-quality evidence. Rerun with real StructMemEval corpus to ratify the 7-day default (clone Wangt-CN/StructMemEval and pass --data)."
   },
   "rows": [
     {
@@ -54,7 +54,7 @@
       "n_queries": 1,
       "n_correct": 1,
       "n_cases": 1,
-      "elapsed_sec": 0.022,
+      "elapsed_sec": 0.021,
       "is_fixture": true
     },
     {
@@ -66,7 +66,7 @@
       "n_queries": 1,
       "n_correct": 1,
       "n_cases": 1,
-      "elapsed_sec": 0.02,
+      "elapsed_sec": 0.015,
       "is_fixture": true
     },
     {
@@ -78,7 +78,7 @@
       "n_queries": 1,
       "n_correct": 1,
       "n_cases": 1,
-      "elapsed_sec": 0.019,
+      "elapsed_sec": 0.014,
       "is_fixture": true
     },
     {
@@ -90,7 +90,7 @@
       "n_queries": 1,
       "n_correct": 1,
       "n_cases": 1,
-      "elapsed_sec": 0.019,
+      "elapsed_sec": 0.016,
       "is_fixture": true
     },
     {
@@ -102,7 +102,7 @@
       "n_queries": 1,
       "n_correct": 1,
       "n_cases": 1,
-      "elapsed_sec": 0.029,
+      "elapsed_sec": 0.018,
       "is_fixture": true
     },
     {
@@ -114,7 +114,7 @@
       "n_queries": 1,
       "n_correct": 1,
       "n_cases": 1,
-      "elapsed_sec": 0.025,
+      "elapsed_sec": 0.017,
       "is_fixture": true
     },
     {
@@ -126,7 +126,7 @@
       "n_queries": 1,
       "n_correct": 1,
       "n_cases": 1,
-      "elapsed_sec": 0.014,
+      "elapsed_sec": 0.025,
       "is_fixture": true
     },
     {
@@ -150,7 +150,7 @@
       "n_queries": 1,
       "n_correct": 0,
       "n_cases": 1,
-      "elapsed_sec": 0.016,
+      "elapsed_sec": 0.017,
       "is_fixture": true
     },
     {
@@ -162,7 +162,7 @@
       "n_queries": 1,
       "n_correct": 0,
       "n_cases": 1,
-      "elapsed_sec": 0.016,
+      "elapsed_sec": 0.018,
       "is_fixture": true
     },
     {
@@ -174,7 +174,7 @@
       "n_queries": 1,
       "n_correct": 0,
       "n_cases": 1,
-      "elapsed_sec": 0.015,
+      "elapsed_sec": 0.013,
       "is_fixture": true
     },
     {
@@ -198,7 +198,7 @@
       "n_queries": 1,
       "n_correct": 0,
       "n_cases": 1,
-      "elapsed_sec": 0.028,
+      "elapsed_sec": 0.015,
       "is_fixture": true
     },
     {
@@ -210,7 +210,7 @@
       "n_queries": 1,
       "n_correct": 0,
       "n_cases": 1,
-      "elapsed_sec": 0.015,
+      "elapsed_sec": 0.035,
       "is_fixture": true
     },
     {
@@ -222,7 +222,7 @@
       "n_queries": 1,
       "n_correct": 0,
       "n_cases": 1,
-      "elapsed_sec": 0.015,
+      "elapsed_sec": 0.029,
       "is_fixture": true
     },
     {
@@ -234,7 +234,7 @@
       "n_queries": 1,
       "n_correct": 0,
       "n_cases": 1,
-      "elapsed_sec": 0.014,
+      "elapsed_sec": 0.015,
       "is_fixture": true
     }
   ]

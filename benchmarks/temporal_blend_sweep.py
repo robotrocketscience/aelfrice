@@ -411,10 +411,21 @@ def main() -> None:
                 )
 
     # Verdict: does the 7d default stand per task?
+    # Fixture-only runs cannot ratify or contradict the default — the
+    # two-row fixture has no temporal-sensitivity by construction. Mark
+    # fixture verdicts explicitly so a reader cannot mistake a structural
+    # smoke pass for operator-quality evidence (#487).
     task_verdicts: dict[str, str] = {}
     for task in tasks:
         task_pts = [r for r in all_results if r.task == task]
         if not task_pts:
+            continue
+        if is_fixture_run:
+            task_verdicts[task] = (
+                "fixture_only — harness wires correctly; no operator-quality "
+                "evidence. Rerun with real StructMemEval corpus to ratify the "
+                "7-day default (clone Wangt-CN/StructMemEval and pass --data)."
+            )
             continue
         default_pt = next((r for r in task_pts if r.half_life_label == "7d"), None)
         best_pt = max(task_pts, key=lambda r: r.score)
