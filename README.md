@@ -2,10 +2,10 @@
 
 # aelfrice
 
-> Your AI stops forgetting your rules.
-> Set up once. Stays out of your way.
+> Your AI stops forgetting.
+> Set up once. Stays out of the way.
 >
-> _Local SQLite. Auditable. No GPU, no network._
+> _Local SQLite. Fully auditable. No GPU, no network._
 
 [![PyPI](https://img.shields.io/pypi/v/aelfrice.svg)](https://pypi.org/project/aelfrice/)
 [![Python](https://img.shields.io/pypi/pyversions/aelfrice.svg)](https://pypi.org/project/aelfrice/)
@@ -18,7 +18,7 @@
 
 You correct your agent. *"Got it,"* it says. Next session, same mistake.
 
-aelfrice runs in the background and stops the forgetting. You write a rule once and it gets attached to every prompt thereafter — no cross-references for the agent to skip, no markdown files to maintain, nothing to remember to do.
+aelfrice runs in the background and stops the amnesia and context drift. You write a rule once and it gets attached to every prompt thereafter — no cross-references for the agent to skip, no markdown files to maintain, nothing to remember to do.
 
 ```bash
 pipx install aelfrice    # or: uv tool install aelfrice
@@ -46,10 +46,10 @@ That's it. Your next prompt that mentions "push" already has the rule attached. 
 - **Bit-level determinism.** No embeddings, no learned re-rankers, no LLM in the retrieval path. Same write log, same code → bit-for-bit identical results across runs and machines. ([PHILOSOPHY.md](docs/PHILOSOPHY.md))
 - **Every belief has a confidence and a confidence-in-its-confidence.** A `(α, β)` Beta-Bernoulli posterior gives both: `α / (α+β)` says which way the belief leans, `α + β` says how sure we are of that lean. New beliefs sit at low evidence (high variance, retrievable but discounted); locked beliefs short-circuit decay and pin as ground truth.
 - **One prompt, every layer responds.** Four parallel lookups happen at once, each catching what the others miss: locked rules pin to the front, keyword match for literal word overlap, anchor-text match that weighs labels and references heavier than body prose, and a graph lane that finds beliefs by how they connect rather than what they say. You don't have to pick. The build cost is paid once when you onboard the project — every prompt thereafter gets every layer for free.
-- **Local-only.** SQLite at `<git-common-dir>/aelfrice/memory.db` (or `~/.aelfrice/memory.db` outside git). No network calls, no telemetry, no accounts. One brain per project, your machine. ([PRIVACY.md](docs/PRIVACY.md))
-- **Auditable to the row.** Every belief has an `origin` column (`user_stated`, `user_corrected`, `commit_ingest`, …) tying it to the action that wrote it. Open the DB in any SQLite browser; nothing hidden.
-- **Reversible.** `aelf uninstall --archive backup.aenc` encrypts the DB and deletes the live copy. `--purge` wipes it. `--keep-db` leaves data untouched. No vendor lock-in by construction.
-- **No GPU, no network, no inference cost.** Runtime deps are `numpy`, `scipy`, `snowballstemmer` — all CPU, all offline. Retrieval is a sparse-matrix query, not a model call.
+- **Local-only.** SQLite at `<git-common-dir>/aelfrice/memory.db` (or `~/.aelfrice/memory.db` outside git). No network calls, no telemetry, no accounts. One brain per project, all on your machine. ([PRIVACY.md](docs/PRIVACY.md))
+- **Auditable to the row.** Every belief has an `origin` column (`user_stated`, `user_corrected`, `commit_ingest`, …) tying it to the action that wrote it. Open the DB in any SQLite browser; nothing hidden. Query it with the tools; full traceability.
+- **Reversible.** `aelf uninstall --archive backup.aenc` encrypts the DB and deletes the live copy. `--purge` wipes it. `--keep-db` leaves data untouched. No vendor lock-in by construction. You're the boss of your memories.
+- **No GPU, no network, no inference cost.** Runtime deps are `numpy`, `scipy`, `snowballstemmer` — all CPU, all offline. Retrieval is a sparse-matrix query, not an LLM call. Operations are fast and local.
 
 ---
 
