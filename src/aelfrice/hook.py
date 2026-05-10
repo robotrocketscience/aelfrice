@@ -49,7 +49,7 @@ try:
         rebuild_v14,
     )
     from aelfrice.hook_search import search_for_prompt
-    from aelfrice.models import LOCK_USER, Belief
+    from aelfrice.models import LOCK_NONE, LOCK_USER, Belief
     from aelfrice.retrieval import retrieve
     from aelfrice.store import MemoryStore
 
@@ -104,6 +104,11 @@ CLOSE_TAG: Final[str] = "</aelfrice-memory>"
 SESSION_START_OPEN_TAG: Final[str] = "<aelfrice-baseline>"
 SESSION_START_CLOSE_TAG: Final[str] = "</aelfrice-baseline>"
 
+# Sub-block tags injected on the first UserPromptSubmit of a session (#578).
+# Placed INSIDE <aelfrice-memory> before per-turn retrieval hits.
+SESSION_START_SUBBLOCK_OPEN: Final[str] = "<session-start>"
+SESSION_START_SUBBLOCK_CLOSE: Final[str] = "</session-start>"
+
 # Fixed framing header rendered inside <aelfrice-memory> and
 # <aelfrice-baseline> blocks. Per docs/hook_hardening.md (#280): the
 # header tells the model these lines are retrieved data, not
@@ -121,6 +126,7 @@ _FRAMING_HEADER: Final[str] = (
 _ESCAPE_TAGS: Final[tuple[str, ...]] = (
     "<aelfrice-memory>", "</aelfrice-memory>",
     "<aelfrice-baseline>", "</aelfrice-baseline>",
+    "<session-start>", "</session-start>",
     "<belief", "</belief>",
 )
 
@@ -882,6 +888,131 @@ def _open_store() -> MemoryStore:
     if str(p) != ":memory:":
         p.parent.mkdir(parents=True, exist_ok=True)
     return MemoryStore(str(p))
+
+
+# ---------------------------------------------------------------------------
+# Session-start sub-block builder (#578)
+# ---------------------------------------------------------------------------
+
+# Core-beliefs thresholds — mirror cli.py defaults; no import of cli.
+_CORE_MIN_CORROBORATION: Final[int] = 2
+_CORE_MIN_POSTERIOR: Final[float] = 2.0 / 3.0
+_CORE_MIN_ALPHA_BETA: Final[int] = 4
+
+
+def _belief_qualifies_core(b: "Belief") -> bool:
+    """Return True when b meets any non-lock core signal.
+
+    Mirrors the logic in cli._qualifies_core using the module-level
+    defaults (corroboration>=2 OR posterior_mean>=2/3 with alpha+beta>=4).
+    Does NOT include the lock signal — locked beliefs are already in the
+    locked section.
+    """
+    corr: int = b.corroboration_count
+    if corr >= _CORE_MIN_CORROBORATION:
+        return True
+    alpha: float = b.alpha
+    beta: float = b.beta
+    ab = alpha + beta
+    if ab >= _CORE_MIN_ALPHA_BETA and (alpha / ab) >= _CORE_MIN_POSTERIOR:
+        return True
+    return False
+
+
+def _build_session_start_subblock(store: "MemoryStore") -> str:
+    """Build the <session-start> sub-block for first-prompt enrichment.
+
+    Contains two tagged sections:
+      <locked> — all user-locked beliefs (L0), same order as
+                 list_locked_beliefs() (locked_at DESC).
+      <core>   — load-bearing unlocked beliefs: corroboration>=2 OR
+                 posterior_mean>=2/3 with alpha+beta>=4. Excludes beliefs
+                 already in <locked>. Sorted by posterior_mean DESC.
+
+    Pause-handoff: not included. No pause-work implementation exists in
+    this codebase; the issue spec says "gated on existence" and the
+    artifact does not exist, so this section is absent.
+
+    Returns "" when both sections are empty (nothing to inject).
+    Cost: one list_locked_beliefs() + one list_belief_ids() + one
+    get_belief() per non-locked belief id. No LLM, no filesystem walk,
+    no new SQL.
+    """
+    locked = store.list_locked_beliefs()
+    locked_ids: set[str] = {b.id for b in locked}
+
+    core_candidates: list[Belief] = []
+    for bid in store.list_belief_ids():
+        if bid in locked_ids:
+            continue
+        b = store.get_belief(bid)
+        if b is None:
+            continue
+        if b.lock_level != LOCK_NONE and b.id not in locked_ids:
+            # Locked but not surfaced via list_locked_beliefs — skip.
+            continue
+        if _belief_qualifies_core(b):
+            core_candidates.append(b)
+
+    # Sort core candidates by posterior_mean DESC, then id ASC for stability.
+    def _posterior_key(b: "Belief") -> tuple[float, str]:
+        ab = b.alpha + b.beta
+        mu = (b.alpha / ab) if ab > 0 else 0.0
+        return (-mu, b.id)
+
+    core_candidates.sort(key=_posterior_key)
+
+    if not locked and not core_candidates:
+        return ""
+
+    lines: list[str] = [SESSION_START_SUBBLOCK_OPEN]
+
+    # <locked> section
+    lines.append("<locked>")
+    for b in locked:
+        content = _escape_for_hook_block(b.content)
+        lock_attr = "user" if b.lock_level == LOCK_USER else "none"
+        lines.append(
+            f'<belief id="{b.id}" lock="{lock_attr}">{content}</belief>'
+        )
+    lines.append("</locked>")
+
+    # <core> section
+    lines.append("<core>")
+    for b in core_candidates:
+        content = _escape_for_hook_block(b.content)
+        ab = b.alpha + b.beta
+        mu = round(b.alpha / ab, 3) if ab > 0 else 0.0
+        lines.append(
+            f'<belief id="{b.id}" corr="{b.corroboration_count}"'
+            f' posterior="{mu}">{content}</belief>'
+        )
+    lines.append("</core>")
+
+    lines.append(SESSION_START_SUBBLOCK_CLOSE)
+    return "\n".join(lines)
+
+
+def _format_hits_with_session_start(
+    hits: list["Belief"], session_start_block: str
+) -> str:
+    """Format the <aelfrice-memory> envelope with an embedded session-start.
+
+    When session_start_block is non-empty it is inserted after the framing
+    header and before the per-turn retrieval beliefs.
+    """
+    lines: list[str] = [OPEN_TAG, _FRAMING_HEADER]
+    if session_start_block:
+        lines.append(session_start_block)
+    for h in hits:
+        lock_attr = "user" if h.lock_level == LOCK_USER else "none"
+        content = _escape_for_hook_block(h.content)
+        lines.append(
+            f'<belief id="{h.id}" lock="{lock_attr}">{content}</belief>'
+        )
+    lines.append(CLOSE_TAG)
+    lines.append("")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
