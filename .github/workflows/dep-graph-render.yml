@@ -1,0 +1,54 @@
+name: dep-graph-render
+
+# Render a Mermaid dependency graph from open-issue Blocks/Blocked-by
+# links and post it as a sticky comment on the milestone-tracker issue.
+# A parallel session can read the comment to find a leaf node (zero
+# blockers) without scanning all open issues by hand.
+#
+# Driven by scripts/dep_graph_render.py — pure-stdlib + the gh CLI.
+# See #581 for the design.
+
+on:
+  schedule:
+    # Daily at 06:00 UTC; cheap enough that one run per day is plenty.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      label:
+        description: "Open-issue label to filter on"
+        type: string
+        default: "v2.1"
+      tracker_issue:
+        description: "Issue number to host the sticky comment"
+        type: string
+        default: "474"
+
+permissions:
+  contents: read
+  issues: write
+
+# Only one pass at a time so the sticky comment update is atomic.
+concurrency:
+  group: dep-graph-render
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+      - name: Render dep graph
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LABEL: ${{ github.event.inputs.label || 'v2.1' }}
+          TRACKER_ISSUE: ${{ github.event.inputs.tracker_issue || '474' }}
+        run: |
+          set -euo pipefail
+          python3 scripts/dep_graph_render.py \
+            --owner "${GITHUB_REPOSITORY_OWNER}" \
+            --repo  "${GITHUB_REPOSITORY##*/}" \
+            --label "${LABEL}" \
+            --tracker-issue "${TRACKER_ISSUE}"
