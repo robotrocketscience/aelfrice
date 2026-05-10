@@ -320,6 +320,54 @@ class BenchmarkReport:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class _ArmMetrics:
+    """Hit@1, hit@3, and MRR for one retrieval arm."""
+
+    hit_at_1: float
+    hit_at_3: float
+    mrr: float
+
+    def to_dict(self) -> dict[str, float]:
+        return asdict(self)  # type: ignore[return-value]
+
+
+@dataclass(frozen=True)
+class MultiHopBenchmarkReport:
+    """Three-arm multi-hop benchmark results.
+
+    Each arm corresponds to a different layer combination passed to
+    ``retrieve()``:
+
+    - ``multihop_l1_only`` — Arm A: entity_index_enabled=False, bfs_enabled=False
+    - ``multihop_l1_l25``  — Arm B: entity_index_enabled=True,  bfs_enabled=False
+    - ``multihop_full``    — Arm C: entity_index_enabled=True,  bfs_enabled=True
+
+    The sanity contract: ``multihop_l1_only.hit_at_1 < 0.50`` — confirming
+    that the queries are genuinely multi-hop and not surface-keyword-solvable
+    by BM25 alone.
+    """
+
+    aelfrice_version: str
+    corpus_size: int
+    query_count: int
+    top_k: int
+    multihop_l1_only: _ArmMetrics
+    multihop_l1_l25: _ArmMetrics
+    multihop_full: _ArmMetrics
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "aelfrice_version": self.aelfrice_version,
+            "corpus_size": self.corpus_size,
+            "query_count": self.query_count,
+            "top_k": self.top_k,
+            "multihop_l1_only": self.multihop_l1_only.to_dict(),
+            "multihop_l1_l25": self.multihop_l1_l25.to_dict(),
+            "multihop_full": self.multihop_full.to_dict(),
+        }
+
+
 # --- Harness ----------------------------------------------------------
 
 
@@ -391,6 +439,71 @@ def seed_multihop_corpus(
             )
         )
     return inserted
+
+
+def run_multihop_benchmark(
+    store: MemoryStore,
+    *,
+    aelfrice_version: str,
+    top_k: int = DEFAULT_TOP_K,
+) -> MultiHopBenchmarkReport:
+    """Run the multi-hop queries against ``store`` with three retrieval arms.
+
+    The caller must have seeded the multi-hop corpus (via
+    ``seed_multihop_corpus``) before calling. The three arms exercise:
+
+    - Arm A (L1-only): ``entity_index_enabled=False, bfs_enabled=False``
+    - Arm B (L0+L2.5+L1): ``entity_index_enabled=True, bfs_enabled=False``
+    - Arm C (full four-layer): ``entity_index_enabled=True, bfs_enabled=True``
+
+    Raises ``ValueError`` if ``top_k`` is not positive.
+    """
+    if top_k <= 0:
+        raise ValueError(f"top_k must be positive, got {top_k}")
+
+    def _score_arm(
+        entity_index_enabled: bool,
+        bfs_enabled: bool,
+    ) -> _ArmMetrics:
+        hits_1 = 0
+        hits_3 = 0
+        rr_sum = 0.0
+        for q in _MULTIHOP_QUERIES:
+            results = retrieve(
+                store,
+                q.query,
+                token_budget=DEFAULT_TOKEN_BUDGET,
+                l1_limit=top_k,
+                entity_index_enabled=entity_index_enabled,
+                bfs_enabled=bfs_enabled,
+            )
+            rank = _rank_of(q.correct_id, results)
+            if rank is not None:
+                rr_sum += 1.0 / rank
+                if rank == 1:
+                    hits_1 += 1
+                if rank <= 3:
+                    hits_3 += 1
+        n = len(_MULTIHOP_QUERIES)
+        return _ArmMetrics(
+            hit_at_1=hits_1 / n,
+            hit_at_3=hits_3 / n,
+            mrr=rr_sum / n,
+        )
+
+    arm_a = _score_arm(entity_index_enabled=False, bfs_enabled=False)
+    arm_b = _score_arm(entity_index_enabled=True, bfs_enabled=False)
+    arm_c = _score_arm(entity_index_enabled=True, bfs_enabled=True)
+
+    return MultiHopBenchmarkReport(
+        aelfrice_version=aelfrice_version,
+        corpus_size=len(_MULTIHOP_CORPUS),
+        query_count=len(_MULTIHOP_QUERIES),
+        top_k=top_k,
+        multihop_l1_only=arm_a,
+        multihop_l1_l25=arm_b,
+        multihop_full=arm_c,
+    )
 
 
 def run_benchmark(
