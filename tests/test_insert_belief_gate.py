@@ -185,12 +185,17 @@ def test_gate_on_allowlisted_module_passes(
 
 
 def test_allowlist_contents_are_ratified_set() -> None:
-    """Hypothesis: the allowlist is exactly the four modules ratified
-    on PR #478. Adding or removing entries is a design decision that
-    requires re-ratification. Falsifiable by drift on either side."""
+    """Hypothesis: the allowlist is exactly the ratified set of modules.
+
+    PR #478 ratified the original four. #548 added wonder.lifecycle for
+    speculative phantom ingest. Adding or removing entries is a design
+    decision that requires re-ratification. Falsifiable by drift on either
+    side.
+    """
     assert INSERT_BELIEF_ALLOWLIST == frozenset({
         "aelfrice.derivation_worker",
         "aelfrice.wonder.simulator",
+        "aelfrice.wonder.lifecycle",
         "aelfrice.benchmark",
         "aelfrice.migrate",
     })

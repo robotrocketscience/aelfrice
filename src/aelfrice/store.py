@@ -65,6 +65,7 @@ _WLAUTH_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 INSERT_BELIEF_ALLOWLIST: Final[frozenset[str]] = frozenset({
     "aelfrice.derivation_worker",
     "aelfrice.wonder.simulator",
+    "aelfrice.wonder.lifecycle",
     "aelfrice.benchmark",
     "aelfrice.migrate",
 })
@@ -449,6 +450,10 @@ _MIGRATIONS: tuple[str, ...] = (
     # ADD COLUMN with a CHECK is brittle across SQLite versions.
     # Python-side RETENTION_CLASSES validates inserts.
     "ALTER TABLE beliefs ADD COLUMN retention_class TEXT NOT NULL DEFAULT 'unknown'",
+    # v2.1 #548 wonder lifecycle. Soft-delete timestamp: NULL = active,
+    # non-NULL = GC'd by `wonder_gc`. Existing rows default to NULL
+    # (active) which is correct — only speculative phantoms are GC'd.
+    "ALTER TABLE beliefs ADD COLUMN valid_to TEXT",
 )
 
 # Indexes that depend on migrated columns. Run after _MIGRATIONS so
@@ -456,6 +461,9 @@ _MIGRATIONS: tuple[str, ...] = (
 _POST_MIGRATION_INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_beliefs_session ON beliefs(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_beliefs_origin ON beliefs(origin)",
+    # v2.1 #548: partial index on active speculative beliefs for GC scans.
+    "CREATE INDEX IF NOT EXISTS idx_beliefs_speculative_gc "
+    "ON beliefs(origin, created_at) WHERE valid_to IS NULL",
 )
 
 # One-shot backfill for v1.0/v1.1 stores opening on v1.2+. Each row
@@ -507,6 +515,9 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
         row["retention_class"] if "retention_class" in keys
         else RETENTION_UNKNOWN
     )
+    # valid_to column added in v2.1 (#548). Pre-migration rows default
+    # to None (active). Same fallback pattern as retention_class.
+    valid_to = row["valid_to"] if "valid_to" in keys else None
     return Belief(
         id=row["id"],
         content=row["content"],
@@ -525,6 +536,7 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
         hibernation_score=row["hibernation_score"],
         activation_condition=row["activation_condition"],
         retention_class=retention_class,
+        valid_to=valid_to,
     )
 
 
@@ -1334,15 +1346,15 @@ class MemoryStore:
                 lock_level, locked_at, demotion_pressure,
                 created_at, last_retrieved_at, session_id, origin,
                 hibernation_score, activation_condition,
-                retention_class
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                retention_class, valid_to
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 b.id, b.content, b.content_hash, b.alpha, b.beta, b.type,
                 b.lock_level, b.locked_at, b.demotion_pressure,
                 b.created_at, b.last_retrieved_at, b.session_id, b.origin,
                 b.hibernation_score, b.activation_condition,
-                b.retention_class,
+                b.retention_class, b.valid_to,
             ),
         )
         self._conn.execute(
@@ -1445,6 +1457,75 @@ class MemoryStore:
         )
         self._conn.commit()
         self._fire_invalidation()
+
+    def soft_delete_belief(self, belief_id: str, ts: str | None = None) -> None:
+        """Set `valid_to` on a belief to soft-delete it (v2.1 #548 wonder GC).
+
+        Only moves beliefs from active (valid_to IS NULL) to soft-deleted.
+        Calling this on an already-GC'd belief is a no-op (idempotent via
+        the WHERE clause). Does not remove edges or corroboration rows —
+        the phantom's evidence trail is preserved for audit.
+        """
+        now = ts if ts is not None else datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            "UPDATE beliefs SET valid_to = ? WHERE id = ? AND valid_to IS NULL",
+            (now, belief_id),
+        )
+        self._bump_belief_version(belief_id)
+        self._conn.commit()
+        self._fire_invalidation()
+
+    def query_wonder_gc_candidates(
+        self,
+        *,
+        cutoff_ts: str,
+        alpha_default: float = 0.3,
+        beta_default: float = 1.0,
+        alpha_epsilon: float = 1e-9,
+        beta_epsilon: float = 1e-9,
+    ) -> list[str]:
+        """Return belief IDs eligible for wonder GC (v2.1 #548).
+
+        Candidates satisfy ALL of:
+        - type = 'speculative'
+        - origin = ORIGIN_SPECULATIVE
+        - valid_to IS NULL (still active)
+        - created_at < cutoff_ts (older than ttl_days)
+        - alpha <= alpha_default + epsilon AND beta <= beta_default + epsilon
+          (priors unchanged from wonder_ingest defaults)
+        - no feedback_history rows (apply_feedback never called)
+        - no RESOLVES edges (incoming or outgoing)
+
+        The caller is responsible for computing `cutoff_ts` from `ttl_days`.
+        Returns a list of belief IDs; order is not guaranteed.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT b.id
+            FROM beliefs b
+            WHERE b.type = 'speculative'
+              AND b.origin = 'speculative'
+              AND b.valid_to IS NULL
+              AND b.created_at < ?
+              AND b.alpha <= ?
+              AND b.beta  <= ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM feedback_history fh
+                  WHERE fh.belief_id = b.id
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM edges e
+                  WHERE e.type = 'RESOLVES'
+                    AND (e.src = b.id OR e.dst = b.id)
+              )
+            """,
+            (
+                cutoff_ts,
+                alpha_default + alpha_epsilon,
+                beta_default + beta_epsilon,
+            ),
+        )
+        return [row["id"] for row in cur.fetchall()]
 
     # --- Entity index (v1.3 L2.5 retrieval) ------------------------------
 
