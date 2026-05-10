@@ -28,10 +28,13 @@ import numpy.typing as npt
 Vector = npt.NDArray[np.float64]
 
 # Default dimensionality. Capacity per Plate's analysis is roughly
-# dim/9 retrievable bound pairs at signal-to-noise threshold; 2048
-# accommodates ~227 distinct bindings, well above aelfrice's typical
-# ~5 outgoing edges per belief.
-DEFAULT_DIM: Final[int] = 2048
+# dim/9 retrievable bound pairs at signal-to-noise threshold; 512
+# accommodates ~57 distinct bindings, well above aelfrice's typical
+# ~5 outgoing edges per belief. dim=2048 is the escape hatch for
+# high-multiplicity corpora where K approaches the lower bound.
+# See #538 / lab campaign R4 verdict (full-corpus latency budget at
+# N=100k holds at dim=512; dim=2048 does not).
+DEFAULT_DIM: Final[int] = 512
 
 
 # ---------------------------------------------------------------------------

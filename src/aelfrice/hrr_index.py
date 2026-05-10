@@ -11,8 +11,8 @@ A structural query of the form ``"<KIND>:<belief-id>"`` (e.g.
 ``bind(role[KIND], id_vec[target])`` and ranks beliefs by the
 inner product against ``struct[b]``. Beliefs whose structure
 contains exactly that bound term score high; orthogonal noise from
-other bindings is ``~1/sqrt(dim)`` per term, so at ``dim=2048`` the
-top-K is dominated by true structural matches.
+other bindings is ``~1/sqrt(dim)`` per term, so at the default
+``dim=512`` the top-K is dominated by true structural matches.
 
 Parallel to the textual lane (BM25F + heat kernel), not a competitor.
 A query parser (:func:`parse_structural_marker`) routes structural
@@ -106,7 +106,9 @@ class HRRStructIndex:
     Build is offline (walks every edge once); query is one matvec
     against the ``(N, dim)`` struct matrix plus one bind. Storage
     cost is dominated by the struct matrix at ``8 * N * dim`` bytes;
-    at ``N=50k, dim=2048`` that is ~800 MB, fitting the AC8 budget.
+    at ``N=50k`` and the default ``dim=512`` that is ~200 MB
+    (~800 MB at the ``dim=2048`` escape-hatch value), both within
+    the AC8 budget.
 
     Determinism: ``random_vector`` draws are reproducible from
     ``np.random.default_rng(seed)``. Two builds against the same
