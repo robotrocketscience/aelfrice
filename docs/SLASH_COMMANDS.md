@@ -1,6 +1,6 @@
 # Slash Commands
 
-Eighteen markdown files in `src/aelfrice/slash_commands/`, tracking the v1.2.0 CLI consolidation plus the v1.4.0 `rebuild` promotion and the v2.0 reasoning surfaces. After `aelf setup`, they appear as `/aelf:*` in the host. Each is a thin wrapper over the CLI — `/aelf:foo` invokes `aelf foo` against the active project's DB.
+Nineteen markdown files in `src/aelfrice/slash_commands/`, tracking the v1.2.0 CLI consolidation, the v1.4.0 `rebuild` promotion, the v2.0 reasoning surfaces, and the v2.x `eval` calibration surface. After `aelf setup`, they appear as `/aelf:*` in the host. Each is a thin wrapper over the CLI — `/aelf:foo` invokes `aelf foo` against the active project's DB.
 
 Slash files are not shipped for hidden CLI subcommands (`bench`, `feedback`, `health`, `migrate`, `project-warm`, `regime`, `session-delta`, `stats`, `statusline`, `unsetup`). Those subcommands stay callable from the CLI for scripting, hook entry-points, and back-compat aliases — they're just not surfaced as slashes.
 
@@ -28,6 +28,7 @@ Slash files are not shipped for hidden CLI subcommands (`bench`, `feedback`, `he
 | `/aelf:rebuild` | optional `--n N`, `--budget T`, `--transcript PATH` — manually fire the context rebuilder; v1.4.0+ |
 | `/aelf:reason` | keyword query — walks the belief graph from BM25-seeded starting points; v2.0+ (#389) |
 | `/aelf:wonder` | optional flags (`--top N`, `--seed ID`, `--emit-phantoms`) — surfaces consolidation candidates / phantom-belief suggestions; v2.0+ (#389), phantom-store integration deferred to v2.x |
+| `/aelf:eval` | optional `--corpus PATH`, `--k N`, `--seed N`, `--json` — runs the relevance-calibration harness (P@K / ROC-AUC / Spearman ρ) ratified at #365 |
 
 Behaviour matches the CLI exactly — see [COMMANDS](COMMANDS.md). The v1.1.0 `edges` → `threads` user-facing rename does not surface here; the program name remains `aelf`.
 
