@@ -50,6 +50,13 @@ def _project_settings(tmp_path: Path) -> Path:
     return tmp_path / ".claude" / "settings.json"
 
 
+_OPT_OUT_AUTO_CAPTURE = (
+    "--no-transcript-ingest",
+    "--no-commit-ingest",
+    "--no-session-start",
+)
+
+
 def _hook_commands(settings_path: Path) -> list[str]:
     data = _read_settings(settings_path)
     hooks = data["hooks"]
@@ -69,8 +76,11 @@ def _hook_commands(settings_path: Path) -> list[str]:
 
 
 def test_setup_default_command_writes_project_settings(tmp_path: Path) -> None:
+    # Auto-capture hooks default-on as of #529; this test scopes itself to
+    # the UserPromptSubmit (read-side) wiring path by opting them out.
     code, output = _run(
-        "setup", "--scope", "project", "--project-root", str(tmp_path)
+        "setup", "--scope", "project", "--project-root", str(tmp_path),
+        *_OPT_OUT_AUTO_CAPTURE,
     )
     assert code == 0
     settings = _project_settings(tmp_path)
@@ -83,9 +93,13 @@ def test_setup_default_command_writes_project_settings(tmp_path: Path) -> None:
 
 
 def test_setup_idempotent_reports_already_present(tmp_path: Path) -> None:
-    _run("setup", "--scope", "project", "--project-root", str(tmp_path))
+    _run(
+        "setup", "--scope", "project", "--project-root", str(tmp_path),
+        *_OPT_OUT_AUTO_CAPTURE,
+    )
     code, output = _run(
-        "setup", "--scope", "project", "--project-root", str(tmp_path)
+        "setup", "--scope", "project", "--project-root", str(tmp_path),
+        *_OPT_OUT_AUTO_CAPTURE,
     )
     assert code == 0
     assert "already installed" in output
@@ -124,7 +138,9 @@ def test_setup_custom_command_timeout_and_status_message(
 
 def test_setup_explicit_settings_path_overrides_scope(tmp_path: Path) -> None:
     explicit = tmp_path / "weird-place" / "claude.json"
-    code, _ = _run("setup", "--settings-path", str(explicit))
+    code, _ = _run(
+        "setup", "--settings-path", str(explicit), *_OPT_OUT_AUTO_CAPTURE,
+    )
     assert code == 0
     assert explicit.exists()
     # Without an explicit --scope, auto-detect from cwd. Whichever scope
@@ -176,11 +192,56 @@ def test_user_scope_writes_into_monkeypatched_user_path(
     import aelfrice.setup as setup_mod
 
     monkeypatch.setattr(setup_mod, "USER_SETTINGS_PATH", fake_user_settings)
-    code, _ = _run("setup", "--scope", "user")
+    code, _ = _run("setup", "--scope", "user", *_OPT_OUT_AUTO_CAPTURE)
     assert code == 0
     assert fake_user_settings.exists()
     expected = resolve_hook_command("user")
     assert _hook_commands(fake_user_settings) == [expected]
+
+
+def test_setup_default_on_auto_capture_writes_all_hooks(
+    tmp_path: Path,
+) -> None:
+    """Bare `aelf setup` wires the v1.2.0 auto-capture pipeline (#529).
+
+    Asserts UserPromptSubmit + Stop + PreCompact + PostCompact (transcript-
+    ingest), PostToolUse:Bash (commit-ingest), and SessionStart land
+    without any opt-in flag.
+    """
+    code, output = _run(
+        "setup", "--scope", "project", "--project-root", str(tmp_path)
+    )
+    assert code == 0
+    data = _read_settings(_project_settings(tmp_path))
+    hooks = data["hooks"]
+    assert isinstance(hooks, dict)
+    hooks_typed = cast(dict[str, object], hooks)
+    # All four transcript-ingest events present.
+    for event in ("UserPromptSubmit", "Stop", "PreCompact", "PostCompact"):
+        assert event in hooks_typed, f"missing {event} in default setup"
+    # SessionStart and PostToolUse (commit-ingest) present.
+    assert "SessionStart" in hooks_typed, "SessionStart not default-on"
+    assert "PostToolUse" in hooks_typed, "commit-ingest PostToolUse not default-on"
+
+
+def test_setup_no_flags_skip_auto_capture(tmp_path: Path) -> None:
+    """Opt-out flags suppress each auto-capture hook independently (#529)."""
+    code, _ = _run(
+        "setup", "--scope", "project", "--project-root", str(tmp_path),
+        *_OPT_OUT_AUTO_CAPTURE,
+    )
+    assert code == 0
+    data = _read_settings(_project_settings(tmp_path))
+    hooks = data["hooks"]
+    assert isinstance(hooks, dict)
+    hooks_typed = cast(dict[str, object], hooks)
+    # UserPromptSubmit (read-side) is unaffected by these flags.
+    assert "UserPromptSubmit" in hooks_typed
+    # Auto-capture event types should be absent.
+    for event in ("Stop", "PreCompact", "PostCompact", "SessionStart", "PostToolUse"):
+        assert event not in hooks_typed, (
+            f"{event} present despite --no-* opt-out"
+        )
 
 
 # ---------------------------------------------------------------------------
