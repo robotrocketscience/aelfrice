@@ -39,7 +39,15 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Final
 
-from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, ORIGIN_UNKNOWN, Belief
+from aelfrice.models import (
+    BELIEF_FACTUAL,
+    EDGE_CITES,
+    EDGE_SUPPORTS,
+    LOCK_NONE,
+    ORIGIN_UNKNOWN,
+    Belief,
+    Edge,
+)
 from aelfrice.retrieval import retrieve
 from aelfrice.store import MemoryStore
 
@@ -128,6 +136,167 @@ _QUERIES: Final[tuple[_QueryEntry, ...]] = (
 )
 
 
+# --- Multi-hop corpus -------------------------------------------------
+#
+# 3 chains of 4 hops each (12 beliefs total). Each chain anchors on a
+# developer-style identifier that appears in the source belief AND in
+# the edge's anchor_text, but NOT in the terminal belief. That gap is
+# exactly the L2.5 entity-index / edge-traversal gap: L1 BM25 cannot
+# bridge it; L2.5 can.
+#
+# Chain layout (A -> B -> C -> D):
+#   A mentions identifier_X in body.
+#   Edge A->B has anchor_text = "identifier_X".
+#   B does NOT contain identifier_X.
+#   Queries reference identifier_X and ask about D.
+#
+# Bridge identifiers per chain:
+#   Chain 1 (auth):   auth_service.py / AuthController / E_AUTH_001
+#   Chain 2 (ingest): ingest_pipeline.py / DataNormalizer / E_PIPE_002
+#   Chain 3 (config): config_loader.py / SettingsManager / E_CFG_003
+
+
+@dataclass(frozen=True)
+class _MultiHopEntry:
+    id: str
+    content: str
+
+
+_MULTIHOP_CORPUS: Final[tuple[_MultiHopEntry, ...]] = (
+    # --- Chain 1: auth ---
+    # A: auth_service.py is the bridge identifier into B
+    _MultiHopEntry(
+        "mh_auth_01",
+        "auth_service.py validates JWT tokens by checking signature and expiry "
+        "on every inbound API request",
+    ),
+    # B: bridge is referenced only in edge anchor_text, not here
+    _MultiHopEntry(
+        "mh_auth_02",
+        "AuthController delegates session creation to the token factory and "
+        "stores the resulting session identifier in a short-lived cookie",
+    ),
+    # C: AuthController is the bridge identifier into D
+    _MultiHopEntry(
+        "mh_auth_03",
+        "AuthController raises E_AUTH_001 when the token factory reports an "
+        "expired refresh token that cannot be silently renewed",
+    ),
+    # D: target — does NOT contain auth_service.py
+    _MultiHopEntry(
+        "mh_auth_04",
+        "E_AUTH_001 triggers a forced re-login flow in the client that clears "
+        "the local credential cache and redirects to the sign-in page",
+    ),
+    # --- Chain 2: ingest ---
+    # A: ingest_pipeline.py is the bridge identifier into B
+    _MultiHopEntry(
+        "mh_pipe_01",
+        "ingest_pipeline.py reads raw events from the message queue and passes "
+        "each batch to a configurable chain of transformer stages",
+    ),
+    # B: bridge is referenced only in edge anchor_text
+    _MultiHopEntry(
+        "mh_pipe_02",
+        "DataNormalizer converts ISO-8601 timestamps to Unix epoch integers "
+        "and strips null fields before the batch reaches the sink stage",
+    ),
+    # C: DataNormalizer is the bridge identifier into D
+    _MultiHopEntry(
+        "mh_pipe_03",
+        "DataNormalizer raises E_PIPE_002 when a batch contains a record whose "
+        "timestamp field is missing entirely rather than null",
+    ),
+    # D: target — does NOT contain ingest_pipeline.py
+    _MultiHopEntry(
+        "mh_pipe_04",
+        "E_PIPE_002 causes the entire batch to be moved to a dead-letter queue "
+        "and an alert is sent to the on-call rotation",
+    ),
+    # --- Chain 3: config ---
+    # A: config_loader.py is the bridge identifier into B
+    _MultiHopEntry(
+        "mh_cfg_01",
+        "config_loader.py reads YAML files from the config directory and merges "
+        "them with environment variable overrides at startup",
+    ),
+    # B: bridge is referenced only in edge anchor_text
+    _MultiHopEntry(
+        "mh_cfg_02",
+        "SettingsManager caches the merged configuration in memory and exposes "
+        "a typed accessor interface to all subsystems that need runtime config",
+    ),
+    # C: SettingsManager is the bridge identifier into D
+    _MultiHopEntry(
+        "mh_cfg_03",
+        "SettingsManager raises E_CFG_003 when a required key is absent from "
+        "both the YAML file and the environment variable overrides",
+    ),
+    # D: target — does NOT contain config_loader.py
+    _MultiHopEntry(
+        "mh_cfg_04",
+        "E_CFG_003 causes the application to exit with a non-zero status code "
+        "and logs the missing key name to help operators diagnose startup failures",
+    ),
+)
+
+
+@dataclass(frozen=True)
+class _MultiHopEdgeSpec:
+    """Lightweight spec for a CITES/SUPPORTS edge in the multi-hop corpus."""
+
+    src: str
+    dst: str
+    edge_type: str
+    anchor: str
+
+
+# Each edge carries the bridge identifier as anchor_text.
+# Chain 1: auth_service.py bridges A->B; AuthController bridges B->C; E_AUTH_001 bridges C->D.
+# Chain 2: ingest_pipeline.py bridges A->B; DataNormalizer bridges B->C; E_PIPE_002 bridges C->D.
+# Chain 3: config_loader.py bridges A->B; SettingsManager bridges B->C; E_CFG_003 bridges C->D.
+_MULTIHOP_EDGES: Final[tuple[_MultiHopEdgeSpec, ...]] = (
+    # Chain 1 auth
+    _MultiHopEdgeSpec("mh_auth_01", "mh_auth_02", EDGE_CITES, "auth_service.py"),
+    _MultiHopEdgeSpec("mh_auth_02", "mh_auth_03", EDGE_SUPPORTS, "AuthController"),
+    _MultiHopEdgeSpec("mh_auth_03", "mh_auth_04", EDGE_CITES, "E_AUTH_001"),
+    # Chain 2 ingest
+    _MultiHopEdgeSpec("mh_pipe_01", "mh_pipe_02", EDGE_CITES, "ingest_pipeline.py"),
+    _MultiHopEdgeSpec("mh_pipe_02", "mh_pipe_03", EDGE_SUPPORTS, "DataNormalizer"),
+    _MultiHopEdgeSpec("mh_pipe_03", "mh_pipe_04", EDGE_CITES, "E_PIPE_002"),
+    # Chain 3 config
+    _MultiHopEdgeSpec("mh_cfg_01", "mh_cfg_02", EDGE_CITES, "config_loader.py"),
+    _MultiHopEdgeSpec("mh_cfg_02", "mh_cfg_03", EDGE_SUPPORTS, "SettingsManager"),
+    _MultiHopEdgeSpec("mh_cfg_03", "mh_cfg_04", EDGE_CITES, "E_CFG_003"),
+)
+
+
+# 8 multi-hop queries. Surface terms in each query do NOT appear in the
+# target belief. The path from query to target requires traversing at least
+# one CITES/SUPPORTS edge whose anchor_text contains the bridge identifier.
+@dataclass(frozen=True)
+class _MultiHopQuery:
+    query: str
+    correct_id: str
+
+
+_MULTIHOP_QUERIES: Final[tuple[_MultiHopQuery, ...]] = (
+    # Chain 1 — query names auth_service.py, target is mh_auth_04 (E_AUTH_001 behavior)
+    _MultiHopQuery("auth_service.py expired token forced re-login", "mh_auth_04"),
+    _MultiHopQuery("auth_service.py E_AUTH_001 credential cache redirect", "mh_auth_04"),
+    # Chain 1 — query names AuthController, target is mh_auth_04
+    _MultiHopQuery("AuthController session creation E_AUTH_001 behavior", "mh_auth_04"),
+    # Chain 2 — query names ingest_pipeline.py, target is mh_pipe_04 (dead-letter)
+    _MultiHopQuery("ingest_pipeline.py batch processing dead-letter", "mh_pipe_04"),
+    _MultiHopQuery("ingest_pipeline.py E_PIPE_002 alert on-call", "mh_pipe_04"),
+    # Chain 3 — query names config_loader.py, target is mh_cfg_04 (exit behavior)
+    _MultiHopQuery("config_loader.py startup failure exit status", "mh_cfg_04"),
+    _MultiHopQuery("config_loader.py E_CFG_003 missing key operator", "mh_cfg_04"),
+    # Chain 3 — query names SettingsManager, target is mh_cfg_04
+    _MultiHopQuery("SettingsManager E_CFG_003 application exit non-zero", "mh_cfg_04"),
+)
+
+
 # --- Scored output ----------------------------------------------------
 
 
@@ -179,6 +348,48 @@ def seed_corpus(store: MemoryStore, *, created_at: str = "2026-04-26T00:00:00Z")
             )
         )
         inserted += 1
+    return inserted
+
+
+def seed_multihop_corpus(
+    store: MemoryStore, *, created_at: str = "2026-04-26T00:00:00Z"
+) -> int:
+    """Insert the multi-hop benchmark corpus and edges into ``store``.
+
+    Inserts the 12 beliefs from ``_MULTIHOP_CORPUS`` followed by all 9 edges
+    from ``_MULTIHOP_EDGES``. Returns the number of beliefs inserted (12).
+    The caller is responsible for creating the store; this function does not
+    seed the original 16-belief corpus.
+    """
+    inserted = 0
+    for entry in _MULTIHOP_CORPUS:
+        store.insert_belief(
+            Belief(
+                id=entry.id,
+                content=entry.content,
+                content_hash=f"bench_{entry.id}",
+                alpha=1.0,
+                beta=1.0,
+                type=BELIEF_FACTUAL,
+                lock_level=LOCK_NONE,
+                locked_at=None,
+                demotion_pressure=0,
+                created_at=created_at,
+                last_retrieved_at=None,
+                origin=ORIGIN_UNKNOWN,
+            )
+        )
+        inserted += 1
+    for spec in _MULTIHOP_EDGES:
+        store.insert_edge(
+            Edge(
+                src=spec.src,
+                dst=spec.dst,
+                type=spec.edge_type,
+                weight=1.0,
+                anchor_text=spec.anchor,
+            )
+        )
     return inserted
 
 
