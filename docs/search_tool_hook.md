@@ -171,7 +171,7 @@ Tactics:
 3. **Cap token count and per-token length.** First 5 tokens, ≥ 3
    chars each. Bounds FTS5 query complexity.
 4. **Reduced retrieval budget.** `token_budget=600`, `l1_limit=10` —
-   well below the user-facing default 2000 / 50.
+   well below the user-facing default 2400 / 50.
 5. **Read-only access.** No write paths — the hook only reads the
    FTS5 index and the locked-beliefs table.
 
