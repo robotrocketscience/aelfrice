@@ -4140,8 +4140,10 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_regime = sub.add_parser("regime", help=argparse.SUPPRESS)
     p_regime.set_defaults(func=_cmd_regime)
 
-    # Hidden: one-shot v1.0 -> v1.1 migration; the era is over.
-    p_migrate = sub.add_parser("migrate", help=argparse.SUPPRESS)
+    p_migrate = sub.add_parser(
+        "migrate",
+        help="copy beliefs from a legacy per-project DB into the current one",
+    )
     p_migrate.add_argument(
         "--from", dest="from_path", default=None,
         help="legacy DB path (default: ~/.aelfrice/memory.db)",
