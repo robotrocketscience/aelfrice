@@ -2,7 +2,7 @@
 
 Iteration spec for issue [#374](https://github.com/robotrocketscience/aelfrice/issues/374). Successor memo to [`v2_enforcement.md` § H1](v2_enforcement.md#h1-directive-detection--defer-to-v2x-with-benchmark-gate); does not re-decide the deferral or the gate, only the path to clearing it.
 
-Status: deferred. Harness shipped (PR [#377](https://github.com/robotrocketscience/aelfrice/pull/377)). Candidate detector measured at P=0.664 / R=0.937 against the lab corpus v0.1 (285 rows, ≥200 floor met). Below the P≥0.80 floor, so H1 stays deferred per spec; iteration target is precision, not recall.
+Status: deferred. Harness shipped (PR [#377](https://github.com/robotrocketscience/aelfrice/pull/377)). Path A intent-prefix filter shipped at PR [#374](https://github.com/robotrocketscience/aelfrice/pull/374) — `src/aelfrice/directive_detector.py` is in-tree. Candidate detector measured at P=0.664 / R=0.937 against the lab corpus v0.1 (285 rows, ≥200 floor met). Below the P≥0.80 floor, so H1 stays deferred per spec; iteration target is precision, not recall.
 
 ## What's being decided
 
