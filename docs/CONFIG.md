@@ -167,11 +167,11 @@ The trade-off vs. `exclude_words`: phrase match is a literal substring, no word 
 
 ### `[onboard.llm]` (v1.3.0+)
 
-Opt-in LLM-Haiku classifier for onboard ingest. Replaces the default regex `classify_sentence` path with one Haiku call per onboard run. Default: off. Boundary policy: [`docs/llm_classifier.md`](llm_classifier.md). Privacy: [`docs/PRIVACY.md § Optional outbound calls`](PRIVACY.md#optional-outbound-calls).
+Host-driven LLM classifier for onboard ingest. Replaces the default regex `classify_sentence` path with the host model's Task tool (no API key required) — direct-API fallback gated by the `[onboard-llm]` extra. Default at v1.5.1+ (#238): on (`enabled = true`); soft-fallback to the regex classifier when no host Task tool is reachable. Boundary policy: [`docs/llm_classifier.md`](llm_classifier.md). Privacy: [`docs/PRIVACY.md § Optional outbound calls`](PRIVACY.md#optional-outbound-calls).
 
 | Key | Type | Default | Effect |
 |---|---|---|---|
-| `enabled` | bool | `false` | Turns on the LLM path when no `--llm-classify` flag is passed. The CLI flag wins on conflict; pass `--llm-classify=false` to force regex even when this is `true`. |
+| `enabled` | bool | `true` (since v1.5.1, #238; was `false` v1.3.0–v1.5.0) | Turns on the LLM path when no `--llm-classify` flag is passed. The CLI flag wins on conflict; pass `--llm-classify=false` to force regex even when this is `true`. |
 | `max_tokens` | int | `200_000` | Hard cap on total input+output tokens per onboard run. The classifier aborts mid-stream when exceeded; already-classified candidates persist and the deterministic belief id ensures a re-run resumes idempotently. `0` disables the cap (power-user). |
 | `model` | str | `"claude-haiku-4-5-20251001"` | Anthropic model id. Pinned by default. Override only if you have a reason — classification recall and the few-shot block are calibrated against the pinned model. |
 
