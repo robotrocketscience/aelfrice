@@ -481,13 +481,39 @@ def measure_token_cost(
     return rebuilt_tokens / pre_clear_tokens
 
 
+def _run_subdir(
+    base: Path | None,
+    case: TranscriptCase,
+    trigger_threshold: float,
+    token_budget: int,
+) -> Path | None:
+    """Compute a deterministic per-(case, config) subdirectory under `base`.
+
+    Returns None if `base` is None — replay_post_fork falls back to its
+    placeholder mode in that case. The slug embeds threshold + budget so
+    a sweep produces one request file per (case, threshold, budget) cell
+    rather than overwriting a single shared file.
+    """
+    if base is None:
+        return None
+    return base / f"{case.path.stem}__t{trigger_threshold}__b{token_budget}"
+
+
 def run_one(
     case: TranscriptCase,
     *,
     trigger_threshold: float,
     token_budget: int,
+    run_dir: Path | None = None,
 ) -> RunResult:
-    """End-to-end one run on one case at one config."""
+    """End-to-end one run on one case at one config.
+
+    When `run_dir` is provided, `replay_post_fork` writes a per-run
+    `replay_requests.jsonl` under `<run_dir>/<case_stem>__t<threshold>__b<budget>/`
+    and joins any matching `replay_responses.jsonl`. Non-None default
+    is opt-in; bare callers (the v1.2.0 stub path) get unchanged
+    behaviour.
+    """
     store = replay_to_fork(case)
     t0 = time.monotonic()
     rebuilt, latency_ms = run_rebuilder(
@@ -496,7 +522,8 @@ def run_one(
         trigger_threshold=trigger_threshold,
         token_budget=token_budget,
     )
-    replay = replay_post_fork(rebuilt, case)
+    case_run_dir = _run_subdir(run_dir, case, trigger_threshold, token_budget)
+    replay = replay_post_fork(rebuilt, case, run_dir=case_run_dir)
     fidelity = score_fidelity(replay)
     cost_ratio = measure_token_cost(rebuilt, case)
     return RunResult(
@@ -520,9 +547,15 @@ def sweep_thresholds(
     *,
     thresholds: tuple[float, ...] = (0.5, 0.6, 0.7, 0.8, 0.9),
     token_budget: int = 2000,
+    run_dir: Path | None = None,
 ) -> SweepResult:
     runs = [
-        run_one(case, trigger_threshold=t, token_budget=token_budget)
+        run_one(
+            case,
+            trigger_threshold=t,
+            token_budget=token_budget,
+            run_dir=run_dir,
+        )
         for case in cases
         for t in thresholds
     ]
@@ -535,9 +568,15 @@ def sweep_budgets(
     *,
     budgets: tuple[int, ...] = (500, 1000, 2000, 4000),
     trigger_threshold: float = 0.7,
+    run_dir: Path | None = None,
 ) -> SweepResult:
     runs = [
-        run_one(case, trigger_threshold=trigger_threshold, token_budget=b)
+        run_one(
+            case,
+            trigger_threshold=trigger_threshold,
+            token_budget=b,
+            run_dir=run_dir,
+        )
         for case in cases
         for b in budgets
     ]
@@ -601,6 +640,19 @@ def main() -> int:
     p.add_argument("--mode", choices=("threshold-sweep", "budget-sweep", "dynamic", "regression"), required=True)
     p.add_argument("--corpus", type=Path, required=True)
     p.add_argument("--out", type=Path, required=True)
+    p.add_argument(
+        "--run-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Optional base directory under which replay_post_fork writes "
+            "per-(case, config) replay_requests.jsonl and reads "
+            "replay_responses.jsonl. Without this flag the harness emits "
+            "placeholder rows (reason=needs_replay_client) and skips file "
+            "IO. See benchmarks/context-rebuilder/README.md for the "
+            "host-agent eval-replay flow (#600)."
+        ),
+    )
     args = p.parse_args()
 
     cases = load_corpus(args.corpus)
@@ -609,9 +661,9 @@ def main() -> int:
         return 1
 
     if args.mode == "threshold-sweep":
-        result = sweep_thresholds(cases)
+        result = sweep_thresholds(cases, run_dir=args.run_dir)
     elif args.mode == "budget-sweep":
-        result = sweep_budgets(cases)
+        result = sweep_budgets(cases, run_dir=args.run_dir)
     elif args.mode == "dynamic":
         raise NotImplementedError("dynamic mode lands once the heuristic exists")
     elif args.mode == "regression":
