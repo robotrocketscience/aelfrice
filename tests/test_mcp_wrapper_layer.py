@@ -59,6 +59,7 @@ _EXPECTED_TOOLS: dict[str, str] = {
     "aelf_confirm": "tool_confirm",
     "aelf_stats": "tool_stats",
     "aelf_health": "tool_health",
+    "aelf_wonder": "tool_wonder",
 }
 
 
@@ -209,7 +210,7 @@ def fastmcp_shim(
     return shim
 
 
-def test_shim_registers_all_twelve_tools(fastmcp_shim: _FakeFastMCP) -> None:
+def test_shim_registers_all_expected_tools(fastmcp_shim: _FakeFastMCP) -> None:
     expected = set(_EXPECTED_TOOLS)
     got = set(fastmcp_shim.tools)
     missing = expected - got
@@ -240,7 +241,9 @@ def test_shim_annotation_keys_are_complete(fastmcp_shim: _FakeFastMCP) -> None:
 
 def test_shim_read_only_set_matches_expected(fastmcp_shim: _FakeFastMCP) -> None:
     """Catch annotation drift: the read-only set is canonical."""
-    expected_read_only = {"aelf_search", "aelf_locked", "aelf_stats", "aelf_health"}
+    expected_read_only = {
+        "aelf_search", "aelf_locked", "aelf_stats", "aelf_health", "aelf_wonder",
+    }
     got_read_only = {
         name for name, captured in fastmcp_shim.tools.items()
         if captured.annotations.get("readOnlyHint") is True
