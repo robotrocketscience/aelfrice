@@ -34,6 +34,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from aelfrice.context_rebuilder import (  # noqa: E402
+    DEFAULT_N_RECENT_TURNS,
+    DEFAULT_REBUILDER_TOKEN_BUDGET,
+    RecentTurn,
+    rebuild_v14,
+)
 from aelfrice.ingest import ingest_jsonl  # noqa: E402
 from aelfrice.store import MemoryStore  # noqa: E402
 
@@ -133,20 +139,77 @@ def replay_to_fork(case: TranscriptCase) -> MemoryStore:
     return store
 
 
+def _recent_turns_pre_fork(
+    case: TranscriptCase, n: int = DEFAULT_N_RECENT_TURNS,
+) -> list[RecentTurn]:
+    """Build the last `n` RecentTurn records from turns 0..fork_turn-1.
+
+    Mirrors the production hook's adapter: each line is a JSON object
+    with `role` and `text`, plus an optional `session_id`. Lines that
+    don't carry role/text are skipped (compaction markers, malformed).
+    """
+    turns: list[RecentTurn] = []
+    if case.fork_turn <= 0:
+        return turns
+    with case.path.open("r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            if i >= case.fork_turn:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(obj, dict):
+                continue
+            role = obj.get("role")
+            text = obj.get("text")
+            if not isinstance(role, str) or not isinstance(text, str):
+                continue
+            sid = obj.get("session_id")
+            turns.append(
+                RecentTurn(
+                    role=role, text=text,
+                    session_id=sid if isinstance(sid, str) else None,
+                )
+            )
+    return turns[-n:]
+
+
 def run_rebuilder(
-    store: object,
+    store: MemoryStore,
     case: TranscriptCase,
     *,
     trigger_threshold: float,
     token_budget: int,
 ) -> tuple[str, float]:
-    """Run the rebuilder against the store at the fork point.
+    """Run the v1.4 rebuilder against the store at the fork point.
 
-    Returns (rebuilt_context_block, latency_ms). TODO: wire to
-    aelfrice.context_rebuilder.rebuild() once context_rebuilder spec
-    ships an implementation.
+    Returns `(rebuilt_context_block, latency_ms)`. Latency is measured
+    via `time.monotonic()` so it stays monotonic by construction.
+
+    `trigger_threshold` is wired to `rebuild_v14`'s per-lane composite-
+    score floors (`floor_session` and `floor_l1`). The v1.7 floor knob
+    is the closest existing rebuild-time parameter to the harness's
+    "threshold-sweep" axis; sweeping it answers "at what relevance
+    floor does the rebuilder still pack useful content for this task?"
+    L0 locked beliefs are unaffected by the floor — they always pack
+    per the documented v1.4 contract.
+
+    `token_budget` is forwarded directly to `rebuild_v14`.
     """
-    raise NotImplementedError("Wire to context_rebuilder.rebuild()")
+    recent = _recent_turns_pre_fork(case)
+    t0 = time.monotonic()
+    rebuilt = rebuild_v14(
+        recent, store,
+        token_budget=token_budget,
+        floor_session=trigger_threshold,
+        floor_l1=trigger_threshold,
+    )
+    latency_ms = (time.monotonic() - t0) * 1000.0
+    return rebuilt, latency_ms
 
 
 def replay_post_fork(

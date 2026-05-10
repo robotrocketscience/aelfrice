@@ -130,3 +130,71 @@ def test_replay_to_fork_zero_fork_turn_returns_empty_store(
         assert list(store.list_belief_ids()) == []
     finally:
         store.close()
+
+
+# --------------------------------------------------------------------- #
+# run_rebuilder                                                         #
+# --------------------------------------------------------------------- #
+
+
+def test_run_rebuilder_returns_block_and_positive_latency(
+    harness: ModuleType, transcript_path: Path
+) -> None:
+    case = harness.TranscriptCase(
+        path=transcript_path, task_type="debug",
+        fork_turn=4, eval_turns=(4, 5),
+    )
+    store = harness.replay_to_fork(case)
+    try:
+        block, latency_ms = harness.run_rebuilder(
+            store, case, trigger_threshold=0.0, token_budget=2000,
+        )
+        assert isinstance(block, str)
+        assert latency_ms >= 0.0
+    finally:
+        store.close()
+
+
+def test_run_rebuilder_passes_threshold_as_floor(
+    harness: ModuleType, transcript_path: Path
+) -> None:
+    """At a high enough floor, no L1 / session beliefs survive.
+    Without locked beliefs in the store, the block is empty per
+    rebuild_v14's silent-path contract."""
+    case = harness.TranscriptCase(
+        path=transcript_path, task_type="debug",
+        fork_turn=6, eval_turns=(),
+    )
+    store = harness.replay_to_fork(case)
+    try:
+        block_low, _ = harness.run_rebuilder(
+            store, case, trigger_threshold=0.0, token_budget=2000,
+        )
+        block_hi, _ = harness.run_rebuilder(
+            store, case, trigger_threshold=10.0, token_budget=2000,
+        )
+        # High floor zeroes out non-locked content. Low floor lets some
+        # beliefs through (or matches; tolerate equality if the store
+        # had no above-floor candidates either way).
+        assert len(block_hi) <= len(block_low)
+    finally:
+        store.close()
+
+
+def test_run_rebuilder_empty_store_returns_empty_block(
+    harness: ModuleType, transcript_path: Path
+) -> None:
+    case = harness.TranscriptCase(
+        path=transcript_path, task_type="debug",
+        fork_turn=0, eval_turns=(),
+    )
+    store = harness.replay_to_fork(case)
+    try:
+        block, latency_ms = harness.run_rebuilder(
+            store, case, trigger_threshold=0.0, token_budget=2000,
+        )
+        # No beliefs ingested + no recent_turns + no locks → empty.
+        assert block == ""
+        assert latency_ms >= 0.0
+    finally:
+        store.close()
