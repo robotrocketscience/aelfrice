@@ -908,9 +908,10 @@ def resolve_use_intentional_clustering(
       1. AELFRICE_INTENTIONAL_CLUSTERING env var (truthy / falsy normalised).
       2. Explicit `explicit` kwarg from the caller.
       3. `[retrieval] use_intentional_clustering` in `.aelfrice.toml`.
-      4. Default: False — ships behind the flag at v2.0.0; the bench gate
-         (A2 in docs/feature-intentional-clustering.md) flips the default
-         after lab-side benchmark evidence clears.
+      4. Default: True — flipped from False after the A4 latency bench
+         gate cleared on the multi-store production sweep (#436 R6, 60/60
+         PASS at p99 0.328ms ~ 15-30x margin under the 5ms budget). See
+         docs/feature-intentional-clustering.md A2 + A4.
     """
     env = _env_intentional_clustering_override()
     if env is not None:
@@ -920,7 +921,7 @@ def resolve_use_intentional_clustering(
     toml_value = _read_toml_flag_for(INTENTIONAL_CLUSTERING_FLAG, start)
     if toml_value is not None:
         return toml_value
-    return False
+    return True
 
 
 def resolve_use_vocab_bridge(

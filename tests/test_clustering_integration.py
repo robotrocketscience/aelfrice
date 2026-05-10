@@ -70,8 +70,8 @@ def _isolated_cwd(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 # --- Flag resolution ---------------------------------------------------
 
 
-def test_default_is_off(_no_env_override: None, _isolated_cwd: Path) -> None:
-    assert resolve_use_intentional_clustering() is False
+def test_default_is_on(_no_env_override: None, _isolated_cwd: Path) -> None:
+    assert resolve_use_intentional_clustering() is True
 
 
 def test_explicit_kwarg_overrides_default(
@@ -94,8 +94,8 @@ def test_env_garbage_falls_through(
     monkeypatch: pytest.MonkeyPatch, _isolated_cwd: Path
 ) -> None:
     monkeypatch.setenv(ENV_INTENTIONAL_CLUSTERING, "maybe")
-    assert resolve_use_intentional_clustering() is False
-    assert resolve_use_intentional_clustering(True) is True
+    assert resolve_use_intentional_clustering() is True
+    assert resolve_use_intentional_clustering(False) is False
 
 
 def test_toml_resolves_when_kwarg_and_env_unset(
@@ -146,27 +146,30 @@ def _populate_clustered_store() -> MemoryStore:
     return s
 
 
-def test_default_call_byte_identical_to_explicit_off(
+def test_default_call_byte_identical_to_explicit_on(
     _no_env_override: None, _isolated_cwd: Path
 ) -> None:
-    """Default and explicit-OFF must agree on the merged belief id list.
+    """Default and explicit-ON must agree on the merged belief id list.
 
-    This is the OFF-byte-identity invariant that makes the wiring safe to
-    land default-OFF — pre-#436-Phase-2 callers see no behavior change."""
+    Post-#436 default-flip: callers that don't pass the kwarg get the
+    same selection as callers that pass `use_intentional_clustering=True`.
+    Operators wanting v2.0.x parity opt out via
+    `[retrieval] use_intentional_clustering = false` or
+    `AELFRICE_INTENTIONAL_CLUSTERING=0`."""
     s = _populate_clustered_store()
-    explicit_off = retrieve_v2(
+    explicit_on = retrieve_v2(
         s, "deploy sqlite",
         budget=2400,
         use_entity_index=False,
-        use_intentional_clustering=False,
+        use_intentional_clustering=True,
     )
-    default_off = retrieve_v2(
+    default_on = retrieve_v2(
         s, "deploy sqlite",
         budget=2400,
         use_entity_index=False,
     )
-    assert [b.id for b in explicit_off.beliefs] \
-        == [b.id for b in default_off.beliefs]
+    assert [b.id for b in explicit_on.beliefs] \
+        == [b.id for b in default_on.beliefs]
 
 
 def test_clustering_changes_selection_at_tight_budget(
