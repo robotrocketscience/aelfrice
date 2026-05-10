@@ -40,10 +40,19 @@ def extract_sentences(text: str) -> list[str]:
     cleaned = re.sub(r"^#{1,6}\s+", "", cleaned, flags=re.MULTILINE)
     # Bold: **text** or __text__
     cleaned = re.sub(r"\*{2}([^*]*)\*{2}", r"\1", cleaned)
-    cleaned = re.sub(r"_{2}([^_]*)_{2}", r"\1", cleaned)
+    # Underscore-bold/italic must be at a true word boundary so
+    # snake_case identifiers and file paths like ``auth_service.py``
+    # are not mangled. Negative lookbehind/lookahead require non-
+    # alphanumeric context outside the underscore (``\b`` does not
+    # work because ``_`` is in ``\w``).
+    cleaned = re.sub(
+        r"(?<![A-Za-z0-9])_{2}([^_]*)_{2}(?![A-Za-z0-9])", r"\1", cleaned,
+    )
     # Italic: *text* or _text_ (single, not double)
     cleaned = re.sub(r"\*([^*]+)\*", r"\1", cleaned)
-    cleaned = re.sub(r"_([^_]+)_", r"\1", cleaned)
+    cleaned = re.sub(
+        r"(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])", r"\1", cleaned,
+    )
     # Markdown table rows: lines containing | characters
     cleaned = re.sub(r"^\s*\|.*\|\s*$", " ", cleaned, flags=re.MULTILINE)
     # List markers: leading -, *, +, or numbered list items

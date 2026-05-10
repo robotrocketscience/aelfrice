@@ -57,3 +57,54 @@ def test_strips_table_rows_and_list_markers() -> None:
     out = extract_sentences(text)
     assert all("|" not in s for s in out)
     assert any("Intro paragraph" in s for s in out)
+
+
+def test_underscore_identifiers_preserved() -> None:
+    """Regression: italic-stripping regex must not mangle snake_case
+    identifiers, file paths, or error codes that contain underscores."""
+    text = "The auth_service.py module imports from user_session.py."
+    out = extract_sentences(text)
+    joined = " ".join(out)
+    assert "auth_service.py" in joined, f"snake_case file_path mangled: {joined!r}"
+    assert "user_session.py" in joined, f"snake_case file_path mangled: {joined!r}"
+
+
+def test_multiple_underscored_tokens_preserved() -> None:
+    """Regression: multiple underscored tokens in one sentence must
+    not be glued together by an unanchored italic regex."""
+    text = "The error E_AUTH_001 is raised by auth_service.py at runtime."
+    out = extract_sentences(text)
+    joined = " ".join(out)
+    assert "E_AUTH_001" in joined, f"error_code mangled: {joined!r}"
+    assert "auth_service.py" in joined, f"file_path mangled: {joined!r}"
+
+
+def test_underscore_italic_still_stripped() -> None:
+    """The fix must keep stripping real Markdown italic at word
+    boundaries (whitespace/punctuation outside the underscores)."""
+    text = "This is _emphasized_ text in a sentence."
+    out = extract_sentences(text)
+    joined = " ".join(out)
+    assert "_emphasized_" not in joined
+    assert "emphasized" in joined
+
+
+def test_underscore_bold_still_stripped() -> None:
+    """The fix must keep stripping real Markdown __bold__ at word
+    boundaries."""
+    text = "This is __very important__ to remember in a sentence."
+    out = extract_sentences(text)
+    joined = " ".join(out)
+    assert "__very important__" not in joined
+    assert "very important" in joined
+
+
+def test_mixed_italic_and_identifier() -> None:
+    """A sentence containing both real italic and identifiers must
+    strip the italic and preserve the identifier."""
+    text = "Use _emphasis_ when documenting auth_service.py behavior in a sentence."
+    out = extract_sentences(text)
+    joined = " ".join(out)
+    assert "_emphasis_" not in joined
+    assert "emphasis" in joined
+    assert "auth_service.py" in joined
