@@ -788,6 +788,7 @@ def format_report(report: DoctorReport) -> str:
     _format_user_prompt_submit_telemetry_section(report, lines)
     _format_missing_runtime_deps_section(report, lines)
     _format_missing_auto_capture_section(report, lines)
+    _format_legacy_schema_section(report, lines)
     return "\n".join(lines)
 
 
@@ -909,6 +910,29 @@ def _check_legacy_schema_dbs(
             con.close()
 
     return results
+
+
+def _format_legacy_schema_section(
+    report: DoctorReport, lines: list[str],
+) -> None:
+    """Append the pre-v1.x legacy-schema nag block (#589) to `lines`.
+
+    Quiet when no legacy DBs are found (parity with #557 quietness).
+    """
+    if not report.legacy_schema_dbs:
+        return
+    lines.append("")
+    lines.append(
+        "legacy-schema per-project DBs detected (pre-v1.x, no `origin` column)."
+    )
+    for entry in report.legacy_schema_dbs:
+        lines.append(
+            f"  {entry.path} ({entry.row_count:,} beliefs, idle {entry.idle_days}d)"
+        )
+    lines.append(
+        "fix: `aelf migrate --from <path> --apply` per DB to copy beliefs "
+        "into the current project's modern-schema DB."
+    )
 
 
 def _format_missing_runtime_deps_section(
