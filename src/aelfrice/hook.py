@@ -344,6 +344,7 @@ _AUDIT_ENV_DISABLE: Final[str] = "AELFRICE_HOOK_AUDIT"
 
 AUDIT_HOOK_USER_PROMPT_SUBMIT: Final[str] = "user_prompt_submit"
 AUDIT_HOOK_SESSION_START: Final[str] = "session_start"
+AUDIT_HOOK_SENTIMENT_FEEDBACK: Final[str] = "sentiment_feedback"
 
 
 @dataclass(frozen=True)
@@ -699,6 +700,12 @@ def user_prompt_submit(
             else DEFAULT_HOOK_TOKEN_BUDGET
         )
         config = load_user_prompt_submit_config(stderr=serr)
+        # #606: sentiment-feedback lane — apply correction signals from
+        # this prompt to the prior UPS turn's retrieved beliefs BEFORE
+        # this turn's retrieval, so demoted posteriors are reflected in
+        # the hits returned here. Default-off, fail-soft, opt-in via
+        # `[feedback] sentiment_from_prose = true` in `.aelfrice.toml`.
+        apply_sentiment_feedback(prompt, session_id, stderr=serr)
         retrieve_start = time.monotonic()
         hits = _retrieve(prompt, budget)
         if hits:
@@ -910,6 +917,230 @@ def _open_store() -> MemoryStore:
     if str(p) != ":memory:":
         p.parent.mkdir(parents=True, exist_ok=True)
     return MemoryStore(str(p))
+
+
+# ---------------------------------------------------------------------------
+# Sentiment-feedback hook lane (#606)
+# ---------------------------------------------------------------------------
+
+
+def _load_aelfrice_toml(
+    start: Path | None = None,
+    *,
+    stderr: IO[str] | None = None,
+) -> dict[str, Any]:
+    """Walk up from `start` looking for `.aelfrice.toml` and return the
+    full parsed mapping. Returns `{}` when no file is found, the file is
+    unreadable, or the TOML is malformed. Fail-soft: never raises.
+
+    Used by the sentiment-feedback lane to resolve `[feedback]` config.
+    The two existing per-section loaders (`load_user_prompt_submit_config`,
+    `load_hook_audit_config`) are kept as-is so their typed-config return
+    contract is unchanged; this helper exists for callers that need the
+    whole document (e.g. modules with their own `is_enabled(config)`
+    surface like `sentiment_feedback.is_enabled`).
+    """
+    serr: IO[str] = stderr if stderr is not None else sys.stderr
+    current = (start if start is not None else Path.cwd()).resolve()
+    seen: set[Path] = set()
+    while current not in seen:
+        seen.add(current)
+        candidate = current / _CONFIG_FILENAME
+        if candidate.is_file():
+            try:
+                raw = candidate.read_bytes()
+            except OSError as exc:
+                print(
+                    f"aelfrice hook: cannot read {candidate}: {exc}",
+                    file=serr,
+                )
+                return {}
+            try:
+                return cast(
+                    dict[str, Any],
+                    tomllib.loads(raw.decode("utf-8", errors="replace")),
+                )
+            except tomllib.TOMLDecodeError as exc:
+                print(
+                    f"aelfrice hook: malformed TOML in {candidate}: {exc}",
+                    file=serr,
+                )
+                return {}
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return {}
+
+
+def _load_prior_ups_belief_ids(
+    session_id: str,
+    *,
+    stderr: IO[str] | None = None,
+) -> list[str]:
+    """Return the belief ids surfaced by the most-recent prior
+    UserPromptSubmit hook fire in `session_id`.
+
+    Reads `hook_audit.jsonl` (and any rotated `.1` file), filters to UPS
+    rows for the matching session, and projects `beliefs[*].id` from the
+    final match. Returns `[]` when:
+
+    - audit is disabled (file missing),
+    - the session has no prior UPS fires recorded,
+    - the most-recent prior fire returned zero beliefs,
+    - any I/O or JSON-shape error occurs (fail-soft).
+
+    The rotated `.1` slot is also scanned so a session that crossed a
+    rotation boundary still surfaces its prior turn. Rotation is a rare
+    event (10 MB default cap) so the extra read is cheap.
+    """
+    if not session_id:
+        return []
+    try:
+        p = db_path()
+        if str(p) == ":memory:":
+            return []
+        audit_path = _audit_path_for_db(p)
+        rotated = audit_path.with_name(audit_path.name + AUDIT_ROTATED_SUFFIX)
+    except Exception:
+        return []
+    candidates: list[Path] = []
+    if rotated.exists():
+        candidates.append(rotated)
+    if audit_path.exists():
+        candidates.append(audit_path)
+    if not candidates:
+        return []
+    last_belief_ids: list[str] = []
+    try:
+        for path in candidates:
+            for record in read_hook_audit(path):
+                if record.get("hook") != AUDIT_HOOK_USER_PROMPT_SUBMIT:
+                    continue
+                if record.get("session_id") != session_id:
+                    continue
+                beliefs_obj: Any = record.get("beliefs")
+                if not isinstance(beliefs_obj, list):
+                    continue
+                ids: list[str] = []
+                for b in beliefs_obj:
+                    if not isinstance(b, dict):
+                        continue
+                    bid = b.get("id")
+                    if isinstance(bid, str) and bid:
+                        ids.append(bid)
+                last_belief_ids = ids
+    except (ValueError, OSError) as exc:
+        print(
+            f"aelfrice: prior-UPS audit scan failed (non-fatal): {exc}",
+            file=stderr if stderr is not None else sys.stderr,
+        )
+        return []
+    return last_belief_ids
+
+
+def apply_sentiment_feedback(
+    prompt: str,
+    session_id: str | None,
+    *,
+    stderr: IO[str] | None = None,
+) -> int:
+    """Detect sentiment in `prompt` and apply it to the prior UPS turn's
+    retrieved beliefs.
+
+    Returns the number of beliefs whose posterior was updated. Returns
+    0 on:
+
+    - sentiment-from-prose disabled in config (default off),
+    - no sentiment signal detected in the prompt,
+    - no prior UPS fire in this session (or audit disabled),
+    - prior fire returned zero beliefs,
+    - any internal error (fail-soft).
+
+    Always writes a `sentiment_feedback`-tagged hook-audit row when a
+    signal fires, even if zero beliefs are updated (e.g. all prior ids
+    have since been deleted) — the row records that the lane considered
+    the prompt. Disabled-by-config short-circuits before audit.
+    """
+    serr: IO[str] = stderr if stderr is not None else sys.stderr
+    if not prompt or not session_id:
+        return 0
+    try:
+        from aelfrice import sentiment_feedback as sf  # noqa: PLC0415
+    except Exception:  # pragma: no cover — defensive
+        return 0
+    try:
+        toml_cfg = _load_aelfrice_toml(stderr=serr)
+        if not sf.is_enabled(toml_cfg):
+            return 0
+        signal = sf.detect_sentiment(prompt)
+        if signal is None:
+            return 0
+        prior_ids = _load_prior_ups_belief_ids(session_id, stderr=serr)
+        if not prior_ids:
+            return 0
+        store = _open_store()
+        try:
+            results = sf.apply_sentiment_to_pending(
+                store=store,
+                signal=signal,
+                pending_belief_ids=prior_ids,
+            )
+        finally:
+            store.close()
+        applied_ids = [r.belief_id for r in results]
+        _write_sentiment_feedback_audit(
+            prompt=prompt,
+            session_id=session_id,
+            signal=signal,
+            applied_ids=applied_ids,
+            stderr=serr,
+        )
+        return len(applied_ids)
+    except Exception as exc:
+        print(
+            f"aelfrice: sentiment-feedback hook failed (non-fatal): {exc}",
+            file=serr,
+        )
+        return 0
+
+
+def _write_sentiment_feedback_audit(
+    *,
+    prompt: str,
+    session_id: str,
+    signal: "Any",
+    applied_ids: list[str],
+    stderr: IO[str] | None = None,
+) -> None:
+    """Append one hook-audit row tagged `sentiment_feedback`. Fail-soft.
+
+    Distinct from `_write_hook_audit_record`: the sentiment row carries
+    pattern/matched_text/valence/applied_ids — fields the UPS audit row
+    does not have. Reuses the same JSONL file + rotation policy.
+    """
+    cfg = load_hook_audit_config(stderr=stderr)
+    if not cfg.enabled:
+        return
+    try:
+        p = db_path()
+        audit_path = _audit_path_for_db(p)
+    except Exception:
+        return
+    record: dict[str, object] = {
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "hook": AUDIT_HOOK_SENTIMENT_FEEDBACK,
+        "session_id": session_id,
+        "prompt_prefix": prompt[:AUDIT_PROMPT_PREFIX_CAP],
+        "sentiment": signal.sentiment,
+        "pattern": signal.pattern,
+        "matched_text": signal.matched_text,
+        "valence": signal.valence,
+        "confidence": signal.confidence,
+        "belief_ids": applied_ids,
+        "n_beliefs": len(applied_ids),
+    }
+    _append_audit(audit_path, record, cfg.max_bytes, stderr=stderr)
 
 
 # ---------------------------------------------------------------------------
