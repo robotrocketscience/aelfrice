@@ -319,3 +319,138 @@ def test_find_aelfrice_log_returns_none_outside_git(
 def test_default_token_budget_matches_spec_default() -> None:
     """Spec docs/specs/context_rebuilder.md sets default 2000."""
     assert DEFAULT_TOKEN_BUDGET == 2000
+
+
+# ---- <working-state> emission (#587) ---------------------------------
+
+
+def test_rebuild_v14_emits_working_state_when_provided(tmp_path: Path) -> None:
+    """rebuild_v14 surfaces a populated WorkingState as a <working-state> sub-block."""
+    from aelfrice.context_rebuilder import rebuild_v14
+    from aelfrice.working_state import WorkingState
+    store = _seed(tmp_path / "m.db", [_mk("F1", "kitchen has bananas")])
+    ws = WorkingState(
+        branch="feat/issue-587-hot-start",
+        status_porcelain=["M  src/aelfrice/foo.py", "?? new.txt"],
+        recent_log=["abc1234 feat: add foo"],
+        recent_user_prompts=["why is foo broken?"],
+        session_commits=["abc1234 feat: add foo"],
+    )
+    try:
+        out = rebuild_v14(
+            [RecentTurn(role="user", text="kitchen check")],
+            store,
+            working_state=ws,
+        )
+    finally:
+        store.close()
+    assert "<working-state>" in out
+    assert "<branch>feat/issue-587-hot-start</branch>" in out
+    assert "<git-status>" in out
+    assert "M  src/aelfrice/foo.py" in out
+    assert "?? new.txt" in out
+    assert "<recent-commits>" in out
+    assert "abc1234 feat: add foo" in out
+    assert "<recent-user-prompts>" in out
+    assert "why is foo broken?" in out
+    assert "<session-commits>" in out
+    assert "</working-state>" in out
+    # <working-state> precedes <retrieved-beliefs> for prominence.
+    if "<retrieved-beliefs" in out:
+        assert out.index("<working-state>") < out.index("<retrieved-beliefs")
+
+
+def test_rebuild_v14_omits_working_state_when_empty(tmp_path: Path) -> None:
+    """An all-empty WorkingState produces no sub-block."""
+    from aelfrice.context_rebuilder import rebuild_v14
+    from aelfrice.working_state import WorkingState
+    store = _seed(tmp_path / "m.db", [_mk("F1", "kitchen has bananas")])
+    try:
+        out = rebuild_v14(
+            [RecentTurn(role="user", text="kitchen check")],
+            store,
+            working_state=WorkingState(),  # all defaults → is_empty()
+        )
+    finally:
+        store.close()
+    assert "<working-state>" not in out
+
+
+def test_rebuild_v14_omits_working_state_when_none(tmp_path: Path) -> None:
+    """Default `working_state=None` is backward-compat — no sub-block."""
+    from aelfrice.context_rebuilder import rebuild_v14
+    store = _seed(tmp_path / "m.db", [_mk("F1", "kitchen has bananas")])
+    try:
+        out = rebuild_v14(
+            [RecentTurn(role="user", text="kitchen check")],
+            store,
+        )
+    finally:
+        store.close()
+    assert "<working-state>" not in out
+
+
+def test_rebuild_v14_emits_block_for_working_state_only(tmp_path: Path) -> None:
+    """WorkingState alone (no L0 / no hits) still produces a non-empty block.
+
+    The v1.7 silent path returns "" only when there's nothing at all to
+    surface. WorkingState is its own load-bearing signal.
+    """
+    from aelfrice.context_rebuilder import rebuild_v14
+    from aelfrice.working_state import WorkingState
+    # Fresh store, no beliefs at all.
+    store = MemoryStore(str(tmp_path / "m.db"))
+    ws = WorkingState(branch="main")
+    try:
+        out = rebuild_v14(
+            [RecentTurn(role="user", text="totally unrelated xyzzy")],
+            store,
+            working_state=ws,
+        )
+    finally:
+        store.close()
+    assert out != ""
+    assert "<working-state>" in out
+    assert "<branch>main</branch>" in out
+
+
+def test_rebuild_v14_omits_individual_empty_working_state_fields(tmp_path: Path) -> None:
+    """Per-field omission: only populated fields get sub-tags."""
+    from aelfrice.context_rebuilder import rebuild_v14
+    from aelfrice.working_state import WorkingState
+    store = _seed(tmp_path / "m.db", [_mk("F1", "kitchen has bananas")])
+    ws = WorkingState(branch="main")  # only branch populated
+    try:
+        out = rebuild_v14(
+            [RecentTurn(role="user", text="kitchen check")],
+            store,
+            working_state=ws,
+        )
+    finally:
+        store.close()
+    assert "<branch>main</branch>" in out
+    assert "<git-status>" not in out
+    assert "<recent-commits>" not in out
+    assert "<recent-user-prompts>" not in out
+    assert "<session-commits>" not in out
+
+
+def test_rebuild_v14_xml_escapes_working_state_text(tmp_path: Path) -> None:
+    """WorkingState fields containing XML metas are escaped."""
+    from aelfrice.context_rebuilder import rebuild_v14
+    from aelfrice.working_state import WorkingState
+    store = _seed(tmp_path / "m.db", [_mk("F1", "kitchen has bananas")])
+    ws = WorkingState(
+        branch="feat/<unsafe>",
+        recent_user_prompts=["query: a < b & c"],
+    )
+    try:
+        out = rebuild_v14(
+            [RecentTurn(role="user", text="check")],
+            store,
+            working_state=ws,
+        )
+    finally:
+        store.close()
+    assert "feat/&lt;unsafe&gt;" in out
+    assert "query: a &lt; b &amp; c" in out

@@ -84,6 +84,7 @@ from aelfrice.retrieval import retrieve
 from aelfrice.scoring import posterior_mean
 from aelfrice.store import MemoryStore
 from aelfrice.triple_extractor import extract_triples
+from aelfrice.working_state import WorkingState, project_working_state
 
 # --- Legacy v1.2.0a0 constants (preserved for backwards compatibility) ----
 
@@ -307,6 +308,7 @@ def rebuild_v14(
     floor_session: float = 0.0,
     floor_l1: float = 0.0,
     query_strategy: str = LEGACY_STRATEGY,
+    working_state: "WorkingState | None" = None,
 ) -> str:
     """v1.4 rebuild: L0 + session-scoped + L2.5/L1 via `retrieve()`.
 
@@ -553,11 +555,21 @@ def rebuild_v14(
     # PreCompact hook's `if body:` guard already drops the envelope
     # on falsy output (hook.py L966), so empty input -> no
     # additionalContext written.
-    if not out:
+    #
+    # v1.5 (#587): the working-state sub-block is its own load-bearing
+    # signal (state-of-work, not retrieval). When there are no belief
+    # hits but working-state has content, still emit — the rebuild
+    # block becomes "no beliefs to surface, here's where you were."
+    has_working_state = working_state is not None and not working_state.is_empty()
+    if not out and not has_working_state:
         return ""
 
     return _format_block(
-        recent_turns, out, session_ids, token_budget=token_budget,
+        recent_turns,
+        out,
+        session_ids,
+        token_budget=token_budget,
+        working_state=working_state,
     )
 
 
@@ -1314,6 +1326,7 @@ def _format_block(
     session_ids: set[str],
     *,
     token_budget: int,
+    working_state: "WorkingState | None" = None,
 ) -> str:
     lines: list[str] = [OPEN_TAG]
     if recent_turns:
@@ -1323,6 +1336,8 @@ def _format_block(
             role = _xml_attr_value(t.role)
             lines.append(f'    <turn role="{role}">{_xml_escape(text)}</turn>')
         lines.append("  </recent-turns>")
+    if working_state is not None and not working_state.is_empty():
+        lines.extend(_format_working_state(working_state))
     if hits:
         used_chars = sum(len(b.content) for b in hits)
         lines.append(
@@ -1343,6 +1358,41 @@ def _format_block(
     lines.append(CLOSE_TAG)
     lines.append("")
     return "\n".join(lines)
+
+
+def _format_working_state(ws: "WorkingState") -> list[str]:
+    """Render a WorkingState into the rebuild-block sub-block (#587).
+
+    Empty fields are individually omitted so the sub-block stays terse.
+    Caller (`_format_block`) gates on `ws.is_empty()` for the all-empty
+    case.
+    """
+    out: list[str] = ["  <working-state>"]
+    if ws.branch:
+        out.append(f"    <branch>{_xml_escape(ws.branch)}</branch>")
+    if ws.status_porcelain:
+        out.append("    <git-status>")
+        for line in ws.status_porcelain:
+            out.append(f"      <line>{_xml_escape(line)}</line>")
+        out.append("    </git-status>")
+    if ws.recent_log:
+        out.append("    <recent-commits>")
+        for line in ws.recent_log:
+            out.append(f"      <commit>{_xml_escape(line)}</commit>")
+        out.append("    </recent-commits>")
+    if ws.recent_user_prompts:
+        out.append("    <recent-user-prompts>")
+        for prompt in ws.recent_user_prompts:
+            text = _normalize_turn_text(prompt)
+            out.append(f"      <prompt>{_xml_escape(text)}</prompt>")
+        out.append("    </recent-user-prompts>")
+    if ws.session_commits:
+        out.append("    <session-commits>")
+        for line in ws.session_commits:
+            out.append(f"      <commit>{_xml_escape(line)}</commit>")
+        out.append("    </session-commits>")
+    out.append("  </working-state>")
+    return out
 
 
 def _normalize_turn_text(text: str) -> str:
@@ -1592,6 +1642,15 @@ def main(
             log_path = (
                 _rebuild_log_dir_for_db(p) / f"{sid_for_log}.jsonl"
             )
+        # v1.5 (#587): post-compact hot-start. Project working-state from
+        # cwd + recent turns; rebuild_v14 surfaces it under a
+        # <working-state> sub-block alongside the retrieved beliefs.
+        # Best-effort: any projector failure returns an empty
+        # WorkingState that the formatter omits.
+        try:
+            working_state = project_working_state(cwd, recent)
+        except Exception:  # noqa: BLE001 -- hook contract: never raise
+            working_state = WorkingState()
         try:
             block = rebuild_v14(
                 recent,
@@ -1600,6 +1659,7 @@ def main(
                 rebuild_log_path=log_path,
                 rebuild_log_enabled=config.rebuild_log_enabled,
                 session_id_for_log=sid_for_log,
+                working_state=working_state,
             )
         finally:
             store.close()
