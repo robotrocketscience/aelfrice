@@ -256,6 +256,12 @@ class RecentTurn:
     role: str  # "user" or "assistant"
     text: str
     session_id: str | None = None
+    ts: str | None = None
+    """RFC3339/ISO-8601 turn timestamp. Populated by
+    `read_recent_turns_aelfrice` when the JSONL line carries `ts`;
+    `None` for the Claude-Code-transcript adapter (which lives in a
+    different schema) and for legacy callers. Used by the v1.5
+    working-state projector (#587) to bound `git log --since=<ts>`."""
 
 
 # --- Public rebuild API ---------------------------------------------------
@@ -1367,9 +1373,10 @@ def read_recent_turns_aelfrice(path: Path, n: int) -> list[RecentTurn]:
 
     Schema per docs/transcript_ingest.md: each line is a JSON object
     with at least {"role": str, "text": str}. The optional
-    `session_id` field is plumbed through to `RecentTurn.session_id`
-    so v1.4's session-scoped retrieval has a per-turn signal. Other
-    fields (turn_id, ts, context) are ignored.
+    `session_id` and `ts` fields are plumbed through to
+    `RecentTurn.session_id` and `RecentTurn.ts` so v1.4's session-
+    scoped retrieval and v1.5's working-state projector (#587) have
+    per-turn signals. Other fields (turn_id, context) are ignored.
 
     Robust: malformed lines are skipped, missing files return empty.
     """
@@ -1398,7 +1405,9 @@ def read_recent_turns_aelfrice(path: Path, n: int) -> list[RecentTurn]:
             continue
         sid_obj = rd.get("session_id")
         sid = sid_obj if isinstance(sid_obj, str) and sid_obj else None
-        out.append(RecentTurn(role=role, text=body, session_id=sid))
+        ts_obj = rd.get("ts")
+        ts = ts_obj if isinstance(ts_obj, str) and ts_obj else None
+        out.append(RecentTurn(role=role, text=body, session_id=sid, ts=ts))
     return out[-n:] if n > 0 else []
 
 
