@@ -174,7 +174,6 @@ jobs:
             }'
 
             item_resp=$(gh api graphql \
-              --header "Authorization: bearer ${GH_TOKEN}" \
               -f query="$item_query" \
               -F number="$issue_num" \
               2>/dev/null || echo '{}')
@@ -220,8 +219,7 @@ jobs:
                 ) { projectV2Item { id } }
               }'
 
-              mutate_resp=$(gh api graphql \
-                --header "Authorization: bearer ${PROJECT_TOKEN}" \
+              mutate_resp=$(GH_TOKEN="$PROJECT_TOKEN" gh api graphql \
                 -f query="$mutate_query" \
                 -f project="$PROJECT_ID" \
                 -f item="$item_id" \
