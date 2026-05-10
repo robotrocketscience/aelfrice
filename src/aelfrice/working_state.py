@@ -24,9 +24,9 @@ of state-at-compaction-time:
 
 Tool-call signatures (issue #587 acceptance bullet 2 second half) are
 intentionally deferred — the v1.2 turns.jsonl schema does not capture
-them, and reading the Claude Code internal transcript format from a
-hook is volatile across harness versions. A follow-up issue tracks
-extending the JSONL schema.
+them, and reading the harness internal transcript format is volatile
+across harness versions. A follow-up issue tracks extending the JSONL
+schema.
 
 Latency: every git invocation has a hard 1.5s timeout and a
 log-on-error/return-empty fallback. Subprocess errors never propagate.
