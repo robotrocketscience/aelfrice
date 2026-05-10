@@ -202,3 +202,56 @@ def test_force_push_after_real_rebase_passes(tmp_path: Path) -> None:
     _git(local, "rebase", "main")
     res = _run_hook(local, _stdin_for(local, "feature/x"))
     assert res.returncode == 0, res.stderr
+
+
+# --- chain to user-managed pre-push hook ------------------------------------
+
+
+def _install_user_hook(local: Path, body: str) -> Path:
+    """Install an executable .git/hooks/pre-push with the given body."""
+    hooks_dir = local / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook = hooks_dir / "pre-push"
+    hook.write_text(body)
+    hook.chmod(0o755)
+    return hook
+
+
+def test_chain_user_hook_failure_propagates(tmp_path: Path) -> None:
+    """When .git/hooks/pre-push exists and exits non-zero, the freshness hook
+    propagates that exit code without running its own check."""
+    local, _origin = _setup_repo(tmp_path, base_age_seconds=3600)  # 1h, fresh
+    _install_user_hook(
+        local,
+        "#!/bin/sh\necho 'discretion blocked' >&2\nexit 7\n",
+    )
+    res = _run_hook(local, _stdin_for(local, "feature/x"))
+    assert res.returncode == 7, (res.returncode, res.stdout, res.stderr)
+    assert "discretion blocked" in res.stderr
+    # Freshness messages must NOT appear — chained hook short-circuited.
+    assert "pre-push aborted" not in res.stderr
+
+
+def test_chain_user_hook_success_continues_to_freshness(tmp_path: Path) -> None:
+    """When the chained user hook exits 0, the freshness check still runs."""
+    local, _origin = _setup_repo(tmp_path, base_age_seconds=10 * 3600)  # stale
+    _install_user_hook(local, "#!/bin/sh\nexit 0\n")
+    res = _run_hook(local, _stdin_for(local, "feature/x"))
+    assert res.returncode != 0, res.stdout + res.stderr
+    assert "pre-push aborted" in res.stderr
+
+
+def test_chain_stdin_delivered_to_user_hook(tmp_path: Path) -> None:
+    """The chained user hook receives the same ref-update stdin git would
+    deliver, so it can implement its own per-ref policy."""
+    local, _origin = _setup_repo(tmp_path, base_age_seconds=3600)  # fresh
+    captured = local / "user-hook-stdin.txt"
+    _install_user_hook(
+        local,
+        f"#!/bin/sh\ncat > {captured!s}\nexit 0\n",
+    )
+    res = _run_hook(local, _stdin_for(local, "feature/x"))
+    assert res.returncode == 0, res.stderr
+    assert captured.exists()
+    body = captured.read_text()
+    assert "refs/heads/feature/x " in body
