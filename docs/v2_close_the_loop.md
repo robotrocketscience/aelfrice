@@ -3,7 +3,8 @@
 **Issue:** [#317](https://github.com/robotrocketscience/aelfrice/issues/317)
 **Status:** spec, no implementation. Implementation lands as a follow-up
 PR against this spec's acceptance list.
-**Target:** v2.0.0
+**Target:** v2.x — deferred per V2_REENTRY_QUEUE; original v2.0.0 anchor
+slipped past the v2.0/v2.1 cuts without a `close_the_loop` module landing.
 
 ---
 
