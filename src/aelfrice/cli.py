@@ -835,6 +835,30 @@ def _wonder_pick_seed(store: MemoryStore) -> object | None:
     return store.get_belief(best_id)
 
 
+def _cmd_wonder_axes(args: argparse.Namespace, out: object) -> int:
+    """Emit dispatch-payload JSON for `aelf wonder --axes QUERY` (#551).
+
+    Mirrors the MCP `aelf_wonder` tool. Always JSON on stdout; exit 0
+    on success.
+    """
+    import json
+    from aelfrice.wonder.dispatch import build_dispatch_payload
+
+    store = _open_store()
+    try:
+        payload = build_dispatch_payload(
+            store, args.axes,
+            budget=args.axes_budget,
+            depth=args.axes_depth,
+            agent_count=args.axes_agents,
+        )
+    finally:
+        store.close()
+
+    print(json.dumps(payload.to_dict(), indent=2), file=out)  # type: ignore[arg-type]
+    return 0
+
+
 def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
     """Surface consolidation candidates and (optionally) emit phantoms.
 
@@ -844,7 +868,13 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
     v2.x (issue #229 lane). When `--emit-phantoms` is set, the same
     candidates are serialized as `Phantom` JSON objects to stdout for
     downstream consumption.
+
+    `--axes QUERY` (#551) bypasses the seed/BFS path and emits the
+    gap-analysis + research-axes JSON for subagent dispatch.
     """
+    if getattr(args, "axes", None):
+        return _cmd_wonder_axes(args, out)
+
     store = _open_store()
     try:
         seed_b: object | None
@@ -3683,6 +3713,16 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_wonder = sub.add_parser(
         "wonder",
         help="surface consolidation candidates / phantom beliefs (#389)",
+        description=(
+            "Three modes:\n"
+            "  graph-walk (default) — consolidation candidates from a "
+            "BFS expansion around a seed.\n"
+            "  --emit-phantoms — same candidates serialised as Phantom "
+            "JSON for offline review.\n"
+            "  --axes QUERY — gap analysis + research axes JSON for "
+            "subagent dispatch (#551). Requires a query argument; "
+            "ignores --seed / --top."
+        ),
     )
     p_wonder.add_argument(
         "--seed", default=None,
@@ -3702,6 +3742,26 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_wonder.add_argument(
         "--json", action="store_true",
         help="emit machine-readable JSON instead of human-readable rows",
+    )
+    p_wonder.add_argument(
+        "--axes", metavar="QUERY", default=None,
+        help=(
+            "axes mode (#551): emit gap analysis + research axes JSON "
+            "for subagent dispatch. Skips graph-walk; consumed by the "
+            "skill layer to fan out parallel research subagents."
+        ),
+    )
+    p_wonder.add_argument(
+        "--axes-budget", type=int, default=24, dest="axes_budget",
+        help="--axes mode: max candidates pulled from retrieve() (default 24)",
+    )
+    p_wonder.add_argument(
+        "--axes-depth", type=int, default=2, dest="axes_depth",
+        help="--axes mode: BFS expansion depth, 0 disables BFS (default 2)",
+    )
+    p_wonder.add_argument(
+        "--axes-agents", type=int, default=4, dest="axes_agents",
+        help="--axes mode: agent_count hint for the skill layer (default 4)",
     )
     p_wonder.set_defaults(func=_cmd_wonder)
 

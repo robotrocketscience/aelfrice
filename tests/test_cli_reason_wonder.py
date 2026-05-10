@@ -168,3 +168,34 @@ def test_wonder_json_payload_shape(_isolated_db: Path) -> None:
         "candidate_id", "score", "relatedness", "suggested_action", "path",
     } <= set(cand.keys())
     assert cand["suggested_action"] in {"merge", "supersede", "contradict", "relate"}
+
+
+# --- aelf wonder --axes (#551) ----------------------------------------
+
+
+def test_wonder_axes_emits_json_payload(_isolated_db: Path) -> None:
+    _seed_chain(_isolated_db)
+    code, out = _run("wonder", "--axes", "indentation")
+    assert code == 0, out
+    payload = json.loads(out)
+    assert {"gap_analysis", "research_axes", "agent_count",
+            "speculative_anchor_ids"} <= set(payload.keys())
+    assert payload["gap_analysis"]["query"] == "indentation"
+    assert 2 <= len(payload["research_axes"]) <= 6
+
+
+def test_wonder_axes_overrides_default_path(_isolated_db: Path) -> None:
+    """--axes bypasses the seed/BFS branch and never prints the
+    'no eligible seeds' message even on an empty store."""
+    code, out = _run("wonder", "--axes", "anything")
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["gap_analysis"]["query"] == "anything"
+
+
+def test_wonder_axes_respects_agent_count(_isolated_db: Path) -> None:
+    _seed_chain(_isolated_db)
+    code, out = _run("wonder", "--axes", "python", "--axes-agents", "2")
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["agent_count"] == 2
