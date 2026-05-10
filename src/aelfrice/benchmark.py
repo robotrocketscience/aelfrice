@@ -271,9 +271,10 @@ _MULTIHOP_EDGES: Final[tuple[_MultiHopEdgeSpec, ...]] = (
 )
 
 
-# 8 multi-hop queries. Surface terms in each query do NOT appear in the
-# target belief. The path from query to target requires traversing at least
-# one CITES/SUPPORTS edge whose anchor_text contains the bridge identifier.
+# 8 multi-hop queries. The query terms are drawn ONLY from source beliefs
+# or edge anchor_text — they do not appear (surface-form) in the target
+# belief. BM25 cannot match the target directly; retrieval must traverse
+# the CITES/SUPPORTS edge whose anchor_text carries the bridge identifier.
 @dataclass(frozen=True)
 class _MultiHopQuery:
     query: str
@@ -281,19 +282,25 @@ class _MultiHopQuery:
 
 
 _MULTIHOP_QUERIES: Final[tuple[_MultiHopQuery, ...]] = (
-    # Chain 1 — query names auth_service.py, target is mh_auth_04 (E_AUTH_001 behavior)
-    _MultiHopQuery("auth_service.py expired token forced re-login", "mh_auth_04"),
-    _MultiHopQuery("auth_service.py E_AUTH_001 credential cache redirect", "mh_auth_04"),
-    # Chain 1 — query names AuthController, target is mh_auth_04
-    _MultiHopQuery("AuthController session creation E_AUTH_001 behavior", "mh_auth_04"),
-    # Chain 2 — query names ingest_pipeline.py, target is mh_pipe_04 (dead-letter)
-    _MultiHopQuery("ingest_pipeline.py batch processing dead-letter", "mh_pipe_04"),
-    _MultiHopQuery("ingest_pipeline.py E_PIPE_002 alert on-call", "mh_pipe_04"),
-    # Chain 3 — query names config_loader.py, target is mh_cfg_04 (exit behavior)
-    _MultiHopQuery("config_loader.py startup failure exit status", "mh_cfg_04"),
-    _MultiHopQuery("config_loader.py E_CFG_003 missing key operator", "mh_cfg_04"),
-    # Chain 3 — query names SettingsManager, target is mh_cfg_04
-    _MultiHopQuery("SettingsManager E_CFG_003 application exit non-zero", "mh_cfg_04"),
+    # Chain 1: source=mh_auth_01 (auth_service.py), target=mh_auth_04 (sign-in page).
+    # auth_service.py appears in mh_auth_01 and in the A->B edge anchor only; it
+    # does NOT appear in the target mh_auth_04 ("sign-in page" belief).
+    _MultiHopQuery("auth_service.py JWT signature expiry", "mh_auth_04"),
+    _MultiHopQuery("auth_service.py inbound API validation", "mh_auth_04"),
+    # Chain 1: source=mh_auth_02 (AuthController), target=mh_auth_04.
+    # AuthController appears in mh_auth_02/mh_auth_03 but NOT in mh_auth_04.
+    _MultiHopQuery("AuthController cookie token factory", "mh_auth_04"),
+    # Chain 2: source=mh_pipe_01 (ingest_pipeline.py), target=mh_pipe_04 (dead-letter).
+    # ingest_pipeline.py appears in mh_pipe_01 and A->B anchor; NOT in mh_pipe_04.
+    _MultiHopQuery("ingest_pipeline.py message queue transformer", "mh_pipe_04"),
+    _MultiHopQuery("ingest_pipeline.py raw events configurable stages", "mh_pipe_04"),
+    # Chain 3: source=mh_cfg_01 (config_loader.py), target=mh_cfg_04 (startup exit).
+    # config_loader.py appears in mh_cfg_01 and A->B anchor; NOT in mh_cfg_04.
+    _MultiHopQuery("config_loader.py YAML environment overrides", "mh_cfg_04"),
+    _MultiHopQuery("config_loader.py startup directory merges", "mh_cfg_04"),
+    # Chain 3: source=mh_cfg_02 (SettingsManager), target=mh_cfg_04.
+    # SettingsManager appears in mh_cfg_02/mh_cfg_03 but NOT in mh_cfg_04.
+    _MultiHopQuery("SettingsManager typed accessor subsystem cache", "mh_cfg_04"),
 )
 
 
