@@ -1,5 +1,5 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUntypedFunctionDecorator=false, reportUnusedFunction=false
-"""MCP server exposing the 12 user-visible tools.
+"""MCP server exposing the 14 user-visible tools.
 
 The same surface as the CLI, accessible from any host that speaks the
 Model Context Protocol. The handlers are pure Python — they take a
@@ -29,6 +29,8 @@ Tool surface (all under the `aelf:` namespace at the host):
   aelf:confirm         {belief_id, source?, note?}       -> affirmed priors
   aelf:stats           {}                                -> counts
   aelf:health          {}                                -> regime report
+  aelf:wonder_persist  {query, budget?, depth?, top?, seed?} -> insert summary
+  aelf:wonder_gc       {ttl_days?, dry_run?}            -> gc summary
 
 The polymorphic onboard is a single MCP tool, not three (per pre-commit
 on tool-surface invisibility — the host LLM should not see plumbing
@@ -746,6 +748,121 @@ def tool_wonder(
     return out
 
 
+def tool_wonder_persist(
+    store: MemoryStore,
+    *,
+    query: str,
+    budget: int = 24,
+    depth: int = 2,
+    top: int = 10,
+    seed: str | None = None,
+) -> dict[str, Any]:
+    """Persist BFS phantom candidates to the store via wonder_ingest.
+
+    Runs the same default-mode pipeline as ``aelf wonder --persist``:
+    seed selection → BFS expansion → wonder_consolidation scoring →
+    top-N phantom construction → ``wonder_ingest``. Returns the insert
+    summary so callers know how many beliefs were written.
+
+    Idempotent on the constituent-pair key: a second call with the
+    same seed belief produces ``inserted=0, skipped=N``.
+
+    Side-effects: writes ``type='speculative'`` beliefs with
+    ``RELATES_TO`` edges and a ``wonder_ingest`` corroboration row.
+    """
+    from aelfrice.bfs_multihop import expand_bfs
+    from aelfrice import wonder_consolidation
+    from aelfrice.models import LOCK_USER, Phantom
+    from aelfrice.wonder.lifecycle import wonder_ingest
+
+    # Seed selection.
+    if seed is not None:
+        seed_b = store.get_belief(seed)
+        if seed_b is None:
+            return {"kind": "wonder.persist", "error": f"seed not found: {seed}"}
+    else:
+        # Deterministic seed: highest-degree non-locked belief, tie-broken by id asc.
+        best_id: str | None = None
+        best_degree = -1
+        for bid in store.list_belief_ids():
+            b = store.get_belief(bid)
+            if b is None or b.lock_level == LOCK_USER:
+                continue
+            degree = len(store.edges_from(bid))
+            if degree > best_degree or (
+                degree == best_degree
+                and best_id is not None
+                and bid < best_id
+            ):
+                best_degree = degree
+                best_id = bid
+        seed_b = store.get_belief(best_id) if best_id is not None else None
+
+    if seed_b is None:
+        return {
+            "kind": "wonder.persist",
+            "inserted": 0,
+            "skipped": 0,
+            "edges_created": 0,
+            "note": "no eligible seeds",
+        }
+
+    hops = expand_bfs([seed_b], store, max_depth=depth, total_budget=top * 2)
+
+    candidates: list[tuple] = []
+    for h in hops:
+        relatedness = wonder_consolidation.score(seed_b, h.belief)
+        combined = h.score * (0.5 + 0.5 * relatedness)
+        candidates.append((combined, h))
+    candidates.sort(key=lambda r: (-r[0], r[1].belief.id))
+    candidates = candidates[:top]
+
+    phantoms = [
+        Phantom(
+            constituent_belief_ids=(seed_b.id, h.belief.id),
+            generator="bfs+wonder_consolidation",
+            content=f"{seed_b.content} ⟷ {h.belief.content}",
+            score=combined,
+        )
+        for combined, h in candidates
+    ]
+
+    result = wonder_ingest(store, phantoms)
+    return {
+        "kind": "wonder.persist",
+        "inserted": result.inserted,
+        "skipped": result.skipped,
+        "edges_created": result.edges_created,
+    }
+
+
+def tool_wonder_gc(
+    store: MemoryStore,
+    *,
+    ttl_days: int = 14,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Soft-delete stale speculative beliefs via wonder_gc.
+
+    Wraps :func:`aelfrice.wonder.lifecycle.wonder_gc`. Candidates must
+    be ``type='speculative'`` + ``origin=ORIGIN_SPECULATIVE``, still
+    active, older than ``ttl_days`` days, with unchanged Bayesian
+    priors and no feedback / RESOLVES edges.
+
+    When ``dry_run=True`` no beliefs are mutated. The second non-dry-run
+    call finds zero new candidates (idempotent).
+    """
+    from aelfrice.wonder.lifecycle import wonder_gc
+
+    result = wonder_gc(store, ttl_days=ttl_days, dry_run=dry_run)
+    return {
+        "kind": "wonder.gc",
+        "scanned": result.scanned,
+        "deleted": result.deleted,
+        "surviving": result.surviving,
+    }
+
+
 # --- FastMCP registration (optional) -----------------------------------
 #
 # The fastmcp library is an optional [mcp] extra. Importing it lazily
@@ -754,7 +871,7 @@ def tool_wonder(
 
 
 def serve() -> None:
-    """Start a FastMCP server with the 12 tools registered.
+    """Start a FastMCP server with the 14 tools registered.
 
     Requires the `[mcp]` extra: `pip install aelfrice[mcp]`. Raises
     `RuntimeError` with an actionable message if `fastmcp` is missing.
@@ -1470,6 +1587,145 @@ def serve() -> None:
         finally:
             store.close()
 
+    @mcp.tool(
+        annotations={
+            "title": "Wonder persist: ingest BFS phantoms to store",
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    )
+    def aelf_wonder_persist(
+        query: Annotated[
+            str,
+            Field(
+                description=(
+                    "Ignored in BFS mode — kept for API symmetry with "
+                    "aelf_wonder. Pass the topic you are exploring; "
+                    "the actual seed is selected deterministically from "
+                    "the store (highest-degree non-locked belief) unless "
+                    "seed is provided."
+                ),
+                min_length=1,
+                max_length=500,
+            ),
+        ],
+        budget: Annotated[
+            int,
+            Field(
+                description="BFS expansion budget (total nodes, default 24).",
+                ge=1,
+                le=200,
+            ),
+        ] = 24,
+        depth: Annotated[
+            int,
+            Field(
+                description="BFS expansion depth (default 2).",
+                ge=0,
+                le=4,
+            ),
+        ] = 2,
+        top: Annotated[
+            int,
+            Field(
+                description=(
+                    "Maximum phantom candidates to build and persist "
+                    "(default 10)."
+                ),
+                ge=1,
+                le=50,
+            ),
+        ] = 10,
+        seed: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Explicit seed belief ID. When omitted the "
+                    "highest-degree non-locked belief is used."
+                ),
+            ),
+        ] = None,
+    ) -> dict[str, Any]:
+        """Persist BFS phantom candidates to the store.
+
+        Runs the default-mode pipeline (BFS + wonder_consolidation
+        scoring) then calls wonder_ingest to write the top-N candidates
+        as ``type='speculative'`` beliefs with ``RELATES_TO`` edges and
+        a ``wonder_ingest`` corroboration row. Idempotent on the
+        constituent-pair key.
+
+        Destructive (writes beliefs). Returns:
+
+          - `kind`: "wonder.persist"
+          - `inserted`: int — new beliefs written
+          - `skipped`: int — already-present duplicates
+          - `edges_created`: int — RELATES_TO edges written
+          - `note`: str (only when no eligible seed)
+        """
+        store = _open_default_store()
+        try:
+            return tool_wonder_persist(
+                store,
+                query=query,
+                budget=budget,
+                depth=depth,
+                top=top,
+                seed=seed,
+            )
+        finally:
+            store.close()
+
+    @mcp.tool(
+        annotations={
+            "title": "Wonder GC: soft-delete stale speculative beliefs",
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+    )
+    def aelf_wonder_gc(
+        ttl_days: Annotated[
+            int,
+            Field(
+                description=(
+                    "Age threshold in days. Speculative beliefs older "
+                    "than this with unchanged priors and no feedback are "
+                    "GC candidates (default 14)."
+                ),
+                ge=1,
+                le=365,
+            ),
+        ] = 14,
+        dry_run: Annotated[
+            bool,
+            Field(
+                description=(
+                    "When True, reports candidates without mutating the "
+                    "store. Use this to preview what would be deleted."
+                ),
+            ),
+        ] = False,
+    ) -> dict[str, Any]:
+        """Soft-delete stale speculative beliefs.
+
+        Calls wonder_gc(store, ttl_days, dry_run). Destructive when
+        ``dry_run=False`` (sets ``valid_to`` on matching beliefs).
+        Second call finds zero new candidates (idempotent). Returns:
+
+          - `kind`: "wonder.gc"
+          - `scanned`: int — candidates found
+          - `deleted`: int — beliefs soft-deleted (0 when dry_run=True)
+          - `surviving`: int — candidates not deleted
+        """
+        store = _open_default_store()
+        try:
+            return tool_wonder_gc(store, ttl_days=ttl_days, dry_run=dry_run)
+        finally:
+            store.close()
+
     # The decorator rebinds each name on `mcp`; the local references
     # below silence pyright's reportUnusedFunction for the bindings
     # themselves. They serve no runtime purpose.
@@ -1477,7 +1733,7 @@ def serve() -> None:
         aelf_onboard, aelf_search, aelf_lock, aelf_locked,
         aelf_demote, aelf_validate, aelf_unlock, aelf_promote,
         aelf_feedback, aelf_confirm, aelf_stats, aelf_health,
-        aelf_wonder,
+        aelf_wonder, aelf_wonder_persist, aelf_wonder_gc,
     )
     del _registered
 

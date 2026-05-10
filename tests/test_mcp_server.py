@@ -612,3 +612,161 @@ def test_wonder_empty_store_returns_always_on_axes(store: MemoryStore) -> None:
     names = [a["name"] for a in out["research_axes"]]
     assert "domain_research" in names
     assert "internal_gap_analysis" in names
+
+
+# --- tool_wonder_persist (#549) ------------------------------------------
+
+
+def _seed_wonder_store(store: MemoryStore) -> tuple[str, str]:
+    """Insert two beliefs + one edge so BFS produces at least one phantom."""
+    from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, ORIGIN_AGENT_INFERRED, Belief, Edge
+    from aelfrice.models import EDGE_RELATES_TO
+
+    b1 = Belief(
+        id="wp1",
+        content="python uses indentation",
+        content_hash="h-wp1",
+        alpha=1.0, beta=1.0,
+        type=BELIEF_FACTUAL, lock_level=LOCK_NONE,
+        locked_at=None, demotion_pressure=0,
+        created_at="2026-05-01T00:00:00Z",
+        last_retrieved_at=None,
+        origin=ORIGIN_AGENT_INFERRED,
+    )
+    b2 = Belief(
+        id="wp2",
+        content="indentation defines blocks in python",
+        content_hash="h-wp2",
+        alpha=1.0, beta=1.0,
+        type=BELIEF_FACTUAL, lock_level=LOCK_NONE,
+        locked_at=None, demotion_pressure=0,
+        created_at="2026-05-01T00:00:00Z",
+        last_retrieved_at=None,
+        origin=ORIGIN_AGENT_INFERRED,
+    )
+    store.insert_belief(b1)
+    store.insert_belief(b2)
+    store.insert_edge(Edge(src="wp1", dst="wp2", type=EDGE_RELATES_TO, weight=1.0))
+    return "wp1", "wp2"
+
+
+def test_wonder_persist_returns_insert_summary(store: MemoryStore) -> None:
+    from aelfrice.mcp_server import tool_wonder_persist
+    _seed_wonder_store(store)
+    out = tool_wonder_persist(store, query="python")
+    assert out["kind"] == "wonder.persist"
+    assert set(out.keys()) >= {"kind", "inserted", "skipped", "edges_created"}
+    assert out["inserted"] >= 1
+    assert out["edges_created"] >= 1
+
+
+def test_wonder_persist_writes_speculative_belief(store: MemoryStore) -> None:
+    from aelfrice.mcp_server import tool_wonder_persist
+    _seed_wonder_store(store)
+    tool_wonder_persist(store, query="python")
+    all_ids = store.list_belief_ids()
+    types = [store.get_belief(bid).type for bid in all_ids if store.get_belief(bid)]  # type: ignore[union-attr]
+    assert "speculative" in types
+
+
+def test_wonder_persist_idempotent(store: MemoryStore) -> None:
+    from aelfrice.mcp_server import tool_wonder_persist
+    _seed_wonder_store(store)
+    out1 = tool_wonder_persist(store, query="python", seed="wp1")
+    out2 = tool_wonder_persist(store, query="python", seed="wp1")
+    assert out1["inserted"] >= 1
+    assert out2["inserted"] == 0
+    assert out2["skipped"] == out1["inserted"]
+
+
+def test_wonder_persist_empty_store_returns_no_eligible_seed(store: MemoryStore) -> None:
+    from aelfrice.mcp_server import tool_wonder_persist
+    out = tool_wonder_persist(store, query="anything")
+    assert out["kind"] == "wonder.persist"
+    assert "note" in out
+    assert "no eligible" in out["note"]
+
+
+def test_wonder_persist_unknown_seed_returns_error(store: MemoryStore) -> None:
+    from aelfrice.mcp_server import tool_wonder_persist
+    _seed_wonder_store(store)
+    out = tool_wonder_persist(store, query="python", seed="no-such-id")
+    assert out["kind"] == "wonder.persist"
+    assert "error" in out
+
+
+# --- tool_wonder_gc (#549) -----------------------------------------------
+
+
+def _insert_stale_speculative(store: MemoryStore, bid: str = "sgc1") -> None:
+    """Insert a stale speculative belief eligible for GC."""
+    from datetime import datetime, timedelta, timezone
+    from aelfrice.models import BELIEF_SPECULATIVE, LOCK_NONE, ORIGIN_SPECULATIVE, Belief
+
+    old_ts = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    spec = Belief(
+        id=bid,
+        content=f"stale phantom {bid}",
+        content_hash=f"gc-mcp-hash-{bid}",
+        alpha=0.3, beta=1.0,
+        type=BELIEF_SPECULATIVE, lock_level=LOCK_NONE,
+        locked_at=None, demotion_pressure=0,
+        created_at=old_ts,
+        last_retrieved_at=None,
+        origin=ORIGIN_SPECULATIVE,
+    )
+    store.insert_belief(spec)
+
+
+def test_wonder_gc_dry_run_does_not_delete(store: MemoryStore) -> None:
+    from aelfrice.mcp_server import tool_wonder_gc
+    _insert_stale_speculative(store)
+    out = tool_wonder_gc(store, dry_run=True)
+    assert out["kind"] == "wonder.gc"
+    assert out["scanned"] == 1
+    assert out["deleted"] == 0
+    # Belief still present.
+    assert store.get_belief("sgc1") is not None
+
+
+def test_wonder_gc_non_dry_run_deletes(store: MemoryStore) -> None:
+    from aelfrice.mcp_server import tool_wonder_gc
+    _insert_stale_speculative(store)
+    out = tool_wonder_gc(store, dry_run=False)
+    assert out["kind"] == "wonder.gc"
+    assert out["scanned"] == 1
+    assert out["deleted"] == 1
+    assert out["surviving"] == 0
+
+
+def test_wonder_gc_ttl_days_filters(store: MemoryStore) -> None:
+    """A belief 5 days old is not a GC candidate at ttl_days=14 but is at ttl_days=3."""
+    from datetime import datetime, timedelta, timezone
+    from aelfrice.models import BELIEF_SPECULATIVE, LOCK_NONE, ORIGIN_SPECULATIVE, Belief
+    from aelfrice.mcp_server import tool_wonder_gc
+
+    ts_5d = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    spec = Belief(
+        id="sgc2",
+        content="medium-age phantom",
+        content_hash="gc-mcp-hash-5d",
+        alpha=0.3, beta=1.0,
+        type=BELIEF_SPECULATIVE, lock_level=LOCK_NONE,
+        locked_at=None, demotion_pressure=0,
+        created_at=ts_5d,
+        last_retrieved_at=None,
+        origin=ORIGIN_SPECULATIVE,
+    )
+    store.insert_belief(spec)
+
+    out14 = tool_wonder_gc(store, ttl_days=14, dry_run=True)
+    assert out14["scanned"] == 0
+
+    out3 = tool_wonder_gc(store, ttl_days=3, dry_run=True)
+    assert out3["scanned"] == 1
+
+
+def test_wonder_gc_empty_store_returns_zero_counts(store: MemoryStore) -> None:
+    from aelfrice.mcp_server import tool_wonder_gc
+    out = tool_wonder_gc(store)
+    assert out == {"kind": "wonder.gc", "scanned": 0, "deleted": 0, "surviving": 0}
