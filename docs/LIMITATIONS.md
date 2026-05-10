@@ -8,7 +8,7 @@ Through v1.2.x: `apply_feedback` updates `(α, β)` and writes an audit row. The
 
 The benchmark harness shipped at v1.0 as the measurement instrument; it was not yet a proof of the feedback claim. The v1.3 partial Bayesian re-rank, v1.6 deferred-feedback sweeper, and v1.7 BM25F default-on flip (see below) progressively closed that gap.
 
-**At v1.3.0:** ranking begins to consume the posterior. L1 score becomes `log(bm25) + 0.5 * log(posterior_mean)`; locked beliefs (L0) bypass scoring as before; the cache invalidates correctly through the existing store-mutation hook. **At v1.6.0:** the MRR-uplift + ECE-calibration eval harness ships at `benchmarks/posterior_ranking.py` and the heat-kernel composition wiring lands as a log-additive term in the ranking score (#151, #306, #310). Both ship default-OFF; the default-flip is gated on the harness clearing the MRR-uplift / ECE thresholds against the v2.0 corpus and lands at v1.7.0 (#154). See [`docs/bayesian_ranking.md`](bayesian_ranking.md) for the v1.3 contract.
+**At v1.3.0:** ranking begins to consume the posterior. L1 score becomes `log(bm25) + 0.5 * log(posterior_mean)`; locked beliefs (L0) bypass scoring as before; the cache invalidates correctly through the existing store-mutation hook. **At v1.6.0:** the MRR-uplift + ECE-calibration eval harness ships at `benchmarks/posterior_ranking.py` and the heat-kernel composition wiring lands as a log-additive term in the ranking score (#151, #306, #310). Both ship default-OFF. **At v2.1.0:** the #154 default-flip lands once the #437 reproducibility-harness gate clears 11/11 — `use_heat_kernel` and `use_hrr_structural` flip default-on. See [`docs/bayesian_ranking.md`](bayesian_ranking.md) for the v1.3 contract.
 
 ## No semantic similarity
 
@@ -31,7 +31,7 @@ Classification on the CLI path defaults to regex-based priors. Higher-quality cl
 
 The v1.3.0 BFS multi-hop expansion (see [bfs_multihop.md](bfs_multihop.md)) resolves each hop to the globally latest serial of its target belief independently. For audit-shaped queries ("what did the agent believe at the time it made this decision?") this can surface a chain whose intermediate hops postdate the seed's session — a fidelity loss against a corpus where supersessions accumulated after the seed was written.
 
-The default retrieval mode (recall, not audit) is correctly served by latest-serial-per-hop. The temporal-coherence fix is targeted at v2.0.0 alongside the published-numbers reproducibility harness; the spec § Open question: temporal coherence documents why deferring is the right call for v1.3.
+The default retrieval mode (recall, not audit) is correctly served by latest-serial-per-hop. The temporal-coherence fix was originally targeted at v2.0.0 alongside the reproducibility harness; the harness shipped (#437) but the temporal fix slipped past v2.0/v2.1 and is now deferred to v2.x. The spec § Open question: temporal coherence documents why deferring is the right call for v1.3.
 
 ## Sharp edges
 
