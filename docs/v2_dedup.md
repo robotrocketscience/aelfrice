@@ -2,7 +2,7 @@
 
 Spec for issue [#197](https://github.com/robotrocketscience/aelfrice/issues/197). Substrate-cascade addendum to [`substrate_decision.md`](substrate_decision.md) (#196 ratified Option B).
 
-Status: spec, no implementation. Recommendation included; decision is the user's.
+Status: read-path shipped. `src/aelfrice/dedup.py` is wired and exposed via `aelf doctor dedup` (audit-only mode); it's also imported by `relationship_detector.py`. The write-path `SUPERSEDES` hook (collapse-on-ingest) is bench-gated behind the corpus benchmark and remains deferred per V2_REENTRY_QUEUE.
 
 ## What's being decided
 
