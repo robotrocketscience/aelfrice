@@ -115,7 +115,7 @@ def _short_title(title: str, limit: int = 50) -> str:
 
 
 def _claim_label(node: dict[str, Any]) -> str:
-    """Return the lowercased claim suffix (e.g. ``setr``) or empty string."""
+    """Return the lowercased claim suffix from an ``author-*`` label, or empty string."""
     for n in node["labels"]["nodes"]:
         name = n["name"]
         if name.startswith("author-"):

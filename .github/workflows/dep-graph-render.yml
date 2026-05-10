@@ -2,8 +2,8 @@ name: dep-graph-render
 
 # Render a Mermaid dependency graph from open-issue Blocks/Blocked-by
 # links and post it as a sticky comment on the milestone-tracker issue.
-# A parallel session can read the comment to find a leaf node (zero
-# blockers) without scanning all open issues by hand.
+# Concurrent contributors can read the comment to find a leaf node
+# (zero blockers) without scanning all open issues by hand.
 #
 # Driven by scripts/dep_graph_render.py — pure-stdlib + the gh CLI.
 # See #581 for the design.
