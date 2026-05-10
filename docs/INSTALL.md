@@ -170,6 +170,29 @@ All hooks are non-blocking. Every failure path returns exit 0 — a hook problem
 
 > **Privacy note.** Default-on transcript-ingest means every turn you type lands in the per-project SQLite DB on `PreCompact` rotation. The DB is local-only (no network, no telemetry — see § "Your data stays yours" in the README) but the JSONL has no PII scrubber. If you paste secrets, customer data, or anything you don't want indexed in chat, opt out with `--no-transcript-ingest` and use `aelf lock` / `aelf onboard` for explicit ingestion only.
 
+### Legacy-schema detection (`aelf doctor`, v2.1+)
+
+`aelf doctor` scans all per-project DBs under `~/.aelfrice/projects/*/memory.db` and flags any that use the pre-v1.x schema (no `origin` column on the `beliefs` table) and have at least one row. DBs on the old schema cannot participate in the v2.x lifecycle — `agent_remembered`, `user_validated`, calibrated weights, `aelf:promote` — because the column that tracks origin is absent.
+
+When legacy DBs are found the doctor report appends a block like:
+
+```
+legacy-schema per-project DBs detected (pre-v1.x, no `origin` column).
+  ~/.aelfrice/projects/2e7ed55e017a/memory.db (35,332 beliefs, idle 16d)
+  ~/.aelfrice/projects/18a856c7a96b/memory.db (6,283 beliefs, idle 13d)
+fix: `aelf migrate --from <path> --apply` per DB to copy beliefs
+     into the current project's modern-schema DB.
+```
+
+The block is quiet when every scanned DB already has the `origin` column. Empty DBs (zero rows) are silently skipped.
+
+To migrate a legacy DB:
+
+```bash
+aelf migrate --from ~/.aelfrice/projects/<id>/memory.db          # dry-run
+aelf migrate --from ~/.aelfrice/projects/<id>/memory.db --apply  # write
+```
+
 ---
 
 ## Update notifier
