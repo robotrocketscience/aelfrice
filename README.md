@@ -38,6 +38,21 @@ That's it. Your next prompt that mentions "push" already has the rule attached. 
 
 ---
 
+## What makes aelfrice different
+
+<p align="center"><img src="docs/assets/02-eterne-hrr.png" width="100%" alt="A layered retrieval pipeline: keyword matches at the surface, structural-marker queries below, locked beliefs threading through both"></p>
+
+- **The agent can't skip the rule.** The `UserPromptSubmit` hook injects matched beliefs into your prompt *before* the model sees it. Not "the agent will check a file" — the file is already in the prompt.
+- **Bit-level determinism.** No embeddings, no learned re-rankers, no LLM in the retrieval path. Same write log, same code → bit-for-bit identical results across runs and machines. ([PHILOSOPHY.md](docs/PHILOSOPHY.md))
+- **Every belief has a confidence and a confidence-in-its-confidence.** A `(α, β)` Beta-Bernoulli posterior gives both: `α / (α+β)` says which way the belief leans, `α + β` says how sure we are of that lean. New beliefs sit at low evidence (high variance, retrievable but discounted); locked beliefs short-circuit decay and pin as ground truth.
+- **Layered retrieval — every lane default-on.** Locked beliefs (always returned), FTS5 keyword (BM25-ranked), BM25F anchor-text (#154, default-on at v1.7.0), HRR structural lane for `KIND:target_id` graph queries (#154, default-on at v1.7.0). Build cost is paid once; every prompt gets every lane.
+- **Local-only.** SQLite at `<git-common-dir>/aelfrice/memory.db` (or `~/.aelfrice/memory.db` outside git). No network calls, no telemetry, no accounts. One brain per project, your machine. ([PRIVACY.md](docs/PRIVACY.md))
+- **Auditable to the row.** Every belief has an `origin` column (`user_stated`, `user_corrected`, `commit_ingest`, …) tying it to the action that wrote it. Open the DB in any SQLite browser; nothing hidden.
+- **Reversible.** `aelf uninstall --archive backup.aenc` encrypts the DB and deletes the live copy. `--purge` wipes it. `--keep-db` leaves data untouched. No vendor lock-in by construction.
+- **No GPU, no network, no inference cost.** Runtime deps are `numpy`, `scipy`, `snowballstemmer` — all CPU, all offline. Retrieval is a sparse-matrix query, not a model call.
+
+---
+
 ## What it does
 
 When you submit a prompt in Claude Code, aelfrice's `UserPromptSubmit` hook fires before the model sees your message. It runs a two-layer search:
