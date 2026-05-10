@@ -201,6 +201,56 @@ def test_wonder_axes_respects_agent_count(_isolated_db: Path) -> None:
     assert payload["agent_count"] == 2
 
 
+# --- aelf wonder --persist (#549) ----------------------------------------
+
+
+def test_wonder_persist_writes_phantoms_to_store(_isolated_db: Path) -> None:
+    """--persist should write phantoms and print an insert summary."""
+    _seed_chain(_isolated_db)
+    code, out = _run("wonder", "--persist")
+    assert code == 0, out
+    assert "wonder persist:" in out
+    assert "inserted=" in out
+    assert "skipped=" in out
+    assert "edges_created=" in out
+    # The store should now have at least one speculative belief.
+    s = MemoryStore(str(_isolated_db))
+    try:
+        all_ids = s.list_belief_ids()
+        types = [s.get_belief(bid).type for bid in all_ids if s.get_belief(bid)]  # type: ignore[union-attr]
+    finally:
+        s.close()
+    assert "speculative" in types
+
+
+def test_wonder_persist_idempotent_on_second_run(_isolated_db: Path) -> None:
+    """A second --persist run with the same seed should skip already-ingested phantoms."""
+    a, _b, _c = _seed_chain(_isolated_db)
+    code1, out1 = _run("wonder", "--persist", "--seed", a)
+    assert code1 == 0, out1
+    code2, out2 = _run("wonder", "--persist", "--seed", a)
+    assert code2 == 0, out2
+    # Second run: inserted=0, skipped >= 1
+    assert "inserted=0" in out2
+    assert "skipped=" in out2
+
+
+def test_wonder_persist_mutually_exclusive_with_emit_phantoms(_isolated_db: Path) -> None:
+    """--persist + --emit-phantoms must exit 2 with an error message."""
+    _seed_chain(_isolated_db)
+    code, out = _run("wonder", "--persist", "--emit-phantoms")
+    assert code == 2
+    assert "--persist" in out and "--emit-phantoms" in out
+
+
+def test_wonder_persist_mutually_exclusive_with_axes(_isolated_db: Path) -> None:
+    """--persist + --axes must exit 2 with an error message."""
+    _seed_chain(_isolated_db)
+    code, out = _run("wonder", "--persist", "--axes", "python")
+    assert code == 2
+    assert "--persist" in out and "--axes" in out
+
+
 # --- aelf wonder gc (#549) ------------------------------------------------
 
 

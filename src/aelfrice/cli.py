@@ -895,16 +895,35 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
     """Surface consolidation candidates and (optionally) emit phantoms.
 
     Default behavior (#389 amendment 9): produces phantom-belief
-    *candidates* in-memory and prints the top-N as ranked rows. Does
-    NOT write to the store unless ``--persist`` is set. When
-    ``--emit-phantoms`` is set, the same candidates are serialized as
-    ``Phantom`` JSON objects to stdout for downstream consumption.
+    *candidates* in-memory and prints the top-N as ranked rows. When
+    ``--persist`` is set, candidates are also written to the store via
+    ``wonder_ingest`` and the insert summary is printed.
+
+    ``--emit-phantoms`` prints candidates as Phantom JSON for offline
+    review; mutually exclusive with ``--persist``.
 
     `--axes QUERY` (#551) bypasses the seed/BFS path and emits the
     gap-analysis + research-axes JSON for research-agent dispatch.
+    Mutually exclusive with ``--persist``.
     """
     if getattr(args, "wonder_subcmd", None) == "gc":
         return _cmd_wonder_gc(args, out)
+
+    persist = getattr(args, "persist", False)
+
+    if persist and getattr(args, "axes", None):
+        print(
+            "aelf wonder: --persist cannot be combined with --axes",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 2
+
+    if persist and getattr(args, "emit_phantoms", False):
+        print(
+            "aelf wonder: --persist cannot be combined with --emit-phantoms",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 2
 
     if getattr(args, "axes", None):
         return _cmd_wonder_axes(args, out)
@@ -954,6 +973,20 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
         )
         for combined, h, _, _ in candidates
     ]
+
+    if persist:
+        from aelfrice.wonder.lifecycle import wonder_ingest
+        ingest_store = _open_store()
+        try:
+            result = wonder_ingest(ingest_store, phantoms)
+        finally:
+            ingest_store.close()
+        print(
+            f"wonder persist: inserted={result.inserted} skipped={result.skipped} "
+            f"edges_created={result.edges_created}",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 0
 
     if args.emit_phantoms:
         import json
@@ -3791,6 +3824,15 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_wonder.add_argument(
         "--axes-agents", type=int, default=4, dest="axes_agents",
         help="--axes mode: agent_count hint for the skill layer (default 4)",
+    )
+    p_wonder.add_argument(
+        "--persist", action="store_true", dest="persist",
+        help=(
+            "after building phantom candidates, persist them to the store "
+            "via wonder_ingest and print the insert summary "
+            "(inserted/skipped/edges_created). "
+            "Mutually exclusive with --emit-phantoms and --axes."
+        ),
     )
     p_wonder.set_defaults(func=_cmd_wonder, wonder_subcmd=None)
 
