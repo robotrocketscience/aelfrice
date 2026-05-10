@@ -86,6 +86,7 @@ Default budget is 2,400 tokens per prompt. Locked beliefs are the always-injecte
 | `aelf onboard .` | Walks the project — git log, README headings, code structure — and ingests structural facts. |
 | `aelf feedback <id> used` | Bayesian feedback. Strengthens the belief's posterior. |
 | `aelf feedback <id> harmful` | Weakens it. After enough independent harmfuls, locks auto-demote. |
+| _(passive — no command)_ | Default-on auto-capture: every prompt/response turn is logged to per-project JSONL and ingested into the belief graph at compaction; successful `git commit` events are ingested too. See [INSTALL § hooks](docs/INSTALL.md). Opt out with `aelf setup --no-transcript-ingest --no-commit-ingest`. |
 
 Each belief carries a `(α, β)` Beta-Bernoulli posterior. `α / (α+β)` is the confidence. Locks short-circuit decay; everything else fades over time so stale beliefs eventually drop out of retrieval.
 
@@ -117,6 +118,7 @@ aelfrice replaces the chain with a mechanism. The hook injects matched beliefs *
 
 Running in the background. No action required after `aelf setup`.
 
+- **Passive capture.** Default-on transcript-ingest, commit-ingest, and session-start hooks (since v2.1). Session activity flows into the belief graph without you typing `aelf` at all; opt out per-hook via `aelf setup --no-transcript-ingest`, `--no-commit-ingest`, `--no-session-start`. See [INSTALL § default-on hooks](docs/INSTALL.md).
 - **Determinism.** Stdlib + SQLite. No embeddings, no learned re-rankers, no LLM in the retrieval path. Every result traces to the action that wrote it.
 - **Local-only.** SQLite at `<repo>/.git/aelfrice/memory.db`. No telemetry, no network calls, no accounts. Per-project isolation by construction. See [PRIVACY.md](docs/PRIVACY.md).
 - **Removable.** `aelf uninstall --archive backup.aenc` encrypts the DB to a file, then deletes it. Or `--purge` for a full wipe.
