@@ -1613,17 +1613,18 @@ def stop(
 ) -> int:
     """Run the Stop hook. Always returns 0.
 
-    Reads a Claude Code Stop JSON payload from `stdin`, finds all
-    correction-class beliefs created in this session that aren't yet
-    user-locked, and either emits a stderr listing with pre-filled
-    `aelf lock` commands (default) or auto-locks them when
+    Reads a Stop JSON payload from `stdin` (harness contract — same
+    payload shape as the SessionStart and PreCompact handlers above),
+    finds all correction-class beliefs created in this session that
+    aren't yet user-locked, and either emits a stderr listing with
+    pre-filled `aelf lock` commands (default) or auto-locks them when
     `AELF_AUTOLOCK_CORRECTIONS=1` is set in the environment.
 
     Hook contract: never block, never raise. Empty / malformed payload,
     missing session_id, no candidates, store errors — all return 0
     silently (or with a single stderr line for visibility).
 
-    The Stop event in Claude Code fires once per assistant-turn end.
+    The Stop event fires once per assistant-turn end (harness-defined).
     The hook is therefore on the post-turn fan-out path and must stay
     cheap; the candidate-walk is bounded by store size.
     """
@@ -1657,7 +1658,7 @@ def stop(
                 return 0
             block = _format_stop_prompt(candidates)
             if block:
-                # stderr per Claude Code Stop-hook contract: any prompt-shaped
+                # stderr per the Stop-hook contract: any prompt-shaped
                 # output to the human reading the session must go to stderr,
                 # not stdout (Stop has no additionalContext channel).
                 serr.write(block)
