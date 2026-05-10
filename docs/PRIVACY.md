@@ -101,7 +101,7 @@ To turn it off after enabling, remove the config line (or set `[feedback] sentim
 
 The cloud LLM at the other end of your prompt sees whatever aelfrice injects. That's inherent to using a cloud LLM. Mitigations:
 
-- **Per-query token budget** (default 2,000). The full memory is never injected.
+- **Per-query token budget** (default 2,400). The full memory is never injected.
 - **L0/L1 ordering** surfaces locks plus query-relevant matches, not a memory dump.
 - **Per-project isolation** means cross-project context cannot bleed in.
 
