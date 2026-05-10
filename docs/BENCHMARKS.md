@@ -7,7 +7,7 @@ aelfrice ships two benchmark surfaces with different purposes and cadences.
 | Synthetic regression | `src/aelfrice/benchmark.py` | Catch retrieval/scoring regressions | <1s | $0 | Every PR (CI) |
 | Academic suite | `benchmarks/` | Reproduce published numbers vs. external benchmarks | minutes–hours | LLM API spend | Nightly + on-tag |
 
-The synthetic harness is a measurement instrument. It is **not** a proof of the central feedback claim — at v1.0–v1.2 the posterior doesn't drive ranking yet. See [LIMITATIONS](LIMITATIONS.md).
+The synthetic harness is a measurement instrument. It is **not** a proof of the central feedback claim — through v1.2 the posterior didn't drive ranking; v1.3 added partial Bayesian re-rank, v1.6 the eval harness + heat-kernel composition wiring, v1.7 BM25F default-on, and v2.1 the use_heat_kernel + use_hrr_structural default-flips. See [LIMITATIONS](LIMITATIONS.md).
 
 The academic suite is the reproducibility deliverable. Most adapters scaffold against MAB, LoCoMo, LongMemEval, StructMemEval, and AMA-Bench but are inert at v1.0; they activate as their feature dependencies port forward. Per-adapter status: [`benchmarks/README.md`](../benchmarks/README.md).
 
