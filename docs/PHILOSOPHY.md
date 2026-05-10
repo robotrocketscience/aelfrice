@@ -36,7 +36,7 @@ Four commitments interlock to make that hold:
 
 These hold compositionally. A single non-deterministic step in the retrieval path destroys the property for the whole pipeline. There is no "mostly deterministic" — either it holds end-to-end or it does not.
 
-The trade-off is real. Embedding systems beat aelfrice on fuzzy semantic recall and multi-session aggregation. We treat that as a clarification of what aelfrice is for, not a gap to close at the cost of the property.
+The trade-off is real. Embedding systems beat aelfrice on fuzzy semantic recall and multi-session aggregation. We treat that as a clarification of what aelfrice is for, not a gap to close at the cost of the property. Three independent bench-gate runs against three different corpora ([#197](https://github.com/robotrocketscience/aelfrice/issues/197), [#422](https://github.com/robotrocketscience/aelfrice/issues/422), [#201](https://github.com/robotrocketscience/aelfrice/issues/201)) hit the natural-language-relatedness wall and closed wontfix on the same boundary; the v3.0 ratification of *paraphrase / synonymy gates live in the consuming agent, not in aelfrice* is in [v3_relatedness_philosophy.md](v3_relatedness_philosophy.md).
 
 What it buys, beyond the obvious:
 
