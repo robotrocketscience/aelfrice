@@ -870,7 +870,7 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
     downstream consumption.
 
     `--axes QUERY` (#551) bypasses the seed/BFS path and emits the
-    gap-analysis + research-axes JSON for subagent dispatch.
+    gap-analysis + research-axes JSON for research-agent dispatch.
     """
     if getattr(args, "axes", None):
         return _cmd_wonder_axes(args, out)
@@ -3720,7 +3720,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "  --emit-phantoms — same candidates serialised as Phantom "
             "JSON for offline review.\n"
             "  --axes QUERY — gap analysis + research axes JSON for "
-            "subagent dispatch (#551). Requires a query argument; "
+            "research-agent dispatch (#551). Requires a query argument; "
             "ignores --seed / --top."
         ),
     )
@@ -3747,8 +3747,8 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--axes", metavar="QUERY", default=None,
         help=(
             "axes mode (#551): emit gap analysis + research axes JSON "
-            "for subagent dispatch. Skips graph-walk; consumed by the "
-            "skill layer to fan out parallel research subagents."
+            "for research-agent dispatch. Skips graph-walk; consumed by "
+            "the skill layer to fan out parallel research agents."
         ),
     )
     p_wonder.add_argument(

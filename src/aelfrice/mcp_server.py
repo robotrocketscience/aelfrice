@@ -726,11 +726,11 @@ def tool_wonder(
     depth: int = 2,
     agent_count: int = 4,
 ) -> dict[str, Any]:
-    """Subagent-dispatch wonder: gap analysis + research axes.
+    """Research-agent dispatch wonder: gap analysis + research axes.
 
     Wraps :func:`aelfrice.wonder.dispatch.build_dispatch_payload`. The
     JSON-only return shape is what the skill layer consumes to fan out
-    parallel research subagents (one per axis); the resulting research
+    parallel research agents (one per axis); the resulting research
     documents are intended to flow back through ``wonder_ingest``
     (track C of umbrella #542).
 
@@ -1401,8 +1401,8 @@ def serve() -> None:
                 description=(
                     "Question or topic to analyse. The store is queried "
                     "for known beliefs; gaps and unresolved contradictions "
-                    "are surfaced as research axes for parallel subagent "
-                    "dispatch."
+                    "are surfaced as research axes for parallel "
+                    "research-agent dispatch."
                 ),
                 min_length=1,
                 max_length=500,
@@ -1436,8 +1436,8 @@ def serve() -> None:
             int,
             Field(
                 description=(
-                    "Hint for how many subagents the skill layer plans to "
-                    "fan out. Returned axes are capped at 6 regardless."
+                    "Hint for how many research agents the skill layer plans "
+                    "to fan out. Returned axes are capped at 6 regardless."
                 ),
                 ge=1,
                 le=8,

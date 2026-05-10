@@ -1,4 +1,4 @@
-"""Subagent-dispatch wonder surface (#551, umbrella #542 track E).
+"""Research-agent dispatch wonder surface (#551, umbrella #542 track E).
 
 Two pure functions plus dataclasses:
 
@@ -12,7 +12,7 @@ Two pure functions plus dataclasses:
 
 The MCP ``wonder()`` tool and the ``aelf wonder <query> --axes`` CLI flag
 both wrap these two functions; the skill layer (E4, separate sub-issue)
-consumes the axes JSON, fans out subagents, and pipes their results back
+consumes the axes JSON, fans out research agents, and pipes their results back
 through ``wonder_ingest`` (track C).
 
 Determinism: both functions are pure given a fixed store snapshot. No
@@ -86,9 +86,9 @@ class GapAnalysis:
 
 @dataclass(frozen=True)
 class ResearchAxis:
-    """One orthogonal research lane for a subagent to pursue.
+    """One orthogonal research lane for a research agent to pursue.
 
-    ``search_hints`` is a tuple of short strings the subagent can plug
+    ``search_hints`` is a tuple of short strings the research agent can plug
     into search engines / tool calls verbatim; ``gap_context`` cites
     which :class:`GapAnalysis` field motivated this axis.
     """
@@ -297,7 +297,7 @@ def generate_research_axes(
     gap_analysis: GapAnalysis,
     agent_count: int = 4,
 ) -> tuple[ResearchAxis, ...]:
-    """Build 2–6 orthogonal research axes for parallel subagent dispatch.
+    """Build 2–6 orthogonal research axes for parallel research-agent dispatch.
 
     Always-on axes:
 
@@ -434,7 +434,7 @@ def build_dispatch_payload(
 
     ``speculative_anchor_ids`` is the candidate-belief id list — track
     C's ``wonder_ingest`` will use these as ``RELATES_TO`` targets when
-    persisting subagent research as speculative beliefs.
+    persisting research agent research as speculative beliefs.
     """
     ga = analyze_gaps(store, query, budget=budget, depth=depth)
     axes = generate_research_axes(ga, agent_count=agent_count)
