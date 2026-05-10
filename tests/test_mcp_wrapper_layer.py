@@ -60,6 +60,8 @@ _EXPECTED_TOOLS: dict[str, str] = {
     "aelf_stats": "tool_stats",
     "aelf_health": "tool_health",
     "aelf_wonder": "tool_wonder",
+    "aelf_wonder_persist": "tool_wonder_persist",
+    "aelf_wonder_gc": "tool_wonder_gc",
 }
 
 
@@ -255,8 +257,8 @@ def test_shim_read_only_set_matches_expected(fastmcp_shim: _FakeFastMCP) -> None
 
 
 def test_shim_destructive_set_matches_expected(fastmcp_shim: _FakeFastMCP) -> None:
-    """Only aelf_demote is annotated destructiveHint=True."""
-    expected_destructive = {"aelf_demote"}
+    """Tools annotated destructiveHint=True: aelf_demote, aelf_wonder_persist, aelf_wonder_gc."""
+    expected_destructive = {"aelf_demote", "aelf_wonder_persist", "aelf_wonder_gc"}
     got_destructive = {
         name for name, captured in fastmcp_shim.tools.items()
         if captured.annotations.get("destructiveHint") is True
