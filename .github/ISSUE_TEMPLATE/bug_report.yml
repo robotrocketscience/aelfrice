@@ -15,8 +15,8 @@ body:
     id: what-happened
     attributes:
       label: What happened
-      description: Exact CLI invocation or MCP call, exact output. Paste the command and the response.
-      render: shell
+      description: |
+        Describe the unexpected behavior. Screenshots, images, and rich-text formatting are supported here — drag-and-drop or paste images directly. Put exact CLI commands and their output under "Minimal reproduction" below.
     validations:
       required: true
   - type: textarea
