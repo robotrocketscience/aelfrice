@@ -269,6 +269,7 @@ def test_source_type_enum_covers_all_variants() -> None:
 
     Updated for #219: filesystem_ingest, cli_remember, and
     consolidation_migration added to support cross-source dedup.
+    Updated for #548: wonder_ingest added for speculative phantom audit trail.
     """
     expected = {
         "commit_ingest",
@@ -277,6 +278,7 @@ def test_source_type_enum_covers_all_variants() -> None:
         "filesystem_ingest",
         "cli_remember",
         "consolidation_migration",
+        "wonder_ingest",
     }
     assert CORROBORATION_SOURCE_TYPES == expected
 

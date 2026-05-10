@@ -14,12 +14,17 @@ BELIEF_FACTUAL: Final[str] = "factual"
 BELIEF_CORRECTION: Final[str] = "correction"
 BELIEF_PREFERENCE: Final[str] = "preference"
 BELIEF_REQUIREMENT: Final[str] = "requirement"
+# v2.1 #548 wonder lifecycle. Speculative beliefs are wonder-generated
+# candidates pending promotion. Not user-facing until `aelf confirm`
+# promotes them to a real type. C4 retags this → real type on threshold.
+BELIEF_SPECULATIVE: Final[str] = "speculative"
 
 BELIEF_TYPES: Final[frozenset[str]] = frozenset({
     BELIEF_FACTUAL,
     BELIEF_CORRECTION,
     BELIEF_PREFERENCE,
     BELIEF_REQUIREMENT,
+    BELIEF_SPECULATIVE,
 })
 
 # --- Edge types ---
@@ -32,6 +37,11 @@ EDGE_DERIVED_FROM: Final[str] = "DERIVED_FROM"
 EDGE_IMPLEMENTS: Final[str] = "IMPLEMENTS"
 EDGE_TEMPORAL_NEXT: Final[str] = "TEMPORAL_NEXT"
 EDGE_TESTS: Final[str] = "TESTS"
+# v2.1 #548 wonder lifecycle. RESOLVES marks that a speculative phantom
+# resolves (answers or supersedes) an existing belief. A phantom with any
+# RESOLVES edge (incoming or outgoing) is excluded from GC — the edge
+# signals human-observable intent that the phantom should persist.
+EDGE_RESOLVES: Final[str] = "RESOLVES"
 
 # Marker edge — semantically distinct from the relational edge types
 # above. POTENTIALLY_STALE tags a target belief as suspected stale; it
@@ -61,6 +71,9 @@ EDGE_POTENTIALLY_STALE: Final[str] = "POTENTIALLY_STALE"
 # TESTS (0.55): evidential edge — source is a test belief, target is the
 # spec/claim under test. Placed just below SUPPORTS (0.60) because a test
 # asserts coverage of a claim rather than directly arguing for it.
+# RESOLVES (0.0): wonder-lifecycle marker. No propagation valence because
+# resolution intent (phantom answers an existing belief) doesn't carry
+# evidential weight in the Bayesian update chain.
 EDGE_VALENCE: Final[dict[str, float]] = {
     EDGE_SUPPORTS: 1.0,
     EDGE_CITES: 0.5,
@@ -71,6 +84,7 @@ EDGE_VALENCE: Final[dict[str, float]] = {
     EDGE_IMPLEMENTS: 0.65,
     EDGE_TEMPORAL_NEXT: 0.2,
     EDGE_TESTS: 0.55,
+    EDGE_RESOLVES: 0.0,
 }
 
 EDGE_TYPES: Final[frozenset[str]] = frozenset(EDGE_VALENCE.keys())
@@ -177,6 +191,11 @@ CORROBORATION_SOURCE_CLI_REMEMBER: Final[str] = "cli_remember"
 # downstream consumers know the row is migration-produced, not a live
 # re-ingest.
 CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION: Final[str] = "consolidation_migration"
+# v2.1 #548 wonder lifecycle. Records the `wonder_ingest` assertion that
+# produced a speculative phantom. The `source_path_hash` field carries
+# `"<generator>@<score:.4f>"` so the provenance is auditable without a
+# dedicated audit_log table (Track A3 is deferred).
+CORROBORATION_SOURCE_WONDER_INGEST: Final[str] = "wonder_ingest"
 
 CORROBORATION_SOURCE_TYPES: Final[frozenset[str]] = frozenset({
     CORROBORATION_SOURCE_COMMIT_INGEST,
@@ -185,6 +204,7 @@ CORROBORATION_SOURCE_TYPES: Final[frozenset[str]] = frozenset({
     CORROBORATION_SOURCE_FILESYSTEM_INGEST,
     CORROBORATION_SOURCE_CLI_REMEMBER,
     CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION,
+    CORROBORATION_SOURCE_WONDER_INGEST,
 })
 
 # v2.0 #205 ingest_log source_kind enum. Wire-format strings; do not
@@ -250,6 +270,10 @@ class Belief:
     is active. `activation_condition` is JSON-encoded TEXT when set.
     Behavior (when to set, when to wake, predicate evaluator) is a
     follow-up issue; this commit only locks in the round-trip shape.
+
+    `valid_to` (v2.1 #548) is the soft-delete timestamp for wonder GC.
+    NULL = active. Non-NULL = GC'd by `wonder_gc`; the belief is excluded
+    from retrieval once set. Only speculative phantoms are GC-eligible.
     """
 
     id: str
@@ -269,6 +293,7 @@ class Belief:
     hibernation_score: float | None = None
     activation_condition: str | None = None
     retention_class: str = RETENTION_UNKNOWN
+    valid_to: str | None = None
 
 
 ANCHOR_TEXT_MAX_LEN: Final[int] = 1000
