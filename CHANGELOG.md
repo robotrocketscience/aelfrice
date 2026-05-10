@@ -27,6 +27,7 @@ Minor release. Two retrieval-lane flag flips clear their reproducibility gates a
 
 - **#291 query-strategy uplift bench gate scaffold + driver** ([#291](https://github.com/robotrocketscience/aelfrice/issues/291), #527). New `run_query_strategy_uplift` driver + bench-gate harness for measuring NDCG@k uplift from query-strategy variants on the labelled corpus. Skip-on-no-corpus pattern; no operator action required absent `AELFRICE_CORPUS_ROOT`.
 - **#435 doc-linker uplift bench gate** ([#435](https://github.com/robotrocketscience/aelfrice/issues/435)). New `run_doc_linker_uplift` driver for the doc-linker bench gate, same skip-on-no-corpus pattern.
+- **#433 vocab_bridge uplift bench gate scaffold + driver** ([#433](https://github.com/robotrocketscience/aelfrice/issues/433)). New `run_vocab_bridge_uplift` driver in `tests/retrieve_uplift_runner.py` mirroring `run_doc_linker_uplift` / `run_query_strategy_uplift`, plus the strict-NDCG ship-gate scaffold in `tests/bench_gate/test_vocab_bridge_uplift.py` (skip-if-runner-absent + skip-if-no-row-has-`expected_top_k`). Measures NDCG@k uplift from `use_vocab_bridge=True` on the labelled corpus. Skip-on-no-corpus pattern; no operator action required absent `AELFRICE_CORPUS_ROOT`.
 
 ### Fixed
 
