@@ -102,9 +102,9 @@ it.
 
 ## Local, always
 
-Your corrections live in one SQLite file on your machine. No cloud sync, no telemetry, no API calls in the retrieval path. The cloud LLM at the other end of your prompt sees whatever aelfrice injects — that's inherent — but aelfrice limits the slice (default 2,000 tokens, scoped to the current query) rather than dumping the whole memory.
+Your corrections live in one SQLite file on your machine. No cloud sync, no telemetry, no API calls in the retrieval path. The cloud LLM at the other end of your prompt sees whatever aelfrice injects — that's inherent — but aelfrice limits the slice (default 2,400 tokens, scoped to the current query) rather than dumping the whole memory.
 
-The 2,000-token default is a calibrated choice, not an arbitrary one. The hypothesis from the research line is that focused context beats exhaustive context: a 2K-token retrieval that selects the right beliefs should match or exceed a 10K-token full-memory dump on response quality, while burning 5× fewer tokens on memory plumbing. The reproducibility cut at v2.0 is where that curve gets re-measured against the public retrieval pipeline; until then the 2,000-token budget is the inherited research-line default, configurable per-call.
+The 2,400-token default is a calibrated choice, not an arbitrary one. The hypothesis from the research line is that focused context beats exhaustive context: a ~2.4K-token retrieval that selects the right beliefs should match or exceed a 10K-token full-memory dump on response quality, while burning ~4× fewer tokens on memory plumbing. The reproducibility cut at v2.0 was where that curve got re-measured against the public retrieval pipeline; the 2,400-token budget is the post-v1.3 default, configurable per-call.
 
 [PRIVACY.md](PRIVACY.md) for verifiable specifics.
 
