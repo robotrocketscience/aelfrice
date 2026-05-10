@@ -1,0 +1,250 @@
+name: auto-status-board
+
+# Keep the v2.1 project board status field in sync with issue/PR lifecycle
+# events. Handled triggers:
+#
+#   pull_request.closed  — merged    → Status=Done
+#                        — not merged → remove from board (deleteProjectV2Item)
+#   issues.closed        → Status=Done
+#   issues.labeled       — label is "status:in-progress" → Status=In Progress
+#   issues.unlabeled     — label is "status:in-progress" → Status=Todo
+#
+# Project-board mutations require a PAT with Projects:write scope stored
+# as secrets.PROJECT_TOKEN. If the secret is absent, the workflow logs a
+# notice and exits successfully. See #579.
+
+on:
+  pull_request:
+    types: [closed]
+  issues:
+    types: [closed, labeled, unlabeled]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+# One run per issue/PR at a time; no cancellation so a slow GraphQL call
+# doesn't race against a simultaneous label flip.
+concurrency:
+  group: auto-status-board-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  update-board-status:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+
+      - name: Determine action and target content
+        id: ctx
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          echo "event_name=${EVENT_NAME}"
+          echo "pr_merged=${PR_MERGED:-}"
+          echo "label_name=${LABEL_NAME:-}"
+
+          action=""
+          content_number=""
+          content_type=""
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            content_number="$PR_NUMBER"
+            content_type="pull_request"
+            if [ "${PR_MERGED:-}" = "true" ]; then
+              action="set_done"
+              echo "PR #${PR_NUMBER} was merged — will set Status=Done."
+            else
+              action="remove"
+              echo "PR #${PR_NUMBER} was closed without merging — will remove from board."
+            fi
+          elif [ "$EVENT_NAME" = "issues" ]; then
+            content_number="$ISSUE_NUMBER"
+            content_type="issue"
+            action_event="${{ github.event.action }}"
+            if [ "$action_event" = "closed" ]; then
+              action="set_done"
+              echo "Issue #${ISSUE_NUMBER} closed — will set Status=Done."
+            elif [ "$action_event" = "labeled" ]; then
+              if [ "${LABEL_NAME:-}" = "status:in-progress" ]; then
+                action="set_in_progress"
+                echo "Issue #${ISSUE_NUMBER} labeled status:in-progress — will set Status=In Progress."
+              else
+                action="noop"
+                echo "Issue #${ISSUE_NUMBER} labeled '${LABEL_NAME:-}' (not status:in-progress) — no board action."
+              fi
+            elif [ "$action_event" = "unlabeled" ]; then
+              if [ "${LABEL_NAME:-}" = "status:in-progress" ]; then
+                action="set_todo"
+                echo "Issue #${ISSUE_NUMBER} unlabeled status:in-progress — will set Status=Todo."
+              else
+                action="noop"
+                echo "Issue #${ISSUE_NUMBER} unlabeled '${LABEL_NAME:-}' (not status:in-progress) — no board action."
+              fi
+            fi
+          fi
+
+          echo "action=${action}" >> "$GITHUB_OUTPUT"
+          echo "content_number=${content_number}" >> "$GITHUB_OUTPUT"
+          echo "content_type=${content_type}" >> "$GITHUB_OUTPUT"
+
+      - name: Apply board action
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          ACTION: ${{ steps.ctx.outputs.action }}
+          CONTENT_NUMBER: ${{ steps.ctx.outputs.content_number }}
+          CONTENT_TYPE: ${{ steps.ctx.outputs.content_type }}
+          REPO: ${{ github.repository }}
+          # Project-board constants (robotrocketscience/aelfrice — project #1)
+          PROJECT_ID: "PVT_kwHOEHqEMc4BWDLC"
+          STATUS_FIELD_ID: "PVTSSF_lAHOEHqEMc4BWDLCzhRaei8"
+          STATUS_OPTION_IN_PROGRESS: "4eb46d3c"
+          STATUS_OPTION_TODO: "f9451636"
+          STATUS_OPTION_DONE: "ccce8594"
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ACTION:-}" ] || [ "$ACTION" = "noop" ]; then
+            echo "No board action required; exiting."
+            exit 0
+          fi
+
+          # PROJECT_TOKEN is required for project-board mutations.
+          if [ -z "${PROJECT_TOKEN:-}" ]; then
+            echo "NOTICE: PROJECT_TOKEN secret is not set."
+            echo "Skipping board update for ${CONTENT_TYPE} #${CONTENT_NUMBER} (action=${ACTION})."
+            echo "Configure secrets.PROJECT_TOKEN (PAT with Projects:write scope) to enable automatic status updates."
+            exit 0
+          fi
+
+          # ── 1. Look up project item for the issue or PR ────────────────────
+          if [ "$CONTENT_TYPE" = "pull_request" ]; then
+            item_query='query($number: Int!) {
+              repository(owner:"robotrocketscience", name:"aelfrice") {
+                pullRequest(number: $number) {
+                  projectItems(first: 5) {
+                    nodes {
+                      id
+                      project { id }
+                    }
+                  }
+                }
+              }
+            }'
+            item_resp=$(GH_TOKEN="$PROJECT_TOKEN" gh api graphql \
+              -f query="$item_query" \
+              -F number="$CONTENT_NUMBER" \
+              2>/dev/null || echo '{}')
+            item_id=$(echo "$item_resp" | jq -r \
+              --arg pid "$PROJECT_ID" \
+              '.data.repository.pullRequest.projectItems.nodes[]
+               | select(.project.id == $pid)
+               | .id' 2>/dev/null || true)
+          else
+            item_query='query($number: Int!) {
+              repository(owner:"robotrocketscience", name:"aelfrice") {
+                issue(number: $number) {
+                  projectItems(first: 5) {
+                    nodes {
+                      id
+                      project { id }
+                    }
+                  }
+                }
+              }
+            }'
+            item_resp=$(GH_TOKEN="$PROJECT_TOKEN" gh api graphql \
+              -f query="$item_query" \
+              -F number="$CONTENT_NUMBER" \
+              2>/dev/null || echo '{}')
+            item_id=$(echo "$item_resp" | jq -r \
+              --arg pid "$PROJECT_ID" \
+              '.data.repository.issue.projectItems.nodes[]
+               | select(.project.id == $pid)
+               | .id' 2>/dev/null || true)
+          fi
+
+          echo "Project item ID for ${CONTENT_TYPE} #${CONTENT_NUMBER}: ${item_id:-<not on board>}"
+
+          if [ -z "${item_id:-}" ]; then
+            echo "Item not found on project board — no action to take."
+            exit 0
+          fi
+
+          # ── 2. Apply the requested mutation ───────────────────────────────
+          if [ "$ACTION" = "remove" ]; then
+            # PR closed without merge: delete the project item.
+            delete_query='mutation($project: ID!, $item: ID!) {
+              deleteProjectV2Item(input: { projectId: $project, itemId: $item }) {
+                deletedItemId
+              }
+            }'
+            delete_resp=$(GH_TOKEN="$PROJECT_TOKEN" gh api graphql \
+              -f query="$delete_query" \
+              -f project="$PROJECT_ID" \
+              -f item="$item_id" \
+              2>&1 || true)
+            deleted_id=$(echo "$delete_resp" | jq -r \
+              '.data.deleteProjectV2Item.deletedItemId // empty' 2>/dev/null || true)
+            if [ -n "$deleted_id" ]; then
+              echo "Removed ${CONTENT_TYPE} #${CONTENT_NUMBER} from board (deleted item_id=${deleted_id})."
+            else
+              echo "WARNING: deleteProjectV2Item did not confirm deletion."
+              echo "Response: ${delete_resp}"
+            fi
+          else
+            # Determine the target status option ID.
+            case "$ACTION" in
+              set_done)        target_option="$STATUS_OPTION_DONE" ;;
+              set_in_progress) target_option="$STATUS_OPTION_IN_PROGRESS" ;;
+              set_todo)        target_option="$STATUS_OPTION_TODO" ;;
+              *)
+                echo "ERROR: unknown action '${ACTION}'."
+                exit 1
+                ;;
+            esac
+
+            update_query='mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
+              updateProjectV2ItemFieldValue(
+                input: {
+                  projectId: $project
+                  itemId: $item
+                  fieldId: $field
+                  value: { singleSelectOptionId: $option }
+                }
+              ) { projectV2Item { id } }
+            }'
+
+            update_resp=$(GH_TOKEN="$PROJECT_TOKEN" gh api graphql \
+              -f query="$update_query" \
+              -f project="$PROJECT_ID" \
+              -f item="$item_id" \
+              -f field="$STATUS_FIELD_ID" \
+              -f option="$target_option" \
+              2>&1 || true)
+
+            updated_id=$(echo "$update_resp" | jq -r \
+              '.data.updateProjectV2ItemFieldValue.projectV2Item.id // empty' \
+              2>/dev/null || true)
+
+            if [ -n "$updated_id" ]; then
+              echo "Status updated for ${CONTENT_TYPE} #${CONTENT_NUMBER} (action=${ACTION}, option=${target_option})."
+            else
+              echo "WARNING: updateProjectV2ItemFieldValue did not return an item ID."
+              echo "Response: ${update_resp}"
+            fi
+          fi
