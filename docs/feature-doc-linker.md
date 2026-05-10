@@ -221,7 +221,7 @@ This measures the **utility of the anchor data**, not the cost of the projection
 
 ### A5 — composition tracker
 
-The #154 composition tracker doc gains a row for `with_doc_anchors`: input shape, output shape, where it sits, bench verdict. Like the vocab bridge (#433) and type-aware compression (#434), this is **not a lane** — it is an output-projection. The tracker row is present for operator clarity.
+The #154 composition tracker doc gains a row for `with_doc_anchors`: input shape, output shape, where it sits, bench verdict. Like type-aware compression (#434), this is **not a lane** — it is an output-projection. The tracker row is present for operator clarity.
 
 ---
 

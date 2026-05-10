@@ -132,7 +132,7 @@ The release where ranking moves beyond BM25 + L2.5 + BFS into graph-authority an
 
 After v2.0.0, `benchmarks/` reproduces every published headline number on a fresh clone with `uv sync && aelf bench all`, within documented tolerance bands.
 
-- HRR vocabulary bridge — closes the vocabulary-gap-recovery claim against a corpus checked into the repo.
+- ~~HRR vocabulary bridge~~ — **closed by the structural-query lane (#152, default-on as of v2.1)**. The lab campaign (`exp/hrr-vocabulary-bridge`) reframed "vocabulary bridge" as "typed-edge structural retrieval" and that mechanism shipped via `src/aelfrice/hrr_index.py`. See [hrr_structural_query_lane.md](hrr_structural_query_lane.md). #433 closed; #536 (the parallel `vocab_bridge.py` query-rewrite module) removed.
 - Type-aware compression — tokens-per-belief reductions on retrieved output.
 - Intentional clustering — co-locating related beliefs for higher coherence on multi-fact queries.
 - Correction-detection eval — five-codebase labeled fixture, scored by both the zero-LLM detector and the LLM-judge path.
@@ -159,8 +159,7 @@ What the research line had, when each piece returns:
 | Posterior-weighted ranking | v1.3.0 (partial) / v1.6.0 (eval harness + composition wiring, default-OFF) / v1.7.0 (default-flip) |
 | BM25F anchor-text + vectorized BM25 | v1.5.0 |
 | Signed Laplacian + heat-kernel authority | v1.7.0 |
-| HRR structural-query lane | v1.7.0 |
-| HRR vocabulary bridge | v2.0.0 |
+| HRR structural-query lane | v1.7.0 (default-on as of v2.1; closes vocabulary-gap-recovery claim per the lab campaign R5 reframe) |
 | Type-aware compression | v2.0.0 |
 | Doc / semantic linker | v2.0.0 |
 | Graph-traversal store methods (`expand_graph`, `get_neighbors`, `edge_exists`) | v1.5 or v1.6 (substrate for `wonder` + `reason`; ships ahead of v2.0) |

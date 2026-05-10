@@ -184,7 +184,7 @@ The continuation-fidelity scorer (#141 v1.4 deliverable) is run on the rebuild_l
 
 ### A5 — composition tracker
 
-The #154 composition tracker doc gains a row for `use_type_aware_compression`: input shape, output shape, where it sits, bench verdict. Like the vocab bridge (#433), this is **not a lane** — it is a packing-stage transform. The tracker row is present for operator clarity.
+The #154 composition tracker doc gains a row for `use_type_aware_compression`: input shape, output shape, where it sits, bench verdict. This is **not a lane** — it is a packing-stage transform. The tracker row is present for operator clarity.
 
 ---
 

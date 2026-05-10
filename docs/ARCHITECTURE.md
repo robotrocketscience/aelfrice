@@ -203,5 +203,5 @@ The following were previously listed here and have since shipped:
 - Entity index / NER → **shipped v1.3.0** ([entity_index.md](entity_index.md))
 - LLM in the hot path (optional onboard classifier) → **shipped v1.3.0** ([llm_classifier.md](llm_classifier.md))
 - BM25F anchor-text retrieval → **shipped v1.7.0**, default-on (#148/#154; +0.6650 NDCG@k uplift on the v0.1 retrieve_uplift fixture)
-- HRR primitives + structural lane → **shipped v1.7.0** ([feature-hrr-vocab-bridge.md](feature-hrr-vocab-bridge.md); opt-in, default-OFF pending composition tracker)
-- Heat-kernel authority scorer → **shipped v1.7.0** (opt-in, default-OFF pending composition tracker)
+- HRR primitives + structural lane → **shipped v1.7.0**, default-on as of v2.1 ([hrr_structural_query_lane.md](hrr_structural_query_lane.md); closes the vocabulary-gap-recovery claim, #154 composition tracker, #437 reproducibility-harness 11/11)
+- Heat-kernel authority scorer → **shipped v1.7.0**, default-on as of v2.1 (#154 composition tracker)
