@@ -214,70 +214,206 @@ def run_rebuilder(
 
 
 REPLAY_PENDING_REASON: Final[str] = "needs_replay_client"
-"""Marker emitted by `replay_post_fork` until the model-invocation
-client lands. Surfaced in `failures[].reason` so summary readers can
-distinguish "skipped, judge required" from a real fidelity miss."""
+"""Marker emitted by `replay_post_fork` when no `run_dir` is given (the
+v1.2.0 stub default). Surfaced in `failures[].reason` so summary readers
+can distinguish "skipped, judge required" from a real fidelity miss."""
+
+PENDING_REPLAY_REASON: Final[str] = "pending_replay"
+"""Marker for a row whose request is now persisted to
+`<run_dir>/replay_requests.jsonl` but whose response has not yet been
+filled in. Distinct from `needs_replay_client`: pending_replay means
+"requests written, awaiting host-agent dispatch + replay_responses.jsonl"."""
+
+NEEDS_LLM_JUDGE_REASON: Final[str] = "needs_llm_judge"
+"""Marker for a row whose response is filled in but the substring/token
+match fails. The open-ended fidelity verdict belongs to commit-3 of
+#592 (LLM judge). Substring success short-circuits to matched=True."""
+
+REPLAY_REQUESTS_FILENAME: Final[str] = "replay_requests.jsonl"
+REPLAY_RESPONSES_FILENAME: Final[str] = "replay_responses.jsonl"
+
+
+def _read_user_and_expected(
+    case: TranscriptCase,
+) -> tuple[dict[int, str], dict[int, str]]:
+    """Walk `case.path` once. Return (expected_by_idx, user_turn_by_idx).
+
+    `expected_by_idx[idx]` is the `text` at line `idx` (the eval target).
+    `user_turn_by_idx[idx]` is the most recent user-role `text` at-or-
+    before line `idx` — the prompt the harness will replay through the
+    rebuilt context to produce `actual`.
+    """
+    expected_by_idx: dict[int, str] = {}
+    user_turn_by_idx: dict[int, str] = {}
+    if not case.eval_turns:
+        return expected_by_idx, user_turn_by_idx
+    wanted = set(case.eval_turns)
+    last_user_text = ""
+    try:
+        with case.path.open("r", encoding="utf-8") as f:
+            for i, raw in enumerate(f):
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                text = obj.get("text") if isinstance(obj.get("text"), str) else ""
+                if obj.get("role") == "user":
+                    last_user_text = text
+                if i in wanted:
+                    expected_by_idx[i] = text
+                    user_turn_by_idx[i] = last_user_text
+    except OSError:
+        return {}, {}
+    return expected_by_idx, user_turn_by_idx
+
+
+def _read_replay_responses(run_dir: Path) -> dict[int, str]:
+    """Read `<run_dir>/replay_responses.jsonl`, one row per turn_idx.
+
+    Each row is `{"turn_idx": int, "actual": str}`. Missing file → {};
+    malformed lines are skipped silently. The host-agent dispatcher
+    (operator-driven, not aelfrice) is the writer; this function is
+    the read half of the polymorphic eval-replay split.
+    """
+    out: dict[int, str] = {}
+    path = run_dir / REPLAY_RESPONSES_FILENAME
+    if not path.is_file():
+        return out
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                idx = obj.get("turn_idx")
+                actual = obj.get("actual")
+                if isinstance(idx, int) and isinstance(actual, str):
+                    out[idx] = actual
+    except OSError:
+        return {}
+    return out
+
+
+def _write_replay_requests(
+    run_dir: Path,
+    rebuilt_context: str,
+    eval_turns: tuple[int, ...],
+    expected_by_idx: dict[int, str],
+    user_turn_by_idx: dict[int, str],
+) -> None:
+    """Write `<run_dir>/replay_requests.jsonl`. One row per eval_turn.
+
+    Schema: `{turn_idx, rebuilt_block, user_turn, expected}`. Best-effort
+    — `mkdir` and write failures squash to a no-op so the rest of
+    `run_one` (latency, token cost) still completes.
+    """
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        path = run_dir / REPLAY_REQUESTS_FILENAME
+        with path.open("w", encoding="utf-8") as f:
+            for idx in eval_turns:
+                row = {
+                    "turn_idx": idx,
+                    "rebuilt_block": rebuilt_context,
+                    "user_turn": user_turn_by_idx.get(idx, ""),
+                    "expected": expected_by_idx.get(idx, ""),
+                }
+                f.write(json.dumps(row) + "\n")
+    except OSError:
+        return
 
 
 def replay_post_fork(
     rebuilt_context: str,
     case: TranscriptCase,
+    *,
+    run_dir: Path | None = None,
 ) -> list[dict]:
     """Replay turns fork_turn..end with rebuilt_context as session start.
 
-    **Stub until the model-invocation client lands** (#592 commit-2 / -3).
-    Returns one placeholder dict per `case.eval_turns`:
+    Two modes, selected by `run_dir`:
 
-        {"turn_idx": int, "expected": str, "actual": "",
-         "matched": False, "reason": REPLAY_PENDING_REASON}
+    **No `run_dir` (v1.2.0 stub default).** Returns one placeholder dict
+    per `case.eval_turns` with `actual=""`, `matched=False`,
+    `reason=REPLAY_PENDING_REASON`. Threshold/budget-sweep modes get
+    valid latency + token-cost numbers without dispatching subagents.
+
+    **With `run_dir` (host-agent eval-replay, #600).** Writes
+    `<run_dir>/replay_requests.jsonl` so an operator-driven dispatcher
+    (Claude Code session, MCP host, or `aelf:replay-eval` skill) can
+    spawn one subagent per row, prompted with `rebuilt_block + "\\n---\\n"
+    + user_turn`, expecting the subagent to write
+    `<run_dir>/replay_responses.jsonl`. On the next harness invocation
+    this function reads that response file, joins by `turn_idx`, and
+    fills `actual`:
+
+      * `actual` empty / row missing  → matched=False, reason=PENDING_REPLAY_REASON.
+      * `expected.lower() in actual.lower()` → matched=True (substring half
+        of the fidelity verdict).
+      * `actual` filled but no substring match → matched=False,
+        reason=NEEDS_LLM_JUDGE_REASON (open-ended; commit-3 of #592 LLM
+        judge picks this up).
 
     `expected` is pulled from the captured transcript's `text` field at
-    the eval-turn line index (1-indexed via the file order, matching the
-    fork_turn convention). When the line is missing or malformed the
-    expected text falls back to "" so the harness still produces a
-    coherent record.
-
-    Threading this stub keeps `run_one` end-to-end runnable: `score_fidelity`
-    reads `matched=False` and returns 0.0; `failures` populates with a
-    machine-readable `reason` so threshold-sweep / budget-sweep modes
-    surface latency + token-cost numbers without crashing on the
-    fidelity step. The real model client lands in a follow-up commit.
+    the eval-turn line index (matching the fork_turn convention). The
+    aelfrice repo never imports the `anthropic` SDK; the model call is
+    the host's responsibility.
     """
-    expected_by_idx: dict[int, str] = {}
-    if case.eval_turns:
-        wanted = set(case.eval_turns)
-        try:
-            with case.path.open("r", encoding="utf-8") as f:
-                for i, line in enumerate(f):
-                    if i not in wanted:
-                        continue
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if isinstance(obj, dict):
-                        t = obj.get("text")
-                        if isinstance(t, str):
-                            expected_by_idx[i] = t
-        except OSError:
-            # Unreadable file → return an empty list rather than partial
-            # placeholders. The harness's load_corpus already filtered
-            # this case out for the corpus-walking path; this guard is
-            # for direct-call use.
-            return []
-    return [
-        {
-            "turn_idx": idx,
-            "expected": expected_by_idx.get(idx, ""),
-            "actual": "",
-            "matched": False,
-            "reason": REPLAY_PENDING_REASON,
-        }
-        for idx in case.eval_turns
-    ]
+    expected_by_idx, user_turn_by_idx = _read_user_and_expected(case)
+    if case.eval_turns and not expected_by_idx and not user_turn_by_idx:
+        # _read_user_and_expected returned ({}, {}) only on OSError.
+        # Mirror the historical behaviour for unreadable files.
+        return []
+
+    responses_by_idx: dict[int, str] = {}
+    if run_dir is not None:
+        if case.eval_turns:
+            _write_replay_requests(
+                run_dir,
+                rebuilt_context,
+                case.eval_turns,
+                expected_by_idx,
+                user_turn_by_idx,
+            )
+        responses_by_idx = _read_replay_responses(run_dir)
+
+    out: list[dict] = []
+    for idx in case.eval_turns:
+        expected = expected_by_idx.get(idx, "")
+        actual = responses_by_idx.get(idx, "")
+        if run_dir is None:
+            reason = REPLAY_PENDING_REASON
+            matched = False
+        elif not actual:
+            reason = PENDING_REPLAY_REASON
+            matched = False
+        elif expected and expected.lower() in actual.lower():
+            reason = ""
+            matched = True
+        else:
+            reason = NEEDS_LLM_JUDGE_REASON
+            matched = False
+        out.append(
+            {
+                "turn_idx": idx,
+                "expected": expected,
+                "actual": actual,
+                "matched": matched,
+                "reason": reason,
+            }
+        )
+    return out
 
 
 def score_fidelity(replay_results: list[dict]) -> float:
