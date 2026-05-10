@@ -2,7 +2,7 @@
 
 Spec for issue [#228](https://github.com/robotrocketscience/aelfrice/issues/228). Substrate-cascade addendum to [`substrate_decision.md`](substrate_decision.md) (#196 ratified Option B). Companion to [`v2_phantom_promotion_trigger.md`](v2_phantom_promotion_trigger.md) (#229) — that issue specifies the rule applied to the phantoms this issue's strategy generates.
 
-Status: research-plan spec, no implementation. The lab pre-registration is the campaign blueprint; this memo is the public-side commitment that lets the campaign close decisions land downstream.
+Status: lifecycle and dispatch shipped at v2.1+. `src/aelfrice/wonder_consolidation.py` is wired; the `aelf:wonder` MCP tool and the `aelf wonder --axes` CLI verb both ship. The generation-strategy bake-off (RW / TC / STS / ensemble) below is still the open question — gated on lab pre-registration close.
 
 ## What's being decided
 
