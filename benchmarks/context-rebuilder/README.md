@@ -277,6 +277,78 @@ These remain open for the fidelity scorer (#138):
 4. Whether augment-mode loses fidelity vs. suppress-mode (matters
    for v2.x suppress-mode promotion decision).
 
+## Host-agent eval-replay (#600)
+
+`replay_post_fork` participates in a polymorphic split that mirrors
+the `/aelf:onboard` pattern: aelfrice never imports the `anthropic`
+SDK, never holds API keys, and pushes the model invocation to the
+calling host (Claude Code, Claude Desktop, an MCP host, or a
+private skill).
+
+### The flow
+
+1. **Sweep with `--run-dir`** writes per-(case, config) request
+   files to disk and skips the model call:
+
+   ```
+   uv run python benchmarks/context-rebuilder/eval_harness.py \
+       --mode threshold-sweep \
+       --corpus benchmarks/context-rebuilder/fixtures/synthetic/ \
+       --out /tmp/sweep1.json \
+       --run-dir /tmp/sweep1/
+   ```
+
+   For each (case, threshold, budget) cell, the harness writes:
+
+       /tmp/sweep1/<case_stem>__t<threshold>__b<budget>/replay_requests.jsonl
+
+   One JSON row per `eval_turn`:
+
+   ```json
+   {"turn_idx": 8, "rebuilt_block": "...", "user_turn": "...", "expected": "..."}
+   ```
+
+   `user_turn` is the most-recent `role=user` text at-or-before the
+   eval index — the prompt the host will replay through the rebuilt
+   context. All rows in the harness JSON output carry
+   `reason=pending_replay`; `score_fidelity` returns 0 on this
+   pass.
+
+2. **Operator dispatches one subagent per row.** From a Claude Code
+   session (or an MCP host with subagent capability), iterate over
+   each `replay_requests.jsonl` line and dispatch a subagent
+   prompted with `rebuilt_block + "\n---\n" + user_turn`. Capture
+   the subagent's reply as `actual` and append a JSON line to
+   `replay_responses.jsonl` in the same directory:
+
+   ```json
+   {"turn_idx": 8, "actual": "..."}
+   ```
+
+   The dispatch step is operator-driven, not aelfrice. A private
+   `aelf:replay-eval` skill in `~/.claude/skills/` can automate the
+   for-loop; the contract is the on-disk request/response files.
+
+3. **Re-run the sweep**, same flags. `replay_post_fork` reads each
+   `replay_responses.jsonl`, joins by `turn_idx`, and:
+
+   * If the response is missing or `actual` is empty:
+     `matched=False`, `reason=pending_replay` (unchanged from pass 1).
+   * If `expected.lower() in actual.lower()`: `matched=True`,
+     `reason=""` (substring half of the fidelity verdict).
+   * Otherwise: `matched=False`, `reason=needs_llm_judge` —
+     open-ended turns parked for commit-3 of #592 (LLM judge).
+
+   `score_fidelity` reports the substring half of the verdict on
+   this pass.
+
+### Without `--run-dir`
+
+The legacy stub path stays default: every row holds
+`reason=needs_replay_client`, `matched=False`, the `actual` field
+is empty, and `score_fidelity` returns 0. Threshold/budget sweeps
+still produce valid latency + token-cost numbers.
+
 ## LLM-judge stage (commit-3 of #592)
 
 Open-ended replay rows that the deterministic substring scorer
