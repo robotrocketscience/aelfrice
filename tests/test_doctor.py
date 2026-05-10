@@ -359,6 +359,7 @@ def test_diagnose_flags_missing_auto_capture_hooks_when_pre_v21(
         "aelf-transcript-logger",
         "aelf-commit-ingest",
         "aelf-session-start-hook",
+        "aelf-stop-hook",
     ]
     rendered = format_report(report)
     assert "auto-capture hooks not installed" in rendered
@@ -368,13 +369,14 @@ def test_diagnose_flags_missing_auto_capture_hooks_when_pre_v21(
 def test_diagnose_quiet_when_all_auto_capture_hooks_present(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fresh v2.1 install: all three default-on hooks present. No nag
-    line in the rendered report."""
+    """Fresh v2.1+ install: all default-on hooks present (including the
+    #582 stop hook). No nag line in the rendered report."""
     bin_dir = tmp_path / "bin"
     retrieval = _exec(bin_dir / "aelf-hook")
     transcript = _exec(bin_dir / "aelf-transcript-logger")
     commit_ingest = _exec(bin_dir / "aelf-commit-ingest")
     session_start = _exec(bin_dir / "aelf-session-start-hook")
+    stop_hook = _exec(bin_dir / "aelf-stop-hook")
     user_path = tmp_path / "settings.json"
     _write_settings(user_path, {
         "hooks": {
@@ -384,6 +386,7 @@ def test_diagnose_quiet_when_all_auto_capture_hooks_present(
             ],
             "Stop": [
                 {"hooks": [{"type": "command", "command": str(transcript)}]},
+                {"hooks": [{"type": "command", "command": str(stop_hook)}]},
             ],
             "PreCompact": [
                 {"hooks": [{"type": "command", "command": str(transcript)}]},
@@ -431,6 +434,7 @@ def test_diagnose_partial_auto_capture_lists_only_missing(
     assert report.missing_auto_capture_hooks == [
         "aelf-commit-ingest",
         "aelf-session-start-hook",
+        "aelf-stop-hook",
     ]
 
 

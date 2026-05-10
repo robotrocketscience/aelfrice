@@ -54,6 +54,7 @@ _OPT_OUT_AUTO_CAPTURE = (
     "--no-transcript-ingest",
     "--no-commit-ingest",
     "--no-session-start",
+    "--no-stop-hook",
 )
 
 
