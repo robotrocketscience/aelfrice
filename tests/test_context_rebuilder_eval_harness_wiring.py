@@ -198,3 +198,52 @@ def test_run_rebuilder_empty_store_returns_empty_block(
         assert latency_ms >= 0.0
     finally:
         store.close()
+
+
+# --------------------------------------------------------------------- #
+# measure_token_cost                                                    #
+# --------------------------------------------------------------------- #
+
+
+def test_measure_token_cost_zero_pre_clear_returns_zero(
+    harness: ModuleType, transcript_path: Path
+) -> None:
+    """fork_turn=0 → no pre-clear text → ratio is 0.0, not divide-by-zero."""
+    case = harness.TranscriptCase(
+        path=transcript_path, task_type="debug",
+        fork_turn=0, eval_turns=(),
+    )
+    assert harness.measure_token_cost("anything", case) == 0.0
+
+
+def test_measure_token_cost_smaller_rebuilt_means_smaller_ratio(
+    harness: ModuleType, transcript_path: Path
+) -> None:
+    case = harness.TranscriptCase(
+        path=transcript_path, task_type="debug",
+        fork_turn=4, eval_turns=(),
+    )
+    big_block = "x" * 1000
+    small_block = "x" * 10
+    big = harness.measure_token_cost(big_block, case)
+    small = harness.measure_token_cost(small_block, case)
+    assert small < big
+    assert small >= 0.0
+
+
+def test_measure_token_cost_uses_shared_estimator(
+    harness: ModuleType, transcript_path: Path
+) -> None:
+    """The harness ratio must match estimate_tokens(rebuilt) /
+    estimate_tokens(pre_clear) so the constant stays in sync with
+    the rebuilder's own bookkeeping."""
+    from benchmarks.context_rebuilder.measure import estimate_tokens
+
+    case = harness.TranscriptCase(
+        path=transcript_path, task_type="debug",
+        fork_turn=4, eval_turns=(),
+    )
+    rebuilt = "context block of arbitrary length"
+    pre_clear = harness._pre_clear_text(case)
+    expected = estimate_tokens(rebuilt) / estimate_tokens(pre_clear)
+    assert harness.measure_token_cost(rebuilt, case) == pytest.approx(expected)

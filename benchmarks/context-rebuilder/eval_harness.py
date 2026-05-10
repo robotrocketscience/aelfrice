@@ -42,6 +42,7 @@ from aelfrice.context_rebuilder import (  # noqa: E402
 )
 from aelfrice.ingest import ingest_jsonl  # noqa: E402
 from aelfrice.store import MemoryStore  # noqa: E402
+from benchmarks.context_rebuilder.measure import estimate_tokens  # noqa: E402
 
 
 Mode = Literal["threshold-sweep", "budget-sweep", "dynamic", "regression"]
@@ -241,16 +242,56 @@ def score_fidelity(replay_results: list[dict]) -> float:
     return matched / len(replay_results)
 
 
+def _pre_clear_text(case: TranscriptCase) -> str:
+    """Concatenate the `text` fields of every turn in 0..fork_turn-1.
+
+    This is the harness's stand-in for "the context the agent had open
+    just before the clear" — a deterministic, model-agnostic measure
+    that doesn't require replaying the transcript through a model.
+    """
+    parts: list[str] = []
+    if case.fork_turn <= 0:
+        return ""
+    with case.path.open("r", encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            if i >= case.fork_turn:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                t = obj.get("text")
+                if isinstance(t, str):
+                    parts.append(t)
+    return "\n".join(parts)
+
+
 def measure_token_cost(
     rebuilt_context: str,
     case: TranscriptCase,
 ) -> float:
-    """Rebuild block size / pre-clear context size.
+    """Rebuild-block tokens / pre-clear-context tokens.
 
-    TODO: needs a tokenizer (tiktoken or model-specific) and the
-    pre-clear context size from the captured transcript.
+    Both sides use `benchmarks.context_rebuilder.measure.estimate_tokens`
+    — the 4-chars-per-token heuristic that mirrors the rebuilder's own
+    internal estimator (`aelfrice.context_rebuilder._CHARS_PER_TOKEN`).
+    Sharing the constant keeps harness measurements aligned with the
+    rebuilder's own budget bookkeeping. A real tokenizer (tiktoken /
+    sentencepiece) would land alongside the LLM-judge in a follow-up.
+
+    Returns 0.0 when the pre-clear text is empty (no transcript content
+    pre-fork) — there's no meaningful ratio to report and division would
+    fail; 0.0 documents the corner without raising.
     """
-    raise NotImplementedError("Wire to tokenizer + transcript size")
+    pre_clear_tokens = estimate_tokens(_pre_clear_text(case))
+    if pre_clear_tokens <= 0:
+        return 0.0
+    rebuilt_tokens = estimate_tokens(rebuilt_context)
+    return rebuilt_tokens / pre_clear_tokens
 
 
 def run_one(
