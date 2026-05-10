@@ -277,6 +277,85 @@ These remain open for the fidelity scorer (#138):
 4. Whether augment-mode loses fidelity vs. suppress-mode (matters
    for v2.x suppress-mode promotion decision).
 
+## LLM-judge stage (commit-3 of #592)
+
+Open-ended replay rows that the deterministic substring scorer
+cannot settle land in the run report tagged
+`reason="needs_llm_judge"`. The judge stage ships as a separate,
+opt-in pass that compares each candidate answer against the
+reference using an off-band model call at the host CLI's anchor
+tier.
+
+The stage is **default-off** (`max_judge_calls=0`) so CI never
+issues a model call. Operators opt in by passing a positive cap;
+the cap binds before any request file is written, so a
+misconfigured run cannot exceed its budget.
+
+### Contamination boundary
+
+The judge sees only `(turn_idx, expected, actual)`. Retrieval
+context -- the rebuilt block and the user turn -- never reaches
+the judge prompt, per [`docs/BENCHMARKS.md`][b] Pass 1 / Pass 2
+separation. Letting the judge see the rebuilt block would allow
+it to patch the candidate using context the candidate did not in
+fact produce, inflating fidelity.
+
+[b]: ../../docs/BENCHMARKS.md
+
+### Operator flow
+
+The harness (or an operator-driven helper) writes a per-run
+`judge_requests.jsonl`; the host CLI's dispatcher issues one
+off-band call per row at the anchor tier (`JUDGE_MODEL_TIER`)
+and writes `judge_responses.jsonl` back to the same directory;
+a follow-up call joins by `turn_idx` and folds the verdicts back
+into the run report.
+
+```
+# 1. Replay produced rows tagged reason="needs_llm_judge". Write
+#    the request file (replace 50 with your call budget):
+uv run python - <<'PY'
+from pathlib import Path
+import json, sys
+sys.path.insert(0, "benchmarks/context-rebuilder")
+from judges import llm_judge
+
+rows = [json.loads(l) for l in
+        Path("run_dir/replay_results.jsonl").read_text().splitlines()
+        if l.strip()]
+n = llm_judge.write_judge_requests(rows, Path("run_dir"),
+                                    max_judge_calls=50)
+print(f"wrote {n} judge requests")
+PY
+
+# 2. Host-side dispatch (one off-band model call per row at the
+#    anchor tier, prompt = llm_judge.JUDGE_PROMPT_TEMPLATE rendered
+#    with the row's `expected` and `actual`). Write
+#    run_dir/judge_responses.jsonl with rows of shape
+#    {"turn_idx": <int>, "matched": <bool>, "rationale": "<str>"}.
+
+# 3. Fold the verdicts back into the run report:
+uv run python - <<'PY'
+from pathlib import Path
+import json, sys
+sys.path.insert(0, "benchmarks/context-rebuilder")
+from judges import llm_judge
+
+rows = [json.loads(l) for l in
+        Path("run_dir/replay_results.jsonl").read_text().splitlines()
+        if l.strip()]
+responses = llm_judge.read_judge_responses(Path("run_dir"))
+folded = llm_judge.apply_judge_verdicts(rows, responses)
+Path("run_dir/replay_results.jsonl").write_text(
+    "\n".join(json.dumps(r) for r in folded) + "\n"
+)
+PY
+```
+
+Wiring this stage into the harness's main flow -- so steps 1 and
+3 ride on the same `eval_harness.py` invocation -- is a follow-up
+that joins onto the `--run-dir` plumbing landing in PR #601.
+
 ## Status
 
 * **#136 -- harness scaffolding:** SHIPPED in v1.4.0. Replay
