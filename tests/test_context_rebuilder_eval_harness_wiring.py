@@ -247,3 +247,56 @@ def test_measure_token_cost_uses_shared_estimator(
     pre_clear = harness._pre_clear_text(case)
     expected = estimate_tokens(rebuilt) / estimate_tokens(pre_clear)
     assert harness.measure_token_cost(rebuilt, case) == pytest.approx(expected)
+
+
+# --------------------------------------------------------------------- #
+# replay_post_fork                                                      #
+# --------------------------------------------------------------------- #
+
+
+def test_replay_post_fork_returns_one_placeholder_per_eval_turn(
+    harness: ModuleType, transcript_path: Path
+) -> None:
+    case = harness.TranscriptCase(
+        path=transcript_path, task_type="debug",
+        fork_turn=2, eval_turns=(2, 4),
+    )
+    results = harness.replay_post_fork("rebuilt-block", case)
+    assert len(results) == 2
+    assert {r["turn_idx"] for r in results} == {2, 4}
+    assert all(not r["matched"] for r in results)
+    assert all(r["reason"] == harness.REPLAY_PENDING_REASON for r in results)
+
+
+def test_replay_post_fork_pulls_expected_from_transcript(
+    harness: ModuleType, transcript_path: Path
+) -> None:
+    case = harness.TranscriptCase(
+        path=transcript_path, task_type="debug",
+        fork_turn=2, eval_turns=(2,),
+    )
+    results = harness.replay_post_fork("", case)
+    assert results[0]["expected"] == "What about session-scoped retrieval?"
+    assert results[0]["actual"] == ""
+
+
+def test_replay_post_fork_empty_eval_turns_returns_empty_list(
+    harness: ModuleType, transcript_path: Path
+) -> None:
+    case = harness.TranscriptCase(
+        path=transcript_path, task_type="debug",
+        fork_turn=2, eval_turns=(),
+    )
+    assert harness.replay_post_fork("rebuilt", case) == []
+
+
+def test_replay_post_fork_score_fidelity_returns_zero(
+    harness: ModuleType, transcript_path: Path
+) -> None:
+    """Stubbed replay → score_fidelity returns 0.0, not a crash."""
+    case = harness.TranscriptCase(
+        path=transcript_path, task_type="debug",
+        fork_turn=2, eval_turns=(2, 4),
+    )
+    results = harness.replay_post_fork("", case)
+    assert harness.score_fidelity(results) == 0.0

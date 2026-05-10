@@ -23,7 +23,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 # Allow `python benchmarks/context-rebuilder/eval_harness.py` to import
 # aelfrice and the benchmarks.context_rebuilder package. The hyphenated
@@ -213,20 +213,71 @@ def run_rebuilder(
     return rebuilt, latency_ms
 
 
+REPLAY_PENDING_REASON: Final[str] = "needs_replay_client"
+"""Marker emitted by `replay_post_fork` until the model-invocation
+client lands. Surfaced in `failures[].reason` so summary readers can
+distinguish "skipped, judge required" from a real fidelity miss."""
+
+
 def replay_post_fork(
     rebuilt_context: str,
     case: TranscriptCase,
 ) -> list[dict]:
     """Replay turns fork_turn..end with rebuilt_context as session start.
 
-    Returns one dict per eval_turn with keys:
-      {"turn_idx": int, "expected": str, "actual": str, "matched": bool}.
+    **Stub until the model-invocation client lands** (#592 commit-2 / -3).
+    Returns one placeholder dict per `case.eval_turns`:
 
-    TODO: wire to a Claude API client once we decide on the eval
-    invocation surface. Initially can be agent-API-driven; later may
-    move to a Claude-Code-harness-equivalent for higher fidelity.
+        {"turn_idx": int, "expected": str, "actual": "",
+         "matched": False, "reason": REPLAY_PENDING_REASON}
+
+    `expected` is pulled from the captured transcript's `text` field at
+    the eval-turn line index (1-indexed via the file order, matching the
+    fork_turn convention). When the line is missing or malformed the
+    expected text falls back to "" so the harness still produces a
+    coherent record.
+
+    Threading this stub keeps `run_one` end-to-end runnable: `score_fidelity`
+    reads `matched=False` and returns 0.0; `failures` populates with a
+    machine-readable `reason` so threshold-sweep / budget-sweep modes
+    surface latency + token-cost numbers without crashing on the
+    fidelity step. The real model client lands in a follow-up commit.
     """
-    raise NotImplementedError("Wire to model invocation client")
+    expected_by_idx: dict[int, str] = {}
+    if case.eval_turns:
+        wanted = set(case.eval_turns)
+        try:
+            with case.path.open("r", encoding="utf-8") as f:
+                for i, line in enumerate(f):
+                    if i not in wanted:
+                        continue
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(obj, dict):
+                        t = obj.get("text")
+                        if isinstance(t, str):
+                            expected_by_idx[i] = t
+        except OSError:
+            # Unreadable file → return an empty list rather than partial
+            # placeholders. The harness's load_corpus already filtered
+            # this case out for the corpus-walking path; this guard is
+            # for direct-call use.
+            return []
+    return [
+        {
+            "turn_idx": idx,
+            "expected": expected_by_idx.get(idx, ""),
+            "actual": "",
+            "matched": False,
+            "reason": REPLAY_PENDING_REASON,
+        }
+        for idx in case.eval_turns
+    ]
 
 
 def score_fidelity(replay_results: list[dict]) -> float:
