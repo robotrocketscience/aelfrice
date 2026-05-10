@@ -192,3 +192,20 @@ class TestIsEmpty:
 
     def test_log_only_is_not_empty(self) -> None:
         assert WorkingState(recent_log=["abc Hello"]).is_empty() is False
+
+
+# --- Latency budget (#587 AC#3) ---------------------------------------
+
+
+class TestLatency:
+    def test_projector_under_500ms_on_clean_repo(self, tmp_repo: Path) -> None:
+        """AC#3 sets ≤50ms p95 in production. The CI host bound is
+        looser: assert under 500ms (10x budget) so the test remains
+        non-flaky on shared/cold runners while still catching a real
+        regression (subprocess hang, missing timeout)."""
+        import time
+        t0 = time.monotonic()
+        ws = project_working_state(tmp_repo, recent_turns=[])
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        assert ws.branch == "main"
+        assert elapsed_ms < 500, f"projector took {elapsed_ms:.1f}ms; expected <500ms"
