@@ -25,8 +25,10 @@ This is a rebuild, not a port. Structural issues that survived the research line
 | **v1.5.0** | shipped | retrieval plumbing — composition plumbing + telemetry, BM25F anchor text, search-tool Bash matcher, v3 federation version-vector schema, dynamic-trigger re-park |
 | **v1.5.1** | shipped | corroboration tracking sibling table (#190); default-on host-driven LLM onboard classifier (#238) |
 | **v1.6.0** | shipped | hardening + observability — hook-hardening framing-tag contract + per-turn audit log, `aelf tail`, belief retention class, rebuild diagnostic log, posterior-ranking eval harness + heat-kernel composition (default-flip gated), deferred-feedback sweeper, v2.0 corpus public scaffold + bench-gate, `replay_full_equality` probe, `session_id` propagation, reachable-install detection |
-| **v1.7.0** | planned | graph signal wave + structural retrieval lane — signed Laplacian + eigenbasis (#149), heat kernel authority (#150), Plate FFT HRR primitives (#216), HRR bind/probe (#152), `uri_baki` post-rank adjuster retest (#153), benchmark-gate default-on flip (#154) |
-| **v2.0.0** | planned | feature parity with the research line + benchmark reproducibility |
+| **v1.7.0** | shipped | graph signal wave + structural retrieval lane — signed Laplacian + eigenbasis (#149), heat kernel authority (#150), Plate FFT HRR primitives (#216), HRR bind/probe (#152), `uri_baki` post-rank adjuster retest (#153). Heat-kernel + HRR-structural shipped opt-in; benchmark-gate default-on flip (#154) deferred to v2.1.0. |
+| **v2.0.0** | shipped | feature parity with the research line + reproducibility-harness scaffolding (#437); wonder lifecycle + dispatch surface; sentiment-feedback module (hook integration pending); dedup read-path (audit-only) |
+| **v2.1.0** | shipped | reproducibility-harness gate cleared 11/11 (#437); `use_heat_kernel` + `use_hrr_structural` defaults flipped on (#154); HRR `dim` default 2048→512 (#538); default-on transcript / commit / session-start hooks (#529); query-strategy uplift bench gate (#291); vocab-bridge bench gate (#433) |
+| **v2.2** | planned | descend the V2_REENTRY_QUEUE backlog — dedup write-path wire-up (#197), sentiment-feedback hook integration (#193), multimodel (#194) |
 
 ## What shipped
 
