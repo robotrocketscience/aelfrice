@@ -76,6 +76,21 @@ push the release
 
 Default budget is 2,400 tokens per prompt. Locked beliefs are the always-injected pool — every lock ships on every prompt, in full, regardless of relevance score. **Lock count is your baseline-context budget knob:** if you've locked 200 things, every session opens with all 200, by your design. The non-locked pool (FTS/L1) is BM25-ranked and truncated to fit.
 
+### Session-start enrichment vs per-turn retrieval
+
+The first `UserPromptSubmit` of a new session carries extra context compared to subsequent prompts in the same session.
+
+**Per-turn retrieval** (every prompt): BM25-ranked beliefs matching your current prompt, wrapped in `<aelfrice-memory>`.
+
+**Session-start enrichment** (first prompt only): a `<session-start>` sub-block is embedded inside that same `<aelfrice-memory>` envelope. It contains two sections:
+
+- `<locked>` — all user-locked beliefs (the full L0 pool, same as `aelf locked`).
+- `<core>` — load-bearing unlocked beliefs: those with corroboration count ≥ 2, or posterior mean ≥ ⅔ with sufficient feedback mass (α+β ≥ 4). Same selection as `aelf core`.
+
+Detection is session-scoped. aelfrice records the last-seen `session_id` in `<git-common-dir>/aelfrice/session_first_prompt.json`. When the id changes (or the file is absent), the current call is treated as the first prompt of a new session; subsequent calls with the same id skip the sub-block.
+
+Cost: one additional `list_locked_beliefs()` + one belief-id walk per session, not per prompt.
+
 ---
 
 ## What it remembers
