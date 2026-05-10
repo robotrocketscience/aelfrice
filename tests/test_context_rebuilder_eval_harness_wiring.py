@@ -300,3 +300,63 @@ def test_replay_post_fork_score_fidelity_returns_zero(
     )
     results = harness.replay_post_fork("", case)
     assert harness.score_fidelity(results) == 0.0
+
+
+# --------------------------------------------------------------------- #
+# End-to-end: threshold-sweep against the bundled synthetic fixture     #
+# --------------------------------------------------------------------- #
+
+
+def test_threshold_sweep_runs_end_to_end_on_synthetic_fixture(
+    harness: ModuleType, tmp_path: Path
+) -> None:
+    """Smoke test: load the bundled synthetic fixture, run a 3-threshold
+    sweep, and verify the JSON output schema. Until the model client
+    lands all fidelity scores will be 0.0 — the sweep still produces
+    valid latency + token-cost numbers."""
+    corpus_dir = (
+        _REPO_ROOT / "benchmarks" / "context-rebuilder" / "fixtures" / "synthetic"
+    )
+    cases = harness.load_corpus(corpus_dir)
+    assert len(cases) >= 1, "synthetic fixture meta.json must resolve"
+
+    result = harness.sweep_thresholds(
+        cases, thresholds=(0.0, 0.5), token_budget=2000,
+    )
+    assert result.mode == "threshold-sweep"
+    assert len(result.runs) == len(cases) * 2
+    for r in result.runs:
+        assert r.fidelity == 0.0  # stub returns 0 until model client
+        assert r.rebuild_latency_ms >= 0.0
+        assert r.token_cost_ratio >= 0.0
+        assert r.fork_turn > 0
+    # summary structure: keyed by task_type, then per-threshold metrics
+    assert "debug" in result.summary
+    debug_summary = result.summary["debug"]
+    assert "threshold=0.0" in debug_summary
+    assert "median_fidelity" in debug_summary["threshold=0.0"]
+    assert "p99_latency_ms" in debug_summary["threshold=0.0"]
+
+
+def test_run_one_returns_runresult_without_crashing(
+    harness: ModuleType, tmp_path: Path
+) -> None:
+    """`run_one` is the per-case entry point used by both sweep modes;
+    it must thread store + rebuild + replay + score without raising
+    even with the replay stub in place."""
+    corpus_dir = (
+        _REPO_ROOT / "benchmarks" / "context-rebuilder" / "fixtures" / "synthetic"
+    )
+    cases = harness.load_corpus(corpus_dir)
+    case = cases[0]
+    result = harness.run_one(case, trigger_threshold=0.0, token_budget=2000)
+    assert isinstance(result, harness.RunResult)
+    assert result.task_type == case.task_type
+    assert result.config == {"trigger_threshold": 0.0, "token_budget": 2000}
+    assert result.n_eval_turns == len(case.eval_turns)
+    # All eval_turns are unmatched stubs, so failures == eval_turns
+    assert len(result.failures) == result.n_eval_turns
+    assert all(
+        f["reason"] == harness.REPLAY_PENDING_REASON
+        for f in result.failures
+    )
