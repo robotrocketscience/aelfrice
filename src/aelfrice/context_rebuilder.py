@@ -68,7 +68,7 @@ import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Final, IO, cast
+from typing import TYPE_CHECKING, Any, Final, IO, cast
 
 from aelfrice.entity_extractor import extract_entities
 from aelfrice.models import LOCK_USER, Belief
@@ -84,7 +84,9 @@ from aelfrice.retrieval import retrieve
 from aelfrice.scoring import posterior_mean
 from aelfrice.store import MemoryStore
 from aelfrice.triple_extractor import extract_triples
-from aelfrice.working_state import WorkingState, project_working_state
+
+if TYPE_CHECKING:
+    from aelfrice.working_state import WorkingState
 
 # --- Legacy v1.2.0a0 constants (preserved for backwards compatibility) ----
 
@@ -1647,6 +1649,10 @@ def main(
         # <working-state> sub-block alongside the retrieved beliefs.
         # Best-effort: any projector failure returns an empty
         # WorkingState that the formatter omits.
+        # Lazy import to break the working_state ↔ context_rebuilder
+        # cyclic-import that CodeQL `py/unsafe-cyclic-import` flagged.
+        from aelfrice.working_state import WorkingState, project_working_state
+
         try:
             working_state = project_working_state(cwd, recent)
         except Exception:  # noqa: BLE001 -- hook contract: never raise
