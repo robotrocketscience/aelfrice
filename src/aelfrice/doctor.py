@@ -40,6 +40,8 @@ import os
 import re
 import shlex
 import shutil
+import sqlite3
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
@@ -223,6 +225,26 @@ HOOK_FAILURES_LOG: Final[Path] = (
 # How many trailing lines of the hook-failures log to surface.
 _HOOK_FAILURES_TAIL: Final[int] = 10
 
+# Root directory under which per-project aelfrice state lives.
+# Each sub-directory is a project-id slug; memory.db sits directly inside.
+# Override via `aelfrice_projects_dir` kwarg on `diagnose()` (tests use this).
+_AELFRICE_PROJECTS_DIR: Final[Path] = (
+    Path.home() / ".aelfrice" / "projects"
+)
+
+
+@dataclass(frozen=True)
+class LegacySchemaDB:
+    """One per-project DB detected as pre-v1.x (no `origin` column).
+
+    `path`      — absolute path to the memory.db file.
+    `row_count` — number of rows in the `beliefs` table.
+    `idle_days` — whole days since the file was last modified (mtime).
+    """
+    path: Path
+    row_count: int
+    idle_days: int
+
 
 @dataclass(frozen=True)
 class CommandFinding:
@@ -292,6 +314,14 @@ class DoctorReport:
     missing_auto_capture_hooks: list[str] = field(
         default_factory=lambda: cast(list[str], [])
     )
+    # Per-project DBs under ~/.aelfrice/projects/*/memory.db that use
+    # the pre-v1.x schema (no `origin` column on the `beliefs` table)
+    # and have at least one row. These DBs cannot participate in the
+    # v2.x lifecycle (agent_remembered, user_validated, calibrated
+    # weights, aelf:promote) without `aelf migrate` (#589).
+    legacy_schema_dbs: list[LegacySchemaDB] = field(
+        default_factory=lambda: cast(list[LegacySchemaDB], [])
+    )
 
     @property
     def broken(self) -> list[CommandFinding]:
@@ -324,6 +354,7 @@ def diagnose(
     known_cli_subcommands: frozenset[str] | None = None,
     search_tool_telemetry_path: Path | None = None,
     user_prompt_submit_telemetry_path: Path | None = None,
+    aelfrice_projects_dir: Path | None = None,
 ) -> DoctorReport:
     """Walk user and project settings.json, return a DoctorReport.
 
@@ -339,6 +370,8 @@ def diagnose(
     derivable from the project root's git-common-dir), the
     search_tool_hook telemetry section is populated. Similarly for
     `user_prompt_submit_telemetry_path` (#218 AC4).
+    `aelfrice_projects_dir` overrides the default scan root for
+    per-project DBs (`~/.aelfrice/projects`); useful in tests (#589).
     """
     user_path = user_settings if user_settings is not None else USER_SETTINGS_PATH
     project_path = (
@@ -358,6 +391,13 @@ def diagnose(
     report.hook_failures_tail = _tail_log(log_path, _HOOK_FAILURES_TAIL)
     report.missing_runtime_deps = _check_runtime_deps()
     report.missing_auto_capture_hooks = _check_auto_capture_hooks(report.findings)
+    # #589: scan per-project DBs for pre-v1.x schema (no `origin` column).
+    _proj_dir = (
+        aelfrice_projects_dir
+        if aelfrice_projects_dir is not None
+        else _AELFRICE_PROJECTS_DIR
+    )
+    report.legacy_schema_dbs = _check_legacy_schema_dbs(projects_dir=_proj_dir)
     if known_cli_subcommands is not None:
         slash_dir = (
             slash_commands_dir if slash_commands_dir is not None
@@ -809,6 +849,66 @@ def _format_missing_auto_capture_section(
         "`aelf setup --no-transcript-ingest --no-commit-ingest "
         "--no-session-start --no-stop-hook`."
     )
+
+
+def _check_legacy_schema_dbs(
+    *,
+    projects_dir: Path | None = None,
+) -> list[LegacySchemaDB]:
+    """Return per-project DBs that are on the pre-v1.x schema (no `origin`).
+
+    Scans `~/.aelfrice/projects/*/memory.db` (or `projects_dir` override).
+    A DB is flagged when ALL of the following hold:
+      1. The `beliefs` table exists.
+      2. No column named `origin` is present.
+      3. `SELECT COUNT(*) FROM beliefs` returns > 0.
+
+    Opens each DB read-only (`file:...?mode=ro`) to avoid accidental writes.
+    Any DB that raises a connection or query error is silently skipped —
+    doctor is diagnostic only.
+    """
+    root = projects_dir if projects_dir is not None else _AELFRICE_PROJECTS_DIR
+    if not root.is_dir():
+        return []
+
+    results: list[LegacySchemaDB] = []
+    now = time.time()
+
+    for db_path in sorted(root.glob("*/memory.db")):
+        try:
+            uri = f"file:{db_path}?mode=ro"
+            con = sqlite3.connect(uri, uri=True)
+        except Exception:  # noqa: BLE001
+            continue
+        try:
+            cur = con.execute("PRAGMA table_info(beliefs)")
+            columns = cur.fetchall()
+            if not columns:
+                # No beliefs table — skip (uninitialised or unrelated DB).
+                continue
+            col_names = {row[1] for row in columns}  # row[1] is the column name
+            if "origin" in col_names:
+                # Modern schema — skip.
+                continue
+            # Legacy schema. Skip empty DBs — uninteresting.
+            (row_count,) = con.execute("SELECT COUNT(*) FROM beliefs").fetchone()
+            if row_count == 0:
+                continue
+            mtime = db_path.stat().st_mtime
+            idle_days = int((now - mtime) / 86400)
+            results.append(
+                LegacySchemaDB(
+                    path=db_path,
+                    row_count=int(row_count),
+                    idle_days=idle_days,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            con.close()
+
+    return results
 
 
 def _format_missing_runtime_deps_section(
