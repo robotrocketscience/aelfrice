@@ -455,4 +455,5 @@ def test_auto_capture_basenames_match_setup() -> None:
         setup.TRANSCRIPT_LOGGER_SCRIPT_NAME,
         setup.COMMIT_INGEST_SCRIPT_NAME,
         setup.SESSION_START_HOOK_SCRIPT_NAME,
+        setup.STOP_HOOK_SCRIPT_NAME,
     }

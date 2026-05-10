@@ -761,6 +761,9 @@ _AUTO_CAPTURE_HOOK_BASENAMES: Final[tuple[str, ...]] = (
     "aelf-transcript-logger",
     "aelf-commit-ingest",
     "aelf-session-start-hook",
+    # #582: session-end correction-lock prompt. Default-on since the
+    # Stop hook landed.
+    "aelf-stop-hook",
 )
 
 
@@ -801,9 +804,10 @@ def _format_missing_auto_capture_section(
     )
     lines.append(
         "fix: re-run 'aelf setup' to wire transcript-ingest, "
-        "commit-ingest, and session-start (default-on since v2.1). "
-        "to opt out per-hook: `aelf setup --no-transcript-ingest "
-        "--no-commit-ingest --no-session-start`."
+        "commit-ingest, session-start, and stop-hook (default-on "
+        "since v2.1 / #582). to opt out per-hook: "
+        "`aelf setup --no-transcript-ingest --no-commit-ingest "
+        "--no-session-start --no-stop-hook`."
     )
 
 
