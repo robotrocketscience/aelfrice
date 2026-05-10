@@ -1,0 +1,241 @@
+{
+  "_notes": "Sweep of temporal_half_life_seconds on StructMemEval temporal tasks (#487). half_life_seconds=null means no decay (temporal_sort=False, equivalent to inf). score=accuracy (fraction of queries where current state is present in retrieval). is_fixture=true when the inline two-row fixture was used instead of real corpus data.",
+  "generated_at_utc": "2026-05-10T06:18:17.223161+00:00",
+  "sweep_grid": [
+    {
+      "label": "1h",
+      "half_life_seconds": 3600.0
+    },
+    {
+      "label": "6h",
+      "half_life_seconds": 21600.0
+    },
+    {
+      "label": "24h",
+      "half_life_seconds": 86400.0
+    },
+    {
+      "label": "3d",
+      "half_life_seconds": 259200.0
+    },
+    {
+      "label": "7d",
+      "half_life_seconds": 604800.0
+    },
+    {
+      "label": "14d",
+      "half_life_seconds": 1209600.0
+    },
+    {
+      "label": "30d",
+      "half_life_seconds": 2592000.0
+    },
+    {
+      "label": "inf",
+      "half_life_seconds": null
+    }
+  ],
+  "tasks": [
+    "location",
+    "accounting"
+  ],
+  "bench": null,
+  "verdict": {
+    "location": "supported",
+    "accounting": "supported"
+  },
+  "rows": [
+    {
+      "half_life_label": "1h",
+      "half_life_seconds": 3600.0,
+      "task": "location",
+      "bench": "small",
+      "score": 1.0,
+      "n_queries": 1,
+      "n_correct": 1,
+      "n_cases": 1,
+      "elapsed_sec": 0.022,
+      "is_fixture": true
+    },
+    {
+      "half_life_label": "6h",
+      "half_life_seconds": 21600.0,
+      "task": "location",
+      "bench": "small",
+      "score": 1.0,
+      "n_queries": 1,
+      "n_correct": 1,
+      "n_cases": 1,
+      "elapsed_sec": 0.02,
+      "is_fixture": true
+    },
+    {
+      "half_life_label": "24h",
+      "half_life_seconds": 86400.0,
+      "task": "location",
+      "bench": "small",
+      "score": 1.0,
+      "n_queries": 1,
+      "n_correct": 1,
+      "n_cases": 1,
+      "elapsed_sec": 0.019,
+      "is_fixture": true
+    },
+    {
+      "half_life_label": "3d",
+      "half_life_seconds": 259200.0,
+      "task": "location",
+      "bench": "small",
+      "score": 1.0,
+      "n_queries": 1,
+      "n_correct": 1,
+      "n_cases": 1,
+      "elapsed_sec": 0.019,
+      "is_fixture": true
+    },
+    {
+      "half_life_label": "7d",
+      "half_life_seconds": 604800.0,
+      "task": "location",
+      "bench": "small",
+      "score": 1.0,
+      "n_queries": 1,
+      "n_correct": 1,
+      "n_cases": 1,
+      "elapsed_sec": 0.029,
+      "is_fixture": true
+    },
+    {
+      "half_life_label": "14d",
+      "half_life_seconds": 1209600.0,
+      "task": "location",
+      "bench": "small",
+      "score": 1.0,
+      "n_queries": 1,
+      "n_correct": 1,
+      "n_cases": 1,
+      "elapsed_sec": 0.025,
+      "is_fixture": true
+    },
+    {
+      "half_life_label": "30d",
+      "half_life_seconds": 2592000.0,
+      "task": "location",
+      "bench": "small",
+      "score": 1.0,
+      "n_queries": 1,
+      "n_correct": 1,
+      "n_cases": 1,
+      "elapsed_sec": 0.014,
+      "is_fixture": true
+    },
+    {
+      "half_life_label": "inf",
+      "half_life_seconds": null,
+      "task": "location",
+      "bench": "small",
+      "score": 1.0,
+      "n_queries": 1,
+      "n_correct": 1,
+      "n_cases": 1,
+      "elapsed_sec": 0.014,
+      "is_fixture": true
+    },
+    {
+      "half_life_label": "1h",
+      "half_life_seconds": 3600.0,
+      "task": "accounting",
+      "bench": "small",
+      "score": 0.0,
+      "n_queries": 1,
+      "n_correct": 0,
+      "n_cases": 1,
+      "elapsed_sec": 0.016,
+      "is_fixture": true
+    },
+    {
+      "half_life_label": "6h",
+      "half_life_seconds": 21600.0,
+      "task": "accounting",
+      "bench": "small",
+      "score": 0.0,
+      "n_queries": 1,
+      "n_correct": 0,
+      "n_cases": 1,
+      "elapsed_sec": 0.016,
+      "is_fixture": true
+    },
+    {
+      "half_life_label": "24h",
+      "half_life_seconds": 86400.0,
+      "task": "accounting",
+      "bench": "small",
+      "score": 0.0,
+      "n_queries": 1,
+      "n_correct": 0,
+      "n_cases": 1,
+      "elapsed_sec": 0.015,
+      "is_fixture": true
+    },
+    {
+      "half_life_label": "3d",
+      "half_life_seconds": 259200.0,
+      "task": "accounting",
+      "bench": "small",
+      "score": 0.0,
+      "n_queries": 1,
+      "n_correct": 0,
+      "n_cases": 1,
+      "elapsed_sec": 0.015,
+      "is_fixture": true
+    },
+    {
+      "half_life_label": "7d",
+      "half_life_seconds": 604800.0,
+      "task": "accounting",
+      "bench": "small",
+      "score": 0.0,
+      "n_queries": 1,
+      "n_correct": 0,
+      "n_cases": 1,
+      "elapsed_sec": 0.028,
+      "is_fixture": true
+    },
+    {
+      "half_life_label": "14d",
+      "half_life_seconds": 1209600.0,
+      "task": "accounting",
+      "bench": "small",
+      "score": 0.0,
+      "n_queries": 1,
+      "n_correct": 0,
+      "n_cases": 1,
+      "elapsed_sec": 0.015,
+      "is_fixture": true
+    },
+    {
+      "half_life_label": "30d",
+      "half_life_seconds": 2592000.0,
+      "task": "accounting",
+      "bench": "small",
+      "score": 0.0,
+      "n_queries": 1,
+      "n_correct": 0,
+      "n_cases": 1,
+      "elapsed_sec": 0.015,
+      "is_fixture": true
+    },
+    {
+      "half_life_label": "inf",
+      "half_life_seconds": null,
+      "task": "accounting",
+      "bench": "small",
+      "score": 0.0,
+      "n_queries": 1,
+      "n_correct": 0,
+      "n_cases": 1,
+      "elapsed_sec": 0.014,
+      "is_fixture": true
+    }
+  ]
+}
