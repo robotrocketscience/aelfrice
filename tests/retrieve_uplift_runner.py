@@ -609,6 +609,180 @@ def run_query_strategy_uplift(
     )
 
 
+# ---------------------------------------------------------------------
+# Vocabulary bridge (#433) — use_vocab_bridge bench gate (spec § A2).
+#
+# Consumed by tests/bench_gate/test_vocab_bridge_uplift.py.
+# Row schema (`tests/corpus/v2_0/vocab_bridge/*.jsonl`) — extends the
+# precondition row schema with `expected_top_k` and optional `k`:
+#
+#   {
+#     "id": "row-id",
+#     "query": "raw query string",
+#     "k": 10,
+#     "store_beliefs": [
+#         {"id": "b1", "content": "...", "anchors": ["text", "..."]},
+#         ...
+#     ],
+#     "expected_canonicals": ["sqlite", ...],   # used by precondition
+#     "expected_top_k":      ["b1", "b2", ...]  # ground-truth ranking
+#   }
+#
+# `expected_canonicals` stays the precondition surface — it lets the
+# appends-at-least-one gate fire without naming specific belief ids.
+# `expected_top_k` is the strict-NDCG ground truth: the bridge wins
+# only if rewriting the query surfaces these ids in this order vs the
+# default-OFF baseline.
+# ---------------------------------------------------------------------
+
+_BENCH_TS = "2026-05-08T00:00:00Z"
+
+
+@dataclass(frozen=True)
+class VocabBridgeUplift:
+    """#433 result shape.
+
+    Field names mirror ``DocLinkerUpliftResults`` / ``QueryStrategyUplift``
+    so the bench-gate failure-message formatter reads
+    ``mean_ndcg_off`` / ``mean_ndcg_on`` / ``uplift`` without
+    per-runner branching.
+    """
+
+    n_rows: int
+    mean_ndcg_off: float
+    mean_ndcg_on: float
+
+    @property
+    def uplift(self) -> float:
+        return self.mean_ndcg_on - self.mean_ndcg_off
+
+
+def _seed_store_for_vocab_bridge(
+    store: MemoryStore, row: dict,  # type: ignore[type-arg]
+) -> None:
+    """Seed a store from the vocab_bridge row shape.
+
+    Row carries ``store_beliefs`` (not ``beliefs``) where each entry
+    optionally lists ``anchors`` — surface-form strings written as
+    incoming-edge ``anchor_text`` from synthetic citing beliefs. This
+    mirrors the precondition seeder in
+    ``tests/bench_gate/test_vocab_bridge_uplift.py`` so the runner
+    sees an identical store shape; the bridge harvest/rewrite path
+    then operates on the same anchor-text universe under both arms.
+    """
+    for entry in row.get("store_beliefs", []):
+        bid = str(entry["id"])
+        store.insert_belief(
+            Belief(
+                id=bid,
+                content=str(entry["content"]),
+                content_hash=f"corpus:{bid}",
+                alpha=float(entry.get("alpha", 1.0)),
+                beta=float(entry.get("beta", 1.0)),
+                type=entry.get("type", BELIEF_FACTUAL),
+                lock_level=LOCK_NONE,
+                locked_at=None,
+                demotion_pressure=0,
+                created_at=_BENCH_TS,
+                last_retrieved_at=None,
+                origin=ORIGIN_AGENT_INFERRED,
+            )
+        )
+    for entry in row.get("store_beliefs", []):
+        for j, anchor in enumerate(entry.get("anchors") or []):
+            citer_id = f"_a_{entry['id']}_{j}"
+            if not store.get_belief(citer_id):
+                store.insert_belief(
+                    Belief(
+                        id=citer_id,
+                        content="anchor citer",
+                        content_hash=f"corpus:{citer_id}",
+                        alpha=1.0,
+                        beta=1.0,
+                        type=BELIEF_FACTUAL,
+                        lock_level=LOCK_NONE,
+                        locked_at=None,
+                        demotion_pressure=0,
+                        created_at=_BENCH_TS,
+                        last_retrieved_at=None,
+                        origin=ORIGIN_AGENT_INFERRED,
+                    )
+                )
+            store.insert_edge(
+                Edge(
+                    src=citer_id,
+                    dst=str(entry["id"]),
+                    type="CITES",
+                    weight=1.0,
+                    anchor_text=str(anchor),
+                )
+            )
+
+
+def run_vocab_bridge_uplift(
+    rows: list[dict],  # type: ignore[type-arg]
+) -> VocabBridgeUplift:
+    """Spec § A2 vocabulary-bridge uplift driver.
+
+    Per row, runs ``retrieve_v2`` twice on fresh stores seeded from
+    ``store_beliefs`` (with anchors): once with
+    ``use_vocab_bridge=False`` (baseline) and once with ``=True``.
+    Same query, same store shape, same ``k``. NDCG@k is scored against
+    ``expected_top_k`` and averaged across rows.
+
+    Rows missing ``expected_top_k`` are skipped (the precondition gate
+    only needs ``expected_canonicals``). The shipped substrate is
+    default-OFF: the bridge appends canonical-entity tokens to the
+    query, never substitutes — so on a corpus where BM25 alone
+    already ranks the relevant beliefs above noise, ``uplift`` will
+    be ~0 and the strict ``> 0`` ship-gate assertion will fail. That
+    is the correct gate-broken signal until labelled rows expose
+    surface-form gaps the bridge can close.
+    """
+    scoreable = [r for r in rows if r.get("expected_top_k")]
+    n = len(scoreable)
+    if n == 0:
+        return VocabBridgeUplift(0, 0.0, 0.0)
+
+    off_total = 0.0
+    on_total = 0.0
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_root = Path(tmp)
+        for row in scoreable:
+            k = _default_k(row)
+            expected = list(row["expected_top_k"])
+
+            for bridge_on in (False, True):
+                _db_counter[0] += 1
+                db = (
+                    tmp_root
+                    / f"vb_{row['id']}_{int(bridge_on)}_{_db_counter[0]}.db"
+                )
+                store = MemoryStore(str(db))
+                try:
+                    _seed_store_for_vocab_bridge(store, row)
+                    result = retrieve_v2(
+                        store, row["query"],
+                        budget=DEFAULT_TOKEN_BUDGET,
+                        use_entity_index=False,
+                        use_vocab_bridge=bridge_on,
+                    )
+                    returned = [b.id for b in result.beliefs[:k]]
+                finally:
+                    store.close()
+                ndcg = ndcg_at_k(returned, expected, k)
+                if bridge_on:
+                    on_total += ndcg
+                else:
+                    off_total += ndcg
+
+    return VocabBridgeUplift(
+        n_rows=n,
+        mean_ndcg_off=off_total / n,
+        mean_ndcg_on=on_total / n,
+    )
+
+
 def _format_table(results: list[FlagUplift]) -> str:
     lines = [
         f"{'flag':<28} {'n':>4} {'NDCG_off':>10} {'NDCG_on':>10} {'uplift':>10}",
