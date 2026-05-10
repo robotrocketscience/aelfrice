@@ -675,6 +675,16 @@ def user_prompt_submit(
         if prompt is None:
             return 0
         session_id = _extract_session_id(raw)
+        # #578: detect first prompt of a new session and build the
+        # <session-start> sub-block if needed. Fail-soft: any error in
+        # detection or block-building leaves session_start_block="" so
+        # the rest of the hook is unaffected.
+        session_start_block = ""
+        try:
+            if is_session_first_prompt(session_id):
+                session_start_block = _retrieve_session_start_block(serr)
+        except Exception:
+            pass
         budget = (
             token_budget
             if token_budget is not None
@@ -710,7 +720,11 @@ def user_prompt_submit(
             )
             # total_chars measured post-collapse (what is actually injected).
             total_chars = sum(len(h.content) for h in hits)
-            body = _format_hits(hits)
+            # #578: inject session-start sub-block on first prompt.
+            if session_start_block:
+                body = _format_hits_with_session_start(hits, session_start_block)
+            else:
+                body = _format_hits(hits)
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
             sout.write(body)
             # AC1: append telemetry record for fires that produce a block.
@@ -1013,6 +1027,28 @@ def _format_hits_with_session_start(
     lines.append(CLOSE_TAG)
     lines.append("")
     return "\n".join(lines)
+
+
+def _retrieve_session_start_block(
+    stderr: IO[str] | None = None,
+) -> str:
+    """Open the store, build the session-start sub-block, close the store.
+
+    Returns "" on any error so the caller can treat it as a no-op. Fail-soft.
+    """
+    serr = stderr if stderr is not None else sys.stderr
+    try:
+        store = _open_store()
+        try:
+            return _build_session_start_subblock(store)
+        finally:
+            store.close()
+    except Exception as exc:
+        print(
+            f"aelfrice: session-start sub-block build failed (non-fatal): {exc}",
+            file=serr,
+        )
+        return ""
 
 
 # ---------------------------------------------------------------------------
