@@ -1,7 +1,7 @@
 # BFS multi-hop graph traversal
 
-**Status:** spec.
-**Target milestone:** v1.3.0.
+**Status:** shipped opt-in. Implementation wired in `src/aelfrice/retrieval.py` (`bfs_enabled` flag, default `False`). Default-on flip is gated on benchmark uplift; per-edge ship-gate notes for #383–#388 (RELATES_TO, IMPLEMENTS, TESTS, TEMPORAL_NEXT, DERIVED_FROM weights) live in this doc's body.
+**Shipped at milestone:** v1.3.0.
 **Tracking issue:** [#144](https://github.com/robotrocketscience/aelfrice/issues/144).
 **Dependencies:** stdlib only. Reads the v1.2 edge schema (`anchor_text`,
 `session_id`, `DERIVED_FROM`). Soft dependency on the v1.3.0
