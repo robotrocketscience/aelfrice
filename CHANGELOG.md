@@ -10,6 +10,10 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+### Performance
+
+- **Update-check cache TTL: 6h → 15min** (`src/aelfrice/lifecycle.py:CACHE_TTL_SECONDS`). The PyPI version-check cache used to expire after six hours, so a freshly-published release could lag the user-visible "update available" banner by up to that long on a busy machine (longer on a quiet one — the check is gated behind the next CLI call or `UserPromptSubmit` hook fire). PyPI's JSON endpoint is CDN-cached and unauthenticated, so a 15-minute cadence is well within the polling-etiquette band and shrinks the worst-case banner-lag window from 6h to ~15min. Detached-subprocess + on-disk-cache architecture is unchanged.
+
 ### Added
 
 - **`issue-creation-audit` workflow flags duplicate-of-shipped issues at creation time** ([#569](https://github.com/robotrocketscience/aelfrice/issues/569)). New `.github/workflows/issue-creation-audit.yml` triggers on `issues.opened` and `issues.edited`. A companion script (`scripts/issue_creation_audit.py`) extracts candidate symbols from the body (module paths under `src/aelfrice/`, `class <Name>` declarations, `{src,tests,docs}/...` file paths, backtick-fenced API symbols) and checks each against `origin/main`. When ≥1 hit found, the workflow posts a single audit comment listing the shipped artifacts with their originating commit SHAs and asks the author to either reply `audit-ack` (intentional follow-up) or close as superseded. Hash-stamped marker keeps the comment idempotent across edits; `audit-ack` reply silences re-runs entirely. Closes the gap demonstrated by #521 (VocabBridge filed for surface already shipped under #433).
