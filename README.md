@@ -165,7 +165,7 @@ The same operations are also available as MCP tools and `/aelf:*` slash commands
 
 Latest stable: **v2.1.0** — heat-kernel + HRR-structural defaults flipped on (#154) after the #437 reproducibility-harness gate cleared 11/11; HRR `dim` default 512 (#538); default-on transcript / commit / session-start hooks (#529).
 
-Next: **v2.2** — descend the V2_REENTRY_QUEUE backlog (dedup wire-up, sentiment-feedback integration, multimodel).
+Next: **v3.0** — wonder lifecycle complete (#542), HRR persistence default-ON (#553), type-aware compression (#434), HRR retrieve_v2 phase-2 (#152), eval-harness completion (#592, #600), plus v3.0 design decisions: NL-relatedness philosophy (#605), sentiment-feedback hook integration (#606), multimodel scope (#607). Milestone tracker: [#608](https://github.com/robotrocketscience/aelfrice/issues/608).
 
 Per-version detail: [docs/ROADMAP.md](docs/ROADMAP.md).
 Open issues / known limits: [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
