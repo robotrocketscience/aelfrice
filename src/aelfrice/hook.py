@@ -67,6 +67,28 @@ prompt and other concurrent UserPromptSubmit hooks competing for
 the same context window.
 """
 
+# ---------------------------------------------------------------------------
+# Session-first-prompt detection (#578)
+# ---------------------------------------------------------------------------
+
+SESSION_STATE_FILENAME: Final[str] = "session_first_prompt.json"
+"""Filename for the per-repo session-start state, sibling of memory.db
+under <git-common-dir>/aelfrice/.
+
+Contains a single JSON object: {"session_id": "<last-seen-session-id>"}.
+When the incoming session_id differs from the stored value (or the file is
+absent), the hook treats the current call as the first prompt of a new
+session, writes the new session_id, and injects the <session-start>
+sub-block. Subsequent calls with the same session_id skip injection.
+
+Detection mechanism: option (b) from the issue spec — a single persistent
+state file rather than a transcript-tail age scan. Rationale: the state
+file requires one read + one write per session with no filesystem walk and
+no dependency on transcript format or timestamp parsing. The session_id
+field in the UserPromptSubmit payload is already extracted for audit
+cross-reference, so no new payload fields are consumed.
+"""
+
 DEFAULT_SESSION_START_TOKEN_BUDGET: Final[int] = 1500
 """Token budget for the SessionStart context block.
 
@@ -860,6 +882,90 @@ def _open_store() -> MemoryStore:
     if str(p) != ":memory:":
         p.parent.mkdir(parents=True, exist_ok=True)
     return MemoryStore(str(p))
+
+
+# ---------------------------------------------------------------------------
+# Session-first-prompt detection (#578)
+# ---------------------------------------------------------------------------
+
+
+def _session_state_path() -> Path | None:
+    """Return the session-state file path, or None when DB is in-memory.
+
+    The state file is a sibling of memory.db under <git-common-dir>/aelfrice/.
+    Returns None for in-memory stores (tests that do not use a real path) so
+    callers can gate on None without special-casing.
+    """
+    try:
+        p = db_path()
+    except Exception:
+        return None
+    if str(p) == ":memory:":
+        return None
+    return p.parent / SESSION_STATE_FILENAME
+
+
+def is_session_first_prompt(session_id: str | None) -> bool:
+    """Return True iff this is the first UserPromptSubmit of a new session.
+
+    Detection mechanism: option (b) — a persistent state file at
+    `<git-common-dir>/aelfrice/session_first_prompt.json`. If the stored
+    session_id differs from `session_id` (or the file is absent), returns
+    True and atomically updates the state file. Subsequent calls with the
+    same session_id return False.
+
+    Returns False when `session_id` is None or empty — the hook cannot
+    distinguish sessions without an id. Also returns False on any I/O or
+    JSON error (fail-soft; never raises).
+    """
+    if not session_id or not session_id.strip():
+        return False
+    state_path = _session_state_path()
+    if state_path is None:
+        return False
+    try:
+        stored_sid: str | None = None
+        if state_path.exists():
+            try:
+                data = json.loads(state_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    val = data.get("session_id")
+                    if isinstance(val, str):
+                        stored_sid = val
+            except (json.JSONDecodeError, OSError):
+                stored_sid = None
+        if stored_sid == session_id:
+            return False
+        # New session: update state file atomically.
+        _write_session_state(state_path, session_id)
+        return True
+    except Exception:
+        return False
+
+
+def _write_session_state(state_path: Path, session_id: str) -> None:
+    """Write the session_id to the state file. Fail-soft: never raises."""
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({"session_id": session_id})
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=state_path.name + ".",
+            suffix=".tmp",
+            dir=str(state_path.parent),
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, state_path)
+        except Exception:
+            if tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
+            raise
+    except Exception:
+        pass
 
 
 def pre_compact(
