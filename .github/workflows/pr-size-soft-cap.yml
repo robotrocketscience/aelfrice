@@ -1,0 +1,105 @@
+name: pr-size-soft-cap
+
+# #602 — advisory soft cap on PR size to reduce merge-thrash. Comments
+# (and updates a sticky marker comment) when a PR exceeds 200 LOC or
+# 3 changed files. Authors split or apply `size:override` to opt out;
+# no hard block. Quiet when the PR is under both thresholds, including
+# when a previously-flagged PR is shrunk back below the line — the
+# sticky comment is removed in that case so the PR view stays clean.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# One pass per PR. New pushes cancel an in-flight check so we don't
+# race on the comment edit.
+concurrency:
+  group: pr-size-soft-cap-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  size-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    # Skip drafts — they're work-in-progress and the author already knows.
+    if: github.event.pull_request.draft == false
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+
+      - name: Check size and post / update / remove sticky comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_ADDITIONS: ${{ github.event.pull_request.additions }}
+          PR_DELETIONS: ${{ github.event.pull_request.deletions }}
+          PR_CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+          # Comma-separated label names. `size:override` opts out.
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          LOC_LIMIT: '200'
+          FILES_LIMIT: '3'
+          MARKER: '<!-- pr-size-soft-cap-v1 -->'
+        run: |
+          set -euo pipefail
+
+          # Opt-out via label.
+          if printf '%s' ",${PR_LABELS}," | grep -q ',size:override,'; then
+            echo "size:override label present; nothing to do."
+            exit 0
+          fi
+
+          loc=$((PR_ADDITIONS + PR_DELETIONS))
+          files="${PR_CHANGED_FILES}"
+          over=0
+          if [ "$loc" -gt "$LOC_LIMIT" ]; then over=1; fi
+          if [ "$files" -gt "$FILES_LIMIT" ]; then over=1; fi
+
+          # Find any prior sticky comment authored by github-actions[bot].
+          existing_id="$(gh api \
+              "repos/${REPO}/issues/${PR_NUMBER}/comments" --paginate \
+              --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | startswith(\"${MARKER}\")))] | .[0].id // empty")"
+
+          if [ "$over" -eq 0 ]; then
+            # Under threshold. Remove a prior sticky if present so a
+            # shrunk PR doesn't carry a stale warning.
+            if [ -n "$existing_id" ]; then
+              echo "PR back under threshold; deleting sticky comment ${existing_id}."
+              gh api -X DELETE "repos/${REPO}/issues/comments/${existing_id}" >/dev/null
+            else
+              echo "Under threshold (loc=${loc}, files=${files}); nothing to do."
+            fi
+            exit 0
+          fi
+
+          # Over threshold — compose the sticky.
+          cat > /tmp/comment.md <<EOF
+          ${MARKER}
+          ### PR-size soft cap
+
+          This PR is over the advisory size threshold:
+
+          - **${loc}** changed lines (limit: ${LOC_LIMIT})
+          - **${files}** changed files (limit: ${FILES_LIMIT})
+
+          Bigger PRs collide with more open work, which under the parallel-session workflow tends to produce repeated \`attn:merge-conflict\` cycles (see #602). When practical, split into smaller PRs that each touch a focused surface.
+
+          This is **advisory only** — nothing is blocked. If the size is intentional (large refactor, module removal, generated code), apply the \`size:override\` label and this comment will be removed on the next push.
+          EOF
+
+          jq -Rs '{body: .}' < /tmp/comment.md > /tmp/payload.json
+
+          if [ -n "$existing_id" ]; then
+            echo "Updating sticky comment ${existing_id}."
+            gh api -X PATCH "repos/${REPO}/issues/comments/${existing_id}" \
+                --input /tmp/payload.json >/dev/null
+          else
+            echo "Posting sticky comment."
+            gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+                --input /tmp/payload.json >/dev/null
+          fi
