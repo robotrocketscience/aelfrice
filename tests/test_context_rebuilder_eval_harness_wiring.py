@@ -303,6 +303,153 @@ def test_replay_post_fork_score_fidelity_returns_zero(
 
 
 # --------------------------------------------------------------------- #
+# replay_post_fork host-agent eval-replay (#600)                        #
+# --------------------------------------------------------------------- #
+
+
+def test_replay_post_fork_writes_requests_jsonl(
+    harness: ModuleType, transcript_path: Path, tmp_path: Path
+) -> None:
+    """With `run_dir`, `replay_post_fork` writes one request row per
+    eval_turn to `<run_dir>/replay_requests.jsonl`."""
+    case = harness.TranscriptCase(
+        path=transcript_path, task_type="debug",
+        fork_turn=2, eval_turns=(2, 4),
+    )
+    run_dir = tmp_path / "run"
+    harness.replay_post_fork("REBUILT_BLOCK", case, run_dir=run_dir)
+    req_path = run_dir / harness.REPLAY_REQUESTS_FILENAME
+    assert req_path.is_file()
+    rows = [json.loads(line) for line in req_path.read_text().splitlines() if line.strip()]
+    assert len(rows) == 2
+    by_idx = {r["turn_idx"]: r for r in rows}
+    assert set(by_idx) == {2, 4}
+    # Each row carries the rebuilt block plus the user prompt at-or-before
+    # the eval turn.
+    assert by_idx[2]["rebuilt_block"] == "REBUILT_BLOCK"
+    assert by_idx[2]["user_turn"] == "What about session-scoped retrieval?"
+    assert by_idx[2]["expected"] == "What about session-scoped retrieval?"
+    # eval_turn=4 is itself a user turn → user_turn == expected.
+    assert by_idx[4]["user_turn"] == "Does the floor apply to L0?"
+
+
+def test_replay_post_fork_pending_reason_when_no_responses(
+    harness: ModuleType, transcript_path: Path, tmp_path: Path
+) -> None:
+    """run_dir set but no response file → rows hold `pending_replay`,
+    distinct from the bare-stub `needs_replay_client`."""
+    case = harness.TranscriptCase(
+        path=transcript_path, task_type="debug",
+        fork_turn=2, eval_turns=(2, 4),
+    )
+    run_dir = tmp_path / "run"
+    rows = harness.replay_post_fork("rebuilt", case, run_dir=run_dir)
+    assert all(not r["matched"] for r in rows)
+    assert all(r["reason"] == harness.PENDING_REPLAY_REASON for r in rows)
+
+
+def test_replay_pending_round_trip(
+    harness: ModuleType, transcript_path: Path, tmp_path: Path
+) -> None:
+    """End-to-end: run replay_post_fork once to emit requests, hand-author
+    a `replay_responses.jsonl` (no subagent), re-invoke replay_post_fork,
+    and assert score_fidelity reports the substring-match verdict.
+
+    Acceptance bullet from #600. No model client involved — the round
+    trip is the contract; the dispatcher is operator-driven.
+    """
+    case = harness.TranscriptCase(
+        path=transcript_path, task_type="debug",
+        fork_turn=2, eval_turns=(2, 4),
+    )
+    run_dir = tmp_path / "run"
+
+    # First pass: requests get written, responses absent → all pending.
+    first_pass = harness.replay_post_fork("rebuilt", case, run_dir=run_dir)
+    assert (run_dir / harness.REPLAY_REQUESTS_FILENAME).is_file()
+    assert all(r["reason"] == harness.PENDING_REPLAY_REASON for r in first_pass)
+    assert harness.score_fidelity(first_pass) == 0.0
+
+    # Hand-author replay_responses.jsonl: turn 2 substring-matches the
+    # expected text, turn 4 does not (drops to needs_llm_judge).
+    # Expected for idx=2 is the literal text at line 2:
+    #   "What about session-scoped retrieval?"
+    responses_path = run_dir / harness.REPLAY_RESPONSES_FILENAME
+    responses_path.write_text(
+        json.dumps({
+            "turn_idx": 2,
+            "actual": "Earlier we discussed: WHAT ABOUT SESSION-SCOPED RETRIEVAL? Yes.",
+        }) + "\n" +
+        json.dumps({
+            "turn_idx": 4,
+            "actual": "no idea what the floor does, sorry",
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    # Second pass: same args, but now responses join in.
+    second_pass = harness.replay_post_fork("rebuilt", case, run_dir=run_dir)
+    by_idx = {r["turn_idx"]: r for r in second_pass}
+    assert by_idx[2]["matched"] is True
+    assert by_idx[2]["reason"] == ""
+    assert by_idx[2]["actual"].startswith("Earlier we discussed")
+    assert by_idx[4]["matched"] is False
+    assert by_idx[4]["reason"] == harness.NEEDS_LLM_JUDGE_REASON
+    assert by_idx[4]["actual"].startswith("no idea")
+
+    # score_fidelity reports the substring-match-half verdict.
+    assert harness.score_fidelity(second_pass) == 0.5
+
+
+def test_replay_pending_partial_response_keeps_others_pending(
+    harness: ModuleType, transcript_path: Path, tmp_path: Path
+) -> None:
+    """Acceptance: `missing rows stay pending_replay`. A response file
+    that only covers some eval_turns must not promote the others."""
+    case = harness.TranscriptCase(
+        path=transcript_path, task_type="debug",
+        fork_turn=2, eval_turns=(2, 4),
+    )
+    run_dir = tmp_path / "run"
+    harness.replay_post_fork("rebuilt", case, run_dir=run_dir)
+    (run_dir / harness.REPLAY_RESPONSES_FILENAME).write_text(
+        json.dumps({
+            "turn_idx": 2,
+            # Expected at idx=2 is "What about session-scoped retrieval?";
+            # actual contains that as a substring → matched=True.
+            "actual": "Reply: what about session-scoped retrieval? — covered.",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    rows = harness.replay_post_fork("rebuilt", case, run_dir=run_dir)
+    by_idx = {r["turn_idx"]: r for r in rows}
+    assert by_idx[2]["matched"] is True
+    assert by_idx[4]["matched"] is False
+    assert by_idx[4]["reason"] == harness.PENDING_REPLAY_REASON
+    assert by_idx[4]["actual"] == ""
+
+
+def test_run_one_threads_run_dir_to_replay_post_fork(
+    harness: ModuleType, tmp_path: Path
+) -> None:
+    """`run_one(run_dir=...)` produces a per-(case, config) subdirectory
+    under the base run_dir with a `replay_requests.jsonl` inside it."""
+    corpus_dir = (
+        _REPO_ROOT / "benchmarks" / "context-rebuilder" / "fixtures" / "synthetic"
+    )
+    cases = harness.load_corpus(corpus_dir)
+    case = cases[0]
+    base = tmp_path / "sweep_run"
+    harness.run_one(
+        case, trigger_threshold=0.5, token_budget=1000, run_dir=base,
+    )
+    expected_subdir = (
+        base / f"{case.path.stem}__t0.5__b1000"
+    )
+    assert (expected_subdir / harness.REPLAY_REQUESTS_FILENAME).is_file()
+
+
+# --------------------------------------------------------------------- #
 # End-to-end: threshold-sweep against the bundled synthetic fixture     #
 # --------------------------------------------------------------------- #
 
