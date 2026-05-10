@@ -1,0 +1,89 @@
+name: auto-add-to-board
+
+# When an issue or pull request is opened, add it to the v2.1 project
+# board (robotrocketscience/aelfrice — project #1) via the GraphQL
+# addProjectV2ItemById mutation. Re-firing is safe: the mutation returns
+# the existing item ID when the content is already on the board.
+#
+# Project-board mutations require a PAT with Projects:write scope stored
+# as secrets.PROJECT_TOKEN. If the secret is absent, the workflow logs a
+# notice and exits successfully — no item is added, but the run is green
+# so unrelated PR checks are not blocked. See #579.
+
+on:
+  issues:
+    types: [opened]
+  pull_request:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+# One run per issue/PR at a time. No cancellation: slow GraphQL calls
+# from a rapid re-open sequence should not cancel each other.
+concurrency:
+  group: auto-add-to-board-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  add-to-board:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+
+      - name: Add issue or PR to project board
+        env:
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          # GraphQL node ID of the content to add (issue or PR).
+          CONTENT_ID: ${{ github.event.issue.node_id || github.event.pull_request.node_id }}
+          CONTENT_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          CONTENT_TYPE: ${{ github.event_name == 'issues' && 'issue' || 'pull_request' }}
+          # Project-board constants (robotrocketscience/aelfrice — project #1)
+          PROJECT_ID: "PVT_kwHOEHqEMc4BWDLC"
+        run: |
+          set -euo pipefail
+
+          echo "Event: ${CONTENT_TYPE} #${CONTENT_NUMBER} (node_id=${CONTENT_ID})"
+
+          # PROJECT_TOKEN is required for project-board mutations; GITHUB_TOKEN
+          # does not have Projects:write on user-owned boards.
+          if [ -z "${PROJECT_TOKEN:-}" ]; then
+            echo "NOTICE: PROJECT_TOKEN secret is not set."
+            echo "Skipping project-board add for ${CONTENT_TYPE} #${CONTENT_NUMBER}."
+            echo "Configure secrets.PROJECT_TOKEN (PAT with Projects:write scope) to enable automatic board population."
+            exit 0
+          fi
+
+          add_query='mutation($project: ID!, $content: ID!) {
+            addProjectV2ItemById(input: { projectId: $project, contentId: $content }) {
+              item { id }
+            }
+          }'
+
+          echo "Calling addProjectV2ItemById for ${CONTENT_TYPE} #${CONTENT_NUMBER}..."
+
+          add_resp=$(GH_TOKEN="$PROJECT_TOKEN" gh api graphql \
+            -f query="$add_query" \
+            -f project="$PROJECT_ID" \
+            -f content="$CONTENT_ID" \
+            2>&1 || true)
+
+          item_id=$(echo "$add_resp" | jq -r \
+            '.data.addProjectV2ItemById.item.id // empty' 2>/dev/null || true)
+
+          if [ -n "$item_id" ]; then
+            echo "Added ${CONTENT_TYPE} #${CONTENT_NUMBER} to board (item_id=${item_id})."
+          else
+            echo "WARNING: addProjectV2ItemById did not return an item ID."
+            echo "Response: ${add_resp}"
+            # Exit 0: a missing/malformed response is not worth blocking CI.
+            exit 0
+          fi
