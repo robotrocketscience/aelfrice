@@ -859,19 +859,53 @@ def _cmd_wonder_axes(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_wonder_gc(args: argparse.Namespace, out: object) -> int:
+    """Run wonder GC: soft-delete stale speculative beliefs (#549).
+
+    Wraps :func:`aelfrice.wonder.lifecycle.wonder_gc`. Candidate beliefs
+    must be ``type='speculative'``, still active (``valid_to IS NULL``),
+    older than ``--ttl-days`` days, and have unchanged Bayesian priors +
+    no feedback / RESOLVES edges.
+
+    ``--dry-run`` reports candidates without mutating the store.
+    Prints ``scanned=N deleted=N surviving=N`` on success.
+    """
+    from aelfrice.wonder.lifecycle import wonder_gc
+
+    store = _open_store()
+    try:
+        result = wonder_gc(
+            store,
+            ttl_days=args.gc_ttl_days,
+            dry_run=args.gc_dry_run,
+        )
+    finally:
+        store.close()
+
+    action = "would delete" if args.gc_dry_run else "deleted"
+    print(
+        f"wonder gc: scanned={result.scanned} {action}={result.deleted} "
+        f"surviving={result.surviving}",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
 def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
     """Surface consolidation candidates and (optionally) emit phantoms.
 
     Default behavior (#389 amendment 9): produces phantom-belief
     *candidates* in-memory and prints the top-N as ranked rows. Does
-    NOT write to the store — phantom-store integration is deferred to
-    v2.x (issue #229 lane). When `--emit-phantoms` is set, the same
-    candidates are serialized as `Phantom` JSON objects to stdout for
-    downstream consumption.
+    NOT write to the store unless ``--persist`` is set. When
+    ``--emit-phantoms`` is set, the same candidates are serialized as
+    ``Phantom`` JSON objects to stdout for downstream consumption.
 
     `--axes QUERY` (#551) bypasses the seed/BFS path and emits the
     gap-analysis + research-axes JSON for research-agent dispatch.
     """
+    if getattr(args, "wonder_subcmd", None) == "gc":
+        return _cmd_wonder_gc(args, out)
+
     if getattr(args, "axes", None):
         return _cmd_wonder_axes(args, out)
 
@@ -911,11 +945,6 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
     candidates.sort(key=lambda r: (-r[0], r[1].belief.id))
     candidates = candidates[: args.top]
 
-    # TODO(v2.x #229 lane): wire phantom emission into store via
-    # store.insert_belief(Belief(..., origin=ORIGIN_SPECULATIVE)) plus
-    # a `wonder_ingest` corroboration row, then a `wonder_gc` 14d
-    # cleanup loop. For now phantoms are surfaced in-memory only;
-    # `--emit-phantoms` prints them as JSON for offline review.
     phantoms = [
         Phantom(
             constituent_belief_ids=(seed_b.id, h.belief.id),  # type: ignore[union-attr]
@@ -3763,7 +3792,29 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--axes-agents", type=int, default=4, dest="axes_agents",
         help="--axes mode: agent_count hint for the skill layer (default 4)",
     )
-    p_wonder.set_defaults(func=_cmd_wonder)
+    p_wonder.set_defaults(func=_cmd_wonder, wonder_subcmd=None)
+
+    # gc sub-subcommand: soft-delete stale speculative beliefs (#549).
+    _wonder_subs = p_wonder.add_subparsers(dest="wonder_subcmd")
+    p_wonder_gc = _wonder_subs.add_parser(
+        "gc",
+        help="soft-delete stale speculative beliefs (wonder GC)",
+        description=(
+            "Soft-deletes speculative phantom beliefs that have received no "
+            "feedback and whose Bayesian priors are still at the ingest "
+            "defaults, and that are older than --ttl-days days. "
+            "Use --dry-run to preview candidates without writing."
+        ),
+    )
+    p_wonder_gc.add_argument(
+        "--dry-run", action="store_true", dest="gc_dry_run",
+        help="report GC candidates without mutating the store",
+    )
+    p_wonder_gc.add_argument(
+        "--ttl-days", type=int, default=14, dest="gc_ttl_days",
+        help="age threshold in days for GC candidates (default 14)",
+    )
+    p_wonder_gc.set_defaults(func=_cmd_wonder, wonder_subcmd="gc")
 
     # v1.4 (#141): user-facing manual trigger for the context
     # rebuilder. Promoted from hidden to visible because manual mode

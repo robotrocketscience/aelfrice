@@ -199,3 +199,121 @@ def test_wonder_axes_respects_agent_count(_isolated_db: Path) -> None:
     assert code == 0
     payload = json.loads(out)
     assert payload["agent_count"] == 2
+
+
+# --- aelf wonder gc (#549) ------------------------------------------------
+
+
+def test_wonder_gc_dry_run_reports_candidates(_isolated_db: Path) -> None:
+    """--dry-run reports candidates without deleting."""
+    from datetime import datetime, timedelta, timezone
+    from aelfrice.models import BELIEF_SPECULATIVE, LOCK_NONE, ORIGIN_SPECULATIVE
+    from aelfrice.models import Belief as _Belief
+
+    # Seed a stale speculative belief directly.
+    old_ts = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    s = MemoryStore(str(_isolated_db))
+    try:
+        spec = _Belief(
+            id="spec1",
+            content="speculative phantom",
+            content_hash="gc-test-hash-1",
+            alpha=0.3,
+            beta=1.0,
+            type=BELIEF_SPECULATIVE,
+            lock_level=LOCK_NONE,
+            locked_at=None,
+            demotion_pressure=0,
+            created_at=old_ts,
+            last_retrieved_at=None,
+            origin=ORIGIN_SPECULATIVE,
+        )
+        s.insert_belief(spec)
+    finally:
+        s.close()
+
+    code, out = _run("wonder", "gc", "--dry-run")
+    assert code == 0, out
+    assert "wonder gc:" in out
+    assert "scanned=1" in out
+    assert "would delete=0" in out
+
+    # Belief must still be present (dry-run does not delete).
+    s2 = MemoryStore(str(_isolated_db))
+    try:
+        assert s2.get_belief("spec1") is not None
+    finally:
+        s2.close()
+
+
+def test_wonder_gc_non_dry_run_deletes_stale(_isolated_db: Path) -> None:
+    """Non-dry-run GC must soft-delete stale speculative beliefs."""
+    from datetime import datetime, timedelta, timezone
+    from aelfrice.models import BELIEF_SPECULATIVE, LOCK_NONE, ORIGIN_SPECULATIVE
+    from aelfrice.models import Belief as _Belief
+
+    old_ts = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    s = MemoryStore(str(_isolated_db))
+    try:
+        spec = _Belief(
+            id="spec2",
+            content="stale speculative phantom",
+            content_hash="gc-test-hash-2",
+            alpha=0.3,
+            beta=1.0,
+            type=BELIEF_SPECULATIVE,
+            lock_level=LOCK_NONE,
+            locked_at=None,
+            demotion_pressure=0,
+            created_at=old_ts,
+            last_retrieved_at=None,
+            origin=ORIGIN_SPECULATIVE,
+        )
+        s.insert_belief(spec)
+    finally:
+        s.close()
+
+    code, out = _run("wonder", "gc")
+    assert code == 0, out
+    assert "wonder gc:" in out
+    assert "scanned=1" in out
+    assert "deleted=1" in out
+
+
+def test_wonder_gc_ttl_days_override(_isolated_db: Path) -> None:
+    """--ttl-days should control which beliefs are eligible."""
+    from datetime import datetime, timedelta, timezone
+    from aelfrice.models import BELIEF_SPECULATIVE, LOCK_NONE, ORIGIN_SPECULATIVE
+    from aelfrice.models import Belief as _Belief
+
+    # Insert a belief that is 5 days old — older than --ttl-days 3, younger than 14.
+    ts_5d = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    s = MemoryStore(str(_isolated_db))
+    try:
+        spec = _Belief(
+            id="spec3",
+            content="medium-age phantom",
+            content_hash="gc-test-hash-3",
+            alpha=0.3,
+            beta=1.0,
+            type=BELIEF_SPECULATIVE,
+            lock_level=LOCK_NONE,
+            locked_at=None,
+            demotion_pressure=0,
+            created_at=ts_5d,
+            last_retrieved_at=None,
+            origin=ORIGIN_SPECULATIVE,
+        )
+        s.insert_belief(spec)
+    finally:
+        s.close()
+
+    # Default TTL (14 days): not eligible.
+    code, out = _run("wonder", "gc", "--dry-run")
+    assert code == 0
+    assert "scanned=0" in out
+
+    # TTL 3 days: eligible.
+    code2, out2 = _run("wonder", "gc", "--dry-run", "--ttl-days", "3")
+    assert code2 == 0
+    assert "scanned=1" in out2
