@@ -280,10 +280,10 @@ These remain open for the fidelity scorer (#138):
 ## Host-agent eval-replay (#600)
 
 `replay_post_fork` participates in a polymorphic split that mirrors
-the `/aelf:onboard` pattern: aelfrice never imports the `anthropic`
-SDK, never holds API keys, and pushes the model invocation to the
-calling host (Claude Code, Claude Desktop, an MCP host, or a
-private skill).
+the `/aelf:onboard` pattern: aelfrice never imports the
+model-vendor SDK, never holds API keys, and pushes the model
+invocation to the calling host (an MCP-enabled host CLI, an
+operator-driven loop, or a private skill).
 
 ### The flow
 
@@ -314,11 +314,12 @@ private skill).
    `reason=pending_replay`; `score_fidelity` returns 0 on this
    pass.
 
-2. **Operator dispatches one subagent per row.** From a Claude Code
-   session (or an MCP host with subagent capability), iterate over
-   each `replay_requests.jsonl` line and dispatch a subagent
-   prompted with `rebuilt_block + "\n---\n" + user_turn`. Capture
-   the subagent's reply as `actual` and append a JSON line to
+2. **Operator dispatches one child task per row.** From a host
+   session (an MCP-enabled host CLI, an operator-driven loop, or a
+   private replay-eval skill), iterate over each
+   `replay_requests.jsonl` line and dispatch a child task prompted
+   with `rebuilt_block + "\n---\n" + user_turn`. Capture the
+   reply as `actual` and append a JSON line to
    `replay_responses.jsonl` in the same directory:
 
    ```json

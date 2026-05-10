@@ -352,7 +352,7 @@ def test_replay_pending_round_trip(
     harness: ModuleType, transcript_path: Path, tmp_path: Path
 ) -> None:
     """End-to-end: run replay_post_fork once to emit requests, hand-author
-    a `replay_responses.jsonl` (no subagent), re-invoke replay_post_fork,
+    a `replay_responses.jsonl` (no child task), re-invoke replay_post_fork,
     and assert score_fidelity reports the substring-match verdict.
 
     Acceptance bullet from #600. No model client involved — the round

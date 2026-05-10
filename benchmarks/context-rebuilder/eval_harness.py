@@ -351,10 +351,10 @@ def replay_post_fork(
 
     **With `run_dir` (host-agent eval-replay, #600).** Writes
     `<run_dir>/replay_requests.jsonl` so an operator-driven dispatcher
-    (Claude Code session, MCP host, or `aelf:replay-eval` skill) can
-    spawn one subagent per row, prompted with `rebuilt_block + "\\n---\\n"
-    + user_turn`, expecting the subagent to write
-    `<run_dir>/replay_responses.jsonl`. On the next harness invocation
+    (an MCP-enabled host CLI, an operator loop, or a private
+    `aelf:replay-eval` skill) can spawn one child task per row,
+    prompted with `rebuilt_block + "\\n---\\n" + user_turn`, expecting
+    the dispatcher to write `<run_dir>/replay_responses.jsonl`. On the next harness invocation
     this function reads that response file, joins by `turn_idx`, and
     fills `actual`:
 
@@ -367,8 +367,8 @@ def replay_post_fork(
 
     `expected` is pulled from the captured transcript's `text` field at
     the eval-turn line index (matching the fork_turn convention). The
-    aelfrice repo never imports the `anthropic` SDK; the model call is
-    the host's responsibility.
+    aelfrice repo never imports a vendor model SDK on this path; the
+    model call is the host's responsibility.
     """
     expected_by_idx, user_turn_by_idx = _read_user_and_expected(case)
     if case.eval_turns and not expected_by_idx and not user_turn_by_idx:
