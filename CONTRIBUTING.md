@@ -132,6 +132,36 @@ anywhere in the PR body:
 
 This silences the warning without requiring a fake issue link.
 
+### Merging — the `ready-to-merge` label
+
+`main` is FF-only and signature-required. To get a PR onto `main`:
+
+1. Open the PR and let CI run.
+2. When CI is green and you (or a reviewer) are satisfied, add the
+   `ready-to-merge` label to the PR.
+
+The `merge-train` workflow (`.github/workflows/merge-train.yml`)
+serializes merges: it picks up labeled PRs one at a time, verifies the
+branch is fast-forward on current `main` and all commits are signed,
+waits for required checks to complete, and FF-pushes to `main`.
+Concurrency-1 — no two merges race.
+
+If the bot rejects the push it removes the label and posts a comment
+explaining why. The most common cause is "branch is not fast-forward"
+(another PR merged while yours was queued). Rebase locally
+(`git rebase github/main`), force-push, and re-add the label.
+
+The bot has no signing key, so it cannot rebase on your behalf
+(see `.github/workflows/flag-stale-open-prs.yml` for the original
+"no auto-rebase" rationale, #341). Authors rebase; the bot only FFs.
+
+The PR-size soft-cap (`.github/workflows/pr-size-soft-cap.yml`) posts
+an advisory comment on PRs over 200 LOC or 3 files. Smaller PRs are
+less likely to lose the FF race; apply `size:override` for legitimate
+large diffs (refactors, removals, generated code).
+
+Both workflows shipped as part of #602.
+
 ## Code of Conduct
 
 See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). The short version: be respectful, focus on the work, no harassment.
