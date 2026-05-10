@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -461,3 +462,163 @@ def test_auto_capture_basenames_match_setup() -> None:
         setup.SESSION_START_HOOK_SCRIPT_NAME,
         setup.STOP_HOOK_SCRIPT_NAME,
     }
+
+
+# ---------------------------------------------------------------------------
+# #589 — per-project legacy-schema detection
+# ---------------------------------------------------------------------------
+
+def _make_legacy_db(path: Path, belief_count: int = 3) -> None:
+    """Create a per-project memory.db WITHOUT the `origin` column (pre-v1.x schema)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(path))
+    con.execute(
+        "CREATE TABLE beliefs "
+        "(id INTEGER PRIMARY KEY, content TEXT, type TEXT)"
+    )
+    for i in range(belief_count):
+        con.execute("INSERT INTO beliefs (content, type) VALUES (?, ?)",
+                    (f"belief {i}", "fact"))
+    con.commit()
+    con.close()
+
+
+def _make_modern_db(path: Path, belief_count: int = 2) -> None:
+    """Create a per-project memory.db WITH the `origin` column (modern schema)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(path))
+    con.execute(
+        "CREATE TABLE beliefs "
+        "(id INTEGER PRIMARY KEY, content TEXT, type TEXT, origin TEXT)"
+    )
+    for i in range(belief_count):
+        con.execute(
+            "INSERT INTO beliefs (content, type, origin) VALUES (?, ?, ?)",
+            (f"belief {i}", "fact", "agent_remembered"),
+        )
+    con.commit()
+    con.close()
+
+
+def _make_empty_legacy_db(path: Path) -> None:
+    """Create a per-project memory.db without `origin`, but with zero rows (skip)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(path))
+    con.execute(
+        "CREATE TABLE beliefs "
+        "(id INTEGER PRIMARY KEY, content TEXT, type TEXT)"
+    )
+    con.commit()
+    con.close()
+
+
+def test_legacy_schema_detected(tmp_path: Path) -> None:
+    """Legacy DB (no `origin` column, rows present) → block present in report;
+    modern DB with `origin` column → absent from block. Also verifies that
+    an empty legacy DB (zero rows) is silently skipped (#589 AC).
+    """
+    from aelfrice.doctor import _check_legacy_schema_dbs
+
+    projects_dir = tmp_path / "projects"
+
+    # Legacy DB with rows — should be flagged.
+    legacy_path = projects_dir / "aabbccdd1234" / "memory.db"
+    _make_legacy_db(legacy_path, belief_count=5)
+
+    # Modern DB with origin column — should be skipped.
+    modern_path = projects_dir / "11223344aabb" / "memory.db"
+    _make_modern_db(modern_path, belief_count=2)
+
+    # Empty legacy DB (no rows) — should be skipped.
+    empty_legacy_path = projects_dir / "deadbeef0000" / "memory.db"
+    _make_empty_legacy_db(empty_legacy_path)
+
+    results = _check_legacy_schema_dbs(projects_dir=projects_dir)
+
+    paths_found = [r.path for r in results]
+    assert legacy_path in paths_found, "legacy DB with rows must be flagged"
+    assert modern_path not in paths_found, "modern DB must not be flagged"
+    assert empty_legacy_path not in paths_found, "empty legacy DB must not be flagged"
+
+    assert len(results) == 1
+    entry = results[0]
+    assert entry.row_count == 5
+    assert entry.idle_days >= 0
+
+
+def test_legacy_schema_report_block_present(tmp_path: Path) -> None:
+    """When legacy DBs are found, format_report appends the nag block."""
+    projects_dir = tmp_path / "projects"
+    legacy_path = projects_dir / "abc123def456" / "memory.db"
+    _make_legacy_db(legacy_path, belief_count=7)
+
+    user_path = tmp_path / "settings.json"
+    _write_settings(user_path, {
+        "hooks": {
+            "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "aelf-hook"}]}],
+        },
+    })
+    report = diagnose(
+        user_settings=user_path,
+        project_root=tmp_path / "noproj",
+        aelfrice_projects_dir=projects_dir,
+    )
+    assert len(report.legacy_schema_dbs) == 1
+    rendered = format_report(report)
+    assert "legacy-schema per-project DBs detected" in rendered
+    assert "aelf migrate" in rendered
+    assert str(legacy_path) in rendered
+
+
+def test_legacy_schema_report_quiet_when_zero(tmp_path: Path) -> None:
+    """When no legacy DBs exist, format_report must not emit the nag block."""
+    projects_dir = tmp_path / "projects"
+    modern_path = projects_dir / "00112233aabb" / "memory.db"
+    _make_modern_db(modern_path, belief_count=3)
+
+    user_path = tmp_path / "settings.json"
+    _write_settings(user_path, {
+        "hooks": {
+            "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "aelf-hook"}]}],
+        },
+    })
+    report = diagnose(
+        user_settings=user_path,
+        project_root=tmp_path / "noproj",
+        aelfrice_projects_dir=projects_dir,
+    )
+    assert report.legacy_schema_dbs == []
+    rendered = format_report(report)
+    assert "legacy-schema per-project DBs detected" not in rendered
+
+
+def test_legacy_schema_quiet_when_projects_dir_missing(tmp_path: Path) -> None:
+    """Non-existent projects dir → no crash, empty list."""
+    from aelfrice.doctor import _check_legacy_schema_dbs
+
+    results = _check_legacy_schema_dbs(
+        projects_dir=tmp_path / "no-such-projects-dir"
+    )
+    assert results == []
+
+
+def test_legacy_schema_idle_days_in_report(tmp_path: Path) -> None:
+    """The rendered block includes 'idle Xd' for the legacy DB."""
+    projects_dir = tmp_path / "projects"
+    legacy_path = projects_dir / "ffee12345678" / "memory.db"
+    _make_legacy_db(legacy_path, belief_count=4)
+
+    user_path = tmp_path / "settings.json"
+    _write_settings(user_path, {
+        "hooks": {
+            "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "aelf-hook"}]}],
+        },
+    })
+    report = diagnose(
+        user_settings=user_path,
+        project_root=tmp_path / "noproj",
+        aelfrice_projects_dir=projects_dir,
+    )
+    rendered = format_report(report)
+    assert "idle" in rendered
+    assert "beliefs" in rendered
