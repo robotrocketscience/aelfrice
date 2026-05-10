@@ -1,0 +1,6 @@
+{
+  "task_type": "debug",
+  "fork_turn": 8,
+  "eval_turns": [8, 10, 12, 14],
+  "notes": "Midpoint fork on the 16-turn synthetic debugging-session fixture. Post-fork eval turns are the four user prompts at file indices 8, 10, 12, 14. Pairs with debugging_session_001.jsonl; load_corpus() resolves this via with_suffix('.meta.json')."
+}
