@@ -1,8 +1,11 @@
 # Entity-index retrieval (L2.5)
 
-**Status:** spec.
-**Target milestone:** v1.3.0 (named on the public roadmap as "entity-index
-retrieval"; ports forward from the earlier research line).
+**Status:** shipped. Module: `src/aelfrice/entity_extractor.py`; storage:
+`belief_entities` table referenced from `src/aelfrice/store.py`,
+`src/aelfrice/retrieval.py`, and `src/aelfrice/eval_harness.py`. Flag:
+`entity_index_enabled` default-on since v1.3.0.
+**Shipped at milestone:** v1.3.0 (named on the public roadmap as
+"entity-index retrieval"; ported forward from the earlier research line).
 **Dependencies:** v1.2.0 triple-extraction port (already shipped). Stdlib
 only — no new third-party deps. Consumes the v1.2.0 [`Belief.session_id`](../src/aelfrice/models.py),
 the v1.2.0 [`Edge.anchor_text`](../src/aelfrice/models.py), and the
