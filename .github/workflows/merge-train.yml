@@ -1,0 +1,158 @@
+name: merge-train
+
+# #602 — label-driven serialized merger for parallel-session work.
+# When a PR is labeled `ready-to-merge`, the workflow attempts to
+# fast-forward `main` to the PR's head. Concurrency-1 means only one
+# merge is ever in flight, eliminating the merge-thrash described in
+# #602 (where overlapping rebases get invalidated faster than CI can
+# re-run).
+#
+# Hard constraint: this workflow runs as `github-actions[bot]`, which
+# has no signing key. The `required_signatures` rule on `main` rejects
+# any commit it adds. So the bot cannot rebase — it can only FF.
+# If a PR is behind main when its turn comes up, the bot unlabels and
+# asks the author to rebase and re-label. Under serialization, main
+# moves only when the bot is merging, so a freshly-rebased author who
+# labels promptly will be FF when their slot is processed.
+#
+# See `.github/workflows/flag-stale-open-prs.yml` for the original
+# "no auto-rebase" rationale (#341).
+
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Concurrency-1: this is the whole point. Two labeled events queue
+# rather than race.
+concurrency:
+  group: merge-train
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    if: github.event.label.name == 'ready-to-merge'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          # Default token is fine for FF pushes — we're advancing main
+          # to existing already-signed commits, not adding new ones.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Attempt merge-train FF
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHECK_TIMEOUT_SECONDS: '600'
+        run: |
+          set -euo pipefail
+
+          fail_and_unlabel() {
+              local reason="$1"
+              # Use the comment marker so repeat-bumps can be detected
+              # / de-duped by anyone reading the PR thread later.
+              cat > /tmp/comment.md <<EOF
+          <!-- merge-train-v1 -->
+          **merge-train: blocked**
+
+          ${reason}
+
+          The \`ready-to-merge\` label has been removed. Address the issue above and re-add the label when you're ready for another attempt.
+          EOF
+              jq -Rs '{body: .}' < /tmp/comment.md > /tmp/payload.json
+              gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+                  --input /tmp/payload.json >/dev/null
+              gh pr edit "${PR_NUMBER}" --remove-label ready-to-merge
+              exit 0
+          }
+
+          echo "[1/5] refreshing refs..."
+          git fetch origin main "${HEAD_REF}" --quiet
+
+          # Sanity-check the PR head matches what the event reported. If
+          # the author force-pushed between the label-fire and now, the
+          # bot would FF to a stale commit. Refuse and re-trigger via
+          # re-labeling.
+          remote_head=$(git rev-parse "origin/${HEAD_REF}")
+          if [ "${remote_head}" != "${HEAD_SHA}" ]; then
+              fail_and_unlabel "branch head moved during merge-train queue (event=\`${HEAD_SHA}\`, current=\`${remote_head}\`). Re-add \`ready-to-merge\` to retry against the new head."
+          fi
+
+          echo "[2/5] FF check..."
+          if ! git merge-base --is-ancestor origin/main "origin/${HEAD_REF}"; then
+              base=$(git merge-base origin/main "origin/${HEAD_REF}" || echo "unknown")
+              head=$(git rev-parse origin/main)
+              fail_and_unlabel "branch is not fast-forward on \`main\` (branch base \`${base}\`, current main \`${head}\`). Rebase locally (\`git rebase github/main\`), force-push, and re-add the label."
+          fi
+
+          echo "[3/5] signature check on commits being pushed..."
+          # Every commit reachable from PR head but not from main must
+          # be signed. The bot can't sign, but it isn't adding commits
+          # here — these are the author's. Verify upfront so a quiet
+          # branch-protection rejection downstream doesn't confuse.
+          unsigned=$(git log --format='%H %G?' "origin/main..origin/${HEAD_REF}" | awk '$2!="G" && $2!="U" {print $1}' || true)
+          if [ -n "${unsigned}" ]; then
+              fail_and_unlabel "one or more commits between main and \`${HEAD_REF}\` are not GPG/SSH-signed:\n\n\`\`\`\n${unsigned}\n\`\`\`\n\nSign them locally and re-add the label. The bot cannot sign on your behalf."
+          fi
+
+          echo "[4/5] waiting for required checks to complete..."
+          deadline=$(( $(date +%s) + CHECK_TIMEOUT_SECONDS ))
+          while [ "$(date +%s)" -lt "${deadline}" ]; do
+              # Pull the merge-rollup state. We filter out the
+              # merge-train job itself — checking it would deadlock.
+              rollup=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" \
+                  --jq '[.check_runs[] | select(.name != "Attempt merge-train FF" and .name != "merge") | {n:.name, s:.status, c:.conclusion}]')
+
+              fails=$(echo "${rollup}" | jq -r '.[] | select(.c == "failure" or .c == "cancelled" or .c == "timed_out" or .c == "action_required") | .n' | paste -sd, -)
+              if [ -n "${fails}" ]; then
+                  fail_and_unlabel "required check(s) failed: \`${fails}\`. Fix CI and re-add the label."
+              fi
+
+              pending=$(echo "${rollup}" | jq -r '.[] | select(.s == "in_progress" or .s == "queued" or .s == "pending") | .n' | wc -l | tr -d ' ')
+              if [ "${pending}" = "0" ]; then
+                  echo "all checks settled."
+                  break
+              fi
+              echo "...${pending} check(s) still running, sleeping 20s"
+              sleep 20
+          done
+
+          if [ "$(date +%s)" -ge "${deadline}" ]; then
+              fail_and_unlabel "timed out waiting for CI checks to complete after $((CHECK_TIMEOUT_SECONDS / 60)) minutes. Retrigger once checks have settled."
+          fi
+
+          echo "[5/5] FF push..."
+          # Push the existing signed head to main. Branch protection's
+          # required-signatures rule sees the commits' signatures and
+          # accepts.
+          if ! git push origin "${HEAD_SHA}:refs/heads/main" 2>/tmp/push.err; then
+              push_err=$(cat /tmp/push.err)
+              fail_and_unlabel "FF push to \`main\` failed:\n\n\`\`\`\n${push_err}\n\`\`\`\n\nCommon causes: branch protection rule changed, force-push detected by another writer, or token permission insufficient. Re-add the label after investigating."
+          fi
+
+          # Success: unlabel and post a confirmation. Don't error if
+          # the unlabel step fails — main already advanced; the worst
+          # case is a stale label that a sister session sees and
+          # ignores because the PR will be CLOSED/MERGED already.
+          gh pr edit "${PR_NUMBER}" --remove-label ready-to-merge || true
+
+          cat > /tmp/comment.md <<EOF
+          <!-- merge-train-v1 -->
+          **merge-train: merged** ${HEAD_SHA} → \`main\` via FF push.
+          EOF
+          jq -Rs '{body: .}' < /tmp/comment.md > /tmp/payload.json
+          gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+              --input /tmp/payload.json >/dev/null
