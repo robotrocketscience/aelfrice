@@ -148,9 +148,9 @@ The same operations are also available as MCP tools and `/aelf:*` slash commands
 
 ## Status
 
-Latest stable: **v1.7** — graph-signal retrieval lane (signed Laplacian, heat-kernel authority, Plate FFT HRR primitives), BM25F anchor-text retrieval default-on.
+Latest stable: **v2.1.0** — heat-kernel + HRR-structural defaults flipped on (#154) after the #437 reproducibility-harness gate cleared 11/11; HRR `dim` default 512 (#538); default-on transcript / commit / session-start hooks (#529).
 
-Next: **v2.0** — research-line parity + benchmark reproducibility cut.
+Next: **v2.2** — descend the V2_REENTRY_QUEUE backlog (dedup wire-up, sentiment-feedback integration, multimodel).
 
 Per-version detail: [docs/ROADMAP.md](docs/ROADMAP.md).
 Open issues / known limits: [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
