@@ -12,7 +12,13 @@ installable release; see the roadmap in [README.md](README.md).
 
 ### Added
 
+- **`aelf doctor` flags pre-v2.1 installs missing default-on auto-capture hooks** ([#557](https://github.com/robotrocketscience/aelfrice/issues/557)). When any of `aelf-transcript-logger`, `aelf-commit-ingest`, or `aelf-session-start-hook` is absent from every scanned `settings.json`, the doctor report appends a one-line nag pointing to `aelf setup` to wire them. Catches the upgrade-from-v2.0 case where `aelf upgrade-cmd` updates the package but does not re-run `setup` to install the v2.1 default-on hooks. Quiet when no settings.json was scanned (the existing no-scopes-scanned message already covers that case) and when every default-on hook is present.
+
 - **Research-agent dispatch wonder surface** ([#551](https://github.com/robotrocketscience/aelfrice/issues/551), umbrella [#542](https://github.com/robotrocketscience/aelfrice/issues/542) track E). New `aelfrice.wonder.dispatch` module exposes `analyze_gaps()` and `generate_research_axes()`. `analyze_gaps(store, query, ...)` returns a `GapAnalysis` dataclass with known beliefs, high-uncertainty beliefs (normalized 0..1 variance proxy > 0.7), unresolved CONTRADICTS pairs (CONTRADICTS minus matching SUPERSEDES), query-term coverage, and named gaps. `generate_research_axes(gap, agent_count)` produces 2–6 orthogonal `ResearchAxis` records: always-on `domain_research` + `internal_gap_analysis`, conditional `contradiction_resolution` / `uncertainty_deep_dive` / `coverage_extension`. Surfaced via the new `aelf_wonder` MCP tool (13th tool) and `aelf wonder --axes QUERY` CLI flag — both return the same JSON shape for downstream skill-layer consumption (E4, separate sub-issue).
+
+### Documentation
+
+- **README documents default-on auto-capture** ([#557](https://github.com/robotrocketscience/aelfrice/issues/557)). Adds a passive-capture row to the `What it remembers` table and a `Passive capture` bullet to `What you get for free` so the headline narrative reflects the v2.1 default flip (#529). Pre-v2.1 the table listed only manual inputs, so a model reading the README inferred aelfrice was for user-locked rules only — the symptom in #557.
 
 ## [2.1.0] - 2026-05-09
 
