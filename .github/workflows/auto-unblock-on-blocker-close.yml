@@ -1,0 +1,280 @@
+name: auto-unblock-on-blocker-close
+
+# When an issue closes, search all open issues whose body references the
+# closing issue as a blocker (via Blocked-by / Blocked by / Depends on /
+# gate syntax). For each matched issue: if every referenced blocker is now
+# CLOSED and the project-board status is currently `Blocked`, flip the
+# status to `Todo` and post a confirmation comment. If some blockers still
+# remain open, post a one-line status comment naming them.
+#
+# Project-board mutations require a PAT with Projects:write scope stored as
+# secrets.PROJECT_TOKEN. If the secret is absent or the mutation fails, the
+# workflow falls back to comment-only mode (still pings the operator) and
+# exits successfully — no flip, but the operator is notified. See #570.
+
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  contents: read
+  issues: write
+
+# One run per closing issue at a time; no cancellation so slow GraphQL
+# calls don't drop a concurrent run that might flip a different blocked
+# issue.
+concurrency:
+  group: auto-unblock-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  unblock:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 1
+
+      - name: Find and unblock dependent issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          CLOSED_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          # Project-board constants (robotrocketscience/aelfrice — project #1)
+          PROJECT_ID: "PVT_kwHOEHqEMc4BWDLC"
+          STATUS_FIELD_ID: "PVTSSF_lAHOEHqEMc4BWDLCzhRaei8"
+          STATUS_OPTION_TODO: "f9451636"
+          STATUS_OPTION_BLOCKED: "3bc23bae"
+        run: |
+          set -euo pipefail
+
+          closed_num="$CLOSED_NUMBER"
+          echo "Closed issue: #${closed_num}"
+
+          # ── 1. Collect all open issues (paginate up to 1000) ──────────────
+          open_issues=$(gh issue list \
+            --repo "$REPO" \
+            --state open \
+            --limit 1000 \
+            --json number,body \
+            --jq '.[] | @base64')
+
+          if [ -z "$open_issues" ]; then
+            echo "No open issues found; nothing to do."
+            exit 0
+          fi
+
+          # Regex forms recognised as blocker references (case-insensitive):
+          #   Blocked-by: #X
+          #   Blocked by: #X
+          #   Blocked by #X
+          #   Depends on: #X
+          #   Depends on #X
+          #   gate: #X
+          #   gate #X
+          # \b prevents #154 from matching #1542.
+          blocker_regex='(?i)(?:blocked[-\s]by:?\s*|blocked\s+by:?\s*|depends\s+on:?\s*|gate:?\s*)#'"${closed_num}"'\b'
+
+          echo "Scanning open issues for references to #${closed_num}..."
+
+          for row in $open_issues; do
+            data=$(echo "$row" | base64 -d)
+            issue_num=$(echo "$data" | jq -r '.number')
+            body=$(echo "$data"      | jq -r '.body // ""')
+
+            # Skip if body doesn't reference the closing issue as a blocker.
+            if ! echo "$body" | grep -qiP "$blocker_regex"; then
+              continue
+            fi
+
+            echo ""
+            echo "=== Issue #${issue_num} references #${closed_num} as a blocker ==="
+
+            # ── 2. Parse ALL blocker refs from this issue's body ───────────
+            all_blockers=$(echo "$body" | grep -ioP \
+              '(?:blocked[-\s]by:?\s*|blocked\s+by:?\s*|depends\s+on:?\s*|gate:?\s*)#\K\d+(?=\b)' \
+              | sort -u)
+
+            echo "All referenced blockers: $(echo "$all_blockers" | tr '\n' ' ')"
+
+            # ── 3. Check state of every blocker ────────────────────────────
+            still_open=""
+            all_closed_details=""
+            for bnum in $all_blockers; do
+              state_json=$(gh issue view "$bnum" \
+                --repo "$REPO" \
+                --json number,state,closedAt \
+                2>/dev/null || echo '{"number":'"$bnum"',"state":"UNKNOWN","closedAt":null}')
+              bstate=$(echo "$state_json" | jq -r '.state')
+              bclosed=$(echo "$state_json" | jq -r '.closedAt // "unknown"')
+              echo "  #${bnum}: ${bstate} (closedAt: ${bclosed})"
+              if [ "$bstate" != "CLOSED" ]; then
+                still_open="${still_open} #${bnum}"
+              else
+                all_closed_details="${all_closed_details}  - #${bnum} (closed ${bclosed})\n"
+              fi
+            done
+
+            marker="<!-- auto-unblock:#${closed_num} -->"
+
+            # ── 4a. Some blockers still open: post a status comment ────────
+            if [ -n "$still_open" ]; then
+              echo "  Some blockers still open:${still_open} — posting status comment."
+
+              # Check for existing marker (idempotency).
+              existing=$(gh issue view "$issue_num" \
+                --repo "$REPO" \
+                --json comments \
+                --jq ".comments[].body | select(contains(\"$marker\"))" \
+                2>/dev/null || true)
+
+              if [ -n "$existing" ]; then
+                echo "  Already commented (marker found); skipping duplicate."
+                continue
+              fi
+
+              comment_body="${marker}
+          Partial unblock — #${closed_num} closed, but these blockers remain open:${still_open}
+
+          This issue will stay \`Blocked\` until all referenced blockers are closed."
+
+              gh issue comment "$issue_num" \
+                --repo "$REPO" \
+                --body "$comment_body" \
+                2>/dev/null || true
+              continue
+            fi
+
+            # ── 4b. All blockers closed ────────────────────────────────────
+            echo "  All blockers closed. Checking project-board status..."
+
+            # ── 5. Look up project-item for this issue ─────────────────────
+            item_query='query($number: Int!) {
+              repository(owner:"robotrocketscience", name:"aelfrice") {
+                issue(number: $number) {
+                  projectItems(first: 5) {
+                    nodes {
+                      id
+                      project { id }
+                      fieldValueByName(name:"Status") {
+                        ... on ProjectV2ItemFieldSingleSelectValue {
+                          optionId
+                          name
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }'
+
+            item_resp=$(gh api graphql \
+              --header "Authorization: bearer ${GH_TOKEN}" \
+              -f query="$item_query" \
+              -F number="$issue_num" \
+              2>/dev/null || echo '{}')
+
+            # Filter to the item in our project.
+            item_id=$(echo "$item_resp" | jq -r \
+              --arg pid "$PROJECT_ID" \
+              '.data.repository.issue.projectItems.nodes[]
+               | select(.project.id == $pid)
+               | .id' 2>/dev/null || true)
+
+            current_option=$(echo "$item_resp" | jq -r \
+              --arg pid "$PROJECT_ID" \
+              '.data.repository.issue.projectItems.nodes[]
+               | select(.project.id == $pid)
+               | .fieldValueByName.optionId // ""' 2>/dev/null || true)
+
+            echo "  Project item ID: ${item_id:-<not found>}"
+            echo "  Current status optionId: ${current_option:-<not found>}"
+
+            # ── 6. Idempotency: only act if currently Blocked ──────────────
+            if [ "$current_option" != "$STATUS_OPTION_BLOCKED" ]; then
+              echo "  Status is not Blocked (optionId=${current_option}); skipping flip + comment."
+              continue
+            fi
+
+            # ── 7. Attempt project-board status flip ───────────────────────
+            flip_succeeded=false
+
+            if [ -z "$PROJECT_TOKEN" ]; then
+              echo "  PROJECT_TOKEN not set — falling back to comment-only mode."
+            elif [ -z "$item_id" ]; then
+              echo "  Issue #${issue_num} has no project item in project ${PROJECT_ID} — cannot flip."
+            else
+              mutate_query='mutation($project: ID!, $item: ID!, $field: ID!, $option: String!) {
+                updateProjectV2ItemFieldValue(
+                  input:{
+                    projectId: $project
+                    itemId: $item
+                    fieldId: $field
+                    value: { singleSelectOptionId: $option }
+                  }
+                ) { projectV2Item { id } }
+              }'
+
+              mutate_resp=$(gh api graphql \
+                --header "Authorization: bearer ${PROJECT_TOKEN}" \
+                -f query="$mutate_query" \
+                -f project="$PROJECT_ID" \
+                -f item="$item_id" \
+                -f field="$STATUS_FIELD_ID" \
+                -f option="$STATUS_OPTION_TODO" \
+                2>&1 || true)
+
+              if echo "$mutate_resp" | jq -e '.data.updateProjectV2ItemFieldValue.projectV2Item.id' \
+                  >/dev/null 2>&1; then
+                flip_succeeded=true
+                echo "  Status flipped: Blocked → Todo"
+              else
+                echo "  Mutation failed — falling back to comment-only mode."
+                echo "  Response: $mutate_resp"
+              fi
+            fi
+
+            # ── 8. Post confirmation or fallback comment ───────────────────
+
+            # Check for existing marker (idempotency).
+            existing=$(gh issue view "$issue_num" \
+              --repo "$REPO" \
+              --json comments \
+              --jq ".comments[].body | select(contains(\"$marker\"))" \
+              2>/dev/null || true)
+
+            if [ -n "$existing" ]; then
+              echo "  Already commented (marker found); skipping duplicate comment."
+              continue
+            fi
+
+            closed_list=$(printf "$all_closed_details")
+
+            if [ "$flip_succeeded" = "true" ]; then
+              comment_body="${marker}
+          Auto-unblock — issue #${closed_num} closed; all referenced blockers are now resolved. Project-board status flipped Blocked → Todo. Re-scan to claim.
+
+          Blockers verified closed:
+          ${closed_list}"
+            else
+              comment_body="${marker}
+          Auto-unblock — issue #${closed_num} closed; all referenced blockers are resolved, but the project-board status flip to Todo could not be applied automatically (PROJECT_TOKEN missing or mutation failed). @robotrocketscience please flip this issue's status from Blocked to Todo manually.
+
+          Blockers verified closed:
+          ${closed_list}"
+            fi
+
+            gh issue comment "$issue_num" \
+              --repo "$REPO" \
+              --body "$comment_body" \
+              2>/dev/null || true
+
+          done
+
+          echo ""
+          echo "auto-unblock scan complete."
