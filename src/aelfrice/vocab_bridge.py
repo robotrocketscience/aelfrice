@@ -110,7 +110,9 @@ class VocabBridge:
     anchor-text edges); rewrite is one ``unbind`` and one
     cleanup-memory query per query token. Storage cost is dominated
     by the surface-form ``(N_surfaces, dim)`` matrix at ``8 *
-    N_surfaces * dim`` bytes; at ``N=10k, dim=2048`` that is ~160 MB.
+    N_surfaces * dim`` bytes; at ``N=10k`` and the default
+    ``dim=512`` that is ~40 MB (~160 MB at the ``dim=2048``
+    escape-hatch value).
 
     Determinism: ``random_vector`` draws are reproducible from
     ``np.random.default_rng(seed)``. Two builds against the same store
