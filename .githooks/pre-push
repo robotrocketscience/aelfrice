@@ -1,5 +1,7 @@
 #!/bin/sh
-# pre-push hook: enforce branch freshness against origin/main.
+# pre-push hook: chain to any pre-existing user-managed pre-push hook
+# (e.g., per-repo discretion enforcement at .git/hooks/pre-push), then
+# enforce branch freshness against origin/main.
 #
 # Aborts the push if the branch's merge-base with origin/main is older than
 # AELF_PRE_PUSH_FRESHNESS_HOURS (default: 4 hours), so feature branches
@@ -10,11 +12,40 @@
 #   - branch deletion (local sha = 40 zeros)
 #   - when ALLOW_STALE_BRANCH_PUSH=1 is set in the environment (logs to stderr)
 #
+# Chain: enabling .githooks/pre-push via `git config core.hooksPath .githooks`
+# displaces any pre-existing .git/hooks/pre-push from git's search path. To
+# preserve user-managed hooks (defense in depth), this script first execs
+# any executable .git/hooks/pre-push it finds and propagates its exit code,
+# then runs the freshness check.
+#
 # Installed via:  git config core.hooksPath .githooks
 # Or run scripts/setup-hooks.sh.
 set -eu
 
 remote_name="${1:-origin}"
+
+# Buffer stdin once so it can be replayed to both the chained hook and the
+# freshness check below. POSIX sh has neither <(...) process substitution
+# nor <<< herestrings, so a temp file is the portable carrier.
+stdin_buf="$(mktemp)"
+trap 'rm -f "$stdin_buf"' EXIT INT TERM HUP
+cat > "$stdin_buf"
+
+# Chain to user-managed pre-push hook, if present and not this same file.
+USER_HOOK="$(git rev-parse --git-path hooks/pre-push 2>/dev/null || echo "")"
+if [ -n "$USER_HOOK" ] && [ -x "$USER_HOOK" ]; then
+    user_hook_dir="$(cd "$(dirname "$USER_HOOK")" 2>/dev/null && pwd || echo "")"
+    self_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo "")"
+    user_hook_abs="${user_hook_dir}/$(basename "$USER_HOOK")"
+    self_abs="${self_dir}/$(basename "$0")"
+    if [ "$user_hook_abs" != "$self_abs" ]; then
+        chained_rc=0
+        "$USER_HOOK" "$@" < "$stdin_buf" || chained_rc=$?
+        if [ "$chained_rc" -ne 0 ]; then
+            exit "$chained_rc"
+        fi
+    fi
+fi
 
 freshness_hours="${AELF_PRE_PUSH_FRESHNESS_HOURS:-}"
 if [ -z "$freshness_hours" ]; then
@@ -83,7 +114,7 @@ while read -r local_ref local_sha remote_ref _remote_sha; do
         echo "" >&2
         fail=1
     fi
-done
+done < "$stdin_buf"
 
 if [ "$fail" -ne 0 ]; then
     if [ "${ALLOW_STALE_BRANCH_PUSH:-0}" = "1" ]; then
