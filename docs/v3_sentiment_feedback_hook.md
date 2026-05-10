@@ -2,8 +2,8 @@
 
 Spec for issue [#606](https://github.com/robotrocketscience/aelfrice/issues/606).
 Production wire-up of `aelfrice.sentiment_feedback` (shipped at v2.0 per #193) into a
-real Claude Code hook lane. Module is pure today; nothing calls it on a live
-turn.
+live `UserPromptSubmit` hook lane. Module is pure today; nothing calls it on a
+real hook fire.
 
 ## What's being decided
 
