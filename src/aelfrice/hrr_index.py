@@ -286,8 +286,7 @@ class HRRStructIndexCache:
     construction, so any belief / edge mutation drops the cached
     index. The next ``get()`` rebuilds.
 
-    Mirrors :class:`aelfrice.vocab_bridge.VocabBridgeCache`. Per-
-    instance: two caches pointing at different stores never share
+    Per-instance: two caches pointing at different stores never share
     state. Thread safety is the caller's responsibility.
     """
 

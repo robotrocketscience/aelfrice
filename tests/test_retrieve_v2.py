@@ -63,12 +63,16 @@ def test_include_locked_false_filters_locked(store: MemoryStore) -> None:
     assert all(b.lock_level == LOCK_NONE for b in result.beliefs)
 
 
-def test_use_hrr_and_use_bfs_accepted_as_noop(store: MemoryStore) -> None:
-    """v1.0.x: flags accepted, no behavioral change. Future-proofs the
-    adapter call sites."""
+def test_use_bfs_accepted_as_noop(store: MemoryStore) -> None:
+    """``use_bfs`` round-trips with no observable ranking change on a
+    single-belief store. Adapter call-site future-proofing.
+
+    The deprecated ``use_hrr`` alias was removed alongside the
+    vocabulary-bridge module in #536 — the structural lane (#152)
+    is the production HRR surface and uses ``use_hrr_structural``."""
     store.insert_belief(_b("A factual statement to find", idx=1))
-    a = retrieve_v2(store, "factual", use_hrr=False, use_bfs=False)
-    b = retrieve_v2(store, "factual", use_hrr=True, use_bfs=True)
+    a = retrieve_v2(store, "factual", use_bfs=False)
+    b = retrieve_v2(store, "factual", use_bfs=True)
     assert [x.id for x in a.beliefs] == [x.id for x in b.beliefs]
 
 
