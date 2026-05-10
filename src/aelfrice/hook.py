@@ -49,7 +49,15 @@ try:
         rebuild_v14,
     )
     from aelfrice.hook_search import search_for_prompt
-    from aelfrice.models import LOCK_NONE, LOCK_USER, Belief
+    from aelfrice.models import (
+        BELIEF_CORRECTION,
+        LOCK_NONE,
+        LOCK_USER,
+        ORIGIN_AGENT_INFERRED,
+        ORIGIN_AGENT_REMEMBERED,
+        ORIGIN_USER_STATED,
+        Belief,
+    )
     from aelfrice.retrieval import retrieve
     from aelfrice.store import MemoryStore
 
@@ -1461,6 +1469,210 @@ def _format_baseline_hits(hits: list[Belief]) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Stop hook — session-end correction-lock prompt (#582)
+# ---------------------------------------------------------------------------
+
+AUTOLOCK_ENV_VAR: Final[str] = "AELF_AUTOLOCK_CORRECTIONS"
+"""When set to a truthy value (1/true/yes/on, case-insensitive), the Stop
+hook auto-locks every session-scoped correction candidate it finds and
+logs each lock to stderr instead of printing the prompt. Default off:
+locking is meaning-bearing and should not happen silently."""
+
+STOP_PROMPT_OPEN_TAG: Final[str] = "<aelfrice-session-end>"
+STOP_PROMPT_CLOSE_TAG: Final[str] = "</aelfrice-session-end>"
+
+# Origins that flag a belief as a candidate for end-of-session lock prompt.
+# Mirrors the issue #582 design: agent-paraphrased corrections never
+# survive context resets unless promoted to user-asserted ground truth.
+_STOP_PROMPT_AGENT_ORIGINS: Final[frozenset[str]] = frozenset({
+    ORIGIN_AGENT_INFERRED,
+    ORIGIN_AGENT_REMEMBERED,
+})
+
+
+def _autolock_enabled(env: dict[str, str] | None = None) -> bool:
+    """Return True when the AELF_AUTOLOCK_CORRECTIONS env var is truthy."""
+    src = env if env is not None else os.environ
+    val = src.get(AUTOLOCK_ENV_VAR, "").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
+def _belief_is_lock_candidate(b: "Belief", session_id: str) -> bool:
+    """Return True iff `b` is a session-scoped, unlocked correction-class
+    belief — the population the Stop hook prompts the user to lock.
+
+    Conditions:
+      * `b.session_id == session_id` (created in this session).
+      * `b.lock_level != LOCK_USER` (locking would be a no-op otherwise).
+      * `b.type == BELIEF_CORRECTION` OR `b.origin in
+        {agent_inferred, agent_remembered}` (correction-class signal).
+    """
+    if b.session_id != session_id:
+        return False
+    if b.lock_level == LOCK_USER:
+        return False
+    if b.type == BELIEF_CORRECTION:
+        return True
+    if b.origin in _STOP_PROMPT_AGENT_ORIGINS:
+        return True
+    return False
+
+
+def _collect_lock_candidates(
+    store: "MemoryStore", session_id: str
+) -> list["Belief"]:
+    """Walk all beliefs once and return the lock-prompt candidates.
+
+    Cost: one `list_belief_ids()` + one `get_belief()` per id. For small
+    stores (<1k beliefs, the typical case at session-end) this is sub-100ms.
+    A focused SQL query is a future optimisation when stores grow.
+    """
+    candidates: list[Belief] = []
+    for bid in store.list_belief_ids():
+        b = store.get_belief(bid)
+        if b is None:
+            continue
+        if _belief_is_lock_candidate(b, session_id):
+            candidates.append(b)
+    return candidates
+
+
+def _format_stop_prompt(candidates: list["Belief"]) -> str:
+    """Render the stderr block listing each candidate with a pre-filled
+    `aelf lock` command. Empty list → empty string."""
+    if not candidates:
+        return ""
+    n = len(candidates)
+    plural = "correction" if n == 1 else "corrections"
+    lines: list[str] = [
+        STOP_PROMPT_OPEN_TAG,
+        f"Found {n} {plural} in this session that aren't locked.",
+        "Run the suggested commands to make them survive into the next session,",
+        "or set AELF_AUTOLOCK_CORRECTIONS=1 to auto-lock corrections at session end.",
+        "",
+    ]
+    for b in candidates:
+        snippet = b.content.strip().replace("\n", " ")
+        if len(snippet) > 120:
+            snippet = snippet[:117] + "..."
+        lines.append(f"  - {b.id} ({b.type}, origin={b.origin}): {snippet}")
+        lines.append(f"    aelf lock --statement {_shell_quote(b.content)}")
+    lines.append(STOP_PROMPT_CLOSE_TAG)
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _shell_quote(s: str) -> str:
+    """Single-quote `s` for safe paste into a shell. Escapes embedded single
+    quotes by closing/escaping/reopening, matching POSIX shell semantics."""
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def _autolock_candidates(
+    store: "MemoryStore", candidates: list["Belief"], stderr: IO[str]
+) -> int:
+    """Upgrade every candidate's lock_level to LOCK_USER in place. Returns
+    the count actually locked. Mirrors the re-lock-upgrade path from
+    `_cmd_lock` (cli.py) without going through the derivation worker —
+    these beliefs already exist; only the lock fields change."""
+    now = _utc_now_iso()
+    locked = 0
+    for b in candidates:
+        try:
+            b.lock_level = LOCK_USER
+            b.locked_at = now
+            b.demotion_pressure = 0
+            b.origin = ORIGIN_USER_STATED
+            store.update_belief(b)
+            locked += 1
+            print(
+                f"aelfrice: auto-locked {b.id} ({b.type}, origin→user_stated)",
+                file=stderr,
+            )
+        except Exception as exc:
+            print(
+                f"aelfrice: auto-lock failed for {b.id}: {exc}",
+                file=stderr,
+            )
+    return locked
+
+
+def _utc_now_iso() -> str:
+    """ISO-8601 UTC timestamp; matches the format used by other hook
+    helpers without importing cli (which would create a circular import)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def stop(
+    *,
+    stdin: IO[str] | None = None,
+    stdout: IO[str] | None = None,
+    stderr: IO[str] | None = None,
+    env: dict[str, str] | None = None,
+) -> int:
+    """Run the Stop hook. Always returns 0.
+
+    Reads a Claude Code Stop JSON payload from `stdin`, finds all
+    correction-class beliefs created in this session that aren't yet
+    user-locked, and either emits a stderr listing with pre-filled
+    `aelf lock` commands (default) or auto-locks them when
+    `AELF_AUTOLOCK_CORRECTIONS=1` is set in the environment.
+
+    Hook contract: never block, never raise. Empty / malformed payload,
+    missing session_id, no candidates, store errors — all return 0
+    silently (or with a single stderr line for visibility).
+
+    The Stop event in Claude Code fires once per assistant-turn end.
+    The hook is therefore on the post-turn fan-out path and must stay
+    cheap; the candidate-walk is bounded by store size.
+    """
+    sin = stdin if stdin is not None else sys.stdin
+    serr = stderr if stderr is not None else sys.stderr
+    if not _IMPORTS_OK:
+        return 0
+    try:
+        raw = sin.read()
+        if not raw or not raw.strip():
+            return 0
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return 0
+        if not isinstance(payload, dict):
+            return 0
+        session_id = _extract_session_id(raw)
+        if not session_id:
+            return 0
+        try:
+            store = _open_store()
+        except Exception:
+            return 0
+        try:
+            candidates = _collect_lock_candidates(store, session_id)
+            if not candidates:
+                return 0
+            if _autolock_enabled(env):
+                _autolock_candidates(store, candidates, serr)
+                return 0
+            block = _format_stop_prompt(candidates)
+            if block:
+                # stderr per Claude Code Stop-hook contract: any prompt-shaped
+                # output to the human reading the session must go to stderr,
+                # not stdout (Stop has no additionalContext channel).
+                serr.write(block)
+        finally:
+            store.close()
+    except Exception as exc:
+        # Last-resort fail-soft. Surface to stderr so the hook log shows
+        # the trace; never bubble to the harness.
+        print(
+            f"aelfrice: stop hook unexpected error (non-fatal): {exc}",
+            file=serr,
+        )
+    return 0
+
+
 def main() -> int:
     """Entry point for `python -m aelfrice.hook`."""
     return user_prompt_submit()
@@ -1474,6 +1686,11 @@ def main_pre_compact() -> int:
 def main_session_start() -> int:
     """Entry point for the SessionStart hook console script."""
     return session_start()
+
+
+def main_stop() -> int:
+    """Entry point for the Stop hook console script (#582)."""
+    return stop()
 
 
 if __name__ == "__main__":
