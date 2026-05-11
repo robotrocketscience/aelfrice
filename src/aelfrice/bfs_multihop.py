@@ -85,12 +85,23 @@ class ScoredHop:
     1.0 (no edge weight exceeds 1.0). `depth` is the number of edges
     in the path (1 for a direct neighbour, 2 for a two-hop expansion,
     etc.). `path` is the ordered list of edge-type strings.
+
+    `belief_id_trail` is the ordered tuple of belief ids the BFS
+    walked through to reach this hop, starting with the seed and
+    ending with this hop's belief id. Length is always ``depth + 1``
+    (seed + one id per hop). Empty default for backwards-compat with
+    callers that construct ``ScoredHop`` directly in tests; the
+    production ``expand_bfs`` always emits a populated trail. Added
+    for #645 R2 (#658) — compound-confidence + fork-on-CONTRADICTS
+    derivation needs the per-hop trail of beliefs, not just the
+    terminal endpoint.
     """
 
     belief: Belief
     score: float
     depth: int
     path: list[str]
+    belief_id_trail: tuple[str, ...] = ()
 
 
 def expand_bfs(
@@ -134,16 +145,23 @@ def expand_bfs(
         return []
 
     visited: set[str] = {b.id for b in seeds}
-    # Frontier entries: (belief_id, path_score, depth, path_edge_types).
-    frontier: list[tuple[str, float, int, list[str]]] = [
-        (b.id, 1.0, 0, []) for b in seeds
+    # Frontier entries: (belief_id, path_score, depth, path_edge_types,
+    # belief_id_trail). The trail tracks every belief id the BFS has
+    # walked through to reach `belief_id`, starting from the seed;
+    # consumers downstream (compound-confidence + fork-on-CONTRADICTS,
+    # #645 R2) reconstruct paths from this without re-walking the
+    # graph.
+    frontier: list[tuple[str, float, int, list[str], tuple[str, ...]]] = [
+        (b.id, 1.0, 0, [], (b.id,)) for b in seeds
     ]
     expanded: list[ScoredHop] = []
     nodes_used: int = 0
 
     while frontier and nodes_used < total_budget:
-        next_frontier: list[tuple[str, float, int, list[str]]] = []
-        for current_id, score, depth, path in frontier:
+        next_frontier: list[
+            tuple[str, float, int, list[str], tuple[str, ...]]
+        ] = []
+        for current_id, score, depth, path, trail in frontier:
             if depth >= max_depth:
                 continue
             if nodes_used >= total_budget:
@@ -185,16 +203,18 @@ def expand_bfs(
                     # this query.
                     continue
                 new_path = path + [edge.type]
+                new_trail = trail + (edge.dst,)
                 expanded.append(
                     ScoredHop(
                         belief=belief,
                         score=new_score,
                         depth=depth + 1,
                         path=new_path,
+                        belief_id_trail=new_trail,
                     )
                 )
                 next_frontier.append(
-                    (edge.dst, new_score, depth + 1, new_path)
+                    (edge.dst, new_score, depth + 1, new_path, new_trail)
                 )
                 nodes_used += 1
         frontier = next_frontier

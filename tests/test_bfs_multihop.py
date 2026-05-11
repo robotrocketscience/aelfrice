@@ -692,8 +692,46 @@ def test_scoredhop_dataclass_shape() -> None:
     assert h.score == 0.5
     assert h.depth == 1
     assert h.path == [EDGE_SUPPORTS]
+    # belief_id_trail defaults to empty for backwards-compat constructors.
+    assert h.belief_id_trail == ()
     with pytest.raises(Exception):
         h.score = 0.9  # type: ignore[misc]
+
+
+def test_belief_id_trail_threaded_through_two_hop_walk() -> None:
+    """#645 R2: ``expand_bfs`` emits a per-hop ``belief_id_trail`` that
+    starts at the seed and ends at the hop's belief id, with length
+    ``depth + 1``."""
+    s = MemoryStore(":memory:")
+    _seed_decisional_chain(s)  # S0 -- RELATES_TO --> S1 -- SUPERSEDES --> S2
+    seed = s.get_belief("S0")
+    assert seed is not None
+    hops = expand_bfs([seed], s)
+    by_id = {h.belief.id: h for h in hops}
+    assert by_id["S1"].belief_id_trail == ("S0", "S1")
+    assert by_id["S2"].belief_id_trail == ("S0", "S1", "S2")
+    for h in hops:
+        assert len(h.belief_id_trail) == h.depth + 1
+        assert h.belief_id_trail[-1] == h.belief.id
+
+
+def test_belief_id_trail_with_multiple_seeds_pins_to_originating_seed() -> None:
+    """Each hop's trail begins at the seed it expanded from, not the
+    first seed in the input list."""
+    s = MemoryStore(":memory:")
+    # Two disjoint micro-chains: A -> B and X -> Y.
+    s.insert_belief(_mk("A", "a"))
+    s.insert_belief(_mk("B", "b"))
+    s.insert_belief(_mk("X", "x"))
+    s.insert_belief(_mk("Y", "y"))
+    s.insert_edge(_edge("A", "B", EDGE_SUPPORTS))
+    s.insert_edge(_edge("X", "Y", EDGE_SUPPORTS))
+    seeds = [s.get_belief("A"), s.get_belief("X")]
+    assert all(seed is not None for seed in seeds)
+    hops = expand_bfs([sd for sd in seeds if sd is not None], s)
+    by_id = {h.belief.id: h for h in hops}
+    assert by_id["B"].belief_id_trail == ("A", "B")
+    assert by_id["Y"].belief_id_trail == ("X", "Y")
 
 
 # ---------------------------------------------------------------------------
