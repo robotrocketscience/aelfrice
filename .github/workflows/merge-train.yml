@@ -103,9 +103,25 @@ jobs:
           # be signed. The bot can't sign, but it isn't adding commits
           # here — these are the author's. Verify upfront so a quiet
           # branch-protection rejection downstream doesn't confuse.
-          unsigned=$(git log --format='%H %G?' "origin/main..origin/${HEAD_REF}" | awk '$2!="G" && $2!="U" {print $1}' || true)
+          #
+          # Use the GitHub commit-verification API rather than `git log
+          # %G?`. The runner is a fresh `actions/checkout` with no
+          # `gpg.ssh.allowedSignersFile` configured, so `%G?` returns
+          # `N` for every SSH-signed commit even though the signature
+          # itself is valid (#618). The API uses each contributor's
+          # registered SSH signing keys (`gh ssh-key add --type signing`
+          # — same set the GitHub UI uses for the green "Verified"
+          # badge), which is the authoritative source.
+          unsigned=""
+          while read -r sha; do
+              [ -n "${sha}" ] || continue
+              verified=$(gh api "repos/${REPO}/commits/${sha}" --jq '.commit.verification.verified')
+              if [ "${verified}" != "true" ]; then
+                  unsigned="${unsigned}${sha}"$'\n'
+              fi
+          done < <(git rev-list "origin/main..origin/${HEAD_REF}")
           if [ -n "${unsigned}" ]; then
-              fail_and_unlabel "one or more commits between main and \`${HEAD_REF}\` are not GPG/SSH-signed:\n\n\`\`\`\n${unsigned}\n\`\`\`\n\nSign them locally and re-add the label. The bot cannot sign on your behalf."
+              fail_and_unlabel "one or more commits between main and \`${HEAD_REF}\` are not verified-signed per the GitHub API:\n\n\`\`\`\n${unsigned}\`\`\`\n\nSign them locally and re-add the label. If the commits look signed locally (\`git log --show-signature\`) but the API disagrees, the contributor's SSH signing key isn't registered with GitHub — run \`gh ssh-key add --type signing ~/.ssh/<key>.pub\` (needs \`admin:ssh_signing_key\` scope; \`gh auth refresh -h github.com -s admin:ssh_signing_key\` if missing)."
           fi
 
           echo "[4/5] waiting for required checks to complete..."
