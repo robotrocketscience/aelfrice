@@ -47,6 +47,7 @@ import numpy as np
 
 _logger = logging.getLogger(__name__)
 _legacy_deprecation_logged = False
+_ephemeral_disable_logged: bool = False
 
 from aelfrice.hrr import DEFAULT_DIM, Vector, bind, random_vector
 from aelfrice.models import EDGE_TYPES
@@ -370,6 +371,9 @@ class HRRStructIndex:
 
 _PERSIST_DIRNAME: Final[str] = ".hrr_struct_index"
 _ENV_PERSIST: Final[str] = "AELFRICE_HRR_PERSIST"
+_EPHEMERAL_PATH_PREFIXES: Final[frozenset[str]] = frozenset(
+    {"/tmp/", "/var/tmp/", "/dev/shm/", "/run/"}
+)
 
 
 @dataclass
@@ -407,11 +411,13 @@ class HRRStructIndexCache:
             self._subscribed = True
 
     def _resolve_persist_dir(self) -> Path | None:
+        global _ephemeral_disable_logged
         if self.store_path is None:
             return None
-        # Env var is the highest-precedence rung — checked directly here
-        # so AELFRICE_HRR_PERSIST wins even when persist_enabled differs.
+        # Highest-precedence rung — env var explicit opt-in/opt-out.
+        # Overrides both ephemeral auto-disable and persist_enabled.
         env_raw = os.environ.get(_ENV_PERSIST)
+        env_force_on = False
         if env_raw is not None:
             norm = env_raw.strip().lower()
             _FALSY = frozenset({"0", "false", "no", "off"})
@@ -419,12 +425,30 @@ class HRRStructIndexCache:
             if norm in _FALSY:
                 return None
             if norm in _TRUTHY:
-                # Env explicitly forces ON — skip the persist_enabled rung.
-                return Path(self.store_path).parent / _PERSIST_DIRNAME
-            # Unrecognised value: fall through to persist_enabled.
-        # Second rung: persist_enabled field (set at construction from the
-        # config-loader; None means "not specified, use default True").
-        if self.persist_enabled is False:
+                env_force_on = True
+            # Unrecognised value: fall through to subsequent rungs.
+        # Ephemeral-path auto-disable. Resolve symlinks so /tmp →
+        # /private/tmp on macOS is caught. Trailing-slash check guards
+        # against false matches like /tmpfoo/.
+        resolved_parent = Path(self.store_path).resolve(strict=False).parent
+        path_with_slash = str(resolved_parent).rstrip("/") + "/"
+        is_ephemeral = any(
+            path_with_slash.startswith(prefix)
+            for prefix in _EPHEMERAL_PATH_PREFIXES
+        )
+        if is_ephemeral and not env_force_on:
+            if not _ephemeral_disable_logged:
+                _logger.warning(
+                    "aelfrice: HRR persistence disabled on ephemeral path %s;"
+                    " set AELFRICE_HRR_PERSIST=1 to force.",
+                    resolved_parent,
+                )
+                _ephemeral_disable_logged = True
+            return None
+        # persist_enabled field (set at construction from the config-loader;
+        # None means "not specified, use default True"). env=truthy already
+        # took the early path above.
+        if not env_force_on and self.persist_enabled is False:
             return None
         return Path(self.store_path).parent / _PERSIST_DIRNAME
 
