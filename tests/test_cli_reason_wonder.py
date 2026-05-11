@@ -282,7 +282,7 @@ def test_wonder_gc_dry_run_reports_candidates(_isolated_db: Path) -> None:
     finally:
         s.close()
 
-    code, out = _run("wonder", "gc", "--dry-run")
+    code, out = _run("wonder", "--gc", "--gc-dry-run")
     assert code == 0, out
     assert "wonder gc:" in out
     assert "scanned=1" in out
@@ -323,7 +323,7 @@ def test_wonder_gc_non_dry_run_deletes_stale(_isolated_db: Path) -> None:
     finally:
         s.close()
 
-    code, out = _run("wonder", "gc")
+    code, out = _run("wonder", "--gc")
     assert code == 0, out
     assert "wonder gc:" in out
     assert "scanned=1" in out
@@ -359,11 +359,11 @@ def test_wonder_gc_ttl_days_override(_isolated_db: Path) -> None:
         s.close()
 
     # Default TTL (14 days): not eligible.
-    code, out = _run("wonder", "gc", "--dry-run")
+    code, out = _run("wonder", "--gc", "--gc-dry-run")
     assert code == 0
     assert "scanned=0" in out
 
     # TTL 3 days: eligible.
-    code2, out2 = _run("wonder", "gc", "--dry-run", "--ttl-days", "3")
+    code2, out2 = _run("wonder", "--gc", "--gc-dry-run", "--gc-ttl-days", "3")
     assert code2 == 0
     assert "scanned=1" in out2

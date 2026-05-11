@@ -915,7 +915,7 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
     gap-analysis + research-axes JSON for research-agent dispatch.
     Mutually exclusive with ``--persist``.
     """
-    if getattr(args, "wonder_subcmd", None) == "gc":
+    if getattr(args, "gc", False):
         return _cmd_wonder_gc(args, out)
 
     persist = getattr(args, "persist", False)
@@ -4023,29 +4023,26 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "Mutually exclusive with --emit-phantoms and --axes."
         ),
     )
-    p_wonder.set_defaults(func=_cmd_wonder, wonder_subcmd=None)
-
-    # gc sub-subcommand: soft-delete stale speculative beliefs (#549).
-    _wonder_subs = p_wonder.add_subparsers(dest="wonder_subcmd")
-    p_wonder_gc = _wonder_subs.add_parser(
-        "gc",
-        help="soft-delete stale speculative beliefs (wonder GC)",
-        description=(
-            "Soft-deletes speculative phantom beliefs that have received no "
-            "feedback and whose Bayesian priors are still at the ingest "
-            "defaults, and that are older than --ttl-days days. "
-            "Use --dry-run to preview candidates without writing."
+    # gc mode (#549): soft-delete stale speculative beliefs. Promoted from
+    # a nested sub-subcommand to a flag in #645 so a positional QUERY can
+    # be added to `aelf wonder` without colliding with `wonder gc`.
+    p_wonder.add_argument(
+        "--gc", action="store_true", dest="gc",
+        help=(
+            "soft-delete stale speculative beliefs (wonder GC). "
+            "Use --gc-dry-run to preview candidates; --gc-ttl-days to "
+            "override the 14-day age threshold."
         ),
     )
-    p_wonder_gc.add_argument(
-        "--dry-run", action="store_true", dest="gc_dry_run",
-        help="report GC candidates without mutating the store",
+    p_wonder.add_argument(
+        "--gc-dry-run", action="store_true", dest="gc_dry_run",
+        help="--gc mode: report candidates without mutating the store",
     )
-    p_wonder_gc.add_argument(
-        "--ttl-days", type=int, default=14, dest="gc_ttl_days",
-        help="age threshold in days for GC candidates (default 14)",
+    p_wonder.add_argument(
+        "--gc-ttl-days", type=int, default=14, dest="gc_ttl_days",
+        help="--gc mode: age threshold in days for GC candidates (default 14)",
     )
-    p_wonder_gc.set_defaults(func=_cmd_wonder, wonder_subcmd="gc")
+    p_wonder.set_defaults(func=_cmd_wonder)
 
     # v1.4 (#141): user-facing manual trigger for the context
     # rebuilder. Promoted from hidden to visible because manual mode
