@@ -17,7 +17,6 @@ Skips entirely if Surface B is not yet shipped (gated on #616 merge).
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import pytest
