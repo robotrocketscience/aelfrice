@@ -1102,24 +1102,36 @@ def _auto_migrate_legacy_dbs(
 def _format_legacy_schema_section(
     report: DoctorReport, lines: list[str],
 ) -> None:
-    """Append the pre-v1.x legacy-schema nag block (#589) to `lines`.
+    """Append legacy-schema migration outcomes to `lines` (#589, #593).
 
-    Quiet when no legacy DBs are found (parity with #557 quietness).
+    Quiet when no legacy DBs were detected this run (parity with #557).
+    Otherwise renders:
+      * one summary line per successfully auto-migrated DB (`migrated_dbs`),
+      * a residual nag block for DBs that auto-migrate could not action
+        (`failed_migrate_dbs`).
+
+    The pre-#593 detection-only nag is gone — `aelf doctor` now actions
+    the migration in place rather than asking the operator to run a
+    follow-up command.
     """
-    if not report.legacy_schema_dbs:
-        return
-    lines.append("")
-    lines.append(
-        "legacy-schema per-project DBs detected (pre-v1.x, no `origin` column)."
-    )
-    for entry in report.legacy_schema_dbs:
+    for entry in report.migrated_dbs:
+        lines.append("")
         lines.append(
-            f"  {entry.path} ({entry.row_count:,} beliefs, idle {entry.idle_days}d)"
+            f"migrated {entry.path}: {entry.row_count:,} beliefs, "
+            f"{entry.duration_ms}ms (backup at {entry.backup_path})"
         )
-    lines.append(
-        "fix: `aelf migrate --from <path> --apply` per DB to copy beliefs "
-        "into the current project's modern-schema DB."
-    )
+    if report.failed_migrate_dbs:
+        lines.append("")
+        lines.append(
+            "legacy-schema auto-migrate FAILED for the following DB(s):"
+        )
+        for entry in report.failed_migrate_dbs:
+            lines.append(f"  {entry.path} ({entry.reason})")
+        lines.append(
+            "fix: investigate manually with "
+            "`aelf migrate --from <path> --apply`; the legacy file is "
+            "untouched after a failed auto-migrate."
+        )
 
 
 def _format_missing_runtime_deps_section(
