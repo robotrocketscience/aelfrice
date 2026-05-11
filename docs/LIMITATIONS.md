@@ -60,7 +60,7 @@ This is a privacy and audit choice. A graph derived from real session activity c
 
 To bootstrap a new clone or collaborator: run `aelf onboard .`. The graph is re-extracted from publicly-visible repo content. To share rules: lock them in CLAUDE.md, CONTRIBUTING.md, or other repo-tracked prose, and the onboard scanner picks them up.
 
-**Read-only cross-project federation is in v3.0 scope** (#650, #655, ratified read-only-only under #661): a local DB can declare peer DBs via `knowledge_deps.json` and surface their beliefs in retrieval, but the per-project DB is the sole writer for its own beliefs and mutation tools reject foreign belief IDs. That mechanism is read-only by construction — no cross-machine write replication, no distributed-write CRDT layer — so the privacy and audit story above is preserved. Multi-writer federation is not on the roadmap.
+**Read-only cross-project federation is in v3.0 scope** (#650, #655, ratified as read-only under #661): a local DB can declare peer DBs via `knowledge_deps.json` and surface their beliefs in retrieval, but the per-project DB is the sole writer for its own beliefs and mutation tools reject foreign belief IDs. That mechanism is read-only by construction — no cross-machine write replication, no distributed-write CRDT layer — so the privacy and audit story above is preserved. Multi-writer federation is not on the roadmap.
 
 ### Multi-session aggregation
 
