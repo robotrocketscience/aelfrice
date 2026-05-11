@@ -192,3 +192,44 @@ jobs:
           jq -Rs '{body: .}' < /tmp/comment.md > /tmp/payload.json
           gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/comments" \
               --input /tmp/payload.json >/dev/null
+
+          # #634: auto-close linked issues. GitHub's auto-close-on-merge
+          # only fires when a merge commit lands; FF push (required here
+          # by the signed-commit branch-protection model) doesn't trigger
+          # it. Parse the PR body for `Closes #N` / `Fixes #N` /
+          # `Resolves #N` (case-insensitive, GitHub's standard keywords)
+          # and close each match explicitly. Failures here log but do
+          # not fail the workflow — the merge has already landed.
+          echo "[6/6] auto-closing linked issues..."
+          pr_body=$(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json body \
+              --jq '.body // ""' | head -c 8192)
+
+          # Extract `<keyword> #<num>` matches. `-i` for case-insensitive,
+          # `-oE` keeps just the matched text, then sed strips down to
+          # the issue numbers. Dedupe with sort -u.
+          linked_issues=$(printf '%s' "${pr_body}" \
+              | grep -ioE '\b(closes|fixes|resolves)[[:space:]]+#[0-9]+' \
+              | sed -E 's/.*#([0-9]+)/\1/' \
+              | sort -u || true)
+
+          if [ -z "${linked_issues}" ]; then
+              echo "  no linked issues parsed from PR body."
+          else
+              for n in ${linked_issues}; do
+                  # Skip if already closed — idempotent.
+                  state=$(gh issue view "${n}" --repo "${REPO}" \
+                      --json state --jq '.state' 2>/dev/null || echo "")
+                  if [ "${state}" = "CLOSED" ]; then
+                      echo "  #${n}: already closed, skipping."
+                      continue
+                  fi
+                  if gh issue close "${n}" --repo "${REPO}" \
+                      --reason completed \
+                      --comment "Shipped via PR #${PR_NUMBER} (merged ${HEAD_SHA})." \
+                      2>&1; then
+                      echo "  #${n}: closed."
+                  else
+                      echo "  #${n}: close failed (non-fatal; merge already landed)." >&2
+                  fi
+              done
+          fi
