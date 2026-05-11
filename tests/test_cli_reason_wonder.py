@@ -116,6 +116,29 @@ def test_reason_json_payload_shape(_isolated_db: Path) -> None:
         assert {"kind", "belief_ids", "note"} <= set(imp.keys())
         assert imp["kind"] in ("TIE", "GAP", "CONSTRAINT_FAILURE", "NO_CHANGE")
         assert isinstance(imp["belief_ids"], list)
+    # #645 R3: dispatch + suggested_updates ride alongside verdict.
+    assert isinstance(payload["dispatch"], list)
+    for item in payload["dispatch"]:
+        assert {"role", "belief_ids", "note"} <= set(item.keys())
+        assert item["role"] in ("Verifier", "Gap-filler", "Fork-resolver")
+        assert isinstance(item["belief_ids"], list)
+    assert isinstance(payload["suggested_updates"], list)
+    for row in payload["suggested_updates"]:
+        assert {"belief_id", "direction", "note"} <= set(row.keys())
+        assert row["direction"] in ("+1", "?", "-1")
+
+
+def test_reason_json_dispatch_empty_when_verdict_sufficient(
+    _isolated_db: Path,
+) -> None:
+    """R3: a SUFFICIENT verdict ships an empty dispatch — the chain
+    already answers the query, no follow-up subagents needed."""
+    a, _, _ = _seed_chain(_isolated_db)
+    code, out = _run("reason", "indentation", "--seed-id", a, "--json")
+    assert code == 0, out
+    payload = json.loads(out)
+    if payload["verdict"] == "SUFFICIENT":
+        assert payload["dispatch"] == []
 
 
 def test_reason_text_output_includes_verdict_footer(_isolated_db: Path) -> None:

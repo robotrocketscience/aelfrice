@@ -74,7 +74,13 @@ from aelfrice.models import (
     Phantom,
 )
 from aelfrice.bfs_multihop import expand_bfs
-from aelfrice.reason import Impasse, Verdict, classify as _reason_classify
+from aelfrice.reason import (
+    Impasse,
+    Verdict,
+    classify as _reason_classify,
+    dispatch_policy as _reason_dispatch_policy,
+    suggested_updates as _reason_suggested_updates,
+)
 from aelfrice import wonder_consolidation
 from aelfrice import __version__ as _AELFRICE_VERSION
 from aelfrice import auto_install as _auto_install
@@ -753,6 +759,8 @@ def _cmd_reason(args: argparse.Namespace, out: object) -> int:
 
     if args.json:
         import json
+        dispatch_items = _reason_dispatch_policy(verdict, impasses)
+        update_rows = _reason_suggested_updates(verdict, impasses, hops)
         payload = {
             "query": args.query,
             "seeds": [
@@ -776,6 +784,22 @@ def _cmd_reason(args: argparse.Namespace, out: object) -> int:
                     "note": imp.note,
                 }
                 for imp in impasses
+            ],
+            "dispatch": [
+                {
+                    "role": item.role.value,
+                    "belief_ids": list(item.belief_ids),
+                    "note": item.note,
+                }
+                for item in dispatch_items
+            ],
+            "suggested_updates": [
+                {
+                    "belief_id": row.belief_id,
+                    "direction": row.direction,
+                    "note": row.note,
+                }
+                for row in update_rows
             ],
         }
         print(json.dumps(payload, indent=2), file=out)  # type: ignore[arg-type]
