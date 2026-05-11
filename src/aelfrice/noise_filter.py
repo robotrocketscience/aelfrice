@@ -147,7 +147,7 @@ _VALID_DISABLE_TOKENS: Final[frozenset[str]] = frozenset({
 #    `gh ` is intentional — it distinguishes the command from prose that
 #    starts with a word that merely contains the token (e.g. "ghosts").
 #
-# 2. Agent tool-call rendering glyph: ⏺ (U+23FA). Emitted at the start
+# 2. Tool-call rendering glyph: ⏺ (U+23FA). Emitted at the start
 #    of tool-call narration lines by some transcript surfaces.
 #
 # 3. Pseudo-XML worktree/task tags: `<worktree`, `<output-file`,
