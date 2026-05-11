@@ -2,7 +2,7 @@
 
 Per #661 ratification of Option B (read-only federation), the local DB
 is the sole writer for its own beliefs. Peers are opened read-only and
-their FTS5 results are UNIONed into retrieval. Mutations targeting
+their FTS5 results are merged via SQL UNION into retrieval. Mutations targeting
 foreign belief IDs raise `ForeignBeliefError` at the API surface.
 
 This module provides three things:
