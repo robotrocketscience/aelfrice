@@ -14,8 +14,8 @@ command follows when running in dispatch mode:
    every ``speculative_anchor_ids`` row, generators carry the axis
    label, and the audit corroboration row is written per phantom.
 
-The mock-subagent fixture stands in for the real ``Agent`` tool dispatch
-that the host (Claude Code) performs in production. Both paths feed
+The mock-subagent fixture stands in for the real subagent dispatch
+the host agent performs in production. Both paths feed
 ``aelf wonder --persist-docs`` the same JSONL shape, so this test
 asserts the contract end-to-end without ever spawning a real subagent.
 """
@@ -159,7 +159,7 @@ def test_axes_to_persist_docs_end_to_end(tmp_path: Path) -> None:
     assert anchors, "axes payload must surface speculative_anchor_ids"
 
     # Step 2: simulate subagent fan-out (mock fixture stands in for the
-    # real Agent tool dispatch).
+    # host-driven parallel dispatch that production uses).
     gap_context = {"query": payload["gap_analysis"]["query"]}
     documents = [
         {
