@@ -507,3 +507,46 @@ def test_run_one_returns_runresult_without_crashing(
         f["reason"] == harness.REPLAY_PENDING_REASON
         for f in result.failures
     )
+
+
+# --------------------------------------------------------------------- #
+# hot_start synthetic fixture (#587 / #592 AC)                          #
+# --------------------------------------------------------------------- #
+
+
+def test_hot_start_fixture_resolves_via_load_corpus(
+    harness: ModuleType,
+) -> None:
+    """The hot_start synthetic fixture is discoverable via load_corpus
+    and surfaces task_type='hot_start' distinct from the debug fixture,
+    so per-task-type summaries segment hot-start fidelity separately."""
+    corpus_dir = (
+        _REPO_ROOT / "benchmarks" / "context-rebuilder" / "fixtures" / "synthetic"
+    )
+    cases = harness.load_corpus(corpus_dir)
+    hot_start = [c for c in cases if c.task_type == "hot_start"]
+    assert len(hot_start) >= 1, "hot_start fixture must resolve via load_corpus"
+    case = hot_start[0]
+    assert case.fork_turn == 8
+    assert case.eval_turns == (8, 10, 12)
+
+
+def test_threshold_sweep_segments_hot_start_from_debug(
+    harness: ModuleType,
+) -> None:
+    """Sweep summary groups results by task_type — confirms hot_start
+    runs are visible alongside debug runs without merging into a single
+    bucket, so the #587 AC ('hot-start scenarios score ≥80%') can be
+    read off the hot_start row without contaminating the cold-start
+    calibration."""
+    corpus_dir = (
+        _REPO_ROOT / "benchmarks" / "context-rebuilder" / "fixtures" / "synthetic"
+    )
+    cases = harness.load_corpus(corpus_dir)
+    result = harness.sweep_thresholds(
+        cases, thresholds=(0.0,), token_budget=2000,
+    )
+    assert "debug" in result.summary
+    assert "hot_start" in result.summary
+    assert "threshold=0.0" in result.summary["hot_start"]
+    assert "median_fidelity" in result.summary["hot_start"]["threshold=0.0"]
