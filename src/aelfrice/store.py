@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from typing import Callable, Final, Iterable, Iterator
 
 from aelfrice.models import (
+    BELIEF_SCOPE_PROJECT,
     CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION,
     CORROBORATION_SOURCE_TYPES,
     CORROBORATION_SOURCE_WONDER_INGEST,
@@ -41,6 +42,7 @@ from aelfrice.models import (
     FeedbackEvent,
     OnboardSession,
     Session,
+    validate_belief_scope,
 )
 from aelfrice.ulid import ulid
 
@@ -541,6 +543,9 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
     # valid_to column added in v2.1 (#548). Pre-migration rows default
     # to None (active). Same fallback pattern as retention_class.
     valid_to = row["valid_to"] if "valid_to" in keys else None
+    # scope column added in v3.0 (#688). Pre-migration rows default to
+    # 'project' (the correct local-only semantics for existing beliefs).
+    scope = row["scope"] if "scope" in keys else BELIEF_SCOPE_PROJECT
     return Belief(
         id=row["id"],
         content=row["content"],
@@ -560,6 +565,7 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
         activation_condition=row["activation_condition"],
         retention_class=retention_class,
         valid_to=valid_to,
+        scope=scope,
     )
 
 
@@ -1476,6 +1482,7 @@ class MemoryStore:
                 f"invalid retention_class {b.retention_class!r}; "
                 f"must be one of {sorted(RETENTION_CLASSES)}"
             )
+        validate_belief_scope(b.scope)
         self._conn.execute(
             """
             INSERT INTO beliefs (
@@ -1483,15 +1490,15 @@ class MemoryStore:
                 lock_level, locked_at, demotion_pressure,
                 created_at, last_retrieved_at, session_id, origin,
                 hibernation_score, activation_condition,
-                retention_class, valid_to
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                retention_class, valid_to, scope
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 b.id, b.content, b.content_hash, b.alpha, b.beta, b.type,
                 b.lock_level, b.locked_at, b.demotion_pressure,
                 b.created_at, b.last_retrieved_at, b.session_id, b.origin,
                 b.hibernation_score, b.activation_condition,
-                b.retention_class, b.valid_to,
+                b.retention_class, b.valid_to, b.scope,
             ),
         )
         self._conn.execute(
@@ -1542,6 +1549,7 @@ class MemoryStore:
 
     def update_belief(self, b: Belief) -> None:
         """Full-row update; demotion_pressure included."""
+        validate_belief_scope(b.scope)
         self._conn.execute(
             """
             UPDATE beliefs SET
@@ -1556,14 +1564,15 @@ class MemoryStore:
                 created_at = ?,
                 last_retrieved_at = ?,
                 session_id = ?,
-                origin = ?
+                origin = ?,
+                scope = ?
             WHERE id = ?
             """,
             (
                 b.content, b.content_hash, b.alpha, b.beta, b.type,
                 b.lock_level, b.locked_at, b.demotion_pressure,
                 b.created_at, b.last_retrieved_at, b.session_id,
-                b.origin, b.id,
+                b.origin, b.scope, b.id,
             ),
         )
         self._conn.execute("DELETE FROM beliefs_fts WHERE id = ?", (b.id,))
