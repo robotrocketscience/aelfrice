@@ -36,12 +36,17 @@ so any belief / edge mutation drops the index transparently.
 from __future__ import annotations
 
 import hashlib
+import logging
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
 import numpy as np
+
+_logger = logging.getLogger(__name__)
+_legacy_deprecation_logged = False
 
 from aelfrice.hrr import DEFAULT_DIM, Vector, bind, random_vector
 from aelfrice.models import EDGE_TYPES
@@ -57,8 +62,16 @@ _STRUCT_MARKER_RE: Final[re.Pattern[str]] = re.compile(
     r"^([A-Z][A-Z_]*):(\S.*)$",
 )
 
-# Persisted ``.npz`` layout version. Bump on incompatible changes.
-_NPZ_VERSION: Final[int] = 1
+# Persisted layout version. Bump on incompatible changes.
+# v1: bundled ``.npz`` (legacy, v1.7 ship format).
+# v2: split format — ``struct.npy`` + ``meta.npz`` in a per-store directory
+#     (required for ``mmap_mode='r'``; see ``docs/feature-hrr-integration.md``).
+_LAYOUT_VERSION: Final[int] = 2
+_NPZ_VERSION: Final[int] = _LAYOUT_VERSION  # back-compat alias
+
+# Split-format filenames inside the persistence directory.
+_STRUCT_FILENAME: Final[str] = "struct.npy"
+_META_FILENAME: Final[str] = "meta.npz"
 
 
 def parse_structural_marker(query: str) -> tuple[str, str] | None:
@@ -226,10 +239,27 @@ class HRRStructIndex:
     # --- persistence ------------------------------------------------
 
     def save(self, path: str | Path) -> None:
-        """Round-trippable persistence to ``.npz``."""
-        p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        # id_vecs + role_vecs are stored as parallel name / matrix
+        """Round-trippable persistence to a per-store directory.
+
+        ``path`` is a directory; ``save`` writes two files inside it:
+
+        - ``struct.npy`` — the ``(N, dim)`` float64 struct matrix,
+          mmap-able via ``np.load(..., mmap_mode='r')``.
+        - ``meta.npz`` — the small metadata blob (belief ids, role/id
+          vectors, dim, seed, layout version).
+
+        Writes are atomic via temp-file + ``os.replace`` so a reader
+        process never observes a partial write.
+        """
+        d = Path(path)
+        d.mkdir(parents=True, exist_ok=True)
+
+        struct_final = d / _STRUCT_FILENAME
+        meta_final = d / _META_FILENAME
+        struct_tmp = d / (_STRUCT_FILENAME + ".tmp")
+        meta_tmp = d / (_META_FILENAME + ".tmp")
+
+        # id_vecs + role_vecs serialize as parallel name / matrix
         # arrays so callers can reconstruct dicts without pickling
         # arbitrary objects.
         id_names = np.asarray(list(self.id_vecs.keys()), dtype=object)
@@ -244,37 +274,97 @@ class HRRStructIndex:
             if self.role_vecs
             else np.zeros((0, self.dim), dtype=np.float64)
         )
-        np.savez(
-            p,
-            version=np.array([_NPZ_VERSION], dtype=np.int32),
-            dim=np.array([self.dim], dtype=np.int64),
-            seed=np.array([self.seed], dtype=np.int64),
-            belief_ids=np.asarray(self.belief_ids, dtype=object),
-            struct=self.struct,
-            id_names=id_names,
-            id_matrix=id_matrix,
-            role_names=role_names,
-            role_matrix=role_matrix,
+
+        # np.save / np.savez append ``.npy`` / ``.npz`` to string paths
+        # whose extension does not match; pass open file handles so the
+        # caller-controlled ``.tmp`` suffix sticks for os.replace.
+        with open(struct_tmp, "wb") as f:
+            np.save(f, self.struct, allow_pickle=False)
+        with open(meta_tmp, "wb") as f:
+            np.savez(
+                f,
+                version=np.array([_LAYOUT_VERSION], dtype=np.int32),
+                dim=np.array([self.dim], dtype=np.int64),
+                seed=np.array([self.seed], dtype=np.int64),
+                belief_ids=np.asarray(self.belief_ids, dtype=object),
+                id_names=id_names,
+                id_matrix=id_matrix,
+                role_names=role_names,
+                role_matrix=role_matrix,
+            )
+        os.replace(struct_tmp, struct_final)
+        os.replace(meta_tmp, meta_final)
+
+    @classmethod
+    def load(
+        cls,
+        path: str | Path,
+        *,
+        mmap: bool = False,
+    ) -> "HRRStructIndex":
+        """Inverse of :meth:`save`.
+
+        Accepts both the split-format directory and a legacy bundled
+        ``.npz`` file written by v1.7. Legacy loads emit a one-shot
+        deprecation log (the file still loads).
+
+        ``mmap=True`` requests ``mmap_mode='r'`` for the struct matrix;
+        only honoured by the split format (the legacy ``.npz`` cannot
+        be mmap'd per the numpy docs and silently ignores the flag).
+        """
+        p = Path(path)
+        if p.is_dir() and (p / _STRUCT_FILENAME).is_file() and (
+            p / _META_FILENAME
+        ).is_file():
+            return cls._load_split(p, mmap=mmap)
+        if p.is_file():
+            return cls._load_legacy_npz(p)
+        raise FileNotFoundError(
+            f"HRRStructIndex.load: no split-format directory or legacy "
+            f".npz at {p!s}"
         )
 
     @classmethod
-    def load(cls, path: str | Path) -> "HRRStructIndex":
-        """Inverse of :meth:`save`."""
-        z = np.load(path, allow_pickle=True)
+    def _load_split(cls, d: Path, *, mmap: bool) -> "HRRStructIndex":
+        mmap_mode = "r" if mmap else None
+        struct = np.load(d / _STRUCT_FILENAME, mmap_mode=mmap_mode)
+        meta = np.load(d / _META_FILENAME, allow_pickle=True)
+        idx = cls(dim=int(meta["dim"][0]), seed=int(meta["seed"][0]))
+        idx.belief_ids = [str(x) for x in meta["belief_ids"].tolist()]
+        idx._index = {bid: i for i, bid in enumerate(idx.belief_ids)}
+        idx.struct = struct
+        id_names = [str(x) for x in meta["id_names"].tolist()]
+        id_matrix = meta["id_matrix"]
+        idx.id_vecs = {n: id_matrix[i] for i, n in enumerate(id_names)}
+        role_names = [str(x) for x in meta["role_names"].tolist()]
+        role_matrix = meta["role_matrix"]
+        idx.role_vecs = {n: role_matrix[i] for i, n in enumerate(role_names)}
+        return idx
+
+    @classmethod
+    def _load_legacy_npz(cls, p: Path) -> "HRRStructIndex":
+        global _legacy_deprecation_logged
+        if not _legacy_deprecation_logged:
+            _logger.warning(
+                "HRRStructIndex: loaded legacy bundled .npz at %s; "
+                "re-save via HRRStructIndex.save(<dir>) to migrate to "
+                "the split-format directory layout (struct.npy + "
+                "meta.npz). Legacy bundled .npz support will be removed "
+                "in a future release.",
+                p,
+            )
+            _legacy_deprecation_logged = True
+        z = np.load(p, allow_pickle=True)
         idx = cls(dim=int(z["dim"][0]), seed=int(z["seed"][0]))
         idx.belief_ids = [str(x) for x in z["belief_ids"].tolist()]
         idx._index = {bid: i for i, bid in enumerate(idx.belief_ids)}
         idx.struct = z["struct"]
         id_names = [str(x) for x in z["id_names"].tolist()]
         id_matrix = z["id_matrix"]
-        idx.id_vecs = {
-            n: id_matrix[i] for i, n in enumerate(id_names)
-        }
+        idx.id_vecs = {n: id_matrix[i] for i, n in enumerate(id_names)}
         role_names = [str(x) for x in z["role_names"].tolist()]
         role_matrix = z["role_matrix"]
-        idx.role_vecs = {
-            n: role_matrix[i] for i, n in enumerate(role_names)
-        }
+        idx.role_vecs = {n: role_matrix[i] for i, n in enumerate(role_names)}
         return idx
 
 
