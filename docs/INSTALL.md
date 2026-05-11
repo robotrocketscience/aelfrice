@@ -193,6 +193,30 @@ aelf migrate --from ~/.aelfrice/projects/<id>/memory.db          # dry-run
 aelf migrate --from ~/.aelfrice/projects/<id>/memory.db --apply  # write
 ```
 
+### Pruning dormant per-project DBs (`aelf doctor --prune-dormant`, v2.1+)
+
+Some per-project DBs hold beliefs from projects you worked on briefly with an older aelfrice version, then abandoned. They never get migrated, never get touched, and just sit there. `aelf doctor --prune-dormant` lists DBs whose `memory.db` mtime is older than `--idle-days` (default 30) and lets you delete them one at a time.
+
+```bash
+aelf doctor --prune-dormant                # dry-run: list dormant DBs only
+aelf doctor --prune-dormant --idle-days 90 # tighter idle threshold
+aelf doctor --prune-dormant --apply        # prompts [y/N] per DB; deletes on 'y'
+```
+
+Sample output:
+
+```
+found 2 dormant per-project DB(s) (idle >= 30d, 41,615 beliefs, 18,432.0 KiB total):
+  ~/.aelfrice/projects/2e7ed55e017a/memory.db (35,332 beliefs, 15,120.4 KiB, idle 35d)
+  ~/.aelfrice/projects/18a856c7a96b/memory.db (6,283 beliefs, 3,311.6 KiB, idle 32d)
+
+dry-run only. re-run with `--apply` to be prompted [y/N] per DB.
+```
+
+`--apply` prompts per DB; the default at the prompt is N, so anything other than `y`/`yes` (including a bare Enter or piping `/dev/null`) preserves the file. There is no `--yes` shortcut — destructive deletion is always per-DB and explicit. Unlike `aelf migrate`, this does not move beliefs anywhere; it only removes the DB file.
+
+The dormant scan is schema-agnostic — both pre-v1.x and modern-schema DBs are flagged when idle. A DB you still want to migrate should go through `aelf migrate --from <path> --apply` (above) before pruning, not after.
+
 ---
 
 ## Update notifier
