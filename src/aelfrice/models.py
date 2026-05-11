@@ -6,6 +6,7 @@ deferred to a later release.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Final
 
@@ -274,6 +275,11 @@ class Belief:
     `valid_to` (v2.1 #548) is the soft-delete timestamp for wonder GC.
     NULL = active. Non-NULL = GC'd by `wonder_gc`; the belief is excluded
     from retrieval once set. Only speculative phantoms are GC-eligible.
+
+    `scope` (v3.0 #688) is the visibility category for federation. One
+    of 'project' (local-only, default), 'global' (any dependent peer),
+    or 'shared:<name>' (named peer group). Validated at write time by
+    `validate_belief_scope`; invalid values raise ``ValueError``.
     """
 
     id: str
@@ -294,6 +300,38 @@ class Belief:
     activation_condition: str | None = None
     retention_class: str = RETENTION_UNKNOWN
     valid_to: str | None = None
+    scope: str = BELIEF_SCOPE_PROJECT
+
+
+# --- Belief scope (visibility category, v3.0 #688) ---
+# Scope controls which peer DBs may read a belief through the federation
+# overlay. Distinct from scope_id (#204), which tags provenance (which
+# DB wrote the row). Wire-format strings; do not rename without a migration.
+BELIEF_SCOPE_PROJECT: Final[str] = "project"
+"""Default. Visible only within the owning DB. Not surfaced to peers."""
+BELIEF_SCOPE_GLOBAL: Final[str] = "global"
+"""Visible to any peer DB that depends on the owning DB."""
+
+# shared:<name> is open-ended; no constant defined for the name part.
+# Validation via BELIEF_SCOPE_RE below.
+
+BELIEF_SCOPE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^project$|^global$|^shared:[a-z0-9_-]+$"
+)
+"""Compiled regex for write-time scope validation.
+
+Valid values: 'project', 'global', 'shared:<name>' where <name> matches
+``[a-z0-9_-]+``. Invalid values must raise ``ValueError`` at write time.
+"""
+
+
+def validate_belief_scope(scope: str) -> None:
+    """Raise ValueError if scope is not a valid belief scope string."""
+    if not BELIEF_SCOPE_RE.match(scope):
+        raise ValueError(
+            f"invalid belief scope {scope!r}; must match "
+            r"^project$|^global$|^shared:[a-z0-9_-]+$"
+        )
 
 
 ANCHOR_TEXT_MAX_LEN: Final[int] = 1000
