@@ -86,11 +86,41 @@ def test_feedback_verdict_same_topic_confirms() -> None:
     assert feedback_verdict((same_topic[0], same_topic[1]), corpus) == "confirm"
 
 
-def test_feedback_verdict_cross_topic_junks() -> None:
-    corpus = build_corpus(rng=random.Random(0), n_topics=3, n_atoms_per_topic=5)
-    t0 = next(a.belief_id for a in corpus.atoms if a.topic == 0)
-    t1 = next(a.belief_id for a in corpus.atoms if a.topic == 1)
-    assert feedback_verdict((t0, t1), corpus) == "junk"
+def test_feedback_verdict_cross_topic_junks_when_signals_match() -> None:
+    """Cross-topic composition junks under R1 only when both broadened
+    paths are blocked — i.e. atoms share session AND share source_type."""
+    from aelfrice.wonder.simulator import CorpusAtom, SyntheticCorpus
+    corpus = SyntheticCorpus(
+        atoms=(
+            CorpusAtom("a0", 0, "sess_00", "commit_ingest"),
+            CorpusAtom("a1", 1, "sess_00", "commit_ingest"),
+        )
+    )
+    assert feedback_verdict(("a0", "a1"), corpus) == "junk"
+
+
+def test_feedback_verdict_cross_topic_confirms_on_distinct_sources() -> None:
+    """R1 rule 2 (#190 A1 signal): ≥2 source_types ⇒ confirm even cross-topic."""
+    from aelfrice.wonder.simulator import CorpusAtom, SyntheticCorpus
+    corpus = SyntheticCorpus(
+        atoms=(
+            CorpusAtom("a0", 0, "sess_00", "commit_ingest"),
+            CorpusAtom("a1", 1, "sess_00", "transcript_ingest"),
+        )
+    )
+    assert feedback_verdict(("a0", "a1"), corpus) == "confirm"
+
+
+def test_feedback_verdict_cross_topic_confirms_on_distinct_sessions() -> None:
+    """R1 rule 3 (#192 A2 signal): ≥2 session_ids ⇒ confirm even cross-topic."""
+    from aelfrice.wonder.simulator import CorpusAtom, SyntheticCorpus
+    corpus = SyntheticCorpus(
+        atoms=(
+            CorpusAtom("a0", 0, "sess_00", "commit_ingest"),
+            CorpusAtom("a1", 1, "sess_01", "commit_ingest"),
+        )
+    )
+    assert feedback_verdict(("a0", "a1"), corpus) == "confirm"
 
 
 def test_feedback_verdict_unknown_belief_junks() -> None:

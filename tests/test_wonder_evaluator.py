@@ -50,10 +50,19 @@ def test_evaluate_all_confirms_promotes() -> None:
 
 
 def test_evaluate_all_junks_marks_junk_rate() -> None:
-    corpus = build_corpus(rng=random.Random(0), n_topics=3, n_atoms_per_topic=5)
-    t0 = next(a.belief_id for a in corpus.atoms if a.topic == 0)
-    t1 = next(a.belief_id for a in corpus.atoms if a.topic == 1)
-    p = _phantom((t0, t1))
+    # Cross-topic + matching session + matching source_type forces the
+    # broadened verdict to junk on all three rules. The original test
+    # relied on a build_corpus draw where the two atoms happened to share
+    # session and source_type; constructing the corpus explicitly here
+    # makes the contract independent of rng state. (#547 B1 broadening.)
+    from aelfrice.wonder.simulator import CorpusAtom, SyntheticCorpus
+    corpus = SyntheticCorpus(
+        atoms=(
+            CorpusAtom("a0", 0, "sess_00", "commit_ingest"),
+            CorpusAtom("a1", 1, "sess_00", "commit_ingest"),
+        )
+    )
+    p = _phantom(("a0", "a1"))
     m = evaluate_strategy([p], corpus, feedback_budget_per_phantom=16)
     assert m.confirmation_rate == 0.0
     assert m.junk_rate == 1.0

@@ -238,31 +238,72 @@ def feedback_verdict(
     composition: tuple[str, ...],
     corpus: SyntheticCorpus,
 ) -> str:
-    """Return ``"confirm"`` if every belief in the composition
-    shares a single topic; otherwise ``"junk"``.
+    """Return ``"confirm"`` if the composition clears any of three
+    independent rules; otherwise ``"junk"``.
 
-    Single-topic agreement is the corpus's ground-truth predicate
-    for "real relationship" — it's the simplest predicate the
-    three candidate strategies all have a path to satisfy:
+    The single-topic rule (R0, v2.0) was the only confirmation path
+    in the original bake-off. Per #547 B1 (post-substrate revisit)
+    the simulator now also exercises the two production signals A1
+    and A2 broadcast as v2.1 prereqs:
 
-    * TC's shared-target shape pulls at most from the same target's
-      incoming neighborhood, which is largely intra-topic at the
-      default densities.
-    * RW depth-2 walks tend to stay intra-topic because intra-edges
-      dominate.
-    * STS draws cross-session, so it must accidentally pick atoms
-      from the same topic to confirm — which is the predicted
-      weakness in the spec's H3.
+    1. **Single-topic agreement** (legacy R0 rule).
+       Every belief in the composition shares one topic — the
+       strict "true relationship" predicate the three strategies
+       all have a path to satisfy.
+
+    2. **Source-distinct corroboration** (#190 A1 signal).
+       The composition's atoms span ≥2 distinct
+       ``belief_corroborations.source_type`` values. Models the
+       production case where the same proposition was reaffirmed
+       through more than one ingest path (e.g. both
+       ``commit_ingest`` and ``transcript_ingest``) — strong
+       provenance diversity, weak topic constraint.
+
+    3. **Session-distinct corroboration** (#192 A2 signal).
+       The composition's atoms span ≥2 distinct ``session_id``
+       values. Models the production case where the proposition
+       reappeared across more than one working session — distinct
+       working contexts, weak topic constraint.
+
+    Rules are evaluated in order; the first ``confirm`` wins. This
+    is additive over the legacy verdict: any composition that R0
+    confirmed still confirms; new confirmations come only from the
+    broadened signals. Compositions referencing unknown belief ids
+    junk through any rule because the per-belief lookups return
+    ``None``.
     """
     if not composition:
         return "junk"
+
+    # Rule 1: single-topic agreement.
     first_topic = corpus.topic_of(composition[0])
-    if first_topic is None:
-        return "junk"
-    for bid in composition[1:]:
-        if corpus.topic_of(bid) != first_topic:
+    if first_topic is not None:
+        if all(
+            corpus.topic_of(bid) == first_topic for bid in composition[1:]
+        ):
+            return "confirm"
+
+    # Rules 2 + 3 require known per-atom signals for every constituent;
+    # an unknown id makes both inapplicable for that composition.
+    source_types: set[str] = set()
+    sessions: set[str] = set()
+    for bid in composition:
+        st = corpus.source_type_of(bid)
+        sess = corpus.session_of(bid)
+        if st is None or sess is None:
             return "junk"
-    return "confirm"
+        source_types.add(st)
+        sessions.add(sess)
+
+    # Rule 2: ≥2 distinct source_types (A1 signal).
+    if len(source_types) >= 2:
+        return "confirm"
+
+    # Rule 3: ≥2 distinct session_ids (A2 signal).
+    if len(sessions) >= 2:
+        return "confirm"
+
+    return "junk"
 
 
 def simulate_promotion(
