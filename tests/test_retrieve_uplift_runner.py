@@ -304,3 +304,86 @@ def test_run_per_flag_uplift_covers_all_flags() -> None:
         assert r.n_rows == 1
         assert 0.0 <= r.mean_ndcg_off <= 1.0
         assert 0.0 <= r.mean_ndcg_on <= 1.0
+
+
+def test_compression_a2_uplift_empty_input() -> None:
+    """Empty corpus: zero rows, zero uplift, no exceptions."""
+    from tests.retrieve_uplift_runner import (
+        CompressionA2Uplift,
+        run_compression_a2_uplift,
+    )
+    r = run_compression_a2_uplift([])
+    assert isinstance(r, CompressionA2Uplift)
+    assert r.n_rows == 0
+    assert r.mean_recall_off == 0.0
+    assert r.mean_recall_on == 0.0
+    assert r.uplift == 0.0
+
+
+def test_compression_a2_uplift_shape_contract() -> None:
+    """Bench-gate test reads .uplift / .mean_recall_off / .mean_recall_on
+    / .n_rows — verify the names haven't drifted."""
+    from tests.retrieve_uplift_runner import CompressionA2Uplift
+    r = CompressionA2Uplift(
+        n_rows=5,
+        mean_recall_off=0.4,
+        mean_recall_on=0.7,
+    )
+    assert abs(r.uplift - 0.3) < 1e-9
+
+
+def test_compression_a2_uplift_runs_on_synthetic_row() -> None:
+    """One mixed-class row → driver returns valid bounded metrics. Does
+    not assert a specific uplift sign — the per-row sign depends on BM25
+    ranking which can shift with rerank tuning. The contract under test
+    is shape + metric-in-[0,1] + no exceptions."""
+    from tests.retrieve_uplift_runner import run_compression_a2_uplift
+    row = {
+        "id": "a2-test-001",
+        "query": "store sqlite memory belief",
+        "k": 4,
+        "token_budget": 80,
+        "beliefs": [
+            {"id": "b1", "content": "the memory store persists beliefs across sessions.",
+             "retention_class": "fact", "lock_level": "none"},
+            {"id": "b2", "content": "the memory store uses sqlite as its on-disk backend. The schema includes beliefs and edges tables.",
+             "retention_class": "snapshot", "lock_level": "none"},
+            {"id": "b3", "content": "the belief table holds beta-bernoulli alpha and beta. Retrieval consults posterior mean for ranking weight.",
+             "retention_class": "transient", "lock_level": "none"},
+            {"id": "b4", "content": "every belief has an immutable content hash. Updates produce new rows rather than mutating existing ones.",
+             "retention_class": "snapshot", "lock_level": "none"},
+        ],
+        "expected_top_k": ["b1", "b2", "b3", "b4"],
+    }
+    r = run_compression_a2_uplift([row])
+    assert r.n_rows == 1
+    assert 0.0 <= r.mean_recall_off <= 1.0
+    assert 0.0 <= r.mean_recall_on <= 1.0
+
+
+def test_compression_a2_uplift_fact_only_row_ties() -> None:
+    """A row whose beliefs are all retention_class=fact compresses to
+    verbatim under both arms, so OFF == ON exactly. Falsifiable if the
+    driver treats fact-class beliefs as compressible."""
+    from tests.retrieve_uplift_runner import run_compression_a2_uplift
+    row = {
+        "id": "a2-test-fact-only",
+        "query": "alpha beta gamma",
+        "k": 3,
+        "token_budget": 50,
+        "beliefs": [
+            {"id": "a", "content": "alpha alpha alpha alpha alpha alpha",
+             "retention_class": "fact", "lock_level": "none"},
+            {"id": "b", "content": "beta beta beta beta beta beta beta",
+             "retention_class": "fact", "lock_level": "none"},
+            {"id": "c", "content": "gamma gamma gamma gamma gamma gamma",
+             "retention_class": "fact", "lock_level": "none"},
+        ],
+        "expected_top_k": ["a", "b", "c"],
+    }
+    r = run_compression_a2_uplift([row])
+    assert r.n_rows == 1
+    assert abs(r.uplift) < 1e-9, (
+        "fact-only rows must tie OFF and ON exactly; "
+        f"got OFF={r.mean_recall_off} ON={r.mean_recall_on}"
+    )
