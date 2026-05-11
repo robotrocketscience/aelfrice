@@ -74,6 +74,7 @@ from aelfrice.models import (
     Phantom,
 )
 from aelfrice.bfs_multihop import expand_bfs
+from aelfrice.reason import Impasse, Verdict, classify as _reason_classify
 from aelfrice import wonder_consolidation
 from aelfrice import __version__ as _AELFRICE_VERSION
 from aelfrice import auto_install as _auto_install
@@ -746,6 +747,7 @@ def _cmd_reason(args: argparse.Namespace, out: object) -> int:
             nodes_per_hop=args.fanout,
             total_budget=args.budget,
         )
+        verdict, impasses = _reason_classify(seeds, hops, store)
     finally:
         store.close()
 
@@ -766,6 +768,15 @@ def _cmd_reason(args: argparse.Namespace, out: object) -> int:
                 }
                 for h in hops
             ],
+            "verdict": verdict.value,
+            "impasses": [
+                {
+                    "kind": imp.kind.value,
+                    "belief_ids": list(imp.belief_ids),
+                    "note": imp.note,
+                }
+                for imp in impasses
+            ],
         }
         print(json.dumps(payload, indent=2), file=out)  # type: ignore[arg-type]
         return 0
@@ -776,6 +787,7 @@ def _cmd_reason(args: argparse.Namespace, out: object) -> int:
         print(f"  {b.id}: {b.content}", file=out)  # type: ignore[arg-type]
     if not hops:
         print("(no expansions — seeds have no outbound edges within budget)", file=out)  # type: ignore[arg-type]
+        _emit_reason_footer(verdict, impasses, out)
         return 0
     print("chain:", file=out)  # type: ignore[arg-type]
     for h in hops:
@@ -787,7 +799,31 @@ def _cmd_reason(args: argparse.Namespace, out: object) -> int:
         )
         if path_str:
             print(f"{indent}  via {path_str}", file=out)  # type: ignore[arg-type]
+    _emit_reason_footer(verdict, impasses, out)
     return 0
+
+
+def _emit_reason_footer(
+    verdict: Verdict, impasses: list[Impasse], out: object
+) -> None:
+    """Print the verdict + impasses block at the tail of `aelf reason`.
+
+    Two-line minimum: a `verdict:` line and an `impasses:` line. When
+    impasses are present, each one renders on its own indented row
+    after the header. Format is grep-friendly so downstream tooling
+    (e.g. R3 dispatch policy) can pick the verdict out of stdout.
+    """
+    print(f"verdict: {verdict.value}", file=out)  # type: ignore[arg-type]
+    if not impasses:
+        print("impasses: (none)", file=out)  # type: ignore[arg-type]
+        return
+    print("impasses:", file=out)  # type: ignore[arg-type]
+    for imp in impasses:
+        ids_str = ",".join(imp.belief_ids)
+        print(
+            f"  {imp.kind.value} [{ids_str}]: {imp.note}",
+            file=out,  # type: ignore[arg-type]
+        )
 
 
 # Edge-type → suggested-action heuristic for `aelf wonder`. The path

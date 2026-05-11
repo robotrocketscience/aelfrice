@@ -102,6 +102,30 @@ def test_reason_json_payload_shape(_isolated_db: Path) -> None:
     assert isinstance(payload["hops"], list)
     assert len(payload["hops"]) >= 1
     assert {"id", "content", "score", "depth", "path"} <= set(payload["hops"][0].keys())
+    # #645 R1: verdict + impasses surface in --json payload.
+    assert "verdict" in payload
+    assert payload["verdict"] in (
+        "SUFFICIENT",
+        "INSUFFICIENT",
+        "CONTRADICTORY",
+        "UNCERTAIN",
+        "PARTIAL",
+    )
+    assert isinstance(payload["impasses"], list)
+    for imp in payload["impasses"]:
+        assert {"kind", "belief_ids", "note"} <= set(imp.keys())
+        assert imp["kind"] in ("TIE", "GAP", "CONSTRAINT_FAILURE", "NO_CHANGE")
+        assert isinstance(imp["belief_ids"], list)
+
+
+def test_reason_text_output_includes_verdict_footer(_isolated_db: Path) -> None:
+    """#645 R1: text mode trails the chain with a `verdict:` line and
+    an `impasses:` line (grep-friendly for downstream R3 dispatch)."""
+    a, _, _ = _seed_chain(_isolated_db)
+    code, out = _run("reason", "indentation", "--seed-id", a)
+    assert code == 0, out
+    assert "verdict:" in out
+    assert "impasses:" in out
 
 
 def test_reason_unknown_seed_id_exits_nonzero(_isolated_db: Path) -> None:
