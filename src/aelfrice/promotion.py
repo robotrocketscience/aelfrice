@@ -38,6 +38,7 @@ Audit row shape (every successful promote, devalidate, and unlock):
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Final
@@ -87,6 +88,103 @@ class UnlockResult:
     belief_id: str
     already_unlocked: bool
     audit_event_id: int | None
+
+
+# --- Surface B: phantom lock-match helper (#550) -------------------------
+
+# Jaccard threshold from docs/v2_phantom_promotion_trigger.md § Surface B.
+# Tunable post-benchmark; constant lives here so tests can read it.
+PHANTOM_LOCK_JACCARD_THRESHOLD: Final[float] = 0.9
+
+# Minimal stopwords for normalized-text Jaccard. Mirrors the set used by
+# relationship_detector to keep the residual subject/predicate tokens.
+_PHANTOM_STOPWORDS: Final[frozenset[str]] = frozenset({
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "to", "of", "in", "on", "for", "with", "by", "and", "or", "but",
+    "if", "then", "than", "as", "at", "from", "this", "that", "these",
+    "those", "it", "its", "i", "you", "we", "they", "he", "she", "him",
+    "her", "them", "us", "me", "my", "your", "our", "their", "his",
+    "hers", "do", "does", "did", "have", "has", "had", "will", "would",
+    "should", "could", "can", "into", "about", "over", "under", "out",
+    "up", "down", "use", "used", "using", "uses", "any", "some",
+})
+
+
+def _normalize_tokens(text: str) -> frozenset[str]:
+    """Lowercase, space-split, stopword-strip — minimal Jaccard normalization.
+
+    Returns a frozenset of residual tokens. Empty input → empty frozenset.
+    The result is deterministic and depends only on the input string.
+    """
+    tokens = {t for t in text.lower().split() if t not in _PHANTOM_STOPWORDS}
+    return frozenset(tokens)
+
+
+def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
+    """Jaccard similarity over two token sets.
+
+    Empty / empty → 1.0 (identical by convention). One empty → 0.0.
+    """
+    if not a and not b:
+        return 1.0
+    union = a | b
+    if not union:
+        return 1.0
+    return len(a & b) / len(union)
+
+
+def find_phantom_lock_matches(
+    store: MemoryStore,
+    lock_text: str,
+    *,
+    jaccard_threshold: float = PHANTOM_LOCK_JACCARD_THRESHOLD,
+) -> list[str]:
+    """Return IDs of active speculative beliefs that match `lock_text`.
+
+    Two-pass scan (fast exact first, then Jaccard):
+
+    Pass 1 — content_hash exact match:
+      Compute sha256(lock_text) and check whether any active speculative
+      belief carries that content_hash. Phantoms ingested via
+      `wonder_ingest` use a constituent-key hash, so this pass catches
+      phantoms whose content was originally ingested with the same text
+      via a content-hash-compatible path.
+
+    Pass 2 — normalized-text Jaccard ≥ threshold:
+      Tokenize both the lock text and each phantom's content (lowercase,
+      space-split, stopword-strip). Beliefs not already matched in pass 1
+      are included if Jaccard ≥ jaccard_threshold.
+
+    Returns a deduplicated list of belief IDs in scan order (created_at
+    ASC). Already-promoted beliefs (origin != ORIGIN_SPECULATIVE) are
+    excluded because `list_active_speculative_beliefs` filters them out.
+
+    Pure function on top of the store — no side effects, no audit rows.
+    Callers are responsible for calling `promote()` on each returned ID.
+    """
+    lock_hash = hashlib.sha256(lock_text.encode("utf-8")).hexdigest()
+    candidates = store.list_active_speculative_beliefs()
+
+    matched_ids: list[str] = []
+    seen: set[str] = set()
+
+    # Pass 1: exact content_hash
+    for belief in candidates:
+        if belief.content_hash == lock_hash:
+            matched_ids.append(belief.id)
+            seen.add(belief.id)
+
+    # Pass 2: Jaccard on normalized text
+    lock_tokens = _normalize_tokens(lock_text)
+    for belief in candidates:
+        if belief.id in seen:
+            continue
+        belief_tokens = _normalize_tokens(belief.content)
+        if _jaccard(lock_tokens, belief_tokens) >= jaccard_threshold:
+            matched_ids.append(belief.id)
+            seen.add(belief.id)
+
+    return matched_ids
 
 
 def _utc_now_iso() -> str:

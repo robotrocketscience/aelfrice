@@ -1542,6 +1542,32 @@ class MemoryStore:
         )
         return [row["id"] for row in cur.fetchall()]
 
+    def list_active_speculative_beliefs(self) -> list["Belief"]:
+        """Return all active (valid_to IS NULL) speculative phantom beliefs.
+
+        Used by the Surface B phantom promotion trigger (#550): after
+        `aelf lock <text>` writes, the caller scans this list for any
+        phantom whose content_hash or normalized text matches the lock
+        target, then promotes matches in the same transaction.
+
+        Returns beliefs ordered by created_at ASC so the caller gets a
+        deterministic ordering for logging. The list is expected to be
+        small (< 100 rows in practice); no LIMIT is applied.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT b.*,
+                   (SELECT COUNT(*) FROM belief_corroborations bc
+                    WHERE bc.belief_id = b.id) AS corroboration_count
+            FROM beliefs b
+            WHERE b.type = 'speculative'
+              AND b.origin = 'speculative'
+              AND b.valid_to IS NULL
+            ORDER BY b.created_at ASC
+            """
+        )
+        return [_row_to_belief(r) for r in cur.fetchall()]
+
     # --- Entity index (v1.3 L2.5 retrieval) ------------------------------
 
     def _write_belief_entities(self, belief_id: str, content: str) -> None:
