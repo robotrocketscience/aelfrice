@@ -935,7 +935,7 @@ def _cmd_wonder_axes(args: argparse.Namespace, out: object) -> int:
     """
     import json as _json
     from aelfrice.wonder.dispatch import build_dispatch_payload
-    from aelfrice.wonder.result import WonderResult
+    from aelfrice.wonder.result import WonderResult, axes_coverage
 
     query, shorthand_count = _parse_wonder_query_shorthand(args.axes)
     # #645: shorthand wins only when the caller didn't override the
@@ -965,7 +965,7 @@ def _cmd_wonder_axes(args: argparse.Namespace, out: object) -> int:
     phantoms_created: int = getattr(args, "_phantoms_created", 0)
     result = WonderResult(
         mode="axes",
-        coverage=phantoms_created / max(1, len(axes_dicts)),
+        coverage=axes_coverage(phantoms_created, len(axes_dicts)),
         known_beliefs=[b.id for b in ga.known_beliefs],
         gaps=list(ga.gaps),
         research_axes=axes_dicts,

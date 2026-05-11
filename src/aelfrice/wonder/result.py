@@ -21,10 +21,16 @@ class WonderResult:
         ``"graph_walk"`` for the default seed/BFS consolidation path or
         ``"axes"`` when ``--axes QUERY`` is passed.
     coverage:
-        Fraction of research axes whose corresponding sub-agent result
-        produced at least one ingested phantom.  Defined as
-        ``phantoms_created / max(1, len(research_axes))``.  Always
-        ``0.0`` in graph-walk mode (the concept does not apply).
+        Ingested-phantoms-per-research-axis, clamped to ``[0.0, 1.0]``.
+        Defined as
+        ``min(1.0, phantoms_created / max(1, len(research_axes)))``.
+        Saturates at ``1.0`` once each axis on average produced at
+        least one phantom; the raw ratio (which can exceed ``1.0``
+        when an axis produces more than one phantom) is intentionally
+        clamped so the field carries the "what fraction of axes were
+        covered" intuition without the per-axis success plumbing.
+        Always ``0.0`` in graph-walk mode (the concept does not
+        apply).
     known_beliefs:
         Belief ids (or content snippets) that satisfied parts of the
         gap in axes mode; the seed belief id in graph-walk mode.
@@ -63,4 +69,13 @@ class WonderResult:
     candidates: list[dict]
 
 
-__all__ = ["WonderResult"]
+def axes_coverage(phantoms_created: int, n_axes: int) -> float:
+    """Return the axes-mode coverage scalar, clamped to ``[0.0, 1.0]``.
+
+    See :class:`WonderResult` ``coverage`` field docstring (#667) for
+    the rationale on clamping the raw ratio.
+    """
+    return min(1.0, phantoms_created / max(1, n_axes))
+
+
+__all__ = ["WonderResult", "axes_coverage"]
