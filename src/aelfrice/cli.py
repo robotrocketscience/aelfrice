@@ -926,9 +926,16 @@ def _cmd_wonder_axes(args: argparse.Namespace, out: object) -> int:
     overrides the default. The shorthand is stripped from the query
     before dispatch so it does not pollute the gap-analysis query
     text.
+
+    The computed values are also packed into a
+    :class:`aelfrice.wonder.result.WonderResult` (#656); the
+    dataclass is exposed via the ``_wonder_result`` attribute of
+    the namespace when the caller sets ``_capture_result=True``
+    (tests only; normal CLI path emits the dispatch-payload JSON).
     """
-    import json
+    import json as _json
     from aelfrice.wonder.dispatch import build_dispatch_payload
+    from aelfrice.wonder.result import WonderResult
 
     query, shorthand_count = _parse_wonder_query_shorthand(args.axes)
     # #645: shorthand wins only when the caller didn't override the
@@ -953,7 +960,22 @@ def _cmd_wonder_axes(args: argparse.Namespace, out: object) -> int:
     finally:
         store.close()
 
-    print(json.dumps(payload.to_dict(), indent=2), file=out)  # type: ignore[arg-type]
+    ga = payload.gap_analysis
+    axes_dicts = [a.to_dict() for a in payload.research_axes]
+    phantoms_created: int = getattr(args, "_phantoms_created", 0)
+    result = WonderResult(
+        mode="axes",
+        coverage=phantoms_created / max(1, len(axes_dicts)),
+        known_beliefs=[b.id for b in ga.known_beliefs],
+        gaps=list(ga.gaps),
+        research_axes=axes_dicts,
+        anchor_speculative_ids=list(payload.speculative_anchor_ids),
+        phantoms_created=phantoms_created,
+    )
+    if getattr(args, "_capture_result", False):
+        args._wonder_result = result  # type: ignore[union-attr]
+
+    print(_json.dumps(payload.to_dict(), indent=2), file=out)  # type: ignore[arg-type]
     return 0
 
 
@@ -1004,6 +1026,11 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
     alias) bypass the seed/BFS path and emit the gap-analysis + research-
     axes JSON for research-agent dispatch. Mutually exclusive with
     ``--persist``. If both forms are passed, ``--axes`` wins.
+
+    The graph-walk path packs its computed values into a
+    :class:`aelfrice.wonder.result.WonderResult` (#656); ``--json``
+    emits ``dataclasses.asdict(result)``.  Human-readable stdout is
+    unchanged.
     """
     if getattr(args, "gc", False):
         return _cmd_wonder_gc(args, out)
@@ -1033,6 +1060,8 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
 
     if getattr(args, "axes", None):
         return _cmd_wonder_axes(args, out)
+
+    from aelfrice.wonder.result import WonderResult
 
     store = _open_store()
     try:
@@ -1084,18 +1113,30 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
         from aelfrice.wonder.lifecycle import wonder_ingest
         ingest_store = _open_store()
         try:
-            result = wonder_ingest(ingest_store, phantoms)
+            ingest_result = wonder_ingest(ingest_store, phantoms)
         finally:
             ingest_store.close()
         print(
-            f"wonder persist: inserted={result.inserted} skipped={result.skipped} "
-            f"edges_created={result.edges_created}",
+            f"wonder persist: inserted={ingest_result.inserted} "
+            f"skipped={ingest_result.skipped} "
+            f"edges_created={ingest_result.edges_created}",
             file=out,  # type: ignore[arg-type]
         )
         return 0
 
+    # Pack all computed values into the structured WonderResult (#656).
+    result = WonderResult(
+        mode="graph_walk",
+        coverage=0.0,
+        known_beliefs=[seed_b.id],  # type: ignore[union-attr]
+        gaps=[],
+        research_axes=[],
+        anchor_speculative_ids=[],
+        phantoms_created=0,
+    )
+
     if args.emit_phantoms:
-        import json
+        import json as _json
         payload = [
             {
                 "constituent_belief_ids": list(p.constituent_belief_ids),
@@ -1105,11 +1146,11 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
             }
             for p in phantoms
         ]
-        print(json.dumps(payload, indent=2), file=out)  # type: ignore[arg-type]
+        print(_json.dumps(payload, indent=2), file=out)  # type: ignore[arg-type]
         return 0
 
     if args.json:
-        import json
+        import json as _json
         payload2 = {
             "seed": {"id": seed_b.id, "content": seed_b.content},  # type: ignore[union-attr]
             "candidates": [
@@ -1123,10 +1164,10 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
                 for combined, h, action, relatedness in candidates
             ],
         }
-        print(json.dumps(payload2, indent=2), file=out)  # type: ignore[arg-type]
+        print(_json.dumps(payload2, indent=2), file=out)  # type: ignore[arg-type]
         return 0
 
-    print(f"seed: {seed_b.id}: {seed_b.content}", file=out)  # type: ignore[arg-type]
+    print(f"seed: {result.known_beliefs[0]}: {seed_b.content}", file=out)  # type: ignore[arg-type,union-attr]
     if not candidates:
         print("(no candidates — seed has no outbound edges)", file=out)  # type: ignore[arg-type]
         return 0
