@@ -13,6 +13,7 @@ from aelfrice.noise_filter import (
     is_license_boilerplate,
     is_noise,
     is_three_word_fragment,
+    is_transcript_noise,
     similarity_to_reference,
 )
 
@@ -329,3 +330,177 @@ def test_similarity_excerpt_is_none_when_clean(
     )
     assert over is False
     assert excerpt is None
+
+
+# --- is_transcript_noise: category 1 — shell-command shape ----------------
+
+
+def test_transcript_noise_cd_prefix() -> None:
+    assert is_transcript_noise("cd /home/user/projects") is True
+
+
+def test_transcript_noise_git_prefix() -> None:
+    assert is_transcript_noise("git checkout main") is True
+
+
+def test_transcript_noise_gh_prefix() -> None:
+    assert is_transcript_noise("gh pr view 675") is True
+
+
+def test_transcript_noise_uv_run_prefix() -> None:
+    assert is_transcript_noise("uv run pytest tests/") is True
+
+
+def test_transcript_noise_pytest_prefix() -> None:
+    assert is_transcript_noise("pytest tests/test_ingest.py -v") is True
+
+
+def test_transcript_noise_python_prefix() -> None:
+    assert is_transcript_noise("python script.py --flag") is True
+
+
+def test_transcript_noise_prose_mentioning_git_is_not_noise() -> None:
+    """git token not at position 0 — must not match."""
+    assert is_transcript_noise("The git history shows a clean merge.") is False
+
+
+def test_transcript_noise_prose_mentioning_gh_is_not_noise() -> None:
+    assert is_transcript_noise("The gh CLI wraps the GitHub REST API.") is False
+
+
+# --- is_transcript_noise: category 2 — tool-call rendering glyph (U+23FA) -
+
+
+def test_transcript_noise_glyph_prefix() -> None:
+    assert is_transcript_noise("⏺ Bash(git status)") is True
+
+
+def test_transcript_noise_glyph_alone() -> None:
+    assert is_transcript_noise("⏺") is True
+
+
+def test_transcript_noise_prose_does_not_start_with_glyph() -> None:
+    assert is_transcript_noise("The tool-call rendering glyph is documented.") is False
+
+
+# --- is_transcript_noise: category 3 — pseudo-XML structural tags ----------
+
+
+def test_transcript_noise_worktree_tag() -> None:
+    assert is_transcript_noise("<worktree id='1'>") is True
+
+
+def test_transcript_noise_output_file_tag() -> None:
+    assert is_transcript_noise("<output-file path='x.py'>") is True
+
+
+def test_transcript_noise_task_tag() -> None:
+    assert is_transcript_noise("<task-17>") is True
+
+
+def test_transcript_noise_summary_background_tag() -> None:
+    assert is_transcript_noise("<summary>Background context here.") is True
+
+
+def test_transcript_noise_prose_not_starting_with_xml_tag() -> None:
+    assert is_transcript_noise("The worktree contains three branches.") is False
+
+
+# --- is_transcript_noise: category 4 — single-word progress emit ----------
+
+
+def test_transcript_noise_polling_dot() -> None:
+    assert is_transcript_noise("Polling.") is True
+
+
+def test_transcript_noise_running_dot() -> None:
+    assert is_transcript_noise("Running.") is True
+
+
+def test_transcript_noise_waiting_dot() -> None:
+    assert is_transcript_noise("Waiting.") is True
+
+
+def test_transcript_noise_progress_two_words_does_not_match_progress_re() -> None:
+    """'Polling for results.' is two words — progress_re won't match it.
+    However, the ACK regex (category 5) does catch it. The net result is
+    is_transcript_noise returns True, which is the correct behaviour per spec."""
+    assert is_transcript_noise("Polling for results.") is True
+
+
+def test_transcript_noise_lowercase_gerund_is_not_progress() -> None:
+    """Pattern requires capital first letter."""
+    assert is_transcript_noise("polling.") is False
+
+
+def test_transcript_noise_gerund_without_dot_still_caught_by_ack() -> None:
+    """'Polling' without a trailing dot doesn't match the progress regex
+    (which requires the dot), but the ACK regex (category 5) allows an
+    optional period — so 'Polling' alone is still transcript noise."""
+    assert is_transcript_noise("Polling") is True
+
+
+# --- is_transcript_noise: category 5 — agent ack emit ---------------------
+
+
+def test_transcript_noise_ack_yes() -> None:
+    assert is_transcript_noise("Yes.") is True
+
+
+def test_transcript_noise_ack_no() -> None:
+    assert is_transcript_noise("No.") is True
+
+
+def test_transcript_noise_ack_standing_by() -> None:
+    assert is_transcript_noise("Standing by.") is True
+
+
+def test_transcript_noise_ack_ready() -> None:
+    assert is_transcript_noise("Ready.") is True
+
+
+def test_transcript_noise_ack_nothing() -> None:
+    assert is_transcript_noise("Nothing.") is True
+
+
+def test_transcript_noise_ack_polling() -> None:
+    assert is_transcript_noise("Polling.") is True
+
+
+def test_transcript_noise_ack_with_short_trailing_text() -> None:
+    assert is_transcript_noise("Ready when you are.") is True
+
+
+def test_transcript_noise_ack_nothing_to_report() -> None:
+    assert is_transcript_noise("Nothing to report.") is True
+
+
+def test_transcript_noise_ack_standing_by_for_direction() -> None:
+    assert is_transcript_noise("Standing by for your direction.") is True
+
+
+def test_transcript_noise_ack_polling_for_results() -> None:
+    """'Polling for results.' matches ACK regex (Polling + short trailing)."""
+    assert is_transcript_noise("Polling for results.") is True
+
+
+def test_transcript_noise_ack_no_trailing_punctuation() -> None:
+    assert is_transcript_noise("Ready") is True
+
+
+def test_transcript_noise_prose_is_not_ack() -> None:
+    assert is_transcript_noise(
+        "The retrieval pipeline drops short acks."
+    ) is False
+
+
+def test_transcript_noise_real_sentence_is_not_noise() -> None:
+    assert is_transcript_noise(
+        "The default DB path is keyed by SHA256 of the working directory."
+    ) is False
+
+
+def test_transcript_noise_empty_returns_false() -> None:
+    """Empty strings are handled upstream by is_noise; is_transcript_noise
+    returns False for them rather than True."""
+    assert is_transcript_noise("") is False
