@@ -140,6 +140,25 @@ After v2.0.0, `benchmarks/` reproduces every published headline number on a fres
 - Expanded surface: `wonder`, `reason`, `core`, `unlock`, `delete`, `confirm`, plus graph-metrics and document-linking.
 - Reproducibility harness: `benchmarks/results/v2.0.0.json` is canonical; CI runs the academic suite nightly.
 
+### v3.0.0 — completion + design cut
+
+v3.0 closes the wonder-lifecycle wave, ships HRR persistence with split-format migration, ships type-aware compression at the rebuilder gate, and ratifies four v3-level design decisions. Replaces the prior v2.2 row, whose three referenced issues turned out to be stale (#197 WONTFIX; #193 evaluation shipped without hook successor; #194 was `ingest_turn(bulk=)`, also shipped). Milestone tracker: [#608](https://github.com/robotrocketscience/aelfrice/issues/608).
+
+Substrate completion:
+
+- **HRR persistence default-ON + split-format migration** ([#553](https://github.com/robotrocketscience/aelfrice/issues/553)). On-disk format moves from monolithic to split `.npy` + `.npz`; persistence defaults to on with an opt-out flag for disk-cost-sensitive installs.
+- **Wonder lifecycle completion** ([#542](https://github.com/robotrocketscience/aelfrice/issues/542) umbrella). Substrate + lifecycle + dispatch. Sub-tasks: phantom promotion trigger ([#550](https://github.com/robotrocketscience/aelfrice/issues/550), shipping Surfaces A+B per the 2026-05-11 ratification — no count-trigger); skill-layer subagent dispatch → `wonder_ingest` ([#552](https://github.com/robotrocketscience/aelfrice/issues/552)); bake-off re-run ([#547](https://github.com/robotrocketscience/aelfrice/issues/547), shipped).
+- **Type-aware compression** ([#434](https://github.com/robotrocketscience/aelfrice/issues/434), shipped). A2 recall@k bench gate landed; rebuilder continuation-fidelity (A4) remains the flip-default gate.
+- **HRR structural-query retrieve_v2 phase-2** ([#152](https://github.com/robotrocketscience/aelfrice/issues/152)). Substrate landed v1.7, phase 1 wiring v2.x; phase 2 remains `attn:bench-needed`.
+- **Eval-harness wire for #587 hot-start scoring** ([#592](https://github.com/robotrocketscience/aelfrice/issues/592)). Judge stage, replay path, and hot-start fixture all shipped on main (PR #613, #601, #639). Remaining work is bench-only — run the harness with judges enabled and capture hot-start ≥ 80% and cold-start no-regression. `attn:bench-needed`.
+
+Design ratifications (all closed, doc-only follow-through):
+
+- **NL-relatedness philosophy** ([#605](https://github.com/robotrocketscience/aelfrice/issues/605), ratified 2026-05-10). Option 1 — stay deterministic, narrow surface. Dedup, contradiction, and relatedness gates live in the consuming agent, not aelfrice.
+- **Sentiment-feedback hook production wire-up** ([#606](https://github.com/robotrocketscience/aelfrice/issues/606), ratified 2026-05-10). `UserPromptSubmit` lane, default-off opt-in, most-recent-window decay policy.
+- **Multimodel scope** ([#607](https://github.com/robotrocketscience/aelfrice/issues/607), deferred 2026-05-11). No maintainer validation path for third-party LLM CLIs; the wonder-dispatch lane (#542/#551) covers the in-tree story.
+- **Federation write model** ([#661](https://github.com/robotrocketscience/aelfrice/issues/661), ratified 2026-05-11). Option B — read-only federation. Per-project DB is sole writer; peers open foreign DBs read-only (SQLite ATTACH) and UNION FTS5 results. Mutation tools reject foreign belief IDs at the API surface. Closes CRDT-primitives sub-issues (#651-#654) WONTFIX; rescopes #650 + #655 to read-only mechanics (scope field, promote/demote verbs, `knowledge_deps.json`, read-time overlay, foreign-ID rejection). See [`docs/design/federation-primitives.md`](design/federation-primitives.md) §1 for the forward-compat version-vector substrate; §2-§5 are flagged as deferred multi-writer extension.
+
 ## Recovery inventory
 
 What the research line had, when each piece returns:
