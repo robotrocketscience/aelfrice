@@ -83,6 +83,122 @@ Reader prompts must include: *"Use only the provided context. Do not use world k
 | StructMemEval | yandex-research/StructMemEval | LLM judge binary | synthetic timestamps + temporal_sort disclosed |
 | AMA-Bench | `AMA-bench/AMA-bench` test | LLM judge accuracy (paper: Qwen3-32B) | alternative judges must be disclosed |
 
+## Eval-judge calibration
+
+LLM-judge benchmarks (LongMemEval, StructMemEval, AMA-Bench, and the
+context-rebuilder eval harness at `benchmarks/context-rebuilder/`) collapse
+to noise if the judge isn't reproducible. The aelfrice project is locked on
+a deterministic narrow surface ([PHILOSOPHY](PHILOSOPHY.md), #605); a
+single-run judge verdict does not establish that the *eval* itself is
+deterministic enough to gate a release on.
+
+The calibration target is **Cohen's κ inter-judge agreement** across N≥3
+independent judge invocations over the same `(expected, actual)` pairs.
+
+### Two κ measures
+
+| Measure | What it captures | Threshold |
+|---|---|---|
+| **Inter-judge κ** (run vs run, pairwise) | Judge reproducibility — same pair, same verdict across independent calls | **≥ 0.70** (gate) |
+| **Judge-vs-baseline κ** (judge run vs `score_substring_exact_match`) | How much semantic lift the judge adds over the zero-LLM baseline | reported, not gated |
+
+Inter-judge κ ≥ 0.70 is "substantial agreement" on the Landis-Koch scale.
+Below that the judge's per-run verdicts are within noise of disagreement
+and the headline score in the run's audit record is not a defensible
+release gate.
+
+Judge-vs-baseline κ is reported for posterity but **not** gated. A high
+value means the judge isn't earning its API cost (substring would have
+done the job); a low value is expected and is what the judge exists to
+provide. Forcing a threshold here either rejects a useful judge or
+accepts a lazy one.
+
+### Run protocol
+
+```bash
+# 1. Generate the same set of (expected, actual) pairs as the single-judge
+#    run. For the context-rebuilder hot-start fixture, this is the
+#    deduplicated pair set from benchmarks/context-rebuilder/eval_harness.py
+#    --mode replay output.
+
+# 2. Invoke the judge N≥3 times, independent calls (fresh API session
+#    each, no shared cache). Capture per-call binary verdicts.
+for i in 1 2 3; do
+    uv run python benchmarks/context-rebuilder/eval_harness.py \
+        --mode judge --run-id 687_run_${i} \
+        --judge <judge-model> \
+        --out benchmarks/results/687_run/judge_${i}.json
+done
+
+# 3. Compute pairwise inter-judge κ and judge-vs-baseline κ.
+uv run python -m benchmarks.context_rebuilder.kappa \
+    --runs benchmarks/results/687_run/judge_{1,2,3}.json \
+    --baseline benchmarks/results/687_run/substring_baseline.json \
+    --out benchmarks/results/687_run/judge_kappa.json
+```
+
+### Zero-LLM baseline
+
+The deterministic baseline is `score_substring_exact_match(prediction,
+ground_truth) > 0` (see `benchmarks/qa_scoring.py:53`). Binarised verdicts
+from this baseline form the comparison vector for judge-vs-baseline κ.
+
+If the eval task is `subject-match + load-bearing-claim` (the
+context-rebuilder hot-start interpretation), substring will systematically
+miss semantic-match cases — that's expected, and is why this gate is
+report-only.
+
+### Judge-kappa artifact
+
+Every multi-judge run produces `benchmarks/results/<run-id>/judge_kappa.json`:
+
+```json
+{
+  "run_id": "687_run",
+  "n_runs": 3,
+  "n_pairs": 18,
+  "judge_model": "<judge-model>",
+  "baseline": "score_substring_exact_match",
+  "inter_judge_kappa": {
+    "run_1_vs_run_2": 0.78,
+    "run_1_vs_run_3": 0.72,
+    "run_2_vs_run_3": 0.74,
+    "mean": 0.75,
+    "min": 0.72
+  },
+  "judge_vs_baseline_kappa": 0.31,
+  "per_run_hot_start_fidelity": [1.0, 0.94, 1.0],
+  "hot_start_fidelity_mean": 0.98,
+  "calibrated": true
+}
+```
+
+`calibrated: true` requires:
+
+- `inter_judge_kappa.min ≥ 0.70` (the **min** across all run-pairs, not the
+  mean — a single noisy run-pair shouldn't be averaged out)
+- `hot_start_fidelity_mean ≥ 0.80` (per #592 AC)
+- N≥3 runs
+
+### Sample-size caveat
+
+At N=3 runs over ~18 deduplicated pairs (the #592 hot-start corpus), the
+95% confidence interval on a κ point estimate of 0.70 spans roughly
+0.45–0.90. The gate is therefore noisy at the standard N=3. Two ways to
+tighten it:
+
+1. **Bump to N=5 runs.** ~5× the judge API cost but cuts the CI roughly
+   in half. Recommended for any pre-release ratification run.
+2. **Accept the noisy gate** and document the CI range in the run's
+   audit record. Suitable for routine bench regression checks but not
+   for release-gate decisions.
+
+A failed κ-gate is **not** a code bug — it means either the judge prompt
+needs tightening (more explicit refusal-on-ambiguity rules) or the
+underlying corpus contains ambiguous pairs that no judge can classify
+reproducibly. The verdict in the kappa.json `rationale` fields surfaces
+which pairs disagreed.
+
 ## Audit record
 
 Every academic run produces:
