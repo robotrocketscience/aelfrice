@@ -247,6 +247,24 @@ class LegacySchemaDB:
 
 
 @dataclass(frozen=True)
+class DormantDB:
+    """One per-project DB detected as idle for >= the dormancy threshold (#594).
+
+    `path`        — absolute path to the memory.db file.
+    `row_count`   — number of rows in the `beliefs` table (0 when the
+                    table is missing or empty; both still count as
+                    pruneable when the file itself is dormant).
+    `idle_days`   — whole days since the file was last modified (mtime).
+    `size_bytes`  — file size of the memory.db, surfaced so the user
+                    knows what storage they reclaim by pruning.
+    """
+    path: Path
+    row_count: int
+    idle_days: int
+    size_bytes: int
+
+
+@dataclass(frozen=True)
 class CommandFinding:
     """One hook/statusline command we inspected.
 
@@ -908,6 +926,83 @@ def _check_legacy_schema_dbs(
             pass
         finally:
             con.close()
+
+    return results
+
+
+# Default minimum idle period before a per-project DB is treated as
+# dormant by `_check_dormant_dbs` (#594). Conservative: a project a
+# user touches monthly stays out of the prune list. Override via the
+# `idle_days` kwarg on the scanner (CLI: `--idle-days N`).
+DORMANT_IDLE_DAYS_DEFAULT: Final[int] = 30
+
+
+def _check_dormant_dbs(
+    *,
+    projects_dir: Path | None = None,
+    idle_days: int = DORMANT_IDLE_DAYS_DEFAULT,
+) -> list[DormantDB]:
+    """Return per-project DBs whose mtime is at least `idle_days` days old.
+
+    Scans `~/.aelfrice/projects/*/memory.db` (or `projects_dir`
+    override). A DB is flagged when ALL of the following hold:
+      1. The memory.db file exists and stat() succeeds.
+      2. (now - mtime) / 86400 >= `idle_days`.
+
+    Schema is irrelevant — both legacy and modern DBs can be dormant.
+    Empty DBs (zero beliefs, or no `beliefs` table at all) are still
+    flagged when dormant; an idle empty DB has zero forward value and
+    is the cleanest prune target.
+
+    Opens each DB read-only (`file:...?mode=ro`) for the row-count
+    probe; any DB whose row-count probe fails (corrupt, no `beliefs`
+    table) is reported with `row_count=0` rather than skipped — the
+    file is still a pruneable artefact even when the schema is unreadable.
+    """
+    root = projects_dir if projects_dir is not None else _AELFRICE_PROJECTS_DIR
+    if not root.is_dir():
+        return []
+
+    results: list[DormantDB] = []
+    now = time.time()
+    threshold_seconds = idle_days * 86400
+
+    for db_path in sorted(root.glob("*/memory.db")):
+        try:
+            stat = db_path.stat()
+        except OSError:
+            continue
+        age_seconds = now - stat.st_mtime
+        if age_seconds < threshold_seconds:
+            continue
+
+        row_count = 0
+        try:
+            uri = f"file:{db_path}?mode=ro"
+            con = sqlite3.connect(uri, uri=True)
+        except Exception:  # noqa: BLE001
+            con = None
+        if con is not None:
+            try:
+                cur = con.execute("PRAGMA table_info(beliefs)")
+                if cur.fetchall():
+                    (rc,) = con.execute(
+                        "SELECT COUNT(*) FROM beliefs"
+                    ).fetchone()
+                    row_count = int(rc)
+            except Exception:  # noqa: BLE001
+                pass
+            finally:
+                con.close()
+
+        results.append(
+            DormantDB(
+                path=db_path,
+                row_count=row_count,
+                idle_days=int(age_seconds / 86400),
+                size_bytes=int(stat.st_size),
+            )
+        )
 
     return results
 
