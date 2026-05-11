@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from aelfrice.ingest import ingest_turn
+from aelfrice.ingest import _ingest_turn_ids, ingest_turn
 from aelfrice.store import MemoryStore
 
 
@@ -112,3 +112,59 @@ def test_complete_session_is_no_op(store: MemoryStore) -> None:
     session = store.create_session()
     # Should not raise even though the session is not in any table.
     store.complete_session(session.id)
+
+
+# --- Transcript-noise filter integration -----------------------------------
+
+
+def test_ingest_turn_ids_filters_transcript_noise_and_keeps_real_sentence(
+    store: MemoryStore,
+) -> None:
+    """A turn containing one sentence from each transcript-noise category
+    plus one real sentence produces exactly one derived belief id, and the
+    persisted belief's content matches the real sentence.
+
+    Noise sentences used (one per category):
+      cat 1 — shell-command shape:       'git checkout main'
+      cat 2 — tool-call rendering glyph: '⏺ Bash(git status)'
+      cat 3 — pseudo-XML tag:            '<worktree id="1">'
+      cat 4 — single-word progress emit: 'Running.'
+      cat 5 — agent ack emit:            'Standing by.'
+      real  — plain factual prose
+
+    The test uses extract_sentences indirectly through _ingest_turn_ids.
+    We build the input as a block of newline-separated strings so that
+    each line reaches is_transcript_noise as an independent sentence.
+    """
+    real_sentence = (
+        "The ingest pipeline stores each classified sentence as a belief "
+        "in the working memory store."
+    )
+    # Build a transcript turn: noise lines first, then the real sentence.
+    # extract_sentences splits on sentence boundaries; using newlines
+    # between the short noise lines ensures they come through as individual
+    # sentences rather than being merged with the prose.
+    turn_text = (
+        "git checkout main\n"
+        "⏺ Bash(git status)\n"
+        "<worktree id='1'>\n"
+        "Running.\n"
+        "Standing by.\n"
+        + real_sentence
+    )
+    ids = _ingest_turn_ids(
+        store=store,
+        text=turn_text,
+        source="test",
+        session_id="sess-675-test",
+    )
+    # Exactly one new belief should have been derived (the real sentence).
+    assert len(ids) == 1, (
+        f"Expected exactly 1 derived belief id, got {len(ids)}: {ids}"
+    )
+    # The persisted belief content must match the real sentence.
+    belief = store.get_belief(ids[0])
+    assert belief is not None, "Derived belief id has no matching belief in store."
+    assert real_sentence in belief.content, (
+        f"Belief content {belief.content!r} does not contain the real sentence."
+    )

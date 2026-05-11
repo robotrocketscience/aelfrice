@@ -24,6 +24,7 @@ from typing import cast
 
 from aelfrice.derivation_worker import run_worker
 from aelfrice.extraction import extract_sentences
+from aelfrice.noise_filter import is_transcript_noise
 from aelfrice.session_resolution import resolve_session_id
 from aelfrice.models import (
     ANCHOR_TEXT_MAX_LEN,
@@ -117,6 +118,7 @@ def _ingest_turn_ids(
     DERIVED_FROM edges between consecutive turns within a session.
     """
     sentences = extract_sentences(text)
+    sentences = [s for s in sentences if not is_transcript_noise(s)]
     if not sentences:
         return []
 
