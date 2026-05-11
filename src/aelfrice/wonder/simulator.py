@@ -34,12 +34,26 @@ from typing import TYPE_CHECKING
 
 from aelfrice.models import (
     BELIEF_FACTUAL,
+    CORROBORATION_SOURCE_COMMIT_INGEST,
+    CORROBORATION_SOURCE_FILESYSTEM_INGEST,
+    CORROBORATION_SOURCE_MCP_REMEMBER,
+    CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     EDGE_CITES,
     EDGE_RELATES_TO,
     EDGE_SUPPORTS,
     LOCK_NONE,
     Belief,
     Edge,
+)
+
+# Synthetic source-type pool mirrors the four ingest paths that A1
+# (#190) plumbs into the `belief_corroborations.source_type` column.
+# Order is fixed so multi-seed runs draw the same pool elements.
+DEFAULT_SOURCE_TYPE_POOL: tuple[str, ...] = (
+    CORROBORATION_SOURCE_COMMIT_INGEST,
+    CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+    CORROBORATION_SOURCE_MCP_REMEMBER,
+    CORROBORATION_SOURCE_FILESYSTEM_INGEST,
 )
 
 if TYPE_CHECKING:
@@ -55,6 +69,7 @@ class CorpusAtom:
     belief_id: str
     topic: int
     session_id: str
+    source_type: str
 
 
 @dataclass
@@ -76,6 +91,18 @@ class SyntheticCorpus:
                 return atom.topic
         return None
 
+    def session_of(self, belief_id: str) -> str | None:
+        for atom in self.atoms:
+            if atom.belief_id == belief_id:
+                return atom.session_id
+        return None
+
+    def source_type_of(self, belief_id: str) -> str | None:
+        for atom in self.atoms:
+            if atom.belief_id == belief_id:
+                return atom.source_type
+        return None
+
 
 def _atom_id(topic: int, idx: int) -> str:
     return f"t{topic:02d}_a{idx:03d}"
@@ -87,6 +114,7 @@ def build_corpus(
     n_topics: int = 8,
     n_atoms_per_topic: int = 25,
     n_sessions: int = 8,
+    n_source_types: int = 4,
     intra_edge_density: float = 0.25,
     cross_edge_density: float = 0.02,
     high_uncertainty_fraction: float = 0.15,
@@ -104,13 +132,32 @@ def build_corpus(
         raise ValueError("n_atoms_per_topic must be >= 3 for TC to find triangles")
     if n_sessions < 2:
         raise ValueError("n_sessions must be >= 2 for STS to be testable")
+    if n_source_types < 2:
+        raise ValueError(
+            "n_source_types must be >= 2 for the source-distinct verdict path "
+            "to be testable"
+        )
+    if n_source_types > len(DEFAULT_SOURCE_TYPE_POOL):
+        raise ValueError(
+            f"n_source_types must be <= {len(DEFAULT_SOURCE_TYPE_POOL)} "
+            "(size of DEFAULT_SOURCE_TYPE_POOL)"
+        )
+    source_pool = DEFAULT_SOURCE_TYPE_POOL[:n_source_types]
 
     atoms: list[CorpusAtom] = []
     for topic in range(n_topics):
         for idx in range(n_atoms_per_topic):
             bid = _atom_id(topic, idx)
             session = f"sess_{rng.randrange(n_sessions):02d}"
-            atoms.append(CorpusAtom(belief_id=bid, topic=topic, session_id=session))
+            source_type = source_pool[rng.randrange(n_source_types)]
+            atoms.append(
+                CorpusAtom(
+                    belief_id=bid,
+                    topic=topic,
+                    session_id=session,
+                    source_type=source_type,
+                )
+            )
 
     # Edges: intra-topic dense, cross-topic sparse. Edge type cycled
     # across the TC-eligible set to give TC something interesting.
