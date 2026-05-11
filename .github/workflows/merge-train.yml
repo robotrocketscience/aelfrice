@@ -25,6 +25,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  issues: write  # #637: `gh issue close --comment` (#634 auto-close) needs issues:write
 
 # Concurrency-1: this is the whole point. Two labeled events queue
 # rather than race.
