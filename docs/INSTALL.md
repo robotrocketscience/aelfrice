@@ -168,6 +168,28 @@ aelf setup --search-tool               # PreToolUse:Grep|Glob memory-first searc
 
 All hooks are non-blocking. Every failure path returns exit 0 — a hook problem must never break a prompt or a commit.
 
+### Self-installing hook manifest (v2.2+)
+
+The list of default-on hooks above is declared in `src/aelfrice/data/hook_manifest.json` and ships in the wheel. The first `aelf <cmd>` invocation after a fresh install or a bare `pipx upgrade aelfrice` (or `uv tool upgrade aelfrice` / `pip install -U aelfrice`) reconciles the installed manifest version against `~/.aelfrice/installed-manifest-version` and merges any new entries into `~/.claude/settings.json` automatically. This closes the loop on bare package-manager upgrades — you no longer have to remember to re-run `aelf setup` to pick up hooks added in newer releases.
+
+What auto-install does:
+
+* Happy path (stamp == installed version) is one stat + one short file read. No JSON parse, no settings.json read.
+* On mismatch, takes an `fcntl` exclusive lock on `~/.aelfrice/.auto-install.lock` so concurrent `aelf` invocations cannot race on the merge.
+* Reuses the same install primitives `aelf setup` calls; the on-disk shape of settings.json is byte-identical.
+* Adds only entries the manifest claims by basename — anything the user added to settings.json by hand is preserved.
+* Respects opt-outs: if you ever ran `aelf setup --no-transcript-ingest`, that choice is persisted at `~/.aelfrice/opt-out-hooks.json` and survives upgrades. Re-running `aelf setup` (without the `--no-*` flag) rescinds the opt-out.
+* Prints a single stderr line when entries were actually added: `aelfrice: hooks updated to v2.2.0 (was v2.1.0) — added: stop_lock_prompt`.
+
+Opt-out controls:
+
+```bash
+export AELFRICE_NO_AUTO_INSTALL=1   # power user: I manage settings.json by hand
+aelf setup --no-stop-hook           # disable one hook; persists across upgrades
+```
+
+`aelf doctor` continues to flag drift — manual edits to settings.json that diverge from the manifest, or hooks the auto-installer would write that the file is missing.
+
 > **Privacy note.** Default-on transcript-ingest means every turn you type lands in the per-project SQLite DB on `PreCompact` rotation. The DB is local-only (no network, no telemetry — see § "Your data stays yours" in the README) but the JSONL has no PII scrubber. If you paste secrets, customer data, or anything you don't want indexed in chat, opt out with `--no-transcript-ingest` and use `aelf lock` / `aelf onboard` for explicit ingestion only.
 
 ### Legacy-schema detection (`aelf doctor`, v2.1+)
