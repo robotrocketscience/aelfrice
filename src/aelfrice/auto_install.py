@@ -256,6 +256,7 @@ def remove_opt_out(hook_name: str, opt_out_path: Path = OPT_OUT_PATH) -> None:
         try:
             opt_out_path.unlink()
         except OSError:
+            # best-effort: empty opt-out file cleanup is non-critical
             pass
 
 
@@ -395,6 +396,7 @@ def maybe_install_manifest(
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
         except OSError:
+            # best-effort: close() below releases the lock either way
             pass
         os.close(lock_fd)
 
