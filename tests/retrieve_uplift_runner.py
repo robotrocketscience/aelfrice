@@ -36,6 +36,7 @@ import math
 import os
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -609,6 +610,108 @@ def run_query_strategy_uplift(
         n_rows=n,
         mean_ndcg_off=off_total / n,
         mean_ndcg_on=on_total / n,
+    )
+
+
+@dataclass(frozen=True)
+class QueryStrategyLatency:
+    """#291 § Bench gates per-rebuild p99 latency contract.
+
+    Fields hold per-arm p99 latency in nanoseconds for the
+    ``transform_query → retrieve`` path (the only span that differs
+    between ``legacy-bm25`` and ``stack-r1-r3``; everything downstream
+    in the rebuild path is strategy-invariant). The bench gate asserts
+    ``p99_on_ns <= p99_off_ns + 5_000_000`` (5 ms).
+    """
+
+    n_rows: int
+    reps_per_row: int
+    p99_off_ns: int
+    p99_on_ns: int
+
+    @property
+    def delta_ns(self) -> int:
+        return self.p99_on_ns - self.p99_off_ns
+
+
+def _p99_ns(samples: list[int]) -> int:
+    """Deterministic p99 of an integer-ns sample list.
+
+    Uses the "k-th largest" convention: with ``n`` samples sorted
+    ascending, returns ``sorted[int(0.99 * n)]`` clamped into range.
+    For ``n == 100`` this yields ``sorted[99]`` (the top 1 sample);
+    for ``n == 600`` this yields ``sorted[594]`` (top 1%).
+    """
+    n = len(samples)
+    if n == 0:
+        return 0
+    s = sorted(samples)
+    idx = min(n - 1, int(0.99 * n))
+    return s[idx]
+
+
+def run_query_strategy_latency(
+    rows: list[dict],  # type: ignore[type-arg]
+    reps_per_row: int = 20,
+) -> QueryStrategyLatency:
+    """#291 § Bench gates per-rebuild p99 latency driver.
+
+    Per row, builds the transient ``MemoryStore`` once, then times
+    ``reps_per_row`` repetitions of ``transform_query → retrieve`` for
+    each strategy. One warmup repetition per arm is discarded before
+    the timed loop so JIT-free Python import + first-call caching does
+    not skew the first sample.
+
+    Aggregation: all ``n_rows * reps_per_row`` timed samples per arm
+    feed into a single p99. Same-store/same-row pairing keeps the two
+    arms measuring identical work modulo the strategy switch.
+    """
+    n = len(rows)
+    if n == 0:
+        return QueryStrategyLatency(0, reps_per_row, 0, 0)
+
+    off_samples: list[int] = []
+    on_samples: list[int] = []
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_root = Path(tmp)
+        for row in rows:
+            k = _default_k(row)
+            for strategy_on in (False, True):
+                _db_counter[0] += 1
+                strategy = (
+                    STACK_R1_R3_STRATEGY if strategy_on else LEGACY_STRATEGY
+                )
+                db = (
+                    tmp_root
+                    / f"qslat_{row['id']}_{int(strategy_on)}_{_db_counter[0]}.db"
+                )
+                store = MemoryStore(str(db))
+                try:
+                    _seed_store(store, row)
+                    # Warmup (discard).
+                    rewritten = transform_query(
+                        row["query"], store, strategy,
+                    )
+                    _retrieve_ids(store, rewritten, k)
+                    # Timed reps.
+                    for _ in range(reps_per_row):
+                        t0 = time.perf_counter_ns()
+                        rewritten = transform_query(
+                            row["query"], store, strategy,
+                        )
+                        _retrieve_ids(store, rewritten, k)
+                        t1 = time.perf_counter_ns()
+                        (on_samples if strategy_on else off_samples).append(
+                            t1 - t0,
+                        )
+                finally:
+                    store.close()
+
+    return QueryStrategyLatency(
+        n_rows=n,
+        reps_per_row=reps_per_row,
+        p99_off_ns=_p99_ns(off_samples),
+        p99_on_ns=_p99_ns(on_samples),
     )
 
 
