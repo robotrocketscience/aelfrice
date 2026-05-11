@@ -9,15 +9,18 @@ import pytest
 
 from aelfrice.models import (
     BELIEF_FACTUAL,
+    BELIEF_SPECULATIVE,
     LOCK_NONE,
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
+    ORIGIN_SPECULATIVE,
     ORIGIN_UNKNOWN,
     ORIGIN_USER_STATED,
     ORIGIN_USER_VALIDATED,
     Belief,
 )
 from aelfrice.promotion import (
+    SOURCE_PROMOTE_PHANTOM_LOCK_MATCH,
     SOURCE_PROMOTE_USER_VALIDATED,
     SOURCE_REVERT_TO_AGENT_INFERRED,
     devalidate,
@@ -235,3 +238,59 @@ def test_validate_devalidate_revalidate_round_trip() -> None:
     assert after.origin == ORIGIN_USER_VALIDATED
     # Three audit rows: promote, devalidate, promote.
     assert s.count_feedback_events() == 3
+
+
+# --- Speculative (phantom) origin — Surface A (#550) ---------------------
+
+
+def test_promote_speculative_flips_to_user_validated() -> None:
+    """Surface A: explicit promote on a phantom belief."""
+    s = _seed(_mk("P", origin=ORIGIN_SPECULATIVE, btype=BELIEF_SPECULATIVE))
+    result = promote(s, "P")
+    assert result.prior_origin == ORIGIN_SPECULATIVE
+    assert result.new_origin == ORIGIN_USER_VALIDATED
+    after = s.get_belief("P")
+    assert after is not None
+    assert after.origin == ORIGIN_USER_VALIDATED
+
+
+def test_promote_speculative_preserves_alpha_beta() -> None:
+    """Provenance flip must not touch posteriors on phantom path."""
+    s = _seed(_mk("P", origin=ORIGIN_SPECULATIVE, btype=BELIEF_SPECULATIVE,
+                  alpha=0.3, beta=1.0))
+    promote(s, "P")
+    after = s.get_belief("P")
+    assert after is not None
+    assert after.alpha == 0.3
+    assert after.beta == 1.0
+
+
+def test_promote_speculative_writes_audit_row() -> None:
+    """Surface A audit row carries user_validated label."""
+    s = _seed(_mk("P", origin=ORIGIN_SPECULATIVE, btype=BELIEF_SPECULATIVE))
+    result = promote(s, "P")
+    assert result.audit_event_id is not None
+    ev = s.list_feedback_events()[0]
+    assert ev.belief_id == "P"
+    assert ev.source == SOURCE_PROMOTE_USER_VALIDATED
+    assert ev.valence == 0.0
+
+
+def test_promote_speculative_with_lock_match_label() -> None:
+    """Surface B: caller supplies phantom_lock_match source label."""
+    s = _seed(_mk("P", origin=ORIGIN_SPECULATIVE, btype=BELIEF_SPECULATIVE))
+    promote(s, "P", source_label=SOURCE_PROMOTE_PHANTOM_LOCK_MATCH)
+    ev = s.list_feedback_events()[0]
+    assert ev.source == SOURCE_PROMOTE_PHANTOM_LOCK_MATCH
+    assert ev.source == "promotion:phantom_lock_match"
+
+
+def test_promote_speculative_idempotent() -> None:
+    """Re-promoting an already-promoted phantom is a no-op."""
+    s = _seed(_mk("P", origin=ORIGIN_SPECULATIVE, btype=BELIEF_SPECULATIVE))
+    first = promote(s, "P")
+    second = promote(s, "P")
+    assert first.audit_event_id is not None
+    assert second.audit_event_id is None
+    assert second.already_validated is True
+    assert s.count_feedback_events() == 1
