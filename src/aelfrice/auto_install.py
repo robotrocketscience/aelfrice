@@ -341,7 +341,7 @@ def maybe_install_manifest(
     force: bool = False,
     timeout: int | None = None,
 ) -> AutoInstallResult:
-    """Merge bundled manifest into Claude Code settings.json if out of date.
+    """Merge bundled manifest into the host settings.json if out of date.
 
     Happy-path overhead when stamp == installed_version is one stat +
     one short file read (no settings.json read, no JSON parse, no
@@ -495,7 +495,7 @@ def auto_install_at_cli_entry(installed_version: str) -> None:
     Bypassed when AELFRICE_NO_AUTO_INSTALL is set. Stderr message is
     emitted only when the merge added at least one new entry. Any
     exception during the merge is swallowed and logged to stderr — we
-    never let a misconfigured Claude Code settings.json block the user's
+    never let a misconfigured the host settings.json block the user's
     actual `aelf <cmd>` invocation.
     """
     if is_disabled_via_env():

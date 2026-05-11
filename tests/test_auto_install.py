@@ -284,7 +284,7 @@ def test_unrelated_user_entries_preserved(tmp_path: Path) -> None:
                     }]}
                 ]
             },
-            "model": "claude-opus-4-7",
+            "model": "test-model-id",
         }),
         encoding="utf-8",
     )
@@ -297,7 +297,7 @@ def test_unrelated_user_entries_preserved(tmp_path: Path) -> None:
     data = json.loads(settings.read_text(encoding="utf-8"))
     # Unrelated top-level keys survived.
     assert data["permissions"] == {"allow": ["WebSearch"]}
-    assert data["model"] == "claude-opus-4-7"
+    assert data["model"] == "test-model-id"
     # The user's UserPromptSubmit entry is still there.
     ups_entries = data["hooks"]["UserPromptSubmit"]
     user_cmd_present = any(
