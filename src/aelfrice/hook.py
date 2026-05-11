@@ -24,6 +24,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import string
 import sys
 import tempfile
 import time
@@ -161,6 +163,7 @@ _CWD_KEY: Final[str] = "cwd"
 
 _UPS_SECTION: Final[str] = "user_prompt_submit_hook"
 _COLLAPSE_KEY: Final[str] = "collapse_duplicate_hashes"
+_PROMPT_SHAPE_GATE_KEY: Final[str] = "prompt_shape_gate_enabled"
 _CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 
 
@@ -174,6 +177,7 @@ class UserPromptSubmitConfig:
     """
 
     collapse_duplicate_hashes: bool = False
+    prompt_shape_gate_enabled: bool = True
 
 
 def load_user_prompt_submit_config(
@@ -224,8 +228,17 @@ def load_user_prompt_submit_config(
                     file=serr,
                 )
                 collapse_obj = False
+            gate_obj: Any = section.get(_PROMPT_SHAPE_GATE_KEY, True)
+            if not isinstance(gate_obj, bool):
+                print(
+                    f"aelfrice hook: ignoring [{_UPS_SECTION}] "
+                    f"{_PROMPT_SHAPE_GATE_KEY} in {candidate} (expected bool)",
+                    file=serr,
+                )
+                gate_obj = True
             return UserPromptSubmitConfig(
                 collapse_duplicate_hashes=collapse_obj,
+                prompt_shape_gate_enabled=gate_obj,
             )
         parent = current.parent
         if parent == current:
@@ -244,6 +257,97 @@ def _dedup_by_content_hash(hits: list[Belief]) -> list[Belief]:
             seen_hashes.add(digest)
             result.append(h)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Prompt-shape gate (#674)
+# ---------------------------------------------------------------------------
+
+# System-message XML prefixes that indicate the prompt is not a user query.
+_SYSTEM_TAG_PREFIXES: Final[tuple[str, ...]] = (
+    "<task-notification>",
+    "<system-",
+    "<tool-result>",
+)
+
+# Trivial single-word acks that carry no retrieval signal.
+_ACK_SET: Final[frozenset[str]] = frozenset(
+    {
+        "yes",
+        "y",
+        "yeah",
+        "yep",
+        "no",
+        "n",
+        "ok",
+        "okay",
+        "continue",
+        "keep going",
+        "go",
+        "next",
+        "b",
+        "a",
+        "more",
+        "done",
+    }
+)
+
+# Minimum stripped character length to consider a prompt substantive.
+_MIN_PROMPT_LEN: Final[int] = 12
+
+# Punctuation removal table for token-count check.
+_STRIP_PUNCT: Final[dict[int, None]] = str.maketrans(
+    "", "", string.punctuation
+)
+
+# Whitespace-split pattern for lightweight token counting.
+_WS_RE: Final[re.Pattern[str]] = re.compile(r"\s+")
+
+
+def _should_skip_bm25(prompt: str) -> tuple[bool, str | None]:
+    """Return ``(skip, reason)`` for the prompt-shape gate (#674).
+
+    Returns ``(True, <reason>)`` when BM25 retrieval should be skipped
+    because the prompt is structurally uninformative — either a
+    system-injected XML envelope or a trivial ack/one-liner.  Returns
+    ``(False, None)`` for substantive prompts that should proceed to
+    ``_retrieve()``.
+
+    Filter A — system-message prefix gate:
+        Prompts whose leading non-whitespace content starts with a
+        known system-envelope tag (``<task-notification>``,
+        ``<system-*``, ``<tool-result>``) are skipped.
+
+    Filter B — triviality gate:
+        Prompts are skipped when stripped length < 12, token count
+        ≤ 2 after stripping punctuation, or normalized lowercase
+        matches the ack set.
+    """
+    stripped = prompt.strip()
+
+    # Filter A: system-message prefix
+    for prefix in _SYSTEM_TAG_PREFIXES:
+        if stripped.startswith(prefix):
+            return True, f"system-tag:{prefix}"
+
+    # Filter B: triviality
+    if len(stripped) < _MIN_PROMPT_LEN:
+        return True, "trivial:short"
+
+    normalized = stripped.lower()
+    if normalized in _ACK_SET:
+        return True, f"trivial:ack:{normalized}"
+
+    # Token count after stripping punctuation
+    no_punct = stripped.translate(_STRIP_PUNCT)
+    tokens = [t for t in _WS_RE.split(no_punct) if t]
+    if len(tokens) <= 2:
+        # Re-check normalized multi-word acks (e.g. "keep going")
+        if normalized in _ACK_SET:
+            return True, f"trivial:ack:{normalized}"
+        return True, "trivial:token-count"
+
+    return False, None
 
 
 # ---------------------------------------------------------------------------

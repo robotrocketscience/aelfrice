@@ -11,6 +11,7 @@ from aelfrice.hook import (
     CLOSE_TAG,
     DEFAULT_HOOK_TOKEN_BUDGET,
     OPEN_TAG,
+    _should_skip_bm25,
     user_prompt_submit,
 )
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
@@ -338,3 +339,141 @@ def test_hook_escapes_framing_tags_inside_belief_content(
     # `&lt;belief`, so the would-be fake element appears as text.
     assert '<belief id="FAKE"' not in out
     assert "&lt;belief" in out
+
+
+# ---------------------------------------------------------------------------
+# _should_skip_bm25: unit tests for the prompt-shape gate (#674)
+# ---------------------------------------------------------------------------
+
+
+# --- Filter A: system-message prefix gate ---
+
+
+def test_skip_task_notification_prefix() -> None:
+    skip, reason = _should_skip_bm25("<task-notification>please do something")
+    assert skip is True
+    assert reason is not None and "task-notification" in reason
+
+
+def test_skip_system_tag_prefix() -> None:
+    skip, reason = _should_skip_bm25("<system-foo>some payload here")
+    assert skip is True
+    assert reason is not None and "system-" in reason
+
+
+def test_skip_tool_result_prefix() -> None:
+    skip, reason = _should_skip_bm25("<tool-result>exit 0")
+    assert skip is True
+    assert reason is not None and "tool-result" in reason
+
+
+def test_skip_system_tag_with_leading_whitespace() -> None:
+    skip, reason = _should_skip_bm25("  <system-context>some data")
+    assert skip is True
+    assert reason is not None
+
+
+def test_no_skip_plain_angle_bracket() -> None:
+    # A prompt that starts with < but not a matching tag must not be skipped.
+    skip, _ = _should_skip_bm25("<something unrelated but long enough to pass")
+    assert skip is False
+
+
+# --- Filter B: triviality gate ---
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "",
+        "y",
+        "yes",
+        "no",
+        "ok",
+        "okay",
+        "continue",
+        "keep going",
+        "go",
+        "next",
+        "b",
+        "a",
+        "more",
+        "done",
+        "yeah",
+        "yep",
+        "n",
+    ],
+)
+def test_skip_ack_prompts(prompt: str) -> None:
+    skip, reason = _should_skip_bm25(prompt)
+    assert skip is True, f"expected skip for {prompt!r}"
+    assert reason is not None
+
+
+def test_skip_ack_case_insensitive() -> None:
+    skip, reason = _should_skip_bm25("DONE")
+    assert skip is True
+    assert reason is not None
+
+
+def test_skip_ack_with_surrounding_whitespace() -> None:
+    skip, reason = _should_skip_bm25("  ok  ")
+    assert skip is True
+    assert reason is not None
+
+
+def test_skip_ack_with_punctuation() -> None:
+    # "OK!" — after stripping punctuation it's "OK", 1 token, also < 12 chars → skip
+    skip, reason = _should_skip_bm25("OK!")
+    assert skip is True
+    assert reason is not None
+
+
+def test_skip_short_prompt_11_chars() -> None:
+    # Exactly 11 stripped chars → skip (boundary: < 12)
+    prompt = "short text!"  # len("short text!") == 11
+    assert len(prompt.strip()) == 11
+    skip, _ = _should_skip_bm25(prompt)
+    assert skip is True
+
+
+def test_no_skip_exactly_12_chars() -> None:
+    # Exactly 12 stripped chars, 2+ tokens → do NOT skip on length alone.
+    # "twelve chars" has 12 chars and 2 tokens; with punct stripping still 2.
+    # Use a 3-token variant to clear the token-count gate too.
+    prompt = "twelve char s"  # len == 13, 3 tokens
+    assert len(prompt.strip()) == 13
+    skip, _ = _should_skip_bm25(prompt)
+    assert skip is False
+
+
+def test_no_skip_exactly_12_chars_boundary() -> None:
+    # Exactly 12 stripped chars with 3 tokens → do NOT skip
+    prompt = "check PR 627"  # len == 12, 3 tokens
+    assert len(prompt.strip()) == 12
+    skip, _ = _should_skip_bm25(prompt)
+    assert skip is False
+
+
+def test_skip_two_token_prompt() -> None:
+    # 2 tokens after punct removal and length passes 12 → skip on token count
+    skip, reason = _should_skip_bm25("definitely yes")  # 2 tokens, 14 chars
+    assert skip is True
+    assert reason is not None
+
+
+def test_no_skip_three_token_prompt() -> None:
+    # 3 distinct tokens, length >= 12 → do NOT skip
+    skip, _ = _should_skip_bm25("explain PR 627")  # 3 tokens, 14 chars
+    assert skip is False
+
+
+def test_no_skip_substantive_prompts() -> None:
+    for prompt in [
+        "check PR #627",
+        "why is the federation merge stuck",
+        "explain the BM25 changes",
+        "what does the retrieval pipeline do when there are no hits",
+    ]:
+        skip, reason = _should_skip_bm25(prompt)
+        assert skip is False, f"should not skip {prompt!r}: reason={reason}"
