@@ -1,0 +1,1 @@
+The belief graph stores weighted edges between nodes representing project-specific facts extracted from source files and commit history. Each edge carries a Bayesian confidence score that updates when the user provides explicit feedback signals.

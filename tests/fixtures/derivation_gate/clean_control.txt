@@ -1,0 +1,1 @@
+The retrieval subsystem uses a two-lane ranked list to surface the most relevant context for the current session. Lane zero contains user-locked beliefs; lane one contains FTS5 matches ranked by recency and corroboration count.
