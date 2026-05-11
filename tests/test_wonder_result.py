@@ -5,8 +5,9 @@ Coverage:
 - Round-trip: build a WonderResult, dataclasses.asdict, json.dumps, json.loads
   -> same shape.
 - Graph-walk mode always returns mode="graph_walk" and coverage=0.0.
-- Axes mode with N axes and K phantoms -> coverage == K / max(1, N).
+- Axes mode with N axes and K phantoms (K<=N) -> coverage == K / max(1, N).
 - Coverage scalar boundary: 0 axes -> denominator clamped to 1.
+- Coverage scalar upper boundary (#667): K > N -> coverage clamped to 1.0.
 - All fields serialise to JSON-native types (no extra converters needed).
 - CLI: ``aelf wonder --json`` emits valid JSON matching WonderResult shape.
 - CLI: ``aelf wonder`` (no --json) human-readable output is unchanged.
@@ -20,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from aelfrice.wonder.result import WonderResult
+from aelfrice.wonder.result import WonderResult, axes_coverage
 
 
 # ---------------------------------------------------------------------------
@@ -50,7 +51,7 @@ def _axes_result(n_axes: int, k_phantoms: int) -> WonderResult:
          "search_hints": [f"hint-{i}"], "gap_context": "test"}
         for i in range(n_axes)
     ]
-    coverage = k_phantoms / max(1, n_axes)
+    coverage = axes_coverage(k_phantoms, n_axes)
     return WonderResult(
         mode="axes",
         coverage=coverage,
@@ -178,6 +179,41 @@ def test_axes_coverage_zero_phantoms() -> None:
     """Some axes, no phantoms -> coverage == 0.0."""
     result = _axes_result(n_axes=3, k_phantoms=0)
     assert result.coverage == pytest.approx(0.0)
+
+
+# --- #667: coverage upper-bound clamp ------------------------------------
+
+
+def test_axes_coverage_just_over_clamps_to_one() -> None:
+    """K = N + 1 -> raw ratio > 1, clamped to 1.0 by axes_coverage."""
+    result = _axes_result(n_axes=4, k_phantoms=5)
+    assert result.coverage == pytest.approx(1.0)
+
+
+def test_axes_coverage_well_over_clamps_to_one() -> None:
+    """K = 2 * N -> raw ratio = 2.0, clamped to 1.0."""
+    result = _axes_result(n_axes=4, k_phantoms=8)
+    assert result.coverage == pytest.approx(1.0)
+
+
+def test_axes_coverage_helper_lower_bound() -> None:
+    """axes_coverage with zero phantoms is exactly 0.0 (no clamp at 0)."""
+    assert axes_coverage(0, 4) == 0.0
+
+
+def test_axes_coverage_helper_zero_denominator() -> None:
+    """Zero-axes case is clamped at the denominator (max(1, ...)),
+    not at the numerator; matches existing n=0 contract."""
+    assert axes_coverage(0, 0) == 0.0
+    assert axes_coverage(3, 0) == pytest.approx(1.0)
+
+
+def test_axes_coverage_helper_bound_property() -> None:
+    """axes_coverage output is in [0, 1] for arbitrary non-negative inputs."""
+    for k in range(0, 20):
+        for n in range(0, 10):
+            v = axes_coverage(k, n)
+            assert 0.0 <= v <= 1.0, (k, n, v)
 
 
 # ---------------------------------------------------------------------------
