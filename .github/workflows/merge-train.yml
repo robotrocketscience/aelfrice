@@ -20,7 +20,11 @@ name: merge-train
 
 on:
   pull_request:
-    types: [labeled]
+    # `labeled` catches the operator's initial ready-to-merge add.
+    # `synchronize` catches subsequent pushes (rebases) while the label
+    # is already attached — without it, a rebased PR's new head SHA is
+    # never re-evaluated until the label is manually cycled. See #646.
+    types: [labeled, synchronize]
 
 permissions:
   contents: write
@@ -35,7 +39,13 @@ concurrency:
 
 jobs:
   merge:
-    if: github.event.label.name == 'ready-to-merge'
+    # On `labeled`: only fire when *this* event added ready-to-merge.
+    # On `synchronize`: only fire when ready-to-merge is *currently* on
+    # the PR (i.e. the operator already consented and the rebase is
+    # bringing it onto a fresh head SHA). See #646.
+    if: |
+      (github.event.action == 'labeled' && github.event.label.name == 'ready-to-merge') ||
+      (github.event.action == 'synchronize' && contains(github.event.pull_request.labels.*.name, 'ready-to-merge'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
