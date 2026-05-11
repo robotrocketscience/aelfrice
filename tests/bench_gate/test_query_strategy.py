@@ -51,3 +51,43 @@ def test_query_strategy_uplift(aelfrice_corpus_root: Path) -> None:
         f"query-strategy uplift not strictly positive on "
         f"{len(rows)} rows:\n{detail}"
     )
+
+
+# Per-rebuild p99 latency budget from #291 § Bench gates.
+#
+#     p99(stack-r1-r3) <= p99(legacy-bm25) + 5 ms
+#
+# Scope: timed span is `transform_query → retrieve` per row, the only
+# spans that differ between the two arms. Downstream rebuild work
+# (compression, packing) is strategy-invariant and intentionally not
+# included. Sample count: `n_rows * reps_per_row` per arm with one
+# warmup repetition discarded per arm per row.
+_LATENCY_BUDGET_NS = 5_000_000
+
+
+@pytest.mark.bench_gated
+def test_query_strategy_latency(aelfrice_corpus_root: Path) -> None:
+    rows = load_corpus_module(aelfrice_corpus_root, "query_strategy")
+    assert rows, "query_strategy corpus produced zero rows"
+
+    runner_mod = pytest.importorskip(
+        "tests.retrieve_uplift_runner",
+        reason=(
+            "query-strategy latency runner not yet wired (operator gate; "
+            "#291 § Bench gates — pending lab-side corpus)"
+        ),
+    )
+
+    results = runner_mod.run_query_strategy_latency(rows, reps_per_row=20)
+    detail = (
+        f"  p99_legacy_bm25={results.p99_off_ns/1e6:.3f}ms "
+        f"p99_stack_r1_r3={results.p99_on_ns/1e6:.3f}ms "
+        f"delta={results.delta_ns/1e6:+.3f}ms "
+        f"budget=+{_LATENCY_BUDGET_NS/1e6:.1f}ms "
+        f"(n_rows={results.n_rows} reps_per_row={results.reps_per_row})"
+    )
+    assert results.delta_ns <= _LATENCY_BUDGET_NS, (
+        f"query-strategy stack-r1-r3 p99 latency exceeds legacy by "
+        f"more than {_LATENCY_BUDGET_NS/1e6:.1f}ms on {len(rows)} "
+        f"rows:\n{detail}"
+    )
