@@ -2,6 +2,10 @@
 
 **Status:** v3 architectural direction. Pre-implementation; identifies the shape of the work and the one schema change worth landing forward-compatibly in v1.x to avoid losing user data later.
 
+> **Update 2026-05-11 (#661 ratification).** v3.0 ships **read-only federation only** (Option B): the per-project DB is the sole writer; peers open foreign DBs read-only (SQLite ATTACH) and UNION FTS5 results, and mutation tools (`feedback` / `lock` / `delete`) reject foreign belief IDs at the API surface. Under that model there are no concurrent writers, so the CRDT primitives in §2–§5 below are **not in v3.0 scope**: `CONTRADICTS` / lock / counter / GC mechanics stay on their current single-writer encoding. §2–§5 are retained as forward reference if multi-writer federation is ever reopened. **§1 (version vectors) remains valid forward-compat substrate** per the v1.x ship plan in #204 / #205; it is harmless under read-only federation and avoids a painful migration if the model ever changes.
+>
+> Closes the CRDT-primitive sub-issues #651 / #652 / #653 / #654 WONTFIX. Read-only mechanics tracked under #650 (umbrella) and #655 (transport).
+
 ---
 
 ## Frame
@@ -52,6 +56,8 @@ version_vector = { scope_id: monotonic_counter }
 ---
 
 ## 2. CONTRADICTS → MV-Register
+
+> **Deferred (2026-05-11, #661).** §2–§5 describe multi-writer CRDT primitives that are not in v3.0 scope under the read-only federation model. Retained as forward reference.
 
 A `CONTRADICTS` edge expresses "two concurrent values, neither subsumes." That is exactly an MV-Register (Multi-Value Register). The cleaner shape is to make the contradiction a property of the *belief*, not a relationship between two resolved beliefs:
 
