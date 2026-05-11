@@ -431,3 +431,118 @@ def is_license_boilerplate(
     """
     _ = config
     return any(p.search(text) is not None for p in _LICENSE_PATTERNS)
+
+
+# Punctuation characters stripped during N-gram tokenisation. We remove
+# everything that is not a word character or whitespace so that
+# "features," and "features" are treated as the same token.
+_PUNCT_RE: Final[re.Pattern[str]] = re.compile(r"[^\w\s]", re.UNICODE)
+
+
+def _tokenise(text: str) -> list[str]:
+    """Lowercase, strip punctuation, split on whitespace.
+
+    Used by `similarity_to_reference` for both the query text and the
+    reference document so that tokenisation is symmetric.
+    """
+    return _PUNCT_RE.sub(" ", text.lower()).split()
+
+
+def _ngrams(tokens: list[str], n: int) -> frozenset[tuple[str, ...]]:
+    """Return the set of unique N-gram tuples from *tokens*.
+
+    A text shorter than *n* tokens produces an empty set, which
+    results in a Jaccard score of 0.0 (disjoint — no shared N-grams).
+    """
+    if len(tokens) < n:
+        return frozenset()
+    return frozenset(
+        tuple(tokens[i : i + n]) for i in range(len(tokens) - n + 1)
+    )
+
+
+def similarity_to_reference(
+    text: str,
+    reference_path: Path,
+    *,
+    n: int = 3,
+    threshold: float = 0.6,
+) -> tuple[bool, float, str | None]:
+    """N-gram Jaccard similarity gate against a reference document.
+
+    Tokenises both ``text`` and the file at ``reference_path`` into
+    normalised N-gram windows (default n=3 words, lowercased, with
+    punctuation stripped). Computes Jaccard similarity over the
+    N-gram sets.
+
+    Returns ``(over_threshold, score, matched_passage_excerpt)``.
+
+    * ``over_threshold`` — True when ``score >= threshold``.
+    * ``score`` — Jaccard similarity in [0.0, 1.0].
+    * ``matched_passage_excerpt`` — a short excerpt of the best
+      matching window from ``text`` when ``over_threshold`` is True,
+      else None.
+
+    **Failure mode (important):** this is a *surface-similarity* gate,
+    not a *plagiarism* gate. It catches near-verbatim paraphrase —
+    re-orderings, minor substitutions, mild expansions of the same
+    surface tokens. It does **not** catch semantic paraphrase (content
+    reworded into entirely different vocabulary). False positives are
+    expected for short technical phrases that legitimately share many
+    tokens with the reference (e.g. repeated API names, standard error
+    messages). Tune ``threshold`` upward to reduce false positives at
+    the cost of sensitivity.
+
+    Mirrors the shape of ``is_noise`` / ``is_three_word_fragment``:
+    pure function, no side effects, stdlib only, deterministic across
+    re-runs.
+
+    Callers that need only the boolean can write::
+
+        flagged, _, _ = similarity_to_reference(text, ref)
+
+    The ``reference_path`` is read fresh on every call so that the
+    caller controls caching. For high-volume use, pre-read the file and
+    call ``_ngrams(_tokenise(content), n)`` once, then reuse the
+    frozenset.
+    """
+    ref_text = reference_path.read_text(encoding="utf-8", errors="replace")
+    ref_tokens = _tokenise(ref_text)
+    ref_set = _ngrams(ref_tokens, n)
+
+    text_tokens = _tokenise(text)
+    text_set = _ngrams(text_tokens, n)
+
+    if not text_set and not ref_set:
+        # Both sides have fewer than n tokens — no N-grams possible.
+        # Treat as perfectly similar (both are empty / trivially the same).
+        return (True, 1.0, text.strip()[:120] or None) if text.strip() else (False, 0.0, None)
+
+    union = text_set | ref_set
+    if not union:
+        return (False, 0.0, None)
+
+    intersection = text_set & ref_set
+    score = len(intersection) / len(union)
+
+    over = score >= threshold
+    excerpt: str | None = None
+    if over:
+        # Find the contiguous window of tokens in *text* that contributes
+        # the most matching N-grams, then reconstruct a short excerpt.
+        best_start = 0
+        best_count = 0
+        window = n * 5  # ~5x the gram width: enough context without being verbose
+        for i in range(max(1, len(text_tokens) - window + 1)):
+            chunk = frozenset(
+                tuple(text_tokens[j : j + n])
+                for j in range(i, min(i + window, len(text_tokens) - n + 1))
+            )
+            count = len(chunk & ref_set)
+            if count > best_count:
+                best_count = count
+                best_start = i
+        end = min(best_start + window, len(text_tokens))
+        excerpt = " ".join(text_tokens[best_start:end])[:200]
+
+    return (over, score, excerpt)

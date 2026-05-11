@@ -13,6 +13,7 @@ from aelfrice.noise_filter import (
     is_license_boilerplate,
     is_noise,
     is_three_word_fragment,
+    similarity_to_reference,
 )
 
 
@@ -245,3 +246,86 @@ def test_is_noise_false_on_long_paragraph_with_copyright_word_in_middle() -> Non
         "alternative untenable for our deployment situation."
     )
     assert is_noise(text) is False
+
+
+# --- similarity_to_reference: property tests ----------------------------
+
+
+def test_similarity_identity(tmp_path: "pytest.TempPathFactory") -> None:  # type: ignore[type-arg]
+    """sim(a, a) == 1.0 — a document compared to itself is fully similar."""
+    ref = tmp_path / "ref.txt"
+    text = "the belief graph stores weighted edges between project nodes"
+    ref.write_text(text, encoding="utf-8")
+    over, score, excerpt = similarity_to_reference(text, ref)
+    assert score == pytest.approx(1.0)
+    assert over is True
+
+
+def test_similarity_symmetry(tmp_path: "pytest.TempPathFactory") -> None:  # type: ignore[type-arg]
+    """sim(a, b) == sim(b, a) — Jaccard is symmetric."""
+    a_text = "the belief graph stores weighted edges between project nodes"
+    b_text = "weighted edges store belief scores between graph nodes here"
+    ref_a = tmp_path / "a.txt"
+    ref_b = tmp_path / "b.txt"
+    ref_a.write_text(a_text, encoding="utf-8")
+    ref_b.write_text(b_text, encoding="utf-8")
+    _, score_ab, _ = similarity_to_reference(a_text, ref_b)
+    _, score_ba, _ = similarity_to_reference(b_text, ref_a)
+    assert score_ab == pytest.approx(score_ba)
+
+
+def test_similarity_disjoint(tmp_path: "pytest.TempPathFactory") -> None:  # type: ignore[type-arg]
+    """sim over no shared N-grams == 0.0."""
+    ref = tmp_path / "ref.txt"
+    ref.write_text(
+        "alpha bravo charlie delta echo foxtrot golf hotel india",
+        encoding="utf-8",
+    )
+    over, score, excerpt = similarity_to_reference(
+        "one two three four five six seven eight nine", ref
+    )
+    assert score == pytest.approx(0.0)
+    assert over is False
+    assert excerpt is None
+
+
+def test_similarity_threshold_fires(tmp_path: "pytest.TempPathFactory") -> None:  # type: ignore[type-arg]
+    """A text above the threshold is flagged and an excerpt is returned."""
+    ref = tmp_path / "ref.txt"
+    body = "the belief graph stores weighted edges between nodes for facts"
+    ref.write_text(body, encoding="utf-8")
+    over, score, excerpt = similarity_to_reference(body, ref, threshold=0.5)
+    assert over is True
+    assert score >= 0.5
+    assert excerpt is not None
+    assert len(excerpt) > 0
+
+
+def test_similarity_threshold_not_fired(tmp_path: "pytest.TempPathFactory") -> None:  # type: ignore[type-arg]
+    """A text below the threshold is not flagged."""
+    ref = tmp_path / "ref.txt"
+    ref.write_text(
+        "the belief graph stores weighted edges between nodes",
+        encoding="utf-8",
+    )
+    # Completely different vocabulary — should score near 0.
+    over, score, _ = similarity_to_reference(
+        "retrieval subsystem uses a two lane ranked list to surface context",
+        ref,
+        threshold=0.6,
+    )
+    assert over is False
+    assert score < 0.6
+
+
+def test_similarity_excerpt_is_none_when_clean(
+    tmp_path: "pytest.TempPathFactory",  # type: ignore[type-arg]
+) -> None:
+    """excerpt is None when the input is below threshold."""
+    ref = tmp_path / "ref.txt"
+    ref.write_text("alpha bravo charlie delta echo", encoding="utf-8")
+    over, _, excerpt = similarity_to_reference(
+        "one two three four five", ref, threshold=0.6
+    )
+    assert over is False
+    assert excerpt is None
