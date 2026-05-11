@@ -3923,6 +3923,94 @@ def _cmd_tail(args: argparse.Namespace, out: object) -> int:
     )
 
 
+def _cmd_scan_derivation(args: argparse.Namespace, out: object) -> int:
+    """N-gram Jaccard similarity gate against a reference document (#681).
+
+    Reads each PATH (or stdin when '-' is given), computes N-gram
+    Jaccard similarity against the reference file, and prints a
+    one-line result per input.
+
+    Exit codes:
+      0  all inputs are below the threshold (clean)
+      1  at least one input exceeded the threshold (matched)
+      2  the reference file is unreadable
+
+    Designed to drop into a git pre-commit / pre-push hook.
+    """
+    from pathlib import Path as _Path
+
+    from aelfrice.noise_filter import similarity_to_reference
+
+    reference_raw: str | None = getattr(args, "reference", None)
+    threshold: float = float(getattr(args, "threshold", 0.6))
+    n: int = int(getattr(args, "n", 3))
+    paths: list[str] = list(getattr(args, "paths", []) or [])
+
+    if not reference_raw:
+        print("aelf scan-derivation: --reference is required", file=sys.stderr)
+        return 2
+    reference = _Path(reference_raw)
+    if not reference.is_file():
+        print(
+            f"aelf scan-derivation: reference not found or unreadable: {reference}",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Pre-check that we can read the reference (exit 2 on failure).
+    try:
+        reference.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        print(
+            f"aelf scan-derivation: cannot read reference {reference}: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    any_matched = False
+
+    def _check_text(label: str, text: str) -> None:
+        nonlocal any_matched
+        over, score, excerpt = similarity_to_reference(
+            text, reference, n=n, threshold=threshold
+        )
+        if over:
+            any_matched = True
+            snippet = excerpt or text[:120]
+            print(
+                f"MATCH [{score:.3f}] {label}: {snippet!r}",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"clean [{score:.3f}] {label}",
+                file=out,  # type: ignore[arg-type]
+            )
+
+    if not paths:
+        # No paths: read stdin as a single blob.
+        text = sys.stdin.read()
+        _check_text("<stdin>", text)
+    else:
+        for p in paths:
+            if p == "-":
+                text = sys.stdin.read()
+                _check_text("<stdin>", text)
+            else:
+                try:
+                    text = _Path(p).read_text(encoding="utf-8", errors="replace")
+                except OSError as exc:
+                    print(
+                        f"aelf scan-derivation: cannot read {p}: {exc}",
+                        file=sys.stderr,
+                    )
+                    any_matched = True  # treat unreadable inputs as failures
+                    continue
+                _check_text(p, text)
+
+    return 1 if any_matched else 0
+
+
 def _known_cli_subcommands() -> frozenset[str]:
     """Snapshot of the subcommands the running `aelf` parser knows.
 
@@ -5308,6 +5396,44 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="dump current audit contents once and exit (no live tail)",
     )
     p_tail.set_defaults(func=_cmd_tail)
+
+    p_scan_deriv = sub.add_parser(
+        "scan-derivation",
+        help=(
+            "N-gram Jaccard similarity gate against a reference document. "
+            "Exits 0=clean, 1=matched, 2=reference unreadable."
+        ),
+    )
+    p_scan_deriv.add_argument(
+        "--reference",
+        default=None,
+        metavar="PATH",
+        help="path to the reference document to compare against (required)",
+    )
+    p_scan_deriv.add_argument(
+        "--threshold",
+        type=float,
+        default=0.6,
+        metavar="FLOAT",
+        help="Jaccard similarity threshold above which an input is flagged (default: 0.6)",
+    )
+    p_scan_deriv.add_argument(
+        "--n",
+        type=int,
+        default=3,
+        metavar="INT",
+        help="N-gram width in words (default: 3)",
+    )
+    p_scan_deriv.add_argument(
+        "paths",
+        nargs="*",
+        metavar="PATH",
+        help=(
+            "files to check; pass '-' to read stdin. "
+            "If omitted, reads stdin as a single input."
+        ),
+    )
+    p_scan_deriv.set_defaults(func=_cmd_scan_derivation)
 
     return parser
 
