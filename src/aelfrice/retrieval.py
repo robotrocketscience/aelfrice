@@ -182,6 +182,11 @@ ENV_BM25F: Final[str] = "AELFRICE_BM25F"
 ENV_HEAT_KERNEL: Final[str] = "AELFRICE_HEAT_KERNEL"
 # v1.7.0 HRR structural-query env override. Tri-state like ENV_BM25F.
 ENV_HRR_STRUCTURAL: Final[str] = "AELFRICE_HRR_STRUCTURAL"
+# #698 HRR persist env override. "0" disables; "1" forces on.
+# Mirrors _ENV_PERSIST in hrr_index (same value; imported at call site).
+ENV_HRR_PERSIST: Final[str] = "AELFRICE_HRR_PERSIST"
+# #698 `[retrieval] hrr_persist` TOML key.
+HRR_PERSIST_FLAG: Final[str] = "hrr_persist"
 # v2.1 #434 type-aware compression env override. Tri-state.
 ENV_TYPE_AWARE_COMPRESSION: Final[str] = "AELFRICE_TYPE_AWARE_COMPRESSION"
 # v2.0 #436 intentional-clustering env override. Tri-state.
@@ -411,6 +416,24 @@ def _env_intentional_clustering_override() -> bool | None:
     recognised truthy/falsy value, else None. Symmetric to
     `_env_bm25f_override`."""
     raw = os.environ.get(ENV_INTENTIONAL_CLUSTERING)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def _env_hrr_persist_override() -> bool | None:
+    """Return True/False if AELFRICE_HRR_PERSIST is set to a recognised
+    truthy/falsy value, else None. Symmetric to `_env_bm25f_override`.
+
+    "0" → False (disable); "1" → True (force on). Unset or unrecognised
+    values return None so the next precedence rung (TOML → default) wins.
+    """
+    raw = os.environ.get(ENV_HRR_PERSIST)
     if raw is None:
         return None
     norm = raw.strip().lower()
@@ -819,6 +842,33 @@ def is_hrr_structural_enabled(
     if explicit is not None:
         return explicit
     toml_value = _read_toml_flag_for(HRR_STRUCTURAL_FLAG, start)
+    if toml_value is not None:
+        return toml_value
+    return True
+
+
+def is_hrr_persist_enabled(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the HRR structural-index persistence flag (#698).
+
+    Precedence (first decisive wins):
+      1. AELFRICE_HRR_PERSIST env var ("0" disables; "1" forces on).
+      2. Explicit `explicit` kwarg from the caller.
+      3. `[retrieval] hrr_persist` in `.aelfrice.toml`.
+      4. Default: True — persistence is on by default. Set
+         `[retrieval] hrr_persist = false` or `AELFRICE_HRR_PERSIST=0`
+         to disable. In-memory stores (`store_path=None`) are never
+         persisted regardless of this flag.
+    """
+    env = _env_hrr_persist_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    toml_value = _read_toml_flag_for(HRR_PERSIST_FLAG, start)
     if toml_value is not None:
         return toml_value
     return True
