@@ -16,14 +16,12 @@ Covers the #623 acceptance bullets:
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 
 from aelfrice import auto_install
 from aelfrice.auto_install import (
-    AutoInstallResult,
     _UNSTAMPED,
     add_opt_out,
     is_disabled_via_env,
