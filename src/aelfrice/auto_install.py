@@ -365,7 +365,7 @@ def maybe_install_manifest(
     # merge serializes concurrent `aelf` invocations on the same host.
     stamp_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = stamp_path.parent / ".auto-install.lock"
-    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+    lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
