@@ -368,6 +368,10 @@ class HRRStructIndex:
         return idx
 
 
+_PERSIST_DIRNAME: Final[str] = ".hrr_struct_index"
+_ENV_PERSIST: Final[str] = "AELFRICE_HRR_PERSIST"
+
+
 @dataclass
 class HRRStructIndexCache:
     """Lazy, invalidation-aware wrapper around a single ``HRRStructIndex``.
@@ -375,6 +379,15 @@ class HRRStructIndexCache:
     Subscribes to the store's invalidation callback registry on
     construction, so any belief / edge mutation drops the cached
     index. The next ``get()`` rebuilds.
+
+    Persistence (#691, sub-task of #553): when ``store_path`` is set and
+    ``AELFRICE_HRR_PERSIST`` is not ``"0"``, the cache also persists the
+    built index to ``<store_dir>/.hrr_struct_index/`` and tries to load
+    it via ``mmap_mode='r'`` on subsequent process starts. Invalidation
+    drops both the in-memory cache and the on-disk blob so the next
+    ``get()`` rebuilds from current store state. In-memory stores
+    (``store_path=None``) and the explicit opt-out keep pure in-memory
+    behavior.
 
     Per-instance: two caches pointing at different stores never share
     state. Thread safety is the caller's responsibility.
@@ -392,14 +405,60 @@ class HRRStructIndexCache:
             self.store.add_invalidation_callback(self.invalidate)
             self._subscribed = True
 
+    def _resolve_persist_dir(self) -> Path | None:
+        if self.store_path is None:
+            return None
+        if os.environ.get(_ENV_PERSIST, "1") == "0":
+            return None
+        return Path(self.store_path).parent / _PERSIST_DIRNAME
+
     def get(self) -> HRRStructIndex:
         """Return the current index, building or rebuilding as needed."""
-        if self._index is None:
-            idx = HRRStructIndex(dim=self.dim)
-            idx.build(self.store, store_path=self.store_path, seed=self.seed)
-            self._index = idx
+        if self._index is not None:
+            return self._index
+        persist_dir = self._resolve_persist_dir()
+        if persist_dir is not None and (persist_dir / _STRUCT_FILENAME).is_file():
+            try:
+                self._index = HRRStructIndex.load(persist_dir, mmap=True)
+                return self._index
+            except (FileNotFoundError, OSError, KeyError, ValueError) as e:
+                _logger.warning(
+                    "HRRStructIndexCache: persist load failed at %s: %s; rebuilding",
+                    persist_dir,
+                    e,
+                )
+        idx = HRRStructIndex(dim=self.dim)
+        idx.build(self.store, store_path=self.store_path, seed=self.seed)
+        if persist_dir is not None:
+            try:
+                idx.save(persist_dir)
+            except OSError as e:
+                _logger.warning(
+                    "HRRStructIndexCache: persist save failed at %s: %s; continuing in-memory",
+                    persist_dir,
+                    e,
+                )
+        self._index = idx
         return self._index
 
     def invalidate(self) -> None:
         """Drop the cached index. Wired to the store mutation hook."""
         self._index = None
+        persist_dir = self._resolve_persist_dir()
+        if persist_dir is None or not persist_dir.is_dir():
+            return
+        for filename in (_STRUCT_FILENAME, _META_FILENAME):
+            f = persist_dir / filename
+            if f.exists():
+                try:
+                    f.unlink()
+                except OSError as e:
+                    _logger.warning(
+                        "HRRStructIndexCache: persist unlink failed at %s: %s",
+                        f,
+                        e,
+                    )
+        try:
+            persist_dir.rmdir()
+        except OSError:
+            pass
