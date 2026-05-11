@@ -387,3 +387,57 @@ def test_compression_a2_uplift_fact_only_row_ties() -> None:
         "fact-only rows must tie OFF and ON exactly; "
         f"got OFF={r.mean_recall_off} ON={r.mean_recall_on}"
     )
+
+
+def test_p99_ns_small_samples() -> None:
+    """`_p99_ns` uses the k-th largest convention deterministically.
+
+    Empty list → 0; single element → that element; n=100 → sorted[99]
+    (top 1 sample of 100); unsorted input still returns the sorted
+    top. Falsifiable if the helper switches to a continuous
+    interpolation that drifts at small n."""
+    from tests.retrieve_uplift_runner import _p99_ns
+
+    assert _p99_ns([]) == 0
+    assert _p99_ns([42]) == 42
+    # n=100; sorted [0..99], idx = int(0.99 * 100) = 99 → value 99.
+    assert _p99_ns(list(range(100))) == 99
+    # Unsorted input → result still pulls from sorted view.
+    assert _p99_ns([5, 1, 9, 3, 7]) == 9
+
+
+def test_query_strategy_latency_empty_input() -> None:
+    from tests.retrieve_uplift_runner import run_query_strategy_latency
+
+    r = run_query_strategy_latency([])
+    assert r.n_rows == 0
+    assert r.p99_off_ns == 0
+    assert r.p99_on_ns == 0
+    assert r.delta_ns == 0
+
+
+def test_query_strategy_latency_runs_on_synthetic_row() -> None:
+    """Shape contract: latency runner returns non-negative p99s per
+    arm and a finite delta on a one-row synthetic store. Magnitude is
+    a lab-side concern (the bench gate enforces the 5 ms budget);
+    here we only check the dataclass populates correctly without
+    raising."""
+    from tests.retrieve_uplift_runner import run_query_strategy_latency
+
+    row = {
+        "id": "qslat-test-001",
+        "query": "MemoryStore persistence",
+        "k": 3,
+        "beliefs": [
+            {"id": "b1", "content": "the memory store persists beliefs"},
+            {"id": "b2", "content": "the configuration file lives at /etc"},
+            {"id": "b3", "content": "the memory store uses sqlite"},
+        ],
+        "edges": [],
+        "expected_top_k": ["b1", "b3"],
+    }
+    r = run_query_strategy_latency([row], reps_per_row=3)
+    assert r.n_rows == 1
+    assert r.reps_per_row == 3
+    assert r.p99_off_ns >= 0
+    assert r.p99_on_ns >= 0
