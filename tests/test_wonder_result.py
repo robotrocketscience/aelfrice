@@ -8,11 +8,15 @@ Coverage:
 - Axes mode with N axes and K phantoms -> coverage == K / max(1, N).
 - Coverage scalar boundary: 0 axes -> denominator clamped to 1.
 - All fields serialise to JSON-native types (no extra converters needed).
+- CLI: ``aelf wonder --json`` emits valid JSON matching WonderResult shape.
+- CLI: ``aelf wonder`` (no --json) human-readable output is unchanged.
 """
 from __future__ import annotations
 
 import dataclasses
+import io
 import json
+from pathlib import Path
 
 import pytest
 
@@ -188,3 +192,110 @@ def test_wonder_result_equality() -> None:
     a = _graph_walk_result()
     b = _graph_walk_result()
     assert a == b
+
+
+# ---------------------------------------------------------------------------
+# CLI integration: aelf wonder --json (#656)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def _isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    p = tmp_path / "aelf.db"
+    monkeypatch.setenv("AELFRICE_DB", str(p))
+    return p
+
+
+def _run(*argv: str) -> tuple[int, str]:
+    from aelfrice.cli import main
+    buf = io.StringIO()
+    code = main(argv=list(argv), out=buf)
+    return code, buf.getvalue()
+
+
+def _seed_db(db: Path) -> str:
+    """Insert one belief and return its id."""
+    from aelfrice.models import (
+        BELIEF_FACTUAL,
+        EDGE_RELATES_TO,
+        LOCK_NONE,
+        ORIGIN_AGENT_INFERRED,
+        Belief,
+        Edge,
+    )
+    from aelfrice.store import MemoryStore
+
+    s = MemoryStore(str(db))
+    bid = "wr-seed-1"
+    bid2 = "wr-seed-2"
+    try:
+        s.insert_belief(Belief(
+            id=bid, content="python uses indentation",
+            content_hash="h1", alpha=1.0, beta=1.0,
+            type=BELIEF_FACTUAL, lock_level=LOCK_NONE, locked_at=None,
+            demotion_pressure=0, created_at="2026-05-11T00:00:00Z",
+            last_retrieved_at=None, origin=ORIGIN_AGENT_INFERRED,
+        ))
+        s.insert_belief(Belief(
+            id=bid2, content="indentation defines code blocks",
+            content_hash="h2", alpha=1.0, beta=1.0,
+            type=BELIEF_FACTUAL, lock_level=LOCK_NONE, locked_at=None,
+            demotion_pressure=0, created_at="2026-05-11T00:00:00Z",
+            last_retrieved_at=None, origin=ORIGIN_AGENT_INFERRED,
+        ))
+        s.insert_edge(Edge(src=bid, dst=bid2, type=EDGE_RELATES_TO, weight=1.0))
+    finally:
+        s.close()
+    return bid
+
+
+def test_wonder_json_flag_emits_valid_json(_isolated_db: Path) -> None:
+    """``aelf wonder --json`` exits 0 and produces valid JSON."""
+    _seed_db(_isolated_db)
+    code, out = _run("wonder", "--json")
+    assert code == 0, out
+    # Must not raise
+    payload = json.loads(out)
+    assert isinstance(payload, dict)
+
+
+def test_wonder_json_flag_matches_wonder_result_shape(_isolated_db: Path) -> None:
+    """``aelf wonder --json`` output matches the WonderResult field set."""
+    seed_id = _seed_db(_isolated_db)
+    code, out = _run("wonder", "--json")
+    assert code == 0, out
+    payload = json.loads(out)
+    expected_keys = {
+        "mode", "coverage", "known_beliefs", "gaps",
+        "research_axes", "anchor_speculative_ids", "phantoms_created",
+    }
+    assert expected_keys == set(payload.keys())
+    # Graph-walk guarantees
+    assert payload["mode"] == "graph_walk"
+    assert payload["coverage"] == 0.0
+    assert payload["phantoms_created"] == 0
+    assert payload["research_axes"] == []
+    assert payload["gaps"] == []
+    assert payload["anchor_speculative_ids"] == []
+    assert seed_id in payload["known_beliefs"]
+
+
+def test_wonder_json_round_trips_cleanly(_isolated_db: Path) -> None:
+    """The JSON output can be loaded and re-dumped without loss."""
+    _seed_db(_isolated_db)
+    code, out = _run("wonder", "--json")
+    assert code == 0, out
+    first = json.loads(out)
+    second = json.loads(json.dumps(first))
+    assert first == second
+
+
+def test_wonder_no_json_flag_human_output_unchanged(_isolated_db: Path) -> None:
+    """Without --json the graph-walk output still starts with 'seed:'."""
+    seed_id = _seed_db(_isolated_db)
+    code, out = _run("wonder")
+    assert code == 0, out
+    assert out.startswith(f"seed: {seed_id}:")
+    # Output must NOT be JSON
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(out)

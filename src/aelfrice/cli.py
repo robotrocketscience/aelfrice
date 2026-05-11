@@ -1150,21 +1150,12 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
         return 0
 
     if args.json:
+        import dataclasses as _dataclasses
         import json as _json
-        payload2 = {
-            "seed": {"id": seed_b.id, "content": seed_b.content},  # type: ignore[union-attr]
-            "candidates": [
-                {
-                    "candidate_id": h.belief.id,
-                    "score": combined,
-                    "relatedness": relatedness,
-                    "suggested_action": action,
-                    "path": h.path,
-                }
-                for combined, h, action, relatedness in candidates
-            ],
-        }
-        print(_json.dumps(payload2, indent=2), file=out)  # type: ignore[arg-type]
+        print(
+            _json.dumps(_dataclasses.asdict(result), indent=2),
+            file=out,  # type: ignore[arg-type]
+        )
         return 0
 
     print(f"seed: {result.known_beliefs[0]}: {seed_b.content}", file=out)  # type: ignore[arg-type,union-attr]

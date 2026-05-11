@@ -180,18 +180,30 @@ def test_wonder_empty_store_returns_zero_with_message(_isolated_db: Path) -> Non
 
 
 def test_wonder_json_payload_shape(_isolated_db: Path) -> None:
+    """--json emits WonderResult as JSON (#656).
+
+    The output is a dataclasses.asdict(WonderResult) object with the
+    seven fields from the dataclass spec.  Graph-walk mode returns
+    mode="graph_walk" and coverage=0.0.
+    """
     a, _, _ = _seed_chain(_isolated_db)
     code, out = _run("wonder", "--json")
     assert code == 0, out
     payload = json.loads(out)
-    assert payload["seed"]["id"] == a
-    assert isinstance(payload["candidates"], list)
-    assert len(payload["candidates"]) >= 1
-    cand = payload["candidates"][0]
+    # WonderResult shape — seven top-level keys
     assert {
-        "candidate_id", "score", "relatedness", "suggested_action", "path",
-    } <= set(cand.keys())
-    assert cand["suggested_action"] in {"merge", "supersede", "contradict", "relate"}
+        "mode", "coverage", "known_beliefs", "gaps",
+        "research_axes", "anchor_speculative_ids", "phantoms_created",
+    } <= set(payload.keys())
+    # Graph-walk mode guarantees
+    assert payload["mode"] == "graph_walk"
+    assert payload["coverage"] == 0.0
+    assert payload["phantoms_created"] == 0
+    assert payload["research_axes"] == []
+    assert payload["gaps"] == []
+    assert payload["anchor_speculative_ids"] == []
+    # known_beliefs contains the seed id
+    assert a in payload["known_beliefs"]
 
 
 # --- aelf wonder --axes (#551) ----------------------------------------
