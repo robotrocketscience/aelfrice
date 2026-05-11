@@ -378,6 +378,143 @@ def test_cache_explicit_invalidate_drops_index() -> None:
     assert cache._index is None
 
 
+# --- #691 persistence wiring ---------------------------------------------
+
+
+def _store_path(tmp_path: Path) -> str:
+    return str(tmp_path / "memory.db")
+
+
+def _persist_dir(tmp_path: Path) -> Path:
+    return tmp_path / ".hrr_struct_index"
+
+
+def test_cache_persists_to_disk_after_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+    s = _toy_store()
+    cache = HRRStructIndexCache(
+        store=s, dim=256, seed=7, store_path=_store_path(tmp_path)
+    )
+    cache.get()
+    pd = _persist_dir(tmp_path)
+    assert (pd / "struct.npy").is_file()
+    assert (pd / "meta.npz").is_file()
+
+
+def test_cache_loads_from_disk_on_second_construct(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+    sp = _store_path(tmp_path)
+    s1 = _toy_store()
+    cache1 = HRRStructIndexCache(store=s1, dim=256, seed=7, store_path=sp)
+    a = cache1.get()
+    s2 = _toy_store()
+    cache2 = HRRStructIndexCache(store=s2, dim=256, seed=7, store_path=sp)
+    b = cache2.get()
+    # Different instances, identical structural content (load round-trip).
+    assert a is not b
+    np.testing.assert_array_equal(a.struct, b.struct)
+    assert a.belief_ids == b.belief_ids
+
+
+def test_cache_load_uses_mmap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+    sp = _store_path(tmp_path)
+    s1 = _toy_store()
+    HRRStructIndexCache(store=s1, dim=256, seed=7, store_path=sp).get()
+    s2 = _toy_store()
+    loaded = HRRStructIndexCache(
+        store=s2, dim=256, seed=7, store_path=sp
+    ).get()
+    # np.memmap subclasses ndarray; check via type rather than .base
+    # (which is None when the file is the direct backing store).
+    assert isinstance(loaded.struct, np.memmap), (
+        f"expected mmap-backed struct, got {type(loaded.struct).__name__}"
+    )
+
+
+def test_cache_invalidate_removes_disk_blob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+    s = _toy_store()
+    cache = HRRStructIndexCache(
+        store=s, dim=256, seed=7, store_path=_store_path(tmp_path)
+    )
+    cache.get()
+    pd = _persist_dir(tmp_path)
+    assert pd.is_dir()
+    cache.invalidate()
+    assert not (pd / "struct.npy").exists()
+    assert not (pd / "meta.npz").exists()
+    # Directory removed when empty
+    assert not pd.exists()
+
+
+def test_cache_env_persist_zero_disables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AELFRICE_HRR_PERSIST", "0")
+    s = _toy_store()
+    cache = HRRStructIndexCache(
+        store=s, dim=256, seed=7, store_path=_store_path(tmp_path)
+    )
+    cache.get()
+    assert not _persist_dir(tmp_path).exists()
+
+
+def test_cache_no_store_path_disables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+    s = _toy_store()
+    cache = HRRStructIndexCache(store=s, dim=256, seed=7, store_path=None)
+    cache.get()
+    # No store_path → no persistence dir anywhere under tmp_path.
+    assert not _persist_dir(tmp_path).exists()
+
+
+def test_cache_load_failure_falls_through_to_rebuild(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+    sp = _store_path(tmp_path)
+    s1 = _toy_store()
+    HRRStructIndexCache(store=s1, dim=256, seed=7, store_path=sp).get()
+    # Corrupt the persisted struct.npy
+    pd = _persist_dir(tmp_path)
+    (pd / "struct.npy").write_bytes(b"not a numpy file")
+    s2 = _toy_store()
+    cache2 = HRRStructIndexCache(store=s2, dim=256, seed=7, store_path=sp)
+    with caplog.at_level("WARNING", logger="aelfrice.hrr_index"):
+        idx = cache2.get()
+    assert idx is not None
+    assert any("persist load failed" in rec.message for rec in caplog.records)
+    # Rebuild also re-saved a valid file
+    HRRStructIndex.load(pd)  # would raise if still corrupt
+
+
+def test_cache_byte_equality_persist_round_trip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+    sp = _store_path(tmp_path)
+    s1 = _toy_store()
+    cold = HRRStructIndexCache(store=s1, dim=256, seed=7, store_path=sp).get()
+    s2 = _toy_store()
+    warm = HRRStructIndexCache(store=s2, dim=256, seed=7, store_path=sp).get()
+    a = cold.probe("CONTRADICTS", "b2", top_k=5)
+    b = warm.probe("CONTRADICTS", "b2", top_k=5)
+    assert a == b
+
+
 # --- AC6 / AC7 (perf-gated) ----------------------------------------------
 
 
