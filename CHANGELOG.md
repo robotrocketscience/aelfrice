@@ -10,6 +10,8 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+## [3.0.0] - Unreleased
+
 ### Added
 
 - **`#N` literal boost in L1 BM25 scoring** ([#677](https://github.com/robotrocketscience/aelfrice/issues/677)). The L1 BM25 tokenizer drops `#`, so plain `#NNN` prompts used to collide on the bare digit with every other `#NNN` in the corpus — audit-log survey of 88 substantive `#NNN`-bearing prompts measured ~20% mean topical-hit rate; 5/88 got zero relevant hits. `_l1_hits` now extracts `#\d+` literals from the prompt via `_extract_hash_n_literals` and, in both the FTS5 and BM25F lanes, adds `log(HASH_N_BOOST_MULTIPLIER)` (default `log(2.0)`) to the final per-belief log score when belief content contains any prompt literal. The shift is log-additive in the same space `partial_bayesian_score` / `combine_log_scores` produce, equivalent to multiplying the BM25 relevance magnitude by the multiplier. Prompts without `#N` literals take the existing byte-identical FTS5 / BM25F short-circuit unchanged — only `#N`-bearing prompts route through the rerank loop, so the v1.0.x `posterior_weight=0.0` byte-identical contract holds for every other query shape. The substring check is literal `lit in content` rather than tokenised, because the whole disambiguation hinges on the `#` anchor the tokenizer otherwise strips. Eleven unit + end-to-end tests cover extraction (multi-literal, bare-digit rejection), the boost helper (presence-of-any semantics, single boost even with multiple matching literals), and the acceptance-bullet ranking case from the issue body.
