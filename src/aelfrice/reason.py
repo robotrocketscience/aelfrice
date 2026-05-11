@@ -114,9 +114,40 @@ the prior."""
 
 CLOSE_MEAN_DELTA: Final[float] = 0.15
 """Two posterior means whose absolute difference is below this delta
-count as "similar" for ``TIE`` detection. Empirical: a 0.15 gap in
-posterior mean is roughly the noise floor of a ``Beta(2, 4)`` vs
-``Beta(3, 3)`` comparison (both ~6 trials)."""
+count as "similar" for the R1 posterior-mean ``TIE`` rule. Empirical:
+a 0.15 gap in posterior mean is roughly the noise floor of a
+``Beta(2, 4)`` vs ``Beta(3, 3)`` comparison (both ~6 trials).
+
+This constant applies to per-belief posterior means only. The
+fork-aware ``TIE`` rule on ``ConsequencePath.compound_confidence``
+uses :data:`COMPOUND_TIE_FLOOR` + :data:`COMPOUND_TIE_REL_TOL`
+instead (#668) — multiplicative compound scores need a
+ratio-based test, not an absolute-diff one, to stay sensible across
+varying path depths."""
+
+COMPOUND_TIE_FLOOR: Final[float] = 0.10
+"""Minimum ``compound_confidence`` for a forked-path pair to be
+eligible for ``TIE`` detection. Pairs whose lower-compound side is
+below this floor are not "comparable" in any useful sense — they
+both decayed too hard along their respective paths to constitute
+meaningful evidence either way. Empirical: 0.10 sits below the BFS
+``min_path_score`` floor (0.10) so any path that survived the walk
+clears the floor in the common case; only deeply-attenuated
+multi-hop paths fall below."""
+
+COMPOUND_TIE_REL_TOL: Final[float] = 0.20
+"""Relative tolerance (``abs(a - b) / max(a, b)``) below which two
+compound_confidence values count as "comparable" for fork-TIE
+detection. Scale-invariant: deeper paths require tighter absolute
+agreement, matching the intuition that two near-collapsed compounds
+(say 0.10 vs 0.08, ratio 0.20) are an actual tie while two strong
+ones (0.99 vs 0.85, ratio ~0.14) are also one, but two mid-range
+compounds at 0.24 vs 0.10 (ratio 0.58) are not.
+
+The earlier R2 prototype used :data:`CLOSE_MEAN_DELTA` (0.15
+absolute) as a stand-in here; that was calibrated against
+per-belief means in the ~0.5 region and over-fires on
+long-path pairs. Replaced as #668."""
 
 
 def _trials(b: Belief) -> float:
@@ -132,6 +163,33 @@ def _mean(b: Belief) -> float:
 
 def _is_low_evidence(b: Belief) -> bool:
     return _trials(b) < CONFIDENT_TRIALS_MIN
+
+
+def _compound_paths_tie(a: float, b: float) -> bool:
+    """Whether two fork-path ``compound_confidence`` values count as a
+    TIE for fork-aware classifier rule (#668).
+
+    Two-knob test (Option B from #668 design):
+
+    1. Both compounds must be above :data:`COMPOUND_TIE_FLOOR` —
+       deeply-attenuated pairs are too weak to constitute meaningful
+       contradiction, no matter how close they are.
+    2. Their relative gap (``abs(a - b) / max(a, b)``) must be below
+       :data:`COMPOUND_TIE_REL_TOL`. Scale-invariant: deeper paths
+       require tighter absolute agreement, in proportion to their
+       compound's magnitude.
+
+    Replaces the earlier absolute-diff check against
+    :data:`CLOSE_MEAN_DELTA`, which was calibrated against per-
+    belief posterior means and over-fired on long-path pairs whose
+    compounds had decayed together.
+    """
+    if min(a, b) <= COMPOUND_TIE_FLOOR:
+        return False
+    denom = max(a, b)
+    if denom <= 0:
+        return False
+    return abs(a - b) / denom < COMPOUND_TIE_REL_TOL
 
 
 def classify(
@@ -235,9 +293,8 @@ def classify(
                 for j in range(i + 1, len(siblings)):
                     a = siblings[i]
                     b = siblings[j]
-                    if (
-                        abs(a.compound_confidence - b.compound_confidence)
-                        < CLOSE_MEAN_DELTA
+                    if _compound_paths_tie(
+                        a.compound_confidence, b.compound_confidence
                     ):
                         impasses.append(
                             Impasse(

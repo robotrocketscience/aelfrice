@@ -307,3 +307,134 @@ def test_classify_paths_none_preserves_r1_behaviour(store: MemoryStore) -> None:
     v_explicit_none, i_explicit_none = classify([seed], [h], store, paths=None)
     assert v_no_paths == v_explicit_none
     assert i_no_paths == i_explicit_none
+
+
+# --- #668: ratio-based compound-tie threshold ---------------------------
+
+
+def test_classify_fork_tie_short_path_ties_long_path_does_not(
+    store: MemoryStore,
+) -> None:
+    """#668: identical absolute diff (0.14) — short paths near 1.0 tie,
+    long paths near 0.2 do not.
+
+    Short-path pair: compound 0.99 vs 0.85, ratio 0.14 < 0.20 → TIE.
+    Long-path pair:  compound 0.24 vs 0.10, ratio 0.58 → no TIE.
+
+    Both have the same absolute diff (~0.14). The old absolute-only
+    rule against CLOSE_MEAN_DELTA=0.15 would tie both; the new
+    relative-tolerance rule correctly separates them.
+    """
+    from aelfrice.reason import ConsequencePath
+
+    seed = _mk("seed", alpha=5.0, beta=2.0)
+    confident = _mk("conf", alpha=8.0, beta=2.0)
+    store.insert_edge(
+        Edge(src="conf", dst="x", type=EDGE_RELATES_TO, weight=1.0)
+    )
+    h = _hop(confident, [EDGE_CONTRADICTS])
+
+    short_paths = [
+        ConsequencePath(
+            belief_ids=("seed", "S1"),
+            edge_kinds=("CONTRADICTS",),
+            compound_confidence=0.99,
+            weakest_link_belief_id="S1",
+            fork_from="seed",
+        ),
+        ConsequencePath(
+            belief_ids=("seed", "S2"),
+            edge_kinds=("CONTRADICTS",),
+            compound_confidence=0.85,
+            weakest_link_belief_id="S2",
+            fork_from="seed",
+        ),
+    ]
+    _, impasses_short = classify([seed], [h], store, paths=short_paths)
+    short_tie = [
+        i for i in impasses_short
+        if i.kind == ImpasseKind.TIE and i.belief_ids == ("S1", "S2")
+    ]
+    assert len(short_tie) == 1, "short-path pair must TIE"
+
+    long_paths = [
+        ConsequencePath(
+            belief_ids=("seed", "x", "y", "L1"),
+            edge_kinds=("RELATES_TO", "RELATES_TO", "CONTRADICTS"),
+            compound_confidence=0.24,
+            weakest_link_belief_id="L1",
+            fork_from="seed",
+        ),
+        ConsequencePath(
+            belief_ids=("seed", "x", "y", "L2"),
+            edge_kinds=("RELATES_TO", "RELATES_TO", "CONTRADICTS"),
+            compound_confidence=0.10,
+            weakest_link_belief_id="L2",
+            fork_from="seed",
+        ),
+    ]
+    _, impasses_long = classify([seed], [h], store, paths=long_paths)
+    long_tie = [
+        i for i in impasses_long
+        if i.kind == ImpasseKind.TIE and i.belief_ids == ("L1", "L2")
+    ]
+    assert len(long_tie) == 0, (
+        "long-path pair with same absolute diff but different ratio "
+        "must NOT TIE"
+    )
+
+
+def test_classify_fork_tie_below_compound_floor_does_not_tie(
+    store: MemoryStore,
+) -> None:
+    """#668: near-collapsed compounds (≈0.02) do not TIE even though
+    their absolute diff is tiny.
+
+    Compound floor is 0.10. A pair at 0.03 vs 0.02 has ratio 0.33,
+    BUT both sides are below the floor — meaning neither side has
+    survived the BFS as meaningful evidence. The fork-TIE rule
+    skips them entirely.
+    """
+    from aelfrice.reason import ConsequencePath
+
+    seed = _mk("seed", alpha=5.0, beta=2.0)
+    confident = _mk("conf", alpha=8.0, beta=2.0)
+    store.insert_edge(
+        Edge(src="conf", dst="x", type=EDGE_RELATES_TO, weight=1.0)
+    )
+    h = _hop(confident, [EDGE_CONTRADICTS])
+
+    paths = [
+        ConsequencePath(
+            belief_ids=("seed", "F1"),
+            edge_kinds=("CONTRADICTS",),
+            compound_confidence=0.03,
+            weakest_link_belief_id="F1",
+            fork_from="seed",
+        ),
+        ConsequencePath(
+            belief_ids=("seed", "F2"),
+            edge_kinds=("CONTRADICTS",),
+            compound_confidence=0.02,
+            weakest_link_belief_id="F2",
+            fork_from="seed",
+        ),
+    ]
+    _, impasses = classify([seed], [h], store, paths=paths)
+    floor_tie = [
+        i for i in impasses
+        if i.kind == ImpasseKind.TIE and i.belief_ids == ("F1", "F2")
+    ]
+    assert len(floor_tie) == 0, (
+        "pair below COMPOUND_TIE_FLOOR must not TIE regardless of "
+        "absolute diff"
+    )
+
+
+def test_compound_tie_constants_documented_and_load_bearing() -> None:
+    """#668 named thresholds; pin the values so any retune is a
+    deliberate change."""
+    from aelfrice.reason import COMPOUND_TIE_FLOOR, COMPOUND_TIE_REL_TOL
+
+    assert COMPOUND_TIE_FLOOR == 0.10
+    assert COMPOUND_TIE_REL_TOL == 0.20
