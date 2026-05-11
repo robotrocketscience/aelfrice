@@ -535,7 +535,7 @@ def test_end_to_end_hook_fire_then_tail(
         "transcript_path": "/dev/null",
         "cwd": "/tmp",
         "hook_event_name": "UserPromptSubmit",
-        "prompt": "bananas",
+        "prompt": "what is in the kitchen full of bananas",
     })
     rc = user_prompt_submit(stdin=io.StringIO(payload), stdout=io.StringIO())
     assert rc == 0
