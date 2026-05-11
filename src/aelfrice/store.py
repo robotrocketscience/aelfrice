@@ -722,6 +722,8 @@ class MemoryStore:
             try:
                 conn.close()
             except sqlite3.Error:
+                # Peer handle close errors are not recoverable at teardown —
+                # swallow so the local store close still runs.
                 pass
         self._peer_handles.clear()
         self._conn.close()
