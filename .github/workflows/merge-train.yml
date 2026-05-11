@@ -103,9 +103,25 @@ jobs:
           # be signed. The bot can't sign, but it isn't adding commits
           # here — these are the author's. Verify upfront so a quiet
           # branch-protection rejection downstream doesn't confuse.
-          unsigned=$(git log --format='%H %G?' "origin/main..origin/${HEAD_REF}" | awk '$2!="G" && $2!="U" {print $1}' || true)
+          #
+          # Use GitHub's verification API rather than `git log --format=%G?`:
+          # %G? requires local `gpg.ssh.allowedSignersFile` to recognise
+          # SSH signatures, which actions/checkout does not set. GitHub's
+          # API is the same source of truth `required_signatures` branch
+          # protection uses downstream, so any commit it reports as
+          # verified will also pass the push gate.
+          unsigned=""
+          while IFS= read -r sha; do
+              [ -z "${sha}" ] && continue
+              verified=$(gh api "repos/${REPO}/commits/${sha}" \
+                  --jq '.commit.verification.verified // false' 2>/dev/null || echo "false")
+              if [ "${verified}" != "true" ]; then
+                  unsigned="${unsigned}${sha}"$'\n'
+              fi
+          done < <(git log --format='%H' "origin/main..origin/${HEAD_REF}")
+          unsigned=${unsigned%$'\n'}
           if [ -n "${unsigned}" ]; then
-              fail_and_unlabel "one or more commits between main and \`${HEAD_REF}\` are not GPG/SSH-signed:\n\n\`\`\`\n${unsigned}\n\`\`\`\n\nSign them locally and re-add the label. The bot cannot sign on your behalf."
+              fail_and_unlabel "one or more commits between main and \`${HEAD_REF}\` are not signed (per GitHub verification API):\n\n\`\`\`\n${unsigned}\n\`\`\`\n\nSign them locally and re-add the label. The bot cannot sign on your behalf."
           fi
 
           echo "[4/5] waiting for required checks to complete..."
