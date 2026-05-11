@@ -42,22 +42,35 @@ def _evaluate(phantom_text: str, lock_text: str) -> bool:
 
     Returns True if the rule promotes the phantom under the lock_text.
     """
+    import hashlib
+
     from aelfrice.models import (
-        BeliefType,
-        ORIGIN_SPECULATIVE,
+        BELIEF_SPECULATIVE,
         LOCK_NONE,
+        ORIGIN_SPECULATIVE,
+        Belief,
     )
     from aelfrice.promotion import find_phantom_lock_matches
     from aelfrice.store import MemoryStore
 
-    store = MemoryStore(":memory:")
-    belief_id = store.insert_belief(
+    content_hash = hashlib.sha256(phantom_text.encode("utf-8")).hexdigest()
+    belief_id = f"phantom-{content_hash[:12]}"
+    phantom = Belief(
+        id=belief_id,
         content=phantom_text,
-        belief_type=BeliefType.SPECULATIVE.value
-            if hasattr(BeliefType, 'SPECULATIVE') else "speculative",
-        origin=ORIGIN_SPECULATIVE,
+        content_hash=content_hash,
+        alpha=1.0,
+        beta=1.0,
+        type=BELIEF_SPECULATIVE,
         lock_level=LOCK_NONE,
+        locked_at=None,
+        demotion_pressure=0,
+        created_at="2026-05-11T00:00:00Z",
+        last_retrieved_at=None,
+        origin=ORIGIN_SPECULATIVE,
     )
+    store = MemoryStore(":memory:")
+    store.insert_belief(phantom)
     matches = find_phantom_lock_matches(store, lock_text)
     return belief_id in matches
 
