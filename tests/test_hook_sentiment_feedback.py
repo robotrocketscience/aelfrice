@@ -396,7 +396,7 @@ def test_ups_hook_applies_sentiment_to_prior_turn_when_enabled(
 
     # Turn 1: query that should retrieve F1; UPS writes its audit row.
     user_prompt_submit(
-        stdin=io.StringIO(_payload("answer purple")),
+        stdin=io.StringIO(_payload("what is the answer in purple")),
         stdout=io.StringIO(),
     )
     pre = _read_belief(db, "F1")
@@ -426,15 +426,15 @@ def test_correction_lowers_subsequent_ranking_across_sessions(
     _seed_db(
         db,
         [
-            _mk("WRONG", "purple bananas are the answer"),
-            _mk("OK", "purple bananas exist in the kitchen"),
+            _mk("WRONG", "the recommended strategy is to apply patches directly"),
+            _mk("OK", "use a separate approach for handling edge cases"),
         ],
     )
     _set_db(monkeypatch, db)
 
     # Session A: turn 1 surfaces only WRONG (prompt is narrower).
     user_prompt_submit(
-        stdin=io.StringIO(_payload("answer", session_id="sA")),
+        stdin=io.StringIO(_payload("apply patches strategy", session_id="sA")),
         stdout=io.StringIO(),
     )
     # Session A: turn 2 — user says "no, wrong". Lane bumps WRONG only,
@@ -447,7 +447,9 @@ def test_correction_lowers_subsequent_ranking_across_sessions(
     # Session B: same DB; replay a query that surfaces both beliefs.
     sout_b = io.StringIO()
     user_prompt_submit(
-        stdin=io.StringIO(_payload("purple bananas", session_id="sB")),
+        stdin=io.StringIO(
+            _payload("patches approach separate handling", session_id="sB")
+        ),
         stdout=sout_b,
     )
     block = sout_b.getvalue()
@@ -475,7 +477,7 @@ def test_feedback_history_row_uses_sentiment_inferred_source(
     _seed_db(db, [_mk("F1", "purple bananas in the kitchen")])
     _set_db(monkeypatch, db)
     user_prompt_submit(
-        stdin=io.StringIO(_payload("purple bananas")), stdout=io.StringIO()
+        stdin=io.StringIO(_payload("purple bananas in kitchen")), stdout=io.StringIO()
     )
     user_prompt_submit(
         stdin=io.StringIO(_payload("no, wrong")), stdout=io.StringIO()
