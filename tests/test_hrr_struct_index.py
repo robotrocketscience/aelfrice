@@ -693,3 +693,193 @@ def test_probe_latency_at_n_50k(request: pytest.FixtureRequest) -> None:
     assert elapsed_ms <= 30.0, (
         f"probe took {elapsed_ms:.2f} ms, exceeds 30ms budget"
     )
+
+
+# --- #695 ephemeral-path auto-disable ---------------------
+
+import sys
+
+
+def _resolved_prefix(raw: str) -> str:
+    """Return the trailing-slash form of raw's resolved path,
+    for use in monkeypatching _EPHEMERAL_PATH_PREFIXES."""
+    return str(Path(raw).resolve(strict=False)) + "/"
+
+
+@pytest.fixture(autouse=False)
+def _reset_ephemeral_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reset the module-level one-shot flag before each test that uses it."""
+    import aelfrice.hrr_index as hi
+    monkeypatch.setattr(hi, "_ephemeral_disable_logged", False)
+
+
+def test_cache_ephemeral_tmp_path_disables(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Store under /tmp/... → no persist dir, WARNING logged."""
+    import aelfrice.hrr_index as hi
+
+    monkeypatch.setattr(hi, "_ephemeral_disable_logged", False)
+    # Use the resolved form so this test is portable across macOS (/private/tmp) and Linux.
+    resolved_prefix = _resolved_prefix("/tmp")
+    monkeypatch.setattr(hi, "_EPHEMERAL_PATH_PREFIXES", frozenset({resolved_prefix}))
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+
+    store_path = "/tmp/aelf-695-test-ephemeral/memory.db"
+    s = _toy_store()
+    cache = HRRStructIndexCache(store=s, dim=64, seed=1, store_path=store_path)
+    with caplog.at_level("WARNING", logger="aelfrice.hrr_index"):
+        cache.get()
+    assert cache._resolve_persist_dir() is None
+    assert any(
+        "HRR persistence disabled on ephemeral path" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_cache_ephemeral_var_tmp_disables(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """/var/tmp/... → disabled."""
+    import aelfrice.hrr_index as hi
+
+    monkeypatch.setattr(hi, "_ephemeral_disable_logged", False)
+    resolved_prefix = _resolved_prefix("/var/tmp")
+    monkeypatch.setattr(hi, "_EPHEMERAL_PATH_PREFIXES", frozenset({resolved_prefix}))
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+
+    store_path = "/var/tmp/aelf-695-test/memory.db"
+    s = _toy_store()
+    cache = HRRStructIndexCache(store=s, dim=64, seed=1, store_path=store_path)
+    assert cache._resolve_persist_dir() is None
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="/dev/shm is Linux-only"
+)
+def test_cache_ephemeral_dev_shm_disables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """/dev/shm/... → disabled (Linux only)."""
+    import aelfrice.hrr_index as hi
+
+    monkeypatch.setattr(hi, "_ephemeral_disable_logged", False)
+    resolved_prefix = _resolved_prefix("/dev/shm")
+    monkeypatch.setattr(hi, "_EPHEMERAL_PATH_PREFIXES", frozenset({resolved_prefix}))
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+
+    store_path = "/dev/shm/aelf-695-test/memory.db"
+    s = _toy_store()
+    cache = HRRStructIndexCache(store=s, dim=64, seed=1, store_path=store_path)
+    assert cache._resolve_persist_dir() is None
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="/run is Linux-only"
+)
+def test_cache_ephemeral_run_disables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """/run/... → disabled (Linux only)."""
+    import aelfrice.hrr_index as hi
+
+    monkeypatch.setattr(hi, "_ephemeral_disable_logged", False)
+    resolved_prefix = _resolved_prefix("/run")
+    monkeypatch.setattr(hi, "_EPHEMERAL_PATH_PREFIXES", frozenset({resolved_prefix}))
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+
+    store_path = "/run/aelf-695-test/memory.db"
+    s = _toy_store()
+    cache = HRRStructIndexCache(store=s, dim=64, seed=1, store_path=store_path)
+    assert cache._resolve_persist_dir() is None
+
+
+def test_cache_env_persist_1_overrides_ephemeral(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """AELFRICE_HRR_PERSIST=1 + /tmp/... → persist dir IS returned."""
+    import aelfrice.hrr_index as hi
+
+    monkeypatch.setattr(hi, "_ephemeral_disable_logged", False)
+    resolved_prefix = _resolved_prefix("/tmp")
+    monkeypatch.setattr(hi, "_EPHEMERAL_PATH_PREFIXES", frozenset({resolved_prefix}))
+    monkeypatch.setenv("AELFRICE_HRR_PERSIST", "1")
+
+    store_path = "/tmp/aelf-695-test-force/memory.db"
+    s = _toy_store()
+    cache = HRRStructIndexCache(store=s, dim=64, seed=1, store_path=store_path)
+    result = cache._resolve_persist_dir()
+    assert result is not None
+    assert result.name == ".hrr_struct_index"
+
+
+def test_cache_env_persist_0_disables_on_ephemeral_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AELFRICE_HRR_PERSIST=0 wins over any path — disabled even under /tmp."""
+    import aelfrice.hrr_index as hi
+
+    monkeypatch.setattr(hi, "_ephemeral_disable_logged", False)
+    resolved_prefix = _resolved_prefix("/tmp")
+    monkeypatch.setattr(hi, "_EPHEMERAL_PATH_PREFIXES", frozenset({resolved_prefix}))
+    monkeypatch.setenv("AELFRICE_HRR_PERSIST", "0")
+
+    store_path = "/tmp/aelf-695-test-disabled/memory.db"
+    s = _toy_store()
+    cache = HRRStructIndexCache(store=s, dim=64, seed=1, store_path=store_path)
+    assert cache._resolve_persist_dir() is None
+
+
+def test_cache_ephemeral_log_once_per_process(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """WARNING fires exactly once even when _resolve_persist_dir is called twice."""
+    import aelfrice.hrr_index as hi
+
+    monkeypatch.setattr(hi, "_ephemeral_disable_logged", False)
+    resolved_prefix = _resolved_prefix("/tmp")
+    monkeypatch.setattr(hi, "_EPHEMERAL_PATH_PREFIXES", frozenset({resolved_prefix}))
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+
+    store_path = "/tmp/aelf-695-test-logonce/memory.db"
+    s = _toy_store()
+    cache = HRRStructIndexCache(store=s, dim=64, seed=1, store_path=store_path)
+    with caplog.at_level("WARNING", logger="aelfrice.hrr_index"):
+        cache.get()
+        cache.invalidate()
+        cache.get()
+
+    warning_msgs = [
+        rec for rec in caplog.records
+        if "HRR persistence disabled on ephemeral path" in rec.message
+    ]
+    assert len(warning_msgs) == 1, (
+        f"expected exactly 1 ephemeral-disable WARNING, got {len(warning_msgs)}"
+    )
+
+
+def test_cache_non_ephemeral_path_persists_normally(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A non-ephemeral path returns the persist dir normally.
+    Monkeypatches _EPHEMERAL_PATH_PREFIXES to empty so tmp_path
+    (which may be under /tmp on Linux) is treated as non-ephemeral."""
+    import aelfrice.hrr_index as hi
+
+    monkeypatch.setattr(hi, "_EPHEMERAL_PATH_PREFIXES", frozenset())
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+
+    sp = str(tmp_path / "memory.db")
+    s = _toy_store()
+    cache = HRRStructIndexCache(store=s, dim=64, seed=1, store_path=sp)
+    result = cache._resolve_persist_dir()
+    assert result is not None
+    assert result.name == ".hrr_struct_index"
+    # Verify get() actually saves to disk (not just returns the path).
+    cache.get()
+    assert (result / "struct.npy").is_file()
