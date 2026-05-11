@@ -138,6 +138,8 @@ def classify(
     seeds: list[Belief],
     hops: list[ScoredHop],
     store: MemoryStore,
+    *,
+    paths: list[ConsequencePath] | None = None,
 ) -> tuple[Verdict, list[Impasse]]:
     """Derive ``(verdict, impasses)`` from walk evidence.
 
@@ -151,6 +153,14 @@ def classify(
     then ``TIE``, then ``GAP``); within each kind impasses are emitted
     in hop-list order (which itself is deterministic per
     :func:`aelfrice.bfs_multihop.expand_bfs`'s ordering contract).
+
+    ``paths`` (R2, #658): when supplied, the classifier additionally
+    emits a ``TIE`` impasse when two CONTRADICTS-forked paths share a
+    common parent and have compound-confidence values within
+    :data:`CLOSE_MEAN_DELTA` of one another. This is in addition to
+    the R1 posterior-mean TIE rule and trips ``CONTRADICTORY`` per the
+    #658 acceptance criterion. Backwards-compat: when ``paths`` is
+    ``None`` the R1-only behaviour holds.
     """
     impasses: list[Impasse] = []
 
@@ -213,6 +223,36 @@ def classify(
                     note="path ends at high-uncertainty leaf",
                 )
             )
+
+    if paths:
+        forks = [p for p in paths if p.fork_from is not None]
+        by_parent: dict[str, list[ConsequencePath]] = {}
+        for p in forks:
+            assert p.fork_from is not None
+            by_parent.setdefault(p.fork_from, []).append(p)
+        for parent_id, siblings in by_parent.items():
+            for i in range(len(siblings)):
+                for j in range(i + 1, len(siblings)):
+                    a = siblings[i]
+                    b = siblings[j]
+                    if (
+                        abs(a.compound_confidence - b.compound_confidence)
+                        < CLOSE_MEAN_DELTA
+                    ):
+                        impasses.append(
+                            Impasse(
+                                kind=ImpasseKind.TIE,
+                                belief_ids=tuple(
+                                    sorted(
+                                        [a.belief_ids[-1], b.belief_ids[-1]]
+                                    )
+                                ),
+                                note=(
+                                    "forked CONTRADICTS branches with "
+                                    "comparable compound_confidence"
+                                ),
+                            )
+                        )
 
     has_tie = any(i.kind == ImpasseKind.TIE for i in impasses)
     has_cf = any(i.kind == ImpasseKind.CONSTRAINT_FAILURE for i in impasses)

@@ -75,9 +75,11 @@ from aelfrice.models import (
 )
 from aelfrice.bfs_multihop import expand_bfs
 from aelfrice.reason import (
+    ConsequencePath,
     Impasse,
     Verdict,
     classify as _reason_classify,
+    derive_paths as _reason_derive_paths,
     dispatch_policy as _reason_dispatch_policy,
     suggested_updates as _reason_suggested_updates,
 )
@@ -753,7 +755,8 @@ def _cmd_reason(args: argparse.Namespace, out: object) -> int:
             nodes_per_hop=args.fanout,
             total_budget=args.budget,
         )
-        verdict, impasses = _reason_classify(seeds, hops, store)
+        paths = _reason_derive_paths(seeds, hops)
+        verdict, impasses = _reason_classify(seeds, hops, store, paths=paths)
     finally:
         store.close()
 
@@ -775,6 +778,16 @@ def _cmd_reason(args: argparse.Namespace, out: object) -> int:
                     "path": h.path,
                 }
                 for h in hops
+            ],
+            "paths": [
+                {
+                    "belief_ids": list(p.belief_ids),
+                    "edge_kinds": list(p.edge_kinds),
+                    "compound_confidence": p.compound_confidence,
+                    "weakest_link_belief_id": p.weakest_link_belief_id,
+                    "fork_from": p.fork_from,
+                }
+                for p in paths
             ],
             "verdict": verdict.value,
             "impasses": [
@@ -811,7 +824,7 @@ def _cmd_reason(args: argparse.Namespace, out: object) -> int:
         print(f"  {b.id}: {b.content}", file=out)  # type: ignore[arg-type]
     if not hops:
         print("(no expansions — seeds have no outbound edges within budget)", file=out)  # type: ignore[arg-type]
-        _emit_reason_footer(verdict, impasses, out)
+        _emit_reason_footer(verdict, impasses, paths, out)
         return 0
     print("chain:", file=out)  # type: ignore[arg-type]
     for h in hops:
@@ -823,29 +836,48 @@ def _cmd_reason(args: argparse.Namespace, out: object) -> int:
         )
         if path_str:
             print(f"{indent}  via {path_str}", file=out)  # type: ignore[arg-type]
-    _emit_reason_footer(verdict, impasses, out)
+    _emit_reason_footer(verdict, impasses, paths, out)
     return 0
 
 
 def _emit_reason_footer(
-    verdict: Verdict, impasses: list[Impasse], out: object
+    verdict: Verdict,
+    impasses: list[Impasse],
+    paths: list[ConsequencePath],
+    out: object,
 ) -> None:
-    """Print the verdict + impasses block at the tail of `aelf reason`.
+    """Print the verdict + impasses + forks block at the tail of `aelf reason`.
 
-    Two-line minimum: a `verdict:` line and an `impasses:` line. When
-    impasses are present, each one renders on its own indented row
-    after the header. Format is grep-friendly so downstream tooling
-    (e.g. R3 dispatch policy) can pick the verdict out of stdout.
+    Three sections: a ``verdict:`` line, the impasses block (either
+    ``(none)`` or one indented row per impasse), and a ``forks:``
+    summary that calls out CONTRADICTS-forked paths with their
+    parent-path terminal id and the forked path's compound confidence.
+    Format is grep-friendly so downstream tooling (e.g. R3 dispatch
+    policy) can pick the verdict out of stdout.
     """
     print(f"verdict: {verdict.value}", file=out)  # type: ignore[arg-type]
     if not impasses:
         print("impasses: (none)", file=out)  # type: ignore[arg-type]
+    else:
+        print("impasses:", file=out)  # type: ignore[arg-type]
+        for imp in impasses:
+            ids_str = ",".join(imp.belief_ids)
+            print(
+                f"  {imp.kind.value} [{ids_str}]: {imp.note}",
+                file=out,  # type: ignore[arg-type]
+            )
+    forks = [p for p in paths if p.fork_from is not None]
+    if not forks:
+        print("forks: (none)", file=out)  # type: ignore[arg-type]
         return
-    print("impasses:", file=out)  # type: ignore[arg-type]
-    for imp in impasses:
-        ids_str = ",".join(imp.belief_ids)
+    print("forks:", file=out)  # type: ignore[arg-type]
+    for p in forks:
         print(
-            f"  {imp.kind.value} [{ids_str}]: {imp.note}",
+            (
+                f"  {p.fork_from} -> {p.belief_ids[-1]} "
+                f"[compound={p.compound_confidence:.3f}, "
+                f"weakest={p.weakest_link_belief_id}]"
+            ),
             file=out,  # type: ignore[arg-type]
         )
 

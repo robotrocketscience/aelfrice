@@ -217,3 +217,93 @@ def test_verdict_and_impasse_kind_are_string_valued() -> None:
     # Required for JSON serialisation downstream.
     assert Verdict.SUFFICIENT.value == "SUFFICIENT"
     assert ImpasseKind.NO_CHANGE.value == "NO_CHANGE"
+
+
+# --- R2 (#658) — fork-aware TIE detection -------------------------------
+
+
+def test_classify_fork_aware_tie_with_confident_hop(store: MemoryStore) -> None:
+    """#645 R2: two CONTRADICTS-forked paths sharing a parent and
+    with compound_confidence within CLOSE_MEAN_DELTA produce a TIE
+    impasse, tripping CONTRADICTORY."""
+    from aelfrice.reason import ConsequencePath
+
+    seed = _mk("seed", alpha=5.0, beta=2.0)
+    confident = _mk("conf", alpha=8.0, beta=2.0)
+    # Non-leaf so GAP doesn't fire.
+    store.insert_edge(
+        Edge(src="conf", dst="x", type=EDGE_RELATES_TO, weight=1.0)
+    )
+    h = _hop(confident, [EDGE_CONTRADICTS])
+    paths = [
+        ConsequencePath(
+            belief_ids=("seed", "B1"),
+            edge_kinds=("CONTRADICTS",),
+            compound_confidence=0.50,
+            weakest_link_belief_id="B1",
+            fork_from="seed",
+        ),
+        ConsequencePath(
+            belief_ids=("seed", "B2"),
+            edge_kinds=("CONTRADICTS",),
+            compound_confidence=0.55,  # delta 0.05 < CLOSE_MEAN_DELTA
+            weakest_link_belief_id="B2",
+            fork_from="seed",
+        ),
+    ]
+    verdict, impasses = classify([seed], [h], store, paths=paths)
+    fork_tie = [
+        i for i in impasses
+        if i.kind == ImpasseKind.TIE and i.belief_ids == ("B1", "B2")
+    ]
+    assert len(fork_tie) == 1
+    assert verdict == Verdict.CONTRADICTORY
+
+
+def test_classify_fork_aware_tie_skips_far_apart_compound(store: MemoryStore) -> None:
+    """Two forks with compound_confidence delta >= CLOSE_MEAN_DELTA do
+    not produce a fork-TIE."""
+    from aelfrice.reason import ConsequencePath
+
+    seed = _mk("seed", alpha=5.0, beta=2.0)
+    confident = _mk("conf", alpha=8.0, beta=2.0)
+    store.insert_edge(
+        Edge(src="conf", dst="x", type=EDGE_RELATES_TO, weight=1.0)
+    )
+    h = _hop(confident, [EDGE_CONTRADICTS])
+    paths = [
+        ConsequencePath(
+            belief_ids=("seed", "B1"),
+            edge_kinds=("CONTRADICTS",),
+            compound_confidence=0.90,
+            weakest_link_belief_id="B1",
+            fork_from="seed",
+        ),
+        ConsequencePath(
+            belief_ids=("seed", "B2"),
+            edge_kinds=("CONTRADICTS",),
+            compound_confidence=0.10,  # delta 0.80 >> CLOSE_MEAN_DELTA
+            weakest_link_belief_id="B2",
+            fork_from="seed",
+        ),
+    ]
+    verdict, impasses = classify([seed], [h], store, paths=paths)
+    fork_tie = [
+        i for i in impasses
+        if i.kind == ImpasseKind.TIE and i.belief_ids == ("B1", "B2")
+    ]
+    assert len(fork_tie) == 0
+
+
+def test_classify_paths_none_preserves_r1_behaviour(store: MemoryStore) -> None:
+    """When `paths` is None, classify() yields R1 output unchanged."""
+    seed = _mk("seed", alpha=5.0, beta=2.0)
+    confident = _mk("conf", alpha=8.0, beta=2.0)
+    store.insert_edge(
+        Edge(src="conf", dst="x", type=EDGE_RELATES_TO, weight=1.0)
+    )
+    h = _hop(confident, [EDGE_SUPERSEDES])
+    v_no_paths, i_no_paths = classify([seed], [h], store)
+    v_explicit_none, i_explicit_none = classify([seed], [h], store, paths=None)
+    assert v_no_paths == v_explicit_none
+    assert i_no_paths == i_explicit_none

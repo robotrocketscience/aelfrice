@@ -143,12 +143,41 @@ def test_reason_json_dispatch_empty_when_verdict_sufficient(
 
 def test_reason_text_output_includes_verdict_footer(_isolated_db: Path) -> None:
     """#645 R1: text mode trails the chain with a `verdict:` line and
-    an `impasses:` line (grep-friendly for downstream R3 dispatch)."""
+    an `impasses:` line (grep-friendly for downstream R3 dispatch).
+    #645 R2: also includes a `forks:` block (none on this fixture)."""
     a, _, _ = _seed_chain(_isolated_db)
     code, out = _run("reason", "indentation", "--seed-id", a)
     assert code == 0, out
     assert "verdict:" in out
     assert "impasses:" in out
+    assert "forks:" in out
+
+
+def test_reason_json_payload_includes_paths(_isolated_db: Path) -> None:
+    """#645 R2: `--json` payload exposes a `paths` list whose entries
+    carry the ConsequencePath shape (belief_ids, edge_kinds,
+    compound_confidence, weakest_link_belief_id, fork_from)."""
+    a, _, _ = _seed_chain(_isolated_db)
+    code, out = _run("reason", "indentation", "--seed-id", a, "--json")
+    assert code == 0, out
+    payload = json.loads(out)
+    assert "paths" in payload
+    assert isinstance(payload["paths"], list)
+    assert len(payload["paths"]) >= 1
+    for p in payload["paths"]:
+        assert {
+            "belief_ids",
+            "edge_kinds",
+            "compound_confidence",
+            "weakest_link_belief_id",
+            "fork_from",
+        } <= set(p.keys())
+        assert isinstance(p["belief_ids"], list)
+        assert isinstance(p["edge_kinds"], list)
+        assert isinstance(p["compound_confidence"], float)
+        assert p["fork_from"] is None or isinstance(p["fork_from"], str)
+        # Trail length == edge count + 1 invariant.
+        assert len(p["belief_ids"]) == len(p["edge_kinds"]) + 1
 
 
 def test_reason_unknown_seed_id_exits_nonzero(_isolated_db: Path) -> None:
