@@ -32,7 +32,7 @@ Multi-provider voting on a single prompt is a narrower mechanism than research-a
 
 ## What this leaves open
 
-- **Host-harness routing of dispatch axes to different models.** If a user configures their host harness to send axis-1 research to Claude and axis-2 to GPT-4o, that's a host configuration question, not an aelfrice change. The aelfrice surface stays provider-agnostic; the structured axis payload travels through the host's existing dispatch mechanism.
+- **Host-harness routing of dispatch axes to different models.** If a user configures their host harness to send axis-1 research to one provider and axis-2 to another, that's a host configuration question, not an aelfrice change. The aelfrice surface stays provider-agnostic; the structured axis payload travels through the host's existing dispatch mechanism.
 - **Lab-side bench experiments** in `~/projects/aelfrice-lab` that measure whether dispatched research-axis disagreement *between providers* yields different `wonder_ingest` outcomes than single-provider dispatch. The lab is the right place to characterize that; nothing in this memo constrains lab investigation.
 - **Re-opening this memo at v3.x.** If a future bench (lab or otherwise) lands evidence that single-prompt cross-provider voting produces a result that cannot be reproduced by research-axis dispatch — i.e., a real capability gap, not a stylistic difference — file a new issue citing this memo, naming the specific capability gap, and proposing the minimum amendment to `PHILOSOPHY.md` § *Determinism is the property* and `PRIVACY.md` § *Optional outbound* required to admit the change. The amendment is the gate, not the SDK.
 
