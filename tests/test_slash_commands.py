@@ -208,6 +208,11 @@ HIDDEN_SUBCOMMANDS = frozenset({
     # pre-commit / pre-push hook wiring. No slash command — it's a
     # reviewer/automation surface, not a workflow verb.
     "scan-derivation",
+    # `clamp-ghosts` is a one-shot maintenance CLI for pre-migration
+    # ghost-α rows (α inflated by a removed code path; no audit trail).
+    # No slash command — it's an operator-only cleanup, not a workflow
+    # verb. See aelfrice/clamp_ghosts.py.
+    "clamp-ghosts",
 })
 
 

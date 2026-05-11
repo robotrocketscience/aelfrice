@@ -4172,6 +4172,51 @@ def _cmd_sweep_feedback(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_clamp_ghosts(args: argparse.Namespace, out: object) -> int:
+    """Clamp α on belief rows with α inflation and no audit trail.
+
+    Dry-run by default; pass ``--apply`` to mutate. See
+    ``aelfrice/clamp_ghosts.py`` for the structural definition of a
+    ghost-α row and the reversibility scheme.
+    """
+    from aelfrice.clamp_ghosts import clamp_ghost_alphas
+
+    store = _open_store()
+    try:
+        result = clamp_ghost_alphas(
+            store,
+            threshold_alpha=float(args.threshold),
+            target_alpha=float(args.target),
+            dry_run=not bool(args.apply),
+            limit=(int(args.limit) if args.limit is not None else None),
+        )
+    finally:
+        try:
+            store.close()
+        except Exception:  # pragma: no cover
+            pass
+
+    print(
+        f"clamp-ghosts: matched={result.matched} clamped={result.clamped} "
+        f"skipped={result.skipped} dry_run={result.dry_run} "
+        f"threshold={result.threshold_alpha} target={result.target_alpha}",
+        file=out,  # type: ignore[arg-type]
+    )
+    if result.sample:
+        print("\ntop matches:", file=out)  # type: ignore[arg-type]
+        for s in result.sample:
+            print(
+                f"  α={s['prior_alpha']:6.2f}  {s['id']}  {s['preview']!r}",
+                file=out,  # type: ignore[arg-type]
+            )
+    if result.dry_run and result.matched > 0:
+        print(
+            "\nrun with --apply to actually clamp.",
+            file=out,  # type: ignore[arg-type]
+        )
+    return 0
+
+
 def _cmd_session_delta(args: argparse.Namespace, out: object) -> int:
     """Compute per-session telemetry and append one v=1 row.
 
@@ -5316,6 +5361,29 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="exit non-zero on any exception (default: log + exit 0 for cron)",
     )
     p_sweep_feedback.set_defaults(func=_cmd_sweep_feedback)
+
+    # Hidden: one-shot maintenance for pre-migration ghost-α rows
+    # (rows whose alpha was inflated by a code path that no longer
+    # exists, leaving no audit trail in feedback_history or
+    # belief_corroborations). See aelfrice/clamp_ghosts.py.
+    p_clamp_ghosts = sub.add_parser("clamp-ghosts", help=argparse.SUPPRESS)
+    p_clamp_ghosts.add_argument(
+        "--threshold", type=float, default=4.0,
+        help="α floor above which a row is a ghost candidate (default: 4.0)",
+    )
+    p_clamp_ghosts.add_argument(
+        "--target", type=float, default=4.0,
+        help="α value to clamp matching rows down to (default: 4.0)",
+    )
+    p_clamp_ghosts.add_argument(
+        "--apply", action="store_true",
+        help="actually clamp (default: dry-run)",
+    )
+    p_clamp_ghosts.add_argument(
+        "--limit", type=int, default=None,
+        help="cap rows processed in one call (default: no cap)",
+    )
+    p_clamp_ghosts.set_defaults(func=_cmd_clamp_ghosts)
 
     p_setup = sub.add_parser(
         "setup",
