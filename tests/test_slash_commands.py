@@ -203,6 +203,11 @@ HIDDEN_SUBCOMMANDS = frozenset({
     # stdio for host integration. Hidden because it's not a user-facing
     # workflow verb; hosts wire it via their MCP server config.
     "mcp",
+    # `scan-derivation` is a discretion-gate CLI (#681): N-gram Jaccard
+    # similarity against a reference document, intended for git
+    # pre-commit / pre-push hook wiring. No slash command — it's a
+    # reviewer/automation surface, not a workflow verb.
+    "scan-derivation",
 })
 
 
