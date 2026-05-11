@@ -1461,10 +1461,20 @@ def _cmd_unlock(args: argparse.Namespace, out: object) -> int:
 
 def _cmd_delete(args: argparse.Namespace, out: object) -> int:
     """Hard-delete one belief from the store. Writes an audit row first (#440)."""
+    from aelfrice.federation import ForeignBeliefError
     from aelfrice.models import LOCK_USER
 
     store = _open_store()
     try:
+        # #655 read-only federation: foreign ids must not be deleted
+        # through the local DB. Check before the local `get_belief`
+        # so the surfaced error names the owning scope rather than
+        # the generic "not found".
+        try:
+            store.assert_local_ownership(args.belief_id)
+        except ForeignBeliefError as e:
+            print(f"delete error: {e}", file=sys.stderr)
+            return 1
         belief = store.get_belief(args.belief_id)
         if belief is None:
             print(f"belief not found: {args.belief_id}", file=sys.stderr)

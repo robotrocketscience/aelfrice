@@ -103,6 +103,8 @@ def promote(
     promotion distinctly while keeping the `promotion:` prefix —
     pass `"promotion:mcp_validate"` for example.
     """
+    # #655: reject foreign belief ids at the mutation surface.
+    store.assert_local_ownership(belief_id)
     belief = store.get_belief(belief_id)
     if belief is None:
         raise ValueError(f"belief not found: {belief_id}")
@@ -163,6 +165,8 @@ def devalidate(
     if the belief is missing, locked, or not currently
     `user_validated`.
     """
+    # #655: reject foreign belief ids at the mutation surface.
+    store.assert_local_ownership(belief_id)
     belief = store.get_belief(belief_id)
     if belief is None:
         raise ValueError(f"belief not found: {belief_id}")
@@ -216,6 +220,8 @@ def unlock(
     Writes a `lock:unlock` audit row on the active (non-idempotent)
     path so the lock-management history is complete.
     """
+    # #655: reject foreign belief ids at the mutation surface.
+    store.assert_local_ownership(belief_id)
     belief = store.get_belief(belief_id)
     if belief is None:
         raise ValueError(f"belief not found: {belief_id}")

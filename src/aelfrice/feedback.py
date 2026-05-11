@@ -137,6 +137,12 @@ def apply_feedback(
     if not source:
         raise ValueError("source must be a non-empty string")
 
+    # #655 read-only federation: reject mutations on foreign belief ids
+    # at the API surface. Raised as ForeignBeliefError (a ValueError
+    # subclass) so existing `except ValueError` blocks in CLI / MCP
+    # surfaces continue to flag the call without special handling.
+    store.assert_local_ownership(belief_id)
+
     b: Belief | None = store.get_belief(belief_id)
     if b is None:
         raise ValueError(f"belief not found: {belief_id}")

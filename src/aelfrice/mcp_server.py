@@ -51,6 +51,7 @@ from aelfrice.classification import (
 from aelfrice.db_paths import db_path
 from aelfrice.derivation import DerivationInput, derive
 from aelfrice.derivation_worker import run_worker
+from aelfrice.federation import ForeignBeliefError
 from aelfrice.feedback import apply_feedback
 from aelfrice.health import (
     REGIME_INSUFFICIENT_DATA,
@@ -544,6 +545,17 @@ def tool_unlock(store: MemoryStore, *, belief_id: str) -> dict[str, Any]:
 
     try:
         result = unlock(store, belief_id)
+    except ForeignBeliefError as e:
+        # #655: distinguish cross-scope mutation from generic "not found"
+        # so MCP callers can branch (e.g. route the user to the owning
+        # scope's CLI for the unlock).
+        return {
+            "kind": "unlock.foreign_belief",
+            "id": belief_id,
+            "unlocked": False,
+            "owning_scope": e.owning_scope,
+            "error": str(e),
+        }
     except ValueError as e:
         return {
             "kind": "unlock.not_found",
@@ -598,6 +610,13 @@ def tool_feedback(
         result = apply_feedback(
             store=store, belief_id=belief_id, valence=valence, source=source,
         )
+    except ForeignBeliefError as exc:
+        return {
+            "kind": "feedback.foreign_belief",
+            "id": belief_id,
+            "owning_scope": exc.owning_scope,
+            "error": str(exc),
+        }
     except ValueError as exc:
         return {
             "kind": "feedback.unknown_belief",
