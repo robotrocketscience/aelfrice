@@ -10,6 +10,10 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+### Removed
+
+- **Aborted GitHub native merge queue migration** ([#624](https://github.com/robotrocketscience/aelfrice/issues/624)). PR #625 added `merge_group:` triggers to `ci.yml` and `staging-gate.yml` and proposed adding a `merge_queue` rule to the Default ruleset. After #625 merged, attempting to apply the ruleset rule was rejected by the GitHub REST API with `Invalid rule 'merge_queue':` (empty reason) — both against the existing ruleset and a standalone disabled test ruleset. GraphQL `repository.mergeQueue` returns `null`, and the "Allow merge queue" toggle is not present in this repo's Settings → Pull Requests. Conclusion: merge queue is not available on this User-owned GitHub Free repository (the feature requires an organization-owned repo on a paid plan). The `merge_group` triggers added by #625 would never fire and have been reverted. `merge-train.yml` remains the merge path. Revisit if/when the repo moves to an organization.
+
 ### Fixed
 
 - **`merge-train` signature check rejected every signed PR** ([#619](https://github.com/robotrocketscience/aelfrice/issues/619)). The check shipped in #602 used `git log --format='%G?'`, which only registers SSH signatures as `G` when the runner has `gpg.format=ssh` and `gpg.ssh.allowedSignersFile` configured — `actions/checkout` sets neither, so every SSH-signed commit fell through to GPG parsing and `%G?` returned `N`. Every PR labeled `ready-to-merge` since #602 shipped was unlabeled with a spurious "not signed" comment, and `main` only advanced via manual operator FF pushes. Replaced with `gh api repos/.../commits/<sha> --jq '.commit.verification.verified'`, the same source of truth the `required_signatures` branch protection rule uses downstream. Any commit the workflow accepts will also pass the push gate.
