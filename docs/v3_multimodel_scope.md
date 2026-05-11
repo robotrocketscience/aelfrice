@@ -6,11 +6,11 @@ Spec for issue [#607](https://github.com/robotrocketscience/aelfrice/issues/607)
 
 **Subsumed.** Multi-LLM consensus is not in v3.0 scope and does not move to a v3.x bench-gated queue. The "different models surface different gaps" use case is covered by wonder-dispatch ([#542](https://github.com/robotrocketscience/aelfrice/issues/542) umbrella) plus the research-agent dispatch surface that shipped at v2.1 ([#551](https://github.com/robotrocketscience/aelfrice/issues/551), closed 2026-05-10).
 
-No new module. No `anthropic` / `openai` / multi-provider client surface added to aelfrice. The polymorphic pattern established by `/aelf:onboard` and `aelf:wonder` — aelfrice writes the structured request, the host harness runs the model call(s) with its own credentials, aelfrice ingests the structured response — is the v3 answer to the question multimodel was meant to answer.
+No new module. No multi-provider client surface added to aelfrice. The polymorphic pattern established by `/aelf:onboard` and `aelf:wonder` — aelfrice writes the structured request, the host harness runs the model call(s) with its own credentials, aelfrice ingests the structured response — is the v3 answer to the question multimodel was meant to answer.
 
 ## Why
 
-The five reasons in [`v2_multimodel.md`](v2_multimodel.md) § *Recommendation* (privacy, determinism, cost, no-benchmark, substrate-removed-justification) are unchanged at v3.0. None of v2.1's defaults flips weakened any of them: PRIVACY.md still caps optional outbound at single-provider Claude Haiku for `--llm-classify`, the determinism property has if anything *hardened* under [#605](https://github.com/robotrocketscience/aelfrice/issues/605)'s relatedness ratification (see [`v3_relatedness_philosophy.md`](v3_relatedness_philosophy.md)), and no bench result has landed showing cross-model voting moves an `aelf bench` number.
+The five reasons in [`v2_multimodel.md`](v2_multimodel.md) § *Recommendation* (privacy, determinism, cost, no-benchmark, substrate-removed-justification) are unchanged at v3.0. None of v2.1's defaults flips weakened any of them: PRIVACY.md still caps optional outbound at the single-provider classifier path for `--llm-classify`, the determinism property has if anything *hardened* under [#605](https://github.com/robotrocketscience/aelfrice/issues/605)'s relatedness ratification (see [`v3_relatedness_philosophy.md`](v3_relatedness_philosophy.md)), and no bench result has landed showing cross-model voting moves an `aelf bench` number.
 
 What changed is the alternative surface. At v2.0 the only way to get "this question deserves more than one angle" was multi-provider voting on a single prompt. At v2.1 the wonder-dispatch surface ships:
 
@@ -26,7 +26,7 @@ Multi-provider voting on a single prompt is a narrower mechanism than research-a
 ## What this rules out, explicitly
 
 - A `multimodel.py` module in `src/aelfrice/`. Not at v3.0, not as opt-in via `.aelfrice.toml`, not as a `[multimodel]` extra. The research-line module of that name (`agentmemory/multimodel.py`) does not port.
-- Direct `anthropic`, `openai`, or any other model-provider SDK dependency in aelfrice's runtime install footprint. The existing default-path-reach guard test stays load-bearing.
+- Direct model-provider SDK dependency in aelfrice's runtime install footprint. The existing default-path-reach guard test stays load-bearing.
 - A v3.x successor ticket of the form `feat/issue-NNN-multimodel-consensus-with-bench-gate`. Filed as a non-issue: the deferral path is closed, not bumped. Any future re-open requires the amendment gate in *What this leaves open* below.
 - An `origin = multi_model_disagreement` belief tag or any persistence surface that assumes cross-provider voting at write time. The store schema does not gain a column for it.
 
