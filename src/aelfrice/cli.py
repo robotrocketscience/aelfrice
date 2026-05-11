@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -844,22 +845,74 @@ def _wonder_pick_seed(store: MemoryStore) -> object | None:
     return store.get_belief(best_id)
 
 
+_WONDER_AGENT_SHORTHAND_RE = re.compile(
+    r"\b(?:(quick|deep)\s+)?(\d+)-agent(?:\s+wonder)?\b",
+    re.IGNORECASE,
+)
+
+
+def _parse_wonder_query_shorthand(query: str) -> tuple[str, int | None]:
+    """Strip agent-count shorthand from a wonder query (#645).
+
+    Recognises ``N-agent`` with an optional ``quick``/``deep`` qualifier
+    in front (and an optional trailing literal "wonder"). Returns the
+    cleaned query and the parsed agent count, or ``(query, None)`` if
+    no shorthand is present.
+
+    Examples — input → (cleaned, count):
+      "quick 2-agent wonder about X"   → ("about X",              2)
+      "deep 6-agent wonder on Y"       → ("on Y",                 6)
+      "3-agent gap on Z"               → ("gap on Z",             3)
+      "no shorthand here"              → ("no shorthand here", None)
+
+    The agent count is not clamped here; callers may apply their own
+    bounds (e.g. ``wonder.max_agents`` from settings).
+    """
+    m = _WONDER_AGENT_SHORTHAND_RE.search(query)
+    if not m:
+        return query, None
+    count = int(m.group(2))
+    cleaned = (query[: m.start()] + query[m.end():]).strip()
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned, count
+
+
 def _cmd_wonder_axes(args: argparse.Namespace, out: object) -> int:
-    """Emit dispatch-payload JSON for `aelf wonder --axes QUERY` (#551).
+    """Emit dispatch-payload JSON for `aelf wonder QUERY` (#645) or
+    the legacy alias `aelf wonder --axes QUERY` (#551).
 
     Mirrors the MCP `aelf_wonder` tool. Always JSON on stdout; exit 0
     on success.
+
+    The query may carry agent-count shorthand ("quick 2-agent",
+    "deep 6-agent", or a bare "N-agent"). When present and the caller
+    did not pass an explicit ``--axes-agents``, the parsed count
+    overrides the default. The shorthand is stripped from the query
+    before dispatch so it does not pollute the gap-analysis query
+    text.
     """
     import json
     from aelfrice.wonder.dispatch import build_dispatch_payload
 
+    query, shorthand_count = _parse_wonder_query_shorthand(args.axes)
+    # #645: shorthand wins only when the caller didn't override the
+    # default explicitly. argparse's default for --axes-agents is 4;
+    # when getattr(args, "axes_agents", None) != 4 we treat the value
+    # as caller-supplied. This heuristic is good enough for the
+    # ergonomic case; explicit overrides remain available.
+    explicit_agents = getattr(args, "axes_agents", 4) != 4
+    if shorthand_count is not None and not explicit_agents:
+        agent_count = shorthand_count
+    else:
+        agent_count = getattr(args, "axes_agents", 4)
+
     store = _open_store()
     try:
         payload = build_dispatch_payload(
-            store, args.axes,
+            store, query,
             budget=args.axes_budget,
             depth=args.axes_depth,
-            agent_count=args.axes_agents,
+            agent_count=agent_count,
         )
     finally:
         store.close()

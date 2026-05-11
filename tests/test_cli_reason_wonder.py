@@ -249,6 +249,90 @@ def test_wonder_positional_query_persist_conflict(_isolated_db: Path) -> None:
     assert "--persist" in out
 
 
+# --- aelf wonder agent-count shorthand (#645) ---------------------------
+
+
+def test_wonder_query_shorthand_quick_2_agent(_isolated_db: Path) -> None:
+    """`quick 2-agent` in the query overrides default agent_count=4."""
+    _seed_chain(_isolated_db)
+    code, out = _run("wonder", "quick 2-agent wonder about indentation")
+    assert code == 0, out
+    payload = json.loads(out)
+    assert payload["agent_count"] == 2
+    # shorthand stripped from the gap-analysis query text
+    assert "2-agent" not in payload["gap_analysis"]["query"]
+    assert "quick" not in payload["gap_analysis"]["query"]
+
+
+def test_wonder_query_shorthand_deep_6_agent(_isolated_db: Path) -> None:
+    """`deep 6-agent` parses to agent_count=6."""
+    _seed_chain(_isolated_db)
+    code, out = _run("wonder", "deep 6-agent wonder on python")
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["agent_count"] == 6
+
+
+def test_wonder_query_shorthand_bare_n_agent(_isolated_db: Path) -> None:
+    """A bare `N-agent` (no quick/deep) also parses."""
+    _seed_chain(_isolated_db)
+    code, out = _run("wonder", "3-agent gap analysis on x")
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["agent_count"] == 3
+
+
+def test_wonder_explicit_axes_agents_overrides_shorthand(
+    _isolated_db: Path,
+) -> None:
+    """An explicit `--axes-agents N` flag wins over query shorthand."""
+    _seed_chain(_isolated_db)
+    code, out = _run(
+        "wonder", "quick 2-agent wonder about x", "--axes-agents", "5",
+    )
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["agent_count"] == 5
+
+
+def test_wonder_no_shorthand_keeps_default_agent_count(
+    _isolated_db: Path,
+) -> None:
+    """Queries without shorthand keep the default agent_count=4."""
+    _seed_chain(_isolated_db)
+    code, out = _run("wonder", "plain query about python")
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["agent_count"] == 4
+    assert payload["gap_analysis"]["query"] == "plain query about python"
+
+
+# --- _parse_wonder_query_shorthand unit tests (#645) --------------------
+
+
+@pytest.mark.parametrize(
+    "raw,expected_query,expected_count",
+    [
+        ("quick 2-agent wonder about X", "about X", 2),
+        ("deep 6-agent wonder on Y", "on Y", 6),
+        ("3-agent gap on Z", "gap on Z", 3),
+        ("Quick 4-AGENT analysis", "analysis", 4),  # case-insensitive
+        ("plain query about python", "plain query about python", None),
+        ("agentic without count", "agentic without count", None),
+        # Shorthand in the middle of the query is stripped cleanly.
+        ("the deep 5-agent wonder probe", "the probe", 5),
+    ],
+)
+def test_parse_wonder_query_shorthand_unit(
+    raw: str, expected_query: str, expected_count: int | None,
+) -> None:
+    from aelfrice.cli import _parse_wonder_query_shorthand
+
+    cleaned, count = _parse_wonder_query_shorthand(raw)
+    assert cleaned == expected_query
+    assert count == expected_count
+
+
 # --- aelf wonder --persist (#549) ----------------------------------------
 
 
