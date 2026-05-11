@@ -8,8 +8,6 @@ mapping byte-for-byte.
 """
 from __future__ import annotations
 
-import pytest
-
 from aelfrice.bfs_multihop import ScoredHop
 from aelfrice.models import (
     BELIEF_FACTUAL,
@@ -235,6 +233,6 @@ def test_never_emits_minus_one_in_r3_minimal() -> None:
         Impasse(kind=ImpasseKind.GAP, belief_ids=("c",), note="leaf"),
     ]
     h = _hop(_mk("d", alpha=5.0, beta=1.0))
-    for v in Verdict:
+    for v in list(Verdict):
         rows = suggested_updates(v, impasses, [h])
         assert all(r.direction != "-1" for r in rows)
