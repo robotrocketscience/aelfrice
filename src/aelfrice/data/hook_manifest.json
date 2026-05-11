@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "hooks": [
+    {
+      "name": "user_prompt_submit_retrieval",
+      "basename": "aelf-hook",
+      "installer": "user_prompt_submit",
+      "default_on": true,
+      "since": "1.0.0",
+      "description": "L0+L1 retrieval injection on every user prompt."
+    },
+    {
+      "name": "transcript_ingest",
+      "basename": "aelf-transcript-logger",
+      "installer": "transcript_ingest",
+      "default_on": true,
+      "since": "1.2.0",
+      "description": "Append turn JSONL across UserPromptSubmit/Stop/PreCompact/PostCompact for ingestion."
+    },
+    {
+      "name": "commit_ingest",
+      "basename": "aelf-commit-ingest",
+      "installer": "commit_ingest",
+      "default_on": true,
+      "since": "1.2.0",
+      "description": "Capture git commit messages as beliefs (PostToolUse:Bash)."
+    },
+    {
+      "name": "session_start",
+      "basename": "aelf-session-start-hook",
+      "installer": "session_start",
+      "default_on": true,
+      "since": "2.0.0",
+      "description": "Inject L0 locked + L2.5 core beliefs at session start."
+    },
+    {
+      "name": "stop_lock_prompt",
+      "basename": "aelf-stop-hook",
+      "installer": "stop",
+      "default_on": true,
+      "since": "2.1.0",
+      "description": "Prompt to lock session corrections at turn end (#582)."
+    }
+  ]
+}
