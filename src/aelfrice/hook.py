@@ -810,8 +810,17 @@ def user_prompt_submit(
         # the hits returned here. Default-off, fail-soft, opt-in via
         # `[feedback] sentiment_from_prose = true` in `.aelfrice.toml`.
         apply_sentiment_feedback(prompt, session_id, stderr=serr)
+        # #674: prompt-shape gate — skip BM25 for system envelopes and
+        # trivial acks, preserving any session-start block unchanged.
+        gate_skip = False
+        gate_reason: str | None = None
+        if config.prompt_shape_gate_enabled:
+            gate_skip, gate_reason = _should_skip_bm25(prompt)
         retrieve_start = time.monotonic()
-        hits = _retrieve(prompt, budget)
+        if gate_skip:
+            hits = []
+        else:
+            hits = _retrieve(prompt, budget)
         if hits:
             # AC1 telemetry: record pre-collapse counts.
             n_returned = len(hits)
@@ -869,6 +878,33 @@ def user_prompt_submit(
                 latency_ms=latency_ms,
                 stderr=serr,
             )
+        elif gate_skip:
+            # Gate fired, no BM25 hits. Emit rebuild_log with empty hits so
+            # the audit trail records the skip. If this is also the first
+            # prompt of a session, still write the session-start sub-block
+            # so locked/core beliefs are not silently dropped.
+            _emit_user_prompt_submit_rebuild_log(
+                prompt=prompt,
+                session_id=session_id,
+                hits_pre_dedup=[],
+                hits_post_dedup=[],
+                stderr=serr,
+            )
+            if session_start_block:
+                latency_ms = int((time.monotonic() - retrieve_start) * 1000)
+                body = _format_hits_with_session_start([], session_start_block)
+                sout.write(body)
+                _write_hook_audit_record(
+                    hook=AUDIT_HOOK_USER_PROMPT_SUBMIT,
+                    prompt=prompt,
+                    rendered_block=body,
+                    n_beliefs=0,
+                    n_locked=0,
+                    session_id=session_id,
+                    beliefs=[],
+                    latency_ms=latency_ms,
+                    stderr=serr,
+                )
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     return 0

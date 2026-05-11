@@ -153,7 +153,7 @@ def test_user_prompt_submit_writes_audit_record(
     _set_db(monkeypatch, db)
     monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
     monkeypatch.chdir(tmp_path)
-    sin = io.StringIO(_payload("bananas", session_id="sess-abc"))
+    sin = io.StringIO(_payload("how many bananas are in the kitchen", session_id="sess-abc"))
     sout = io.StringIO()
     rc = user_prompt_submit(stdin=sin, stdout=sout)
     assert rc == 0
@@ -162,7 +162,7 @@ def test_user_prompt_submit_writes_audit_record(
     assert len(records) == 1
     rec = records[0]
     assert rec["hook"] == AUDIT_HOOK_USER_PROMPT_SUBMIT
-    assert rec["prompt_prefix"] == "bananas"
+    assert rec["prompt_prefix"] == "how many bananas are in the kitchen"
     assert rec["n_beliefs"] == 1
     assert rec["n_locked"] == 0
     assert rec["session_id"] == "sess-abc"
@@ -186,7 +186,7 @@ def test_user_prompt_submit_audit_records_locked_count(
     _set_db(monkeypatch, db)
     monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
     monkeypatch.chdir(tmp_path)
-    sin = io.StringIO(_payload("anything"))
+    sin = io.StringIO(_payload("what is the user truth stored here"))
     sout = io.StringIO()
     user_prompt_submit(stdin=sin, stdout=sout)
     rec = read_hook_audit(_audit_path_for_db(db))[0]
@@ -253,7 +253,7 @@ def test_env_disable_suppresses_audit_write(
     _set_db(monkeypatch, db)
     monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "0")
     monkeypatch.chdir(tmp_path)
-    sin = io.StringIO(_payload("bananas"))
+    sin = io.StringIO(_payload("how many bananas are in the kitchen"))
     sout = io.StringIO()
     user_prompt_submit(stdin=sin, stdout=sout)
     assert not _audit_path_for_db(db).exists()
@@ -270,7 +270,7 @@ def test_toml_disable_suppresses_audit_write(
         "[hook_audit]\nenabled = false\n", encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
-    sin = io.StringIO(_payload("bananas"))
+    sin = io.StringIO(_payload("how many bananas are in the kitchen"))
     sout = io.StringIO()
     user_prompt_submit(stdin=sin, stdout=sout)
     assert not _audit_path_for_db(db).exists()
@@ -297,16 +297,16 @@ def test_rotation_at_max_bytes(
     audit_path = _audit_path_for_db(db)
     rotated = audit_path.with_name(audit_path.name + AUDIT_ROTATED_SUFFIX)
     # Fire once: live has one record, well under 500 B; no rotation yet.
-    sin = io.StringIO(_payload("bananas"))
+    sin = io.StringIO(_payload("how many bananas are in the kitchen"))
     user_prompt_submit(stdin=sin, stdout=io.StringIO())
     assert audit_path.exists()
     assert not rotated.exists()
     first_size = audit_path.stat().st_size
     # Fire again: post-write size > 500 B → rotate to .1 → fresh live file
     # is created by the next fire.
-    sin = io.StringIO(_payload("bananas"))
+    sin = io.StringIO(_payload("how many bananas are in the kitchen"))
     user_prompt_submit(stdin=sin, stdout=io.StringIO())
-    sin = io.StringIO(_payload("bananas"))
+    sin = io.StringIO(_payload("how many bananas are in the kitchen"))
     user_prompt_submit(stdin=sin, stdout=io.StringIO())
     assert rotated.exists()
     # Rotated content was the post-fire-2 file (single-slot rotation).
@@ -417,7 +417,7 @@ def test_audit_write_failsoft_on_unwriteable_path(
     # Windows where directory-named file behavior differs.)
     audit_path.unlink()
     audit_path.mkdir()
-    sin = io.StringIO(_payload("bananas"))
+    sin = io.StringIO(_payload("how many bananas are in the kitchen"))
     sout = io.StringIO()
     serr = io.StringIO()
     rc = user_prompt_submit(stdin=sin, stdout=sout, stderr=serr)
