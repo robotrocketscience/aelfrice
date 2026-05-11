@@ -54,6 +54,41 @@ class ImpasseKind(str, Enum):
 
 
 @dataclass(frozen=True)
+class ConsequencePath:
+    """One root-to-leaf consequence chain over the belief graph (#645 R2).
+
+    A ``ConsequencePath`` is the path-centric view of a BFS expansion
+    that R1's hop-centric :class:`~aelfrice.bfs_multihop.ScoredHop`
+    encodes endpoint-first. The fields:
+
+    - ``belief_ids`` — ordered ``root → leaf`` belief ids; first element
+      is the originating seed, last is the path's terminal belief.
+    - ``edge_kinds`` — ordered list of edge-type strings; length is
+      always ``len(belief_ids) - 1``. Length-zero edge_kinds means the
+      path is a seed-only "path" (the seed itself before any expansion).
+    - ``compound_confidence`` — ``∏ posterior_mean(belief) for belief in
+      belief_ids``. Multiplicative decay along the chain: a single
+      weak intermediate belief attenuates the whole path.
+    - ``weakest_link_belief_id`` — id of the belief with the lowest
+      posterior mean over ``belief_ids``. Ties broken by hop index,
+      deepest wins (later occurrence in the trail).
+    - ``fork_from`` — when this path was forked because its terminal
+      edge is ``EDGE_CONTRADICTS``, the belief id at the
+      parent-path's terminal (i.e. ``belief_ids[-2]``). ``None`` on
+      non-forked paths.
+
+    Frozen + hashable so two derivations from the same evidence are
+    byte-identical and the path can be used as a dict key.
+    """
+
+    belief_ids: tuple[str, ...]
+    edge_kinds: tuple[str, ...]
+    compound_confidence: float
+    weakest_link_belief_id: str
+    fork_from: str | None = None
+
+
+@dataclass(frozen=True)
 class Impasse:
     """One reasoning impasse observed over the walk.
 
@@ -348,3 +383,91 @@ def suggested_updates(
             )
 
     return rows
+
+
+def derive_paths(
+    seeds: list[Belief],
+    hops: list[ScoredHop],
+) -> list[ConsequencePath]:
+    """Derive :class:`ConsequencePath` records from walk evidence.
+
+    Pure function — no graph traversal, no store lookups. Reconstructs
+    each path from each hop's ``belief_id_trail`` (populated by
+    :func:`aelfrice.bfs_multihop.expand_bfs`) and the posterior means
+    of beliefs reachable through ``seeds`` and ``hops``.
+
+    Emits:
+
+    1. One length-1 ``ConsequencePath`` per seed (the "no-expansion"
+       baseline path; ``edge_kinds == ()``).
+    2. One ``ConsequencePath`` per hop, mirroring its trail.
+
+    Fork detection: a hop whose terminal edge is ``EDGE_CONTRADICTS``
+    surfaces with ``fork_from`` set to the parent-path's terminal
+    belief (``belief_id_trail[-2]``). Both the parent and the forked
+    branch are present in the returned list — the parent is just the
+    earlier hop (or seed) whose terminal id matches.
+
+    Order is preserved from the input ``hops`` (which is itself
+    deterministic per :func:`expand_bfs`'s sort contract). Seeds are
+    emitted first, in seed-input order; hops after, in
+    sorted-result order.
+
+    Skips hops whose ``belief_id_trail`` is empty (test fixtures that
+    don't bother to populate it) so the function is defensive against
+    older callers without crashing.
+    """
+    belief_by_id: dict[str, Belief] = {s.id: s for s in seeds}
+    for h in hops:
+        belief_by_id[h.belief.id] = h.belief
+
+    paths: list[ConsequencePath] = []
+
+    for s in seeds:
+        m = _mean(s)
+        paths.append(
+            ConsequencePath(
+                belief_ids=(s.id,),
+                edge_kinds=(),
+                compound_confidence=m,
+                weakest_link_belief_id=s.id,
+                fork_from=None,
+            )
+        )
+
+    for h in hops:
+        trail = h.belief_id_trail
+        if not trail:
+            continue
+        beliefs_along: list[Belief] = []
+        for bid in trail:
+            b = belief_by_id.get(bid)
+            if b is None:
+                break
+            beliefs_along.append(b)
+        if len(beliefs_along) != len(trail):
+            continue
+        compound = 1.0
+        for b in beliefs_along:
+            compound *= _mean(b)
+        weakest_id = beliefs_along[0].id
+        weakest_mean = _mean(beliefs_along[0])
+        for b in beliefs_along[1:]:
+            m = _mean(b)
+            if m <= weakest_mean:
+                weakest_mean = m
+                weakest_id = b.id
+        fork_from: str | None = None
+        if h.path and h.path[-1] == EDGE_CONTRADICTS and len(trail) >= 2:
+            fork_from = trail[-2]
+        paths.append(
+            ConsequencePath(
+                belief_ids=tuple(trail),
+                edge_kinds=tuple(h.path),
+                compound_confidence=compound,
+                weakest_link_belief_id=weakest_id,
+                fork_from=fork_from,
+            )
+        )
+
+    return paths
