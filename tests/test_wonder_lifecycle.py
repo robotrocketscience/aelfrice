@@ -224,6 +224,53 @@ def test_ingest_distinct_constituent_pairs_are_not_deduped(
     assert r.skipped == 0
 
 
+def test_ingest_distinct_generators_are_not_deduped(
+    store_with_constituents: MemoryStore,
+) -> None:
+    """Two phantoms with identical constituents but different generators
+    persist as two distinct rows (v3.0 #644 option 2).
+
+    The v1 key was generator-agnostic and would collapse these to one.
+    Under the v2 key the generator is part of the hash basis, so each
+    axis of a single --axes dispatch lands as its own phantom.
+    """
+    store = store_with_constituents
+    phantom_gen_a = _phantom(
+        "a", "b", content="axis A research", generator="subagent_dispatch:axis_A"
+    )
+    phantom_gen_b = _phantom(
+        "a", "b", content="axis B research", generator="subagent_dispatch:axis_B"
+    )
+
+    r = wonder_ingest(store, [phantom_gen_a, phantom_gen_b])
+    assert r.inserted == 2, "distinct generators must persist as distinct rows"
+    assert r.skipped == 0
+
+    beliefs = [store.get_belief(bid) for bid in store.list_belief_ids()]
+    speculative = [
+        b for b in beliefs if b is not None and b.type == BELIEF_SPECULATIVE
+    ]
+    assert len(speculative) == 2
+    contents = {b.content for b in speculative}
+    assert contents == {"axis A research", "axis B research"}
+
+
+def test_ingest_same_generator_same_constituents_is_idempotent(
+    store_with_constituents: MemoryStore,
+) -> None:
+    """Re-running the *same* dispatch (same generator, same constituents)
+    is still a no-op under option 2 — generator-keyed dedup does not
+    weaken the cross-run idempotency contract.
+    """
+    store = store_with_constituents
+    phantom = _phantom("a", "b", generator="subagent_dispatch:axis_X")
+    r1 = wonder_ingest(store, [phantom])
+    r2 = wonder_ingest(store, [phantom])
+    assert r1.inserted == 1
+    assert r2.inserted == 0
+    assert r2.skipped == 1
+
+
 # ---------------------------------------------------------------------------
 # wonder_gc: dry_run
 # ---------------------------------------------------------------------------
