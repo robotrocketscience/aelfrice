@@ -199,3 +199,152 @@ def classify(
         verdict = Verdict.SUFFICIENT
 
     return verdict, impasses
+
+
+class SubagentRole(str, Enum):
+    """Role label for one subagent dispatch produced by R3.
+
+    The slash skill maps each impasse to a role; the host agent fans
+    out one subagent per ``DispatchItem`` with the matching prompt
+    scaffold. Determinism: role is a pure function of impasse kind.
+    """
+
+    VERIFIER = "Verifier"
+    GAP_FILLER = "Gap-filler"
+    FORK_RESOLVER = "Fork-resolver"
+
+
+_ROLE_BY_IMPASSE: Final[dict[ImpasseKind, SubagentRole]] = {
+    ImpasseKind.GAP: SubagentRole.GAP_FILLER,
+    ImpasseKind.NO_CHANGE: SubagentRole.GAP_FILLER,
+    ImpasseKind.TIE: SubagentRole.FORK_RESOLVER,
+    ImpasseKind.CONSTRAINT_FAILURE: SubagentRole.VERIFIER,
+}
+
+
+@dataclass(frozen=True)
+class DispatchItem:
+    """One subagent the host should spawn to address an impasse.
+
+    ``role`` is the prompt scaffold the slash skill picks. ``belief_ids``
+    is the loci the subagent should investigate (passed through from
+    :class:`Impasse`). ``note`` carries the impasse's original note so
+    the prompt has the diagnostic phrase already attached.
+    """
+
+    role: SubagentRole
+    belief_ids: tuple[str, ...]
+    note: str
+
+
+@dataclass(frozen=True)
+class SuggestedUpdate:
+    """One ``(belief_id, direction)`` row for the SUGGESTED UPDATES section.
+
+    ``direction`` is ``+1`` (helpful — on a confident, non-impasse hop),
+    ``-1`` (rejected — on a fork-losing path; deferred until R2's fork
+    data lands, never emitted by the R3 minimal surface), or ``"?"``
+    (uncertain — on an impasse path).
+    """
+
+    belief_id: str
+    direction: str
+    note: str
+
+
+def dispatch_policy(
+    verdict: Verdict, impasses: list[Impasse]
+) -> list[DispatchItem]:
+    """Map ``(verdict, impasses)`` to the ordered subagent dispatch.
+
+    Verdict drives whether to dispatch at all; impasse kind drives the
+    role for each dispatched subagent.
+
+    - :attr:`Verdict.SUFFICIENT`: no dispatch (the chain already answers).
+    - :attr:`Verdict.PARTIAL`, :attr:`Verdict.UNCERTAIN`,
+      :attr:`Verdict.INSUFFICIENT`, :attr:`Verdict.CONTRADICTORY`:
+      one :class:`DispatchItem` per impasse, role derived from
+      :class:`ImpasseKind` via :data:`_ROLE_BY_IMPASSE`.
+
+    Output order matches impasse list order — itself deterministic per
+    :func:`classify`'s ordering contract — so two runs with the same
+    inputs produce the same dispatch sequence byte-for-byte.
+    """
+    if verdict == Verdict.SUFFICIENT:
+        return []
+    return [
+        DispatchItem(
+            role=_ROLE_BY_IMPASSE[imp.kind],
+            belief_ids=imp.belief_ids,
+            note=imp.note,
+        )
+        for imp in impasses
+    ]
+
+
+def suggested_updates(
+    verdict: Verdict,
+    impasses: list[Impasse],
+    hops: list[ScoredHop],
+) -> list[SuggestedUpdate]:
+    """Derive the SUGGESTED UPDATES rows the slash skill emits.
+
+    Direction rules (R3 minimal surface):
+
+    - ``+1`` — hop belief is confident
+      (``alpha + beta >= CONFIDENT_TRIALS_MIN``) and not the locus of
+      any impasse. Emitted for every verdict except
+      :attr:`Verdict.INSUFFICIENT` (which has no expansions to vote on).
+    - ``"?"`` — belief appears in any impasse's ``belief_ids``. Emitted
+      once per impasse-locus belief, deduplicated across impasses.
+    - ``-1`` — deferred to a follow-up after R2 ships the fork-path data;
+      this function never emits ``-1`` rows.
+
+    A belief that is both confident-on-chain *and* on an impasse path
+    resolves to ``"?"`` (impasse evidence wins; the caller's manual
+    review is the right path).
+
+    Order: confident-positive rows in hop order first, then
+    impasse-locus rows in impasse order. Within each block, deduped
+    by first occurrence.
+    """
+    impasse_locus: set[str] = set()
+    impasse_note_by_id: dict[str, str] = {}
+    for imp in impasses:
+        for bid in imp.belief_ids:
+            impasse_locus.add(bid)
+            impasse_note_by_id.setdefault(bid, imp.note)
+
+    rows: list[SuggestedUpdate] = []
+    seen: set[str] = set()
+
+    if verdict != Verdict.INSUFFICIENT:
+        for h in hops:
+            bid = h.belief.id
+            if bid in seen or bid in impasse_locus:
+                continue
+            if _is_low_evidence(h.belief):
+                continue
+            seen.add(bid)
+            rows.append(
+                SuggestedUpdate(
+                    belief_id=bid,
+                    direction="+1",
+                    note="confident hop on the answer chain",
+                )
+            )
+
+    for imp in impasses:
+        for bid in imp.belief_ids:
+            if bid in seen:
+                continue
+            seen.add(bid)
+            rows.append(
+                SuggestedUpdate(
+                    belief_id=bid,
+                    direction="?",
+                    note=impasse_note_by_id[bid],
+                )
+            )
+
+    return rows
