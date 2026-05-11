@@ -1,0 +1,6 @@
+{
+  "task_type": "hot_start",
+  "fork_turn": 8,
+  "eval_turns": [8, 10, 12],
+  "notes": "Post-compact hot-start scenario for #587 / #592 AC. Pre-fork (turns 0..7) establishes specific working state: failing test `test_ingest_jsonl_idempotent`, file `src/aelfrice/ingest.py`, function `_dedup_key`. The fork at turn 8 simulates a /clear-induced compact. Post-fork user prompts at 8, 10, 12 ask 'where were we?', 'which file/function?', 'what was the verification step?' — each prompt is the substring-match expected value, matching the convention used by debugging_session_001.meta.json. Calibration verdict (≥80% hot-start fidelity) requires the host-agent eval-replay flow documented in #600 / README.md."
+}
