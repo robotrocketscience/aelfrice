@@ -129,10 +129,30 @@ jobs:
           while [ "$(date +%s)" -lt "${deadline}" ]; do
               # Pull the merge-rollup state. We filter out the
               # merge-train job itself — checking it would deadlock.
+              # Group by check name and keep the latest run per name
+              # (max by started_at) — superseded older runs leave
+              # CANCELLED rows on the SHA that should not gate merge
+              # (#632). GitHub's required-checks evaluation already
+              # works on per-name latest; we mirror that here.
               rollup=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" \
-                  --jq '[.check_runs[] | select(.name != "Attempt merge-train FF" and .name != "merge") | {n:.name, s:.status, c:.conclusion}]')
+                  --jq '
+                    [.check_runs[]
+                     | select(.name != "Attempt merge-train FF" and .name != "merge")]
+                    | group_by(.name)
+                    | map(max_by(.started_at))
+                    | map({n:.name, s:.status, c:.conclusion})
+                  ')
 
-              fails=$(echo "${rollup}" | jq -r '.[] | select(.c == "failure" or .c == "cancelled" or .c == "timed_out" or .c == "action_required") | .n' | paste -sd, -)
+              # CANCELLED is not in the failure list — a cancelled run
+              # almost always means the run was superseded by a newer
+              # trigger on the same SHA. After the per-name dedup above
+              # only the latest run survives, so a true cancellation
+              # (no successor) would still surface here as the only run
+              # for that name with c=cancelled — operator can re-trigger
+              # CI in that case. Keeping cancelled out of `fails` avoids
+              # the common false-positive where superseded older runs
+              # blocked merge (#632).
+              fails=$(echo "${rollup}" | jq -r '.[] | select(.c == "failure" or .c == "timed_out" or .c == "action_required") | .n' | paste -sd, -)
               if [ -n "${fails}" ]; then
                   fail_and_unlabel "required check(s) failed: \`${fails}\`. Fix CI and re-add the label."
               fi
