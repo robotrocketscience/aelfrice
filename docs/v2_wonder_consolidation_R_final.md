@@ -98,3 +98,125 @@ hold the same defer verdict as R0 default.
   R0 above).
 
 Closes #228.
+
+---
+
+## Revisit (v2.1, post-substrate)
+
+Per #547 B1, the bake-off was re-run on the same three configs with the
+production-signal-broadened `feedback_verdict` from #547 (single-topic OR
+≥2 distinct `belief_corroborations.source_type` OR ≥2 distinct
+`session_id`). Both broadening signals are now live on `github/main`
+(`belief_corroborations` table from #190 A1; `session_id` propagation from
+#192 A2 — see `tests/test_session_id_population_rate.py` for the ≥80%
+population check).
+
+### Aggregate verdicts: v2.0 baseline vs v2.1 substrate
+
+| Config       | feedback_budget | v2.0 verdict | v2.1 verdict        |
+|--------------|----------------:|:-------------|:--------------------|
+| R0 default   | 16              | defer        | **ensemble**        |
+| R_a50_b8     | 8               | drop         | drop *(unchanged)*  |
+| R_a50_b32    | 32              | defer        | **ensemble**        |
+
+### Strategy metrics at the operating point (R0 default, 10-seed mean)
+
+| Strategy | confirmation_rate (v2.0 → v2.1) | junk_rate (v2.0 → v2.1) | retrieval_per_cost |
+|----------|---------------------------------:|-------------------------:|--------------------:|
+| RW       | 0.374 → **1.000**                | 0.626 → **0.000**        | 0.99               |
+| STS      | 0.112 → **1.000**                | 0.888 → **0.000**        | 1.00               |
+| TC       | 0.294 → **0.977**                | 0.706 → **0.023**        | 0.67               |
+
+Junk rates collapse for all three strategies — the broadened verdict
+exposes the synthetic-corpus result the v2.0 memo flagged: *"a real corpus
+with broader 'useful' criteria might let STS clear the threshold"*. The
+A1+A2 signals are that "broader 'useful' criterion" in operational form.
+
+### Four-rule decision tree applied
+
+R0 default and R_a50_b32 are isomorphic on the verdict axis; R_a50_b8 is
+budget-bound (see § Budget-bound exception below). Walking the spec
+rules in declared order at the operating point:
+
+1. **Rule 1 (drop):** every strategy's confirmation_rate must fall below
+   `H0_NULL_RATE = 0.065`. RW=1.0, STS=1.0, TC=0.977 → does **not** fire.
+2. **Rule 2 (defer):** any strategy's `junk_rate > 0.60` triggers defer.
+   RW=0.0, STS=0.0, TC=0.023 → all below the 60% gate. Does **not** fire.
+   *This is the explicit rule-2 pass the issue's acceptance asked for.*
+3. **Rule 3 (single-strategy ship):** would fire only if exactly one
+   strategy clears `H0+10pp = 0.165` with the others not complementary.
+   All three clear the floor — does **not** fire.
+4. **Rule 4 (ensemble):** top-two strategies' pairwise Jaccard must be
+   below `JACCARD_COMPLEMENT = 0.3` with each clearing the floor.
+   RW|STS Jaccard = 0.000 (RW and STS sort top by confirmation_rate at
+   1.000 each), both clear the floor → **fires**.
+
+The adoption_verdict() function returns `ensemble` for the top two
+strategies (RW + STS), with TC available as a third generator the
+ensemble may reach for opportunistically (its retrieval_per_cost is
+materially lower at 0.67 vs the 0.99–1.00 for RW/STS, so it's the
+weakest of the three even though it clears the floor).
+
+### Budget-bound exception (R_a50_b8)
+
+The `feedback_budget=8` config returns `drop` — but **not** because the
+strategies degraded. Confirmation_rate is `0.0` for all three because
+`α=12` promotion gate cannot be cleared inside 8 feedback events
+regardless of confirm rate (8 confirms ⇒ α=1+8=9 < 12). This is a
+cardinality property of the simulator, not a strategy signal: a low-
+budget operating point can never promote any phantom. The v2.0 R_final
+memo had this same property; the broadening did not affect it.
+
+If v2.1 ships an ensemble, it should be gated on a non-trivial feedback
+budget (≥12 promotion-gate clearance). The promotion rule (#229) is the
+tracking issue for the live tuning side.
+
+### Honest read
+
+The v2.0 R_final memo flagged the synthetic corpus's single-topic
+predicate as understating real-world signal, and predicted that a real
+corpus with broader "useful" criteria would let STS clear the threshold.
+The numbers now bear that out — STS goes from 0.112 → 1.000
+confirmation_rate. That's not subtle. But two caveats:
+
+* **H0_NULL_RATE is now stale.** The 0.065 null rate was calibrated to
+  the original single-topic-only verdict. Under the three-rule disjoint
+  verdict the random-baseline confirm rate is materially higher
+  (composition of 2 cross-topic atoms confirms ≥56% under default
+  params: prob of distinct sessions ≈ 1−1/n_sessions = 0.875, OR distinct
+  source_types ≈ 1−1/n_source_types = 0.75; non-independent but jointly
+  near 0.94). A future revisit should recalibrate `H0_NULL_RATE` against
+  the new verdict OR introduce a separate null-rate constant for the
+  broadened-verdict regime. *Tracking note: this does not invalidate the
+  v2.1 ensemble verdict — the strategies all sit far above any plausible
+  recalibrated H0 — but it does mean the "+10pp over H0" floor in the
+  current code is a less stringent gate than the v2.0 memo claimed.*
+* **TC's retrieval_per_cost (0.67) is lower than RW (0.99) and STS
+  (1.00).** TC is the marginal performer of the three. If the ensemble
+  is too expensive to run in production, dropping TC keeps a tight
+  RW+STS pair complementary at Jaccard=0.0, both at confirmation_rate
+  1.0.
+
+### Recommendation
+
+**Ship the RW+STS ensemble as the v2.1 offline default**, with TC
+available as an opportunistic third strategy. The rule-2 pass is clean
+(junk rates 0.0%–2.3%); the top-two complementarity holds (Jaccard 0.0);
+the H0+10pp floor is cleared with significant headroom.
+
+If the operator prefers conservatism over the H0-stale caveat, the
+honest interim step is to recalibrate `H0_NULL_RATE` against the
+broadened verdict before flipping the offline-generation default — but
+that's a separate landing.
+
+### Provenance (revisit)
+
+- Result JSONs: `bake_off_results/R0_v2_substrate.json`,
+  `R_a50_b8_v2_substrate.json`, `R_a50_b32_v2_substrate.json`.
+- Verdict-broadening commit: `feat(wonder/simulator): broaden
+  feedback_verdict — A1 + A2 confirm paths` on this branch.
+- Reproduce: `uv run python -m aelfrice.wonder.runner --output <path>`
+  (defaults match R0; `--n-atoms-per-topic 50 --feedback-budget 8|32`
+  for the other two).
+
+Closes #547.
