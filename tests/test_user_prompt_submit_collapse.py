@@ -195,7 +195,7 @@ def test_collapse_off_keeps_duplicates_in_output(
         lambda **_kw: UserPromptSubmitConfig(collapse_duplicate_hashes=False),
     )
 
-    sin = StringIO(json.dumps({"prompt": "test"}))
+    sin = StringIO(json.dumps({"prompt": "what duplicate text should appear here"}))
     sout = StringIO()
     user_prompt_submit(stdin=sin, stdout=sout, stderr=StringIO())
 
@@ -229,7 +229,7 @@ def test_collapse_on_deduplicates_before_output(
         lambda **_kw: UserPromptSubmitConfig(collapse_duplicate_hashes=True),
     )
 
-    sin = StringIO(json.dumps({"prompt": "test"}))
+    sin = StringIO(json.dumps({"prompt": "show me the duplicate text results please"}))
     sout = StringIO()
     user_prompt_submit(stdin=sin, stdout=sout, stderr=StringIO())
 
