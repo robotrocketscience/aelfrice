@@ -1,6 +1,6 @@
 # NNNN — Title
 
-- **Status:** Proposed | Accepted | Superseded by [NNNN](NNNN-other.md)
+- **Status:** Proposed | Accepted | Superseded by `[NNNN](NNNN-other.md)`
 - **Date:** YYYY-MM-DD
 - **Deciders:** @handle, @handle
 
