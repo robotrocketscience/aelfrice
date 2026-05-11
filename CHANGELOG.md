@@ -187,7 +187,7 @@ The README roadmap row for v1.7 also lists signed-Laplacian (#149), heat-kernel 
 
 - **Dedup audit pass + `aelf doctor dedup` CLI** ([#197](https://github.com/robotrocketscience/aelfrice/issues/197) R1). Round-1 dedup ships: core algorithm with a configurable `[dedup]` config block, audit pass that surfaces near-duplicates without acting, and `aelf doctor dedup` CLI for one-shot operator runs. User surface and `LIMITATIONS.md` shrink documented at [`docs/dedup.md`](docs/dedup.md).
 
-- **Wonder-consolidation bake-off — three phantom-generation strategies** ([#228](https://github.com/robotrocketscience/aelfrice/issues/228)). Three candidate strategies for phantom-belief generation evaluated head-to-head on a synthetic corpus: bake-off runner, evaluator, and ship-decision memo recorded at [`docs/wonder_consolidation_R_final.md`](docs/wonder_consolidation_R_final.md).
+- **Wonder-consolidation bake-off — three phantom-generation strategies** ([#228](https://github.com/robotrocketscience/aelfrice/issues/228)). Three candidate strategies for phantom-belief generation evaluated head-to-head on a synthetic corpus: bake-off runner, evaluator, and ship-decision memo recorded at [`docs/v2_wonder_consolidation_R_final.md`](docs/v2_wonder_consolidation_R_final.md).
 
 - **Sentiment-from-prose feedback detector** ([#193](https://github.com/robotrocketscience/aelfrice/issues/193)). Regex-based sentiment-from-prose detector emits implicit posterior-feedback signal from inbound prose. `aelf health` surfaces the enabled/disabled state. Privacy doc updated to call out the inbound prose inspection scope ([`docs/PRIVACY.md`](docs/PRIVACY.md)).
 
@@ -197,7 +197,7 @@ The README roadmap row for v1.7 also lists signed-Laplacian (#149), heat-kernel 
 
 - **Rebuild-log instrumentation on `UserPromptSubmit`** ([#288](https://github.com/robotrocketscience/aelfrice/issues/288) phase-1a). The rebuild diagnostic log added in v1.6.0 gains coverage of the `UserPromptSubmit` hook path. Each per-prompt rebuild now appends a JSONL record; the audit script in `scripts/audit_rebuild_log.py` (also from v1.6.0) handles UPS records uniformly with the existing PreCompact records.
 
-- **Directive-detection — Path A intent-prefix filter** ([#374](https://github.com/robotrocketscience/aelfrice/issues/374), [#199](https://github.com/robotrocketscience/aelfrice/issues/199) H1). H1 ship of the v2.0 enforcement reading: a regex-based intent-prefix filter that detects directive-shaped input on `UserPromptSubmit`. Bench gate + candidate detector land first, then the prefix-filter behavior. Spec memo at [`docs/directive_detection.md`](docs/directive_detection.md).
+- **Directive-detection — Path A intent-prefix filter** ([#374](https://github.com/robotrocketscience/aelfrice/issues/374), [#199](https://github.com/robotrocketscience/aelfrice/issues/199) H1). H1 ship of the v2.0 enforcement reading: a regex-based intent-prefix filter that detects directive-shaped input on `UserPromptSubmit`. Bench gate + candidate detector land first, then the prefix-filter behavior. Spec memo at [`docs/v2_directive_detection.md`](docs/v2_directive_detection.md).
 
 - **`uri_baki` post-rank score adjuster — N=10k/50k retest** ([#153](https://github.com/robotrocketscience/aelfrice/issues/153)). Post-rank score adjusters (URI-aware boost/dampen) reland with a retest harness at N=10k and N=50k. Experimental — opt-in via `[retrieval] use_uri_baki = true`.
 
@@ -207,7 +207,7 @@ The README roadmap row for v1.7 also lists signed-Laplacian (#149), heat-kernel 
 
 - **Testing-strategy unit/integration/E2E split + `attn:e2e-failure` workflow** ([#370](https://github.com/robotrocketscience/aelfrice/issues/370)). Documents the unit / integration / E2E split at [`docs/testing-strategy.md`](docs/testing-strategy.md). E2E workflow triggers on `push:main` and opens an `attn:e2e-failure` issue if the suite fails — main-branch-only, so PRs aren't on the hook.
 
-- **Close-the-loop measurement harness — spec memo** ([#317](https://github.com/robotrocketscience/aelfrice/issues/317)). Spec memo at [`docs/close-the-loop.md`](docs/close-the-loop.md) for the close-the-loop measurement pipeline; implementation in a future cut.
+- **Close-the-loop measurement harness — spec memo** ([#317](https://github.com/robotrocketscience/aelfrice/issues/317)). Spec memo at [`docs/v2_close_the_loop.md`](docs/v2_close_the_loop.md) for the close-the-loop measurement pipeline; implementation in a future cut.
 
 - **PR-title conventional-commit prefix gate** ([#413](https://github.com/robotrocketscience/aelfrice/issues/413)). New `pr-title-prefix` job in `staging-gate.yml` mirrors the existing `commit-msg-prefix` job but validates the PR title. Fails the PR if the title does not start with `feat:`, `fix:`, `docs:`, or another approved prefix. Prefix list is delegated to `scripts/check-commit-msg.py` so it stays in sync with commits and CLAUDE.md.
 
