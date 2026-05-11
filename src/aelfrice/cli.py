@@ -689,13 +689,19 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
     store = _open_store()
     try:
         hits = retrieve(store, args.query, token_budget=args.budget)
-        if not hits:
+        # #655 read-only federation overlay: surface peer FTS5 hits
+        # alongside local results. Peer hits are display-only and tagged
+        # with their origin scope name; mutations on these ids are
+        # rejected by the API surface (ForeignBeliefError). Empty when
+        # no knowledge_deps.json or no reachable peers.
+        peer_hits = store.search_peer_beliefs(args.query, limit=args.budget)
+        if not hits and not peer_hits:
             n_beliefs = store.count_beliefs()
         else:
             n_beliefs = -1  # not consulted on the success path
     finally:
         store.close()
-    if not hits:
+    if not hits and not peer_hits:
         if n_beliefs == 0:
             print(
                 "no results — store is empty. Run `aelf onboard <path>` "
@@ -712,6 +718,11 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
     for h in hits:
         prefix = "[locked]" if h.lock_level == LOCK_USER else "        "
         print(f"{prefix} {h.id}: {h.content}", file=out)  # type: ignore[arg-type]
+    for belief, peer_name, _score in peer_hits:
+        print(
+            f"[scope:{peer_name}] {belief.id}: {belief.content}",
+            file=out,  # type: ignore[arg-type]
+        )
     return 0
 
 
