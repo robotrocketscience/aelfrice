@@ -1,0 +1,163 @@
+{
+  "aelfrice_version": "2.1.0",
+  "captured_at_utc": "2026-05-11T14:12:37Z",
+  "git_commit": "4ee1bf792c59157533a8ce463b73d3c40b3475f4",
+  "harness_version": "1",
+  "headline_cut": {
+    "amabench": [
+      {
+        "args": [],
+        "sub_key": null
+      }
+    ],
+    "locomo": [
+      {
+        "args": [],
+        "sub_key": null
+      }
+    ],
+    "longmemeval": [
+      {
+        "args": [],
+        "sub_key": null
+      }
+    ],
+    "mab": [
+      {
+        "args": [
+          "--split",
+          "Conflict_Resolution"
+        ],
+        "sub_key": "Conflict_Resolution"
+      },
+      {
+        "args": [
+          "--split",
+          "Test_Time_Learning"
+        ],
+        "sub_key": "Test_Time_Learning"
+      },
+      {
+        "args": [
+          "--split",
+          "Long_Range_Understanding"
+        ],
+        "sub_key": "Long_Range_Understanding"
+      },
+      {
+        "args": [
+          "--split",
+          "Accurate_Retrieval"
+        ],
+        "sub_key": "Accurate_Retrieval"
+      }
+    ],
+    "structmemeval": [
+      {
+        "args": [
+          "--task",
+          "location",
+          "--bench",
+          "big"
+        ],
+        "sub_key": "location"
+      },
+      {
+        "args": [
+          "--task",
+          "accounting",
+          "--bench",
+          "big"
+        ],
+        "sub_key": "accounting"
+      },
+      {
+        "args": [
+          "--task",
+          "recommendations",
+          "--bench",
+          "big"
+        ],
+        "sub_key": "recommendations"
+      },
+      {
+        "args": [
+          "--task",
+          "tree",
+          "--bench",
+          "big"
+        ],
+        "sub_key": "tree"
+      }
+    ]
+  },
+  "label": "v2.0.0 canonical",
+  "results": {
+    "amabench": {
+      "_": {
+        "_elapsed_sec": 0.047,
+        "_error_message": "Traceback (most recent call last):\n  File \"<frozen runpy>\", line 198, in _run_module_as_main\n  File \"<frozen runpy>\", line 88, in _run_code\n  File \"/home/runner/work/aelfrice/aelfrice/benchmarks/amabench_adapter.py\", line 25, in <module>\n    from datasets import load_dataset  # type: ignore[import-untyped]\n    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nModuleNotFoundError: No module named 'datasets'",
+        "_status": "error"
+      }
+    },
+    "locomo": {
+      "_": {
+        "_elapsed_sec": 0.047,
+        "_error_message": "Traceback (most recent call last):\n  File \"<frozen runpy>\", line 198, in _run_module_as_main\n  File \"<frozen runpy>\", line 88, in _run_code\n  File \"/home/runner/work/aelfrice/aelfrice/benchmarks/locomo_adapter.py\", line 25, in <module>\n    from nltk.stem import PorterStemmer  # type: ignore[import-untyped]\n    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nModuleNotFoundError: No module named 'nltk'",
+        "_status": "error"
+      }
+    },
+    "longmemeval": {
+      "_": {
+        "_elapsed_sec": 0.318,
+        "_error_message": "Traceback (most recent call last):\n  File \"<frozen runpy>\", line 198, in _run_module_as_main\n  File \"<frozen runpy>\", line 88, in _run_code\n  File \"/home/runner/work/aelfrice/aelfrice/benchmarks/longmemeval_adapter.py\", line 691, in <module>\n    main()\n    ~~~~^^\n  File \"/home/runner/work/aelfrice/aelfrice/benchmarks/longmemeval_adapter.py\", line 596, in main\n    raw = load_from_huggingface()\n  File \"/home/runner/work/aelfrice/aelfrice/benchmarks/longmemeval_adapter.py\", line 210, in load_from_h",
+        "_status": "error"
+      }
+    },
+    "mab": {
+      "Accurate_Retrieval": {
+        "_elapsed_sec": 0.044,
+        "_error_message": "Traceback (most recent call last):\n  File \"<frozen runpy>\", line 198, in _run_module_as_main\n  File \"<frozen runpy>\", line 88, in _run_code\n  File \"/home/runner/work/aelfrice/aelfrice/benchmarks/mab_adapter.py\", line 29, in <module>\n    import nltk  # type: ignore[import-untyped]\n    ^^^^^^^^^^^\nModuleNotFoundError: No module named 'nltk'",
+        "_status": "error"
+      },
+      "Conflict_Resolution": {
+        "_elapsed_sec": 0.047,
+        "_error_message": "Traceback (most recent call last):\n  File \"<frozen runpy>\", line 198, in _run_module_as_main\n  File \"<frozen runpy>\", line 88, in _run_code\n  File \"/home/runner/work/aelfrice/aelfrice/benchmarks/mab_adapter.py\", line 29, in <module>\n    import nltk  # type: ignore[import-untyped]\n    ^^^^^^^^^^^\nModuleNotFoundError: No module named 'nltk'",
+        "_status": "error"
+      },
+      "Long_Range_Understanding": {
+        "_elapsed_sec": 0.048,
+        "_error_message": "Traceback (most recent call last):\n  File \"<frozen runpy>\", line 198, in _run_module_as_main\n  File \"<frozen runpy>\", line 88, in _run_code\n  File \"/home/runner/work/aelfrice/aelfrice/benchmarks/mab_adapter.py\", line 29, in <module>\n    import nltk  # type: ignore[import-untyped]\n    ^^^^^^^^^^^\nModuleNotFoundError: No module named 'nltk'",
+        "_status": "error"
+      },
+      "Test_Time_Learning": {
+        "_elapsed_sec": 0.05,
+        "_error_message": "Traceback (most recent call last):\n  File \"<frozen runpy>\", line 198, in _run_module_as_main\n  File \"<frozen runpy>\", line 88, in _run_code\n  File \"/home/runner/work/aelfrice/aelfrice/benchmarks/mab_adapter.py\", line 29, in <module>\n    import nltk  # type: ignore[import-untyped]\n    ^^^^^^^^^^^\nModuleNotFoundError: No module named 'nltk'",
+        "_status": "error"
+      }
+    },
+    "structmemeval": {
+      "accounting": {
+        "_elapsed_sec": 0.309,
+        "_error_message": "No cases found. Check --data path and --task/--bench options.",
+        "_status": "skipped_data_missing"
+      },
+      "location": {
+        "_elapsed_sec": 0.313,
+        "_error_message": "No cases found. Check --data path and --task/--bench options.",
+        "_status": "skipped_data_missing"
+      },
+      "recommendations": {
+        "_elapsed_sec": 0.311,
+        "_error_message": "No cases found. Check --data path and --task/--bench options.",
+        "_status": "skipped_data_missing"
+      },
+      "tree": {
+        "_elapsed_sec": 0.308,
+        "_error_message": "No cases found. Check --data path and --task/--bench options.",
+        "_status": "skipped_data_missing"
+      }
+    }
+  },
+  "schema_version": 2
+}
