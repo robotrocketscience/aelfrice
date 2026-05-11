@@ -13,6 +13,11 @@ Covers the acceptance bullets from #655:
 * missing peer DB warns rather than crashes
 * aelf health JSON reports peers with reachability + scope_id
 * no regression on single-DB workflows (zero peers configured)
+
+Updated for #688 scope field: beliefs that should be visible to peers
+must use scope='global' (or 'shared:<name>'). The factory default is
+now 'project' per the column default, but tests that assert peer
+visibility pass scope='global' explicitly.
 """
 from __future__ import annotations
 
@@ -39,7 +44,15 @@ def _belief(
     *,
     lock_level: str = LOCK_NONE,
     origin: str = ORIGIN_AGENT_INFERRED,
+    scope: str = "global",
 ) -> Belief:
+    """Construct a test Belief.
+
+    scope defaults to 'global' so existing tests that assert peer
+    visibility continue to pass after #688 introduced the scope filter
+    on search_peer_beliefs. Tests that exercise the project/global
+    distinction should pass scope= explicitly.
+    """
     return Belief(
         id=id_,
         content=content,
@@ -54,6 +67,7 @@ def _belief(
         last_retrieved_at=None,
         session_id=None,
         origin=origin,
+        scope=scope,
     )
 
 
