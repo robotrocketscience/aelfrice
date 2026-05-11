@@ -911,18 +911,26 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
     ``--emit-phantoms`` prints candidates as Phantom JSON for offline
     review; mutually exclusive with ``--persist``.
 
-    `--axes QUERY` (#551) bypasses the seed/BFS path and emits the
-    gap-analysis + research-axes JSON for research-agent dispatch.
-    Mutually exclusive with ``--persist``.
+    `aelf wonder QUERY` (#645) and `--axes QUERY` (#551, retained as an
+    alias) bypass the seed/BFS path and emit the gap-analysis + research-
+    axes JSON for research-agent dispatch. Mutually exclusive with
+    ``--persist``. If both forms are passed, ``--axes`` wins.
     """
     if getattr(args, "gc", False):
         return _cmd_wonder_gc(args, out)
+
+    # #645: a positional QUERY routes to axes mode by default. The
+    # legacy --axes flag is retained as an explicit alias and takes
+    # precedence if both forms are passed.
+    query = getattr(args, "query", None)
+    if query is not None and getattr(args, "axes", None) is None:
+        args.axes = query
 
     persist = getattr(args, "persist", False)
 
     if persist and getattr(args, "axes", None):
         print(
-            "aelf wonder: --persist cannot be combined with --axes",
+            "aelf wonder: --persist cannot be combined with --axes / QUERY",
             file=out,  # type: ignore[arg-type]
         )
         return 2
@@ -3965,14 +3973,25 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "wonder",
         help="surface consolidation candidates / phantom beliefs (#389)",
         description=(
-            "Three modes:\n"
-            "  graph-walk (default) — consolidation candidates from a "
-            "BFS expansion around a seed.\n"
-            "  --emit-phantoms — same candidates serialised as Phantom "
-            "JSON for offline review.\n"
-            "  --axes QUERY — gap analysis + research axes JSON for "
-            "research-agent dispatch (#551). Requires a query argument; "
-            "ignores --seed / --top."
+            "Modes (#645):\n"
+            "  no-arg — graph-walk consolidation candidates from a BFS "
+            "expansion around a seed.\n"
+            "  QUERY (positional) — axes-spawn-ingest research flow "
+            "(gap analysis + research axes JSON for skill-layer dispatch).\n"
+            "  --gc — soft-delete stale speculative beliefs.\n"
+            "  --emit-phantoms — graph-walk candidates serialised as "
+            "Phantom JSON for offline review.\n"
+            "  --persist — graph-walk candidates persisted to the store "
+            "via wonder_ingest.\n"
+            "  --axes QUERY — deprecated alias for the positional QUERY."
+        ),
+    )
+    p_wonder.add_argument(
+        "query", nargs="?", default=None,
+        help=(
+            "research query (#645): when provided, runs the axes-spawn-"
+            "ingest flow instead of graph-walk. Equivalent to --axes "
+            "QUERY but ergonomic. With no query, graph-walk runs."
         ),
     )
     p_wonder.add_argument(

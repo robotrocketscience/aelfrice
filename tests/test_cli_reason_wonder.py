@@ -201,6 +201,54 @@ def test_wonder_axes_respects_agent_count(_isolated_db: Path) -> None:
     assert payload["agent_count"] == 2
 
 
+# --- aelf wonder QUERY (positional, #645) -------------------------------
+
+
+def test_wonder_positional_query_routes_to_axes(_isolated_db: Path) -> None:
+    """A positional QUERY runs the axes-spawn-ingest flow by default
+    (#645 default-flip), matching `aelf wonder --axes QUERY` shape."""
+    _seed_chain(_isolated_db)
+    code, out = _run("wonder", "indentation")
+    assert code == 0, out
+    payload = json.loads(out)
+    assert {"gap_analysis", "research_axes", "agent_count",
+            "speculative_anchor_ids"} <= set(payload.keys())
+    assert payload["gap_analysis"]["query"] == "indentation"
+
+
+def test_wonder_no_arg_still_graph_walks(_isolated_db: Path) -> None:
+    """No QUERY → graph-walk consolidation mode (aelfrice extension
+    preserved; #645 acceptance)."""
+    _seed_chain(_isolated_db)
+    code, out = _run("wonder")
+    # graph-walk produces human-readable rows (or the empty-store
+    # message), NOT a JSON payload with `gap_analysis`.
+    assert code == 0
+    try:
+        payload = json.loads(out)
+    except (json.JSONDecodeError, ValueError):
+        payload = None
+    if payload is not None:
+        assert "gap_analysis" not in payload
+
+
+def test_wonder_axes_flag_overrides_positional(_isolated_db: Path) -> None:
+    """When both `QUERY` positional and `--axes Q2` are passed, the
+    explicit --axes flag wins (back-compat for callers that pass both)."""
+    _seed_chain(_isolated_db)
+    code, out = _run("wonder", "ignored-positional", "--axes", "explicit")
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["gap_analysis"]["query"] == "explicit"
+
+
+def test_wonder_positional_query_persist_conflict(_isolated_db: Path) -> None:
+    """Positional QUERY + --persist must error like --axes + --persist."""
+    code, out = _run("wonder", "some query", "--persist")
+    assert code == 2
+    assert "--persist" in out
+
+
 # --- aelf wonder --persist (#549) ----------------------------------------
 
 
