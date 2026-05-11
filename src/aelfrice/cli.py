@@ -75,6 +75,7 @@ from aelfrice.models import (
 from aelfrice.bfs_multihop import expand_bfs
 from aelfrice import wonder_consolidation
 from aelfrice import __version__ as _AELFRICE_VERSION
+from aelfrice.auto_install import auto_install_at_cli_entry
 from aelfrice.benchmark import run_benchmark, seed_corpus
 from aelfrice.classification import (
     HostClassification,
@@ -5122,6 +5123,15 @@ _UPDATE_CHECK_SKIP_CMDS: Final[frozenset[str]] = frozenset(
     {"upgrade-cmd", "upgrade", "uninstall", "statusline"}
 )
 
+# Commands that already mutate or tear down settings.json themselves.
+# Running auto-install before them would either be a wasted no-op
+# (setup re-writes the same entries) or actively wrong (uninstall is
+# about to remove them). Doctor explicitly inspects on-disk state and
+# should see what is there, not what auto-install would write.
+_AUTO_INSTALL_SKIP_CMDS: Final[frozenset[str]] = frozenset(
+    {"setup", "unsetup", "uninstall", "doctor"}
+)
+
 
 def _maybe_emit_update_banner(cmd: str | None) -> None:
     """Print a one-line orange notice on stderr if an update is pending.
@@ -5186,6 +5196,14 @@ def main(argv: Sequence[str] | None = None, out: object = None) -> int:
     parser = build_parser()
     args = parser.parse_args(effective_argv)
     cmd = getattr(args, "cmd", None)
+    if cmd not in _AUTO_INSTALL_SKIP_CMDS:
+        # Idempotent post-upgrade hook installer (#623). Gated on a
+        # version stamp at ~/.aelfrice/installed-manifest-version, so
+        # the happy path on subsequent invocations is a single stat +
+        # short file read. Honors AELFRICE_NO_AUTO_INSTALL=1. Never
+        # raises — failure is logged to stderr and the command runs
+        # regardless.
+        auto_install_at_cli_entry(installed_version=_AELFRICE_VERSION)
     if not _update_check_disabled() and cmd not in _UPDATE_CHECK_SKIP_CMDS:
         # Fire-and-forget: cache TTL gates duplicate work, never blocks.
         maybe_check_for_update_async()
