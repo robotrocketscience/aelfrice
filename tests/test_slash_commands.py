@@ -154,6 +154,35 @@ def test_upgrade_slash_uses_no_flag_upgrade_cmd() -> None:
     )
 
 
+def test_upgrade_slash_keeps_step_2_imperative() -> None:
+    """`/aelf:upgrade` must keep step 2 as a hard execution step.
+
+    Issue #611: agents were stopping after step 1 — printing the
+    detection output and never running the `run:` command. The slash
+    body's job is to keep step 2 explicit enough that an agent reading
+    it cannot reasonably stop early. Lock in two markers:
+
+    - the word `verbatim` appears in step 2 (signals "don't substitute
+      a guess of what to run").
+    - the body anticipates the parenthetical advisory by name
+      (`(installed via pipx — use pipx to upgrade)`) and tells the
+      agent it is not a substitute for executing the `run:` line.
+
+    If a future edit softens either, this test fires. The point of the
+    test is to keep the imperative load-bearing under copy edits.
+    """
+    text = (_slash_dir() / "upgrade.md").read_text()
+    assert "verbatim" in text, (
+        "/aelf:upgrade step 2 must instruct the agent to run the `run:` "
+        "command verbatim (see #611 — guess-substitution failure mode)."
+    )
+    assert "installed via pipx" in text, (
+        "/aelf:upgrade must call out the parenthetical advisory by name "
+        "so the agent does not treat it as a substitute for step 2 "
+        "(see #611 — stop-after-step-1 failure mode)."
+    )
+
+
 # Subparsers intentionally hidden from --help at v1.3. Aliases live one
 # minor and are deleted at v1.4 (`health`, `stats`); the rest stay
 # callable indefinitely as scripting / hook entry points.
