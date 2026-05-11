@@ -80,6 +80,99 @@ If precision falls below 90%, tighten Surface B Jaccard. If recall falls below 7
 - Demotion (`origin = user_validated → speculative`) — not currently planned; may surface if user-validated phantoms accumulate stale signals.
 - Cross-project phantom federation — not applicable; phantoms are per-project.
 
+## Adversarial bench fixture (added 2026-05-11)
+
+The labeled-corpus benchmark above remains the formal recall/precision gate.
+In addition, an in-repo adversarial fixture documents Surface B's failure
+surface against hand-constructed edge cases — synthetic and corpus-free, so
+it runs on every CI pass without a `bench-gated` skip.
+
+Location: `tests/fixtures/promotion_adversarial.json`.
+Harness: `tests/test_promotion_adversarial.py`.
+
+The fixture has two case categories:
+
+- `regression_cases` (currently 26): Surface B behaves as `expected_should_promote`
+  says it should. Strict assertion. A failure here is a regression in the rule's
+  correct-behavior surface.
+- `edge_cases` (currently 75): Surface B's verdict differs from
+  `expected_should_promote`. Marked `@pytest.mark.xfail` so the bench gate stays
+  green. Each documents a known failure mode (synonym substitution, antonym,
+  presupposition, role reversal, etc.). When a future Surface B improvement
+  starts handling a case correctly, the xfail flips to "unexpectedly passing"
+  — that's the signal to remove the xfail and move the case to
+  `regression_cases`.
+
+The 35-class taxonomy (sections A/B/C: false-positive / false-negative /
+boundary-fragile axes; sections D/E/F: security-researcher / linguistics /
+QA personas) is enumerated in the fixture's `_meta.classes_covered`. Five
+classes (A2, A4, C2, D1, E1) had no surviving cases after the mechanical
+filter discarded LLM-generator math errors; they are listed in
+`_meta.classes_lost_in_filter` and remain candidate attack vectors.
+
+### Roadmap implied by the fixture
+
+Empirical follow-up work tested but **not** included in this PR:
+
+#### Tier 1 — cheap deterministic normalization (one PR)
+
+| Improvement | Closes | Cost |
+|---|---|---|
+| Acronym expansion table (~15 entries) | B3 (5 cases) | ~10 lines |
+| Porter stemming via existing `snowballstemmer` dep | B4/E4 partial (2-3 cases) | ~3 lines |
+| Punctuation strip pre-tokenize | F1 (4 cases) | ~3 lines |
+| NFKC Unicode normalize | F2 partial (2 cases), D4 partial | ~3 lines |
+| Hyphen split in tokenizer | B6 (5 cases) | ~3 lines |
+
+Total: ~22 cases would flip from `edge_cases` to `regression_cases`. These
+are deterministic improvements that respect the #605 PHILOSOPHY lock.
+
+#### Tier 2 — layered-matcher redesign (separate design decision)
+
+Surface B currently sits outside the project's main retrieval stack
+(`retrieval.retrieve()`, `bm25.BM25Index`, `hrr_index`, the planned
+`#227` precomputed-neighbor vocab bridge). It does its own linear scan
+over `list_active_speculative_beliefs()` plus raw Jaccard. The fixture
+makes the cost of this isolation visible — several adversarial classes
+would be addressable by leveraging the existing layers:
+
+| Layer | Adversarial classes it would address |
+|---|---|
+| **BM25 IDF weighting** | A7 (sparse-token threshold inflation) — rare terms count more, common-term overlap stops cracking 0.9 by accident |
+| **FTS5 tokenizer** (Unicode-aware, optional `porter` stemmer) | B6 (hyphenation), F2 (whitespace variants), partial B4/E4 (morphology) — overlap with Tier 1 cheap fix, but free if Surface B uses FTS5 instead of `str.split()` |
+| **Vocab bridge** (#227, spec only) | B1 (synonyms) IF the corpus has enough context for distributional co-occurrence to bind variants — uncertain on single-statement phantoms |
+| **HRR primitives** | None directly — empirical test confirmed naive HRR-bag-of-words adds nothing for lexical similarity; HRR is the substrate for structural-composition queries (#152), not for content-equivalence matching |
+
+A Tier 2 redesign would replace Surface B's standalone scan with:
+
+1. **FTS5 candidate pre-filter** — narrows the active-speculative scan to
+   terms with at least one shared token, cheap and IDF-weighted.
+2. **Match condition** — accept on `BM25-normalized score ≥ τ` OR raw
+   `Jaccard ≥ 0.9` (kept as the conservative fallback).
+3. **Vocab-bridge consult** when #227 ships — adds synonym closure to the
+   candidate set without changing the threshold semantics.
+
+This is a Surface B v2 design call, not a drop-in. Closes ~5-10 additional
+cases beyond Tier 1 and substantially improves precision on the FP axis.
+Worth its own design memo + bench-driven acceptance after #616 lands and
+the Tier 1 fix has measured impact in production.
+
+Out of cheap-fix scope (would require either embeddings — locked out by
+#605 — or substantive Surface B redesign):
+- Synonym substitution (B1, 5 cases) — empirically tested with WordNet via NLTK;
+  WordNet's lemma-set canonicalization fails because polysemous words have
+  divergent first-sense lemmas. A WordNet-backed pairwise alignment matcher
+  would address this but is a Surface B v2 redesign, not a drop-in.
+- Antonym substitution (E2, 5 cases) — distributional similarity does not
+  reliably distinguish antonyms; not addressable without explicit lexical
+  antonym data.
+- Paraphrase (B2), presupposition (E3), scope ambiguity (E5), role reversal
+  (A5), token flooding (D2) — all involve syntactic/logical structure that
+  Surface B's bag-of-tokens substrate does not encode.
+
+These six classes (~25 cases) constitute the documented limit of the
+deterministic-narrow-surface approach to phantom-lock matching.
+
 ## Provenance
 
 Lab memory cited in issue body: `103307e54dc4ee70` (2026-04-28).
