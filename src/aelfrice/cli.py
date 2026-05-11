@@ -2874,6 +2874,16 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
     use_json = getattr(args, "json", False)
     corpus_min = _resolve_corpus_min()
     project_age = _git_first_commit_age_days()
+    # #655 surface knowledge_deps.json parse failures as a finding-style
+    # warning rather than letting them crash health. Done outside the
+    # store-open block so a malformed peer config doesn't block the
+    # rest of the audit.
+    peer_config_error: str | None = None
+    try:
+        from aelfrice.federation import load_peer_deps as _load_peer_deps
+        _load_peer_deps()
+    except ValueError as e:
+        peer_config_error = str(e)
     store = _open_store()
     try:
         report = audit(
@@ -2882,6 +2892,7 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
             project_age_days=project_age,
         )
         features = compute_features(store)
+        peer_snapshot = store.peer_health()
     finally:
         store.close()
 
@@ -2905,6 +2916,10 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
             },
             "features": {
                 "edges_by_type": features.edges_by_type,
+            },
+            "federation": {
+                "peers": peer_snapshot,
+                "config_error": peer_config_error,
             },
         }
         print(json.dumps(payload), file=out)  # type: ignore[arg-type]
@@ -2954,6 +2969,27 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
             "sentiment-from-prose feedback: disabled",
             file=out,  # type: ignore[arg-type]
         )
+    print("", file=out)  # type: ignore[arg-type]
+    print("federation peers:", file=out)  # type: ignore[arg-type]
+    if peer_config_error is not None:
+        print(
+            f"  [warn] knowledge_deps.json: {peer_config_error}",
+            file=out,  # type: ignore[arg-type]
+        )
+    if not peer_snapshot:
+        print("  (none configured)", file=out)  # type: ignore[arg-type]
+    else:
+        for entry in peer_snapshot:
+            status = "ok" if entry["reachable"] else "missing"
+            scope_marker = (
+                f" scope_id={entry['scope_id'][:8]}…"
+                if entry["scope_id"]
+                else ""
+            )
+            print(
+                f"  [{status:7s}] {entry['name']:16s} {entry['path']}{scope_marker}",
+                file=out,  # type: ignore[arg-type]
+            )
     print("", file=out)  # type: ignore[arg-type]
     print("run `aelf regime` for the v1.0 regime classifier.",
           file=out)  # type: ignore[arg-type]
