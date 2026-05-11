@@ -16,6 +16,13 @@ store without losing the global DB itself.
 - --all opts into copying every belief regardless of project relevance
 - never deletes from the source DB
 
+In-place migration (#593) reuses the same `migrate()` core: rename
+the legacy per-project DB to a `.pre-v1x.bak` sibling, then run
+`migrate(legacy=bak, target=original, copy_all=True, apply=True)`.
+Used by `aelf doctor` to silently bring pre-v1.x per-project DBs
+forward to the modern schema. Backup-first means the operation is
+recoverable even if the migration crashes mid-write.
+
 Out of scope for v1.1.0: feedback_history copy (audit-log fidelity
 across stores), in-place delete from legacy, --pattern filter,
 interactive selection. All v1.2.0+.
@@ -23,6 +30,7 @@ interactive selection. All v1.2.0+.
 from __future__ import annotations
 
 import sqlite3
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -227,4 +235,84 @@ def migrate(
         target_path=target_path,
         counts=counts,
         applied=apply,
+    )
+
+
+IN_PLACE_BACKUP_SUFFIX: Final[str] = ".pre-v1x.bak"
+
+
+@dataclass(frozen=True)
+class InPlaceMigrateReport:
+    """Result of an in-place migration of a pre-v1.x per-project DB.
+
+    `db_path`     — path of the now-modern-schema DB (same as input).
+    `backup_path` — sibling preserving the original pre-v1.x file.
+    `counts`      — copy counts from the underlying `migrate()` call.
+    `duration_ms` — wall-clock time for the full operation.
+    """
+
+    db_path: Path
+    backup_path: Path
+    counts: MigrateCounts
+    duration_ms: int
+
+
+def migrate_in_place(
+    db_path: Path,
+    *,
+    backup_suffix: str = IN_PLACE_BACKUP_SUFFIX,
+) -> InPlaceMigrateReport:
+    """Migrate a pre-v1.x per-project DB in place, preserving a backup.
+
+    Steps:
+      1. Validate `db_path` exists and the backup target is free.
+      2. Rename `db_path` → `db_path + backup_suffix` (atomic on POSIX).
+      3. Read every belief + edge from the backup via the existing
+         `migrate()` core (`copy_all=True`, `apply=True`). The target
+         is `db_path`, freshly created with the modern schema by
+         `MemoryStore`.
+      4. Beliefs missing the `origin` column land as `ORIGIN_UNKNOWN`
+         (handled by `_read_legacy_beliefs`).
+
+    Raises:
+      FileNotFoundError — `db_path` doesn't exist.
+      FileExistsError   — backup target already exists; refuses to
+                          overwrite to keep prior backups recoverable.
+
+    Used by `aelf doctor` (#593) to silently bring legacy per-project
+    DBs forward. Operator-direct invocation is also valid for one-off
+    recovery (any caller that owns a legacy per-project DB path).
+    """
+    if not db_path.exists():
+        raise FileNotFoundError(db_path)
+
+    backup_path = db_path.with_name(db_path.name + backup_suffix)
+    if backup_path.exists():
+        raise FileExistsError(
+            f"backup target already exists: {backup_path} — "
+            f"refusing to overwrite a prior backup"
+        )
+
+    start_ns = time.monotonic_ns()
+
+    # Atomic rename — POSIX guarantees no partial state.
+    db_path.rename(backup_path)
+
+    # migrate() requires a project_root, but with copy_all=True the
+    # filter is bypassed; any path works.
+    report = migrate(
+        legacy_path=backup_path,
+        target_path=db_path,
+        project_root=Path("/"),
+        apply=True,
+        copy_all=True,
+    )
+
+    duration_ms = (time.monotonic_ns() - start_ns) // 1_000_000
+
+    return InPlaceMigrateReport(
+        db_path=db_path,
+        backup_path=backup_path,
+        counts=report.counts,
+        duration_ms=duration_ms,
     )
