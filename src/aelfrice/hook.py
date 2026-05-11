@@ -640,6 +640,7 @@ def _write_hook_audit_record(
     session_id: str | None = None,
     beliefs: list["Belief"] | None = None,
     latency_ms: int | None = None,
+    prompt_shape_gate_skip: str | None = None,
     config: HookAuditConfig | None = None,
     stderr: IO[str] | None = None,
 ) -> None:
@@ -656,6 +657,10 @@ def _write_hook_audit_record(
     retrieve+format; `tokens` — derived from `rendered_block` via the
     same 4-chars-per-token estimator retrieval uses for budgeting.
     Older readers ignore unknown fields.
+
+    #674 additive field:
+    `prompt_shape_gate_skip` — set to the gate reason string when
+    the prompt-shape gate fired and BM25 retrieval was skipped.
     """
     cfg = config if config is not None else load_hook_audit_config(stderr=stderr)
     if not cfg.enabled:
@@ -680,6 +685,8 @@ def _write_hook_audit_record(
         record["beliefs"] = [_serialize_belief_for_audit(b) for b in beliefs]
     if latency_ms is not None:
         record["latency_ms"] = int(latency_ms)
+    if prompt_shape_gate_skip is not None:
+        record["prompt_shape_gate_skip"] = prompt_shape_gate_skip
     _append_audit(audit_path, record, cfg.max_bytes, stderr=stderr)
 
 
@@ -879,10 +886,12 @@ def user_prompt_submit(
                 stderr=serr,
             )
         elif gate_skip:
-            # Gate fired, no BM25 hits. Emit rebuild_log with empty hits so
-            # the audit trail records the skip. If this is also the first
-            # prompt of a session, still write the session-start sub-block
-            # so locked/core beliefs are not silently dropped.
+            # Gate fired, no BM25 hits. Emit rebuild_log with empty hits
+            # (no-op per its early-return guard on empty hits_pre_dedup).
+            # Write an audit record regardless so the skip reason is
+            # captured in the hook audit trail (#674). If this is also the
+            # first prompt of a session, still write the session-start
+            # sub-block so locked/core beliefs are not silently dropped.
             _emit_user_prompt_submit_rebuild_log(
                 prompt=prompt,
                 session_id=session_id,
@@ -890,21 +899,24 @@ def user_prompt_submit(
                 hits_post_dedup=[],
                 stderr=serr,
             )
+            latency_ms = int((time.monotonic() - retrieve_start) * 1000)
             if session_start_block:
-                latency_ms = int((time.monotonic() - retrieve_start) * 1000)
                 body = _format_hits_with_session_start([], session_start_block)
                 sout.write(body)
-                _write_hook_audit_record(
-                    hook=AUDIT_HOOK_USER_PROMPT_SUBMIT,
-                    prompt=prompt,
-                    rendered_block=body,
-                    n_beliefs=0,
-                    n_locked=0,
-                    session_id=session_id,
-                    beliefs=[],
-                    latency_ms=latency_ms,
-                    stderr=serr,
-                )
+            else:
+                body = ""
+            _write_hook_audit_record(
+                hook=AUDIT_HOOK_USER_PROMPT_SUBMIT,
+                prompt=prompt,
+                rendered_block=body,
+                n_beliefs=0,
+                n_locked=0,
+                session_id=session_id,
+                beliefs=[],
+                latency_ms=latency_ms,
+                prompt_shape_gate_skip=gate_reason,
+                stderr=serr,
+            )
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     return 0

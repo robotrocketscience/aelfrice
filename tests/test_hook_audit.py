@@ -202,11 +202,35 @@ def test_user_prompt_submit_no_audit_when_no_hits(
     _set_db(monkeypatch, db)
     monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
     monkeypatch.chdir(tmp_path)
-    sin = io.StringIO(_payload("xyzzy_no_match_whatever"))
+    sin = io.StringIO(_payload("explain the deployment process for dinosaurs"))
     sout = io.StringIO()
     user_prompt_submit(stdin=sin, stdout=sout)
     audit_path = _audit_path_for_db(db)
     assert not audit_path.exists() or read_hook_audit(audit_path) == []
+
+
+def test_prompt_shape_gate_audit_records_skip_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gated ack prompt must write an audit record with prompt_shape_gate_skip set."""
+    db = tmp_path / "memory.db"
+    _seed_db(db, [_mk("F1", "the kitchen is full of bananas")])
+    _set_db(monkeypatch, db)
+    monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    sin = io.StringIO(_payload("yes", session_id="gate-audit-sess"))
+    sout = io.StringIO()
+    rc = user_prompt_submit(stdin=sin, stdout=sout)
+    assert rc == 0
+    audit_path = _audit_path_for_db(db)
+    records = read_hook_audit(audit_path)
+    assert len(records) == 1
+    rec = records[0]
+    assert rec["hook"] == AUDIT_HOOK_USER_PROMPT_SUBMIT
+    assert rec["n_beliefs"] == 0
+    assert "prompt_shape_gate_skip" in rec
+    skip_reason = rec["prompt_shape_gate_skip"]
+    assert isinstance(skip_reason, str) and len(skip_reason) > 0
 
 
 def test_session_start_writes_audit_record(
