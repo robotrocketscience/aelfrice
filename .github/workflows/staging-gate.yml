@@ -4,15 +4,6 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, edited]
-  merge_group:
-    # #624 — GitHub native merge queue runs required checks on the
-    # rebased `gh-readonly-queue/main/pr-N-<sha>` branch before
-    # merging. The three required staging-gate jobs (secrets-scan,
-    # pattern-scan, history-scan) re-run on the rebased result so a
-    # queue-introduced regression cannot land. PR-context-only jobs
-    # below (commit-msg-prefix, pr-title-prefix, pr-body-issue-link,
-    # release-docs-check) are gated to pull_request via `if:` since
-    # their inputs don't exist on merge_group events.
 
 permissions:
   contents: read
@@ -91,11 +82,8 @@ jobs:
   history-scan:
     runs-on: ubuntu-latest
     env:
-      # Event-agnostic: pull_request supplies base.ref/head.sha;
-      # merge_group supplies base_sha/head_sha (already rebased).
       BASE_REF: ${{ github.event.pull_request.base.ref }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
-      MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
       - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
         with:
@@ -104,7 +92,6 @@ jobs:
         with:
           fetch-depth: 0
       - name: Fetch base ref
-        if: github.event_name == 'pull_request'
         run: |
           git fetch --no-tags origin "$BASE_REF"
       - name: Decode patterns
@@ -120,14 +107,8 @@ jobs:
           # already shipped to main. Scope the scan to commits this PR adds
           # on top of the merge base, so a legitimate identifier merged via
           # an earlier PR cannot retroactively block every subsequent PR.
-          if [ -n "${MERGE_GROUP_BASE_SHA:-}" ]; then
-              # Merge-queue event: the queue branch is already rebased onto
-              # base_sha, so the incoming range is base_sha..head_sha exactly.
-              range="${MERGE_GROUP_BASE_SHA}..${HEAD_SHA}"
-          else
-              merge_base="$(git merge-base "origin/${BASE_REF}" "$HEAD_SHA")"
-              range="${merge_base}..${HEAD_SHA}"
-          fi
+          merge_base="$(git merge-base "origin/${BASE_REF}" "$HEAD_SHA")"
+          range="${merge_base}..${HEAD_SHA}"
           git log "$range" --format='%H%n%an%n%ae%n%cn%n%ce%n%s%n%b' > /tmp/h
           git log "$range" -p > /tmp/d
           fail=0
@@ -143,10 +124,6 @@ jobs:
           exit "$fail"
 
   release-docs-check:
-    # PR-only: relies on github.event.pull_request.base.ref to detect a
-    # version bump. On merge_group the PR-level check already ran, and
-    # the rebased branch has the same pyproject.toml.
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
@@ -204,9 +181,6 @@ jobs:
   # This job fails the PR if any commit has an invalid prefix.
   # ---------------------------------------------------------------------------
   commit-msg-prefix:
-    # PR-only: validates the PR's incoming commits, not the rebased
-    # queue commits (which carry the same subjects).
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
@@ -249,8 +223,6 @@ jobs:
   # in sync with `commit-msg-prefix` and CLAUDE.md.
   # ---------------------------------------------------------------------------
   pr-title-prefix:
-    # PR-only: github.event.pull_request.title does not exist on merge_group.
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
@@ -290,8 +262,6 @@ jobs:
   # and as a check-run summary.  See CONTRIBUTING.md § PR body requirements.
   # ---------------------------------------------------------------------------
   pr-body-issue-link:
-    # PR-only and advisory.
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
