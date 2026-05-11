@@ -84,6 +84,9 @@ from aelfrice.classification import (
 from aelfrice.derivation import DerivationInput, derive
 from aelfrice.derivation_worker import run_worker
 from aelfrice.doctor import (
+    DORMANT_IDLE_DAYS_DEFAULT,
+    DormantDB,
+    _check_dormant_dbs,
     classify_orphans as _classify_orphans,
     diagnose,
     format_orphan_feedback_report as _format_orphan_feedback_report,
@@ -3050,6 +3053,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_detect_stale(args, out)
     if getattr(args, "derive_pending", False):
         return _cmd_doctor_derive_pending(args, out)
+    if getattr(args, "prune_dormant", False):
+        return _cmd_doctor_prune_dormant(args, out)
     scope = getattr(args, "scope", None)
     exit_code = 0
     if scope in (None, "hooks"):
@@ -3448,6 +3453,111 @@ def _cmd_doctor_promote_retention(
         store.close()
     print(_format_promotion_report(report), file=out)  # type: ignore[arg-type]
     return 0
+
+
+def _cmd_doctor_prune_dormant(
+    args: argparse.Namespace, out: object
+) -> int:
+    """Identify per-project DBs idle for >= --idle-days (default 30)
+    and optionally delete them after explicit per-DB confirmation (#594).
+
+    Default action is dry-run: scan + list. With ``--apply``, the
+    user is prompted ``[y/N]`` per DB; only ``y``/``Y`` deletes the
+    file. Anything else preserves the DB and proceeds to the next
+    one. Bypasses the hooks/graph checks; never opens the canonical
+    store.
+
+    Honours ``--idle-days N`` (override default), ``--projects-dir``
+    (override scan root, primarily for tests).
+    """
+    idle_days_raw = getattr(args, "idle_days", None)
+    idle_days = (
+        int(idle_days_raw) if idle_days_raw is not None
+        else DORMANT_IDLE_DAYS_DEFAULT
+    )
+    if idle_days < 0:
+        print(
+            f"aelf doctor --prune-dormant: --idle-days must be >= 0 (got {idle_days})",
+            file=sys.stderr,
+        )
+        return 2
+
+    projects_dir_raw = getattr(args, "projects_dir", None)
+    projects_dir = Path(projects_dir_raw) if projects_dir_raw else None
+
+    apply = bool(getattr(args, "apply", False))
+
+    dormant = _check_dormant_dbs(
+        projects_dir=projects_dir, idle_days=idle_days,
+    )
+    if not dormant:
+        print(
+            f"no per-project DBs idle for >= {idle_days} days.",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 0
+
+    total_bytes = sum(d.size_bytes for d in dormant)
+    total_beliefs = sum(d.row_count for d in dormant)
+    print(
+        f"found {len(dormant)} dormant per-project DB(s) "
+        f"(idle >= {idle_days}d, {total_beliefs:,} beliefs, "
+        f"{total_bytes / 1024:.1f} KiB total):",
+        file=out,  # type: ignore[arg-type]
+    )
+    for entry in dormant:
+        print(_format_dormant_entry(entry), file=out)  # type: ignore[arg-type]
+
+    if not apply:
+        print(
+            "",
+            file=out,  # type: ignore[arg-type]
+        )
+        print(
+            "dry-run only. re-run with `--apply` to be prompted [y/N] per DB.",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 0
+
+    deleted = 0
+    skipped = 0
+    for entry in dormant:
+        prompt = f"delete {entry.path}? [y/N] "
+        try:
+            answer = input(prompt).strip().lower()
+        except EOFError:
+            answer = ""
+        if answer in ("y", "yes"):
+            try:
+                entry.path.unlink()
+                deleted += 1
+                print(f"  deleted {entry.path}", file=out)  # type: ignore[arg-type]
+            except OSError as exc:
+                print(
+                    f"  ERROR deleting {entry.path}: {exc}",
+                    file=sys.stderr,
+                )
+                skipped += 1
+        else:
+            skipped += 1
+            print(f"  kept {entry.path}", file=out)  # type: ignore[arg-type]
+
+    print("", file=out)  # type: ignore[arg-type]
+    print(
+        f"prune complete: {deleted} deleted, {skipped} kept.",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
+def _format_dormant_entry(entry: DormantDB) -> str:
+    """One-line summary of a dormant DB for the prune listing."""
+    return (
+        f"  {entry.path} "
+        f"({entry.row_count:,} beliefs, "
+        f"{entry.size_bytes / 1024:.1f} KiB, "
+        f"idle {entry.idle_days}d)"
+    )
 
 
 def _print_doctor_store_check(out: object) -> None:
@@ -4329,6 +4439,40 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "hatch when a prior batch crashed mid-stamp). Idempotent; "
             "zero unstamped rows is the steady state. Bypasses the "
             "hooks/graph checks."
+        ),
+    )
+    p_doctor.add_argument(
+        "--prune-dormant",
+        dest="prune_dormant",
+        action="store_true",
+        default=False,
+        help=(
+            "list per-project DBs under ~/.aelfrice/projects/*/memory.db "
+            "that have been idle for >= --idle-days (default 30). "
+            "Combine with --apply to be prompted [y/N] per DB and "
+            "delete on 'y'. Bypasses the hooks/graph checks; never "
+            "opens the canonical store. Issue #594."
+        ),
+    )
+    p_doctor.add_argument(
+        "--idle-days",
+        dest="idle_days",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "with --prune-dormant: idle threshold in days (default: 30). "
+            "Files with mtime older than now - N days qualify."
+        ),
+    )
+    p_doctor.add_argument(
+        "--projects-dir",
+        dest="projects_dir",
+        default=None,
+        metavar="PATH",
+        help=(
+            "with --prune-dormant: override the per-project DB scan "
+            "root (default: ~/.aelfrice/projects). Primarily for tests."
         ),
     )
     p_doctor.add_argument(
