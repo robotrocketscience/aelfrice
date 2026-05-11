@@ -2994,6 +2994,7 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
         )
         features = compute_features(store)
         peer_snapshot = store.peer_health()
+        scope_counts = store.count_beliefs_by_scope()
     finally:
         store.close()
 
@@ -3021,6 +3022,7 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
             "federation": {
                 "peers": peer_snapshot,
                 "config_error": peer_config_error,
+                "beliefs_by_scope": scope_counts,
             },
         }
         print(json.dumps(payload), file=out)  # type: ignore[arg-type]

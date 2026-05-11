@@ -2943,6 +2943,20 @@ class MemoryStore:
         )
         return {str(r["type"]): int(r["n"]) for r in cur.fetchall()}
 
+    def count_beliefs_by_scope(self) -> dict[str, int]:
+        """Return a mapping of scope value → count across all beliefs.
+
+        Used by ``aelf health`` to surface per-scope belief counts in
+        the federation JSON block. Rows without a scope value (pre-v3.0
+        stores opened before the migration ran) are counted under
+        'project' since that is the column default.
+        """
+        cur = self._conn.execute(
+            "SELECT COALESCE(scope, 'project') AS scope_val, "
+            "COUNT(*) AS n FROM beliefs GROUP BY scope_val ORDER BY scope_val"
+        )
+        return {str(r["scope_val"]): int(r["n"]) for r in cur.fetchall()}
+
     # --- Auditor queries (used by aelf health) ---------------------------
 
     def count_orphan_edges(self) -> int:
