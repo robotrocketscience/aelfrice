@@ -11,12 +11,6 @@ on:
     # Per #413/#427 follow-up: replaces the previous `paths-ignore`
     # filter that silently dropped the pytest check on docs-only PRs
     # and blocked them under `required_status_checks`.
-  merge_group:
-    # #624 — GitHub's native merge queue rebases queued PRs onto the
-    # current main and runs required checks on the synthetic
-    # `gh-readonly-queue/main/pr-N-<sha>` branch before merging.
-    # Without `merge_group` here, `pytest (3.12)` and `pytest (3.13)`
-    # never fire on the rebased result and the queue blocks forever.
 
 permissions:
   contents: read
