@@ -200,7 +200,7 @@ def test_user_prompt_submit_writes_telemetry_record(
         lambda **_kw: UserPromptSubmitConfig(),
     )
 
-    sin = StringIO(_write_prompt_payload("explain telemetry"))
+    sin = StringIO(_write_prompt_payload("explain the telemetry output"))
     sout = StringIO()
     serr = StringIO()
     rc = user_prompt_submit(stdin=sin, stdout=sout, stderr=serr)
@@ -250,7 +250,7 @@ def test_telemetry_query_capped_at_500_chars(
     from aelfrice.hook import user_prompt_submit
 
     tel = tmp_path / "user_prompt_submit.jsonl"
-    long_prompt = "x" * 1000
+    long_prompt = "query word " * 100  # 1100 chars, many tokens, passes gate
     hits = [_make_belief("some content")]
 
     monkeypatch.setattr("aelfrice.hook._retrieve", lambda prompt, budget, **_: hits)
