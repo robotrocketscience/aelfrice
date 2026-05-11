@@ -129,6 +129,23 @@ aelfrice replaces the chain with a mechanism. The hook injects matched beliefs *
 
 ---
 
+## Why this is a memory system, not a key-value store
+
+[Leonard Lin's review of agentic-memory implementations](https://github.com/lhl/agentic-memory/blob/main/ANALYSIS.md) frames the bar bluntly:
+
+> The biggest differentiator is not "vector DB vs SQLite" — it's **write correctness and governance**: provenance / audit trail, write gates / confirmation, conflict handling, reversibility (inspect / edit / delete).
+
+By that bar, "a vector store with a similarity query" is not a memory system — it is a search index. A memory system has to answer *who wrote this, when, via what ingress, what supersedes it, and how do I take it back*. Here is how aelfrice answers each.
+
+| Lin's pillar | What it means | aelfrice mechanism |
+|---|---|---|
+| **Provenance / audit trail** | Every row traces back to the action that wrote it: who, when, via what ingress channel. | `origin` column on every belief — `user_stated`, `user_corrected`, `user_validated`, `agent_inferred`, `agent_remembered`, `document_recent`, `speculative` ([`src/aelfrice/models.py`](src/aelfrice/models.py)). Append-only [`ingest_log`](src/aelfrice/store.py) table records every raw input with its source kind, source path, and session id — tear the DB down and rebuild it from this log alone. `content_hash` binds each row to its content. `belief_versions` / `edge_versions` sidecar tables carry per-scope version vectors. Open the file in any SQLite browser; nothing is hidden. |
+| **Write gates / confirmation** | Persistence is not unconditional. Some writes need explicit approval; external-origin claims cannot be laundered into ground truth. | Two-tier lock state: `lock_level ∈ {none, user}` with a `locked_at` timestamp and a `demotion_pressure` counter that blocks silent removal. `aelf lock` is the only path to L0 user-asserted ground truth — locked beliefs short-circuit decay and pin to every retrieval. `aelf confirm` only bumps a Beta-Bernoulli posterior — it cannot promote `origin` without an explicit `aelf promote`. The `(α, β)` posterior means feedback *accumulates* rather than overwrites; one harmful click does not erase a belief, it nudges the mean. |
+| **Conflict handling** | Competing claims about the same thing are surfaced, not silently overwritten. | First-class edge types `CONTRADICTS` and `SUPERSEDES` in [`src/aelfrice/models.py`](src/aelfrice/models.py) — disagreement is a graph relation, not a vanished row. New facts about the same (entity, property) chain via `SUPERSEDES` rather than mutating in-place, leaving the prior claim queryable. Per-scope version vectors (#204 / #205) preserve causal ordering for concurrent edits across worktrees. |
+| **Reversibility (inspect / edit / delete)** | Mutations remain auditable and partially undoable. The user is the boss of their memories. | `aelf delete <id>` writes an audit row *before* the cascade ([`cli.py:1363`](src/aelfrice/cli.py)). `aelf unlock` writes a `lock:unlock` audit row ([`promotion.py`](src/aelfrice/promotion.py)); `aelf promote` and its inverse leave `promotion:revert_to_agent_inferred` rows; `aelf feedback` lands rows in `feedback_history`. The `ingest_log` is append-only and replay-capable. At the top level: `aelf uninstall --archive backup.aenc` encrypts and removes the live DB, `--purge` wipes, `--keep-db` leaves data untouched. No vendor lock-in by construction. |
+
+---
+
 ## What you get for free
 
 Running in the background. No action required after `aelf setup`.
