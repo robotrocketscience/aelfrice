@@ -261,8 +261,11 @@ def test_save_load_round_trip(tmp_path: Path) -> None:
     s = _toy_store()
     idx = HRRStructIndex(dim=512, seed=99)
     idx.build(s)
-    path = tmp_path / "hrr.npz"
+    path = tmp_path / "hrr"
     idx.save(path)
+    # Split-format layout: directory containing struct.npy + meta.npz.
+    assert (path / "struct.npy").is_file()
+    assert (path / "meta.npz").is_file()
     loaded = HRRStructIndex.load(path)
     assert loaded.dim == idx.dim
     assert loaded.seed == idx.seed
@@ -272,6 +275,78 @@ def test_save_load_round_trip(tmp_path: Path) -> None:
     a = idx.probe("CONTRADICTS", "b2", top_k=5)
     b = loaded.probe("CONTRADICTS", "b2", top_k=5)
     assert a == b
+
+
+def test_save_load_byte_identical_struct(tmp_path: Path) -> None:
+    """#553 acceptance: build → save → load → probe scores must be
+    bit-identical to in-memory probe scores (no float drift across
+    the persistence boundary)."""
+    s = _toy_store()
+    idx = HRRStructIndex(dim=512, seed=99)
+    idx.build(s)
+    path = tmp_path / "hrr"
+    idx.save(path)
+    loaded = HRRStructIndex.load(path)
+    # Bytes-identical struct matrix.
+    assert idx.struct.tobytes() == loaded.struct.tobytes()
+    # Bytes-identical probe scores (not just sort order).
+    rv = idx.role_vecs["CONTRADICTS"]
+    iv = idx.id_vecs["b2"]
+    from aelfrice.hrr import bind
+    probe = bind(rv, iv)
+    np.testing.assert_array_equal(idx.struct @ probe, loaded.struct @ probe)
+
+
+def test_load_legacy_bundled_npz_with_deprecation_log(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#553 acceptance: legacy v1.7 bundled .npz still loads with a
+    one-shot deprecation log."""
+    import aelfrice.hrr_index as hi
+
+    s = _toy_store()
+    idx = HRRStructIndex(dim=512, seed=99)
+    idx.build(s)
+
+    # Hand-roll a legacy bundled .npz at the v1.7 shape so the test
+    # does not depend on save() still writing that format.
+    legacy_path = tmp_path / "hrr.npz"
+    id_names = np.asarray(list(idx.id_vecs.keys()), dtype=object)
+    id_matrix = np.stack(list(idx.id_vecs.values()), axis=0)
+    role_names = np.asarray(list(idx.role_vecs.keys()), dtype=object)
+    role_matrix = np.stack(list(idx.role_vecs.values()), axis=0)
+    np.savez(
+        legacy_path,
+        version=np.array([1], dtype=np.int32),
+        dim=np.array([idx.dim], dtype=np.int64),
+        seed=np.array([idx.seed], dtype=np.int64),
+        belief_ids=np.asarray(idx.belief_ids, dtype=object),
+        struct=idx.struct,
+        id_names=id_names,
+        id_matrix=id_matrix,
+        role_names=role_names,
+        role_matrix=role_matrix,
+    )
+
+    # Reset the one-shot flag so this test reliably observes the log.
+    hi._legacy_deprecation_logged = False
+    with caplog.at_level("WARNING", logger="aelfrice.hrr_index"):
+        loaded = HRRStructIndex.load(legacy_path)
+    assert any(
+        "legacy bundled .npz" in rec.message for rec in caplog.records
+    )
+
+    # Equivalence: legacy load produces an index that probes identically.
+    np.testing.assert_array_equal(loaded.struct, idx.struct)
+    a = idx.probe("CONTRADICTS", "b2", top_k=5)
+    b = loaded.probe("CONTRADICTS", "b2", top_k=5)
+    assert a == b
+
+
+def test_load_missing_path_raises(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        HRRStructIndex.load(tmp_path / "does-not-exist")
 
 
 # --- HRRStructIndexCache --------------------------------------------------
