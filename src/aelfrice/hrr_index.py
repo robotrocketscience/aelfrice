@@ -397,6 +397,7 @@ class HRRStructIndexCache:
     dim: int = DEFAULT_DIM
     store_path: str | None = None
     seed: int | None = None
+    persist_enabled: bool | None = None
     _index: HRRStructIndex | None = field(default=None, init=False, repr=False)
     _subscribed: bool = field(default=False, init=False, repr=False)
 
@@ -408,7 +409,22 @@ class HRRStructIndexCache:
     def _resolve_persist_dir(self) -> Path | None:
         if self.store_path is None:
             return None
-        if os.environ.get(_ENV_PERSIST, "1") == "0":
+        # Env var is the highest-precedence rung — checked directly here
+        # so AELFRICE_HRR_PERSIST wins even when persist_enabled differs.
+        env_raw = os.environ.get(_ENV_PERSIST)
+        if env_raw is not None:
+            norm = env_raw.strip().lower()
+            _FALSY = frozenset({"0", "false", "no", "off"})
+            _TRUTHY = frozenset({"1", "true", "yes", "on"})
+            if norm in _FALSY:
+                return None
+            if norm in _TRUTHY:
+                # Env explicitly forces ON — skip the persist_enabled rung.
+                return Path(self.store_path).parent / _PERSIST_DIRNAME
+            # Unrecognised value: fall through to persist_enabled.
+        # Second rung: persist_enabled field (set at construction from the
+        # config-loader; None means "not specified, use default True").
+        if self.persist_enabled is False:
             return None
         return Path(self.store_path).parent / _PERSIST_DIRNAME
 
