@@ -461,4 +461,8 @@ class HRRStructIndexCache:
         try:
             persist_dir.rmdir()
         except OSError:
+            # Best-effort cleanup: the persist dir may still hold foreign
+            # files (a co-located store metadata file, an editor swap, a
+            # concurrent reader's mmap handle on Linux). Leaving the dir
+            # in place is harmless — the next get() will repopulate it.
             pass
