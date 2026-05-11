@@ -469,16 +469,57 @@ def test_auto_capture_basenames_match_setup() -> None:
 # ---------------------------------------------------------------------------
 
 def _make_legacy_db(path: Path, belief_count: int = 3) -> None:
-    """Create a per-project memory.db WITHOUT the `origin` column (pre-v1.x schema)."""
+    """Create a per-project memory.db on the pre-v1.x schema (no `origin`).
+
+    Carries all columns that `migrate._read_legacy_beliefs` reads back
+    so an auto-migrate pass over this fixture round-trips through
+    `MemoryStore`. The shape matches what real pre-v1.x aelfrice DBs
+    looked like in the field — minus the `origin` column added in v1.x.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(path))
-    con.execute(
-        "CREATE TABLE beliefs "
-        "(id INTEGER PRIMARY KEY, content TEXT, type TEXT)"
+    con.executescript(
+        """
+        CREATE TABLE beliefs (
+            id                TEXT PRIMARY KEY,
+            content           TEXT NOT NULL,
+            content_hash      TEXT NOT NULL,
+            alpha             REAL NOT NULL,
+            beta              REAL NOT NULL,
+            type              TEXT NOT NULL,
+            lock_level        TEXT NOT NULL,
+            locked_at         TEXT,
+            demotion_pressure INTEGER NOT NULL DEFAULT 0,
+            created_at        TEXT NOT NULL,
+            last_retrieved_at TEXT
+        );
+        CREATE TABLE edges (
+            src    TEXT NOT NULL,
+            dst    TEXT NOT NULL,
+            type   TEXT NOT NULL,
+            weight REAL NOT NULL,
+            PRIMARY KEY (src, dst, type)
+        );
+        """
     )
     for i in range(belief_count):
-        con.execute("INSERT INTO beliefs (content, type) VALUES (?, ?)",
-                    (f"belief {i}", "fact"))
+        con.execute(
+            "INSERT INTO beliefs "
+            "(id, content, content_hash, alpha, beta, type, lock_level, "
+            " demotion_pressure, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                f"belief-{i:06d}",
+                f"belief {i} content",
+                f"hash{i:08d}",
+                1.0,
+                1.0,
+                "fact",
+                "none",
+                0,
+                "2026-01-01T00:00:00Z",
+            ),
+        )
     con.commit()
     con.close()
 
@@ -546,8 +587,19 @@ def test_legacy_schema_detected(tmp_path: Path) -> None:
     assert entry.idle_days >= 0
 
 
-def test_legacy_schema_report_block_present(tmp_path: Path) -> None:
-    """When legacy DBs are found, format_report appends the nag block."""
+def test_legacy_schema_auto_migrate_success(tmp_path: Path) -> None:
+    """`diagnose` auto-migrates legacy DBs in place (#593).
+
+    Verifies the operator-decision contract:
+      * The pre-v1.x file is preserved at `<path>.pre-v1x.bak`.
+      * A modern-schema DB lives at the original path (has `origin` col).
+      * `report.migrated_dbs` carries one entry with the row count and
+        a non-negative duration.
+      * `report.failed_migrate_dbs` is empty.
+      * The format pass emits a `migrated <path>: <N> beliefs, ...`
+        summary line — no more `legacy-schema per-project DBs detected`
+        nag, no more `aelf migrate --from` fix instruction.
+    """
     projects_dir = tmp_path / "projects"
     legacy_path = projects_dir / "abc123def456" / "memory.db"
     _make_legacy_db(legacy_path, belief_count=7)
@@ -563,11 +615,139 @@ def test_legacy_schema_report_block_present(tmp_path: Path) -> None:
         project_root=tmp_path / "noproj",
         aelfrice_projects_dir=projects_dir,
     )
+
+    # Pre-migration detection set is preserved on the report.
     assert len(report.legacy_schema_dbs) == 1
+
+    # Auto-migrate ran successfully.
+    assert len(report.migrated_dbs) == 1
+    assert len(report.failed_migrate_dbs) == 0
+    migrated = report.migrated_dbs[0]
+    assert migrated.path == legacy_path
+    assert migrated.backup_path == legacy_path.with_name(
+        legacy_path.name + ".pre-v1x.bak"
+    )
+    assert migrated.row_count == 7
+    assert migrated.duration_ms >= 0
+
+    # Files: backup preserved, modern-schema DB at original path.
+    assert migrated.backup_path.is_file(), "backup must be preserved"
+    assert legacy_path.is_file(), "modern-schema DB must exist at original path"
+
+    # The DB at original path now carries `origin`.
+    con = sqlite3.connect(f"file:{legacy_path}?mode=ro", uri=True)
+    try:
+        cols = {row[1] for row in con.execute("PRAGMA table_info(beliefs)")}
+    finally:
+        con.close()
+    assert "origin" in cols, "post-migration DB must have the origin column"
+
+    # Format pass: summary line present, old nag absent.
     rendered = format_report(report)
-    assert "legacy-schema per-project DBs detected" in rendered
-    assert "aelf migrate" in rendered
+    assert f"migrated {legacy_path}" in rendered
+    assert "7 beliefs" in rendered
+    assert str(migrated.backup_path) in rendered
+    assert "legacy-schema per-project DBs detected" not in rendered
+    assert "aelf migrate --from" not in rendered
+
+
+def test_legacy_schema_auto_migrate_failure_when_backup_exists(
+    tmp_path: Path,
+) -> None:
+    """A stale `.pre-v1x.bak` blocks auto-migrate (#593 recoverability guard).
+
+    `migrate_in_place` refuses to overwrite an existing backup so the
+    operator can recover from prior failed runs. `diagnose()` surfaces
+    the failure via `failed_migrate_dbs` and renders the residual nag
+    in format_report.
+    """
+    projects_dir = tmp_path / "projects"
+    legacy_path = projects_dir / "deadbeefcafe" / "memory.db"
+    _make_legacy_db(legacy_path, belief_count=3)
+
+    # Pre-existing backup blocks the migration.
+    stale_backup = legacy_path.with_name(legacy_path.name + ".pre-v1x.bak")
+    stale_backup.write_bytes(b"prior-run-artifact")
+
+    user_path = tmp_path / "settings.json"
+    _write_settings(user_path, {
+        "hooks": {
+            "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "aelf-hook"}]}],
+        },
+    })
+    report = diagnose(
+        user_settings=user_path,
+        project_root=tmp_path / "noproj",
+        aelfrice_projects_dir=projects_dir,
+    )
+
+    assert len(report.migrated_dbs) == 0
+    assert len(report.failed_migrate_dbs) == 1
+    failure = report.failed_migrate_dbs[0]
+    assert failure.path == legacy_path
+    assert failure.reason == "FileExistsError"
+
+    # Legacy file untouched on failure; stale backup byte-identical.
+    assert legacy_path.is_file()
+    assert stale_backup.read_bytes() == b"prior-run-artifact"
+
+    rendered = format_report(report)
+    assert "auto-migrate FAILED" in rendered
     assert str(legacy_path) in rendered
+    assert "FileExistsError" in rendered
+    assert "aelf migrate --from" in rendered
+
+
+def test_migrate_in_place_round_trip(tmp_path: Path) -> None:
+    """`migrate_in_place` direct-call: backup made, content preserved (#593).
+
+    Bypasses `diagnose()` so a regression in the doctor-side orchestrator
+    can't mask a regression in the schema-mutation primitive itself.
+    """
+    from aelfrice.migrate import migrate_in_place
+
+    db_path = tmp_path / "memory.db"
+    _make_legacy_db(db_path, belief_count=4)
+
+    report = migrate_in_place(db_path)
+
+    assert report.db_path == db_path
+    assert report.backup_path == db_path.with_name(db_path.name + ".pre-v1x.bak")
+    assert report.counts.inserted_beliefs == 4
+    assert report.duration_ms >= 0
+    assert report.backup_path.is_file()
+    assert db_path.is_file()
+
+    # Post-migration DB has the modern schema's origin column.
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        cols = {row[1] for row in con.execute("PRAGMA table_info(beliefs)")}
+    finally:
+        con.close()
+    assert "origin" in cols
+
+
+def test_migrate_in_place_refuses_existing_backup(tmp_path: Path) -> None:
+    """`migrate_in_place` raises FileExistsError when a backup is already present.
+
+    Keeps prior-run artifacts recoverable instead of clobbering them.
+    """
+    from aelfrice.migrate import migrate_in_place
+
+    db_path = tmp_path / "memory.db"
+    _make_legacy_db(db_path, belief_count=1)
+    db_path.with_name(db_path.name + ".pre-v1x.bak").write_bytes(b"prior")
+
+    with pytest.raises(FileExistsError):
+        migrate_in_place(db_path)
+
+
+def test_migrate_in_place_raises_when_missing(tmp_path: Path) -> None:
+    """`migrate_in_place` raises FileNotFoundError when the input is absent."""
+    from aelfrice.migrate import migrate_in_place
+
+    with pytest.raises(FileNotFoundError):
+        migrate_in_place(tmp_path / "does-not-exist" / "memory.db")
 
 
 def test_legacy_schema_report_quiet_when_zero(tmp_path: Path) -> None:
