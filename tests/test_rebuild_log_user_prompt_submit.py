@@ -90,7 +90,7 @@ def test_user_prompt_submit_writes_rebuild_log(
 
     sout = io.StringIO()
     rc = user_prompt_submit(
-        stdin=io.StringIO(_payload("bananas", "ups-sess-1")),
+        stdin=io.StringIO(_payload("are there bananas in the kitchen", "ups-sess-1")),
         stdout=sout,
         stderr=io.StringIO(),
     )
