@@ -43,6 +43,14 @@ class WonderResult:
         Count of phantoms created (axes mode only); ``0`` in
         graph-walk mode.  Sourced from the ``inserted`` count of the
         ingest path when ``--persist-docs FILE`` is used.
+    candidates:
+        Graph-walk-mode consolidation candidates ranked by combined
+        BFS-path-score × token-relatedness.  Each row is
+        ``{candidate_id, score, relatedness, suggested_action, path}``
+        — preserves the v2.x ``--json`` structured shape so existing
+        callers do not lose access to the candidate ranking on the
+        v3.0 dataclass cutover.  Empty list in axes mode (the concept
+        does not apply).
     """
 
     mode: Literal["graph_walk", "axes"]
@@ -52,6 +60,7 @@ class WonderResult:
     research_axes: list[dict]
     anchor_speculative_ids: list[str]
     phantoms_created: int
+    candidates: list[dict]
 
 
 __all__ = ["WonderResult"]

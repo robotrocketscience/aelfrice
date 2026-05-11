@@ -38,6 +38,7 @@ def _graph_walk_result(**overrides: object) -> WonderResult:
         research_axes=[],
         anchor_speculative_ids=[],
         phantoms_created=0,
+        candidates=[],
     )
     base.update(overrides)
     return WonderResult(**base)  # type: ignore[arg-type]
@@ -58,6 +59,7 @@ def _axes_result(n_axes: int, k_phantoms: int) -> WonderResult:
         research_axes=axes,
         anchor_speculative_ids=["b-anchor-1"],
         phantoms_created=k_phantoms,
+        candidates=[],
     )
 
 
@@ -74,12 +76,13 @@ def test_wonder_result_is_frozen() -> None:
 
 
 def test_wonder_result_field_names() -> None:
-    """All seven fields specified in the issue are present."""
+    """All eight fields are present (#656 spec + candidates regression fix)."""
     result = _graph_walk_result()
     d = dataclasses.asdict(result)
     expected = {
         "mode", "coverage", "known_beliefs", "gaps",
         "research_axes", "anchor_speculative_ids", "phantoms_created",
+        "candidates",
     }
     assert expected == set(d.keys())
 
@@ -268,6 +271,7 @@ def test_wonder_json_flag_matches_wonder_result_shape(_isolated_db: Path) -> Non
     expected_keys = {
         "mode", "coverage", "known_beliefs", "gaps",
         "research_axes", "anchor_speculative_ids", "phantoms_created",
+        "candidates",
     }
     assert expected_keys == set(payload.keys())
     # Graph-walk guarantees
@@ -278,6 +282,12 @@ def test_wonder_json_flag_matches_wonder_result_shape(_isolated_db: Path) -> Non
     assert payload["gaps"] == []
     assert payload["anchor_speculative_ids"] == []
     assert seed_id in payload["known_beliefs"]
+    # Candidates are list-of-dicts with the v2.x --json row shape
+    assert isinstance(payload["candidates"], list)
+    if payload["candidates"]:
+        row = payload["candidates"][0]
+        assert {"candidate_id", "score", "relatedness",
+                "suggested_action", "path"} == set(row.keys())
 
 
 def test_wonder_json_round_trips_cleanly(_isolated_db: Path) -> None:

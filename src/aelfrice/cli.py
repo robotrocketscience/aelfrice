@@ -971,6 +971,7 @@ def _cmd_wonder_axes(args: argparse.Namespace, out: object) -> int:
         research_axes=axes_dicts,
         anchor_speculative_ids=list(payload.speculative_anchor_ids),
         phantoms_created=phantoms_created,
+        candidates=[],
     )
     if getattr(args, "_capture_result", False):
         args._wonder_result = result  # type: ignore[union-attr]
@@ -1125,6 +1126,16 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
         return 0
 
     # Pack all computed values into the structured WonderResult (#656).
+    candidate_rows = [
+        {
+            "candidate_id": h.belief.id,
+            "score": combined,
+            "relatedness": relatedness,
+            "suggested_action": action,
+            "path": list(h.path),
+        }
+        for combined, h, action, relatedness in candidates
+    ]
     result = WonderResult(
         mode="graph_walk",
         coverage=0.0,
@@ -1133,6 +1144,7 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
         research_axes=[],
         anchor_speculative_ids=[],
         phantoms_created=0,
+        candidates=candidate_rows,
     )
 
     if args.emit_phantoms:
