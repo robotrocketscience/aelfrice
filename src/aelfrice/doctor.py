@@ -265,6 +265,32 @@ class DormantDB:
 
 
 @dataclass(frozen=True)
+class MigratedDB:
+    """One per-project DB auto-migrated in place to the modern schema (#593).
+
+    `path`        — final path of the now-modern-schema DB.
+    `backup_path` — sibling preserving the original pre-v1.x file.
+    `row_count`   — beliefs inserted into the modern-schema DB.
+    `duration_ms` — wall-clock time for the migration.
+    """
+    path: Path
+    backup_path: Path
+    row_count: int
+    duration_ms: int
+
+
+@dataclass(frozen=True)
+class FailedMigrateDB:
+    """One per-project DB that auto-migrate could not action (#593).
+
+    `path`   — the legacy DB path; the file is untouched after failure.
+    `reason` — short label (exception class name) for the failure mode.
+    """
+    path: Path
+    reason: str
+
+
+@dataclass(frozen=True)
 class CommandFinding:
     """One hook/statusline command we inspected.
 
@@ -336,9 +362,26 @@ class DoctorReport:
     # the pre-v1.x schema (no `origin` column on the `beliefs` table)
     # and have at least one row. These DBs cannot participate in the
     # v2.x lifecycle (agent_remembered, user_validated, calibrated
-    # weights, aelf:promote) without `aelf migrate` (#589).
+    # weights, aelf:promote) without `aelf migrate` (#589). The field
+    # holds the pre-migration detection set; after `diagnose()` runs
+    # the auto-migrate pass (#593), check `migrated_dbs` for success
+    # outcomes and `failed_migrate_dbs` for the residual nag.
     legacy_schema_dbs: list[LegacySchemaDB] = field(
         default_factory=lambda: cast(list[LegacySchemaDB], [])
+    )
+    # Per-project DBs that the auto-migrate pass brought forward to
+    # the modern schema this run (#593). Each entry preserves the
+    # backup path so the operator can recover the pre-migration file
+    # if anything looks off after the fact.
+    migrated_dbs: list[MigratedDB] = field(
+        default_factory=lambda: cast(list[MigratedDB], [])
+    )
+    # Per-project DBs detected as legacy but where the auto-migrate
+    # pass raised (e.g. backup target already exists; sqlite read
+    # errors). The legacy file is untouched on failure; the operator
+    # can investigate manually and re-run.
+    failed_migrate_dbs: list[FailedMigrateDB] = field(
+        default_factory=lambda: cast(list[FailedMigrateDB], [])
     )
 
     @property
@@ -416,6 +459,14 @@ def diagnose(
         else _AELFRICE_PROJECTS_DIR
     )
     report.legacy_schema_dbs = _check_legacy_schema_dbs(projects_dir=_proj_dir)
+    # #593: auto-migrate any detected legacy DBs in place. Operator
+    # decision was "no prompt, no banner" — silent migration with a
+    # `.pre-v1x.bak` backup hop. Failures degrade to the residual
+    # `failed_migrate_dbs` nag.
+    (
+        report.migrated_dbs,
+        report.failed_migrate_dbs,
+    ) = _auto_migrate_legacy_dbs(report.legacy_schema_dbs)
     if known_cli_subcommands is not None:
         slash_dir = (
             slash_commands_dir if slash_commands_dir is not None
@@ -1005,6 +1056,47 @@ def _check_dormant_dbs(
         )
 
     return results
+
+
+def _auto_migrate_legacy_dbs(
+    legacy_dbs: list[LegacySchemaDB],
+) -> tuple[list[MigratedDB], list[FailedMigrateDB]]:
+    """Run `migrate_in_place` on every detected legacy DB (#593).
+
+    Silent per the operator decision: no per-DB prompt, no banner.
+    Successes populate `MigratedDB` rows for the format pass to render
+    as one-line summaries. Failures populate `FailedMigrateDB` rows
+    that fall back to the residual nag (the original #589 flow).
+
+    Each migration is independent — a failure on DB N doesn't stop
+    the pass on DB N+1.
+    """
+    if not legacy_dbs:
+        return [], []
+
+    # Local import keeps the doctor → migrate dep one-way and lets
+    # tests stub the migrate path independently.
+    from aelfrice.migrate import migrate_in_place
+
+    migrated: list[MigratedDB] = []
+    failed: list[FailedMigrateDB] = []
+    for entry in legacy_dbs:
+        try:
+            report = migrate_in_place(entry.path)
+        except Exception as exc:  # noqa: BLE001  # silent per #593 contract
+            failed.append(
+                FailedMigrateDB(path=entry.path, reason=type(exc).__name__)
+            )
+            continue
+        migrated.append(
+            MigratedDB(
+                path=report.db_path,
+                backup_path=report.backup_path,
+                row_count=report.counts.inserted_beliefs,
+                duration_ms=report.duration_ms,
+            )
+        )
+    return migrated, failed
 
 
 def _format_legacy_schema_section(
