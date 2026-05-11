@@ -83,7 +83,8 @@ def test_hook_fire_writes_feedback_rows_tagged_hook(
     _set_db(monkeypatch, db)
 
     rc = user_prompt_submit(
-        stdin=io.StringIO(_payload("bananas")), stdout=io.StringIO()
+        stdin=io.StringIO(_payload("tell me about the bananas in the kitchen")),
+        stdout=io.StringIO(),
     )
     assert rc == 0
 
@@ -109,7 +110,8 @@ def test_hook_fire_increments_alpha_not_beta(
     _set_db(monkeypatch, db)
 
     user_prompt_submit(
-        stdin=io.StringIO(_payload("bananas")), stdout=io.StringIO()
+        stdin=io.StringIO(_payload("are there bananas in the kitchen")),
+        stdout=io.StringIO(),
     )
 
     s2 = MemoryStore(str(db))
@@ -146,7 +148,7 @@ def test_hook_fire_does_not_pressure_locked_contradictors(
     # Fire 10 prompts that all hit CONTRADICTOR.
     for _ in range(10):
         user_prompt_submit(
-            stdin=io.StringIO(_payload("alpha greater")),
+            stdin=io.StringIO(_payload("is alpha greater than beta always")),
             stdout=io.StringIO(),
         )
 
@@ -174,7 +176,8 @@ def test_hook_fire_records_locked_hits_too(
     _set_db(monkeypatch, db)
 
     user_prompt_submit(
-        stdin=io.StringIO(_payload("anything")), stdout=io.StringIO()
+        stdin=io.StringIO(_payload("which scripts should I use to publish")),
+        stdout=io.StringIO(),
     )
 
     s2 = MemoryStore(str(db))
@@ -198,7 +201,10 @@ def test_hook_fire_no_match_writes_no_rows(
     _set_db(monkeypatch, db)
 
     user_prompt_submit(
-        stdin=io.StringIO(_payload("xyzzyzzz")), stdout=io.StringIO()
+        stdin=io.StringIO(
+            _payload("unrelated content about typewriters and jellyfish")
+        ),
+        stdout=io.StringIO(),
     )
 
     s2 = MemoryStore(str(db))
