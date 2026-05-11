@@ -4,6 +4,8 @@ Spec for issue [#198](https://github.com/robotrocketscience/aelfrice/issues/198)
 
 Status: spec, no implementation. **Recommendation: defer to v2.x with a strict evidence-gate.**
 
+> **Superseded by [`v3_multimodel_scope.md`](v3_multimodel_scope.md) ([#607](https://github.com/robotrocketscience/aelfrice/issues/607))** at v3.0. The v2.x deferral path is closed, not bumped: wonder-dispatch ([#551](https://github.com/robotrocketscience/aelfrice/issues/551)) subsumes the use case. This memo is preserved as the provenance record for the v2 reasoning; the v3 memo is the live disposition.
+
 ## What's being decided
 
 Whether to port the research-line `multimodel.py` (~143-189 LOC) to v2.0. The module runs the same prompt across multiple providers (Claude + GPT + local), takes a majority vote, and tags low-consensus beliefs `origin = multi_model_disagreement`. v1.x routes `--llm-classify` through Claude Haiku alone.
