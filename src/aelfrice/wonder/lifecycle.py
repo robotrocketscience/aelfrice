@@ -43,16 +43,34 @@ _INGEST_ALPHA: float = 0.3
 _INGEST_BETA: float = 1.0
 
 
-def _constituent_key(constituent_belief_ids: tuple[str, ...]) -> str:
-    """SHA-256 of the sorted constituent IDs — the idempotency key.
+_CONSTITUENT_KEY_VERSION: str = "v2"
 
-    Keyed on the sorted tuple rather than on content text so that two
-    phantoms produced from the same constituent pair (but with different
-    generated text) are treated as the same candidate. Phantoms from
-    *different* constituent pairs with *identical* text are distinct —
-    hence content hash is not the dedup axis here.
+
+def _constituent_key(
+    constituent_belief_ids: tuple[str, ...],
+    generator: str,
+) -> str:
+    """SHA-256 of the sorted constituent IDs + generator — the idempotency key.
+
+    Keyed on the sorted constituent tuple *and* the generator so two
+    phantoms produced from the same constituent set under different
+    generators (e.g. an ``--axes`` dispatch run that returns N axis
+    documents over the same anchor set) persist as N distinct rows
+    rather than collapsing to one. Phantoms from *different* constituent
+    sets with *identical* text remain distinct — content hash is not
+    the dedup axis here.
+
+    Key format prefix is ``wonder_ingest:v2:`` (v3.0 #644). The v1
+    layout was generator-agnostic; existing speculative rows are
+    rehashed on first open by
+    ``MemoryStore._maybe_rehash_speculative_v2`` using the generator
+    stored in the wonder_ingest corroboration row.
     """
-    raw = "wonder_ingest:" + ":".join(sorted(constituent_belief_ids))
+    raw = (
+        f"wonder_ingest:{_CONSTITUENT_KEY_VERSION}:"
+        + ":".join(sorted(constituent_belief_ids))
+        + "|" + generator
+    )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -84,8 +102,11 @@ def wonder_ingest(
     For each ``Phantom``:
 
     1. Derive a deterministic ``content_hash`` from the sorted
-       ``constituent_belief_ids``; if a belief with that hash already
-       exists, skip insertion (idempotent on the constituent-pair key).
+       ``constituent_belief_ids`` **and** the ``generator`` (v3.0 #644);
+       if a belief with that hash already exists, skip insertion.
+       Idempotent on the (constituent-set, generator) pair: re-running
+       the same dispatch is a no-op; running a *different* generator
+       over the same constituents produces a distinct phantom.
     2. Insert a ``Belief`` with ``type='speculative'``,
        ``origin=ORIGIN_SPECULATIVE``, α=0.3, β=1.0.
     3. Insert ``RELATES_TO`` edges from the new belief to every
@@ -101,7 +122,9 @@ def wonder_ingest(
     edges_created = 0
 
     for phantom in phantoms:
-        key = _constituent_key(phantom.constituent_belief_ids)
+        key = _constituent_key(
+            phantom.constituent_belief_ids, phantom.generator
+        )
         existing = store.get_belief_by_content_hash(key)
         if existing is not None:
             skipped += 1

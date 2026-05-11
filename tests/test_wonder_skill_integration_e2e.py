@@ -179,24 +179,20 @@ def test_axes_to_persist_docs_end_to_end(tmp_path: Path) -> None:
 
     # Step 4: ingest.
     #
-    # NOTE on wonder_ingest dedup semantics: the existing C1 contract
-    # (lifecycle.py::_constituent_key) keys idempotency on the sorted
-    # constituent belief ids alone — generator is NOT part of the key.
-    # Multiple axes producing documents anchored to the same
-    # speculative_anchor_ids collapse to ONE phantom (first-write-wins
-    # on the shared constituent set). The remaining N-1 documents are
-    # counted as `skipped` rather than inserted.
-    #
-    # This is a known E4-vs-C1 contract tension; resolving it (extend
-    # the dedup key to include `generator` so per-axis phantoms can
-    # coexist) is a follow-up because it changes the content_hash of
-    # existing on-disk rows. The PR body surfaces this as an operator
-    # decision. The test asserts what actually ships: end-to-end flow
-    # works, phantom + RELATES_TO edges land, audit row exists.
+    # wonder_ingest dedup semantics (v3.0 #644, option 2): the
+    # idempotency key is `_constituent_key(anchor_ids, generator)` —
+    # i.e. the sorted constituent set *plus* the generator string.
+    # `documents_to_phantoms` sets `generator =
+    # "subagent_dispatch:<axis_name>"`, so N axes over the same anchor
+    # set produce N distinct phantoms (one per axis). Re-running the
+    # same dispatch is still idempotent (same axis_name → same
+    # generator → same key → skipped on second pass).
     stdout = _run_persist_docs(db_path, jsonl_path)
-    assert "inserted=1" in stdout, stdout
-    assert f"skipped={len(documents) - 1}" in stdout, stdout
-    assert f"edges_created={len(anchors)}" in stdout, stdout
+    assert f"inserted={len(documents)}" in stdout, stdout
+    assert "skipped=0" in stdout, stdout
+    assert (
+        f"edges_created={len(documents) * len(anchors)}" in stdout
+    ), stdout
 
     # Step 5: verify persistence.
     store = MemoryStore(str(db_path))
@@ -208,18 +204,29 @@ def test_axes_to_persist_docs_end_to_end(tmp_path: Path) -> None:
             and b.type == BELIEF_SPECULATIVE
             and b.origin == ORIGIN_SPECULATIVE
         ]
-        assert len(phantoms) == 1, (
-            f"expected 1 phantom (dedup on shared constituents); got {len(phantoms)}"
+        assert len(phantoms) == len(documents), (
+            f"expected {len(documents)} phantoms (one per axis under "
+            f"option-2 generator-keyed dedup); got {len(phantoms)}"
         )
-        phantom = phantoms[0]
-        edges = store.edges_from(phantom.id)
-        relates_to = [e for e in edges if e.type == EDGE_RELATES_TO]
-        assert len(relates_to) == len(anchors), relates_to
-        assert sorted(e.dst for e in relates_to) == sorted(anchors)
-        # Content should be one of the mock-subagent documents (the
-        # first-axis one wins because lifecycle iterates in input order).
-        assert phantom.content.startswith("[mock-subagent]"), phantom.content
-        assert phantom.origin == ORIGIN_SPECULATIVE
+        # Every phantom anchors to the same constituent set.
+        for phantom in phantoms:
+            edges = store.edges_from(phantom.id)
+            relates_to = [e for e in edges if e.type == EDGE_RELATES_TO]
+            assert len(relates_to) == len(anchors), relates_to
+            assert sorted(e.dst for e in relates_to) == sorted(anchors)
+            assert phantom.content.startswith("[mock-subagent]"), (
+                phantom.content
+            )
+            assert phantom.origin == ORIGIN_SPECULATIVE
+        # Each phantom carries a distinct generator (one per axis).
+        gens = {
+            store.list_corroborations(p.id)[0][3]
+            for p in phantoms
+        }
+        assert len(gens) == len(documents), (
+            f"expected {len(documents)} distinct generators in audit; "
+            f"got {gens}"
+        )
     finally:
         store.close()
 
