@@ -2051,11 +2051,31 @@ class MemoryStore:
         get the same `Belief` shape as local search. Score values are
         peer-local — no cross-peer normalisation; the merge is a simple
         union sort.
+
+        Scope filter (v3.0 #688): only peer rows with ``scope='global'``
+        or ``scope`` matching a shared-group name that this DB also
+        declares as a dep (dep name starts with ``'shared:'``) are
+        returned. ``scope='project'`` rows stay local to their owning
+        DB and are never surfaced to peers.
         """
         escaped = _escape_fts5_query(query)
         if not escaped:
             return []
         self._load_peer_deps_if_needed()
+        # Collect shared-group names from this DB's own deps so we can
+        # build the scope IN-clause for peer queries. 'global' is always
+        # included; 'shared:X' dep names are added as-is.
+        shared_names: list[str] = [
+            dep.name for dep in self._peer_deps
+            if dep.name.startswith("shared:")
+        ]
+        visible_scopes: list[str] = ["global"] + shared_names
+        # Build a parameterised IN clause: (?, ?, ...) with one slot per
+        # visible scope value. SQLite does not support array bindings so
+        # we construct the placeholder string dynamically.
+        scope_placeholders = ", ".join("?" * len(visible_scopes))
+        scope_sql = f"AND b.scope IN ({scope_placeholders})"
+
         merged: list[tuple[Belief, str, float]] = []
         for dep in self._peer_deps:
             conn = self._peer_conn(dep.name)
@@ -2063,7 +2083,7 @@ class MemoryStore:
                 continue
             try:
                 cur = conn.execute(
-                    """
+                    f"""
                     SELECT b.*,
                            bm25(beliefs_fts) AS bm25_score,
                            (SELECT COUNT(*) FROM belief_corroborations bc
@@ -2071,16 +2091,17 @@ class MemoryStore:
                     FROM beliefs b
                     JOIN beliefs_fts f ON f.id = b.id
                     WHERE beliefs_fts MATCH ?
+                    {scope_sql}
                     ORDER BY bm25(beliefs_fts)
                     LIMIT ?
                     """,
-                    (escaped, limit),
+                    (escaped, *visible_scopes, limit),
                 )
                 rows = cur.fetchall()
             except sqlite3.OperationalError:
-                # Peer schema doesn't match (no `beliefs_fts` or
-                # different columns): skip silently. Federation must
-                # tolerate older or non-aelfrice SQLite files at the
+                # Peer schema doesn't match (no `beliefs_fts`, no `scope`
+                # column, or other schema drift): skip silently. Federation
+                # must tolerate older or non-aelfrice SQLite files at the
                 # configured paths without crashing the host query.
                 continue
             for r in rows:
