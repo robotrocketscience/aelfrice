@@ -1079,6 +1079,63 @@ def _cmd_wonder_gc(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_wonder_persist_docs(args: argparse.Namespace, out: object) -> int:
+    """Ingest subagent research documents from a JSONL file (#552).
+
+    Skill-layer integration entry point. After the host agent has
+    collected one document per axis from a `/aelf:wonder --axes`
+    dispatch, it writes them to a JSONL file with rows
+    ``{axis_name, content, anchor_ids}`` and invokes this subcommand
+    to convert + persist.
+
+    Prints ``inserted=N skipped=N edges_created=N`` on success;
+    mirrors the ``--persist`` summary so log-scraping is uniform.
+    """
+    from pathlib import Path
+
+    from aelfrice.wonder.lifecycle import wonder_ingest
+    from aelfrice.wonder.skill_integration import (
+        documents_to_phantoms,
+        load_documents_jsonl,
+    )
+
+    path = Path(args.persist_docs)
+    if not path.exists():
+        print(
+            f"aelf wonder: --persist-docs file not found: {path}",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 2
+
+    try:
+        documents, anchor_ids = load_documents_jsonl(path)
+    except ValueError as e:
+        print(f"aelf wonder: {e}", file=out)  # type: ignore[arg-type]
+        return 2
+
+    if not documents:
+        print(
+            "aelf wonder: --persist-docs file contains no documents; nothing to ingest",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 0
+
+    phantoms = documents_to_phantoms(documents, anchor_ids)
+
+    store = _open_store()
+    try:
+        result = wonder_ingest(store, phantoms)
+    finally:
+        store.close()
+
+    print(
+        f"wonder persist-docs: inserted={result.inserted} "
+        f"skipped={result.skipped} edges_created={result.edges_created}",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
 def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
     """Surface consolidation candidates and (optionally) emit phantoms.
 
@@ -1094,6 +1151,11 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
     alias) bypass the seed/BFS path and emit the gap-analysis + research-
     axes JSON for research-agent dispatch. Mutually exclusive with
     ``--persist``. If both forms are passed, ``--axes`` wins.
+
+    ``--persist-docs FILE`` (#552) reads subagent research documents
+    from a JSONL file and persists them via ``wonder_ingest``. Used by
+    the ``/aelf:wonder --axes`` skill-layer orchestration; mutually
+    exclusive with ``--persist``, ``--axes``, and ``--emit-phantoms``.
 
     The graph-walk path packs its computed values into a
     :class:`aelfrice.wonder.result.WonderResult` (#656); ``--json``
@@ -1111,6 +1173,22 @@ def _cmd_wonder(args: argparse.Namespace, out: object) -> int:
         args.axes = query
 
     persist = getattr(args, "persist", False)
+    persist_docs = getattr(args, "persist_docs", None)
+
+    if persist_docs and (
+        persist
+        or getattr(args, "axes", None)
+        or getattr(args, "emit_phantoms", False)
+    ):
+        print(
+            "aelf wonder: --persist-docs cannot be combined with "
+            "--persist / --axes / --emit-phantoms",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 2
+
+    if persist_docs:
+        return _cmd_wonder_persist_docs(args, out)
 
     if persist and getattr(args, "axes", None):
         print(
@@ -4397,6 +4475,19 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "via wonder_ingest and print the insert summary "
             "(inserted/skipped/edges_created). "
             "Mutually exclusive with --emit-phantoms and --axes."
+        ),
+    )
+    p_wonder.add_argument(
+        "--persist-docs", metavar="FILE", default=None, dest="persist_docs",
+        help=(
+            "skill-layer integration (#552): read subagent research "
+            "documents from a JSONL FILE (one row per axis: "
+            "{axis_name, content, anchor_ids}), convert to Phantoms, "
+            "and persist via wonder_ingest. Used by the "
+            "/aelf:wonder --axes flow after the host has collected "
+            "subagent responses. Skips graph-walk; ignores --seed / "
+            "--top. Mutually exclusive with --persist, --emit-phantoms, "
+            "--axes."
         ),
     )
     # gc mode (#549): soft-delete stale speculative beliefs. Promoted from
