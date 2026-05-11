@@ -36,6 +36,7 @@ varies; the assertion is a regression band, not a benchmark target.
 from __future__ import annotations
 
 import time
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pytest
@@ -694,7 +695,7 @@ def test_scoredhop_dataclass_shape() -> None:
     assert h.path == [EDGE_SUPPORTS]
     # belief_id_trail defaults to empty for backwards-compat constructors.
     assert h.belief_id_trail == ()
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         h.score = 0.9  # type: ignore[misc]
 
 
