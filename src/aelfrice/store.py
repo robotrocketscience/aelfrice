@@ -709,8 +709,21 @@ class MemoryStore:
         # #219 UNIQUE(content_hash). Table-swap migration; runs once
         # after the dedup pass guarantees no duplicates remain.
         self._maybe_apply_content_hash_unique()
+        # #655 read-only federation. Peer DBs are opened on demand via
+        # `federation.open_peer_connection`; the deps list itself is
+        # cached eagerly so `aelf health` can report missing peers
+        # without paying a per-peer connect cost.
+        self._peer_deps: list = []  # list[federation.PeerDep]; lazy fill
+        self._peer_handles: dict[str, sqlite3.Connection] = {}
+        self._peer_deps_loaded: bool = False
 
     def close(self) -> None:
+        for conn in self._peer_handles.values():
+            try:
+                conn.close()
+            except sqlite3.Error:
+                pass
+        self._peer_handles.clear()
         self._conn.close()
 
     # --- Invalidation callbacks ------------------------------------------
@@ -1745,6 +1758,212 @@ class MemoryStore:
             score_obj = r["bm25_score"]
             score = float(score_obj) if score_obj is not None else 0.0
             out.append((_row_to_belief(r), score))
+        return out
+
+    # --- #655 read-only federation ---------------------------------------
+    #
+    # Peer DBs (other aelfrice scopes referenced from this project's
+    # `knowledge_deps.json`) are opened lazily on first use as fresh
+    # read-only `sqlite3.Connection` handles. The local DB stays the
+    # sole writer; the peer handles only serve `SELECT`s for the
+    # retrieval-time UNION overlay and foreign-ID ownership lookups.
+    #
+    # No ATTACH is used because Python's `sqlite3.connect()` defaults
+    # to URI mode off, so an ATTACH-with-URI cannot reliably open the
+    # peer read-only on the main connection. A fresh URI connection
+    # per peer is cleaner and isolates failures.
+
+    def _load_peer_deps_if_needed(self) -> None:
+        """Load `knowledge_deps.json` on first peer-related access. Idempotent."""
+        if self._peer_deps_loaded:
+            return
+        # Local import — federation is a leaf module that imports nothing
+        # from store, but importing it at module top would still pull
+        # `subprocess` + `json` into every store consumer. Cheaper to
+        # pay the import only when peers are actually consulted.
+        from aelfrice import federation
+
+        try:
+            self._peer_deps = federation.load_peer_deps()
+        except ValueError:
+            # Malformed knowledge_deps.json: treat as no peers for the
+            # store's perspective. Callers that care about config errors
+            # (the CLI / `aelf health`) call `federation.load_peer_deps`
+            # directly to surface the parse failure.
+            self._peer_deps = []
+        self._peer_deps_loaded = True
+
+    def peer_deps(self) -> list:
+        """Return the cached list of `federation.PeerDep` entries (may be empty)."""
+        self._load_peer_deps_if_needed()
+        return list(self._peer_deps)
+
+    def _peer_conn(self, name: str) -> sqlite3.Connection | None:
+        """Return a cached read-only `sqlite3.Connection` for peer `name`.
+
+        Returns None when the peer is not configured, marked unreachable
+        (file missing at load time), or fails to open. Open failures are
+        swallowed silently — federation is opportunistic — but the peer
+        is marked unreachable so subsequent calls don't retry.
+        """
+        from aelfrice import federation
+
+        self._load_peer_deps_if_needed()
+        if name in self._peer_handles:
+            return self._peer_handles[name]
+        for i, dep in enumerate(self._peer_deps):
+            if dep.name != name:
+                continue
+            if not dep.reachable:
+                return None
+            try:
+                conn = federation.open_peer_connection(dep.path)
+            except sqlite3.Error:
+                # Demote to unreachable so we don't retry every query.
+                self._peer_deps[i] = federation.PeerDep(
+                    name=dep.name, path=dep.path, reachable=False
+                )
+                return None
+            self._peer_handles[name] = conn
+            return conn
+        return None
+
+    def find_foreign_owner(self, belief_id: str) -> str | None:
+        """Return the peer scope name that owns `belief_id`, or None.
+
+        None means the belief is local (or absent everywhere). Used by
+        mutation entry points to detect cross-scope write attempts and
+        by `aelf health` to annotate retrieval results.
+        """
+        # Local owner short-circuit: most reads hit local rows.
+        local = self._conn.execute(
+            "SELECT 1 FROM beliefs WHERE id = ? LIMIT 1", (belief_id,)
+        ).fetchone()
+        if local is not None:
+            return None
+        self._load_peer_deps_if_needed()
+        for dep in self._peer_deps:
+            conn = self._peer_conn(dep.name)
+            if conn is None:
+                continue
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM beliefs WHERE id = ? LIMIT 1", (belief_id,)
+                ).fetchone()
+            except sqlite3.OperationalError:
+                # Peer DB without a `beliefs` table (or schema drift):
+                # treat as not-owner, continue.
+                continue
+            if row is not None:
+                return dep.name
+        return None
+
+    def assert_local_ownership(self, belief_id: str) -> None:
+        """Raise `ForeignBeliefError` when `belief_id` is owned by a peer.
+
+        Mutation entry points (`apply_feedback`, `lock`, `delete`,
+        `unlock`, `promote`, `confirm`) call this at the start to honour
+        the #661 read-only federation contract: foreign rows are
+        retrieval-time display only and must not be mutated through the
+        local DB.
+
+        No-op when `belief_id` is local or absent (caller's existing
+        "not found" path handles absence — federation does not invent
+        new error semantics there).
+        """
+        from aelfrice.federation import ForeignBeliefError
+
+        owner = self.find_foreign_owner(belief_id)
+        if owner is not None:
+            raise ForeignBeliefError(belief_id=belief_id, owning_scope=owner)
+
+    def search_peer_beliefs(
+        self, query: str, limit: int = 20,
+    ) -> list[tuple[Belief, str, float]]:
+        """FTS5 search across every reachable peer DB.
+
+        Returns `(belief, peer_name, bm25_score)` triples merged from
+        all peer query results and sorted ascending by `bm25_score`
+        (smaller = more relevant, matching `search_beliefs_scored`).
+        Empty query, no peers, or peers without a compatible
+        `beliefs_fts` table all yield `[]`.
+
+        Belief rows are reconstructed via `_row_to_belief` so callers
+        get the same `Belief` shape as local search. Score values are
+        peer-local — no cross-peer normalisation; the merge is a simple
+        union sort.
+        """
+        escaped = _escape_fts5_query(query)
+        if not escaped:
+            return []
+        self._load_peer_deps_if_needed()
+        merged: list[tuple[Belief, str, float]] = []
+        for dep in self._peer_deps:
+            conn = self._peer_conn(dep.name)
+            if conn is None:
+                continue
+            try:
+                cur = conn.execute(
+                    """
+                    SELECT b.*,
+                           bm25(beliefs_fts) AS bm25_score,
+                           (SELECT COUNT(*) FROM belief_corroborations bc
+                            WHERE bc.belief_id = b.id) AS corroboration_count
+                    FROM beliefs b
+                    JOIN beliefs_fts f ON f.id = b.id
+                    WHERE beliefs_fts MATCH ?
+                    ORDER BY bm25(beliefs_fts)
+                    LIMIT ?
+                    """,
+                    (escaped, limit),
+                )
+                rows = cur.fetchall()
+            except sqlite3.OperationalError:
+                # Peer schema doesn't match (no `beliefs_fts` or
+                # different columns): skip silently. Federation must
+                # tolerate older or non-aelfrice SQLite files at the
+                # configured paths without crashing the host query.
+                continue
+            for r in rows:
+                score_obj = r["bm25_score"]
+                score = float(score_obj) if score_obj is not None else 0.0
+                merged.append((_row_to_belief(r), dep.name, score))
+        merged.sort(key=lambda t: t[2])
+        return merged[:limit]
+
+    def peer_health(self) -> list[dict]:
+        """Snapshot of configured peers for `aelf health` output.
+
+        Returns a list of dicts shaped `{"name", "path", "reachable",
+        "scope_id"}`. `scope_id` is the peer DB's persisted
+        `local_scope_id` (read from `schema_meta` on the peer) when
+        reachable; None otherwise. Read-only — never opens a write
+        handle.
+        """
+        self._load_peer_deps_if_needed()
+        out: list[dict] = []
+        for dep in self._peer_deps:
+            scope_id: str | None = None
+            if dep.reachable:
+                conn = self._peer_conn(dep.name)
+                if conn is not None:
+                    try:
+                        row = conn.execute(
+                            "SELECT value FROM schema_meta WHERE key = ?",
+                            (SCHEMA_META_LOCAL_SCOPE_ID,),
+                        ).fetchone()
+                        if row is not None:
+                            scope_id = str(row["value"])
+                    except sqlite3.OperationalError:
+                        scope_id = None
+            out.append(
+                {
+                    "name": dep.name,
+                    "path": str(dep.path),
+                    "reachable": dep.reachable,
+                    "scope_id": scope_id,
+                }
+            )
         return out
 
     # --- Retrieval recency -----------------------------------------------
