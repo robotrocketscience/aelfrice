@@ -466,6 +466,15 @@ _MIGRATIONS: tuple[str, ...] = (
     # non-NULL = GC'd by `wonder_gc`. Existing rows default to NULL
     # (active) which is correct — only speculative phantoms are GC'd.
     "ALTER TABLE beliefs ADD COLUMN valid_to TEXT",
+    # v3.0 #688 federation scope visibility. Default 'project' keeps
+    # existing rows local — identical to pre-#688 behaviour. Peers only
+    # surface rows where scope='global' or scope='shared:<name>'.
+    # Distinct from scope_id (#204), which tags provenance (which DB
+    # wrote the belief); scope tags the publishing decision (who may
+    # read it). CHECK constraint omitted — ALTER TABLE ADD COLUMN
+    # with CHECK is brittle across SQLite versions; Python-side
+    # BELIEF_SCOPES validates writes.
+    "ALTER TABLE beliefs ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'",
 )
 
 # Indexes that depend on migrated columns. Run after _MIGRATIONS so
@@ -476,6 +485,8 @@ _POST_MIGRATION_INDEXES: tuple[str, ...] = (
     # v2.1 #548: partial index on active speculative beliefs for GC scans.
     "CREATE INDEX IF NOT EXISTS idx_beliefs_speculative_gc "
     "ON beliefs(origin, created_at) WHERE valid_to IS NULL",
+    # v3.0 #688: scope visibility index for federation overlay filter.
+    "CREATE INDEX IF NOT EXISTS idx_beliefs_scope ON beliefs(scope)",
 )
 
 # One-shot backfill for v1.0/v1.1 stores opening on v1.2+. Each row
