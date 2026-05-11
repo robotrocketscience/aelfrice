@@ -49,6 +49,7 @@ zero-effort — see docs/bfs_multihop.md § Cache invalidation.
 """
 from __future__ import annotations
 
+import math
 import os
 import re
 from collections import OrderedDict
@@ -210,6 +211,47 @@ _ENV_FALSY: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
 _ENV_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 
 _CANONICALIZE_PUNCT: Final[re.Pattern[str]] = re.compile(r"[^\w\s]")
+
+# #677 retrieval-time literal boost for `#N` issue/PR references.
+# Audit-log survey of 88 substantive prompts containing a literal
+# `#NNN` token showed ~20% mean topical-match rate in the L1 BM25
+# block: the BM25 tokenizer drops `#` so `#627` collides on the
+# bare digit `627` with every other `#NNN` in the corpus. The boost
+# compares prompt-extracted `#N` literals against belief content as
+# a substring and adds `log(HASH_N_BOOST_MULTIPLIER)` to the final
+# log score on a hit — log-additive in the same space
+# `partial_bayesian_score` / `combine_log_scores` produce, so the
+# shift is equivalent to multiplying the underlying BM25 relevance
+# magnitude by the multiplier.
+_HASH_N_LITERAL_RE: Final[re.Pattern[str]] = re.compile(r"#\d+")
+HASH_N_BOOST_MULTIPLIER: Final[float] = 2.0
+_HASH_N_BOOST_LOG: Final[float] = math.log(HASH_N_BOOST_MULTIPLIER)
+
+
+def _extract_hash_n_literals(query: str) -> list[str]:
+    """Return every `#N` literal in `query` (e.g. ``['#627', '#280']``).
+
+    Empty list when none present — the caller treats empty as "no
+    boost, keep the byte-identical FTS5 short-circuit".
+    """
+    return _HASH_N_LITERAL_RE.findall(query)
+
+
+def _hash_n_boosted(score: float, content: str, literals: list[str]) -> float:
+    """Add `log(HASH_N_BOOST_MULTIPLIER)` to `score` when `content`
+    contains any literal from `literals`. No-op for empty `literals`.
+
+    The check is literal `lit in content` rather than a tokenized
+    match — the whole reason the boost exists is that the BM25
+    tokenizer strips the leading `#`, which is what causes the
+    disambiguation failure on plain `#NNN` queries (#677). The
+    literals carry the `#` anchor.
+    """
+    if not literals:
+        return score
+    if any(lit in content for lit in literals):
+        return score + _HASH_N_BOOST_LOG
+    return score
 
 
 def canonicalize_query(query: str) -> str:
@@ -1177,6 +1219,12 @@ def _l1_hits(
         and not eigenbasis_cache.is_stale()
         and eigenbasis_cache.eigvals is not None
     )
+    # #677 retrieval-time `#N` literal boost. When the prompt names
+    # one or more `#NNN` tokens, bypass the byte-identical FTS5 and
+    # BM25F short-circuits and go through the rerank loop so the
+    # boost can take effect; for prompts without literals the gate
+    # short-circuits as before and the byte-identical contract holds.
+    hash_n_literals = _extract_hash_n_literals(query)
 
     if use_bm25f_anchors:
         # The cache lazy-builds the index on first call and is
@@ -1193,7 +1241,7 @@ def _l1_hits(
             if b is None:
                 continue
             beliefs.append((b, raw))
-        if posterior_weight == 0.0 and not heat_active:
+        if posterior_weight == 0.0 and not heat_active and not hash_n_literals:
             return [b for b, _ in beliefs]
         # BM25F scores are non-negative; the rerank uses `raw` as the
         # positive-magnitude relevance signal directly (the FTS5 path
@@ -1221,11 +1269,12 @@ def _l1_hits(
                 s = partial_bayesian_score(
                     -raw, b.alpha, b.beta, posterior_weight,
                 )
+            s = _hash_n_boosted(s, b.content, hash_n_literals)
             keyed.append((s, b.id, b))
         keyed.sort(key=lambda x: (-x[0], x[1]))
         return [b for _, _, b in keyed]
 
-    if posterior_weight == 0.0 and not heat_active:
+    if posterior_weight == 0.0 and not heat_active and not hash_n_literals:
         return store.search_beliefs(query, limit=l1_limit)
     scored = store.search_beliefs_scored(query, limit=l1_limit)
     if not scored:
@@ -1255,6 +1304,7 @@ def _l1_hits(
             s = partial_bayesian_score(
                 bm25_raw, b.alpha, b.beta, posterior_weight,
             )
+        s = _hash_n_boosted(s, b.content, hash_n_literals)
         keyed.append((s, b.id, b))
     # Higher score = more relevant. Tie-break on id ASC for
     # determinism (matches the convention in bfs_multihop and L2.5).
