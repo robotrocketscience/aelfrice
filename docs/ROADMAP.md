@@ -132,7 +132,7 @@ The release where ranking moves beyond BM25 + L2.5 + BFS into graph-authority an
 
 After v2.0.0, `benchmarks/` reproduces every published headline number on a fresh clone with `uv sync && aelf bench all`, within documented tolerance bands.
 
-- ~~HRR vocabulary bridge~~ — **closed by the structural-query lane (#152, default-on as of v2.1)**. The lab campaign (`exp/hrr-vocabulary-bridge`) reframed "vocabulary bridge" as "typed-edge structural retrieval" and that mechanism shipped via `src/aelfrice/hrr_index.py`. See [hrr_structural_query_lane.md](hrr_structural_query_lane.md). #433 closed; #536 (the parallel `vocab_bridge.py` query-rewrite module) removed.
+- ~~HRR vocabulary bridge~~ — **closed by the structural-query lane (#152, default-on as of v2.1)**. The lab campaign (`exp/hrr-vocabulary-bridge`) reframed "vocabulary bridge" as "typed-edge structural retrieval" and that mechanism shipped via `src/aelfrice/hrr_index.py`. See [feature-hrr-integration.md](feature-hrr-integration.md). #433 closed; #536 (the parallel `vocab_bridge.py` query-rewrite module) removed.
 - Type-aware compression — tokens-per-belief reductions on retrieved output.
 - Intentional clustering — co-locating related beliefs for higher coherence on multi-fact queries.
 - Correction-detection eval — five-codebase labeled fixture, scored by both the zero-LLM detector and the LLM-judge path.
