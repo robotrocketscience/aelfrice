@@ -43,7 +43,9 @@ from typing import Callable
 from aelfrice.models import (
     BELIEF_FACTUAL,
     LOCK_NONE,
+    LOCK_USER,
     ORIGIN_AGENT_INFERRED,
+    RETENTION_UNKNOWN,
     Belief,
     Edge,
 )
@@ -56,6 +58,7 @@ from aelfrice.retrieval import (
     DEFAULT_TOKEN_BUDGET,
     retrieve,
     retrieve_v2,
+    retrieve_with_tiers,
 )
 from aelfrice.store import MemoryStore
 
@@ -606,6 +609,149 @@ def run_query_strategy_uplift(
         n_rows=n,
         mean_ndcg_off=off_total / n,
         mean_ndcg_on=on_total / n,
+    )
+
+
+# ---------------------------------------------------------------------
+# Type-aware compression A2 (#434) — compression_a2_recall bench gate.
+#
+# Consumed by tests/bench_gate/test_compression_a2_recall.py.
+# Row schema (`tests/corpus/v2_0/compression_a2_recall/*.jsonl`):
+#
+#   {
+#     "id": "row-id",
+#     "query": "natural language query",
+#     "k": 12,
+#     "token_budget": 250,
+#     "beliefs": [
+#       {"id": "...", "content": "...",
+#        "retention_class": "fact" | "snapshot" | "transient" | "unknown",
+#        "lock_level": "none" | "user"}
+#     ],
+#     "expected_top_k": ["belief-id-1", ...]
+#   }
+#
+# Differs from `compression_uplift` (the upstream-invariant gate that
+# ships at tests/bench_gate/test_compression_uplift.py): this module's
+# rows carry queries and expected ranking, the gate measures
+# recall@k(ON) > recall@k(OFF) at fixed token_budget, and the runner
+# drives full L0+L1 retrieval rather than calling compress_for_retrieval
+# per row.
+# ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CompressionA2Uplift:
+    """Spec § A2 result shape for #434.
+
+    Field names mirror ``DocLinkerUpliftResults`` / ``QueryStrategyUplift``
+    so the bench-gate failure-message formatter can read ``mean_recall_off``
+    / ``mean_recall_on`` / ``uplift`` without per-runner branching.
+    """
+
+    n_rows: int
+    mean_recall_off: float
+    mean_recall_on: float
+
+    @property
+    def uplift(self) -> float:
+        return self.mean_recall_on - self.mean_recall_off
+
+
+def _a2_belief_from_row(b: dict) -> Belief:  # type: ignore[type-arg]
+    """Build a Belief from a compression_a2_recall row's belief dict.
+
+    Differs from ``_belief_from_row`` by honouring the row's
+    ``retention_class`` and ``lock_level`` — the two fields that
+    determine compression strategy under the A2 arm.
+    """
+    lock = LOCK_USER if str(b.get("lock_level", "none")) == "user" else LOCK_NONE
+    return Belief(
+        id=b["id"],
+        content=b["content"],
+        content_hash=f"corpus:{b['id']}",
+        alpha=float(b.get("alpha", 1.0)),
+        beta=float(b.get("beta", 1.0)),
+        type=b.get("type", BELIEF_FACTUAL),
+        lock_level=lock,
+        locked_at=_TS if lock == LOCK_USER else None,
+        demotion_pressure=0,
+        created_at=_TS,
+        last_retrieved_at=None,
+        origin=ORIGIN_AGENT_INFERRED,
+        retention_class=str(b.get("retention_class", RETENTION_UNKNOWN)),
+    )
+
+
+def run_compression_a2_uplift(
+    rows: list[dict],  # type: ignore[type-arg]
+) -> CompressionA2Uplift:
+    """Spec § A2 type-aware compression uplift driver.
+
+    Per row: build a transient ``MemoryStore`` seeded with the row's
+    beliefs (locks + retention classes preserved). Call
+    ``retrieve_with_tiers`` twice on the same store — once with
+    ``use_type_aware_compression=False`` and once with ``=True``. Same
+    ``token_budget`` (per-row override or ``DEFAULT_TOKEN_BUDGET``),
+    same query. Recall@k against ``expected_top_k`` is averaged
+    across rows.
+
+    Both arms disable L2.5 entity index and L3 BFS so the compression
+    effect is isolated to the L1 pack-loop budget. ``intentional
+    clustering`` is held off both arms (mutually exclusive with
+    compression per ``retrieval.py``).
+
+    Degenerate cases the gate-side commentary should expect:
+    - All-``fact`` or all-locked rows produce identical OFF/ON arms
+      (compression is a no-op on those classes) — uplift contribution
+      is exactly zero.
+    - Rows whose belief population fits the budget verbatim produce
+      OFF == ON because there is no pack-trim under either arm.
+    """
+    n = len(rows)
+    if n == 0:
+        return CompressionA2Uplift(0, 0.0, 0.0)
+
+    off_total = 0.0
+    on_total = 0.0
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_root = Path(tmp)
+        for row in rows:
+            k = _default_k(row)
+            budget = int(row.get("token_budget", DEFAULT_TOKEN_BUDGET))
+            expected = list(row.get("expected_top_k", []))
+
+            for compress_on in (False, True):
+                _db_counter[0] += 1
+                db = (
+                    tmp_root
+                    / f"a2_{row['id']}_{int(compress_on)}_{_db_counter[0]}.db"
+                )
+                store = MemoryStore(str(db))
+                try:
+                    for b in row.get("beliefs", []):
+                        store.insert_belief(_a2_belief_from_row(b))
+                    result_tuple = retrieve_with_tiers(
+                        store, row["query"],
+                        token_budget=budget,
+                        entity_index_enabled=False,
+                        bfs_enabled=False,
+                        use_type_aware_compression=compress_on,
+                        use_intentional_clustering=False,
+                    )
+                    returned_ids = [b.id for b in result_tuple[0][:k]]
+                finally:
+                    store.close()
+                recall = _recall_at_k(returned_ids, expected)
+                if compress_on:
+                    on_total += recall
+                else:
+                    off_total += recall
+
+    return CompressionA2Uplift(
+        n_rows=n,
+        mean_recall_off=off_total / n,
+        mean_recall_on=on_total / n,
     )
 
 
