@@ -1372,6 +1372,29 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
                 doc_uri,
                 anchor_type=ANCHOR_MANUAL,
             )
+
+        # #550 Surface B: promote any speculative phantom whose
+        # content_hash or normalized text (Jaccard ≥ 0.9) matches the
+        # lock statement. Runs in the same DB transaction as the lock
+        # write — promote() commits on each call, which is safe here
+        # because each promote is idempotent.
+        from aelfrice.promotion import (
+            SOURCE_PROMOTE_PHANTOM_LOCK_MATCH,
+            find_phantom_lock_matches,
+            promote,
+        )
+        phantom_ids = find_phantom_lock_matches(store, args.statement)
+        for phantom_id in phantom_ids:
+            promote(
+                store,
+                phantom_id,
+                source_label=SOURCE_PROMOTE_PHANTOM_LOCK_MATCH,
+                now=now,
+            )
+            print(  # type: ignore[arg-type]
+                f"promoted phantom: {phantom_id}",
+                file=out,
+            )
     finally:
         store.close()
     return 0
