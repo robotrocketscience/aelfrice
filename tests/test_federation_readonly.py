@@ -347,7 +347,7 @@ def test_local_id_wins_over_peer_id_in_owner_lookup(
 ):
     """If the same belief id is in both, local ownership takes precedence.
 
-    Avoids a rogue peer collision raising ForeignBeliefError on a
+    Avoids a stray peer collision raising ForeignBeliefError on a
     legitimately-local belief.
     """
     peer_path = tmp_path / "peerA.db"
