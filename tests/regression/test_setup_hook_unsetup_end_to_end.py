@@ -137,7 +137,7 @@ def test_setup_then_invoke_hook_then_unsetup_round_trip(
             "transcript_path": "/dev/null",
             "cwd": str(tmp_path),
             "hook_event_name": "UserPromptSubmit",
-            "prompt": "bananas",
+            "prompt": "tell me about the bananas in the kitchen",
         }
     )
     proc = subprocess.run(
