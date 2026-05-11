@@ -75,6 +75,7 @@ from aelfrice.models import (
 from aelfrice.bfs_multihop import expand_bfs
 from aelfrice import wonder_consolidation
 from aelfrice import __version__ as _AELFRICE_VERSION
+from aelfrice import auto_install as _auto_install
 from aelfrice.auto_install import auto_install_at_cli_entry
 from aelfrice.benchmark import run_benchmark, seed_corpus
 from aelfrice.classification import (
@@ -2025,9 +2026,49 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
             f"slash commands already up to date in {sc_result.dest_dir}",
             file=out,  # type: ignore[arg-type]
         )
+    _sync_setup_opt_outs_and_stamp(args)
     _print_setup_next_step(out)
     _print_setup_jsonl_history_hint(out)
     return 0
+
+
+# Map argparse dest -> manifest hook `name`. A `False` value on the
+# arg means the user passed --no-X, so the corresponding manifest
+# hook is opted out (and stays opted out across upgrades, per #623).
+_SETUP_FLAG_TO_HOOK_NAME: Final[dict[str, str]] = {
+    "transcript_ingest": "transcript_ingest",
+    "commit_ingest": "commit_ingest",
+    "session_start": "session_start",
+    "stop_hook": "stop_lock_prompt",
+}
+
+
+def _sync_setup_opt_outs_and_stamp(args: argparse.Namespace) -> None:
+    """Reflect --no-X flags into the opt-out file; bump auto-install stamp.
+
+    Called at the end of `_cmd_setup`. For each --no-* default-on flag
+    the user passed, record the opt-out so a later bare `pipx upgrade
+    aelfrice` + first `aelf <cmd>` does NOT silently re-add the hook.
+    Conversely, when the user re-runs `aelf setup` without --no-X for
+    a hook they previously disabled, the opt-out is rescinded.
+
+    The version stamp is bumped to the installed version unconditionally
+    here — `aelf setup` is the explicit-opt-in entry point, so after it
+    runs successfully the next `aelf <cmd>` should fast-path with no
+    further work.
+    """
+    for flag, hook_name in _SETUP_FLAG_TO_HOOK_NAME.items():
+        wants = bool(getattr(args, flag, True))
+        if wants:
+            _auto_install.remove_opt_out(hook_name, _auto_install.OPT_OUT_PATH)
+        else:
+            _auto_install.add_opt_out(hook_name, _auto_install.OPT_OUT_PATH)
+    try:
+        _auto_install.write_stamp(_auto_install.STAMP_PATH, _AELFRICE_VERSION)
+    except OSError:
+        # Stamp write failure is non-fatal — auto-install will retry on
+        # the next `aelf <cmd>` invocation.
+        pass
 
 
 def _print_setup_next_step(out: object) -> None:
