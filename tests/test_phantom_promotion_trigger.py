@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -25,9 +24,7 @@ from aelfrice.models import (
     BELIEF_FACTUAL,
     BELIEF_SPECULATIVE,
     LOCK_NONE,
-    LOCK_USER,
     ORIGIN_SPECULATIVE,
-    ORIGIN_USER_STATED,
     ORIGIN_USER_VALIDATED,
     RETENTION_FACT,
     RETENTION_SNAPSHOT,
@@ -35,7 +32,6 @@ from aelfrice.models import (
     Phantom,
 )
 from aelfrice.promotion import (
-    PHANTOM_LOCK_JACCARD_THRESHOLD,
     SOURCE_PROMOTE_PHANTOM_LOCK_MATCH,
     SOURCE_PROMOTE_USER_VALIDATED,
     find_phantom_lock_matches,
