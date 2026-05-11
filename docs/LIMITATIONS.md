@@ -31,7 +31,7 @@ Classification on the CLI path defaults to regex-based priors. Higher-quality cl
 
 The v1.3.0 BFS multi-hop expansion (see [bfs_multihop.md](bfs_multihop.md)) resolves each hop to the globally latest serial of its target belief independently. For audit-shaped queries ("what did the agent believe at the time it made this decision?") this can surface a chain whose intermediate hops postdate the seed's session — a fidelity loss against a corpus where supersessions accumulated after the seed was written.
 
-The default retrieval mode (recall, not audit) is correctly served by latest-serial-per-hop. The temporal-coherence fix was originally targeted at v2.0.0 alongside the reproducibility harness; the harness shipped (#437) but the temporal fix slipped past v2.0/v2.1 and is now deferred to v2.x. The spec § Open question: temporal coherence documents why deferring is the right call for v1.3.
+The default retrieval mode (recall, not audit) is correctly served by latest-serial-per-hop. The temporal-coherence fix was originally targeted at v2.0.0 alongside the reproducibility harness; the harness shipped (#437) but the temporal fix slipped past v2.0/v2.1 and is not scheduled on a current milestone. The spec § Open question: temporal coherence documents why deferring is the right call for v1.3.
 
 ## Sharp edges
 
@@ -52,13 +52,15 @@ The default retrieval mode (recall, not audit) is correctly served by latest-ser
 
 These are scope choices that follow from aelfrice's commitments. They are *not* roadmap items.
 
-### Sharing, sync, or federation
+### Sharing, sync, or distributed-write federation
 
-aelfrice ships no mechanism for exporting, syncing, or distributing memory contents between users, machines, or projects. The brain graph stays on the machine it was written on.
+aelfrice ships no mechanism for syncing, distributing-by-write, or otherwise replicating memory contents between users or machines. The brain graph stays on the machine it was written on.
 
 This is a privacy and audit choice. A graph derived from real session activity contains filesystem paths, hostnames, internal URLs, names from git config, project architecture details, and content the agent inferred from chat. None of that is suitable for cross-machine distribution by default. Per-belief allowlists are not reliable enough to make automated export safe.
 
 To bootstrap a new clone or collaborator: run `aelf onboard .`. The graph is re-extracted from publicly-visible repo content. To share rules: lock them in CLAUDE.md, CONTRIBUTING.md, or other repo-tracked prose, and the onboard scanner picks them up.
+
+**Read-only cross-project federation is in v3.0 scope** (#650, #655, ratified read-only-only under #661): a local DB can declare peer DBs via `knowledge_deps.json` and surface their beliefs in retrieval, but the per-project DB is the sole writer for its own beliefs and mutation tools reject foreign belief IDs. That mechanism is read-only by construction — no cross-machine write replication, no distributed-write CRDT layer — so the privacy and audit story above is preserved. Multi-writer federation is not on the roadmap.
 
 ### Multi-session aggregation
 
@@ -68,7 +70,7 @@ The principled response is to add aggregative-query routing at the structural-an
 
 ### Multi-project query
 
-One DB at a time. Beliefs from project A do not surface in project B (different `.git/` directories). Use `AELFRICE_DB` to scope per-project explicitly.
+One DB writes at a time. Beliefs written in project A do not get *written* into project B (different `.git/` directories); use `AELFRICE_DB` to scope per-project explicitly. v3.0's read-only federation (above) is the path for *reading* peer-project beliefs into a local query without merging the underlying stores.
 
 ## Compatibility
 
