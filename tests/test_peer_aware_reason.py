@@ -19,8 +19,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
 from aelfrice.bfs_multihop import ScoredHop, expand_bfs
 from aelfrice.models import (
     EDGE_SUPPORTS,
