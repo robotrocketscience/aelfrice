@@ -9,7 +9,7 @@ This is the reference for power users whose project has a documentation idiom or
 A single optional TOML file at the root of a project (or any ancestor). It exposes two power-user surfaces:
 
 - `[noise]` — onboard-time belief filter. Changes how `aelf onboard` ingests beliefs; nothing else.
-- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, default-on since v2.1), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1), `use_type_aware_compression` (per-belief retention-class compression, opt-in since v2.1). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
+- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, default-on since v2.1), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, opt-in since v2.1). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
 
 Locks, hooks, MCP tools, and the Bayesian feedback math are not affected.
 
@@ -78,6 +78,16 @@ use_heat_kernel = true
 # `false` for parity with the pre-flip ranking.
 # AELFRICE_HRR_STRUCTURAL=0 env var overrides.
 use_hrr_structural = true
+
+# v3.0+. Default `true`. Persists the HRR structural-index
+# (struct.npy + meta.npz) to <store_dir>/.hrr_struct_index/ so
+# warm starts mmap the matrix instead of rebuilding (~38s at
+# N=50k → ~1s warm-load per #553). Auto-disabled when the store
+# root resolves under /tmp/, /var/tmp/, /dev/shm/, or /run/.
+# AELFRICE_HRR_PERSIST env var overrides (truthy/falsy match);
+# AELFRICE_HRR_PERSIST=1 forces persistence even on ephemeral
+# paths.
+hrr_persist = true
 
 # v2.1+. Default `false`, opt-in. Enables type-aware compression
 # (#434) — populates RetrievalResult.compressed_beliefs with per-
@@ -314,6 +324,22 @@ On structural lane hit, locked beliefs (when `include_locked=True`) pin to the h
 Long-running consumers should pass an explicit `hrr_struct_index_cache: HRRStructIndexCache | None` to amortise the per-belief HRR encode cost across queries. None falls through to a fresh build per call. The cache subscribes to the store's invalidation registry so any belief / edge mutation drops the index transparently.
 
 Precedence (first decisive wins): env var `AELFRICE_HRR_STRUCTURAL=0`/`1` > explicit Python kwarg `use_hrr_structural=<bool>` > TOML `[retrieval] use_hrr_structural` > default `true`. The flip landed when the #437 reproducibility-harness reached 11/11 (see #154). Set the flag to `false` for parity with the v2.0.x ranking.
+
+### `hrr_persist`
+
+Boolean, default `true` (v3.0+, #698). Toggles HRR structural-index persistence. When enabled, `HRRStructIndexCache` writes the built `(N, dim)` matrix to `<store_dir>/.hrr_struct_index/struct.npy` (plus the `meta.npz` metadata blob) on first build and `np.load(..., mmap_mode='r')`s it on every subsequent cold start — turning the ~38 s rebuild at N=50k into a ~1 s warm-load per `docs/feature-hrr-integration.md`. The save is atomic via temp-file + `os.replace` so readers never observe a partial write.
+
+**Ephemeral-path auto-disable** (#695). When the store root resolves under one of `/tmp/`, `/var/tmp/`, `/dev/shm/`, or `/run/`, the cache treats `hrr_persist` as if it were explicitly `false` and logs once per process:
+
+```
+aelfrice: HRR persistence disabled on ephemeral path <path>; set AELFRICE_HRR_PERSIST=1 to force.
+```
+
+Set `AELFRICE_HRR_PERSIST=1` to override the auto-disable. The TOML key cannot override (TOML lives at the store root which is itself the path being checked); the env var is the only escape hatch.
+
+Precedence (first decisive wins): env var `AELFRICE_HRR_PERSIST` (truthy `"1"`/`"true"`/`"yes"`/`"on"` forces on; falsy `"0"`/`"false"`/`"no"`/`"off"` disables) > explicit `persist_enabled=<bool>` on `HRRStructIndexCache(...)` > TOML `[retrieval] hrr_persist` > default `true`. Non-boolean TOML values trace to stderr and fall through to the default. The canonical construction site is `aelfrice.retrieval.make_hrr_struct_cache(...)`, which threads the resolved value into the cache for callers that don't manage flag resolution themselves.
+
+**When to disable.** Disk-constrained deployments (the on-disk blob is 328 MB at N=10k, 1.64 GB at N=50k; federation × multiple stores amplifies) and read-only filesystems are the two cases the opt-out exists for. Operators see the resolved state via `aelf doctor` (`hrr.persist_enabled` row) and `aelf status` (`hrr.persist_state` summary line).
 
 ### `use_type_aware_compression`
 
