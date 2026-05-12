@@ -239,24 +239,17 @@ def test_sample_capped_at_10(store: MemoryStore) -> None:
     assert len(result.sample) == 10
 
 
-def test_validation_rejects_target_above_threshold() -> None:
+def test_validation_rejects_target_above_threshold(store: MemoryStore) -> None:
     """clamp_ghost_alphas raises if target > threshold (would no-op)."""
-
-    class _NopStore:  # never reached
-        _conn = None
-
     with pytest.raises(ValueError, match="target_alpha"):
-        clamp_ghost_alphas(_NopStore(), threshold_alpha=4.0, target_alpha=8.0)  # type: ignore[arg-type]
+        clamp_ghost_alphas(store, threshold_alpha=4.0, target_alpha=8.0)
 
 
-def test_validation_rejects_nonpositive_alphas() -> None:
-    class _NopStore:
-        _conn = None
-
+def test_validation_rejects_nonpositive_alphas(store: MemoryStore) -> None:
     with pytest.raises(ValueError, match="must be positive"):
-        clamp_ghost_alphas(_NopStore(), threshold_alpha=0.0)  # type: ignore[arg-type]
+        clamp_ghost_alphas(store, threshold_alpha=0.0)
     with pytest.raises(ValueError, match="must be positive"):
-        clamp_ghost_alphas(_NopStore(), target_alpha=-1.0)  # type: ignore[arg-type]
+        clamp_ghost_alphas(store, target_alpha=-1.0)
 
 
 # -- CLI surface ------------------------------------------------------------
