@@ -338,26 +338,14 @@ def replay_full_equality(
     # --- Canonical orphans -------------------------------------------------
     # A canonical belief is an orphan when every log row pointing at it is
     # legacy_unknown (or there are no log rows at all, pre-#205).
-    # TODO(perf): replace N+1 iteration with set-based store query — see
-    # follow-up issue.
-    belief_ids = store.list_belief_ids()
-    canonical_orphan = 0
+    all_orphans = store.list_canonical_orphans()
+    canonical_orphan = len(all_orphans)
     examples_canonical_orphan: list[dict] = []  # type: ignore[type-arg]
-
-    for bid in belief_ids:
-        all_rows = store.iter_ingest_log_for_belief(bid)
-        has_non_legacy = any(
-            str(r.get("source_kind", "")) != INGEST_SOURCE_LEGACY_UNKNOWN
-            for r in all_rows
-        )
-        if not has_non_legacy:
-            canonical_orphan += 1
-            if len(examples_canonical_orphan) < drift_examples:
-                b = store.get_belief(bid)
-                examples_canonical_orphan.append({
-                    "belief_id": bid,
-                    "content_hash": b.content_hash if b is not None else None,
-                })
+    for bid, content_hash in all_orphans[:drift_examples]:
+        examples_canonical_orphan.append({
+            "belief_id": bid,
+            "content_hash": content_hash,
+        })
 
     # feedback_derived_edges: always 0 — edges table has no source column.
     # See docstring for explanation.
