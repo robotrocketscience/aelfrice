@@ -1473,6 +1473,49 @@ class MemoryStore:
         cur = self._conn.execute("SELECT id FROM beliefs ORDER BY id ASC")
         return [str(r["id"]) for r in cur.fetchall()]
 
+    def list_canonical_orphans(
+        self,
+        limit: int | None = None,
+    ) -> list[tuple[str, str | None]]:
+        """Return `(belief_id, content_hash)` for every canonical orphan.
+
+        A canonical belief is an orphan when every ingest_log row that
+        points at it has ``source_kind = 'legacy_unknown'``, or when no
+        ingest_log row points at it at all (pre-#205 stores).
+
+        The set-based query avoids the N+1 per-belief iteration that
+        ``_compute_replay_drift_report`` previously performed.  A single
+        SQL pass over ``ingest_log`` builds the set of belief ids that
+        have at least one non-legacy row; the outer ``NOT IN`` selects
+        the complement.
+
+        Results are ordered ``ORDER BY b.id ASC`` to preserve the same
+        sample-stability guarantee as ``list_belief_ids()``.
+
+        Args:
+            limit: When given, cap the returned list.  ``None`` returns
+                all orphans (used for the total count).
+        """
+        limit_clause = f" LIMIT {int(limit)}" if limit is not None else ""
+        cur = self._conn.execute(
+            f"""
+            SELECT b.id, b.content_hash
+            FROM beliefs b
+            WHERE b.id NOT IN (
+                SELECT je.value
+                FROM ingest_log il, json_each(il.derived_belief_ids) je
+                WHERE il.derived_belief_ids IS NOT NULL
+                  AND il.source_kind != ?
+            )
+            ORDER BY b.id ASC{limit_clause}
+            """,
+            (INGEST_SOURCE_LEGACY_UNKNOWN,),
+        )
+        return [
+            (str(r["id"]), str(r["content_hash"]) if r["content_hash"] is not None else None)
+            for r in cur.fetchall()
+        ]
+
     # --- Belief CRUD ------------------------------------------------------
 
     def insert_belief(self, b: Belief) -> None:
