@@ -408,6 +408,8 @@ def test_cache_persists_to_disk_after_build(
 def test_cache_loads_from_disk_on_second_construct(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import aelfrice.hrr_index as hi
+    monkeypatch.setattr(hi, "_EPHEMERAL_PATH_PREFIXES", frozenset())
     monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
     sp = _store_path(tmp_path)
     s1 = _toy_store()
@@ -521,6 +523,8 @@ def test_cache_load_failure_falls_through_to_rebuild(
 def test_cache_byte_equality_persist_round_trip(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import aelfrice.hrr_index as hi
+    monkeypatch.setattr(hi, "_EPHEMERAL_PATH_PREFIXES", frozenset())
     monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
     sp = _store_path(tmp_path)
     s1 = _toy_store()
