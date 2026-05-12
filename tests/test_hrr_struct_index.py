@@ -413,6 +413,11 @@ def test_cache_loads_from_disk_on_second_construct(
     s1 = _toy_store()
     cache1 = HRRStructIndexCache(store=s1, dim=256, seed=7, store_path=sp)
     a = cache1.get()
+    # Persistence must have written the struct file before the warm load.
+    pd = _persist_dir(tmp_path)
+    assert (pd / "struct.npy").is_file(), (
+        "struct.npy not found after cold build — persistence is disabled"
+    )
     s2 = _toy_store()
     cache2 = HRRStructIndexCache(store=s2, dim=256, seed=7, store_path=sp)
     b = cache2.get()
@@ -420,6 +425,10 @@ def test_cache_loads_from_disk_on_second_construct(
     assert a is not b
     np.testing.assert_array_equal(a.struct, b.struct)
     assert a.belief_ids == b.belief_ids
+    # Warm load must be mmap-backed, proving a disk round-trip occurred.
+    assert isinstance(b.struct, np.memmap), (
+        f"expected mmap-backed struct on warm load, got {type(b.struct).__name__}"
+    )
 
 
 def test_cache_load_uses_mmap(
@@ -516,8 +525,17 @@ def test_cache_byte_equality_persist_round_trip(
     sp = _store_path(tmp_path)
     s1 = _toy_store()
     cold = HRRStructIndexCache(store=s1, dim=256, seed=7, store_path=sp).get()
+    # Persistence must have written the struct file before the warm load.
+    pd = _persist_dir(tmp_path)
+    assert (pd / "struct.npy").is_file(), (
+        "struct.npy not found after cold build — persistence is disabled"
+    )
     s2 = _toy_store()
     warm = HRRStructIndexCache(store=s2, dim=256, seed=7, store_path=sp).get()
+    # Warm load must be mmap-backed, proving a disk round-trip occurred.
+    assert isinstance(warm.struct, np.memmap), (
+        f"expected mmap-backed struct on warm load, got {type(warm.struct).__name__}"
+    )
     a = cold.probe("CONTRADICTS", "b2", top_k=5)
     b = warm.probe("CONTRADICTS", "b2", top_k=5)
     assert a == b
