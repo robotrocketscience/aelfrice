@@ -727,10 +727,10 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
 
 
 def _seeds_with_scopes(
-    store: "MemoryStore",
+    store: MemoryStore,
     query: str,
     k: int,
-) -> "tuple[list, dict[str, str | None]]":
+) -> tuple[list, dict[str, str | None]]:
     """Return (seeds, scopes) for the reason walk's query path.
 
     Unions local search_beliefs + peer search_peer_beliefs results.
@@ -740,8 +740,6 @@ def _seeds_with_scopes(
     the local copy wins (scope=None), preserving byte-identical behaviour
     for local-only stores where search_peer_beliefs returns [].
     """
-    from aelfrice.store import MemoryStore  # local import avoids circularity
-
     local_hits = store.search_beliefs(query, limit=k)
     local_ids: set[str] = {b.id for b in local_hits}
 
