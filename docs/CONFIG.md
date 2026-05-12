@@ -10,6 +10,7 @@ A single optional TOML file at the root of a project (or any ancestor). It expos
 
 - `[noise]` — onboard-time belief filter. Changes how `aelf onboard` ingests beliefs; nothing else.
 - `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, default-on since v2.1), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, opt-in since v2.1). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
+- `[rebuilder]` (v1.7+) — context-rebuilder knobs. Selects the query-understanding stack (`query_strategy`) and sets token-budget floors for the session-scoped and L1 belief lanes (`[rebuild_floor] session` and `[rebuild_floor] l1`).
 
 Locks, hooks, MCP tools, and the Bayesian feedback math are not affected.
 
@@ -106,6 +107,30 @@ use_type_aware_compression = false
 # otherwise a no-op.
 # use_signed_laplacian = false
 # use_posterior_ranking = false
+
+[rebuilder]
+# v3.0+ / #718 (PR #719). Selects the query-rewriting stack used by
+# the context rebuilder. Default `"stack-r1-r3"` since v3.0; runs
+# entity expansion + per-store IDF clipping via aelfrice.query_understanding.
+# Set to `"legacy-bm25"` for the v1.4-byte-identical escape hatch.
+# `"legacy-bm25"` is sequenced for removal as PR-4 (#291) one minor
+# release after the flip.
+query_strategy = "stack-r1-r3"
+
+[rebuild_floor]
+# v1.7+ (#289 / #364). Token-budget composite-score floors applied
+# during context rebuilding. Malformed values (wrong type, negative)
+# fall back to the default with a stderr trace; the rebuild never
+# raises on a bad floor value.
+#
+# Minimum composite score for a session-scoped (L2) belief to be
+# packed into the rebuilt block. 0.0 = no floor (pack everything).
+# Default 0.10.
+session = 0.10
+
+# Minimum composite score for an L1 / L2.5 belief to be packed.
+# 0.0 = no floor. Default 0.40.
+l1 = 0.40
 
 [onboard.llm]
 # v1.3.0+; default flipped to true in v1.5.0 (#238). Host-driven
@@ -361,6 +386,31 @@ Precedence (first decisive wins): env var `AELFRICE_TYPE_AWARE_COMPRESSION=0`/`1
 ### Placeholder flags
 
 `use_signed_laplacian` and `use_posterior_ranking` are reserved by #154 but their owning lanes have not yet shipped. The flags are recognised by `warn_placeholder_flags()` so writing them in `.aelfrice.toml` does not error; setting either to `true` emits a one-shot stderr deprecation warning and is otherwise a no-op. Source of truth: `PLACEHOLDER_FLAGS` in `src/aelfrice/retrieval.py`.
+
+## `[rebuilder]` and `[rebuild_floor]` (v1.7+)
+
+Malformed values (wrong type, out-of-range, unrecognised strategy string) in either section fall back to the field default with a `aelfrice rebuilder: ignoring …` trace to stderr. The rebuild never raises on a bad config value.
+
+### `query_strategy`
+
+String, one of `"stack-r1-r3"` or `"legacy-bm25"`. Default `"stack-r1-r3"` since v3.0 (#718, PR #719).
+
+| Value | Effect |
+|---|---|
+| `"stack-r1-r3"` (default since v3.0) | Runs the R1+R3 query-understanding stack: entity expansion followed by per-store IDF clipping. See `aelfrice.query_understanding` for the rewriter contract. Bench evidence (2026-05-12, 30-row corpus): mean NDCG@k 0.3006 → 0.5858 (+0.2851 absolute). |
+| `"legacy-bm25"` | Byte-identical to the v1.4 raw-BM25 path. Opt-in escape hatch for operators who need the exact pre-v3.0 retrieval shape. Removal is sequenced as PR-4 (#291), one minor release after the flip. |
+
+Unrecognised values trace to stderr and fall back to `"stack-r1-r3"`.
+
+### `[rebuild_floor] session`
+
+Float ≥ 0, default `0.10` (v1.7+, #289 / #364). Minimum composite score for a session-scoped (L2) belief to be packed into the rebuilt block. Beliefs whose composite score falls below this floor are skipped with a `below_floor_session:…` reason tag in the rebuild log. Set to `0.0` to disable the floor and pack all session-scoped candidates.
+
+### `[rebuild_floor] l1`
+
+Float ≥ 0, default `0.40` (v1.7+, #289 / #364). Minimum composite score for an L1 / L2.5 belief to be packed. Beliefs below this floor are skipped with a `below_floor_l1:…` reason tag. Set to `0.0` to pack all L1 / L2.5 candidates regardless of score.
+
+Negative values and non-numeric values are rejected; the default applies and the rejection is traced to stderr.
 
 ## When changes apply
 
