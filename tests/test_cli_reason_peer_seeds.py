@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from aelfrice.cli import main
+from aelfrice.cli import _seeds_with_scopes, main
 from aelfrice.models import (
     BELIEF_FACTUAL,
     EDGE_SUPPORTS,
@@ -308,3 +308,73 @@ def test_local_only_no_scope_annotation(
         assert hop["owning_scope"] is None, (
             f"hop {hop['id']!r} expected owning_scope=None in local-only store"
         )
+
+
+# ---------------------------------------------------------------------------
+# _seeds_with_scopes dedup regression
+# ---------------------------------------------------------------------------
+
+
+class _StubStore:
+    """Minimal stand-in for MemoryStore exposing only the two methods
+    `_seeds_with_scopes` consults. Lets the regression test drive
+    duplicate peer-id scenarios without standing up real on-disk peers."""
+
+    def __init__(
+        self,
+        local: list[Belief],
+        peer: list[tuple[Belief, str, float]],
+    ) -> None:
+        self._local = local
+        self._peer = peer
+
+    def search_beliefs(self, query: str, limit: int = 20) -> list[Belief]:
+        return list(self._local[:limit])
+
+    def search_peer_beliefs(
+        self, query: str, limit: int = 20,
+    ) -> list[tuple[Belief, str, float]]:
+        return list(self._peer[:limit])
+
+
+def test_seeds_with_scopes_dedupes_duplicate_peer_ids() -> None:
+    """When two peers expose the same belief id (or one peer is wired
+    twice in the deps file), `_seeds_with_scopes` must append the seed
+    exactly once and pin scope to the first-seen peer. Without dedup
+    the loop double-appends and overwrites the scope to whichever peer
+    comes second in iteration order, breaking determinism."""
+    shared = _mk_belief("shared-1", "globally visible knowledge")
+    store = _StubStore(
+        local=[],
+        peer=[
+            (shared, "peerA", 0.5),
+            (shared, "peerB", 0.7),
+        ],
+    )
+
+    seeds, scopes = _seeds_with_scopes(store, "any", k=5)  # type: ignore[arg-type]
+
+    seed_ids = [b.id for b in seeds]
+    assert seed_ids == ["shared-1"], (
+        f"expected single seed; got {seed_ids} (double-append regression)"
+    )
+    assert scopes == {"shared-1": "peerA"}, (
+        f"expected first-seen peer to win; got {scopes}"
+    )
+
+
+def test_seeds_with_scopes_local_beats_peer_for_same_id() -> None:
+    """Existing behaviour pinned: when a belief id is present locally AND
+    on a peer, the local copy wins (scope=None). Sister assertion to the
+    dedup test — confirms the seed-set initialiser still suppresses peer
+    rows for ids the local store already knows about."""
+    b = _mk_belief("dup-1", "knowledge known both sides")
+    store = _StubStore(
+        local=[b],
+        peer=[(b, "peerA", 0.5)],
+    )
+
+    seeds, scopes = _seeds_with_scopes(store, "any", k=5)  # type: ignore[arg-type]
+
+    assert [s.id for s in seeds] == ["dup-1"]
+    assert scopes == {"dup-1": None}
