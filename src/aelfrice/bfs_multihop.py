@@ -95,6 +95,16 @@ class ScoredHop:
     for #645 R2 (#658) — compound-confidence + fork-on-CONTRADICTS
     derivation needs the per-hop trail of beliefs, not just the
     terminal endpoint.
+
+    ``owning_scope`` is the federation scope that owns this hop's
+    belief: ``None`` for local-DB hops (the pre-federation default),
+    a peer ``name`` (matching the peer's ``knowledge_deps.json``
+    entry) when the hop walked into a peer DB. Added for #690 —
+    peer-aware BFS walks step into a peer's edge table via
+    ``MemoryStore.edges_from_in_scope`` and materialise neighbours
+    via ``get_belief_in_scope``; the scope propagates from parent
+    frontier entry to child so subsequent hops route to the right
+    DB.
     """
 
     belief: Belief
@@ -102,6 +112,7 @@ class ScoredHop:
     depth: int
     path: list[str]
     belief_id_trail: tuple[str, ...] = ()
+    owning_scope: str | None = None
 
 
 def expand_bfs(
@@ -112,6 +123,7 @@ def expand_bfs(
     nodes_per_hop: int = DEFAULT_NODES_PER_HOP,
     total_budget: int = DEFAULT_TOTAL_BUDGET_NODES,
     min_path_score: float = DEFAULT_MIN_PATH_SCORE,
+    seed_scopes: dict[str, str | None] | None = None,
 ) -> list[ScoredHop]:
     """Walk outbound edges from `seeds`, returning ranked expansions.
 
@@ -140,33 +152,48 @@ def expand_bfs(
     Returns expansions only — seeds are NOT included in the output
     (the visited-set initialisation prevents that, and the L3 tier
     contract is "tier-0 seeds first, BFS expansions after").
+
+    Federation (#690): ``seed_scopes`` is an optional ``{belief_id:
+    owning_scope}`` mapping. When a seed id appears in the dict with
+    a non-None scope, the walk follows that peer's edges (via
+    ``store.edges_from_in_scope`` / ``get_belief_in_scope``) instead
+    of local. The scope propagates from each frontier entry to its
+    children — once the walk enters a peer, subsequent hops stay
+    inside that peer's edge graph. Seeds not in the dict (and the
+    default ``seed_scopes=None`` case) walk local edges only, so
+    pre-federation callers see identical behaviour byte-for-byte.
     """
     if not seeds or max_depth < 1 or total_budget < 1:
         return []
 
+    scopes_in: dict[str, str | None] = seed_scopes or {}
     visited: set[str] = {b.id for b in seeds}
     # Frontier entries: (belief_id, path_score, depth, path_edge_types,
-    # belief_id_trail). The trail tracks every belief id the BFS has
-    # walked through to reach `belief_id`, starting from the seed;
-    # consumers downstream (compound-confidence + fork-on-CONTRADICTS,
-    # #645 R2) reconstruct paths from this without re-walking the
-    # graph.
-    frontier: list[tuple[str, float, int, list[str], tuple[str, ...]]] = [
-        (b.id, 1.0, 0, [], (b.id,)) for b in seeds
+    # belief_id_trail, owning_scope). The trail tracks every belief id
+    # the BFS has walked through to reach `belief_id`, starting from
+    # the seed; consumers downstream (compound-confidence + fork-on-
+    # CONTRADICTS, #645 R2) reconstruct paths from this without
+    # re-walking the graph. `owning_scope` is the federation scope
+    # whose edges the next hop reads (None = local; #690).
+    frontier: list[
+        tuple[str, float, int, list[str], tuple[str, ...], str | None]
+    ] = [
+        (b.id, 1.0, 0, [], (b.id,), scopes_in.get(b.id))
+        for b in seeds
     ]
     expanded: list[ScoredHop] = []
     nodes_used: int = 0
 
     while frontier and nodes_used < total_budget:
         next_frontier: list[
-            tuple[str, float, int, list[str], tuple[str, ...]]
+            tuple[str, float, int, list[str], tuple[str, ...], str | None]
         ] = []
-        for current_id, score, depth, path, trail in frontier:
+        for current_id, score, depth, path, trail, scope in frontier:
             if depth >= max_depth:
                 continue
             if nodes_used >= total_budget:
                 break
-            edges: list[Edge] = store.edges_from(current_id)
+            edges: list[Edge] = store.edges_from_in_scope(current_id, scope)
             # Determinism: rank by (-edge-type-weight, -edge.weight,
             # dst id). Filter already-visited dsts BEFORE ranking so
             # the top-k slice is over genuinely-novel candidates.
@@ -195,7 +222,7 @@ def expand_bfs(
                 # missing-belief race doesn't re-queue the same id
                 # later in this same call.
                 visited.add(edge.dst)
-                belief = store.get_belief(edge.dst)
+                belief = store.get_belief_in_scope(edge.dst, scope)
                 if belief is None:
                     # Race: belief was deleted between edges_from
                     # and get_belief. Skip; the next mutation cycle
@@ -211,10 +238,11 @@ def expand_bfs(
                         depth=depth + 1,
                         path=new_path,
                         belief_id_trail=new_trail,
+                        owning_scope=scope,
                     )
                 )
                 next_frontier.append(
-                    (edge.dst, new_score, depth + 1, new_path, new_trail)
+                    (edge.dst, new_score, depth + 1, new_path, new_trail, scope)
                 )
                 nodes_used += 1
         frontier = next_frontier

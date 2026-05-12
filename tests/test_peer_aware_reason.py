@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from aelfrice.bfs_multihop import expand_bfs
 from aelfrice.models import (
     EDGE_SUPPORTS,
     LOCK_NONE,
@@ -152,5 +153,79 @@ def test_in_scope_helpers_local_passthrough(tmp_path: Path):
         )
         assert local.get_belief_in_scope("local-1", None) is not None
         assert len(local.edges_from_in_scope("local-1", None)) == 1
+    finally:
+        local.close()
+
+
+def test_expand_bfs_follows_peer_edges_two_hops(
+    tmp_path: Path, monkeypatch
+):
+    """Acceptance bullet 1: peer 2-hop neighbour surfaces with owning_scope."""
+    peer_path = tmp_path / "peerA.db"
+    _seed_peer_with_chain(peer_path)
+    _wire_peer(tmp_path, peer_path, monkeypatch)
+
+    local = MemoryStore(str(tmp_path / "local.db"))
+    try:
+        seed = local.get_belief_in_scope("peer-a", "peerA")
+        assert seed is not None
+        hops = expand_bfs(
+            [seed],
+            local,
+            seed_scopes={"peer-a": "peerA"},
+        )
+        ids = [h.belief.id for h in hops]
+        assert "peer-b" in ids and "peer-c" in ids
+        for h in hops:
+            assert h.owning_scope == "peerA"
+            assert h.belief.scope == "global"
+        # Determinism: SUPPORTS-only chain ranks peer-b before peer-c
+        # (lower depth → higher compound score).
+        assert hops[0].belief.id == "peer-b"
+        assert hops[1].belief.id == "peer-c"
+        assert hops[0].depth == 1
+        assert hops[1].depth == 2
+    finally:
+        local.close()
+
+
+def test_expand_bfs_local_seed_walks_local_edges_only(tmp_path: Path):
+    """Pre-federation behaviour preserved: local seeds → owning_scope=None."""
+    local = MemoryStore(str(tmp_path / "local.db"))
+    try:
+        local.insert_belief(_belief("local-a", "anchor"))
+        local.insert_belief(_belief("local-b", "neighbour"))
+        local.insert_edge(
+            Edge(
+                src="local-a", dst="local-b",
+                type=EDGE_SUPPORTS, weight=1.0,
+            )
+        )
+        seed = local.get_belief_in_scope("local-a", None)
+        assert seed is not None
+        hops = expand_bfs([seed], local)  # no seed_scopes
+        assert len(hops) == 1
+        assert hops[0].belief.id == "local-b"
+        assert hops[0].owning_scope is None
+    finally:
+        local.close()
+
+
+def test_expand_bfs_unreachable_peer_yields_no_hops(
+    tmp_path: Path, monkeypatch
+):
+    """When the peer DB is missing, the walk degrades to zero hops."""
+    peer_path = tmp_path / "missing.db"
+    _wire_peer(tmp_path, peer_path, monkeypatch)
+
+    local = MemoryStore(str(tmp_path / "local.db"))
+    try:
+        synthetic_seed = _belief("peer-a", "stand-in for the missing seed")
+        hops = expand_bfs(
+            [synthetic_seed],
+            local,
+            seed_scopes={"peer-a": "peerA"},
+        )
+        assert hops == []
     finally:
         local.close()
