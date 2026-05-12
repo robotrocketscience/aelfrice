@@ -1860,7 +1860,37 @@ def _cmd_stats(args: argparse.Namespace, out: object) -> int:
     print(f"threads:           {n_threads}", file=out)  # type: ignore[arg-type]
     print(f"locked:            {n_locked}", file=out)  # type: ignore[arg-type]
     print(f"feedback events:   {n_history}", file=out)  # type: ignore[arg-type]
+    print(_format_hrr_persist_status_line(), file=out)  # type: ignore[arg-type]
     return 0
+
+
+def _format_hrr_persist_status_line() -> str:
+    """Return the ``hrr.persist_state`` summary line for ``aelf status`` (#696)."""
+    from aelfrice.hrr_index import (  # noqa: PLC0415
+        HRRStructIndexCache,
+        last_build_seconds as _last_build_seconds,
+    )
+    from aelfrice.store import MemoryStore as _MemoryStore  # noqa: PLC0415
+    try:
+        _store = _MemoryStore(":memory:")
+        try:
+            cache = HRRStructIndexCache(
+                store=_store, dim=512, store_path=str(db_path()),
+            )
+            state = cache.resolve_persist_state()
+        finally:
+            _store.close()
+    except Exception:  # noqa: BLE001
+        return "hrr.persist_state: unknown (probe error)"
+    enabled = bool(state.get("enabled", False))
+    if enabled:
+        on_disk = int(state.get("on_disk_bytes", 0))  # type: ignore[arg-type]
+        lbs = _last_build_seconds()
+        suffix = f", last build {lbs:.3f}s" if lbs is not None else ""
+        return f"hrr.persist_state:  on {on_disk} bytes{suffix}"
+    else:
+        reason = state.get("reason") or "disabled"
+        return f"hrr.persist_state:  off ({reason})"
 
 
 # Academic-suite targets that are scaffolded but not yet runnable at v1.0.0.
@@ -3470,6 +3500,7 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
             project_root=project_root,
             hook_failures_log=hook_failures_log,
             known_cli_subcommands=known_subs,
+            hrr_store_path=str(db_path()),
         )
         print(format_report(report), file=out)  # type: ignore[arg-type]
         _print_doctor_store_check(out)

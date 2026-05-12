@@ -383,6 +383,10 @@ class DoctorReport:
     failed_migrate_dbs: list[FailedMigrateDB] = field(
         default_factory=lambda: cast(list[FailedMigrateDB], [])
     )
+    # HRR persistence state (#696). Keys: enabled (bool), dir (Path|None),
+    # on_disk_bytes (int), reason (str|None), last_build_seconds (float|None).
+    # None when the HRR persist probe was not requested (no store_path).
+    hrr_persist_state: dict[str, object] | None = None
 
     @property
     def broken(self) -> list[CommandFinding]:
@@ -416,6 +420,8 @@ def diagnose(
     search_tool_telemetry_path: Path | None = None,
     user_prompt_submit_telemetry_path: Path | None = None,
     aelfrice_projects_dir: Path | None = None,
+    hrr_store_path: str | None = None,
+    hrr_dim: int = 512,
 ) -> DoctorReport:
     """Walk user and project settings.json, return a DoctorReport.
 
@@ -433,6 +439,9 @@ def diagnose(
     `user_prompt_submit_telemetry_path` (#218 AC4).
     `aelfrice_projects_dir` overrides the default scan root for
     per-project DBs (`~/.aelfrice/projects`); useful in tests (#589).
+    `hrr_store_path` enables the HRR persist-state block (#696) — pass
+    the resolved DB path so doctor can probe `_resolve_persist_dir`.
+    `hrr_dim` is the HRR dimension (default 512, matches DEFAULT_DIM).
     """
     user_path = user_settings if user_settings is not None else USER_SETTINGS_PATH
     project_path = (
@@ -503,7 +512,53 @@ def diagnose(
             )
         except ValueError:
             report.user_prompt_submit_telemetry_corrupt = True
+    # #696: HRR persist-state block — populate when hrr_store_path is
+    # provided. Uses a transient HRRStructIndexCache instance (read-only,
+    # does not trigger any build or WARNING log).
+    if hrr_store_path is not None:
+        report.hrr_persist_state = _diagnose_hrr_persist(
+            hrr_store_path, hrr_dim,
+        )
     return report
+
+
+def _diagnose_hrr_persist(
+    store_path: str,
+    dim: int,
+) -> dict[str, object]:
+    """Return the HRR persist-state dict for the given store path (#696).
+
+    Constructs a transient ``HRRStructIndexCache`` against an in-memory
+    store (no build, no I/O except the persist-dir size check) and calls
+    ``resolve_persist_state()``. Merges ``last_build_seconds`` from the
+    module-level slot.
+
+    Imported lazily to avoid importing numpy at doctor import time.
+    """
+    try:
+        from aelfrice.hrr_index import (  # noqa: PLC0415
+            HRRStructIndexCache,
+            last_build_seconds as _last_build_seconds,
+        )
+        from aelfrice.store import MemoryStore as _MemoryStore  # noqa: PLC0415
+        _store = _MemoryStore(":memory:")
+        try:
+            cache = HRRStructIndexCache(
+                store=_store, dim=dim, store_path=store_path,
+            )
+            state: dict[str, object] = dict(cache.resolve_persist_state())
+            state["last_build_seconds"] = _last_build_seconds()
+        finally:
+            _store.close()
+    except Exception:  # noqa: BLE001 — doctor never crashes on this
+        state = {
+            "enabled": False,
+            "dir": None,
+            "on_disk_bytes": 0,
+            "reason": "error",
+            "last_build_seconds": None,
+        }
+    return state
 
 
 def _derive_telemetry_path(
@@ -858,6 +913,7 @@ def format_report(report: DoctorReport) -> str:
     _format_missing_runtime_deps_section(report, lines)
     _format_missing_auto_capture_section(report, lines)
     _format_legacy_schema_section(report, lines)
+    _format_hrr_section(report, lines)
     return "\n".join(lines)
 
 
@@ -1147,6 +1203,38 @@ def _format_missing_runtime_deps_section(
         "fix: reinstall aelfrice to pull in all declared deps: "
         "`uv tool upgrade aelfrice` or `pip install --upgrade aelfrice`"
     )
+
+
+def _format_hrr_section(
+    report: DoctorReport, lines: list[str],
+) -> None:
+    """Append the HRR persist-state block to `lines` (#696).
+
+    Quiet when ``hrr_persist_state`` was not populated (no store probe
+    requested). Renders three rows under an ``HRR`` header:
+    ``persist_enabled``, ``on_disk_bytes``, ``last_build_seconds``.
+    """
+    if report.hrr_persist_state is None:
+        return
+    state = report.hrr_persist_state
+    lines.append("")
+    lines.append("HRR")
+    enabled = bool(state.get("enabled", False))
+    reason = state.get("reason")
+    if enabled:
+        enabled_str = "true"
+    else:
+        reason_suffix = f" ({reason})" if reason else ""
+        enabled_str = f"false{reason_suffix}"
+    lines.append(f"  persist_enabled:      {enabled_str}")
+    on_disk = int(state.get("on_disk_bytes", 0))  # type: ignore[arg-type]
+    lines.append(f"  on_disk_bytes:        {on_disk}")
+    lbs = state.get("last_build_seconds")
+    if lbs is None:
+        lbs_str = "n/a"
+    else:
+        lbs_str = f"{float(lbs):.3f}"  # type: ignore[arg-type]
+    lines.append(f"  last_build_seconds:   {lbs_str}")
 
 
 def _format_telemetry_section(report: DoctorReport, lines: list[str]) -> None:
