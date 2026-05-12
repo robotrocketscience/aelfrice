@@ -36,9 +36,9 @@ DB resolves from `$AELFRICE_DB`, then `<git-common-dir>/aelfrice/memory.db` when
 |---|---|
 | `stats` | Belief / thread / lock / feedback counts. |
 | `health [--json]` | Structural auditor: orphan threads, FTS5 sync, locked contradictions, corpus volume. Includes a per-edge-type count breakdown (sorted by count desc, then alphabetically); empty store prints `no edges yet`. `--json` emits `{"audit": {...}, "features": {"edges_by_type": {...}}}`. Exits 1 on structural failure; corpus-volume warnings are informational. |
-| `status` | Alias for `health`. |
+| `status` | Alias for `health`. v3.0+ adds an `hrr.persist_state` summary line — see *HRR persistence reporter* below. |
 | `regime` | The v1.0 regime classifier output (`supersede` / `ignore` / `mixed` / `insufficient_data`). Informational; always exits 0. |
-| `doctor` | Verify hook + statusline commands resolve. Inspects `bash <script>` wrappers, flags `2>/dev/null \|\| true` patterns. Surfaces empty-store warning. Exits 1 on broken hooks. v1.6+ flags: `--gc-orphan-feedback` (delete `feedback_history` rows whose `belief_id` no longer exists, #223); `--promote-retention` (one-shot reclassification pass over low-prior beliefs based on accumulated retrieval / corroboration evidence, #290 phase-3). |
+| `doctor` | Verify hook + statusline commands resolve. Inspects `bash <script>` wrappers, flags `2>/dev/null \|\| true` patterns. Surfaces empty-store warning. Exits 1 on broken hooks. v1.6+ flags: `--gc-orphan-feedback` (delete `feedback_history` rows whose `belief_id` no longer exists, #223); `--promote-retention` (one-shot reclassification pass over low-prior beliefs based on accumulated retrieval / corroboration evidence, #290 phase-3). v3.0+ adds three HRR persistence rows (`hrr.persist_enabled`, `hrr.on_disk_bytes`, `hrr.last_build_seconds`) — see *HRR persistence reporter* below. |
 | `bench [--top-k N]` | Run the deterministic 16-belief × 16-query benchmark. Prints a JSON `BenchmarkReport`. |
 | `bench all --out PATH [--canonical] [--adapters CSV] [--smoke]` | (v2.0+, #437) Reproducibility harness — subprocess each academic-suite adapter (mab, locomo, longmemeval, structmemeval, amabench) at the canonical headline cut and merge into one schema-v2 JSON. `--canonical` asserts the run matches `CANONICAL_INVOCATIONS` (full benchmarks per the 2026-05-06 ratification) and refuses if the cut differs. `--smoke` runs the small SMOKE_INVOCATIONS subset. `--adapters` filters; combined with `--canonical` this refuses (cut mismatch). Returns 0 ok / 1 any error / 2 any skipped_data_missing. |
 | `tail [--full] [--since DUR] [--filter EXPR]` | (v1.6+) Live-tail the per-turn hook audit log. `tail -f`-style pretty-printer over `<git-common-dir>/aelfrice/hook_audit.jsonl`. Default one-line summary per fire (timestamp, session, n_locked, latency, prompt prefix); `--full` switches to the full rendered block. See [hook-injection-audit.md](hook-injection-audit.md). |
@@ -59,6 +59,35 @@ DB resolves from `$AELFRICE_DB`, then `<git-common-dir>/aelfrice/memory.db` when
 | `rebuild [--transcript PATH] [--n N] [--budget N]` | Manual context-rebuilder run (alpha; normally fires on `PreCompact`). Prints the rebuild block to stdout. |
 | `project-warm <path> [--debounce N]` | CwdChanged hook entry point. Resolves `<path>` to a project root (git work-tree or `~/.aelfrice/projects/<id>/`-provisioned ancestor), pre-loads the SQLite + OS page cache, and writes a sentinel under `~/.aelfrice/projects/<id>/.last_warm`. Silent no-op for unknown paths, denied paths (default deny: `/tmp/**`, `/var/folders/**`, `~/Downloads/**`, `~/Desktop/**` — override via `~/.aelfrice/config.json` `project_warm.deny_globs`), and any call inside the 60-second debounce window. Always exits 0; never writes to stdout. |
 | `session-delta [--id ID] [--telemetry-path PATH]` | **Advanced/hidden.** SessionEnd hook entry point. Computes per-session deltas (beliefs created, corrections detected, feedback given, velocity) from beliefs tagged with `--id` in the active store, combines with a current store snapshot (beliefs/graph blocks) and rolling-window rollups from the existing `telemetry.jsonl`, and appends one v=1 JSON row to `PATH` (default `~/.aelfrice/telemetry.jsonl`). Missing or empty `--id` is a silent no-op (stderr warning, exit 0). Idle sessions with zero beliefs still emit a row so `len(telemetry.jsonl)` equals session count. Not shown in `aelf --help`. |
+
+## HRR persistence reporter
+
+(v3.0+, #696) `aelf doctor` and `aelf status` report whether the HRR structural-index is persisted to disk, how large the blob is, and how long the most recent rebuild took. The rows let an operator confirm warm-load is actually firing instead of silently rebuilding every cold start.
+
+### `aelf doctor`
+
+Three rows under the `HRR` block:
+
+| Row | Type | Meaning |
+|---|---|---|
+| `hrr.persist_enabled` | `true` / `false` | Result of `HRRStructIndexCache._resolve_persist_dir()`. `true` when the resolver returns a non-`None` path — captures `store_path` set + `AELFRICE_HRR_PERSIST != "0"` + (#695) ephemeral-path not auto-disabled. |
+| `hrr.on_disk_bytes` | int | `os.path.getsize(<persist_dir>/struct.npy) + os.path.getsize(<persist_dir>/meta.npz)` when both files exist; `0` otherwise. |
+| `hrr.last_build_seconds` | float / `n/a` | Wall-clock of the most recent `HRRStructIndex.build()` call this process. `n/a` if no build has fired since process start. |
+
+`aelf doctor --json` adds the same three fields as a nested `hrr` object plus a `reason` string when persistence is off (`no store path`, `AELFRICE_HRR_PERSIST=0`, or `ephemeral path`).
+
+### `aelf status`
+
+One summary line:
+
+```
+hrr.persist_state: on <N> bytes, last build <X>s
+hrr.persist_state: off (<reason>)
+```
+
+Where `<reason>` is one of `no store path`, `AELFRICE_HRR_PERSIST=0`, `ephemeral path`, or `unknown (probe error)`.
+
+See [CONFIG § `hrr_persist`](CONFIG.md) for the underlying flag, [`docs/feature-hrr-integration.md`](feature-hrr-integration.md) for the substrate spec, and `tests/test_hrr_struct_index.py` for the matrix of observable states.
 
 ## Help flags
 
