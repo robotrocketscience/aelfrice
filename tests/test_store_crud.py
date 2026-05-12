@@ -7,6 +7,8 @@ from aelfrice.models import (
     BELIEF_FACTUAL,
     BELIEF_SCOPE_GLOBAL,
     EDGE_SUPPORTS,
+    INGEST_SOURCE_CLI_REMEMBER,
+    INGEST_SOURCE_LEGACY_UNKNOWN,
     LOCK_NONE,
     RETENTION_FACT,
     RETENTION_TRANSIENT,
@@ -207,3 +209,129 @@ def test_stamp_retrieved_overwrites_prior_timestamp() -> None:
     s.stamp_retrieved(["b1"], ts="2026-04-28T01:00:00Z")
     s.stamp_retrieved(["b1"], ts="2026-04-28T02:00:00Z")
     assert s.get_belief("b1").last_retrieved_at == "2026-04-28T02:00:00Z"  # type: ignore[union-attr]
+
+
+# ---------------------------------------------------------------------------
+# list_canonical_orphans (#725)
+# ---------------------------------------------------------------------------
+
+_TS = "2026-05-12T00:00:00+00:00"
+
+
+def test_list_canonical_orphans_empty_store() -> None:
+    """Empty store → empty list."""
+    s = MemoryStore(":memory:")
+    assert s.list_canonical_orphans() == []
+
+
+def test_list_canonical_orphans_no_log_rows() -> None:
+    """Belief with zero ingest_log rows is a canonical orphan (pre-#205 case)."""
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk_belief("b1"))
+    result = s.list_canonical_orphans()
+    assert result == [("b1", "h_b1")]
+
+
+def test_list_canonical_orphans_all_legacy_rows() -> None:
+    """Belief whose only log rows are legacy_unknown → canonical orphan."""
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk_belief("b1"))
+    s.record_ingest(
+        source_kind=INGEST_SOURCE_LEGACY_UNKNOWN,
+        source_path=None,
+        raw_text="content b1",
+        derived_belief_ids=["b1"],
+        ts=_TS,
+    )
+    result = s.list_canonical_orphans()
+    assert result == [("b1", "h_b1")]
+
+
+def test_list_canonical_orphans_non_legacy_row_excludes_belief() -> None:
+    """Belief with a non-legacy log row is not an orphan."""
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk_belief("b1"))
+    s.record_ingest(
+        source_kind=INGEST_SOURCE_CLI_REMEMBER,
+        source_path=None,
+        raw_text="content b1",
+        derived_belief_ids=["b1"],
+        ts=_TS,
+    )
+    assert s.list_canonical_orphans() == []
+
+
+def test_list_canonical_orphans_mixed_beliefs() -> None:
+    """Only all-legacy beliefs surface; non-legacy-covered beliefs are excluded."""
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk_belief("b1"))  # will be orphan
+    s.insert_belief(_mk_belief("b2"))  # has a real log row → not orphan
+    s.insert_belief(_mk_belief("b3"))  # no log rows at all → orphan
+    s.record_ingest(
+        source_kind=INGEST_SOURCE_LEGACY_UNKNOWN,
+        source_path=None,
+        raw_text="content b1",
+        derived_belief_ids=["b1"],
+        ts=_TS,
+    )
+    s.record_ingest(
+        source_kind=INGEST_SOURCE_CLI_REMEMBER,
+        source_path=None,
+        raw_text="content b2",
+        derived_belief_ids=["b2"],
+        ts=_TS,
+    )
+    result = s.list_canonical_orphans()
+    assert result == [("b1", "h_b1"), ("b3", "h_b3")]
+
+
+def test_list_canonical_orphans_mixed_log_rows_same_belief() -> None:
+    """A belief with both a legacy and a non-legacy row is NOT an orphan."""
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk_belief("b1"))
+    s.record_ingest(
+        source_kind=INGEST_SOURCE_LEGACY_UNKNOWN,
+        source_path=None,
+        raw_text="content b1",
+        derived_belief_ids=["b1"],
+        ts=_TS,
+    )
+    s.record_ingest(
+        source_kind=INGEST_SOURCE_CLI_REMEMBER,
+        source_path=None,
+        raw_text="content b1",
+        derived_belief_ids=["b1"],
+        ts=_TS,
+    )
+    assert s.list_canonical_orphans() == []
+
+
+def test_list_canonical_orphans_limit() -> None:
+    """limit= caps the returned list."""
+    s = MemoryStore(":memory:")
+    for i in range(5):
+        s.insert_belief(_mk_belief(f"b{i}"))
+    result = s.list_canonical_orphans(limit=3)
+    assert len(result) == 3
+
+
+def test_list_canonical_orphans_order_by_id_asc() -> None:
+    """Results are returned in id ASC order (same as list_belief_ids)."""
+    s = MemoryStore(":memory:")
+    for bid in ["bz", "ba", "bm"]:
+        s.insert_belief(_mk_belief(bid))
+    ids_orphans = [r[0] for r in s.list_canonical_orphans()]
+    ids_list = s.list_belief_ids()
+    assert ids_orphans == sorted(ids_orphans)
+    assert ids_orphans == ids_list
+
+
+def test_list_canonical_orphans_no_log_rows_returns_content_hash() -> None:
+    """Tuples carry the correct content_hash from the beliefs row."""
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk_belief("bx"))
+    result = s.list_canonical_orphans()
+    assert len(result) == 1
+    bid, ch = result[0]
+    assert bid == "bx"
+    assert ch == "h_bx"
