@@ -140,7 +140,7 @@ def test_migration_rehashes_v1_speculative_row(tmp_path) -> None:
 
 
 def test_migration_is_idempotent_on_second_open(tmp_path) -> None:
-    """Marker present → second open is a no-op (no UPDATEs issued)."""
+    """Marker present → second open is a no-op (no UPDATE statements issued)."""
     db = str(tmp_path / "spec_idem.db")
     s = MemoryStore(db)
     phantom_id, v1_hash, _v2 = _seed_v1_shaped_phantom(s)
