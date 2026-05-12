@@ -959,8 +959,10 @@ def test_hrr_persist_disk_bytes_after_build(
 ) -> None:
     """persist_disk_bytes equals sum of struct.npy + meta.npz after build."""
     import os
+    import aelfrice.hrr_index as hi
     from aelfrice.hrr_index import persist_disk_bytes
 
+    monkeypatch.setattr(hi, "_EPHEMERAL_PATH_PREFIXES", frozenset())
     monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
     sp = _store_path(tmp_path)
     s = _toy_store()
