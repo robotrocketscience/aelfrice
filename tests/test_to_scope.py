@@ -240,8 +240,6 @@ def test_promote_to_scope_foreign_id_rejected(
     isolated_db: Path,
 ) -> None:
     """promote --to-scope on a foreign belief id exits nonzero."""
-    import json
-
     # Create a peer DB with a belief.
     peer_db = tmp_path / "peer.db"
     peer_store = MemoryStore(str(peer_db))
