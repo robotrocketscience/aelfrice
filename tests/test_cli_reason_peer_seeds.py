@@ -315,44 +315,66 @@ def test_local_only_no_scope_annotation(
 # ---------------------------------------------------------------------------
 
 
-class _StubStore:
-    """Minimal stand-in for MemoryStore exposing only the two methods
-    `_seeds_with_scopes` consults. Lets the regression test drive
-    duplicate peer-id scenarios without standing up real on-disk peers."""
-
-    def __init__(
-        self,
-        local: list[Belief],
-        peer: list[tuple[Belief, str, float]],
-    ) -> None:
-        self._local = local
-        self._peer = peer
-
-    def search_beliefs(self, query: str, limit: int = 20) -> list[Belief]:
-        return list(self._local[:limit])
-
-    def search_peer_beliefs(
-        self, query: str, limit: int = 20,
-    ) -> list[tuple[Belief, str, float]]:
-        return list(self._peer[:limit])
-
-
-def test_seeds_with_scopes_dedupes_duplicate_peer_ids() -> None:
-    """When two peers expose the same belief id (or one peer is wired
-    twice in the deps file), `_seeds_with_scopes` must append the seed
-    exactly once and pin scope to the first-seen peer. Without dedup
-    the loop double-appends and overwrites the scope to whichever peer
-    comes second in iteration order, breaking determinism."""
-    shared = _mk_belief("shared-1", "globally visible knowledge")
-    store = _StubStore(
-        local=[],
-        peer=[
-            (shared, "peerA", 0.5),
-            (shared, "peerB", 0.7),
-        ],
+def _wire_two_peers_same_path(
+    tmp_path: Path,
+    peer_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Write a knowledge_deps.json that lists the same peer DB twice
+    under two distinct peer names. `search_peer_beliefs` iterates peers
+    in dep order, so an FTS5 hit in the shared DB surfaces twice — once
+    tagged ``peerA``, once tagged ``peerB``. This is the on-disk shape
+    that triggers the dedup defect."""
+    deps_file = tmp_path / "knowledge_deps.json"
+    deps_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "deps": [
+                    {"name": "peerA", "path": str(peer_path)},
+                    {"name": "peerB", "path": str(peer_path)},
+                ],
+            }
+        ),
+        encoding="utf-8",
     )
+    monkeypatch.setenv("AELFRICE_KNOWLEDGE_DEPS", str(deps_file))
 
-    seeds, scopes = _seeds_with_scopes(store, "any", k=5)  # type: ignore[arg-type]
+
+def test_seeds_with_scopes_dedupes_duplicate_peer_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the same peer DB is wired twice in knowledge_deps.json (or
+    two peers expose the same `scope='global'` belief id),
+    `_seeds_with_scopes` must append the seed exactly once and pin
+    scope to the first-seen peer. Without dedup the loop double-appends
+    and overwrites the scope to whichever peer comes second in
+    iteration order, breaking determinism.
+
+    Uses a real on-disk peer DB queried through `search_peer_beliefs`
+    (no mocks) — the dep-file lists `peer_db` twice under names
+    ``peerA`` / ``peerB`` so FTS5 returns the same hit row twice.
+    """
+    local_db = tmp_path / "local.db"
+    peer_db = tmp_path / "shared_peer.db"
+
+    monkeypatch.setenv("AELFRICE_DB", str(local_db))
+    _wire_two_peers_same_path(tmp_path, peer_db, monkeypatch)
+
+    # Seed peer with one global belief; local store stays empty.
+    peer_store = MemoryStore(str(peer_db))
+    try:
+        peer_store.insert_belief(
+            _mk_belief("shared-1", "federation widgets knowledge", scope="global")
+        )
+    finally:
+        peer_store.close()
+
+    local_store = MemoryStore(str(local_db))
+    try:
+        seeds, scopes = _seeds_with_scopes(local_store, "widgets", k=5)
+    finally:
+        local_store.close()
 
     seed_ids = [b.id for b in seeds]
     assert seed_ids == ["shared-1"], (
@@ -363,18 +385,43 @@ def test_seeds_with_scopes_dedupes_duplicate_peer_ids() -> None:
     )
 
 
-def test_seeds_with_scopes_local_beats_peer_for_same_id() -> None:
+def test_seeds_with_scopes_local_beats_peer_for_same_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Existing behaviour pinned: when a belief id is present locally AND
     on a peer, the local copy wins (scope=None). Sister assertion to the
     dedup test — confirms the seed-set initialiser still suppresses peer
-    rows for ids the local store already knows about."""
-    b = _mk_belief("dup-1", "knowledge known both sides")
-    store = _StubStore(
-        local=[b],
-        peer=[(b, "peerA", 0.5)],
-    )
+    rows for ids the local store already knows about.
 
-    seeds, scopes = _seeds_with_scopes(store, "any", k=5)  # type: ignore[arg-type]
+    Real on-disk fixture: both local and peer DBs insert a belief under
+    the same id ``dup-1``; the helper is invoked through the real
+    `search_beliefs` / `search_peer_beliefs` SQLite paths.
+    """
+    local_db = tmp_path / "local.db"
+    peer_db = tmp_path / "peerA.db"
+
+    monkeypatch.setenv("AELFRICE_DB", str(local_db))
+    _wire_peer(tmp_path, peer_db, monkeypatch)
+
+    # Insert the same id into both DBs; local belief is 'project' scope,
+    # peer belief is 'global'. `search_beliefs` only hits local; the
+    # global peer copy comes through `search_peer_beliefs` and must lose.
+    peer_store = MemoryStore(str(peer_db))
+    try:
+        peer_store.insert_belief(
+            _mk_belief("dup-1", "knowledge widgets peer side", scope="global")
+        )
+    finally:
+        peer_store.close()
+
+    local_store = MemoryStore(str(local_db))
+    try:
+        local_store.insert_belief(
+            _mk_belief("dup-1", "knowledge widgets local side", scope="project")
+        )
+        seeds, scopes = _seeds_with_scopes(local_store, "widgets", k=5)
+    finally:
+        local_store.close()
 
     assert [s.id for s in seeds] == ["dup-1"]
     assert scopes == {"dup-1": None}
