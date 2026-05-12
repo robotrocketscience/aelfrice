@@ -39,6 +39,7 @@ import hashlib
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
@@ -52,6 +53,43 @@ _ephemeral_disable_logged: bool = False
 from aelfrice.hrr import DEFAULT_DIM, Vector, bind, random_vector
 from aelfrice.models import EDGE_TYPES
 from aelfrice.store import MemoryStore
+
+# ---------------------------------------------------------------------------
+# Build-stats slot (#696): wall-clock duration of the most recent
+# HRRStructIndex.build() call in this process.
+#
+# Module-level dict keeps the read side accessible without changing the
+# public API of HRRStructIndex. None means "no build has fired this process".
+# ---------------------------------------------------------------------------
+_HRR_BUILD_STATS: dict[str, float | None] = {"last_build_seconds": None}
+
+
+def last_build_seconds() -> float | None:
+    """Return wall-clock duration (seconds) of the most recent build, or None.
+
+    Returns ``None`` when no ``HRRStructIndex.build()`` call has completed
+    in this process. Used by ``aelf doctor`` and ``aelf status`` (#696).
+    """
+    return _HRR_BUILD_STATS["last_build_seconds"]
+
+
+def persist_disk_bytes(persist_dir: Path | None) -> int:
+    """Return on-disk size of the persisted index files in bytes.
+
+    Sums ``struct.npy`` + ``meta.npz`` when both exist inside
+    ``persist_dir``. Returns ``0`` when ``persist_dir`` is ``None``,
+    when the directory does not exist, or when either file is absent.
+    ``OSError`` / ``FileNotFoundError`` are caught and mapped to ``0``.
+    """
+    if persist_dir is None:
+        return 0
+    try:
+        struct_size = os.path.getsize(persist_dir / _STRUCT_FILENAME)
+        meta_size = os.path.getsize(persist_dir / _META_FILENAME)
+        return struct_size + meta_size
+    except (FileNotFoundError, OSError):
+        return 0
+
 
 # Structural-marker regex: an uppercase-with-underscores edge type
 # followed by a colon and a non-empty belief id. Matched
@@ -155,6 +193,8 @@ class HRRStructIndex:
         Re-running ``build`` over the same store with the same seed
         produces a byte-identical struct matrix (AC2).
         """
+        _t0 = time.perf_counter()
+
         if seed is None and store_path is not None:
             seed = _seed_from_path(store_path)
         if seed is not None:
@@ -168,6 +208,7 @@ class HRRStructIndex:
             self.struct = np.zeros((0, self.dim), dtype=np.float64)
             self.id_vecs = {}
             self.role_vecs = {}
+            _HRR_BUILD_STATS["last_build_seconds"] = time.perf_counter() - _t0
             return
 
         # One Generator per draw stream — id-vec stream and role-vec
@@ -196,6 +237,7 @@ class HRRStructIndex:
             if terms:
                 struct[i] = np.sum(np.stack(terms, axis=0), axis=0)
         self.struct = struct
+        _HRR_BUILD_STATS["last_build_seconds"] = time.perf_counter() - _t0
 
     def probe(
         self, kind: str, target_id: str, top_k: int = 10,
@@ -410,7 +452,16 @@ class HRRStructIndexCache:
             self.store.add_invalidation_callback(self.invalidate)
             self._subscribed = True
 
-    def _resolve_persist_dir(self) -> Path | None:
+    def _resolve_persist_dir(
+        self, *, log_on_ephemeral: bool = True,
+    ) -> Path | None:
+        """Resolve the on-disk persist directory, or ``None`` when disabled.
+
+        ``log_on_ephemeral`` controls whether the one-shot ephemeral-path
+        WARNING is fired: when ``False`` the warning is suppressed so
+        callers like ``resolve_persist_state`` can probe the path without
+        triggering the one-shot log.
+        """
         global _ephemeral_disable_logged
         if self.store_path is None:
             return None
@@ -437,7 +488,7 @@ class HRRStructIndexCache:
             for prefix in _EPHEMERAL_PATH_PREFIXES
         )
         if is_ephemeral and not env_force_on:
-            if not _ephemeral_disable_logged:
+            if log_on_ephemeral and not _ephemeral_disable_logged:
                 _logger.warning(
                     "aelfrice: HRR persistence disabled on ephemeral path %s;"
                     " set AELFRICE_HRR_PERSIST=1 to force.",
@@ -451,6 +502,65 @@ class HRRStructIndexCache:
         if not env_force_on and self.persist_enabled is False:
             return None
         return Path(self.store_path).parent / _PERSIST_DIRNAME
+
+    def resolve_persist_state(self) -> dict[str, object]:
+        """Return a doctor-facing snapshot of HRR persist configuration.
+
+        Read-only — does not mutate cache state or fire any one-shot
+        WARNING. Returns::
+
+            {
+                "enabled": bool,
+                "dir": Path | None,
+                "on_disk_bytes": int,
+                "reason": str | None,  # None when enabled
+            }
+
+        ``reason`` is one of ``None`` (enabled), ``"no store path"``,
+        ``"AELFRICE_HRR_PERSIST=0"``, ``"ephemeral path"``.
+        """
+        if self.store_path is None:
+            return {
+                "enabled": False,
+                "dir": None,
+                "on_disk_bytes": 0,
+                "reason": "no store path",
+            }
+        if os.environ.get(_ENV_PERSIST, "1") == "0":
+            return {
+                "enabled": False,
+                "dir": None,
+                "on_disk_bytes": 0,
+                "reason": "AELFRICE_HRR_PERSIST=0",
+            }
+        persist_dir = self._resolve_persist_dir(log_on_ephemeral=False)
+        if persist_dir is None:
+            # Determine whether the ephemeral-path predicate fired
+            # (env=truthy/unset, persist_enabled not False, so the only
+            # remaining reason _resolve_persist_dir returns None is an
+            # ephemeral path).  Use the same resolve+prefix logic.
+            resolved_parent = Path(self.store_path).resolve(strict=False).parent
+            path_with_slash = str(resolved_parent).rstrip("/") + "/"
+            reason = (
+                "ephemeral path"
+                if any(
+                    path_with_slash.startswith(prefix)
+                    for prefix in _EPHEMERAL_PATH_PREFIXES
+                )
+                else None
+            )
+            return {
+                "enabled": False,
+                "dir": None,
+                "on_disk_bytes": 0,
+                "reason": reason,
+            }
+        return {
+            "enabled": True,
+            "dir": persist_dir,
+            "on_disk_bytes": persist_disk_bytes(persist_dir),
+            "reason": None,
+        }
 
     def get(self) -> HRRStructIndex:
         """Return the current index, building or rebuilding as needed."""
