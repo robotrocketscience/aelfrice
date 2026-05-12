@@ -348,11 +348,10 @@ def rebuild_v14(
     are unaffected.
 
     v1.7 (#291 PR-2): `query_strategy` selects the query rewriter.
-    Default `legacy-bm25` is byte-identical to the v1.4 path.
-    `stack-r1-r3` opts into the ratified R1 entity-expansion + R3
-    per-store IDF-clip stack from `aelfrice.query_understanding`.
-    The default flip lands in PR-3 after a clean #288 phase-1b
-    operator-week.
+    Default `stack-r1-r3` (since #291 PR-3 / #718) runs the ratified
+    R1 entity-expansion + R3 per-store IDF-clip stack from
+    `aelfrice.query_understanding`. `legacy-bm25` is byte-identical
+    to the v1.4 path and remains opt-in until PR-4 removes it.
     """
     locked: list[Belief] = store.list_locked_beliefs()
     locked_ids: set[str] = {b.id for b in locked}
@@ -631,11 +630,12 @@ class RebuilderConfig:
     `[rebuild_floor] l1` in .aelfrice.toml. Calibration lands
     in a follow-up after #288 phase-1b."""
     query_strategy: str = DEFAULT_QUERY_STRATEGY
-    """v1.7 (#291 PR-2) opt-in for the R1+R3 query-understanding
-    stack. `legacy-bm25` (default) is byte-identical to v1.4.
-    `stack-r1-r3` opts in. Operator-tunable via
-    `[rebuilder] query_strategy` in .aelfrice.toml. Default flip
-    lands in PR-3 after a clean #288 phase-1b operator-week."""
+    """v1.7 (#291 PR-2) selector for the R1+R3 query-understanding
+    stack. Default `stack-r1-r3` (since #291 PR-3 / #718, v3.0)
+    runs entity expansion + per-store IDF clipping; `legacy-bm25`
+    is the v1.4-byte-identical opt-in escape hatch (removal
+    sequenced as PR-4). Operator-tunable via `[rebuilder]
+    query_strategy` in .aelfrice.toml."""
 
 
 def load_rebuilder_config(start: Path | None = None) -> RebuilderConfig:

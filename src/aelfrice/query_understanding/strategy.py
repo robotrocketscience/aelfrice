@@ -1,18 +1,19 @@
-"""Query-strategy dispatcher: legacy-bm25 (default) vs stack-r1-r3.
+"""Query-strategy dispatcher: stack-r1-r3 (default) vs legacy-bm25.
 
 The rebuilder calls `transform_query(raw_query, store, strategy)` to
 produce the final query string fed to `retrieve()`. Two strategies
 exist at v1.7 (#291):
 
-* `legacy-bm25` -- the v1.4-era query string is passed through
-  unchanged. Default until #291 PR-3 flips after a clean
-  #288 phase-1b operator-week.
 * `stack-r1-r3` -- the ratified R1+R3 stack: capitalised-token
   entity expansion, then per-store IDF-quantile clipping, against
   the cached `BM25Index` for the store. Returns the rewritten term
   list joined with spaces (FTS5 MATCH consumes the whitespace-
   separated form; duplicated terms boost their effective query
-  frequency the same way the lab campaign measured).
+  frequency the same way the lab campaign measured). Default since
+  #291 PR-3 (v3.0) after the bench gate cleared on the lab corpus.
+* `legacy-bm25` -- the v1.4-era query string is passed through
+  unchanged. Retained as an opt-in escape hatch; removal is
+  sequenced as PR-4 one minor release after the flip.
 
 This module owns no state; the per-store BM25Index + quantile cache
 lives in `query_understanding.store_cache`.

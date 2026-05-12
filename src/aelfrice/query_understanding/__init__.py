@@ -6,15 +6,18 @@ Three deterministic transforms a caller stacks before BM25:
 2. R3 IDF clip with per-store quantile thresholds
    (`clip_with_quantile_thresholds`, `compute_idf_quantile_thresholds`)
 3. PR-2 wiring: `transform_query(raw_query, store, strategy)`
-   dispatches between `legacy-bm25` (default) and `stack-r1-r3`.
+   dispatches between `stack-r1-r3` (default since #291 PR-3) and
+   `legacy-bm25` (opt-in escape hatch, removal sequenced as PR-4).
    The per-store BM25Index + quantile cache lives in
    `store_cache.get_bm25_and_quantiles`.
 
 PR-1 landed the rewriters + per-store quantile helper + unit tests.
-PR-2 lands the dispatcher + cache + rebuilder/hook plumbing behind
-the `query_strategy = "legacy-bm25"` setting (default unchanged).
-The default flip to `stack-r1-r3` lands in PR-3 after a clean
-#288 phase-1b operator-week.
+PR-2 landed the dispatcher + cache + rebuilder/hook plumbing behind
+the `query_strategy` setting (initially defaulting to `legacy-bm25`
+for safety). PR-3 (#718) flipped the default to `stack-r1-r3` after
+the bench gate cleared (+94.8% NDCG@k uplift, +0.66 ms p99 — well
+inside the documented thresholds). PR-4 removes the `legacy-bm25`
+code path one minor release after the flip.
 
 The synthetic-tuned IDF constants (1.5, 2.5) from the lab R3.5
 campaign do not transfer to live stores (live IDF medians 7.5-9.5
