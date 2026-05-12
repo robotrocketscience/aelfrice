@@ -461,7 +461,89 @@ def tool_locked(
     return payload
 
 
-def tool_demote(store: MemoryStore, *, belief_id: str) -> dict[str, Any]:
+def _tool_apply_scope_change(
+    store: MemoryStore,
+    belief_id: str,
+    to_scope: str,
+) -> dict[str, Any]:
+    """Flip a belief's scope field and write a zero-valence audit row.
+
+    Shared by tool_demote and tool_validate/tool_promote.
+    Returns a result dict with 'kind', 'id', 'scope_updated', and optionally
+    'prior_scope', 'new_scope', 'audit_event_id', 'owning_scope', or 'error'.
+    """
+    from aelfrice.models import validate_belief_scope
+
+    try:
+        validate_belief_scope(to_scope)
+    except ValueError as e:
+        return {
+            "kind": "scope.invalid",
+            "id": belief_id,
+            "scope_updated": False,
+            "error": str(e),
+        }
+
+    try:
+        store.assert_local_ownership(belief_id)
+    except ForeignBeliefError as e:
+        return {
+            "kind": "scope.foreign_belief",
+            "id": belief_id,
+            "scope_updated": False,
+            "owning_scope": e.owning_scope,
+            "error": str(e),
+        }
+
+    belief = store.get_belief(belief_id)
+    if belief is None:
+        return {
+            "kind": "scope.not_found",
+            "id": belief_id,
+            "scope_updated": False,
+            "error": "belief not found",
+        }
+
+    old_scope = belief.scope
+    if old_scope == to_scope:
+        return {
+            "kind": "scope.unchanged",
+            "id": belief_id,
+            "scope_updated": False,
+            "prior_scope": old_scope,
+            "new_scope": to_scope,
+        }
+
+    belief.scope = to_scope
+    store.update_belief(belief)
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    audit_id = store.insert_feedback_event(
+        belief_id=belief_id,
+        valence=0.0,
+        source=f"scope:{old_scope}->{to_scope}",
+        created_at=ts,
+    )
+    return {
+        "kind": "scope.updated",
+        "id": belief_id,
+        "scope_updated": True,
+        "prior_scope": old_scope,
+        "new_scope": to_scope,
+        "audit_event_id": audit_id,
+    }
+
+
+def tool_demote(
+    store: MemoryStore,
+    *,
+    belief_id: str,
+    to_scope: str | None = None,
+) -> dict[str, Any]:
+    # --to-scope: orthogonal scope flip; run before tier demotion.
+    if to_scope is not None:
+        return _tool_apply_scope_change(store, belief_id, to_scope)
+
     belief = store.get_belief(belief_id)
     if belief is None:
         return {
@@ -495,14 +577,31 @@ def tool_validate(
     *,
     belief_id: str,
     source: str = "user_validated",
+    to_scope: str | None = None,
 ) -> dict[str, Any]:
     """Promote agent_inferred -> user_validated. v1.2.0.
 
     `source` becomes the audit-row source suffix: "promotion:<source>".
     Defaults to "user_validated" so the audit row reads
     "promotion:user_validated" — the canonical wire-format string.
+
+    `to_scope` is an optional scope flip (#689). When supplied, the
+    belief's scope field is updated to the given value and a zero-valence
+    audit row tagged 'scope:<old>-><new>' is written. Orthogonal to the
+    origin flip: both may occur in one call when the belief is
+    agent_inferred; only scope changes when the belief is already at the
+    user_validated tier (the promote path is idempotent and returns
+    'validate.already' without writing a redundant audit row).
     """
     from aelfrice.promotion import promote
+
+    # --to-scope: apply orthogonal scope change first.
+    if to_scope is not None:
+        scope_result = _tool_apply_scope_change(store, belief_id, to_scope)
+        if scope_result["kind"] in (
+            "scope.invalid", "scope.foreign_belief", "scope.not_found",
+        ):
+            return scope_result
 
     label = (
         f"promotion:{source}"
@@ -518,19 +617,32 @@ def tool_validate(
             "error": str(e),
         }
     if result.already_validated:
+        # When to_scope drove the call and origin was already validated,
+        # include the scope result so the caller sees what changed.
+        if to_scope is not None:
+            return {
+                "kind": "validate.already",
+                "id": belief_id,
+                "prior_origin": result.prior_origin,
+                "new_origin": result.new_origin,
+                "scope": scope_result,  # type: ignore[possibly-undefined]
+            }
         return {
             "kind": "validate.already",
             "id": belief_id,
             "prior_origin": result.prior_origin,
             "new_origin": result.new_origin,
         }
-    return {
+    out: dict[str, Any] = {
         "kind": "validate.promoted",
         "id": belief_id,
         "prior_origin": result.prior_origin,
         "new_origin": result.new_origin,
         "audit_event_id": result.audit_event_id,
     }
+    if to_scope is not None:
+        out["scope"] = scope_result  # type: ignore[possibly-undefined]
+    return out
 
 
 def tool_unlock(store: MemoryStore, *, belief_id: str) -> dict[str, Any]:
@@ -582,14 +694,15 @@ def tool_promote(
     *,
     belief_id: str,
     source: str = "user_validated",
+    to_scope: str | None = None,
 ) -> dict[str, Any]:
     """Promote agent_inferred -> user_validated. Alias of tool_validate.
 
     Exists as a first-class tool so MCP callers can use the more
     intuitive name. Identical semantics and return shape to
-    tool_validate.
+    tool_validate. Accepts optional to_scope (#689).
     """
-    return tool_validate(store, belief_id=belief_id, source=source)
+    return tool_validate(store, belief_id=belief_id, source=source, to_scope=to_scope)
 
 
 def tool_feedback(
@@ -946,6 +1059,18 @@ def serve() -> None:
             pattern=r"^(json|markdown)$",
         ),
     ]
+    _ScopeValue = Annotated[
+        str,
+        Field(
+            description=(
+                "Visibility scope for the belief. One of 'project' "
+                "(local-only, default), 'global' (any dependent peer), "
+                "or 'shared:<name>' where <name> matches [a-z0-9_-]+. "
+                "Validated against BELIEF_SCOPE_RE at write time."
+            ),
+            pattern=r"^project$|^global$|^shared:[a-z0-9_-]+$",
+        ),
+    ]
 
     _FastMCP: Any = _FastMCPCls
     mcp: Any = _FastMCP(
@@ -1224,26 +1349,42 @@ def serve() -> None:
             "openWorldHint": False,
         },
     )
-    def aelf_demote(belief_id: _BeliefId) -> dict[str, Any]:
+    def aelf_demote(
+        belief_id: _BeliefId,
+        to_scope: _ScopeValue | None = None,
+    ) -> dict[str, Any]:
         """Demote a belief one tier — drop a lock OR devalidate.
 
         For a user-locked (L0) belief: clears the lock to L1.
         For a user_validated belief: drops origin to agent_inferred.
         For other beliefs: no-op. Mutates origin/lock fields.
 
+        When to_scope is supplied, only the scope field is changed
+        (orthogonal to tier demotion). Writes a zero-valence audit row
+        tagged 'scope:<old>-><new>' to feedback_history. Rejected for
+        foreign belief ids.
+
         Args:
             belief_id: Stable hash-prefix ID returned by aelf_search,
                 aelf_lock, or aelf_locked.
+            to_scope: Optional target scope ('project', 'global', or
+                'shared:<name>'). When supplied, scope is flipped instead
+                of performing tier demotion.
 
-        Returns: {"kind": one of [demote.demoted, demote.devalidated,
-                                  demote.not_locked, demote.not_found],
+        Returns (no to_scope): {"kind": one of [demote.demoted,
+                  demote.devalidated, demote.not_locked, demote.not_found],
                   "id": belief_id, "demoted": bool,
                   "tier": str (when devalidated),
                   "error": str (when not_found)}
+        Returns (with to_scope): {"kind": one of [scope.updated,
+                  scope.unchanged, scope.invalid, scope.foreign_belief,
+                  scope.not_found], "id": str, "scope_updated": bool,
+                  "prior_scope": str, "new_scope": str,
+                  "audit_event_id": int (when updated)}
         """
         store = _open_default_store()
         try:
-            return tool_demote(store, belief_id=belief_id)
+            return tool_demote(store, belief_id=belief_id, to_scope=to_scope)
         finally:
             store.close()
 
@@ -1329,6 +1470,7 @@ def serve() -> None:
     def aelf_promote(
         belief_id: _BeliefId,
         source: _SourceLabel = "user_validated",
+        to_scope: _ScopeValue | None = None,
     ) -> dict[str, Any]:
         """Alias of aelf_validate. Identical semantics and return shape.
 
@@ -1336,12 +1478,27 @@ def serve() -> None:
         more naturally for their use case ('promote' for tier transitions,
         'validate' for verification flows).
 
-        Args, Returns: see aelf_validate.
+        When to_scope is supplied, the belief's scope field is also
+        updated. Orthogonal: both origin flip and scope flip may occur in
+        one call when the belief is agent_inferred; only scope changes
+        when the belief is already user_validated.
+
+        Args:
+            belief_id: see aelf_validate.
+            source: see aelf_validate.
+            to_scope: Optional target scope ('project', 'global', or
+                'shared:<name>'). When supplied, a zero-valence audit row
+                tagged 'scope:<old>-><new>' is written alongside any
+                origin-flip audit row.
+
+        Returns: see aelf_validate. When to_scope is supplied, the
+            payload includes an additional 'scope' key containing the
+            scope-change result dict.
         """
         store = _open_default_store()
         try:
             return tool_promote(
-                store, belief_id=belief_id, source=source,
+                store, belief_id=belief_id, source=source, to_scope=to_scope,
             )
         finally:
             store.close()
