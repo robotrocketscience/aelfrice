@@ -140,7 +140,7 @@ uv run python -m benchmarks.context_rebuilder.kappa \
 ### Zero-LLM baseline
 
 The deterministic baseline is `score_substring_exact_match(prediction,
-ground_truth) > 0` (see `benchmarks/qa_scoring.py:53`). Binarised verdicts
+ground_truth) > 0` (see `benchmarks/qa_scoring.py:53`). Binarized verdicts
 from this baseline form the comparison vector for judge-vs-baseline κ.
 
 If the eval task is `subject-match + load-bearing-claim` (the
@@ -187,8 +187,8 @@ At N=3 runs over ~18 deduplicated pairs (the #592 hot-start corpus), the
 0.45–0.90. The gate is therefore noisy at the standard N=3. Two ways to
 tighten it:
 
-1. **Bump to N=5 runs.** ~5× the judge API cost but cuts the CI roughly
-   in half. Recommended for any pre-release ratification run.
+1. **Bump to N=5 runs.** ~1.67× the judge API cost (5/3 of N=3) but cuts
+   the CI roughly in half. Recommended for any pre-release ratification run.
 2. **Accept the noisy gate** and document the CI range in the run's
    audit record. Suitable for routine bench regression checks but not
    for release-gate decisions.
@@ -196,8 +196,10 @@ tighten it:
 A failed κ-gate is **not** a code bug — it means either the judge prompt
 needs tightening (more explicit refusal-on-ambiguity rules) or the
 underlying corpus contains ambiguous pairs that no judge can classify
-reproducibly. The verdict in the kappa.json `rationale` fields surfaces
-which pairs disagreed.
+reproducibly. To find which pairs disagreed, inspect the per-judge input
+JSONL files (`run_<i>.jsonl`, with `{turn_idx, matched, rationale}` rows
+read by `read_judge_responses`); kappa.json itself only carries per-pair
+agreement scores, not per-row verdicts.
 
 ## Audit record
 
