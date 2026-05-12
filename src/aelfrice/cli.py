@@ -1501,9 +1501,78 @@ def _cmd_locked(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _apply_scope_change(
+    store: object,
+    belief_id: str,
+    to_scope: str,
+    out: object,
+) -> int:
+    """Flip a belief's scope field and write a zero-valence audit row.
+
+    Called by _cmd_promote and _cmd_demote when --to-scope is given.
+    Validates the target scope, rejects foreign ids via
+    assert_local_ownership, and writes a 'scope:<old>-><new>' audit row
+    to feedback_history so the change is reconstructible.
+
+    Returns 0 on success, 1 on error.  Does NOT touch origin or lock.
+    """
+    from datetime import datetime, timezone
+
+    from aelfrice.federation import ForeignBeliefError
+    from aelfrice.models import validate_belief_scope
+
+    try:
+        validate_belief_scope(to_scope)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+
+    _store = store  # type: ignore[assignment]
+    try:
+        _store.assert_local_ownership(belief_id)  # type: ignore[union-attr]
+    except ForeignBeliefError as e:
+        print(f"scope change rejected: {e}", file=sys.stderr)
+        return 1
+
+    belief = _store.get_belief(belief_id)  # type: ignore[union-attr]
+    if belief is None:
+        print(f"belief not found: {belief_id}", file=sys.stderr)
+        return 1
+
+    old_scope = belief.scope
+    if old_scope == to_scope:
+        print(
+            f"scope unchanged: {belief_id} (already {to_scope})",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 0
+
+    belief.scope = to_scope
+    _store.update_belief(belief)  # type: ignore[union-attr]
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    _store.insert_feedback_event(  # type: ignore[union-attr]
+        belief_id=belief_id,
+        valence=0.0,
+        source=f"scope:{old_scope}->{to_scope}",
+        created_at=ts,
+    )
+    print(
+        f"scope updated: {belief_id} ({old_scope} -> {to_scope})",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
 def _cmd_demote(args: argparse.Namespace, out: object) -> int:
     store = _open_store()
     try:
+        # --to-scope: flip scope (orthogonal to tier demotion)
+        to_scope: str | None = getattr(args, "to_scope", None)
+        if to_scope is not None:
+            rc = _apply_scope_change(store, args.belief_id, to_scope, out)
+            return rc
+
         belief = store.get_belief(args.belief_id)
         if belief is None:
             print(f"belief not found: {args.belief_id}", file=sys.stderr)
@@ -1529,8 +1598,20 @@ def _cmd_validate(args: argparse.Namespace, out: object) -> int:
     """Promote agent_inferred -> user_validated. v1.2.0."""
     from aelfrice.promotion import promote
 
+    to_scope: str | None = getattr(args, "to_scope", None)
+
     store = _open_store()
     try:
+        # --to-scope: orthogonal scope flip. Runs independently of origin flip.
+        if to_scope is not None:
+            rc = _apply_scope_change(store, args.belief_id, to_scope, out)
+            if rc != 0:
+                return rc
+
+        # Origin flip: promote agent_inferred -> user_validated.
+        # When --to-scope is the only action and the belief is already
+        # user_validated, the idempotent already-validated path returns 0
+        # without writing a redundant audit row — that is correct behaviour.
         try:
             result = promote(
                 store, args.belief_id,
@@ -1542,7 +1623,10 @@ def _cmd_validate(args: argparse.Namespace, out: object) -> int:
             print(str(e), file=sys.stderr)
             return 1
         if result.already_validated:
-            print(f"already validated: {args.belief_id}", file=out)  # type: ignore[arg-type]
+            # Don't print "already validated" when --to-scope drove the call
+            # and origin was already at the validated tier.
+            if to_scope is None:
+                print(f"already validated: {args.belief_id}", file=out)  # type: ignore[arg-type]
             return 0
         print(
             f"validated: {args.belief_id} "
@@ -4655,6 +4739,20 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
     p_demote.add_argument("belief_id", help="id of the belief to demote")
+    p_demote.add_argument(
+        "--to-scope",
+        default=None,
+        dest="to_scope",
+        metavar="SCOPE",
+        help=(
+            "flip the belief's visibility scope to SCOPE "
+            "('project', 'global', or 'shared:<name>'). "
+            "Orthogonal to tier demotion — when supplied, only the scope "
+            "is changed. Writes a zero-valence audit row tagged "
+            "'scope:<old>-><new>' to feedback_history. "
+            "Rejected for foreign belief ids."
+        ),
+    )
     p_demote.set_defaults(func=_cmd_demote)
 
     # Hidden: weaker than `aelf lock`; rarely needed at the CLI surface.
@@ -4735,6 +4833,22 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help=(
             "audit-row source suffix; written as 'promotion:<source>' "
             "in feedback_history. Defaults to 'user_validated'."
+        ),
+    )
+    p_promote.add_argument(
+        "--to-scope",
+        default=None,
+        dest="to_scope",
+        metavar="SCOPE",
+        help=(
+            "flip the belief's visibility scope to SCOPE "
+            "('project', 'global', or 'shared:<name>'). "
+            "Orthogonal to origin promotion — when supplied alongside "
+            "an agent_inferred belief, both the origin flip and scope "
+            "flip occur. Against an already-validated belief, only the "
+            "scope is changed. Writes a zero-valence audit row tagged "
+            "'scope:<old>-><new>' to feedback_history. "
+            "Rejected for foreign belief ids."
         ),
     )
     p_promote.set_defaults(func=_cmd_promote)
