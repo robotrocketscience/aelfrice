@@ -736,12 +736,16 @@ def _seeds_with_scopes(
     Unions local search_beliefs + peer search_peer_beliefs results.
     Local seeds get scope=None; peer seeds get scope=<peer name>.
 
-    Deduplication: if a belief id appears in both local and peer results
-    the local copy wins (scope=None), preserving byte-identical behaviour
-    for local-only stores where search_peer_beliefs returns [].
+    Deduplication: first-seen wins. Local hits seed the dedup set, so a
+    belief id present locally suppresses any peer copy (scope=None
+    preserved). For ids that appear only on peers, the first peer in
+    `search_peer_beliefs` iteration order wins; subsequent peer rows for
+    the same id are dropped. This guarantees deterministic output even
+    when multiple peers expose the same `scope='global'` belief id, or
+    when a peer is wired more than once in the deps file.
     """
     local_hits = store.search_beliefs(query, limit=k)
-    local_ids: set[str] = {b.id for b in local_hits}
+    seen_ids: set[str] = {b.id for b in local_hits}
 
     peer_hits = store.search_peer_beliefs(query, limit=k)
 
@@ -749,9 +753,10 @@ def _seeds_with_scopes(
     scopes: dict[str, str | None] = {b.id: None for b in local_hits}
 
     for belief, peer_name, _score in peer_hits:
-        if belief.id not in local_ids:
+        if belief.id not in seen_ids:
             seeds.append(belief)
             scopes[belief.id] = peer_name
+            seen_ids.add(belief.id)
 
     return seeds, scopes
 
