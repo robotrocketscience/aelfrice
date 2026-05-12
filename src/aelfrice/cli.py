@@ -726,31 +726,71 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _seeds_with_scopes(
+    store: "MemoryStore",
+    query: str,
+    k: int,
+) -> "tuple[list, dict[str, str | None]]":
+    """Return (seeds, scopes) for the reason walk's query path.
+
+    Unions local search_beliefs + peer search_peer_beliefs results.
+    Local seeds get scope=None; peer seeds get scope=<peer name>.
+
+    Deduplication: if a belief id appears in both local and peer results
+    the local copy wins (scope=None), preserving byte-identical behaviour
+    for local-only stores where search_peer_beliefs returns [].
+    """
+    from aelfrice.store import MemoryStore  # local import avoids circularity
+
+    local_hits = store.search_beliefs(query, limit=k)
+    local_ids: set[str] = {b.id for b in local_hits}
+
+    peer_hits = store.search_peer_beliefs(query, limit=k)
+
+    seeds: list = list(local_hits)
+    scopes: dict[str, str | None] = {b.id: None for b in local_hits}
+
+    for belief, peer_name, _score in peer_hits:
+        if belief.id not in local_ids:
+            seeds.append(belief)
+            scopes[belief.id] = peer_name
+
+    return seeds, scopes
+
+
 def _cmd_reason(args: argparse.Namespace, out: object) -> int:
     """Surface a reasoning chain over the belief graph for a query.
 
     Seeds: explicit `--seed-id` (repeatable) wins; otherwise top-k
-    `search_beliefs` BM25 hits over `args.query`. Walks `expand_bfs`
-    from those seeds with terminal-tight defaults and prints either
-    an indented hop tree (default) or JSON when `--json`.
+    `search_beliefs` BM25 hits over `args.query` unioned with peer
+    FTS5 hits via `_seeds_with_scopes`. Walks `expand_bfs` from those
+    seeds with terminal-tight defaults and prints either an indented
+    hop tree (default) or JSON when `--json`.
 
     Read-only: never writes to the store.
     """
     store = _open_store()
     try:
         seeds: list = []
+        seed_scopes: dict[str, str | None] = {}
         if args.seed_id:
             for sid in args.seed_id:
                 b = store.get_belief(sid)
                 if b is None:
-                    print(
-                        f"aelf reason: seed-id not found: {sid}",
-                        file=out,  # type: ignore[arg-type]
-                    )
-                    return 2
+                    # Fall through to peer stores before giving up (#713).
+                    owner = store.find_foreign_owner(sid)
+                    if owner is not None:
+                        b = store.get_belief_in_scope(sid, owner)
+                    if b is None:
+                        print(
+                            f"aelf reason: seed-id not found: {sid}",
+                            file=out,  # type: ignore[arg-type]
+                        )
+                        return 2
+                    seed_scopes[sid] = owner
                 seeds.append(b)
         else:
-            seeds = store.search_beliefs(args.query, limit=args.k)
+            seeds, seed_scopes = _seeds_with_scopes(store, args.query, args.k)
         if not seeds:
             print(
                 "aelf reason: no seeds (empty store, or query didn't "
@@ -759,12 +799,19 @@ def _cmd_reason(args: argparse.Namespace, out: object) -> int:
                 file=out,  # type: ignore[arg-type]
             )
             return 0
+        # Pass seed_scopes only when at least one seed has a non-None scope;
+        # otherwise preserve byte-identical pre-#690 output for local-only
+        # stores (seed_scopes=None, not an empty dict with all-None values).
+        scopes_arg: dict[str, str | None] | None = (
+            seed_scopes if any(v is not None for v in seed_scopes.values()) else None
+        )
         hops = expand_bfs(
             seeds,
             store,
             max_depth=args.depth,
             nodes_per_hop=args.fanout,
             total_budget=args.budget,
+            seed_scopes=scopes_arg,
         )
         paths = _reason_derive_paths(seeds, hops)
         verdict, impasses = _reason_classify(seeds, hops, store, paths=paths)
@@ -778,7 +825,12 @@ def _cmd_reason(args: argparse.Namespace, out: object) -> int:
         payload = {
             "query": args.query,
             "seeds": [
-                {"id": b.id, "content": b.content} for b in seeds
+                {
+                    "id": b.id,
+                    "content": b.content,
+                    "owning_scope": seed_scopes.get(b.id),
+                }
+                for b in seeds
             ],
             "hops": [
                 {
@@ -834,7 +886,12 @@ def _cmd_reason(args: argparse.Namespace, out: object) -> int:
     print(f"query: {args.query}", file=out)  # type: ignore[arg-type]
     print("seeds:", file=out)  # type: ignore[arg-type]
     for b in seeds:
-        print(f"  {b.id}: {b.content}", file=out)  # type: ignore[arg-type]
+        scope = seed_scopes.get(b.id)
+        scope_tag = f"[scope:{scope}] " if scope else ""
+        print(
+            f"  {scope_tag}{b.id}: {b.content}",
+            file=out,  # type: ignore[arg-type]
+        )
     if not hops:
         print("(no expansions — seeds have no outbound edges within budget)", file=out)  # type: ignore[arg-type]
         _emit_reason_footer(verdict, impasses, paths, out)
