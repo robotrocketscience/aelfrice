@@ -90,7 +90,7 @@ jobs:
               exit 0
           }
 
-          echo "[1/5] refreshing refs..."
+          echo "[1/6] refreshing refs..."
           git fetch origin main "${HEAD_REF}" --quiet
 
           # Sanity-check the PR head matches what the event reported. If
@@ -102,14 +102,36 @@ jobs:
               fail_and_unlabel "branch head moved during merge-train queue (event=\`${HEAD_SHA}\`, current=\`${remote_head}\`). Re-add \`ready-to-merge\` to retry against the new head."
           fi
 
-          echo "[2/5] FF check..."
+          echo "[2/6] FF check..."
           if ! git merge-base --is-ancestor origin/main "origin/${HEAD_REF}"; then
               base=$(git merge-base origin/main "origin/${HEAD_REF}" || echo "unknown")
               head=$(git rev-parse origin/main)
               fail_and_unlabel "branch is not fast-forward on \`main\` (branch base \`${base}\`, current main \`${head}\`). Rebase locally (\`git rebase github/main\`), force-push, and re-add the label."
           fi
 
-          echo "[3/5] signature check on commits being pushed..."
+          echo "[3/6] conversation-resolution check..."
+          # Query the PR's review threads via GraphQL and collect any that are
+          # neither resolved nor outdated. Must run before the expensive CI
+          # poll so unresolved threads short-circuit cheaply (avoids hitting
+          # the push gate with a GH006 rejection after a full 10-minute wait).
+          unresolved=$(gh api graphql -F pr="${PR_NUMBER}" -f query='
+            query($pr:Int!) {
+              repository(owner:"robotrocketscience", name:"aelfrice") {
+                pullRequest(number:$pr) {
+                  reviewThreads(first:100) {
+                    nodes { isResolved isOutdated comments(first:1){nodes{path}} }
+                  }
+                }
+              }
+            }' --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved==false and .isOutdated==false) | .comments.nodes[0].path] | unique')
+
+          if [ "${unresolved}" != "[]" ] && [ -n "${unresolved}" ]; then
+              paths=$(echo "${unresolved}" | jq -r 'join(", ")')
+              count=$(echo "${unresolved}" | jq 'length')
+              fail_and_unlabel "${count} review thread(s) are unresolved on these files: ${paths}. Resolve them on the PR (click 'Resolve conversation' on each) and re-add the label."
+          fi
+
+          echo "[4/6] signature check on commits being pushed..."
           # Every commit reachable from PR head but not from main must
           # be signed. The bot can't sign, but it isn't adding commits
           # here — these are the author's. Verify upfront so a quiet
@@ -135,7 +157,7 @@ jobs:
               fail_and_unlabel "one or more commits between main and \`${HEAD_REF}\` are not signed (per GitHub verification API):\n\n\`\`\`\n${unsigned}\n\`\`\`\n\nSign them locally and re-add the label. The bot cannot sign on your behalf."
           fi
 
-          echo "[4/5] waiting for required checks to complete..."
+          echo "[5/6] waiting for required checks to complete..."
           deadline=$(( $(date +%s) + CHECK_TIMEOUT_SECONDS ))
           while [ "$(date +%s)" -lt "${deadline}" ]; do
               # Pull the merge-rollup state. We filter out the
@@ -181,7 +203,7 @@ jobs:
               fail_and_unlabel "timed out waiting for CI checks to complete after $((CHECK_TIMEOUT_SECONDS / 60)) minutes. Retrigger once checks have settled."
           fi
 
-          echo "[5/5] FF push..."
+          echo "[6/6] FF push..."
           # Push the existing signed head to main. Branch protection's
           # required-signatures rule sees the commits' signatures and
           # accepts.
@@ -211,7 +233,7 @@ jobs:
           # `Resolves #N` (case-insensitive, GitHub's standard keywords)
           # and close each match explicitly. Failures here log but do
           # not fail the workflow — the merge has already landed.
-          echo "[6/6] auto-closing linked issues..."
+          echo "[7/7] auto-closing linked issues..."
           pr_body=$(gh pr view "${PR_NUMBER}" --repo "${REPO}" --json body \
               --jq '.body // ""' | head -c 8192)
 
