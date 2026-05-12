@@ -4183,13 +4183,17 @@ def _cmd_clamp_ghosts(args: argparse.Namespace, out: object) -> int:
 
     store = _open_store()
     try:
-        result = clamp_ghost_alphas(
-            store,
-            threshold_alpha=float(args.threshold),
-            target_alpha=float(args.target),
-            dry_run=not bool(args.apply),
-            limit=(int(args.limit) if args.limit is not None else None),
-        )
+        try:
+            result = clamp_ghost_alphas(
+                store,
+                threshold_alpha=float(args.threshold),
+                target_alpha=float(args.target),
+                dry_run=not bool(args.apply),
+                limit=(int(args.limit) if args.limit is not None else None),
+            )
+        except ValueError as exc:
+            print(f"aelf clamp-ghosts: {exc}", file=sys.stderr)
+            return 2
     finally:
         try:
             store.close()
