@@ -285,7 +285,7 @@ class HRRStructIndex:
                 f,
                 version=np.array([_LAYOUT_VERSION], dtype=np.int32),
                 dim=np.array([self.dim], dtype=np.int64),
-                seed=np.array([self.seed], dtype=np.int64),
+                seed=np.array([self.seed], dtype=np.uint64),
                 belief_ids=np.asarray(self.belief_ids, dtype=object),
                 id_names=id_names,
                 id_matrix=id_matrix,
