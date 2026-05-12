@@ -1691,7 +1691,7 @@ def _rebuild_and_format(
     rebuild_log_enabled: bool = True,
     floor_session: float = 0.0,
     floor_l1: float = 0.0,
-    query_strategy: str = "legacy-bm25",
+    query_strategy: str = "stack-r1-r3",
 ) -> str:
     """Open the store and run the v1.4 rebuild.
 

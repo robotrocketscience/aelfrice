@@ -38,7 +38,7 @@ STACK_R1_R3_STRATEGY: Final[str] = "stack-r1-r3"
 VALID_STRATEGIES: Final[frozenset[str]] = frozenset(
     {LEGACY_STRATEGY, STACK_R1_R3_STRATEGY},
 )
-DEFAULT_STRATEGY: Final[str] = LEGACY_STRATEGY
+DEFAULT_STRATEGY: Final[str] = STACK_R1_R3_STRATEGY
 
 
 def transform_query(

@@ -309,7 +309,7 @@ def rebuild_v14(
     session_id_for_log: str | None = None,
     floor_session: float = 0.0,
     floor_l1: float = 0.0,
-    query_strategy: str = LEGACY_STRATEGY,
+    query_strategy: str = DEFAULT_QUERY_STRATEGY,
     working_state: "WorkingState | None" = None,
 ) -> str:
     """v1.4 rebuild: L0 + session-scoped + L2.5/L1 via `retrieve()`.

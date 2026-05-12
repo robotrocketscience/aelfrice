@@ -89,8 +89,8 @@ def test_transform_legacy_returns_query_unchanged(tmp_path: Path) -> None:
         store.close()
 
 
-def test_transform_default_is_legacy() -> None:
-    assert DEFAULT_STRATEGY == LEGACY_STRATEGY
+def test_transform_default_is_stack_r1_r3() -> None:
+    assert DEFAULT_STRATEGY == STACK_R1_R3_STRATEGY
 
 
 def test_transform_stack_lowercases_capitalised(tmp_path: Path) -> None:
@@ -203,9 +203,9 @@ def test_cache_quantile_args_passed_through(tmp_path: Path) -> None:
 # --- RebuilderConfig --------------------------------------------------------
 
 
-def test_config_default_query_strategy_is_legacy() -> None:
+def test_config_default_query_strategy_is_stack_r1_r3() -> None:
     cfg = RebuilderConfig()
-    assert cfg.query_strategy == LEGACY_STRATEGY
+    assert cfg.query_strategy == STACK_R1_R3_STRATEGY
 
 
 def test_config_loads_query_strategy_override(tmp_path: Path) -> None:
@@ -223,7 +223,7 @@ def test_config_invalid_query_strategy_falls_back_to_default(
         '[rebuilder]\nquery_strategy = "nonsense"\n'
     )
     cfg = load_rebuilder_config(tmp_path)
-    assert cfg.query_strategy == LEGACY_STRATEGY
+    assert cfg.query_strategy == STACK_R1_R3_STRATEGY
     err = capsys.readouterr().err
     assert "query_strategy" in err
     assert "nonsense" not in err  # don't echo the bad value verbatim
@@ -236,7 +236,7 @@ def test_config_non_string_query_strategy_falls_back(
         '[rebuilder]\nquery_strategy = 42\n'
     )
     cfg = load_rebuilder_config(tmp_path)
-    assert cfg.query_strategy == LEGACY_STRATEGY
+    assert cfg.query_strategy == STACK_R1_R3_STRATEGY
     assert "query_strategy" in capsys.readouterr().err
 
 
@@ -251,10 +251,10 @@ def test_config_explicit_legacy_value_loads(tmp_path: Path) -> None:
 # --- rebuild_v14 plumbing ---------------------------------------------------
 
 
-def test_rebuild_default_query_strategy_is_legacy(tmp_path: Path) -> None:
+def test_rebuild_default_query_strategy_is_stack_r1_r3(tmp_path: Path) -> None:
     """Calling rebuild_v14 with no `query_strategy` argument is
-    byte-identical to calling it with `query_strategy='legacy-bm25'`.
-    Default must not change behavior."""
+    byte-identical to calling it with `query_strategy='stack-r1-r3'`
+    after the #291 PR-3 default flip."""
     store = _seed(
         tmp_path / "m.db",
         [_mk(
@@ -265,8 +265,8 @@ def test_rebuild_default_query_strategy_is_legacy(tmp_path: Path) -> None:
     try:
         turns = [RecentTurn(role="user", text="Tell me about the Rebuilder")]
         without_arg = rebuild_v14(turns, store)
-        with_legacy = rebuild_v14(turns, store, query_strategy=LEGACY_STRATEGY)
-        assert without_arg == with_legacy
+        with_stack = rebuild_v14(turns, store, query_strategy=STACK_R1_R3_STRATEGY)
+        assert without_arg == with_stack
     finally:
         store.close()
 
