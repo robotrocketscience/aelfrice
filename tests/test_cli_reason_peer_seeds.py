@@ -232,7 +232,7 @@ def test_query_path_surfaces_peer_seed_human(
     two_scope_with_local: tuple,
 ) -> None:
     """Query path: peer FTS5 hit surfaces with [scope:peerA] in human output."""
-    _local_db, _peer_db, local_id, peer_id = two_scope_with_local
+    _local_db, _peer_db, _local_id, peer_id = two_scope_with_local
     code, out = _run(_local_db, "reason", "knowledge widgets")
     assert code == 0, f"expected exit 0; output:\n{out}"
     assert f"[scope:peerA] {peer_id}" in out, (
