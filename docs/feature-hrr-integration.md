@@ -183,16 +183,16 @@ The persistence work above is the **substrate** that makes default-ON viable. Th
 
 ## Acceptance criteria
 
-- [ ] `HRRStructIndex.save()` writes split format (`struct.npy` + `meta.npz`); existing tests pass against the new shape.
-- [ ] `HRRStructIndex.load(path)` accepts the split format AND the legacy bundled `.npz` (with deprecation log).
-- [ ] `HRRStructIndexCache` reads via `mmap_mode='r'` when the split format is present.
-- [ ] `aelf doctor` reports `hrr.persist_enabled`, `hrr.on_disk_bytes`, `hrr.last_build_seconds` rows.
-- [ ] Cold-start `aelf search` at N=50k synthetic store completes in ≤ 1 s when persisted (rebuilds in ≤ 38 s when not persisted; verifies `AELFRICE_HRR_PERSIST=0` codepath).
-- [ ] NDCG byte-equality test: build → save → load → probe vs in-memory probe must produce bit-identical scores.
-- [ ] `[retrieval] hrr_persist = false` in `.aelfrice.toml` disables persistence entirely; subsequent runs show no `.aelfrice/hrr/` directory created.
-- [ ] Ephemeral-path auto-disable: a store rooted at `/tmp/<x>/store` logs the documented message exactly once per process and creates no `.aelfrice/hrr/` directory; `AELFRICE_HRR_PERSIST=1` overrides this and creates the directory normally.
-- [ ] Cache invalidation: mutating a belief that participates in any HRR encoding drops both the in-memory index AND the on-disk blob.
-- [ ] `docs/CONFIG.md` and `docs/COMMANDS.md` document the new flags and `aelf doctor` rows.
+- [x] `HRRStructIndex.save()` writes split format (`struct.npy` + `meta.npz`); existing tests pass against the new shape. (PR [#693](https://github.com/robotrocketscience/aelfrice/pull/693))
+- [x] `HRRStructIndex.load(path)` accepts the split format AND the legacy bundled `.npz` (with deprecation log). (PR [#693](https://github.com/robotrocketscience/aelfrice/pull/693))
+- [x] `HRRStructIndexCache` reads via `mmap_mode='r'` when the split format is present. (PR [#693](https://github.com/robotrocketscience/aelfrice/pull/693))
+- [x] `aelf doctor` reports `hrr.persist_enabled`, `hrr.on_disk_bytes`, `hrr.last_build_seconds` rows. (PR [#704](https://github.com/robotrocketscience/aelfrice/pull/704))
+- [ ] Cold-start `aelf search` at N=50k synthetic store completes in ≤ 1 s when persisted (rebuilds in ≤ 38 s when not persisted; verifies `AELFRICE_HRR_PERSIST=0` codepath). *Bench-gate test shipped in PR [#706](https://github.com/robotrocketscience/aelfrice/pull/706); the gate skips under non-bench CI and requires an operator run with `AELFRICE_CORPUS_ROOT` set to capture the actual numbers. Tracked on [#697](https://github.com/robotrocketscience/aelfrice/issues/697) until the bench-needed flow produces a results artifact.*
+- [x] NDCG byte-equality test: build → save → load → probe vs in-memory probe must produce bit-identical scores. (`tests/test_hrr_struct_index.py::test_save_load_byte_identical_struct`, PR [#693](https://github.com/robotrocketscience/aelfrice/pull/693))
+- [x] `[retrieval] hrr_persist = false` in `.aelfrice.toml` disables persistence entirely; subsequent runs show no `.aelfrice/hrr/` directory created. (PR [#703](https://github.com/robotrocketscience/aelfrice/pull/703))
+- [x] Ephemeral-path auto-disable: a store rooted at `/tmp/<x>/store` logs the documented message exactly once per process and creates no `.aelfrice/hrr/` directory; `AELFRICE_HRR_PERSIST=1` overrides this and creates the directory normally. (PR [#701](https://github.com/robotrocketscience/aelfrice/pull/701))
+- [x] Cache invalidation: mutating a belief that participates in any HRR encoding drops both the in-memory index AND the on-disk blob. (`tests/test_hrr_struct_index.py::test_cache_invalidate_removes_disk_blob`, PR [#693](https://github.com/robotrocketscience/aelfrice/pull/693))
+- [x] `docs/CONFIG.md` and `docs/COMMANDS.md` document the new flags and `aelf doctor` rows. (PR [#699 — this bundle](https://github.com/robotrocketscience/aelfrice/issues/699))
 
 ---
 
