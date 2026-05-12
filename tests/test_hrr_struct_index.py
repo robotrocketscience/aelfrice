@@ -1009,6 +1009,8 @@ def test_resolve_persist_state_enabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Normal path with a non-ephemeral store → enabled=True, reason=None."""
+    import aelfrice.hrr_index as hi
+    monkeypatch.setattr(hi, "_EPHEMERAL_PATH_PREFIXES", frozenset())
     monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
     sp = _store_path(tmp_path)
     s = _toy_store()
