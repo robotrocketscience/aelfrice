@@ -39,5 +39,5 @@ Run: `uv run aelf wonder $ARGUMENTS`. Display the output verbatim. Do not add co
 
 4. **Persist.** Run `uv run aelf wonder --persist-docs /tmp/aelf-wonder-dispatch-<unix-ts>.jsonl`. Display the resulting `inserted=N skipped=N edges_created=N` summary verbatim.
 
-**Known dedup behaviour:** `wonder_ingest` keys idempotency on the sorted constituent belief IDs alone. Since every axis row shares the same `speculative_anchor_ids`, only the first row's document persists as a phantom; subsequent rows count as `skipped`. This is current C1 contract behaviour; extending the dedup key to include `generator` so per-axis phantoms can coexist is tracked as a follow-up to #552.
+**Dedup behaviour:** `wonder_ingest` keys idempotency on the sorted constituent belief IDs **and** the generator string (key prefix `wonder_ingest:v2:`, shipped in #644). An N-axis dispatch over the same `speculative_anchor_ids` therefore persists as N distinct phantoms (one per axis-derived generator), not one. Re-running the same dispatch is still a no-op.
 </process>
