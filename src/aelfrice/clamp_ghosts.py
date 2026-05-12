@@ -191,14 +191,33 @@ def clamp_ghost_alphas(
     now_iso = datetime.now(timezone.utc).isoformat()
     clamped = 0
     for r in rows:
-        prior = float(r["alpha"])
-        if prior <= target_alpha:
-            # Race-safe guard: another writer might have clamped this row
-            # already between the SELECT and the UPDATE.
-            continue
-        delta = -(prior - target_alpha)  # negative valence: reversible audit
         try:
             conn.execute("BEGIN IMMEDIATE")
+            # Re-check eligibility under the write lock so concurrent
+            # --apply runs can't both clamp the same belief and insert
+            # duplicate CLAMP_SOURCE audit rows (breaks the one-row
+            # reversible-audit invariant).
+            current = conn.execute(
+                "SELECT b.alpha AS alpha "
+                "FROM beliefs b "
+                "WHERE b.id = ? "
+                "  AND b.lock_level = 'none' "
+                "  AND b.alpha > ? "
+                "  AND NOT EXISTS ("
+                "    SELECT 1 FROM feedback_history fh "
+                "    WHERE fh.belief_id = b.id"
+                "  ) "
+                "  AND NOT EXISTS ("
+                "    SELECT 1 FROM belief_corroborations bc "
+                "    WHERE bc.belief_id = b.id"
+                "  )",
+                (r["id"], target_alpha),
+            ).fetchone()
+            if current is None:
+                conn.execute("ROLLBACK")
+                continue
+            prior = float(current["alpha"])
+            delta = -(prior - target_alpha)  # negative valence: reversible audit
             conn.execute(
                 "UPDATE beliefs SET alpha = ? WHERE id = ?",
                 (target_alpha, r["id"]),
