@@ -509,7 +509,7 @@ def is_transcript_noise(sentence: str) -> bool:
     4. **Single-word progress emit** — matches `^[A-Z][a-z]+ing\\.$`
        (a lone capitalised gerund and a full stop, nothing else).
     5. **Agent ack emit** — matches
-       `^(Yes|No|Standing by|Ready|Nothing|Polling)( .{0,40})?\\.*$`;
+       `^(Yes|No|Standing by|Ready|Nothing|Polling)( .{0,40})?\\.?$`;
        covers bare keywords and short trailing phrases up to 40 chars.
 
     All patterns are case-sensitive as written. Empty or whitespace-only
