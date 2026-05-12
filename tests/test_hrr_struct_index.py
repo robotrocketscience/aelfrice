@@ -515,6 +515,140 @@ def test_cache_byte_equality_persist_round_trip(
     assert a == b
 
 
+# --- #698 is_hrr_persist_enabled + TOML/env precedence ------------------
+
+
+def test_hrr_persist_default_on() -> None:
+    """No env, no kwarg, no TOML → default True."""
+    from aelfrice.retrieval import is_hrr_persist_enabled
+
+    assert is_hrr_persist_enabled() is True
+
+
+def test_hrr_persist_toml_false_disables(tmp_path: Path) -> None:
+    """[retrieval] hrr_persist = false in TOML disables persistence."""
+    from aelfrice.retrieval import is_hrr_persist_enabled
+
+    cfg = tmp_path / ".aelfrice.toml"
+    cfg.write_text("[retrieval]\nhrr_persist = false\n")
+    assert is_hrr_persist_enabled(start=tmp_path) is False
+
+
+def test_hrr_persist_toml_true_enables(tmp_path: Path) -> None:
+    """[retrieval] hrr_persist = true in TOML keeps persistence ON."""
+    from aelfrice.retrieval import is_hrr_persist_enabled
+
+    cfg = tmp_path / ".aelfrice.toml"
+    cfg.write_text("[retrieval]\nhrr_persist = true\n")
+    assert is_hrr_persist_enabled(start=tmp_path) is True
+
+
+def test_hrr_persist_env_zero_overrides_toml_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AELFRICE_HRR_PERSIST=0 overrides TOML=true (env wins)."""
+    from aelfrice.retrieval import is_hrr_persist_enabled
+
+    monkeypatch.setenv("AELFRICE_HRR_PERSIST", "0")
+    cfg = tmp_path / ".aelfrice.toml"
+    cfg.write_text("[retrieval]\nhrr_persist = true\n")
+    assert is_hrr_persist_enabled(start=tmp_path) is False
+
+
+def test_hrr_persist_env_one_overrides_toml_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AELFRICE_HRR_PERSIST=1 overrides TOML=false (env wins)."""
+    from aelfrice.retrieval import is_hrr_persist_enabled
+
+    monkeypatch.setenv("AELFRICE_HRR_PERSIST", "1")
+    cfg = tmp_path / ".aelfrice.toml"
+    cfg.write_text("[retrieval]\nhrr_persist = false\n")
+    assert is_hrr_persist_enabled(start=tmp_path) is True
+
+
+def test_hrr_persist_toml_non_boolean_falls_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """Non-boolean hrr_persist value in TOML traces to stderr and falls
+    through to the default (True)."""
+    from aelfrice.retrieval import is_hrr_persist_enabled
+
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+    cfg = tmp_path / ".aelfrice.toml"
+    cfg.write_text('[retrieval]\nhrr_persist = "yes"\n')
+    result = is_hrr_persist_enabled(start=tmp_path)
+    assert result is True
+    captured = capsys.readouterr()
+    assert "hrr_persist" in captured.err
+    assert "expected bool" in captured.err
+
+
+def test_hrr_persist_enabled_false_suppresses_disk_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """persist_enabled=False on HRRStructIndexCache → no persist dir created."""
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+    s = _toy_store()
+    cache = HRRStructIndexCache(
+        store=s, dim=256, seed=7,
+        store_path=str(tmp_path / "memory.db"),
+        persist_enabled=False,
+    )
+    cache.get()
+    assert not (tmp_path / ".hrr_struct_index").exists()
+
+
+def test_make_hrr_struct_cache_toml_false_disables_persist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """make_hrr_struct_cache() with hrr_persist=false in TOML → no disk."""
+    from aelfrice.retrieval import make_hrr_struct_cache
+
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+    cfg = tmp_path / ".aelfrice.toml"
+    cfg.write_text("[retrieval]\nhrr_persist = false\n")
+    sp = str(tmp_path / "memory.db")
+    s = _toy_store()
+    cache = make_hrr_struct_cache(s, store_path=sp, start=tmp_path)
+    cache.get()
+    assert not (tmp_path / ".hrr_struct_index").exists()
+
+
+def test_make_hrr_struct_cache_env_zero_overrides_toml_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """make_hrr_struct_cache() with AELFRICE_HRR_PERSIST=0 + TOML=true → no disk."""
+    from aelfrice.retrieval import make_hrr_struct_cache
+
+    monkeypatch.setenv("AELFRICE_HRR_PERSIST", "0")
+    cfg = tmp_path / ".aelfrice.toml"
+    cfg.write_text("[retrieval]\nhrr_persist = true\n")
+    sp = str(tmp_path / "memory.db")
+    s = _toy_store()
+    cache = make_hrr_struct_cache(s, store_path=sp, start=tmp_path)
+    cache.get()
+    assert not (tmp_path / ".hrr_struct_index").exists()
+
+
+def test_make_hrr_struct_cache_env_one_overrides_persist_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """make_hrr_struct_cache() with AELFRICE_HRR_PERSIST=1 + TOML=false → disk written."""
+    from aelfrice.retrieval import make_hrr_struct_cache
+
+    monkeypatch.setenv("AELFRICE_HRR_PERSIST", "1")
+    cfg = tmp_path / ".aelfrice.toml"
+    cfg.write_text("[retrieval]\nhrr_persist = false\n")
+    sp = str(tmp_path / "memory.db")
+    s = _toy_store()
+    cache = make_hrr_struct_cache(s, store_path=sp, start=tmp_path)
+    cache.get()
+    pd = tmp_path / ".hrr_struct_index"
+    assert (pd / "struct.npy").is_file()
+    assert (pd / "meta.npz").is_file()
+
+
 # --- AC6 / AC7 (perf-gated) ----------------------------------------------
 
 
