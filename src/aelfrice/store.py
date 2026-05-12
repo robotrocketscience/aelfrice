@@ -14,6 +14,7 @@ suite locks that behaviour in from day one
 """
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import os
@@ -25,7 +26,10 @@ from typing import Callable, Final, Iterable, Iterator
 from aelfrice.models import (
     CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION,
     CORROBORATION_SOURCE_TYPES,
+    CORROBORATION_SOURCE_WONDER_INGEST,
+    EDGE_RELATES_TO,
     EDGE_VALENCE,
+    ORIGIN_SPECULATIVE,
     INGEST_SOURCE_KINDS,
     INGEST_SOURCE_LEGACY_UNKNOWN,
     ONBOARD_STATE_COMPLETED,
@@ -430,6 +434,14 @@ SCHEMA_META_CONTENT_HASH_DEDUP_COMPLETE: Final[str] = "content_hash_dedup_comple
 # UNIQUE(content_hash) to the beliefs table. Fresh stores skip the
 # swap because their _SCHEMA already includes the constraint.
 SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED: Final[str] = "content_hash_unique_applied"
+# v3.0 #644. Set after the one-shot rehash that switches speculative
+# beliefs from the v1 `_constituent_key(constituent_ids)` hash to the
+# v2 `_constituent_key(constituent_ids, generator)` hash. Recovers the
+# generator from each row's wonder_ingest corroboration audit. ISO
+# timestamp on completion. Absence triggers the rehash on next open.
+SCHEMA_META_SPECULATIVE_HASH_V2_COMPLETE: Final[str] = (
+    "speculative_hash_v2_complete"
+)
 
 # v1.0 -> v1.2 column additions. Each ALTER runs after _SCHEMA. ALTERs
 # are idempotent: a duplicate-column OperationalError on a v1.2-fresh
@@ -709,6 +721,12 @@ class MemoryStore:
         # #219 UNIQUE(content_hash). Table-swap migration; runs once
         # after the dedup pass guarantees no duplicates remain.
         self._maybe_apply_content_hash_unique()
+        # v3.0 #644 speculative_hash_v2 rehash. Re-derives
+        # `content_hash` for every existing speculative belief using the
+        # new (constituent_set, generator) key. Must run AFTER the
+        # content-hash UNIQUE swap so any same-key collisions raise
+        # cleanly. Idempotent via SCHEMA_META marker.
+        self._maybe_rehash_speculative_v2()
         # #655 read-only federation. Peer DBs are opened on demand via
         # `federation.open_peer_connection`; the deps list itself is
         # cached eagerly so `aelf health` can report missing peers
@@ -1338,6 +1356,99 @@ class MemoryStore:
             datetime.now(timezone.utc).isoformat(),
         )
         return True
+
+    def _maybe_rehash_speculative_v2(self) -> int:
+        """v3.0 #644 one-shot rehash of speculative beliefs.
+
+        Re-derives ``content_hash`` for every existing speculative
+        belief using the v2 ``_constituent_key`` format (sorted
+        constituent set + generator). The v1 format was generator-
+        agnostic; a v2 binary opening a pre-v2 store needs every
+        on-disk speculative row to carry a v2 hash so future ingests
+        of the same (constituent_set, generator) tuple correctly
+        dedup against it.
+
+        Generator is recovered from each row's ``wonder_ingest``
+        corroboration audit. The audit row's ``source_path_hash`` is
+        formatted as ``"<generator>@<score:.4f>"``; we strip the
+        trailing ``@<score>`` with ``rsplit('@', 1)`` so generators
+        that contain ``'@'`` (unconstrained by contract) round-trip
+        cleanly.
+
+        Rows we cannot recover are skipped, not failed:
+
+        * No outgoing ``RELATES_TO`` edges → malformed; leave as-is.
+        * No ``wonder_ingest`` corroboration row → cannot derive
+          generator; leave as-is. The 14-day wonder_gc sweep will
+          retire these naturally.
+
+        The v2 hash is computed inline (rather than imported from
+        ``wonder.lifecycle._constituent_key``) for two reasons: it
+        avoids a circular import (store ← wonder.lifecycle), and a
+        migration's algorithm must be frozen at the point the marker
+        was set even if the live function changes shape later.
+
+        Idempotent via ``SCHEMA_META_SPECULATIVE_HASH_V2_COMPLETE``.
+        Returns the count of rows actually rewritten.
+        """
+        if self.get_schema_meta(SCHEMA_META_SPECULATIVE_HASH_V2_COMPLETE):
+            return 0
+
+        cur = self._conn.execute(
+            "SELECT id, content_hash FROM beliefs WHERE origin = ?",
+            (ORIGIN_SPECULATIVE,),
+        )
+        candidates = [(str(r["id"]), str(r["content_hash"])) for r in cur.fetchall()]
+
+        rewritten = 0
+        for belief_id, old_hash in candidates:
+            edge_cur = self._conn.execute(
+                "SELECT dst FROM edges WHERE src = ? AND type = ? "
+                "ORDER BY dst ASC",
+                (belief_id, EDGE_RELATES_TO),
+            )
+            constituent_ids = [str(r["dst"]) for r in edge_cur.fetchall()]
+            if not constituent_ids:
+                continue
+
+            corr_cur = self._conn.execute(
+                "SELECT source_path_hash FROM belief_corroborations "
+                "WHERE belief_id = ? AND source_type = ? "
+                "ORDER BY ingested_at ASC LIMIT 1",
+                (belief_id, CORROBORATION_SOURCE_WONDER_INGEST),
+            )
+            corr_row = corr_cur.fetchone()
+            if corr_row is None or corr_row["source_path_hash"] is None:
+                continue
+
+            sph = str(corr_row["source_path_hash"])
+            if "@" not in sph:
+                continue
+            generator = sph.rsplit("@", 1)[0]
+
+            new_hash = hashlib.sha256(
+                (
+                    "wonder_ingest:v2:"
+                    + ":".join(sorted(constituent_ids))
+                    + "|" + generator
+                ).encode("utf-8")
+            ).hexdigest()
+
+            if new_hash == old_hash:
+                continue
+
+            self._conn.execute(
+                "UPDATE beliefs SET content_hash = ? WHERE id = ?",
+                (new_hash, belief_id),
+            )
+            rewritten += 1
+
+        self._conn.commit()
+        self.set_schema_meta(
+            SCHEMA_META_SPECULATIVE_HASH_V2_COMPLETE,
+            datetime.now(timezone.utc).isoformat(),
+        )
+        return rewritten
 
     def list_belief_ids(self) -> list[str]:
         """All belief ids in insertion-time order. Used by the v1.3
