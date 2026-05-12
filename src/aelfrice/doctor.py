@@ -850,6 +850,8 @@ def format_report(report: DoctorReport) -> str:
         # #236: render the missing-dep block too — the install-broken
         # case is exactly when settings.json may be absent.
         _format_missing_runtime_deps_section(report, lines)
+        # #696: HRR block is independent of settings.json scan.
+        _format_hrr_section(report, lines)
         return "\n".join(lines)
     for scope, path in report.scopes_scanned:
         lines.append(f"scanned {scope}: {path}")

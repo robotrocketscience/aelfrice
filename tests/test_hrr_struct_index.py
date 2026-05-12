@@ -913,3 +913,167 @@ def test_cache_non_ephemeral_path_persists_normally(
     # Verify get() actually saves to disk (not just returns the path).
     cache.get()
     assert (result / "struct.npy").is_file()
+
+
+# --- #696 build-stats and persist-state reporter rows ---------------------
+
+
+def test_hrr_last_build_seconds_none_before_build() -> None:
+    """Module-level helper returns None before any build fires."""
+    import aelfrice.hrr_index as hi
+
+    # Reset the slot so this test is independent of run order.
+    hi._HRR_BUILD_STATS["last_build_seconds"] = None
+    assert hi.last_build_seconds() is None
+
+
+def test_hrr_last_build_seconds_set_after_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """last_build_seconds() returns a positive float after cache.get()."""
+    import aelfrice.hrr_index as hi
+
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+    hi._HRR_BUILD_STATS["last_build_seconds"] = None
+    s = _toy_store()
+    cache = HRRStructIndexCache(store=s, dim=256, seed=7)
+    cache.get()
+    val = hi.last_build_seconds()
+    assert val is not None, "last_build_seconds must be set after build"
+    assert val > 0.0, f"expected positive duration, got {val}"
+
+
+def test_hrr_persist_disk_bytes_zero_when_no_files(tmp_path: Path) -> None:
+    """persist_disk_bytes returns 0 when the persist dir is empty or missing."""
+    from aelfrice.hrr_index import persist_disk_bytes
+
+    assert persist_disk_bytes(None) == 0
+    assert persist_disk_bytes(tmp_path / "nonexistent") == 0
+    empty_dir = tmp_path / "empty"
+    empty_dir.mkdir()
+    assert persist_disk_bytes(empty_dir) == 0
+
+
+def test_hrr_persist_disk_bytes_after_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """persist_disk_bytes equals sum of struct.npy + meta.npz after build."""
+    import os
+    from aelfrice.hrr_index import persist_disk_bytes
+
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+    sp = _store_path(tmp_path)
+    s = _toy_store()
+    cache = HRRStructIndexCache(store=s, dim=256, seed=7, store_path=sp)
+    cache.get()
+    pd = _persist_dir(tmp_path)
+    expected = (
+        os.path.getsize(pd / "struct.npy")
+        + os.path.getsize(pd / "meta.npz")
+    )
+    got = persist_disk_bytes(pd)
+    assert got > 0, "expected non-zero disk bytes after build"
+    assert got == expected, f"expected {expected}, got {got}"
+
+
+def test_resolve_persist_state_disabled_no_store_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """store_path=None → enabled=False, reason='no store path', bytes=0."""
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+    s = _toy_store()
+    cache = HRRStructIndexCache(store=s, dim=256, seed=7, store_path=None)
+    state = cache.resolve_persist_state()
+    assert state["enabled"] is False
+    assert state["reason"] == "no store path"
+    assert state["on_disk_bytes"] == 0
+    assert state["dir"] is None
+
+
+def test_resolve_persist_state_disabled_env_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AELFRICE_HRR_PERSIST=0 → enabled=False, reason='AELFRICE_HRR_PERSIST=0'."""
+    monkeypatch.setenv("AELFRICE_HRR_PERSIST", "0")
+    s = _toy_store()
+    cache = HRRStructIndexCache(
+        store=s, dim=256, seed=7, store_path=_store_path(tmp_path)
+    )
+    state = cache.resolve_persist_state()
+    assert state["enabled"] is False
+    assert state["reason"] == "AELFRICE_HRR_PERSIST=0"
+    assert state["on_disk_bytes"] == 0
+
+
+def test_resolve_persist_state_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Normal path with a non-ephemeral store → enabled=True, reason=None."""
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+    sp = _store_path(tmp_path)
+    s = _toy_store()
+    cache = HRRStructIndexCache(store=s, dim=256, seed=7, store_path=sp)
+    state = cache.resolve_persist_state()
+    assert state["enabled"] is True
+    assert state["reason"] is None
+    # on_disk_bytes may be 0 before build — that's fine.
+    assert isinstance(state["on_disk_bytes"], int)
+
+
+def test_resolve_persist_state_does_not_trigger_ephemeral_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """resolve_persist_state() must not fire WARNING logs.
+
+    The ephemeral-path auto-disable log (PR #701) would fire on _resolve_persist_dir()
+    with a /tmp store path.  resolve_persist_state() must use log_on_ephemeral=False
+    so no WARNING is emitted.  If _ephemeral_disable_logged doesn't exist yet (pre
+    #701), the test checks that no WARNING is emitted by the method call at all.
+    """
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+    # Use a /tmp path to trigger the ephemeral check if #701 has landed.
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="/tmp/aelfrice-test-") as td:
+        sp = str(Path(td) / "memory.db")
+        s = _toy_store()
+        cache = HRRStructIndexCache(store=s, dim=256, seed=7, store_path=sp)
+        with caplog.at_level("WARNING", logger="aelfrice.hrr_index"):
+            cache.resolve_persist_state()
+        hrr_warnings = [
+            r for r in caplog.records
+            if r.name == "aelfrice.hrr_index" and r.levelname == "WARNING"
+        ]
+        assert hrr_warnings == [], (
+            f"resolve_persist_state() emitted unexpected WARNING(s): "
+            + ", ".join(r.message for r in hrr_warnings)
+        )
+
+
+# --- #696 doctor integration test -----------------------------------------
+
+
+def test_doctor_hrr_rows_appear_in_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """diagnose() with hrr_store_path populates hrr_persist_state and
+    format_report() renders the three HRR rows."""
+    from aelfrice.doctor import diagnose, format_report
+
+    monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
+    sp = _store_path(tmp_path)
+
+    report = diagnose(
+        user_settings=tmp_path / "no-settings.json",
+        project_root=tmp_path / "no-project",
+        hrr_store_path=sp,
+    )
+
+    assert report.hrr_persist_state is not None, (
+        "hrr_persist_state must be populated when hrr_store_path is provided"
+    )
+    text = format_report(report)
+    assert "HRR" in text, "HRR section header missing from format_report output"
+    assert "persist_enabled:" in text, "persist_enabled row missing"
+    assert "on_disk_bytes:" in text, "on_disk_bytes row missing"
+    assert "last_build_seconds:" in text, "last_build_seconds row missing"
