@@ -377,11 +377,20 @@ class SuggestedUpdate:
     ``-1`` (rejected — on a fork-losing path; deferred until R2's fork
     data lands, never emitted by the R3 minimal surface), or ``"?"``
     (uncertain — on an impasse path).
+
+    ``owning_scope`` is the federation scope owning ``belief_id``:
+    ``None`` for local rows (the pre-federation default), a peer
+    name when the belief lives in a foreign DB. Per #661 (read-only
+    federation), the slash skill's close-the-loop writeback must
+    skip rows with a non-None ``owning_scope`` — mutations
+    targeting foreign ids raise ``ForeignBeliefError`` at the API
+    surface. Added for #690.
     """
 
     belief_id: str
     direction: str
     note: str
+    owning_scope: str | None = None
 
 
 def dispatch_policy(
@@ -447,6 +456,15 @@ def suggested_updates(
             impasse_locus.add(bid)
             impasse_note_by_id.setdefault(bid, imp.note)
 
+    # Per #690: a belief's owning scope is None unless a hop or seed
+    # surfaced it from a peer DB. The hops list (post-#690 BFS)
+    # carries owning_scope per ScoredHop; we collect a {bid: scope}
+    # map so foreign hops AND impasse-locus rows that happened to
+    # share an id get the scope tag too.
+    scope_by_id: dict[str, str | None] = {}
+    for h in hops:
+        scope_by_id.setdefault(h.belief.id, h.owning_scope)
+
     rows: list[SuggestedUpdate] = []
     seen: set[str] = set()
 
@@ -463,6 +481,7 @@ def suggested_updates(
                     belief_id=bid,
                     direction="+1",
                     note="confident hop on the answer chain",
+                    owning_scope=h.owning_scope,
                 )
             )
 
@@ -476,6 +495,7 @@ def suggested_updates(
                     belief_id=bid,
                     direction="?",
                     note=impasse_note_by_id[bid],
+                    owning_scope=scope_by_id.get(bid),
                 )
             )
 

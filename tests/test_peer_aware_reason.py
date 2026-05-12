@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from aelfrice.bfs_multihop import expand_bfs
+from aelfrice.bfs_multihop import ScoredHop, expand_bfs
 from aelfrice.models import (
     EDGE_SUPPORTS,
     LOCK_NONE,
@@ -29,6 +29,7 @@ from aelfrice.models import (
     Belief,
     Edge,
 )
+from aelfrice.reason import Verdict, suggested_updates
 from aelfrice.store import MemoryStore
 
 
@@ -229,3 +230,34 @@ def test_expand_bfs_unreachable_peer_yields_no_hops(
         assert hops == []
     finally:
         local.close()
+
+
+def test_suggested_updates_flags_foreign_ids():
+    """Acceptance bullet 5: SuggestedUpdate rows for peer hops carry owning_scope."""
+    local_b = _belief("local-b", "local belief on chain")
+    peer_b = _belief("peer-b", "peer belief on chain")
+    hops = [
+        ScoredHop(
+            belief=local_b,
+            score=0.8,
+            depth=1,
+            path=[EDGE_SUPPORTS],
+            belief_id_trail=("local-a", "local-b"),
+            owning_scope=None,
+        ),
+        ScoredHop(
+            belief=peer_b,
+            score=0.6,
+            depth=1,
+            path=[EDGE_SUPPORTS],
+            belief_id_trail=("peer-a", "peer-b"),
+            owning_scope="peerA",
+        ),
+    ]
+    rows = suggested_updates(Verdict.SUFFICIENT, impasses=[], hops=hops)
+    by_id = {r.belief_id: r for r in rows}
+    assert by_id["local-b"].owning_scope is None
+    assert by_id["peer-b"].owning_scope == "peerA"
+    # Both rows are direction=+1 (confident, non-impasse hops).
+    assert by_id["local-b"].direction == "+1"
+    assert by_id["peer-b"].direction == "+1"
