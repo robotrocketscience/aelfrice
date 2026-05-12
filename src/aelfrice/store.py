@@ -3079,6 +3079,56 @@ class MemoryStore:
         )
         return [_row_to_edge(r) for r in cur.fetchall()]
 
+    def edges_from_in_scope(
+        self, src: str, owning_scope: str | None
+    ) -> list[Edge]:
+        """Read-only ``edges_from`` against a named peer (or local).
+
+        ``owning_scope=None`` is the local DB and delegates to
+        :meth:`edges_from`. A peer name routes to the cached
+        read-only ``sqlite3.Connection`` from :meth:`_peer_conn`.
+        Unreachable peers and schema-drift peer DBs (no ``edges``
+        table) return ``[]`` rather than raising — federation is
+        opportunistic per #661.
+        """
+        if owning_scope is None:
+            return self.edges_from(src)
+        conn = self._peer_conn(owning_scope)
+        if conn is None:
+            return []
+        try:
+            cur = conn.execute(
+                "SELECT * FROM edges WHERE src = ?", (src,)
+            )
+            return [_row_to_edge(r) for r in cur.fetchall()]
+        except sqlite3.OperationalError:
+            return []
+
+    def get_belief_in_scope(
+        self, belief_id: str, owning_scope: str | None
+    ) -> Belief | None:
+        """Read-only ``get_belief`` against a named peer (or local).
+
+        ``owning_scope=None`` delegates to :meth:`get_belief`. A peer
+        name routes to the cached read-only ``sqlite3.Connection``
+        from :meth:`_peer_conn`. Unreachable peers and schema-drift
+        peer DBs return ``None`` rather than raising. Used by the
+        peer-aware BFS walk (#690) to materialise foreign beliefs
+        the walk steps into.
+        """
+        if owning_scope is None:
+            return self.get_belief(belief_id)
+        conn = self._peer_conn(owning_scope)
+        if conn is None:
+            return None
+        try:
+            row = conn.execute(
+                "SELECT * FROM beliefs WHERE id = ?", (belief_id,)
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        return _row_to_belief(row) if row else None
+
     def edges_for_beliefs(self, belief_ids: list[str]) -> list[Edge]:
         """Batched edge fetch for clustering (#436).
 
