@@ -10,7 +10,7 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
-## [3.0.0] - Unreleased
+## [3.0.0] - 2026-05-13
 
 ### Documentation
 
