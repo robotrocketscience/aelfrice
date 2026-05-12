@@ -1,10 +1,15 @@
 """CRUD + FTS5 tests for the SQLite store."""
 from __future__ import annotations
 
+import pytest
+
 from aelfrice.models import (
     BELIEF_FACTUAL,
+    BELIEF_SCOPE_GLOBAL,
     EDGE_SUPPORTS,
     LOCK_NONE,
+    RETENTION_FACT,
+    RETENTION_TRANSIENT,
     Belief,
     Edge,
 )
@@ -65,6 +70,45 @@ def test_belief_update_persists_alpha_beta_and_demotion() -> None:
     assert got.alpha == 5.5
     assert got.beta == 2.25
     assert got.demotion_pressure == 4
+
+
+def test_belief_update_persists_full_row_columns() -> None:
+    """update_belief docstring promises full-row semantics: every Belief
+    dataclass field that maps to a `beliefs` column must round-trip. This
+    test mutates each column previously absent from the SET clause
+    (#708) and asserts the on-disk row reflects the mutation."""
+    s = MemoryStore(":memory:")
+    b = _mk_belief()
+    s.insert_belief(b)
+    b.hibernation_score = 0.42
+    b.activation_condition = '{"on": "next_retrieval"}'
+    b.retention_class = RETENTION_FACT
+    b.valid_to = "2026-12-31T23:59:59Z"
+    b.scope = BELIEF_SCOPE_GLOBAL
+    s.update_belief(b)
+    got = s.get_belief("b1")
+    assert got is not None
+    assert got.hibernation_score == 0.42
+    assert got.activation_condition == '{"on": "next_retrieval"}'
+    assert got.retention_class == RETENTION_FACT
+    assert got.valid_to == "2026-12-31T23:59:59Z"
+    assert got.scope == BELIEF_SCOPE_GLOBAL
+
+
+def test_belief_update_rejects_invalid_retention_class() -> None:
+    """update_belief validates retention_class on the same allowlist as
+    insert_belief; an invalid value raises ValueError before any UPDATE."""
+    s = MemoryStore(":memory:")
+    b = _mk_belief()
+    b.retention_class = RETENTION_TRANSIENT
+    s.insert_belief(b)
+    b.retention_class = "bogus"
+    with pytest.raises(ValueError, match="invalid retention_class"):
+        s.update_belief(b)
+    # On-disk row unchanged because validation fired before UPDATE.
+    got = s.get_belief("b1")
+    assert got is not None
+    assert got.retention_class == RETENTION_TRANSIENT
 
 
 def test_belief_delete_returns_none() -> None:

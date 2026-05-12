@@ -1548,7 +1548,13 @@ class MemoryStore:
         return _row_to_belief(row) if row else None
 
     def update_belief(self, b: Belief) -> None:
-        """Full-row update; demotion_pressure included."""
+        """Full-row update; every column on the `beliefs` row that is
+        a property of the `Belief` dataclass round-trips through here."""
+        if b.retention_class not in RETENTION_CLASSES:
+            raise ValueError(
+                f"invalid retention_class {b.retention_class!r}; "
+                f"must be one of {sorted(RETENTION_CLASSES)}"
+            )
         validate_belief_scope(b.scope)
         self._conn.execute(
             """
@@ -1565,6 +1571,10 @@ class MemoryStore:
                 last_retrieved_at = ?,
                 session_id = ?,
                 origin = ?,
+                hibernation_score = ?,
+                activation_condition = ?,
+                retention_class = ?,
+                valid_to = ?,
                 scope = ?
             WHERE id = ?
             """,
@@ -1572,7 +1582,8 @@ class MemoryStore:
                 b.content, b.content_hash, b.alpha, b.beta, b.type,
                 b.lock_level, b.locked_at, b.demotion_pressure,
                 b.created_at, b.last_retrieved_at, b.session_id,
-                b.origin, b.scope, b.id,
+                b.origin, b.hibernation_score, b.activation_condition,
+                b.retention_class, b.valid_to, b.scope, b.id,
             ),
         )
         self._conn.execute("DELETE FROM beliefs_fts WHERE id = ?", (b.id,))
