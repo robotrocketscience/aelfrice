@@ -27,6 +27,7 @@ _REBUILD_CEILING_S = 38.0
 
 
 @pytest.mark.bench_gated
+@pytest.mark.timeout(120)  # build phase takes ~38s; warm load ≤ 1s; 120s total headroom
 def test_hrr_cold_start_warm_load_under_one_second_at_50k(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -93,6 +94,7 @@ def test_hrr_cold_start_warm_load_under_one_second_at_50k(
 
 
 @pytest.mark.bench_gated
+@pytest.mark.timeout(120)  # rebuild ceiling is 38s; 120s gives 3× headroom on slow CI
 def test_hrr_cold_start_rebuild_under_38s_at_50k_persist_off(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
