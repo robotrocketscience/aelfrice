@@ -787,6 +787,7 @@ def _cmd_reason(args: argparse.Namespace, out: object) -> int:
                     "score": h.score,
                     "depth": h.depth,
                     "path": h.path,
+                    "owning_scope": h.owning_scope,
                 }
                 for h in hops
             ],
@@ -822,6 +823,7 @@ def _cmd_reason(args: argparse.Namespace, out: object) -> int:
                     "belief_id": row.belief_id,
                     "direction": row.direction,
                     "note": row.note,
+                    "owning_scope": row.owning_scope,
                 }
                 for row in update_rows
             ],
@@ -841,8 +843,9 @@ def _cmd_reason(args: argparse.Namespace, out: object) -> int:
     for h in hops:
         indent = "  " * h.depth
         path_str = " -> ".join(h.path) if h.path else ""
+        scope_tag = f"[scope:{h.owning_scope}] " if h.owning_scope else ""
         print(
-            f"{indent}[{h.score:.3f}] {h.belief.id}: {h.belief.content}",
+            f"{indent}[{h.score:.3f}] {scope_tag}{h.belief.id}: {h.belief.content}",
             file=out,  # type: ignore[arg-type]
         )
         if path_str:
