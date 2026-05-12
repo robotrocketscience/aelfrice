@@ -28,7 +28,6 @@ from aelfrice.cli import build_parser
 from aelfrice.clamp_ghosts import (
     CLAMP_SOURCE,
     DEFAULT_TARGET_ALPHA,
-    DEFAULT_THRESHOLD_ALPHA,
     clamp_ghost_alphas,
 )
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
