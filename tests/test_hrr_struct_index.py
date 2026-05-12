@@ -392,6 +392,8 @@ def _persist_dir(tmp_path: Path) -> Path:
 def test_cache_persists_to_disk_after_build(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import aelfrice.hrr_index as hi
+    monkeypatch.setattr(hi, "_EPHEMERAL_PATH_PREFIXES", frozenset())
     monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
     s = _toy_store()
     cache = HRRStructIndexCache(
@@ -423,6 +425,8 @@ def test_cache_loads_from_disk_on_second_construct(
 def test_cache_load_uses_mmap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import aelfrice.hrr_index as hi
+    monkeypatch.setattr(hi, "_EPHEMERAL_PATH_PREFIXES", frozenset())
     monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
     sp = _store_path(tmp_path)
     s1 = _toy_store()
@@ -441,6 +445,8 @@ def test_cache_load_uses_mmap(
 def test_cache_invalidate_removes_disk_blob(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    import aelfrice.hrr_index as hi
+    monkeypatch.setattr(hi, "_EPHEMERAL_PATH_PREFIXES", frozenset())
     monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
     s = _toy_store()
     cache = HRRStructIndexCache(
@@ -484,6 +490,8 @@ def test_cache_load_failure_falls_through_to_rebuild(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    import aelfrice.hrr_index as hi
+    monkeypatch.setattr(hi, "_EPHEMERAL_PATH_PREFIXES", frozenset())
     monkeypatch.delenv("AELFRICE_HRR_PERSIST", raising=False)
     sp = _store_path(tmp_path)
     s1 = _toy_store()
