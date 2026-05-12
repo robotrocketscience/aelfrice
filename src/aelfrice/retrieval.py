@@ -76,6 +76,7 @@ from aelfrice.clustering import (
 )
 from aelfrice.compression import CompressedBelief, compress_for_retrieval
 from aelfrice.doc_linker import DocAnchor
+from aelfrice.hrr import DEFAULT_DIM
 from aelfrice.hrr_index import (
     HRRStructIndex,
     HRRStructIndexCache,
@@ -872,6 +873,34 @@ def is_hrr_persist_enabled(
     if toml_value is not None:
         return toml_value
     return True
+
+
+def make_hrr_struct_cache(
+    store: MemoryStore,
+    *,
+    store_path: str | None = None,
+    dim: int = DEFAULT_DIM,
+    seed: int | None = None,
+    start: Path | None = None,
+) -> HRRStructIndexCache:
+    """Construct an :class:`HRRStructIndexCache` with persistence wired
+    to the resolved :func:`is_hrr_persist_enabled` flag (#698).
+
+    This is the canonical construction site for long-running callers
+    (interactive shells, bench harnesses) that want config-driven
+    persistence behaviour without manually resolving the flag.
+    The ``persist_enabled`` field on the returned cache reflects the
+    env → TOML → default precedence chain so callers do not need to
+    import or call :func:`is_hrr_persist_enabled` directly.
+    """
+    persist = is_hrr_persist_enabled(start=start)
+    return HRRStructIndexCache(
+        store=store,
+        dim=dim,
+        store_path=store_path,
+        seed=seed,
+        persist_enabled=persist,
+    )
 
 
 def _route_structural_query(
