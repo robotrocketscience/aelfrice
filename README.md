@@ -57,7 +57,7 @@ That's it. Your next prompt that mentions "push" already has the rule attached. 
 
 When you submit a prompt, aelfrice's `UserPromptSubmit` hook fires before the model sees your message. It runs four retrieval lanes in parallel and merges the result:
 
-```
+```text
 L0: locked beliefs   -> rules you marked permanent (always returned, never trimmed)
 L1: FTS5 keyword     -> SQLite full-text search, BM25 + posterior-weighted rerank
 L2: graph walk       -> typed-edge BFS from L1 seeds (SUPPORTS, CONTRADICTS, SUPERSEDES, DERIVED_FROM, ...)
