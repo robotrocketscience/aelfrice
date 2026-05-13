@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -723,3 +725,127 @@ def clear_cache(cache_path: Path = CACHE_FILE) -> None:
         pass
     except OSError:
         pass
+
+
+# --- Migrate non-uv install to uv tool (#733) ---------------------------
+
+# Sentinel marking a successful migration. Persists across versions; once
+# a host has migrated, `aelf setup` short-circuits the migration check.
+# Lives alongside the auto_install stamp under ~/.aelfrice/.
+MIGRATED_TO_UV_SENTINEL: Final[Path] = (
+    Path.home() / ".aelfrice" / "migrated-to-uv"
+)
+
+# Maximum wall-clock seconds for `uv tool install --force aelfrice`.
+# Bounded so a hung uv install does not block `aelf setup` indefinitely.
+MIGRATION_TIMEOUT_SECONDS: Final[int] = 120
+
+
+@dataclass(frozen=True)
+class MigrationResult:
+    """Outcome of a `maybe_migrate_to_uv()` call.
+
+    `attempted` is True iff we actually invoked the subprocess.
+    `succeeded` is True iff the subprocess returned 0 and the sentinel
+    was written. `reason` is a human-readable description suitable for
+    a single-line stderr notice, populated in both the skipped and the
+    failed paths as well as the succeeded path (to name the orphan).
+    """
+
+    attempted: bool
+    succeeded: bool
+    reason: str
+
+
+def maybe_migrate_to_uv(
+    *,
+    sentinel_path: Path = MIGRATED_TO_UV_SENTINEL,
+    timeout: int = MIGRATION_TIMEOUT_SECONDS,
+    force: bool = False,
+) -> MigrationResult:
+    """Migrate a non-uv aelfrice install to `uv tool install aelfrice`.
+
+    Idempotent: writes `sentinel_path` after a successful subprocess
+    return; subsequent calls short-circuit on the sentinel unless
+    `force=True`. Never raises — every failure mode returns a
+    `MigrationResult` describing what happened.
+
+    Short-circuit order (cheapest first):
+      1. sentinel exists → no-op
+      2. running install is already uv_tool → no-op
+      3. `uv` is not on PATH → skip with install-uv hint
+      4. subprocess `uv tool install --force aelfrice`:
+         - success → write sentinel, return succeeded with orphan hint
+         - non-zero exit → return failed with stderr excerpt
+         - timeout / OSError → return failed with descriptive reason
+
+    The `uv tool install --force aelfrice` form overwrites the existing
+    `~/.local/bin/aelf` shim (which uv tool and pipx both target). The
+    running process — still under the pipx venv — continues to function
+    until exit; future invocations resolve through the new uv shim.
+    """
+    if not force and sentinel_path.exists():
+        return MigrationResult(False, False, "already migrated (sentinel exists)")
+    advice = upgrade_advice()
+    if advice.context == "uv_tool":
+        return MigrationResult(False, False, "already on uv tool")
+    uv_bin = shutil.which("uv")
+    if uv_bin is None:
+        return MigrationResult(
+            False,
+            False,
+            "uv not on PATH — install uv from https://docs.astral.sh/uv/ "
+            "then re-run /aelf:upgrade",
+        )
+    try:
+        proc = subprocess.run(
+            [uv_bin, "tool", "install", "--force", PACKAGE_NAME],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return MigrationResult(
+            True,
+            False,
+            f"uv tool install timed out after {timeout}s — pipx install left untouched",
+        )
+    except OSError as exc:
+        return MigrationResult(
+            True, False, f"uv tool install failed to launch: {exc}"
+        )
+    if proc.returncode != 0:
+        stderr_excerpt = (proc.stderr or "").strip().splitlines()
+        tail = stderr_excerpt[-1] if stderr_excerpt else "(no stderr)"
+        return MigrationResult(
+            True,
+            False,
+            f"uv tool install exited {proc.returncode}: {tail[:200]}",
+        )
+    # Success: write the sentinel before reporting, so a crash between
+    # subprocess return and notice print still leaves the host marked
+    # as migrated. The sentinel is a 2KB-or-less metadata file; we
+    # tolerate a sentinel-write failure (very rare) by returning
+    # succeeded=True with a reason mentioning the orphan and the
+    # missing sentinel — the operator can re-run /aelf:upgrade safely.
+    try:
+        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+        sentinel_path.write_text(
+            f"migrated from {advice.context} at {time.time():.0f}\n"
+        )
+    except OSError:
+        pass
+    if _is_pipx_install():
+        orphan_note = (
+            "orphan pipx venv at ~/.local/pipx/venvs/aelfrice — "
+            "remove with `pipx uninstall aelfrice` at your leisure"
+        )
+    else:
+        # _is_venv() / system fall through here — pip is the right verb.
+        orphan_note = (
+            "orphan pip install left in place — "
+            "remove with `pip uninstall -y aelfrice` after this process exits"
+        )
+    return MigrationResult(
+        True, True, f"migrated to uv tool; {orphan_note}"
+    )
