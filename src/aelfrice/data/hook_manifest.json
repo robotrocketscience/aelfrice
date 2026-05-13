@@ -40,6 +40,22 @@
       "default_on": true,
       "since": "2.1.0",
       "description": "Prompt to lock session corrections at turn end (#582)."
+    },
+    {
+      "name": "search_tool",
+      "basename": "aelf-search-tool-hook",
+      "installer": "search_tool",
+      "default_on": true,
+      "since": "3.0.1",
+      "description": "PreToolUse:Grep|Glob memory-first search before agent's own tool fires (#738)."
+    },
+    {
+      "name": "search_tool_bash",
+      "basename": "aelf-search-tool-hook",
+      "installer": "search_tool_bash",
+      "default_on": true,
+      "since": "3.0.1",
+      "description": "PreToolUse:Bash memory-first check on grep/rg/find/fd/ack shell commands (#738)."
     }
   ]
 }

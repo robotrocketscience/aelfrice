@@ -52,12 +52,16 @@ from aelfrice.setup import (
     SettingsScope,
     USER_SETTINGS_PATH,
     install_commit_ingest_hook,
+    install_search_tool_bash_hook,
+    install_search_tool_hook,
     install_session_start_hook,
     install_stop_hook,
     install_transcript_ingest_hooks,
     install_user_prompt_submit_hook,
     resolve_commit_ingest_command,
     resolve_hook_command,
+    resolve_search_tool_bash_command,
+    resolve_search_tool_command,
     resolve_session_start_hook_command,
     resolve_stop_hook_command,
     resolve_transcript_logger_command,
@@ -310,6 +314,14 @@ _DISPATCH: Final[dict[str, _DispatchEntry]] = {
     "stop": (
         resolve_stop_hook_command,
         install_stop_hook,
+    ),
+    "search_tool": (
+        resolve_search_tool_command,
+        install_search_tool_hook,
+    ),
+    "search_tool_bash": (
+        resolve_search_tool_bash_command,
+        install_search_tool_bash_hook,
     ),
 }
 
