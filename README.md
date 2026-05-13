@@ -33,6 +33,15 @@ That's it. The next prompt that mentions "push" already has the rule. From here 
 
 ---
 
+## What it does for you
+
+- **Stops the AI forgetting your rules.** Lock a rule once with `aelf lock "..."` — it comes back attached to every prompt after that, in every new session. You don't have to remind the AI; aelfrice does.
+- **The AI can't skip it.** What aelfrice remembers is in the prompt *before* the model sees it — not stored in a file the AI is supposed to check on its own. The reminding happens for the AI, not by you.
+- **Stays on your computer.** One file on your machine. No cloud account. No telemetry. If you stop trusting aelfrice, `aelf uninstall` removes it cleanly in one command.
+- **Set up once. Forget it's there.** Three commands at install time. After that, you reach for `aelf` rarely. The background hooks do the rest.
+
+---
+
 ## How it works
 
 When you submit a prompt, aelfrice's `UserPromptSubmit` hook fires before the model sees your message. It runs four retrieval lanes in parallel, merges the result, and prepends the matched beliefs as an `<aelfrice-memory>` block:
