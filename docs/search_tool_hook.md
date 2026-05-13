@@ -1,9 +1,13 @@
 # Search-tool hook
 
-**Status:** spec.
-**Target milestone:** v1.2.x patch (pulled forward from v1.3.0 — it ships
-independently of the v1.3 retrieval wave and validates the `PreToolUse`
-retrieval surface ahead of the bigger work). Default-on candidate at v1.3.0.
+**Status:** shipped; **default-on as of v3.0.1** (#738). Both the
+`PreToolUse:Grep|Glob` surface and the `PreToolUse:Bash` (grep/rg/find/
+fd/ack) extension wire automatically via `aelf setup`. Opt out per-hook
+with `aelf setup --no-search-tool` / `--no-search-tool-bash` (opt-out
+persists via `~/.aelfrice/opt-out-hooks.json`). Historical design
+discussion below pre-dates the flip; treat the "default-OFF" / "gated
+on telemetry" notes as the original v1.5.0 framing rather than current
+state.
 **Dependencies:** stdlib only. Consumes the v1.0 retrieval pipeline
 ([`aelfrice.retrieval.retrieve`](../src/aelfrice/retrieval.py)) and
 the v1.1.0 per-project DB resolution
@@ -76,8 +80,9 @@ configuration matches on tool calls and emits a JSON object with
 `hookSpecificOutput.additionalContext` to inject results.
 
 Configuration lives under the user's `~/.claude/settings.json`. The
-opt-in surface is `aelf setup --search-tool`, mirroring `aelf setup
---commit-ingest` from v1.2.0.
+hook is wired by default at v3.0.1+ (`aelf setup` with no flags
+installs both this hook and the Bash extension). Pass
+`aelf setup --no-search-tool` to skip and persist the opt-out.
 
 ### Hook contract (PreToolUse)
 

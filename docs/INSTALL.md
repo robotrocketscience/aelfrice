@@ -142,22 +142,26 @@ Bare `aelf setup` wires the v1.2.0 auto-capture pipeline alongside the read-side
 | transcript-ingest | `UserPromptSubmit` + `Stop` + `PreCompact` + `PostCompact` | **on** | logs every turn to a per-project JSONL; PreCompact rotates the file and ingests it into beliefs/edges |
 | commit-ingest | `PostToolUse:Bash` | **on** | each successful `git commit` runs the triple extractor on the message |
 | session-start | `SessionStart` | **on** | new sessions open with L0 locked beliefs already injected |
+| stop-lock-prompt | `Stop` | **on** | prompt to lock correction-class beliefs from this session (#582) |
+| search-tool | `PreToolUse:Grep` / `Glob` | **on** (v3.0.1+) | belief-store check before the agent's own Grep/Glob fires |
+| search-tool-bash | `PreToolUse:Bash` | **on** (v3.0.1+) | belief-store check before shell grep/rg/find/fd/ack fires |
 | rebuilder | `PreCompact` | off | retrieval-curated context rebuilder (augment-mode, v1.4 alpha) |
-| search-tool | `PreToolUse:Grep` / `Glob` | off | belief-store check before the agent's own search tool fires |
 
-Opt out per-hook:
+Opt out per-hook (persists across upgrades via `~/.aelfrice/opt-out-hooks.json`):
 
 ```bash
 aelf setup --no-transcript-ingest      # skip the four transcript-logger hooks
 aelf setup --no-commit-ingest          # skip the commit-message ingest hook
 aelf setup --no-session-start          # skip the SessionStart locked-belief injection
+aelf setup --no-stop-hook              # skip the Stop lock-prompt hook
+aelf setup --no-search-tool            # skip the PreToolUse:Grep|Glob hook
+aelf setup --no-search-tool-bash       # skip the PreToolUse:Bash hook
 ```
 
 Opt in to the off-by-default hooks:
 
 ```bash
 aelf setup --rebuilder                 # PreCompact context rebuilder (alpha)
-aelf setup --search-tool               # PreToolUse:Grep|Glob memory-first search
 ```
 
 `aelf unsetup` mirrors: bare invocation removes every default-on hook. `--no-*` flags suppress per-hook removal.
