@@ -740,6 +740,7 @@ def _do_search(
                 session_id, new_ids, locked_ids=locked_ids, stderr=stderr,
             )
         except Exception:
+            # Fail-soft: ring-write is observability/dedup, not load-bearing.
             pass
 
     # Write telemetry for the Bash branch only (AC3 prerequisite).
