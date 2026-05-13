@@ -10,6 +10,10 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+### Changed
+
+- **PreCompact rebuilder now fires by default** ([#746](https://github.com/robotrocketscience/aelfrice/issues/746)). Flips `DEFAULT_TRIGGER_MODE` in `src/aelfrice/context_rebuilder.py` from `"manual"` to `"threshold"`. The v1.4.0 ship-default of `manual` was a conservative hold pending production telemetry: with that posture the rebuilder was a no-op on every harness compaction unless the user added `[rebuilder] trigger_mode = "threshold"` to `.aelfrice.toml`. Both bench gates have now cleared: [#592](https://github.com/robotrocketscience/aelfrice/issues/592) (eval-harness commit-3, closed 2026-05-13: hot-start 100% at `trigger_threshold <= 0.6`, cold-start 75% across t in {0.5..0.8}) and [#687](https://github.com/robotrocketscience/aelfrice/issues/687) (Cohen's-κ multi-run ratification, closed 2026-05-13). Fresh installs now experience augment-mode rebuild without configuration. Opt out via `[rebuilder] trigger_mode = "manual"` in `.aelfrice.toml` — the config-load and hook-dispatch paths already honor the override; no plumbing changes. Per-compaction token spend rises by the rebuild block size (~5-6 KB observed); for token-sensitive workflows the opt-out remains available.
+
 ## [3.0.1] - 2026-05-13
 
 ### Security
