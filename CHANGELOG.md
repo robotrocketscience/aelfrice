@@ -10,6 +10,10 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+### Changed
+
+- **Install / upgrade surface collapsed to `uv tool` only** ([#730](https://github.com/robotrocketscience/aelfrice/issues/730)). `aelf upgrade-cmd` (and the `/aelf:upgrade` slash) now emit a single in-place upgrade form (`uv tool upgrade aelfrice`) for uv-managed installs and a migration chain (`pipx uninstall aelfrice && uv tool install aelfrice`, or the pip equivalent) for any other installer. `UpgradeAdvice.context` collapses from four values (`uv_tool` / `pipx` / `venv` / `system`) to two (`uv_tool` / `non_uv`). Per-installer context notes are gone; `_UPGRADE_CONTEXT_NOTE` retains a single uv entry plus one explicit migration note. The pipx/venv/system detection helpers in `lifecycle.py` are still used internally to pick the right uninstall verb, but they no longer surface as distinct supported channels. README and `docs/INSTALL.md` rewritten around `uv tool install`. **Migration for existing pipx / pip users:** run `pipx uninstall aelfrice && uv tool install aelfrice` (or `pip uninstall -y aelfrice && uv tool install aelfrice`) once. The next `aelf upgrade-cmd` against a non-uv install emits the same line.
+
 ## [3.0.0] - 2026-05-13
 
 ### Added
