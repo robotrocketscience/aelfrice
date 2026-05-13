@@ -159,8 +159,6 @@ Running in the background. No action required after `aelf setup`.
 - **Local-only.** SQLite at `<repo>/.git/aelfrice/memory.db`. No telemetry, no network calls, no accounts. Per-project isolation by construction. See [PRIVACY.md](docs/PRIVACY.md).
 - **Removable.** `aelf uninstall --archive backup.aenc` encrypts the DB to a file, then deletes it. Or `--purge` for a full wipe.
 
-Tradeoff: no fuzzy semantic recall. See [PHILOSOPHY.md](docs/PHILOSOPHY.md).
-
 ---
 
 ## Day-to-day surface
