@@ -55,14 +55,16 @@ That's it. Your next prompt that mentions "push" already has the rule attached. 
 
 ## What it does
 
-When you submit a prompt in Claude Code, aelfrice's `UserPromptSubmit` hook fires before the model sees your message. It runs a two-layer search:
+When you submit a prompt, aelfrice's `UserPromptSubmit` hook fires before the model sees your message. It runs four retrieval lanes in parallel and merges the result:
 
 ```
-L0: locked beliefs   -> rules you marked permanent (always returned)
-L1: FTS5 keyword     -> SQLite full-text search, BM25-ranked
+L0: locked beliefs   -> rules you marked permanent (always returned, never trimmed)
+L1: FTS5 keyword     -> SQLite full-text search, BM25 + posterior-weighted rerank
+L2: graph walk       -> typed-edge BFS from L1 seeds (SUPPORTS, CONTRADICTS, SUPERSEDES, DERIVED_FROM, ...)
+L2.5: structural HRR -> Plate-FFT bind/probe against anchor text + structural markers
 ```
 
-(Since v3.0, two additional lanes run alongside L1 by default: an L2 graph walk over typed edges from L1 seeds, and an L2.5 structural HRR rerank against anchor text and structural markers. The two-layer phrasing above is the v1.0 baseline; the four-lane stack is the v3.0 default. See [ARCHITECTURE § Retrieval](docs/ARCHITECTURE.md#retrieval).)
+L0 always ships; L1, L2, and L2.5 are budget-trimmed against the merged candidate set in score-descending order, with locked beliefs winning every overflow. Default token budget is 2,400. The default ranking stack flipped to `stack-r1-r3` (entity expansion + per-store IDF clipping) at v3.0; bench evidence on the labeled query-strategy corpus measured **+0.2851 absolute NDCG@k (+94.8%)** versus the v1.4 raw-BM25 baseline at p99 latency 4.5 ms. Full lane wiring (composition, latency budgets, federation peer DBs) is in [ARCHITECTURE § Retrieval](docs/ARCHITECTURE.md#retrieval).
 
 The matching beliefs come back as an `<aelfrice-memory>` block prepended to your prompt. The agent reads it as part of the prompt — it doesn't have to remember to check a file.
 
