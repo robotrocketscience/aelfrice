@@ -18,7 +18,7 @@
 
 You correct your agent. *"Got it,"* it says. Next session, same mistake.
 
-aelfrice is a memory substrate that runs in the background of your coding agent. Write a rule once and every relevant prompt thereafter ships with that rule already attached — *before* the model sees your message. No `CLAUDE.md` chain to maintain, no cross-references for the agent to skip; the matched beliefs are in the prompt, not in a file the agent is supposed to consult.
+aelfrice runs in the background and stops the amnesia. Write a rule once and every relevant prompt thereafter ships with that rule already attached — *before* the model sees your message. No `CLAUDE.md` chain to maintain, no cross-references for the agent to skip; the matched beliefs are in the prompt, not in a file the agent is supposed to consult.
 
 ## Install
 
