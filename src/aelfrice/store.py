@@ -44,6 +44,16 @@ from aelfrice.models import (
     Session,
     validate_belief_scope,
 )
+from aelfrice.meta_beliefs import (
+    MetaBeliefState,
+    SignalPosterior,
+    apply_evidence,
+    decay_toward_default,
+    encode_signal_weights,
+    is_valid_signal_class,
+    parse_signal_weights,
+    prior_alpha_beta,
+)
 from aelfrice.ulid import ulid
 
 # --- v2.x view-flip gate --------------------------------------------------
@@ -3241,6 +3251,207 @@ class MemoryStore:
             "SELECT type, COUNT(*) AS n FROM edges GROUP BY type"
         )
         return {str(r["type"]): int(r["n"]) for r in cur.fetchall()}
+
+    # --- Meta-belief substrate (#755 / umbrella #480) --------------------
+
+    def install_meta_belief(
+        self,
+        key: str,
+        *,
+        static_default: float,
+        half_life_seconds: int,
+        signal_weights: dict[str, float],
+        now_ts: int,
+    ) -> bool:
+        """Idempotent install of a meta-belief config row.
+
+        Returns True on first install, False if the row already exists
+        (existing rows are NOT overwritten — config changes require an
+        explicit migration so the surfaced value can't silently shift
+        under retrieval consumers). Subscriptions are stored as a
+        canonical-sorted JSON blob via ``encode_signal_weights`` so two
+        identical configs produce byte-identical column values.
+
+        Raises ``ValueError`` if ``static_default`` is out of [0, 1],
+        ``half_life_seconds`` is non-positive, or any subscribed signal
+        class is unknown.
+        """
+        if not (0.0 <= static_default <= 1.0):
+            raise ValueError(
+                f"static_default must be in [0, 1]; got {static_default!r}"
+            )
+        if half_life_seconds <= 0:
+            raise ValueError(
+                f"half_life_seconds must be > 0; got {half_life_seconds!r}"
+            )
+        for cls in signal_weights:
+            if not is_valid_signal_class(cls):
+                raise ValueError(f"unknown signal class: {cls!r}")
+        cur = self._conn.execute(
+            "SELECT 1 FROM meta_beliefs WHERE key = ?", (key,)
+        )
+        if cur.fetchone() is not None:
+            return False
+        encoded = encode_signal_weights(signal_weights)
+        self._conn.execute(
+            "INSERT INTO meta_beliefs "
+            "(key, static_default, half_life_seconds, last_updated_ts, signal_classes) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (key, float(static_default), int(half_life_seconds),
+             int(now_ts), encoded),
+        )
+        self._conn.commit()
+        return True
+
+    def update_meta_belief(
+        self,
+        key: str,
+        signal_class: str,
+        evidence: float,
+        *,
+        now_ts: int,
+    ) -> bool:
+        """Apply one evidence event to a meta-belief's signal sub-posterior.
+
+        Steps: read current sub-posterior (or initialise at the
+        ``static_default`` prior); decay it by ``now_ts -
+        last_updated_ts``; apply the evidence; persist. The meta-belief's
+        own ``last_updated_ts`` is also refreshed.
+
+        Returns True if persisted, False if the meta-belief doesn't
+        exist or the ``signal_class`` is not in its subscription list
+        (no-op, no audit row in this commit; audit machinery is
+        umbrella #480 sub-task scope).
+        """
+        cur = self._conn.execute(
+            "SELECT static_default, half_life_seconds, signal_classes "
+            "FROM meta_beliefs WHERE key = ?",
+            (key,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return False
+        static_default = float(row["static_default"])
+        half_life = int(row["half_life_seconds"])
+        weights = parse_signal_weights(row["signal_classes"])
+        if signal_class not in weights:
+            return False
+        # Read existing sub-posterior or initialise at prior.
+        cur2 = self._conn.execute(
+            "SELECT alpha, beta, last_updated_ts "
+            "FROM meta_belief_signal_posteriors "
+            "WHERE meta_key = ? AND signal_class = ?",
+            (key, signal_class),
+        )
+        prior_row = cur2.fetchone()
+        if prior_row is None:
+            a0, b0 = prior_alpha_beta(static_default)
+            alpha, beta = a0, b0
+            last_ts = now_ts
+        else:
+            alpha = float(prior_row["alpha"])
+            beta = float(prior_row["beta"])
+            last_ts = int(prior_row["last_updated_ts"])
+        age = max(0, now_ts - last_ts)
+        alpha, beta = decay_toward_default(
+            alpha, beta,
+            age_seconds=float(age),
+            half_life_seconds=float(half_life),
+            static_default=static_default,
+        )
+        alpha, beta = apply_evidence(alpha, beta, evidence)
+        # UPSERT
+        self._conn.execute(
+            "INSERT INTO meta_belief_signal_posteriors "
+            "(meta_key, signal_class, alpha, beta, last_updated_ts) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(meta_key, signal_class) DO UPDATE SET "
+            "alpha = excluded.alpha, beta = excluded.beta, "
+            "last_updated_ts = excluded.last_updated_ts",
+            (key, signal_class, float(alpha), float(beta), int(now_ts)),
+        )
+        self._conn.execute(
+            "UPDATE meta_beliefs SET last_updated_ts = ? WHERE key = ?",
+            (int(now_ts), key),
+        )
+        self._conn.commit()
+        return True
+
+    def read_meta_belief_state(self, key: str) -> MetaBeliefState | None:
+        """Return the raw materialised state of a meta-belief, or None.
+
+        Sub-posteriors are returned **un-decayed** — i.e. with the
+        ``(alpha, beta, last_updated_ts)`` exactly as persisted. Callers
+        that want the decayed surfaced value should pass the result to
+        ``aelfrice.meta_beliefs.decay_state`` with the current timestamp,
+        or call ``read_meta_belief_value`` for the one-shot path.
+        """
+        cur = self._conn.execute(
+            "SELECT key, static_default, half_life_seconds, "
+            "last_updated_ts, signal_classes "
+            "FROM meta_beliefs WHERE key = ?",
+            (key,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        weights = parse_signal_weights(row["signal_classes"])
+        posteriors: dict[str, SignalPosterior] = {}
+        cur2 = self._conn.execute(
+            "SELECT signal_class, alpha, beta, last_updated_ts "
+            "FROM meta_belief_signal_posteriors WHERE meta_key = ? "
+            "ORDER BY signal_class",
+            (key,),
+        )
+        for pr in cur2.fetchall():
+            cls = str(pr["signal_class"])
+            posteriors[cls] = SignalPosterior(
+                signal_class=cls,
+                alpha=float(pr["alpha"]),
+                beta=float(pr["beta"]),
+                last_updated_ts=int(pr["last_updated_ts"]),
+            )
+        return MetaBeliefState(
+            key=str(row["key"]),
+            static_default=float(row["static_default"]),
+            half_life_seconds=int(row["half_life_seconds"]),
+            last_updated_ts=int(row["last_updated_ts"]),
+            signal_weights=weights,
+            posteriors=posteriors,
+        )
+
+    def read_meta_belief_value(self, key: str, *, now_ts: int) -> float | None:
+        """One-shot read of the surfaced value with decay applied.
+
+        Returns None when no such meta-belief exists. Returns the
+        ``static_default`` when the meta-belief is installed but no
+        sub-posterior has accumulated any evidence yet (cold start).
+        """
+        from aelfrice.meta_beliefs import decay_state  # local — avoid cycle
+        state = self.read_meta_belief_state(key)
+        if state is None:
+            return None
+        decayed = decay_state(state, now_ts=now_ts)
+        return decayed.value
+
+    def list_meta_beliefs(self) -> list[MetaBeliefState]:
+        """All installed meta-beliefs, sorted by key.
+
+        Sub-posteriors are un-decayed (same contract as
+        ``read_meta_belief_state``). Used by ``aelf doctor`` diagnostic
+        surface; callers needing the decayed read should map
+        ``aelfrice.meta_beliefs.decay_state`` over the result.
+        """
+        cur = self._conn.execute(
+            "SELECT key FROM meta_beliefs ORDER BY key"
+        )
+        keys = [str(r["key"]) for r in cur.fetchall()]
+        out: list[MetaBeliefState] = []
+        for k in keys:
+            state = self.read_meta_belief_state(k)
+            if state is not None:
+                out.append(state)
+        return out
 
     # --- Edge CRUD --------------------------------------------------------
 
