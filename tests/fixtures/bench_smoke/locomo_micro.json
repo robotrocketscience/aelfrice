@@ -1,0 +1,48 @@
+[
+  {
+    "_synthetic": "Schema-matching fixture for the LoCoMo adapter PR-smoke job. NOT derived from any LoCoMo upstream data. Synthesized 2026-05-13 per issue #476 (ratify: all=B synthesize) — snap-research/locomo is CC BY-NC 4.0 and its derivatives cannot be redistributed in this repo. This fixture exercises the dispatcher contract only; real-data shape coverage lives in the nightly bench-canonical cron.",
+    "sample_id": "smoke_synth_001",
+    "conversation": {
+      "speaker_a": "Mira",
+      "speaker_b": "Theo",
+      "session_1_date_time": "10:15 am on 4 January 2024",
+      "session_1": [
+        {"speaker": "Mira", "dia_id": "D1:0", "text": "I finally adopted that orange tabby from the shelter on Maple Street last weekend."},
+        {"speaker": "Theo", "dia_id": "D1:1", "text": "Oh nice — what did you name them?"},
+        {"speaker": "Mira", "dia_id": "D1:2", "text": "Pumpkin. She's three years old and apparently her favorite toy is a felt mouse."},
+        {"speaker": "Theo", "dia_id": "D1:3", "text": "And the apartment building lets you have pets? I thought your lease said no animals."},
+        {"speaker": "Mira", "dia_id": "D1:4", "text": "I moved into a new place on Elm Avenue in November — this one allows cats up to fifteen pounds."}
+      ],
+      "session_2_date_time": "3:40 pm on 27 February 2024",
+      "session_2": [
+        {"speaker": "Theo", "dia_id": "D2:0", "text": "How is Pumpkin settling in?"},
+        {"speaker": "Mira", "dia_id": "D2:1", "text": "Great. She mostly sleeps on the windowsill in the living room and chases the felt mouse around at night."},
+        {"speaker": "Theo", "dia_id": "D2:2", "text": "Have you taken her to a vet yet?"},
+        {"speaker": "Mira", "dia_id": "D2:3", "text": "Yes, last Friday. The vet on Birch Street said she's healthy and recommended switching to a grain-free food."}
+      ]
+    },
+    "qa": [
+      {
+        "question": "What is the name of Mira's cat?",
+        "answer": "Pumpkin",
+        "adversarial_answer": "",
+        "evidence": ["D1:2"],
+        "category": 4
+      },
+      {
+        "question": "Where did Mira adopt her cat from?",
+        "answer": "the shelter on Maple Street",
+        "adversarial_answer": "",
+        "evidence": ["D1:0"],
+        "category": 4
+      },
+      {
+        "question": "What street is Mira's new apartment on, and what is her cat's favorite toy?",
+        "answer": "Elm Avenue, felt mouse",
+        "adversarial_answer": "",
+        "evidence": ["D1:2", "D1:4"],
+        "category": 1
+      }
+    ]
+  }
+]

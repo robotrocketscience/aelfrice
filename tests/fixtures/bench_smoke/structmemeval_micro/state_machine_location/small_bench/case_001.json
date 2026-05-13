@@ -1,0 +1,34 @@
+{
+  "_synthetic": "Schema-matching fixture for StructMemEval (location task) PR-smoke job. NOT derived from any upstream StructMemEval data. Synthesized 2026-05-13 per issue #476 (ratify: all=B synthesize). StructMemEval upstream is not publicly available with a verifiable LICENSE (see newton's license read in #476). Exercises the discover_cases path + dispatcher contract.",
+  "case_id": "smoke_loc_001",
+  "sessions": [
+    {
+      "session_id": "s1",
+      "topic": "object placement",
+      "messages": [
+        {"role": "user", "content": "I placed the blue notebook on the desk in the study."},
+        {"role": "user", "content": "I also put the silver pen on the bookshelf."}
+      ]
+    },
+    {
+      "session_id": "s2",
+      "topic": "object move",
+      "messages": [
+        {"role": "user", "content": "I moved the blue notebook from the desk to the top drawer of the filing cabinet."}
+      ]
+    },
+    {
+      "session_id": "s3",
+      "topic": "current state",
+      "messages": [
+        {"role": "user", "content": "The silver pen is still on the bookshelf where I left it."}
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "question": "Where is the blue notebook?",
+      "reference_answer": {"text": "the top drawer of the filing cabinet"}
+    }
+  ]
+}

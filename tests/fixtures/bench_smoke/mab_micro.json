@@ -1,0 +1,61 @@
+[
+  {
+    "_synthetic": "Schema-matching fixture for the MAB adapter PR-smoke job. NOT derived from ai-hyz/MemoryAgentBench upstream data. Synthesized 2026-05-13 per issue #476 (ratify: all=B synthesize). MAB upstream is MIT-licensed but the per-issue decision was to synthesize all four bench fixtures uniformly to keep a single clean redistribution story. Exercises the load_mab_from_file path + dispatcher contract; does not cover real-data shape.",
+    "context": "Note 1: The lab fridge in room 204 is set to 4 degrees Celsius. Note 2: The thermostat in conference room A is set to 21 degrees. Note 3: The lab fridge in room 204 is set to 2 degrees Celsius. Note 4: Building security desk is on the ground floor near the east entrance.",
+    "questions": [
+      "What temperature is the lab fridge in room 204 set to?",
+      "Where is the building security desk?"
+    ],
+    "answers": [
+      ["2 degrees Celsius", "2C", "2"],
+      ["ground floor", "east entrance", "ground floor near the east entrance"]
+    ],
+    "metadata": {
+      "source": "smoke_conflict_resolution",
+      "split": "Conflict_Resolution"
+    }
+  },
+  {
+    "context": "Employee handbook excerpt: All hires complete onboarding within their first two weeks. The IT helpdesk is reachable at extension 4242. The cafeteria opens at 7:30 am on weekdays. Note: starting Monday, the cafeteria opens at 7:00 am on weekdays.",
+    "questions": [
+      "What time does the cafeteria open on weekdays?"
+    ],
+    "answers": [
+      ["7:00 am", "7 am", "7:00"]
+    ],
+    "metadata": {
+      "source": "smoke_test_time_learning",
+      "split": "Test_Time_Learning"
+    }
+  },
+  {
+    "context": "Quarterly review notes: Q1 revenue was 1.2 million. Q2 revenue rose to 1.5 million. Q3 revenue dipped to 1.3 million. Q4 revenue closed at 1.7 million. Total team headcount grew from 12 to 18 over the year. The largest single customer represented 22 percent of annual revenue.",
+    "questions": [
+      "What was Q4 revenue?",
+      "What percentage of annual revenue came from the largest single customer?"
+    ],
+    "answers": [
+      ["1.7 million", "$1.7M", "1.7M"],
+      ["22 percent", "22%"]
+    ],
+    "metadata": {
+      "source": "smoke_long_range_understanding",
+      "split": "Long_Range_Understanding"
+    }
+  },
+  {
+    "context": "Reading list summary: The introduction is in chapter 1. The methodology section spans chapters 2 through 4. The case studies are in chapter 5. The appendix on terminology appears at the end of the book. The bibliography lists 47 references total.",
+    "questions": [
+      "Which chapters contain the methodology section?",
+      "How many references does the bibliography list?"
+    ],
+    "answers": [
+      ["chapters 2 through 4", "chapters 2-4", "2 through 4"],
+      ["47", "47 references"]
+    ],
+    "metadata": {
+      "source": "smoke_accurate_retrieval",
+      "split": "Accurate_Retrieval"
+    }
+  }
+]

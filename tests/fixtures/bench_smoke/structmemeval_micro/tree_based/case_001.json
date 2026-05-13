@@ -1,0 +1,26 @@
+{
+  "case_id": "smoke_tree_001",
+  "sessions": [
+    {
+      "session_id": "s1",
+      "topic": "org structure",
+      "messages": [
+        {"role": "user", "content": "The engineering org has three teams: platform, product, and infrastructure."},
+        {"role": "user", "content": "Platform team has two squads: API and data."}
+      ]
+    },
+    {
+      "session_id": "s2",
+      "topic": "team detail",
+      "messages": [
+        {"role": "user", "content": "The API squad inside platform owns the public REST API and the GraphQL gateway."}
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "question": "Which squad in the platform team owns the GraphQL gateway?",
+      "reference_answer": {"text": "the API squad"}
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "case_id": "smoke_rec_001",
+  "sessions": [
+    {
+      "session_id": "s1",
+      "topic": "preferences",
+      "messages": [
+        {"role": "user", "content": "I really love spicy Thai food, especially green curry."},
+        {"role": "user", "content": "I don't eat seafood — it makes me feel unwell."}
+      ]
+    },
+    {
+      "session_id": "s2",
+      "topic": "preference update",
+      "messages": [
+        {"role": "user", "content": "Actually I've started eating salmon recently and I enjoy it. Other seafood I still avoid."}
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "question": "What kind of seafood does the user now eat?",
+      "reference_answer": {"text": "salmon"}
+    }
+  ]
+}

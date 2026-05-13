@@ -1,0 +1,65 @@
+[
+  {
+    "_synthetic": "Schema-matching fixture for the LongMemEval adapter PR-smoke job. NOT derived from xiaowu0162/longmemeval-cleaned upstream data. Synthesized 2026-05-13 per issue #476 (ratify: all=B synthesize). Upstream is MIT-licensed but the per-issue decision was to synthesize all four bench fixtures uniformly. Exercises load_from_file path + dispatcher contract.",
+    "question_id": "smoke_lme_001",
+    "question_type": "single-session-user",
+    "question": "What kind of coffee did Priya order at the new shop on Cedar Street?",
+    "answer": "an oat-milk flat white",
+    "question_date": "2024-03-15",
+    "haystack_dates": ["2024-02-20", "2024-03-01"],
+    "haystack_session_ids": ["sess_a", "sess_b"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "I tried that new coffee shop on Cedar Street yesterday.", "has_answer": false},
+        {"role": "assistant", "content": "Oh nice! Was it any good?", "has_answer": false},
+        {"role": "user", "content": "Yes — Priya and I both went. She ordered an oat-milk flat white and said it was the best she'd had in months.", "has_answer": true},
+        {"role": "assistant", "content": "Sounds great. I'll have to check it out.", "has_answer": false}
+      ],
+      [
+        {"role": "user", "content": "Reminder: dentist appointment on Friday at 3pm.", "has_answer": false},
+        {"role": "assistant", "content": "Noted. Anything else?", "has_answer": false}
+      ]
+    ],
+    "answer_session_ids": ["sess_a"]
+  },
+  {
+    "question_id": "smoke_lme_002",
+    "question_type": "multi-session",
+    "question": "Which two cities did the user visit on their March trip?",
+    "answer": ["Lisbon", "Porto"],
+    "question_date": "2024-04-10",
+    "haystack_dates": ["2024-03-05", "2024-03-12", "2024-03-25"],
+    "haystack_session_ids": ["trip_1", "trip_2", "trip_3"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "Booking the flight to Lisbon for the 8th.", "has_answer": true},
+        {"role": "assistant", "content": "Got it.", "has_answer": false}
+      ],
+      [
+        {"role": "user", "content": "Took the train from Lisbon to Porto today; staying two nights here.", "has_answer": true},
+        {"role": "assistant", "content": "Have a great time.", "has_answer": false}
+      ],
+      [
+        {"role": "user", "content": "Back home now. The trip was wonderful.", "has_answer": false},
+        {"role": "assistant", "content": "Welcome back!", "has_answer": false}
+      ]
+    ],
+    "answer_session_ids": ["trip_1", "trip_2"]
+  },
+  {
+    "question_id": "smoke_lme_003",
+    "question_type": "temporal-reasoning",
+    "question": "When did the user start running again?",
+    "answer": "January 2024",
+    "question_date": "2024-05-01",
+    "haystack_dates": ["2024-01-15"],
+    "haystack_session_ids": ["run_1"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "I've started running again — went for my first jog in two years this morning. It's January and the weather is finally bearable.", "has_answer": true},
+        {"role": "assistant", "content": "Welcome back to it!", "has_answer": false}
+      ]
+    ],
+    "answer_session_ids": ["run_1"]
+  }
+]

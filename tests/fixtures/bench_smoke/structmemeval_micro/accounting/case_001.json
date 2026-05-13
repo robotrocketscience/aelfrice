@@ -1,0 +1,29 @@
+{
+  "case_id": "smoke_acc_001",
+  "sessions": [
+    {
+      "session_id": "s1",
+      "topic": "opening balance",
+      "messages": [
+        {"role": "user", "content": "Starting balance in account A is 500 dollars."}
+      ]
+    },
+    {
+      "session_id": "s2",
+      "topic": "transactions",
+      "messages": [
+        {"role": "user", "content": "Deposited 200 into account A on Tuesday."},
+        {"role": "user", "content": "Withdrew 50 from account A on Wednesday."}
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "question": "What is the current balance in account A?",
+      "reference_answer": [
+        {"text": "650 dollars"},
+        {"text": "$650"}
+      ]
+    }
+  ]
+}
