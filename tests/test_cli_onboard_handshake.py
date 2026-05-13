@@ -218,3 +218,106 @@ def test_accept_classifications_rejects_unknown_session(tmp_path: Path) -> None:
         "--classifications-file", str(f),
     )
     assert code == 1
+
+
+# --- onboard --check (#761) --------------------------------------------
+
+
+def test_check_requires_path() -> None:
+    code, _ = _run("onboard", "--check")
+    assert code == 2
+
+
+def test_check_on_empty_dir_reports_zero(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    code, out = _run("onboard", str(repo), "--check")
+    assert code == 0
+    assert "already present: 0 candidates" in out
+    assert "new since last onboard: 0 candidates" in out
+
+
+def test_check_on_fresh_repo_reports_new_candidates(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _populate_repo(repo)
+    code, out = _run("onboard", str(repo), "--check")
+    assert code == 0
+    assert "already present: 0 candidates" in out
+    # at least one candidate extracted from _populate_repo content
+    assert "new since last onboard: " in out
+    assert "new since last onboard: 0 candidates" not in out
+
+
+def test_check_does_not_persist_session(tmp_path: Path) -> None:
+    """Pre-scan must not leave an onboard_sessions row behind."""
+    from aelfrice.cli import db_path
+    from aelfrice.store import MemoryStore
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _populate_repo(repo)
+    code, _ = _run("onboard", str(repo), "--check")
+    assert code == 0
+    store = MemoryStore(str(db_path()))
+    try:
+        assert store.count_onboard_sessions() == 0
+    finally:
+        store.close()
+
+
+def test_check_reports_already_present_after_accept(tmp_path: Path) -> None:
+    """A second --check after a real onboard reports the inserted
+    candidates as already-present, demonstrating the idempotency signal
+    the issue requested."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _populate_repo(repo)
+
+    emit_code, emit_out = _run("onboard", str(repo), "--emit-candidates")
+    assert emit_code == 0
+    emit_payload = json.loads(emit_out)
+    sid = emit_payload["session_id"]
+    sentences = emit_payload["sentences"]
+    classifications = [
+        {"index": s["index"], "belief_type": "factual", "persist": True}
+        for s in sentences
+    ]
+    cf = tmp_path / "classifications.json"
+    cf.write_text(json.dumps(classifications))
+    accept_code, _ = _run(
+        "onboard",
+        "--accept-classifications",
+        "--session-id", sid,
+        "--classifications-file", str(cf),
+    )
+    assert accept_code == 0
+
+    check_code, check_out = _run("onboard", str(repo), "--check")
+    assert check_code == 0
+    assert f"already present: {len(sentences)} candidates" in check_out
+    assert "new since last onboard: 0 candidates" in check_out
+
+
+def test_check_bypasses_emit_candidates(tmp_path: Path) -> None:
+    """--check must short-circuit before --emit-candidates path even when
+    both flags are passed. The pre-scan path is read-only; the emit path
+    persists a session. --check wins."""
+    from aelfrice.cli import db_path
+    from aelfrice.store import MemoryStore
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _populate_repo(repo)
+    code, out = _run(
+        "onboard", str(repo), "--check", "--emit-candidates"
+    )
+    assert code == 0
+    # human-readable text, not JSON
+    assert "path: " in out
+    assert "session_id" not in out
+    store = MemoryStore(str(db_path()))
+    try:
+        assert store.count_onboard_sessions() == 0
+    finally:
+        store.close()

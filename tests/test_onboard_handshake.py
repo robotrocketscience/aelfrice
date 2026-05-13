@@ -337,3 +337,92 @@ def test_accept_classifications_tags_beliefs_with_session_id(
         b = store.get_belief(bid)
         assert b is not None
         assert b.session_id == result.session_id
+
+
+# --- check_onboard_candidates (#761) -----------------------------------
+
+
+def test_check_returns_zero_counts_on_empty_dir(
+    store: MemoryStore, tmp_path: Path
+) -> None:
+    from aelfrice.classification import check_onboard_candidates
+
+    result = check_onboard_candidates(store, tmp_path)
+    assert result.n_already_present == 0
+    assert result.n_new == 0
+
+
+def test_check_counts_new_candidates_on_fresh_repo(
+    store: MemoryStore, tmp_path: Path
+) -> None:
+    from aelfrice.classification import check_onboard_candidates
+
+    _populate_repo(tmp_path)
+    result = check_onboard_candidates(store, tmp_path)
+    assert result.n_new > 0
+    assert result.n_already_present == 0
+
+
+def test_check_records_repo_path(store: MemoryStore, tmp_path: Path) -> None:
+    from aelfrice.classification import check_onboard_candidates
+
+    _populate_repo(tmp_path)
+    result = check_onboard_candidates(store, tmp_path)
+    assert result.repo_path == str(tmp_path)
+
+
+def test_check_does_not_persist_session(
+    store: MemoryStore, tmp_path: Path
+) -> None:
+    """Pre-scan must not write an onboard_sessions row."""
+    from aelfrice.classification import check_onboard_candidates
+
+    _populate_repo(tmp_path)
+    check_onboard_candidates(store, tmp_path)
+    assert store.count_onboard_sessions() == 0
+
+
+def test_check_does_not_insert_beliefs(
+    store: MemoryStore, tmp_path: Path
+) -> None:
+    """Pre-scan must not insert any beliefs."""
+    from aelfrice.classification import check_onboard_candidates
+
+    _populate_repo(tmp_path)
+    check_onboard_candidates(store, tmp_path)
+    cur = store._conn.execute("SELECT COUNT(*) FROM beliefs")
+    assert cur.fetchone()[0] == 0
+
+
+def test_check_flips_to_already_present_after_accept(
+    store: MemoryStore, tmp_path: Path
+) -> None:
+    """After accept_classifications inserts beliefs, a second check
+    must classify those same candidates as already-present."""
+    from aelfrice.classification import check_onboard_candidates
+
+    _populate_repo(tmp_path)
+    first = check_onboard_candidates(store, tmp_path)
+    started = start_onboard_session(store, tmp_path, now="2026-05-13T00:00:00Z")
+    classifications = [
+        HostClassification(index=s.index, belief_type=BELIEF_FACTUAL, persist=True)
+        for s in started.sentences
+    ]
+    accept_classifications(
+        store, started.session_id, classifications, now="2026-05-13T00:01:00Z"
+    )
+    second = check_onboard_candidates(store, tmp_path)
+    assert second.n_already_present == first.n_new
+    assert second.n_new == 0
+
+
+def test_check_is_idempotent_under_repeat_calls(
+    store: MemoryStore, tmp_path: Path
+) -> None:
+    """Repeated pre-scans against the same tree return identical counts."""
+    from aelfrice.classification import check_onboard_candidates
+
+    _populate_repo(tmp_path)
+    a = check_onboard_candidates(store, tmp_path)
+    b = check_onboard_candidates(store, tmp_path)
+    assert (a.n_already_present, a.n_new) == (b.n_already_present, b.n_new)
