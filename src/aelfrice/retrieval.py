@@ -1043,6 +1043,15 @@ class LaneTelemetry:
     bfs: int = 0
     bm25f_used: bool = False
     posterior_weight: float = 0.0
+    # #741 adaptive expansion-gate. ``expansion_gate_reason`` is the
+    # tag returned by :func:`aelfrice.expansion_gate.should_run_expansion`
+    # (e.g. ``"narrow"``, ``"broad:long,no-markers"``,
+    # ``"env-force-expansion"``). ``expansion_gate_skipped_bfs`` is True
+    # when the gate forced ``bfs_on=False`` on this call. Both fields
+    # default to safe values so callers built against the pre-#741
+    # LaneTelemetry surface keep working.
+    expansion_gate_reason: str = ""
+    expansion_gate_skipped_bfs: bool = False
 
 
 # Per-process snapshot of the most recent retrieval call. Test-
@@ -1456,6 +1465,15 @@ def retrieve(
     bm25f_on = resolve_use_bm25f_anchors(use_bm25f_anchors)
     weight = resolve_posterior_weight(posterior_weight)
     heat_on = is_heat_kernel_enabled(heat_kernel_enabled)
+    # #741 adaptive expansion-gate: cheap deterministic prompt-shape
+    # check that short-circuits BFS expansion on broad natural-language
+    # prompts. L0 / L1 / L2.5-entity stay on regardless. The gate
+    # has its own env / TOML escape hatches; see
+    # :mod:`aelfrice.expansion_gate` for resolver precedence.
+    from aelfrice.expansion_gate import should_run_expansion
+    gate_decision = should_run_expansion(query)
+    gate_skipped_bfs = bfs_on and not gate_decision.run_bfs
+    bfs_on = bfs_on and gate_decision.run_bfs
     # v1.5.0 #154: emit one stderr line per placeholder lane the
     # user has set True in `.aelfrice.toml`. Fail-soft, once-per-
     # process per flag.
@@ -1557,6 +1575,8 @@ def retrieve(
         bfs=len(out) - len(locked) - len(l25) - len(l1_packed),
         bm25f_used=bm25f_on,
         posterior_weight=weight,
+        expansion_gate_reason=gate_decision.reason,
+        expansion_gate_skipped_bfs=gate_skipped_bfs,
     )
 
     # v1.6.0 #191: enqueue one retrieval_exposure row per surfaced
@@ -1637,6 +1657,12 @@ def retrieve_with_tiers(
     bm25f_on = resolve_use_bm25f_anchors(use_bm25f_anchors)
     weight = resolve_posterior_weight(posterior_weight)
     heat_on = is_heat_kernel_enabled(heat_kernel_enabled)
+    # #741 adaptive expansion-gate. Same shape as retrieve(): short-
+    # circuit BFS on broad prompts; L0 / L1 / L2.5-entity unaffected.
+    from aelfrice.expansion_gate import should_run_expansion
+    gate_decision = should_run_expansion(query)
+    gate_skipped_bfs = bfs_on and not gate_decision.run_bfs
+    bfs_on = bfs_on and gate_decision.run_bfs
     compress_on = resolve_use_type_aware_compression(
         use_type_aware_compression,
     )
@@ -1773,6 +1799,8 @@ def retrieve_with_tiers(
         bfs=len(bfs_chains),
         bm25f_used=bm25f_on,
         posterior_weight=weight,
+        expansion_gate_reason=gate_decision.reason,
+        expansion_gate_skipped_bfs=gate_skipped_bfs,
     )
     return out, locked_ids_list, l25_ids_list, l1_ids_list, bfs_chains
 

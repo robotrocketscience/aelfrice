@@ -642,6 +642,8 @@ def _write_hook_audit_record(
     beliefs: list["Belief"] | None = None,
     latency_ms: int | None = None,
     prompt_shape_gate_skip: str | None = None,
+    expansion_gate_reason: str | None = None,
+    expansion_gate_skipped_bfs: bool | None = None,
     config: HookAuditConfig | None = None,
     stderr: IO[str] | None = None,
 ) -> None:
@@ -662,6 +664,14 @@ def _write_hook_audit_record(
     #674 additive field:
     `prompt_shape_gate_skip` — set to the gate reason string when
     the prompt-shape gate fired and BM25 retrieval was skipped.
+
+    #741 additive fields:
+    `expansion_gate_reason` — short tag from
+    :func:`aelfrice.expansion_gate.should_run_expansion` (e.g.
+    ``"narrow"``, ``"broad:long,no-markers"``, ``"env-force-expansion"``).
+    `expansion_gate_skipped_bfs` — True when the adaptive expansion-gate
+    forced BFS off on this retrieve() call (only meaningful when the
+    BFS lane was otherwise enabled).
     """
     cfg = config if config is not None else load_hook_audit_config(stderr=stderr)
     if not cfg.enabled:
@@ -688,6 +698,10 @@ def _write_hook_audit_record(
         record["latency_ms"] = int(latency_ms)
     if prompt_shape_gate_skip is not None:
         record["prompt_shape_gate_skip"] = prompt_shape_gate_skip
+    if expansion_gate_reason is not None:
+        record["expansion_gate_reason"] = expansion_gate_reason
+    if expansion_gate_skipped_bfs is not None:
+        record["expansion_gate_skipped_bfs"] = bool(expansion_gate_skipped_bfs)
     _append_audit(audit_path, record, cfg.max_bytes, stderr=stderr)
 
 
@@ -875,6 +889,14 @@ def user_prompt_submit(
             )
             # #280 mitigation 3: per-turn audit of the rendered block.
             # #321 additive fields: beliefs[], latency_ms, tokens.
+            # #741 additive fields: expansion_gate_reason +
+            # expansion_gate_skipped_bfs — read off the per-process
+            # LaneTelemetry snapshot left by the most recent retrieve()
+            # call so `aelf tail` can show what got gated and why.
+            from aelfrice.retrieval import (  # noqa: PLC0415
+                last_lane_telemetry,
+            )
+            tel = last_lane_telemetry()
             _write_hook_audit_record(
                 hook=AUDIT_HOOK_USER_PROMPT_SUBMIT,
                 prompt=prompt,
@@ -884,6 +906,8 @@ def user_prompt_submit(
                 session_id=session_id,
                 beliefs=hits,
                 latency_ms=latency_ms,
+                expansion_gate_reason=tel.expansion_gate_reason or None,
+                expansion_gate_skipped_bfs=tel.expansion_gate_skipped_bfs,
                 stderr=serr,
             )
         elif gate_skip:
