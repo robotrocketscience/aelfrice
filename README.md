@@ -178,6 +178,16 @@ Everything else (deeper diagnostics, archive/uninstall, migration tools, hook en
 
 The same operations are also available as MCP tools and `/aelf:*` slash commands — same library underneath. See [MCP](docs/MCP.md) and [SLASH_COMMANDS](docs/SLASH_COMMANDS.md).
 
+### Reasoning surfaces (v3.0)
+
+Two slash commands let the agent reach back into the belief graph mid-turn instead of relying only on the auto-injected retrieval block.
+
+**`/aelf:reason <query>`** — walks the belief graph from BM25-seeded starting points and emits a structured reasoning trace: hops with edge-type breadcrumbs, a `VERDICT` (`SUFFICIENT` / `INCOMPLETE` / `CONTRADICTED` / `IMPASSE`), `IMPASSES` (typed gaps, ties, or constraint failures), and `SUGGESTED UPDATES` — `(belief_id, direction, note)` rows that map straight to `aelf feedback` so the conclusion closes the loop on the beliefs that fed it. Each impasse is dispatched to a role-tagged subagent (Verifier / Gap-filler / Fork-resolver) so a single `/aelf:reason` invocation produces both an answer and the work needed to resolve what's still uncertain. Peer-aware: hops in foreign scopes are annotated `[scope:<name>]`. Spec: [COMMANDS § `reason`](docs/COMMANDS.md), [v2_wonder_consolidation_R_final.md](docs/v2_wonder_consolidation_R_final.md).
+
+**`/aelf:wonder [QUERY]`** — two modes. With no argument it surfaces consolidation candidates (groups of related beliefs that could be merged, contradicted, or superseded). With a positional `QUERY` (or `--axes QUERY`) it runs gap analysis on what the store already knows about the topic, generates 2–6 orthogonal research axes (always-on `domain_research` + `internal_gap_analysis`; conditional `contradiction_resolution` / `uncertainty_deep_dive` / `coverage_extension`), fans out one subagent per axis, and persists the merged research as new speculative beliefs via `wonder_ingest`. Agent-count shorthand (`quick 2-agent`, `deep 4-agent`) is recognised in the query string. Phantom-store integration shipped at v3.0; speculative beliefs surface in retrieval discounted until you promote them with `aelf promote` or lock the underlying statement. Spec: [COMMANDS § `wonder`](docs/COMMANDS.md), [feature-correction-detection-eval.md](docs/feature-correction-detection-eval.md), [v2_wonder_consolidation_R_final.md](docs/v2_wonder_consolidation_R_final.md).
+
+Both surfaces are deterministic in the aelfrice layer (verdict classification, impasse derivation, axis generation, suggested-update mapping) — the only LLM call happens when the host agent dispatches a subagent for a `/aelf:reason` impasse or a `/aelf:wonder` axis, and those calls run under the host's own credentials, not aelfrice's.
+
 ---
 
 ## Status
