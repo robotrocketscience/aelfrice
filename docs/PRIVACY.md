@@ -58,7 +58,7 @@ grep -rn "llm-classify\|onboard\.llm\|llm_classify" src/aelfrice/
 
 ## No accounts
 
-No sign-in, no API key, no sync server. Everything is one local SQLite file. Back up by copying the file. aelfrice ships no mechanism for sharing memory contents between users, machines, or projects — see [LIMITATIONS](LIMITATIONS.md).
+No sign-in, no API key, no sync server. Everything is one local SQLite file. Back up by copying the file. aelfrice ships no mechanism for syncing or distributing memory contents between users or machines. **v3.0 ships read-only cross-project federation** (#650 / #655 / #688): a project may declare peer DB paths in a local `knowledge_deps.json` and surface those peers' `global` / `shared:<name>` beliefs in FTS5 + BFS — but this is a local-filesystem-only operation (no network, no telemetry), the local DB is the sole writer for its own rows, and mutations against foreign belief IDs raise `ForeignBeliefError` at the API surface. See [LIMITATIONS § Sharing, sync, or distributed-write federation](LIMITATIONS.md#sharing-sync-or-distributed-write-federation).
 
 ## Per-project isolation
 
@@ -79,9 +79,9 @@ Resolution order:
 - `aelf demote` removes a lock immediately. The belief itself remains; you can also delete it via the store API.
 - Every Bayesian update goes through `apply_feedback` and writes one `feedback_history` audit row. Provenance is queryable.
 
-## Optional inbound prose inspection: `sentiment_from_prose` (v2.0+)
+## Optional inbound prose inspection: `sentiment_from_prose` (v2.0 module, v3.0 hook wire-up)
 
-When `[feedback] sentiment_from_prose = true` is set in `.aelfrice.toml` (or `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE=1` is set in the environment), aelfrice runs each user prompt the host hook surfaces through a 24-pattern regex bank ([`src/aelfrice/sentiment_feedback.py`](../src/aelfrice/sentiment_feedback.py)) and writes one `feedback_history` row per matched pattern, distributed across the previous turn's retrieved beliefs.
+The regex sentiment detector module shipped at v2.0 but was not reached by any live hook until v3.0 #606. When `[feedback] sentiment_from_prose = true` is set in `.aelfrice.toml` (or `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE=1` is set in the environment), aelfrice runs each user prompt the host hook surfaces through a 24-pattern regex bank ([`src/aelfrice/sentiment_feedback.py`](../src/aelfrice/sentiment_feedback.py)) and writes one `feedback_history` row per matched pattern, distributed across the previous turn's retrieved beliefs.
 
 **Default off.** Existing users see no behavior change.
 
