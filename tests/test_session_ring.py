@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from aelfrice import session_ring
 from aelfrice.session_ring import (
     DEFAULT_RING_MAX,
     RING_MAX_ENV,
