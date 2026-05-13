@@ -132,6 +132,7 @@ from aelfrice.lifecycle import (
     is_disabled as _update_check_disabled,
     detect_reachable_installs,
     maybe_check_for_update_async,
+    maybe_migrate_to_uv,
     read_cache as _read_update_cache,
     uninstall as _lifecycle_uninstall,
     upgrade_advice,
@@ -2311,6 +2312,24 @@ def _cmd_project_warm(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_setup(args: argparse.Namespace, out: object) -> int:
+    # #733: auto-migrate non-uv aelfrice installs to uv tool on first
+    # post-upgrade setup. Gated on a one-shot sentinel inside
+    # maybe_migrate_to_uv so re-running setup for unrelated reasons
+    # (config change, scope flip) does not re-trigger the migration.
+    # Runs BEFORE hook reconciliation so `resolve_hook_command` resolves
+    # the `aelf-hook` shim through the freshly-installed uv-tool path
+    # rather than the now-orphaned pipx shim.
+    migration = maybe_migrate_to_uv()
+    if migration.attempted or migration.reason != "already migrated (sentinel exists)":
+        # Surface a single stderr line in every case except the
+        # post-migration steady state, so the operator knows why
+        # `~/.local/bin/aelf` may have moved underneath them.
+        if migration.reason != "already on uv tool":
+            verb = "migrated" if migration.succeeded else "migration skipped"
+            print(
+                f"aelfrice: {verb} — {migration.reason}",
+                file=sys.stderr,
+            )
     scope = _effective_scope(args)
     path = _resolve_settings_path(args)
     command = args.command if args.command is not None else resolve_hook_command(scope)
