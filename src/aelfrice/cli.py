@@ -2998,9 +2998,13 @@ def _cmd_mcp(args: argparse.Namespace, out: object) -> int:
 
 _UPGRADE_CONTEXT_NOTE: dict[str, str] = {
     "uv_tool": "installed via uv tool — use uv to upgrade",
-    "pipx": "installed via pipx — use pipx to upgrade",
-    "venv": "running inside a virtual environment — use pip to upgrade",
-    "system": "system / user install — use pip to upgrade",
+    # #730: every non-uv install (pipx/venv/system) is routed to a
+    # migration command. The note tells the user this isn't an in-place
+    # upgrade — they're switching install channels.
+    "non_uv": (
+        "aelfrice is supported via `uv tool` only (#730); the `run:` "
+        "line below migrates this install to uv"
+    ),
 }
 
 
