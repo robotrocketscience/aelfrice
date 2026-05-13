@@ -1,0 +1,37 @@
+# Stub fixture for benchmarks/expansion_gate_bench.py.
+#
+# This is a *wiring smoke test*, NOT the #741 acceptance corpus. The
+# real labelled 50+50 broad/narrow corpus is sourced out-of-tree
+# (gate:lab-corpus convention; see #724). Small-N numbers from this
+# fixture are NOT load-bearing for the #741 acceptance bullet; they
+# only confirm the harness produces parseable cells and the gate
+# fires on broad-shaped prompts.
+#
+# All rows are hand-authored from in-repo public sources: the #741
+# issue body, CHANGELOG, README, source-file paths and identifiers
+# visible under src/.
+#
+# Lines starting with '#' are comments; the loader skips them.
+#
+# --- Broad prompts (long, exploratory, no structural markers) ---
+{"prompt": "what could we improve about how aelfrice handles broad natural-language questions that don't reference any specific belief structure or identifiers", "label": "broad"}
+{"prompt": "tell me about the overall design philosophy of the retrieval pipeline and what tradeoffs the project makes between latency and recall", "label": "broad"}
+{"prompt": "how does the system decide which beliefs to surface when many possibly relevant candidates compete for the same token budget", "label": "broad"}
+{"prompt": "why might the rebuilder fire less often after the trigger mode default flipped and what would that mean for session state recovery quality over time", "label": "broad"}
+{"prompt": "explain how the four layer retrieval stack interacts with the adaptive expansion gate and what failure modes we should watch for in real world usage", "label": "broad"}
+{"prompt": "what would the right cadence be for periodic checkpointing if we wanted to balance recovery quality against per turn overhead on the hook path", "label": "broad"}
+{"prompt": "tell me about the federation write model and how peers interact when one project wants to read from another project belief store", "label": "broad"}
+{"prompt": "how should the deterministic narrow surface principle apply when designing new gates and resolvers that classify queries by shape", "label": "broad"}
+{"prompt": "what are the open questions around adaptive half life as a meta belief and how would that interact with the existing posterior decay", "label": "broad"}
+{"prompt": "describe the general approach to ranking when multiple lanes contribute candidates with different score scales and provenance histories", "label": "broad"}
+# --- Narrow prompts (short, structural markers: ids, paths, issues) ---
+{"prompt": "should_run_expansion in src/aelfrice/expansion_gate.py", "label": "narrow"}
+{"prompt": "AELFRICE_NO_EXPANSION_GATE env override behavior", "label": "narrow"}
+{"prompt": "ExpansionDecision run_bfs field", "label": "narrow"}
+{"prompt": "context_rebuilder.py trigger_mode threshold default", "label": "narrow"}
+{"prompt": "retrieve() bfs_enabled kwarg precedence", "label": "narrow"}
+{"prompt": "#741 acceptance broad-prompt p95", "label": "narrow"}
+{"prompt": "LaneTelemetry expansion_gate_skipped_bfs", "label": "narrow"}
+{"prompt": "src/aelfrice/retrieval.py:1473 gate_decision", "label": "narrow"}
+{"prompt": "is_bfs_enabled resolver TOML key", "label": "narrow"}
+{"prompt": "EDGE_SUPPORTS insert_edge MemoryStore", "label": "narrow"}
