@@ -371,5 +371,23 @@ def read_ring_state(session_id: str | None) -> dict[str, Any]:
     return data
 
 
+def read_ring_file() -> dict[str, Any]:
+    """Return the raw ring shape, ignoring session_id matching.
+
+    Surface for ``aelf doctor`` which has no session_id at hand but
+    still wants to display whatever ring is currently persisted.
+    Returns ``{}`` when the sentinel does not exist or is malformed.
+    """
+    ring_path = _session_ring_path()
+    if ring_path is None:
+        return {}
+    if not ring_path.exists():
+        return {}
+    data = _read_ring_unlocked(ring_path)
+    if not isinstance(data, dict):
+        return {}
+    return data
+
+
 def _warn(stderr: IO[str] | None, msg: str) -> None:
     print(msg, file=stderr if stderr is not None else sys.stderr)

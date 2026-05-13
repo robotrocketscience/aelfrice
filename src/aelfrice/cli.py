@@ -4179,6 +4179,32 @@ def _print_doctor_store_check(out: object) -> None:
             f"store: {n} belief(s) at {db_path()}",
             file=out,  # type: ignore[arg-type]
         )
+    _print_doctor_session_ring(out)
+
+
+def _print_doctor_session_ring(out: object) -> None:
+    """Surface the #740 injection-dedup ring state (one line).
+
+    Reports current ring size, cap, and lifetime eviction count.
+    Silent when the sentinel file is absent (no session has fired
+    UPS yet on this repo). Never affects exit status.
+    """
+    try:
+        from aelfrice.session_ring import read_ring_file  # noqa: PLC0415
+
+        data = read_ring_file()
+    except Exception:  # pragma: no cover - defensive
+        return
+    if not data:
+        return
+    ring = data.get("ring") if isinstance(data.get("ring"), list) else []
+    ring_max = data.get("ring_max")
+    evicted = data.get("evicted_total")
+    print(
+        f"injection ring: {len(ring)}/{ring_max} ids "
+        f"(evicted {evicted} this session)",
+        file=out,  # type: ignore[arg-type]
+    )
 
 
 def _cmd_sweep_feedback(args: argparse.Namespace, out: object) -> int:
