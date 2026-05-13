@@ -76,8 +76,9 @@ def _aelfrice_log(cwd: Path, lines: list[dict[str, object]]) -> Path:
     p = cwd / ".git" / "aelfrice" / "transcripts" / "turns.jsonl"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
-    # The v1.4 ship default for `trigger_mode` is "manual"; these
-    # tests exercise the auto-fire path, so opt them into "threshold".
+    # Auto-fire is the ship default since #746; we still write the
+    # threshold mode explicitly so the test is self-documenting and
+    # robust to any future default flip.
     cfg = cwd / ".aelfrice.toml"
     if not cfg.exists():
         # Disable v1.7 (#364) relevance floor in tests by default;
@@ -223,9 +224,10 @@ def test_pre_compact_falls_back_to_claude_transcript(
     _set_db(monkeypatch, db)
     no_git = tmp_path / "no_git"
     no_git.mkdir()
-    # v1.4 default trigger_mode is "manual"; opt into auto-fire. Floor
-    # disabled so this test's assertion ("kitchen check" appears in
-    # rebuild output) is not gated on FTS5 indexing of the fixture.
+    # threshold is the ship default since #746 but we set it explicitly
+    # so the fixture documents intent. Floor disabled so this test's
+    # assertion ("kitchen check" appears in rebuild output) is not gated
+    # on FTS5 indexing of the fixture.
     (no_git / ".aelfrice.toml").write_text(
         '[rebuilder]\ntrigger_mode = "threshold"\n'
         "[rebuild_floor]\nsession = 0.0\nl1 = 0.0\n",

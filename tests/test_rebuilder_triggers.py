@@ -126,18 +126,32 @@ def _write_config(cwd: Path, body: str) -> None:
     (cwd / ".aelfrice.toml").write_text(body, encoding="utf-8")
 
 
-# --- TM1: manual mode is the default ------------------------------------
+# --- TM1: threshold mode is the default (#746) --------------------------
 
 
-def test_tm1_default_trigger_mode_is_manual() -> None:
-    """Ship default at v1.4.0 must be manual.
+def test_tm1_default_trigger_mode_is_threshold() -> None:
+    """Ship default is threshold after #746.
 
-    The spec is explicit: threshold mode is opt-in until production
-    telemetry. If this test fails, someone has flipped the ship
-    default without re-reading the issue's "hard rules".
+    The v1.4.0 ship-default of manual was a conservative hold pending
+    production telemetry. Bench gates #592 (eval-harness commit-3)
+    and #687 (Cohen's-kappa multi-run validation) both closed on
+    2026-05-13, so #746 flipped the default to threshold. If this
+    test fails, re-read #746 before flipping back.
     """
-    assert DEFAULT_TRIGGER_MODE == TRIGGER_MODE_MANUAL
-    assert RebuilderConfig().trigger_mode == TRIGGER_MODE_MANUAL
+    assert DEFAULT_TRIGGER_MODE == TRIGGER_MODE_THRESHOLD
+    assert RebuilderConfig().trigger_mode == TRIGGER_MODE_THRESHOLD
+
+
+def test_tm1_no_config_file_defaults_to_threshold(tmp_path: Path) -> None:
+    """A fresh install with no .aelfrice.toml lands on threshold.
+
+    This is the user-visible promise of #746: nothing to configure for
+    auto-rebuild to fire. Belt + suspenders alongside the constant
+    check — the constant could be right while the loader returns
+    something else if a future refactor wires its own fallback.
+    """
+    cfg = load_rebuilder_config(start=tmp_path)
+    assert cfg.trigger_mode == TRIGGER_MODE_THRESHOLD
 
 
 def test_tm1_manual_mode_pre_compact_hook_no_ops(
