@@ -9,8 +9,10 @@ This is the reference for power users whose project has a documentation idiom or
 A single optional TOML file at the root of a project (or any ancestor). It exposes two power-user surfaces:
 
 - `[noise]` — onboard-time belief filter. Changes how `aelf onboard` ingests beliefs; nothing else.
-- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, default-on since v2.1), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, opt-in since v2.1). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
+- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, default-on since v2.1), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, opt-in since v2.1), `use_intentional_clustering` (co-locating related beliefs, default-on since v3.0). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
 - `[rebuilder]` (v1.7+) — context-rebuilder knobs. Selects the query-understanding stack (`query_strategy`) and sets token-budget floors for the session-scoped and L1 belief lanes (`[rebuild_floor] session` and `[rebuild_floor] l1`).
+- `[feedback]` (v3.0+) — feedback-lane opt-ins. `sentiment_from_prose` (default `false`) wires the sentiment-feedback detector into `UserPromptSubmit` (#606).
+- `[user_prompt_submit_hook]` (v3.0+) — UPS hook knobs. `prompt_shape_gate_enabled` (default `true`) gates trivial-prompt and system-envelope short-circuits before BM25 retrieval runs (#674).
 
 Locks, hooks, MCP tools, and the Bayesian feedback math are not affected.
 
@@ -100,6 +102,14 @@ hrr_persist = true
 # overrides.
 use_type_aware_compression = false
 
+# v3.0+ (#436). Default `true` since the multi-store production sweep
+# cleared 60/60 PASS at p99 0.328 ms (~15-30x margin under the 5 ms A4
+# latency budget). Co-locates related beliefs in the packed retrieval
+# output so multi-fact queries surface a coherent neighborhood. Set to
+# `false` for v2.0.x parity. AELFRICE_INTENTIONAL_CLUSTERING=0 env
+# var overrides.
+use_intentional_clustering = true
+
 # Placeholder flags reserved by #154 — recognised so callers can
 # write forward-compat config, but their lanes have not yet
 # shipped. Setting either to true emits a one-shot stderr
@@ -131,6 +141,30 @@ session = 0.10
 # Minimum composite score for an L1 / L2.5 belief to be packed.
 # 0.0 = no floor. Default 0.40.
 l1 = 0.40
+
+[feedback]
+# v3.0+ (#606). Default `false`, opt-in. When true, the
+# UserPromptSubmit hook runs the regex sentiment detector against
+# each prompt and applies +/- valence feedback against the prior
+# turn's retrieved beliefs (single-session window — cross-session
+# propagation is explicit follow-up work). Fail-soft: any internal
+# error returns 0 and never surfaces into the UPS hook contract.
+# AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE=1 env var overrides. See
+# docs/v3_sentiment_feedback_hook.md.
+sentiment_from_prose = false
+
+[user_prompt_submit_hook]
+# v3.0+ (#674). Default `true`. Short-circuits BM25 retrieval on two
+# prompt shapes: system-envelope echoes (prompts that start with a
+# <task-notification> / <system-*> / <tool-result> tag) and trivial
+# acks (stripped length < 12, <= 2 words after punctuation strip,
+# or a normalized match against a fixed 17-word ack set: "yes",
+# "ok", "continue", "keep going", etc.). When the gate fires,
+# hits = [] and the hook-audit row records the reason
+# (prompt_shape_gate_skip="trivial:ack:yes",
+# "system-tag:<task-notification>", etc.). The session-start
+# sub-block is preserved unaffected. Set to false to disable.
+prompt_shape_gate_enabled = true
 
 [onboard.llm]
 # v1.3.0+; default flipped to true in v1.5.0 (#238). Host-driven
