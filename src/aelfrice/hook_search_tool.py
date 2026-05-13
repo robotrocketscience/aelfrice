@@ -520,6 +520,8 @@ def _format_results(
     locked_ids: set[str],
     *,
     bash_source: tuple[str, str] | None = None,
+    suppressed_recent: int = 0,
+    latest_fire_idx: int = -1,
 ) -> str:
     """Render retrieve() output as a flat text block for additionalContext.
 
@@ -530,6 +532,13 @@ def _format_results(
     emitted block carries `source="bash:<cmd>"` and `cmd="<truncated>"`
     attributes so the agent can tell which Bash invocation triggered
     the injection. Default `None` preserves the v1.2.x output shape.
+
+    #740 dedup: when `beliefs` is empty *and* `suppressed_recent > 0`,
+    emit a short ``note="answer already in prompt context (turn N)"``
+    pointer instead of the full block. When the call is mixed
+    (`beliefs` non-empty *and* `suppressed_recent > 0`), append a
+    trailing "(N more already in context)" line so the agent knows the
+    block has been deduped.
     """
     if bash_source is not None:
         cmd_name, raw_cmd = bash_source
@@ -552,15 +561,30 @@ def _format_results(
             line = line[: PER_LINE_CHAR_CAP - 3] + "..."
         lines.append(line)
     if not lines:
+        if suppressed_recent > 0:
+            turn_attr = (
+                f' turn="{latest_fire_idx}"' if latest_fire_idx >= 0 else ""
+            )
+            return (
+                f"<aelfrice-search {attrs}"
+                f' note="answer already in prompt context"'
+                f' suppressed="{suppressed_recent}"{turn_attr}/>'
+            )
         return (
             f'<aelfrice-search {attrs}>'
             f"no matching beliefs in store; the tool result will fill the gap"
             f"</aelfrice-search>"
         )
     body = "\n".join(lines)
+    trailer = ""
+    if suppressed_recent > 0:
+        trailer = (
+            f"\n({suppressed_recent} more matching belief(s) already in prompt "
+            f"context from earlier this session)"
+        )
     return (
         f'<aelfrice-search {attrs}>aelf search ran on this query before '
-        f"the tool fires; results:\n{body}\n"
+        f"the tool fires; results:\n{body}{trailer}\n"
         f"If this answers the question, you may skip the tool call. Otherwise "
         f"use the tool to fill gaps.</aelfrice-search>"
     )
@@ -591,6 +615,10 @@ def _do_search(
     bash_source: tuple[str, str] | None = None
     session_id: str | None = None
     t0: float | None = None
+    # #740 dedup needs session_id on the Grep|Glob branch too, not just
+    # Bash; extract eagerly so both lanes can consult the session ring.
+    session_obj = payload.get("session_id")
+    session_id = session_obj if isinstance(session_obj, str) else None
     if _is_search_tool_call(payload):
         query = _extract_query(payload)
         if query is None:
@@ -600,8 +628,6 @@ def _do_search(
         # only to this lane; Grep|Glob fires once per direct tool
         # call and is not capped.
         t0 = time.perf_counter()
-        session_obj = payload.get("session_id")
-        session_id = session_obj if isinstance(session_obj, str) else None
         if _bash_fire_cap_reached(session_id):
             return
         bash_extracted = _extract_bash_query(payload)
@@ -673,9 +699,48 @@ def _do_search(
     finally:
         store.close()
 
+    # #740 cross-fire dedup: partition retrieved beliefs into ones not yet
+    # injected this session ("new") vs ones already shipped via an earlier
+    # UPS or PreToolUse fire ("recent"). Locked beliefs always pass through
+    # as new — the session-start guarantee requires them on every fire.
+    # Fail-soft: any ring error degrades to "no dedup", never breaks the
+    # hook contract.
+    suppressed_recent = 0
+    latest_fire_idx = -1
+    new_ids: list[str] = []
+    try:
+        from aelfrice.session_ring import (  # noqa: PLC0415
+            append_ids as _ring_append_ids,
+            filter_against_ring as _ring_filter,
+        )
+        filter_result = _ring_filter(
+            session_id, list(beliefs), locked_ids=locked_ids, stderr=stderr,
+        )
+        beliefs = filter_result.new_beliefs
+        suppressed_recent = len(filter_result.recent_ids)
+        latest_fire_idx = filter_result.latest_fire_idx
+        new_ids = [
+            getattr(b, "id", "") for b in beliefs if getattr(b, "id", None)
+        ]
+    except Exception:
+        # Dedup is best-effort; fall back to the v1.2.x emit shape.
+        pass
+
     _emit(stdout, _format_results(
         query, beliefs, locked_ids, bash_source=bash_source,
+        suppressed_recent=suppressed_recent,
+        latest_fire_idx=latest_fire_idx,
     ))
+
+    # Record the new ids in the ring so subsequent PreToolUse fires this
+    # turn (and the next UPS fire) see them as already-injected.
+    if new_ids:
+        try:
+            _ring_append_ids(  # type: ignore[name-defined]
+                session_id, new_ids, locked_ids=locked_ids, stderr=stderr,
+            )
+        except Exception:
+            pass
 
     # Write telemetry for the Bash branch only (AC3 prerequisite).
     if bash_source is not None and t0 is not None:

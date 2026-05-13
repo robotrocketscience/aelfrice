@@ -156,10 +156,19 @@ def test_empty_pattern_is_noop(per_repo_db: Path) -> None:
 
 
 def test_repeated_calls_produce_same_output(per_repo_db: Path) -> None:
-    """AC4: Same payload twice → identical additionalContext."""
+    """AC4: Same payload twice → identical additionalContext.
+
+    Each call uses a distinct session_id so the #740 cross-fire dedup
+    ring does not collapse the second call into a pointer block — the
+    AC4 contract is about retrieval determinism, not session state.
+    """
     _seed_belief(per_repo_db, "gamma is the third letter")
-    _, out1, _ = _run(_payload(pattern="gamma"))
-    _, out2, _ = _run(_payload(pattern="gamma"))
+    p1 = _payload(pattern="gamma")
+    p1["session_id"] = "session-call-1"
+    p2 = _payload(pattern="gamma")
+    p2["session_id"] = "session-call-2"
+    _, out1, _ = _run(p1)
+    _, out2, _ = _run(p2)
     assert out1 == out2
 
 
