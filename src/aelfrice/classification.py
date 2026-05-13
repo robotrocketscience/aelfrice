@@ -64,8 +64,10 @@ __all__ = [
     "OnboardSentence",
     "StartOnboardResult",
     "AcceptOnboardResult",
+    "OnboardCheckResult",
     "start_onboard_session",
     "accept_classifications",
+    "check_onboard_candidates",
 ]
 
 
@@ -138,6 +140,22 @@ class HostClassification:
     index: int
     belief_type: str
     persist: bool
+
+
+@dataclass
+class OnboardCheckResult:
+    """Output of `check_onboard_candidates`.
+
+    Read-only pre-scan: runs the three extractors and counts how many
+    candidates would be filtered as already-present vs handed to the
+    classifier, without writing an onboard_sessions row or inserting
+    any beliefs. Lets callers decide whether re-onboard is worth the
+    LLM/CPU cost before dispatching classification (#761).
+    """
+
+    n_already_present: int
+    n_new: int
+    repo_path: str
 
 
 @dataclass
@@ -241,6 +259,50 @@ def start_onboard_session(
         session_id=session_id,
         sentences=pending_sentences,
         n_already_present=n_already_present,
+    )
+
+
+def check_onboard_candidates(
+    store: "MemoryStore",
+    repo_path: Path,
+) -> OnboardCheckResult:
+    """Pre-scan a repo without persisting a session or inserting beliefs.
+
+    Runs the same extractor + dedup-by-id pipeline as
+    `start_onboard_session` but discards the candidate list and returns
+    only counts. No `onboard_sessions` row is written and no beliefs are
+    touched, so the call is side-effect free and safe to repeat.
+
+    Surfaces the same `n_already_present` signal the polymorphic
+    handshake exposes via `--emit-candidates`, but at the human-facing
+    `aelf onboard <path> --check` entry — letting callers see what a
+    re-onboard would do before paying the classification cost (#761).
+    """
+    from aelfrice.scanner import (
+        extract_ast,
+        extract_filesystem,
+        extract_git_log,
+    )
+
+    candidates = (
+        extract_filesystem(repo_path)
+        + extract_git_log(repo_path)
+        + extract_ast(repo_path)
+    )
+
+    n_already_present = 0
+    n_new = 0
+    for c in candidates:
+        bid = _derive_belief_id(c.text, c.source)
+        if store.get_belief(bid) is not None:
+            n_already_present += 1
+        else:
+            n_new += 1
+
+    return OnboardCheckResult(
+        n_already_present=n_already_present,
+        n_new=n_new,
+        repo_path=str(repo_path),
     )
 
 
