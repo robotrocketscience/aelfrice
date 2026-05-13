@@ -120,6 +120,13 @@ def isolated_env(
     """
     monkeypatch.delenv(ENV_BFS, raising=False)
     monkeypatch.delenv(ENV_ENTITY_INDEX, raising=False)
+    # #741 adaptive expansion-gate: these tests cover the BFS lane
+    # itself and use single-token / unmarked queries that the gate
+    # would otherwise classify as "broad" and short-circuit. Force
+    # expansion on so the BFS-internal contracts (AC1-AC11) keep
+    # asserting BFS behaviour, not gate behaviour. The gate has its
+    # own test surface in tests/test_expansion_gate.py.
+    monkeypatch.setenv("AELFRICE_FORCE_EXPANSION", "1")
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
