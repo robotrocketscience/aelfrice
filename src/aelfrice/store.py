@@ -395,6 +395,32 @@ _SCHEMA: tuple[str, ...] = (
     "ON belief_documents(belief_id)",
     "CREATE INDEX IF NOT EXISTS idx_belief_documents_doc_uri "
     "ON belief_documents(doc_uri)",
+    # v3.x #755 (umbrella #480): adaptive meta-belief layer.
+    # `meta_beliefs` stores per-meta-belief configuration; the actual
+    # Beta-Bernoulli sub-posteriors live in `meta_belief_signal_posteriors`
+    # so the per-signal-class breakdown is queryable without parsing JSON.
+    # Physical separation from `beliefs` is the leak-proofing for
+    # umbrella #480 §1 — no path through retrieval, BFS, or edge
+    # composition touches this table.
+    """
+    CREATE TABLE IF NOT EXISTS meta_beliefs (
+        key                 TEXT PRIMARY KEY,
+        static_default      REAL    NOT NULL,
+        half_life_seconds   INTEGER NOT NULL,
+        last_updated_ts     INTEGER NOT NULL,
+        signal_classes      TEXT    NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS meta_belief_signal_posteriors (
+        meta_key            TEXT    NOT NULL REFERENCES meta_beliefs(key) ON DELETE CASCADE,
+        signal_class        TEXT    NOT NULL,
+        alpha               REAL    NOT NULL,
+        beta                REAL    NOT NULL,
+        last_updated_ts     INTEGER NOT NULL,
+        PRIMARY KEY (meta_key, signal_class)
+    )
+    """,
 )
 
 # Marker key for the entity-index one-shot backfill. Empty value =
