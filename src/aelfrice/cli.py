@@ -2472,7 +2472,7 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 f"(command={ci_command!r})",
                 file=out,  # type: ignore[arg-type]
             )
-    if getattr(args, "search_tool", False):
+    if getattr(args, "search_tool", True):
         st_command = resolve_search_tool_command(scope)
         st_result = install_search_tool_hook(
             path, command=st_command, timeout=args.timeout,
@@ -2489,7 +2489,7 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 f"(command={st_command!r})",
                 file=out,  # type: ignore[arg-type]
             )
-    if getattr(args, "search_tool_bash", False):
+    if getattr(args, "search_tool_bash", True):
         stb_command = resolve_search_tool_bash_command(scope)
         stb_result = install_search_tool_bash_hook(
             path, command=stb_command, timeout=args.timeout,
@@ -2504,21 +2504,6 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
             print(
                 f"installed search-tool-bash PreToolUse:Bash hook in "
                 f"{stb_result.path} (command={stb_command!r})",
-                file=out,  # type: ignore[arg-type]
-            )
-    if getattr(args, "no_search_tool_bash", False):
-        stb_rm = uninstall_search_tool_bash_hook(
-            path, command_basename=SEARCH_TOOL_BASH_SCRIPT_NAME,
-        )
-        if stb_rm.removed == 0:
-            print(
-                f"no search-tool-bash hook in {stb_rm.path}",
-                file=out,  # type: ignore[arg-type]
-            )
-        else:
-            print(
-                f"removed {stb_rm.removed} search-tool-bash entr"
-                f"{'y' if stb_rm.removed == 1 else 'ies'} from {stb_rm.path}",
                 file=out,  # type: ignore[arg-type]
             )
     slash_dest = getattr(args, "slash_commands_dir", None)
@@ -2555,6 +2540,8 @@ _SETUP_FLAG_TO_HOOK_NAME: Final[dict[str, str]] = {
     "commit_ingest": "commit_ingest",
     "session_start": "session_start",
     "stop_hook": "stop_lock_prompt",
+    "search_tool": "search_tool",
+    "search_tool_bash": "search_tool_bash",
 }
 
 
@@ -2761,7 +2748,7 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
                 f"{'y' if ci_result.removed == 1 else 'ies'} from {ci_result.path}",
                 file=out,  # type: ignore[arg-type]
             )
-    if getattr(args, "search_tool", False):
+    if getattr(args, "search_tool", True):
         st_result = uninstall_search_tool_hook(
             path, command_basename=SEARCH_TOOL_SCRIPT_NAME,
         )
@@ -2776,7 +2763,7 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
                 f"{'y' if st_result.removed == 1 else 'ies'} from {st_result.path}",
                 file=out,  # type: ignore[arg-type]
             )
-    if getattr(args, "search_tool_bash", False):
+    if getattr(args, "search_tool_bash", True):
         stb_result = uninstall_search_tool_bash_hook(
             path, command_basename=SEARCH_TOOL_BASH_SCRIPT_NAME,
         )
@@ -5550,36 +5537,27 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_setup.add_argument(
-        "--search-tool", dest="search_tool", action="store_true",
+        "--search-tool", dest="search_tool",
+        action=argparse.BooleanOptionalAction, default=True,
         help=(
-            "additionally wire the PreToolUse:Grep|Glob hook so the agent's "
-            "own search queries first run against the per-project belief "
-            "store and the results are injected as additionalContext. "
-            "If memory has the answer the agent can skip / refine the tool "
-            "call; if not, the tool result fills the gap. See "
-            "docs/search_tool_hook.md."
+            "wire the PreToolUse:Grep|Glob hook so the agent's own search "
+            "queries first run against the per-project belief store and the "
+            "results are injected as additionalContext. If memory has the "
+            "answer the agent can skip / refine the tool call; if not, the "
+            "tool result fills the gap. Default: ON. Pass --no-search-tool to "
+            "skip. See docs/search_tool_hook.md."
         ),
     )
-    _stb_group = p_setup.add_mutually_exclusive_group()
-    _stb_group.add_argument(
-        "--search-tool-bash", dest="search_tool_bash", action="store_true",
-        default=False,
+    p_setup.add_argument(
+        "--search-tool-bash", dest="search_tool_bash",
+        action=argparse.BooleanOptionalAction, default=True,
         help=(
-            "additionally wire the PreToolUse:Bash hook so shell search "
-            "commands (grep, rg, find, fd, ack) run against the per-project "
-            "belief store before firing. Independent of --search-tool; "
-            "either, both, or neither may be installed. Default-OFF at "
-            "v1.5.0; default-on flip is gated on telemetry. See "
+            "wire the PreToolUse:Bash hook so shell search commands "
+            "(grep, rg, find, fd, ack) run against the per-project belief "
+            "store before firing. Independent of --search-tool; either, "
+            "both, or neither may be installed. Default: ON. Pass "
+            "--no-search-tool-bash to skip. See "
             "docs/search_tool_hook.md § Bash extension."
-        ),
-    )
-    _stb_group.add_argument(
-        "--no-search-tool-bash", dest="no_search_tool_bash", action="store_true",
-        default=False,
-        help=(
-            "remove the PreToolUse:Bash search-tool-bash hook if present. "
-            "Idempotent (no-op when the hook is not installed). "
-            "Independent of --search-tool / --no-search-tool."
         ),
     )
     p_setup.set_defaults(func=_cmd_setup)
@@ -5719,12 +5697,20 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_unsetup.add_argument(
-        "--search-tool", dest="search_tool", action="store_true",
-        help="also remove the PreToolUse:Grep|Glob search-tool hook entry.",
+        "--search-tool", dest="search_tool",
+        action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "remove the PreToolUse:Grep|Glob search-tool hook entry. "
+            "Default: ON. Pass --no-search-tool to leave it in place."
+        ),
     )
     p_unsetup.add_argument(
-        "--search-tool-bash", dest="search_tool_bash", action="store_true",
-        help="also remove the PreToolUse:Bash search-tool-bash hook entry.",
+        "--search-tool-bash", dest="search_tool_bash",
+        action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "remove the PreToolUse:Bash search-tool-bash hook entry. "
+            "Default: ON. Pass --no-search-tool-bash to leave it in place."
+        ),
     )
     p_unsetup.set_defaults(func=_cmd_unsetup)
 
