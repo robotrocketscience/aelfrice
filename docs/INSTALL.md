@@ -2,25 +2,19 @@
 
 ## Prerequisites
 
-- Python 3.12 or 3.13.
-- [`uv`](https://docs.astral.sh/uv/) (recommended) or `pip`. `uv` handles the Python version for you.
+- Python 3.12 or 3.13. (`uv` handles the Python version for you — no need to install Python separately.)
+- [`uv`](https://docs.astral.sh/uv/). The supported install channel (#730). If you don't have it: `curl -LsSf https://astral.sh/uv/install.sh | sh`.
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code), or any agent that can spawn a hook on `UserPromptSubmit`.
 
 ## 1. Install the package
 
 ```bash
-pip install aelfrice                # core, zero runtime deps
-pip install "aelfrice[mcp]"         # add the MCP server (fastmcp)
-pip install "aelfrice[archive]"     # add the encrypted-archive uninstall path
+uv tool install aelfrice                # core, zero runtime deps
+uv tool install "aelfrice[mcp]"         # add the MCP server (fastmcp)
+uv tool install "aelfrice[archive]"     # add the encrypted-archive uninstall path
 ```
 
-Or with `uv`:
-
-```bash
-uv tool install aelfrice
-```
-
-Or from source:
+Or from source (developer install):
 
 ```bash
 git clone https://github.com/robotrocketscience/aelfrice.git
@@ -28,6 +22,8 @@ cd aelfrice && uv sync
 ```
 
 This installs two console scripts: `aelf` (the CLI) and `aelf-hook` (the hook entry-point Claude Code spawns on each prompt).
+
+> **Migrating from pipx / pip?** As of v3.0.x aelfrice is uv-only (#730). If you previously installed via pipx, run `pipx uninstall aelfrice && uv tool install aelfrice` once. `aelf upgrade-cmd` will surface the same migration line on the next upgrade check. pip-installed users: `pip uninstall -y aelfrice && uv tool install aelfrice`.
 
 Verify:
 
@@ -52,7 +48,7 @@ Auto-detection picks the right scope and command path:
 | Run from… | `--scope` | `--command` |
 |---|---|---|
 | inside a project venv | `project` (writes `<project>/.claude/settings.json`) | `<project>/.venv/bin/aelf-hook` |
-| a `pipx`-installed `aelf` outside any venv | `user` (writes `~/.claude/settings.json`) | first `aelf-hook` on `$PATH` |
+| a `uv tool`-installed `aelf` outside any venv | `user` (writes `~/.claude/settings.json`) | first `aelf-hook` on `$PATH` |
 | a venv unrelated to `cwd` | `user` | first `aelf-hook` on `$PATH`, falls back to the active venv |
 
 Override with `--scope user|project` and `--command /abs/path/aelf-hook` when you need to.
@@ -170,7 +166,7 @@ All hooks are non-blocking. Every failure path returns exit 0 — a hook problem
 
 ### Self-installing hook manifest (v3.0+)
 
-The list of default-on hooks above is declared in `src/aelfrice/data/hook_manifest.json` and ships in the wheel. The first `aelf <cmd>` invocation after a fresh install or a bare `pipx upgrade aelfrice` (or `uv tool upgrade aelfrice` / `pip install -U aelfrice`) reconciles the installed manifest version against `~/.aelfrice/installed-manifest-version` and merges any new entries into `~/.claude/settings.json` automatically. This closes the loop on bare package-manager upgrades — you no longer have to remember to re-run `aelf setup` to pick up hooks added in newer releases.
+The list of default-on hooks above is declared in `src/aelfrice/data/hook_manifest.json` and ships in the wheel. The first `aelf <cmd>` invocation after a fresh install or a bare `uv tool upgrade aelfrice` reconciles the installed manifest version against `~/.aelfrice/installed-manifest-version` and merges any new entries into `~/.claude/settings.json` automatically. This closes the loop on bare package-manager upgrades — you no longer have to remember to re-run `aelf setup` to pick up hooks added in newer releases.
 
 What auto-install does:
 
@@ -240,11 +236,12 @@ The dormant scan is schema-agnostic — both pre-v1.x and modern-schema DBs are 
 ## Update notifier
 
 ```bash
-aelf upgrade           # prints the right pip-upgrade line for your env
-aelf upgrade --check   # yes/no, no command line printed
+aelf upgrade-cmd          # prints the canonical upgrade command (`run: …`)
+aelf upgrade-cmd --check  # same output, no behaviour difference
+/aelf:upgrade             # imperative slash: detect + run + re-setup
 ```
 
-`aelf upgrade` detects venv vs pipx vs system and tells you the line. It does not run pip itself — replacing the running interpreter mid-process is unreliable on Windows.
+`aelf upgrade-cmd` emits `run: uv tool upgrade aelfrice` on a uv-managed install. If aelfrice was installed via another tool (pipx, pip, system), the `run:` line is the migration chain (`pipx uninstall aelfrice && uv tool install aelfrice`, or the pip equivalent) — uv is the single supported install channel (#730). The CLI does not execute the upgrade itself: replacing the running interpreter mid-process is unreliable on Windows.
 
 The orange statusline banner appears automatically when an update is available. Disable with `export AELF_NO_UPDATE_CHECK=1`.
 
@@ -258,7 +255,7 @@ You must pick a disposition for the DB:
 aelf uninstall --keep-db              # leave the DB in place (safe default)
 aelf uninstall --archive backup.aenc  # encrypt to file then delete
 aelf uninstall --purge                # permanently delete (three confirmation gates)
-pip uninstall aelfrice                # finally remove the wheel
+uv tool uninstall aelfrice            # finally remove the wheel
 ```
 
 `--archive` uses Fernet (AES-128-CBC + HMAC, scrypt-derived key). Recover later:
@@ -276,7 +273,7 @@ Requires the `[archive]` extra.
 
 | Symptom | Fix |
 |---|---|
-| `aelf: command not found` | Confirm `~/.local/bin` (pipx) or `<venv>/bin` is on `$PATH`. |
+| `aelf: command not found` | Confirm `~/.local/bin` (uv tool shim dir) is on `$PATH`. `uv tool update-shell` adds it for you. |
 | Hook fires but no `<aelfrice-memory>` block appears | `aelf doctor` — usually the hook command points at a deleted script. |
 | `aelf doctor` says "skipped (shell metacharacters)" on a hook line | Stale install. `aelf setup` rewrites the hook in place. |
 | Two worktrees of the same repo see the same beliefs | Working as designed — they share `--git-common-dir`. Pin one with `AELFRICE_DB`. |
