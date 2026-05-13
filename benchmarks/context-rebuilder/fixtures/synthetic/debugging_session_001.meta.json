@@ -1,6 +1,6 @@
 {
   "task_type": "debug",
   "fork_turn": 8,
-  "eval_turns": [8, 10, 12, 14],
-  "notes": "Midpoint fork on the 16-turn synthetic debugging-session fixture. Post-fork eval turns are the four user prompts at file indices 8, 10, 12, 14. Pairs with debugging_session_001.jsonl; load_corpus() resolves this via with_suffix('.meta.json')."
+  "eval_turns": [9, 11, 13, 15],
+  "notes": "Midpoint fork on the 16-turn synthetic debugging-session fixture. Post-fork eval turns are the four assistant continuations at file indices 9, 11, 13, 15. The harness pulls `user_turn` from each eval_turn's most-recent-user-role text (8/10/12/14) and `expected` from the eval_turn itself (assistant continuations at 9/11/13/15). This makes `expected` the canonical answer the post-rebuild agent should produce, so judge-vs-baseline κ compares answer-against-answer (calibration ratification #687). Prior shape used eval_turns=[8,10,12,14] which set expected=user_question_text: substring path always missed and the judge prompt split on Q/A speech-act mismatches (mirrors the hot_start fixture's #687 failure evidence, fixed alongside in PR #639). Pairs with debugging_session_001.jsonl; load_corpus() resolves this via with_suffix('.meta.json')."
 }
