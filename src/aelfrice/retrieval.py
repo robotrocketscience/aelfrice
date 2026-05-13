@@ -1873,9 +1873,12 @@ def retrieve_v2(
       lane fires and returns instead of the textual lane. Parallel,
       not blended (per spec): on marker hit the BM25F + heat-kernel
       stack is bypassed entirely; on miss the call falls through to
-      the textual lane unchanged. Default-OFF until the #437
-      reproducibility harness clears, per the #154 composition
-      tracker.
+      the textual lane unchanged. Default-ON post #154 composition
+      tracker — the #437 reproducibility-harness gate cleared at
+      11/11 and `is_hrr_structural_enabled()` resolves to True when
+      no env / kwarg / TOML override is set. Opt out via
+      `AELFRICE_HRR_STRUCTURAL=0`, `use_hrr_structural=False`, or
+      `[retrieval] use_hrr_structural = false` in `.aelfrice.toml`.
     - `hrr_struct_index_cache` (#152) — explicit
       `HRRStructIndexCache` to reuse an already-built index across
       calls. None falls through to a fresh build per call.
