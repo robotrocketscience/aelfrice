@@ -12,3 +12,4 @@ build/
 *.db-shm
 !tests/e2e/fixtures/*.db
 telemetry/
+.agents/
