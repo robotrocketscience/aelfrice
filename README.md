@@ -148,7 +148,7 @@ Running in the background. No action required after `aelf setup`.
 
 - **Passive capture.** Default-on transcript-ingest, commit-ingest, and session-start hooks. Session activity flows into the belief graph without you typing `aelf` at all; opt out per-hook via `aelf setup --no-transcript-ingest`, `--no-commit-ingest`, `--no-session-start`. See [INSTALL § default-on hooks](docs/INSTALL.md).
 - **Determinism.** Stdlib + SQLite. No embeddings, no learned re-rankers, no LLM in the retrieval path. Every result traces to the action that wrote it.
-- **Local-only.** SQLite at `<git-common-dir>/aelfrice/memory.db`. No telemetry, no network calls, no accounts. Per-project isolation by construction. v3.0 ships *read-only* cross-project federation via `knowledge_deps.json` — peer DBs are opened read-only, foreign-id mutations are rejected at the API surface, no multi-writer extension. See [PRIVACY.md](docs/PRIVACY.md).
+- **Local-only.** SQLite at `<git-common-dir>/aelfrice/memory.db`. aelfrice itself makes no network calls and emits no telemetry; no accounts. (Subagent LLM dispatches in `/aelf:wonder` / `/aelf:reason` flows do reach the network — under the host agent's credentials, not aelfrice's. The retrieval path stays local.) Per-project isolation by construction. v3.0 ships *read-only* cross-project federation via `knowledge_deps.json` — peer DBs are opened read-only, foreign-id mutations are rejected at the API surface, no multi-writer extension. See [PRIVACY.md](docs/PRIVACY.md).
 - **Removable.** `aelf uninstall --archive backup.aenc` encrypts the DB to a file, then deletes it. Or `--purge` for a full wipe.
 
 ---
