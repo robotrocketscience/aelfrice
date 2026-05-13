@@ -444,6 +444,15 @@ SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED: Final[str] = "content_hash_unique_appli
 SCHEMA_META_SPECULATIVE_HASH_V2_COMPLETE: Final[str] = (
     "speculative_hash_v2_complete"
 )
+# #762. Set after the one-shot column-retype that fixes legacy
+# `belief_corroborations.belief_id INTEGER` columns to `TEXT` so the FK
+# to `beliefs.id TEXT PRIMARY KEY` actually matches. The released v1.5
+# package shipped with INTEGER for some users; CREATE TABLE IF NOT
+# EXISTS kept the broken column on every subsequent open. ISO timestamp
+# on completion; fresh stores stamp the marker without doing work.
+SCHEMA_META_CORROBORATIONS_BELIEF_ID_RETYPED: Final[str] = (
+    "belief_corroborations_belief_id_retyped"
+)
 
 # v1.0 -> v1.2 column additions. Each ALTER runs after _SCHEMA. ALTERs
 # are idempotent: a duplicate-column OperationalError on a v1.2-fresh
@@ -732,6 +741,12 @@ class MemoryStore:
         # v2.0 #205 ingest_log version-vector backfill. Same shape
         # as #204 but for the parallel-write log table. Idempotent.
         self._maybe_backfill_log_version_vectors()
+        # #762 retype `belief_corroborations.belief_id` INTEGER -> TEXT
+        # on legacy DBs. Must run BEFORE _maybe_consolidate_content_hash_
+        # duplicates because that pass writes synthetic corroboration
+        # rows whose TEXT belief ids fail the FK against the legacy
+        # INTEGER column. Idempotent; no-op on canonical stores.
+        self._maybe_retype_belief_corroborations_belief_id()
         # #219 content_hash dedup. Must run BEFORE the table-swap that
         # adds UNIQUE(content_hash) so we eliminate all duplicates first.
         self._maybe_consolidate_content_hash_duplicates()
@@ -1037,6 +1052,128 @@ class MemoryStore:
             datetime.now(timezone.utc).isoformat(),
         )
         return inserted
+
+    def _maybe_retype_belief_corroborations_belief_id(self) -> bool:
+        """One-shot column-retype: `belief_corroborations.belief_id` to TEXT.
+
+        #762. Some legacy DBs were created when the table shipped with
+        `belief_id INTEGER`. `beliefs.id` is `TEXT PRIMARY KEY`, so the
+        FK silently misses on every INSERT of a hex belief id and raises
+        `FOREIGN KEY constraint failed`. `CREATE TABLE IF NOT EXISTS`
+        never corrects the column on a pre-existing table, so the
+        canonical DDL update was a no-op on affected stores.
+
+        Detection uses `PRAGMA table_info(belief_corroborations)`. If
+        `belief_id` reports type `INTEGER` (case-insensitive), the
+        retype runs. Any other type — including the canonical `TEXT`,
+        the legacy table missing entirely (handled by the prior
+        `CREATE TABLE IF NOT EXISTS` in `_SCHEMA`), or a future shape —
+        just stamps the marker without touching the table.
+
+        Recipe (SQLite-recommended column retype):
+
+          1. CREATE TABLE belief_corroborations_new (... belief_id TEXT ...)
+          2. INSERT INTO belief_corroborations_new SELECT * FROM old
+          3. DROP TABLE belief_corroborations
+          4. ALTER TABLE belief_corroborations_new RENAME TO ...
+          5. Recreate the index.
+
+        Wrapped in `PRAGMA foreign_keys=OFF` per SQLite's altertable
+        guidance — the toggle must be outside any transaction, so the
+        swap runs in its own explicit BEGIN/COMMIT.
+
+        Idempotent via `SCHEMA_META_CORROBORATIONS_BELIEF_ID_RETYPED`.
+        Returns True if the swap ran, False if it was already applied
+        or unnecessary.
+        """
+        if self.get_schema_meta(SCHEMA_META_CORROBORATIONS_BELIEF_ID_RETYPED):
+            return False
+
+        col_info = self._conn.execute(
+            "PRAGMA table_info(belief_corroborations)"
+        ).fetchall()
+        if not col_info:
+            # Table missing entirely — _SCHEMA's CREATE IF NOT EXISTS in
+            # __init__ already created the canonical shape on this open.
+            # Just stamp so we never re-check.
+            self.set_schema_meta(
+                SCHEMA_META_CORROBORATIONS_BELIEF_ID_RETYPED,
+                datetime.now(timezone.utc).isoformat(),
+            )
+            return False
+
+        belief_id_type: str | None = None
+        for col in col_info:
+            if str(col["name"]) == "belief_id":
+                belief_id_type = str(col["type"]).upper()
+                break
+
+        if belief_id_type != "INTEGER":
+            # Canonical TEXT (or anything that is not the broken
+            # INTEGER affinity) — nothing to fix. Stamp marker.
+            self.set_schema_meta(
+                SCHEMA_META_CORROBORATIONS_BELIEF_ID_RETYPED,
+                datetime.now(timezone.utc).isoformat(),
+            )
+            return False
+
+        # Legacy INTEGER schema detected. Run the swap.
+        self._conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            self._conn.execute("BEGIN")
+            try:
+                # Drop any leftover temp table from a failed prior attempt.
+                self._conn.execute(
+                    "DROP TABLE IF EXISTS belief_corroborations_new"
+                )
+                self._conn.execute(
+                    """
+                    CREATE TABLE belief_corroborations_new (
+                        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                        belief_id         TEXT    NOT NULL
+                            REFERENCES beliefs(id) ON DELETE CASCADE,
+                        ingested_at       TEXT    NOT NULL,
+                        source_type       TEXT    NOT NULL,
+                        session_id        TEXT,
+                        source_path_hash  TEXT
+                    )
+                    """
+                )
+                # Carry rows over. Existing belief_id values are hex
+                # strings that SQLite stored under INTEGER affinity as
+                # TEXT (affinity coerces on INSERT; hex digits are not
+                # valid INTEGER literals so the original value
+                # survives). The straight copy preserves them.
+                self._conn.execute(
+                    "INSERT INTO belief_corroborations_new "
+                    "(id, belief_id, ingested_at, source_type, "
+                    "session_id, source_path_hash) "
+                    "SELECT id, belief_id, ingested_at, source_type, "
+                    "session_id, source_path_hash "
+                    "FROM belief_corroborations"
+                )
+                self._conn.execute("DROP TABLE belief_corroborations")
+                self._conn.execute(
+                    "ALTER TABLE belief_corroborations_new "
+                    "RENAME TO belief_corroborations"
+                )
+                self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "idx_belief_corroborations_belief_id "
+                    "ON belief_corroborations(belief_id)"
+                )
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+        finally:
+            self._conn.execute("PRAGMA foreign_keys=ON")
+
+        self.set_schema_meta(
+            SCHEMA_META_CORROBORATIONS_BELIEF_ID_RETYPED,
+            datetime.now(timezone.utc).isoformat(),
+        )
+        return True
 
     def _maybe_consolidate_content_hash_duplicates(self) -> int:
         """One-shot migration: collapse duplicate content_hash rows.
