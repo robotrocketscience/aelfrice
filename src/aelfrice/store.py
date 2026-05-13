@@ -1496,9 +1496,7 @@ class MemoryStore:
             limit: When given, cap the returned list.  ``None`` returns
                 all orphans (used for the total count).
         """
-        limit_clause = f" LIMIT {int(limit)}" if limit is not None else ""
-        cur = self._conn.execute(
-            f"""
+        sql = """
             SELECT b.id, b.content_hash
             FROM beliefs b
             WHERE b.id NOT IN (
@@ -1507,10 +1505,13 @@ class MemoryStore:
                 WHERE il.derived_belief_ids IS NOT NULL
                   AND il.source_kind != ?
             )
-            ORDER BY b.id ASC{limit_clause}
-            """,
-            (INGEST_SOURCE_LEGACY_UNKNOWN,),
-        )
+            ORDER BY b.id ASC
+        """
+        params: tuple[object, ...] = (INGEST_SOURCE_LEGACY_UNKNOWN,)
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (INGEST_SOURCE_LEGACY_UNKNOWN, int(limit))
+        cur = self._conn.execute(sql, params)
         return [
             (str(r["id"]), str(r["content_hash"]) if r["content_hash"] is not None else None)
             for r in cur.fetchall()
