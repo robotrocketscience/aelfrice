@@ -214,6 +214,11 @@ HIDDEN_SUBCOMMANDS = frozenset({
     # No slash command — it's an operator-only cleanup, not a workflow
     # verb. See aelfrice/clamp_ghosts.py.
     "clamp-ghosts",
+    # `export-canvas` is the JSON Canvas 1.0 exporter probe for the
+    # Obsidian-mapping research (#763). No slash command — it's a
+    # research artifact emitter, not a workflow verb. May graduate
+    # to EXPECTED_COMMANDS if/when the vault-exporter sibling lands.
+    "export-canvas",
 })
 
 

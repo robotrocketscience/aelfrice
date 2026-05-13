@@ -1085,6 +1085,78 @@ def _parse_wonder_query_shorthand(query: str) -> tuple[str, int | None]:
     return cleaned, count
 
 
+def _cmd_export_canvas(args: argparse.Namespace, out: object) -> int:
+    """Emit a JSON Canvas 1.0 document from seeds + BFS expansion (#763).
+
+    Same seed-selection rules as ``_cmd_reason``: ``--seed-id``
+    (repeatable) bypasses BM25 seed selection; otherwise top-k BM25
+    hits via ``_seeds_with_scopes``. Expansion uses ``expand_bfs``
+    with the user-supplied depth/budget/fanout. Result is serialised
+    to ``--out`` (default stdout) as deterministic JSON.
+
+    Read-only: never writes to the store.
+    """
+    from aelfrice.canvas_export import export_canvas  # local import
+    import json as _json
+
+    store = _open_store()
+    try:
+        seeds: list = []
+        seed_scopes: dict[str, str | None] = {}
+        if args.seed_id:
+            for sid in args.seed_id:
+                b = store.get_belief(sid)
+                if b is None:
+                    owner = store.find_foreign_owner(sid)
+                    if owner is not None:
+                        b = store.get_belief_in_scope(sid, owner)
+                    if b is None:
+                        print(
+                            f"aelf export-canvas: seed-id not found: {sid}",
+                            file=out,  # type: ignore[arg-type]
+                        )
+                        return 2
+                    seed_scopes[sid] = owner
+                seeds.append(b)
+        else:
+            seeds, seed_scopes = _seeds_with_scopes(store, args.query, args.k)
+        if not seeds:
+            print(
+                "aelf export-canvas: no seeds (empty store, or query "
+                "didn't match any indexed belief). Try --seed-id <id> "
+                "to force a starting point.",
+                file=out,  # type: ignore[arg-type]
+            )
+            return 0
+        scopes_arg: dict[str, str | None] | None = (
+            seed_scopes if any(v is not None for v in seed_scopes.values()) else None
+        )
+        hops = expand_bfs(
+            seeds,
+            store,
+            max_depth=args.depth,
+            nodes_per_hop=args.fanout,
+            total_budget=args.budget,
+            seed_scopes=scopes_arg,
+        )
+        payload = export_canvas(seeds, hops, store)
+    finally:
+        store.close()
+
+    text = _json.dumps(payload, indent=2, sort_keys=False) + "\n"
+    if args.out and args.out != "-":
+        from pathlib import Path as _Path
+        _Path(args.out).write_text(text)
+        print(
+            f"aelf export-canvas: wrote {args.out} "
+            f"({len(payload['nodes'])} nodes, {len(payload['edges'])} edges)",
+            file=out,  # type: ignore[arg-type]
+        )
+    else:
+        print(text, end="", file=out)  # type: ignore[arg-type]
+    return 0
+
+
 def _cmd_wonder_axes(args: argparse.Namespace, out: object) -> int:
     """Emit dispatch-payload JSON for `aelf wonder QUERY` (#645) or
     the legacy alias `aelf wonder --axes QUERY` (#551).
@@ -5940,6 +6012,37 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_session_delta.set_defaults(func=_cmd_session_delta)
+
+    p_export_canvas = sub.add_parser("export-canvas", help=argparse.SUPPRESS)
+    p_export_canvas.add_argument(
+        "query", nargs="?", default="",
+        help="keyword query for seed selection (omit when using --seed-id)",
+    )
+    p_export_canvas.add_argument(
+        "--seed-id", action="append", default=[], dest="seed_id",
+        help="explicit seed belief id (repeatable; bypasses BM25 seed selection)",
+    )
+    p_export_canvas.add_argument(
+        "--k", type=int, default=3,
+        help="BM25 seed fanout when --seed-id not given (default 3)",
+    )
+    p_export_canvas.add_argument(
+        "--depth", type=int, default=2,
+        help="max BFS hop depth (default 2)",
+    )
+    p_export_canvas.add_argument(
+        "--budget", type=int, default=32,
+        help="total expansion-node budget (default 32)",
+    )
+    p_export_canvas.add_argument(
+        "--fanout", type=int, default=8,
+        help="max edges expanded per frontier entry (default 8)",
+    )
+    p_export_canvas.add_argument(
+        "--out", default="-",
+        help="output path (default '-' for stdout)",
+    )
+    p_export_canvas.set_defaults(func=_cmd_export_canvas)
 
     p_tail = sub.add_parser(
         "tail",
