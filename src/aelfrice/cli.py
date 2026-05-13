@@ -3754,6 +3754,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_derive_pending(args, out)
     if getattr(args, "prune_dormant", False):
         return _cmd_doctor_prune_dormant(args, out)
+    if getattr(args, "meta_beliefs", False):
+        return _cmd_doctor_meta_beliefs(args, out)
     scope = getattr(args, "scope", None)
     exit_code = 0
     if scope in (None, "hooks"):
@@ -3783,6 +3785,88 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         if graph_exit != 0:
             exit_code = graph_exit
     return exit_code
+
+
+def _cmd_doctor_meta_beliefs(args: argparse.Namespace, out: object) -> int:
+    """Surface installed meta-belief state (#755 substrate diagnostic).
+
+    Lists every row in ``meta_beliefs`` with its config + decayed
+    surfaced value + per-signal-class sub-posterior breakdown. Text
+    mode emits a human-readable table; ``--json`` emits a stable
+    object so downstream tooling (eval-harness gates, dashboards) can
+    parse without screen-scraping. Always exits 0; this is a diagnostic
+    surface, not a gate.
+    """
+    import json as _json
+    import time as _time
+    from aelfrice.meta_beliefs import decay_state
+
+    store = _open_store()
+    try:
+        states = store.list_meta_beliefs()
+    finally:
+        store.close()
+    now_ts = int(_time.time())
+    rows = [decay_state(s, now_ts=now_ts) for s in states]
+    if getattr(args, "json_output", False):
+        payload = {
+            "now_ts": now_ts,
+            "count": len(rows),
+            "meta_beliefs": [
+                {
+                    "key": s.key,
+                    "value": s.value,
+                    "static_default": s.static_default,
+                    "half_life_seconds": s.half_life_seconds,
+                    "last_updated_ts": s.last_updated_ts,
+                    "signal_weights": dict(sorted(s.signal_weights.items())),
+                    "posteriors": [
+                        {
+                            "signal_class": p.signal_class,
+                            "alpha": p.alpha,
+                            "beta": p.beta,
+                            "last_updated_ts": p.last_updated_ts,
+                        }
+                        for p in sorted(
+                            s.posteriors.values(),
+                            key=lambda p: p.signal_class,
+                        )
+                    ],
+                }
+                for s in rows
+            ],
+        }
+        print(_json.dumps(payload, indent=2, sort_keys=False), file=out)  # type: ignore[arg-type]
+        return 0
+    if not rows:
+        print("aelf doctor --meta-beliefs: no meta-beliefs installed.",
+              file=out)  # type: ignore[arg-type]
+        return 0
+    print(f"aelf doctor --meta-beliefs: {len(rows)} installed (now_ts={now_ts})",
+          file=out)  # type: ignore[arg-type]
+    for s in rows:
+        print(
+            f"\n  {s.key}\n"
+            f"    value           = {s.value:.6f}\n"
+            f"    static_default  = {s.static_default}\n"
+            f"    half_life       = {s.half_life_seconds}s\n"
+            f"    last_updated_ts = {s.last_updated_ts}",
+            file=out,  # type: ignore[arg-type]
+        )
+        if not s.posteriors:
+            print("    posteriors      = (none — cold start)",
+                  file=out)  # type: ignore[arg-type]
+            continue
+        print("    posteriors:", file=out)  # type: ignore[arg-type]
+        for cls in sorted(s.posteriors.keys()):
+            p = s.posteriors[cls]
+            weight = s.signal_weights.get(cls, 0.0)
+            print(
+                f"      [{cls}] alpha={p.alpha:.4f} beta={p.beta:.4f} "
+                f"weight={weight} ts={p.last_updated_ts}",
+                file=out,  # type: ignore[arg-type]
+            )
+    return 0
 
 
 def _cmd_doctor_dedup(args: argparse.Namespace, out: object) -> int:
@@ -5548,6 +5632,28 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "POTENTIALLY_STALE edges (#387). Direction: newer belief → "
             "older belief. Idempotent. Stdlib only. Bypasses the "
             "hooks/graph checks. Tunes share with --relationships."
+        ),
+    )
+    p_doctor.add_argument(
+        "--meta-beliefs",
+        dest="meta_beliefs",
+        action="store_true",
+        default=False,
+        help=(
+            "report installed meta-belief state (#755): per-key static "
+            "default, half-life, surfaced value, and per-signal-class "
+            "sub-posteriors. Bypasses the hooks/graph checks. Read-only. "
+            "Add --json for machine-readable output."
+        ),
+    )
+    p_doctor.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        default=False,
+        help=(
+            "with --meta-beliefs: emit JSON instead of a human-readable "
+            "table. No effect on other doctor sub-modes today."
         ),
     )
     p_doctor.set_defaults(func=_cmd_doctor)
