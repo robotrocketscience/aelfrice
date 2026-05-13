@@ -19,7 +19,14 @@ roundtrip, no extra billing. Falls back to the regex classifier on
    verbatim. Stop. Otherwise extract `<path>` (everything that isn't
    `--no-subagents`).
 
-2. **Emit candidates.** Run:
+2. **Pre-scan and emit candidates.** First run the read-only pre-scan:
+   `uv run aelf onboard "<path>" --check`
+   Print the output verbatim so the user sees the idempotency state
+   before any session opens. Parse the `new since last onboard: <N>
+   candidates` line; if `N == 0`, stop — no session is opened, no
+   classification work is dispatched (#761).
+
+   Otherwise run:
    `uv run aelf onboard "<path>" --emit-candidates`
    Parse the JSON. Capture `session_id`, `n_already_present`, and
    `sentences` (a list of `{index, text, source}` objects).
