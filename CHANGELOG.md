@@ -10,6 +10,8 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-05-13
+
 ### Security
 
 - **Bump transitive `authlib` 1.7.0 → 1.7.2 to address CVE-2026-44681** ([GHSA-r95x-qfjj-fjj2](https://github.com/advisories/GHSA-r95x-qfjj-fjj2), [Dependabot #4](https://github.com/robotrocketscience/aelfrice/security/dependabot/4)). Medium-severity (CVSS 6.1) open-redirect in Authlib's OIDC server flows (`OpenIDImplicitGrant` / `OpenIDHybridGrant`) — `redirect_uri` validation runs after scope validation, so a malformed authorization request with `response_type=id_token` and `openid` omitted from scope can cause a `302` to an attacker-controlled URL. aelfrice's exposure: effectively zero — `authlib` is pulled transitively via `fastmcp` (the optional `[mcp]` extra) and the aelfrice MCP server does not implement an OIDC authorization endpoint or register the affected grant types. Fix shipped because it's free; runtime impact is one transitive bump. Lockfile-only change; `pyproject.toml` unaffected. 61 MCP-server tests pass against `authlib==1.7.2`.
