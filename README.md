@@ -23,9 +23,9 @@ aelfrice is a memory substrate that runs in the background of your coding agent.
 ## Install
 
 ```bash
-pipx install aelfrice    # or: uv tool install aelfrice
-aelf setup               # wire the UserPromptSubmit hook into your agent
-aelf onboard .           # one-shot project scan: filesystem, git log, AST
+uv tool install aelfrice    # requires uv — https://docs.astral.sh/uv/
+aelf setup                  # wire the UserPromptSubmit hook into your agent
+aelf onboard .              # one-shot project scan: filesystem, git log, AST
 aelf lock "never push directly to main; use scripts/publish.sh"
 ```
 
