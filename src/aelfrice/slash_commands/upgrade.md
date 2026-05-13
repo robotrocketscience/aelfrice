@@ -1,30 +1,34 @@
 ---
 name: aelf:upgrade
-description: Upgrade aelfrice to the latest published version using the right tool for this install context.
+description: Upgrade aelfrice to the latest published version using uv.
 allowed-tools:
   - Bash
 ---
 <objective>
-Imperative upgrade. This slash is the *end-to-end* upgrade flow:
-detect the install method (uv tool / pipx / venv / system pip),
-**run the upgrade itself**, then re-run `aelf setup` so any
-slash-command bundle changes that shipped in the new release land
-cleanly (orphan-pruned, new files written).
+Imperative upgrade. This slash is the *end-to-end* upgrade flow: ask
+the CLI for the canonical command, **run the upgrade itself**, then
+re-run `aelf setup` so any slash-command bundle changes that shipped
+in the new release land cleanly (orphan-pruned, new files written).
 
-The user invoked this slash because they want aelfrice on a new
+Per #730 aelfrice is supported on a single install channel: `uv tool`.
+If the active install was set up via a different installer (pipx, pip,
+system), `aelf upgrade-cmd` emits a migration command (uninstall the
+old + `uv tool install aelfrice`) — execute it verbatim, same as a
+plain upgrade.
+
+The user invoked this slash because they want aelfrice on the new
 version when it's done. Producing the detection output and stopping
 is the wrong outcome — that is what `aelf upgrade-cmd` does on its
 own. This slash exists to take the next step.
 
 Why Bash and not in-process: replacing the running package
 mid-process is unreliable on Windows and can leave a broken
-interpreter. The Bash block runs `pipx upgrade` / `uv tool upgrade`
-(or equivalent) in a subprocess separate from the running `aelf` —
-no mid-process replacement.
+interpreter. The Bash block runs the `run:` command in a subprocess
+separate from the running `aelf` — no mid-process replacement.
 </objective>
 
 <process>
-Step 1 — detect install context.
+Step 1 — fetch the canonical upgrade command.
 
 Run `aelf upgrade-cmd` (no flags) to ask aelfrice itself what command
 would upgrade the active install. Use the no-flag form deliberately:
@@ -38,16 +42,19 @@ the slash silently did nothing (#530). The no-flag form has emitted
 
 - If the output contains `aelfrice is up to date`, print that line
   verbatim and stop. There is nothing to do.
-- Otherwise the output contains a line of the form `run: <command>`
-  (for example `run: pipx upgrade aelfrice` or `run: uv tool upgrade
-  aelfrice`). Extract `<command>` exactly — everything after `run: `.
-  This is the canonical upgrade command for this install. **You must
-  use it verbatim** in step 2.
+- Otherwise the output contains a line of the form `run: <command>`.
+  Extract `<command>` exactly — everything after `run: `. This is the
+  canonical command for this install. It is one of:
+    - `uv tool upgrade aelfrice` (uv-managed install, in-place upgrade)
+    - `pipx uninstall aelfrice && uv tool install aelfrice` (pipx install, migrate to uv)
+    - `pip uninstall -y aelfrice && uv tool install aelfrice` (pip/venv/system, migrate to uv)
+  **You must use it verbatim** in step 2.
 
-Any parenthetical advisory in the output (such as
-`(installed via pipx — use pipx to upgrade)`) is hint text for
-humans reading the CLI directly. It is NOT a substitute for step 2.
-The `run:` line is the canonical instruction; the parenthetical is
+Any parenthetical note in the output (such as
+`(installed via uv tool — use uv to upgrade)` or
+`(aelfrice is supported via 'uv tool' only (#730) …)`) is hint text
+for humans reading the CLI directly. It is NOT a substitute for step
+2. The `run:` line is the canonical instruction; the parenthetical is
 not.
 
 Step 2 — execute the upgrade. This is the step the user is paying
@@ -61,7 +68,9 @@ upgrade. Step 2 is what makes the upgrade happen.
 
 If `<command>` exits non-zero, print the captured output and stop —
 do not proceed to step 3. (Common cause: the install method changed
-since the cached detection; rerun the slash.)
+since the cached detection; rerun the slash. Or: the migration
+chain's first half failed — for example pipx wasn't on PATH when the
+command tried to run it.)
 
 Step 3 — refresh installed slash commands and hooks.
 
@@ -88,12 +97,14 @@ proceed safely).
 
 <failure_modes>
 **Anti-pattern: stopping after step 1.** Some agents read the
-`(installed via pipx — use pipx to upgrade)` advisory and interpret
-it as "the system has told the user what to do, my job is done."
-This is wrong. The slash is `/aelf:upgrade`, not `/aelf:show-me-the-
-upgrade-command`. The user clicked it because they wanted the
-upgrade to happen. If you stop here, the user is no further along
-than when they started, and they will reasonably file a bug
+`(installed via uv tool — use uv to upgrade)` advisory (or the
+`(aelfrice is supported via 'uv tool' only …)` migration note) and
+interpret it as "the system has told the user what to do, my job is
+done." This is wrong. The slash is `/aelf:upgrade`, not
+`/aelf:show-me-the-upgrade-command`. The user clicked it because they
+wanted the upgrade to happen. If you stop here, the user is no
+further along than when they started, and they will reasonably file
+a bug
 ([#611](https://github.com/robotrocketscience/aelfrice/issues/611)
 is the original report of exactly this failure).
 
