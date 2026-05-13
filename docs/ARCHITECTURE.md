@@ -48,7 +48,14 @@ Imports are one-directional — modules lower in the table import from higher.
 | `context_rebuilder.py` | PreCompact alpha that surfaces aelfrice retrieval before Claude Code summarises. |
 | `benchmark.py` | Deterministic 16-belief × 16-query synthetic harness. Frozen `BenchmarkReport`. |
 | `cli.py` | argparse multi-subcommand CLI. Entry: `aelf`. Everyday surface in `aelf --help`; full surface (diagnostic, hook, lifecycle verbs) in `aelf --help --advanced`. |
-| `mcp_server.py` | FastMCP server, 12 tools. `[mcp]` optional extra. See [MCP](MCP.md) for the full tool list. |
+| `mcp_server.py` | FastMCP server, 15 tools (12 v2.0 surface + `aelf_wonder` / `aelf_wonder_persist` / `aelf_wonder_gc` added in v3.0). `[mcp]` optional extra. See [MCP](MCP.md) for the full tool list. |
+| `federation.py` | (v3.0+) Read-only peer-DB federation. `load_peer_deps()` parses `knowledge_deps.json`; `open_peer_connection(path)` opens a peer SQLite in `mode=ro&immutable=1`; `ForeignBeliefError` rejects mutations against foreign belief ids at the API surface. See [LIMITATIONS § Sharing, sync, or federation](LIMITATIONS.md). |
+| `clamp_ghosts.py` | (v3.0+) `clamp_ghost_alphas(store, target_alpha, dry_run)` repair tool — clamps α on belief rows that have inflated posteriors without audit-trail backing (pre-migration artifacts only). Reversible via the negative-valence audit row written inside the same transaction. Backs `aelf clamp-ghosts` (hidden). |
+| `reason.py` | (v2.0+, expanded v3.0) Graph-walk reasoning over the belief edge graph. v3.0 (#645, #658) adds Verdict / ImpasseKind classifiers, `ConsequencePath` fork-on-CONTRADICTS deriver, `dispatch_policy()` mapping impasses to Verifier/Gap-filler/Fork-resolver roles, and `suggested_updates()` close-the-loop feedback row derivation. Backs `aelf reason` + `/aelf:reason`. |
+| `wonder/` | (v2.0+, expanded v3.0) Wonder lifecycle: gap analysis (`dispatch.py`), research-axes generation, phantom ingest/GC (`wonder_ingest`, `wonder_gc`), Skill-layer subagent integration (`skill_integration.py` per #552), structured `WonderResult` dataclass (#656). |
+| `sentiment_feedback.py` | (v2.0 module, v3.0 hook wired) Regex sentiment detector. v3.0 (#606) wires it into `UserPromptSubmit` behind `[feedback] sentiment_from_prose = true`. |
+| `auto_install.py` | (v3.0+, #623) Version-stamped manifest merger. First `aelf <cmd>` after a wheel upgrade merges any new default-on hooks from `data/hook_manifest.json` into `~/.claude/settings.json`. `fcntl`-locked; honors `~/.aelfrice/opt-out-hooks.json`. |
+| `working_state.py` | (v3.0+, #587) Post-compact `<working-state>` projector (current branch, bounded `git status`, last HEAD log entries, last K user prompts, session commits). Each git invocation has a 1.5s timeout + return-empty fallback. |
 | `setup.py` | Idempotent install/uninstall of all hooks + statusline. Atomic write via tempfile + `os.replace`. |
 | `hook.py` | `aelfrice.hook:main` — process Claude Code spawns on each prompt. Reads stdin, calls `retrieve()`, emits `<aelfrice-memory>` on stdout. Non-blocking. Entry: `aelf-hook`. |
 | `slash_commands/` | One markdown file per CLI subcommand surfaced in `/aelf:*`. |
@@ -59,22 +66,27 @@ Imports are one-directional — modules lower in the table import from higher.
 
 - `type ∈ {factual, correction, preference, requirement}`
 - `lock_level ∈ {none, user}`
-- `origin ∈ {user_stated, user_corrected, user_validated, agent_inferred, agent_remembered, document_recent, unknown}` (v1.2+)
+- `origin ∈ {user_stated, user_corrected, user_validated, agent_inferred, agent_remembered, document_recent, speculative, unknown}` (v1.2+; `speculative` added with the v2.0 wonder substrate for phantom beliefs)
+- `scope ∈ {project, global, shared:<name>}` (v3.0+, #688). `project` is the default and local-only; `global` is surfaced to any peer DB that declares this DB in its `knowledge_deps.json`; `shared:<name>` is surfaced only to peers that also list `shared:<name>` as a dep.
 
-**Edge** — `src, dst, type, weight, anchor_text, created_at`. Six edge types with valence multipliers:
+**Edge** — `src, dst, type, weight, anchor_text, created_at`. Ten edge types in `EDGE_VALENCE`:
 
 | Type | Valence | |
 |---|---|---|
 | `SUPPORTS` | +1.0 | full positive |
+| `IMPLEMENTS` | +0.65 | code-implements-spec link |
+| `TESTS` | +0.55 | test-covers link |
 | `CITES` | +0.5 | half positive |
 | `DERIVED_FROM` | +0.5 | half positive (turn-to-turn provenance) |
 | `RELATES_TO` | +0.3 | weak positive |
-| `CONTRADICTS` | -0.5 | half negative |
+| `TEMPORAL_NEXT` | +0.2 | session-time successor |
 | `SUPERSEDES` | 0.0 | structural; no propagation |
+| `RESOLVES` | 0.0 | structural; closes a `CONTRADICTS` thread |
+| `CONTRADICTS` | -0.5 | half negative |
 
-The research line carried 17 edge types — 12 core (the six above plus `CALLS`, `TESTS`, `IMPLEMENTS`, `TEMPORAL_NEXT`, `CO_CHANGED`, `CONTAINS`, `COMMIT_TOUCHES`) and 5 speculative/causal (`SPECULATES`, `DEPENDS_ON`, `RESOLVES`, `HIBERNATED`, `DERIVED_FROM`). The narrowing to six is deliberate: the speculative/causal set hangs on the deferred `wonder` / multi-axis-uncertainty substrate (see [ROADMAP § Recovery inventory](ROADMAP.md#recovery-inventory)), and the additional core types (`CALLS`, `TESTS`, `IMPLEMENTS`, etc.) come back with the additional onboarding extractors that produce them — not by extending this enum in isolation.
+A separate `POTENTIALLY_STALE` edge type exists as a producer-only signal from `aelf doctor` (#387) and is deliberately not in `EDGE_TYPES` — it does not participate in valence propagation. The research line carried 17 edge types — additional speculative/causal markers (`SPECULATES`, `DEPENDS_ON`, `HIBERNATED`) and additional structural extractors (`CALLS`, `CO_CHANGED`, `CONTAINS`, `COMMIT_TOUCHES`) remain parked until the extractors that produce them ship. The current ten-type set covers the v2.0 wonder lifecycle (`RESOLVES`, `SUPERSEDES`, `CONTRADICTS`) and the v1.x code/test linkage (`IMPLEMENTS`, `TESTS`); see [ROADMAP § Recovery inventory](ROADMAP.md#recovery-inventory) for the deferred set.
 
-**SQLite tables:** `beliefs`, `beliefs_fts` (virtual, porter unicode61), `edges` PK `(src, dst, type)`, `feedback_history`, `sessions`, `onboard_sessions`, `schema_meta`.
+**SQLite tables:** `beliefs` (with `scope` column since v3.0), `beliefs_fts` (virtual, porter unicode61), `edges` PK `(src, dst, type)`, `feedback_history`, `sessions`, `onboard_sessions`, `belief_corroborations` (sibling table, v1.5.1+), `ingest_log` (append-only, v1.6+), `belief_versions` + `edge_versions` (per-scope version vectors, v1.5+), `schema_meta`. The `scope` column has an `idx_beliefs_scope` index; both column and index land idempotently via the migration runner.
 
 ## Bayesian update
 
@@ -191,11 +203,11 @@ and the harness's own summary land in the new context (augment mode)
 
 ## Out of scope through v1.x
 
-These land at v2.0 with evidence (a benchmark, an experiment, a clear case where the existing operations don't suffice):
+These remain parked until a benchmark, experiment, or concrete failure mode justifies them:
 
-- Sentence-transformer embeddings (HRR primitives shipped at v1.7.0 as a structural lane, not a learned-embedding lane)
-- Cross-project knowledge federation
-- Full composition tracker — 10-round MRR uplift, ECE calibration, BM25F × heat-kernel × HRR-structural composition eval (#154; v2.0.0+ work). The partial Bayesian reranking shipped at v1.3.0 and BM25F-only L1 shipped default-on at v1.7.0; the unfinished piece is the joint-composition bench gate that flips heat-kernel and HRR-structural defaults.
+- Sentence-transformer embeddings (HRR primitives shipped at v1.7.0 as a structural lane, not a learned-embedding lane; v3.0 PHILOSOPHY ratification #605 keeps determinism as the property — no embedding lane planned)
+- Multi-writer federation / CRDT primitives. v3.0 ships *read-only* federation (#650 / #655 / #688) — peers open foreign DBs read-only and UNION FTS5 results. The multi-writer extension (#651-#654 CRDT primitives) closed WONTFIX at the v3.0 cut per the #661 ratification.
+- Full composition tracker — 10-round MRR uplift, ECE calibration, BM25F × heat-kernel × HRR-structural composition eval (#154). Heat-kernel and HRR-structural defaults flipped on at v2.1; the joint-composition bench gate as such was not run separately, but the #437 reproducibility-harness 11/11 covers the substrate.
 
 The following were previously listed here and have since shipped:
 - Posterior-aware retrieval ranking → **shipped v1.3.0** (partial; [bayesian_ranking.md](bayesian_ranking.md))
@@ -205,3 +217,9 @@ The following were previously listed here and have since shipped:
 - BM25F anchor-text retrieval → **shipped v1.7.0**, default-on (#148/#154; +0.6650 NDCG@k uplift on the v0.1 retrieve_uplift fixture)
 - HRR primitives + structural lane → **shipped v1.7.0**, default-on as of v2.1 ([feature-hrr-integration.md](feature-hrr-integration.md); source at `src/aelfrice/hrr_index.py`; closes the vocabulary-gap-recovery claim, #154 composition tracker, #437 reproducibility-harness 11/11)
 - Heat-kernel authority scorer → **shipped v1.7.0**, default-on as of v2.1 (#154 composition tracker)
+- HRR persistence (split-format `.npy` + `.npz` save/load, default-on) → **shipped v3.0** (#553)
+- Wonder lifecycle (graph-walk + axes-dispatch + phantom promotion Surfaces A+B) → **shipped v2.0/v3.0** ([#542](https://github.com/robotrocketscience/aelfrice/issues/542) umbrella)
+- Read-only cross-project federation → **shipped v3.0** (#650 / #655 / #688)
+- Eval-harness LLM-judge + Cohen's-κ calibration → **shipped v3.0** (#592 / #600 / #687)
+- Type-aware compression A2 bench gate → **shipped v3.0** (#434)
+- `query_strategy` stack-r1-r3 default → **shipped v3.0** (#718)
