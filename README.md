@@ -55,14 +55,14 @@ That's it. Your next prompt that mentions "push" already has the rule attached. 
 
 ## What it does
 
-When you submit a prompt in Claude Code, aelfrice's `UserPromptSubmit` hook fires before the model sees your message. It runs a multi-lane search and merges the results:
+When you submit a prompt in Claude Code, aelfrice's `UserPromptSubmit` hook fires before the model sees your message. It runs a two-layer search:
 
 ```
 L0: locked beliefs   -> rules you marked permanent (always returned)
 L1: FTS5 keyword     -> SQLite full-text search, BM25-ranked
-L2: graph walk       -> typed-edge BFS from L1 seeds (SUPPORTS, CONTRADICTS, …)
-L2.5: structural HRR -> anchor-text + structural-marker rerank (default since v3.0)
 ```
+
+(Since v3.0, two additional lanes run alongside L1 by default: an L2 graph walk over typed edges from L1 seeds, and an L2.5 structural HRR rerank against anchor text and structural markers. The two-layer phrasing above is the v1.0 baseline; the four-lane stack is the v3.0 default. See [ARCHITECTURE § Retrieval](docs/ARCHITECTURE.md#retrieval).)
 
 The matching beliefs come back as an `<aelfrice-memory>` block prepended to your prompt. The agent reads it as part of the prompt — it doesn't have to remember to check a file.
 
