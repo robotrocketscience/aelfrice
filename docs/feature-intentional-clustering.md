@@ -1,6 +1,6 @@
 # Feature spec: Intentional clustering (#436)
 
-**Status:** wired into `retrieve_v2` behind `use_intentional_clustering` (default-OFF at v2.0.0); bench-gate evidence (A2) is the gate to flip the default
+**Status:** wired into `retrieve_v2` behind `use_intentional_clustering`; default-ON since v3.0 after the #436 R6 A4 latency gate cleared 60/60 PASS at p99 0.328ms on the multi-store production sweep
 **Issue:** #436
 **Recovery-inventory line:** [`docs/ROADMAP.md`](ROADMAP.md) — *"Intentional clustering | v2.0.0"*
 **Substrate prereqs:** edge graph (foundation), `dedup.DuplicateCluster` union-find pattern (`src/aelfrice/dedup.py:155-185`, shipped #197), heat kernel authority (#150, shipped v1.7.0), BFS multi-hop (#143, shipped v1.3.0)
@@ -146,10 +146,10 @@ When the flag is OFF, the existing pack loop runs unchanged. When ON, both `clus
 
 `use_intentional_clustering` follows the convention at `retrieval.py:118-131`:
 
-1. `retrieve(..., use_intentional_clustering=True)` kwarg.
-2. `AELFRICE_INTENTIONAL_CLUSTERING=1` env var.
-3. `[retrieval] use_intentional_clustering = true` in `.aelfrice.toml`.
-4. Default OFF at v2.0.0 until bench-gate clears.
+1. `retrieve(..., use_intentional_clustering=True|False)` kwarg.
+2. `AELFRICE_INTENTIONAL_CLUSTERING=1|0` env var.
+3. `[retrieval] use_intentional_clustering = true|false` in `.aelfrice.toml`.
+4. Default ON since v3.0 (#436 R6, 60/60 PASS at p99 0.328ms — ~15-30x margin under the 5ms A4 budget). Opt out via any of the three paths above for v2.0.x ranking parity.
 
 Two adjacent knobs (also TOML-only, no env var):
 
