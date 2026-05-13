@@ -14,10 +14,10 @@
 
 ## Problem
 
-v1.7+ ships HRR machinery still default-OFF behind a flag awaiting bench evidence:
+At v1.7 ship time, HRR machinery was still default-OFF behind a flag awaiting bench evidence (v2.1 closed this — see Solution below):
 
 - `hrr.py` — Plate (1995) primitives.
-- `hrr_index.py` — `HRRStructIndex` for `KIND:target_id` structural-marker queries. Default-OFF behind `use_hrr_structural`.
+- `hrr_index.py` — `HRRStructIndex` for `KIND:target_id` structural-marker queries. Default-ON behind `use_hrr_structural` since v2.1, after the #154 composition-tracker / #437 reproducibility-harness gate cleared 11/11.
 
 Three blocking items stand between the current state and a default-ON ship:
 
@@ -172,7 +172,7 @@ False negatives: legitimate test setups under `/tmp/` get the auto-disable. Miti
 
 ### Default-flip flag (gated by labeled-corpus evidence, not this spec's blocker)
 
-The persistence work above is the **substrate** that makes default-ON viable. The actual **default-flip** of `use_hrr_structural` (`retrieve_v2(..., use_hrr_structural=...)`) stays gated on labeled-corpus evidence per the existing #154 composition tracker policy. v2.1 ships persistence + format migration regardless. The flag ships default-OFF until the bench clears; once it does, a separate atomic PR flips it.
+The persistence work above is the **substrate** that makes default-ON viable. The actual **default-flip** of `use_hrr_structural` (`retrieve_v2(..., use_hrr_structural=...)`) shipped in v2.1 after the #154 composition-tracker / #437 reproducibility-harness gate cleared 11/11. v2.1 also ships persistence + format migration; the persistence substrate keeps cold-start cost off the user-felt path now that the lane is default-ON. Opt-out paths (env `AELFRICE_HRR_STRUCTURAL=0`, kwarg `use_hrr_structural=False`, `[retrieval] use_hrr_structural = false`) remain available for parity with the pre-flip ranking.
 
 ### What v2.1 does NOT change
 
