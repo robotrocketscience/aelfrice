@@ -62,6 +62,7 @@ try:
         Belief,
     )
     from aelfrice.retrieval import retrieve
+    from aelfrice.session_ring import append_ids as _ring_append_ids
     from aelfrice.store import MemoryStore
 
     _IMPORTS_OK: bool = True
@@ -910,6 +911,23 @@ def user_prompt_submit(
                 expansion_gate_skipped_bfs=tel.expansion_gate_skipped_bfs,
                 stderr=serr,
             )
+            # #740: record the per-turn injected belief ids in the
+            # session ring so subsequent PreToolUse:Grep|Glob|Bash fires
+            # can dedup against the UPS-fire injection set. Locked ids
+            # carry a `locked: true` flag in the ring entry but consumers
+            # apply their own locked-set when filtering, so the ring is
+            # explicit about caller intent rather than authoritative.
+            try:
+                injected_ids = [h.id for h in hits if getattr(h, "id", None)]
+                locked_now = {h.id for h in hits if h.lock_level == LOCK_USER}
+                _ring_append_ids(
+                    session_id,
+                    injected_ids,
+                    locked_ids=locked_now,
+                    stderr=serr,
+                )
+            except Exception:  # fail-soft: ring is noise reduction only
+                pass
         elif gate_skip:
             # Gate fired, no BM25 hits. Emit rebuild_log with empty hits
             # (no-op per its early-return guard on empty hits_pre_dedup).
