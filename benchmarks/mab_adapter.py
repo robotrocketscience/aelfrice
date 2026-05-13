@@ -11,6 +11,7 @@ Usage:
     uv run python benchmarks/mab_adapter.py --split Conflict_Resolution
     uv run python benchmarks/mab_adapter.py --split Conflict_Resolution --source factconsolidation_mh_262k
     uv run python benchmarks/mab_adapter.py --split Conflict_Resolution --retrieve-only /tmp/mab_retrieval.json
+    uv run python benchmarks/mab_adapter.py --data tests/fixtures/bench_smoke/mab_micro.json --retrieve-only /tmp/out.json
 """
 from __future__ import annotations
 
@@ -252,6 +253,47 @@ def chunk_context(text: str, chunk_size: int = DEFAULT_CHUNK_SIZE) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+def load_mab_from_file(path: str, source_filter: str | None = None) -> list[MABRow]:
+    """Load MAB rows from a local JSON file.
+
+    The file is a JSON array of objects matching the HuggingFace row
+    schema: ``{context, questions, answers, metadata}``. ``answers`` is
+    a list-of-lists (one per question, each inner list a set of
+    acceptable answer strings). ``metadata`` may include ``source``.
+
+    Used by PR-smoke fixtures (`tests/fixtures/bench_smoke/mab_micro.json`)
+    so the adapter dispatcher can be exercised offline without a
+    HuggingFace download. Production runs still use ``load_mab_split``.
+    """
+    file_path: Path = Path(path)
+    with file_path.open("r", encoding="utf-8") as f:
+        raw: list[dict[str, object]] = json.load(f)
+    rows: list[MABRow] = []
+    for item in raw:
+        raw_meta: object = item.get("metadata", {})
+        metadata: dict[str, object]
+        if isinstance(raw_meta, str):
+            metadata = json.loads(raw_meta)
+        elif isinstance(raw_meta, dict):
+            metadata = dict(raw_meta)  # type: ignore[arg-type]
+        else:
+            metadata = {}
+        raw_answers: object = item.get("answers", [])
+        answers: list[list[str]] = [
+            [str(x) for x in a] for a in raw_answers  # type: ignore[union-attr]
+        ] if isinstance(raw_answers, list) else []
+        row: MABRow = MABRow(
+            context=str(item.get("context", "")),
+            questions=[str(q) for q in item.get("questions", [])],  # type: ignore[union-attr]
+            answers=answers,
+            metadata=metadata,
+        )
+        if source_filter is not None and row.source != source_filter:
+            continue
+        rows.append(row)
+    return rows
+
+
 def load_mab_split(split: str, source_filter: str | None = None) -> list[MABRow]:
     """Load a split from the HuggingFace MemoryAgentBench dataset."""
     if split not in VALID_SPLITS:
@@ -428,7 +470,11 @@ def main() -> None:
     parser.add_argument(
         "--split", default="Conflict_Resolution",
         choices=VALID_SPLITS,
-        help="Dataset split to evaluate (default: Conflict_Resolution)",
+        help="Dataset split to evaluate (default: Conflict_Resolution; ignored when --data is set)",
+    )
+    parser.add_argument(
+        "--data", default=None,
+        help="Path to a local JSON file matching the HF row schema (skips HuggingFace download)",
     )
     parser.add_argument(
         "--source", default=None,
@@ -460,11 +506,18 @@ def main() -> None:
     )
     args: argparse.Namespace = parser.parse_args()
 
-    print(f"Loading MAB dataset split: {args.split}")
+    if args.data:
+        print(f"Loading MAB rows from local file: {args.data}")
+    else:
+        print(f"Loading MAB dataset split: {args.split}")
     if args.source:
         print(f"Filtering by source: {args.source}")
     try:
-        rows: list[MABRow] = load_mab_split(args.split, source_filter=args.source)
+        rows: list[MABRow] = (
+            load_mab_from_file(args.data, source_filter=args.source)
+            if args.data
+            else load_mab_split(args.split, source_filter=args.source)
+        )
     except FileNotFoundError as exc:
         print(
             f"MAB data not found: {exc}",
