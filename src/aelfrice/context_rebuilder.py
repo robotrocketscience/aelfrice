@@ -194,13 +194,18 @@ VALID_TRIGGER_MODES: Final[tuple[str, ...]] = (
              Setting this raises a clear error in the hook path.
 """
 
-DEFAULT_TRIGGER_MODE: Final[str] = TRIGGER_MODE_MANUAL
-"""Ship-default trigger mode at v1.4.0.
+DEFAULT_TRIGGER_MODE: Final[str] = TRIGGER_MODE_THRESHOLD
+"""Ship-default trigger mode.
 
-Manual is the default until production telemetry confirms the
-calibrated threshold. The threshold-mode default value is set by
-`benchmarks/context_rebuilder/calibration_v1_4_0.json`; the user
-opts in via `[rebuilder] trigger_mode = "threshold"`.
+Threshold (#746). v1.4.0 shipped with `manual` as a conservative
+default pending production telemetry; the eval-harness commit-3
+bench (#592) cleared on 2026-05-13 (hot-start 100% at
+`trigger_threshold <= 0.6`, cold-start 75% across t in {0.5..0.8}),
+ratified by the Cohen's-kappa multi-run gate (#687) the same day.
+With both gates closed the rebuilder now fires by default; the
+calibrated operating point is set by `DEFAULT_THRESHOLD_FRACTION`.
+
+Opt out: `[rebuilder] trigger_mode = "manual"` in `.aelfrice.toml`.
 """
 
 DEFAULT_THRESHOLD_FRACTION: Final[float] = 0.6
