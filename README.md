@@ -58,7 +58,7 @@ The result is prepended to your prompt verbatim:
 push the release
 ```
 
-**Lock count is the operator's baseline-context budget knob.** If you lock 200 things, every session opens with all 200, by design. Everything non-locked is BM25-ranked and budget-trimmed. The first prompt of a new session carries one extra block — a `<session-start>` sub-block listing all locks plus load-bearing unlocked beliefs (corroboration ≥ 2, or posterior mean ≥ ⅔ with α+β ≥ 4); subsequent prompts in the same session skip it. See [ARCHITECTURE § Session-start enrichment](docs/ARCHITECTURE.md#claude-code-hook).
+**Lock count is the operator's baseline-context budget knob.** If you lock 200 things, every session opens with all 200, by design. Everything non-locked is BM25-ranked and budget-trimmed. The first prompt of a new session carries one extra block — a `<session-start>` sub-block listing all locks plus load-bearing unlocked beliefs (corroboration ≥ 2, or posterior mean ≥ ⅔ with α+β ≥ 4); subsequent prompts in the same session skip it. Detection is session-scoped via a sentinel at `<git-common-dir>/aelfrice/session_first_prompt.json`.
 
 ---
 
