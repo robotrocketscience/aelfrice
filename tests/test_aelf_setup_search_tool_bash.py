@@ -1,16 +1,20 @@
-"""Tests for `aelf setup --search-tool-bash` and
-`aelf setup --no-search-tool-bash` (#155 AC7).
+"""Tests for `aelf setup` search-tool / search-tool-bash flag behavior.
 
-Coverage:
-- Install writes a PreToolUse:Bash hook entry. Idempotent (second call
-  is a no-op that prints "already installed").
-- Uninstall (--no-search-tool-bash) removes it. Idempotent (no-op when
-  absent).
-- install + uninstall + install round-trip.
-- Independent of --search-tool: can install both, either, or neither.
-- aelf unsetup --search-tool-bash also removes the entry.
-- install_search_tool_bash_hook / uninstall_search_tool_bash_hook
-  low-level unit tests matching the commit-ingest + search-tool pattern.
+History: #155 AC7 introduced these as opt-in flags. #738 (v3.0.1) flipped
+them to default-on under the `--X / --no-X` BooleanOptionalAction
+convention used by every other default-on hook.
+
+Current contract (post #738):
+- Bare `aelf setup` wires both PreToolUse hooks.
+- `--no-search-tool` / `--no-search-tool-bash` skip install AND persist
+  the opt-out at `~/.aelfrice/opt-out-hooks.json` so the next
+  auto-install reconcile does not re-add the hook.
+- Setup-time --no-X does NOT actively uninstall an existing entry; for
+  that, use `aelf unsetup` (default-on for both flags).
+- Both can be opted out together to reproduce the pre-3.0.1 no-PreToolUse
+  default.
+- Low-level install_search_tool_bash_hook / uninstall_search_tool_bash_hook
+  unit tests match the commit-ingest + search-tool pattern.
 """
 from __future__ import annotations
 
@@ -182,21 +186,25 @@ def test_cli_setup_search_tool_bash_idempotent(tmp_path: Path) -> None:
     assert len(_bash_entries(_settings(p))) == 1
 
 
-def test_cli_setup_no_search_tool_bash_removes(tmp_path: Path) -> None:
+def test_cli_setup_no_search_tool_bash_does_not_remove_existing(tmp_path: Path) -> None:
+    """Per #738, setup-time --no-X skips install but does not uninstall.
+
+    Use `aelf unsetup` for explicit removal.
+    """
     p = tmp_path / "settings.json"
     _run_setup(p, "--search-tool-bash")
     assert len(_bash_entries(_settings(p))) == 1
-    rc, out = _run_setup(p, "--no-search-tool-bash")
+    rc, _ = _run_setup(p, "--no-search-tool-bash")
     assert rc == 0
-    assert "removed" in out
-    assert _bash_entries(_settings(p)) == []
+    assert len(_bash_entries(_settings(p))) == 1
 
 
-def test_cli_setup_no_search_tool_bash_idempotent_when_absent(tmp_path: Path) -> None:
+def test_cli_setup_no_search_tool_bash_skips_install(tmp_path: Path) -> None:
+    """`aelf setup --no-search-tool-bash` on a fresh settings.json leaves bash unset."""
     p = tmp_path / "settings.json"
-    rc, out = _run_setup(p, "--no-search-tool-bash")
+    rc, _ = _run_setup(p, "--no-search-tool-bash")
     assert rc == 0
-    assert "no search-tool-bash" in out
+    assert _bash_entries(_settings(p)) == []
 
 
 def test_cli_setup_search_tool_bash_independent_of_search_tool(
@@ -210,12 +218,11 @@ def test_cli_setup_search_tool_bash_independent_of_search_tool(
     assert len(_bash_entries(data)) == 1
 
 
-def test_cli_setup_no_search_tool_bash_leaves_grep_glob_intact(
+def test_cli_setup_no_search_tool_bash_installs_grep_glob_only(
     tmp_path: Path,
 ) -> None:
+    """Bare setup + --no-search-tool-bash wires Grep|Glob but not Bash."""
     p = tmp_path / "settings.json"
-    _run_setup(p, "--search-tool")
-    _run_setup(p, "--search-tool-bash")
     _run_setup(p, "--no-search-tool-bash")
     data = _settings(p)
     assert len(_grep_glob_entries(data)) == 1
@@ -241,3 +248,63 @@ def test_cli_unsetup_search_tool_bash_idempotent(tmp_path: Path) -> None:
     rc, out = _run_unsetup(p, "--search-tool-bash")
     assert rc == 0
     assert "no search-tool-bash" in out
+
+
+# ---------------------------------------------------------------------------
+# CLI: default-on flip (#738)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_setup_bare_installs_both_search_tool_hooks(tmp_path: Path) -> None:
+    """Per #738: bare `aelf setup` (no flags) wires both PreToolUse hooks."""
+    p = tmp_path / "settings.json"
+    rc, _ = _run_setup(p)
+    assert rc == 0
+    data = _settings(p)
+    assert len(_grep_glob_entries(data)) == 1
+    assert len(_bash_entries(data)) == 1
+
+
+def test_cli_setup_both_no_flags_reproduces_pre_3_0_1_default(tmp_path: Path) -> None:
+    """`aelf setup --no-search-tool --no-search-tool-bash` wires neither hook."""
+    p = tmp_path / "settings.json"
+    rc, _ = _run_setup(p, "--no-search-tool", "--no-search-tool-bash")
+    assert rc == 0
+    data = _settings(p)
+    assert _grep_glob_entries(data) == []
+    assert _bash_entries(data) == []
+
+
+def test_cli_setup_no_search_tool_installs_bash_only(tmp_path: Path) -> None:
+    """`aelf setup --no-search-tool` wires search-tool-bash only."""
+    p = tmp_path / "settings.json"
+    rc, _ = _run_setup(p, "--no-search-tool")
+    assert rc == 0
+    data = _settings(p)
+    assert _grep_glob_entries(data) == []
+    assert len(_bash_entries(data)) == 1
+
+
+def test_cli_unsetup_bare_removes_both_search_tool_hooks(tmp_path: Path) -> None:
+    """Per #738: bare `aelf unsetup` (no flags) removes both PreToolUse hooks."""
+    p = tmp_path / "settings.json"
+    _run_setup(p)  # bare install -> both present
+    data = _settings(p)
+    assert len(_grep_glob_entries(data)) == 1
+    assert len(_bash_entries(data)) == 1
+    rc, _ = _run_unsetup(p)
+    assert rc == 0
+    data = _settings(p)
+    assert _grep_glob_entries(data) == []
+    assert _bash_entries(data) == []
+
+
+def test_cli_unsetup_no_search_tool_leaves_grep_glob(tmp_path: Path) -> None:
+    """`aelf unsetup --no-search-tool` leaves the Grep|Glob hook in place."""
+    p = tmp_path / "settings.json"
+    _run_setup(p)
+    rc, _ = _run_unsetup(p, "--no-search-tool")
+    assert rc == 0
+    data = _settings(p)
+    assert len(_grep_glob_entries(data)) == 1
+    assert _bash_entries(data) == []

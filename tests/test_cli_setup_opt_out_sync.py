@@ -87,3 +87,52 @@ def test_setup_no_stop_hook_uses_correct_manifest_name(
     opt_outs = auto_install.read_opt_outs(opt_out)
     assert "stop_lock_prompt" in opt_outs
     assert "stop_hook" not in opt_outs
+
+
+def test_setup_no_search_tool_adds_opt_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """`aelf setup --no-search-tool` persists the opt-out (#738)."""
+    _, opt_out = _patch_paths(monkeypatch, tmp_path)
+    settings = tmp_path / "settings.json"
+    monkeypatch.setenv("AELF_NO_UPDATE_CHECK", "1")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cli.main([
+        "setup", "--settings", str(settings), "--scope", "project",
+        "--no-statusline", "--no-search-tool",
+    ])
+    assert "search_tool" in auto_install.read_opt_outs(opt_out)
+
+
+def test_setup_no_search_tool_bash_adds_opt_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """`aelf setup --no-search-tool-bash` persists the opt-out (#738)."""
+    _, opt_out = _patch_paths(monkeypatch, tmp_path)
+    settings = tmp_path / "settings.json"
+    monkeypatch.setenv("AELF_NO_UPDATE_CHECK", "1")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cli.main([
+        "setup", "--settings", str(settings), "--scope", "project",
+        "--no-statusline", "--no-search-tool-bash",
+    ])
+    assert "search_tool_bash" in auto_install.read_opt_outs(opt_out)
+
+
+def test_setup_bare_rescinds_search_tool_opt_outs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Bare `aelf setup` after a prior --no-search-tool drops the opt-out (#738)."""
+    _, opt_out = _patch_paths(monkeypatch, tmp_path)
+    settings = tmp_path / "settings.json"
+    monkeypatch.setenv("AELF_NO_UPDATE_CHECK", "1")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    auto_install.add_opt_out("search_tool", opt_out)
+    auto_install.add_opt_out("search_tool_bash", opt_out)
+    cli.main([
+        "setup", "--settings", str(settings), "--scope", "project",
+        "--no-statusline",
+    ])
+    opt_outs = auto_install.read_opt_outs(opt_out)
+    assert "search_tool" not in opt_outs
+    assert "search_tool_bash" not in opt_outs
