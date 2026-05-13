@@ -311,10 +311,12 @@ def test_cli_writes_canvas_to_path(tmp_path: Path):
     from aelfrice.cli import main as cli_main
 
     # Spin up a fresh on-disk store and inject one belief so the CLI
-    # can find a seed. Reuse the project-aware open_store() path by
-    # pointing AELFRICE_DATA_DIR at the tmp dir.
+    # can find a seed. Point AELFRICE_DB at a tmp file so we don't
+    # touch the operator's real store.
     import os
-    os.environ["AELFRICE_DATA_DIR"] = str(tmp_path)
+    db_path = tmp_path / "brain.sqlite"
+    prev = os.environ.get("AELFRICE_DB")
+    os.environ["AELFRICE_DB"] = str(db_path)
     try:
         from aelfrice.db_paths import _open_store
         store = _open_store()
@@ -342,4 +344,7 @@ def test_cli_writes_canvas_to_path(tmp_path: Path):
         assert len(payload["nodes"]) == 1
         assert payload["nodes"][0]["id"] == "seed_belief"
     finally:
-        os.environ.pop("AELFRICE_DATA_DIR", None)
+        if prev is None:
+            os.environ.pop("AELFRICE_DB", None)
+        else:
+            os.environ["AELFRICE_DB"] = prev
