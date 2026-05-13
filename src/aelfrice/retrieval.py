@@ -129,9 +129,11 @@ RETRIEVAL_SECTION: Final[str] = "retrieval"
 ENTITY_INDEX_FLAG: Final[str] = "entity_index_enabled"
 BFS_FLAG: Final[str] = "bfs_enabled"
 POSTERIOR_WEIGHT_FLAG: Final[str] = "posterior_weight"
-# v1.5.0 BM25F flag. Default-OFF: FTS5 BM25 stays the L1 path until a
-# benchmark gate (#154 composition tracker) flips the default. Opt-in
-# via the kwarg, AELFRICE_BM25F=1, or `[retrieval] use_bm25f_anchors = true`.
+# v1.5.0 BM25F flag. Default-ON since v1.7.0: the #154 composition-
+# tracker bench cleared with +0.6650 NDCG@k uplift on the v0.1
+# retrieve_uplift fixture, so the FTS5 BM25 path is no longer the L1
+# default. Opt out via the kwarg, AELFRICE_BM25F=0, or
+# `[retrieval] use_bm25f_anchors = false`.
 BM25F_FLAG: Final[str] = "use_bm25f_anchors"
 
 # v1.5.0 #154 composition-tracker placeholder flags. The components
@@ -151,13 +153,17 @@ HRR_STRUCTURAL_FLAG: Final[str] = "use_hrr_structural"
 # CompressedBelief renderings; OFF leaves the field empty for byte-identical
 # behavior with v1.x adapters.
 TYPE_AWARE_COMPRESSION_FLAG: Final[str] = "use_type_aware_compression"
-# v2.0 #436 intentional-clustering flag. Default-OFF at v2.0.0 until the
-# lab-side bench gate (A2 in docs/feature-intentional-clustering.md)
-# clears. When ON, the L1 pack loop is replaced with a diversity-aware
-# greedy fill that biases the top-K toward distinct graph-connected
-# clusters; locked + L2.5 are pre-included unchanged. Mutually exclusive
-# with use_type_aware_compression at v2.0.0 — the cluster pack uses raw
-# token cost, composing it with compressed cost is a v2.x follow-up.
+# v2.0 #436 intentional-clustering flag. Default-ON since v3.0: the
+# A4 latency gate cleared on the multi-store production sweep (#436
+# R6, 60/60 PASS at p99 0.328ms — ~15-30x margin under the 5ms
+# budget). When ON, the L1 pack loop is replaced with a diversity-
+# aware greedy fill that biases the top-K toward distinct graph-
+# connected clusters; locked + L2.5 are pre-included unchanged.
+# Mutually exclusive with use_type_aware_compression at v2.0.0 — the
+# cluster pack uses raw token cost, composing it with compressed cost
+# is a v2.x follow-up. Opt out via the kwarg,
+# AELFRICE_INTENTIONAL_CLUSTERING=0, or
+# `[retrieval] use_intentional_clustering = false`.
 INTENTIONAL_CLUSTERING_FLAG: Final[str] = "use_intentional_clustering"
 
 PLACEHOLDER_FLAGS: Final[tuple[str, ...]] = (
