@@ -14,6 +14,10 @@ installable release; see the roadmap in [README.md](README.md).
 
 - **PreCompact rebuilder now fires by default** ([#746](https://github.com/robotrocketscience/aelfrice/issues/746)). Flips `DEFAULT_TRIGGER_MODE` in `src/aelfrice/context_rebuilder.py` from `"manual"` to `"threshold"`. The v1.4.0 ship-default of `manual` was a conservative hold pending production telemetry: with that posture the rebuilder was a no-op on every harness compaction unless the user added `[rebuilder] trigger_mode = "threshold"` to `.aelfrice.toml`. Both bench gates have now cleared: [#592](https://github.com/robotrocketscience/aelfrice/issues/592) (eval-harness commit-3, closed 2026-05-13: hot-start 100% at `trigger_threshold <= 0.6`, cold-start 75% across t in {0.5..0.8}) and [#687](https://github.com/robotrocketscience/aelfrice/issues/687) (Cohen's-κ multi-run ratification, closed 2026-05-13). Fresh installs now experience augment-mode rebuild without configuration. Opt out via `[rebuilder] trigger_mode = "manual"` in `.aelfrice.toml` — the config-load and hook-dispatch paths already honor the override; no plumbing changes. Per-compaction token spend rises by the rebuild block size (~5-6 KB observed); for token-sensitive workflows the opt-out remains available.
 
+### Fixed
+
+- **Filter harness-wrapper prompts at the transcript-write path** ([#747](https://github.com/robotrocketscience/aelfrice/issues/747)). `transcript_logger.py` now drops prompts rejected by `noise_filter.is_transcript_noise` (synthetic `<task-notification>`, `<summary>Monitor`, `<tool-result>`, etc.) before append to `<git-common-dir>/aelfrice/transcripts/turns.jsonl`. Companion broadening: `_TRANSCRIPT_XML_PREFIXES` now matches `<summary>Monitor` in addition to `<summary>Background`, closing the gap that let Monitor stream-end renderings reach `ingest.py` and land as `agent_inferred` beliefs. Session-id detection and upstream fire counters are unaffected; only the JSONL append is gated. Cleanup of the existing noise rows in `turns.jsonl` and noise beliefs in the store is out of scope here (issue notes a follow-up).
+
 ## [3.0.1] - 2026-05-13
 
 ### Security
