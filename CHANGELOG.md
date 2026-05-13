@@ -867,7 +867,8 @@ Foundation milestone — store, models, config.
 - Initial repo scaffold: pyproject, README, GitHub Actions workflows,
   scan configs (commit `67b4343`).
 
-[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v2.0.1...HEAD
+[Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/robotrocketscience/aelfrice/compare/v2.1.0...v3.0.0
 [2.1.0]: https://github.com/robotrocketscience/aelfrice/compare/v2.0.1...v2.1.0
 [2.0.1]: https://github.com/robotrocketscience/aelfrice/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/robotrocketscience/aelfrice/compare/v1.7.0...v2.0.0
