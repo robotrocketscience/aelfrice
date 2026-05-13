@@ -1,0 +1,65 @@
+name: Bench Smoke
+
+# PR-smoke for the four benchmark adapters (#476).
+#
+# Exercises each adapter's `--retrieve-only` CLI path against a
+# schema-matching micro-fixture under `tests/fixtures/bench_smoke/`,
+# asserting non-zero retrieved-belief counts per item. Two-minute
+# dispatcher-contract validation only — real-data shape coverage
+# stays with the nightly `bench-canonical` cron.
+#
+# Runs on every PR that touches code, adapters, fixtures, or the
+# smoke test itself. Docs-only PRs short-circuit to a pass.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-smoke-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          filters: |
+            relevant:
+              - 'src/**'
+              - 'benchmarks/**'
+              - 'tests/test_bench_smoke.py'
+              - 'tests/fixtures/bench_smoke/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - '.github/workflows/bench-smoke.yml'
+
+      - if: steps.filter.outputs.relevant == 'true'
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - if: steps.filter.outputs.relevant == 'true'
+        name: Install dev group + benchmarks extras
+        run: uv sync --frozen --group dev --extra benchmarks
+
+      - if: steps.filter.outputs.relevant == 'true'
+        name: Run bench-smoke tests
+        run: uv run pytest tests/test_bench_smoke.py -v --timeout=120
+
+      - if: steps.filter.outputs.relevant != 'true'
+        run: echo "No bench-smoke-relevant paths changed; reporting pass."
