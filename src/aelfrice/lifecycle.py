@@ -318,10 +318,16 @@ def format_update_banner(
 
 @dataclass(frozen=True)
 class UpgradeAdvice:
-    """How to upgrade aelfrice in the user's specific install context."""
+    """How to upgrade aelfrice in the user's specific install context.
+
+    Per #730 aelfrice is supported on a single install channel: `uv tool`.
+    `context` therefore collapses to two values: `uv_tool` for a uv-managed
+    install (in-place upgrade) and `non_uv` for any other install path
+    (migration command — uninstall the old + `uv tool install`).
+    """
 
     command: str
-    context: str  # 'uv_tool' | 'pipx' | 'venv' | 'system'
+    context: str  # 'uv_tool' | 'non_uv'
 
 
 def _is_uv_tool_install() -> bool:
@@ -380,16 +386,18 @@ def _is_venv() -> bool:
 
 
 def upgrade_advice() -> UpgradeAdvice:
-    """Return the correct upgrade command for the running install context.
+    """Return the upgrade command for the running install context.
+
+    aelfrice is supported on a single install channel: `uv tool` (#730).
+    When the running install came from a different installer we emit a
+    migration command (uninstall the old + `uv tool install`) rather
+    than an in-place upgrade — the supported upgrade path is uv.
 
     Detection order matters: uv-tool and pipx are both virtualenvs, so
-    they must be identified before the generic venv check.
-
-    Contexts and their upgrade commands:
-      uv_tool  — uv tool upgrade aelfrice
-      pipx     — pipx upgrade aelfrice
-      venv     — pip install --upgrade aelfrice  (active venv's pip)
-      system   — pip install --user --upgrade aelfrice
+    they must be identified before the generic venv check. The pipx /
+    venv / system branches are kept because we still need to know *what*
+    to tell the user to uninstall before the uv install — but they all
+    collapse to `context="non_uv"` at the API surface.
     """
     if _is_uv_tool_install():
         return UpgradeAdvice(
@@ -397,22 +405,20 @@ def upgrade_advice() -> UpgradeAdvice:
             context="uv_tool",
         )
     if _is_pipx_install():
-        return UpgradeAdvice(
-            command=f"pipx upgrade {PACKAGE_NAME}",
-            context="pipx",
+        migrate = (
+            f"pipx uninstall {PACKAGE_NAME} "
+            f"&& uv tool install {PACKAGE_NAME}"
         )
-    if _is_venv():
-        return UpgradeAdvice(
-            command=f"pip install --upgrade {PACKAGE_NAME}",
-            context="venv",
+    else:
+        # venv and system installs: pip uninstall, then uv tool install.
+        # `-y` skips the pip confirmation prompt; the user opted in by
+        # running the slash. `uv tool install` itself sets up the shim
+        # in ~/.local/bin so no further PATH plumbing is needed.
+        migrate = (
+            f"pip uninstall -y {PACKAGE_NAME} "
+            f"&& uv tool install {PACKAGE_NAME}"
         )
-    # Fall through: system / user-site install. --user is the safest
-    # default since system-site requires root and most users don't
-    # want to sudo pip install.
-    return UpgradeAdvice(
-        command=f"pip install --user --upgrade {PACKAGE_NAME}",
-        context="system",
-    )
+    return UpgradeAdvice(command=migrate, context="non_uv")
 
 
 # --- Multi-install detection -------------------------------------------

@@ -312,16 +312,44 @@ def _patch_detection(
 
 
 @pytest.mark.parametrize(
-    "uv_tool,pipx,venv,expected_context,expected_cmd_fragment",
+    "uv_tool,pipx,venv,expected_context,expected_cmd",
     [
+        # uv_tool: in-place upgrade.
         (True, False, False, "uv_tool", "uv tool upgrade aelfrice"),
-        (False, True, False, "pipx", "pipx upgrade aelfrice"),
-        (False, False, True, "venv", "pip install --upgrade aelfrice"),
-        (False, False, False, "system", "pip install --user --upgrade aelfrice"),
+        # pipx: migrate to uv via pipx uninstall.
+        (
+            False,
+            True,
+            False,
+            "non_uv",
+            "pipx uninstall aelfrice && uv tool install aelfrice",
+        ),
+        # venv: migrate to uv via pip uninstall.
+        (
+            False,
+            False,
+            True,
+            "non_uv",
+            "pip uninstall -y aelfrice && uv tool install aelfrice",
+        ),
+        # system / user-site: same as venv (pip uninstall + uv install).
+        (
+            False,
+            False,
+            False,
+            "non_uv",
+            "pip uninstall -y aelfrice && uv tool install aelfrice",
+        ),
         # uv_tool wins even if venv is also true (order check).
         (True, False, True, "uv_tool", "uv tool upgrade aelfrice"),
-        # pipx wins over plain venv.
-        (False, True, True, "pipx", "pipx upgrade aelfrice"),
+        # pipx wins over plain venv (pipx is detected first).
+        (
+            False,
+            True,
+            True,
+            "non_uv",
+            "pipx uninstall aelfrice && uv tool install aelfrice",
+        ),
     ],
 )
 def test_upgrade_advice_routing(
@@ -330,12 +358,15 @@ def test_upgrade_advice_routing(
     pipx: bool,
     venv: bool,
     expected_context: str,
-    expected_cmd_fragment: str,
+    expected_cmd: str,
 ) -> None:
+    """#730: contexts collapse to uv_tool|non_uv; non_uv commands are
+    migration commands (uninstall + uv tool install), not in-place
+    upgrades via the foreign installer."""
     _patch_detection(monkeypatch, uv_tool=uv_tool, pipx=pipx, venv=venv)
     advice = lifecycle.upgrade_advice()
     assert advice.context == expected_context
-    assert advice.command == expected_cmd_fragment
+    assert advice.command == expected_cmd
 
 
 # ---------------------------------------------------------------------------
