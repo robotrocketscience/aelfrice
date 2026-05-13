@@ -215,6 +215,10 @@ def _handle_user_prompt_submit(payload: dict[str, object]) -> None:
         if is_transcript_noise(prompt):
             return
     except Exception:
+        # Fail-soft: any noise_filter regression falls through to the
+        # plain-append path. Silent by design — this hook runs on every
+        # user prompt and its stderr leaks into the harness output, so
+        # logging here would be worse UX than rare unfiltered rows.
         pass
     session_id = payload.get("session_id")
     sid = session_id if isinstance(session_id, str) else None
