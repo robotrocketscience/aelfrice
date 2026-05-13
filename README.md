@@ -5,7 +5,7 @@
 > Your AI stops forgetting.
 > Set up once. Stays out of the way.
 >
-> _Local SQLite. Fully auditable. No GPU, no network._
+> _No cloud. No account. No telemetry._
 
 [![PyPI](https://img.shields.io/pypi/v/aelfrice.svg)](https://pypi.org/project/aelfrice/)
 [![Python](https://img.shields.io/pypi/pyversions/aelfrice.svg)](https://pypi.org/project/aelfrice/)
