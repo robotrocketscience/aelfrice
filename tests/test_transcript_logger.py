@@ -62,6 +62,29 @@ def test_user_prompt_submit_skips_empty_prompt(tdir: Path) -> None:
     assert not (tdir / "turns.jsonl").is_file()
 
 
+def test_user_prompt_submit_skips_transcript_noise_prompt(tdir: Path) -> None:
+    """#747: harness-wrapper prompts must not be appended to turns.jsonl.
+
+    `<task-notification>` and `<summary>Monitor` shapes are scaffolding,
+    not user intent — they crowd the rebuilder's recent-turns window and
+    pollute downstream ingest. The logger now consults
+    `noise_filter.is_transcript_noise` before append.
+    """
+    rc1 = _run_main({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "<task-notification>worker idle</task-notification>",
+        "session_id": "sess-noise-1",
+    })
+    rc2 = _run_main({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": '<summary>Monitor "PR 743" stream ended</summary>',
+        "session_id": "sess-noise-2",
+    })
+    assert rc1 == 0
+    assert rc2 == 0
+    assert not (tdir / "turns.jsonl").is_file()
+
+
 def test_user_prompt_submit_no_session_id_writes_null(tdir: Path) -> None:
     rc = _run_main({
         "hook_event_name": "UserPromptSubmit",

@@ -4,6 +4,8 @@ Wires four hook events into a project-scoped append-only JSONL log
 under `<git-common-dir>/aelfrice/transcripts/turns.jsonl`:
 
 - `UserPromptSubmit` -> append `{"role": "user", "text": <prompt>, ...}`.
+  Harness-wrapper prompts (rejected by `noise_filter.is_transcript_noise`)
+  are dropped before append per #747.
 - `Stop` -> append `{"role": "assistant", "text": <last assistant turn>, ...}`.
 - `PreCompact` -> write a `compaction_start` marker, rotate
   `turns.jsonl` to `archive/turns-<ts>.jsonl`, spawn
@@ -202,6 +204,18 @@ def _handle_user_prompt_submit(payload: dict[str, object]) -> None:
     prompt = payload.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
         return
+    # #747: harness-wrapper prompts (<task-notification>, <summary>Monitor,
+    # <tool-result>, etc.) carry no user intent and crowd real turns out of
+    # the rebuilder's recent-turns window. Gate the append on the same
+    # noise predicate ingest.py uses; fail-soft so a noise_filter import
+    # error never breaks the logger.
+    try:
+        from aelfrice.noise_filter import is_transcript_noise  # noqa: PLC0415
+
+        if is_transcript_noise(prompt):
+            return
+    except Exception:
+        pass
     session_id = payload.get("session_id")
     sid = session_id if isinstance(session_id, str) else None
     line = _build_turn_line(
