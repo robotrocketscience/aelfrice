@@ -32,7 +32,7 @@ rebuilder hood).
 | Augment-mode coordination with the harness | Shipped |
 | `additionalContext` JSON envelope on stdout | Shipped |
 | Manual fire via `aelf rebuild` / `/aelf:rebuild` | Shipped (#141) |
-| Trigger modes — manual + threshold | Shipped (#141; default `manual`) |
+| Trigger modes — manual + threshold | Shipped (#141; default `threshold` since #746) |
 | Threshold default sourced from calibration data | Shipped (#141; `benchmarks/context-rebuilder/calibration_v1_4_0.json`) |
 | Trigger mode — dynamic | **Parked for v1.5** (#141; see § Dynamic mode (parked v1.5) below) |
 | Suppress-mode coordination with the harness | **Parked for v2.x** |
@@ -128,11 +128,11 @@ investigated separately. Configured via `.aelfrice.toml`:
 
 ```toml
 [rebuilder]
-# v1.4 ship default. The PreCompact hook no-ops unless the user
-# explicitly fires the rebuilder via `aelf rebuild` or
-# `/aelf:rebuild`. Opt into auto-firing by switching to
-# `trigger_mode = "threshold"`.
-trigger_mode = "manual"
+# Ship default since #746. The PreCompact hook fires when the
+# harness compacts; opt out by setting this to "manual" if you
+# only want the rebuilder to run on explicit `aelf rebuild` /
+# `/aelf:rebuild` invocations.
+trigger_mode = "threshold"
 
 # Calibrated default from
 # benchmarks/context-rebuilder/calibration_v1_4_0.json. Only
@@ -143,12 +143,13 @@ trigger_mode = "manual"
 threshold_fraction = 0.6
 ```
 
-- **`manual`** *(default at v1.4.0)*: PreCompact hook never fires
+- **`manual`** *(opt-out since #746)*: PreCompact hook never fires
   the rebuild block. Only explicit invocations
-  (`aelf rebuild` / `/aelf:rebuild`) emit a block. This is the
-  ship default until production telemetry confirms threshold-mode
-  is safe to default-on.
-- **`threshold`**: PreCompact hook fires when called by Claude
+  (`aelf rebuild` / `/aelf:rebuild`) emit a block. Use this if the
+  augment-mode token-spend bump (~5-6 KB per compaction) is not
+  worth the context-preservation win for your workflow.
+- **`threshold`** *(default since #746; bench gates #592 + #687
+  cleared 2026-05-13)*: PreCompact hook fires when called by Claude
   Code's harness. The harness's own threshold gating is the trigger
   signal; `threshold_fraction` documents the *calibrated operating
   point* and is the reproducible source-of-truth for the default
