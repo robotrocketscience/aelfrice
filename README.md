@@ -44,6 +44,8 @@ That's it. The next prompt that mentions "push" already has the rule. From here 
 
 ## How it works
 
+In plain English: four searches run in parallel over your stored rules, the best matches get prepended to your prompt, and the model reads the lot as one message. Below is the wiring for readers who want the receipts.
+
 When you submit a prompt, aelfrice's `UserPromptSubmit` hook fires before the model sees your message. It runs four retrieval lanes in parallel, merges the result, and prepends the matched beliefs as an `<aelfrice-memory>` block:
 
 ```text
