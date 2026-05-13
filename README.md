@@ -47,7 +47,7 @@ That's it. Your next prompt that mentions "push" already has the rule attached. 
 - **Every belief has a confidence and a confidence-in-its-confidence.** A `(α, β)` Beta-Bernoulli posterior gives both: `α / (α+β)` says which way the belief leans, `α + β` says how sure we are of that lean. New beliefs sit at low evidence (high variance, retrievable but discounted); locked beliefs short-circuit decay and pin as ground truth.
 - **One prompt, every layer responds.** Four parallel lookups happen at once, each catching what the others miss: locked rules pin to the front, keyword match for literal word overlap, anchor-text match that weighs labels and references heavier than body prose, and a graph lane that finds beliefs by how they connect rather than what they say. You don't have to pick. The build cost is paid once when you onboard the project — every prompt thereafter gets every layer for free.
 - **Local-only.** SQLite at `<git-common-dir>/aelfrice/memory.db` (or `~/.aelfrice/memory.db` outside git). No network calls, no telemetry, no accounts. One brain per project, all on your machine. ([PRIVACY.md](docs/PRIVACY.md))
-- **Auditable to the row.** Every belief has an `origin` column (`user_stated`, `user_corrected`, `commit_ingest`, …) tying it to the action that wrote it. Open the DB in any SQLite browser; nothing hidden. Query it with the tools; full traceability.
+- **Auditable to the row.** Every belief has an `origin` column (`user_stated`, `user_corrected`, `user_validated`, `agent_inferred`, `agent_remembered`, `document_recent`, `speculative`, `unknown`) tying it to the action that wrote it. Open the DB in any SQLite browser; nothing hidden. Query it with the tools; full traceability.
 - **Reversible.** `aelf uninstall --archive backup.aenc` encrypts the DB and deletes the live copy. `--purge` wipes it. `--keep-db` leaves data untouched. No vendor lock-in by construction. You're the boss of your memories.
 - **No GPU, no network, no inference cost.** Runtime deps are `numpy`, `scipy`, `snowballstemmer` — all CPU, all offline. Retrieval is a sparse-matrix query, not an LLM call. Operations are fast and local.
 
@@ -55,11 +55,13 @@ That's it. Your next prompt that mentions "push" already has the rule attached. 
 
 ## What it does
 
-When you submit a prompt in Claude Code, aelfrice's `UserPromptSubmit` hook fires before the model sees your message. It runs a two-layer search:
+When you submit a prompt in Claude Code, aelfrice's `UserPromptSubmit` hook fires before the model sees your message. It runs a multi-lane search and merges the results:
 
 ```
 L0: locked beliefs   -> rules you marked permanent (always returned)
 L1: FTS5 keyword     -> SQLite full-text search, BM25-ranked
+L2: graph walk       -> typed-edge BFS from L1 seeds (SUPPORTS, CONTRADICTS, …)
+L2.5: structural HRR -> anchor-text + structural-marker rerank (default since v3.0)
 ```
 
 The matching beliefs come back as an `<aelfrice-memory>` block prepended to your prompt. The agent reads it as part of the prompt — it doesn't have to remember to check a file.
@@ -142,7 +144,7 @@ By that bar, "a vector store with a similarity query" is not a memory system —
 | **Provenance / audit trail** | Every row traces back to the action that wrote it: who, when, via what ingress channel. | `origin` column on every belief — `user_stated`, `user_corrected`, `user_validated`, `agent_inferred`, `agent_remembered`, `document_recent`, `speculative` ([`src/aelfrice/models.py`](src/aelfrice/models.py)). Append-only [`ingest_log`](src/aelfrice/store.py) table records every raw input with its source kind, source path, and session id — tear the DB down and rebuild it from this log alone. `content_hash` binds each row to its content. `belief_versions` / `edge_versions` sidecar tables carry per-scope version vectors. Open the file in any SQLite browser; nothing is hidden. |
 | **Write gates / confirmation** | Persistence is not unconditional. Some writes need explicit approval; external-origin claims cannot be laundered into ground truth. | Two-tier lock state: `lock_level ∈ {none, user}` with a `locked_at` timestamp and a `demotion_pressure` counter that blocks silent removal. `aelf lock` is the only path to L0 user-asserted ground truth — locked beliefs short-circuit decay and pin to every retrieval. `aelf confirm` only bumps a Beta-Bernoulli posterior — it cannot promote `origin` without an explicit `aelf promote`. The `(α, β)` posterior means feedback *accumulates* rather than overwrites; one harmful click does not erase a belief, it nudges the mean. |
 | **Conflict handling** | Competing claims about the same thing are surfaced, not silently overwritten. | First-class edge types `CONTRADICTS` and `SUPERSEDES` in [`src/aelfrice/models.py`](src/aelfrice/models.py) — disagreement is a graph relation, not a vanished row. New facts about the same (entity, property) chain via `SUPERSEDES` rather than mutating in-place, leaving the prior claim queryable. Per-scope version vectors (#204 / #205) preserve causal ordering for concurrent edits across worktrees. |
-| **Reversibility (inspect / edit / delete)** | Mutations remain auditable and partially undoable. The user is the boss of their memories. | `aelf delete <id>` writes an audit row *before* the cascade ([`cli.py:1363`](src/aelfrice/cli.py)). `aelf unlock` writes a `lock:unlock` audit row ([`promotion.py`](src/aelfrice/promotion.py)); `aelf promote` and its inverse leave `promotion:revert_to_agent_inferred` rows; `aelf feedback` lands rows in `feedback_history`. The `ingest_log` is append-only and replay-capable. At the top level: `aelf uninstall --archive backup.aenc` encrypts and removes the live DB, `--purge` wipes, `--keep-db` leaves data untouched. No vendor lock-in by construction. |
+| **Reversibility (inspect / edit / delete)** | Mutations remain auditable and partially undoable. The user is the boss of their memories. | `aelf delete <id>` writes an audit row *before* the cascade ([`cli.py:_cmd_delete`](src/aelfrice/cli.py)). `aelf unlock` writes a `lock:unlock` audit row ([`promotion.py`](src/aelfrice/promotion.py)); `aelf promote` and its inverse leave `promotion:revert_to_agent_inferred` rows; `aelf feedback` lands rows in `feedback_history`. The `ingest_log` is append-only and replay-capable. At the top level: `aelf uninstall --archive backup.aenc` encrypts and removes the live DB, `--purge` wipes, `--keep-db` leaves data untouched. No vendor lock-in by construction. |
 
 ---
 
@@ -180,9 +182,7 @@ The same operations are also available as MCP tools and `/aelf:*` slash commands
 
 ## Status
 
-Latest stable: **v2.1.0** — heat-kernel + HRR-structural defaults flipped on (#154) after the #437 reproducibility-harness gate cleared 11/11; HRR `dim` default 512 (#538); default-on transcript / commit / session-start hooks (#529).
-
-Next: **v3.0** — wonder lifecycle complete (#542), HRR persistence default-ON (#553), type-aware compression (#434), HRR retrieve_v2 phase-2 (#152), eval-harness completion (#592, #600), plus v3.0 design decisions: NL-relatedness philosophy (#605), sentiment-feedback hook integration (#606), multimodel scope (#607). Milestone tracker: [#608](https://github.com/robotrocketscience/aelfrice/issues/608).
+Latest stable: **v3.0.0** (2026-05-13) — wonder lifecycle complete (#542), wonder/reason parity (#645) with VERDICT/IMPASSES + dispatch policy + suggested updates, HRR persistence default-ON with split-format save/load (#553), type-aware compression A2 bench gate (#434), eval-harness host-agent replay + LLM-judge stage + Cohen's-κ runner (#592, #600, #687), read-only federation with `scope` field + peer DB FTS5/BFS (#650/#655/#688/#690), `query_strategy` default flipped to `stack-r1-r3` (#718), phantom-promotion Surface A + Surface B (#550), sentiment-feedback UPS hook (#606). Ratified design decisions: PHILOSOPHY stays deterministic (#605); multimodel deferred (#607). Milestone tracker: [#608](https://github.com/robotrocketscience/aelfrice/issues/608). Full entries: [CHANGELOG.md § 3.0.0](CHANGELOG.md).
 
 Per-version detail: [docs/ROADMAP.md](docs/ROADMAP.md).
 Open issues / known limits: [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
