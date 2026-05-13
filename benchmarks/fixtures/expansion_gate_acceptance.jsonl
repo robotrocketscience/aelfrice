@@ -1,0 +1,109 @@
+# 100-row labelled fixture for the #741 expansion-gate acceptance bench.
+# Hand-authored from in-repo public material (README, CHANGELOG, docs/,
+# src/, tests/). Schema: one JSON row per line, {prompt, label} where
+# label is broad or narrow.
+#
+# Lines starting with '#' are comments; the loader skips them.
+#
+# --- Broad prompts (50) ---------------------------------------------------
+{"prompt": "what is the right way to think about the four layer retrieval stack when a query touches both locked beliefs and the fuzzy long tail at the same time", "label": "broad"}
+{"prompt": "why does the project insist on deterministic stdlib gates instead of just letting an embedding model decide which lane to fire on a given query", "label": "broad"}
+{"prompt": "how should we decide when a multi hop walk is worth the latency budget versus returning a smaller but tighter set of locked anchors and recent corroborations", "label": "broad"}
+{"prompt": "tell me about the overall philosophy behind the deterministic narrow surface and how that constrains the kinds of new gates we are willing to add", "label": "broad"}
+{"prompt": "explain how the Bayesian posterior over a belief updates when fresh evidence arrives and what the half life decay buys us beyond a simple count of corroborations", "label": "broad"}
+{"prompt": "which trade offs become load bearing when we start asking the rebuilder to fire on every turn versus only on threshold crossings or session boundaries", "label": "broad"}
+{"prompt": "who should be the audience for the periodic checkpoint summaries and how does that audience shape the level of detail the rebuilder needs to preserve", "label": "broad"}
+{"prompt": "what does it mean for the system to honor the principle that a belief is never silently overwritten and where in the pipeline does that promise actually live", "label": "broad"}
+{"prompt": "why might a long natural language question be a poor fit for graph walks even when the underlying belief store has rich edges and recent provenance", "label": "broad"}
+{"prompt": "how does the project draw the line between an honest disagreement among beliefs and a contradiction that the resolver should actively try to surface to the user", "label": "broad"}
+{"prompt": "tell me about how locked anchors propagate confidence into neighbors and what stops a single locked claim from dragging the rest of the graph along with it", "label": "broad"}
+{"prompt": "explain why the gate is willing to be conservative and skip expansion when in doubt rather than running the expensive lanes and ranking later", "label": "broad"}
+{"prompt": "what does a healthy mix of broad and narrow prompts look like in real daily usage and how would we even measure that without leaking user content off device", "label": "broad"}
+{"prompt": "why is it preferable to keep the expansion gate purely textual and shape based instead of learning a classifier on past query telemetry over time", "label": "broad"}
+{"prompt": "how do we want the bench harness to treat warmups and outliers when the goal is comparing percentile latency rather than mean throughput across cells", "label": "broad"}
+{"prompt": "which kinds of failure modes should we worry about most when the gate misclassifies a query and we silently lose the multi hop lane on that call", "label": "broad"}
+{"prompt": "tell me about the relationship between recall and latency for the broad question shape and where the diminishing returns actually live on the curve", "label": "broad"}
+{"prompt": "why does the rebuilder bother emitting a session scoped block in addition to the locked block when the locked rows are already pinned and load bearing", "label": "broad"}
+{"prompt": "how would a user notice if the gate started firing too aggressively on prompts that look broad but actually wanted the graph walk to be honest", "label": "broad"}
+{"prompt": "explain the reasoning behind keeping the structural query lane on even when the BFS lane is gated off for a given broad shaped query", "label": "broad"}
+{"prompt": "what assumptions about prompt distribution underlie the acceptance bullet that broad p95 must improve by at least thirty percent when the gate is on", "label": "broad"}
+{"prompt": "why should narrow prompt p50 latency be the regression guard rather than narrow prompt p95 or some richer summary of the tail", "label": "broad"}
+{"prompt": "how does the deterministic resolver precedence interact with someone who wants to opt out of gating only for a particular project rather than globally", "label": "broad"}
+{"prompt": "tell me about the kinds of structural markers that historically have correlated with a question actually wanting a multi hop walk in this codebase", "label": "broad"}
+{"prompt": "explain why the question form prefix heuristic exists at all when the length and marker checks would already catch most genuinely broad prompts on their own", "label": "broad"}
+{"prompt": "what should we do when a user pastes a long block of natural language that happens to contain one stray identifier near the end of the message", "label": "broad"}
+{"prompt": "why might it be a mistake to expose the gate decision back to the model as a tool result instead of keeping it an internal telemetry signal", "label": "broad"}
+{"prompt": "how does the project balance the desire for a small surface area against the reality that real users keep asking for one more knob on every release", "label": "broad"}
+{"prompt": "which release notes are most relevant to someone trying to understand the current expansion gate behavior without reading every commit since the initial cut", "label": "broad"}
+{"prompt": "tell me about the historical reasons the retrieval pipeline grew lanes incrementally rather than landing as one monolithic surface from the start", "label": "broad"}
+{"prompt": "what would change about the gate design if the underlying belief store grew by an order of magnitude and the BFS lane became dramatically more expensive", "label": "broad"}
+{"prompt": "why is wall clock latency the right yardstick for the acceptance bench instead of something like nodes visited or candidate set size at each stage", "label": "broad"}
+{"prompt": "how should we describe the gate behavior in user facing documentation without overpromising determinism or hiding the heuristic nature of the decision", "label": "broad"}
+{"prompt": "explain how the project thinks about test coverage when a feature is partly a latency optimization and partly a behavioral change in retrieval output", "label": "broad"}
+{"prompt": "what makes a good labelled fixture for a latency benchmark and where does hand authoring stop being scalable once the corpus needs to grow", "label": "broad"}
+{"prompt": "why does the README emphasize that aelfrice is a memory layer for long lived agents rather than a general purpose vector database for arbitrary text", "label": "broad"}
+{"prompt": "how would a future contributor reason about whether to extend the gate with a new heuristic versus adding a whole new resolver step earlier in the pipeline", "label": "broad"}
+{"prompt": "tell me about the way the project handles speculative beliefs and how that affects which candidates can ever reach the top of a retrieval result list", "label": "broad"}
+{"prompt": "which design decisions in the retrieval surface are most likely to look obviously wrong in hindsight once the system has a year of real usage data", "label": "broad"}
+{"prompt": "what would it take to convince the project to ship an embedding lane in spite of the stated preference for deterministic stdlib only retrieval mechanics", "label": "broad"}
+{"prompt": "why is keeping retrieval offline and on device a hard constraint rather than something we relax when a hosted call would clearly improve recall", "label": "broad"}
+{"prompt": "how does the project want maintainers to think about backwards compatibility for the gate decision dataclass as new fields get added over time", "label": "broad"}
+{"prompt": "explain why the bench harness reports percentiles per label per cell instead of collapsing everything into a single global summary statistic", "label": "broad"}
+{"prompt": "what are the load bearing claims in the acceptance criteria for the gate and which of them depend on the labelled corpus actually being representative", "label": "broad"}
+{"prompt": "tell me about the way locked beliefs survive demotion pressure and how that interacts with retrieval ordering when neighbors decay around them", "label": "broad"}
+{"prompt": "which guarantees does the retrieval surface make about ordering stability when two candidates have identical scores under the current ranking rule", "label": "broad"}
+{"prompt": "why might a contributor reach for the gate as a latency lever before exploring caching or memoization on the expensive lanes themselves", "label": "broad"}
+{"prompt": "how should documentation describe the difference between a broad prompt that gets short circuited and a genuinely empty query that gets only the locked rows", "label": "broad"}
+{"prompt": "tell me about the kinds of questions where the user would actually be annoyed if the gate fired and silently dropped the multi hop lane behind their back", "label": "broad"}
+{"prompt": "what should the project do about prompts that arrive in a language other than English where the question form prefix list will simply not match", "label": "broad"}
+# --- Narrow prompts (50) --------------------------------------------------
+{"prompt": "should_run_expansion in src/aelfrice/expansion_gate.py", "label": "narrow"}
+{"prompt": "AELFRICE_NO_EXPANSION_GATE env override semantics in src/aelfrice/expansion_gate.py", "label": "narrow"}
+{"prompt": "AELFRICE_FORCE_EXPANSION escape hatch precedence at src/aelfrice/expansion_gate.py", "label": "narrow"}
+{"prompt": "ExpansionDecision run_bfs field default", "label": "narrow"}
+{"prompt": "ExpansionDecision run_hrr_structural reserved field", "label": "narrow"}
+{"prompt": "BROAD_PROMPT_TOKEN_THRESHOLD constant value in expansion_gate.py", "label": "narrow"}
+{"prompt": "_QUESTION_FORM_PREFIXES tuple contents in expansion_gate.py", "label": "narrow"}
+{"prompt": "_has_structural_markers helper in expansion_gate.py", "label": "narrow"}
+{"prompt": "_read_toml_flag walk in expansion_gate.py", "label": "narrow"}
+{"prompt": "retrieve() bfs_enabled kwarg path", "label": "narrow"}
+{"prompt": "last_lane_telemetry in src/aelfrice/retrieval.py", "label": "narrow"}
+{"prompt": "LaneTelemetry expansion_gate_skipped_bfs flag", "label": "narrow"}
+{"prompt": "#741 acceptance broad p95 bullet", "label": "narrow"}
+{"prompt": "#724 lab_corpus convention reference", "label": "narrow"}
+{"prompt": "#605 v3.0 philosophy_decision callsite", "label": "narrow"}
+{"prompt": "#387 aelf_doctor producer for POTENTIALLY_STALE marker", "label": "narrow"}
+{"prompt": "#421 edge_rerank consumer entry point", "label": "narrow"}
+{"prompt": "#548 wonder_lifecycle RESOLVES edge", "label": "narrow"}
+{"prompt": "EDGE_SUPPORTS insert path through MemoryStore.insert_edge", "label": "narrow"}
+{"prompt": "EDGE_CONTRADICTS valence in edge_valence dict", "label": "narrow"}
+{"prompt": "EDGE_SUPERSEDES propagation behavior in edge_valence", "label": "narrow"}
+{"prompt": "EDGE_RELATES_TO catch_all weight value", "label": "narrow"}
+{"prompt": "EDGE_DERIVED_FROM versus EDGE_CITES coupling in src/aelfrice/models.py", "label": "narrow"}
+{"prompt": "EDGE_IMPLEMENTS propagation multiplier in src/aelfrice/models.py", "label": "narrow"}
+{"prompt": "EDGE_TEMPORAL_NEXT chronological weight in src/aelfrice/models.py", "label": "narrow"}
+{"prompt": "EDGE_TESTS evidential_edge multiplier value", "label": "narrow"}
+{"prompt": "EDGE_RESOLVES wonder_marker zero valence", "label": "narrow"}
+{"prompt": "POTENTIALLY_STALE marker_edge in models.py", "label": "narrow"}
+{"prompt": "BFS_EDGE_WEIGHTS table entries in src/aelfrice/retrieval.py", "label": "narrow"}
+{"prompt": "seed_multihop_corpus in aelfrice.benchmark", "label": "narrow"}
+{"prompt": "benchmarks/expansion_gate_bench.py CELL_KEYS tuple", "label": "narrow"}
+{"prompt": "benchmarks/fixtures/expansion_gate_stub.jsonl row count", "label": "narrow"}
+{"prompt": "tests/unit/test_expansion_gate.py question form cases", "label": "narrow"}
+{"prompt": "tests/integration/test_retrieve_expansion_gate.py wiring", "label": "narrow"}
+{"prompt": "docs/PHILOSOPHY.md narrow_surface section", "label": "narrow"}
+{"prompt": "src/aelfrice/models.py EDGE_VALENCE dict", "label": "narrow"}
+{"prompt": "src/aelfrice/store.py MemoryStore insert_edge signature", "label": "narrow"}
+{"prompt": "src/aelfrice/retrieval.py retrieve() entry", "label": "narrow"}
+{"prompt": "src/aelfrice/context_rebuilder/__init__.py trigger_mode default", "label": "narrow"}
+{"prompt": "[retrieval] expansion_gate_enabled in .aelfrice.toml", "label": "narrow"}
+{"prompt": "CONFIG_FILENAME constant for .aelfrice.toml walk_root", "label": "narrow"}
+{"prompt": "RETRIEVAL_SECTION key_name in expansion_gate.py", "label": "narrow"}
+{"prompt": "EXPANSION_GATE_FLAG constant_lookup in expansion_gate.py", "label": "narrow"}
+{"prompt": "_env_force_expansion truthy parse_table", "label": "narrow"}
+{"prompt": "_env_no_expansion_gate falsy parse_table", "label": "narrow"}
+{"prompt": "_starts_with_question_form word_boundary check", "label": "narrow"}
+{"prompt": "_FILE_PATH_RE regex_prefixes src tests docs benchmarks scripts", "label": "narrow"}
+{"prompt": "_SNAKE_CASE_RE pattern match on insert_edge", "label": "narrow"}
+{"prompt": "_CAMEL_CASE_RE pattern_match on MemoryStore class", "label": "narrow"}
+{"prompt": "_ISSUE_REF_RE matches #741 and #605 references", "label": "narrow"}
