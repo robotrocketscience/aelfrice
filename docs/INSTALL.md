@@ -168,7 +168,7 @@ aelf setup --search-tool               # PreToolUse:Grep|Glob memory-first searc
 
 All hooks are non-blocking. Every failure path returns exit 0 — a hook problem must never break a prompt or a commit.
 
-### Self-installing hook manifest (v2.2+)
+### Self-installing hook manifest (v3.0+)
 
 The list of default-on hooks above is declared in `src/aelfrice/data/hook_manifest.json` and ships in the wheel. The first `aelf <cmd>` invocation after a fresh install or a bare `pipx upgrade aelfrice` (or `uv tool upgrade aelfrice` / `pip install -U aelfrice`) reconciles the installed manifest version against `~/.aelfrice/installed-manifest-version` and merges any new entries into `~/.claude/settings.json` automatically. This closes the loop on bare package-manager upgrades — you no longer have to remember to re-run `aelf setup` to pick up hooks added in newer releases.
 
@@ -192,30 +192,26 @@ aelf setup --no-stop-hook           # disable one hook; persists across upgrades
 
 > **Privacy note.** Default-on transcript-ingest means every turn you type lands in the per-project SQLite DB on `PreCompact` rotation. The DB is local-only (no network, no telemetry — see § "Your data stays yours" in the README) but the JSONL has no PII scrubber. If you paste secrets, customer data, or anything you don't want indexed in chat, opt out with `--no-transcript-ingest` and use `aelf lock` / `aelf onboard` for explicit ingestion only.
 
-### Legacy-schema detection (`aelf doctor`, v2.1+)
+### Legacy-schema detection + auto-migrate (`aelf doctor`, v3.0+)
 
-`aelf doctor` scans all per-project DBs under `~/.aelfrice/projects/*/memory.db` and flags any that use the pre-v1.x schema (no `origin` column on the `beliefs` table) and have at least one row. DBs on the old schema cannot participate in the v2.x lifecycle — `agent_remembered`, `user_validated`, calibrated weights, `aelf:promote` — because the column that tracks origin is absent.
+`aelf doctor` scans all per-project DBs under `~/.aelfrice/projects/*/memory.db` and migrates any that use the pre-v1.x schema (no `origin` column on the `beliefs` table) in place. DBs on the old schema cannot participate in the v2.x / v3.0 lifecycle — `agent_remembered`, `user_validated`, calibrated weights, `aelf:promote`, federation `scope` — because the columns that track them are absent.
 
-When legacy DBs are found the doctor report appends a block like:
+Auto-migrate behaviour (v3.0+, [#593](https://github.com/robotrocketscience/aelfrice/issues/593)): for each detected legacy DB, doctor renames `memory.db` → `memory.db.pre-v1x.bak` (atomic POSIX rename) and runs the existing `migrate()` core with `copy_all=True, apply=True` against the backup, writing a fresh modern-schema DB back at the original path. Beliefs land with `origin=ORIGIN_UNKNOWN`. The backup is preserved verbatim and never overwritten — if a stale `<path>.pre-v1x.bak` already exists from a prior failed run, the migration aborts for that DB and the failure is surfaced under `report.failed_migrate_dbs` instead of clobbering recoverable state. Success path emits one line per DB:
 
 ```
-legacy-schema per-project DBs detected (pre-v1.x, no `origin` column).
-  ~/.aelfrice/projects/2e7ed55e017a/memory.db (35,332 beliefs, idle 16d)
-  ~/.aelfrice/projects/18a856c7a96b/memory.db (6,283 beliefs, idle 13d)
-fix: `aelf migrate --from <path> --apply` per DB to copy beliefs
-     into the current project's modern-schema DB.
+migrated ~/.aelfrice/projects/2e7ed55e017a/memory.db: 35,332 beliefs, 412ms (backup at ~/.aelfrice/projects/2e7ed55e017a/memory.db.pre-v1x.bak)
 ```
 
-The block is quiet when every scanned DB already has the `origin` column. Empty DBs (zero rows) are silently skipped.
+Empty DBs (zero rows) are silently skipped. Failures surface a residual nag pointing at the manual `aelf migrate --from <path> --apply` path for that specific DB.
 
-To migrate a legacy DB:
+For manual migrations (e.g. a DB outside the standard `~/.aelfrice/projects/` tree):
 
 ```bash
-aelf migrate --from ~/.aelfrice/projects/<id>/memory.db          # dry-run
-aelf migrate --from ~/.aelfrice/projects/<id>/memory.db --apply  # write
+aelf migrate --from /alt/path/memory.db          # dry-run
+aelf migrate --from /alt/path/memory.db --apply  # write
 ```
 
-### Pruning dormant per-project DBs (`aelf doctor --prune-dormant`, v2.1+)
+### Pruning dormant per-project DBs (`aelf doctor --prune-dormant`, v3.0+)
 
 Some per-project DBs hold beliefs from projects you worked on briefly with an older aelfrice version, then abandoned. They never get migrated, never get touched, and just sit there. `aelf doctor --prune-dormant` lists DBs whose `memory.db` mtime is older than `--idle-days` (default 30) and lets you delete them one at a time.
 
