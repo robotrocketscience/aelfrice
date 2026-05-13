@@ -33,6 +33,24 @@ def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AELFRICE_DB", str(tmp_path / "aelf.db"))
 
 
+@pytest.fixture(autouse=True)
+def isolated_migration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#733: prevent `aelf setup` integration tests from invoking the
+    real uv-tool migration subprocess on a contributor's host. Stub
+    `cli.maybe_migrate_to_uv` to return a no-op result for every test
+    in this file. The migration behaviour itself is covered by
+    `tests/test_migrate_to_uv.py` and `tests/test_setup_migrate_order.py`.
+    """
+    from aelfrice import cli as cli_mod
+    from aelfrice.lifecycle import MigrationResult
+
+    monkeypatch.setattr(
+        cli_mod,
+        "maybe_migrate_to_uv",
+        lambda: MigrationResult(False, False, "already on uv tool"),
+    )
+
+
 def _run(*argv: str) -> tuple[int, str]:
     buf = io.StringIO()
     code = main(argv=list(argv), out=buf)
