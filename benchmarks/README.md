@@ -117,13 +117,23 @@ When adapters activate, they pull from upstream sources rather
 than vendoring data. See `benchmarks/datasets.toml` (ships with
 P2) for pinned commit SHAs and sha256 checksums.
 
-| Benchmark | Source | License |
+| Benchmark | Source (actual, per adapter pin) | License |
 |---|---|---|
-| MAB | HuggingFace `huangchaoyi/MemoryAgentBench` | check upstream |
-| LoCoMo | github.com/snap-research/locomo | check upstream |
-| LongMemEval | HuggingFace `xiaowu0162/longmemeval` | check upstream |
-| StructMemEval | github.com/yandex-research/StructMemEval | check upstream |
+| MAB | HuggingFace `ai-hyz/MemoryAgentBench` | MIT |
+| LoCoMo | github.com/snap-research/locomo | CC BY-NC 4.0 |
+| LongMemEval | HuggingFace `xiaowu0162/longmemeval-cleaned` | MIT |
+| StructMemEval | github.com/yandex-research/StructMemEval | no LICENSE file (default copyright) |
 | AMA-Bench | (TBD on activation) | check upstream |
 
 License verification happens at activation time per benchmark, not
-at scaffold time.
+at scaffold time. The MAB and LongMemEval entries match the actual
+`HF_DATASET` pins in `mab_adapter.py` and `longmemeval_adapter.py`;
+earlier versions of this table pointed at related-but-different
+upstreams (`huangchaoyi/MemoryAgentBench`, `xiaowu0162/longmemeval`)
+that the adapters do not actually load.
+
+PR-smoke fixtures under `tests/fixtures/bench_smoke/` are
+schema-matching synthetic data — not derived from any of these
+upstreams — per the activation-time license review on #476.
+Real-data shape coverage continues to come from the nightly
+`bench-canonical` cron.
