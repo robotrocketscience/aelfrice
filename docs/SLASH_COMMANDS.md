@@ -2,7 +2,7 @@
 
 Nineteen markdown files in `src/aelfrice/slash_commands/`, tracking the v1.2.0 CLI consolidation, the v1.4.0 `rebuild` promotion, the v2.0 reasoning surfaces, and the v2.x `eval` calibration surface. After `aelf setup`, they appear as `/aelf:*` in the host. Each is a thin wrapper over the CLI — `/aelf:foo` invokes `aelf foo` against the active project's DB.
 
-Slash files are not shipped for hidden CLI subcommands (`bench`, `feedback`, `health`, `migrate`, `project-warm`, `regime`, `session-delta`, `stats`, `statusline`, `unsetup`). Those subcommands stay callable from the CLI for scripting, hook entry-points, and back-compat aliases — they're just not surfaced as slashes.
+Slash files cover the everyday user-facing surface, plus a handful of operator workflows where one keystroke matters (`/aelf:uninstall`, `/aelf:upgrade`). Hidden CLI subcommands (`bench`, `clamp-ghosts`, `demote`, `feedback`, `gate`, `health`, `ingest-transcript`, `project-warm`, `regime`, `resolve`, `session-delta`, `stats`, `statusline`, `unsetup`, `upgrade-cmd`, `validate`) and the per-hook entry points stay callable from the CLI for scripting and back-compat — they're not surfaced as slashes. The visible CLI verbs `migrate`, `mcp`, `sweep-feedback`, and `scan-derivation` are likewise CLI-only because they're operator / scripting flows rather than per-turn agent surface.
 
 `aelf setup` installs all slash-command files automatically into `~/.claude/commands/aelf/` and prunes any stale files left behind by renames (e.g. `stats.md` after the v1.2.0 rename to `status.md`). Re-running `aelf setup` after an upgrade is sufficient to keep the set current.
 
@@ -16,7 +16,7 @@ Slash files are not shipped for hidden CLI subcommands (`bench`, `feedback`, `he
 | `/aelf:unlock` | belief id — drops the lock without changing origin tier |
 | `/aelf:locked` | optional `--pressured` |
 | `/aelf:confirm` | belief id — bumps posterior without freezing |
-| `/aelf:promote` | belief id — promote `agent_inferred` to `user_validated` |
+| `/aelf:promote` | belief id — promote `agent_inferred` to `user_validated`. v3.0+ accepts `--to-scope SCOPE` to flip federation visibility in the same call (#689). |
 | `/aelf:delete` | belief id (locked beliefs require `--force`; `--yes` skips prompt) |
 | `/aelf:core` | optional `--json`, `--locked-only` — surfaces load-bearing beliefs |
 | `/aelf:status` | (none) — belief / lock / history counts (renamed from `stats` at v1.2.0) |
@@ -26,8 +26,8 @@ Slash files are not shipped for hidden CLI subcommands (`bench`, `feedback`, `he
 | `/aelf:upgrade` | (none) — imperative upgrade. Detects install context, runs `uv tool upgrade aelfrice` (or pipx/pip equivalent) in Bash (separate process, no mid-process interpreter replacement), then `aelf setup` to refresh the slash-command bundle, then clears the stale update-banner cache. The advisory `aelf upgrade-cmd` CLI verb still exists for scripted use. |
 | `/aelf:uninstall` | one of `--keep-db`, `--archive`, `--purge` |
 | `/aelf:rebuild` | optional `--n N`, `--budget T`, `--transcript PATH` — manually fire the context rebuilder; v1.4.0+ |
-| `/aelf:reason` | keyword query — walks the belief graph from BM25-seeded starting points; v2.0+ (#389) |
-| `/aelf:wonder` | optional flags (`--top N`, `--seed ID`, `--emit-phantoms`) — surfaces consolidation candidates / phantom-belief suggestions; v2.0+ (#389), phantom-store integration deferred to v2.x |
+| `/aelf:reason` | keyword query — v2.0+ (#389) walks the belief graph from BM25-seeded starting points; v3.0+ ([#645](https://github.com/robotrocketscience/aelfrice/issues/645) R3, [#690](https://github.com/robotrocketscience/aelfrice/issues/690), [#713](https://github.com/robotrocketscience/aelfrice/issues/713)) expands into a three-step orchestrator: (1) run `aelf reason --json` and print the chain; (2) fan out one Task subagent per `payload.dispatch[i]` with a role-tagged prompt (Verifier / Gap-filler / Fork-resolver derived from VERDICT + ImpasseKind); (3) print a `SUGGESTED UPDATES` section that maps `payload.suggested_updates[*]` to `aelf feedback` close-the-loop directions. Peer hops in foreign scopes are annotated `[scope:<name>]`. |
+| `/aelf:wonder` | two modes (v3.0+, [#542](https://github.com/robotrocketscience/aelfrice/issues/542) / [#552](https://github.com/robotrocketscience/aelfrice/issues/552)). **No-arg / `--seed`** runs the v2.0 graph-walk consolidation (`--top N`, `--emit-phantoms`). **Positional `QUERY` / `--axes QUERY`** runs `aelf wonder --axes QUERY`, fans out one Task subagent per research axis with the axis name + search hints + gap context, collects each subagent's research document into a JSONL file with `{axis_name, content, anchor_ids}` rows, and hands the file to `aelf wonder --persist-docs FILE` which materialises one phantom per axis via `wonder_ingest`. Agent-count shorthand `quick N-agent` / `deep N-agent` recognised. Phantom-store integration shipped at v3.0; pre-v3 the slash only emitted candidates. |
 | `/aelf:eval` | optional `--corpus PATH`, `--k N`, `--seed N`, `--json` — runs the relevance-calibration harness (P@K / ROC-AUC / Spearman ρ) ratified at #365 |
 
 Behaviour matches the CLI exactly — see [COMMANDS](COMMANDS.md). The v1.1.0 `edges` → `threads` user-facing rename does not surface here; the program name remains `aelf`.
