@@ -1,27 +1,46 @@
 ---
 name: aelf:wonder
-description: Surface consolidation candidates and phantom-belief suggestions over the belief graph; with a query, run the axes-spawn-ingest research flow.
-argument-hint: Optional query (e.g. "about X as it relates to Y") or graph-walk flags (--top 5, --emit-phantoms, --seed <id>, --gc, --persist)
+description: Research a topic and persist findings as new speculative beliefs the next /aelf:reason can use, or (no topic) run a graph-walk consolidation pass.
+argument-hint: Topic (e.g. "about session id propagation" or "indentation rules"), or graph-walk flags (--top 5, --emit-phantoms, --seed <id>, --gc, --persist)
 allowed-tools:
   - Bash
   - Task
   - Write
 ---
 <objective>
-Two modes, picked from the arguments:
+The research surface. Pair to `/aelf:reason`: where reason walks the graph you already have, wonder *grows* the graph by going off and learning things, so the next reason pass is richer.
 
-1. **No query → graph-walk consolidation.** Walk the belief graph from a deterministically-picked seed (or `--seed <id>`) and surface ranked consolidation candidates with suggested actions. Use `--emit-phantoms` to print Phantom JSON for offline review or `--persist` to write them to the store via `wonder_ingest`.
-2. **With a positional query (or `--axes "<query>"`) → axes-spawn-ingest research flow.** Run gap analysis against the query, generate research axes, fan out one subagent per axis to produce research documents, then hand the documents back through `wonder_ingest` so each subagent's research lands as a speculative phantom belief anchored to the gap-surface seeds. This is the wonder consolidation dispatch loop (#542 E4 / #552 / #645). The query may carry agent-count shorthand: `quick N-agent`, `deep N-agent`, or bare `N-agent` (e.g. `aelf wonder "quick 2-agent wonder about indentation"` → `agent_count=2`, query `"about indentation"`).
+Two modes, picked from the shape of the arguments:
+
+1. **Bare positional topic** (e.g. `/aelf:wonder about indentation`) **or `--axes "<query>"` → axes-spawn-ingest research flow.** Run gap analysis against the topic, generate 2–6 orthogonal research axes, fan out one subagent per axis to produce research documents, then hand the documents back through `wonder_ingest` so each subagent's research lands as a speculative phantom belief anchored to the gap-surface seeds. This is the wonder consolidation dispatch loop (#542 E4 / #552 / #645). The topic may carry agent-count shorthand: `quick N-agent`, `deep N-agent`, or bare `N-agent` (e.g. `quick 2-agent wonder about indentation` → `agent_count=2`, query `"about indentation"`).
+2. **No topic / flag-only** (`/aelf:wonder` with no args, or only flags like `--top 5`, `--emit-phantoms`, `--seed <id>`, `--gc`, `--persist`) **→ graph-walk consolidation.** Walk the belief graph from a deterministically-picked seed (or `--seed <id>`) and surface ranked consolidation candidates with suggested actions. Use `--emit-phantoms` to print Phantom JSON for offline review or `--persist` to write them to the store via `wonder_ingest`.
 </objective>
 
 <process>
-**If `$ARGUMENTS` does NOT contain `--axes`:**
+**Dispatch on the shape of `$ARGUMENTS`:**
 
-Run: `uv run aelf wonder $ARGUMENTS`. Display the output verbatim. Do not add commentary.
+- **Bare positional topic** — `$ARGUMENTS` is non-empty and its first non-whitespace character is **not** `-`. The user typed something like `/aelf:wonder about indentation`. Run with the topic quoted as one CLI argument:
 
-**If `$ARGUMENTS` contains `--axes "<query>"`:**
+  ```bash
+  uv run aelf wonder "$ARGUMENTS"
+  ```
 
-1. **Get the dispatch payload.** Run `uv run aelf wonder $ARGUMENTS`. Stdout is JSON of shape `{gap_analysis, research_axes, agent_count, speculative_anchor_ids}`. Parse it. If `research_axes` is empty, print the payload and stop — there is nothing to dispatch.
+  The quotes are load-bearing — the CLI's positional `query` is a single argument; without them argparse rejects multi-word topics (`error: unrecognized arguments: ...`).
+
+- **Empty or flag-only** — `$ARGUMENTS` is empty, or its first non-whitespace character is `-` (e.g. `--gc`, `--persist`, `--emit-phantoms`, `--axes "<query>"`). Run unquoted so the shell tokenises flags correctly:
+
+  ```bash
+  uv run aelf wonder $ARGUMENTS
+  ```
+
+**What to do with the output:**
+
+- If stdout is JSON of shape `{gap_analysis, research_axes, agent_count, speculative_anchor_ids}` (the axes-spawn-ingest flow ran — either via a bare positional topic or via `--axes "<query>"`), proceed to the dispatch loop below.
+- Otherwise (graph-walk consolidation output, `--gc` summary, etc.), display the output verbatim and stop.
+
+**Dispatch loop** (axes flow only):
+
+1. **Parse the JSON payload.** If `research_axes` is empty, print the payload and stop — there is nothing to dispatch.
 
 2. **Fan out one subagent per axis.** For each axis in `research_axes`, spawn a Task subagent in parallel (send a single assistant message containing one Task tool use per axis). Each subagent's prompt should include:
 
