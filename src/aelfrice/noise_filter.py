@@ -182,6 +182,7 @@ _TRANSCRIPT_XML_PREFIXES: Final[tuple[str, ...]] = (
     "<output-file",
     "<task-",
     "<summary>Background",
+    "<summary>Monitor",
 )
 
 # Single-word capitalised gerund followed by a full stop: "Polling.", "Running."
@@ -505,7 +506,8 @@ def is_transcript_noise(sentence: str) -> bool:
        Match is case-sensitive and position-anchored at index 0.
     2. **Tool-call rendering glyph** — starts with ⏺ (U+23FA).
     3. **Pseudo-XML structural tags** — starts with `<worktree`,
-       `<output-file`, `<task-`, or `<summary>Background`.
+       `<output-file`, `<task-`, `<summary>Background`, or
+       `<summary>Monitor`.
     4. **Single-word progress emit** — matches `^[A-Z][a-z]+ing\\.$`
        (a lone capitalised gerund and a full stop, nothing else).
     5. **Agent ack emit** — matches

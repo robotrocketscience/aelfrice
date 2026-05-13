@@ -402,6 +402,20 @@ def test_transcript_noise_summary_background_tag() -> None:
     assert is_transcript_noise("<summary>Background context here.") is True
 
 
+def test_transcript_noise_summary_monitor_tag() -> None:
+    """<summary>Monitor stream-end render: #747 regression guard.
+
+    The harness wraps stream-end notifications as
+    `<summary>Monitor "..." stream ended</summary>`. Prior to #747
+    only `<summary>Background` was in `_TRANSCRIPT_XML_PREFIXES`, so
+    these slipped past `is_transcript_noise` and landed in
+    `ingest.py` as `agent_inferred` beliefs.
+    """
+    assert is_transcript_noise(
+        '<summary>Monitor "PR 743" stream ended</summary>'
+    ) is True
+
+
 def test_transcript_noise_prose_not_starting_with_xml_tag() -> None:
     assert is_transcript_noise("The worktree contains three branches.") is False
 
