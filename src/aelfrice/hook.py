@@ -50,6 +50,7 @@ try:
         read_recent_turns_claude_transcript,
         rebuild_v14,
     )
+    from aelfrice.query_understanding import DEFAULT_STRATEGY
     from aelfrice.hook_search import search_for_prompt
     from aelfrice.models import (
         BELIEF_CORRECTION,
@@ -1691,7 +1692,7 @@ def _rebuild_and_format(
     rebuild_log_enabled: bool = True,
     floor_session: float = 0.0,
     floor_l1: float = 0.0,
-    query_strategy: str = "stack-r1-r3",
+    query_strategy: str = DEFAULT_STRATEGY,
 ) -> str:
     """Open the store and run the v1.4 rebuild.
 
