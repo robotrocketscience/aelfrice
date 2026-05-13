@@ -91,6 +91,7 @@ from aelfrice.benchmark import run_benchmark, seed_corpus
 from aelfrice.classification import (
     HostClassification,
     accept_classifications,
+    check_onboard_candidates,
     start_onboard_session,
 )
 from aelfrice.derivation import DerivationInput, derive
@@ -458,7 +459,47 @@ def _cmd_onboard_accept_classifications(
     return 0
 
 
+def _cmd_onboard_check(args: argparse.Namespace, out: object) -> int:
+    """Read-only pre-scan: print n_already_present / n_new and exit.
+
+    Runs the extractor + id-dedup pipeline against the store without
+    writing an onboard_sessions row or inserting beliefs. Lets the user
+    see what a re-onboard would do before paying the classification
+    cost (#761). No LLM gates, no network, no consent prompt.
+    """
+    if not args.path:
+        print(
+            "aelf onboard --check: <path> is required.",
+            file=sys.stderr,
+        )
+        return 2
+    repo_path = Path(args.path)
+    store = _open_store()
+    try:
+        result = check_onboard_candidates(store, repo_path)
+    finally:
+        store.close()
+    total = result.n_already_present + result.n_new
+    pct_present = (
+        (result.n_already_present * 100) // total if total > 0 else 0
+    )
+    print(
+        f"path: {result.repo_path}\n"
+        f"already present: {result.n_already_present} candidates "
+        f"({pct_present}% of {total})\n"
+        f"new since last onboard: {result.n_new} candidates\n"
+        f"(read-only pre-scan; no beliefs inserted, no session persisted)",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
 def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
+    # --check: read-only pre-scan, bypasses every other onboard path.
+    # Runs before --emit-candidates / --accept-classifications because
+    # it makes no store writes and short-circuits cleanly (#761).
+    if getattr(args, "check", False):
+        return _cmd_onboard_check(args, out)
     # --emit-candidates / --accept-classifications: low-level entry
     # points used by the /aelf:onboard slash command to drive the
     # polymorphic onboard handshake from a Claude Code session via
@@ -4571,6 +4612,18 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "extract candidates, persist a PENDING onboard session, "
             "and print {session_id, n_already_present, sentences[]} as "
             "JSON to stdout. No network. Used by /aelf:onboard."
+        ),
+    )
+    p_onboard.add_argument(
+        "--check",
+        dest="check",
+        action="store_true",
+        help=(
+            "read-only pre-scan: report how many candidates would be "
+            "filtered as already-present vs handed to the classifier, "
+            "then exit without inserting any beliefs or persisting a "
+            "session. No network, no LLM consent prompt. Use to decide "
+            "whether re-onboard is worth the classification cost (#761)."
         ),
     )
     p_onboard.add_argument(
