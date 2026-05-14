@@ -199,6 +199,21 @@ MODULES: dict[str, tuple[set[str], dict[str, str]]] = {
             "k": "int",
         },
     ),
+    # #819 labeled rerank-relevance corpus — bench unblock for #769 / #724 /
+    # #800 R5 / #817 flip-default. Per-row: a query, a candidate-belief
+    # pool, and the labeller-judged gold relevant set at rank k. Optional
+    # `gold_ordering` (not enforced here) carries a full preference order
+    # when assignable; consumers that only need recall/precision@k read
+    # `gold_top_k` and ignore `gold_ordering` when absent.
+    "rerank_relevance": (
+        {"graded"},
+        {
+            "query": "str",
+            "beliefs": "list[belief]",
+            "gold_top_k": "list[str]",
+            "k": "int",
+        },
+    ),
 }
 
 COMMON_REQUIRED = ("id", "provenance", "labeller_note", "label")

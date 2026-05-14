@@ -53,7 +53,9 @@ tests/corpus/v2_0/
 │   └── *.jsonl
 ├── multi_fact/                        #436 (intentional clustering — multi-fact recall)
 │   └── *.jsonl
-└── doc_linker/                        #435 (belief↔document anchor uplift)
+├── doc_linker/                        #435 (belief↔document anchor uplift)
+│   └── *.jsonl
+└── rerank_relevance/                  #819 (labeled rerank-relevance — bench unblock for #769/#724/#800 R5/#817 flip-default)
     └── *.jsonl
 ```
 
@@ -96,6 +98,7 @@ required for **all** modules:
 | `wonder_online` | `beliefs` (list[obj]), `edges` (list[obj]), `seed_id` (string), `expected_candidate_ids` (list[string]) | `graded` |
 | `multi_fact` | `query` (string), `expected_belief_ids` (list[string]), `expected_clusters` (list[list[string]]), `n_clusters_required` (int), `tag` (string) | `graded` |
 | `doc_linker` | `query` (string), `beliefs` (list[obj]), `expected_belief_ids` (list[string]), `expected_doc_uris` (list[string]), `k` (int) | `graded` |
+| `rerank_relevance` | `query` (string), `beliefs` (list[obj]), `gold_top_k` (list[string], **unordered**), `k` (int); optional `gold_ordering` (list[string], ordered when assignable) | `graded` |
 
 ### `directive_detection` re-entry gate (#374)
 
@@ -296,6 +299,49 @@ Public-tree fixtures may live here (synthetic-only); real-traffic
 fixtures stay lab-side per directory-of-origin rules. The bench-gate
 test at `tests/bench_gate/test_doc_linker.py` skips cleanly when the
 module dir is empty.
+
+### `rerank_relevance` bench unblock (#819)
+
+Tracker module backing four downstream bench-gate decisions that share a
+common need: a labeled set of (query, candidate-belief, gold-relevance)
+triples on real-shape aelfrice retrieval workloads. The four consumers:
+
+- **#769** flip `use_type_aware_compression` default-OFF → default-ON
+  (A2 recall@k on the labeled corpus, A4 fidelity on rebuild_logs).
+- **#724** raise `DEFAULT_CLUSTER_EDGE_FLOOR` 0.4 → 0.6 — two prior bench
+  runs failed on `multi_fact`, finding came from a different-shape corpus.
+- **#800 R5 / #817** flip `use_zeta_rerank` default-OFF → default-ON. The
+  R5 verdict-gating bench was deferred pending this corpus.
+- Feature-ablation harness (lab `docs/feature-inventory.md` Layer 2) —
+  measures aelfrice-with-feature-X-off vs aelfrice-with-feature-X-on on
+  real-shape queries.
+
+Per-row shape (also covered by `tests/test_corpus_schema.py`):
+
+- `query` — string. The retrieve_v2 input under test.
+- `beliefs` — list of `{"id": str, "text": str}` (each id stable within
+  the row; harness wires them into a transient `MemoryStore`).
+- `gold_top_k` — non-empty list of belief ids the labeller judged
+  relevant to `query` (set semantics; order ignored by the relevance gate).
+- `k` — integer ≥ 1; the rank cutoff used to score retrieval against
+  `gold_top_k`.
+- `gold_ordering` (optional) — ordered list of belief ids when a full
+  preference order is assignable. Omitted (or `null`) when only top-K
+  membership is labelled. Consumers that need pairwise preferences read
+  this; consumers that only need recall/precision@k can ignore it.
+
+Aggregation (default consumer): per-row precision@k = `|top_k(query) ∩
+gold_top_k| / k`, recall@k = `|top_k(query) ∩ gold_top_k| / |gold_top_k|`.
+ζ rerank / γ rerank consumers compare `rank_biased_overlap` and
+`rank_changed_fraction` against the baseline rerank on the same rows.
+
+Public-tree fixtures may live here when fully synthetic and scrubbed
+per the directory-of-origin rule — see `docs/feature-rerank-relevance-corpus.md`
+for the labeling protocol and scrubbing checklist. Real aelfrice-store
+captures (lab side) and any `~/.claude/`-sourced text never enter this
+module. The bench-gate smoke harness at
+`tests/bench_gate/test_rerank_relevance.py` skips cleanly when the
+module dir is empty or unmounted.
 
 ## v0.1 acceptance (per #307)
 
