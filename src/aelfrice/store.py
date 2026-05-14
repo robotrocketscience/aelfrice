@@ -3287,21 +3287,16 @@ class MemoryStore:
         for cls in signal_weights:
             if not is_valid_signal_class(cls):
                 raise ValueError(f"unknown signal class: {cls!r}")
-        cur = self._conn.execute(
-            "SELECT 1 FROM meta_beliefs WHERE key = ?", (key,)
-        )
-        if cur.fetchone() is not None:
-            return False
         encoded = encode_signal_weights(signal_weights)
-        self._conn.execute(
-            "INSERT INTO meta_beliefs "
+        cur = self._conn.execute(
+            "INSERT OR IGNORE INTO meta_beliefs "
             "(key, static_default, half_life_seconds, last_updated_ts, signal_classes) "
             "VALUES (?, ?, ?, ?, ?)",
             (key, float(static_default), int(half_life_seconds),
              int(now_ts), encoded),
         )
         self._conn.commit()
-        return True
+        return cur.rowcount > 0
 
     def update_meta_belief(
         self,
