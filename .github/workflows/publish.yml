@@ -29,16 +29,29 @@ jobs:
         with:
           subject-path: 'dist/*'
       - uses: pypa/gh-action-pypi-publish@release/v1
-      - name: Create GitHub Release
+      - name: Promote or create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # release-drafter pre-creates a DRAFT release for the next resolved
+          # version on every push to main. `gh release view` succeeds against
+          # drafts, so a naive existence-check leaves the new tag's release
+          # stuck in DRAFT and v(N-1) keeps the Latest badge (#804). Promote
+          # the draft when it exists; only `release create` if no release
+          # exists at all. Always assert --latest for the freshly cut tag.
           tag="${GITHUB_REF#refs/tags/}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "release $tag already exists; skipping"
-            exit 0
+          if state=$(gh release view "$tag" --json isDraft -q .isDraft 2>/dev/null); then
+            if [ "$state" = "true" ]; then
+              echo "release $tag exists as DRAFT — promoting to published + latest"
+              gh release edit "$tag" --draft=false --latest --verify-tag
+            else
+              echo "release $tag already published; nothing to do"
+            fi
+          else
+            echo "no release for $tag — creating from generated notes"
+            gh release create "$tag" \
+              --title "$tag" \
+              --generate-notes \
+              --latest \
+              --verify-tag
           fi
-          gh release create "$tag" \
-            --title "$tag" \
-            --generate-notes \
-            --verify-tag
