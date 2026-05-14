@@ -1,0 +1,56 @@
+{
+  "harness": "bfs_latency_v3",
+  "harness_version": "1",
+  "aelfrice_version": "3.0.1",
+  "git_commit": "efd061359de4c369e7862a9e269ae3af1707b630",
+  "captured_at_utc": "2026-05-14T00:35:26Z",
+  "corpus": {
+    "beliefs": 10000,
+    "edges": 20200,
+    "topics": 200
+  },
+  "query_count": 30,
+  "iterations_per_query": 10,
+  "arms": {
+    "bfs_off": {
+      "label": "bfs_off",
+      "samples": 300,
+      "p50_ms": 101.83991596568376,
+      "p95_ms": 140.1334999827668,
+      "p99_ms": 228.56191702885553,
+      "max_ms": 325.2031249576248,
+      "mean_ms": 109.55237802312088,
+      "min_ms": 94.98320805141702
+    },
+    "bfs_on": {
+      "label": "bfs_on",
+      "samples": 300,
+      "p50_ms": 102.85787499742582,
+      "p95_ms": 175.78208300983533,
+      "p99_ms": 242.8541670087725,
+      "max_ms": 627.0899159717374,
+      "mean_ms": 117.39168599034504,
+      "min_ms": 97.28599997470155
+    }
+  },
+  "delta_ms": {
+    "p50": 1.0179590317420661,
+    "p95": 35.648583027068526,
+    "p99": 14.29224997991696,
+    "max": 301.88679101411253
+  },
+  "gate": {
+    "delta_p50_ms": 1.0179590317420661,
+    "delta_p95_ms": 35.648583027068526,
+    "delta_p50_pass": true,
+    "delta_p95_pass": true,
+    "tail_ratio": 6.096664120150559,
+    "tail_ratio_pass": true,
+    "passed": true
+  },
+  "gate_thresholds": {
+    "delta_p50_ms": 5.0,
+    "delta_p95_ms": 50.0,
+    "max_over_median_ratio": 10.0
+  }
+}
