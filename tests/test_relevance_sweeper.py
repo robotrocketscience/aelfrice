@@ -19,10 +19,7 @@ from aelfrice.hook import (
 )
 from aelfrice.meta_beliefs import SIGNAL_RELEVANCE
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
-from aelfrice.retrieval import (
-    ENV_META_BELIEF_HALF_LIFE,
-    META_HALF_LIFE_KEY,
-)
+from aelfrice.retrieval import META_HALF_LIFE_KEY
 from aelfrice.store import MemoryStore
 
 TEST_META_KEY = "meta:retrieval.test_relevance_consumer"
