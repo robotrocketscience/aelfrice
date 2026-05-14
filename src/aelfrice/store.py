@@ -463,6 +463,22 @@ _SCHEMA: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_injection_events_pending "
     "ON injection_events(session_id, referenced) "
     "WHERE referenced IS NULL",
+    # #801: onboard rejection ledger. Records (text, source) pairs the
+    # host classifier rejected with persist=False so re-running
+    # `aelf onboard <path>` does not re-emit and re-classify the same
+    # noise on every pass. belief_id is the same SHA used by `beliefs.id`
+    # (sha256(source\\0text)[:16]); rejections and accepted beliefs share
+    # a key space and a rejection-then-accept moves the row from this
+    # table into `beliefs`. Forward-compat: empty on existing stores
+    # because IF NOT EXISTS leaves prior schemas untouched.
+    """
+    CREATE TABLE IF NOT EXISTS onboard_rejections (
+        belief_id   TEXT PRIMARY KEY,
+        text        TEXT NOT NULL,
+        source      TEXT NOT NULL,
+        rejected_at TEXT NOT NULL
+    )
+    """,
 )
 
 # Marker key for the entity-index one-shot backfill. Empty value =
@@ -3902,6 +3918,58 @@ class MemoryStore:
                 "SELECT COUNT(*) AS n FROM onboard_sessions WHERE state = ?",
                 (state,),
             )
+        row = cur.fetchone()
+        return int(row["n"]) if row else 0
+
+    def insert_onboard_rejection(
+        self, belief_id: str, text: str, source: str, rejected_at: str,
+    ) -> None:
+        """Record a host classifier `persist=False` verdict (#801).
+
+        Idempotent on `belief_id`: subsequent rejections of the same
+        `(text, source)` pair refresh `rejected_at` to the latest run.
+        """
+        self._conn.execute(
+            """
+            INSERT INTO onboard_rejections (belief_id, text, source, rejected_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(belief_id) DO UPDATE SET rejected_at = excluded.rejected_at
+            """,
+            (belief_id, text, source, rejected_at),
+        )
+        self._conn.commit()
+
+    def delete_onboard_rejection(self, belief_id: str) -> bool:
+        """Drop a rejection ledger entry. Returns True if a row was
+        removed. Called when a previously-rejected sentence is accepted
+        on a `--force` re-run so the ledger only carries currently-
+        rejected entries.
+        """
+        cur = self._conn.execute(
+            "DELETE FROM onboard_rejections WHERE belief_id = ?",
+            (belief_id,),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def is_onboard_rejected(self, belief_id: str) -> bool:
+        cur = self._conn.execute(
+            "SELECT 1 FROM onboard_rejections WHERE belief_id = ? LIMIT 1",
+            (belief_id,),
+        )
+        return cur.fetchone() is not None
+
+    def list_onboard_rejection_ids(self) -> set[str]:
+        """Set of all rejected belief_ids. Used to bulk-filter
+        candidates without one SELECT per row.
+        """
+        cur = self._conn.execute("SELECT belief_id FROM onboard_rejections")
+        return {row["belief_id"] for row in cur.fetchall()}
+
+    def count_onboard_rejections(self) -> int:
+        cur = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM onboard_rejections"
+        )
         row = cur.fetchone()
         return int(row["n"]) if row else 0
 
