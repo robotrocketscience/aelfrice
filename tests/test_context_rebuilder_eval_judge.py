@@ -6,7 +6,7 @@ hand-authored by an operator running the host-side dispatch.
 
 Two contracts are load-bearing and asserted explicitly:
 
-  1. The contamination boundary (`docs/BENCHMARKS.md`): the judge
+  1. The contamination boundary (`docs/concepts/BENCHMARKS.md`): the judge
      request file carries only `(turn_idx, expected, actual)` — no
      rebuilt block, no user turn.
 
@@ -51,7 +51,7 @@ def test_judge_request_schema_carries_only_turn_idx_expected_actual(
 ) -> None:
     """The request file must not surface retrieval context to the judge.
 
-    `docs/BENCHMARKS.md` requires that generation and scoring run as
+    `docs/concepts/BENCHMARKS.md` requires that generation and scoring run as
     separate passes and that the judge never sees the rebuilt context.
     This test fails loud if a future edit widens the schema to include
     `rebuilt_block`, `user_turn`, or any other retrieval-pass field.

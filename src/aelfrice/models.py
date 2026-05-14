@@ -104,7 +104,7 @@ LOCK_LEVELS: Final[frozenset[str]] = frozenset({LOCK_NONE, LOCK_USER})
 # rename without a migration. `unknown` exists only for the migration
 # window — new writes always pick one of the three live values per
 # the ingest-path defaults documented at
-# `docs/belief_retention_class.md` § 2.
+# `docs/design/belief_retention_class.md` § 2.
 RETENTION_FACT: Final[str] = "fact"
 RETENTION_SNAPSHOT: Final[str] = "snapshot"
 RETENTION_TRANSIENT: Final[str] = "transient"
@@ -117,7 +117,7 @@ RETENTION_CLASSES: Final[frozenset[str]] = frozenset({
     RETENTION_UNKNOWN,
 })
 
-# Per-ingest-source defaults from docs/belief_retention_class.md § 2.
+# Per-ingest-source defaults from docs/design/belief_retention_class.md § 2.
 # `transient` is never a default — it is operator-supplied only,
 # reserved for a future `aelf remember --transient` flag.
 # Sources outside this table fall back to RETENTION_UNKNOWN; use
@@ -298,7 +298,7 @@ class Belief:
 
     `hibernation_score` and `activation_condition` (v2.0 #196) are the
     storage half of the hibernation lifecycle ratified in
-    docs/substrate_decision.md. Both nullable; `None` means the belief
+    docs/design/substrate_decision.md. Both nullable; `None` means the belief
     is active. `activation_condition` is JSON-encoded TEXT when set.
     Behavior (when to set, when to wake, predicate evaluator) is a
     follow-up issue; this commit only locks in the round-trip shape.

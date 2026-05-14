@@ -1,6 +1,6 @@
 """commit-ingest hook latency regression test.
 
-Spec target (docs/commit_ingest_hook.md):
+Spec target (docs/design/commit_ingest_hook.md):
     median <= 30 ms, p95 <= 100 ms
 
 Cold-start Python eats most of that on a real subprocess run, so the

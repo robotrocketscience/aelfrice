@@ -172,7 +172,7 @@ def test_empty_path_default_zero_floor_packs_normally(tmp_path: Path) -> None:
 
 
 def test_default_floor_constants_match_spec() -> None:
-    """Pin the placeholder values to `docs/relevance_floor.md` §4.
+    """Pin the placeholder values to `docs/design/relevance_floor.md` §4.
     A change to either trips this test so a follow-up calibration
     PR cannot slip past review unnoticed."""
     assert DEFAULT_FLOOR_SESSION == 0.10

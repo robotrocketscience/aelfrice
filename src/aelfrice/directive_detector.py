@@ -2,7 +2,7 @@
 
 Candidate regex detector against which the bench gate is evaluated.
 
-Per spec [`docs/v2_enforcement.md` § H1](../docs/v2_enforcement.md#h1-directive-detection--defer-to-v2x-with-benchmark-gate),
+Per spec [`docs/design/v2_enforcement.md` § H1](../docs/design/v2_enforcement.md#h1-directive-detection--defer-to-v2x-with-benchmark-gate),
 H1 (`process_directive`, TODO lifecycle, escalation) does not start until a
 labeled corpus shows ≥80% precision and ≥60% recall on 200 coding prompts.
 This module provides the detector under test. It does not auto-create
@@ -17,7 +17,7 @@ True when the text reads as an imperative directive the user intends as a
 durable rule. False for questions, hedged statements, and reported speech.
 
 The verb bank below is the spec's "29 imperatives" reconstructed from the
-ratification text (issue #374, `docs/v2_enforcement.md` § H1). The exact
+ratification text (issue #374, `docs/design/v2_enforcement.md` § H1). The exact
 membership is tunable; the gate scores whatever detector is in this module.
 """
 from __future__ import annotations

@@ -78,7 +78,7 @@ def _corr(
 
 
 def test_promotion_thresholds_match_spec() -> None:
-    """docs/belief_retention_class.md §4 nails N=3, M=2."""
+    """docs/design/belief_retention_class.md §4 nails N=3, M=2."""
     assert PROMOTE_RETENTION_MIN_CORROBORATIONS == 3
     assert PROMOTE_RETENTION_MIN_SESSIONS == 2
 

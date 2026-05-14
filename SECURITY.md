@@ -36,7 +36,7 @@ Out of scope:
 - **All data is local.** Your beliefs live in a single SQLite file at `~/.aelfrice/memory.db` (or `$AELFRICE_DB`). aelfrice does not back this up, sync this, or transmit any portion of it.
 - **Auditable update math.** Every Bayesian update is one function (`apply_feedback`). Every retrieval ordering is one function (`retrieve`). Both are short, plain, and reviewable.
 
-See [docs/PRIVACY.md](docs/PRIVACY.md) for verifiable details.
+See [docs/user/PRIVACY.md](docs/user/PRIVACY.md) for verifiable details.
 
 ## Disclosure
 

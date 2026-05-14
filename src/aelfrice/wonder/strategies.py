@@ -1,6 +1,6 @@
 """Three phantom-generation strategies for the #228 bake-off.
 
-Per ``docs/v2_wonder_consolidation.md`` §"The three candidate strategies":
+Per ``docs/design/v2_wonder_consolidation.md`` §"The three candidate strategies":
 
 * **RW (random walk)** — start from a high-uncertainty atom, walk N
   hops on the typed-edge graph, bundle visited atoms.

@@ -7,7 +7,7 @@ not touch adapter internals — every adapter keeps its own argparse and
 its own `--output PATH` write path; the dispatcher is the loop, the
 JSON merge, and the canonical-vs-cron filename split.
 
-Spec: docs/v2_reproducibility_harness.md (ratified 2026-05-06).
+Spec: docs/design/v2_reproducibility_harness.md (ratified 2026-05-06).
 Issue: #437.
 """
 from __future__ import annotations

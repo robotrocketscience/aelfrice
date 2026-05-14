@@ -3,7 +3,7 @@
 Connects a belief to the document anchor it describes — a file path with a
 line range, a URL with a section fragment, etc. — so retrieval can return the
 canonical reference alongside the bare belief snippet. Spec:
-``docs/feature-doc-linker.md``.
+``docs/design/feature-doc-linker.md``.
 
 The linker stores opaque URI strings in a sibling table ``belief_documents``
 keyed on ``(belief_id, doc_uri)``. Idempotent re-ingest: ``INSERT OR IGNORE``

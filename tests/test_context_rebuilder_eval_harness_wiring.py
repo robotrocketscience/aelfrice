@@ -352,7 +352,7 @@ def test_replay_requests_carry_canonical_prompt_field(
     embeds the row's user_turn verbatim; (c) the prompt embeds the
     rebuilt_block verbatim; (d) the prompt starts with the cooperative-
     reader instruction (the user-turn-anchor instruction documented in
-    docs/BENCHMARKS.md § "Bench measurement scope").
+    docs/concepts/BENCHMARKS.md § "Bench measurement scope").
     """
     case = harness.TranscriptCase(
         path=transcript_path, task_type="debug",

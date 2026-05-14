@@ -6,7 +6,7 @@ The signal is distributed equally across the previous turn's
 retrieved beliefs via `apply_sentiment_to_pending`, which calls
 `feedback.apply_feedback` once per pending belief id.
 
-Design contract (spec: `docs/v2_sentiment_feedback.md`):
+Design contract (spec: `docs/design/v2_sentiment_feedback.md`):
 
   * **Default off.** Opt-in via `[feedback] sentiment_from_prose = true`
     in `.aelfrice.toml`, or `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE=1`.

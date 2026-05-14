@@ -16,7 +16,7 @@ v1.3.0 partial Bayesian-weighted ranking
 `partial_bayesian_score(bm25_raw, alpha, beta, posterior_weight)`
 combines an FTS5 BM25 score (SQLite signs it non-positive: smaller
 = better) with the existing Beta-Bernoulli posterior mean log-
-additively, per `docs/bayesian_ranking.md` § Algorithm:
+additively, per `docs/design/bayesian_ranking.md` § Algorithm:
 
     score = log(max(-bm25_raw, EPS))
           + posterior_weight * log(posterior_mean(alpha, beta))

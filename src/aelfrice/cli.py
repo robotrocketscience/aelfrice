@@ -2018,7 +2018,7 @@ def _emit_core(
 def _cmd_core(args: argparse.Namespace, out: object) -> int:
     """Surface load-bearing beliefs: locked ∪ corroborated ∪ high-posterior.
 
-    Spec: docs/feature-aelf-core.md. No new store method — composition over
+    Spec: docs/design/feature-aelf-core.md. No new store method — composition over
     list_locked_beliefs(), list_belief_ids(), and get_belief().
     """
     store = _open_store()
@@ -2769,7 +2769,7 @@ def _print_setup_jsonl_history_hint(out: object) -> None:
         f"hint: {_CLAUDE_PROJECTS_DIR} has {count}{suffix} historical "
         f"session JSONL(s). To ingest them retroactively: "
         f"`aelf ingest-transcript --batch {_CLAUDE_PROJECTS_DIR}` "
-        f"(see docs/INSTALL.md § Batch ingest of historical sessions "
+        f"(see docs/user/INSTALL.md § Batch ingest of historical sessions "
         f"for the privacy trade-off).",
         file=out,  # type: ignore[arg-type]
     )
@@ -4134,7 +4134,7 @@ def _cmd_doctor_derive_pending(
     """Run the derivation worker over every unstamped ingest_log row (#264).
 
     Manual escape hatch for the recover-by-replay crash semantics from
-    `docs/v2_derivation_worker.md`. If a worker died between batches and
+    `docs/design/v2_derivation_worker.md`. If a worker died between batches and
     left log rows with `derived_belief_ids IS NULL`, this sweep walks
     them, derives, and stamps each.
 
@@ -4292,7 +4292,7 @@ def _cmd_doctor_promote_retention(
 
     A snapshot is promoted when corroborated >= 3 times across >= 2
     distinct sessions with no inbound CONTRADICTS edge. See
-    docs/belief_retention_class.md §4.
+    docs/design/belief_retention_class.md §4.
 
     Opt-in by design (mirrors --classify-orphans from #206). Use
     --dry-run to count candidates without mutating; --max N to cap
@@ -4795,7 +4795,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "Persistent memory for AI agents. Set up once, stays out of "
             "your way. The subcommands below are the everyday surface; "
             "advanced verbs (diagnostics, archive/uninstall, hook entry-"
-            "points) are hidden from --help. See docs/COMMANDS.md for the "
+            "points) are hidden from --help. See docs/user/COMMANDS.md for the "
             "complete reference."
         ),
         formatter_class=formatter,
@@ -4819,7 +4819,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "Power users: tune the onboard noise filter via "
             ".aelfrice.toml at the project root. Disable categories, "
             "override the fragment threshold, or add project-specific "
-            "exclude_words / exclude_phrases. See docs/CONFIG.md for "
+            "exclude_words / exclude_phrases. See docs/user/CONFIG.md for "
             "the schema and worked examples."
         ),
     )
@@ -5894,7 +5894,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "results are injected as additionalContext. If memory has the "
             "answer the agent can skip / refine the tool call; if not, the "
             "tool result fills the gap. Default: ON. Pass --no-search-tool to "
-            "skip. See docs/search_tool_hook.md."
+            "skip. See docs/design/search_tool_hook.md."
         ),
     )
     p_setup.add_argument(
@@ -5906,7 +5906,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "store before firing. Independent of --search-tool; either, "
             "both, or neither may be installed. Default: ON. Pass "
             "--no-search-tool-bash to skip. See "
-            "docs/search_tool_hook.md § Bash extension."
+            "docs/design/search_tool_hook.md § Bash extension."
         ),
     )
     p_setup.set_defaults(func=_cmd_setup)

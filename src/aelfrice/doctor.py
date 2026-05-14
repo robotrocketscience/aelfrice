@@ -1747,7 +1747,7 @@ def format_orphan_feedback_report(report: OrphanFeedbackReport) -> str:
 # promote-retention pass (issue #290 phase-3)
 # ---------------------------------------------------------------------------
 
-# Promotion thresholds from docs/belief_retention_class.md §4.
+# Promotion thresholds from docs/design/belief_retention_class.md §4.
 # A snapshot belief is promoted to ``fact`` once it has been
 # corroborated at least N times across at least M distinct sessions
 # with no inbound CONTRADICTS edge. Constants are module-level so
@@ -1786,7 +1786,7 @@ def promote_retention(
 ) -> PromotionRunReport:
     """Promote snapshot beliefs to ``fact`` once corroborated enough.
 
-    Per docs/belief_retention_class.md §4 a snapshot is promoted when
+    Per docs/design/belief_retention_class.md §4 a snapshot is promoted when
     it has been re-asserted ``min_corroborations`` times across
     ``min_sessions`` distinct sessions with no inbound CONTRADICTS
     edge. Promotion writes two things per belief:

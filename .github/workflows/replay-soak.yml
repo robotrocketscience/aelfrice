@@ -15,7 +15,7 @@ name: Replay Soak
 # scoped to `refs/heads/main` only; `replay-soak-status` is
 # unconstrained, which lets the cron commit and push under the
 # default workflow token without a long-lived signing key or a
-# bypass-roster expansion. See `docs/feature-replay-soak-bot.md`.
+# bypass-roster expansion. See `docs/design/feature-replay-soak-bot.md`.
 
 on:
   schedule:

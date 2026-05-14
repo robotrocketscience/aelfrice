@@ -1,6 +1,6 @@
 """Bench gate for #769 / #775 type-aware compression — A4 rebuilder fidelity.
 
-Spec § A4 in ``docs/feature-type-aware-compression.md``:
+Spec § A4 in ``docs/design/feature-type-aware-compression.md``:
 
     continuation_fidelity(use_type_aware_compression=ON)
     >= continuation_fidelity(=OFF) - 0.005
@@ -55,7 +55,7 @@ flip-default decision for ``use_type_aware_compression=True`` also
 requires A2 (retrieval recall@k uplift, covered by
 ``tests/bench_gate/test_compression_a2_recall.py``) and A3
 (determinism, covered by ``tests/test_compression.py``). See
-``docs/feature-type-aware-compression.md`` § Bench-gate / ship-or-defer
+``docs/design/feature-type-aware-compression.md`` § Bench-gate / ship-or-defer
 policy and #769 for the umbrella tracker.
 """
 from __future__ import annotations

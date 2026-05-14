@@ -29,13 +29,13 @@ L2.5 in one call). It also wires:
 Augment-mode only at v1.4.0. Both the harness's compaction summary
 and the rebuilder's block land in the new context. Suppress mode
 (replacing the harness compaction entirely) is parked for v2.x per
-[ROADMAP.md](../docs/ROADMAP.md).
+[ROADMAP.md](../docs/concepts/ROADMAP.md).
 
 The pure rebuild() function is decoupled from the I/O paths so the
 eval harness can drive it directly with a pre-loaded list of recent
 turns. Two adapters convert different on-disk transcript formats
 into that list: read_recent_turns_aelfrice() for the canonical
-turns.jsonl format described in docs/transcript_ingest.md, and
+turns.jsonl format described in docs/design/transcript_ingest.md, and
 read_recent_turns_claude_transcript() for Claude Code's internal
 transcript format.
 
@@ -154,14 +154,14 @@ REBUILD_FLOOR_L1_KEY: Final[str] = "l1"
 DEFAULT_FLOOR_SESSION: Final[float] = 0.10
 """Soft floor for session-scoped (L2) hits. Beliefs from the current
 session have a high prior of relevance; reject only on near-zero
-composite scores. Placeholder per `docs/relevance_floor.md` §4 — the
+composite scores. Placeholder per `docs/design/relevance_floor.md` §4 — the
 production value lands in a follow-up after #288 phase-1b
 calibration. Operator-tunable via `[rebuild_floor] session`."""
 
 DEFAULT_FLOOR_L1: Final[float] = 0.40
 """Hard floor for L1 BM25 / L2.5 entity hits. Most candidates that
 fall below this composite score are off-topic for the recent-turn
-query. Placeholder per `docs/relevance_floor.md` §4. Operator-tunable
+query. Placeholder per `docs/design/relevance_floor.md` §4. Operator-tunable
 via `[rebuild_floor] l1`."""
 
 FLOOR_SCORED_QUERY_LIMIT: Final[int] = 200
@@ -191,7 +191,7 @@ VALID_TRIGGER_MODES: Final[tuple[str, ...]] = (
              trigger. The `threshold_fraction` documents the
              calibrated operating point.
 `dynamic`:   Heuristic-driven trigger. Parked at v1.4.0 -- see
-             `docs/context_rebuilder.md § Dynamic mode (parked)`.
+             `docs/design/context_rebuilder.md § Dynamic mode (parked)`.
              Setting this raises a clear error in the hook path.
 """
 
@@ -218,7 +218,7 @@ bundled synthetic fixture sweeping 0.5/0.6/0.7/0.8/0.9). 0.6
 maximizes the **token-efficient** continuation-fidelity proxy
 (fidelity / token_budget_ratio) within the documented token-cost
 band, with ties broken on lowest threshold (earlier firing catches
-drift sooner). See `docs/context_rebuilder.md § Threshold
+drift sooner). See `docs/design/context_rebuilder.md § Threshold
 calibration` for the full sweep table and rationale.
 
 This value is fixture-bound -- a v1.5.x re-calibration on a
@@ -343,7 +343,7 @@ def rebuild_v14(
     L1 / L2.5 packs above `floor_l1`. When all hits are floored out
     AND no locks exist the function returns the empty string —
     `rebuild_v14`'s "I don't know — say nothing" path. See
-    `docs/relevance_floor.md` for the composite-score formula and
+    `docs/design/relevance_floor.md` for the composite-score formula and
     the rationale for the split.
 
     The function-signature defaults are `floor_session=0.0,
@@ -1094,7 +1094,7 @@ def floor_composite_score(
     callers should not call this for them.
 
     Composite formula and clamp behavior pinned by
-    `docs/relevance_floor.md` §1. Coefficient 0.5/0.5 is the
+    `docs/design/relevance_floor.md` §1. Coefficient 0.5/0.5 is the
     placeholder split; tuning lands post-#288.
     """
     if bm25_raw is None:
@@ -1252,7 +1252,7 @@ def record_user_prompt_submit_log(
     phase-1b cannot accumulate data.
 
     Schema is the same Layer-1 record the spec ratifies in
-    ``docs/rebuild_eval_harness.md``: synthesise a single
+    ``docs/design/rebuild_eval_harness.md``: synthesise a single
     ``RecentTurn`` from the prompt so the existing
     ``_build_rebuild_log_record`` machinery (hash, extracted_query,
     extracted_entities) applies unchanged. Candidates are the
@@ -1448,7 +1448,7 @@ def _xml_attr_value(s: str) -> str:
 def read_recent_turns_aelfrice(path: Path, n: int) -> list[RecentTurn]:
     """Read tail of an aelfrice turns.jsonl into RecentTurn records.
 
-    Schema per docs/transcript_ingest.md: each line is a JSON object
+    Schema per docs/design/transcript_ingest.md: each line is a JSON object
     with at least {"role": str, "text": str}. The optional
     `session_id` and `ts` fields are plumbed through to
     `RecentTurn.session_id` and `RecentTurn.ts` so v1.4's session-
@@ -1642,7 +1642,7 @@ def main(
             print(
                 "aelfrice rebuilder: trigger_mode='dynamic' is parked "
                 "at v1.4, ships v1.5; falling back to no-op. See "
-                "docs/context_rebuilder.md § Dynamic mode (parked v1.5).",
+                "docs/design/context_rebuilder.md § Dynamic mode (parked v1.5).",
                 file=serr,
             )
             return 0

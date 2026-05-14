@@ -6,7 +6,7 @@ walks a fixture turn-by-turn) and the headline JSON output (which now
 carries `continuation_fidelity` alongside `token_budget_delta` and
 `hook_latency_ms`).
 
-Per `docs/context_rebuilder.md` § Validation:
+Per `docs/design/context_rebuilder.md` § Validation:
 
     Continuation fidelity: does the agent answer the same subsequent
     questions correctly? Scored binary by the agent's responses
@@ -70,7 +70,7 @@ equivalence.
 
 These modes are documented (not hidden) so v1.4.x calibration runs
 can correlate the per-task-type fidelity numbers with the failure
-modes the spec calls out (`docs/context_rebuilder.md § Failure
+modes the spec calls out (`docs/design/context_rebuilder.md § Failure
 modes`).
 
 ## Method toggle
@@ -298,13 +298,13 @@ def score_continuation_fidelity(
     if method == "embedding":
         raise NotImplementedError(
             "embedding-based scoring is parked for v1.5.x; see #138 "
-            "and docs/context_rebuilder.md § Validation. v1.4.0 ships "
+            "and docs/design/context_rebuilder.md § Validation. v1.4.0 ships "
             "method='exact' only."
         )
     if method == "llm-judge":
         raise NotImplementedError(
             "LLM-judge scoring is parked for v1.5.x; see #138 and "
-            "docs/context_rebuilder.md § Validation. v1.4.0 ships "
+            "docs/design/context_rebuilder.md § Validation. v1.4.0 ships "
             "method='exact' only (no eval-time outbound calls)."
         )
     if method != "exact":

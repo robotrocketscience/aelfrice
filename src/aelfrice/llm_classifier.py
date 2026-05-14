@@ -7,7 +7,7 @@ extra; the actual `anthropic` import is local to the request call site
 so a baseline install has no `anthropic` symbol resolvable at any
 module load.
 
-Boundary policy (docs/llm_classifier.md § 4):
+Boundary policy (docs/design/llm_classifier.md § 4):
 
   All four gates must succeed before any outbound call. If any gate
   fails, `aelf onboard` either falls through to the regex classifier
@@ -22,7 +22,7 @@ Boundary policy (docs/llm_classifier.md § 4):
      `~/.aelfrice/llm-classify-consented` records timestamp +
      model id + aelfrice major version.
 
-Failure semantics (docs/llm_classifier.md § 7):
+Failure semantics (docs/design/llm_classifier.md § 7):
 
   - Connection refused / DNS / TLS / 5xx / 429 / timeout / malformed
     response → fall back to regex `classify_sentence` for the whole

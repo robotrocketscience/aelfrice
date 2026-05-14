@@ -1,6 +1,6 @@
 """End-to-end: hook writes turns -> PreCompact rotates -> ingest_jsonl produces beliefs.
 
-Mirrors the manual round-trip described in docs/transcript_ingest.md
+Mirrors the manual round-trip described in docs/design/transcript_ingest.md
 acceptance criterion 2 but without a live Claude Code instance:
 drive the hook entry point with synthetic JSON payloads, trigger
 PreCompact, then call ingest_jsonl on the rotated archive.

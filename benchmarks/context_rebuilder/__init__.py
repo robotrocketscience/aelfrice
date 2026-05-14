@@ -21,7 +21,7 @@ Public surface:
   * `measure.token_budget_delta(...)` / `measure.hook_latency_ms(...)`
     -- the two scaffolding metrics.
 
-Per `docs/eval_fixture_policy.md`: synthetic fixtures only on the
+Per `docs/design/eval_fixture_policy.md`: synthetic fixtures only on the
 public-repo path. Captured fixtures live lab-side and never gate CI.
 """
 from __future__ import annotations

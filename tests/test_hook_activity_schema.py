@@ -1,6 +1,6 @@
 """hook-activity schema reservation: enforce PostToolUseFailure:* namespace.
 
-Companion to docs/hook_activity_schema.md. The doc reserves the literal
+Companion to docs/design/hook_activity_schema.md. The doc reserves the literal
 event-name prefix `PostToolUseFailure` inside `~/.aelfrice/hook-activity.jsonl`
 for the HOME-side failure-signal hook. This test guards the reservation
 deterministically: if any future writer under `src/aelfrice/` emits the
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# The literal event-name prefix reserved by docs/hook_activity_schema.md.
+# The literal event-name prefix reserved by docs/design/hook_activity_schema.md.
 # Producing hook lives in the user's HOME repo, not in src/aelfrice/.
 RESERVED_EVENT_PREFIX: str = "PostToolUseFailure"
 
@@ -37,7 +37,7 @@ def test_no_aelfrice_writer_emits_post_tool_use_failure_event_name() -> None:
 
     The HOME-side hook owns this event-name namespace. Any aelfrice-side
     occurrence is a collision and would invalidate the schema reservation
-    in docs/hook_activity_schema.md.
+    in docs/design/hook_activity_schema.md.
     """
     assert _SRC_DIR.is_dir(), f"expected src tree at {_SRC_DIR}"
 
@@ -59,7 +59,7 @@ def test_no_aelfrice_writer_emits_post_tool_use_failure_event_name() -> None:
             f"Found {len(offenders)} aelfrice-side reference(s) to the reserved "
             f"event-name prefix '{RESERVED_EVENT_PREFIX}'. "
             "This namespace is reserved for the HOME-side failure-signal hook "
-            "by docs/hook_activity_schema.md; aelfrice writers must not emit "
+            "by docs/design/hook_activity_schema.md; aelfrice writers must not emit "
             "it. Collisions:\n"
             f"{formatted}"
         )

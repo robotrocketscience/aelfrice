@@ -19,7 +19,7 @@ fanout / total-budget; multiplicative path-score over the table in
 `bfs_multihop.BFS_EDGE_WEIGHTS`. Default-OFF at v1.3.0; opt in via the
 `bfs_enabled` flag in `[retrieval]` of `.aelfrice.toml`, the
 `AELFRICE_BFS=1` env var, or an explicit kwarg. See
-`docs/bfs_multihop.md` for the spec.
+`docs/design/bfs_multihop.md` for the spec.
 
 Default-on at v1.3.0 via the config flag `entity_index_enabled` in
 `[retrieval]` of `.aelfrice.toml`. Two off-switches:
@@ -45,7 +45,7 @@ mutate inside `insert_belief` / `update_belief` / `delete_belief`,
 so the existing callback semantics already cover them). The v1.0.1
 wipe-on-write policy on edge mutators (`insert_edge`, `update_edge`,
 `delete_edge`) is exactly what makes the v1.3 BFS cache correctness
-zero-effort — see docs/bfs_multihop.md § Cache invalidation.
+zero-effort — see docs/design/bfs_multihop.md § Cache invalidation.
 """
 from __future__ import annotations
 
@@ -116,7 +116,7 @@ DEFAULT_TOKEN_BUDGET: Final[int] = 2400
 _CHARS_PER_TOKEN: Final[float] = 4.0
 DEFAULT_L1_LIMIT: Final[int] = 50
 
-# v1.3.0 entity-index defaults (docs/entity_index.md § Budget split).
+# v1.3.0 entity-index defaults (docs/design/entity_index.md § Budget split).
 DEFAULT_L25_LIMIT: Final[int] = 20
 DEFAULT_L25_TOKEN_SUBBUDGET: Final[int] = 400
 DEFAULT_QUERY_ENTITY_CAP: Final[int] = 16
@@ -149,7 +149,7 @@ HEAT_KERNEL_FLAG: Final[str] = "use_heat_kernel"
 POSTERIOR_RANKING_FLAG: Final[str] = "use_posterior_ranking"
 HRR_STRUCTURAL_FLAG: Final[str] = "use_hrr_structural"
 # v2.1 #434 type-aware compression flag. Default-OFF at v2.0.0 until the
-# lab-side bench gate (A2 + A4 in docs/feature-type-aware-compression.md)
+# lab-side bench gate (A2 + A4 in docs/design/feature-type-aware-compression.md)
 # clears. ON populates RetrievalResult.compressed_beliefs with per-belief
 # CompressedBelief renderings; OFF leaves the field empty for byte-identical
 # behavior with v1.x adapters.
@@ -282,7 +282,7 @@ ENV_META_BELIEF_BM25F_ANCHOR_WEIGHT: Final[str] = (
 # ---------------------------------------------------------------------------
 # `expand_bfs` takes `int max_depth`. Bounds `[1, 6]` honour the
 # single-hop floor (a depth-0 expansion is a no-op) and the latency
-# safety ceiling documented in `docs/bfs_multihop.md`. BFS depth
+# safety ceiling documented in `docs/design/bfs_multihop.md`. BFS depth
 # dominates p95 retrieval latency, so this is load-bearing for safety.
 META_BFS_DEPTH_BUDGET_KEY: Final[str] = "meta:retrieval.bfs_depth_budget"
 BFS_DEPTH_BUDGET_FLOOR: Final[int] = 1
@@ -1594,7 +1594,7 @@ def resolve_use_type_aware_compression(
       2. Explicit `explicit` kwarg from the caller.
       3. `[retrieval] use_type_aware_compression` in `.aelfrice.toml`.
       4. Default: False — ships behind the flag at v2.0.0; the bench gate
-         (A2 + A4 in docs/feature-type-aware-compression.md) flips the
+         (A2 + A4 in docs/design/feature-type-aware-compression.md) flips the
          default after lab-side benchmark evidence clears.
     """
     env = _env_type_aware_compression_override()
@@ -1622,7 +1622,7 @@ def resolve_use_intentional_clustering(
       4. Default: True — flipped from False after the A4 latency bench
          gate cleared on the multi-store production sweep (#436 R6, 60/60
          PASS at p99 0.328ms ~ 15-30x margin under the 5ms budget). See
-         docs/feature-intentional-clustering.md A2 + A4.
+         docs/design/feature-intentional-clustering.md A2 + A4.
     """
     env = _env_intentional_clustering_override()
     if env is not None:
@@ -1908,7 +1908,7 @@ def _l1_hits(
     the rerank uses `combine_log_scores(bm25, heat, posterior_mean)`
     instead of `partial_bayesian_score`. Heat propagation cost is the
     `eigvecs.T @ seeds` matvec (~7-8 ms at N=50k, K=200; see
-    docs/bayesian_ranking.md § "Heat-kernel cost"). When the cache is
+    docs/design/bayesian_ranking.md § "Heat-kernel cost"). When the cache is
     None, stale, empty, or carries no overlap with the L1 hit ids, the
     path degrades to `partial_bayesian_score` — byte-identical to the
     heat-off contract. AC4 / AC8 of #151 are preserved by this fall-
@@ -2102,7 +2102,7 @@ def retrieve(
     score with the Beta-Bernoulli posterior_mean log-additively:
     `score = log(-bm25) + posterior_weight * log(posterior_mean)`.
     `0.0` collapses to v1.0.x BM25-only ordering (byte-identical
-    regression-tested). Default `0.5` per docs/bayesian_ranking.md
+    regression-tested). Default `0.5` per docs/design/bayesian_ranking.md
     § Defaults; resolved via `resolve_posterior_weight()` (env →
     kwarg → TOML → 0.5). L0 locks bypass the score entirely; L2.5
     and L3 are unaffected.
@@ -2365,7 +2365,7 @@ def retrieve_with_tiers(
             "use_intentional_clustering and use_type_aware_compression "
             "are mutually exclusive at v2.0.0 — the cluster pack uses "
             "raw token cost; composing it with compressed cost is a "
-            "v2.x follow-up. See docs/feature-intentional-clustering.md "
+            "v2.x follow-up. See docs/design/feature-intentional-clustering.md "
             "§ Reconciliation vs. type-aware compression (#434).",
         )
     warn_placeholder_flags()
@@ -2739,11 +2739,11 @@ class RetrievalCache:
     decimals so floating-point jitter does not fragment the cache).
     Two queries that differ in any of these are distinct entries.
     BFS knobs (`bfs_max_depth` etc.) are NOT in the key — per
-    docs/bfs_multihop.md § Cache invalidation, callers that toggle
+    docs/design/bfs_multihop.md § Cache invalidation, callers that toggle
     them per call would defeat the cache anyway.
 
     The `posterior_weight` cache-key extension is a structural fix
-    against cross-caller collisions per docs/bayesian_ranking.md §
+    against cross-caller collisions per docs/design/bayesian_ranking.md §
     "Cache invalidation". Posterior-write staleness is handled by
     the existing store-mutation callback (apply_feedback ->
     update_belief -> _fire_invalidation -> cache wipe).

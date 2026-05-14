@@ -878,7 +878,7 @@ def run_compression_a2_uplift(
 #     "rebuilder_token_budget": 4000        # optional
 #   }
 #
-# A4 spec (`docs/feature-type-aware-compression.md` § A4): the
+# A4 spec (`docs/design/feature-type-aware-compression.md` § A4): the
 # rebuilder is exercised with `use_type_aware_compression ∈ {OFF, ON}`
 # at the same `[rebuilder] token_budget`; continuation-fidelity for
 # the ON arm must be at least the OFF arm minus a 0.005 noise band

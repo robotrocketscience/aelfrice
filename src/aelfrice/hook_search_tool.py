@@ -11,7 +11,7 @@ Hook contract (Claude Code PreToolUse):
 - All failure modes return exit 0 silently. The hook may NEVER cause a
   `Grep` or `Glob` to feel broken.
 
-Latency budget per docs/search_tool_hook.md:
+Latency budget per docs/design/search_tool_hook.md:
     median <= 50 ms, p95 <= 200 ms
 
 Tactics:

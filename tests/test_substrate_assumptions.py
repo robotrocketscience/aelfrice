@@ -1,7 +1,7 @@
 """Quick assumption-check tests for the v2.0 substrate decision (#196).
 
 These are scratch tests that verify claims made in
-``docs/substrate_decision.md``. They are intentionally narrow and
+``docs/design/substrate_decision.md``. They are intentionally narrow and
 single-file — they exercise the memo's load-bearing assertions before
 the user ratifies an option:
 

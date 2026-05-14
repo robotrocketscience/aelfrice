@@ -1,6 +1,6 @@
 """Expected Calibration Error (ECE) scorer for the posterior-ranking eval harness.
 
-Implements the ECE contract from docs/v2_posterior_ranking_residual.md § Slice 1.
+Implements the ECE contract from docs/design/v2_posterior_ranking_residual.md § Slice 1.
 
 For each (query, retrieved_belief, rank) triple in the eval set, treat
 posterior_mean(b) as the predicted probability that the user will rate b

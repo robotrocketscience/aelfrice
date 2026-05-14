@@ -1,6 +1,6 @@
 """Tests for `aelf core` CLI subcommand (#439).
 
-Five-belief fixture matrix per spec (docs/feature-aelf-core.md):
+Five-belief fixture matrix per spec (docs/design/feature-aelf-core.md):
   b-locked       lock=user  alpha=1 beta=1 corr=0  → yes (LOCK)
   b-corr         lock=none  alpha=1 beta=1 corr=3  → yes (CORR)
   b-posterior    lock=none  alpha=4 beta=1 corr=0  → yes (μ=0.8, α+β=5)

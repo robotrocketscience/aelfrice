@@ -4,7 +4,7 @@ Both tests are gated by the ``bench_gated`` autouse marker and skip when
 ``AELFRICE_CORPUS_ROOT`` is unset (normal CI).  Run the gates explicitly
 by setting the env var to any existing directory.
 
-Acceptance criteria (docs/feature-hrr-integration.md §"Acceptance criteria"):
+Acceptance criteria (docs/design/feature-hrr-integration.md §"Acceptance criteria"):
   - Warm cold-start (persist-on): ≤ 1.0 s at N=50k
   - Rebuild cold-start (persist-off): ≤ 38.0 s at N=50k
 """

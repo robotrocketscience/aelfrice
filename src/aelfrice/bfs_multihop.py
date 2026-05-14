@@ -4,7 +4,7 @@ Pure-expansion module: walks outbound edges from a set of seed beliefs,
 scoring visited beliefs by the multiplicative product of edge-type
 weights along the path that reached them.
 
-Constants and behaviour follow `docs/bfs_multihop.md` exactly:
+Constants and behaviour follow `docs/design/bfs_multihop.md` exactly:
 
   - `BFS_EDGE_WEIGHTS` — module-level dict (monkey-patchable in tests),
     biases the frontier toward decisional edges (SUPERSEDES 0.90,
@@ -45,7 +45,7 @@ from aelfrice.models import (
 )
 from aelfrice.store import MemoryStore
 
-# Default knobs — see docs/bfs_multihop.md § Depth cap and budget.
+# Default knobs — see docs/design/bfs_multihop.md § Depth cap and budget.
 DEFAULT_MAX_DEPTH: Final[int] = 2
 DEFAULT_NODES_PER_HOP: Final[int] = 16
 DEFAULT_TOTAL_BUDGET_NODES: Final[int] = 32
@@ -127,7 +127,7 @@ def expand_bfs(
 ) -> list[ScoredHop]:
     """Walk outbound edges from `seeds`, returning ranked expansions.
 
-    Pseudocode + properties: see `docs/bfs_multihop.md § Algorithm`.
+    Pseudocode + properties: see `docs/design/bfs_multihop.md § Algorithm`.
 
     Determinism contract:
       - Edges at each frontier expansion are ranked by

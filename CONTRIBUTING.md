@@ -10,7 +10,7 @@ Best categories of PR:
 
 - Bug fixes with a regression test that fails before and passes after.
 - Doc fixes (typo, broken link, stale claim against current code).
-- Closing one of the [known issues at v1.0](docs/LIMITATIONS.md#known-issues-at-v10) — but ping in an issue first to align on approach.
+- Closing one of the [known issues at v1.0](docs/user/LIMITATIONS.md#known-issues-at-v10) — but ping in an issue first to align on approach.
 
 Hard to land without prior alignment:
 
@@ -38,7 +38,7 @@ Don't include `~/.aelfrice/memory.db` from a real project — it contains your p
 
 ## What's likely to land where
 
-The v1.x roadmap is bucketed. See [LIMITATIONS](docs/LIMITATIONS.md#known-issues-at-v10) for each issue's target version.
+The v1.x roadmap is bucketed. See [LIMITATIONS](docs/user/LIMITATIONS.md#known-issues-at-v10) for each issue's target version.
 
 - **v1.0.1** — launch fix-up. Hook → `aelfrice.retrieval.retrieve()` rewrite + `feedback_history` recording (highest-impact gap). `aelf --version` flag. Onboard noise filters. CONTRADICTS auto-supersession. Onboard performance regression baseline.
 - **v1.1.0** — project identity (`.git/aelfrice/memory.db`, `.aelfrice.toml`, orphan-DB cleanup, worktree concurrency). Onboard behavior (git-recency weighting, `agent_inferred` → `user_validated` promotion). Cosmetic surface (edges→threads, split `aelf status` from `aelf health`).

@@ -3,7 +3,7 @@
 Three offline phantom-generation strategies plus a deterministic
 synthetic corpus + feedback simulator + evaluator + runner that
 together close the v2.0 ship-decision per
-``docs/v2_wonder_consolidation.md``.
+``docs/design/v2_wonder_consolidation.md``.
 
 The harness is a research surface: nothing here writes to a live
 ``Store`` outside the bake-off. The chosen-strategy production

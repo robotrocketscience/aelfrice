@@ -1,7 +1,7 @@
 """Tests for the v1.5.0 #155 Bash matcher in
 `aelfrice.hook_search_tool`.
 
-Acceptance-criteria coverage from `docs/search_tool_hook.md
+Acceptance-criteria coverage from `docs/design/search_tool_hook.md
 § Bash extension`:
 
 - AC1 — `test_allowlist_fires`, `test_unknown_command_silent_skip`,

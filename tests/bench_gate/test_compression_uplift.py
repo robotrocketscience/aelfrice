@@ -1,6 +1,6 @@
 """Bench gate for #434 type-aware compression.
 
-Measures the precondition for A2 in `docs/feature-type-aware-compression.md`:
+Measures the precondition for A2 in `docs/design/feature-type-aware-compression.md`:
 on a mixed-retention-class corpus, the compressed total token cost is
 strictly less than the uncompressed total token cost. If compression
 does not reduce cost on the lab corpus, no pack-loop rewrite can

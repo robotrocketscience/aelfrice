@@ -162,8 +162,8 @@ jobs:
             echo "::error file=README.md::Roadmap row for v${head_ver} still says 'next' or 'planned'. Flip status to 'shipped' before cutting the release."
             fail=1
           fi
-          if [ -f docs/ROADMAP.md ] && ! grep -qE "v${head_ver}" docs/ROADMAP.md; then
-            echo "::warning file=docs/ROADMAP.md::No mention of v${head_ver}. Consider adding a section (non-blocking)."
+          if [ -f docs/concepts/ROADMAP.md ] && ! grep -qE "v${head_ver}" docs/concepts/ROADMAP.md; then
+            echo "::warning file=docs/concepts/ROADMAP.md::No mention of v${head_ver}. Consider adding a section (non-blocking)."
           fi
           exit "$fail"
 

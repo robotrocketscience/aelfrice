@@ -1,7 +1,7 @@
 """Bake-off evaluator metrics for #228.
 
 Direct port of the four metrics in
-``docs/v2_wonder_consolidation.md`` § "Adoption criteria for v2.0
+``docs/design/v2_wonder_consolidation.md`` § "Adoption criteria for v2.0
 ship":
 
 * ``confirmation_rate`` — promotions / phantoms_generated under

@@ -3,7 +3,7 @@
 Computes pairwise inter-judge κ across N≥3 independent judge runs over
 the same `(expected, actual)` pairs, plus a judge-vs-baseline κ where
 the baseline is the zero-LLM substring-exact-match path. Emits the
-`judge_kappa.json` artifact specified in `docs/BENCHMARKS.md
+`judge_kappa.json` artifact specified in `docs/concepts/BENCHMARKS.md
 §Eval-judge calibration` (PR #700).
 
 Inputs are judge-response JSONL files in the shape written by
@@ -183,7 +183,7 @@ def compute_kappa_report(
     """Build the κ report from N judge runs and an optional baseline.
 
     The report's `calibrated` boolean encodes the gate from
-    `docs/BENCHMARKS.md §Eval-judge calibration`:
+    `docs/concepts/BENCHMARKS.md §Eval-judge calibration`:
 
     - inter_judge_kappa.min ≥ 0.70
     - hot_start_fidelity_mean ≥ 0.80
@@ -265,7 +265,7 @@ def compute_kappa_report(
 
 def report_to_json(report: KappaReport) -> dict:
     """Project a KappaReport into the artifact-contract JSON shape
-    documented in `docs/BENCHMARKS.md §Eval-judge calibration`.
+    documented in `docs/concepts/BENCHMARKS.md §Eval-judge calibration`.
 
     Keys match the documented schema exactly so downstream tooling
     (CI gate, release-prep checklist) can rely on stable field names.

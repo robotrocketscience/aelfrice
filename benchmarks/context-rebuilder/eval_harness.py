@@ -1,6 +1,6 @@
 """Context-rebuilder eval harness — skeleton.
 
-Backs docs/context_rebuilder.md. NOT runnable as-is — the TODOs
+Backs docs/design/context_rebuilder.md. NOT runnable as-is — the TODOs
 mark integration points that fill in as the rebuilder
 implementation lands across v1.2.0–v1.4.0. The shape of this file
 is the contract: the spec's acceptance criteria reference these
@@ -246,7 +246,7 @@ POST_CLEAR_INSTRUCTION: Final[str] = (
 )
 """Cooperative-reader instruction prepended to every post-clear replay
 prompt (#797). Measurement scope is documented in
-`docs/BENCHMARKS.md` § "Bench measurement scope". Wording is
+`docs/concepts/BENCHMARKS.md` § "Bench measurement scope". Wording is
 deliberately conservative — it tells the reader which atom to anchor
 on, not which atoms to recite. Verbatim-recap wording was rejected
 because it would let any pack containing the named atoms score 1.0
@@ -398,7 +398,7 @@ def replay_post_fork(
     `aelf:replay-eval` skill) can spawn one child task per row,
     prompted with the row's `prompt` field (the canonical post-clear
     replay prompt assembled by `_assemble_post_clear_prompt`, prepending
-    `POST_CLEAR_INSTRUCTION`; see #797 and `docs/BENCHMARKS.md`
+    `POST_CLEAR_INSTRUCTION`; see #797 and `docs/concepts/BENCHMARKS.md`
     § "Bench measurement scope"). The legacy `rebuilt_block` and
     `user_turn` fields remain in the row for inspection. Dispatchers
     are expected to write `<run_dir>/replay_responses.jsonl`. On the

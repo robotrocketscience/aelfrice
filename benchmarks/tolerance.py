@@ -11,7 +11,7 @@ Per the 2026-05-06 ratification on #437, bands are relative-with-floor:
 - Soft warning: drift inside the band but >50% of the band width
   emits a notice without failing.
 
-Spec: docs/v2_reproducibility_harness.md.
+Spec: docs/design/v2_reproducibility_harness.md.
 Issue: #437.
 """
 from __future__ import annotations

@@ -15,7 +15,7 @@ Covers the acceptance criteria from issue #138:
 
 All tests deterministic, well under the 2-second budget, no
 network. Synthetic fixture only per
-`docs/eval_fixture_policy.md`.
+`docs/design/eval_fixture_policy.md`.
 """
 from __future__ import annotations
 

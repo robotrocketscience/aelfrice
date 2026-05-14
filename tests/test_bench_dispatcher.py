@@ -1,7 +1,7 @@
 """Tests for benchmarks.run — the v2.0 reproducibility dispatcher.
 
 The dispatcher subprocesses each adapter, so all tests stub the runner
-to avoid spawning real benchmarks. Spec: docs/v2_reproducibility_harness.md.
+to avoid spawning real benchmarks. Spec: docs/design/v2_reproducibility_harness.md.
 Issue: #437.
 """
 from __future__ import annotations

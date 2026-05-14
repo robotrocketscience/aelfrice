@@ -1,7 +1,7 @@
 """Acceptance tests for the v1.3.0 LLM-Haiku onboard classifier.
 
 One test per acceptance criterion in
-[docs/llm_classifier.md § 9](../docs/llm_classifier.md#9-acceptance-criteria-for-the-implementation-pr).
+[docs/design/llm_classifier.md § 9](../docs/design/llm_classifier.md#9-acceptance-criteria-for-the-implementation-pr).
 
 Hard rules from the spec / task:
 - ALL tests mock the Anthropic client. No real network. No real

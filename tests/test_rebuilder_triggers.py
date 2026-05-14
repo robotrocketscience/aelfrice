@@ -482,7 +482,7 @@ def test_tm5_dynamic_probe_verdict_is_park() -> None:
     assert result.verdict == "park", (
         f"dynamic_probe flipped to ship: {result.rationale}. "
         f"This is a doc-update event: re-read "
-        f"docs/context_rebuilder.md § Dynamic mode (parked v1.5) "
+        f"docs/design/context_rebuilder.md § Dynamic mode (parked v1.5) "
         f"and either ship dynamic mode (with PR-body acknowledgment "
         f"of the verdict change) or update the probe."
     )

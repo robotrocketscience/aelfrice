@@ -123,7 +123,7 @@ SESSION_START_SUBBLOCK_OPEN: Final[str] = "<session-start>"
 SESSION_START_SUBBLOCK_CLOSE: Final[str] = "</session-start>"
 
 # Fixed framing header rendered inside <aelfrice-memory> and
-# <aelfrice-baseline> blocks. Per docs/hook_hardening.md (#280): the
+# <aelfrice-baseline> blocks. Per docs/design/hook_hardening.md (#280): the
 # header tells the model these lines are retrieved data, not
 # instructions, so the trust boundary is structurally legible.
 _FRAMING_HEADER: Final[str] = (
@@ -1883,7 +1883,7 @@ def pre_compact(
         # `threshold` -> fire as below; the harness's own PreCompact
         #                trigger is the gate. `threshold_fraction`
         #                documents the calibrated operating point.
-        # `dynamic` -> parked at v1.4 (see docs/context_rebuilder.md
+        # `dynamic` -> parked at v1.4 (see docs/design/context_rebuilder.md
         #              § Dynamic mode (parked v1.5)). Log + no-op.
         mode = config.trigger_mode
         if mode == TRIGGER_MODE_MANUAL:
@@ -1892,7 +1892,7 @@ def pre_compact(
             print(
                 "aelfrice rebuilder: trigger_mode='dynamic' is parked "
                 "at v1.4, ships v1.5; falling back to no-op. See "
-                "docs/context_rebuilder.md § Dynamic mode (parked v1.5).",
+                "docs/design/context_rebuilder.md § Dynamic mode (parked v1.5).",
                 file=serr,
             )
             return 0

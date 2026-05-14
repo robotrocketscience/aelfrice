@@ -1,4 +1,4 @@
-"""Acceptance tests for `RetrievalCache` (docs/lru_query_cache.md).
+"""Acceptance tests for `RetrievalCache` (docs/design/lru_query_cache.md).
 
 Eight tests, one per acceptance criterion. All deterministic, in-memory
 SQLite, < 100 ms wall clock per test.

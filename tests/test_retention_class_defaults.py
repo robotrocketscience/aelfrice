@@ -1,6 +1,6 @@
 """Tests for #290 phase-2: per-ingest-source retention_class defaults.
 
-Covers the spec table at docs/belief_retention_class.md § 2 and its
+Covers the spec table at docs/design/belief_retention_class.md § 2 and its
 wiring through derivation.derive() and scanner.
 
 Phase-1 (PR #351) shipped the column + python validator. Phase-2

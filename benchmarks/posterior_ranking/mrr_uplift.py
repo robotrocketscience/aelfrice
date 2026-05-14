@@ -1,7 +1,7 @@
 """MRR uplift evaluator for the posterior-ranking eval harness.
 
 Implements the 10-round MRR uplift contract from
-docs/v2_posterior_ranking_residual.md § Slice 1.
+docs/design/v2_posterior_ranking_residual.md § Slice 1.
 
 Round 0: baseline retrieve (no feedback applied).  Record mrr_0 = 1/rank
 of the known_belief_content in the top-K results (0 if not found).

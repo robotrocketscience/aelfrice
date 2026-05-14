@@ -86,7 +86,7 @@ onboard-llm = [
     # `[onboard.llm].enabled = true`). The default install does NOT
     # pull anthropic; the import is local to the call site so a
     # default install has no `anthropic` symbol resolvable at any
-    # module load. Boundary policy: docs/llm_classifier.md § 4.
+    # module load. Boundary policy: docs/design/llm_classifier.md § 4.
     "anthropic>=0.40",
 ]
 archive = [

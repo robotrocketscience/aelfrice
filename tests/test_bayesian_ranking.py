@@ -1,5 +1,5 @@
 """Acceptance tests for v1.3.0 partial Bayesian-weighted ranking
-(`docs/bayesian_ranking.md`, issue #146).
+(`docs/design/bayesian_ranking.md`, issue #146).
 
 One test per acceptance criterion. All deterministic, in-memory
 SQLite, ≤2s per test, no probabilistic assertions.

@@ -30,7 +30,7 @@ structured kinds miss. Sentence-prose noise from this pattern is the
 dominant source of index bloat — the per-call `max_entities` cap
 exists to bound that.
 
-Spec: docs/entity_index.md § Pattern bank.
+Spec: docs/design/entity_index.md § Pattern bank.
 """
 from __future__ import annotations
 
@@ -211,7 +211,7 @@ def extract_entities(
 
     `max_entities` is a hard ceiling per call. Past the cap, overflow
     matches are dropped silently. The cap defaults to 64 per the
-    docs/entity_index.md § Refresh strategy back-of-envelope.
+    docs/design/entity_index.md § Refresh strategy back-of-envelope.
     """
     if not text or max_entities <= 0:
         return []

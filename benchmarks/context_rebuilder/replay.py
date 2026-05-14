@@ -1,6 +1,6 @@
 """Transcript-replay loader for the context-rebuilder eval harness.
 
-Reads a `turns.jsonl` file (per `docs/transcript_ingest.md` schema)
+Reads a `turns.jsonl` file (per `docs/design/transcript_ingest.md` schema)
 and walks the per-turn agent state, returning a structured
 `ReplayResult` that includes per-turn `token_budget_delta` and
 `hook_latency_ms` measurements.

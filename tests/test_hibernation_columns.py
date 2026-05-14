@@ -3,7 +3,7 @@
 Behavior (when to set hibernation_score, predicate evaluator,
 sweeper integration) is deferred to a follow-up issue. This file
 locks in the storage shape ratified in
-docs/substrate_decision.md § Decision asks #3 + #4: both columns
+docs/design/substrate_decision.md § Decision asks #3 + #4: both columns
 nullable, `None` means active, `activation_condition` is JSON-
 encoded TEXT.
 """

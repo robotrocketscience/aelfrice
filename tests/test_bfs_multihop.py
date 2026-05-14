@@ -1,6 +1,6 @@
 """Acceptance tests for the v1.3.0 BFS multi-hop graph traversal.
 
-One section per acceptance criterion in `docs/bfs_multihop.md`:
+One section per acceptance criterion in `docs/design/bfs_multihop.md`:
 
   AC1. Fixture chains (decisional, pruned informational, contradiction)
        surface (or are pruned) per the documented edge-weight table.
@@ -635,7 +635,7 @@ def test_ac11_latest_serial_per_hop_documented_v13_contract() -> None:
 def test_default_constants_match_spec() -> None:
     """The four default knobs are pinned to the spec values. A
     drift here is a documented benchmark deviation — see
-    docs/bfs_multihop.md § Depth cap and budget."""
+    docs/design/bfs_multihop.md § Depth cap and budget."""
     assert DEFAULT_MAX_DEPTH == 2
     assert DEFAULT_NODES_PER_HOP == 16
     assert DEFAULT_TOTAL_BUDGET_NODES == 32

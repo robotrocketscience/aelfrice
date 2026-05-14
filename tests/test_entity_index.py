@@ -1,6 +1,6 @@
 """Acceptance tests for the v1.3.0 entity-index (L2.5) retrieval tier.
 
-One test per acceptance criterion in docs/entity_index.md § Validation:
+One test per acceptance criterion in docs/design/entity_index.md § Validation:
 
   AC1. Pattern coverage (per-kind unit fixtures, ≥3 positive + ≥3
        negative). Tabulated below as a parametrised fixture set.
@@ -111,7 +111,7 @@ def isolated_env(
     [
         # file_path POSIX (3 positive)
         ("see src/aelfrice/retrieval.py for details", KIND_FILE_PATH, "src/aelfrice/retrieval.py"),
-        ("docs/ROADMAP.md notes the milestone", KIND_FILE_PATH, "docs/roadmap.md"),
+        ("docs/concepts/ROADMAP.md notes the milestone", KIND_FILE_PATH, "docs/roadmap.md"),
         ("the .github/workflows/ci.yml fires on PR", KIND_FILE_PATH, ".github/workflows/ci.yml"),
         # url
         ("see https://example.com/path for docs", KIND_URL, "https://example.com/path"),

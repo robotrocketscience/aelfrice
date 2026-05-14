@@ -12,7 +12,7 @@ Gate (per #739 + operator decision in PR #754):
 
 The original #739 body proposed absolute thresholds (p50 ≤ 25 ms,
 p95 ≤ 100 ms) borrowed from the v1.3 acceptance band published in
-``docs/bfs_multihop.md:518-525``. Run 1 (commit 62ce0b3) showed the
+``docs/design/bfs_multihop.md:518-525``. Run 1 (commit 62ce0b3) showed the
 v3.0 baseline alone already exceeds those absolutes — eight+ minors
 of HRR / BM25F / heat / clustering / posterior-rerank work have
 moved the baseline. The gate was reframed to a **delta** criterion

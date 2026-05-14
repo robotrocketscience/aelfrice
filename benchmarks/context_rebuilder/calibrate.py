@@ -6,7 +6,7 @@ v1.4.0 default `threshold_fraction` in
 `aelfrice.context_rebuilder.DEFAULT_THRESHOLD_FRACTION`.
 
 The threshold default MUST come from this measurement, not from a
-hand-picked number. See `docs/context_rebuilder.md § Threshold
+hand-picked number. See `docs/design/context_rebuilder.md § Threshold
 calibration` for the chosen value and rationale.
 
 ## Method

@@ -1,7 +1,7 @@
 """Origin-tier promotion for v1.2.0+.
 
 Implements the `agent_inferred -> user_validated` promotion path
-designed in `docs/promotion_path.md`. The CLI surface is
+designed in `docs/design/promotion_path.md`. The CLI surface is
 `aelf validate <belief_id>`; the MCP surface is `aelf:validate`.
 
 Extended in v2.1 (#550) to also accept `origin = ORIGIN_SPECULATIVE`
@@ -92,7 +92,7 @@ class UnlockResult:
 
 # --- Surface B: phantom lock-match helper (#550) -------------------------
 
-# Jaccard threshold from docs/v2_phantom_promotion_trigger.md § Surface B.
+# Jaccard threshold from docs/design/v2_phantom_promotion_trigger.md § Surface B.
 # Tunable post-benchmark; constant lives here so tests can read it.
 PHANTOM_LOCK_JACCARD_THRESHOLD: Final[float] = 0.9
 

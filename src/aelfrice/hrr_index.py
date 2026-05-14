@@ -104,7 +104,7 @@ _STRUCT_MARKER_RE: Final[re.Pattern[str]] = re.compile(
 # Persisted layout version. Bump on incompatible changes.
 # v1: bundled ``.npz`` (legacy, v1.7 ship format).
 # v2: split format — ``struct.npy`` + ``meta.npz`` in a per-store directory
-#     (required for ``mmap_mode='r'``; see ``docs/feature-hrr-integration.md``).
+#     (required for ``mmap_mode='r'``; see ``docs/design/feature-hrr-integration.md``).
 _LAYOUT_VERSION: Final[int] = 2
 _NPZ_VERSION: Final[int] = _LAYOUT_VERSION  # back-compat alias
 

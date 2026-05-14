@@ -13,7 +13,7 @@
 [![CI](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml/badge.svg)](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml)
 [![OSSInsight](https://img.shields.io/badge/OSSInsight-analytics-blue)](https://ossinsight.io/analyze/robotrocketscience/aelfrice)
 <!-- bench-canonical-badge:start -->
-[![Reproducibility](https://img.shields.io/badge/reproducibility-partial%20%286%2F11%20adapters%29-yellow)](docs/v2_reproducibility_harness.md)
+[![Reproducibility](https://img.shields.io/badge/reproducibility-partial%20%286%2F11%20adapters%29-yellow)](docs/design/v2_reproducibility_harness.md)
 <!-- bench-canonical-badge:end -->
 
 You correct your agent. *"Got it,"* it says. Next session, same mistake.
@@ -55,7 +55,7 @@ L2: graph walk       -> typed-edge BFS from L1 seeds (SUPPORTS, CONTRADICTS, SUP
 L2.5: structural HRR -> Plate-FFT bind/probe against anchor text + structural markers
 ```
 
-L0 always ships. L1, L2, and L2.5 are budget-trimmed against the merged candidate set in score-descending order; locked beliefs win every overflow. Default budget: 2,400 tokens per prompt. The default ranking stack is `stack-r1-r3` (entity expansion + per-store IDF clipping); bench evidence on the labelled query-strategy corpus measured **+0.2851 absolute NDCG@k (+94.8%)** versus the v1.4 raw-BM25 baseline at p99 latency 4.5 ms. Full lane wiring, composition, and federation peer DBs: [ARCHITECTURE § Retrieval](docs/ARCHITECTURE.md#retrieval).
+L0 always ships. L1, L2, and L2.5 are budget-trimmed against the merged candidate set in score-descending order; locked beliefs win every overflow. Default budget: 2,400 tokens per prompt. The default ranking stack is `stack-r1-r3` (entity expansion + per-store IDF clipping); bench evidence on the labelled query-strategy corpus measured **+0.2851 absolute NDCG@k (+94.8%)** versus the v1.4 raw-BM25 baseline at p99 latency 4.5 ms. Full lane wiring, composition, and federation peer DBs: [ARCHITECTURE § Retrieval](docs/concepts/ARCHITECTURE.md#retrieval).
 
 The result is prepended to your prompt verbatim:
 
@@ -86,7 +86,7 @@ aelf status                          # quick health summary
 aelf setup / aelf doctor            # initial install + verification
 ```
 
-`aelf --help` shows the everyday surface; `aelf --help --advanced` lists the rest. Full reference: [COMMANDS](docs/COMMANDS.md). The same operations are exposed as MCP tools and `/aelf:*` slash commands — same library underneath. See [MCP](docs/MCP.md) and [SLASH_COMMANDS](docs/SLASH_COMMANDS.md).
+`aelf --help` shows the everyday surface; `aelf --help --advanced` lists the rest. Full reference: [COMMANDS](docs/user/COMMANDS.md). The same operations are exposed as MCP tools and `/aelf:*` slash commands — same library underneath. See [MCP](docs/user/MCP.md) and [SLASH_COMMANDS](docs/user/SLASH_COMMANDS.md).
 
 ---
 
@@ -98,7 +98,7 @@ Two slash commands let the agent reach back into the belief graph mid-turn, beyo
 
 **`/aelf:reason <query>`** — the structured-walk surface. Walks the belief graph from BM25-seeded starting points and emits a typed reasoning trace: hops with edge-type breadcrumbs, a `VERDICT` (`SUFFICIENT` / `INCOMPLETE` / `CONTRADICTED` / `IMPASSE`), `IMPASSES` (typed gaps, ties, or constraint failures), and `SUGGESTED UPDATES` — `(belief_id, direction, note)` rows that map straight to `aelf feedback` so the conclusion closes the loop on the beliefs that fed it. Each impasse is dispatched to a role-tagged subagent (Verifier / Gap-filler / Fork-resolver). Peer hops in foreign federation scopes are annotated `[scope:<name>]`.
 
-The pair-rhythm is the point: `/aelf:wonder` adds fresh thinking to the graph, then `/aelf:reason` draws conclusions across it. Both surfaces are deterministic in the aelfrice layer (verdict classification, impasse derivation, axis generation, suggested-update mapping). The only LLM calls happen when the host agent dispatches a subagent per impasse or research axis — and those calls run under the host's own credentials, not aelfrice's. Specs: [COMMANDS § `wonder`](docs/COMMANDS.md), [COMMANDS § `reason`](docs/COMMANDS.md), [v3.0 wonder+reason parity (#645)](https://github.com/robotrocketscience/aelfrice/issues/645).
+The pair-rhythm is the point: `/aelf:wonder` adds fresh thinking to the graph, then `/aelf:reason` draws conclusions across it. Both surfaces are deterministic in the aelfrice layer (verdict classification, impasse derivation, axis generation, suggested-update mapping). The only LLM calls happen when the host agent dispatches a subagent per impasse or research axis — and those calls run under the host's own credentials, not aelfrice's. Specs: [COMMANDS § `wonder`](docs/user/COMMANDS.md), [COMMANDS § `reason`](docs/user/COMMANDS.md), [v3.0 wonder+reason parity (#645)](https://github.com/robotrocketscience/aelfrice/issues/645).
 
 ---
 
@@ -157,25 +157,25 @@ By that bar, "a vector store with a similarity query" is not a memory system —
 
 Running in the background. No action required after `aelf setup`.
 
-- **Passive capture.** Default-on transcript-ingest, commit-ingest, and session-start hooks. Session activity flows into the belief graph without you typing `aelf` at all; opt out per-hook via `aelf setup --no-transcript-ingest`, `--no-commit-ingest`, `--no-session-start`. See [INSTALL § default-on hooks](docs/INSTALL.md).
+- **Passive capture.** Default-on transcript-ingest, commit-ingest, and session-start hooks. Session activity flows into the belief graph without you typing `aelf` at all; opt out per-hook via `aelf setup --no-transcript-ingest`, `--no-commit-ingest`, `--no-session-start`. See [INSTALL § default-on hooks](docs/user/INSTALL.md).
 - **Determinism.** Stdlib + SQLite. No embeddings, no learned re-rankers, no LLM in the retrieval path. Every result traces to the action that wrote it.
-- **Local-only.** SQLite at `<git-common-dir>/aelfrice/memory.db`. aelfrice itself makes no network calls and emits no telemetry; no accounts. (Subagent LLM dispatches in `/aelf:wonder` / `/aelf:reason` flows do reach the network — under the host agent's credentials, not aelfrice's. The retrieval path stays local.) Per-project isolation by construction. v3.0 ships *read-only* cross-project federation via `knowledge_deps.json` — peer DBs are opened read-only, foreign-id mutations are rejected at the API surface, no multi-writer extension. See [PRIVACY.md](docs/PRIVACY.md).
+- **Local-only.** SQLite at `<git-common-dir>/aelfrice/memory.db`. aelfrice itself makes no network calls and emits no telemetry; no accounts. (Subagent LLM dispatches in `/aelf:wonder` / `/aelf:reason` flows do reach the network — under the host agent's credentials, not aelfrice's. The retrieval path stays local.) Per-project isolation by construction. v3.0 ships *read-only* cross-project federation via `knowledge_deps.json` — peer DBs are opened read-only, foreign-id mutations are rejected at the API surface, no multi-writer extension. See [PRIVACY.md](docs/user/PRIVACY.md).
 - **Removable.** `aelf uninstall --archive backup.aenc` encrypts the DB to a file, then deletes it. Or `--purge` for a full wipe.
 
 ---
 
 ## Status
 
-Latest stable: **v3.0.1** (2026-05-13). Per-entry detail in [CHANGELOG § 3.0.1](CHANGELOG.md). Per-version history: [docs/ROADMAP.md](docs/ROADMAP.md). Known limits: [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
+Latest stable: **v3.0.1** (2026-05-13). Per-entry detail in [CHANGELOG § 3.0.1](CHANGELOG.md). Per-version history: [docs/concepts/ROADMAP.md](docs/concepts/ROADMAP.md). Known limits: [docs/user/LIMITATIONS.md](docs/user/LIMITATIONS.md).
 
 ---
 
 ## Documentation
 
-- **Getting started:** [Install](docs/INSTALL.md) · [Quickstart](docs/QUICKSTART.md)
-- **Reference:** [Commands](docs/COMMANDS.md) · [MCP](docs/MCP.md) · [Slash commands](docs/SLASH_COMMANDS.md) · [Config](docs/CONFIG.md)
-- **Background:** [Architecture](docs/ARCHITECTURE.md) · [Philosophy](docs/PHILOSOPHY.md) · [Privacy](docs/PRIVACY.md) · [Limitations](docs/LIMITATIONS.md)
-- **Development:** [Releasing](docs/RELEASING.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
+- **Getting started:** [Install](docs/user/INSTALL.md) · [Quickstart](docs/user/QUICKSTART.md)
+- **Reference:** [Commands](docs/user/COMMANDS.md) · [MCP](docs/user/MCP.md) · [Slash commands](docs/user/SLASH_COMMANDS.md) · [Config](docs/user/CONFIG.md)
+- **Background:** [Architecture](docs/concepts/ARCHITECTURE.md) · [Philosophy](docs/concepts/PHILOSOPHY.md) · [Privacy](docs/user/PRIVACY.md) · [Limitations](docs/user/LIMITATIONS.md)
+- **Development:** [Releasing](docs/concepts/RELEASING.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 ## Citation
 

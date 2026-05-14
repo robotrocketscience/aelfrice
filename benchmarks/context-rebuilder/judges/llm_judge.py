@@ -8,7 +8,7 @@ off-band, then folds the verdicts back into the run.
 
 ## Contamination protocol
 
-`docs/BENCHMARKS.md` is explicit: generation and scoring run as separate
+`docs/concepts/BENCHMARKS.md` is explicit: generation and scoring run as separate
 passes, and **the judge never sees the retrieval context.** The request
 schema therefore carries only `(turn_idx, expected, actual)` — not the
 rebuilt block, not the user turn. Including the rebuilt block in the

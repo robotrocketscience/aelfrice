@@ -150,7 +150,7 @@ def _project_user_prompts(
 def _earliest_session_ts(recent_turns: "list[RecentTurn]") -> str | None:
     """Find the oldest `ts` of turns sharing the latest turn's session_id.
 
-    The turns.jsonl schema (docs/transcript_ingest.md) carries `ts` per
+    The turns.jsonl schema (docs/design/transcript_ingest.md) carries `ts` per
     turn. `read_recent_turns_aelfrice` populates `RecentTurn.ts` when the
     line has it; legacy callers and the Claude-Code transcript adapter
     pass through with `ts=None`.

@@ -6,7 +6,7 @@ the existing rank+pack returns K beliefs from the highest-scoring graph
 neighbourhood and a complementary cluster never makes the cut.
 Clustering replaces the pack loop with a diversity-aware greedy fill.
 
-Spec: ``docs/feature-intentional-clustering.md``.
+Spec: ``docs/design/feature-intentional-clustering.md``.
 
 This module owns the pure-library half of the contract:
 

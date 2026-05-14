@@ -1,6 +1,6 @@
 """Bench gate for #434 type-aware compression — A2 recall@k uplift.
 
-Spec § A2 in ``docs/feature-type-aware-compression.md``:
+Spec § A2 in ``docs/design/feature-type-aware-compression.md``:
 
     recall@k(use_type_aware_compression=ON) > recall@k(=OFF)
 
@@ -38,7 +38,7 @@ flip-default decision for ``use_type_aware_compression=True`` also
 requires A3 (determinism, covered by ``tests/test_compression.py``)
 and A4 (rebuilder continuation-fidelity, a separate bench gate
 against the rebuild_logs corpus — not yet wired). See
-``docs/feature-type-aware-compression.md`` § Bench-gate / ship-or-defer
+``docs/design/feature-type-aware-compression.md`` § Bench-gate / ship-or-defer
 policy.
 """
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Bench gate for #435 doc linker.
 
-Spec acceptance A2 (docs/feature-doc-linker.md):
+Spec acceptance A2 (docs/design/feature-doc-linker.md):
 
     NDCG@k(with_doc_anchors=ON, anchors_populated=ON)
         > NDCG@k(with_doc_anchors=ON, anchors_populated=OFF)

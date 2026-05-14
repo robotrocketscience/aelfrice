@@ -1,7 +1,7 @@
 """Type-aware compression for retrieval pack (#434).
 
 Pure deterministic compressor over `(Belief, locked)` per
-`docs/feature-type-aware-compression.md`. Strategy is dispatched by
+`docs/design/feature-type-aware-compression.md`. Strategy is dispatched by
 `belief.retention_class`:
 
   fact      → verbatim         (locked or not)
@@ -133,7 +133,7 @@ def compress_for_retrieval(belief: Belief, *, locked: bool) -> CompressedBelief:
     """Compress a belief for the retrieval pack.
 
     Pure and deterministic. See module docstring and
-    `docs/feature-type-aware-compression.md` for the strategy table.
+    `docs/design/feature-type-aware-compression.md` for the strategy table.
 
     Invariant: `rendered_tokens <= _estimate_tokens(belief.content)`.
     """

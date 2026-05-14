@@ -1,7 +1,7 @@
 """search-tool hook: dispatch, query extraction, retrieval injection, failure modes.
 
 Mirrors test_commit_ingest_hook.py structure. Acceptance criteria from
-docs/search_tool_hook.md numbered in test docstrings.
+docs/design/search_tool_hook.md numbered in test docstrings.
 """
 from __future__ import annotations
 

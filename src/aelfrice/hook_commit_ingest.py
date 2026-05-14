@@ -17,7 +17,7 @@ Hook contract (Claude Code PostToolUse):
 - All failure modes return exit 0 silently. The hook may NEVER
   cause a `git commit` to feel broken.
 
-Latency budget per docs/commit_ingest_hook.md:
+Latency budget per docs/design/commit_ingest_hook.md:
     median <= 30 ms, p95 <= 100 ms
 
 Tactics:

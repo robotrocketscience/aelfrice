@@ -2,7 +2,7 @@
 
 Classifies a commit message into one of {"fix", "correction", "revert-of-error", None}
 via a deterministic regex over a small keyword bank. Test-utility scope only;
-not shipped library code (see docs/feature-correction-detection-eval.md § Path A).
+not shipped library code (see docs/design/feature-correction-detection-eval.md § Path A).
 
 Usage:
     from tests.bench_gate._commit_intent import classify_commit_intent

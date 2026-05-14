@@ -304,7 +304,7 @@ def probe(fixture: Path) -> DynamicProbeResult:
             f"no candidate clears the v1.4 ship-gate "
             f"(>= {DYNAMIC_FIDELITY_MARGIN} absolute fidelity at "
             f"same-or-lower token cost). Measurements: {deltas}. "
-            f"Parked for v1.5; see docs/context_rebuilder.md "
+            f"Parked for v1.5; see docs/design/context_rebuilder.md "
             f"§ Dynamic mode (parked v1.5)."
         )
 

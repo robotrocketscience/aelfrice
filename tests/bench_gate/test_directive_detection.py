@@ -1,6 +1,6 @@
 """Bench gate for #374 — H1 directive detection re-entry.
 
-Per `docs/v2_enforcement.md` § H1, H1 unblocks for implementation only when
+Per `docs/design/v2_enforcement.md` § H1, H1 unblocks for implementation only when
 the candidate detector hits ≥80% precision and ≥60% recall on ≥200 labeled
 coding prompts. This test scores `aelfrice.directive_detector.detect_directive`
 against the lab-side corpus and asserts the gate.
@@ -29,7 +29,7 @@ def test_directive_detection_gate(aelfrice_corpus_root: Path) -> None:
     if len(rows) < MIN_ROWS:
         pytest.skip(
             f"directive_detection corpus has {len(rows)} rows; gate requires "
-            f"≥{MIN_ROWS} per docs/v2_enforcement.md § H1"
+            f"≥{MIN_ROWS} per docs/design/v2_enforcement.md § H1"
         )
 
     from aelfrice.directive_detector import detect_directive
@@ -53,10 +53,10 @@ def test_directive_detection_gate(aelfrice_corpus_root: Path) -> None:
     assert precision >= PRECISION_GATE, (
         f"directive_detection precision {precision:.3f} below "
         f"{PRECISION_GATE} gate (TP={tp}, FP={fp}, FN={fn}, TN={tn}, "
-        f"n={len(rows)}); H1 stays deferred per docs/v2_enforcement.md § H1"
+        f"n={len(rows)}); H1 stays deferred per docs/design/v2_enforcement.md § H1"
     )
     assert recall >= RECALL_GATE, (
         f"directive_detection recall {recall:.3f} below {RECALL_GATE} gate "
         f"(TP={tp}, FP={fp}, FN={fn}, TN={tn}, n={len(rows)}); "
-        f"H1 stays deferred per docs/v2_enforcement.md § H1"
+        f"H1 stays deferred per docs/design/v2_enforcement.md § H1"
     )

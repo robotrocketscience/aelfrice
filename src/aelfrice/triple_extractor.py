@@ -5,7 +5,7 @@ no LLM. Reusable by every v1.x ingest caller that has prose at
 hand: the v1.2.0 commit-ingest hook, transcript-ingest, manual
 `aelf remember` calls, and the v1.3.0 entity-index path.
 
-Two-piece API per docs/triple_extractor.md:
+Two-piece API per docs/design/triple_extractor.md:
 
 - `extract_triples(text)` -> list[Triple]: pure, no store side-effects.
 - `ingest_triples(store, triples, session_id=None)` -> IngestResult:
