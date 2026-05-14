@@ -52,7 +52,7 @@ def _mk_belief(text: str, *, alpha: float = 1.0, beta: float = 1.0) -> Belief:
     return Belief(
         id=bid, content=text, content_hash=f"h_{bid}",
         alpha=alpha, beta=beta, type=BELIEF_FACTUAL,
-        lock_level=LOCK_NONE, locked_at=None, demotion_pressure=0,
+        lock_level=LOCK_NONE, locked_at=None,
         created_at="2023-11-14T22:13:20+00:00",
         last_retrieved_at=None, retention_class=RETENTION_FACT,
     )
