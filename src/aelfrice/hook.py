@@ -834,6 +834,13 @@ def user_prompt_submit(
         # the hits returned here. Default-off, fail-soft, opt-in via
         # `[feedback] sentiment_from_prose = true` in `.aelfrice.toml`.
         apply_sentiment_feedback(prompt, session_id, stderr=serr)
+        # #779 Layer 3: score the prior turn's pending injection_events
+        # against the assistant transcript and push `relevance` evidence
+        # into the meta-belief substrate. Runs BEFORE this turn's
+        # retrieval so the shifted posteriors are visible to the
+        # half-life / anchor-weight / etc. consumers that fire below.
+        # Fail-soft, like sentiment-feedback.
+        _sweep_relevance_signal(session_id=session_id, stderr=serr)
         # #674: prompt-shape gate — skip BM25 for system envelopes and
         # trivial acks, preserving any session-start block unchanged.
         gate_skip = False
@@ -983,6 +990,159 @@ def user_prompt_submit(
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     return 0
+
+
+def _read_assistant_text_since(
+    session_id: str, since_iso: str, *, stderr: IO[str] | None = None,
+) -> str:
+    """Concatenate every assistant transcript line in ``session_id``
+    whose ``ts`` is strictly greater than ``since_iso``.
+
+    Returns ``""`` when the transcript file is missing, the session
+    has no matching assistant lines, or any IO / JSON-decode error
+    occurs (fail-soft). Source: the single ``turns.jsonl`` written by
+    the Stop hook in ``transcript_logger``. Lines preceding the
+    cutoff are skipped; rotation marker lines and malformed lines
+    are ignored. Wall-clock independence is preserved at the
+    higher level — the caller passes ``since_iso``, not ``time.time()``.
+    """
+    serr = stderr if stderr is not None else sys.stderr
+    try:
+        from aelfrice.transcript_logger import turns_path  # noqa: PLC0415
+        p = turns_path()
+        if not p.exists():
+            return ""
+        chunks: list[str] = []
+        with p.open("r", encoding="utf-8") as f:
+            for raw in f:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if obj.get("role") != "assistant":
+                    continue
+                if obj.get("session_id") != session_id:
+                    continue
+                ts = obj.get("ts")
+                if not isinstance(ts, str) or ts <= since_iso:
+                    continue
+                text = obj.get("text")
+                if isinstance(text, str) and text:
+                    chunks.append(text)
+        return "\n".join(chunks)
+    except Exception as exc:
+        print(
+            f"aelfrice: transcript read failed (non-fatal): {exc}",
+            file=serr,
+        )
+        return ""
+
+
+def _sweep_relevance_signal(
+    *,
+    session_id: str | None,
+    stderr: IO[str] | None = None,
+) -> None:
+    """Score prior turns' pending ``injection_events`` against the
+    assistant transcript and update each active consumer's
+    ``relevance`` sub-posterior.
+
+    Runs once at the *start* of every UPS hook, before this turn's
+    retrieval. Reads pending events for ``session_id`` (events whose
+    ``referenced IS NULL``), joins each event_id to its belief
+    content, scores via :func:`relevance_detection.score_references`
+    against the concatenated assistant text since the oldest pending
+    event's ``injected_at``, and then:
+
+      1. For each scored ``(event_id, referenced)`` tuple, fires
+         ``update_meta_belief(consumer_key, SIGNAL_RELEVANCE,
+         evidence=float(referenced), ...)`` once per consumer key in
+         the event's ``active_consumers`` list. The substrate
+         silently no-ops on consumers that didn't subscribe to
+         ``relevance``, so the wiring is single-sourced via the env
+         flags.
+      2. Stamps the event row with ``referenced`` + ``referenced_at``
+         so it never gets re-scored.
+
+    Fail-soft: any path-resolution, store-open, or update error
+    prints one line to stderr and returns. The sweeper is feedback
+    substrate — a write failure must not break the user-visible
+    retrieval contract.
+    """
+    serr = stderr if stderr is not None else sys.stderr
+    if not session_id:
+        return
+    try:
+        from aelfrice.meta_beliefs import SIGNAL_RELEVANCE  # noqa: PLC0415
+        from aelfrice.relevance_detection import (  # noqa: PLC0415
+            score_references,
+        )
+
+        p = db_path()
+        if str(p) == ":memory:":
+            return
+        store = MemoryStore(str(p))
+        try:
+            pending = store.list_pending_injection_events(session_id)
+            if not pending:
+                return
+            oldest_injected_at = min(e[3] for e in pending)
+            response_text = _read_assistant_text_since(
+                session_id, oldest_injected_at, stderr=serr,
+            )
+            if not response_text:
+                return
+            belief_content_by_id: dict[str, str] = {}
+            for _eid, _tid, bid, *_rest in pending:
+                if bid in belief_content_by_id:
+                    continue
+                belief = store.get_belief(bid)
+                belief_content_by_id[bid] = (
+                    belief.content if belief is not None else ""
+                )
+            pairs = [
+                (eid, belief_content_by_id.get(bid, ""))
+                for eid, _tid, bid, *_rest in pending
+            ]
+            scored = score_references(pairs, response_text)
+            scored_by_event_id = dict(scored)
+            now_iso = datetime.now(timezone.utc).isoformat()
+            now_ts = int(time.time())
+            for eid, _tid, _bid, _at, _src, active_consumers in pending:
+                referenced = scored_by_event_id.get(eid)
+                if referenced is None:
+                    continue
+                for consumer_key in active_consumers:
+                    try:
+                        store.update_meta_belief(
+                            consumer_key,
+                            SIGNAL_RELEVANCE,
+                            evidence=float(referenced),
+                            now_ts=now_ts,
+                        )
+                    except Exception as exc:
+                        print(
+                            f"aelfrice: meta-belief update failed for "
+                            f"{consumer_key!r} (non-fatal): {exc}",
+                            file=serr,
+                        )
+                store.update_injection_referenced(
+                    eid,
+                    referenced=int(referenced),
+                    referenced_at=now_iso,
+                )
+        finally:
+            store.close()
+    except Exception as exc:
+        print(
+            f"aelfrice: relevance sweeper failed (non-fatal): {exc}",
+            file=serr,
+        )
 
 
 def _new_injection_event_turn_id() -> str:
