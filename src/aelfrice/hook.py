@@ -947,14 +947,26 @@ def user_prompt_submit(
             try:
                 injected_ids = [h.id for h in hits if getattr(h, "id", None)]
                 locked_now = {h.id for h in hits if h.lock_level == LOCK_USER}
-                _ring_append_ids(
+                _next_fire = _ring_append_ids(
                     session_id,
                     injected_ids,
                     locked_ids=locked_now,
                     stderr=serr,
                 )
             except Exception:  # fail-soft: ring is noise reduction only
-                pass
+                _next_fire = -1
+            # #816 hot-path: record belief_touches alongside the ring
+            # append, sharing the ring's fire_idx so JSON ring + sidecar
+            # table track the same monotonic counter. v1 is write-only;
+            # the rerank consumer is gated on R7c (DESIGN.md v1 ship
+            # list item 7). Fail-soft: never breaks the hook.
+            if _next_fire >= 1 and injected_ids:
+                _record_touches(
+                    session_id=session_id,
+                    belief_ids=injected_ids,
+                    fire_idx=_next_fire - 1,
+                    stderr=serr,
+                )
         elif gate_skip:
             # Gate fired, no BM25 hits. Emit rebuild_log with empty hits
             # (no-op per its early-return guard on empty hits_pre_dedup).
@@ -1160,6 +1172,103 @@ def _new_injection_event_turn_id() -> str:
         + "-"
         + secrets.token_hex(4)
     )
+
+
+def _record_touches(
+    *,
+    session_id: str | None,
+    belief_ids: list[str],
+    fire_idx: int,
+    stderr: IO[str] | None = None,
+) -> None:
+    """Append one ``belief_touches`` row per injected belief.
+
+    Sibling of :func:`_record_injection_events`. Fires from the UPS
+    hook after retrieval has decided which beliefs will appear in the
+    rendered block, sharing the ``fire_idx`` from
+    :func:`session_ring.append_ids` so the JSON ring and the sidecar
+    table stay aligned on the same monotonic counter.
+
+    v1 ships INJECTION-only events (DESIGN.md v1 §"Event kinds — H4
+    FAIL → INJECTION-only"); only bit 0 of ``event_kinds_bitmask`` is
+    set. v1 writes but does not read this state — the rerank consumer
+    is gated on the H3 fidelity test post-R7c.
+
+    Fail-soft: path-resolution, store-open, or insert failure prints
+    one line to stderr and never propagates. Touch state is
+    opportunistic substrate; a write failure must not break the
+    hook's user-visible context-injection contract.
+
+    Also performs a one-shot per-session migration of the #744 JSON
+    injection ring into ``belief_touches`` — every ring entry for
+    ``session_id`` is INSERT-OR-IGNORE'd with its original
+    ``fire_idx`` and INJECTION bit set, so beliefs touched before the
+    sidecar shipped become visible to the table without a separate
+    migration pass. Idempotent: subsequent calls see the rows already
+    exist and the INSERT no-ops.
+    """
+    serr = stderr if stderr is not None else sys.stderr
+    if not session_id or not belief_ids or fire_idx < 0:
+        return
+    try:
+        from aelfrice.hot_path import (  # noqa: PLC0415
+            TOUCH_EVENT_KIND_INJECTION,
+        )
+        from aelfrice.session_ring import (  # noqa: PLC0415
+            read_ring_state,
+        )
+        p = db_path()
+        if str(p) == ":memory:":
+            return
+        store = MemoryStore(str(p))
+        try:
+            # #744 → belief_touches one-shot migration. Idempotent via
+            # the ON CONFLICT DO UPDATE in record_touch — re-running
+            # against an already-migrated row just refreshes the
+            # last_fire_idx and bumps touch_count, which is wrong on a
+            # *migration* call but right on a *current* call. To keep
+            # the migration distinct from the current write, we issue
+            # one record_touch per ring entry *before* the current
+            # touches, so the current writes are the last to land and
+            # the row reflects the most-recent fire_idx.
+            ring_state = read_ring_state(session_id)
+            if isinstance(ring_state, dict):
+                ring_list = ring_state.get("ring")
+                if isinstance(ring_list, list):
+                    for entry in ring_list:
+                        if not isinstance(entry, dict):
+                            continue
+                        rid = entry.get("id")
+                        rfire = entry.get("fire_idx")
+                        if (
+                            not isinstance(rid, str) or not rid
+                            or not isinstance(rfire, int) or rfire < 0
+                        ):
+                            continue
+                        store.record_touch(
+                            belief_id=rid,
+                            session_id=session_id,
+                            fire_idx=rfire,
+                            event_kind=TOUCH_EVENT_KIND_INJECTION,
+                        )
+            # Current turn's injection set.
+            for bid in belief_ids:
+                if not bid:
+                    continue
+                store.record_touch(
+                    belief_id=bid,
+                    session_id=session_id,
+                    fire_idx=fire_idx,
+                    event_kind=TOUCH_EVENT_KIND_INJECTION,
+                )
+        finally:
+            store.close()
+    except Exception as exc:
+        print(
+            f"aelfrice: UPS belief_touches emit failed "
+            f"(non-fatal): {exc}",
+            file=serr,
+        )
 
 
 def _record_injection_events(
