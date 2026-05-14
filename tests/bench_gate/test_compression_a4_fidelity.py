@@ -105,6 +105,16 @@ def test_compression_a4_corpus_round_trip(
                 f"row {row['id']} turn {i} role must be user|assistant, "
                 f"got {turn['role']!r}"
             )
+        for i, b in enumerate(row["beliefs"]):
+            assert "id" in b, f"row {row['id']} belief {i} missing id"
+            assert "content" in b, (
+                f"row {row['id']} belief {i} missing content"
+            )
+        for i, a in enumerate(row["expected_post_clear_answers"]):
+            assert isinstance(a, str), (
+                f"row {row['id']} expected_post_clear_answers[{i}] "
+                f"must be a string, got {type(a).__name__}"
+            )
 
 
 @pytest.mark.bench_gated
