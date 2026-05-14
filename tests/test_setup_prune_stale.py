@@ -19,7 +19,6 @@ mode described in issue #781:
 from __future__ import annotations
 
 import json
-import os
 import stat
 from pathlib import Path
 from typing import cast
