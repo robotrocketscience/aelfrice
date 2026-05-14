@@ -3779,6 +3779,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_prune_dormant(args, out)
     if getattr(args, "meta_beliefs", False):
         return _cmd_doctor_meta_beliefs(args, out)
+    if getattr(args, "hot_path", False):
+        return _cmd_doctor_hot_path(args, out)
     scope = getattr(args, "scope", None)
     exit_code = 0
     if scope in (None, "hooks"):
@@ -3857,6 +3859,45 @@ def _cmd_doctor_fix_hooks(
             "--fix: no stale aelf-* hook entries to prune",
             file=out,  # type: ignore[arg-type]
         )
+
+
+def _cmd_doctor_hot_path(args: argparse.Namespace, out: object) -> int:
+    """Surface ``belief_touches`` per-session inventory (#816 v1).
+
+    Read-only diagnostic. Lists every session_id that has at least one
+    touch row, with its row count and most-recent fire_idx. Useful for
+    operators inspecting whether the touch-state substrate is
+    accumulating data ahead of the H3 consumer flip (R7c-gated).
+
+    Always exits 0; v1 is observational. The future consumer flip will
+    add a gate path here that compares writes against expected
+    cardinality.
+    """
+    store = _open_store()
+    try:
+        sessions = store.list_touch_sessions()
+    finally:
+        store.close()
+    if not sessions:
+        print(
+            "aelf doctor --hot-path: belief_touches is empty.",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 0
+    print(
+        f"aelf doctor --hot-path: {len(sessions)} session(s) with touch state.",
+        file=out,  # type: ignore[arg-type]
+    )
+    print(
+        f"{'session_id':<48}  {'rows':>8}  {'max_fire_idx':>14}",
+        file=out,  # type: ignore[arg-type]
+    )
+    for sid, n, max_fire in sessions:
+        print(
+            f"{sid:<48}  {n:>8d}  {max_fire:>14d}",
+            file=out,  # type: ignore[arg-type]
+        )
+    return 0
 
 
 def _cmd_doctor_meta_beliefs(args: argparse.Namespace, out: object) -> int:
@@ -5724,6 +5765,17 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "default, half-life, surfaced value, and per-signal-class "
             "sub-posteriors. Bypasses the hooks/graph checks. Read-only. "
             "Add --json for machine-readable output."
+        ),
+    )
+    p_doctor.add_argument(
+        "--hot-path",
+        dest="hot_path",
+        action="store_true",
+        default=False,
+        help=(
+            "report `belief_touches` per-session inventory (#816): "
+            "session_id, row count, max fire_idx. Bypasses the "
+            "hooks/graph checks. Read-only; v1 is observational."
         ),
     )
     p_doctor.add_argument(
