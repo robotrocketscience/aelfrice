@@ -3800,6 +3800,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         _print_doctor_store_check(out)
         if report.broken:
             exit_code = 1
+        if getattr(args, "fix", False):
+            _cmd_doctor_fix_hooks(args, report, out)
     if scope in (None, "graph"):
         if scope is None:
             print("", file=out)  # type: ignore[arg-type]
@@ -3807,6 +3809,53 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         if graph_exit != 0:
             exit_code = graph_exit
     return exit_code
+
+
+def _cmd_doctor_fix_hooks(
+    args: argparse.Namespace, report: object, out: object,
+) -> None:
+    """Apply `prune_broken_aelf_hooks` to every settings.json doctor scanned.
+
+    Called from `_cmd_doctor` when `--fix` is set. Reads the list of
+    scopes/paths off the already-built `DoctorReport` so the prune
+    decision matches what doctor just reported. `args.dry_run` flips
+    the prune into report-only mode.
+
+    Custom hooks (non-`aelf-` basename) are never touched by the
+    prune helper itself — this wrapper only handles I/O.
+    """
+    from typing import cast
+
+    dry_run = bool(getattr(args, "dry_run", False))
+    scopes_scanned = cast(
+        list[tuple[str, Path]],
+        getattr(report, "scopes_scanned", []),
+    )
+    if not scopes_scanned:
+        return
+    print("", file=out)  # type: ignore[arg-type]
+    any_removed = False
+    for _scope, path in scopes_scanned:
+        prune = prune_broken_aelf_hooks(path, dry_run=dry_run)
+        if not prune.total_removed:
+            continue
+        any_removed = True
+        events = ", ".join(
+            f"{event}={count}"
+            for event, count in sorted(prune.removed_per_event.items())
+        )
+        verb = "would prune" if dry_run else "pruned"
+        noun = "entry" if prune.total_removed == 1 else "entries"
+        print(
+            f"--fix: {verb} {prune.total_removed} stale aelf-* hook "
+            f"{noun} ({events}) from {path}",
+            file=out,  # type: ignore[arg-type]
+        )
+    if not any_removed:
+        print(
+            "--fix: no stale aelf-* hook entries to prune",
+            file=out,  # type: ignore[arg-type]
+        )
 
 
 def _cmd_doctor_meta_beliefs(args: argparse.Namespace, out: object) -> int:
@@ -5676,6 +5725,18 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help=(
             "with --meta-beliefs: emit JSON instead of a human-readable "
             "table. No effect on other doctor sub-modes today."
+        ),
+    )
+    p_doctor.add_argument(
+        "--fix",
+        dest="fix",
+        action="store_true",
+        default=False,
+        help=(
+            "with hooks scope: remove `aelf-*` hook entries whose program "
+            "no longer resolves (#781). Custom shell hooks (non-`aelf-` "
+            "basenames) are never touched. Combine with --dry-run to "
+            "print what would be pruned without rewriting settings.json."
         ),
     )
     p_doctor.set_defaults(func=_cmd_doctor)
