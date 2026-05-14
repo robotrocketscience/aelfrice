@@ -49,6 +49,12 @@ PARTIAL_BAYESIAN_BM25_FLOOR: Final[float] = 1e-12
 # λ=0.5; collapses to 0.91 at λ=1.0; minimal effect at λ=0.0).
 DEFAULT_POSTERIOR_WEIGHT: Final[float] = 0.5
 
+# #796 γ rerank — minimum temperature accepted by
+# `gamma_posterior_score`. T must be strictly positive (division);
+# values below this floor clamp upward so a misconfigured meta-belief
+# or env override never raises at retrieval time.
+GAMMA_TEMPERATURE_FLOOR: Final[float] = 1e-6
+
 # --- Half-lives in seconds ---
 _HOUR: Final[float] = 3600.0
 TYPE_HALF_LIFE_SECONDS: Final[dict[str, float]] = {
@@ -201,3 +207,36 @@ def partial_bayesian_score(
     # pathological `alpha = 0` operator-fed case to avoid `log(0)`.
     p_safe = p if p > 0.0 else PARTIAL_BAYESIAN_BM25_FLOOR
     return log_bm25 + posterior_weight * math.log(p_safe)
+
+
+def gamma_posterior_score(
+    bm25_raw: float,
+    alpha: float,
+    beta: float,
+    temperature: float,
+) -> float:
+    """#796 γ rerank — Boltzmann temperature on the posterior log term.
+
+    `score = log(max(-bm25_raw, EPS)) + (1 / T) * log(posterior_mean)`
+
+    At `T = 1.0` this collapses to `partial_bayesian_score` with
+    `posterior_weight = 1.0` (byte-identical). Lower `T` sharpens the
+    posterior contribution (high-posterior beliefs pull harder);
+    higher `T` flattens it toward BM25-only ranking.
+
+    Temperatures at or below `GAMMA_TEMPERATURE_FLOOR` clamp upward —
+    a misconfigured meta-belief value never raises at retrieval time.
+    Negative temperatures are likewise clamped: the Boltzmann reading
+    is undefined for `T <= 0` and the safest fall-back is the floor.
+
+    γ is the load-bearing precursor to #758's adaptive
+    `meta:retrieval.posterior_temperature`. Until that meta-belief is
+    populated and learning, callers pin `T = 1.0` and the bench panel
+    measures the γ vs log-additive surface (#796 R&D campaign verdict).
+    """
+    t_safe = temperature if temperature > GAMMA_TEMPERATURE_FLOOR else (
+        GAMMA_TEMPERATURE_FLOOR
+    )
+    return partial_bayesian_score(
+        bm25_raw, alpha, beta, posterior_weight=(1.0 / t_safe),
+    )
