@@ -215,6 +215,29 @@ TEMPORAL_HALF_LIFE_FLAG: Final[str] = "temporal_half_life_seconds"
 # `.aelfrice.toml`. A bench-evidence sweep harness is queued as a
 # follow-up issue (A3=A).
 DEFAULT_TEMPORAL_HALF_LIFE_SECONDS: Final[float] = 7.0 * 24.0 * 3600.0
+# v3.x #756 meta-belief consumer for the temporal half-life. See
+# umbrella #480 + the operator ratification on #756 (2026-05-13)
+# for the design call: encoding lives in the consumer, the substrate
+# stays pattern-uniform across B–F, and bounds are picked at the
+# consumer's natural scale. Log-linear with [3d, 14d] bounds; v=0.5
+# (cold start) → ~6.5d, close to the #473 ratified 7d static.
+META_HALF_LIFE_KEY: Final[str] = "meta:retrieval.temporal_half_life_seconds"
+HALF_LIFE_FLOOR_SECONDS: Final[float] = 3.0 * 24.0 * 3600.0
+HALF_LIFE_CEIL_SECONDS: Final[float] = 14.0 * 24.0 * 3600.0
+# Static-default `value` for the meta-belief. Mid-range under the
+# log-linear bounds chosen above so the cold-start surfaced half-life
+# lands near the #473 ratified 7d.
+META_HALF_LIFE_STATIC_DEFAULT: Final[float] = 0.5
+# Sub-posterior decay half-life — how fast the meta-belief itself
+# forgets old evidence. 30d so a one-off latency spike doesn't shift
+# the half-life; sustained evidence does. Slower than the surfaced
+# half-life value's own [3d, 14d] band, per the #756 init spec.
+META_HALF_LIFE_POSTERIOR_DECAY_SECONDS: Final[int] = 30 * 24 * 3600
+# Default-OFF feature flag. Until the bench-gate clears, every
+# retrieval still uses the v2.1 #473 static path; setting this env
+# var truthy switches `resolve_temporal_half_life_with_meta` to
+# read the meta-belief from the store first.
+ENV_META_BELIEF_HALF_LIFE: Final[str] = "AELFRICE_META_BELIEF_HALF_LIFE"
 # Number of decimal places used to round `posterior_weight` before
 # inclusion in the cache key. Two callers passing weights that
 # differ by less than this granularity collapse to the same key.
@@ -664,6 +687,45 @@ def _env_temporal_half_life() -> float | None:
     return value
 
 
+def decode_meta_half_life(value: float) -> float:
+    """Decode a `[0, 1]` meta-belief value into seconds via log-linear
+    interpolation between :data:`HALF_LIFE_FLOOR_SECONDS` (3 days) and
+    :data:`HALF_LIFE_CEIL_SECONDS` (14 days).
+
+    `v=0.0` → 3d, `v=1.0` → 14d, `v=0.5` → ~6.5d (close to the #473
+    ratified 7d static). Values outside `[0, 1]` are clamped — the
+    substrate's `posterior_mean` is mathematically bounded to `[0, 1]`
+    but `value` may be the `static_default` cold-start fallback on a
+    misconfigured row, so we defend.
+
+    Per the #756 operator ratification (2026-05-13): the encoding
+    lives in the consumer, not in the substrate. This keeps the
+    substrate pattern-uniform across umbrella #480 sub-tasks B–F.
+    """
+    v = max(0.0, min(1.0, value))
+    ln_floor = math.log(HALF_LIFE_FLOOR_SECONDS)
+    ln_ceil = math.log(HALF_LIFE_CEIL_SECONDS)
+    return math.exp(ln_floor + v * (ln_ceil - ln_floor))
+
+
+def is_meta_belief_half_life_enabled() -> bool:
+    """Return True iff :data:`ENV_META_BELIEF_HALF_LIFE` is set to a
+    recognised truthy value.
+
+    Ships default-OFF per the #756 bench-gate clause: until #437 A/B
+    corpus evidence clears, every retrieval still uses the v2.1 #473
+    static-7d path. Operators flip this on per-shell to opt into the
+    adaptive half-life. The issue's `=enabled` spelling is honoured
+    alongside the codebase-standard truthy tokens (`1`, `true`, `yes`,
+    `on`) — both forms map to the same state, no precedence wrinkles.
+    """
+    raw = os.environ.get(ENV_META_BELIEF_HALF_LIFE)
+    if raw is None:
+        return False
+    norm = raw.strip().lower()
+    return norm in _ENV_TRUTHY or norm == "enabled"
+
+
 def resolve_temporal_half_life(
     explicit: float | None = None,
     *,
@@ -679,6 +741,11 @@ def resolve_temporal_half_life(
     Non-positive values at any layer fall through to the next layer.
     The decay is `2 ** (-age_seconds / half_life)` so half_life=0 is
     undefined; treat it as missing.
+
+    The meta-belief consumer (#756) lives in a separate function
+    (:func:`resolve_temporal_half_life_with_meta`) because it requires
+    a store handle and a `now_ts`. Bare retrieve-time consumers without
+    a store still resolve through this static-config chain.
     """
     env = _env_temporal_half_life()
     if env is not None:
