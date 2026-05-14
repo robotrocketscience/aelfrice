@@ -25,6 +25,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import string
 import sys
 import tempfile
@@ -869,6 +870,25 @@ def user_prompt_submit(
                 hits_post_dedup=hits,
                 stderr=serr,
             )
+            # #779 Layer 1: record one injection_events row per
+            # injected belief. Drives the close-the-loop relevance
+            # sweeper (Layer 3) on the next UPS turn. active_consumers
+            # carries the set of meta-belief keys whose retrieval
+            # consumer was env-gated ON for this call; the sweeper
+            # iterates that list when delivering `relevance` evidence
+            # so the wiring stays single-sourced via the env flags.
+            from aelfrice.retrieval import (  # noqa: PLC0415
+                get_active_meta_belief_consumers,
+            )
+            _injection_turn_id = _new_injection_event_turn_id()
+            _record_injection_events(
+                session_id=session_id,
+                turn_id=_injection_turn_id,
+                hits=hits,
+                source="ups",
+                active_consumers=get_active_meta_belief_consumers(),
+                stderr=serr,
+            )
             # total_chars measured post-collapse (what is actually injected).
             total_chars = sum(len(h.content) for h in hits)
             # #578: inject session-start sub-block on first prompt.
@@ -963,6 +983,77 @@ def user_prompt_submit(
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     return 0
+
+
+def _new_injection_event_turn_id() -> str:
+    """Generate a turn id for an injection_events batch.
+
+    Same shape as ``transcript_logger._new_turn_id`` so the sort
+    semantics (lexicographic = chronological because of the
+    ``%Y%m%dT%H%M%S%fZ`` prefix) work across the two writers, but
+    independent — the sweeper joins on ``session_id`` and temporal
+    order, not on string-equality of turn ids between transcript and
+    injection-event rows.
+    """
+    return (
+        datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        + "-"
+        + secrets.token_hex(4)
+    )
+
+
+def _record_injection_events(
+    *,
+    session_id: str | None,
+    turn_id: str,
+    hits: list[Belief],
+    source: str,
+    active_consumers: list[str],
+    stderr: IO[str] | None = None,
+) -> None:
+    """Append one ``injection_events`` row per injected belief.
+
+    Fires from the UPS hook after retrieval has decided which beliefs
+    will appear in the rendered ``<aelfrice-rebuild>`` block. The
+    sweeper at the *next* UPS turn (#779 Layer 3) reads these rows,
+    scores ``referenced`` against the assistant transcript, and pushes
+    one update per active consumer into the meta-belief substrate.
+
+    Fail-soft: any path-resolution, store-open, or insert failure
+    prints one line to stderr and never propagates. injection_events
+    is diagnostic/feedback substrate — a write failure must not break
+    the hook's user-visible context-injection contract.
+    """
+    serr = stderr if stderr is not None else sys.stderr
+    if not session_id or not hits:
+        return
+    try:
+        p = db_path()
+        if str(p) == ":memory:":
+            return
+        injected_at = datetime.now(timezone.utc).isoformat()
+        store = MemoryStore(str(p))
+        try:
+            for h in hits:
+                bid = getattr(h, "id", None)
+                if not bid:
+                    continue
+                store.record_injection_event(
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    belief_id=bid,
+                    injected_at=injected_at,
+                    source=source,
+                    active_consumers=active_consumers,
+                )
+        finally:
+            store.close()
+    except Exception as exc:
+        print(
+            f"aelfrice: UPS injection_events emit failed "
+            f"(non-fatal): {exc}",
+            file=serr,
+        )
 
 
 def _emit_user_prompt_submit_rebuild_log(

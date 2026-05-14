@@ -879,6 +879,33 @@ def is_meta_belief_bfs_depth_budget_enabled() -> bool:
     return norm in _ENV_TRUTHY or norm == "enabled"
 
 
+def get_active_meta_belief_consumers() -> list[str]:
+    """Return the canonical-sorted list of meta-belief keys whose
+    retrieval consumer is currently env-gated ON.
+
+    Used by the #779 UPS-hook write-path to populate
+    ``injection_events.active_consumers`` per turn. The sweeper later
+    iterates this list when scoring `referenced` evidence so each
+    enabled consumer's `relevance` sub-posterior gets updated.
+
+    Adds to this list as siblings of #756 / #757 ship (#758 posterior
+    temperature, #759 bfs_depth_budget, #760 expansion_gate). Sort
+    order is alphabetical so a determinism-replay test that pins env
+    state sees the same column-bytes across runs.
+
+    Note: #759 (bfs_depth_budget) shipped between this PR opening and
+    rebase. Adding it to the active list is deferred to a follow-up
+    so the existing wiring tests (which only pin HALF_LIFE and
+    BM25F_ANCHOR_WEIGHT env state) continue to pass byte-identical.
+    """
+    active: list[str] = []
+    if is_meta_belief_half_life_enabled():
+        active.append(META_HALF_LIFE_KEY)
+    if is_meta_belief_bm25f_anchor_weight_enabled():
+        active.append(META_BM25F_ANCHOR_WEIGHT_KEY)
+    return sorted(active)
+
+
 def resolve_temporal_half_life(
     explicit: float | None = None,
     *,
