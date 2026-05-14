@@ -392,6 +392,16 @@ POSTERIOR_TEMPERATURE_CEIL: Final[float] = 2.0
 META_POSTERIOR_TEMPERATURE_STATIC_DEFAULT: Final[float] = 0.5
 # Sub-posterior decay — 30d, matching the rest of the #480 family.
 META_POSTERIOR_TEMPERATURE_POSTERIOR_DECAY_SECONDS: Final[int] = 30 * 24 * 3600
+# Default-OFF feature flag for #758 adaptive-learning delivery.
+# Distinct from :data:`ENV_USE_GAMMA_POSTERIOR_TEMPERATURE` (#796): that
+# flag gates whether the γ-rerank uses ``T`` at all; this flag gates
+# whether the sweeper delivers relevance evidence to the meta-belief so
+# ``T`` can learn. The two axes are independent — running with only the
+# gamma flag on gives a fixed ``T=1.0`` cold-start; running with both on
+# lets ``T`` adapt based on which top-K beliefs the assistant references.
+ENV_META_BELIEF_POSTERIOR_TEMPERATURE: Final[str] = (
+    "AELFRICE_META_BELIEF_POSTERIOR_TEMPERATURE"
+)
 
 # Number of decimal places used to round `posterior_weight` before
 # inclusion in the cache key. Two callers passing weights that
@@ -1041,6 +1051,27 @@ def is_meta_belief_expansion_gate_token_threshold_enabled() -> bool:
     mirroring :func:`is_meta_belief_half_life_enabled`.
     """
     raw = os.environ.get(ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD)
+    if raw is None:
+        return False
+    norm = raw.strip().lower()
+    return norm in _ENV_TRUTHY or norm == "enabled"
+
+def is_meta_belief_posterior_temperature_enabled() -> bool:
+    """Return True iff :data:`ENV_META_BELIEF_POSTERIOR_TEMPERATURE`
+    is set to a recognised truthy value.
+
+    Ships default-OFF per the #758 adaptive-delivery gate: until relevance
+    evidence accumulates in a bench corpus, the gamma-rerank temperature stays
+    at its cold-start value of T = 1.0. Operators flip this on per-shell
+    to opt into the adaptive learning signal. The ``=enabled`` spelling is
+    honoured alongside the codebase-standard truthy tokens (``1``, ``true``,
+    ``yes``, ``on``), mirroring :func:`is_meta_belief_half_life_enabled`.
+
+    Note: this flag controls only the sweeper delivery path. The gamma-rerank
+    itself is separately gated by :func:`resolve_use_gamma_posterior_temperature`
+    and :data:`ENV_USE_GAMMA_POSTERIOR_TEMPERATURE`.
+    """
+    raw = os.environ.get(ENV_META_BELIEF_POSTERIOR_TEMPERATURE)
     if raw is None:
         return False
     norm = raw.strip().lower()
@@ -1747,6 +1778,39 @@ def resolve_use_gamma_posterior_temperature(
     if toml_value is not None:
         return toml_value
     return False
+
+
+def install_posterior_temperature_meta_belief(
+    store: MemoryStore,
+    *,
+    now_ts: int,
+) -> bool:
+    """Idempotent install of the #758 meta-belief on ``store``.
+
+    Returns True on first install, False if the row already exists.
+    Mirrors :func:`install_expansion_gate_token_threshold_meta_belief`'s
+    contract — existing rows are not overwritten because the surfaced
+    temperature would silently shift under the gamma-rerank consumer.
+
+    Ships with relevance signal only. Single-signal subscription is
+    intentional: temperature changes the rerank distribution shape; the
+    only natural feedback is whether the top-K beliefs surfaced by the
+    rerank were actually used. Latency does not characterise distribution
+    quality — a fast but poorly-ranked result set is not evidence that
+    T should change. 30d posterior decay, matching the rest of the #480
+    family. Cold-start ``static_default = 0.5`` decodes via
+    :func:`resolve_posterior_temperature_with_meta` to ``T = 1.0`` (the
+    geometric mean of FLOOR=0.5 and CEIL=2.0 in log space), which is
+    byte-identical to the log-additive partial_bayesian_score baseline.
+    """
+    from aelfrice.meta_beliefs import SIGNAL_RELEVANCE
+    return store.install_meta_belief(
+        META_POSTERIOR_TEMPERATURE_KEY,
+        static_default=META_POSTERIOR_TEMPERATURE_STATIC_DEFAULT,
+        half_life_seconds=META_POSTERIOR_TEMPERATURE_POSTERIOR_DECAY_SECONDS,
+        signal_weights={SIGNAL_RELEVANCE: 1.0},
+        now_ts=now_ts,
+    )
 
 
 def resolve_posterior_temperature_with_meta(
