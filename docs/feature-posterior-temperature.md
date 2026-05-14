@@ -99,7 +99,7 @@ The byte-identical short-circuit (`posterior_weight == 0.0 and not heat_active a
 |---|---|---|
 | **G1** — surface lands behind a default-OFF flag | shipped | this PR |
 | **G2** — bench panel widened with `ordered_top_k_overlap` + `rank_biased_overlap` | shipped | `src/aelfrice/calibration_metrics.py`, `src/aelfrice/eval_harness.py::compare_ranking_panel` |
-| **G3** — labeled relevance corpus exists under `~/projects/aelfrice-lab/tests/corpus/v3_x/relevance/` | **pending** | lab-side authoring; tracked separately |
+| **G3** — labeled relevance corpus exists | **pending** | corpus authoring tracked separately |
 | **G4** — γ@T=1.0 vs γ@T=0.5 / T=2.0 on labeled corpus shows discriminable rank-overlap deltas | **pending G3** | adoption verdict gate |
 | **G5** — flip default to True if G4 clears with effect size ≥ 1σ | **pending G3, G4** | follow-up PR |
 
