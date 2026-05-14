@@ -340,6 +340,90 @@ def test_replay_post_fork_writes_requests_jsonl(
     assert by_idx[4]["user_turn"] == "The floor never applies to L0 beliefs."
 
 
+def test_replay_requests_carry_canonical_prompt_field(
+    harness: ModuleType, transcript_path: Path, tmp_path: Path
+) -> None:
+    """#797 P3: each replay_requests row carries a `prompt` field built
+    by `_assemble_post_clear_prompt`. Dispatchers prompt their child
+    task with this field directly; the legacy rebuilt_block / user_turn
+    fields remain for inspection.
+
+    Asserts: (a) every row has a non-empty `prompt`; (b) the prompt
+    embeds the row's user_turn verbatim; (c) the prompt embeds the
+    rebuilt_block verbatim; (d) the prompt starts with the cooperative-
+    reader instruction (the user-turn-anchor instruction documented in
+    docs/BENCHMARKS.md § "Bench measurement scope").
+    """
+    case = harness.TranscriptCase(
+        path=transcript_path, task_type="debug",
+        fork_turn=2, eval_turns=(2, 4),
+    )
+    run_dir = tmp_path / "run"
+    harness.replay_post_fork("REBUILT_BLOCK", case, run_dir=run_dir)
+    rows = [
+        json.loads(line)
+        for line in (run_dir / harness.REPLAY_REQUESTS_FILENAME)
+            .read_text().splitlines()
+        if line.strip()
+    ]
+    by_idx = {r["turn_idx"]: r for r in rows}
+
+    instruction = harness.POST_CLEAR_INSTRUCTION
+    assert instruction, "POST_CLEAR_INSTRUCTION must not be empty"
+
+    for idx, row in by_idx.items():
+        prompt = row["prompt"]
+        assert prompt, f"row idx={idx} missing prompt"
+        assert prompt.startswith(instruction), (
+            f"row idx={idx} prompt must lead with the cooperative-reader "
+            f"instruction (the user-turn-anchor wording)"
+        )
+        assert row["rebuilt_block"] in prompt, (
+            f"row idx={idx} prompt must embed rebuilt_block verbatim"
+        )
+        assert row["user_turn"] in prompt, (
+            f"row idx={idx} prompt must embed user_turn verbatim"
+        )
+
+
+def test_post_clear_instruction_anchors_on_user_turn(
+    harness: ModuleType,
+) -> None:
+    """#797 P3: regression test on the wording itself. The instruction
+    must (a) reference the user's question, (b) warn against answering
+    adjacent / related questions (idx 13 question-conflation failure
+    mode), (c) warn against substituting an adjacent fact (idx 11
+    cross-contamination), and (d) ask for the specific fact the user
+    asked for (idx 9 dropped-facts).
+
+    Wording can drift; this test pins the *load-bearing* properties of
+    the wording, not the exact phrasing.
+    """
+    instruction = harness.POST_CLEAR_INSTRUCTION.lower()
+    # (a) anchors on the user's question
+    assert "user" in instruction and "question" in instruction
+    # (b) discourages question-conflation (idx 13)
+    assert "adjacent" in instruction or "related" in instruction
+    # (c) discourages cross-contamination (idx 11)
+    assert "substituting" in instruction or "substitut" in instruction
+    # (d) asks for the specific fact (idx 9)
+    assert "specific fact" in instruction
+
+
+def test_assemble_post_clear_prompt_is_deterministic(
+    harness: ModuleType,
+) -> None:
+    """Same (rebuilt_block, user_turn) → byte-identical prompt. The
+    bench depends on prompt determinism for κ stability across runs."""
+    a = harness._assemble_post_clear_prompt("R", "U")
+    b = harness._assemble_post_clear_prompt("R", "U")
+    assert a == b
+    # Sensitive to inputs (a smoke-check; prevents accidental constant
+    # return).
+    assert harness._assemble_post_clear_prompt("R", "U") != \
+        harness._assemble_post_clear_prompt("R2", "U")
+
+
 def test_replay_post_fork_pending_reason_when_no_responses(
     harness: ModuleType, transcript_path: Path, tmp_path: Path
 ) -> None:
