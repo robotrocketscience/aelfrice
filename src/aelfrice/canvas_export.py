@@ -45,7 +45,6 @@ from aelfrice.models import (
     EDGE_VALENCE,
     LOCK_USER,
     Belief,
-    Edge,
 )
 from aelfrice.store import MemoryStore
 

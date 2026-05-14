@@ -7,7 +7,6 @@ posterior / valence buckets defined in the module.
 from __future__ import annotations
 
 import json
-import tempfile
 from pathlib import Path
 
 from aelfrice.bfs_multihop import ScoredHop, expand_bfs
