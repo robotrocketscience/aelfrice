@@ -21,7 +21,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import Final, cast
 
 from aelfrice.derivation_worker import run_worker
 from aelfrice.extraction import extract_sentences
@@ -36,46 +36,60 @@ from aelfrice.models import (
 )
 from aelfrice.store import MemoryStore
 
-# #809 / #785 § 3: pattern-based subfloor-noise detector.
+# #809 / #785 § 3: pattern-based subfloor-noise detector with
+# length-floor scope.
 #
-# `retrieval-corpus-bloat` R0/R2 (lab campaign, 2026-05-11) attributed
-# 19% of short-reinforced beliefs in the alpha+beta >= 10 stratum to
-# three specific prose-fragment classes that the sentence splitter
-# emits as freestanding sentences but that carry no semantic claim:
-# code-fence boundaries (` ```bash`, `` ``` ``), header stubs (lines
-# ending with `:` — "Acceptance criteria:", "Pipeline composition, in
-# order of evidence:"), and bullet stubs (`- run tests`, `* foo`).
-#
-# These patterns are filtered at the ingest boundary: a matched
-# sentence does not become a freestanding belief row. When it sits
-# between two full-length-belief sentences within the same turn, the
-# clause attaches as `anchor_text` on an intra-turn DERIVED_FROM edge,
+# Three short-fragment classes are filtered at the sentence-level
+# ingest boundary: code-fence boundaries (` ```bash`, `` ``` ``),
+# header stubs ending in `:` ("Acceptance criteria:", "Open
+# questions:"), and markdown bullet stubs (`- run tests`, `* foo`).
+# A matched sentence does not become a freestanding belief row; when
+# it sits between two full-length-belief sentences in the same turn
+# it attaches as `anchor_text` on an intra-turn DERIVED_FROM edge,
 # preserving relational meaning without inflating the belief-row
-# count. Unanchored matches (no surrounding full-length belief in the
-# same turn) are silently dropped.
+# count. Unanchored matches are silently dropped.
 #
-# Pattern-based rather than length-based per the operator-ratified
-# scope for #809: a strict length floor (spec literal: 80 chars) drops
-# legitimate short factual claims ("The config file lives at
-# /etc/aelf.") alongside the noise, breaking the conservative ingest
-# contract that the existing test suite encodes. Pattern-matching
-# closes only the named noise classes; legit short claims survive.
+# The pattern check is **scoped to short content** by a length cap
+# (`_SUBFLOOR_MAX_LEN`). The spec's intent is to filter short
+# fragments that carry no semantic claim; long-form content that
+# happens to start with `- ` or end in `:` (real prose statements,
+# multi-sentence list items that survived `extract_sentences`) is
+# load-bearing and must not be dropped. A pattern-only check
+# (without the length cap) over-applies and drops long-form prose
+# ending in `:` — e.g.,
+# "If you look at the way the rebuilder picks beliefs, the order is
+# always the same:".
 #
-# Acknowledged false-positive risk: "ends with `:`" can fire on real
-# prose ("He said:", "The reasons are these:"). The lab campaign
-# named this pattern explicitly; trade-off accepted at empirical
-# scope. Re-measure if production data surfaces a non-trivial miss
-# rate.
+# Why 80 chars: matches the spec literal in
+# docs/feature-ingest-speaker-gate.md §3. Empirically, sentences of
+# this kind that exceed ~80 chars are dominantly real prose; below
+# ~80 chars they are dominantly header stubs / fragment markers.
+#
+# A standalone 80-char length floor (without the pattern check) is
+# also wrong — it would drop short legit claims like "The default
+# port is 8080." that the test suite encodes as ingest-eligible.
+# The combination (pattern AND < 80) catches the load-bearing noise
+# class while preserving both short legit claims and long-form
+# prose.
+#
+# Acknowledged residual false-positive risk: a short complete
+# sentence ending with `:` ("He said:", "Note:") still drops.
+# These are ambiguous in isolation and the cost of preserving them
+# is a more elaborate rule (verb-detection, list-following-context)
+# that gets fragile fast. Trade-off accepted at empirical scope;
+# re-measure if production data surfaces a non-trivial miss rate.
+_SUBFLOOR_MAX_LEN: Final[int] = 80
 _SUBFLOOR_BULLET_PREFIX = re.compile(r"^[-*+]\s")
 
 
 def _looks_like_subfloor_noise(sentence: str) -> bool:
-    """True when `sentence` matches one of the named noise patterns
-    from `retrieval-corpus-bloat` R2: code-fence boundary, header stub
-    ending in `:`, or markdown bullet stub. See module docstring for
-    rationale and false-positive scope."""
+    """True when `sentence` matches one of the three short-fragment
+    noise patterns (code-fence boundary, `:`-suffix header stub,
+    markdown bullet stub) AND its stripped length is below
+    `_SUBFLOOR_MAX_LEN`. Long-form content is never noise regardless
+    of leading or trailing markers — see module docstring."""
     stripped = sentence.strip()
-    if not stripped:
+    if not stripped or len(stripped) >= _SUBFLOOR_MAX_LEN:
         return False
     if stripped.startswith("```"):
         return True
