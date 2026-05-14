@@ -186,6 +186,7 @@ def _render_locked_markdown(payload: dict[str, Any]) -> str:
 def _render_stats_markdown(payload: dict[str, Any]) -> str:
     return (
         "# Aelfrice store snapshot\n\n"
+        f"- Version: {payload.get('version', 'unknown')}\n"
         f"- Beliefs: {payload.get('beliefs', 0)}\n"
         f"- Threads: {payload.get('threads', payload.get('edges', 0))}\n"
         f"- Locked: {payload.get('locked', 0)}\n"
@@ -805,9 +806,12 @@ def tool_stats(
     *,
     response_format: str = _RESPONSE_FORMAT_JSON,
 ) -> dict[str, Any]:
+    from aelfrice import __version__ as _aelf_version  # noqa: PLC0415
+
     n_edges = store.count_edges()
     payload: dict[str, Any] = {
         "kind": "stats.snapshot",
+        "version": _aelf_version,
         "beliefs": store.count_beliefs(),
         # `edges` is the v1.0 key. v1.1.0 adds `threads` as the
         # forward-compatible alias and emits both for one minor; v1.2.0

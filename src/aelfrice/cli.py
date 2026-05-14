@@ -2107,6 +2107,8 @@ def _cmd_feedback(args: argparse.Namespace, out: object) -> int:
 
 def _cmd_stats(args: argparse.Namespace, out: object) -> int:
     _ = args
+    from aelfrice import __version__ as _aelf_version  # noqa: PLC0415
+
     store = _open_store()
     try:
         n_beliefs = store.count_beliefs()
@@ -2115,6 +2117,7 @@ def _cmd_stats(args: argparse.Namespace, out: object) -> int:
         n_history = store.count_feedback_events()
     finally:
         store.close()
+    print(f"version:           {_aelf_version}", file=out)  # type: ignore[arg-type]
     print(f"beliefs:           {n_beliefs}", file=out)  # type: ignore[arg-type]
     # v1.1.0 user-facing rename: "edges" -> "threads". Internal schema
     # keeps `edges`. MCP `aelf:stats` emits both keys for one minor.
