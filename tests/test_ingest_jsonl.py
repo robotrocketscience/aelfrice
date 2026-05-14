@@ -54,7 +54,7 @@ def test_consecutive_turns_get_derived_from_edge(tmp_path: Path) -> None:
     _write_jsonl(p, [
         {"role": "user", "text": "Pi equals 3.14.", "session_id": "S",
          "turn_id": "t1"},
-        {"role": "assistant", "text": "Tau equals 6.28.", "session_id": "S",
+        {"role": "user", "text": "Tau equals 6.28.", "session_id": "S",
          "turn_id": "t2"},
     ])
     store = MemoryStore(":memory:")
@@ -106,7 +106,7 @@ def test_idempotent_re_ingest(tmp_path: Path) -> None:
     _write_jsonl(p, [
         {"role": "user", "text": "Pi equals 3.14.", "session_id": "S",
          "turn_id": "t1"},
-        {"role": "assistant", "text": "Tau equals 6.28.", "session_id": "S",
+        {"role": "user", "text": "Tau equals 6.28.", "session_id": "S",
          "turn_id": "t2"},
     ])
     store = MemoryStore(":memory:")
@@ -163,7 +163,7 @@ def test_anchor_text_truncated_at_cap(tmp_path: Path) -> None:
     _write_jsonl(p, [
         {"role": "user", "text": overlong + ".", "session_id": "S",
          "turn_id": "t1"},
-        {"role": "assistant", "text": "Reply.", "session_id": "S",
+        {"role": "user", "text": "Follow-up.", "session_id": "S",
          "turn_id": "t2"},
     ])
     store = MemoryStore(":memory:")
@@ -206,6 +206,84 @@ def test_source_label_passed_through(tmp_path: Path) -> None:
         store.close()
 
 
+# --- #785 §1: speaker-attribution gate -----------------------------
+
+
+def test_transcript_logger_skips_assistant_role_for_belief_creation(
+    tmp_path: Path,
+) -> None:
+    """#785 §1: assistant-role rows are read for boundary tracking but
+    excluded from belief creation. Only user-role content reaches the
+    ingest entrypoint, so belief rows derive exclusively from user
+    turns. Pre-existing assistant rows in the store are NOT
+    back-purged here (separate stratum-aware cleanup campaign per
+    spec Non-decisions)."""
+    p = tmp_path / "turns.jsonl"
+    _write_jsonl(p, [
+        {"role": "user", "text": "Pi equals 3.14.", "session_id": "S",
+         "turn_id": "t1"},
+        {"role": "assistant", "text": "Tau equals 6.28.", "session_id": "S",
+         "turn_id": "t2"},
+        {"role": "user", "text": "Phi is 1.618.", "session_id": "S",
+         "turn_id": "t3"},
+    ])
+    store = MemoryStore(":memory:")
+    try:
+        r = ingest_jsonl(store, p)
+        # User turns ingested, assistant turn counted under skipped_lines.
+        assert r.turns_ingested == 2
+        assert r.skipped_lines >= 1
+        # No belief row should contain the assistant text.
+        rows = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+            "SELECT content FROM beliefs"
+        ).fetchall()
+        contents = [row["content"] for row in rows]
+        assert not any("Tau equals 6.28" in c for c in contents), (
+            f"assistant text leaked into beliefs: {contents}"
+        )
+        # User content did reach belief creation.
+        assert any("Pi equals 3.14" in c for c in contents)
+        assert any("Phi is 1.618" in c for c in contents)
+    finally:
+        store.close()
+
+
+def test_transcript_logger_assistant_role_edges_still_construct(
+    tmp_path: Path,
+) -> None:
+    """#785 §1: DERIVED_FROM edges between user-turn beliefs are still
+    built across an intervening assistant turn. The last_per_session
+    pointer keeps tracking the prior USER turn's last belief, so
+    consecutive user turns get linked even when an assistant turn
+    sits between them in the JSONL."""
+    p = tmp_path / "turns.jsonl"
+    _write_jsonl(p, [
+        {"role": "user", "text": "Pi equals 3.14.", "session_id": "S",
+         "turn_id": "t1"},
+        {"role": "assistant", "text": "Reply about pi.", "session_id": "S",
+         "turn_id": "t2"},
+        {"role": "user", "text": "Tau equals 6.28.", "session_id": "S",
+         "turn_id": "t3"},
+    ])
+    store = MemoryStore(":memory:")
+    try:
+        r = ingest_jsonl(store, p)
+        assert r.edges_inserted >= 1
+        edges = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+            "SELECT anchor_text FROM edges WHERE type = ?",
+            (EDGE_DERIVED_FROM,),
+        ).fetchall()
+        # The anchor is the prior USER turn's text, not the assistant's:
+        # the gate skips assistant rows without updating
+        # last_per_session, so edges chain user→user.
+        anchors = [e["anchor_text"] for e in edges]
+        assert any(a == "Pi equals 3.14." for a in anchors), (
+            f"expected user→user edge with prior-user anchor; got {anchors}"
+        )
+    finally:
+        store.close()
+
+
 # --- Claude Code internal JSONL format (issue #115) ----------------
 
 
@@ -231,13 +309,19 @@ def test_ingest_claude_code_session_string_content(tmp_path: Path) -> None:
 
 
 def test_ingest_claude_code_v2_content_array(tmp_path: Path) -> None:
-    """Claude Code v2 shape: message.content is [{type:text,text:...}]."""
+    """v2 session-JSONL shape: message.content is [{type:text,text:...}].
+
+    Uses `type=user` so the #785 §1 speaker-gate does not suppress
+    belief creation; the v2 content-array parsing path is shared
+    between user/assistant rows, so this test exercises the array
+    decoder, not the role gate.
+    """
     p = tmp_path / "session.jsonl"
     _write_jsonl(p, [
         {
-            "type": "assistant",
+            "type": "user",
             "message": {
-                "role": "assistant",
+                "role": "user",
                 "content": [
                     {"type": "text", "text": "Pi is 3.14."},
                     {"type": "tool_use", "id": "x"},

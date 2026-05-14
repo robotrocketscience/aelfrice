@@ -39,19 +39,23 @@ def test_full_round_trip(tdir: Path, tmp_path: Path) -> None:
     transcript = tmp_path / "claude_code_transcript.jsonl"
     transcript_lines: list[dict[str, object]] = []
 
+    # #785 §1: only user-role rows produce beliefs. User prompts here
+    # are assertable statements so the round-trip exercises the full
+    # ingest → search path; assistant replies remain for boundary
+    # tracking but no longer feed belief creation.
     user_prompts = [
-        "What database does the project use?",
-        "Where does the brain-graph DB live?",
-        "Can two worktrees share one DB?",
-        "What is the busy_timeout?",
-        "Does aelfrice use FTS5?",
-    ]
-    assistant_replies = [
         "The project uses SQLite for storage.",
         "The brain-graph DB lives under .git/aelfrice/memory.db.",
         "Two worktrees of one repo share one DB via git-common-dir.",
         "The store sets busy_timeout to five thousand milliseconds.",
         "Aelfrice uses FTS5 with the porter unicode61 tokenizer.",
+    ]
+    assistant_replies = [
+        "Acknowledged.",
+        "Got it.",
+        "Right.",
+        "Understood.",
+        "Confirmed.",
     ]
 
     for i, (prompt, reply) in enumerate(zip(user_prompts, assistant_replies)):
@@ -104,9 +108,12 @@ def test_full_round_trip(tdir: Path, tmp_path: Path) -> None:
     try:
         result = ingest_jsonl(store, archived)
         assert result.lines_read == 11
-        assert result.turns_ingested == 10
-        assert result.skipped_lines == 1  # the compaction marker
-        assert result.beliefs_inserted >= 5  # depends on classifier persist rate
+        # #785 §1: assistant-role rows are excluded from belief creation;
+        # only the 5 user turns produce beliefs. Assistant rows count
+        # under skipped_lines alongside the compaction marker.
+        assert result.turns_ingested == 5
+        assert result.skipped_lines == 6  # 5 assistant rows + 1 compaction marker
+        assert result.beliefs_inserted >= 1  # depends on classifier persist rate
 
         # Every inserted belief should carry the round-trip session id.
         rows = store._conn.execute(  # pyright: ignore[reportPrivateUsage]

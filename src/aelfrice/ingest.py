@@ -174,15 +174,16 @@ class IngestJsonlResult:
 
 
 def _normalize_jsonl_turn(obj: dict[str, object]) -> dict[str, str | None] | None:
-    """Normalize one JSONL line to `{text, session_id, ts}` or None.
+    """Normalize one JSONL line to `{role, text, session_id, ts}` or None.
 
     Two shapes are recognised; everything else (compaction markers,
     file-history snapshots, tool results) returns None and is counted
     as skipped by the caller. None of the v2-shape Claude Code
     sub-fields are required to be present -- only `text` matters.
 
-    Always preserves the literal `text` field; ts/session_id flow
-    into the belief row when present.
+    Always preserves the literal `text` field; role flows through so
+    `ingest_jsonl` can apply the #785 speaker-attribution gate;
+    ts/session_id flow into the belief row when present.
     """
     # Shape 1: aelfrice transcript-logger turns.jsonl
     role = obj.get("role")
@@ -191,6 +192,7 @@ def _normalize_jsonl_turn(obj: dict[str, object]) -> dict[str, str | None] | Non
         sess = obj.get("session_id")
         ts = obj.get("ts")
         return {
+            "role": role,
             "text": text,
             "session_id": sess if isinstance(sess, str) and sess else None,
             "ts": ts if isinstance(ts, str) else None,
@@ -227,6 +229,7 @@ def _normalize_jsonl_turn(obj: dict[str, object]) -> dict[str, str | None] | Non
     sess = obj.get("sessionId")
     ts = obj.get("timestamp")
     return {
+        "role": cast(str, type_field),
         "text": text,
         "session_id": sess if isinstance(sess, str) and sess else None,
         "ts": ts if isinstance(ts, str) else None,
@@ -309,11 +312,24 @@ def ingest_jsonl(
                 # results, malformed -- not user/assistant text.
                 skipped += 1
                 continue
+            role = normalized["role"]
             text = normalized["text"]
             sess_str = normalized["session_id"]
             created_at = normalized["ts"]
+            # #785 §1 speaker-attribution gate: assistant-role rows are
+            # read for normalization (so the rebuilder's transcript view
+            # stays whole) but excluded from belief creation. The
+            # last_per_session pointer keeps tracking the prior USER
+            # belief, so DERIVED_FROM edges between consecutive user
+            # turns are built across any intervening assistant rows.
+            # Pre-existing assistant rows in the store are not
+            # back-purged here — see spec "Non-decisions" for the
+            # separate stratum-aware cleanup campaign.
+            if role == "assistant":
+                skipped += 1
+                continue
             ids = _ingest_turn_ids(
-                store=store, text=text, source=source_label,
+                store=store, text=cast(str, text), source=source_label,
                 session_id=sess_str, created_at=created_at,
             )
             turns_ingested += 1
@@ -332,7 +348,7 @@ def ingest_jsonl(
                 if store.get_edge(edge.src, edge.dst, edge.type) is None:
                     store.insert_edge(edge)
                     edges_inserted += 1
-            last_per_session[sess_str] = (head_id, text)
+            last_per_session[sess_str] = (head_id, cast(str, text))
 
     return IngestJsonlResult(
         lines_read=lines_read,

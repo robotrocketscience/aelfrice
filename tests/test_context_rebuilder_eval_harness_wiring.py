@@ -59,15 +59,22 @@ def _make_turn(idx: int, role: str, text: str) -> dict:
 
 @pytest.fixture()
 def transcript_path(tmp_path: Path) -> Path:
-    """Six-turn transcript: alternating user/assistant."""
+    """Six-turn transcript: alternating user/assistant.
+
+    User turns carry assertable statements (not questions) so each
+    one classifies persist=True under the #785 §1 speaker-gate, which
+    excludes assistant rows from belief creation. Pre-#785, the
+    asymmetric pattern (user asks, assistant asserts) relied on
+    assistant statements producing beliefs; that path is closed.
+    """
     p = tmp_path / "session.jsonl"
     turns = [
-        _make_turn(0, "user", "How does the rebuilder pack L0 hits?"),
-        _make_turn(1, "assistant", "L0 locked beliefs are packed first."),
-        _make_turn(2, "user", "What about session-scoped retrieval?"),
-        _make_turn(3, "assistant", "Session-scoped runs above L2.5 and L1."),
-        _make_turn(4, "user", "Does the floor apply to L0?"),
-        _make_turn(5, "assistant", "L0 always packs without floor."),
+        _make_turn(0, "user", "The rebuilder packs L0 locked beliefs first."),
+        _make_turn(1, "assistant", "Correct, that matches the spec."),
+        _make_turn(2, "user", "Session-scoped retrieval runs above L2.5 and L1."),
+        _make_turn(3, "assistant", "Right, that ordering is documented."),
+        _make_turn(4, "user", "The floor never applies to L0 beliefs."),
+        _make_turn(5, "assistant", "Confirmed."),
     ]
     _write_jsonl(p, turns)
     return p
@@ -276,7 +283,7 @@ def test_replay_post_fork_pulls_expected_from_transcript(
         fork_turn=2, eval_turns=(2,),
     )
     results = harness.replay_post_fork("", case)
-    assert results[0]["expected"] == "What about session-scoped retrieval?"
+    assert results[0]["expected"] == "Session-scoped retrieval runs above L2.5 and L1."
     assert results[0]["actual"] == ""
 
 
@@ -327,10 +334,10 @@ def test_replay_post_fork_writes_requests_jsonl(
     # Each row carries the rebuilt block plus the user prompt at-or-before
     # the eval turn.
     assert by_idx[2]["rebuilt_block"] == "REBUILT_BLOCK"
-    assert by_idx[2]["user_turn"] == "What about session-scoped retrieval?"
-    assert by_idx[2]["expected"] == "What about session-scoped retrieval?"
+    assert by_idx[2]["user_turn"] == "Session-scoped retrieval runs above L2.5 and L1."
+    assert by_idx[2]["expected"] == "Session-scoped retrieval runs above L2.5 and L1."
     # eval_turn=4 is itself a user turn → user_turn == expected.
-    assert by_idx[4]["user_turn"] == "Does the floor apply to L0?"
+    assert by_idx[4]["user_turn"] == "The floor never applies to L0 beliefs."
 
 
 def test_replay_post_fork_pending_reason_when_no_responses(
@@ -373,12 +380,12 @@ def test_replay_pending_round_trip(
     # Hand-author replay_responses.jsonl: turn 2 substring-matches the
     # expected text, turn 4 does not (drops to needs_llm_judge).
     # Expected for idx=2 is the literal text at line 2:
-    #   "What about session-scoped retrieval?"
+    #   "Session-scoped retrieval runs above L2.5 and L1."
     responses_path = run_dir / harness.REPLAY_RESPONSES_FILENAME
     responses_path.write_text(
         json.dumps({
             "turn_idx": 2,
-            "actual": "Earlier we discussed: WHAT ABOUT SESSION-SCOPED RETRIEVAL? Yes.",
+            "actual": "Earlier we discussed: SESSION-SCOPED RETRIEVAL RUNS ABOVE L2.5 AND L1. Yes.",
         }) + "\n" +
         json.dumps({
             "turn_idx": 4,
@@ -415,9 +422,9 @@ def test_replay_pending_partial_response_keeps_others_pending(
     (run_dir / harness.REPLAY_RESPONSES_FILENAME).write_text(
         json.dumps({
             "turn_idx": 2,
-            # Expected at idx=2 is "What about session-scoped retrieval?";
+            # Expected at idx=2 is "Session-scoped retrieval runs above L2.5 and L1.";
             # actual contains that as a substring → matched=True.
-            "actual": "Reply: what about session-scoped retrieval? — covered.",
+            "actual": "Reply: session-scoped retrieval runs above L2.5 and L1. — covered.",
         }) + "\n",
         encoding="utf-8",
     )
