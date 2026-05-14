@@ -74,7 +74,7 @@ roundtrip, no extra billing. Falls back to the regex classifier on
    ≤12 batches.
 
    **Print exactly one block**, in this shape:
-   ```
+   ```text
    ═ aelf onboard: parallel classification ═
    what  <S> candidate sentences extracted from <path>. Each one needs
          to be typed (factual / preference / requirement / correction)
