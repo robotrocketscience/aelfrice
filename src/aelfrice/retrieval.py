@@ -277,6 +277,32 @@ META_BM25F_ANCHOR_WEIGHT_POSTERIOR_DECAY_SECONDS: Final[int] = 30 * 24 * 3600
 ENV_META_BELIEF_BM25F_ANCHOR_WEIGHT: Final[str] = (
     "AELFRICE_META_BELIEF_BM25F_ANCHOR_WEIGHT"
 )
+# ---------------------------------------------------------------------------
+# #759 BFS depth-budget meta-belief consumer (sub-task E of umbrella #480)
+# ---------------------------------------------------------------------------
+# `expand_bfs` takes `int max_depth`. Bounds `[1, 6]` honour the
+# single-hop floor (a depth-0 expansion is a no-op) and the latency
+# safety ceiling documented in `docs/bfs_multihop.md`. BFS depth
+# dominates p95 retrieval latency, so this is load-bearing for safety.
+META_BFS_DEPTH_BUDGET_KEY: Final[str] = "meta:retrieval.bfs_depth_budget"
+BFS_DEPTH_BUDGET_FLOOR: Final[int] = 1
+BFS_DEPTH_BUDGET_CEIL: Final[int] = 6
+# Static-default `value` for the meta-belief. Mid-range under the
+# log-linear bounds: `decode_bfs_depth_budget(0.5)` ≈ sqrt(1*6) ≈ 2.45
+# → rounds to 2. This is intentionally one hop below
+# `BFS_DEFAULT_MAX_DEPTH` (2): shallow-only finds → posterior pulls
+# budget down, consistent with the #759 spec rationale.
+META_BFS_DEPTH_BUDGET_STATIC_DEFAULT: Final[float] = 0.5
+# Sub-posterior decay — 30d, matching #756 and #757 so all #480 sub-
+# tasks are comparable and a single one-off spike doesn't shift the
+# surfaced depth.
+META_BFS_DEPTH_BUDGET_POSTERIOR_DECAY_SECONDS: Final[int] = 30 * 24 * 3600
+# Default-OFF feature flag. Ships behind the #437 A/B bench-gate
+# clause, same as #756 and #757. Setting this env var truthy switches
+# `resolve_bfs_depth_budget_with_meta` to read the meta-belief first.
+ENV_META_BELIEF_BFS_DEPTH_BUDGET: Final[str] = (
+    "AELFRICE_META_BELIEF_BFS_DEPTH_BUDGET"
+)
 # Number of decimal places used to round `posterior_weight` before
 # inclusion in the cache key. Two callers passing weights that
 # differ by less than this granularity collapse to the same key.
@@ -803,6 +829,50 @@ def is_meta_belief_bm25f_anchor_weight_enabled() -> bool:
     `on`), mirroring :func:`is_meta_belief_half_life_enabled`.
     """
     raw = os.environ.get(ENV_META_BELIEF_BM25F_ANCHOR_WEIGHT)
+    if raw is None:
+        return False
+    norm = raw.strip().lower()
+    return norm in _ENV_TRUTHY or norm == "enabled"
+
+
+def decode_bfs_depth_budget(value: float) -> int:
+    """Decode a `[0, 1]` meta-belief value into an integer BFS max-depth
+    via log-linear interpolation between
+    :data:`BFS_DEPTH_BUDGET_FLOOR` (1) and
+    :data:`BFS_DEPTH_BUDGET_CEIL` (6).
+
+    `v=0.0` → 1, `v=1.0` → 6, `v=0.5` → 2 (rounded from ~2.45,
+    one hop below :data:`BFS_DEFAULT_MAX_DEPTH` so a cold-start
+    install with the meta-belief on gently trims the budget until
+    evidence accrues).
+
+    Values outside `[0, 1]` are clamped — the substrate's
+    `posterior_mean` is mathematically bounded to `[0, 1]` but
+    ``value`` may be the static_default fallback on a misconfigured
+    row. The result is rounded to the nearest int because
+    ``expand_bfs`` accepts only ``int max_depth``.
+
+    Per the 2026-05-13 #756 ratification: encoding lives in the
+    consumer, substrate stays pattern-uniform across #480 B–F.
+    """
+    v = max(0.0, min(1.0, value))
+    ln_floor = math.log(BFS_DEPTH_BUDGET_FLOOR)
+    ln_ceil = math.log(BFS_DEPTH_BUDGET_CEIL)
+    return int(round(math.exp(ln_floor + v * (ln_ceil - ln_floor))))
+
+
+def is_meta_belief_bfs_depth_budget_enabled() -> bool:
+    """Return True iff :data:`ENV_META_BELIEF_BFS_DEPTH_BUDGET` is set
+    to a recognised truthy value.
+
+    Ships default-OFF per the #759 bench-gate clause: until #437 A/B
+    corpus evidence clears, BFS still uses :data:`BFS_DEFAULT_MAX_DEPTH`
+    from ``bfs_multihop``. Operators flip this on per-shell to opt into
+    the adaptive depth budget. The ``=enabled`` spelling is honoured
+    alongside the codebase-standard truthy tokens (``1``, ``true``,
+    ``yes``, ``on``), mirroring :func:`is_meta_belief_half_life_enabled`.
+    """
+    raw = os.environ.get(ENV_META_BELIEF_BFS_DEPTH_BUDGET)
     if raw is None:
         return False
     norm = raw.strip().lower()
