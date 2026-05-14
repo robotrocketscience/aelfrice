@@ -60,13 +60,13 @@ Tools register under the `aelf:` namespace.
 | `aelf:onboard` | — | `path`, `session_id`, `classifications` | polymorphic — see below |
 | `aelf:search` | `query` | `budget` (default 2,400) | `{kind, n_hits, hits[]}` |
 | `aelf:lock` | `statement` | — | `{kind, id, action}` |
-| `aelf:locked` | — | `pressured` | `{kind, n, locked[]}` |
+| `aelf:locked` | — | `limit`, `offset`, `response_format` | `{kind, n, total, next_offset, locked[]}` |
 | `aelf:demote` | `belief_id` | `to_scope` (v3.0+, [#689](https://github.com/robotrocketscience/aelfrice/issues/689)) | `{kind, id, demoted}`; with `to_scope` set, also flips federation visibility and writes a `scope:<old>-><new>` audit row. |
 | `aelf:unlock` | `belief_id` | — | `{kind, id, unlocked, audit_event_id?}` |
 | `aelf:validate` | `belief_id` | `source` (default `user_validated`), `to_scope` (v3.0+) | `{kind, id, prior_origin, new_origin, audit_event_id?}` on success; `{kind: "validate.error", id, error}` on invalid request |
 | `aelf:promote` | `belief_id` | `source` (default `user_validated`), `to_scope` (v3.0+) | same union as `aelf:validate` |
-| `aelf:feedback` | `belief_id`, `signal` | `source` | `{kind, id, signal, prior_alpha, new_alpha, prior_beta, new_beta, pressured_locks, demoted_locks}` |
-| `aelf:confirm` | `belief_id` | `source` (default `user_confirmed`), `note` | `{kind, id, source, prior_alpha, new_alpha, prior_beta, new_beta, pressured_locks, demoted_locks, note?}` |
+| `aelf:feedback` | `belief_id`, `signal` | `source` | `{kind, id, signal, prior_alpha, new_alpha, prior_beta, new_beta}` |
+| `aelf:confirm` | `belief_id` | `source` (default `user_confirmed`), `note` | `{kind, id, source, prior_alpha, new_alpha, prior_beta, new_beta, note?}` |
 | `aelf:stats` | — | — | `{kind, beliefs, threads, locked, feedback_events, ...}` |
 | `aelf:health` | — | — | `{kind, regime, description, classification_confidence?, features?}` |
 | `aelf:wonder` | — | `query`, `axes_agents`, `seed_id`, `top` | gap-analysis + research-axes payload (`{gap_analysis, research_axes, agent_count, speculative_anchor_ids}`) when `query` is set; graph-walk consolidation candidates when not — v3.0+ (#551). |
@@ -83,7 +83,7 @@ Tools register under the `aelf:` namespace.
 // Returns
 {"kind": "confirm.applied", "id": "abc123", "source": "user_confirmed",
  "prior_alpha": 1.0, "new_alpha": 2.0, "prior_beta": 1.0, "new_beta": 1.0,
- "pressured_locks": [], "demoted_locks": [], "note": "verified against project docs"}
+ "note": "verified against project docs"}
 ```
 
 ## `aelf:onboard` polymorphism
@@ -176,7 +176,7 @@ classDiagram
   class AelfToolHandlers {
     +tool_search(store, query, budget, response_format) dict
     +tool_lock(store, statement) dict
-    +tool_locked(store, pressured, limit, offset, response_format) dict
+    +tool_locked(store, limit, offset, response_format) dict
     +tool_demote(store, belief_id) dict
     +tool_validate(store, belief_id, source) dict
     +tool_unlock(store, belief_id) dict
@@ -217,7 +217,7 @@ classDiagram
     +aelf_onboard(path?, session_id?, classifications?) dict
     +aelf_search(query, budget, response_format) dict
     +aelf_lock(statement) dict
-    +aelf_locked(pressured, limit, offset, response_format) dict
+    +aelf_locked(limit, offset, response_format) dict
     +aelf_demote(belief_id) dict
     +aelf_validate(belief_id, source) dict
     +aelf_unlock(belief_id) dict

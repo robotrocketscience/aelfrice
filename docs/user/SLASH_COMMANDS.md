@@ -14,7 +14,7 @@ Slash files cover the everyday user-facing surface, plus a handful of operator w
 | `/aelf:search` | keyword query |
 | `/aelf:lock` | statement to lock |
 | `/aelf:unlock` | belief id — drops the lock without changing origin tier |
-| `/aelf:locked` | optional `--pressured` |
+| `/aelf:locked` | (none) |
 | `/aelf:confirm` | belief id — bumps posterior without freezing |
 | `/aelf:promote` | belief id — promote `agent_inferred` to `user_validated`. v3.0+ accepts `--to-scope SCOPE` to flip federation visibility in the same call (#689). |
 | `/aelf:delete` | belief id (locked beliefs require `--force`; `--yes` skips prompt) |
