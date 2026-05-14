@@ -16,7 +16,7 @@ This spec closes the loop with three coordinated additions across `transcript_lo
 
 ## The feedback loop being closed
 
-```
+```text
 agent narrates progress
     ↓
 transcript_logger ingests narration as a belief row
@@ -153,6 +153,6 @@ All three changes preserve the contract that *same payload → same belief set, 
 - [ ] `transcript_logger.py` skips assistant-role messages for belief creation; edge construction path unchanged.
 - [ ] `hook.py` marks sentiment-matched UPS text as feedback-only before ingest archives the message; ingest reads the mark.
 - [ ] `ingest.py` defines `MIN_BELIEF_CONTENT_CHARS = 80` as a module constant; sub-floor candidates demote to edge `anchor_text` or are rejected per §3 contract.
-- [ ] All six unit tests in §1, §2, §3 pass.
+- [ ] All eight unit tests in §1, §2, §3 pass.
 - [ ] Full pytest suite green (no regression in unrelated ingest paths).
 - [ ] Determinism unchanged: same payload → same belief set across two ingest runs.
