@@ -305,22 +305,26 @@ operator-driven loop, or a private skill).
    One JSON row per `eval_turn`:
 
    ```json
-   {"turn_idx": 8, "rebuilt_block": "...", "user_turn": "...", "expected": "..."}
+   {"turn_idx": 8, "rebuilt_block": "...", "user_turn": "...",
+    "expected": "...", "prompt": "..."}
    ```
 
    `user_turn` is the most-recent `role=user` text at-or-before the
-   eval index — the prompt the host will replay through the rebuilt
-   context. All rows in the harness JSON output carry
-   `reason=pending_replay`; `score_fidelity` returns 0 on this
-   pass.
+   eval index. `prompt` is the canonical post-clear replay prompt
+   built by `_assemble_post_clear_prompt`, prepending
+   `POST_CLEAR_INSTRUCTION` (the cooperative-reader instruction
+   documented in `docs/BENCHMARKS.md` § "Bench measurement scope"
+   and ratified per #797). All rows in the harness JSON output
+   carry `reason=pending_replay`; `score_fidelity` returns 0 on
+   this pass.
 
 2. **Operator dispatches one child task per row.** From a host
    session (an MCP-enabled host CLI, an operator-driven loop, or a
    private replay-eval skill), iterate over each
    `replay_requests.jsonl` line and dispatch a child task prompted
-   with `rebuilt_block + "\n---\n" + user_turn`. Capture the
-   reply as `actual` and append a JSON line to
-   `replay_responses.jsonl` in the same directory:
+   with the row's `prompt` field directly. Capture the reply as
+   `actual` and append a JSON line to `replay_responses.jsonl` in
+   the same directory:
 
    ```json
    {"turn_idx": 8, "actual": "..."}

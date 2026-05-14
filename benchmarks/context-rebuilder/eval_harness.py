@@ -232,6 +232,40 @@ match fails. The open-ended fidelity verdict belongs to commit-3 of
 REPLAY_REQUESTS_FILENAME: Final[str] = "replay_requests.jsonl"
 REPLAY_RESPONSES_FILENAME: Final[str] = "replay_responses.jsonl"
 
+POST_CLEAR_INSTRUCTION: Final[str] = (
+    "You are answering a single user question, given rebuilt context "
+    "from a prior session that was cleared. Answer only the question "
+    "the user actually asked. Do not answer adjacent or related "
+    "questions that the rebuilt context might also support. When the "
+    "user's question asks about a specific fact (a file path, an error "
+    "symptom, a root cause, a verification step, a fix), draw that "
+    "fact from the rebuilt context rather than substituting a related "
+    "fact from a neighbouring topic. If the rebuilt context does not "
+    "contain the specific fact the user asks for, say so plainly "
+    "rather than guessing or recapitulating an adjacent fact."
+)
+"""Cooperative-reader instruction prepended to every post-clear replay
+prompt (#797). Measurement scope is documented in
+`docs/BENCHMARKS.md` § "Bench measurement scope". Wording is
+deliberately conservative — it tells the reader which atom to anchor
+on, not which atoms to recite. Verbatim-recap wording was rejected
+because it would let any pack containing the named atoms score 1.0
+regardless of pack quality."""
+
+
+def _assemble_post_clear_prompt(rebuilt_block: str, user_turn: str) -> str:
+    """Assemble the canonical post-clear replay prompt.
+
+    Dispatchers SHOULD prompt their child task with this string. The
+    individual `rebuilt_block` and `user_turn` fields remain in the
+    row for inspection / debugging; the `prompt` field is the contract.
+    """
+    return (
+        f"{POST_CLEAR_INSTRUCTION}\n\n"
+        f"--- REBUILT CONTEXT ---\n{rebuilt_block}\n\n"
+        f"--- USER QUESTION ---\n{user_turn}"
+    )
+
 
 def _read_user_and_expected(
     case: TranscriptCase,
@@ -314,20 +348,29 @@ def _write_replay_requests(
 ) -> None:
     """Write `<run_dir>/replay_requests.jsonl`. One row per eval_turn.
 
-    Schema: `{turn_idx, rebuilt_block, user_turn, expected}`. Best-effort
-    — `mkdir` and write failures squash to a no-op so the rest of
-    `run_one` (latency, token cost) still completes.
+    Schema: `{turn_idx, rebuilt_block, user_turn, expected, prompt}`.
+    `prompt` is the canonical post-clear replay prompt assembled by
+    `_assemble_post_clear_prompt`; dispatchers SHOULD prompt their
+    child task with `prompt` directly. The `rebuilt_block` /
+    `user_turn` fields remain for inspection and back-compat reads.
+
+    Best-effort — `mkdir` and write failures squash to a no-op so the
+    rest of `run_one` (latency, token cost) still completes.
     """
     try:
         run_dir.mkdir(parents=True, exist_ok=True)
         path = run_dir / REPLAY_REQUESTS_FILENAME
         with path.open("w", encoding="utf-8") as f:
             for idx in eval_turns:
+                user_turn = user_turn_by_idx.get(idx, "")
                 row = {
                     "turn_idx": idx,
                     "rebuilt_block": rebuilt_context,
-                    "user_turn": user_turn_by_idx.get(idx, ""),
+                    "user_turn": user_turn,
                     "expected": expected_by_idx.get(idx, ""),
+                    "prompt": _assemble_post_clear_prompt(
+                        rebuilt_context, user_turn
+                    ),
                 }
                 f.write(json.dumps(row) + "\n")
     except OSError:
@@ -353,10 +396,14 @@ def replay_post_fork(
     `<run_dir>/replay_requests.jsonl` so an operator-driven dispatcher
     (an MCP-enabled host CLI, an operator loop, or a private
     `aelf:replay-eval` skill) can spawn one child task per row,
-    prompted with `rebuilt_block + "\\n---\\n" + user_turn`, expecting
-    the dispatcher to write `<run_dir>/replay_responses.jsonl`. On the next harness invocation
-    this function reads that response file, joins by `turn_idx`, and
-    fills `actual`:
+    prompted with the row's `prompt` field (the canonical post-clear
+    replay prompt assembled by `_assemble_post_clear_prompt`, prepending
+    `POST_CLEAR_INSTRUCTION`; see #797 and `docs/BENCHMARKS.md`
+    § "Bench measurement scope"). The legacy `rebuilt_block` and
+    `user_turn` fields remain in the row for inspection. Dispatchers
+    are expected to write `<run_dir>/replay_responses.jsonl`. On the
+    next harness invocation this function reads that response file,
+    joins by `turn_idx`, and fills `actual`:
 
       * `actual` empty / row missing  → matched=False, reason=PENDING_REPLAY_REASON.
       * `expected.lower() in actual.lower()` → matched=True (substring half
