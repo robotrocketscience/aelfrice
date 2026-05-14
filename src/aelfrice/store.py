@@ -431,6 +431,38 @@ _SCHEMA: tuple[str, ...] = (
         PRIMARY KEY (meta_key, signal_class)
     )
     """,
+    # v3.x #779 Layer 1: live close-the-loop relevance-signal
+    # infrastructure. One row per (UPS-or-pre_compact event, injected
+    # belief). Sidecar audit table — never touched by BFS, edge
+    # composition, or retrieval rerank. Drives the reference-detection
+    # sweeper that surfaces `relevance` evidence into the meta-belief
+    # substrate (#755). `active_consumers` is a canonical-sorted JSON
+    # array of the meta-belief keys whose retrieval consumer fired on
+    # this call — the sweeper iterates that list and writes one
+    # update_meta_belief call per active consumer that subscribes to
+    # the relevance signal-class. `referenced` is tri-state: NULL means
+    # the sweeper hasn't scored this row yet; 0 / 1 is the scored
+    # outcome. Schema ratified 2026-05-14 (issue #779 comment).
+    """
+    CREATE TABLE IF NOT EXISTS injection_events (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id       TEXT    NOT NULL,
+        turn_id          TEXT    NOT NULL,
+        belief_id        TEXT    NOT NULL REFERENCES beliefs(id) ON DELETE CASCADE,
+        injected_at      TEXT    NOT NULL,
+        source           TEXT    NOT NULL,
+        active_consumers TEXT    NOT NULL DEFAULT '[]',
+        referenced       INTEGER,
+        referenced_at    TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_injection_events_session_turn "
+    "ON injection_events(session_id, turn_id)",
+    "CREATE INDEX IF NOT EXISTS idx_injection_events_belief "
+    "ON injection_events(belief_id)",
+    "CREATE INDEX IF NOT EXISTS idx_injection_events_pending "
+    "ON injection_events(session_id, referenced) "
+    "WHERE referenced IS NULL",
 )
 
 # Marker key for the entity-index one-shot backfill. Empty value =
