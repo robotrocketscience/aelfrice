@@ -3005,6 +3005,146 @@ class MemoryStore:
             for r in cur.fetchall()
         ]
 
+    # ----- #779 injection_events -------------------------------------
+    #
+    # Schema ratified 2026-05-14 on issue #779. `source` is a string
+    # enum: v1 ships with only `'ups'`; future sources (`'pre_compact'`,
+    # `'sub_agent'`) drop in without a schema migration. `active_consumers`
+    # is a canonical-sorted JSON array of meta-belief keys — the
+    # encoder sorts so two stores with the same subscriptions produce
+    # byte-identical column values (same determinism property as
+    # `meta_beliefs.encode_signal_weights`).
+
+    def record_injection_event(
+        self,
+        *,
+        session_id: str,
+        turn_id: str,
+        belief_id: str,
+        injected_at: str,
+        source: str,
+        active_consumers: list[str],
+    ) -> int:
+        """Insert one injection_events row, return its rowid.
+
+        Caller batches per-(turn × belief) writes by sharing the same
+        ``turn_id`` and ``injected_at`` across the batch — the sweeper
+        groups by ``(session_id, turn_id)`` so the batch is what gets
+        scored together.
+
+        Raises ``ValueError`` on an empty ``source``. Other validation
+        (e.g. the v1 ``source ∈ {'ups'}`` allowlist) lives in the
+        caller so this method stays forward-compatible with sources
+        added in later commits without a migration.
+        """
+        if not source:
+            raise ValueError("source must be a non-empty string")
+        encoded_consumers = json.dumps(
+            sorted(set(active_consumers)), separators=(",", ":"),
+        )
+        cur = self._conn.execute(
+            """
+            INSERT INTO injection_events
+                (session_id, turn_id, belief_id, injected_at, source,
+                 active_consumers)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (session_id, turn_id, belief_id, injected_at, source,
+             encoded_consumers),
+        )
+        self._conn.commit()
+        rowid = cur.lastrowid
+        if rowid is None:
+            raise RuntimeError(
+                "injection_events insert returned no rowid"
+            )
+        return rowid
+
+    def list_pending_injection_events(
+        self,
+        session_id: str,
+        *,
+        before_turn_id: str | None = None,
+        limit: int = 1000,
+    ) -> list[tuple[int, str, str, str, str, list[str]]]:
+        """Return [(id, turn_id, belief_id, injected_at, source,
+        active_consumers)] for injection_events rows in ``session_id``
+        with ``referenced IS NULL``.
+
+        When ``before_turn_id`` is supplied, only rows whose
+        ``turn_id`` is strictly less than it (string-lexicographic) are
+        returned — turn ids are ``{utc-compact-ts}-{hex4}`` (see
+        ``transcript_logger._new_turn_id``) and the timestamp prefix
+        sorts chronologically, so this slices to "events from prior
+        turns" cleanly. The sweeper passes the current turn's id so
+        it never scores events from the same turn (the assistant
+        response isn't written yet).
+
+        Ordered by ``id`` ASC for deterministic processing.
+        """
+        params: list[object] = [session_id]
+        clause = ""
+        if before_turn_id is not None:
+            clause = " AND turn_id < ?"
+            params.append(before_turn_id)
+        params.append(limit)
+        cur = self._conn.execute(
+            f"""
+            SELECT id, turn_id, belief_id, injected_at, source,
+                   active_consumers
+            FROM injection_events
+            WHERE session_id = ? AND referenced IS NULL{clause}
+            ORDER BY id ASC
+            LIMIT ?
+            """,
+            tuple(params),
+        )
+        rows: list[tuple[int, str, str, str, str, list[str]]] = []
+        for r in cur.fetchall():
+            decoded = json.loads(str(r["active_consumers"]))
+            if not isinstance(decoded, list):
+                decoded = []
+            rows.append((
+                int(r["id"]),
+                str(r["turn_id"]),
+                str(r["belief_id"]),
+                str(r["injected_at"]),
+                str(r["source"]),
+                [str(x) for x in decoded],
+            ))
+        return rows
+
+    def update_injection_referenced(
+        self,
+        event_id: int,
+        *,
+        referenced: int,
+        referenced_at: str,
+    ) -> bool:
+        """Stamp ``referenced`` ∈ {0, 1} and ``referenced_at`` on a
+        single ``injection_events`` row.
+
+        Returns True if the row was updated, False if no row matched
+        (already scored, or unknown id). Idempotent at the
+        ``UPDATE ... WHERE referenced IS NULL`` level — a second call
+        on a scored row returns False without disturbing the prior
+        score.
+        """
+        if referenced not in (0, 1):
+            raise ValueError(
+                f"referenced must be 0 or 1; got {referenced!r}"
+            )
+        cur = self._conn.execute(
+            """
+            UPDATE injection_events
+            SET referenced = ?, referenced_at = ?
+            WHERE id = ? AND referenced IS NULL
+            """,
+            (referenced, referenced_at, event_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
     def has_explicit_feedback_in_window(
         self,
         belief_id: str,
