@@ -454,3 +454,103 @@ def test_rebuild_v14_xml_escapes_working_state_text(tmp_path: Path) -> None:
         store.close()
     assert "feat/&lt;unsafe&gt;" in out
     assert "query: a &lt; b &amp; c" in out
+
+
+# ---- #798: rebuild_v14 pack accounting honors use_type_aware_compression ----
+
+
+def _mk_snapshot(bid: str, content: str) -> Belief:
+    # Snapshot-class belief whose verbatim cost > headline cost.
+    from aelfrice.models import RETENTION_SNAPSHOT
+    return Belief(
+        id=bid,
+        content=content,
+        content_hash=f"h_{bid}",
+        alpha=1.0,
+        beta=1.0,
+        type=BELIEF_FACTUAL,
+        retention_class=RETENTION_SNAPSHOT,
+        lock_level=LOCK_NONE,
+        locked_at=None,
+        demotion_pressure=0,
+        created_at="2026-04-26T00:00:00Z",
+        last_retrieved_at=None,
+    )
+
+
+def test_rebuild_v14_pack_size_matches_compression_flag(tmp_path: Path) -> None:
+    """#798: rebuild_v14 pack accounting honors `use_type_aware_compression`.
+
+    With a tight budget that forces trim under OFF, the ON arm must pack
+    strictly more beliefs than the OFF arm — otherwise the rebuilder is
+    using verbatim cost regardless of flag (the bug PR #776's A4 gate hit).
+    """
+    from aelfrice.context_rebuilder import rebuild_v14
+
+    # Headline is the first sentence ending in ". ". Padding pushes
+    # verbatim cost well above compressed (headline-only) cost.
+    pad = " padding bytes " * 8
+    beliefs = [
+        _mk_snapshot(
+            f"S{i}",
+            f"banana headline {i}. {pad}second sentence keeps verbatim large.",
+        )
+        for i in range(1, 7)
+    ]
+    store = _seed(tmp_path / "m.db", beliefs)
+    turns = [RecentTurn(role="user", text="banana")]
+    try:
+        # Tight budget: long verbatim trims, short headlines fit more.
+        off_block = rebuild_v14(
+            turns, store, token_budget=120, use_type_aware_compression=False,
+        )
+        on_block = rebuild_v14(
+            turns, store, token_budget=120, use_type_aware_compression=True,
+        )
+    finally:
+        store.close()
+
+    off_packed = off_block.count('<belief id="')
+    on_packed = on_block.count('<belief id="')
+    assert on_packed > off_packed, (
+        "use_type_aware_compression=True must let rebuild_v14 pack more "
+        f"beliefs than =False at a tight budget (off={off_packed}, "
+        f"on={on_packed}). If equal, _estimate_belief_tokens is ignoring "
+        "the flag — #798's verbatim-cost re-pack bug has regressed."
+    )
+
+
+def test_rebuild_v14_compression_off_byte_identical_default(
+    tmp_path: Path,
+) -> None:
+    """#798: default-OFF leaves the byte-identical contract intact.
+
+    `rebuild_v14(...)` with no kwarg and no env override must produce the
+    same block as `rebuild_v14(..., use_type_aware_compression=False)` —
+    the #139 / #288 regression contract.
+    """
+    import os
+
+    from aelfrice.context_rebuilder import rebuild_v14
+
+    pad = " padding bytes " * 8
+    beliefs = [
+        _mk_snapshot(
+            f"S{i}",
+            f"banana headline {i}. {pad}second sentence keeps verbatim large.",
+        )
+        for i in range(1, 5)
+    ]
+    store = _seed(tmp_path / "m.db", beliefs)
+    turns = [RecentTurn(role="user", text="banana")]
+    prior_env = os.environ.pop("AELFRICE_TYPE_AWARE_COMPRESSION", None)
+    try:
+        default_block = rebuild_v14(turns, store, token_budget=120)
+        off_block = rebuild_v14(
+            turns, store, token_budget=120, use_type_aware_compression=False,
+        )
+    finally:
+        store.close()
+        if prior_env is not None:
+            os.environ["AELFRICE_TYPE_AWARE_COMPRESSION"] = prior_env
+    assert default_block == off_block

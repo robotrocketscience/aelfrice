@@ -80,7 +80,8 @@ from aelfrice.query_understanding import (
     VALID_STRATEGIES,
     transform_query,
 )
-from aelfrice.retrieval import retrieve
+from aelfrice.compression import compress_for_retrieval
+from aelfrice.retrieval import resolve_use_type_aware_compression, retrieve
 from aelfrice.scoring import posterior_mean
 from aelfrice.store import MemoryStore
 from aelfrice.triple_extractor import extract_triples
@@ -316,6 +317,7 @@ def rebuild_v14(
     floor_l1: float = 0.0,
     query_strategy: str = DEFAULT_QUERY_STRATEGY,
     working_state: "WorkingState | None" = None,
+    use_type_aware_compression: bool | None = None,
 ) -> str:
     """v1.4 rebuild: L0 + session-scoped + L2.5/L1 via `retrieve()`.
 
@@ -358,6 +360,12 @@ def rebuild_v14(
     `aelfrice.query_understanding`. `legacy-bm25` is byte-identical
     to the v1.4 path and remains opt-in until PR-4 removes it.
     """
+    # #798: resolve compression flag once, thread through pack accounting
+    # so rebuild_v14's trim matches retrieve()'s trim under the same flag.
+    compress_on: bool = resolve_use_type_aware_compression(
+        use_type_aware_compression,
+    )
+
     locked: list[Belief] = store.list_locked_beliefs()
     locked_ids: set[str] = {b.id for b in locked}
 
@@ -371,7 +379,10 @@ def rebuild_v14(
     # composite ourselves so we can interleave session-scoped
     # beliefs in the right slot.
     retrieved: list[Belief] = retrieve(
-        store, query, token_budget=token_budget,
+        store,
+        query,
+        token_budget=token_budget,
+        use_type_aware_compression=compress_on,
     )
     # Drop L0 from retrieved (we'll prepend our own copy).
     non_locked_hits: list[Belief] = [
@@ -402,7 +413,9 @@ def rebuild_v14(
     # or any future dedup gap). Without this, the rebuild block can
     # surface 10+ identical lines. Locked wins (it's prepended whole);
     # subsequent tiers skip any hash already packed.
-    used: int = sum(_estimate_belief_tokens(b) for b in locked)
+    used: int = sum(
+        _estimate_belief_tokens(b, compress_on=compress_on) for b in locked
+    )
     out: list[Belief] = list(locked)
     seen_hashes: set[str] = {b.content_hash for b in locked}
     hash_to_packed_id: dict[str, str] = {b.content_hash: b.id for b in locked}
@@ -450,7 +463,7 @@ def rebuild_v14(
             reason = "budget_exceeded"
             n_dropped_by_budget += 1
         else:
-            cost = _estimate_belief_tokens(b)
+            cost = _estimate_belief_tokens(b, compress_on=compress_on)
             if used + cost > token_budget:
                 budget_exceeded_session = True
                 decision = "dropped"
@@ -500,7 +513,7 @@ def rebuild_v14(
             reason2 = "budget_exceeded"
             n_dropped_by_budget += 1
         else:
-            cost = _estimate_belief_tokens(b)
+            cost = _estimate_belief_tokens(b, compress_on=compress_on)
             if used + cost > token_budget:
                 budget_exceeded_non_locked = True
                 decision2 = "dropped"
@@ -1321,9 +1334,16 @@ def record_user_prompt_submit_log(
 # --- Format helpers --------------------------------------------------------
 
 
-def _estimate_belief_tokens(b: Belief) -> int:
+def _estimate_belief_tokens(b: Belief, *, compress_on: bool = False) -> int:
+    # Verbatim cost by default; compressed render cost when compress_on=True.
+    # Mirrors retrieval._cost so rebuild_v14's pack accounting matches
+    # retrieve()'s pack accounting under the same flag — closes #798.
+    # Locks always render verbatim (compress_for_retrieval honors locked=True).
     if not b.content:
         return 0
+    if compress_on:
+        cb = compress_for_retrieval(b, locked=(b.lock_level == LOCK_USER))
+        return cb.rendered_tokens
     return int((len(b.content) + _CHARS_PER_TOKEN - 1) // _CHARS_PER_TOKEN)
 
 
