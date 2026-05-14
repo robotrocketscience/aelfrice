@@ -244,6 +244,39 @@ ENV_META_BELIEF_HALF_LIFE: Final[str] = "AELFRICE_META_BELIEF_HALF_LIFE"
 # saturates at 1.0, slow retrieval shrinks toward 0. Per the ratified
 # wiring (D4: latency signal only, relevance deferred to #779).
 LATENCY_TARGET_SECONDS: Final[float] = 0.080
+# v3.x #757 meta-belief consumer for the BM25F anchor-weight knob.
+# Sub-task C of umbrella #480, reuses the #756 pattern (encoding in the
+# consumer, substrate pattern-uniform). BM25F in aelfrice has a single
+# tunable: `anchor_weight` (DEFAULT_ANCHOR_WEIGHT = 3 in bm25.py), the
+# weight on the incoming-anchor token stream relative to the content
+# stream. The issue's per-field framing assumed a multi-field BM25F
+# that aelfrice does not have — scope ratified down to anchor_weight
+# only (2026-05-13 review).
+META_BM25F_ANCHOR_WEIGHT_KEY: Final[str] = "meta:retrieval.bm25f_anchor_weight"
+# anchor_weight is an integer >= 0 (see bm25.py:217). Bounds `[1, 10]`
+# avoid the degenerate `0` case (anchors fully disabled, equivalent to
+# vanilla BM25 — silently turning off a feature flagged ON by default
+# would be a regression vector) and cap at 10 to keep the L1 lane within
+# the operator-reasoned range where the #148 R3 default of 3 was chosen.
+BM25F_ANCHOR_WEIGHT_FLOOR: Final[int] = 1
+BM25F_ANCHOR_WEIGHT_CEIL: Final[int] = 10
+# Static-default `value` for the meta-belief. Mid-range so cold-start
+# decodes to ~3.16 → round to 3, matching DEFAULT_ANCHOR_WEIGHT exactly
+# and preserving byte-identical retrieval order on first install.
+META_BM25F_ANCHOR_WEIGHT_STATIC_DEFAULT: Final[float] = 0.5
+# Sub-posterior decay. 30d matches #756 — same rationale: a one-off
+# noisy signal shouldn't shift the surfaced weight; sustained evidence
+# should. The whole #480 family converges on this number so each
+# sub-task is comparable.
+META_BM25F_ANCHOR_WEIGHT_POSTERIOR_DECAY_SECONDS: Final[int] = 30 * 24 * 3600
+# Default-OFF feature flag. Until the #437 A/B bench gate clears, every
+# retrieval still uses the v1.5/#148 R3 static `DEFAULT_ANCHOR_WEIGHT=3`
+# path through `BM25IndexCache`; setting this env var truthy switches
+# `resolve_bm25f_anchor_weight_with_meta` to read the meta-belief from
+# the store first.
+ENV_META_BELIEF_BM25F_ANCHOR_WEIGHT: Final[str] = (
+    "AELFRICE_META_BELIEF_BM25F_ANCHOR_WEIGHT"
+)
 # Number of decimal places used to round `posterior_weight` before
 # inclusion in the cache key. Two callers passing weights that
 # differ by less than this granularity collapse to the same key.
@@ -726,6 +759,50 @@ def is_meta_belief_half_life_enabled() -> bool:
     `on`) — both forms map to the same state, no precedence wrinkles.
     """
     raw = os.environ.get(ENV_META_BELIEF_HALF_LIFE)
+    if raw is None:
+        return False
+    norm = raw.strip().lower()
+    return norm in _ENV_TRUTHY or norm == "enabled"
+
+
+def decode_meta_bm25f_anchor_weight(value: float) -> int:
+    """Decode a `[0, 1]` meta-belief value into an integer anchor_weight
+    via log-linear interpolation between
+    :data:`BM25F_ANCHOR_WEIGHT_FLOOR` (1) and
+    :data:`BM25F_ANCHOR_WEIGHT_CEIL` (10).
+
+    `v=0.0` → 1, `v=1.0` → 10, `v=0.5` → 3 (rounded from ~3.16, matching
+    `DEFAULT_ANCHOR_WEIGHT` exactly so the cold-start install preserves
+    byte-identical retrieval order until the meta-belief actually moves).
+
+    Values outside `[0, 1]` are clamped — the substrate's
+    `posterior_mean` is mathematically bounded to `[0, 1]` but `value`
+    may be the `static_default` cold-start fallback on a misconfigured
+    row, so we defend. The result is rounded to the nearest int because
+    `BM25Index.build` accepts only integer anchor_weight (it replicates
+    the anchor token stream `anchor_weight` times — see bm25.py:243).
+
+    Per the same #756 (2026-05-13) ratification: encoding lives in the
+    consumer, substrate stays pattern-uniform across #480 B–F.
+    """
+    v = max(0.0, min(1.0, value))
+    ln_floor = math.log(BM25F_ANCHOR_WEIGHT_FLOOR)
+    ln_ceil = math.log(BM25F_ANCHOR_WEIGHT_CEIL)
+    return round(math.exp(ln_floor + v * (ln_ceil - ln_floor)))
+
+
+def is_meta_belief_bm25f_anchor_weight_enabled() -> bool:
+    """Return True iff :data:`ENV_META_BELIEF_BM25F_ANCHOR_WEIGHT` is set
+    to a recognised truthy value.
+
+    Ships default-OFF per the #757 bench-gate clause: until #437 A/B
+    corpus evidence clears, BM25F still uses `DEFAULT_ANCHOR_WEIGHT = 3`
+    from bm25.py. Operators flip this on per-shell to opt into the
+    adaptive anchor-weight. The `=enabled` spelling is honoured
+    alongside the codebase-standard truthy tokens (`1`, `true`, `yes`,
+    `on`), mirroring :func:`is_meta_belief_half_life_enabled`.
+    """
+    raw = os.environ.get(ENV_META_BELIEF_BM25F_ANCHOR_WEIGHT)
     if raw is None:
         return False
     norm = raw.strip().lower()
