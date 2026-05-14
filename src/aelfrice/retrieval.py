@@ -912,6 +912,71 @@ def resolve_temporal_half_life_with_meta(
     return DEFAULT_TEMPORAL_HALF_LIFE_SECONDS
 
 
+def install_bm25f_anchor_weight_meta_belief(
+    store: MemoryStore,
+    *,
+    now_ts: int,
+) -> bool:
+    """Idempotent install of the #757 meta-belief on ``store``.
+
+    Returns True on first install, False if the row already exists.
+    Mirrors :func:`install_temporal_half_life_meta_belief`'s contract —
+    existing rows are not overwritten because the surfaced anchor_weight
+    would silently shift under BM25F.
+
+    The install signature pins the v3.x ratified defaults: bm25_l0_ratio
+    signal only (relevance deferred to #779 per the same D4 split that
+    #756 followed), 30d posterior decay, cold-start ``value`` = 0.5
+    which decodes through :func:`decode_meta_bm25f_anchor_weight` to 3,
+    matching ``bm25.DEFAULT_ANCHOR_WEIGHT`` exactly.
+    """
+    from aelfrice.meta_beliefs import SIGNAL_BM25_L0_RATIO
+    return store.install_meta_belief(
+        META_BM25F_ANCHOR_WEIGHT_KEY,
+        static_default=META_BM25F_ANCHOR_WEIGHT_STATIC_DEFAULT,
+        half_life_seconds=META_BM25F_ANCHOR_WEIGHT_POSTERIOR_DECAY_SECONDS,
+        signal_weights={SIGNAL_BM25_L0_RATIO: 1.0},
+        now_ts=now_ts,
+    )
+
+
+def resolve_bm25f_anchor_weight_with_meta(
+    store: MemoryStore | None,
+    *,
+    now_ts: int,
+    explicit: int | None = None,
+) -> int:
+    """Resolve the BM25F anchor_weight knob with meta-belief consultation.
+
+    Precedence (first decisive wins):
+      1. Explicit ``explicit`` kwarg from the caller (lets the bench
+         harness and tests pin a value).
+      2. **Meta-belief** (#757) — only when
+         :data:`ENV_META_BELIEF_BM25F_ANCHOR_WEIGHT` resolves truthy AND
+         ``store`` has the meta-belief installed. Decodes the substrate's
+         `[0, 1]` value through :func:`decode_meta_bm25f_anchor_weight`
+         into the `[1, 10]` band.
+      3. Default: ``bm25.DEFAULT_ANCHOR_WEIGHT`` (3).
+
+    Unlike #756's resolver, this one has no env-var or TOML override
+    layer — anchor_weight has never had a user-facing config knob (it
+    has been a code constant since v1.5/#148 R3). Explicit-kwarg stays
+    the only operator-side override path so the meta-belief surface
+    doesn't introduce a new public config that we'd have to keep
+    stable. ``None`` ``store`` collapses to the static default.
+    """
+    if explicit is not None:
+        return int(explicit)
+    if store is not None and is_meta_belief_bm25f_anchor_weight_enabled():
+        meta_value = store.read_meta_belief_value(
+            META_BM25F_ANCHOR_WEIGHT_KEY, now_ts=now_ts,
+        )
+        if meta_value is not None:
+            return decode_meta_bm25f_anchor_weight(meta_value)
+    from aelfrice.bm25 import DEFAULT_ANCHOR_WEIGHT
+    return DEFAULT_ANCHOR_WEIGHT
+
+
 def _belief_age_seconds(b: Belief, now: datetime) -> float:
     """Seconds between `now` and `b.created_at` (clamped at 0).
 
