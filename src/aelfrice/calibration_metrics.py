@@ -27,6 +27,8 @@ __all__ = (
     "precision_at_k",
     "roc_auc",
     "spearman_rho",
+    "ordered_top_k_overlap",
+    "rank_biased_overlap",
 )
 
 
@@ -130,3 +132,97 @@ def spearman_rho(
     if denom == 0:
         return None
     return (n * sxy - sx * sy) / denom
+
+
+def ordered_top_k_overlap(
+    a: Sequence[object], b: Sequence[object], k: int,
+) -> float:
+    """Fraction of the top-k positions where ``a`` and ``b`` agree.
+
+    Compares the first ``k`` elements of two ranked lists position-by-
+    position; the score is the count of matching positions divided by
+    ``k``. Returns 1.0 when both lists' prefixes are identical and 0.0
+    when no top-k position matches.
+
+    Items beyond rank ``k`` are ignored. Missing slots (an input shorter
+    than ``k``) count as non-matches. Use this alongside
+    `rank_biased_overlap` to discriminate top-of-list churn from
+    middle-of-list reorderings — the #796 R4 finding was that PR@k and
+    Spearman ρ alone cannot tell those apart.
+    """
+    if k <= 0:
+        raise ValueError("k must be positive")
+    a_top = list(a[:k])
+    b_top = list(b[:k])
+    matches = sum(
+        1
+        for i in range(k)
+        if i < len(a_top) and i < len(b_top) and a_top[i] == b_top[i]
+    )
+    return matches / k
+
+
+def rank_biased_overlap(
+    a: Sequence[object], b: Sequence[object], p: float = 0.9,
+) -> float:
+    """Rank-biased overlap (RBO) — top-weighted ranking similarity.
+
+    Implements the extrapolated finite-list form (RBO_EXT) from Webber
+    et al. (2010), "A Similarity Measure for Indefinite Rankings".
+    Comparison runs up to depth ``D = min(len(a), len(b))`` and
+    extrapolates a constant agreement rate beyond ``D``:
+
+        RBO_EXT = (X_D / D) * p^D
+                + (1 - p) * sum_{d=1}^{D} p^(d-1) * X_d / d
+
+    where ``X_d = |A_d ∩ B_d|`` is the intersection size at depth d.
+    This is the conventional "RBO score" used in IR practice and
+    satisfies the unit-bound property: identical equal-length lists
+    score 1.0, fully disjoint lists score 0.0. The non-extrapolated
+    RBO_MIN underestimates identical lists by ``p^D`` and was
+    rejected here because the tests in #796 R4 rely on identical →
+    1.0 as a sanity gate.
+
+    ``p`` controls top-weight: ``p → 0`` weights rank 1 only;
+    ``p → 1`` weights the tail almost as much as the head. The #796
+    R4 finding used ``p = 0.9`` to give the top-K meaningful weight
+    without ignoring downstream rearrangements; that is the default.
+    Lists of unequal length are compared on their common prefix
+    length ``D``; tail items past ``D`` are ignored.
+
+    Properties covered by the test suite:
+      * Identical lists → 1.0.
+      * Disjoint lists → 0.0.
+      * Monotone in prefix agreement: extending a shared prefix never
+        lowers the score.
+      * Both empty → 1.0 (vacuous identity); one empty → 0.0.
+    """
+    if not 0.0 < p < 1.0:
+        raise ValueError("p must be in the open interval (0, 1)")
+    la, lb = len(a), len(b)
+    if la == 0 and lb == 0:
+        return 1.0
+    if la == 0 or lb == 0:
+        return 0.0
+    depth = min(la, lb)
+    seen_a: set[object] = set()
+    seen_b: set[object] = set()
+    overlap_count = 0
+    weighted_sum = 0.0
+    final_agreement = 0.0
+    for d in range(depth):
+        x = a[d]
+        if x in seen_b:
+            overlap_count += 1
+        seen_a.add(x)
+        y = b[d]
+        if y in seen_a:
+            overlap_count += 1
+        seen_b.add(y)
+        agreement = overlap_count / (d + 1)
+        weighted_sum += (p ** d) * agreement
+        final_agreement = agreement
+    # RBO_EXT extrapolation term: assume agreement stays at the depth-D
+    # rate for ranks beyond D. For identical equal-length lists this
+    # term equals p^D so the total converges to 1.0.
+    return final_agreement * (p ** depth) + (1.0 - p) * weighted_sum
