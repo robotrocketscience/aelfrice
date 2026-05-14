@@ -474,6 +474,35 @@ _SCHEMA: tuple[str, ...] = (
         rejected_at TEXT NOT NULL
     )
     """,
+    # v3.x #748 / #816 hot-path touch state. Sidecar table — sibling
+    # to `injection_events` (#779), but smaller and write-deduplicated
+    # via PK upsert. Records per-(belief, session) "last touched"
+    # state; H4-only INJECTION events in v1 (bit 0 of
+    # `event_kinds_bitmask`). Bits 1-3 reserved for v2 expansion
+    # (`retrieve_hit`, `bfs_visit`, `user_action` — none populated in v1;
+    # the lab campaign refuted their addition at the rerank gate).
+    # `last_fire_idx` is a monotonic counter (NOT a wall-clock
+    # timestamp) per locked PHILOSOPHY decision #605; the same query
+    # + the same fire_idx + the same touch state must produce the same
+    # ranking across replays. PK `(belief_id, session_id)` enforces
+    # the per-session reset semantic from locked federation decision
+    # #661 — touch state is local to the owning project DB; foreign
+    # federated beliefs come in cold every read. Rerank consumer is
+    # NOT wired in v1 (DESIGN.md v1 ship list item 7); writes
+    # accumulate against the eventual H3 fidelity test, gated on R7c.
+    """
+    CREATE TABLE IF NOT EXISTS belief_touches (
+        belief_id           TEXT    NOT NULL,
+        session_id          TEXT    NOT NULL,
+        last_fire_idx       INTEGER NOT NULL,
+        touch_count         INTEGER NOT NULL DEFAULT 0,
+        event_kinds_bitmask INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (belief_id, session_id),
+        FOREIGN KEY (belief_id) REFERENCES beliefs(id) ON DELETE CASCADE
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_belief_touches_session_fire "
+    "ON belief_touches(session_id, last_fire_idx DESC)",
 )
 
 # Marker key for the entity-index one-shot backfill. Empty value =
@@ -3170,6 +3199,149 @@ class MemoryStore:
         )
         self._conn.commit()
         return cur.rowcount > 0
+
+    # ----- #816 belief_touches (hot-path v1) -------------------------
+    #
+    # Sidecar to `injection_events` (#779). Where `injection_events`
+    # records every (turn × belief) inject-or-not row for the close-
+    # the-loop sweeper, `belief_touches` records the *last* fire_idx
+    # at which each (belief, session) pair was touched, plus the
+    # event-kind bitmask. PK upsert keeps the table compact — one row
+    # per (belief, session), not one per touch.
+    #
+    # DESIGN.md v1 (`6b40538`):
+    # - INJECTION-only writes (bit 0). Other bits reserved.
+    # - fire_idx is a monotonic counter, not wall-clock (#605).
+    # - PK enforces per-session reset (#661 federation).
+    # - No rerank consumer in v1; this table is a write-only substrate
+    #   for the H3 fidelity test once R7c gates clear.
+    #
+    # Idempotency: `record_touch` does an INSERT ... ON CONFLICT DO
+    # UPDATE — re-touching the same (belief, session) refreshes
+    # `last_fire_idx` and bumps `touch_count`, OR-ing the new event
+    # kind into the bitmask. The same input twice produces the same
+    # row state (touch_count increments by 1 on each call).
+
+    def record_touch(
+        self,
+        *,
+        belief_id: str,
+        session_id: str,
+        fire_idx: int,
+        event_kind: int,
+    ) -> None:
+        """Record one touch event.
+
+        Inserts ``(belief_id, session_id)`` with ``last_fire_idx``,
+        ``touch_count=1``, ``event_kinds_bitmask=event_kind``; or, on
+        existing row, refreshes ``last_fire_idx`` to ``fire_idx``,
+        increments ``touch_count`` by 1, and OR-s ``event_kind`` into
+        the bitmask.
+
+        Raises ``ValueError`` on empty ``belief_id`` / ``session_id``
+        or non-positive ``fire_idx`` / ``event_kind``. The FK to
+        ``beliefs(id)`` is enforced at write time when foreign keys
+        are on (test fixtures must populate ``beliefs`` first or
+        disable FK enforcement for isolated unit tests).
+        """
+        if not belief_id:
+            raise ValueError("belief_id must be a non-empty string")
+        if not session_id:
+            raise ValueError("session_id must be a non-empty string")
+        if fire_idx < 0:
+            raise ValueError(f"fire_idx must be >= 0; got {fire_idx!r}")
+        if event_kind <= 0:
+            raise ValueError(
+                f"event_kind must be a positive bitmask; got {event_kind!r}"
+            )
+        self._conn.execute(
+            """
+            INSERT INTO belief_touches
+                (belief_id, session_id, last_fire_idx, touch_count,
+                 event_kinds_bitmask)
+            VALUES (?, ?, ?, 1, ?)
+            ON CONFLICT(belief_id, session_id) DO UPDATE SET
+                last_fire_idx = excluded.last_fire_idx,
+                touch_count = belief_touches.touch_count + 1,
+                event_kinds_bitmask =
+                    belief_touches.event_kinds_bitmask | excluded.event_kinds_bitmask
+            """,
+            (belief_id, session_id, fire_idx, event_kind),
+        )
+        self._conn.commit()
+
+    def read_touch_set_in_window(
+        self,
+        session_id: str,
+        *,
+        current_fire_idx: int,
+        window_k: int,
+    ) -> set[str]:
+        """Return the set of belief_ids touched within the window.
+
+        A belief is in the window iff
+        ``last_fire_idx >= current_fire_idx - window_k`` for the
+        given ``session_id``. Boolean shape from DESIGN.md v1 §"Decay
+        shape" — the lab campaign's H2 refutation locked this against
+        the exponential alternative.
+
+        Returns an empty set when ``session_id`` has no rows, when
+        ``window_k`` is non-positive, or on any other input that
+        produces an empty cross-section. No exception leaks for a
+        missing-session caller — touch state is opportunistic
+        substrate; the consumer (post-R7c) must work without it.
+        """
+        if window_k <= 0 or not session_id:
+            return set()
+        threshold = current_fire_idx - window_k
+        cur = self._conn.execute(
+            """
+            SELECT belief_id FROM belief_touches
+            WHERE session_id = ? AND last_fire_idx >= ?
+            """,
+            (session_id, threshold),
+        )
+        return {str(r["belief_id"]) for r in cur.fetchall()}
+
+    def count_touches_for_session(self, session_id: str) -> int:
+        """Number of ``belief_touches`` rows for ``session_id``.
+
+        Read surface for ``aelf doctor --hot-path`` and the v1 test
+        plan's per-session-reset property check. Returns 0 on an
+        empty / unknown session.
+        """
+        if not session_id:
+            return 0
+        cur = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM belief_touches WHERE session_id = ?",
+            (session_id,),
+        )
+        row = cur.fetchone()
+        return int(row["n"]) if row is not None else 0
+
+    def list_touch_sessions(self) -> list[tuple[str, int, int]]:
+        """Return ``[(session_id, row_count, max_fire_idx)]`` per session.
+
+        Ordered by ``max_fire_idx`` DESC (most-recent session first),
+        with ``session_id`` as a stable tie-breaker. Surface for
+        ``aelf doctor --hot-path``: gives the operator a view of how
+        many beliefs each session has touched and what the latest
+        fire_idx for that session is.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT session_id,
+                   COUNT(*) AS n,
+                   COALESCE(MAX(last_fire_idx), -1) AS max_fire
+            FROM belief_touches
+            GROUP BY session_id
+            ORDER BY max_fire DESC, session_id ASC
+            """,
+        )
+        return [
+            (str(r["session_id"]), int(r["n"]), int(r["max_fire"]))
+            for r in cur.fetchall()
+        ]
 
     def has_explicit_feedback_in_window(
         self,
