@@ -2152,8 +2152,13 @@ def retrieve(
     # prompts. L0 / L1 / L2.5-entity stay on regardless. The gate
     # has its own env / TOML escape hatches; see
     # :mod:`aelfrice.expansion_gate` for resolver precedence.
+    # #760: pass store + now_ts so the meta-belief resolver can adapt
+    # the token threshold; falls back to BROAD_PROMPT_TOKEN_THRESHOLD
+    # when the flag is off or the meta-belief is not installed.
     from aelfrice.expansion_gate import should_run_expansion
-    gate_decision = should_run_expansion(query)
+    gate_decision = should_run_expansion(
+        query, store=store, now_ts=int(time.time()),
+    )
     gate_skipped_bfs = bfs_on and not gate_decision.run_bfs
     bfs_on = bfs_on and gate_decision.run_bfs
     # v1.5.0 #154: emit one stderr line per placeholder lane the
@@ -2341,8 +2346,12 @@ def retrieve_with_tiers(
     heat_on = is_heat_kernel_enabled(heat_kernel_enabled)
     # #741 adaptive expansion-gate. Same shape as retrieve(): short-
     # circuit BFS on broad prompts; L0 / L1 / L2.5-entity unaffected.
+    # #760: pass store + now_ts for the meta-belief token-threshold
+    # resolver; same fallback posture as retrieve().
     from aelfrice.expansion_gate import should_run_expansion
-    gate_decision = should_run_expansion(query)
+    gate_decision = should_run_expansion(
+        query, store=store, now_ts=int(time.time()),
+    )
     gate_skipped_bfs = bfs_on and not gate_decision.run_bfs
     bfs_on = bfs_on and gate_decision.run_bfs
     compress_on = resolve_use_type_aware_compression(

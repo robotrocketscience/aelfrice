@@ -351,3 +351,118 @@ def test_active_consumers_sorted(
     out = get_active_meta_belief_consumers()
     assert out == sorted(out)
     assert META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY in out
+
+
+# --- Integration: should_run_expansion wired to meta-belief ---------------
+
+from aelfrice.expansion_gate import should_run_expansion  # noqa: E402
+
+
+def _build_store_with_meta(now_ts: int = 1700000000) -> MemoryStore:
+    """Return a fresh in-memory store with the #760 meta-belief installed."""
+    s = MemoryStore(":memory:")
+    install_expansion_gate_token_threshold_meta_belief(s, now_ts=now_ts)
+    return s
+
+
+def _make_long_prompt(n_tokens: int) -> str:
+    """Return a prose prompt with exactly n_tokens whitespace-delimited
+    words and no structural markers (so the length signal is decisive)."""
+    return " ".join([f"word{i}" for i in range(n_tokens)])
+
+
+def test_flag_off_byte_identical_to_no_meta_belief(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flag OFF: should_run_expansion with store+meta-belief installed is
+    byte-identical to should_run_expansion with no store."""
+    monkeypatch.delenv(ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD, raising=False)
+    store = _build_store_with_meta()
+    query = _make_long_prompt(BROAD_PROMPT_TOKEN_THRESHOLD + 5)
+
+    without_store = should_run_expansion(query)
+    with_store = should_run_expansion(query, store=store, now_ts=1700000001)
+
+    assert without_store.run_bfs == with_store.run_bfs
+    assert without_store.run_hrr_structural == with_store.run_hrr_structural
+
+
+def test_flag_on_meta_absent_same_as_flag_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flag ON but no meta-belief row: resolver falls through to
+    BROAD_PROMPT_TOKEN_THRESHOLD — same gate verdict as flag-off."""
+    monkeypatch.setenv(ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD, "enabled")
+    store = MemoryStore(":memory:")  # meta-belief not installed
+    query = _make_long_prompt(BROAD_PROMPT_TOKEN_THRESHOLD + 5)
+
+    baseline = should_run_expansion(query)
+    with_store = should_run_expansion(query, store=store, now_ts=1700000000)
+
+    assert baseline.run_bfs == with_store.run_bfs
+
+
+def test_flag_on_meta_at_default_value_byte_identical(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flag ON + meta-belief at static_default=0.5: decode(0.5) == 80 ==
+    BROAD_PROMPT_TOKEN_THRESHOLD, so the gate verdict is byte-identical."""
+    monkeypatch.setenv(ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD, "enabled")
+    store = _build_store_with_meta(now_ts=1700000000)
+    query = _make_long_prompt(BROAD_PROMPT_TOKEN_THRESHOLD + 5)
+
+    baseline = should_run_expansion(query)
+    with_meta = should_run_expansion(query, store=store, now_ts=1700000001)
+
+    assert baseline.run_bfs == with_meta.run_bfs
+    # Both should gate on the long prompt (n_tokens > 80)
+    assert with_meta.run_bfs is False
+    assert "long" in with_meta.reason
+
+
+def test_flag_on_high_threshold_lets_medium_prompt_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flag ON + meta-belief posterior pulled toward CEIL (value→1.0, threshold→320):
+    a prompt with length in (80, 320] that would have tripped the gate at threshold=80
+    now passes through (run_bfs=True)."""
+    monkeypatch.setenv(ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD, "enabled")
+    store = _build_store_with_meta(now_ts=1700000000)
+
+    # Drive the posterior strongly toward 1.0 (CEIL) with many strong-positive events
+    base_ts = 1700000001
+    for i in range(200):
+        store.update_meta_belief(
+            META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY,
+            SIGNAL_RELEVANCE,
+            evidence=1.0,
+            now_ts=base_ts + i,
+        )
+    resolved_threshold = resolve_expansion_gate_token_threshold_with_meta(
+        store, now_ts=base_ts + 200
+    )
+    # After strong positive evidence the threshold should have risen above 80
+    assert resolved_threshold > BROAD_PROMPT_TOKEN_THRESHOLD, (
+        f"expected threshold > {BROAD_PROMPT_TOKEN_THRESHOLD}, got {resolved_threshold}"
+    )
+
+    # A prompt with token count between 80 and the new threshold should now
+    # NOT trip the long-prompt signal (though it may still gate on no-markers
+    # or question-form — test with a query that has structural markers to
+    # isolate the threshold signal)
+    # Use a prompt exactly at BROAD_PROMPT_TOKEN_THRESHOLD + 1 with a structural
+    # marker appended to suppress no-markers, but still > old threshold
+    n_tokens = BROAD_PROMPT_TOKEN_THRESHOLD + 1  # 81 tokens — trips old gate
+    if n_tokens < resolved_threshold:
+        # Only assert the threshold-specific gate if we can isolate it
+        query_with_marker = (
+            _make_long_prompt(n_tokens - 1) + " src/aelfrice/retrieval.py"
+        )
+        with_meta = should_run_expansion(
+            query_with_marker, store=store, now_ts=base_ts + 200,
+        )
+        # With the raised threshold, 81 tokens should not trip "long"
+        assert "long" not in with_meta.reason, (
+            f"expected no 'long' signal at threshold={resolved_threshold} "
+            f"for {n_tokens}-token prompt, got reason={with_meta.reason!r}"
+        )
