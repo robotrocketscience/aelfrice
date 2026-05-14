@@ -214,7 +214,7 @@ separate question that, if needed, belongs in a separate AC and
 instrumentation.
 
 Refs: #592 (original AC), #687 / PR #727 (κ commit-3), #777 (κ Run 2),
-#797 (P3 ratification — instructed-reader scope + AC at 0.80).
+issue #797 (P3 ratification — instructed-reader scope + AC at 0.80).
 
 ### Sample-size caveat
 
