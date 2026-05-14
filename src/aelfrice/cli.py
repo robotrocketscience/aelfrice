@@ -4,7 +4,7 @@ Commands:
   onboard <path>                   scan a project and ingest beliefs
   search <query> [--budget N]      L0 locked + L1 FTS5 retrieval
   lock <statement>                 insert (or upgrade) a user-locked belief
-  locked [--pressured]             list locked beliefs
+  locked                           list locked beliefs
   demote <id>                      manually demote a lock to none
   confirm <id> [--source S]        explicitly affirm a belief (bumps Beta-Bernoulli alpha)
   feedback <id> <used|harmful>     apply one Bayesian feedback event
@@ -1666,22 +1666,17 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_locked(args: argparse.Namespace, out: object) -> int:
+    _ = args
     store = _open_store()
     try:
         locked = store.list_locked_beliefs()
     finally:
         store.close()
-    if args.pressured:
-        locked = [b for b in locked if b.demotion_pressure > 0]
     if not locked:
-        msg = "no pressured locks" if args.pressured else "no locked beliefs"
-        print(msg, file=out)  # type: ignore[arg-type]
+        print("no locked beliefs", file=out)  # type: ignore[arg-type]
         return 0
     for b in locked:
-        pressure_marker = (
-            f" (pressure={b.demotion_pressure})" if b.demotion_pressure > 0 else ""
-        )
-        print(f"{b.id}{pressure_marker}: {b.content}", file=out)  # type: ignore[arg-type]
+        print(f"{b.id}: {b.content}", file=out)  # type: ignore[arg-type]
     return 0
 
 
@@ -5130,10 +5125,6 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_lock.set_defaults(func=_cmd_lock)
 
     p_locked = sub.add_parser("locked", help="list locked beliefs")
-    p_locked.add_argument(
-        "--pressured", action="store_true",
-        help="only show locks with nonzero demotion_pressure",
-    )
     p_locked.set_defaults(func=_cmd_locked)
 
     # Read-only lens: load-bearing beliefs (locked ∪ corroborated ∪ high-posterior).

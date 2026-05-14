@@ -1,17 +1,15 @@
 ---
 name: aelf:locked
-description: List user-locked beliefs. Pass --pressured to show only locks with nonzero demotion pressure.
-argument-hint: (optional) --pressured
+description: List user-locked beliefs.
 allowed-tools:
   - Bash
 ---
 <objective>
-Inspect the locked-belief tier. With no arguments, lists every user
-lock; with `--pressured`, lists only locks that have accumulated
-demotion pressure from contradicting feedback.
+Inspect the locked-belief tier — every user-asserted ground-truth
+statement in the local memory store.
 </objective>
 
 <process>
-Run: `uv run aelf locked $ARGUMENTS`
+Run: `uv run aelf locked`
 Display the output verbatim. Do not add commentary.
 </process>

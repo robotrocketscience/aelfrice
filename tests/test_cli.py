@@ -164,26 +164,6 @@ def test_locked_lists_inserted_lock(isolated_db: Path) -> None:
     assert "we always sign commits with ssh" in out
 
 
-def test_locked_pressured_filters_to_pressured_only(isolated_db: Path) -> None:
-    """An unpressured lock is hidden by --pressured, then a pressured one shows."""
-    _run("lock", "we always sign commits with ssh")
-    code, out = _run("locked", "--pressured")
-    assert code == 0
-    assert "no pressured locks" in out
-
-    # Manually pressure the lock so the next call sees it.
-    s = MemoryStore(str(isolated_db))
-    try:
-        for b in s.list_locked_beliefs():
-            b.demotion_pressure = 2
-            s.update_belief(b)
-    finally:
-        s.close()
-    code, out = _run("locked", "--pressured")
-    assert code == 0
-    assert "pressure=2" in out
-
-
 def test_demote_removes_user_lock(isolated_db: Path) -> None:
     _run("lock", "we always sign commits with ssh")
     s = MemoryStore(str(isolated_db))
