@@ -83,6 +83,11 @@ def test_migrate_skips_when_uv_not_on_path(
     assert result.succeeded is False
     assert "uv not on PATH" in result.reason
     assert "docs.astral.sh/uv" in result.reason
+    # Surface a runnable install one-liner so operators don't have to
+    # click through to docs — both the Astral curl form and the macOS
+    # brew alternative are named verbatim.
+    assert "curl -LsSf https://astral.sh/uv/install.sh | sh" in result.reason
+    assert "brew install uv" in result.reason
     assert not sentinel.exists()
 
 
