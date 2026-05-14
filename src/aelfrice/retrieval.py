@@ -303,6 +303,41 @@ META_BFS_DEPTH_BUDGET_POSTERIOR_DECAY_SECONDS: Final[int] = 30 * 24 * 3600
 ENV_META_BELIEF_BFS_DEPTH_BUDGET: Final[str] = (
     "AELFRICE_META_BELIEF_BFS_DEPTH_BUDGET"
 )
+# ---------------------------------------------------------------------------
+# #760 expansion-gate token-threshold meta-belief consumer (sub-task F of #480)
+# ---------------------------------------------------------------------------
+# `should_run_expansion` tests `len(tokens) > threshold`. Bounds `[20, 320]`
+# give a factor-of-4 band around the v1 default of 80; the geometric mean
+# of 20 and 320 is exactly 80 (`sqrt(20*320) = sqrt(6400) = 80`), so the
+# cold-start decode at `static_default=0.5` is byte-identical to the
+# hardcoded `BROAD_PROMPT_TOKEN_THRESHOLD` value. The `relevance` signal
+# (close-the-loop #779) is the sole subscribed class: an injected belief
+# that is referenced by the assistant in a subsequent turn is evidence that
+# the expansion-gate threshold should let more broad prompts through
+# (higher threshold = fewer gates). The direction is correct because
+# expansion gate outcomes directly feed retrieval quality, not latency.
+EXPANSION_GATE_TOKEN_THRESHOLD_FLOOR: Final[int] = 20
+EXPANSION_GATE_TOKEN_THRESHOLD_CEIL: Final[int] = 320
+META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY: Final[str] = (
+    "meta:retrieval.expansion_gate.token_threshold"
+)
+# Static-default `value` for the meta-belief. decode(0.5) == 80 exactly
+# (geometric mean of floor and ceil), matching `BROAD_PROMPT_TOKEN_THRESHOLD`
+# so a cold-start install with the meta-belief flag on is byte-identical.
+META_EXPANSION_GATE_TOKEN_THRESHOLD_STATIC_DEFAULT: Final[float] = 0.5
+# Sub-posterior decay — 30d, matching #756/#757/#759 so all #480 sub-tasks
+# are comparable on the same evidence time-scale.
+META_EXPANSION_GATE_TOKEN_THRESHOLD_POSTERIOR_DECAY_SECONDS: Final[int] = (
+    30 * 24 * 3600
+)
+# Default-OFF feature flag. Setting this env var truthy switches
+# `resolve_expansion_gate_token_threshold_with_meta` to read the meta-belief
+# first, replacing the hardcoded `BROAD_PROMPT_TOKEN_THRESHOLD` in
+# `should_run_expansion`. Same default-OFF / bench-gate posture as
+# #756/#757/#759.
+ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD: Final[str] = (
+    "AELFRICE_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD"
+)
 # Number of decimal places used to round `posterior_weight` before
 # inclusion in the cache key. Two callers passing weights that
 # differ by less than this granularity collapse to the same key.
@@ -873,6 +908,54 @@ def is_meta_belief_bfs_depth_budget_enabled() -> bool:
     ``yes``, ``on``), mirroring :func:`is_meta_belief_half_life_enabled`.
     """
     raw = os.environ.get(ENV_META_BELIEF_BFS_DEPTH_BUDGET)
+    if raw is None:
+        return False
+    norm = raw.strip().lower()
+    return norm in _ENV_TRUTHY or norm == "enabled"
+
+
+def decode_expansion_gate_token_threshold(value: float) -> int:
+    """Decode a `[0, 1]` meta-belief value into an integer token threshold
+    via log-linear interpolation between
+    :data:`EXPANSION_GATE_TOKEN_THRESHOLD_FLOOR` (20) and
+    :data:`EXPANSION_GATE_TOKEN_THRESHOLD_CEIL` (320).
+
+    `v=0.0` → 20, `v=1.0` → 320, `v=0.5` → 80 exactly.
+
+    The `v=0.5` decode equals 80 because the geometric mean of 20 and
+    320 is ``sqrt(20 * 320) = sqrt(6400) = 80`` — a precise integer.
+    Cold-start with the meta-belief on is therefore byte-identical to
+    the pre-#760 hardcoded :data:`aelfrice.expansion_gate.BROAD_PROMPT_TOKEN_THRESHOLD`.
+
+    Values outside `[0, 1]` are clamped — the substrate's
+    ``posterior_mean`` is mathematically bounded to `[0, 1]` but
+    ``value`` may be the static_default fallback on a misconfigured
+    row. The result is rounded to the nearest int because
+    ``should_run_expansion`` compares ``len(tokens) > threshold``
+    against a whole number.
+
+    Per the 2026-05-13 #756 ratification: encoding lives in the
+    consumer, substrate stays pattern-uniform across #480 B–F.
+    """
+    v = max(0.0, min(1.0, value))
+    ln_floor = math.log(EXPANSION_GATE_TOKEN_THRESHOLD_FLOOR)
+    ln_ceil = math.log(EXPANSION_GATE_TOKEN_THRESHOLD_CEIL)
+    return int(round(math.exp(ln_floor + v * (ln_ceil - ln_floor))))
+
+
+def is_meta_belief_expansion_gate_token_threshold_enabled() -> bool:
+    """Return True iff :data:`ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD`
+    is set to a recognised truthy value.
+
+    Ships default-OFF per the #760 bench-gate clause: until #437 A/B
+    corpus evidence clears, ``should_run_expansion`` still uses the
+    hardcoded :data:`aelfrice.expansion_gate.BROAD_PROMPT_TOKEN_THRESHOLD`
+    (80). Operators flip this on per-shell to opt into the adaptive
+    token threshold. The ``=enabled`` spelling is honoured alongside the
+    codebase-standard truthy tokens (``1``, ``true``, ``yes``, ``on``),
+    mirroring :func:`is_meta_belief_half_life_enabled`.
+    """
+    raw = os.environ.get(ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD)
     if raw is None:
         return False
     norm = raw.strip().lower()
