@@ -24,6 +24,7 @@ from aelfrice.models import (
 from aelfrice.retrieval import (
     ENV_TYPE_AWARE_COMPRESSION,
     resolve_use_type_aware_compression,
+    retrieve,
     retrieve_v2,
 )
 from aelfrice.store import MemoryStore
@@ -301,3 +302,97 @@ def test_pack_locked_unchanged_when_flag_on(
     assert [b.id for b in off.beliefs] == [b.id for b in on.beliefs]
     # Locked render is verbatim under compression.
     assert on.compressed_beliefs[0].strategy == STRATEGY_VERBATIM
+
+
+# --- Bare `retrieve()` flag wiring (#776) ------------------------------
+#
+# The same toggle that #434 wired into `retrieve_with_tiers` and
+# `retrieve_v2` was missing from `retrieve()` — and `rebuild_v14` calls
+# `retrieve()`. Without this wiring the A4 bench gate (#775) is a no-op
+# because the OFF/ON arms produce byte-identical output. These tests
+# lock the wiring: default-OFF byte-identity, env-var / kwarg observability,
+# and locks-render-verbatim.
+
+
+def test_retrieve_pack_widens_when_flag_on(
+    _no_env_override: None, _isolated_cwd: Path
+) -> None:
+    s = _populate_pack_widening_store()
+    off = retrieve(
+        s, "sqlite system",
+        token_budget=80,
+        entity_index_enabled=False,
+        use_type_aware_compression=False,
+    )
+    on = retrieve(
+        s, "sqlite system",
+        token_budget=80,
+        entity_index_enabled=False,
+        use_type_aware_compression=True,
+    )
+    assert len(on) > len(off)
+
+
+def test_retrieve_pack_byte_identical_when_flag_off(
+    _no_env_override: None, _isolated_cwd: Path
+) -> None:
+    """Default-OFF: id list matches an explicit OFF call byte-for-byte."""
+    s = _populate_pack_widening_store()
+    explicit_off = retrieve(
+        s, "sqlite system",
+        token_budget=80,
+        entity_index_enabled=False,
+        use_type_aware_compression=False,
+    )
+    default_off = retrieve(
+        s, "sqlite system",
+        token_budget=80,
+        entity_index_enabled=False,
+    )
+    assert [b.id for b in explicit_off] == [b.id for b in default_off]
+
+
+def test_retrieve_env_var_enables_compression(
+    monkeypatch: pytest.MonkeyPatch, _isolated_cwd: Path
+) -> None:
+    """`AELFRICE_TYPE_AWARE_COMPRESSION=1` flips the pack via the resolver.
+
+    This is the path the A4 bench harness uses: it sets the env var around
+    `rebuild_v14`, and `rebuild_v14` calls `retrieve()`. Without the
+    wiring this test guards, the env var has no effect.
+    """
+    s = _populate_pack_widening_store()
+    monkeypatch.delenv(ENV_TYPE_AWARE_COMPRESSION, raising=False)
+    off = retrieve(
+        s, "sqlite system", token_budget=80, entity_index_enabled=False,
+    )
+    monkeypatch.setenv(ENV_TYPE_AWARE_COMPRESSION, "1")
+    on = retrieve(
+        s, "sqlite system", token_budget=80, entity_index_enabled=False,
+    )
+    assert len(on) > len(off)
+
+
+def test_retrieve_locked_unchanged_when_flag_on(
+    _no_env_override: None, _isolated_cwd: Path
+) -> None:
+    """Locks render verbatim under bare `retrieve()` too."""
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk(
+        "L1",
+        "user-pinned: sqlite is the chosen substrate. immutable.",
+        retention_class=RETENTION_SNAPSHOT,
+        lock_level=LOCK_USER,
+        locked_at="2026-05-08T00:00:00Z",
+    ))
+    off = retrieve(
+        s, "sqlite",
+        entity_index_enabled=False,
+        use_type_aware_compression=False,
+    )
+    on = retrieve(
+        s, "sqlite",
+        entity_index_enabled=False,
+        use_type_aware_compression=True,
+    )
+    assert [b.id for b in off] == [b.id for b in on]
