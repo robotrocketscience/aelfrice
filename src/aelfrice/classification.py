@@ -119,12 +119,16 @@ class StartOnboardResult:
     counts candidates that were dropped before the host saw them because
     a belief with the deterministic id already exists — re-running
     onboard on a tree the brain has already seen does not re-ask the
-    host to classify the same content.
+    host to classify the same content. `n_already_rejected` (#801)
+    counts candidates the host previously rejected with persist=False;
+    they sit in the rejection ledger and are bypassed unless the caller
+    passes `force=True`.
     """
 
     session_id: str
     sentences: list[OnboardSentence]
     n_already_present: int
+    n_already_rejected: int = 0
 
 
 @dataclass
@@ -151,11 +155,16 @@ class OnboardCheckResult:
     classifier, without writing an onboard_sessions row or inserting
     any beliefs. Lets callers decide whether re-onboard is worth the
     LLM/CPU cost before dispatching classification (#761).
+
+    `n_already_rejected` (#801) counts candidates currently in the
+    rejection ledger (host previously verdict persist=False); they are
+    excluded from `n_new` unless the caller passes `force=True`.
     """
 
     n_already_present: int
     n_new: int
     repo_path: str
+    n_already_rejected: int = 0
 
 
 @dataclass
@@ -195,16 +204,24 @@ def start_onboard_session(
     repo_path: Path,
     *,
     now: str | None = None,
+    force: bool = False,
 ) -> StartOnboardResult:
     """Run the three scanner extractors against `repo_path`, filter out
-    candidates whose deterministic belief id is already in the store,
-    persist the rest as a pending onboard_sessions row, and return the
-    payload the host should classify.
+    candidates whose deterministic belief id is already in the store
+    (or in the rejection ledger when `force=False`), persist the rest
+    as a pending onboard_sessions row, and return the payload the host
+    should classify.
 
     Idempotent: re-calling against the same tree returns a fresh
-    session_id whose `sentences` list excludes anything already present.
+    session_id whose `sentences` list excludes anything already present
+    *and* anything the host previously rejected with persist=False.
     The host can answer with an empty list of classifications and the
     session will close cleanly.
+
+    `force=True` (#801) bypasses the rejection ledger so previously
+    rejected candidates are re-emitted for the host to re-classify.
+    Already-present beliefs are still filtered — `force` only opts back
+    in to noise the host already saw, not to duplicate-stored content.
     """
     # Lazy import: scanner imports classification at module-load (it
     # calls `classify_sentence`); importing scanner at top-level here
@@ -223,12 +240,20 @@ def start_onboard_session(
         + extract_ast(repo_path)
     )
 
+    rejected_ids: set[str] = (
+        set() if force else store.list_onboard_rejection_ids()
+    )
+
     pending_sentences: list[OnboardSentence] = []
     n_already_present = 0
+    n_already_rejected = 0
     for c in candidates:
         bid = _derive_belief_id(c.text, c.source)
         if store.get_belief(bid) is not None:
             n_already_present += 1
+            continue
+        if bid in rejected_ids:
+            n_already_rejected += 1
             continue
         pending_sentences.append(
             OnboardSentence(
@@ -259,12 +284,15 @@ def start_onboard_session(
         session_id=session_id,
         sentences=pending_sentences,
         n_already_present=n_already_present,
+        n_already_rejected=n_already_rejected,
     )
 
 
 def check_onboard_candidates(
     store: "MemoryStore",
     repo_path: Path,
+    *,
+    force: bool = False,
 ) -> OnboardCheckResult:
     """Pre-scan a repo without persisting a session or inserting beliefs.
 
@@ -277,6 +305,9 @@ def check_onboard_candidates(
     handshake exposes via `--emit-candidates`, but at the human-facing
     `aelf onboard <path> --check` entry — letting callers see what a
     re-onboard would do before paying the classification cost (#761).
+
+    `n_already_rejected` (#801) reports candidates currently in the
+    rejection ledger; they are excluded from `n_new` unless `force=True`.
     """
     from aelfrice.scanner import (
         extract_ast,
@@ -290,12 +321,19 @@ def check_onboard_candidates(
         + extract_ast(repo_path)
     )
 
+    rejected_ids: set[str] = (
+        set() if force else store.list_onboard_rejection_ids()
+    )
+
     n_already_present = 0
+    n_already_rejected = 0
     n_new = 0
     for c in candidates:
         bid = _derive_belief_id(c.text, c.source)
         if store.get_belief(bid) is not None:
             n_already_present += 1
+        elif bid in rejected_ids:
+            n_already_rejected += 1
         else:
             n_new += 1
 
@@ -303,6 +341,7 @@ def check_onboard_candidates(
         n_already_present=n_already_present,
         n_new=n_new,
         repo_path=str(repo_path),
+        n_already_rejected=n_already_rejected,
     )
 
 
