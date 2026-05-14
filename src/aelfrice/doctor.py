@@ -837,6 +837,171 @@ def _check_path(
     )
 
 
+# ---------------------------------------------------------------------------
+# Prune dead `aelf-*` hook entries from settings.json (#781).
+# ---------------------------------------------------------------------------
+
+# Basename prefix that marks an entry as one this package installed.
+# Custom hooks (user-installed shell scripts, third-party integrations)
+# are left strictly alone.
+_AELF_HOOK_BASENAME_PREFIX: Final[str] = "aelf-"
+
+
+@dataclass(frozen=True)
+class HookPruneResult:
+    """Outcome of `prune_broken_aelf_hooks`.
+
+    `removed_per_event` maps each hook event name (e.g. `"PreToolUse"`)
+    to the number of parent entries removed from it. Events with no
+    removals are absent.
+
+    `total_removed` is the sum across events — zero when the file is
+    already clean.
+    """
+
+    settings_path: Path
+    removed_per_event: dict[str, int]
+    total_removed: int
+
+
+def prune_broken_aelf_hooks(
+    settings_path: Path, *, dry_run: bool = False,
+) -> HookPruneResult:
+    """Drop hook entries whose `aelf-*` program no longer resolves.
+
+    Walks every `hooks.<event>[i].hooks[j]` command in `settings_path`.
+    An entry is removed when ALL of:
+
+    * its inner command's first whitespace token has a basename
+      starting with `aelf-` (so `aelf-hook`, `aelf-stop-hook`, etc. are
+      in scope; bare shell scripts, `bash`, custom integrations are
+      not);
+    * `_inspect_command` classifies it `status="broken"` (the program
+      path / `$PATH` lookup fails).
+
+    Custom shell hooks (`gh-pii-guard.sh`, `conversation-logger.sh`,
+    etc.) and statuslines are never touched. Skipped (shell-meta)
+    commands are not pruned — the predicate is conservative.
+
+    When `dry_run=True`, the file is not rewritten; the result still
+    reports what *would* have been removed. Missing files return a
+    zero-removal result.
+    """
+    if not settings_path.exists():
+        return HookPruneResult(
+            settings_path=settings_path, removed_per_event={}, total_removed=0,
+        )
+    try:
+        data = _load_settings_json(settings_path)
+    except (ValueError, OSError):
+        return HookPruneResult(
+            settings_path=settings_path, removed_per_event={}, total_removed=0,
+        )
+    hooks_obj = data.get(_HOOKS_KEY)
+    if not isinstance(hooks_obj, dict):
+        return HookPruneResult(
+            settings_path=settings_path, removed_per_event={}, total_removed=0,
+        )
+    hooks_dict = cast(dict[str, object], hooks_obj)
+    removed_per_event: dict[str, int] = {}
+    for event_name, event_list in list(hooks_dict.items()):
+        if not isinstance(event_list, list):
+            continue
+        entries = cast(list[object], event_list)
+        kept: list[object] = []
+        n_removed = 0
+        for entry in entries:
+            if _entry_is_broken_aelf_hook(settings_path, entry):
+                n_removed += 1
+                continue
+            kept.append(entry)
+        if n_removed:
+            removed_per_event[event_name] = n_removed
+            event_list[:] = kept
+    total = sum(removed_per_event.values())
+    if total and not dry_run:
+        _atomic_rewrite_settings(settings_path, data)
+    return HookPruneResult(
+        settings_path=settings_path,
+        removed_per_event=removed_per_event,
+        total_removed=total,
+    )
+
+
+def _entry_is_broken_aelf_hook(
+    settings_path: Path, entry: object,
+) -> bool:
+    """True iff `entry` is an `aelf-*`-basename hook whose program is broken.
+
+    The settings entry shape is::
+
+        {"hooks": [{"type": "command", "command": "<cmd>"}, ...]}
+
+    An entry is considered broken when ANY of its inner command hooks
+    have an `aelf-*` basename and resolve to `status="broken"`. One
+    broken inner command condemns the whole parent entry — Claude
+    Code's hook runner spawns each inner command per fire, so leaving
+    a half-broken parent in place would still emit ENOENT per call.
+    """
+    if not isinstance(entry, dict):
+        return False
+    entry_dict = cast(dict[str, object], entry)
+    inner = entry_dict.get(_INNER_HOOKS_KEY)
+    if not isinstance(inner, list):
+        return False
+    for hook in cast(list[object], inner):
+        if not isinstance(hook, dict):
+            continue
+        hook_dict = cast(dict[str, object], hook)
+        if hook_dict.get(_TYPE_KEY) != _HOOK_TYPE_COMMAND:
+            continue
+        cmd = hook_dict.get(_COMMAND_KEY)
+        if not isinstance(cmd, str):
+            continue
+        stripped = cmd.strip()
+        if not stripped:
+            continue
+        first = stripped.split(maxsplit=1)[0]
+        if not Path(first).name.startswith(_AELF_HOOK_BASENAME_PREFIX):
+            continue
+        finding = _inspect_command(settings_path, "<prune>", cmd)
+        if finding.status == "broken":
+            return True
+    return False
+
+
+_HOOK_TYPE_COMMAND: Final[str] = "command"
+
+
+def _atomic_rewrite_settings(path: Path, data: dict[str, object]) -> None:
+    """Atomically replace `path` with the new JSON. Mirrors setup._atomic_write.
+
+    Pulled into doctor so the prune helper can rewrite without taking
+    an import dependency on a private setup symbol. The format matches
+    setup's writer byte-for-byte (indent=2, ensure_ascii=False, trailing
+    newline) so a setup→prune→setup round trip stays diff-stable.
+    """
+    import os
+    import tempfile
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".tmp", dir=str(path.parent)
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(serialized)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+
+
 def format_report(report: DoctorReport) -> str:
     """Render a DoctorReport as a human-readable string for the CLI."""
     lines: list[str] = []

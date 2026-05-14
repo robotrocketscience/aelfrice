@@ -99,6 +99,7 @@ from aelfrice.derivation_worker import run_worker
 from aelfrice.doctor import (
     DORMANT_IDLE_DAYS_DEFAULT,
     DormantDB,
+    HookPruneResult,
     _check_dormant_dbs,
     classify_orphans as _classify_orphans,
     diagnose,
@@ -108,6 +109,7 @@ from aelfrice.doctor import (
     format_report,
     gc_orphan_feedback as _gc_orphan_feedback,
     promote_retention as _promote_retention,
+    prune_broken_aelf_hooks,
 )
 from aelfrice.llm_classifier import (
     ENV_API_KEY as _LLM_ENV_API_KEY,
@@ -2453,6 +2455,23 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
     for removed_path in cleanup.removed:
         print(
             f"cleaned dangling shim: {removed_path}",
+            file=out,  # type: ignore[arg-type]
+        )
+    # #781: prune any `aelf-*` hook entries pointing at vanished venv
+    # paths before reconciling installs. The dedupe-on-install path
+    # (Layer A) only catches collisions on the basename we are about
+    # to write; old stale entries for events we are NOT installing
+    # this run still need to be swept out.
+    prune = prune_broken_aelf_hooks(path)
+    if prune.total_removed:
+        events = ", ".join(
+            f"{event}={count}"
+            for event, count in sorted(prune.removed_per_event.items())
+        )
+        print(
+            f"pruned {prune.total_removed} stale aelf-* hook entr"
+            f"{'y' if prune.total_removed == 1 else 'ies'} "
+            f"({events}) from {prune.settings_path}",
             file=out,  # type: ignore[arg-type]
         )
     result = install_user_prompt_submit_hook(
