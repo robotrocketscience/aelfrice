@@ -1245,22 +1245,36 @@ def _record_touches(
                             or not isinstance(rfire, int) or rfire < 0
                         ):
                             continue
-                        store.record_touch(
-                            belief_id=rid,
-                            session_id=session_id,
-                            fire_idx=rfire,
-                            event_kind=TOUCH_EVENT_KIND_INJECTION,
-                        )
+                        # Per-row tolerance — ring entries may point
+                        # at beliefs that have since been deleted
+                        # (FK to beliefs is enforced in prod). Skip
+                        # those without poisoning the rest of the
+                        # migration.
+                        try:
+                            store.record_touch(
+                                belief_id=rid,
+                                session_id=session_id,
+                                fire_idx=rfire,
+                                event_kind=TOUCH_EVENT_KIND_INJECTION,
+                            )
+                        except Exception:
+                            continue
             # Current turn's injection set.
             for bid in belief_ids:
                 if not bid:
                     continue
-                store.record_touch(
-                    belief_id=bid,
-                    session_id=session_id,
-                    fire_idx=fire_idx,
-                    event_kind=TOUCH_EVENT_KIND_INJECTION,
-                )
+                try:
+                    store.record_touch(
+                        belief_id=bid,
+                        session_id=session_id,
+                        fire_idx=fire_idx,
+                        event_kind=TOUCH_EVENT_KIND_INJECTION,
+                    )
+                except Exception:
+                    # Same per-row tolerance for the current set:
+                    # extremely unlikely but possible (a belief
+                    # deleted between retrieval and the touch write).
+                    continue
         finally:
             store.close()
     except Exception as exc:
