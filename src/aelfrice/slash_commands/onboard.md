@@ -37,6 +37,69 @@ roundtrip, no extra billing. Falls back to the regex classifier on
 
 3. **Batch.** Split `sentences` into batches of at most 50 entries.
 
+   Then, **before dispatching any subagents in step 4**, print a single
+   human-readable block that explains what is about to happen, how long
+   it will take, and what it costs. Without this block, the wall of
+   "12 background agents launched" log lines reads as scary, even
+   though classification is cheap and finishes in a few minutes.
+
+   Compute everything from the actual batched payload (not fixed
+   numbers). When you fill in the block, name the actual classifier
+   model from the `model:` field of step 4's dispatch — render it
+   literally as `<model>` from that field so the user sees the
+   concrete id in the printed output.
+
+   **Token estimate.** For each batch:
+   - `input_tokens ≈ ceil((1200 + sum(len(s["text"]) + len(s["source"]) + 30 for s in batch)) / 4)`
+     where `1200` is the rough character length of the classification
+     prompt template in step 4, and `/4` is the standard "~4 chars per
+     token" approximation from the provider's public token glossary.
+   - `output_tokens ≈ 40 * len(batch)` — one short JSON entry per
+     sentence (`{"index": N, "belief_type": "...", "persist": ...}`).
+
+   Sum across all batches.
+
+   **Cost estimate.** Price at the classifier model's currently
+   published per-token rates from the provider's public pricing page.
+   As of 2026-05 the model named in step 4 priced at
+   `$1.00/MTok input, $5.00/MTok output`; refresh from the pricing
+   page if pricing has moved.
+
+   **Time estimate.** Subagents dispatch in parallel waves of ~12.
+   Each wave takes ~30-90 seconds wall-clock — the classifier itself
+   is fast, but subagent spawn / queue overhead dominates per-token
+   latency. So:
+   `wall_time ≈ ceil(n_batches / 12) * 60s ± 30s`
+   Render as a range, e.g. "~2-4 min" for 46 batches, "~30-60s" for
+   ≤12 batches.
+
+   **Print exactly one block**, in this shape:
+   ```
+   ═ aelf onboard: parallel classification ═
+   what  <S> candidate sentences extracted from <path>. Each one needs
+         to be typed (factual / preference / requirement / correction)
+         or filtered as noise, so retrieval later can prioritize real
+         facts over boilerplate.
+   how   <N> batches of ≤50 sentences, dispatched to `<model>`
+         subagents in parallel waves of ~12 — that's why you'll see
+         "12 background agents launched" repeated several times below.
+   time  ~<X>-<Y> min  (subagent dispatch + classifier latency)
+   cost  ~<Ti>K input + ~<To>K output tokens
+         ≈ $<X.XX> equivalent API spend
+         billing: runs against your existing subagent quota
+                  (Max / Pro / Team) — no separate API charge.
+   ════════════════════════════════════════
+   ```
+   Round token counts to nearest K and cost to two decimals.
+   `<path>` is the path passed to the slash command; `<model>` is the
+   model id from step 4's `model:` field.
+
+   This is an upper-bound order-of-magnitude estimate, not a guarantee;
+   actual usage depends on per-batch retries and the subagent's system
+   prompt overhead, which the host can't observe. The point is to
+   replace "how much is this going to cost? how long will it take?"
+   with numbers up front.
+
 4. **Classify each batch via Haiku Task subagents.** For each batch,
    invoke the Task tool with:
    - `subagent_type`: `general-purpose`
