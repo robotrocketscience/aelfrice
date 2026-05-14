@@ -528,10 +528,13 @@ def test_hot_start_fixture_resolves_via_load_corpus(
     assert len(hot_start) >= 1, "hot_start fixture must resolve via load_corpus"
     case = hot_start[0]
     assert case.fork_turn == 8
-    # eval_turns point at assistant continuations (9, 11, 13) so `expected`
-    # is the canonical answer text, not the user prompt — see #687 calibration
-    # ratification and the meta `notes` for the prior-shape rationale.
-    assert case.eval_turns == (9, 11, 13)
+    # eval_turns point at assistant continuations (9, 11, 13, 15, 17, 19, 21,
+    # 23, 25, 27) so `expected` is the canonical answer text, not the user
+    # prompt — see #687 calibration ratification and the meta `notes` for the
+    # prior-shape rationale. Widened from n=3 to n=10 per #778 (v3.1 close
+    # of #592 hot-start AC) to address statistical thinness diagnosed in
+    # Run 2's multi-judge κ sweep.
+    assert case.eval_turns == (9, 11, 13, 15, 17, 19, 21, 23, 25, 27)
 
 
 def test_threshold_sweep_segments_hot_start_from_debug(

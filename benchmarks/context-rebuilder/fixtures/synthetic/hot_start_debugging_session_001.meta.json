@@ -1,6 +1,17 @@
 {
   "task_type": "hot_start",
   "fork_turn": 8,
-  "eval_turns": [9, 11, 13],
-  "notes": "Post-compact hot-start scenario for #587 / #592 AC. Pre-fork (turns 0..7) establishes specific working state: failing test `test_ingest_jsonl_idempotent`, file `src/aelfrice/ingest.py`, function `_dedup_key`. The fork at turn 8 simulates a /clear-induced compact. Post-fork user prompts at indices 8, 10, 12 ask 'where were we?', 'which file/function?', 'what was the verification step?'; the harness pulls `user_turn` from each eval_turn's most-recent-user-role text (8/10/12) and `expected` from the eval_turn itself (assistant continuations at 9/11/13). This makes `expected` the canonical answer the post-rebuild agent should produce, so judge-vs-baseline κ compares answer-against-answer (calibration ratification #687). Prior shape used eval_turns=[8,10,12] which set expected=user_question_text: substring path always missed and the judge prompt split on Q/A speech-act mismatches (inter-judge κ=0.0, fidelity 0.67 — see #687 for the failure evidence). Sibling fixture debugging_session_001.meta.json keeps its [8,10,12,14] shape until the cold-start sweep is re-ratified separately."
+  "eval_turns": [
+    9,
+    11,
+    13,
+    15,
+    17,
+    19,
+    21,
+    23,
+    25,
+    27
+  ],
+  "notes": "Post-compact hot-start scenario for #587 / #592 AC, widened to n=10 eval turns per #778 (v3.1 close of #592). Pre-fork (turns 0..7) establishes specific working state: failing test `test_ingest_jsonl_idempotent`, file `src/aelfrice/ingest.py`, function `_dedup_key`, intermittency root cause (CRLF vs LF newline policy), the literal fix (`sentence.rstrip('\\r\\n').rstrip()` before `unicodedata.normalize('NFC', sentence)`), the why-fix-_dedup_key-not-conftest rationale (production robustness), the dedup tuple shape `(session_id, turn_id, source, sentence)`, the NFC normalization form, the repro command (`print(repr(sentence))` before `_dedup_key` returns), and the conftest location (line 47, `Path.write_text`). The fork at turn 8 simulates a /clear-induced compact. Post-fork user prompts at indices 8, 10, 12, 14, 16, 18, 20, 22, 24, 26 ask one canonical-recall question each; the harness pulls `user_turn` from each eval_turn's most-recent-user-role text and `expected` from the eval_turn itself (assistant continuations at 9, 11, 13, 15, 17, 19, 21, 23, 25, 27). Each new eval probes a different specific fact from pre-fork turns 0..7 not previously tested by the n=3 shape, so the judge prompt's specific-facts rubric (#778) gets exercised across distinct atom kinds (test name, file path, function name, root cause, code change, rationale, data structure, normalization form, command, file:line location). Prior shapes: n=3 with eval_turns=[9,11,13] (per #687 PR #705) — passed substring path but Run 2 κ sweep saw inter_judge_kappa.min=0.0 / fidelity_mean=0.667 against the [9,11,13] cut (#592 v3.0 deferral, locked belief cea8ba7708ae3ca3). n=3 with eval_turns=[8,10,12] (pre-#687) — set expected=user_question_text, substring path always missed and judge split on Q/A speech-act mismatches. Sibling fixture debugging_session_001.meta.json keeps its [8,10,12,14] shape until the cold-start sweep is re-ratified separately."
 }
