@@ -56,8 +56,8 @@ DEFAULT_POSTERIOR_WEIGHT: Final[float] = 0.5
 GAMMA_TEMPERATURE_FLOOR: Final[float] = 1e-6
 
 # #800 / #817 ζ rerank — pinned defaults from the R&D campaign
-# verdict at `~/projects/aelfrice-lab/experiments/zeta-posterior/`
-# (R0–R4, commits `2baac93` through `82ec453`). At
+# verdict at `experiments/zeta-posterior/` (lab-side, R0–R4,
+# commits `2baac93` through `82ec453`). At
 # (α=1.0, β=0.25, scale=14.5) ζ dominates γ on rank_biased_overlap
 # for similar rank_changed_fraction (R2 head-to-head). Tunability
 # via kwargs preserved for tests; env/TOML knobs for α / β / scale
