@@ -45,9 +45,10 @@ roundtrip, no extra billing. Falls back to the regex classifier on
 
    Compute everything from the actual batched payload (not fixed
    numbers). When you fill in the block, name the actual classifier
-   model from the `model:` field of step 4's dispatch — render it
-   literally as `<model>` from that field so the user sees the
-   concrete id in the printed output.
+   model from the `model:` field of step 4's dispatch — render the
+   string verbatim (alias or full model id, whichever step 4
+   specifies) so the printed `<model>` matches the dispatch and the
+   pricing reference below.
 
    **Token estimate.** For each batch:
    - `input_tokens ≈ ceil((1200 + sum(len(s["text"]) + len(s["source"]) + 30 for s in batch)) / 4)`
