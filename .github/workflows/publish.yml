@@ -55,3 +55,26 @@ jobs:
               --latest \
               --verify-tag
           fi
+      - name: Assert release published as Latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Belt-and-suspenders: fail loudly if the previous step succeeded but
+          # the release isn't actually visible as published + Latest. Prevents
+          # a silent regression of #804 (e.g. a future flag rename leaving the
+          # draft in place but exiting 0). isLatest is not a queryable field
+          # on `gh release view`, so we check via two narrow queries against
+          # their canonical sources: `gh release view --json isDraft` and the
+          # `releases/latest` REST endpoint.
+          tag="${GITHUB_REF#refs/tags/}"
+          is_draft=$(gh release view "$tag" --json isDraft -q .isDraft)
+          latest_tag=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name)
+          echo "post-promote state: isDraft=$is_draft latest_tag=$latest_tag (this tag=$tag)"
+          if [ "$is_draft" != "false" ]; then
+            echo "::error::release $tag is still a draft after promote step"
+            exit 1
+          fi
+          if [ "$latest_tag" != "$tag" ]; then
+            echo "::error::release $tag is not flagged as Latest (latest=$latest_tag)"
+            exit 1
+          fi
