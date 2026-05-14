@@ -2409,6 +2409,19 @@ def retrieve_v2(
 
     effective_now_ts = now_ts if now_ts is not None else int(time.time())
 
+    # #759 BFS depth-budget resolver. Fires before retrieve_with_tiers so
+    # the effective max_depth is locked in before the BFS expansion runs.
+    # The explicit clause: only pass the caller's bfs_max_depth when it
+    # deviates from the default — a caller that passes the default
+    # deliberately shouldn't suppress the meta-belief layer.
+    bfs_max_depth = resolve_bfs_depth_budget_with_meta(
+        store,
+        now_ts=effective_now_ts,
+        explicit=(
+            bfs_max_depth if bfs_max_depth != BFS_DEFAULT_MAX_DEPTH else None
+        ),
+    )
+
     retrieve_start = time.perf_counter()
     (
         out,
@@ -2470,6 +2483,31 @@ def retrieve_v2(
                     f"failed: {exc}",
                     file=sys.stderr,
                 )
+
+    # #759 latency-signal update for bfs_depth_budget meta-belief. This
+    # is a SECOND meta-belief update, independent of the #756 half-life
+    # update above. Both fire on every retrieve_v2 call when their
+    # respective flags are on. Same evidence formula and fail-soft
+    # try/except posture as #756: store errors print to stderr and are
+    # swallowed; retrieval must never raise on a meta-belief write failure.
+    if is_meta_belief_bfs_depth_budget_enabled() and retrieve_elapsed > 0.0:
+        try:
+            from aelfrice.meta_beliefs import SIGNAL_LATENCY as _SIGNAL_LATENCY
+            evidence = max(0.0, min(
+                1.0, LATENCY_TARGET_SECONDS / retrieve_elapsed,
+            ))
+            store.update_meta_belief(
+                META_BFS_DEPTH_BUDGET_KEY,
+                _SIGNAL_LATENCY,
+                evidence=evidence,
+                now_ts=effective_now_ts,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(
+                "aelfrice retrieval: meta-belief bfs_depth_budget latency "
+                f"update failed: {exc}",
+                file=sys.stderr,
+            )
 
     compressed: list[CompressedBelief] = []
     if resolve_use_type_aware_compression(use_type_aware_compression):
