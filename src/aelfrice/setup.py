@@ -322,21 +322,24 @@ def _install_event_hook(
 
     Creates `settings_path` (and parent dirs) if missing. Preserves
     every other key in the file. Idempotent: a second call with the
-    same `command` is a no-op and returns `already_present=True`.
+    same `command` is a no-op and returns `already_present=True`. A
+    call whose `command` shares a basename with an existing entry but
+    points at a different absolute path (typical of venv recreation)
+    replaces the existing entry instead of appending — see #781.
     """
     if not command:
         raise ValueError("command must be a non-empty string")
     data = _load_settings(settings_path)
     entries = _get_event_list(data, event_key, create=True)
-    if _find_entry_index(entries, command) is not None:
+    if _install_or_replace_entry(
+        entries,
+        command=command,
+        timeout=timeout,
+        status_message=status_message,
+    ):
         return InstallResult(
             path=settings_path, installed=False, already_present=True
         )
-    entries.append(
-        _build_entry(
-            command=command, timeout=timeout, status_message=status_message
-        )
-    )
     _atomic_write(settings_path, data)
     return InstallResult(
         path=settings_path, installed=True, already_present=False
@@ -504,13 +507,12 @@ def install_transcript_ingest_hooks(
     already: list[str] = []
     for event in TRANSCRIPT_INGEST_EVENTS:
         entries = _get_event_list(data, event, create=True)
-        if _find_entry_index(entries, command) is not None:
+        if _install_or_replace_entry(
+            entries, command=command, timeout=timeout, status_message=None,
+        ):
             already.append(event)
-            continue
-        entries.append(_build_entry(
-            command=command, timeout=timeout, status_message=None,
-        ))
-        installed.append(event)
+        else:
+            installed.append(event)
     if installed:
         _atomic_write(settings_path, data)
     return TranscriptIngestInstallResult(
@@ -603,14 +605,16 @@ def install_commit_ingest_hook(
         raise ValueError("command must be a non-empty string")
     data = _load_settings(settings_path)
     entries = _get_event_list(data, COMMIT_INGEST_EVENT, create=True)
-    if _find_entry_index(entries, command) is not None:
+    if _install_or_replace_entry(
+        entries,
+        command=command,
+        timeout=timeout,
+        status_message=None,
+        matcher=COMMIT_INGEST_MATCHER,
+    ):
         return InstallResult(
             path=settings_path, installed=False, already_present=True,
         )
-    entries.append(_build_entry(
-        command=command, timeout=timeout, status_message=None,
-        matcher=COMMIT_INGEST_MATCHER,
-    ))
     _atomic_write(settings_path, data)
     return InstallResult(
         path=settings_path, installed=True, already_present=False,
@@ -698,14 +702,16 @@ def install_search_tool_hook(
         raise ValueError("command must be a non-empty string")
     data = _load_settings(settings_path)
     entries = _get_event_list(data, SEARCH_TOOL_EVENT, create=True)
-    if _find_entry_index(entries, command) is not None:
+    if _install_or_replace_entry(
+        entries,
+        command=command,
+        timeout=timeout,
+        status_message=None,
+        matcher=SEARCH_TOOL_MATCHER,
+    ):
         return InstallResult(
             path=settings_path, installed=False, already_present=True,
         )
-    entries.append(_build_entry(
-        command=command, timeout=timeout, status_message=None,
-        matcher=SEARCH_TOOL_MATCHER,
-    ))
     _atomic_write(settings_path, data)
     return InstallResult(
         path=settings_path, installed=True, already_present=False,
@@ -775,22 +781,19 @@ def install_search_tool_bash_hook(
         raise ValueError("command must be a non-empty string")
     data = _load_settings(settings_path)
     entries = _get_event_list(data, SEARCH_TOOL_EVENT, create=True)
-    # Idempotency check: look for an existing entry with the same command
-    # AND matcher="Bash". An entry with the same command under Grep|Glob
-    # is a different hook and must not be conflated.
-    already = any(
-        e.get("matcher") == SEARCH_TOOL_BASH_MATCHER
-        and _entry_matches(e, command)
-        for e in entries
-    )
-    if already:
+    # _install_or_replace_entry's matcher-aware dedup keeps this entry
+    # distinct from the Grep|Glob-matcher search-tool entry (same script
+    # basename, different matcher → different hook per the v1.5.0 spec).
+    if _install_or_replace_entry(
+        entries,
+        command=command,
+        timeout=timeout,
+        status_message=None,
+        matcher=SEARCH_TOOL_BASH_MATCHER,
+    ):
         return InstallResult(
             path=settings_path, installed=False, already_present=True,
         )
-    entries.append(_build_entry(
-        command=command, timeout=timeout, status_message=None,
-        matcher=SEARCH_TOOL_BASH_MATCHER,
-    ))
     _atomic_write(settings_path, data)
     return InstallResult(
         path=settings_path, installed=True, already_present=False,
@@ -890,15 +893,15 @@ def install_session_start_hook(
         raise ValueError("command must be a non-empty string")
     data = _load_settings(settings_path)
     entries = _get_event_list(data, SESSION_START_EVENT_KEY, create=True)
-    if _find_entry_index(entries, command) is not None:
+    if _install_or_replace_entry(
+        entries,
+        command=command,
+        timeout=timeout,
+        status_message=status_message,
+    ):
         return InstallResult(
             path=settings_path, installed=False, already_present=True
         )
-    entries.append(
-        _build_entry(
-            command=command, timeout=timeout, status_message=status_message
-        )
-    )
     _atomic_write(settings_path, data)
     return InstallResult(
         path=settings_path, installed=True, already_present=False
@@ -993,15 +996,15 @@ def install_stop_hook(
         raise ValueError("command must be a non-empty string")
     data = _load_settings(settings_path)
     entries = _get_event_list(data, STOP_EVENT_KEY, create=True)
-    if _find_entry_index(entries, command) is not None:
+    if _install_or_replace_entry(
+        entries,
+        command=command,
+        timeout=timeout,
+        status_message=status_message,
+    ):
         return InstallResult(
             path=settings_path, installed=False, already_present=True
         )
-    entries.append(
-        _build_entry(
-            command=command, timeout=timeout, status_message=status_message
-        )
-    )
     _atomic_write(settings_path, data)
     return InstallResult(
         path=settings_path, installed=True, already_present=False
@@ -1447,6 +1450,70 @@ def _entry_matches_basename(
         first = cmd.strip().split(maxsplit=1)[0] if cmd.strip() else ""
         if first and Path(first).name == basename:
             return True
+    return False
+
+
+def _command_basename(command: str) -> str:
+    """Basename of the first whitespace-stripped path token of `command`.
+
+    Mirrors the rule `_entry_matches_basename` applies on the entry side:
+    the program is the first whitespace token, the basename is what we
+    deduplicate against. Returns `""` for an empty / whitespace-only
+    command (callers treat that as "no basename, append").
+    """
+    stripped = command.strip()
+    if not stripped:
+        return ""
+    first = stripped.split(maxsplit=1)[0]
+    return Path(first).name
+
+
+def _install_or_replace_entry(
+    entries: list[dict[str, object]],
+    *,
+    command: str,
+    timeout: int | None,
+    status_message: str | None,
+    matcher: str | None = None,
+) -> bool:
+    """Install or replace a hook entry, deduping by `(matcher, basename)`.
+
+    Mutates `entries` in place. Dedupe key: any existing entry whose
+    `matcher` field matches `matcher` (both None for events without a
+    matcher) AND whose first inner-command basename matches the
+    basename of `command`'s first whitespace token is the same logical
+    hook — even if the absolute path differs.
+
+    Returns True iff `entries` already contained a byte-identical entry
+    and was NOT mutated; caller can skip the atomic write. Returns
+    False iff `entries` was mutated (new entry appended or path-stale
+    entry replaced); caller must atomic-write.
+
+    Replacement (rather than append) collapses the duplicate-hook
+    accumulation #781 documents: a venv recreation (uv tool upgrade,
+    pipx → uv migration, tmpdir scratch install) changes the absolute
+    path but keeps the basename, so the existing entry is found by
+    basename and overwritten instead of an additional stale-path entry
+    being appended.
+    """
+    new_entry = _build_entry(
+        command=command,
+        timeout=timeout,
+        status_message=status_message,
+        matcher=matcher,
+    )
+    target_base = _command_basename(command)
+    if target_base:
+        for i, entry in enumerate(entries):
+            if entry.get("matcher") != matcher:
+                continue
+            if not _entry_matches_basename(entry, target_base):
+                continue
+            if entry == new_entry:
+                return True
+            entries[i] = new_entry
+            return False
+    entries.append(new_entry)
     return False
 
 

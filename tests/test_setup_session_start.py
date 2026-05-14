@@ -102,11 +102,25 @@ def test_uninstall_session_start_does_not_touch_user_prompt_submit(
 
 
 def test_uninstall_session_start_by_basename(tmp_path: Path) -> None:
+    """Uninstall-by-basename clears multiple stacked stale-path entries.
+
+    Pre-existing settings.json files may carry stacked stale-path
+    entries from before the #781 install-dedup fix landed. Write that
+    shape directly here — install_session_start_hook now deduplicates
+    by basename and would collapse the two stale entries on append.
+    """
     p = tmp_path / "settings.json"
-    install_session_start_hook(p, command=_SS_CMD)
-    install_session_start_hook(
-        p, command="/different/path/aelf-session-start-hook"
-    )
+    p.write_text(json.dumps({
+        "hooks": {
+            "SessionStart": [
+                {"hooks": [{"type": "command", "command": _SS_CMD}]},
+                {"hooks": [{
+                    "type": "command",
+                    "command": "/different/path/aelf-session-start-hook",
+                }]},
+            ],
+        },
+    }))
     data = _read(p)
     assert len(data["hooks"]["SessionStart"]) == 2  # type: ignore[index]
     result = uninstall_session_start_hook(

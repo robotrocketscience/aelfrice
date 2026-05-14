@@ -128,11 +128,25 @@ def test_uninstall_stop_hook_basename_does_not_remove_transcript_ingest(
 
 
 def test_uninstall_stop_hook_by_basename(tmp_path: Path) -> None:
+    """Uninstall-by-basename clears multiple stale-path entries.
+
+    Pre-existing settings.json files may carry stacked stale-path
+    entries from before the #781 install-dedup fix landed. Write
+    that shape directly here — install_stop_hook now deduplicates by
+    basename and would collapse the two stale entries on append.
+    """
     p = tmp_path / "settings.json"
-    install_stop_hook(p, command=_STOP_CMD)
-    install_stop_hook(
-        p, command="/different/path/aelf-stop-hook"
-    )
+    p.write_text(json.dumps({
+        "hooks": {
+            "Stop": [
+                {"hooks": [{"type": "command", "command": _STOP_CMD}]},
+                {"hooks": [{
+                    "type": "command",
+                    "command": "/different/path/aelf-stop-hook",
+                }]},
+            ],
+        },
+    }))
     data = _read(p)
     assert len(data["hooks"]["Stop"]) == 2  # type: ignore[index]
     result = uninstall_stop_hook(

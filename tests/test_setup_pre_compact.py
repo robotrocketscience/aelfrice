@@ -104,12 +104,25 @@ def test_uninstall_pre_compact_does_not_touch_user_prompt_submit(
 
 
 def test_uninstall_pre_compact_by_basename(tmp_path: Path) -> None:
-    """Basename match cleans up across abs / bare installs."""
+    """Basename match cleans up across stacked stale-path entries.
+
+    Settings files from before #781's install-dedup landing may carry
+    multiple PreCompact entries with the same basename but different
+    paths (uv/pipx/venv churn). install_pre_compact_hook now collapses
+    those on append, so this test writes the stale shape directly.
+    """
     p = tmp_path / "settings.json"
-    install_pre_compact_hook(p, command=_PC_CMD)
-    install_pre_compact_hook(
-        p, command="/different/path/aelf-pre-compact-hook"
-    )
+    p.write_text(json.dumps({
+        "hooks": {
+            "PreCompact": [
+                {"hooks": [{"type": "command", "command": _PC_CMD}]},
+                {"hooks": [{
+                    "type": "command",
+                    "command": "/different/path/aelf-pre-compact-hook",
+                }]},
+            ],
+        },
+    }))
     data = _read(p)
     assert len(data["hooks"]["PreCompact"]) == 2  # type: ignore[index]
     result = uninstall_pre_compact_hook(

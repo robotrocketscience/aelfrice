@@ -265,15 +265,27 @@ def test_uninstall_rejects_empty_command(tmp_path: Path) -> None:
 def test_uninstall_basename_match_removes_bare_and_absolute(
     tmp_path: Path,
 ) -> None:
-    """Basename mode catches both 'aelf-hook' and any absolute path
-    whose final component is 'aelf-hook' -- which is the round-trip
-    pairing for the new auto-resolving setup."""
+    """Basename mode catches multiple stacked stale-path entries.
+
+    Settings files from before #781's install-dedup landing may carry
+    several UserPromptSubmit entries with the same basename but
+    different paths (uv/pipx/venv churn). install_user_prompt_submit_hook
+    now collapses those on append, so this test writes the stale shape
+    directly.
+    """
     settings = tmp_path / "settings.json"
-    install_user_prompt_submit_hook(settings, command="aelf-hook")
-    install_user_prompt_submit_hook(
-        settings, command="/Users/me/.venv/bin/aelf-hook"
-    )
-    install_user_prompt_submit_hook(settings, command="/keep/me")
+    settings.write_text(json.dumps({
+        "hooks": {
+            "UserPromptSubmit": [
+                {"hooks": [{"type": "command", "command": "aelf-hook"}]},
+                {"hooks": [{
+                    "type": "command",
+                    "command": "/Users/me/.venv/bin/aelf-hook",
+                }]},
+                {"hooks": [{"type": "command", "command": "/keep/me"}]},
+            ],
+        },
+    }))
 
     result = uninstall_user_prompt_submit_hook(
         settings, command_basename="aelf-hook"
