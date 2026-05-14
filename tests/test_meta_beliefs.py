@@ -392,6 +392,38 @@ def test_doctor_meta_beliefs_json_is_parseable(tmp_path, monkeypatch):
     assert any(p["signal_class"] == SIGNAL_RELEVANCE for p in row["posteriors"])
 
 
+def test_install_concurrent_race_returns_false_not_raises(tmp_path):
+    """INSERT OR IGNORE path: second install returns False without raising.
+
+    Simulates the outcome of two concurrent writers where the first write
+    wins.  Single-threaded; exercises the rowcount > 0 return path rather
+    than actual concurrency.
+    """
+    import sqlite3
+    db_path = tmp_path / "race.sqlite"
+    s = MemoryStore(str(db_path))
+    try:
+        first = s.install_meta_belief(
+            "meta:race", static_default=0.5, half_life_seconds=3600,
+            signal_weights={SIGNAL_RELEVANCE: 1.0}, now_ts=1,
+        )
+        assert first is True
+
+        # Second call: row already present — must return False, NOT raise.
+        try:
+            second = s.install_meta_belief(
+                "meta:race", static_default=0.5, half_life_seconds=3600,
+                signal_weights={SIGNAL_RELEVANCE: 1.0}, now_ts=2,
+            )
+        except sqlite3.IntegrityError as exc:
+            raise AssertionError(
+                f"install_meta_belief raised IntegrityError on duplicate key: {exc}"
+            ) from exc
+        assert second is False
+    finally:
+        s.close()
+
+
 def test_doctor_meta_beliefs_empty_store_reports_none(tmp_path, monkeypatch):
     import os
     db_path = tmp_path / "empty.sqlite"
