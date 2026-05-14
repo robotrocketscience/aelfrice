@@ -69,8 +69,9 @@ roundtrip, no extra billing. Falls back to the regex classifier on
    Each wave takes ~30-90 seconds wall-clock — the classifier itself
    is fast, but subagent spawn / queue overhead dominates per-token
    latency. So:
-   `wall_time ≈ ceil(n_batches / 12) * 60s ± 30s`
-   Render as a range, e.g. "~2-4 min" for 46 batches, "~30-60s" for
+   Let `waves = ceil(n_batches / 12)`.
+   `wall_time_range ≈ [waves * 30s, waves * 90s]`
+   Render as a range, e.g. "~2-6 min" for 46 batches, "~30-90s" for
    ≤12 batches.
 
    **Print exactly one block**, in this shape:
