@@ -1047,6 +1047,78 @@ def resolve_bm25f_anchor_weight_with_meta(
     return DEFAULT_ANCHOR_WEIGHT
 
 
+def install_bfs_depth_budget_meta_belief(
+    store: MemoryStore,
+    *,
+    now_ts: int,
+) -> bool:
+    """Idempotent install of the #759 meta-belief on ``store``.
+
+    Returns True on first install, False if the row already exists.
+    Mirrors :func:`install_temporal_half_life_meta_belief`'s contract —
+    existing rows are not overwritten because the surfaced depth budget
+    would silently shift under BFS.
+
+    The install signature pins the v3.x ratified defaults: latency
+    signal only (`bfs_depth` signal deferred to #779 per the same D4
+    split that #756 and #757 followed), 30d posterior decay, cold-start
+    ``value`` = 0.5 which decodes to 2 via :func:`decode_bfs_depth_budget`.
+    """
+    from aelfrice.meta_beliefs import SIGNAL_LATENCY
+    return store.install_meta_belief(
+        META_BFS_DEPTH_BUDGET_KEY,
+        static_default=META_BFS_DEPTH_BUDGET_STATIC_DEFAULT,
+        half_life_seconds=META_BFS_DEPTH_BUDGET_POSTERIOR_DECAY_SECONDS,
+        signal_weights={SIGNAL_LATENCY: 1.0},
+        now_ts=now_ts,
+    )
+
+
+def resolve_bfs_depth_budget_with_meta(
+    store: MemoryStore | None,
+    *,
+    now_ts: int,
+    explicit: int | None = None,
+    start: None = None,  # reserved for future TOML layer; unused by #759 MVP
+) -> int:
+    """Resolve the BFS max-depth knob with meta-belief consultation.
+
+    Returns an ``int`` because ``expand_bfs`` takes ``int max_depth``.
+
+    Precedence (first decisive wins):
+      1. Explicit ``explicit`` kwarg from the caller (positive int) —
+         for the bench harness override path.
+      2. **Meta-belief** (#759) — only when
+         :data:`ENV_META_BELIEF_BFS_DEPTH_BUDGET` resolves truthy AND
+         ``store`` has the meta-belief installed. Decodes the substrate's
+         `[0, 1]` value through :func:`decode_bfs_depth_budget` into
+         the `[1, 6]` band, rounded to int.
+      3. Default: :data:`BFS_DEFAULT_MAX_DEPTH` from
+         ``aelfrice.bfs_multihop``.
+
+    No env-var or TOML override layer — bfs_max_depth has never had a
+    user-facing config knob, so we do not synthesize one. Operators
+    override via explicit kwarg (bench) or meta-belief (production).
+    ``None`` ``store`` collapses to the static default.
+
+    The ``explicit`` clause is so a caller explicitly passing the
+    :data:`BFS_DEFAULT_MAX_DEPTH` default doesn't disable the
+    meta-belief; only a non-default explicit override bypasses the
+    adaptive layer. Callers that do not override should pass
+    ``explicit=bfs_max_depth if bfs_max_depth != BFS_DEFAULT_MAX_DEPTH
+    else None`` so the default falls through to the meta-belief.
+    """
+    if explicit is not None and explicit > 0:
+        return int(explicit)
+    if store is not None and is_meta_belief_bfs_depth_budget_enabled():
+        meta_value = store.read_meta_belief_value(
+            META_BFS_DEPTH_BUDGET_KEY, now_ts=now_ts,
+        )
+        if meta_value is not None:
+            return decode_bfs_depth_budget(meta_value)
+    return BFS_DEFAULT_MAX_DEPTH
+
+
 def _belief_age_seconds(b: Belief, now: datetime) -> float:
     """Seconds between `now` and `b.created_at` (clamped at 0).
 
