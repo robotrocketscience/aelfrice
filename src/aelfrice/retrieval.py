@@ -1089,9 +1089,9 @@ def get_active_meta_belief_consumers() -> list[str]:
 
     Sort order is alphabetical so a determinism-replay test that pins
     env state sees the same column-bytes across runs. #756 half-life,
-    #757 bm25f_anchor_weight, #760 expansion_gate subscribe to signals
-    covered by the sweeper. #759 bfs_depth_budget uses latency-only
-    and is not swept for relevance.
+    #757 bm25f_anchor_weight, #758 posterior_temperature, #760
+    expansion_gate subscribe to signals covered by the sweeper. #759
+    bfs_depth_budget uses latency-only and is not swept for relevance.
     """
     active: list[str] = []
     if is_meta_belief_half_life_enabled():
@@ -1100,6 +1100,8 @@ def get_active_meta_belief_consumers() -> list[str]:
         active.append(META_BM25F_ANCHOR_WEIGHT_KEY)
     if is_meta_belief_expansion_gate_token_threshold_enabled():
         active.append(META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY)
+    if is_meta_belief_posterior_temperature_enabled():
+        active.append(META_POSTERIOR_TEMPERATURE_KEY)
     return sorted(active)
 
 
