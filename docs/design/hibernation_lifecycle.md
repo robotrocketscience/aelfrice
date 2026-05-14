@@ -49,7 +49,8 @@ Three trigger candidates, ordered by how much I trust them:
 
 #### Candidate A — passive decay against retrieval
 
-<!-- TODO(#822 follow-up): example needs rewrite against current hibernation_score-based criteria; see src/aelfrice/store.py::list_hibernated -->
+<!-- TODO(#825): hibernation_lifecycle.md is a design doc for an
+     unimplemented feature; dispose per #825's verdict. -->
 ```
 hibernate IF
     lock_level == LOCK_NONE
