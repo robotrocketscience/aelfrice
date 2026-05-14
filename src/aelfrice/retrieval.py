@@ -98,6 +98,7 @@ from aelfrice.graph_spectral import (
 from aelfrice.models import LOCK_NONE, LOCK_USER, Belief
 from aelfrice.scoring import (
     DEFAULT_POSTERIOR_WEIGHT,
+    gamma_posterior_score,
     partial_bayesian_score,
     posterior_mean,
 )
@@ -2013,6 +2014,7 @@ def _l1_hits(
     bm25f_cache: BM25IndexCache | None = None,
     eigenbasis_cache: GraphEigenbasisCache | None = None,
     heat_kernel_on: bool = False,
+    gamma_temperature: float | None = None,
 ) -> list[Belief]:
     """Run L1: FTS5 BM25 search (default) or BM25F sparse-matvec
     (v1.5.0 opt-in), optionally reranked by partial-Bayesian score.
@@ -2030,6 +2032,17 @@ def _l1_hits(
     when use_bm25f_anchors is False.
 
     `posterior_weight > 0` reranks via `partial_bayesian_score`.
+
+    `gamma_temperature` (v3.x #796): when not None AND `heat_kernel_on`
+    is False (or no eigenbasis is available), the rerank loop swaps
+    `partial_bayesian_score(bm25_raw, α, β, posterior_weight)` for
+    `gamma_posterior_score(bm25_raw, α, β, gamma_temperature)`. At
+    `T = 1.0` γ is byte-identical to `partial_bayesian_score` at
+    `posterior_weight = 1.0`. None falls through to the log-additive
+    path. When `heat_kernel_on` is True and the heat-rerank fires γ is
+    a no-op on this call — the two scoring paths are mutually
+    exclusive by design (the operator decision deferred composition
+    to a later issue).
 
     `heat_kernel_on` (v1.7.0): when True AND `eigenbasis_cache` holds a
     non-stale eigenbasis whose `belief_ids` intersect the L1 hit set,
@@ -2114,7 +2127,15 @@ def _l1_hits(
             if b is None:
                 continue
             beliefs.append((b, raw))
-        if posterior_weight == 0.0 and not heat_active and not hash_n_literals:
+        # γ is opt-in; when set it forces the rerank loop so the
+        # byte-identical short-circuit can't bypass the temperature
+        # reweighting.
+        if (
+            posterior_weight == 0.0
+            and not heat_active
+            and not hash_n_literals
+            and gamma_temperature is None
+        ):
             return [b for b, _ in beliefs]
         # BM25F scores are non-negative; the rerank uses `raw` as the
         # positive-magnitude relevance signal directly (the FTS5 path
@@ -2138,6 +2159,10 @@ def _l1_hits(
                         else DEFAULT_POSTERIOR_LOG_WEIGHT
                     ),
                 )
+            elif gamma_temperature is not None:
+                s = gamma_posterior_score(
+                    -raw, b.alpha, b.beta, gamma_temperature,
+                )
             else:
                 s = partial_bayesian_score(
                     -raw, b.alpha, b.beta, posterior_weight,
@@ -2147,7 +2172,12 @@ def _l1_hits(
         keyed.sort(key=lambda x: (-x[0], x[1]))
         return [b for _, _, b in keyed]
 
-    if posterior_weight == 0.0 and not heat_active and not hash_n_literals:
+    if (
+        posterior_weight == 0.0
+        and not heat_active
+        and not hash_n_literals
+        and gamma_temperature is None
+    ):
         return store.search_beliefs(query, limit=l1_limit)
     scored = store.search_beliefs_scored(query, limit=l1_limit)
     if not scored:
@@ -2172,6 +2202,10 @@ def _l1_hits(
                     posterior_weight if posterior_weight > 0.0
                     else DEFAULT_POSTERIOR_LOG_WEIGHT
                 ),
+            )
+        elif gamma_temperature is not None:
+            s = gamma_posterior_score(
+                bm25_raw, b.alpha, b.beta, gamma_temperature,
             )
         else:
             s = partial_bayesian_score(
@@ -2262,6 +2296,18 @@ def retrieve(
     bm25f_on = resolve_use_bm25f_anchors(use_bm25f_anchors)
     weight = resolve_posterior_weight(posterior_weight)
     heat_on = is_heat_kernel_enabled(heat_kernel_enabled)
+    # #796 γ rerank — resolve once per call so the temperature read
+    # is consistent across BM25F / FTS5 branches and the audit-trail
+    # sees a single store hit. When the flag is off, gamma_t stays
+    # None and `_l1_hits` skips the γ branch entirely (byte-identical
+    # to the log-additive baseline).
+    gamma_on = resolve_use_gamma_posterior_temperature()
+    gamma_t = (
+        resolve_posterior_temperature_with_meta(
+            store, now_ts=int(time.time()),
+        )
+        if gamma_on else None
+    )
     compress_on = resolve_use_type_aware_compression(
         use_type_aware_compression,
     )
@@ -2339,6 +2385,7 @@ def retrieve(
             l1_limit=l1_limit, posterior_weight=weight,
             use_bm25f_anchors=bm25f_on, bm25f_cache=bm25f_cache,
             eigenbasis_cache=eigenbasis_cache, heat_kernel_on=heat_on,
+            gamma_temperature=gamma_t,
         )
         l1 = [
             b for b in raw_l1
@@ -2472,6 +2519,14 @@ def retrieve_with_tiers(
     bm25f_on = resolve_use_bm25f_anchors(use_bm25f_anchors)
     weight = resolve_posterior_weight(posterior_weight)
     heat_on = is_heat_kernel_enabled(heat_kernel_enabled)
+    # #796 γ rerank — same resolution as `retrieve()`.
+    gamma_on = resolve_use_gamma_posterior_temperature()
+    gamma_t = (
+        resolve_posterior_temperature_with_meta(
+            store, now_ts=int(time.time()),
+        )
+        if gamma_on else None
+    )
     # #741 adaptive expansion-gate. Same shape as retrieve(): short-
     # circuit BFS on broad prompts; L0 / L1 / L2.5-entity unaffected.
     # #760: pass store + now_ts for the meta-belief token-threshold
@@ -2542,6 +2597,7 @@ def retrieve_with_tiers(
             l1_limit=l1_limit, posterior_weight=weight,
             use_bm25f_anchors=bm25f_on, bm25f_cache=bm25f_cache,
             eigenbasis_cache=eigenbasis_cache, heat_kernel_on=heat_on,
+            gamma_temperature=gamma_t,
         )
         l1 = [
             b for b in raw_l1
