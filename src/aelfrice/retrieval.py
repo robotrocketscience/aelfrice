@@ -1612,9 +1612,53 @@ def _l1_hits(
         # raw BM25F score in the same `bm25_raw` slot the FTS5 path
         # uses for ``bm25(beliefs_fts)``; see partial_bayesian_score
         # for the log-additive composition.
-        cache = bm25f_cache or BM25IndexCache(store)
+        #
+        # #757 wire-in: when no cache is supplied, resolve the
+        # anchor_weight through the meta-belief consumer; an explicit
+        # caller-supplied cache is honoured as-is (the bench harness
+        # and unit tests pin specific anchor_weights via the cache).
+        if bm25f_cache is None:
+            cache = BM25IndexCache(
+                store,
+                anchor_weight=resolve_bm25f_anchor_weight_with_meta(
+                    store, now_ts=int(time.time()),
+                ),
+            )
+        else:
+            cache = bm25f_cache
         index = cache.get()
         scored_pairs = index.score(query, top_k=l1_limit)
+        # #757 bm25_l0_ratio signal update. Only fires when the
+        # meta-belief feature flag is on; the env check matches the
+        # resolver above so the read/write paths flip together.
+        # update_meta_belief is a no-op when the row isn't installed
+        # (returns False), so this is safe without an explicit
+        # existence check. Fail-soft: a store error here must never
+        # break retrieval — mirrors the #756 latency-signal posture
+        # in retrieve_v2.
+        if is_meta_belief_bm25f_anchor_weight_enabled():
+            try:
+                locked_at_query = list(store.list_locked_beliefs())
+                if locked_at_query:
+                    bm25f_top_ids = {bid for bid, _ in scored_pairs}
+                    hits = sum(
+                        1 for b in locked_at_query
+                        if b.id in bm25f_top_ids
+                    )
+                    evidence = hits / len(locked_at_query)
+                    from aelfrice.meta_beliefs import SIGNAL_BM25_L0_RATIO
+                    store.update_meta_belief(
+                        META_BM25F_ANCHOR_WEIGHT_KEY,
+                        SIGNAL_BM25_L0_RATIO,
+                        evidence=evidence,
+                        now_ts=int(time.time()),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    "aelfrice retrieval: meta-belief bm25_l0_ratio "
+                    f"update failed: {exc}",
+                    file=sys.stderr,
+                )
         beliefs: list[tuple[Belief, float]] = []
         for bid, raw in scored_pairs:
             b = store.get_belief(bid)
