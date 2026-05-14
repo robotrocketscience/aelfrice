@@ -30,7 +30,9 @@ from typing import TYPE_CHECKING, Sequence
 
 from aelfrice.calibration_metrics import (
     CalibrationReport,
+    ordered_top_k_overlap,
     precision_at_k,
+    rank_biased_overlap,
     roc_auc,
     spearman_rho,
 )
@@ -42,11 +44,22 @@ __all__ = (
     "DEFAULT_CALIBRATION_CORPUS",
     "DEFAULT_K",
     "DEFAULT_SEED",
+    "DEFAULT_RBO_PERSISTENCE",
     "load_calibration_fixtures",
     "build_calibration_store",
     "run_calibration_on_fixtures",
     "format_calibration_report",
+    "RankComparisonReport",
+    "compare_ranking_panel",
+    "format_ranking_comparison",
 )
+
+# #796 R4 default — top-weight that gives the top-K meaningful weight
+# without ignoring tail rearrangements. Chosen so a single transposition
+# at rank 1 shifts the score noticeably while a transposition at rank
+# 10 does not. Held in this module so the γ-vs-log-additive A/B bench
+# and any later harness see the same default.
+DEFAULT_RBO_PERSISTENCE: float = 0.9
 
 DEFAULT_CALIBRATION_CORPUS = (
     Path(__file__).resolve().parent.parent.parent
@@ -231,4 +244,94 @@ def format_calibration_report(
     lines.append(f"P@{report.k}:        {report.p_at_k:.4f}")
     lines.append(f"ROC-AUC:      {_format_optional_float(report.roc_auc)}")
     lines.append(f"Spearman ρ:   {_format_optional_float(report.spearman_rho)}")
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# #796 R4 rank-comparison panel
+# ---------------------------------------------------------------------------
+# When comparing two retrieval configurations (γ rerank vs log-additive
+# baseline; bm25 vs bm25f; etc.) on the same query corpus, PR@K and
+# Spearman ρ measure each config independently against the relevance
+# label set. They cannot tell whether the configs produce the same
+# top-K order or merely the same top-K set. The R4 campaign added
+# ``ordered_top_k_overlap`` and ``rank_biased_overlap`` to discriminate
+# top-of-list churn from middle-of-list reorderings; this panel
+# averages those metrics across queries and exposes them in a stable
+# report shape. The γ-vs-log-additive bench harness is the load-
+# bearing consumer.
+
+
+from dataclasses import dataclass  # noqa: E402 — keep grouping with #796 block
+
+
+@dataclass(frozen=True)
+class RankComparisonReport:
+    """Per-query mean of rank-overlap metrics between two retrieval
+    configurations on a shared query set.
+
+    ``ordered_top_k`` is the mean of ``ordered_top_k_overlap(a_i, b_i, k)``
+    across queries. ``rbo`` is the mean of
+    ``rank_biased_overlap(a_i, b_i, p)``. Both are bounded in [0, 1];
+    1.0 means the two configs agree at the measured granularity, 0.0
+    means they disagree completely.
+
+    ``n_queries`` is the number of (a, b) pairs aggregated. Queries
+    where both rankings are empty contribute 1.0 to RBO (vacuous
+    identity) but 0.0 to ordered_top_k (no positions to match).
+    """
+
+    k: int
+    p: float
+    n_queries: int
+    ordered_top_k: float
+    rbo: float
+
+
+def compare_ranking_panel(
+    pairs: Sequence[tuple[Sequence[object], Sequence[object]]],
+    *,
+    k: int = DEFAULT_K,
+    p: float = DEFAULT_RBO_PERSISTENCE,
+) -> RankComparisonReport:
+    """Compute the #796 rank-comparison panel for paired rankings.
+
+    Each pair ``(a_i, b_i)`` is the ranked-id list from configuration A
+    and configuration B on the same query. The two metrics are computed
+    per pair and arithmetic-mean-aggregated across pairs. An empty
+    ``pairs`` list raises ``ValueError`` (no meaningful average).
+    """
+    if not pairs:
+        raise ValueError("pairs must be non-empty")
+    if k <= 0:
+        raise ValueError("k must be positive")
+    otk_vals: list[float] = []
+    rbo_vals: list[float] = []
+    for a, b in pairs:
+        otk_vals.append(ordered_top_k_overlap(a, b, k))
+        rbo_vals.append(rank_biased_overlap(a, b, p=p))
+    return RankComparisonReport(
+        k=k,
+        p=p,
+        n_queries=len(pairs),
+        ordered_top_k=sum(otk_vals) / len(otk_vals),
+        rbo=sum(rbo_vals) / len(rbo_vals),
+    )
+
+
+def format_ranking_comparison(report: RankComparisonReport) -> str:
+    """Format a ``RankComparisonReport`` as a deterministic text block.
+
+    Mirrors ``format_calibration_report``'s shape so the two panels
+    sit cleanly side-by-side in a combined bench run.
+    """
+    lines = [
+        "rank-comparison panel — γ vs log-additive (#796 R4)",
+        f"  n_queries:    {report.n_queries}",
+        f"  k:            {report.k}",
+        f"  p:            {report.p:.4f}",
+        "",
+        f"ordered_top_k@{report.k}:  {report.ordered_top_k:.4f}",
+        f"RBO(p={report.p:.2f}):      {report.rbo:.4f}",
+    ]
     return "\n".join(lines) + "\n"
