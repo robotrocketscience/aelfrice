@@ -12,7 +12,7 @@ How to cut a new version. Maintainer reference.
 1. Branch `release/vX.Y.Z` off `main`.
 2. Bump `pyproject.toml` `version`. (Single source of truth — no `__version__` in code.)
 3. `uv lock`.
-4. Move `[Unreleased]` CHANGELOG entries into `[X.Y.Z] — YYYY-MM-DD`. Add link footnote.
+4. In `CHANGELOG/v<major>.md` (e.g. `CHANGELOG/v3.md` for any v3.x release), move `[Unreleased]` entries into `[X.Y.Z] — YYYY-MM-DD`. Add the compare-link footnote at the bottom of the same file. Top-level `CHANGELOG.md` is a thin index; do not edit it for routine releases. A new major (`vN+1.0.0`) needs a new `CHANGELOG/v<N+1>.md` and a row added to the index.
 5. Update README roadmap status.
 6. Run locally:
    ```bash
@@ -55,7 +55,7 @@ Clean tool-install in a scratch venv proves the wheel is functional. Compare CLI
 
 ```bash
 git switch -c release/vX.Y.Z+1 vX.Y.Z
-# fix → bump → lock → CHANGELOG → PR → gate → merge → tag
+# fix → bump → lock → CHANGELOG/vN.md → PR → gate → merge → tag
 ```
 
 If `main` has moved on incompatibly, cherry-pick instead.

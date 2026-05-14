@@ -150,13 +150,21 @@ jobs:
           fi
           echo "Release PR detected: ${base_ver} -> ${head_ver}"
           fail=0
-          if ! grep -qE "^## \[${head_ver}\]" CHANGELOG.md; then
-            echo "::error file=CHANGELOG.md::Missing '## [${head_ver}]' section. Move [Unreleased] entries into a dated [${head_ver}] block."
+          # CHANGELOG.md is a thin index; per-major release content lives in CHANGELOG/vN.md
+          major="${head_ver%%.*}"
+          changelog_file="CHANGELOG/v${major}.md"
+          if [ ! -f "$changelog_file" ]; then
+            echo "::error file=CHANGELOG.md::Missing ${changelog_file} for v${head_ver}. Create it and add the [${head_ver}] section there."
             fail=1
-          fi
-          if ! grep -qE "^\[${head_ver}\]:\s*https://github.com/" CHANGELOG.md; then
-            echo "::error file=CHANGELOG.md::Missing compare-link footnote '[${head_ver}]: https://github.com/...' near bottom of file."
-            fail=1
+          else
+            if ! grep -qE "^## \[${head_ver}\]" "$changelog_file"; then
+              echo "::error file=${changelog_file}::Missing '## [${head_ver}]' section. Move [Unreleased] entries into a dated [${head_ver}] block in this file."
+              fail=1
+            fi
+            if ! grep -qE "^\[${head_ver}\]:\s*https://github.com/" "$changelog_file"; then
+              echo "::error file=${changelog_file}::Missing compare-link footnote '[${head_ver}]: https://github.com/...' near bottom of this file."
+              fail=1
+            fi
           fi
           if grep -qE "v?${head_ver}\s*\|\s*(next|planned)\b" README.md; then
             echo "::error file=README.md::Roadmap row for v${head_ver} still says 'next' or 'planned'. Flip status to 'shipped' before cutting the release."

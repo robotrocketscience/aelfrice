@@ -46,7 +46,7 @@ jobs:
 
           ## What CI already verified (do not re-check)
 
-          - \`CHANGELOG.md\` has a \`## [${version}]\` section with a compare-link footnote
+          - \`CHANGELOG/v\${version%%.*}.md\` has a \`## [${version}]\` section with a compare-link footnote
           - \`README.md\` roadmap row for v${version} is no longer marked \`next\` or \`planned\`
 
           Close this issue when the sweep is done, or convert remaining items into a tracked PR.
