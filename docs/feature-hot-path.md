@@ -63,11 +63,14 @@ hook:
    fire_idx=next_fire_idx - 1, ...)`. The fire_idx the touches receive
    is the same one the ring just assigned, so the JSON ring and the
    sidecar share a counter.
-3. Inside `_record_touches`, before the current writes land, the JSON
-   ring is read once and any existing entries for `session_id` are
-   migrated via `record_touch` at their original `fire_idx`. This
-   one-shot per-session migration ensures beliefs touched before this
-   PR shipped become visible to the table.
+3. Inside `_record_touches`, the supplied `injected_ids` are each
+   recorded via `record_touch`. The hook is **forward-only** — it does
+   NOT read the JSON ring or backfill pre-substrate entries. An earlier
+   revision tried a one-shot per-session migration off the JSON ring,
+   but `record_touch` uses `ON CONFLICT DO UPDATE` so the replay was
+   non-idempotent: every UPS fire re-bumped `touch_count` on every ring
+   entry. The migration is gone; ring entries that predate this table
+   are simply not represented in `belief_touches`.
 
 `record_touch` upserts: a new (belief, session) pair inserts with
 `touch_count=1` and the supplied `event_kind` bit set; an existing
@@ -167,6 +170,6 @@ re-measurement, not by config knob.
 - [#748](https://github.com/robotrocketscience/aelfrice/issues/748) — R&D campaign tracker (closes once consumer ships and H3 reports).
 - [#816](https://github.com/robotrocketscience/aelfrice/issues/816) — this storage substrate.
 - [#779](https://github.com/robotrocketscience/aelfrice/issues/779) — `injection_events` sibling.
-- [#744](https://github.com/robotrocketscience/aelfrice/issues/744) / [#740](https://github.com/robotrocketscience/aelfrice/issues/740) — JSON injection ring (predecessor; v1 reads-and-migrates).
+- [#744](https://github.com/robotrocketscience/aelfrice/issues/744) / [#740](https://github.com/robotrocketscience/aelfrice/issues/740) — JSON injection ring (predecessor; v1 shares its `fire_idx` counter but does NOT migrate ring entries — forward-only).
 - [#605](https://github.com/robotrocketscience/aelfrice/issues/605) — locked PHILOSOPHY (determinism, narrow surface).
 - [#661](https://github.com/robotrocketscience/aelfrice/issues/661) — locked federation decision.

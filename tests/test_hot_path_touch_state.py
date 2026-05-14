@@ -236,22 +236,41 @@ def test_fk_cascade_on_belief_delete(tmp_path: Path) -> None:
 # --------------------------- hook integration -------------------------
 
 
-def test_record_touches_writes_and_migrates_ring(
+def _read_touch_rows(db: Path, session_id: str) -> dict[str, tuple[int, int]]:
+    s = MemoryStore(str(db))
+    try:
+        return {
+            str(r["belief_id"]): (int(r["last_fire_idx"]), int(r["touch_count"]))
+            for r in s._conn.execute(
+                "SELECT belief_id, last_fire_idx, touch_count "
+                "FROM belief_touches WHERE session_id=?",
+                (session_id,),
+            ).fetchall()
+        }
+    finally:
+        s.close()
+
+
+def test_record_touches_writes_current_turn_only_no_ring_backfill(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`_record_touches` should write current touches AND migrate the
-    #744 JSON ring's prior entries via INSERT-or-update.
+    """Forward-only contract — pre-substrate JSON-ring entries are NOT
+    backfilled into ``belief_touches``. Only the current turn's
+    ``belief_ids`` land.
+
+    Regression guard for the dropped one-shot migration: a prior
+    implementation re-read the ring on every UPS fire and replayed
+    every entry through ``record_touch``, which uses ON CONFLICT DO
+    UPDATE (touch_count = touch_count + 1) — so the replay was
+    non-idempotent. The replay is gone; this test pins the new
+    contract.
     """
     from aelfrice import hook, session_ring
 
     db = tmp_path / "memory.db"
     monkeypatch.setattr(hook, "db_path", lambda: db)
     monkeypatch.setattr(session_ring, "db_path", lambda: db)
-    # Initialize the store with beliefs for every id the migration +
-    # current writes reference. Production FK enforcement is on and
-    # the migration code path tolerates stale ids by skipping them;
-    # this test exercises the happy path where the beliefs still
-    # exist.
+
     s = MemoryStore(str(db))
     for bid in ("old1", "old2", "new1", "new2"):
         s.insert_belief(_new_belief(bid))
@@ -277,22 +296,66 @@ def test_record_touches_writes_and_migrates_ring(
         fire_idx=4,
     )
 
-    s = MemoryStore(str(db))
-    rows = {
-        str(r["belief_id"]): (int(r["last_fire_idx"]), int(r["touch_count"]))
-        for r in s._conn.execute(
-            "SELECT belief_id, last_fire_idx, touch_count FROM belief_touches "
-            "WHERE session_id=?",
-            ("S",),
-        ).fetchall()
-    }
-    s.close()
-    # Migration backfilled old1/old2 at their ring fire_idx.
-    assert rows["old1"] == (2, 1), rows
-    assert rows["old2"] == (3, 1), rows
-    # Current touches landed at fire_idx=4.
+    rows = _read_touch_rows(db, "S")
+    # old1/old2 were in the ring but are NOT backfilled — forward-only.
+    assert "old1" not in rows, rows
+    assert "old2" not in rows, rows
+    # Current touches landed at fire_idx=4 with touch_count=1.
     assert rows["new1"] == (4, 1), rows
     assert rows["new2"] == (4, 1), rows
+
+
+def test_record_touches_count_matches_actual_inject_count_across_fires(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``touch_count`` increments once per UPS fire that actually injects
+    the belief — not once per ring entry.
+
+    Regression for the pre-fix bug (reviews on PR #821, 2026-05-14):
+    every UPS fire walked the entire JSON ring and called
+    ``record_touch`` for every entry, so a belief sitting in the ring
+    got ``touch_count`` bumped on every fire regardless of whether it
+    was in the current injection set; current-turn beliefs got bumped
+    twice (once via ring replay, once via the explicit current loop).
+
+    Mimics the production caller in
+    ``hook.py:_record_touches`` call site: ``append_ids`` first, then
+    ``_record_touches`` with ``fire_idx=_next_fire - 1``.
+    """
+    from aelfrice import hook, session_ring
+    from aelfrice.session_ring import append_ids
+
+    db = tmp_path / "memory.db"
+    monkeypatch.setattr(hook, "db_path", lambda: db)
+    monkeypatch.setattr(session_ring, "db_path", lambda: db)
+
+    s = MemoryStore(str(db))
+    for bid in ("b1", "b2"):
+        s.insert_belief(_new_belief(bid))
+    s.close()
+
+    # Three UPS fires, modeling the production sequence:
+    #   append_ids(...)  → returns next_fire_idx
+    #   _record_touches(fire_idx=next_fire - 1)
+    # Injection pattern: [b1], [b2], [b1].
+    for ids in (["b1"], ["b2"], ["b1"]):
+        next_fire = append_ids("S", ids, locked_ids=set())
+        assert next_fire >= 1
+        hook._record_touches(
+            session_id="S",
+            belief_ids=ids,
+            fire_idx=next_fire - 1,
+        )
+
+    rows = _read_touch_rows(db, "S")
+    # b1 was actually injected twice → touch_count=2; last_fire_idx is
+    # the slot of the third (final) fire.
+    assert rows["b1"][1] == 2, rows
+    # b2 was injected once → touch_count=1.
+    assert rows["b2"][1] == 1, rows
+    # last_fire_idx monotonicity: b1's last touch is at the latest fire,
+    # which is strictly greater than b2's.
+    assert rows["b1"][0] > rows["b2"][0], rows
 
 
 def test_record_touches_fail_soft_on_missing_db(

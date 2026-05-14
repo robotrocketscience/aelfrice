@@ -1199,13 +1199,15 @@ def _record_touches(
     opportunistic substrate; a write failure must not break the
     hook's user-visible context-injection contract.
 
-    Also performs a one-shot per-session migration of the #744 JSON
-    injection ring into ``belief_touches`` — every ring entry for
-    ``session_id`` is INSERT-OR-IGNORE'd with its original
-    ``fire_idx`` and INJECTION bit set, so beliefs touched before the
-    sidecar shipped become visible to the table without a separate
-    migration pass. Idempotent: subsequent calls see the rows already
-    exist and the INSERT no-ops.
+    Forward-only: this writes the current turn's injection set only.
+    Pre-substrate ring entries (#744 JSON ring rows that predate this
+    sidecar) are NOT backfilled. A prior implementation tried to
+    "migrate" the ring on every UPS fire, but ``record_touch`` uses
+    ``ON CONFLICT DO UPDATE`` (touch_count = touch_count + 1), so the
+    replay was non-idempotent: every UPS fire re-bumped ``touch_count``
+    on every ring entry. v1 has no consumer reading ``touch_count``,
+    so the bug was latent; v2 rerank correctness depends on the
+    counter being one-per-actual-touch, so the replay is gone.
     """
     serr = stderr if stderr is not None else sys.stderr
     if not session_id or not belief_ids or fire_idx < 0:
@@ -1214,52 +1216,12 @@ def _record_touches(
         from aelfrice.hot_path import (  # noqa: PLC0415
             TOUCH_EVENT_KIND_INJECTION,
         )
-        from aelfrice.session_ring import (  # noqa: PLC0415
-            read_ring_state,
-        )
         p = db_path()
         if str(p) == ":memory:":
             return
         store = MemoryStore(str(p))
         try:
-            # #744 → belief_touches one-shot migration. Idempotent via
-            # the ON CONFLICT DO UPDATE in record_touch — re-running
-            # against an already-migrated row just refreshes the
-            # last_fire_idx and bumps touch_count, which is wrong on a
-            # *migration* call but right on a *current* call. To keep
-            # the migration distinct from the current write, we issue
-            # one record_touch per ring entry *before* the current
-            # touches, so the current writes are the last to land and
-            # the row reflects the most-recent fire_idx.
-            ring_state = read_ring_state(session_id)
-            if isinstance(ring_state, dict):
-                ring_list = ring_state.get("ring")
-                if isinstance(ring_list, list):
-                    for entry in ring_list:
-                        if not isinstance(entry, dict):
-                            continue
-                        rid = entry.get("id")
-                        rfire = entry.get("fire_idx")
-                        if (
-                            not isinstance(rid, str) or not rid
-                            or not isinstance(rfire, int) or rfire < 0
-                        ):
-                            continue
-                        # Per-row tolerance — ring entries may point
-                        # at beliefs that have since been deleted
-                        # (FK to beliefs is enforced in prod). Skip
-                        # those without poisoning the rest of the
-                        # migration.
-                        try:
-                            store.record_touch(
-                                belief_id=rid,
-                                session_id=session_id,
-                                fire_idx=rfire,
-                                event_kind=TOUCH_EVENT_KIND_INJECTION,
-                            )
-                        except Exception:
-                            continue
-            # Current turn's injection set.
+            # Current turn's injection set — forward-only, no ring replay.
             for bid in belief_ids:
                 if not bid:
                     continue
