@@ -794,8 +794,9 @@ def maybe_migrate_to_uv(
         return MigrationResult(
             False,
             False,
-            "uv not on PATH — install uv from https://docs.astral.sh/uv/ "
-            "then re-run /aelf:upgrade",
+            "uv not on PATH — install with `curl -LsSf "
+            "https://astral.sh/uv/install.sh | sh` or `brew install uv` "
+            "(see https://docs.astral.sh/uv/), then re-run /aelf:upgrade",
         )
     try:
         proc = subprocess.run(
