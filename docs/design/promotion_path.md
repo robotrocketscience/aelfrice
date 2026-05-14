@@ -32,7 +32,6 @@ with these fields relevant to provenance:
 | `type` | `str` | One of `factual`, `correction`, `preference`, `requirement`. Not a provenance signal. |
 | `lock_level` | `str` | `none` or `user`. Two-valued. |
 | `locked_at` | `str \| None` | Set when `lock_level == LOCK_USER`. |
-| `demotion_pressure` | `int` | Counter on locks, irrelevant to non-locked. |
 
 There is **no `origin` field**. The contradiction tie-breaker
 ([`src/aelfrice/contradiction.py:30-42`](../src/aelfrice/contradiction.py))
@@ -72,8 +71,7 @@ v1.0.x scanner did not commit to that label and we don't want to
 retroactively claim it. Beliefs that should be `agent_inferred`
 will be re-marked when v1.2.0 reruns onboard against v1.1.0+ stores.
 
-TBD: whether `unknown` rows surface in `aelf locked --pressured`-style
-listings as a separate category. Not load-bearing for promotion.
+TBD: whether `unknown` rows surface in separate listings. Not load-bearing for promotion.
 
 ### What promotion does not do
 
@@ -177,14 +175,10 @@ provided new evidence; they have provided a label.
 ### Why not C (apply_feedback)
 
 `apply_feedback` rejects zero valence
-([`feedback.py:135-136`](../src/aelfrice/feedback.py)) and triggers
-the demotion-pressure walk on positive valence
-([`feedback.py:160-165`](../src/aelfrice/feedback.py)). Using it
-as the promotion path would mean: validating a belief that
-contradicts a user-locked belief would pressure-walk the lock.
-That couples promotion semantics to the contradiction graph, which
-is precisely what we don't want — promotion is about the belief
-itself, not its neighbourhood.
+([`feedback.py:135-136`](../src/aelfrice/feedback.py)). Using it
+as the promotion path would couple promotion semantics to the
+feedback math, which is precisely what we don't want — promotion
+is a provenance label, not an evidence event.
 
 C is also irreversible-in-place. To "undo" you'd `apply_feedback`
 with negative valence, but the audit log then shows two real
@@ -196,10 +190,9 @@ both as evidence rather than as one provenance flip and one undo.
 ### Why not A
 
 A makes promotion a **stronger** floor than is actually warranted.
-A promoted belief that turns out wrong takes 5 contradictions to
-auto-demote ([`feedback.py:26`](../src/aelfrice/feedback.py)) — the
-same as a real lock. The point of having a tier between
-`agent_inferred` and `user_stated` is that the floor is **softer**.
+Setting α=9.0, β=0.5 on a validated belief puts it on equal footing
+with a real lock. The point of having a tier between `agent_inferred`
+and `user_stated` is that the floor is **softer**.
 
 ### Audit row regardless
 
@@ -315,10 +308,7 @@ also flip `origin=user_validated` → `agent_inferred` when
 | `lock_level=none, origin=agent_inferred` | prints "belief is not locked", no-op | unchanged |
 | `lock_level=user, origin=user_validated` | → `lock_level=none`, `origin` untouched | → `lock_level=none`, `origin` stays `user_validated` (one tier per `demote` call) |
 
-One tier per `demote` call. Same as how
-[`feedback._pressure_and_maybe_demote`](../src/aelfrice/feedback.py)
-demotes one tier at a time even if pressure thresholds were already
-crossed.
+One tier per `demote` call.
 
 ### Alternative: separate `aelf devalidate` command
 
@@ -559,14 +549,6 @@ Marked `TBD` for items that need implementation feedback to settle.
   Confirm during v1.2.0 implementation.
 - **TBD: exit code for the data-inconsistency case** (origin already
   `user_stated` without lock). Lean toward 1; arguable for 2.
-- **TBD: validation gives access to a softer auto-demote threshold?**
-  The locked-belief auto-demote at `DEMOTION_THRESHOLD=5`
-  ([`feedback.py:26`](../src/aelfrice/feedback.py)) is calibrated for
-  locks. `user_validated` beliefs aren't locked, so the threshold
-  doesn't apply today. Future question: should `user_validated`
-  beliefs accumulate their own (lower) demotion pressure? Out of
-  scope for v1.2.0; flagged for v1.3+ once feedback-into-ranking
-  data exists.
 - **TBD: interaction with [LIMITATIONS.md § harness conflict](../user/LIMITATIONS.md#harness-conflict--claude-code-auto-memory-write-path).**
   At v1.2.0 the MCP write path is documented but not canonical. Does
   `aelf:validate` offer the user a path to graduate harness-side

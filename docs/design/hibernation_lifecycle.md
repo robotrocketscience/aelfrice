@@ -28,8 +28,8 @@ Three open questions:
 
 - **Trigger:** scheduled doctor-pass sweep, not online. Score is
   `1.0 - posterior_mean(α, β)` clamped to `[0, 1]`, written only when
-  `last_retrieved_at` is older than 30 days *and* `demotion_pressure
-  >= 1` *and* `lock_level == LOCK_NONE`. NULL otherwise.
+  `last_retrieved_at` is older than 30 days *and*
+  `lock_level == LOCK_NONE`. NULL otherwise.
 - **Activation condition grammar:** narrow, declarative JSON object
   with three optional clauses — `keywords_any`, `source_kind`, and
   `after_ts`. All clauses combine with implicit AND. No nesting, no
@@ -49,29 +49,28 @@ Three trigger candidates, ordered by how much I trust them:
 
 #### Candidate A — passive decay against retrieval
 
+<!-- TODO(#822 follow-up): example needs rewrite against current hibernation_score-based criteria; see src/aelfrice/store.py::list_hibernated -->
 ```
 hibernate IF
     lock_level == LOCK_NONE
 AND last_retrieved_at IS NOT NULL
 AND last_retrieved_at < now - 30 days
-AND demotion_pressure >= 1
 AND posterior_mean(α, β) < 0.6
 ```
 
 `hibernation_score = 1.0 - posterior_mean(α, β)`. Beliefs that meet
-all four predicates simultaneously have: been around long enough to
+all three predicates simultaneously have: been around long enough to
 be retrievable (have a `last_retrieved_at`), gone unconsulted long
-enough to be cold, accumulated some explicit demotion signal, and
-have a posterior that doesn't strongly endorse them. The 30-day
-window matches `feedback_history` retention semantics.
+enough to be cold, and have a posterior that doesn't strongly endorse
+them. The 30-day window matches `feedback_history` retention semantics.
 
 **Why this and not the others:**
 
 - *Pure age* hibernates beliefs that were correct-and-quiet
   (the user just hasn't talked about them).
-- *Pure demotion_pressure* hibernates beliefs that the user actively
-  marked wrong — but those should be *deleted* via the existing
-  feedback path, not soft-suspended.
+- *Pure negative-feedback* hibernates beliefs the user actively
+  marked wrong via `harmful` — but those should be *deleted* via the
+  existing feedback path, not soft-suspended.
 - *Pure low-posterior* hibernates beliefs the system never had
   evidence for — but new beliefs start at α=β=1.0 (posterior 0.5),
   so this would hibernate brand-new beliefs.
