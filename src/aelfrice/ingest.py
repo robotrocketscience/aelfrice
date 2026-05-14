@@ -17,6 +17,7 @@ structure is recoverable downstream by the v1.4.0 context rebuilder.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +35,55 @@ from aelfrice.models import (
     Edge,
 )
 from aelfrice.store import MemoryStore
+
+# #809 / #785 § 3: pattern-based subfloor-noise detector.
+#
+# `retrieval-corpus-bloat` R0/R2 (lab campaign, 2026-05-11) attributed
+# 19% of short-reinforced beliefs in the alpha+beta >= 10 stratum to
+# three specific prose-fragment classes that the sentence splitter
+# emits as freestanding sentences but that carry no semantic claim:
+# code-fence boundaries (` ```bash`, `` ``` ``), header stubs (lines
+# ending with `:` — "Acceptance criteria:", "Pipeline composition, in
+# order of evidence:"), and bullet stubs (`- run tests`, `* foo`).
+#
+# These patterns are filtered at the ingest boundary: a matched
+# sentence does not become a freestanding belief row. When it sits
+# between two full-length-belief sentences within the same turn, the
+# clause attaches as `anchor_text` on an intra-turn DERIVED_FROM edge,
+# preserving relational meaning without inflating the belief-row
+# count. Unanchored matches (no surrounding full-length belief in the
+# same turn) are silently dropped.
+#
+# Pattern-based rather than length-based per the operator-ratified
+# scope for #809: a strict length floor (spec literal: 80 chars) drops
+# legitimate short factual claims ("The config file lives at
+# /etc/aelf.") alongside the noise, breaking the conservative ingest
+# contract that the existing test suite encodes. Pattern-matching
+# closes only the named noise classes; legit short claims survive.
+#
+# Acknowledged false-positive risk: "ends with `:`" can fire on real
+# prose ("He said:", "The reasons are these:"). The lab campaign
+# named this pattern explicitly; trade-off accepted at empirical
+# scope. Re-measure if production data surfaces a non-trivial miss
+# rate.
+_SUBFLOOR_BULLET_PREFIX = re.compile(r"^[-*+]\s")
+
+
+def _looks_like_subfloor_noise(sentence: str) -> bool:
+    """True when `sentence` matches one of the named noise patterns
+    from `retrieval-corpus-bloat` R2: code-fence boundary, header stub
+    ending in `:`, or markdown bullet stub. See module docstring for
+    rationale and false-positive scope."""
+    stripped = sentence.strip()
+    if not stripped:
+        return False
+    if stripped.startswith("```"):
+        return True
+    if stripped.endswith(":"):
+        return True
+    if _SUBFLOOR_BULLET_PREFIX.match(stripped):
+        return True
+    return False
 
 
 def _now_utc_iso() -> str:
@@ -116,10 +166,39 @@ def _ingest_turn_ids(
     list is the per-sentence derived belief id (in input order, with
     duplicates dropped) — `ingest_jsonl` uses the last entry to wire
     DERIVED_FROM edges between consecutive turns within a session.
+
+    #809 adds a pattern-based subfloor filter: sentences matching
+    `_looks_like_subfloor_noise` (code-fence prefix, header ending in
+    `:`, bullet stub) do not become belief rows. When a sub-floor
+    sentence sits between two full-length-belief sentences in the
+    same turn, it attaches as `anchor_text` on an intra-turn
+    DERIVED_FROM edge between the surrounding beliefs; unanchored
+    sub-floor sentences are silently dropped.
     """
     sentences = extract_sentences(text)
     sentences = [s for s in sentences if not is_transcript_noise(s)]
     if not sentences:
+        return []
+
+    # #809: partition sentences into full-length belief candidates and
+    # sub-floor clauses pending demotion to edge anchor_text. The
+    # `subfloor_between[i]` list holds sub-floor clauses (in original
+    # order) that preceded `full_sentences[i]`; entries before the
+    # first full sentence and after the last full sentence are
+    # unanchored and silently dropped.
+    full_sentences: list[str] = []
+    subfloor_between: list[list[str]] = []
+    pending_subfloor: list[str] = []
+    for sentence in sentences:
+        if _looks_like_subfloor_noise(sentence):
+            pending_subfloor.append(sentence)
+        else:
+            full_sentences.append(sentence)
+            subfloor_between.append(pending_subfloor)
+            pending_subfloor = []
+    # Anything left in pending_subfloor has no following full sentence —
+    # unanchored, silently dropped.
+    if not full_sentences:
         return []
 
     ts = created_at or _now_utc_iso()
@@ -130,7 +209,7 @@ def _ingest_turn_ids(
     ids_before: set[str] = set(store.list_belief_ids())
 
     log_ids: list[str] = []
-    for sentence in sentences:
+    for sentence in full_sentences:
         log_id = store.record_ingest(
             source_kind=INGEST_SOURCE_FILESYSTEM,
             source_path=source,
@@ -145,20 +224,51 @@ def _ingest_turn_ids(
     # at end-of-turn is the per-batch invocation pattern from the spec.
     run_worker(store)
 
+    # Resolve each log_id to its canonical belief id once, in input
+    # order. Used twice: (a) for the public return value (newly
+    # inserted beliefs, deduped), (b) for the #809 intra-turn edge
+    # wiring below (per-sentence belief id, position-preserving).
+    log_belief_ids: list[str | None] = []
     inserted: list[str] = []
     seen: set[str] = set()
     for log_id in log_ids:
         entry = store.get_ingest_log_entry(log_id)
-        if entry is None:
+        bid: str | None = None
+        if entry is not None:
+            ids = entry.get("derived_belief_ids") or []
+            if isinstance(ids, list) and ids:
+                head = ids[0]
+                if isinstance(head, str):
+                    bid = head
+        log_belief_ids.append(bid)
+        if bid is not None and bid not in ids_before and bid not in seen:
+            seen.add(bid)
+            inserted.append(bid)
+
+    # #809: wire intra-turn DERIVED_FROM edges between consecutive
+    # full-length beliefs whose original-prose ordering was separated
+    # by one or more sub-floor clauses. Edge direction matches the
+    # inter-turn DERIVED_FROM convention in `ingest_jsonl` (src is the
+    # later belief, dst is the earlier one — "this is derived from
+    # that earlier one"). Anchor_text is the joined sub-floor clauses,
+    # truncated to ANCHOR_TEXT_MAX_LEN.
+    for i in range(1, len(log_belief_ids)):
+        between = subfloor_between[i]
+        if not between:
             continue
-        ids = entry.get("derived_belief_ids") or []
-        if not isinstance(ids, list):
+        prior_bid = log_belief_ids[i - 1]
+        curr_bid = log_belief_ids[i]
+        if prior_bid is None or curr_bid is None or prior_bid == curr_bid:
             continue
-        for bid in ids:
-            if (isinstance(bid, str) and bid not in ids_before
-                    and bid not in seen):
-                seen.add(bid)
-                inserted.append(bid)
+        anchor = " | ".join(between)[:ANCHOR_TEXT_MAX_LEN]
+        if store.get_edge(curr_bid, prior_bid, EDGE_DERIVED_FROM) is not None:
+            continue
+        store.insert_edge(Edge(
+            src=curr_bid, dst=prior_bid,
+            type=EDGE_DERIVED_FROM, weight=1.0,
+            anchor_text=anchor,
+        ))
+
     return inserted
 
 
