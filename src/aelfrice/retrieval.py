@@ -758,6 +758,77 @@ def resolve_temporal_half_life(
     return DEFAULT_TEMPORAL_HALF_LIFE_SECONDS
 
 
+def install_temporal_half_life_meta_belief(
+    store: MemoryStore,
+    *,
+    now_ts: int,
+) -> bool:
+    """Idempotent install of the #756 meta-belief on ``store``.
+
+    Returns True on first install, False if the row already exists.
+    Mirrors :func:`store.MemoryStore.install_meta_belief`'s idempotency
+    contract — existing rows are not overwritten because the surfaced
+    value would silently shift under retrieval consumers.
+
+    The install signature pins the v3.x ratified defaults: latency
+    signal only (relevance deferred to #779 per D4), 30d posterior
+    decay (slower than the surfaced half-life's own [3d, 14d] band),
+    cold-start ``value`` ≈ 6.5d via :func:`decode_meta_half_life` on
+    the 0.5 static default.
+    """
+    from aelfrice.meta_beliefs import SIGNAL_LATENCY
+    return store.install_meta_belief(
+        META_HALF_LIFE_KEY,
+        static_default=META_HALF_LIFE_STATIC_DEFAULT,
+        half_life_seconds=META_HALF_LIFE_POSTERIOR_DECAY_SECONDS,
+        signal_weights={SIGNAL_LATENCY: 1.0},
+        now_ts=now_ts,
+    )
+
+
+def resolve_temporal_half_life_with_meta(
+    store: MemoryStore | None,
+    *,
+    now_ts: int,
+    explicit: float | None = None,
+    start: Path | None = None,
+) -> float:
+    """Meta-aware variant of :func:`resolve_temporal_half_life`.
+
+    Precedence (first decisive wins):
+      1. AELFRICE_TEMPORAL_HALF_LIFE_SECONDS env var (positive float).
+      2. Explicit ``explicit`` kwarg from the caller.
+      3. ``[retrieval] temporal_half_life_seconds`` in `.aelfrice.toml`.
+      4. **Meta-belief** (#756) — only when :data:`ENV_META_BELIEF_HALF_LIFE`
+         resolves truthy AND ``store`` has the meta-belief installed.
+         Decodes the substrate's `[0, 1]` value through
+         :func:`decode_meta_half_life` into the `[3d, 14d]` band.
+      5. Default: :data:`DEFAULT_TEMPORAL_HALF_LIFE_SECONDS` (7 days).
+
+    The meta-belief precedence sits *below* the explicit-config layers
+    on purpose: an operator setting the env var or TOML key is an
+    intentional override that should bypass the adaptive layer.
+    Without that ordering, the meta-belief would compete with explicit
+    operator intent. ``None`` ``store`` collapses to the static
+    :func:`resolve_temporal_half_life` chain unchanged.
+    """
+    env = _env_temporal_half_life()
+    if env is not None:
+        return env
+    if explicit is not None and explicit > 0.0:
+        return float(explicit)
+    toml_value = _read_toml_float_for(TEMPORAL_HALF_LIFE_FLAG, start)
+    if toml_value is not None and toml_value > 0.0:
+        return float(toml_value)
+    if store is not None and is_meta_belief_half_life_enabled():
+        meta_value = store.read_meta_belief_value(
+            META_HALF_LIFE_KEY, now_ts=now_ts,
+        )
+        if meta_value is not None:
+            return decode_meta_half_life(meta_value)
+    return DEFAULT_TEMPORAL_HALF_LIFE_SECONDS
+
+
 def _belief_age_seconds(b: Belief, now: datetime) -> float:
     """Seconds between `now` and `b.created_at` (clamped at 0).
 
