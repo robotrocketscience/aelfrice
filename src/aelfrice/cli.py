@@ -345,14 +345,16 @@ def _cmd_onboard_emit_candidates(args: argparse.Namespace, out: object) -> int:
         )
         return 2
     repo_path = Path(args.path)
+    force = bool(getattr(args, "force", False))
     store = _open_store()
     try:
-        result = start_onboard_session(store, repo_path)
+        result = start_onboard_session(store, repo_path, force=force)
     finally:
         store.close()
     payload = {
         "session_id": result.session_id,
         "n_already_present": result.n_already_present,
+        "n_already_rejected": result.n_already_rejected,
         "sentences": [
             {"index": s.index, "text": s.text, "source": s.source}
             for s in result.sentences
@@ -476,19 +478,25 @@ def _cmd_onboard_check(args: argparse.Namespace, out: object) -> int:
         )
         return 2
     repo_path = Path(args.path)
+    force = bool(getattr(args, "force", False))
     store = _open_store()
     try:
-        result = check_onboard_candidates(store, repo_path)
+        result = check_onboard_candidates(store, repo_path, force=force)
     finally:
         store.close()
-    total = result.n_already_present + result.n_new
+    total = (
+        result.n_already_present + result.n_already_rejected + result.n_new
+    )
     pct_present = (
         (result.n_already_present * 100) // total if total > 0 else 0
     )
+    force_note = " (--force: ledger bypassed)" if force else ""
     print(
         f"path: {result.repo_path}\n"
         f"already present: {result.n_already_present} candidates "
         f"({pct_present}% of {total})\n"
+        f"already rejected: {result.n_already_rejected} candidates"
+        f"{force_note}\n"
         f"new since last onboard: {result.n_new} candidates\n"
         f"(read-only pre-scan; no beliefs inserted, no session persisted)",
         file=out,  # type: ignore[arg-type]
@@ -4897,6 +4905,18 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help=(
             "print the candidates that would be sent to the classifier "
             "without contacting the network. Implies --llm-classify."
+        ),
+    )
+    p_onboard.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help=(
+            "bypass the rejection ledger: re-emit candidates the host "
+            "previously classified persist=False so a fresh classification "
+            "pass can re-roll them. Has no effect on candidates already "
+            "stored as beliefs — those stay filtered. Apply on the "
+            "--emit-candidates or --check entry; default is ledger-on (#801)."
         ),
     )
     p_onboard.add_argument(
