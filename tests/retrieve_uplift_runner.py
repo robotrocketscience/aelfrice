@@ -858,6 +858,224 @@ def run_compression_a2_uplift(
     )
 
 
+# ---------------------------------------------------------------------
+# Type-aware compression A4 (#434 / #769 / #775) — rebuilder
+# continuation-fidelity bench gate.
+#
+# Consumed by tests/bench_gate/test_compression_a4_fidelity.py.
+# Row schema (`<corpus_root>/compression_a4_fidelity/*.jsonl`):
+#
+#   {
+#     "id": "row-id",
+#     "transcript_pre_clear": [
+#       {"role": "user"|"assistant", "text": "...",
+#        "session_id": "...", "ts": "..."}, ...
+#     ],
+#     "beliefs": [
+#       {"id": "...", "content": "...",
+#        "retention_class": "fact" | "snapshot" | "transient" | "unknown",
+#        "lock_level": "none" | "user"}
+#     ],
+#     "expected_post_clear_answers": ["answer-text-1", ...],
+#     "rebuilder_token_budget": 4000        # optional
+#   }
+#
+# A4 spec (`docs/feature-type-aware-compression.md` § A4): the
+# rebuilder is exercised with `use_type_aware_compression ∈ {OFF, ON}`
+# at the same `[rebuilder] token_budget`; continuation-fidelity for
+# the ON arm must be at least the OFF arm minus a 0.005 noise band
+# (mirroring the BM25F gate-band model at #154).
+#
+# Fidelity-as-token-coverage proxy. The v1.4 exact-method scorer
+# (#138) compares an agent's post-clear answer to ground truth.
+# Capturing real agent answers under both arms requires a live model;
+# instead the runner uses a deterministic proxy: for each
+# expected_post_clear_answer, score the fraction of normalized answer
+# tokens that appear in the normalized rebuild block. Better
+# compression preserves more load-bearing tokens per token of budget,
+# so a passing A4 gate says "compression does not strip the
+# information that post-clear answers depended on, within the 0.005
+# tolerance band." The proxy is documented inline so a later swap to
+# captured-answer scoring (when the lab corpus carries
+# `captured_post_clear_answers_{off,on}` arrays) is a drop-in.
+# ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CompressionA4Fidelity:
+    """Spec § A4 result shape for #769 type-aware compression flip-default.
+
+    Field names parallel ``CompressionA2Uplift`` so the bench-gate
+    failure-message formatter can read ``mean_fidelity_off`` /
+    ``mean_fidelity_on`` / ``uplift`` without per-runner branching.
+    """
+
+    n_rows: int
+    mean_fidelity_off: float
+    mean_fidelity_on: float
+
+    @property
+    def uplift(self) -> float:
+        return self.mean_fidelity_on - self.mean_fidelity_off
+
+
+def _normalize_tokens_for_coverage(text: str) -> list[str]:
+    """Whitespace-split lowercase normalization.
+
+    Same conservative normalization as ``score._normalize_for_exact``
+    in spirit (NFC + casefold + whitespace collapse), but emitted as
+    a token list for set-coverage scoring. Punctuation is stripped at
+    token boundaries; intra-token punctuation is preserved.
+    """
+    import re
+    import unicodedata
+    normalized = unicodedata.normalize("NFC", text).casefold()
+    tokens = re.findall(r"[\w']+", normalized)
+    return tokens
+
+
+def _coverage_score(expected: str, rebuild_block: str) -> float:
+    """Fraction of expected tokens that appear in the rebuild block.
+
+    Returns 1.0 for an empty expected string (vacuously perfect,
+    matching the scorer module's empty-case convention). Returns 0.0
+    when the expected string has tokens but none appear in the
+    rebuild block.
+    """
+    expected_tokens = _normalize_tokens_for_coverage(expected)
+    if not expected_tokens:
+        return 1.0
+    block_tokens = set(_normalize_tokens_for_coverage(rebuild_block))
+    hits = sum(1 for t in expected_tokens if t in block_tokens)
+    return hits / len(expected_tokens)
+
+
+def _set_compression_env(value: bool) -> str | None:
+    """Set ``AELFRICE_TYPE_AWARE_COMPRESSION`` and return the prior value.
+
+    Caller is responsible for restoring the prior value (or ``del``-ing
+    the env var if prior was ``None``). Kept narrow on purpose — the
+    runner uses a try/finally rather than a context manager so the
+    OFF/ON loop body stays a single line per arm.
+    """
+    prior = os.environ.get("AELFRICE_TYPE_AWARE_COMPRESSION")
+    os.environ["AELFRICE_TYPE_AWARE_COMPRESSION"] = "1" if value else "0"
+    return prior
+
+
+def _restore_compression_env(prior: str | None) -> None:
+    if prior is None:
+        os.environ.pop("AELFRICE_TYPE_AWARE_COMPRESSION", None)
+    else:
+        os.environ["AELFRICE_TYPE_AWARE_COMPRESSION"] = prior
+
+
+def _a4_recent_turns_from_row(row: dict) -> list:  # type: ignore[type-arg]
+    """Build the rebuilder's recent_turns list from a row's transcript.
+
+    Lazy import of ``RecentTurn`` to keep the runner module importable
+    even on environments where ``aelfrice.context_rebuilder`` is not
+    available at collection time.
+    """
+    from aelfrice.context_rebuilder import RecentTurn
+    turns = []
+    for t in row.get("transcript_pre_clear", []):
+        turns.append(
+            RecentTurn(
+                role=str(t.get("role", "user")),
+                text=str(t.get("text", "")),
+                session_id=t.get("session_id"),
+                ts=t.get("ts"),
+            )
+        )
+    return turns
+
+
+def run_compression_a4_fidelity(
+    rows: list[dict],  # type: ignore[type-arg]
+) -> CompressionA4Fidelity:
+    """Spec § A4 rebuilder continuation-fidelity driver.
+
+    Per row: build a transient ``MemoryStore`` from the row's beliefs
+    (locks + retention classes preserved, same as A2). Build the
+    rebuilder's ``recent_turns`` list from ``transcript_pre_clear``.
+    Call ``rebuild_v14`` twice — once with
+    ``AELFRICE_TYPE_AWARE_COMPRESSION=0``, once ``=1`` — at the row's
+    ``rebuilder_token_budget`` (or the rebuilder's default). Score
+    each arm by the token-coverage proxy described in the module-level
+    block comment.
+
+    Empty rows produce ``CompressionA4Fidelity(0, 0.0, 0.0)``. Rows
+    whose expected_post_clear_answers list is empty contribute a
+    per-arm score of 1.0 (vacuously perfect, matching the #138
+    scorer's empty-case convention).
+    """
+    from aelfrice.context_rebuilder import (
+        DEFAULT_REBUILDER_TOKEN_BUDGET,
+        rebuild_v14,
+    )
+
+    n = len(rows)
+    if n == 0:
+        return CompressionA4Fidelity(0, 0.0, 0.0)
+
+    off_total = 0.0
+    on_total = 0.0
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_root = Path(tmp)
+        for row in rows:
+            budget = int(
+                row.get(
+                    "rebuilder_token_budget",
+                    DEFAULT_REBUILDER_TOKEN_BUDGET,
+                )
+            )
+            expected_answers = [
+                str(a) for a in row.get("expected_post_clear_answers", [])
+            ]
+            recent_turns = _a4_recent_turns_from_row(row)
+
+            for compress_on in (False, True):
+                _db_counter[0] += 1
+                db = (
+                    tmp_root
+                    / f"a4_{row['id']}_{int(compress_on)}_{_db_counter[0]}.db"
+                )
+                store = MemoryStore(str(db))
+                try:
+                    for b in row.get("beliefs", []):
+                        store.insert_belief(_a2_belief_from_row(b))
+                    prior = _set_compression_env(compress_on)
+                    try:
+                        rebuild_block = rebuild_v14(
+                            recent_turns, store, token_budget=budget,
+                        )
+                    finally:
+                        _restore_compression_env(prior)
+                finally:
+                    store.close()
+
+                if not expected_answers:
+                    score = 1.0
+                else:
+                    per_answer = [
+                        _coverage_score(a, rebuild_block)
+                        for a in expected_answers
+                    ]
+                    score = sum(per_answer) / len(per_answer)
+
+                if compress_on:
+                    on_total += score
+                else:
+                    off_total += score
+
+    return CompressionA4Fidelity(
+        n_rows=n,
+        mean_fidelity_off=off_total / n,
+        mean_fidelity_on=on_total / n,
+    )
+
+
 def _format_table(results: list[FlagUplift]) -> str:
     lines = [
         f"{'flag':<28} {'n':>4} {'NDCG_off':>10} {'NDCG_on':>10} {'uplift':>10}",
