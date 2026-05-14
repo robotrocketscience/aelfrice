@@ -16,7 +16,7 @@ score = log(max(-bm25_raw, EPS)) + posterior_weight · log(posterior_mean)
 
 `posterior_weight` is a process-wide scalar tuned at v1.3.0 (default `0.5`). Two independent operator concerns motivate the γ surface:
 
-1. The intended consumer for `meta:retrieval.posterior_temperature` (a softmax / Boltzmann temperature `T`) does not exist on `github/main` — see pascal's pre-claim analysis on #758. Issue #796 is the load-bearing precursor: ship the temperature surface so `meta:retrieval.posterior_temperature` has something to bind to.
+1. The intended consumer for `meta:retrieval.posterior_temperature` (a softmax / Boltzmann temperature `T`) does not exist on `github/main` — pre-claim analysis on #758 confirmed `git grep -E 'softmax|boltzmann|temperature' github/main -- 'src/aelfrice/'` returns zero hits in src. Issue #796 is the load-bearing precursor: ship the temperature surface so `meta:retrieval.posterior_temperature` has something to bind to.
 2. PR@5 + Spearman ρ alone cannot discriminate top-K reorderings from middle-of-list churn (#796 R4). The bench panel needs `ordered_top_k_overlap` and `rank_biased_overlap` to make γ-vs-log-additive comparisons load-bearing.
 
 γ is **reparametrised log-additive**, not a new family — see *Contract* below. At `T = 1.0` it is byte-identical to `partial_bayesian_score(..., posterior_weight=1.0)`. Lower `T` sharpens the posterior contribution; higher `T` flattens toward BM25-only ranking.
