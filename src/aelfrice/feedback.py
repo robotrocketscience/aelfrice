@@ -4,15 +4,6 @@
 that mutates a belief's alpha/beta after onboarding. It also writes an
 audit row to `feedback_history` for every successful update so the
 project's feedback regime is recoverable after the fact.
-
-Demotion-pressure propagation and auto-demote at threshold land in
-follow-up commits; this module ships the core update + audit path
-first so the contract is stable before the propagation layer hooks in.
-
-`DEMOTION_THRESHOLD` is exposed here as a module-level configurable
-constant (default 5, per round-6 E22). Callers may rebind it for tests
-or domain-specific tuning. The auto-demote path that consumes it lands
-next.
 """
 from __future__ import annotations
 
@@ -20,10 +11,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Final
 
-from aelfrice.models import EDGE_CONTRADICTS, LOCK_NONE, LOCK_USER, Belief
+from aelfrice.models import Belief
 from aelfrice.store import MemoryStore
-
-DEMOTION_THRESHOLD: int = 5
 
 POSITIVE: Final[str] = "positive"
 NEGATIVE: Final[str] = "negative"
@@ -41,8 +30,6 @@ class FeedbackResult:
     new_beta: float
     valence: float
     source: str
-    pressured_locks: list[str]
-    demoted_locks: list[str]
 
 
 def _utc_now_iso() -> str:
@@ -62,54 +49,12 @@ def _bayesian_update(b: Belief, valence: float) -> tuple[float, float]:
     return (b.alpha, b.beta + (-valence))
 
 
-def _pressure_and_maybe_demote(
-    store: MemoryStore, source_id: str
-) -> tuple[list[str], list[str]]:
-    """For each outbound CONTRADICTS edge from source_id whose dst is a
-    user-locked belief, increment that belief's demotion_pressure by 1.
-    If the post-increment pressure is at or above DEMOTION_THRESHOLD,
-    demote the belief one tier (lock_level -> none, locked_at -> None,
-    demotion_pressure reset to 0).
-
-    Returns (pressured_ids, demoted_ids) — both sorted for determinism.
-    A belief that demotes in this call appears in BOTH lists: it was
-    pressured (the increment that crossed the threshold) and demoted
-    (the resulting tier change).
-
-    Caller is responsible for only invoking on positive-valence events:
-    a positive signal on a contradictor is evidence the contradicted
-    lock is wrong; a negative signal weakens the contradictor itself.
-
-    1-hop only. Multi-hop pressure accumulation is deferred.
-    """
-    pressured: list[str] = []
-    demoted: list[str] = []
-    for edge in store.edges_from(source_id):
-        if edge.type != EDGE_CONTRADICTS:
-            continue
-        target = store.get_belief(edge.dst)
-        if target is None:
-            continue
-        if target.lock_level != LOCK_USER:
-            continue
-        target.demotion_pressure += 1
-        pressured.append(target.id)
-        if target.demotion_pressure >= DEMOTION_THRESHOLD:
-            target.lock_level = LOCK_NONE
-            target.locked_at = None
-            target.demotion_pressure = 0
-            demoted.append(target.id)
-        store.update_belief(target)
-    return (sorted(pressured), sorted(demoted))
-
-
 def apply_feedback(
     store: MemoryStore,
     belief_id: str,
     valence: float,
     source: str,
     now: str | None = None,
-    propagate: bool = True,
 ) -> FeedbackResult:
     """Apply one feedback event to one belief.
 
@@ -121,16 +66,6 @@ def apply_feedback(
     4. Persist the new posterior on the belief row.
     5. Append one row to feedback_history (created_at = `now` or UTC now).
     6. Return a FeedbackResult with prior + new posteriors and the row id.
-
-    `propagate` controls the demotion-pressure walk on positive valence.
-    Default True preserves the corrective-feedback contract: a positive
-    signal on a contradictor counts as evidence the contradicted lock is
-    wrong, and the walk increments the lock's pressure. Pass False for
-    non-corrective positive signals (e.g., implicit retrieval-time exposure
-    from the UserPromptSubmit hook) where the caller updates posteriors
-    on the retrieved belief but does not wish to pressure neighbouring
-    locked beliefs. Negative valence is unaffected — the pressure walk
-    only fires on positive valence regardless of `propagate`.
     """
     if valence == 0.0:
         raise ValueError("valence must be nonzero")
@@ -163,13 +98,6 @@ def apply_feedback(
         created_at=timestamp,
     )
 
-    pressured_locks: list[str] = []
-    demoted_locks: list[str] = []
-    if valence > 0.0 and propagate:
-        pressured_locks, demoted_locks = _pressure_and_maybe_demote(
-            store, belief_id
-        )
-
     return FeedbackResult(
         belief_id=belief_id,
         event_id=event_id,
@@ -179,6 +107,4 @@ def apply_feedback(
         new_beta=new_beta,
         valence=valence,
         source=source,
-        pressured_locks=pressured_locks,
-        demoted_locks=demoted_locks,
     )

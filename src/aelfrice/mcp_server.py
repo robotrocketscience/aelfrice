@@ -745,8 +745,6 @@ def tool_feedback(
         "new_alpha": result.new_alpha,
         "prior_beta": result.prior_beta,
         "new_beta": result.new_beta,
-        "pressured_locks": result.pressured_locks,
-        "demoted_locks": result.demoted_locks,
     }
 
 
@@ -768,9 +766,7 @@ def tool_confirm(
     `note` is an optional free-text annotation that appears in the return
     payload for the caller's context; it is not persisted to the store.
 
-    The positive signal increments alpha, raising posterior_mean, and
-    activates the demotion-pressure walk on any contradicting user-locked
-    belief (same propagate=True default as apply_feedback).
+    The positive signal increments alpha, raising posterior_mean.
     """
     try:
         result = apply_feedback(
@@ -793,8 +789,6 @@ def tool_confirm(
         "new_alpha": result.new_alpha,
         "prior_beta": result.prior_beta,
         "new_beta": result.new_beta,
-        "pressured_locks": result.pressured_locks,
-        "demoted_locks": result.demoted_locks,
     }
     if note:
         payload["note"] = note
@@ -1551,7 +1545,6 @@ def serve() -> None:
                   "id": str, "signal": str,
                   "prior_alpha": float, "new_alpha": float,
                   "prior_beta": float, "new_beta": float,
-                  "pressured_locks": list[str], "demoted_locks": list[str],
                   "error": str (on error variants)}
         """
         store = _open_default_store()
@@ -1591,7 +1584,7 @@ def serve() -> None:
         commitment is softer than aelf_lock would imply. Records source
         as 'user_confirmed' by default so confirms are distinguishable
         from generic 'used' feedback in the audit table. Mutates
-        posterior and may pressure contradicting locks.
+        the Beta-Bernoulli posterior; the lock graph is left untouched.
 
         Args:
             belief_id: Target belief ID.
@@ -1603,7 +1596,6 @@ def serve() -> None:
                   "id": str, "source": str,
                   "prior_alpha": float, "new_alpha": float,
                   "prior_beta": float, "new_beta": float,
-                  "pressured_locks": list[str], "demoted_locks": list[str],
                   "note": str (when supplied),
                   "error": str (when unknown_belief)}
         """

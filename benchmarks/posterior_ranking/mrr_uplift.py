@@ -239,7 +239,6 @@ def run_single_seed(
                 target_id,
                 valence=1.0,
                 source="eval_synthetic",
-                propagate=False,
             )
 
         round_mrr = _mean_mrr(_rnd + 1)

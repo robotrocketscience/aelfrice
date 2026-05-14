@@ -2,8 +2,7 @@
 
 Closes the v1.0.1 retrieval-side feedback-loop gap (LIMITATIONS § Hook
 layer). Every hook-driven retrieval writes one feedback_history row
-tagged source='hook' with a small positive valence and propagate=False
-so locked beliefs are not pressured by implicit exposure.
+tagged source='hook' with a small positive valence.
 """
 from __future__ import annotations
 
@@ -112,13 +111,14 @@ def test_record_retrieval_updates_alpha_not_beta() -> None:
     assert b.beta == 1.0
 
 
-# --- record_retrieval: propagate=False (no pressure walk) ----------------
+# --- record_retrieval: locks survive implicit hook exposure -------------
 
 
-def test_record_retrieval_does_not_pressure_locked_contradictors() -> None:
-    """Hook exposure of a contradictor must not pressure-walk the locked
-    target — that would auto-demote locks on every prompt that surfaces
-    a contradicting belief in the FTS5 layer."""
+def test_record_retrieval_does_not_demote_locked_contradictors() -> None:
+    """Hook exposure of a contradictor must not change the lock state
+    of any user-locked belief. Auto-demotion has been removed (#814 /
+    PHILOSOPHY #605); this test still pins the invariant from the
+    consuming side."""
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("X"))
     s.insert_belief(_mk("Y", lock_level=LOCK_USER,
@@ -127,7 +127,6 @@ def test_record_retrieval_does_not_pressure_locked_contradictors() -> None:
     record_retrieval(s, [s.get_belief("X")])  # type: ignore[list-item]
     y_after = s.get_belief("Y")
     assert y_after is not None
-    assert y_after.demotion_pressure == 0
     assert y_after.lock_level == LOCK_USER
 
 

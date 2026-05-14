@@ -2108,8 +2108,7 @@ def _cmd_feedback(args: argparse.Namespace, out: object) -> int:
     print(
         f"applied {args.signal} to {args.belief_id}: "
         f"alpha {result.prior_alpha:.3f}->{result.new_alpha:.3f}, "
-        f"beta {result.prior_beta:.3f}->{result.new_beta:.3f}, "
-        f"pressured={result.pressured_locks}, demoted={result.demoted_locks}",
+        f"beta {result.prior_beta:.3f}->{result.new_beta:.3f}",
         file=out,  # type: ignore[arg-type]
     )
     return 0

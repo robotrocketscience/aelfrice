@@ -12,14 +12,7 @@ This module exists because:
    to the agent". The README's Bayesian-memory claim depends on this
    loop closing.
 
-2. Hook-driven retrievals are *non-corrective* signals. A retrieved
-   belief is evidence of relevance, not evidence that any neighbouring
-   user-locked belief is wrong. Calling `apply_feedback` with the default
-   propagate=True would pressure-walk locked beliefs on every prompt,
-   silently auto-demoting them. The hook passes `propagate=False` so the
-   posterior moves but the lock graph is left alone.
-
-3. Hook-driven valence is implicit and weaker than explicit user
+2. Hook-driven valence is implicit and weaker than explicit user
    feedback. A retrieval is exposure, not endorsement. Use a small
    positive valence (`HOOK_RETRIEVAL_VALENCE = 0.1`) so a thousand
    retrievals over a few months don't dominate the posterior the way a
@@ -93,9 +86,7 @@ def record_retrieval(
     """Write one feedback_history row per belief; return rows written.
 
     For each belief, calls `apply_feedback(store, belief.id, valence,
-    source, propagate=False)`. propagate=False suppresses the
-    demotion-pressure walk so implicit hook exposure does not pressure
-    user-locked beliefs.
+    source)` — Beta-Bernoulli posterior update plus an audit row.
 
     Best-effort: any per-belief failure is logged to `stderr` (defaults
     to `sys.stderr`) and the loop continues. Returns the number of
@@ -112,7 +103,6 @@ def record_retrieval(
                 b.id,
                 valence,
                 source,
-                propagate=False,
             )
             written += 1
             stamped_ids.append(b.id)

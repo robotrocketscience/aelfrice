@@ -117,7 +117,6 @@ def _build_ece_observations(
                     feedback_target_id,
                     valence=1.0,
                     source="eval_synthetic",
-                    propagate=False,
                 )
 
         store.close()

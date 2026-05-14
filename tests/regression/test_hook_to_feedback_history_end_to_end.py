@@ -7,8 +7,8 @@ on-disk DB seeded with three matching beliefs. After the call:
   - feedback_history contains rows tagged source='hook'.
   - Each row has positive valence.
   - Per-belief alpha increased; beta unchanged.
-  - User-locked beliefs in the surrounding graph are not auto-demoted
-    (propagate=False semantics through the hook path).
+  - User-locked beliefs in the surrounding graph keep their lock
+    state across hook firings (no auto-demotion of any kind).
 """
 from __future__ import annotations
 

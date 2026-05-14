@@ -300,11 +300,6 @@ def apply_sentiment_to_pending(
     `escalated` upgrades a negative signal's magnitude to
     `ESCALATED_NEGATIVE_VALENCE`. Has no effect on positive signals;
     the correction-frequency path only escalates negatives by design.
-
-    `propagate=False` is passed through to `apply_feedback` because
-    sentiment signals are not corrective in the contradictor-walk sense:
-    they are bulk implicit signals on a retrieval set, not user
-    judgments on individual contradicting beliefs.
     """
     if not pending_belief_ids:
         return []
@@ -323,7 +318,6 @@ def apply_sentiment_to_pending(
             valence=valence,
             source=SENTIMENT_INFERRED_SOURCE,
             now=now,
-            propagate=False,
         )
         results.append(result)
     return results
