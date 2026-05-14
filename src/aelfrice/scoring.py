@@ -55,6 +55,24 @@ DEFAULT_POSTERIOR_WEIGHT: Final[float] = 0.5
 # or env override never raises at retrieval time.
 GAMMA_TEMPERATURE_FLOOR: Final[float] = 1e-6
 
+# #800 / #817 ζ rerank — pinned defaults from the R&D campaign
+# verdict at `~/projects/aelfrice-lab/experiments/zeta-posterior/`
+# (R0–R4, commits `2baac93` through `82ec453`). At
+# (α=1.0, β=0.25, scale=14.5) ζ dominates γ on rank_biased_overlap
+# for similar rank_changed_fraction (R2 head-to-head). Tunability
+# via kwargs preserved for tests; env/TOML knobs for α / β / scale
+# are deferred per #817 § "Out of scope".
+ZETA_ALPHA_DEFAULT: Final[float] = 1.0
+ZETA_BETA_DEFAULT: Final[float] = 0.25
+ZETA_SCALE_DEFAULT: Final[float] = 14.5
+
+# Floor on the `posterior_mean` argument to `zeta_posterior_score`.
+# A corrupted store row reading `posterior_mean = 0.0` would otherwise
+# raise `ValueError: math domain error` at the inner `log()` call;
+# the floor clamps such inputs upward to `PARTIAL_BAYESIAN_BM25_FLOOR`
+# so retrieval never crashes on degenerate posteriors.
+ZETA_POSTERIOR_FLOOR: Final[float] = PARTIAL_BAYESIAN_BM25_FLOOR
+
 # --- Half-lives in seconds ---
 _HOUR: Final[float] = 3600.0
 TYPE_HALF_LIFE_SECONDS: Final[dict[str, float]] = {
@@ -240,3 +258,52 @@ def gamma_posterior_score(
     return partial_bayesian_score(
         bm25_raw, alpha, beta, posterior_weight=(1.0 / t_safe),
     )
+
+
+def zeta_posterior_score(
+    bm25_raw: float,
+    alpha: float,
+    beta: float,
+    scale: float,
+    posterior_mean: float,
+) -> float:
+    """#817 / #800 ζ rerank — bounded sigmoid posterior contribution.
+
+    `score = log(max(-bm25_raw, EPS))
+           + alpha * (sigmoid(beta * (log(p) - log(0.5))) - 0.5) * scale`
+
+    Where `p = posterior_mean` (already computed by the caller, typically
+    via `posterior_mean(α_beta, β_beta)`). `alpha`, `beta`, `scale` are
+    the ζ shape parameters — not the Beta-Bernoulli `(α, β)` pair.
+
+    Bounded contribution: the posterior term lies in
+    `[-α·scale/2, +α·scale/2]`. No belief gets unboundedly leveraged
+    by extreme posteriors — the structural difference from γ, where
+    `(1/T)·log(p)` is unbounded as T → 0.
+
+    Posterior-neutral point: at `p = 0.5`, `log(p) − log(0.5) = 0`, the
+    sigmoid is 0.5, the bracket is 0, and the entire posterior term
+    collapses. A store of all-uniform posteriors is rank-equivalent to
+    log-BM25 alone — the same edge-case property `partial_bayesian_score`
+    has at `posterior_weight = 0.0`.
+
+    Floor clamp: `posterior_mean <= ZETA_POSTERIOR_FLOOR` clamps upward
+    so a corrupted store row never raises `math domain error` at
+    retrieval time.
+
+    ζ is **not** byte-identical to `partial_bayesian_score` or
+    `gamma_posterior_score` at any (α, β, scale) — the additive term
+    is bounded around `log(0.5)`, not a free log of the posterior. ζ
+    is the new long-term shape, not a continuous extension of γ. See
+    `docs/feature-zeta-posterior-rerank.md` § "Contract" for the
+    full derivation.
+    """
+    relevance_pos = max(-bm25_raw, PARTIAL_BAYESIAN_BM25_FLOOR)
+    log_bm25 = math.log(relevance_pos)
+    p_safe = posterior_mean if posterior_mean > ZETA_POSTERIOR_FLOOR else (
+        ZETA_POSTERIOR_FLOOR
+    )
+    # `sigmoid(x) = 1 / (1 + exp(-x))`. Centred so p=0.5 → contribution=0.
+    x = beta * (math.log(p_safe) - math.log(0.5))
+    sigmoid = 1.0 / (1.0 + math.exp(-x))
+    return log_bm25 + alpha * (sigmoid - 0.5) * scale
