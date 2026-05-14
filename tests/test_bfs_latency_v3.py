@@ -143,8 +143,8 @@ def test_main_end_to_end_smoke(tmp_path: Path):
         "--beliefs", "40",
         "--topics", "4",
         "--queries", "4",
-        "--iterations", "2",
-        "--warmup", "1",
+        "--iterations", "10",
+        "--warmup", "2",
         "--output", str(out),
     ])
     # Tiny-corpus run on a v3.0 stack comfortably clears the gate;
