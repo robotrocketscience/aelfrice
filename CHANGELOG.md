@@ -926,6 +926,7 @@ Foundation milestone — store, models, config.
   scan configs (commit `67b4343`).
 
 [Unreleased]: https://github.com/robotrocketscience/aelfrice/compare/v3.0.1...HEAD
+[3.1.0]: https://github.com/robotrocketscience/aelfrice/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/robotrocketscience/aelfrice/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/robotrocketscience/aelfrice/compare/v2.1.0...v3.0.0
 [2.1.0]: https://github.com/robotrocketscience/aelfrice/compare/v2.0.1...v2.1.0
