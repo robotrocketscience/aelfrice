@@ -10,6 +10,10 @@ installable release; see the roadmap in [README.md](README.md).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Rebuilder pack accounting now honours `use_type_aware_compression`** ([#798](https://github.com/robotrocketscience/aelfrice/issues/798)). `rebuild_v14` was re-packing `retrieve()`'s candidate set with verbatim token cost regardless of the flag, so any ON-arm extras `retrieve()` admitted at compressed cost got trimmed back to the OFF-arm count. The downstream A4 continuation-fidelity bench gate ([#775](https://github.com/robotrocketscience/aelfrice/issues/775) / [PR #776](https://github.com/robotrocketscience/aelfrice/pull/776)) was therefore structurally vacuous — per-row fidelity delta = 0 by construction, regardless of corpus. Fix resolves the flag once at `rebuild_v14` entry (`resolve_use_type_aware_compression(use_type_aware_compression)`), threads it into the `retrieve()` call and into `_estimate_belief_tokens(b, *, compress_on=...)` at all three pack sites (L0 init, session tier, L1 / L2.5 tier). The rebuild block content itself stays verbatim — the change is in *how many* beliefs survive the budget, not what each surviving belief renders as. Default-OFF and the legacy `_retrieve_for_rebuild` (v1.2.0a0 alpha contract) are byte-identical. Unblocks the A4 axis of the [#769](https://github.com/robotrocketscience/aelfrice/issues/769) flip-default decision. Operator-decision history: Option A per [#798 thread](https://github.com/robotrocketscience/aelfrice/issues/798); Options B (rebuilder emits `compressed_beliefs[i].rendered`) and C (drop A4 from #769 acceptance) declined. Two new tests in `tests/test_context_rebuilder.py` (`test_rebuild_v14_pack_size_matches_compression_flag`, `test_rebuild_v14_compression_off_byte_identical_default`).
+
 ## [3.1.0] - 2026-05-14
 
 ### Added

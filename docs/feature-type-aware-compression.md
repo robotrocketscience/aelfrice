@@ -138,7 +138,7 @@ Per `docs/belief_retention_class.md` § "Recommendation summary": *"Soft down-we
 
 The rebuilder consumes retrieval output and writes a continuation-fidelity-scored block at `<git-common-dir>/aelfrice/rebuild_logs/`. With compression on, the rebuilder gets more total beliefs in the same `[rebuilder] token_budget` (default in `context_rebuilder.py:111`). Acceptance #4 makes this measurable: continuation-fidelity uplift at fixed budget.
 
-The rebuilder does not need a separate config knob; it inherits the retrieval-side flag. If `use_type_aware_compression` is on at retrieval call-time, the rebuilder reads compressed output transparently via the `RetrievalResult` shape change above.
+The rebuilder does not need a separate config knob; it inherits the retrieval-side flag. `rebuild_v14` resolves `use_type_aware_compression` once at function entry via `resolve_use_type_aware_compression(use_type_aware_compression)`, threads the resolved boolean into the `retrieve()` call so retrieve's L1/L2.5 pack accounting is compression-aware, and threads it into `_estimate_belief_tokens(b, *, compress_on=...)` at all three pack sites in rebuild_v14 (L0 init, session tier, L1 / L2.5 tier). The rebuild-block content itself remains verbatim — compression changes *how many* beliefs fit under the budget, not what each surviving belief renders as. This is the #798 fix; before it landed, rebuild_v14 used verbatim cost for its own re-pack and silently trimmed retrieve()'s ON-arm extras back to the OFF-arm count, leaving A4 structurally vacuous (per-row fidelity delta = 0 regardless of corpus).
 
 ### vs. type / source-tier axes
 
@@ -181,6 +181,8 @@ A second test compares against a fixture of `(belief_id, expected_rendered)` pai
 ### A4 — rebuilder fidelity
 
 The continuation-fidelity scorer (#141 v1.4 deliverable) is run on the rebuild_logs corpus with `use_type_aware_compression={OFF, ON}`. Bench-gate: ON ≥ OFF on continuation-fidelity score at the same `[rebuilder] token_budget`. Tolerance band: `≥ baseline − 0.005` (a half-point of the fidelity-score noise floor, mirroring the BM25F bench-gate band at #154).
+
+Prerequisite: rebuild_v14's pack accounting must honour the compression flag — otherwise per-row fidelity delta is 0 by construction, as documented in #798. That prerequisite landed alongside this doc revision (see `tests/test_context_rebuilder.py::test_rebuild_v14_pack_size_matches_compression_flag` — asserts ON packs strictly more beliefs than OFF at a budget that forces trim).
 
 ### A5 — composition tracker
 
