@@ -321,3 +321,88 @@ def test_check_bypasses_emit_candidates(tmp_path: Path) -> None:
         assert store.count_onboard_sessions() == 0
     finally:
         store.close()
+
+
+# --- #801 rejection-ledger CLI wiring -----------------------------------
+
+
+def _reject_all(repo: Path, monkeypatch: pytest.MonkeyPatch) -> int:
+    """Run emit + accept-all-persist:false. Returns the number of
+    sentences rejected.
+    """
+    _, emit_out = _run("onboard", str(repo), "--emit-candidates")
+    payload = json.loads(emit_out)
+    sid = payload["session_id"]
+    sentences = payload["sentences"]
+    cls = [
+        {"index": s["index"], "belief_type": "factual", "persist": False}
+        for s in sentences
+    ]
+    code, _ = _run(
+        "onboard",
+        "--accept-classifications",
+        "--session-id", sid,
+        "--classifications-file", "-",
+        stdin=json.dumps(cls),
+        monkeypatch=monkeypatch,
+    )
+    assert code == 0
+    return len(sentences)
+
+
+def test_emit_candidates_json_exposes_n_already_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _populate_repo(repo)
+    n = _reject_all(repo, monkeypatch)
+    assert n > 0
+    code, out = _run("onboard", str(repo), "--emit-candidates")
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["n_already_rejected"] == n
+    assert payload["sentences"] == []
+
+
+def test_check_reports_already_rejected_after_persist_false(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _populate_repo(repo)
+    n = _reject_all(repo, monkeypatch)
+    assert n > 0
+    code, out = _run("onboard", str(repo), "--check")
+    assert code == 0
+    assert f"already rejected: {n} candidates" in out
+    assert "new since last onboard: 0 candidates" in out
+
+
+def test_force_flag_re_emits_previously_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _populate_repo(repo)
+    n = _reject_all(repo, monkeypatch)
+    assert n > 0
+    code, out = _run("onboard", str(repo), "--emit-candidates", "--force")
+    assert code == 0
+    payload = json.loads(out)
+    assert len(payload["sentences"]) == n
+    assert payload["n_already_rejected"] == 0
+
+
+def test_check_force_notes_ledger_bypass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _populate_repo(repo)
+    n = _reject_all(repo, monkeypatch)
+    assert n > 0
+    code, out = _run("onboard", str(repo), "--check", "--force")
+    assert code == 0
+    assert "--force: ledger bypassed" in out
+    assert f"new since last onboard: {n} candidates" in out
