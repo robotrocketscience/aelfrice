@@ -15,7 +15,8 @@ import pytest
 
 from benchmarks.bfs_latency_v3 import (
     DEFAULT_BELIEF_COUNT,
-    GATE_P50_MS,
+    GATE_DELTA_P50_MS,
+    GATE_DELTA_P95_MS,
     _percentile,
     evaluate_gate,
     main,
@@ -24,6 +25,21 @@ from benchmarks.bfs_latency_v3 import (
 )
 from benchmarks.bfs_latency_v3 import ArmResult
 from aelfrice.store import MemoryStore
+
+
+def _arm(
+    label: str,
+    *,
+    p50: float, p95: float, p99: float,
+    max_ms: float, mean: float = 0.0, min_ms: float = 0.0,
+) -> ArmResult:
+    return ArmResult(
+        label=label, samples=100,
+        p50_ms=p50, p95_ms=p95, p99_ms=p99,
+        max_ms=max_ms,
+        mean_ms=mean or p50,
+        min_ms=min_ms or p50 * 0.5,
+    )
 
 
 def test_percentile_nearest_rank():
@@ -72,33 +88,54 @@ def test_synth_queries_deterministic_and_precise():
         assert first.startswith("topic_"), q
 
 
-def test_evaluate_gate_pass_and_fail():
-    good = ArmResult(
-        label="bfs_on", samples=100,
-        p50_ms=10.0, p95_ms=40.0, p99_ms=80.0,
-        max_ms=90.0, mean_ms=12.0, min_ms=8.0,
-    )
-    g = evaluate_gate(good)
+def test_evaluate_gate_passes_under_small_delta():
+    off = _arm("bfs_off", p50=100.0, p95=140.0, p99=180.0, max_ms=400.0)
+    # delta_p50 = +3 ms ≤ 5; delta_p95 = +25 ms ≤ 50; tail ratio fine.
+    on = _arm("bfs_on", p50=103.0, p95=165.0, p99=195.0, max_ms=390.0)
+    g = evaluate_gate(off, on)
     assert g.passed is True
-    assert g.p50_pass and g.p95_pass and g.p99_pass and g.tail_ratio_pass
+    assert g.delta_p50_pass and g.delta_p95_pass and g.tail_ratio_pass
+    assert g.delta_p50_ms == pytest.approx(3.0)
+    assert g.delta_p95_ms == pytest.approx(25.0)
 
-    bad_p50 = ArmResult(
-        label="bfs_on", samples=100,
-        p50_ms=GATE_P50_MS + 1.0,
-        p95_ms=40.0, p99_ms=80.0,
-        max_ms=90.0, mean_ms=30.0, min_ms=8.0,
-    )
-    assert evaluate_gate(bad_p50).passed is False
 
-    bad_tail = ArmResult(
-        label="bfs_on", samples=100,
-        p50_ms=10.0, p95_ms=40.0, p99_ms=80.0,
-        max_ms=200.0,  # 20× p50 -> tail-ratio fail.
-        mean_ms=15.0, min_ms=8.0,
+def test_evaluate_gate_fails_on_delta_p50_regression():
+    off = _arm("bfs_off", p50=100.0, p95=140.0, p99=180.0, max_ms=400.0)
+    # delta_p50 = GATE_DELTA_P50_MS + 0.1 → fail.
+    on = _arm(
+        "bfs_on",
+        p50=100.0 + GATE_DELTA_P50_MS + 0.1,
+        p95=145.0, p99=185.0, max_ms=400.0,
     )
-    g_tail = evaluate_gate(bad_tail)
-    assert g_tail.tail_ratio_pass is False
-    assert g_tail.passed is False
+    g = evaluate_gate(off, on)
+    assert g.delta_p50_pass is False
+    assert g.passed is False
+
+
+def test_evaluate_gate_fails_on_delta_p95_regression():
+    off = _arm("bfs_off", p50=100.0, p95=140.0, p99=180.0, max_ms=400.0)
+    # delta_p95 = GATE_DELTA_P95_MS + 0.1 → fail.
+    on = _arm(
+        "bfs_on",
+        p50=101.0,
+        p95=140.0 + GATE_DELTA_P95_MS + 0.1,
+        p99=185.0, max_ms=400.0,
+    )
+    g = evaluate_gate(off, on)
+    assert g.delta_p95_pass is False
+    assert g.passed is False
+
+
+def test_evaluate_gate_fails_on_tail_ratio():
+    off = _arm("bfs_off", p50=10.0, p95=40.0, p99=80.0, max_ms=90.0)
+    on = _arm(
+        "bfs_on", p50=10.0, p95=41.0, p99=82.0,
+        # 20× p50 → tail-ratio fail even with negligible deltas.
+        max_ms=200.0,
+    )
+    g = evaluate_gate(off, on)
+    assert g.tail_ratio_pass is False
+    assert g.passed is False
 
 
 def test_main_end_to_end_smoke(tmp_path: Path):

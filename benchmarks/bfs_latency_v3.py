@@ -2,16 +2,22 @@
 
 Measures retrieval p50/p95/p99 latency with and without BFS on a
 ≥10k-belief / ≥25k-edge synthetic store, all v3.0 default lanes
-engaged. Gate per #739:
+engaged.
 
-    p50 ≤ 25 ms with BFS on
-    p95 ≤ 100 ms with BFS on
-    p99 ≤ 250 ms with BFS on
-    max / median ratio ≤ 10x with BFS on
+Gate (per #739 + operator decision in PR #754):
 
-The v1.3 acceptance band (``docs/bfs_multihop.md:518-525``) was
-published against v1.0+v1.2 corpora and has not been re-run on the
-v3.0 stack. This harness is the re-run.
+    delta_p50  ≤  5 ms  (bfs_on − bfs_off)
+    delta_p95  ≤ 50 ms  (bfs_on − bfs_off)
+    max / median ratio ≤ 10x with BFS on (tail sanity)
+
+The original #739 body proposed absolute thresholds (p50 ≤ 25 ms,
+p95 ≤ 100 ms) borrowed from the v1.3 acceptance band published in
+``docs/bfs_multihop.md:518-525``. Run 1 (commit 62ce0b3) showed the
+v3.0 baseline alone already exceeds those absolutes — eight+ minors
+of HRR / BM25F / heat / clustering / posterior-rerank work have
+moved the baseline. The gate was reframed to a **delta** criterion
+in PR #754 so what's measured is what flipping the default actually
+costs, not whether v1.3's absolute band still holds.
 
 Corpus shape
 ------------
@@ -89,10 +95,12 @@ DEFAULT_ITERATIONS_PER_QUERY: Final[int] = 10
 DEFAULT_QUERIES: Final[int] = 30
 DEFAULT_WARMUP_ITERATIONS: Final[int] = 3
 
-# Per #739 acceptance:
-GATE_P50_MS: Final[float] = 25.0
-GATE_P95_MS: Final[float] = 100.0
-GATE_P99_MS: Final[float] = 250.0
+# Gate thresholds per #739 + PR #754 Option 1 reframe.
+# bfs_on − bfs_off, evaluated on the same corpus.
+GATE_DELTA_P50_MS: Final[float] = 5.0
+GATE_DELTA_P95_MS: Final[float] = 50.0
+# Tail-sanity guard on the BFS-on arm — kept from the original
+# #739 spec since a pathological tail isn't bounded by a delta.
 GATE_MAX_OVER_MEDIAN_RATIO: Final[float] = 10.0
 
 # A handful of stop-style words used by the prompt-shape gate
@@ -352,31 +360,43 @@ def time_arm(
 
 @dataclass(frozen=True)
 class GateResult:
-    p50_pass: bool
-    p95_pass: bool
-    p99_pass: bool
-    tail_ratio_pass: bool
+    delta_p50_ms: float
+    delta_p95_ms: float
+    delta_p50_pass: bool
+    delta_p95_pass: bool
     tail_ratio: float
+    tail_ratio_pass: bool
     passed: bool
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
-def evaluate_gate(bfs_on: ArmResult) -> GateResult:
-    """Apply #739's gate conditions to the BFS-on arm."""
-    tail_ratio = bfs_on.max_ms / bfs_on.p50_ms if bfs_on.p50_ms > 0 else float("inf")
-    p50_pass = bfs_on.p50_ms <= GATE_P50_MS
-    p95_pass = bfs_on.p95_ms <= GATE_P95_MS
-    p99_pass = bfs_on.p99_ms <= GATE_P99_MS
+def evaluate_gate(bfs_off: ArmResult, bfs_on: ArmResult) -> GateResult:
+    """Apply the delta-reframed gate (PR #754 Option 1).
+
+    The cost being measured is what flipping `is_bfs_enabled()`
+    default to True adds on top of the same-corpus BFS-off arm —
+    not whether the v1.3 absolute band still holds against the
+    v3.0 retrieval stack.
+    """
+    delta_p50 = bfs_on.p50_ms - bfs_off.p50_ms
+    delta_p95 = bfs_on.p95_ms - bfs_off.p95_ms
+    tail_ratio = (
+        bfs_on.max_ms / bfs_on.p50_ms
+        if bfs_on.p50_ms > 0 else float("inf")
+    )
+    delta_p50_pass = delta_p50 <= GATE_DELTA_P50_MS
+    delta_p95_pass = delta_p95 <= GATE_DELTA_P95_MS
     tail_pass = tail_ratio <= GATE_MAX_OVER_MEDIAN_RATIO
     return GateResult(
-        p50_pass=p50_pass,
-        p95_pass=p95_pass,
-        p99_pass=p99_pass,
-        tail_ratio_pass=tail_pass,
+        delta_p50_ms=delta_p50,
+        delta_p95_ms=delta_p95,
+        delta_p50_pass=delta_p50_pass,
+        delta_p95_pass=delta_p95_pass,
         tail_ratio=tail_ratio,
-        passed=p50_pass and p95_pass and p99_pass and tail_pass,
+        tail_ratio_pass=tail_pass,
+        passed=delta_p50_pass and delta_p95_pass and tail_pass,
     )
 
 
@@ -429,10 +449,9 @@ def _emit_report(
             "max": bfs_on.max_ms - bfs_off.max_ms,
         },
         "gate": gate.to_dict(),
-        "gate_thresholds_ms": {
-            "p50": GATE_P50_MS,
-            "p95": GATE_P95_MS,
-            "p99": GATE_P99_MS,
+        "gate_thresholds": {
+            "delta_p50_ms": GATE_DELTA_P50_MS,
+            "delta_p95_ms": GATE_DELTA_P95_MS,
             "max_over_median_ratio": GATE_MAX_OVER_MEDIAN_RATIO,
         },
     }
@@ -532,7 +551,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-        gate = evaluate_gate(bfs_on)
+        gate = evaluate_gate(bfs_off, bfs_on)
         report = _emit_report(
             corpus=corpus,
             query_count=len(queries),
