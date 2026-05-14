@@ -1,0 +1,138 @@
+{
+  "_calibration_notes": "Single-run capture at git_commit 0e91fd1d (tag v3.0.1). No 3-run variance band (matches v2.2.2 single-run methodology). Tolerance bands per spec: defaults apply (F1 plus or minus 7%, EM plus or minus 10%, latency plus or minus 25%, fallback plus or minus 10%, absolute floor plus or minus 0.02). Headline_cut extended with two non-canonical MAB sub_keys (factconsolidation_sh_262k, factconsolidation_mh_262k) corresponding to mab_adapter.py --source factconsolidation_{sh,mh}_262k variants; the v2.0.0 canonical four MAB splits (Conflict_Resolution, Test_Time_Learning, Long_Range_Understanding, Accurate_Retrieval) and four StructMemEval sub-tasks (location, accounting, recommendations, tree) were NOT re-measured at v3.0.1 and are TBD. StructMemEval below is the single 14-row aggregate, not the v2.0.0 per-sub-task cut. The MAB SH/MH numbers below are below the paper baselines published in mab_adapter.py BASELINES dict; see follow-up regression issue for the architectural diagnosis (BM25 retrieval does not preserve upstream serial-number prefixes that the FACTCONSOLIDATION_PROMPT rubric requires for newest-fact selection). HRR structural lane forced ON via AELFRICE_HRR_STRUCTURAL=1 to match v2.2.2 methodology; v3.0.1 ships with that default OFF pending #437 reproducibility-harness clearance, so this capture is a methodology-matched comparison, not a default-config measurement. Bench fixtures (StructMemEval, MAB HF dataset, LongMemEval, LoCoMo) downloaded fresh per run; not pinned by checksum.",
+  "aelfrice_version": "3.0.1",
+  "captured_at_utc": "2026-05-13T00:00:00Z",
+  "git_commit": "0e91fd1df18c41cc3667e87c89005c7b5cc670d5",
+  "harness_version": "1",
+  "headline_cut": {
+    "locomo": [
+      {
+        "args": [],
+        "sub_key": null
+      }
+    ],
+    "longmemeval": [
+      {
+        "args": [],
+        "sub_key": null
+      }
+    ],
+    "mab": [
+      {
+        "args": ["--split", "Conflict_Resolution", "--source", "factconsolidation_sh_262k"],
+        "sub_key": "factconsolidation_sh_262k"
+      },
+      {
+        "args": ["--split", "Conflict_Resolution", "--source", "factconsolidation_mh_262k"],
+        "sub_key": "factconsolidation_mh_262k"
+      }
+    ],
+    "structmemeval": [
+      {
+        "args": [],
+        "sub_key": null
+      }
+    ]
+  },
+  "label": "v3.0.1 parity",
+  "metric_overrides": {},
+  "results": {
+    "locomo": {
+      "_": {
+        "_elapsed_sec": null,
+        "_status": "ok",
+        "output": {
+          "overall_f1": 0.4088,
+          "total_qa": 1986,
+          "category_f1": {
+            "1": 0.3849,
+            "2": 0.3062,
+            "3": 0.2475,
+            "4": 0.4878,
+            "5": 0.3834
+          },
+          "n_runs": 1,
+          "variance_probed": false
+        }
+      }
+    },
+    "longmemeval": {
+      "_": {
+        "_elapsed_sec": null,
+        "_status": "ok",
+        "output": {
+          "metric": "accuracy",
+          "score_pct": 74.0,
+          "correct": 370,
+          "total": 500,
+          "per_category": {
+            "knowledge-update": {"correct": 63, "total": 78, "accuracy_pct": 80.8},
+            "multi-session": {"correct": 75, "total": 133, "accuracy_pct": 56.4},
+            "single-session-assistant": {"correct": 48, "total": 56, "accuracy_pct": 85.7},
+            "single-session-preference": {"correct": 25, "total": 30, "accuracy_pct": 83.3},
+            "single-session-user": {"correct": 61, "total": 70, "accuracy_pct": 87.1},
+            "temporal-reasoning": {"correct": 98, "total": 133, "accuracy_pct": 73.7}
+          },
+          "strict_rejudge": {
+            "metric": "accuracy",
+            "score_pct": 76.8,
+            "correct": 384,
+            "total": 500,
+            "per_category": {
+              "knowledge-update": {"correct": 66, "total": 78, "accuracy_pct": 84.6},
+              "multi-session": {"correct": 81, "total": 133, "accuracy_pct": 60.9},
+              "single-session-assistant": {"correct": 47, "total": 56, "accuracy_pct": 83.9},
+              "single-session-preference": {"correct": 28, "total": 30, "accuracy_pct": 93.3},
+              "single-session-user": {"correct": 67, "total": 70, "accuracy_pct": 95.7},
+              "temporal-reasoning": {"correct": 95, "total": 133, "accuracy_pct": 71.4}
+            }
+          },
+          "n_runs": 1,
+          "variance_probed": false
+        }
+      }
+    },
+    "mab": {
+      "factconsolidation_sh_262k": {
+        "_elapsed_sec": null,
+        "_status": "ok",
+        "output": {
+          "metric": "substring_exact_match",
+          "score_pct": 57.0,
+          "correct": 57,
+          "total": 100,
+          "n_runs": 1,
+          "variance_probed": false
+        }
+      },
+      "factconsolidation_mh_262k": {
+        "_elapsed_sec": null,
+        "_status": "ok",
+        "output": {
+          "metric": "substring_exact_match",
+          "score_pct": 6.0,
+          "correct": 6,
+          "total": 100,
+          "n_runs": 1,
+          "variance_probed": false
+        }
+      }
+    },
+    "structmemeval": {
+      "_": {
+        "_elapsed_sec": null,
+        "_status": "ok",
+        "output": {
+          "metric": "accuracy",
+          "score_pct": 100.0,
+          "correct": 14,
+          "total": 14,
+          "n_runs": 1,
+          "variance_probed_3run_distribution": [0, 7, 100, 100],
+          "variance_probed_note": "3-run variance probe gave [0%, 7%, 100%, 100%] across 4 attempts; the 14/14 headline is not robust. Treat as inadmissible without multi-run protocol. See follow-up issue for non-robustness diagnosis."
+        }
+      }
+    }
+  },
+  "schema_version": "1.0"
+}
