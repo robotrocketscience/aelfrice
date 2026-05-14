@@ -57,8 +57,8 @@ JSON payload on stdin from the harness.
 3. Calls `hook_search.search_for_prompt(store, prompt,
    token_budget=1500)` (`hook.py` line 139).
    - `search_for_prompt` calls `retrieval.retrieve()` then writes
-     a `feedback_history` row per hit with `valence=0.1,
-     propagate=False` (`hook_search.py` lines 79–80).
+     a `feedback_history` row per hit with `valence=0.1`
+     (`hook_search.py`).
 4. Formats non-empty results as:
    ```
    <aelfrice-memory>

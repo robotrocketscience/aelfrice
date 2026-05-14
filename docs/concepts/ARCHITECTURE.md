@@ -8,7 +8,7 @@ How aelfrice fits together. Maps directly to source under `src/aelfrice/`.
 2. **Stdlib + SQLite only.** No vector DB, no embeddings, no LLM in the hot path. The `[mcp]` extra (`fastmcp`) is the only optional runtime dep.
 3. **Bayesian, not vibes.** Confidence is `α / (α + β)`. Every update has a closed-form rule. At v1.3.0+ the posterior is combined log-additively with BM25 on the L1 tier — see [LIMITATIONS](../user/LIMITATIONS.md) for what the partial ranking does and doesn't cover.
 4. **`apply_feedback` is the central endpoint.** One writer of `(α, β)`. One audit row per successful update.
-5. **Locks are user-asserted ground truth.** A user-locked belief short-circuits decay. Contradicting positive feedback accumulates `demotion_pressure`; ≥5 ⇒ auto-demote.
+5. **Locks are user-asserted ground truth.** A user-locked belief short-circuits decay. Lock correction is an explicit user act via `aelf lock` overwriting (PHILOSOPHY [#605](https://github.com/robotrocketscience/aelfrice/issues/605)); contradiction-driven auto-demotion was removed in [#814](https://github.com/robotrocketscience/aelfrice/issues/814).
 
 ### Enrichment-step boundary
 
@@ -30,7 +30,7 @@ Imports are one-directional — modules lower in the table import from higher.
 | `scoring.py` | `posterior_mean`, `decay`, `relevance_combiner`. Type half-lives. Lock-floor short-circuit. Decay target: Jeffreys `(0.5, 0.5)`. |
 | `store.py` | SQLite WAL + FTS5 + CRUD. `propagate_valence` BFS with broker-confidence attenuation. |
 | `retrieval.py` | `retrieve(store, query, token_budget=2000)` — L0 locked + L2.5 entity-index (v1.3+) + L1 FTS5 BM25/BM25F (BM25F default-on since v1.7.0) with Bayesian log-additive reranking (v1.3+) + L3 BFS multi-hop (v1.3+, default-off) over the L0+L2.5+L1 seed set. L0 never trimmed. |
-| `feedback.py` | `apply_feedback(store, belief_id, valence, source)` — only Bayesian-update path. Writes `feedback_history`. Drives demotion-pressure + auto-demote. |
+| `feedback.py` | `apply_feedback(store, belief_id, valence, source)` — only Bayesian-update path. Writes `feedback_history`. |
 | `contradiction.py` | `resolve_contradiction` — picks a winner per precedence, inserts `SUPERSEDES`, writes audit row. Backs `aelf resolve`. |
 | `correction.py` | No-LLM heuristic correction detector. |
 | `classification.py` | Type priors + regex fallback. Polymorphic onboard state machine. |
@@ -62,7 +62,7 @@ Imports are one-directional — modules lower in the table import from higher.
 
 ## Data model
 
-**Belief** — `id, content, content_hash, alpha, beta, type, lock_level, locked_at, demotion_pressure, origin, session_id, created_at, last_retrieved_at`.
+**Belief** — `id, content, content_hash, alpha, beta, type, lock_level, locked_at, origin, session_id, created_at, last_retrieved_at`.
 
 - `type ∈ {factual, correction, preference, requirement}`
 - `lock_level ∈ {none, user}`
@@ -93,12 +93,10 @@ A separate `POTENTIALLY_STALE` edge type exists as a producer-only signal from `
 `apply_feedback(store, belief_id, valence, source)`:
 
 1. Load belief. Reject zero valence and empty source.
-2. **Positive valence:** `α += valence`. Walk outbound `CONTRADICTS` edges; user-locked destinations get `demotion_pressure += 1`. If pressure ≥ 5 (default), demote.
-3. **Negative valence:** `β += |valence|`. No pressure walk — the β increment already handles it.
+2. **Positive valence:** `α += valence`.
+3. **Negative valence:** `β += |valence|`.
 4. Persist atomically.
 5. Append a `FeedbackEvent` row. Always.
-
-Walk is 1-hop only. Multi-hop pressure is deferred.
 
 ## Retrieval
 
