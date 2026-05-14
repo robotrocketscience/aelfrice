@@ -370,8 +370,17 @@ def accept_classifications(
             skipped_unclassified += 1
             continue
         if not c.persist:
+            # #801: record the rejection so the next `aelf onboard` pass
+            # filters this candidate out instead of re-classifying it.
+            store.insert_onboard_rejection(
+                _derive_belief_id(text, source), text, source, timestamp,
+            )
             skipped_non_persisting += 1
             continue
+        # #801: a persisted sentence may have been previously rejected
+        # and surfaced again via --force. Drop the stale ledger entry so
+        # the ledger only carries currently-rejected candidates.
+        store.delete_onboard_rejection(_derive_belief_id(text, source))
         log_id = store.record_ingest(
             source_kind=INGEST_SOURCE_FILESYSTEM,
             source_path=source,
