@@ -1426,6 +1426,7 @@ def retrieve(
     bm25f_cache: BM25IndexCache | None = None,
     heat_kernel_enabled: bool | None = None,
     eigenbasis_cache: GraphEigenbasisCache | None = None,
+    use_type_aware_compression: bool | None = None,
 ) -> list[Belief]:
     """Return L0 locked + L2.5 entity + L1 BM25 + L3 BFS expansions.
 
@@ -1464,6 +1465,17 @@ def retrieve(
     tier are dropped (the visited-set in `expand_bfs` prevents
     seeds from being re-surfaced; we additionally guard against
     overlap with L1 hits the seeds didn't include).
+
+    `use_type_aware_compression` (#776, v3.1): when True, L2.5 / L1 /
+    BFS pack accounting uses each belief's compressed
+    `rendered_tokens` (via `compress_for_retrieval`) instead of
+    `_belief_tokens(b)`. Locks render verbatim per the strategy
+    table, so L0 accounting is unchanged. Default-OFF — resolver
+    returns False unless env / kwarg / TOML overrides it — so
+    existing callers see byte-identical output. Mirrors the wiring
+    `retrieve_with_tiers` has carried since v2.0 (#434); added to
+    bare `retrieve()` so `rebuild_v14`'s call site observes the
+    toggle that A4 (#775) measures.
     """
     global _LAST_TELEMETRY
     enabled = is_entity_index_enabled(entity_index_enabled)
@@ -1471,6 +1483,19 @@ def retrieve(
     bm25f_on = resolve_use_bm25f_anchors(use_bm25f_anchors)
     weight = resolve_posterior_weight(posterior_weight)
     heat_on = is_heat_kernel_enabled(heat_kernel_enabled)
+    compress_on = resolve_use_type_aware_compression(
+        use_type_aware_compression,
+    )
+
+    def _cost(b: Belief) -> int:
+        """Per-belief pack cost. Compressed render when flag ON,
+        else raw token estimate. Locks render verbatim either way."""
+        if not compress_on:
+            return _belief_tokens(b)
+        cb = compress_for_retrieval(
+            b, locked=(b.lock_level == LOCK_USER),
+        )
+        return cb.rendered_tokens
     # #741 adaptive expansion-gate: cheap deterministic prompt-shape
     # check that short-circuits BFS expansion on broad natural-language
     # prompts. L0 / L1 / L2.5-entity stay on regardless. The gate
@@ -1538,11 +1563,11 @@ def retrieve(
 
     # Token accounting. L0 always survives. L2.5 lands above L1 in
     # the output. L1 trims from the tail.
-    used: int = locked_used + sum(_belief_tokens(b) for b in l25)
+    used: int = locked_used + sum(_cost(b) for b in l25)
     out: list[Belief] = list(locked) + list(l25)
     l1_packed: list[Belief] = []
     for b in l1:
-        cost: int = _belief_tokens(b)
+        cost: int = _cost(b)
         if used + cost > effective_budget:
             break
         out.append(b)
@@ -1568,7 +1593,7 @@ def retrieve(
             for hop in hops:
                 if hop.belief.id in seen_ids:
                     continue
-                cost = _belief_tokens(hop.belief)
+                cost = _cost(hop.belief)
                 if used + cost > effective_budget:
                     break
                 out.append(hop.belief)
