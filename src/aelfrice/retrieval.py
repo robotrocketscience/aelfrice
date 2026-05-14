@@ -98,9 +98,13 @@ from aelfrice.graph_spectral import (
 from aelfrice.models import LOCK_NONE, LOCK_USER, Belief
 from aelfrice.scoring import (
     DEFAULT_POSTERIOR_WEIGHT,
+    ZETA_ALPHA_DEFAULT,
+    ZETA_BETA_DEFAULT,
+    ZETA_SCALE_DEFAULT,
     gamma_posterior_score,
     partial_bayesian_score,
     posterior_mean,
+    zeta_posterior_score,
 )
 from aelfrice.store import MemoryStore
 
@@ -177,6 +181,16 @@ INTENTIONAL_CLUSTERING_FLAG: Final[str] = "use_intentional_clustering"
 USE_GAMMA_POSTERIOR_TEMPERATURE_FLAG: Final[str] = (
     "use_gamma_posterior_temperature"
 )
+# v3.x #817 / #800 ζ rerank flag. Default-OFF, mirrors γ's posture:
+# the flag is plumbing until a labeled relevance corpus exists and
+# the bench panel demonstrates uplift over either log-additive or γ.
+# When ON, `_l1_hits` routes its rerank through `zeta_posterior_score(...)`
+# with pinned `(ZETA_ALPHA_DEFAULT, ZETA_BETA_DEFAULT, ZETA_SCALE_DEFAULT)`
+# from the #800 R&D campaign verdict. ζ + γ are mutually exclusive on
+# any given retrieval call — `retrieve()` / `retrieve_with_tiers()`
+# raise `ValueError` at flag resolution when both are on (the operator
+# decision per issue #817 §"Out of scope" deferred composition).
+USE_ZETA_POSTERIOR_RERANK_FLAG: Final[str] = "use_zeta_posterior_rerank"
 
 PLACEHOLDER_FLAGS: Final[tuple[str, ...]] = (
     SIGNED_LAPLACIAN_FLAG,
@@ -213,6 +227,10 @@ ENV_INTENTIONAL_CLUSTERING: Final[str] = "AELFRICE_INTENTIONAL_CLUSTERING"
 # v3.x #796 γ rerank env override. Tri-state, default-OFF.
 ENV_USE_GAMMA_POSTERIOR_TEMPERATURE: Final[str] = (
     "AELFRICE_USE_GAMMA_POSTERIOR_TEMPERATURE"
+)
+# v3.x #817 ζ rerank env override. Tri-state, default-OFF.
+ENV_USE_ZETA_POSTERIOR_RERANK: Final[str] = (
+    "AELFRICE_USE_ZETA_POSTERIOR_RERANK"
 )
 # v1.3.0 posterior-weight env override. Float-typed; "0.0" is the
 # only value that fully disables (collapsing to BM25-only ordering).
@@ -598,6 +616,21 @@ def _env_use_gamma_posterior_temperature_override() -> bool | None:
     set to a recognised truthy/falsy value, else None. Symmetric to
     `_env_type_aware_compression_override`."""
     raw = os.environ.get(ENV_USE_GAMMA_POSTERIOR_TEMPERATURE)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def _env_use_zeta_posterior_rerank_override() -> bool | None:
+    """Return True/False if AELFRICE_USE_ZETA_POSTERIOR_RERANK is set to a
+    recognised truthy/falsy value, else None. Symmetric to
+    `_env_use_gamma_posterior_temperature_override`."""
+    raw = os.environ.get(ENV_USE_ZETA_POSTERIOR_RERANK)
     if raw is None:
         return None
     norm = raw.strip().lower()
@@ -1764,6 +1797,64 @@ def resolve_posterior_temperature_with_meta(
     return math.exp(log_floor + v * (log_ceil - log_floor))
 
 
+def resolve_use_zeta_posterior_rerank(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the ζ rerank flag (#817 / #800).
+
+    Precedence (first decisive wins):
+      1. AELFRICE_USE_ZETA_POSTERIOR_RERANK env var.
+      2. Explicit `explicit` kwarg from the caller.
+      3. `[retrieval] use_zeta_posterior_rerank` in `.aelfrice.toml`.
+      4. Default: False — ships behind the flag at v3.x. Flip-default
+         is gated on the same labeled relevance corpus as γ's flip,
+         per `docs/feature-zeta-posterior-rerank.md` §
+         "Bench-gate / ship-or-defer policy".
+
+    Mirror of `resolve_use_gamma_posterior_temperature`. The mutual-
+    exclusion with γ is enforced at `retrieve()` /
+    `retrieve_with_tiers()` entry via `_assert_gamma_zeta_mutual_exclusion`
+    after both flags have been resolved — this resolver returns a bool
+    independent of γ's state.
+    """
+    env = _env_use_zeta_posterior_rerank_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    toml_value = _read_toml_flag_for(
+        USE_ZETA_POSTERIOR_RERANK_FLAG, start,
+    )
+    if toml_value is not None:
+        return toml_value
+    return False
+
+
+def _assert_gamma_zeta_mutual_exclusion(
+    gamma_on: bool, zeta_on: bool,
+) -> None:
+    """Raise `ValueError` if both the γ and ζ rerank flags resolve True.
+
+    Composition semantics are deferred per issue #817 §"Out of scope" —
+    the operator decision is "raise at flag resolution, operator picks
+    one". This helper is called from `retrieve()` and
+    `retrieve_with_tiers()` after each flag is resolved independently.
+    """
+    if gamma_on and zeta_on:
+        raise ValueError(
+            "γ and ζ posterior rerank flags are mutually exclusive on a "
+            "given retrieval call. "
+            f"AELFRICE_USE_GAMMA_POSTERIOR_TEMPERATURE / "
+            f"{USE_GAMMA_POSTERIOR_TEMPERATURE_FLAG} resolved True AND "
+            f"AELFRICE_USE_ZETA_POSTERIOR_RERANK / "
+            f"{USE_ZETA_POSTERIOR_RERANK_FLAG} resolved True. "
+            "Pick one. See docs/feature-zeta-posterior-rerank.md § "
+            "'Composition with γ' (issue #817)."
+        )
+
+
 _PLACEHOLDER_WARNED: set[str] = set()
 
 
@@ -2015,6 +2106,7 @@ def _l1_hits(
     eigenbasis_cache: GraphEigenbasisCache | None = None,
     heat_kernel_on: bool = False,
     gamma_temperature: float | None = None,
+    zeta_params: tuple[float, float, float] | None = None,
 ) -> list[Belief]:
     """Run L1: FTS5 BM25 search (default) or BM25F sparse-matvec
     (v1.5.0 opt-in), optionally reranked by partial-Bayesian score.
@@ -2043,6 +2135,16 @@ def _l1_hits(
     a no-op on this call — the two scoring paths are mutually
     exclusive by design (the operator decision deferred composition
     to a later issue).
+
+    `zeta_params` (v3.x #817 / #800): when not None AND `heat_kernel_on`
+    is False (or no eigenbasis is available), the rerank loop swaps
+    `partial_bayesian_score(...)` for
+    `zeta_posterior_score(-raw, ζα, ζβ, ζscale, posterior_mean(α, β))`.
+    The tuple is `(alpha, beta, scale)` in ζ-parameter space (not
+    Beta-Bernoulli α/β). None falls through to the log-additive or γ
+    path; γ and ζ are caller-enforced mutually exclusive — see
+    `_assert_gamma_zeta_mutual_exclusion`. Heat-rerank dominates ζ
+    just as it does γ.
 
     `heat_kernel_on` (v1.7.0): when True AND `eigenbasis_cache` holds a
     non-stale eigenbasis whose `belief_ids` intersect the L1 hit set,
@@ -2127,14 +2229,15 @@ def _l1_hits(
             if b is None:
                 continue
             beliefs.append((b, raw))
-        # γ is opt-in; when set it forces the rerank loop so the
-        # byte-identical short-circuit can't bypass the temperature
-        # reweighting.
+        # γ / ζ are opt-in; when either is set it forces the rerank
+        # loop so the byte-identical short-circuit can't bypass the
+        # posterior reweighting.
         if (
             posterior_weight == 0.0
             and not heat_active
             and not hash_n_literals
             and gamma_temperature is None
+            and zeta_params is None
         ):
             return [b for b, _ in beliefs]
         # BM25F scores are non-negative; the rerank uses `raw` as the
@@ -2163,6 +2266,12 @@ def _l1_hits(
                 s = gamma_posterior_score(
                     -raw, b.alpha, b.beta, gamma_temperature,
                 )
+            elif zeta_params is not None:
+                ζα, ζβ, ζscale = zeta_params
+                s = zeta_posterior_score(
+                    -raw, ζα, ζβ, ζscale,
+                    posterior_mean(b.alpha, b.beta),
+                )
             else:
                 s = partial_bayesian_score(
                     -raw, b.alpha, b.beta, posterior_weight,
@@ -2177,6 +2286,7 @@ def _l1_hits(
         and not heat_active
         and not hash_n_literals
         and gamma_temperature is None
+        and zeta_params is None
     ):
         return store.search_beliefs(query, limit=l1_limit)
     scored = store.search_beliefs_scored(query, limit=l1_limit)
@@ -2206,6 +2316,12 @@ def _l1_hits(
         elif gamma_temperature is not None:
             s = gamma_posterior_score(
                 bm25_raw, b.alpha, b.beta, gamma_temperature,
+            )
+        elif zeta_params is not None:
+            ζα, ζβ, ζscale = zeta_params
+            s = zeta_posterior_score(
+                bm25_raw, ζα, ζβ, ζscale,
+                posterior_mean(b.alpha, b.beta),
             )
         else:
             s = partial_bayesian_score(
@@ -2308,6 +2424,17 @@ def retrieve(
         )
         if gamma_on else None
     )
+    # #817 ζ rerank — same posture as γ. Pinned shape parameters from
+    # the #800 R&D verdict; tunability via TOML/env for α/β/scale is
+    # deferred. γ and ζ are mutually exclusive: when both flags resolve
+    # True, raise at flag-resolution time per issue #817 § "Out of scope"
+    # — the operator decision to defer composition.
+    zeta_on = resolve_use_zeta_posterior_rerank()
+    _assert_gamma_zeta_mutual_exclusion(gamma_on, zeta_on)
+    zeta_params = (
+        (ZETA_ALPHA_DEFAULT, ZETA_BETA_DEFAULT, ZETA_SCALE_DEFAULT)
+        if zeta_on else None
+    )
     compress_on = resolve_use_type_aware_compression(
         use_type_aware_compression,
     )
@@ -2386,6 +2513,7 @@ def retrieve(
             use_bm25f_anchors=bm25f_on, bm25f_cache=bm25f_cache,
             eigenbasis_cache=eigenbasis_cache, heat_kernel_on=heat_on,
             gamma_temperature=gamma_t,
+            zeta_params=zeta_params,
         )
         l1 = [
             b for b in raw_l1
@@ -2527,6 +2655,13 @@ def retrieve_with_tiers(
         )
         if gamma_on else None
     )
+    # #817 ζ rerank — same resolution as `retrieve()`.
+    zeta_on = resolve_use_zeta_posterior_rerank()
+    _assert_gamma_zeta_mutual_exclusion(gamma_on, zeta_on)
+    zeta_params = (
+        (ZETA_ALPHA_DEFAULT, ZETA_BETA_DEFAULT, ZETA_SCALE_DEFAULT)
+        if zeta_on else None
+    )
     # #741 adaptive expansion-gate. Same shape as retrieve(): short-
     # circuit BFS on broad prompts; L0 / L1 / L2.5-entity unaffected.
     # #760: pass store + now_ts for the meta-belief token-threshold
@@ -2598,6 +2733,7 @@ def retrieve_with_tiers(
             use_bm25f_anchors=bm25f_on, bm25f_cache=bm25f_cache,
             eigenbasis_cache=eigenbasis_cache, heat_kernel_on=heat_on,
             gamma_temperature=gamma_t,
+            zeta_params=zeta_params,
         )
         l1 = [
             b for b in raw_l1
