@@ -253,6 +253,52 @@ def test_legit_short_factual_claim_still_ingested(
     assert store.count_beliefs() == 1
 
 
+# --- Length-floor boundary on the three-pattern check --------------------
+
+
+def test_helper_does_not_flag_long_form_prose_ending_with_colon() -> None:
+    """A long sentence ending with `:` is a real prose statement, not
+    a header stub. The gate's pattern check is scoped to short
+    content (< 80 chars stripped); long content survives regardless
+    of the trailing `:`. Without this boundary, prose like the
+    sentence below — 81 chars — would be incorrectly dropped from
+    ingest."""
+    s = ("If you look at the way the rebuilder picks beliefs, "
+         "the order is always the same:")
+    assert len(s) == 81
+    assert _looks_like_subfloor_noise(s) is False
+
+
+def test_helper_does_not_flag_long_bullet_paragraph() -> None:
+    """A long-form belief that happens to start with `- ` (e.g. a
+    list item that survived `extract_sentences`'s leading-marker
+    strip via an edge case) is load-bearing content, not a stub.
+    The length-floor preserves it."""
+    s = ("- Keeps each belief's confidence as a Beta-Bernoulli "
+         "posterior so that confidence updates remain interpretable")
+    assert len(s) >= 80
+    assert _looks_like_subfloor_noise(s) is False
+
+
+def test_helper_flags_short_header_below_floor() -> None:
+    """The pattern check still fires on canonical short header stubs.
+    Sanity-check the boundary in the other direction."""
+    assert _looks_like_subfloor_noise("Acceptance criteria:") is True
+    assert _looks_like_subfloor_noise("```bash") is True
+    assert _looks_like_subfloor_noise("- run tests") is True
+
+
+def test_helper_drops_at_boundary_just_below_floor() -> None:
+    """A 79-char `:`-suffix string drops (< 80). An 80-char string
+    survives (>= 80). The boundary is half-open at 80."""
+    s79 = "x" * 78 + ":"
+    s80 = "x" * 79 + ":"
+    assert len(s79) == 79
+    assert len(s80) == 80
+    assert _looks_like_subfloor_noise(s79) is True
+    assert _looks_like_subfloor_noise(s80) is False
+
+
 def test_ingest_idempotent_on_repeat_under_demotion(
     store: MemoryStore,
 ) -> None:
