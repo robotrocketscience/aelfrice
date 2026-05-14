@@ -351,7 +351,7 @@ def test_ac11_per_query_overhead_within_budget() -> None:
 
 def test_ac12_limitations_md_documents_partial_ranking() -> None:
     repo = Path(__file__).resolve().parents[1]
-    text = (repo / "docs" / "LIMITATIONS.md").read_text(encoding="utf-8")
+    text = (repo / "docs" / "user" / "LIMITATIONS.md").read_text(encoding="utf-8")
     # The v1.3.0 paragraph must mention the formula and the cache
     # invalidation contract.
     assert "v1.3.0" in text
@@ -364,7 +364,7 @@ def test_ac12_limitations_md_documents_partial_ranking() -> None:
 
 def test_ac13_roadmap_links_bayesian_ranking_spec() -> None:
     repo = Path(__file__).resolve().parents[1]
-    text = (repo / "docs" / "ROADMAP.md").read_text(encoding="utf-8")
+    text = (repo / "docs" / "concepts" / "ROADMAP.md").read_text(encoding="utf-8")
     assert "bayesian_ranking.md" in text
 
 

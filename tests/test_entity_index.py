@@ -111,7 +111,7 @@ def isolated_env(
     [
         # file_path POSIX (3 positive)
         ("see src/aelfrice/retrieval.py for details", KIND_FILE_PATH, "src/aelfrice/retrieval.py"),
-        ("docs/concepts/ROADMAP.md notes the milestone", KIND_FILE_PATH, "docs/roadmap.md"),
+        ("docs/concepts/ROADMAP.md notes the milestone", KIND_FILE_PATH, "docs/concepts/roadmap.md"),
         ("the .github/workflows/ci.yml fires on PR", KIND_FILE_PATH, ".github/workflows/ci.yml"),
         # url
         ("see https://example.com/path for docs", KIND_URL, "https://example.com/path"),
