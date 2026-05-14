@@ -177,8 +177,44 @@ Every multi-judge run produces `benchmarks/results/<run-id>/judge_kappa.json`:
 
 - `inter_judge_kappa.min ≥ 0.70` (the **min** across all run-pairs, not the
   mean — a single noisy run-pair shouldn't be averaged out)
-- `hot_start_fidelity_mean ≥ 0.80` (per #592 AC)
+- `hot_start_fidelity_mean ≥ 0.80` (per #592 AC, ratified under the
+  measurement scope below — see "Bench measurement scope")
 - N≥3 runs
+
+### Bench measurement scope
+
+`hot_start_fidelity` measures **rebuilder-pack quality at the limit of a
+cooperative, instructed reader**. It is *not* a measurement of typical
+post-clear recall by an arbitrary host CLI.
+
+The replay prompt assembled by
+`benchmarks/context-rebuilder/eval_harness.py::_assemble_post_clear_prompt`
+prepends `POST_CLEAR_INSTRUCTION` — a conservative cooperative-reader
+instruction that asks the dispatched child task to:
+
+1. Answer the specific question the user_turn asks (no question
+   conflation across adjacent atoms in the rebuild block).
+2. Cite the specific fact from the rebuild block that the user_turn
+   asks about (no dropped facts when the answer is present in pack).
+3. Stay scoped to the user_turn's atom (no cross-contamination from
+   adjacent atoms even when they are present in the pack).
+
+The instruction is deliberately conservative — it does **not** ask the
+reader to recapitulate named atoms verbatim. Verbatim-recap wording was
+rejected (#797) because it would let any pack containing the named
+atoms score 1.0 regardless of pack quality, defeating the bench as a
+regression-detection signal.
+
+**The 0.80 AC bar is ratified against this instructed-reader
+measurement.** When this number falls, that means rebuilder-pack
+quality has regressed *or* the reader instruction has decohered — both
+are signals worth catching. It does not mean a typical un-instructed
+host CLI will recall 0.80 of the same atoms after a clear; that is a
+separate question that, if needed, belongs in a separate AC and
+instrumentation.
+
+Refs: #592 (original AC), #687 / PR #727 (κ commit-3), #777 (κ Run 2),
+#797 (P3 ratification — instructed-reader scope + AC at 0.80).
 
 ### Sample-size caveat
 
