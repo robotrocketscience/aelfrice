@@ -80,14 +80,43 @@ REFERENCE:
 CANDIDATE:
 {actual}
 
+## How to score
+
+1. Identify the specific facts the reference commits to. A specific
+   fact is a concrete atom — a name, path, value, action, or numeric
+   quantity — that the reference is asserting. A reference may commit
+   to one fact or several. Surrounding prose (restating the question,
+   tooling tips, error explanations) is supporting material, not a
+   fact for scoring purposes.
+2. Check whether the candidate, read alone, conveys EVERY specific
+   fact from the reference. Synonyms, paraphrases, equivalent
+   restatements, and reordered phrasing all count as conveying the
+   same fact.
+3. `matched` is true iff a reader of the candidate alone — given no
+   other context — could correctly state each specific fact the
+   reference commits to.
+
+## Worked examples
+
+REFERENCE: "Use binary search; runs in O(log n)."
+Specific facts: "binary search" AND "O(log n)".
+- CANDIDATE "Binary search, which is O(log n)." → matched=true
+- CANDIDATE "Use binary search." → matched=false (omits complexity)
+- CANDIDATE "It's an O(log n) algorithm." → matched=false (omits name)
+
+REFERENCE: "Yes."
+Specific facts: none — the reference commits only to affirmation.
+- CANDIDATE "Yes, that should work." → matched=true
+- CANDIDATE "No." → matched=false (contradicts)
+- CANDIDATE "" → matched=false (empty)
+
+## Verdict
+
 Reply with a single JSON object on one line:
   {{"matched": true|false, "rationale": "<= 240 chars"}}
 
-`matched` is true when the candidate conveys the same factual content
-as the reference (paraphrase, partial restatement, or equivalent
-phrasing all count). It is false when the candidate omits the
-reference's load-bearing claim, contradicts it, or is empty. Do not
-penalize style differences.
+Do not penalize style differences, missing supporting material, or
+extra phrasing not present in the reference.
 """
 """Prompt the host-side dispatcher should send to each off-band call.
 Anchors the judge in a no-retrieval-context posture (contamination
