@@ -166,6 +166,16 @@ TYPE_AWARE_COMPRESSION_FLAG: Final[str] = "use_type_aware_compression"
 # AELFRICE_INTENTIONAL_CLUSTERING=0, or
 # `[retrieval] use_intentional_clustering = false`.
 INTENTIONAL_CLUSTERING_FLAG: Final[str] = "use_intentional_clustering"
+# v3.x #796 γ rerank flag. Default-OFF until a labeled relevance corpus
+# exists and the bench panel (PR@5 + ρ + ordered_top_k_overlap +
+# rank_biased_overlap) demonstrates uplift over log-additive. When ON,
+# `_l1_hits` routes its rerank through `gamma_posterior_score(...)` with
+# `T = resolve_posterior_temperature_with_meta(...)` (defaults to 1.0
+# when the meta-belief is absent — byte-identical to
+# `partial_bayesian_score` at `posterior_weight = 1.0`).
+USE_GAMMA_POSTERIOR_TEMPERATURE_FLAG: Final[str] = (
+    "use_gamma_posterior_temperature"
+)
 
 PLACEHOLDER_FLAGS: Final[tuple[str, ...]] = (
     SIGNED_LAPLACIAN_FLAG,
@@ -199,6 +209,10 @@ HRR_PERSIST_FLAG: Final[str] = "hrr_persist"
 ENV_TYPE_AWARE_COMPRESSION: Final[str] = "AELFRICE_TYPE_AWARE_COMPRESSION"
 # v2.0 #436 intentional-clustering env override. Tri-state.
 ENV_INTENTIONAL_CLUSTERING: Final[str] = "AELFRICE_INTENTIONAL_CLUSTERING"
+# v3.x #796 γ rerank env override. Tri-state, default-OFF.
+ENV_USE_GAMMA_POSTERIOR_TEMPERATURE: Final[str] = (
+    "AELFRICE_USE_GAMMA_POSTERIOR_TEMPERATURE"
+)
 # v1.3.0 posterior-weight env override. Float-typed; "0.0" is the
 # only value that fully disables (collapsing to BM25-only ordering).
 # Empty / non-numeric values fall through to the next precedence
@@ -338,6 +352,28 @@ META_EXPANSION_GATE_TOKEN_THRESHOLD_POSTERIOR_DECAY_SECONDS: Final[int] = (
 ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD: Final[str] = (
     "AELFRICE_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD"
 )
+# ---------------------------------------------------------------------------
+# #796 γ-rerank posterior-temperature meta-belief consumer
+# ---------------------------------------------------------------------------
+# Boltzmann temperature `T` on the posterior log term, consumed by
+# `scoring.gamma_posterior_score`. Bounds `[0.5, 2.0]`; geometric mean
+# is exactly 1.0, so the cold-start decode at `static_default=0.5` is
+# `T = 1.0` — byte-identical to `partial_bayesian_score` with
+# `posterior_weight = 1.0`. Adaptive learning of `T` (the #758 follow-
+# up) is out of scope for #796: this issue ships the surface and the
+# default-OFF flag, and the bench panel records γ vs log-additive
+# under a hardcoded `T = 1.0`. The meta-belief substrate is installed
+# here so the #758 wiring can drop in without a second config flip.
+META_POSTERIOR_TEMPERATURE_KEY: Final[str] = (
+    "meta:retrieval.posterior_temperature"
+)
+POSTERIOR_TEMPERATURE_FLOOR: Final[float] = 0.5
+POSTERIOR_TEMPERATURE_CEIL: Final[float] = 2.0
+# Mid-range so cold-start decodes to `T = 1.0` exactly.
+META_POSTERIOR_TEMPERATURE_STATIC_DEFAULT: Final[float] = 0.5
+# Sub-posterior decay — 30d, matching the rest of the #480 family.
+META_POSTERIOR_TEMPERATURE_POSTERIOR_DECAY_SECONDS: Final[int] = 30 * 24 * 3600
+
 # Number of decimal places used to round `posterior_weight` before
 # inclusion in the cache key. Two callers passing weights that
 # differ by less than this granularity collapse to the same key.
@@ -546,6 +582,21 @@ def _env_intentional_clustering_override() -> bool | None:
     recognised truthy/falsy value, else None. Symmetric to
     `_env_bm25f_override`."""
     raw = os.environ.get(ENV_INTENTIONAL_CLUSTERING)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def _env_use_gamma_posterior_temperature_override() -> bool | None:
+    """Return True/False if AELFRICE_USE_GAMMA_POSTERIOR_TEMPERATURE is
+    set to a recognised truthy/falsy value, else None. Symmetric to
+    `_env_type_aware_compression_override`."""
+    raw = os.environ.get(ENV_USE_GAMMA_POSTERIOR_TEMPERATURE)
     if raw is None:
         return None
     norm = raw.strip().lower()
@@ -1633,6 +1684,83 @@ def resolve_use_intentional_clustering(
     if toml_value is not None:
         return toml_value
     return True
+
+
+def resolve_use_gamma_posterior_temperature(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the γ rerank flag (#796).
+
+    Precedence (first decisive wins):
+      1. AELFRICE_USE_GAMMA_POSTERIOR_TEMPERATURE env var.
+      2. Explicit `explicit` kwarg from the caller.
+      3. `[retrieval] use_gamma_posterior_temperature` in `.aelfrice.toml`.
+      4. Default: False — ships behind the flag at v3.x. Adoption verdict
+         (flip default) is deferred until a labeled relevance corpus
+         exists, per `docs/feature-posterior-temperature.md` §
+         "Bench-gate / ship-or-defer policy".
+    """
+    env = _env_use_gamma_posterior_temperature_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    toml_value = _read_toml_flag_for(
+        USE_GAMMA_POSTERIOR_TEMPERATURE_FLAG, start,
+    )
+    if toml_value is not None:
+        return toml_value
+    return False
+
+
+def resolve_posterior_temperature_with_meta(
+    store: "MemoryStore | None",
+    *,
+    now_ts: int,
+) -> float:
+    """Resolve the γ-rerank Boltzmann temperature `T` (#796).
+
+    Reads `meta:retrieval.posterior_temperature` from the store via
+    `read_meta_belief_value`. Returns:
+
+      * `T = 1.0` when `store` is None or the meta-belief is not
+        installed — the byte-identical-to-log-additive case (γ at
+        `T = 1.0` equals `partial_bayesian_score(..., 1.0)`).
+      * Log-linear decode of the meta-belief value to
+        `[POSTERIOR_TEMPERATURE_FLOOR, POSTERIOR_TEMPERATURE_CEIL]`
+        otherwise. With the static_default of 0.5 the decode lands
+        at the geometric mean 1.0 exactly, so a cold-start install
+        is still byte-identical until evidence accumulates.
+
+    Adaptive learning of `T` is #758's scope; #796 ships the surface
+    and the decoder only. The store read is best-effort — any error
+    falls back to `T = 1.0` rather than raising.
+    """
+    if store is None:
+        return 1.0
+    try:
+        raw = store.read_meta_belief_value(
+            META_POSTERIOR_TEMPERATURE_KEY, now_ts=now_ts,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            "aelfrice retrieval: posterior-temperature meta-belief "
+            f"read failed: {exc}",
+            file=sys.stderr,
+        )
+        return 1.0
+    if raw is None:
+        return 1.0
+    # Clamp the [0, 1] posterior surface value to its valid band before
+    # the log-linear decode. The store contract should already keep it
+    # in-range; the clamp is defensive against future code paths that
+    # write raw values.
+    v = max(0.0, min(1.0, float(raw)))
+    log_floor = math.log(POSTERIOR_TEMPERATURE_FLOOR)
+    log_ceil = math.log(POSTERIOR_TEMPERATURE_CEIL)
+    return math.exp(log_floor + v * (log_ceil - log_floor))
 
 
 _PLACEHOLDER_WARNED: set[str] = set()
