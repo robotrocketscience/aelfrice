@@ -288,7 +288,7 @@ def test_accept_skips_existing_beliefs_inserted_after_session_started(
     store.insert_belief(Belief(
         id=bid, content=s0.text, content_hash="precomputed",
         alpha=1.0, beta=1.0, type=BELIEF_FACTUAL,
-        lock_level=LOCK_NONE, locked_at=None, demotion_pressure=0,
+        lock_level=LOCK_NONE, locked_at=None,
         created_at="2026-04-26T00:30:00Z", last_retrieved_at=None,
     ))
     cls = [HostClassification(

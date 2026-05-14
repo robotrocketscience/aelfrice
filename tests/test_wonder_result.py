@@ -271,15 +271,13 @@ def _seed_db(db: Path) -> str:
         s.insert_belief(Belief(
             id=bid, content="python uses indentation",
             content_hash="h1", alpha=1.0, beta=1.0,
-            type=BELIEF_FACTUAL, lock_level=LOCK_NONE, locked_at=None,
-            demotion_pressure=0, created_at="2026-05-11T00:00:00Z",
+            type=BELIEF_FACTUAL, lock_level=LOCK_NONE, locked_at=None, created_at="2026-05-11T00:00:00Z",
             last_retrieved_at=None, origin=ORIGIN_AGENT_INFERRED,
         ))
         s.insert_belief(Belief(
             id=bid2, content="indentation defines code blocks",
             content_hash="h2", alpha=1.0, beta=1.0,
-            type=BELIEF_FACTUAL, lock_level=LOCK_NONE, locked_at=None,
-            demotion_pressure=0, created_at="2026-05-11T00:00:00Z",
+            type=BELIEF_FACTUAL, lock_level=LOCK_NONE, locked_at=None, created_at="2026-05-11T00:00:00Z",
             last_retrieved_at=None, origin=ORIGIN_AGENT_INFERRED,
         ))
         s.insert_edge(Edge(src=bid, dst=bid2, type=EDGE_RELATES_TO, weight=1.0))

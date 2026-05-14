@@ -303,7 +303,6 @@ def _mk_belief(bid: str, content: str) -> Belief:
         type=BELIEF_FACTUAL,
         lock_level=LOCK_NONE,
         locked_at=None,
-        demotion_pressure=0,
         created_at="2023-11-14T22:13:20+00:00",
         last_retrieved_at=None,
         retention_class=RETENTION_FACT,

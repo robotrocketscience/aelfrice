@@ -281,8 +281,8 @@ class Belief:
     """A unit of memory with Bayesian confidence and lock state.
 
     Fields: id, content, content_hash, alpha, beta, type, lock_level,
-    locked_at, demotion_pressure, created_at, last_retrieved_at,
-    session_id, origin, hibernation_score, activation_condition.
+    locked_at, created_at, last_retrieved_at, session_id, origin,
+    hibernation_score, activation_condition.
 
     `session_id` (v1.2+) tags the belief with the ingest session that
     inserted it. Optional: ingest paths that don't open a session
@@ -321,7 +321,6 @@ class Belief:
     type: str
     lock_level: str
     locked_at: str | None
-    demotion_pressure: int
     created_at: str
     last_retrieved_at: str | None
     session_id: str | None = None

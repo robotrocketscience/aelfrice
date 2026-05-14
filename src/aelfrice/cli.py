@@ -1612,7 +1612,6 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
             if existing is not None:
                 existing.lock_level = LOCK_USER
                 existing.locked_at = now
-                existing.demotion_pressure = 0
                 existing.origin = ORIGIN_USER_STATED
                 store.update_belief(existing)
             print(f"upgraded existing belief to lock: {actual_id}", file=out)  # type: ignore[arg-type]

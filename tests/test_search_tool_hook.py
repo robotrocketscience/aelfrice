@@ -66,7 +66,6 @@ def _seed_belief(db_path: Path, content: str, *, locked: bool = False) -> str:
         type=BELIEF_FACTUAL,
         lock_level=LOCK_USER if locked else LOCK_NONE,
         locked_at="2026-04-27T00:00:00Z" if locked else None,
-        demotion_pressure=0,
         created_at="2026-04-27T00:00:00Z",
         last_retrieved_at=None,
     )

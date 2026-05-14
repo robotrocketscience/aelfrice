@@ -42,7 +42,6 @@ def _mk_belief(
         type=BELIEF_FACTUAL,
         lock_level=LOCK_NONE,
         locked_at=None,
-        demotion_pressure=0,
         created_at="2026-05-02T00:00:00Z",
         last_retrieved_at=None,
         retention_class=retention_class,
@@ -64,8 +63,7 @@ def test_retention_classes_has_four_values() -> None:
 def test_belief_default_retention_class_is_unknown() -> None:
     b = Belief(
         id="x", content="c", content_hash="h", alpha=1.0, beta=1.0,
-        type=BELIEF_FACTUAL, lock_level=LOCK_NONE, locked_at=None,
-        demotion_pressure=0, created_at="2026-05-02T00:00:00Z",
+        type=BELIEF_FACTUAL, lock_level=LOCK_NONE, locked_at=None, created_at="2026-05-02T00:00:00Z",
         last_retrieved_at=None,
     )
     # Default exists so callers that don't yet know about retention_class
@@ -118,11 +116,10 @@ def test_check_constraint_rejects_direct_sql_garbage(
             """
             INSERT INTO beliefs (
                 id, content, content_hash, alpha, beta, type,
-                lock_level, locked_at, demotion_pressure,
-                created_at, last_retrieved_at, retention_class
+                lock_level, locked_at, created_at, last_retrieved_at, retention_class
             ) VALUES (
                 'raw', 'c', 'h_raw', 1.0, 1.0, 'factual',
-                'none', NULL, 0, '2026-05-02T00:00:00Z', NULL,
+                'none', NULL, '2026-05-02T00:00:00Z', NULL,
                 'totally_invalid'
             )
             """
@@ -172,11 +169,10 @@ def test_pre_290_store_opens_cleanly_and_backfills_unknown(
         """
         INSERT INTO beliefs (
             id, content, content_hash, alpha, beta, type,
-            lock_level, locked_at, demotion_pressure,
-            created_at, last_retrieved_at, origin
+            lock_level, locked_at, created_at, last_retrieved_at, origin
         ) VALUES (
             'pre', 'old content', 'h_pre', 1.0, 1.0, 'factual',
-            'none', NULL, 0, '2026-04-01T00:00:00Z', NULL, 'unknown'
+            'none', NULL, '2026-04-01T00:00:00Z', NULL, 'unknown'
         )
         """
     )

@@ -68,7 +68,6 @@ def _mk(
         type=BELIEF_FACTUAL,
         lock_level=lock_level,
         locked_at=locked_at,
-        demotion_pressure=0,
         created_at="2026-04-26T00:00:00Z",
         last_retrieved_at=None,
         session_id=session_id,
@@ -275,7 +274,6 @@ def test_issue_281_dedup_collapses_duplicates_in_retrieved_lists(
                 content_hash="SHARED_HASH",
                 alpha=1.0, beta=1.0, type=BELIEF_FACTUAL,
                 lock_level=LOCK_NONE, locked_at=None,
-                demotion_pressure=0,
                 created_at="2026-04-26T00:00:00Z",
                 last_retrieved_at=None,
             )
@@ -319,7 +317,6 @@ def test_issue_281_locked_takes_precedence_over_dup_l1_hits(
             alpha=1.0, beta=1.0, type=BELIEF_FACTUAL,
             lock_level=LOCK_USER,
             locked_at="2026-04-26T00:00:00Z",
-            demotion_pressure=0,
             created_at="2026-04-26T00:00:00Z",
             last_retrieved_at=None,
         )
@@ -328,7 +325,6 @@ def test_issue_281_locked_takes_precedence_over_dup_l1_hits(
             content_hash="H1",
             alpha=1.0, beta=1.0, type=BELIEF_FACTUAL,
             lock_level=LOCK_NONE, locked_at=None,
-            demotion_pressure=0,
             created_at="2026-04-26T00:00:00Z",
             last_retrieved_at=None,
         )

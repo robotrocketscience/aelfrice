@@ -40,7 +40,6 @@ def _mk(
     origin: str = ORIGIN_AGENT_INFERRED,
     alpha: float = 1.0,
     beta: float = 1.0,
-    demotion_pressure: int = 0,
 ) -> Belief:
     return Belief(
         id=bid,
@@ -51,7 +50,6 @@ def _mk(
         type=BELIEF_FACTUAL,
         lock_level=lock,
         locked_at=locked_at,
-        demotion_pressure=demotion_pressure,
         created_at="2026-05-01T00:00:00Z",
         last_retrieved_at=None,
         origin=origin,
@@ -97,15 +95,6 @@ def test_unlock_clears_locked_at() -> None:
     after = s.get_belief("A")
     assert after is not None
     assert after.locked_at is None
-
-
-def test_unlock_clears_demotion_pressure() -> None:
-    b = _locked_belief("A", demotion_pressure=3)
-    s = _seed(b)
-    unlock(s, "A")
-    after = s.get_belief("A")
-    assert after is not None
-    assert after.demotion_pressure == 0
 
 
 def test_unlock_does_not_touch_origin() -> None:

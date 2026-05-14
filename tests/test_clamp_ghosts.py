@@ -46,7 +46,6 @@ def _mk(bid: str, *, alpha: float = 1.0, beta: float = 1.0, lock: str = LOCK_NON
         type=BELIEF_FACTUAL,
         lock_level=lock,
         locked_at=("2026-04-01T00:00:00Z" if lock != LOCK_NONE else None),
-        demotion_pressure=0,
         created_at="2026-04-26T00:00:00Z",
         last_retrieved_at=None,
         session_id=None,

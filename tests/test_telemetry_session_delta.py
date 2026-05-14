@@ -76,7 +76,6 @@ def _belief(
         type=btype,
         lock_level=LOCK_NONE,
         locked_at=None,
-        demotion_pressure=0,
         created_at=_FIXED_NOW.isoformat(),
         last_retrieved_at=None,
         session_id=session_id,

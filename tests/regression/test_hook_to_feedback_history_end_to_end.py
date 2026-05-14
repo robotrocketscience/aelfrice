@@ -49,7 +49,6 @@ def _mk(
         type=BELIEF_FACTUAL,
         lock_level=lock_level,
         locked_at=locked_at,
-        demotion_pressure=0,
         created_at="2026-04-26T00:00:00Z",
         last_retrieved_at=None,
     )
@@ -158,7 +157,6 @@ def test_hook_fire_does_not_pressure_locked_contradictors(
     finally:
         s2.close()
     assert locked is not None
-    assert locked.demotion_pressure == 0
     assert locked.lock_level == LOCK_USER
 
 

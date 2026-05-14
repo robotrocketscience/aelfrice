@@ -49,7 +49,6 @@ def _mk(
         type=btype,
         lock_level=lock,
         locked_at=locked_at,
-        demotion_pressure=0,
         created_at=created_at,
         last_retrieved_at=None,
         origin=origin,

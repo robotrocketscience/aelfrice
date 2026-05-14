@@ -256,17 +256,6 @@ def test_inserted_belief_alpha_below_user_prior(tmp_path: Path) -> None:
     assert b.alpha < 3.0
 
 
-def test_inserted_belief_demotion_pressure_zero(tmp_path: Path) -> None:
-    (tmp_path / "README.md").write_text(
-        "the project ships only the regex fallback at v0.5",
-        encoding="utf-8",
-    )
-    s = MemoryStore(":memory:")
-    scan_repo(s, tmp_path)
-    b = s.search_beliefs("regex")[0]
-    assert b.demotion_pressure == 0
-
-
 # --- session_id propagation (#192) -------------------------------------
 
 

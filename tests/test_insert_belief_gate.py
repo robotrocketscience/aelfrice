@@ -50,7 +50,6 @@ def _belief(bid: str = "b" * 16, content: str = "alpha gate test") -> Belief:
         type=BELIEF_FACTUAL,
         lock_level=LOCK_NONE,
         locked_at=None,
-        demotion_pressure=0,
         created_at="2026-05-08T00:00:00+00:00",
         last_retrieved_at=None,
         session_id=None,

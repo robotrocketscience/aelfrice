@@ -140,7 +140,6 @@ def wonder_ingest(
             type=BELIEF_SPECULATIVE,
             lock_level=LOCK_NONE,
             locked_at=None,
-            demotion_pressure=0,
             created_at=now,
             last_retrieved_at=None,
             session_id=session_id,

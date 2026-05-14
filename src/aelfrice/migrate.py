@@ -94,7 +94,6 @@ def _read_legacy_beliefs(conn: sqlite3.Connection) -> list[Belief]:
             type=row["type"],
             lock_level=row["lock_level"],
             locked_at=row["locked_at"],
-            demotion_pressure=int(row["demotion_pressure"]),
             created_at=row["created_at"],
             last_retrieved_at=row["last_retrieved_at"],
             origin=row["origin"] if has_origin else ORIGIN_UNKNOWN,

@@ -68,7 +68,6 @@ def _mk(
         type=type_,
         lock_level=lock_level,
         locked_at=None,
-        demotion_pressure=0,
         created_at="2026-01-01T00:00:00Z",
         last_retrieved_at=None,
         session_id=session_id,
@@ -256,7 +255,6 @@ def test_autolock_candidates_mutates_in_place(tmp_path: Path) -> None:
         assert b.lock_level == LOCK_USER
         assert b.origin == ORIGIN_USER_STATED
         assert b.locked_at is not None
-        assert b.demotion_pressure == 0
     finally:
         s.close()
 

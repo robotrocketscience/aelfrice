@@ -141,9 +141,9 @@ def _seed_duplicates(path: str) -> None:
     # Canonical (older created_at).
     con.execute(
         "INSERT INTO beliefs (id, content, content_hash, alpha, beta, type, "
-        "lock_level, demotion_pressure, created_at, origin) "
+        "lock_level, created_at, origin) "
         "VALUES ('can-001', 'Sky is blue.', 'hash-sky', 2.0, 3.0, 'factual', "
-        "'none', 0, '2026-01-01T00:00:00Z', 'agent_inferred')"
+        "'none', '2026-01-01T00:00:00Z', 'agent_inferred')"
     )
     con.execute(
         "INSERT INTO beliefs_fts (id, content) VALUES ('can-001', 'Sky is blue.')"
@@ -151,9 +151,9 @@ def _seed_duplicates(path: str) -> None:
     # Duplicate (newer created_at).
     con.execute(
         "INSERT INTO beliefs (id, content, content_hash, alpha, beta, type, "
-        "lock_level, demotion_pressure, created_at, origin) "
+        "lock_level, created_at, origin) "
         "VALUES ('dup-001', 'Sky is blue.', 'hash-sky', 1.0, 1.0, 'factual', "
-        "'user', 0, '2026-02-01T00:00:00Z', 'user_stated')"
+        "'user', '2026-02-01T00:00:00Z', 'user_stated')"
     )
     con.execute(
         "INSERT INTO beliefs_fts (id, content) VALUES ('dup-001', 'Sky is blue.')"
@@ -392,8 +392,8 @@ def _seed_duplicates_with_real_fk(path: str) -> None:
     for bid, content, ch, created in rows:
         con.execute(
             "INSERT INTO beliefs (id, content, content_hash, alpha, beta, "
-            "type, lock_level, demotion_pressure, created_at, origin) "
-            "VALUES (?, ?, ?, 1.0, 1.0, 'factual', 'none', 0, ?, "
+            "type, lock_level, created_at, origin) "
+            "VALUES (?, ?, ?, 1.0, 1.0, 'factual', 'none', ?, "
             "'agent_remembered')",
             (bid, content, ch, created),
         )

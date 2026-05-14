@@ -2259,7 +2259,6 @@ def _autolock_candidates(
         try:
             b.lock_level = LOCK_USER
             b.locked_at = now
-            b.demotion_pressure = 0
             b.origin = ORIGIN_USER_STATED
             store.update_belief(b)
             locked += 1

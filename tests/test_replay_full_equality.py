@@ -168,14 +168,14 @@ def test_origin_null_backfill_cohort(store: MemoryStore) -> None:
         """
         INSERT INTO beliefs (
             id, content, content_hash, alpha, beta, type, lock_level,
-            locked_at, demotion_pressure, created_at, last_retrieved_at,
+            locked_at, created_at, last_retrieved_at,
             session_id, origin
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unknown')
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unknown')
         """,
         (
             b.id, b.content, b.content_hash,
             b.alpha, b.beta, b.type, b.lock_level,
-            b.locked_at, b.demotion_pressure, b.created_at,
+            b.locked_at, b.created_at,
             b.last_retrieved_at, b.session_id,
         ),
     )
@@ -438,14 +438,14 @@ def test_has_drift_false_when_legacy_backfill_only(store: MemoryStore) -> None:
         """
         INSERT INTO beliefs (
             id, content, content_hash, alpha, beta, type, lock_level,
-            locked_at, demotion_pressure, created_at, last_retrieved_at,
+            locked_at, created_at, last_retrieved_at,
             session_id, origin
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unknown')
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unknown')
         """,
         (
             b.id, b.content, b.content_hash,
             b.alpha, b.beta, b.type, b.lock_level,
-            b.locked_at, b.demotion_pressure, b.created_at,
+            b.locked_at, b.created_at,
             b.last_retrieved_at, b.session_id,
         ),
     )

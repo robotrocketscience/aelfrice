@@ -57,7 +57,6 @@ def _seed_belief(
             type=BELIEF_FACTUAL,
             lock_level=lock_level,
             locked_at=None,
-            demotion_pressure=0,
             created_at="2026-05-05T00:00:00Z",
             last_retrieved_at=None,
             origin=ORIGIN_AGENT_INFERRED,
@@ -291,7 +290,7 @@ def test_delete_cascades_outgoing_edges(isolated_db: Path) -> None:
             id=src_id, content="source belief",
             content_hash="hash_src", alpha=1.0, beta=1.0,
             type=BELIEF_FACTUAL, lock_level=LOCK_NONE,
-            locked_at=None, demotion_pressure=0,
+            locked_at=None,
             created_at="2026-05-05T00:00:00Z",
             last_retrieved_at=None, origin=ORIGIN_AGENT_INFERRED,
         ))
@@ -299,7 +298,7 @@ def test_delete_cascades_outgoing_edges(isolated_db: Path) -> None:
             id=dst_id, content="destination belief",
             content_hash="hash_dst", alpha=1.0, beta=1.0,
             type=BELIEF_FACTUAL, lock_level=LOCK_NONE,
-            locked_at=None, demotion_pressure=0,
+            locked_at=None,
             created_at="2026-05-05T00:00:00Z",
             last_retrieved_at=None, origin=ORIGIN_AGENT_INFERRED,
         ))
@@ -329,7 +328,7 @@ def test_delete_cascades_incoming_edges(isolated_db: Path) -> None:
             id=src_id, content="source belief for incoming test",
             content_hash="hash_src2", alpha=1.0, beta=1.0,
             type=BELIEF_FACTUAL, lock_level=LOCK_NONE,
-            locked_at=None, demotion_pressure=0,
+            locked_at=None,
             created_at="2026-05-05T00:00:00Z",
             last_retrieved_at=None, origin=ORIGIN_AGENT_INFERRED,
         ))
@@ -337,7 +336,7 @@ def test_delete_cascades_incoming_edges(isolated_db: Path) -> None:
             id=dst_id, content="destination belief for incoming test",
             content_hash="hash_dst2", alpha=1.0, beta=1.0,
             type=BELIEF_FACTUAL, lock_level=LOCK_NONE,
-            locked_at=None, demotion_pressure=0,
+            locked_at=None,
             created_at="2026-05-05T00:00:00Z",
             last_retrieved_at=None, origin=ORIGIN_AGENT_INFERRED,
         ))

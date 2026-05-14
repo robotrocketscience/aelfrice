@@ -506,7 +506,7 @@ def _make_legacy_db(path: Path, belief_count: int = 3) -> None:
         con.execute(
             "INSERT INTO beliefs "
             "(id, content, content_hash, alpha, beta, type, lock_level, "
-            " demotion_pressure, created_at) "
+            "demotion_pressure, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 f"belief-{i:06d}",

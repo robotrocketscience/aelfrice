@@ -57,7 +57,6 @@ def _belief(
         type=BELIEF_FACTUAL,
         lock_level=lock_level,
         locked_at="2026-05-11T00:00:00Z" if lock_level == LOCK_USER else None,
-        demotion_pressure=0,
         created_at="2026-05-11T00:00:00Z",
         last_retrieved_at=None,
         origin=origin,

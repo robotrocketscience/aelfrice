@@ -75,7 +75,6 @@ def _mk(
         type=BELIEF_FACTUAL,
         lock_level=lock_level,
         locked_at=locked_at,
-        demotion_pressure=0,
         created_at="2026-04-26T00:00:00Z",
         last_retrieved_at=None,
     )
@@ -414,10 +413,10 @@ def test_ac6_v10_fixture_opens_and_backfills(tmp_path: Path) -> None:
     """)
     conn.execute(
         "INSERT INTO beliefs (id, content, content_hash, alpha, beta, "
-        "type, lock_level, locked_at, demotion_pressure, created_at, "
+        "type, lock_level, locked_at, created_at, "
         "last_retrieved_at) VALUES "
         "('B1', 'mentions aelfrice.retrieval and src/foo.py', 'h', "
-        "1.0, 1.0, 'factual', 'none', NULL, 0, '2026-01-01T00:00:00Z', NULL)"
+        "1.0, 1.0, 'factual', 'none', NULL, '2026-01-01T00:00:00Z', NULL)"
     )
     conn.execute(
         "INSERT INTO beliefs_fts (id, content) VALUES "

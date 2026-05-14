@@ -56,7 +56,6 @@ def _mk(bid: str, content: str = "") -> Belief:
         type=BELIEF_FACTUAL,
         lock_level=LOCK_NONE,
         locked_at=None,
-        demotion_pressure=0,
         created_at="2026-04-26T00:00:00Z",
         last_retrieved_at=None,
         session_id=None,
@@ -394,7 +393,6 @@ def test_propagate_off_locked_neighbours_unchanged() -> None:
         content_hash="hY", alpha=1.0, beta=1.0,
         type=BELIEF_FACTUAL, lock_level="user",
         locked_at="2026-04-26T00:00:00Z",
-        demotion_pressure=0,
         created_at="2026-04-26T00:00:00Z",
         last_retrieved_at=None,
         session_id=None,
@@ -412,5 +410,4 @@ def test_propagate_off_locked_neighbours_unchanged() -> None:
     # Y's pressure must be untouched: implicit signals do not propagate.
     y = s.get_belief("Y")
     assert y is not None
-    assert y.demotion_pressure == 0
     assert y.lock_level == "user"

@@ -62,7 +62,6 @@ def _seed_store(db_path: Path) -> MemoryStore:
             type=BELIEF_FACTUAL,
             lock_level=LOCK_NONE,
             locked_at=None,
-            demotion_pressure=0,
             created_at=_TS,
             last_retrieved_at=None,
             origin=ORIGIN_AGENT_INFERRED,

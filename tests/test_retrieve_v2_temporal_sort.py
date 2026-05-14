@@ -41,7 +41,6 @@ def _belief(
         type=BELIEF_FACTUAL,
         lock_level=LOCK_USER if locked else LOCK_NONE,
         locked_at=created.isoformat() if locked else None,
-        demotion_pressure=0,
         created_at=created.isoformat(),
         last_retrieved_at=None,
     )

@@ -53,7 +53,6 @@ def _mk(bid: str, *, locked: bool = False) -> Belief:
         type=BELIEF_FACTUAL,
         lock_level=LOCK_USER if locked else LOCK_NONE,
         locked_at="2026-05-08T00:00:00+00:00" if locked else None,
-        demotion_pressure=0,
         created_at="2026-05-08T00:00:00+00:00",
         last_retrieved_at=None,
     )

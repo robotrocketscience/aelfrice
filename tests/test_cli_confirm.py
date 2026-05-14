@@ -43,7 +43,6 @@ def _seed_belief(db: Path, content: str, bid: str = "aabbccddeeff") -> str:
             id=bid, content=content, content_hash="testhash",
             alpha=1.0, beta=1.0, type=BELIEF_FACTUAL,
             lock_level=LOCK_NONE, locked_at=None,
-            demotion_pressure=0,
             created_at="2026-05-05T00:00:00Z",
             last_retrieved_at=None,
             origin=ORIGIN_AGENT_INFERRED,

@@ -52,23 +52,21 @@ def _seed_v1_0_store(path: Path) -> None:
             """
             INSERT INTO beliefs (
                 id, content, content_hash, alpha, beta, type,
-                lock_level, locked_at, demotion_pressure,
-                created_at, last_retrieved_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                lock_level, locked_at, created_at, last_retrieved_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             ("legacy1", "old belief", "h", 1.0, 1.0, "factual",
-             LOCK_NONE, None, 0, "2025-01-01T00:00:00+00:00", None),
+             LOCK_NONE, None, "2025-01-01T00:00:00+00:00", None),
         )
         conn.execute(
             """
             INSERT INTO beliefs (
                 id, content, content_hash, alpha, beta, type,
-                lock_level, locked_at, demotion_pressure,
-                created_at, last_retrieved_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                lock_level, locked_at, created_at, last_retrieved_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             ("legacy2", "another", "h2", 1.0, 1.0, "factual",
-             LOCK_NONE, None, 0, "2025-01-02T00:00:00+00:00", None),
+             LOCK_NONE, None, "2025-01-02T00:00:00+00:00", None),
         )
         conn.execute(
             "INSERT INTO edges (src, dst, type, weight) VALUES (?, ?, ?, ?)",

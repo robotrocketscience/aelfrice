@@ -30,7 +30,6 @@ def _belief(bid: str, content_hash: str) -> Belief:
         type=BELIEF_FACTUAL,
         lock_level=LOCK_NONE,
         locked_at=None,
-        demotion_pressure=0,
         created_at="2026-04-28T00:00:00Z",
         last_retrieved_at=None,
     )
@@ -49,8 +48,8 @@ def test_fresh_store_rejects_duplicate_content_hash() -> None:
         with pytest.raises(sqlite3.IntegrityError):
             store._conn.execute(  # type: ignore[reportPrivateUsage]
                 "INSERT INTO beliefs (id, content, content_hash, alpha, beta, "
-                "type, lock_level, demotion_pressure, created_at, origin) "
-                "VALUES (?, ?, ?, 1.0, 1.0, 'factual', 'none', 0, "
+                "type, lock_level, created_at, origin) "
+                "VALUES (?, ?, ?, 1.0, 1.0, 'factual', 'none', "
                 "'2026-04-28T00:00:00Z', 'unknown')",
                 ("id-002", "different content", "hash-aaa"),
             )
@@ -124,9 +123,9 @@ def test_unique_enforced_after_migration(tmp_path: Path) -> None:
         with pytest.raises(sqlite3.IntegrityError):
             store._conn.execute(  # type: ignore[reportPrivateUsage]
                 "INSERT INTO beliefs (id, content, content_hash, alpha, beta, "
-                "type, lock_level, demotion_pressure, created_at, origin) "
+                "type, lock_level, created_at, origin) "
                 "VALUES ('new-999', 'x', 'hash-sky', 1.0, 1.0, "
-                "'factual', 'none', 0, '2026-04-28T00:00:00Z', 'unknown')"
+                "'factual', 'none', '2026-04-28T00:00:00Z', 'unknown')"
             )
     finally:
         store.close()

@@ -47,7 +47,6 @@ def _all_beliefs(store: MemoryStore) -> list[Belief]:
                 type=row["type"],
                 lock_level=row["lock_level"],
                 locked_at=row["locked_at"],
-                demotion_pressure=row["demotion_pressure"],
                 created_at=row["created_at"],
                 last_retrieved_at=row["last_retrieved_at"],
                 origin=row["origin"] if "origin" in row.keys() else "unknown",

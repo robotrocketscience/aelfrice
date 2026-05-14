@@ -16,7 +16,6 @@ def _b(id_: str, session_id: str | None = None) -> Belief:
         type="factual",
         lock_level=LOCK_NONE,
         locked_at=None,
-        demotion_pressure=0,
         created_at="2026-04-27T00:00:00+00:00",
         last_retrieved_at=None,
         session_id=session_id,

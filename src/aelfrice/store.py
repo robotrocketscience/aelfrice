@@ -7,10 +7,6 @@ table mirrors `beliefs.content` for keyword retrieval.
 Broker-confidence attenuation: each hop through an intermediate belief is
 dampened by that belief's alpha/(alpha+beta), so low-confidence brokers
 absorb propagation rather than amplify it.
-
-`demotion_pressure` is both written and read end-to-end here; the test
-suite locks that behaviour in from day one
-(see tests/test_demotion_pressure.py).
 """
 from __future__ import annotations
 
@@ -166,7 +162,6 @@ _SCHEMA: tuple[str, ...] = (
         type                TEXT NOT NULL,
         lock_level          TEXT NOT NULL,
         locked_at           TEXT,
-        demotion_pressure   INTEGER NOT NULL DEFAULT 0,
         created_at          TEXT NOT NULL,
         last_retrieved_at   TEXT,
         session_id          TEXT,
@@ -570,6 +565,16 @@ _MIGRATIONS: tuple[str, ...] = (
     # with CHECK is brittle across SQLite versions; Python-side
     # BELIEF_SCOPES validates writes.
     "ALTER TABLE beliefs ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'",
+    # v3.1 #814: drop the contradict-edge auto-demote machinery. The
+    # column was always-zero in practice (zero CONTRADICTS edges
+    # against any locked belief across production lifetime) and the
+    # mechanism conflicts with locked PHILOSOPHY #605
+    # (dedup/contradiction in the consuming agent, not aelfrice).
+    # SQLite >= 3.35 supports DROP COLUMN; the migration loop's
+    # OperationalError handler catches "no such column" on a v3.1-fresh
+    # DB (the column was never created) the same way it catches
+    # "duplicate column name" on prior ALTER TABLE ADD COLUMN entries.
+    "ALTER TABLE beliefs DROP COLUMN demotion_pressure",
 )
 
 # Indexes that depend on migrated columns. Run after _MIGRATIONS so
@@ -648,7 +653,6 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
         type=row["type"],
         lock_level=row["lock_level"],
         locked_at=row["locked_at"],
-        demotion_pressure=row["demotion_pressure"],
         created_at=row["created_at"],
         last_retrieved_at=row["last_retrieved_at"],
         session_id=row["session_id"],
@@ -794,10 +798,17 @@ class MemoryStore:
             try:
                 self._conn.execute(stmt)
             except sqlite3.OperationalError as e:
-                # "duplicate column name: X" — column already present
-                # (either from CREATE TABLE on a fresh v1.2 DB or from
-                # a previous migration pass). Anything else re-raises.
-                if "duplicate column name" not in str(e):
+                # Idempotency catches:
+                #   - "duplicate column name: X" — ADD COLUMN already
+                #     present (fresh v1.2 DB or prior migration pass).
+                #   - "no such column: X" — DROP COLUMN already done
+                #     (fresh DB that never had the column, or prior
+                #     migration pass).
+                msg = str(e)
+                if (
+                    "duplicate column name" not in msg
+                    and "no such column" not in msg
+                ):
                     raise
         for stmt in _POST_MIGRATION_INDEXES:
             self._conn.execute(stmt)
@@ -1752,15 +1763,15 @@ class MemoryStore:
             """
             INSERT INTO beliefs (
                 id, content, content_hash, alpha, beta, type,
-                lock_level, locked_at, demotion_pressure,
+                lock_level, locked_at,
                 created_at, last_retrieved_at, session_id, origin,
                 hibernation_score, activation_condition,
                 retention_class, valid_to, scope
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 b.id, b.content, b.content_hash, b.alpha, b.beta, b.type,
-                b.lock_level, b.locked_at, b.demotion_pressure,
+                b.lock_level, b.locked_at,
                 b.created_at, b.last_retrieved_at, b.session_id, b.origin,
                 b.hibernation_score, b.activation_condition,
                 b.retention_class, b.valid_to, b.scope,
@@ -1831,7 +1842,6 @@ class MemoryStore:
                 type = ?,
                 lock_level = ?,
                 locked_at = ?,
-                demotion_pressure = ?,
                 created_at = ?,
                 last_retrieved_at = ?,
                 session_id = ?,
@@ -1845,7 +1855,7 @@ class MemoryStore:
             """,
             (
                 b.content, b.content_hash, b.alpha, b.beta, b.type,
-                b.lock_level, b.locked_at, b.demotion_pressure,
+                b.lock_level, b.locked_at,
                 b.created_at, b.last_retrieved_at, b.session_id,
                 b.origin, b.hibernation_score, b.activation_condition,
                 b.retention_class, b.valid_to, b.scope, b.id,

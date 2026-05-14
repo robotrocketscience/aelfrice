@@ -1595,7 +1595,7 @@ def classify_orphans(
             report.skipped += 1
             continue
         # Update only the type and origin fields; leave alpha/beta, lock,
-        # demotion_pressure, and timestamps intact so prior work is not lost.
+        # and timestamps intact so prior work is not lost.
         updated = _belief_with_type(belief, cls.belief_type, ORIGIN_AGENT_INFERRED)
         store.update_belief(updated)
         report.classified += 1
@@ -1624,7 +1624,6 @@ def _belief_with_type(
         type=new_type,
         lock_level=belief.lock_level,
         locked_at=belief.locked_at,
-        demotion_pressure=belief.demotion_pressure,
         created_at=belief.created_at,
         last_retrieved_at=belief.last_retrieved_at,
         session_id=belief.session_id,

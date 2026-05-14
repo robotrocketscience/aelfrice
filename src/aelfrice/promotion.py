@@ -330,7 +330,7 @@ def unlock(
     """Clear the user-lock on a belief. Pure inverse of `aelf lock`.
 
     Does not touch origin — the belief's origin tier is unchanged.
-    Clears `lock_level`, `locked_at`, and `demotion_pressure`.
+    Clears `lock_level` and `locked_at`.
 
     Idempotent: unlocking an already-unlocked belief is a no-op
     (returns `already_unlocked=True`, writes no audit row).
@@ -354,7 +354,6 @@ def unlock(
         )
     belief.lock_level = LOCK_NONE
     belief.locked_at = None
-    belief.demotion_pressure = 0
     store.update_belief(belief)
     timestamp = now if now is not None else _utc_now_iso()
     audit_id = store.insert_feedback_event(

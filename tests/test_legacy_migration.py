@@ -45,8 +45,8 @@ def _insert_belief_direct(conn: sqlite3.Connection, bid: str, content: str,
         """
         INSERT INTO beliefs (
             id, content, content_hash, alpha, beta, type, lock_level,
-            demotion_pressure, created_at, origin, session_id
-        ) VALUES (?, ?, ?, 1.0, 1.0, 'factual', 'none', 0, ?, 'unknown', ?)
+            created_at, origin, session_id
+        ) VALUES (?, ?, ?, 1.0, 1.0, 'factual', 'none', ?, 'unknown', ?)
         """,
         (bid, content, f"hash-{bid}", created_at, session_id),
     )

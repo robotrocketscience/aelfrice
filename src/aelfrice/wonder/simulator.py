@@ -224,7 +224,6 @@ def populate_store(
                 type=BELIEF_FACTUAL,
                 lock_level=LOCK_NONE,
                 locked_at=None,
-                demotion_pressure=0,
                 created_at=timestamp,
                 last_retrieved_at=None,
                 session_id=atom.session_id,

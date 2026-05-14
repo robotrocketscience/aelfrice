@@ -313,7 +313,6 @@ def test_warm_project_warms_real_store(
                 type=BELIEF_FACTUAL,
                 lock_level=LOCK_USER,
                 locked_at="2026-04-27T00:00:00Z",
-                demotion_pressure=0,
                 created_at="2026-04-27T00:00:00Z",
                 last_retrieved_at=None,
                 origin="user_stated",

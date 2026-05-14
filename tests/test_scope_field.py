@@ -52,7 +52,6 @@ def _belief(
         type=BELIEF_FACTUAL,
         lock_level=LOCK_NONE,
         locked_at=None,
-        demotion_pressure=0,
         created_at="2026-05-11T00:00:00+00:00",
         last_retrieved_at=None,
         session_id=None,
@@ -138,11 +137,11 @@ def test_migration_adds_scope_to_existing_db(tmp_path: Path) -> None:
     raw.execute(
         "INSERT INTO beliefs "
         "(id, content, content_hash, alpha, beta, type, lock_level, "
-        "demotion_pressure, created_at, origin, retention_class) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "created_at, origin, retention_class) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ("old-1", "legacy content", "old-1-hash",
          1.0, 1.0, "factual", "none",
-         0, "2026-01-01T00:00:00+00:00", "agent_inferred", "fact"),
+         "2026-01-01T00:00:00+00:00", "agent_inferred", "fact"),
     )
     raw.commit()
     raw.close()

@@ -46,7 +46,6 @@ def _make_belief(
         type=BELIEF_FACTUAL,
         lock_level=LOCK_NONE,
         locked_at=None,
-        demotion_pressure=0,
         created_at=created_at,
         last_retrieved_at=None,
     )

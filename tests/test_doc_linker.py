@@ -43,7 +43,6 @@ def _belief(bid: str, content: str, *, lock: str = LOCK_NONE) -> Belief:
         type=BELIEF_FACTUAL,
         lock_level=lock,
         locked_at=ts if lock == LOCK_USER else None,
-        demotion_pressure=0,
         created_at=ts,
         last_retrieved_at=None,
         session_id=None,

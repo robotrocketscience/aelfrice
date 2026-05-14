@@ -53,7 +53,6 @@ def _put_belief(
     alpha: float = 2.0,
     beta: float = 1.0,
     lock_level: str = LOCK_NONE,
-    demotion_pressure: int = 0,
 ) -> Belief:
     locked_at = "2026-04-26T00:00:00Z" if lock_level == LOCK_USER else None
     b = Belief(
@@ -65,7 +64,6 @@ def _put_belief(
         type=BELIEF_FACTUAL,
         lock_level=lock_level,
         locked_at=locked_at,
-        demotion_pressure=demotion_pressure,
         created_at="2026-04-26T00:00:00Z",
         last_retrieved_at=None,
     )
@@ -170,23 +168,6 @@ def test_locked_lists_user_locks(store: MemoryStore) -> None:
     assert out["n"] == 2
 
 
-def test_locked_pressured_filter_excludes_unpressured(store: MemoryStore) -> None:
-    tool_lock(store, statement="alpha")
-    out = tool_locked(store, pressured=True)
-    assert out["n"] == 0
-
-
-def test_locked_pressured_filter_includes_pressured(store: MemoryStore) -> None:
-    tool_lock(store, statement="alpha")
-    bid = tool_locked(store)["locked"][0]["id"]
-    b = store.get_belief(bid)
-    assert b is not None
-    b.demotion_pressure = 3
-    store.update_belief(b)
-    out = tool_locked(store, pressured=True)
-    assert out["n"] == 1
-
-
 def test_locked_pagination_default_returns_first_page(store: MemoryStore) -> None:
     """Default limit pages cleanly when corpus exceeds the page size."""
     for i in range(5):
@@ -247,17 +228,6 @@ def test_search_json_default_unchanged(store: MemoryStore) -> None:
     assert "format" not in out and "text" not in out
 
 
-def test_locked_markdown_includes_pressure_marker(store: MemoryStore) -> None:
-    bid = tool_lock(store, statement="never push to main")["id"]
-    b = store.get_belief(bid)
-    assert b is not None
-    b.demotion_pressure = 5
-    store.update_belief(b)
-    out = tool_locked(store, response_format="markdown")
-    assert out["kind"] == "locked.list.markdown"
-    assert "pressure=5" in out["text"]
-
-
 def test_stats_markdown_renders_counts(store: MemoryStore) -> None:
     tool_lock(store, statement="rule 1")
     tool_lock(store, statement="rule 2")
@@ -314,8 +284,7 @@ def _put_inferred(store: MemoryStore, id: str = "inf1") -> Belief:
     b = Belief(
         id=id, content="some inferred fact", content_hash="hh",
         alpha=1.0, beta=1.0, type=BELIEF_FACTUAL,
-        lock_level=LOCK_NONE, locked_at=None,
-        demotion_pressure=0, created_at="2026-04-26T00:00:00Z",
+        lock_level=LOCK_NONE, locked_at=None, created_at="2026-04-26T00:00:00Z",
         last_retrieved_at=None, origin=ORIGIN_AGENT_INFERRED,
     )
     store.insert_belief(b)
@@ -628,7 +597,7 @@ def _seed_wonder_store(store: MemoryStore) -> tuple[str, str]:
         content_hash="h-wp1",
         alpha=1.0, beta=1.0,
         type=BELIEF_FACTUAL, lock_level=LOCK_NONE,
-        locked_at=None, demotion_pressure=0,
+        locked_at=None,
         created_at="2026-05-01T00:00:00Z",
         last_retrieved_at=None,
         origin=ORIGIN_AGENT_INFERRED,
@@ -639,7 +608,7 @@ def _seed_wonder_store(store: MemoryStore) -> tuple[str, str]:
         content_hash="h-wp2",
         alpha=1.0, beta=1.0,
         type=BELIEF_FACTUAL, lock_level=LOCK_NONE,
-        locked_at=None, demotion_pressure=0,
+        locked_at=None,
         created_at="2026-05-01T00:00:00Z",
         last_retrieved_at=None,
         origin=ORIGIN_AGENT_INFERRED,
@@ -710,7 +679,7 @@ def _insert_stale_speculative(store: MemoryStore, bid: str = "sgc1") -> None:
         content_hash=f"gc-mcp-hash-{bid}",
         alpha=0.3, beta=1.0,
         type=BELIEF_SPECULATIVE, lock_level=LOCK_NONE,
-        locked_at=None, demotion_pressure=0,
+        locked_at=None,
         created_at=old_ts,
         last_retrieved_at=None,
         origin=ORIGIN_SPECULATIVE,
@@ -752,7 +721,7 @@ def test_wonder_gc_ttl_days_filters(store: MemoryStore) -> None:
         content_hash="gc-mcp-hash-5d",
         alpha=0.3, beta=1.0,
         type=BELIEF_SPECULATIVE, lock_level=LOCK_NONE,
-        locked_at=None, demotion_pressure=0,
+        locked_at=None,
         created_at=ts_5d,
         last_retrieved_at=None,
         origin=ORIGIN_SPECULATIVE,

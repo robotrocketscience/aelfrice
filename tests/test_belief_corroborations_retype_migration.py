@@ -181,7 +181,6 @@ def test_record_corroboration_succeeds_after_retype(tmp_path: Path) -> None:
             type=BELIEF_FACTUAL,
             lock_level=LOCK_NONE,
             locked_at=None,
-            demotion_pressure=0,
             created_at="2026-05-13T00:00:00+00:00",
             last_retrieved_at=None,
         )
@@ -220,8 +219,8 @@ def test_existing_corroboration_rows_carry_over(tmp_path: Path) -> None:
     con.execute("PRAGMA foreign_keys=OFF")
     con.execute(
         "INSERT INTO beliefs (id, content, content_hash, alpha, beta, "
-        "type, lock_level, demotion_pressure, created_at, origin) "
-        "VALUES (?, ?, ?, 1.0, 1.0, 'factual', 'none', 0, ?, "
+        "type, lock_level, created_at, origin) "
+        "VALUES (?, ?, ?, 1.0, 1.0, 'factual', 'none', ?, "
         "'agent_remembered')",
         ("4fadaddd9b67b614", "example", "ch_x", "2026-05-13T00:00:00Z"),
     )

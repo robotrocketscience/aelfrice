@@ -20,7 +20,7 @@ Tool surface (all under the `aelf:` namespace at the host):
                          {}                              -> list pending
   aelf:search          {query, budget?}                  -> hits
   aelf:lock            {statement}                       -> id + action
-  aelf:locked          {pressured?}                      -> locked beliefs
+  aelf:locked          {limit?, offset?}                 -> locked beliefs
   aelf:demote          {belief_id}                       -> demoted bool
   aelf:validate        {belief_id, source?}              -> origin promotion
   aelf:unlock          {belief_id}                       -> lock cleared
@@ -172,9 +172,7 @@ def _render_locked_markdown(payload: dict[str, Any]) -> str:
         return f"{header}\n\nNo locks found at offset {offset}.\n"
     lines = [header, ""]
     for b in locked:
-        pressure = b.get("demotion_pressure", 0)
-        suffix = f" (pressure={pressure})" if pressure > 0 else ""
-        lines.append(f"- **{b['id']}**{suffix}: {b.get('content', '').strip()}")
+        lines.append(f"- **{b['id']}**: {b.get('content', '').strip()}")
     if has_more:
         lines.append("")
         lines.append(
@@ -400,7 +398,6 @@ def tool_lock(
         if existing is not None:
             existing.lock_level = LOCK_USER
             existing.locked_at = now
-            existing.demotion_pressure = 0
             existing.origin = ORIGIN_USER_STATED
             store.update_belief(existing)
         return {"kind": "lock.upgraded", "id": actual_id, "action": "upgraded"}
@@ -419,7 +416,6 @@ _LOCKED_MAX_LIMIT: Final[int] = 500
 def tool_locked(
     store: MemoryStore,
     *,
-    pressured: bool = False,
     limit: int = _LOCKED_DEFAULT_LIMIT,
     offset: int = 0,
     response_format: str = _RESPONSE_FORMAT_JSON,
@@ -432,8 +428,6 @@ def tool_locked(
     `total` so callers know whether to keep paging.
     """
     locked = store.list_locked_beliefs()
-    if pressured:
-        locked = [b for b in locked if b.demotion_pressure > 0]
     total = len(locked)
     safe_offset = max(0, offset)
     safe_limit = max(1, min(limit, _LOCKED_MAX_LIMIT))
@@ -451,7 +445,6 @@ def tool_locked(
             {
                 "id": b.id,
                 "content": b.content,
-                "demotion_pressure": b.demotion_pressure,
                 "locked_at": b.locked_at,
             }
             for b in page
@@ -1269,16 +1262,6 @@ def serve() -> None:
         },
     )
     def aelf_locked(
-        pressured: Annotated[
-            bool,
-            Field(
-                description=(
-                    "If True, return only locks whose demotion_pressure "
-                    "> 0 (challenged by contradicting evidence). "
-                    "Default False returns all locks."
-                ),
-            ),
-        ] = False,
         limit: Annotated[
             int,
             Field(
@@ -1309,9 +1292,6 @@ def serve() -> None:
         page by page. Read-only.
 
         Args:
-            pressured: If True, return only locks whose demotion_pressure
-                is greater than zero (i.e. ones being challenged by
-                contradicting evidence). Default False returns all locks.
             limit: Page size. Default 50, max 500.
             offset: Pagination offset. Pass `next_offset` from the prior
                 response to advance.
@@ -1323,14 +1303,12 @@ def serve() -> None:
                   "has_more": bool,
                   "next_offset": int | None,
                   "locked": [{"id": str, "content": str,
-                              "demotion_pressure": int,
                               "locked_at": str}, ...]}
         """
         store = _open_default_store()
         try:
             return tool_locked(
                 store,
-                pressured=pressured,
                 limit=limit,
                 offset=offset,
                 response_format=response_format,
@@ -1528,9 +1506,7 @@ def serve() -> None:
         """Record positive or negative feedback on a belief's usefulness.
 
         Updates the Beta-Bernoulli posterior (alpha for 'used', beta for
-        'harmful'). Negative feedback also walks the contradiction graph
-        and increments demotion_pressure on supporting locks. Mutates
-        posterior + audit + (potentially) lock pressure.
+        'harmful') and writes a feedback_history audit row.
 
         Args:
             belief_id: Target belief ID.

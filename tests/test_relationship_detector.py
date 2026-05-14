@@ -134,7 +134,6 @@ def _insert(store: MemoryStore, bid: str, content: str) -> None:
             type=BELIEF_FACTUAL,
             lock_level=LOCK_NONE,
             locked_at=None,
-            demotion_pressure=0,
             created_at="2026-05-03T00:00:00Z",
             last_retrieved_at=None,
         )

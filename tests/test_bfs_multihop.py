@@ -98,7 +98,6 @@ def _mk(
         type=BELIEF_FACTUAL,
         lock_level=lock_level,
         locked_at=locked_at,
-        demotion_pressure=0,
         created_at=created_at,
         last_retrieved_at=None,
     )

@@ -70,7 +70,6 @@ def test_relock_upgrades_existing_lock_id(store: MemoryStore) -> None:
     assert b is not None
     b.lock_level = 0  # LOCK_NONE
     b.locked_at = None
-    b.demotion_pressure = 5
     store.update_belief(b)
 
     second = tool_lock(store, statement="we always sign commits")
@@ -80,7 +79,6 @@ def test_relock_upgrades_existing_lock_id(store: MemoryStore) -> None:
     assert refreshed is not None
     assert refreshed.lock_level == LOCK_USER
     assert refreshed.locked_at is not None
-    assert refreshed.demotion_pressure == 0
     assert refreshed.origin == ORIGIN_USER_STATED
 
 

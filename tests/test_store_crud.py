@@ -23,7 +23,6 @@ def _mk_belief(
     content: str = "the sky is blue",
     alpha: float = 1.0,
     beta: float = 1.0,
-    demotion_pressure: int = 0,
 ) -> Belief:
     return Belief(
         id=bid,
@@ -34,7 +33,6 @@ def _mk_belief(
         type=BELIEF_FACTUAL,
         lock_level=LOCK_NONE,
         locked_at=None,
-        demotion_pressure=demotion_pressure,
         created_at="2026-04-25T00:00:00Z",
         last_retrieved_at=None,
     )
@@ -54,7 +52,6 @@ def test_belief_insert_and_get_roundtrip() -> None:
     assert got.type == b.type
     assert got.lock_level == b.lock_level
     assert got.locked_at == b.locked_at
-    assert got.demotion_pressure == b.demotion_pressure
     assert got.created_at == b.created_at
     assert got.last_retrieved_at == b.last_retrieved_at
 
@@ -65,13 +62,11 @@ def test_belief_update_persists_alpha_beta_and_demotion() -> None:
     s.insert_belief(b)
     b.alpha = 5.5
     b.beta = 2.25
-    b.demotion_pressure = 4
     s.update_belief(b)
     got = s.get_belief("b1")
     assert got is not None
     assert got.alpha == 5.5
     assert got.beta == 2.25
-    assert got.demotion_pressure == 4
 
 
 def test_belief_update_persists_full_row_columns() -> None:

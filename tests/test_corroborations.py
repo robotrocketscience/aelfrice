@@ -43,7 +43,6 @@ def _belief(bid: str, content: str, content_hash: str) -> Belief:
         type=BELIEF_FACTUAL,
         lock_level=LOCK_NONE,
         locked_at=None,
-        demotion_pressure=0,
         created_at="2026-04-28T00:00:00Z",
         last_retrieved_at=None,
     )

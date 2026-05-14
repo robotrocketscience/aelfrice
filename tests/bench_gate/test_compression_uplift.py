@@ -62,7 +62,6 @@ def _belief_from_row(row: dict) -> tuple[Belief, bool]:
         type=BELIEF_FACTUAL,
         lock_level=lock_level,
         locked_at=None,
-        demotion_pressure=0,
         created_at="2026-05-08T00:00:00Z",
         last_retrieved_at=None,
         retention_class=retention_class,

@@ -227,7 +227,6 @@ def _build_workload(rng: random.Random) -> tuple[MemoryStore, list[str], datetim
             type=BELIEF_FACTUAL,
             lock_level=LOCK_NONE,
             locked_at=None,
-            demotion_pressure=0,
             created_at=_fmt(created_at_dt),
             last_retrieved_at=None,
             session_id=None,
