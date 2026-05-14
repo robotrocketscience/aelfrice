@@ -52,13 +52,14 @@ from __future__ import annotations
 import math
 import os
 import re
+import sys
+import time
+import tomllib
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Any, Final
-import sys
-import tomllib
 
 from aelfrice.bfs_multihop import (
     DEFAULT_MAX_DEPTH as BFS_DEFAULT_MAX_DEPTH,
@@ -238,6 +239,11 @@ META_HALF_LIFE_POSTERIOR_DECAY_SECONDS: Final[int] = 30 * 24 * 3600
 # var truthy switches `resolve_temporal_half_life_with_meta` to
 # read the meta-belief from the store first.
 ENV_META_BELIEF_HALF_LIFE: Final[str] = "AELFRICE_META_BELIEF_HALF_LIFE"
+# Target wall-time per the #437 bench latency floor. Evidence per
+# retrieval event is `clip(target / observed, 0, 1)` — fast retrieval
+# saturates at 1.0, slow retrieval shrinks toward 0. Per the ratified
+# wiring (D4: latency signal only, relevance deferred to #779).
+LATENCY_TARGET_SECONDS: Final[float] = 0.080
 # Number of decimal places used to round `posterior_weight` before
 # inclusion in the cache key. Two callers passing weights that
 # differ by less than this granularity collapse to the same key.
@@ -1996,6 +2002,7 @@ def retrieve_v2(
     use_hrr_structural: bool | None = None,
     hrr_struct_index_cache: HRRStructIndexCache | None = None,
     with_doc_anchors: bool = False,
+    now_ts: int | None = None,
 ) -> RetrievalResult:
     """Lab-compatible retrieval wrapper for academic-suite adapters.
 
@@ -2029,8 +2036,14 @@ def retrieve_v2(
       issue #473 A1=A).
     - `temporal_half_life_seconds` (v2.1 #473) — explicit override for
       the half-life when `temporal_sort=True`. None falls through to
-      `resolve_temporal_half_life()`'s precedence chain. Ignored when
+      `resolve_temporal_half_life_with_meta()`'s precedence chain
+      (env → kwarg → TOML → meta-belief → default-7d). Ignored when
       `temporal_sort=False`.
+    - `now_ts` (#756) — UTC seconds, used by the meta-belief consumer
+      to time-stamp posterior decay and the latency-signal update.
+      Defaults to ``int(time.time())`` so production callers don't
+      need to pass it. Tests and replay tooling pin it for
+      determinism (locked ``c06f8d575fad71fb`` PHILOSOPHY).
     - `use_hrr_structural` (#152) — when True AND the query parses as
       a `<KIND>:<target_id>` structural marker, the HRR structural
       lane fires and returns instead of the textual lane. Parallel,
@@ -2066,6 +2079,9 @@ def retrieve_v2(
         if struct_result is not None:
             return struct_result
 
+    effective_now_ts = now_ts if now_ts is not None else int(time.time())
+
+    retrieve_start = time.perf_counter()
     (
         out,
         locked_ids_list,
@@ -2088,13 +2104,44 @@ def retrieve_v2(
         use_type_aware_compression=use_type_aware_compression,
         use_intentional_clustering=use_intentional_clustering,
     )
+    retrieve_elapsed = time.perf_counter() - retrieve_start
     if include_locked:
         beliefs = out
     else:
         beliefs = [b for b in out if b.lock_level == LOCK_NONE]
     if temporal_sort:
-        half_life = resolve_temporal_half_life(temporal_half_life_seconds)
+        half_life = resolve_temporal_half_life_with_meta(
+            store,
+            now_ts=effective_now_ts,
+            explicit=temporal_half_life_seconds,
+        )
         beliefs = _apply_temporal_decay(beliefs, half_life)
+        # #756 latency-signal update. Only fires when the meta-belief
+        # feature flag is on; the env check matches the resolver above
+        # so the read/write paths flip together. update_meta_belief is
+        # a no-op when the meta-belief isn't installed (returns False),
+        # so this is safe without an explicit existence check. Fail-
+        # soft: a store error here must never break retrieval — that
+        # invariant mirrors the deferred-feedback enqueue at the end
+        # of `retrieve()`.
+        if is_meta_belief_half_life_enabled() and retrieve_elapsed > 0.0:
+            try:
+                from aelfrice.meta_beliefs import SIGNAL_LATENCY
+                evidence = max(0.0, min(
+                    1.0, LATENCY_TARGET_SECONDS / retrieve_elapsed,
+                ))
+                store.update_meta_belief(
+                    META_HALF_LIFE_KEY,
+                    SIGNAL_LATENCY,
+                    evidence=evidence,
+                    now_ts=effective_now_ts,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    "aelfrice retrieval: meta-belief latency update "
+                    f"failed: {exc}",
+                    file=sys.stderr,
+                )
 
     compressed: list[CompressedBelief] = []
     if resolve_use_type_aware_compression(use_type_aware_compression):
