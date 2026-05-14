@@ -971,21 +971,19 @@ def get_active_meta_belief_consumers() -> list[str]:
     iterates this list when scoring `referenced` evidence so each
     enabled consumer's `relevance` sub-posterior gets updated.
 
-    Adds to this list as siblings of #756 / #757 ship (#758 posterior
-    temperature, #759 bfs_depth_budget, #760 expansion_gate). Sort
-    order is alphabetical so a determinism-replay test that pins env
-    state sees the same column-bytes across runs.
-
-    Note: #759 (bfs_depth_budget) shipped between this PR opening and
-    rebase. Adding it to the active list is deferred to a follow-up
-    so the existing wiring tests (which only pin HALF_LIFE and
-    BM25F_ANCHOR_WEIGHT env state) continue to pass byte-identical.
+    Sort order is alphabetical so a determinism-replay test that pins
+    env state sees the same column-bytes across runs. #756 half-life,
+    #757 bm25f_anchor_weight, #760 expansion_gate subscribe to signals
+    covered by the sweeper. #759 bfs_depth_budget uses latency-only
+    and is not swept for relevance.
     """
     active: list[str] = []
     if is_meta_belief_half_life_enabled():
         active.append(META_HALF_LIFE_KEY)
     if is_meta_belief_bm25f_anchor_weight_enabled():
         active.append(META_BM25F_ANCHOR_WEIGHT_KEY)
+    if is_meta_belief_expansion_gate_token_threshold_enabled():
+        active.append(META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY)
     return sorted(active)
 
 
@@ -1227,6 +1225,77 @@ def resolve_bfs_depth_budget_with_meta(
         if meta_value is not None:
             return decode_bfs_depth_budget(meta_value)
     return BFS_DEFAULT_MAX_DEPTH
+
+
+def install_expansion_gate_token_threshold_meta_belief(
+    store: MemoryStore,
+    *,
+    now_ts: int,
+) -> bool:
+    """Idempotent install of the #760 meta-belief on ``store``.
+
+    Returns True on first install, False if the row already exists.
+    Mirrors :func:`install_bfs_depth_budget_meta_belief`'s contract —
+    existing rows are not overwritten because the surfaced threshold
+    would silently shift under the expansion gate.
+
+    The install signature pins the v3.x ratified defaults: relevance
+    signal only (the close-the-loop #779 layer is the right signal for
+    expansion quality — a referenced injected belief is evidence that
+    expansion was useful, so raising the threshold gate is warranted),
+    30d posterior decay, cold-start ``value`` = 0.5 which decodes to 80
+    via :func:`decode_expansion_gate_token_threshold`, matching
+    :data:`aelfrice.expansion_gate.BROAD_PROMPT_TOKEN_THRESHOLD` exactly.
+    """
+    from aelfrice.meta_beliefs import SIGNAL_RELEVANCE
+    return store.install_meta_belief(
+        META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY,
+        static_default=META_EXPANSION_GATE_TOKEN_THRESHOLD_STATIC_DEFAULT,
+        half_life_seconds=META_EXPANSION_GATE_TOKEN_THRESHOLD_POSTERIOR_DECAY_SECONDS,
+        signal_weights={SIGNAL_RELEVANCE: 1.0},
+        now_ts=now_ts,
+    )
+
+
+def resolve_expansion_gate_token_threshold_with_meta(
+    store: MemoryStore | None,
+    *,
+    now_ts: int,
+    explicit: int | None = None,
+) -> int:
+    """Resolve the expansion-gate token-threshold knob with meta-belief
+    consultation.
+
+    Returns an ``int`` because ``should_run_expansion`` compares
+    ``len(tokens) > threshold`` against a whole number.
+
+    Precedence (first decisive wins):
+      1. Explicit ``explicit`` kwarg from the caller (positive int) —
+         for test and bench harness overrides.
+      2. **Meta-belief** (#760) — only when
+         :data:`ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD` resolves
+         truthy AND ``store`` has the meta-belief installed. Decodes the
+         substrate's `[0, 1]` value through
+         :func:`decode_expansion_gate_token_threshold` into the `[20, 320]`
+         band, rounded to int.
+      3. Default: :data:`aelfrice.expansion_gate.BROAD_PROMPT_TOKEN_THRESHOLD`
+         (80).
+
+    No env-var or TOML override layer — the expansion-gate token threshold
+    has never had a user-facing config knob outside the gate itself, so we
+    do not synthesize one. Operators override via explicit kwarg or the
+    meta-belief. ``None`` ``store`` collapses to the static default.
+    """
+    if explicit is not None and explicit > 0:
+        return int(explicit)
+    if store is not None and is_meta_belief_expansion_gate_token_threshold_enabled():
+        meta_value = store.read_meta_belief_value(
+            META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY, now_ts=now_ts,
+        )
+        if meta_value is not None:
+            return decode_expansion_gate_token_threshold(meta_value)
+    from aelfrice.expansion_gate import BROAD_PROMPT_TOKEN_THRESHOLD
+    return BROAD_PROMPT_TOKEN_THRESHOLD
 
 
 def _belief_age_seconds(b: Belief, now: datetime) -> float:

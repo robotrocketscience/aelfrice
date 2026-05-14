@@ -24,8 +24,11 @@ from aelfrice.retrieval import (
     META_EXPANSION_GATE_TOKEN_THRESHOLD_POSTERIOR_DECAY_SECONDS,
     META_EXPANSION_GATE_TOKEN_THRESHOLD_STATIC_DEFAULT,
     decode_expansion_gate_token_threshold,
+    install_expansion_gate_token_threshold_meta_belief,
     is_meta_belief_expansion_gate_token_threshold_enabled,
+    resolve_expansion_gate_token_threshold_with_meta,
 )
+from aelfrice.store import MemoryStore
 
 
 # --- Log-linear bounded encoding (#760 pattern reuse of #756/#757/#759 D3) ---
@@ -158,5 +161,193 @@ def test_cold_start_byte_identical_to_hardcoded() -> None:
 
 def test_signal_relevance_constant_available() -> None:
     """SIGNAL_RELEVANCE must be importable — it's the only subscribed class
-    for the #760 install helper (shipped in Commit 2)."""
+    for the #760 install helper."""
     assert SIGNAL_RELEVANCE == "relevance"
+
+
+# --- Install helper (idempotency) -----------------------------------------
+
+def test_install_meta_belief_first_call_returns_true() -> None:
+    store = MemoryStore(":memory:")
+    assert install_expansion_gate_token_threshold_meta_belief(
+        store, now_ts=1700000000
+    ) is True
+    state = store.read_meta_belief_state(META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY)
+    assert state is not None
+
+
+def test_install_meta_belief_second_call_no_op() -> None:
+    """Re-install must NOT overwrite the existing row — accumulated
+    posterior mass for the relevance sub-posterior must not be lost."""
+    store = MemoryStore(":memory:")
+    install_expansion_gate_token_threshold_meta_belief(store, now_ts=1700000000)
+    assert install_expansion_gate_token_threshold_meta_belief(
+        store, now_ts=1700000001
+    ) is False
+
+
+def test_install_meta_belief_uses_relevance_signal() -> None:
+    """MVP ships with relevance only — the expansion gate is a quality
+    signal (was the injected belief actually used?), not a latency signal."""
+    store = MemoryStore(":memory:")
+    install_expansion_gate_token_threshold_meta_belief(store, now_ts=1700000000)
+    state = store.read_meta_belief_state(META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY)
+    assert state is not None
+    assert state.signal_weights == {SIGNAL_RELEVANCE: 1.0}
+
+
+def test_install_meta_belief_cold_start_value_is_static_default() -> None:
+    """After install with no evidence, read_meta_belief_value returns
+    static_default (0.5), which decodes to 80 — byte-identical to the
+    hardcoded BROAD_PROMPT_TOKEN_THRESHOLD."""
+    store = MemoryStore(":memory:")
+    install_expansion_gate_token_threshold_meta_belief(store, now_ts=1700000000)
+    value = store.read_meta_belief_value(
+        META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY, now_ts=1700000000
+    )
+    assert value is not None
+    assert decode_expansion_gate_token_threshold(value) == BROAD_PROMPT_TOKEN_THRESHOLD
+
+
+# --- Meta-aware resolver (precedence + fallback) --------------------------
+
+def test_resolver_no_store_falls_through_to_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """store=None collapses to BROAD_PROMPT_TOKEN_THRESHOLD unchanged."""
+    monkeypatch.delenv(ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD, raising=False)
+    result = resolve_expansion_gate_token_threshold_with_meta(
+        None, now_ts=1700000000
+    )
+    assert result == BROAD_PROMPT_TOKEN_THRESHOLD
+
+
+def test_resolver_flag_off_ignores_installed_meta_belief(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default-OFF invariant: with the env flag unset, an installed
+    meta-belief is invisible to the resolver."""
+    monkeypatch.delenv(ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD, raising=False)
+    store = MemoryStore(":memory:")
+    install_expansion_gate_token_threshold_meta_belief(store, now_ts=1700000000)
+    result = resolve_expansion_gate_token_threshold_with_meta(
+        store, now_ts=1700000001
+    )
+    assert result == BROAD_PROMPT_TOKEN_THRESHOLD
+
+
+def test_resolver_flag_on_cold_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flag-on + freshly-installed meta-belief at static_default=0.5.
+
+    decode(0.5) = 80 = BROAD_PROMPT_TOKEN_THRESHOLD, so flipping the flag
+    on for the first time is byte-identical to the pre-#760 path.
+    """
+    monkeypatch.setenv(ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD, "enabled")
+    store = MemoryStore(":memory:")
+    install_expansion_gate_token_threshold_meta_belief(store, now_ts=1700000000)
+    cold_start_threshold = resolve_expansion_gate_token_threshold_with_meta(
+        store, now_ts=1700000001
+    )
+    assert cold_start_threshold == decode_expansion_gate_token_threshold(
+        META_EXPANSION_GATE_TOKEN_THRESHOLD_STATIC_DEFAULT,
+    )
+    assert cold_start_threshold == BROAD_PROMPT_TOKEN_THRESHOLD
+
+
+def test_resolver_explicit_kwarg_bypasses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit positive-int kwarg wins over meta-belief (bench override)."""
+    monkeypatch.setenv(ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD, "enabled")
+    store = MemoryStore(":memory:")
+    install_expansion_gate_token_threshold_meta_belief(store, now_ts=1700000000)
+    result = resolve_expansion_gate_token_threshold_with_meta(
+        store, now_ts=1700000001, explicit=150,
+    )
+    assert result == 150
+
+
+def test_resolver_flag_on_meta_uninstalled_falls_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Flag-on but no meta-belief row: resolver falls through to
+    BROAD_PROMPT_TOKEN_THRESHOLD cleanly. No spurious row materialises."""
+    monkeypatch.setenv(ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD, "enabled")
+    store = MemoryStore(":memory:")
+    result = resolve_expansion_gate_token_threshold_with_meta(
+        store, now_ts=1700000000,
+    )
+    assert result == BROAD_PROMPT_TOKEN_THRESHOLD
+    assert store.read_meta_belief_state(
+        META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY
+    ) is None
+
+
+# --- End-to-end: evidence responsiveness ----------------------------------
+
+def test_strong_positive_relevance_evidence_raises_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """100 strong-positive relevance events (evidence=1.0) → the posterior
+    should raise the resolved threshold toward CEIL (320), so the resolved
+    threshold must be >= the cold-start threshold (80)."""
+    monkeypatch.setenv(ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD, "enabled")
+    store = MemoryStore(":memory:")
+    install_expansion_gate_token_threshold_meta_belief(store, now_ts=1700000000)
+    cold_start = resolve_expansion_gate_token_threshold_with_meta(
+        store, now_ts=1700000000
+    )
+    base_ts = 1700000001
+    for i in range(100):
+        store.update_meta_belief(
+            META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY,
+            SIGNAL_RELEVANCE,
+            evidence=1.0,
+            now_ts=base_ts + i,
+        )
+    after = resolve_expansion_gate_token_threshold_with_meta(
+        store, now_ts=base_ts + 100
+    )
+    assert after >= cold_start, (
+        f"after 100 strong-positive relevance events expected threshold >= {cold_start}, "
+        f"got {after}"
+    )
+
+
+# --- get_active_meta_belief_consumers integration -------------------------
+
+def test_active_consumers_includes_expansion_gate_when_flag_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the expansion gate env flag is set truthy, the key must appear
+    in get_active_meta_belief_consumers() so the #779 sweeper delivers
+    relevance evidence to it."""
+    from aelfrice.retrieval import (
+        ENV_META_BELIEF_BM25F_ANCHOR_WEIGHT,
+        ENV_META_BELIEF_HALF_LIFE,
+        get_active_meta_belief_consumers,
+    )
+    monkeypatch.delenv(ENV_META_BELIEF_HALF_LIFE, raising=False)
+    monkeypatch.delenv(ENV_META_BELIEF_BM25F_ANCHOR_WEIGHT, raising=False)
+    monkeypatch.setenv(ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD, "enabled")
+    consumers = get_active_meta_belief_consumers()
+    assert META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY in consumers
+
+
+def test_active_consumers_sorted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Consumers list is always alphabetically sorted (determinism)."""
+    from aelfrice.retrieval import (
+        ENV_META_BELIEF_BM25F_ANCHOR_WEIGHT,
+        ENV_META_BELIEF_HALF_LIFE,
+        get_active_meta_belief_consumers,
+    )
+    monkeypatch.setenv(ENV_META_BELIEF_HALF_LIFE, "1")
+    monkeypatch.setenv(ENV_META_BELIEF_BM25F_ANCHOR_WEIGHT, "1")
+    monkeypatch.setenv(ENV_META_BELIEF_EXPANSION_GATE_TOKEN_THRESHOLD, "1")
+    out = get_active_meta_belief_consumers()
+    assert out == sorted(out)
+    assert META_EXPANSION_GATE_TOKEN_THRESHOLD_KEY in out
