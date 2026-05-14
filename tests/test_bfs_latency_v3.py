@@ -147,9 +147,14 @@ def test_main_end_to_end_smoke(tmp_path: Path):
         "--warmup", "2",
         "--output", str(out),
     ])
-    # Tiny-corpus run on a v3.0 stack comfortably clears the gate;
-    # rc==0 also implies the JSON was emitted.
-    assert rc == 0
+    # Smoke contract per file docstring: "Latency numbers are not
+    # asserted — only schema, determinism, and gate-result shape."
+    # rc==1 = gate FAIL on a noisy CI runner; rc==0 = gate PASS. Both
+    # mean the harness ran end-to-end and emitted the JSON. The
+    # gate-verdict path is covered by the dedicated
+    # test_evaluate_gate_* fixtures above with hand-rolled ArmResults
+    # that do not depend on runner timing.
+    assert rc in (0, 1)
     payload = json.loads(out.read_text())
     assert payload["harness"] == "bfs_latency_v3"
     assert payload["corpus"]["beliefs"] == 40
@@ -160,7 +165,19 @@ def test_main_end_to_end_smoke(tmp_path: Path):
         for k in ("p50_ms", "p95_ms", "p99_ms", "max_ms", "min_ms"):
             assert isinstance(a[k], (int, float))
             assert a[k] >= 0
-    assert isinstance(payload["gate"]["passed"], bool)
+    gate = payload["gate"]
+    assert isinstance(gate["passed"], bool)
+    for k in (
+        "delta_p50_ms", "delta_p95_ms", "tail_ratio",
+    ):
+        assert isinstance(gate[k], (int, float))
+    for k in (
+        "delta_p50_pass", "delta_p95_pass", "tail_ratio_pass",
+    ):
+        assert isinstance(gate[k], bool)
+    # rc encodes gate.passed; assert the two agree even though we
+    # don't pin which value either one takes.
+    assert (rc == 0) is gate["passed"]
 
 
 def test_default_belief_count_is_gate_size():
