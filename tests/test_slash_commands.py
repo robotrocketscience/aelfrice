@@ -57,6 +57,12 @@ EXPECTED_COMMANDS = (
     # v2.0 (#365 R4) — operator-facing relevance-calibration harness
     # (P@K / ROC-AUC / Spearman ρ).
     "eval",
+    # v3.1 (#629) — query-anchored DOT/JSON viewer. Sibling to
+    # `aelf reason` (walks the same BFS surface, different output).
+    # Shipped visible so the disclaimer in the v3.1 Obsidian vault
+    # export (#630, sibling) can point users at `aelf graph` as the
+    # graph-view escape hatch.
+    "graph",
 )
 
 

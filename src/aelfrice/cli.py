@@ -1167,6 +1167,139 @@ def _cmd_export_canvas(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_graph(args: argparse.Namespace, out: object) -> int:
+    """Emit a query-anchored DOT or JSON view of the belief graph (#629).
+
+    Anchors: `--seed-id` (repeatable) wins when supplied; otherwise the
+    positional `anchor` is tried as a literal belief id, falling back to
+    a top-1 BM25 hit so users can pass a keyword instead of memorising
+    ids. Walks `expand_bfs` with the supplied hops/budget/fanout, then
+    serialises via `graph_export.export_dot` or `export_graph_json`.
+
+    Read-only: never writes to the store.
+    """
+    from aelfrice.graph_export import (
+        DEFAULT_PREVIEW_CHARS,
+        export_dot,
+        export_graph_json,
+    )
+    from aelfrice.models import EDGE_TYPES
+    import json as _json
+
+    store = _open_store()
+    try:
+        seeds: list = []
+        seed_scopes: dict[str, str | None] = {}
+        if args.seed_id:
+            for sid in args.seed_id:
+                b = store.get_belief(sid)
+                if b is None:
+                    owner = store.find_foreign_owner(sid)
+                    if owner is not None:
+                        b = store.get_belief_in_scope(sid, owner)
+                    if b is None:
+                        print(
+                            f"aelf graph: seed-id not found: {sid}",
+                            file=out,  # type: ignore[arg-type]
+                        )
+                        return 2
+                    seed_scopes[sid] = owner
+                seeds.append(b)
+        elif args.anchor:
+            # Try literal id first; fall back to BM25 top-1.
+            b = store.get_belief(args.anchor)
+            if b is not None:
+                seeds.append(b)
+                seed_scopes[b.id] = None
+            else:
+                owner = store.find_foreign_owner(args.anchor)
+                if owner is not None:
+                    b = store.get_belief_in_scope(args.anchor, owner)
+                    if b is not None:
+                        seeds.append(b)
+                        seed_scopes[b.id] = owner
+                if not seeds:
+                    seeds, seed_scopes = _seeds_with_scopes(
+                        store, args.anchor, k=1,
+                    )
+        if not seeds:
+            print(
+                "aelf graph: no anchor (belief id not found, "
+                "BM25 returned no hits). Pass --seed-id <id> "
+                "or a query that matches an indexed belief.",
+                file=out,  # type: ignore[arg-type]
+            )
+            return 2
+
+        # Edge-type filter is comma-separated; validate against the
+        # canonical set so a typo doesn't silently produce an empty
+        # graph.
+        edge_types_filter: frozenset[str] | None = None
+        if args.edge_types:
+            requested = [t.strip() for t in args.edge_types.split(",") if t.strip()]
+            unknown = [t for t in requested if t not in EDGE_TYPES]
+            if unknown:
+                print(
+                    "aelf graph: unknown edge type(s): "
+                    f"{', '.join(unknown)}. Allowed: "
+                    f"{', '.join(sorted(EDGE_TYPES))}.",
+                    file=out,  # type: ignore[arg-type]
+                )
+                return 2
+            edge_types_filter = frozenset(requested)
+
+        scopes_arg: dict[str, str | None] | None = (
+            seed_scopes if any(v is not None for v in seed_scopes.values()) else None
+        )
+        hops = expand_bfs(
+            seeds,
+            store,
+            max_depth=args.hops,
+            nodes_per_hop=args.fanout,
+            total_budget=args.budget,
+            seed_scopes=scopes_arg,
+        )
+
+        preview_chars = args.preview_chars
+        if args.format == "dot":
+            text = export_dot(
+                seeds, hops, store,
+                edge_types_filter=edge_types_filter,
+                preview_chars=preview_chars,
+            )
+        else:  # json — validated by argparse choices below
+            payload = export_graph_json(
+                seeds, hops, store,
+                edge_types_filter=edge_types_filter,
+                preview_chars=preview_chars,
+            )
+            text = _json.dumps(payload, indent=2, sort_keys=False) + "\n"
+    finally:
+        store.close()
+
+    if args.out and args.out != "-":
+        from pathlib import Path as _Path
+        _Path(args.out).write_text(text)
+        # Stat reporting: count nodes/edges from the rendered text where
+        # possible so the message reflects what landed in the file.
+        if args.format == "dot":
+            node_lines = sum(1 for ln in text.splitlines()
+                              if " [label=" in ln and "->" not in ln)
+            edge_lines = sum(1 for ln in text.splitlines() if " -> " in ln)
+        else:
+            payload = _json.loads(text)
+            node_lines = len(payload.get("nodes", []))
+            edge_lines = len(payload.get("edges", []))
+        print(
+            f"aelf graph: wrote {args.out} "
+            f"({node_lines} nodes, {edge_lines} edges)",
+            file=out,  # type: ignore[arg-type]
+        )
+    else:
+        print(text, end="", file=out)  # type: ignore[arg-type]
+    return 0
+
+
 def _cmd_wonder_axes(args: argparse.Namespace, out: object) -> int:
     """Emit dispatch-payload JSON for `aelf wonder QUERY` (#645) or
     the legacy alias `aelf wonder --axes QUERY` (#551).
@@ -5002,6 +5135,73 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="emit machine-readable JSON instead of indented hop tree",
     )
     p_reason.set_defaults(func=_cmd_reason)
+
+    # `aelf graph` — query-anchored DOT / JSON viewer (#629). Sibling
+    # to `aelf reason` (walks the same BFS) but emits a renderable
+    # subgraph instead of a textual chain. `--format html` deliberately
+    # not implemented — the ratified scope is dot + json only; HTML
+    # rendering belongs in a separate proposal with its own gate.
+    p_graph = sub.add_parser(
+        "graph",
+        help=(
+            "emit a query-anchored subgraph (DOT or JSON) around a "
+            "belief, expanded N hops via BFS"
+        ),
+    )
+    p_graph.add_argument(
+        "anchor", nargs="?", default="",
+        help=(
+            "anchor belief id (or keyword that matches one belief via "
+            "BM25); omit when using --seed-id"
+        ),
+    )
+    p_graph.add_argument(
+        "--seed-id", action="append", default=[], dest="seed_id",
+        help=(
+            "explicit anchor belief id (repeatable; overrides the "
+            "positional anchor)"
+        ),
+    )
+    p_graph.add_argument(
+        "--hops", type=int, default=2,
+        help="max BFS hop depth (default 2)",
+    )
+    p_graph.add_argument(
+        "--budget", type=int, default=32,
+        help="total BFS expansion-node budget (default 32)",
+    )
+    p_graph.add_argument(
+        "--fanout", type=int, default=8,
+        help="max edges expanded per frontier entry (default 8)",
+    )
+    p_graph.add_argument(
+        "--edge-types", default=None, dest="edge_types",
+        help=(
+            "comma-separated edge-type filter (e.g. "
+            "CITES,RELATES_TO,IMPLEMENTS); applied at the display "
+            "layer — edges of other types are dropped, surfaced nodes "
+            "remain visible"
+        ),
+    )
+    p_graph.add_argument(
+        "--format", choices=("dot", "json"), default="dot",
+        help=(
+            "output format: 'dot' (Graphviz, pipe to dot -Tsvg; "
+            "default) or 'json' (renderer-agnostic {nodes,edges})"
+        ),
+    )
+    p_graph.add_argument(
+        "--preview-chars", type=int, default=60, dest="preview_chars",
+        help=(
+            "max chars of belief content shown as node label "
+            "(default 60; 0 emits empty labels)"
+        ),
+    )
+    p_graph.add_argument(
+        "--out", default="-",
+        help="output path (default '-' for stdout)",
+    )
+    p_graph.set_defaults(func=_cmd_graph)
 
     p_wonder = sub.add_parser(
         "wonder",
