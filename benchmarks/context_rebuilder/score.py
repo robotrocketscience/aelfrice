@@ -241,6 +241,47 @@ def _fixture_assistant_texts_after_clear(
     return out
 
 
+def score_text_pairs_exact(
+    truth_texts: list[str],
+    agent_texts: list[str],
+) -> FidelityScore:
+    """Exact-method scoring of aligned (truth, agent) text pairs.
+
+    The shared core between ``score_continuation_fidelity`` (which
+    builds the pairs from a ``ReplayResult``) and harness drivers that
+    already hold the pairs without going through ``replay.run``
+    (compression A4 runner under #844).
+
+    Raises ``ValueError`` on length mismatch — a misaligned caller is
+    a programming error and silent shift would mis-score every turn.
+    """
+    n = len(truth_texts)
+    if len(agent_texts) != n:
+        raise ValueError(
+            f"agent_texts length {len(agent_texts)} does not match "
+            f"truth_texts length {n}"
+        )
+    if n == 0:
+        return FidelityScore(
+            score=1.0,
+            method="exact",
+            n_post_clear_assistant_turns=0,
+            per_turn=[],
+        )
+    per_turn: list[int] = []
+    for truth, agent in zip(truth_texts, agent_texts):
+        if _normalize_for_exact(truth) == _normalize_for_exact(agent):
+            per_turn.append(1)
+        else:
+            per_turn.append(0)
+    return FidelityScore(
+        score=sum(per_turn) / float(n),
+        method="exact",
+        n_post_clear_assistant_turns=n,
+        per_turn=per_turn,
+    )
+
+
 def score_continuation_fidelity(
     replay_result: ReplayResult,
     *,
@@ -329,6 +370,9 @@ def score_continuation_fidelity(
         agent_texts = list(truth_texts)
     else:
         if len(post_clear_answers) != n:
+            # Preserve the replay-result-flavored error message rather
+            # than delegating to score_text_pairs_exact's generic one —
+            # callers grep for "post-clear assistant turn(s)" in tests.
             raise ValueError(
                 f"post_clear_answers length {len(post_clear_answers)} "
                 f"does not match the {n} post-clear assistant turn(s) "
@@ -336,29 +380,4 @@ def score_continuation_fidelity(
             )
         agent_texts = list(post_clear_answers)
 
-    # Vacuous case: no scoreable turns. By documented convention,
-    # this is 1.0 (vacuously perfect), with `n=0` recorded so
-    # callers can detect it.
-    if n == 0:
-        return FidelityScore(
-            score=1.0,
-            method="exact",
-            n_post_clear_assistant_turns=0,
-            per_turn=[],
-        )
-
-    # `exact` per-turn comparison.
-    per_turn: list[int] = []
-    for truth, agent in zip(truth_texts, agent_texts):
-        if _normalize_for_exact(truth) == _normalize_for_exact(agent):
-            per_turn.append(1)
-        else:
-            per_turn.append(0)
-
-    aggregate = sum(per_turn) / float(n)
-    return FidelityScore(
-        score=aggregate,
-        method="exact",
-        n_post_clear_assistant_turns=n,
-        per_turn=per_turn,
-    )
+    return score_text_pairs_exact(truth_texts, agent_texts)
