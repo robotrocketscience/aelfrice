@@ -81,8 +81,10 @@ def test_graph_dot_default_format_renders_anchor(_isolated_db: Path) -> None:
         assert f'"{bid}"' in out
     # Edges land as `src -> dst` lines.
     assert f'"{a}" -> "{b}"' in out
-    assert "SUP" in out  # SUPPORTS abbreviation
-    assert "CIT" in out  # CITES abbreviation
+    # #629 ratification: edges are color-only, no text label.
+    edge_lines = [ln for ln in out.splitlines() if " -> " in ln]
+    assert all("label=" not in ln for ln in edge_lines)
+    assert any("color=" in ln for ln in edge_lines)
 
 
 def test_graph_json_format_emits_nodes_edges(_isolated_db: Path) -> None:

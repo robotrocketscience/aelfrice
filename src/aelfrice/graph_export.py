@@ -25,19 +25,18 @@ Encoding policy
 ---------------
 
 - Node label: belief content truncated to ``preview_chars`` (default
-  60), with ``…`` ellipsis. Issue Q3 ratification (#629): deterministic
-  truncation, not summarisation.
+  80), with ``…`` ellipsis. Issue Q3 ratification (#629 operator
+  comment 4462076007): deterministic truncation, not summarisation;
+  80 chars matches the L1/L2 retrieval-preview convention.
 - Node color: locked => cyan; posterior mean buckets (high =>
   green, low => red, mid => no color attribute). Matches
   ``canvas_export.py`` so a user looking at both views reads the
   same visual encoding.
-- Edge label: 3-4 char abbreviation of the edge type (``SUP``,
-  ``CON``, ``CIT``, ``REL``, ``DRV``, ``IMP``, ``TMP``, ``TST``,
-  ``SUPS``, ``RES``, ``STL``). Issue Q2 ratification (#629): color
-  + truncated label, both required for B/W and screen-reader
-  contexts.
-- Edge color: per edge type, fixed map (see ``EDGE_DOT_COLOR``).
-  Consistent across runs; not derived from valence so the viewer
+- Edge encoding: color-only, no text label. Issue Q2 ratification
+  (#629 operator comment 4462076007): color-code only, legend in
+  ``--help`` / docs. Scales to dense subgraphs without label
+  overlap. Edge color is per type, fixed map (see ``EDGE_DOT_COLOR``);
+  consistent across runs; not derived from valence so the viewer
   distinguishes ``CITES`` from ``RELATES_TO`` even though both
   carry positive valence.
 - ``--edge-types`` filter: applied at the display layer (not at
@@ -73,7 +72,7 @@ from aelfrice.models import (
 )
 from aelfrice.store import MemoryStore
 
-DEFAULT_PREVIEW_CHARS: Final[int] = 60
+DEFAULT_PREVIEW_CHARS: Final[int] = 80
 
 # Posterior buckets (mirrors canvas_export so viewers agree).
 POSTERIOR_HIGH_CUTOFF: Final[float] = 0.75
@@ -107,26 +106,6 @@ EDGE_DOT_COLOR: Final[dict[str, str]] = {
     EDGE_POTENTIALLY_STALE: "gray70",
 }
 
-# 3-4 char edge-type abbreviations. Distinct prefixes so a user
-# reading a dense graph can identify types from the label alone
-# (color is the primary channel; the label is the redundant one
-# per Q2). SUPS vs SUP keeps SUPERSEDES distinguishable from
-# SUPPORTS.
-EDGE_LABEL_ABBR: Final[dict[str, str]] = {
-    EDGE_SUPPORTS: "SUP",
-    EDGE_CONTRADICTS: "CON",
-    EDGE_CITES: "CIT",
-    EDGE_RELATES_TO: "REL",
-    EDGE_DERIVED_FROM: "DRV",
-    EDGE_IMPLEMENTS: "IMP",
-    EDGE_TEMPORAL_NEXT: "TMP",
-    EDGE_TESTS: "TST",
-    EDGE_SUPERSEDES: "SUPS",
-    EDGE_RESOLVES: "RES",
-    EDGE_POTENTIALLY_STALE: "STL",
-}
-
-
 @dataclass(frozen=True)
 class GraphNode:
     """Resolved node entry before serialisation.
@@ -147,7 +126,6 @@ class GraphEdge:
     src: str
     dst: str
     edge_type: str
-    label: str  # 3-4 char abbreviation
     color: str  # "" => no color attribute
 
 
@@ -237,13 +215,11 @@ def _collect_edges(
             seen.add(key)
             if edge_types_filter is not None and e.type not in edge_types_filter:
                 continue
-            label = EDGE_LABEL_ABBR.get(e.type, e.type[:4])
             color = EDGE_DOT_COLOR.get(e.type, "")
             rows.append(GraphEdge(
                 src=e.src,
                 dst=e.dst,
                 edge_type=e.type,
-                label=label,
                 color=color,
             ))
     rows.sort(key=lambda r: (r.src, r.dst, r.edge_type))
@@ -304,12 +280,12 @@ def export_dot(
             attrs.append('penwidth=2')
         lines.append(f'  "{_dot_escape(n.id)}" [{", ".join(attrs)}];')
     for e in edges:
-        attrs = [f'label="{e.label}"']
+        attrs: list[str] = []
         if e.color:
             attrs.append(f'color="{e.color}"')
+        suffix = f' [{", ".join(attrs)}]' if attrs else ""
         lines.append(
-            f'  "{_dot_escape(e.src)}" -> "{_dot_escape(e.dst)}" '
-            f'[{", ".join(attrs)}];'
+            f'  "{_dot_escape(e.src)}" -> "{_dot_escape(e.dst)}"{suffix};'
         )
     lines.append("}")
     return "\n".join(lines) + "\n"
@@ -355,7 +331,6 @@ def export_graph_json(
             "src": e.src,
             "dst": e.dst,
             "type": e.edge_type,
-            "label": e.label,
         }
         if e.color:
             row["color"] = e.color

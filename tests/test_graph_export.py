@@ -11,7 +11,6 @@ from aelfrice.bfs_multihop import ScoredHop, expand_bfs
 from aelfrice.graph_export import (
     DEFAULT_PREVIEW_CHARS,
     EDGE_DOT_COLOR,
-    EDGE_LABEL_ABBR,
     NODE_DOT_COLOR_HIGH,
     NODE_DOT_COLOR_LOCKED,
     NODE_DOT_COLOR_LOW,
@@ -177,7 +176,13 @@ def test_mid_posterior_omits_color_key():
 # ---------------------------------------------------------------- edge encoding
 
 
-def test_edge_label_uses_short_abbreviation():
+def test_edges_emit_no_label_attribute():
+    """#629 ratification: color-only edges, no text label.
+
+    Verifies both DOT and JSON outputs omit any per-edge ``label``
+    attribute. Type information is preserved in JSON via the ``type``
+    field; DOT consumers read color and rely on the ``--help`` legend.
+    """
     a = _belief("a", "alpha")
     b = _belief("b", "beta")
     store = _seed_store([a, b], [
@@ -187,9 +192,11 @@ def test_edge_label_uses_short_abbreviation():
         hops = [ScoredHop(belief=b, score=0.6, depth=1, path=[EDGE_SUPPORTS],
                           belief_id_trail=("a", "b"))]
         js = export_graph_json([a], hops, store)
-        assert js["edges"][0]["label"] == EDGE_LABEL_ABBR[EDGE_SUPPORTS]
-        assert js["edges"][0]["label"] == "SUP"
+        assert "label" not in js["edges"][0]
         assert js["edges"][0]["type"] == EDGE_SUPPORTS
+        dot = export_dot([a], hops, store)
+        edge_line = [ln for ln in dot.splitlines() if " -> " in ln][0]
+        assert "label=" not in edge_line
     finally:
         store.close()
 

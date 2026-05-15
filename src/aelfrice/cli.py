@@ -5147,6 +5147,29 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "emit a query-anchored subgraph (DOT or JSON) around a "
             "belief, expanded N hops via BFS"
         ),
+        description=(
+            "Emit a query-anchored subgraph (DOT or JSON) around a "
+            "belief, expanded N hops via BFS.\n"
+            "\n"
+            "Edge encoding (#629 ratification): color-code only, no "
+            "text labels on edges. Color legend:\n"
+            "  SUPPORTS          darkgreen\n"
+            "  CONTRADICTS       firebrick\n"
+            "  CITES             royalblue\n"
+            "  RELATES_TO        gray50\n"
+            "  DERIVED_FROM      purple\n"
+            "  IMPLEMENTS        teal\n"
+            "  TEMPORAL_NEXT     darkorange\n"
+            "  TESTS             goldenrod\n"
+            "  SUPERSEDES        black\n"
+            "  RESOLVES          darkviolet\n"
+            "  POTENTIALLY_STALE gray70\n"
+            "\n"
+            "Node encoding: locked => cyan; posterior mean >= 0.75 "
+            "=> darkgreen; posterior mean < 0.25 => firebrick; "
+            "mid bucket emits no color attribute. Locked nodes also "
+            "get penwidth=2 so they pop in B/W contexts."
+        ),
     )
     p_graph.add_argument(
         "anchor", nargs="?", default="",
@@ -5191,10 +5214,10 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_graph.add_argument(
-        "--preview-chars", type=int, default=60, dest="preview_chars",
+        "--preview-chars", type=int, default=80, dest="preview_chars",
         help=(
             "max chars of belief content shown as node label "
-            "(default 60; 0 emits empty labels)"
+            "(default 80; 0 emits empty labels)"
         ),
     )
     p_graph.add_argument(
