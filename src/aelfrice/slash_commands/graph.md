@@ -1,7 +1,7 @@
 ---
 name: aelf:graph
 description: Emit a query-anchored subgraph (DOT or JSON) around a belief, expanded N hops via BFS. Deterministic; pipe DOT to `dot -Tsvg` to render.
-argument-hint: <belief-id-or-keyword> [--hops N] [--edge-types T1,T2,...] [--format dot|json] [--preview-chars N] [--out PATH]
+argument-hint: <belief-id-or-keyword> [--seed-id ID]... [--hops N] [--edge-types T1,T2,...] [--format dot|json] [--preview-chars N] [--out PATH]
 allowed-tools:
   - Bash
 ---

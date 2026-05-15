@@ -22,7 +22,6 @@ from aelfrice.models import (
     EDGE_CITES,
     EDGE_CONTRADICTS,
     EDGE_RELATES_TO,
-    EDGE_SUPERSEDES,
     EDGE_SUPPORTS,
     LOCK_NONE,
     LOCK_USER,
