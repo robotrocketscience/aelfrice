@@ -3989,6 +3989,35 @@ class MemoryStore:
         )
         return [(str(r["id"]), str(r["content"])) for r in cur.fetchall()]
 
+    def list_active_beliefs(
+        self,
+        *,
+        limit: int | None = None,
+        order: str = "id_asc",
+    ) -> list[Belief]:
+        """Return active beliefs (``valid_to IS NULL``) for bulk export.
+
+        ``order``:
+          * ``"id_asc"`` (default) — stable deterministic order by id;
+            byte-identical re-export semantic for #630.
+          * ``"recent"`` — newest first by ``created_at DESC`` then id
+            ASC for tie-break.
+
+        ``limit`` caps the SQL row count. ``None`` returns every active
+        belief. Soft-deleted phantoms (``valid_to IS NOT NULL``) are
+        always excluded — they're tombstones, not exportable content.
+        """
+        order_sql = {
+            "id_asc": "ORDER BY id ASC",
+            "recent": "ORDER BY created_at DESC, id ASC",
+        }[order]
+        limit_clause = f"LIMIT {int(limit)}" if limit is not None else ""
+        cur = self._conn.execute(
+            f"SELECT * FROM beliefs WHERE valid_to IS NULL "
+            f"{order_sql} {limit_clause}"
+        )
+        return [_row_to_belief(r) for r in cur.fetchall()]
+
     # --- Setr: propagate_valence -----------------------------------------
 
     def propagate_valence(
