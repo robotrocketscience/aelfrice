@@ -1,12 +1,16 @@
 # Hot-path touch state (v1)
 
-**Status (v3.x):** storage substrate shipped, retrieval consumer parked.
+**Status (v3.x):** storage substrate shipped, retrieval consumer **deferred-with-evidence** (post-R7c).
 
 The hot-path touch state is a per-(belief, session) sidecar that
 records the most-recent `fire_idx` at which each belief was injected
 into the agent's context. v1 ships the write path and inspection
-surface; the rerank consumer that reads this state is a separate PR
-gated on a lab-side post-R7c campaign round.
+surface. The originally-planned rerank consumer that would read this
+state is no longer scheduled — R7c (see ["Why no consumer in
+v1"](#why-no-consumer-in-v1) below) found production posterior-touch
+correlation above the pre-committed crossover on two corpora; the
+synthetic-baseline signal that motivated the consumer mostly
+evaporates at production correlation levels.
 
 ## What it is
 
@@ -19,7 +23,7 @@ event-kind bitmask. The two tables answer different questions:
 | Table | Read shape | Cardinality | Consumer |
 |---|---|---|---|
 | `injection_events` | "did the assistant reference this belief?" | one row per (turn × belief) | #779 sweeper |
-| `belief_touches` | "was this belief recently in the prompt?" | one row per (belief × session) | (parked — post-R7c) |
+| `belief_touches` | "was this belief recently in the prompt?" | one row per (belief × session) | (deferred-with-evidence — see #848) |
 
 The intended consumer for `belief_touches` is a posterior-rerank
 multiplier that boosts beliefs touched in the last K fires of the
@@ -95,21 +99,43 @@ OR-s the event_kind bit into the bitmask.
 
 ## Why no consumer in v1
 
-The retrieval-consumer plan is a rerank-stage posterior multiplier
-that boosts beliefs `is_hot(b, current_fire_idx, K)` returns True for.
-DESIGN.md v1 (`experiments/hot-path/DESIGN.md` in the lab) gates the
-consumer flip on two preconditions:
+The retrieval-consumer plan was a rerank-stage posterior multiplier
+that boosts beliefs `is_hot(b, current_fire_idx, K)` returns True
+for. DESIGN.md v1 (`experiments/hot-path/DESIGN.md` in the lab)
+gated the consumer flip on two preconditions; both have now resolved:
 
 1. **PR #782** (v3.1 `JUDGE_PROMPT_TEMPLATE` sharpening + hot_start
    fixture widening) — landed 2026-05-14.
-2. **R7c production-posterior-temperature ρ measurement** — needs
-   ≥50 rows accumulated in `injection_events` on a real per-project
-   DB. Structurally unrunnable until the substrate has been live long
-   enough to gather rows.
+2. **R7c production-posterior-temperature ρ measurement** — completed
+   2026-05-15 against two real per-project DBs.
 
-Until R7c reports `r`, the v1 substrate writes are the only useful
-output — they buy R7c the ability to run. The consumer flip is a
-separate PR.
+R7c result (cross-corpus):
+
+| Corpus | Session events | Touched | ρ_mixed (load-bearing) | Band (per R7b) |
+|---|---|---|---|---|
+| aelfrice repo | 168 | 14 | **+0.8745** | `SHIP_H4_ONLY` |
+| Independent project | 214 | 89 | **+0.7244** | `SHIP_H4_ONLY` |
+
+Both ρ_mixed values are above the pre-committed 0.60 crossover
+that R7b identified as the threshold above which R7's
+91% top-K shift signal mostly evaporates. Cross-corpus agreement
+across two independent project shapes strengthens the read.
+
+**Decision: the consumer flip is not scheduled.** The originally-
+modelled posterior-rerank touch-temperature multiplier is
+deferred-with-evidence — not "we haven't measured yet," but "we
+measured and the evidence doesn't justify the build." See #848 for
+the tracker and re-opening conditions. The substrate writes shipped
+here remain in place and remain useful for inspection (`aelf doctor
+--hot-path`) and for any future consumer that wants a different
+mechanism.
+
+Caveat: each R7c corpus is a single-session measurement; N is
+modest. Verdict is suggestive-not-decisive at this dispatch budget.
+An extended sweep is what `scripts/probe_posterior_touch_correlation.py`
+exists to enable — contributors with their own corpora can add to
+the M=2 trial-equivalent verdict and either tighten the defer call
+or re-open H3.
 
 ## What R4 measures and what it does NOT
 
@@ -121,9 +147,11 @@ consumers actually see. The decision is robust to formula choice
 (R4d/R4e), corpus dwell (R4b), event-mix frequency (R4c), and
 multiplicative-vs-additive blend (R5).
 
-R4 does **not** measure rebuilder continuation fidelity. That is H3's
-job (R3 — load-bearing, parked on R7c). v1 ships the substrate so
-H3 can be measured at all.
+R4 does **not** measure rebuilder continuation fidelity. That was H3's
+job (R3 — load-bearing); R7c's cross-corpus measurement found the
+synthetic R7 signal mostly evaporates at production correlation
+levels, so R3 is not scheduled. The substrate shipped here remains
+the foundation any future H3 mechanism would build on.
 
 ## Inspection
 

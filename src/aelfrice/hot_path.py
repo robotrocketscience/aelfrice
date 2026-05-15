@@ -19,9 +19,13 @@ source of truth for the scope this module ships against:
   1.000 across the lab corpus. `retrieve_hit`, `bfs_visit`, and
   `user_action` are out for v1; the bitmask reserves the bits.
 - **No rerank consumer.** Touch state is written but not read at
-  rerank time in v1. The H3 fidelity test (R3 / R7c) gates the
-  consumer flip. v1 ships the substrate; the multiplier helper here
-  has no production caller yet.
+  rerank time. R7c (2026-05-15) found production posterior-touch
+  correlation above the 0.60 crossover R7b pre-committed
+  (rho_mixed = +0.87 on the aelfrice corpus, +0.72 on an
+  independent corpus); the originally-modelled posterior-rerank
+  touch-temperature multiplier is deferred-with-evidence and is not
+  scheduled. The multiplier helper in this module has no production
+  caller and is not slated to get one. See #848 for the tracker.
 
 Locked decisions honored:
 
