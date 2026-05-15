@@ -225,6 +225,13 @@ HIDDEN_SUBCOMMANDS = frozenset({
     # research artifact emitter, not a workflow verb. May graduate
     # to EXPECTED_COMMANDS if/when the vault-exporter sibling lands.
     "export-canvas",
+    # `export-obsidian` is the Obsidian vault exporter (#630) — the
+    # vault-exporter sibling referenced in the export-canvas note. Kept
+    # hidden in v1 to match export-canvas; graduation to a slash command
+    # is a separate ship once the surface settles. Disclaimers (perf +
+    # edge-type) live in --help and the end-of-run NOTE lines so users
+    # see them either way.
+    "export-obsidian",
 })
 
 

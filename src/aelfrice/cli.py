@@ -1300,6 +1300,76 @@ def _cmd_graph(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_export_obsidian(args: argparse.Namespace, out: object) -> int:
+    """Export the belief graph to an Obsidian vault (#630).
+
+    One Markdown note per belief written under ``<vault>/aelfrice/``;
+    the subdirectory is wiped and rewritten on each run (ratified Q2).
+    Typed edges land in YAML front-matter for Dataview; wikilinks land
+    in the body for graph view. Read-only against the store.
+    """
+    from aelfrice.obsidian_export import (
+        DEFAULT_MAX_NOTES,
+        EDGE_TYPE_DISCLAIMER,
+        HARD_MAX_NOTES,
+        PERF_DISCLAIMER,
+        select_beliefs,
+        write_vault,
+    )
+
+    requested = args.max_notes if args.max_notes is not None else DEFAULT_MAX_NOTES
+    if requested > HARD_MAX_NOTES and not args.force:
+        print(
+            f"aelf export-obsidian: --max-notes {requested} exceeds the "
+            f"hard ceiling ({HARD_MAX_NOTES}). Re-run with --force to "
+            f"override. Reminder: Obsidian's graph view chokes past a "
+            f"few thousand nodes — see --help for the perf disclaimer.",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 2
+
+    vault = Path(args.vault).expanduser().resolve()
+    if not vault.exists() or not vault.is_dir():
+        print(
+            f"aelf export-obsidian: vault path does not exist or is not "
+            f"a directory: {vault}",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 2
+
+    store = _open_store()
+    try:
+        beliefs = select_beliefs(
+            store,
+            scope=args.scope,
+            query=args.query,
+            max_notes=requested,
+            neighborhood_hops=args.neighborhood_hops,
+            k_seeds=args.k,
+        )
+        if not beliefs:
+            print(
+                "aelf export-obsidian: no beliefs in scope (empty store, "
+                "or query matched nothing). Nothing written.",
+                file=out,  # type: ignore[arg-type]
+            )
+            return 0
+        result = write_vault(beliefs, store, vault)
+    finally:
+        store.close()
+
+    print(
+        f"aelf export-obsidian: wrote {result.notes_written} notes to "
+        f"{result.vault_dir}",
+        file=out,  # type: ignore[arg-type]
+    )
+    print("", file=out)  # type: ignore[arg-type]
+    print(f"NOTE: {PERF_DISCLAIMER}", file=out)  # type: ignore[arg-type]
+    print("", file=out)  # type: ignore[arg-type]
+    print(f"NOTE: {EDGE_TYPE_DISCLAIMER}", file=out)  # type: ignore[arg-type]
+    return 0
+
+
 def _cmd_wonder_axes(args: argparse.Namespace, out: object) -> int:
     """Emit dispatch-payload JSON for `aelf wonder QUERY` (#645) or
     the legacy alias `aelf wonder --axes QUERY` (#551).
@@ -6516,6 +6586,68 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="output path (default '-' for stdout)",
     )
     p_export_canvas.set_defaults(func=_cmd_export_canvas)
+
+    # #630 — Obsidian vault exporter. Two disclaimers MUST appear in the
+    # help text verbatim (proposal acceptance criterion):
+    #   1. Obsidian's graph view doesn't scale.
+    #   2. Obsidian's graph is untyped.
+    # The disclaimer strings live in aelfrice.obsidian_export so the
+    # README, CLI help, and end-of-run NOTE lines all read from the
+    # same source and can't drift.
+    from aelfrice.obsidian_export import (
+        DEFAULT_MAX_NOTES as _OBS_DEFAULT_MAX,
+        EDGE_TYPE_DISCLAIMER as _OBS_EDGE_DISC,
+        HARD_MAX_NOTES as _OBS_HARD_MAX,
+        PERF_DISCLAIMER as _OBS_PERF_DISC,
+    )
+    p_export_obsidian = sub.add_parser(
+        "export-obsidian",
+        help="export the belief graph to an Obsidian vault as Markdown notes",
+        description=(
+            "Export the belief graph to an Obsidian vault as Markdown "
+            "notes with typed-edge YAML front-matter.\n\n"
+            f"PERFORMANCE DISCLAIMER: {_OBS_PERF_DISC}\n\n"
+            f"EDGE-TYPE DISCLAIMER: {_OBS_EDGE_DISC}"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_export_obsidian.add_argument(
+        "vault",
+        help="path to the Obsidian vault root (the 'aelfrice/' subdir is "
+             "wiped and rewritten on each run)",
+    )
+    p_export_obsidian.add_argument(
+        "--scope", choices=("all", "recent", "query"), default="all",
+        help="selection mode (default: all)",
+    )
+    p_export_obsidian.add_argument(
+        "--query", default=None,
+        help="BM25 seed query (required when --scope query)",
+    )
+    p_export_obsidian.add_argument(
+        "--neighborhood-hops", type=int, default=1, dest="neighborhood_hops",
+        help="BFS expansion depth from BM25 seeds (--scope query; default 1)",
+    )
+    p_export_obsidian.add_argument(
+        "--k", type=int, default=8,
+        help="BM25 seed fanout for --scope query (default 8)",
+    )
+    p_export_obsidian.add_argument(
+        "--max-notes", type=int, default=None, dest="max_notes",
+        help=(
+            f"cap on notes written (default {_OBS_DEFAULT_MAX}; "
+            f"hard ceiling {_OBS_HARD_MAX}; pass --force to exceed)"
+        ),
+    )
+    p_export_obsidian.add_argument(
+        "--force", action="store_true",
+        help=(
+            f"required to exceed the {_OBS_HARD_MAX}-note hard ceiling; "
+            "exists to prevent accidentally dumping a 50k-belief store "
+            "into a vault Obsidian can't render"
+        ),
+    )
+    p_export_obsidian.set_defaults(func=_cmd_export_obsidian)
 
     p_tail = sub.add_parser(
         "tail",
