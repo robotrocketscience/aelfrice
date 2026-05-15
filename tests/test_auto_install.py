@@ -386,11 +386,8 @@ def test_auto_install_at_cli_entry_runs_when_uv_tool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Sanity: when the gate reports uv-tool, `maybe_install_manifest`
-    is invoked. We do not exercise the merge end-to-end here — its
-    happy path is covered by the dedicated `_do_merge` tests above.
-    Note: the real-merge path uses bound default `stamp_path` /
-    `opt_out_path` arguments which would leak to the user's actual
-    `~/.aelfrice/` if not stubbed."""
+    is invoked. Stubbed for test isolation — happy-path behaviour of
+    `_do_merge` is covered by the dedicated `_do_merge` tests above."""
     monkeypatch.delenv("AELFRICE_NO_AUTO_INSTALL", raising=False)
     monkeypatch.setattr(
         auto_install, "is_running_from_uv_tool_install", lambda: True
@@ -406,6 +403,39 @@ def test_auto_install_at_cli_entry_runs_when_uv_tool(
     monkeypatch.setattr(auto_install, "maybe_install_manifest", stub)
     auto_install.auto_install_at_cli_entry(installed_version="2.2.0")
     assert calls == ["2.2.0"]
+
+
+def test_module_attr_monkeypatch_propagates_to_default_args(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Regression for #839: when the caller omits `stamp_path` /
+    `opt_out_path`, `maybe_install_manifest` MUST resolve them via
+    `auto_install.STAMP_PATH` / `OPT_OUT_PATH` looked up at *call*
+    time, not the value bound at function-definition time. Pre-fix
+    the defaults captured the original module attributes, so module
+    attribute monkeypatches were silently ignored and the merge ran
+    against the user's real `~/.aelfrice/`. Post-fix the defaults are
+    `None` and resolved inside the function from the module globals,
+    so monkeypatches propagate (mirroring the existing `settings_path`
+    pattern at the top of the function).
+
+    Direct positive assertion: if the fix is in place, the tmp stamp
+    file gets written to the new version. If the fix breaks, the tmp
+    stamp file stays at its pre-merge value (the merge wrote to the
+    real `~/.aelfrice/installed-manifest-version` instead) and the
+    assertion fails — which also surfaces the regression early enough
+    that the test author can investigate before the broken code lands."""
+    settings, stamp, opt_out = _settings_setup(tmp_path)
+    monkeypatch.setattr(auto_install, "STAMP_PATH", stamp)
+    monkeypatch.setattr(auto_install, "OPT_OUT_PATH", opt_out)
+    write_stamp(stamp, "1.0.0")  # establish a known pre-merge value
+    # Call maybe_install_manifest directly with no stamp_path / opt_out_path
+    # — the property under test is exactly the default-arg resolution.
+    maybe_install_manifest(
+        installed_version="2.2.0",
+        settings_path=settings,
+    )
+    assert read_stamp(stamp) == "2.2.0"
 
 
 # --- failure semantics ---------------------------------------------------
