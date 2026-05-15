@@ -343,6 +343,71 @@ def test_auto_install_at_cli_entry_bypasses_when_env_set(
     assert captured.err == ""
 
 
+# --- install-context gate (#834) ----------------------------------------
+
+
+def test_auto_install_at_cli_entry_skips_when_not_uv_tool(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Per #834: a worktree's `uv run aelf` must not rewrite the user's
+    global ~/.claude/settings.json. When the install-context gate
+    reports we are NOT running from a uv-tool install, the helper must
+    short-circuit before reading the manifest or touching the stamp."""
+    monkeypatch.delenv("AELFRICE_NO_AUTO_INSTALL", raising=False)
+    monkeypatch.setattr(
+        auto_install, "is_running_from_uv_tool_install", lambda: False
+    )
+    monkeypatch.setattr(auto_install, "STAMP_PATH", tmp_path / "stamp")
+    monkeypatch.setattr(auto_install, "OPT_OUT_PATH", tmp_path / "opt-out")
+    monkeypatch.setattr(auto_install, "USER_SETTINGS_PATH", tmp_path / "settings.json")
+    auto_install.auto_install_at_cli_entry(installed_version="2.2.0")
+    # Nothing written, nothing printed — the global settings file must
+    # not have been created (regression: #834 reproducer).
+    assert not (tmp_path / "stamp").exists()
+    assert not (tmp_path / "settings.json").exists()
+    captured = capsys.readouterr()
+    assert captured.err == ""
+
+
+def test_is_running_from_uv_tool_install_delegates_to_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gate forwards to `lifecycle._is_uv_tool_install` so detection
+    stays in one place. Test both branches via that single seam."""
+    from aelfrice import lifecycle
+
+    monkeypatch.setattr(lifecycle, "_is_uv_tool_install", lambda: True)
+    assert auto_install.is_running_from_uv_tool_install() is True
+    monkeypatch.setattr(lifecycle, "_is_uv_tool_install", lambda: False)
+    assert auto_install.is_running_from_uv_tool_install() is False
+
+
+def test_auto_install_at_cli_entry_runs_when_uv_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sanity: when the gate reports uv-tool, `maybe_install_manifest`
+    is invoked. We do not exercise the merge end-to-end here — its
+    happy path is covered by the dedicated `_do_merge` tests above.
+    Note: the real-merge path uses bound default `stamp_path` /
+    `opt_out_path` arguments which would leak to the user's actual
+    `~/.aelfrice/` if not stubbed."""
+    monkeypatch.delenv("AELFRICE_NO_AUTO_INSTALL", raising=False)
+    monkeypatch.setattr(
+        auto_install, "is_running_from_uv_tool_install", lambda: True
+    )
+    calls: list[str] = []
+
+    def stub(*, installed_version: str, **_kw: object) -> object:
+        calls.append(installed_version)
+        return auto_install.AutoInstallResult(
+            ran=True, prev_version="0.0.0", new_version=installed_version
+        )
+
+    monkeypatch.setattr(auto_install, "maybe_install_manifest", stub)
+    auto_install.auto_install_at_cli_entry(installed_version="2.2.0")
+    assert calls == ["2.2.0"]
+
+
 # --- failure semantics ---------------------------------------------------
 
 

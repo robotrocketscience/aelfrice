@@ -64,6 +64,12 @@ def test_auto_install_at_cli_entry_does_not_propagate_exceptions(
 ) -> None:
     """A blown-up merge must NOT block the user's actual command."""
     monkeypatch.delenv("AELFRICE_NO_AUTO_INSTALL", raising=False)
+    # Force the install-context gate open: this test exercises the merge
+    # path itself, not the gate. The gate is covered separately in
+    # tests/test_auto_install.py.
+    monkeypatch.setattr(
+        auto_install, "is_running_from_uv_tool_install", lambda: True
+    )
 
     def boom(**_kw: object) -> None:
         raise RuntimeError("synthetic")
