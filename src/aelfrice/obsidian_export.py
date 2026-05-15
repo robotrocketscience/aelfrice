@@ -110,7 +110,6 @@ class ExportResult:
     """Summary of a write_vault run for CLI surface and tests."""
     notes_written: int
     vault_dir: Path
-    truncated_at_cap: bool
 
 
 _SLUG_KILL_RE = re.compile(r"[^a-z0-9]+")
@@ -380,5 +379,4 @@ def write_vault(
     return ExportResult(
         notes_written=len(beliefs),
         vault_dir=target,
-        truncated_at_cap=False,
     )
