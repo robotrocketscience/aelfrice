@@ -88,6 +88,8 @@ ARTIFACT_THRESHOLD = 0.60
 
 def spearman_rho(a: list[float], b: list[float]) -> float:
     """Pure-stdlib Spearman rank correlation with average-rank ties."""
+    if len(a) != len(b):
+        raise ValueError(f"length mismatch: len(a)={len(a)} vs len(b)={len(b)}")
     n = len(a)
     if n < 2:
         return 0.0

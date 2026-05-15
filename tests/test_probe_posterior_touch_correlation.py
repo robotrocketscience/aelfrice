@@ -62,6 +62,24 @@ class TestSpearmanRho:
         assert probe_module.spearman_rho([], []) == 0.0
         assert probe_module.spearman_rho([1.0], [2.0]) == 0.0
 
+    def test_nonlinear_monotonic_returns_one(self, probe_module):
+        # Spearman is rank-based: any monotonic-increasing transform
+        # of `a` produces ρ = +1, even when the relationship is highly
+        # nonlinear. Pins the behaviour against a future implementation
+        # that accidentally drops the rank step.
+        a = [1.0, 2.0, 3.0, 4.0, 5.0]
+        b = [1.0, 4.0, 27.0, 256.0, 3125.0]  # i ** i
+        assert probe_module.spearman_rho(a, b) == 1.0
+
+    def test_length_mismatch_raises(self, probe_module):
+        # Silent truncation or IndexError on length-mismatched inputs
+        # would mis-report ρ for an asymmetric measurement; raise
+        # explicitly so callers cannot reach a wrong-but-finite value.
+        with pytest.raises(ValueError, match="length mismatch"):
+            probe_module.spearman_rho([1.0, 2.0], [1.0, 2.0, 3.0])
+        with pytest.raises(ValueError, match="length mismatch"):
+            probe_module.spearman_rho([1.0, 2.0, 3.0], [1.0, 2.0])
+
 
 class TestVerdictForRho:
     def test_low_rho_returns_build_pipeline(self, probe_module):
