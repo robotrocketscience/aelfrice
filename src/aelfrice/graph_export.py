@@ -25,7 +25,7 @@ Encoding policy
 ---------------
 
 - Node label: belief content truncated to ``preview_chars`` (default
-  60), with ``…`` ellipsis. Faraday's Q3 ratification: deterministic
+  60), with ``…`` ellipsis. Issue Q3 ratification (#629): deterministic
   truncation, not summarisation.
 - Node color: locked => cyan; posterior mean buckets (high =>
   green, low => red, mid => no color attribute). Matches
@@ -33,7 +33,7 @@ Encoding policy
   same visual encoding.
 - Edge label: 3-4 char abbreviation of the edge type (``SUP``,
   ``CON``, ``CIT``, ``REL``, ``DRV``, ``IMP``, ``TMP``, ``TST``,
-  ``SUPS``, ``RES``, ``STL``). Faraday's Q2 ratification: color
+  ``SUPS``, ``RES``, ``STL``). Issue Q2 ratification (#629): color
   + truncated label, both required for B/W and screen-reader
   contexts.
 - Edge color: per edge type, fixed map (see ``EDGE_DOT_COLOR``).
