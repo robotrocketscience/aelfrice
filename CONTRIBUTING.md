@@ -36,6 +36,40 @@ Body should include:
 
 Don't include `~/.aelfrice/memory.db` from a real project — it contains your private beliefs. Reproduce on a scratch DB (`AELFRICE_DB=/tmp/scratch.db`) and share that.
 
+## Triage labels
+
+The issue tracker uses a small label vocabulary that gh-driven tooling
+(`aelf-scan.sh`, `aelf-claim.sh`; see `src/aelfrice/cli.py` and
+`src/aelfrice/gate_list.py`) reads to decide whether an open issue is
+ready to be claimed or should be hidden from the active queue. Apply
+one or more of these at file-time when an issue isn't immediately
+actionable:
+
+- **`gate:operator`** — operator decision or operator-side data must
+  arrive before the issue can move. Example: a tracker that opens once
+  enough telemetry has accumulated to baseline against (#749, #488).
+- **`gate:prereq`** — blocked on another tracked work item (sub-task,
+  upstream dependency, framework landing first).
+- **`gate:lab-corpus`** — blocked on lab-side corpus delivery; the
+  public-tree work cannot exercise its acceptance criteria until the
+  corpus is committed.
+- **`gate:ratify`** — needs ratification of a design decision before
+  implementation should begin.
+- **`gate:umbrella`** — umbrella issue that coordinates sub-issues but
+  has no implementation surface of its own; closes when its children
+  close.
+- **`bench-gated`** — implementation has shipped; the only outstanding
+  work is a benchmark run whose result determines whether to flip a
+  default, ship a tuning change, or revert (#769, #697, #491).
+- **`attn:decisions-needed`** — operator must adjudicate something
+  before the issue can move. Sets it apart from `gate:operator`: the
+  operator has all the information, just hasn't picked.
+
+Issues carrying any of these labels surface in scanner inventory
+output but are excluded from the "next actionable" list. Adding the
+right label at file-time prevents the issue from being re-evaluated
+on every fresh scan.
+
 ## What's likely to land where
 
 The v1.x roadmap is bucketed. See [LIMITATIONS](docs/user/LIMITATIONS.md#known-issues-at-v10) for each issue's target version.
