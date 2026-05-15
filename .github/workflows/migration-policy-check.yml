@@ -1,0 +1,74 @@
+name: Migration Policy Check
+
+# Refuse destructive `_MIGRATIONS` entries in `src/aelfrice/store.py`
+# that arrive without a paired reader update (#840). Closes the
+# bug-class that produced #833 — destructive schema migration shipped
+# without matching `_row_to_belief` / `Belief` dataclass change in
+# the same PR.
+#
+# The gate compares the `_MIGRATIONS` tuple between the PR base and
+# head. For each *added* entry that matches a destructive pattern
+# (DROP COLUMN, DROP TABLE, RENAME COLUMN, RENAME TO), it requires
+# the same PR to also change either `_row_to_belief` in `store.py`
+# or the `Belief` dataclass in `models.py`. ADD COLUMN entries pass
+# unconditionally. Non-`store.py` PRs short-circuit to a pass.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: migration-policy-check-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  migration-policy-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          # Need the base ref for `git show <base>:src/aelfrice/store.py`.
+          fetch-depth: 0
+
+      - uses: dorny/paths-filter@de90cc6fb38fc0963ad72b210f1f284cd68cea36 # v3.0.2
+        id: filter
+        with:
+          filters: |
+            relevant:
+              - 'src/aelfrice/store.py'
+              - 'src/aelfrice/models.py'
+              - 'scripts/check_migration_policy.py'
+              - '.github/workflows/migration-policy-check.yml'
+
+      - if: steps.filter.outputs.relevant == 'true'
+        name: Extract base + head copies of store.py and models.py
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mkdir -p /tmp/migration-policy
+          git show "${BASE_SHA}:src/aelfrice/store.py"  > /tmp/migration-policy/base_store.py
+          git show "${HEAD_SHA}:src/aelfrice/store.py"  > /tmp/migration-policy/head_store.py
+          git show "${BASE_SHA}:src/aelfrice/models.py" > /tmp/migration-policy/base_models.py
+          git show "${HEAD_SHA}:src/aelfrice/models.py" > /tmp/migration-policy/head_models.py
+
+      - if: steps.filter.outputs.relevant == 'true'
+        name: Run migration-policy gate
+        run: |
+          python scripts/check_migration_policy.py \
+            --base-store  /tmp/migration-policy/base_store.py \
+            --head-store  /tmp/migration-policy/head_store.py \
+            --base-models /tmp/migration-policy/base_models.py \
+            --head-models /tmp/migration-policy/head_models.py
+
+      - if: steps.filter.outputs.relevant != 'true'
+        run: echo "No migration-policy-relevant paths changed; reporting pass."
