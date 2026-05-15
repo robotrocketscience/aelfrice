@@ -503,16 +503,50 @@ def is_disabled_via_env(env: dict[str, str] | None = None) -> bool:
     return bool(src.get(NO_AUTO_INSTALL_ENV, "").strip())
 
 
+def is_running_from_uv_tool_install() -> bool:
+    """True iff the running aelfrice is the user's installed `uv tool` copy.
+
+    Auto-install rewrites `~/.claude/settings.json`, which is a global
+    user-config file. Invoking `uv run aelf` (or `python -m aelfrice.cli`)
+    from a project worktree's local `.venv` resolves to the worktree's
+    source — whose hook surface may differ from the user's installed
+    version. Letting that source rewrite the user's global settings is
+    the bug closed by #834: a per-worktree command silently downgraded
+    the user's installed-version hook surface to whatever the worktree
+    happened to advertise.
+
+    Detection delegates to `lifecycle._is_uv_tool_install`, which checks
+    for `~/.local/share/uv/tools/aelfrice/` and falls back to a
+    `sys.prefix` scan against the uv tools root. Worktree-local venvs,
+    contributor `pytest` runs, system Python, and pipx installs all
+    return False here and are excluded from auto-install.
+
+    Returning False means the gate skips merging — power users who
+    want auto-install to run from a non-uv-tool context can still
+    invoke `aelf setup` explicitly. The `AELFRICE_NO_AUTO_INSTALL`
+    env override remains the symmetric escape hatch for uv-tool users.
+    """
+    # Local import keeps `auto_install` importable when `lifecycle` has
+    # not yet been imported by the caller (e.g. during early CLI bootstrap).
+    from aelfrice.lifecycle import _is_uv_tool_install
+
+    return _is_uv_tool_install()
+
+
 def auto_install_at_cli_entry(installed_version: str) -> None:
     """Convenience for `cli.main()`: best-effort merge, never raises.
 
-    Bypassed when AELFRICE_NO_AUTO_INSTALL is set. Stderr message is
-    emitted only when the merge added at least one new entry. Any
-    exception during the merge is swallowed and logged to stderr — we
-    never let a misconfigured the host settings.json block the user's
-    actual `aelf <cmd>` invocation.
+    Bypassed when AELFRICE_NO_AUTO_INSTALL is set, or when the running
+    aelfrice is not the user's `uv tool` install (#834 — a worktree's
+    `uv run aelf` must not rewrite the user's global settings.json).
+    Stderr message is emitted only when the merge added at least one
+    new entry. Any exception during the merge is swallowed and logged
+    to stderr — we never let a misconfigured the host settings.json
+    block the user's actual `aelf <cmd>` invocation.
     """
     if is_disabled_via_env():
+        return
+    if not is_running_from_uv_tool_install():
         return
     try:
         result = maybe_install_manifest(installed_version=installed_version)
