@@ -165,6 +165,27 @@ jobs:
               echo "::error file=${changelog_file}::Missing compare-link footnote '[${head_ver}]: https://github.com/...' near bottom of this file."
               fail=1
             fi
+            # #837 — [Unreleased] must be drained on release. Between the
+            # `## [Unreleased]` header and the next `## [` header, only
+            # `### ...` subsection headers and whitespace may remain.
+            # Any bullet / paragraph content = entries that should have
+            # moved into the dated section (per top-level CHANGELOG.md
+            # policy: "On release, move [Unreleased] content into a
+            # dated ## [X.Y.Z] section"). Catches SemVer breaks like a
+            # patch release shipping breaking changes left in
+            # [Unreleased] (the original failure mode that motivated this
+            # check: PR #835 review thread).
+            unreleased_body=$(awk '
+              /^## \[Unreleased\]/ { in_unreleased=1; next }
+              /^## \[/ && in_unreleased { exit }
+              in_unreleased && NF > 0 && !/^###/ { print }
+            ' "$changelog_file")
+            if [ -n "$unreleased_body" ]; then
+              echo "::error file=${changelog_file}::Release PR detected (${base_ver} -> ${head_ver}) but [Unreleased] still contains content. Migrate it into [${head_ver}] (or split the unmigrated entries into a follow-up release) before merging."
+              echo "Offending [Unreleased] content (first 20 lines):"
+              printf '%s\n' "$unreleased_body" | head -20 | sed 's/^/  /'
+              fail=1
+            fi
           fi
           if grep -qE "v?${head_ver}\s*\|\s*(next|planned)\b" README.md; then
             echo "::error file=README.md::Roadmap row for v${head_ver} still says 'next' or 'planned'. Flip status to 'shipped' before cutting the release."
