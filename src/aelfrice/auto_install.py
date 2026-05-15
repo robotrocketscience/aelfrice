@@ -349,8 +349,8 @@ def maybe_install_manifest(
     installed_version: str,
     scope: SettingsScope = "user",
     settings_path: Path | None = None,
-    stamp_path: Path = STAMP_PATH,
-    opt_out_path: Path = OPT_OUT_PATH,
+    stamp_path: Path | None = None,
+    opt_out_path: Path | None = None,
     force: bool = False,
     timeout: int | None = None,
 ) -> AutoInstallResult:
@@ -361,11 +361,23 @@ def maybe_install_manifest(
     install dispatch). The merge runs only when (a) `force=True` or
     (b) the on-disk stamp is older than `installed_version`.
 
+    `stamp_path` and `opt_out_path` resolve from the module-level
+    `STAMP_PATH` / `OPT_OUT_PATH` constants when omitted. The default
+    is `None` rather than the constant itself so that tests
+    monkeypatching `auto_install.STAMP_PATH` propagate (#839 — bound
+    defaults captured the original module attribute at function-def
+    time, leaking real-merge writes to `~/.aelfrice/` during contributor
+    testing). Mirrors the existing `settings_path` pattern above.
+
     Returns an AutoInstallResult describing what (if anything) was done.
     Never raises for missing files; the caller's CLI is unaffected by a
     failed auto-install (the stamp stays at its prior value and the
     next invocation retries).
     """
+    if stamp_path is None:
+        stamp_path = STAMP_PATH
+    if opt_out_path is None:
+        opt_out_path = OPT_OUT_PATH
     prev = read_stamp(stamp_path)
     if not force and prev == installed_version:
         return AutoInstallResult(
