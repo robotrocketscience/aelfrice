@@ -2,11 +2,27 @@
 
 ## Status
 
-**Spec — proposing for ratification.** Storage half landed in PR #282
-(`hibernation_score REAL` + `activation_condition TEXT`, both nullable).
-This memo specifies the *behavior*: when each column gets written, the
-predicate grammar for `activation_condition`, and the sweeper that
-consumes them.
+**Design memo — UNIMPLEMENTED on `github/main` as of v3.1.** Storage
+half landed in PR #282 (`hibernation_score REAL` +
+`activation_condition TEXT`, both nullable on `beliefs`); both columns
+sit unused. `git grep 'list_hibernated\|hibernate_eligible\|def.*hibernat' src/`
+returns nothing; `git grep 'hibernation_score\s*=' src/` shows only the
+row→model load and the `INSERT/UPDATE` statements that write `NULL` —
+no scorer populates the column.
+
+Treat the rest of this file as design-stage notes for a future
+implementation pass, not as documentation of current behavior.
+The trigger / grammar / sweeper sections below describe a proposed
+shape; nothing here ships in v3.x. Re-open this memo for ratification
+when an eligibility surface lands.
+
+The original spec also keyed the trigger off `demotion_pressure`;
+that column was removed by #814 / PR #820, so any future
+implementation will need to choose new signal columns. The §
+"Detailed proposal" SQL examples below have been pruned of
+`demotion_pressure` references already (see #822 / PR #824), but the
+rest of the trigger logic is unchanged from the original draft and
+remains hypothetical.
 
 ## Problem
 
@@ -49,21 +65,17 @@ Three trigger candidates, ordered by how much I trust them:
 
 #### Candidate A — passive decay against retrieval
 
-<!-- TODO(#825): hibernation_lifecycle.md is a design doc for an
-     unimplemented feature; dispose per #825's verdict. -->
-```
-hibernate IF
-    lock_level == LOCK_NONE
-AND last_retrieved_at IS NOT NULL
-AND last_retrieved_at < now - 30 days
-AND posterior_mean(α, β) < 0.6
-```
+The original spec proposed a passive-decay trigger keyed off
+`last_retrieved_at`, `lock_level`, posterior mean, and (originally)
+`demotion_pressure`. The latter column was removed by #814 / PR #820;
+no replacement signal has been chosen. As of v3.1, no SQL trigger of
+this shape exists in the codebase — `hibernation_score` is always
+written as `NULL`. The 30-day window referenced below would
+notionally match `feedback_history` retention semantics.
 
-`hibernation_score = 1.0 - posterior_mean(α, β)`. Beliefs that meet
-all three predicates simultaneously have: been around long enough to
-be retrievable (have a `last_retrieved_at`), gone unconsulted long
-enough to be cold, and have a posterior that doesn't strongly endorse
-them. The 30-day window matches `feedback_history` retention semantics.
+This section, like the rest of this memo, is a design sketch for a
+future implementation pass. Re-open it with concrete SQL when an
+implementation lands.
 
 **Why this and not the others:**
 
@@ -99,10 +111,12 @@ only mechanism. Score column becomes vestigial.
 Rejected: the substrate decision specifically ratified the score as
 a soft-suspension mechanism. Without trigger, score is unused.
 
-**Decision ask:** confirm Candidate A. The thresholds (30 days, ≥1
-demotion, <0.6 posterior) are individually defensible but not
-benchmarked. Ratifying the *shape* of the rule unblocks
-implementation; the constants can be tuned in v2.x.
+**Decision ask (deferred):** confirm a Candidate-A-style trigger
+shape. The original draft listed `≥1 demotion_pressure` as one
+threshold; that column no longer exists, so any future ratification
+needs to choose a replacement signal first. Constants (30 days,
+posterior cutoff) are individually defensible but not benchmarked.
+Ratification deferred until an implementation pass is scheduled.
 
 ### 2. Activation-condition predicate grammar
 
