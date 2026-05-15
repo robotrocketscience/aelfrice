@@ -62,6 +62,7 @@ from aelfrice.retrieval import (
     retrieve_with_tiers,
 )
 from aelfrice.store import MemoryStore
+from benchmarks.context_rebuilder.score import score_text_pairs_exact
 
 _TS = "2026-05-05T00:00:00+00:00"
 
@@ -884,18 +885,29 @@ def run_compression_a2_uplift(
 # the ON arm must be at least the OFF arm minus a 0.005 noise band
 # (mirroring the BM25F gate-band model at #154).
 #
-# Fidelity-as-token-coverage proxy. The v1.4 exact-method scorer
-# (#138) compares an agent's post-clear answer to ground truth.
-# Capturing real agent answers under both arms requires a live model;
-# instead the runner uses a deterministic proxy: for each
-# expected_post_clear_answer, score the fraction of normalized answer
-# tokens that appear in the normalized rebuild block. Better
-# compression preserves more load-bearing tokens per token of budget,
-# so a passing A4 gate says "compression does not strip the
-# information that post-clear answers depended on, within the 0.005
-# tolerance band." The proxy is documented inline so a later swap to
-# captured-answer scoring (when the lab corpus carries
-# `captured_post_clear_answers_{off,on}` arrays) is a drop-in.
+# Fidelity scoring has two paths, picked per row:
+#
+# 1. Exact-method (#138 / #844). When a row carries
+#    `captured_post_clear_answers_off` and
+#    `captured_post_clear_answers_on` arrays — the agent's actual
+#    post-clear answer recorded under each arm — score each arm by
+#    `score_text_pairs_exact(expected_post_clear_answers,
+#    captured_post_clear_answers_<arm>)`. Same exact-match semantics
+#    `score_continuation_fidelity` uses. Lengths must align across
+#    the three arrays per row; mismatch raises `ValueError`.
+#
+# 2. Token-coverage proxy (legacy default). When the captured arrays
+#    are absent on a row, fall back to: for each
+#    expected_post_clear_answer, score the fraction of normalized
+#    answer tokens that appear in the normalized rebuild block.
+#    Better compression preserves more load-bearing tokens per token
+#    of budget, so a passing A4 gate under the proxy says
+#    "compression does not strip the information post-clear answers
+#    depended on, within the 0.005 tolerance band." The R7-R18
+#    campaign on #769 found the proxy is mathematically ceiling-bound
+#    at production budget; #844 wires the exact-method path so a
+#    corpus rewrite can escape the ceiling without changing this
+#    harness's contract.
 # ---------------------------------------------------------------------
 
 
@@ -999,14 +1011,27 @@ def run_compression_a4_fidelity(
     rebuilder's ``recent_turns`` list from ``transcript_pre_clear``.
     Call ``rebuild_v14`` twice — once with
     ``AELFRICE_TYPE_AWARE_COMPRESSION=0``, once ``=1`` — at the row's
-    ``rebuilder_token_budget`` (or the rebuilder's default). Score
-    each arm by the token-coverage proxy described in the module-level
-    block comment.
+    ``rebuilder_token_budget`` (or the rebuilder's default).
+
+    Per-arm scoring follows the two-path rule in the module-level
+    block comment: when a row carries
+    ``captured_post_clear_answers_off`` / ``...on`` arrays the arm
+    routes to the #138 exact-method scorer via
+    ``score_text_pairs_exact``; otherwise the legacy token-coverage
+    proxy runs against ``rebuild_block``.
 
     Empty rows produce ``CompressionA4Fidelity(0, 0.0, 0.0)``. Rows
     whose expected_post_clear_answers list is empty contribute a
     per-arm score of 1.0 (vacuously perfect, matching the #138
     scorer's empty-case convention).
+
+    Raises
+    ------
+    ValueError
+        If a row carries a ``captured_post_clear_answers_<arm>``
+        array whose length does not match
+        ``expected_post_clear_answers``. The row id is included in
+        the message so corpus-authoring drift is locatable.
     """
     from aelfrice.context_rebuilder import (
         DEFAULT_REBUILDER_TOKEN_BUDGET,
@@ -1053,8 +1078,26 @@ def run_compression_a4_fidelity(
                 finally:
                     store.close()
 
+                arm_key = (
+                    "captured_post_clear_answers_on"
+                    if compress_on
+                    else "captured_post_clear_answers_off"
+                )
+                captured = row.get(arm_key)
                 if not expected_answers:
                     score = 1.0
+                elif captured is not None:
+                    captured_list = [str(a) for a in captured]
+                    if len(captured_list) != len(expected_answers):
+                        raise ValueError(
+                            f"row {row['id']}: {arm_key} length "
+                            f"{len(captured_list)} does not match "
+                            f"expected_post_clear_answers length "
+                            f"{len(expected_answers)}"
+                        )
+                    score = score_text_pairs_exact(
+                        expected_answers, captured_list
+                    ).score
                 else:
                     per_answer = [
                         _coverage_score(a, rebuild_block)

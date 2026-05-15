@@ -389,6 +389,102 @@ def test_compression_a2_uplift_fact_only_row_ties() -> None:
     )
 
 
+def test_compression_a4_fidelity_empty_input() -> None:
+    """Empty corpus: zero rows, both arms zero, no exceptions."""
+    from tests.retrieve_uplift_runner import (
+        CompressionA4Fidelity,
+        run_compression_a4_fidelity,
+    )
+    r = run_compression_a4_fidelity([])
+    assert isinstance(r, CompressionA4Fidelity)
+    assert r.n_rows == 0
+    assert r.mean_fidelity_off == 0.0
+    assert r.mean_fidelity_on == 0.0
+    assert r.uplift == 0.0
+
+
+def test_compression_a4_fidelity_shape_contract() -> None:
+    """Bench-gate reads .uplift / .mean_fidelity_off / .mean_fidelity_on
+    / .n_rows — verify the names haven't drifted."""
+    from tests.retrieve_uplift_runner import CompressionA4Fidelity
+    r = CompressionA4Fidelity(
+        n_rows=3,
+        mean_fidelity_off=0.6,
+        mean_fidelity_on=0.8,
+    )
+    assert abs(r.uplift - 0.2) < 1e-9
+
+
+def _a4_proxy_row() -> dict:  # type: ignore[type-arg]
+    """Minimal A4 row without captured-answer arrays — triggers the
+    legacy token-coverage proxy path."""
+    return {
+        "id": "a4-test-proxy",
+        "transcript_pre_clear": [
+            {"role": "user", "text": "tell me about beliefs"},
+            {"role": "assistant", "text": "beliefs are stored in sqlite"},
+        ],
+        "beliefs": [
+            {"id": "b1",
+             "content": "the memory store persists beliefs across sessions",
+             "retention_class": "fact", "lock_level": "none"},
+            {"id": "b2",
+             "content": "sqlite is the on-disk backend for beliefs",
+             "retention_class": "snapshot", "lock_level": "none"},
+        ],
+        "expected_post_clear_answers": ["beliefs are stored in sqlite"],
+        "rebuilder_token_budget": 1000,
+    }
+
+
+def test_compression_a4_fidelity_proxy_fallback() -> None:
+    """Row without captured_post_clear_answers_* falls back to the
+    token-coverage proxy. Shape contract + score-in-[0,1] is the
+    contract under test; sign of uplift is corpus-dependent and not
+    asserted here."""
+    from tests.retrieve_uplift_runner import run_compression_a4_fidelity
+    r = run_compression_a4_fidelity([_a4_proxy_row()])
+    assert r.n_rows == 1
+    assert 0.0 <= r.mean_fidelity_off <= 1.0
+    assert 0.0 <= r.mean_fidelity_on <= 1.0
+
+
+def test_compression_a4_fidelity_exact_method_path() -> None:
+    """Row with captured_post_clear_answers_{off,on} arrays routes to
+    the exact-method scorer. Construct a row whose OFF captured answer
+    matches expected and ON captured answer does not — exact-method
+    must produce OFF=1.0, ON=0.0 regardless of the rebuild block
+    contents or proxy ceiling.
+
+    Falsifiable: if the runner forgets to route captured arrays and
+    silently re-runs the proxy, both arms saturate near 1.0 and the
+    asserted spread (≥ 0.9) collapses."""
+    from tests.retrieve_uplift_runner import run_compression_a4_fidelity
+    row = _a4_proxy_row()
+    row["id"] = "a4-test-exact"
+    row["captured_post_clear_answers_off"] = ["beliefs are stored in sqlite"]
+    row["captured_post_clear_answers_on"] = ["something unrelated"]
+    r = run_compression_a4_fidelity([row])
+    assert r.n_rows == 1
+    assert r.mean_fidelity_off == 1.0
+    assert r.mean_fidelity_on == 0.0
+    assert r.uplift == -1.0
+
+
+def test_compression_a4_fidelity_captured_length_mismatch_raises() -> None:
+    """Captured array shorter / longer than expected is a corpus-
+    authoring error; the runner must surface it with row id rather
+    than silently scoring against a shifted index."""
+    import pytest
+    from tests.retrieve_uplift_runner import run_compression_a4_fidelity
+    row = _a4_proxy_row()
+    row["id"] = "a4-test-mismatch"
+    row["captured_post_clear_answers_off"] = []  # zero vs expected len=1
+    row["captured_post_clear_answers_on"] = ["x"]
+    with pytest.raises(ValueError, match=r"a4-test-mismatch"):
+        run_compression_a4_fidelity([row])
+
+
 def test_p99_ns_small_samples() -> None:
     """`_p99_ns` uses the k-th largest convention deterministically.
 
