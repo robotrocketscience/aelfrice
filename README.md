@@ -102,6 +102,22 @@ The pair-rhythm is the point: `/aelf:wonder` adds fresh thinking to the graph, t
 
 ---
 
+## Obsidian export
+
+If you already live in Obsidian, `aelf export-obsidian <vault-path>` emits the belief graph as one Markdown note per belief under `<vault>/aelfrice/`. Typed edges land in YAML front-matter for [Dataview](https://blacksmithgu.github.io/obsidian-dataview/); the same edges appear in the note body as wikilinks so the graph view has something to draw. The export is **one-way (DB → vault)**: SQLite stays the source of truth, and the `<vault>/aelfrice/` subdirectory is wiped and rewritten on each run.
+
+Scopes: `--scope all` (everything, capped by `--max-notes`), `--scope recent` (newest first), `--scope query "<text>"` (BM25 seeds + N-hop neighbourhood). Default cap is 500 notes; the hard ceiling is 5000 unless `--force` is passed.
+
+Two structural limits ship with the feature, not as later documentation drift:
+
+> **Obsidian's built-in graph view does not scale.** Force-directed layout chokes around a few thousand nodes; every zoom or hover re-runs layout. Do not export your full belief store and expect the graph view to be usable. Use `--scope query` or `--max-notes` to bound the export, or use `aelf graph` ([#629](https://github.com/robotrocketscience/aelfrice/issues/629)) for query-anchored visualization that works at any store size.
+>
+> **Obsidian's graph view is untyped.** Wikilinks are wikilinks; the aelfrice edge types are not distinguishable in the graph. Edge types are preserved in YAML front-matter and queryable via the [Dataview plugin](https://blacksmithgu.github.io/obsidian-dataview/), but graph view will not show them. This is an Obsidian limitation, not an export bug.
+
+Spec: [#630](https://github.com/robotrocketscience/aelfrice/issues/630).
+
+---
+
 ## Memory model
 
 Every belief carries a `(α, β)` Beta-Bernoulli posterior: `α / (α+β)` is the confidence; `α + β` is how much evidence backs that confidence. New beliefs sit at low evidence (high variance, retrievable but discounted); locked beliefs short-circuit decay and pin as ground truth.

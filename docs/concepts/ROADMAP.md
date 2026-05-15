@@ -220,7 +220,7 @@ The research line also shipped the following capabilities that aelfrice does **n
 - **Session-velocity tracking** (items/hour decay scaling). v1 ships per-belief decay with type-specific half-lives; velocity-scaled decay is the research-line refinement and is parked.
 - **Calibrated status reporting** that surfaces rigor-tier distribution and velocity context to a new agent. Depends on the two items above.
 - **Cross-project shared scopes** via SQLite ATTACH. Subsumed by the Multi-project query non-goal in [LIMITATIONS § Sharing, sync, or federation](../user/LIMITATIONS.md). Named here so the research-line term ("shared scopes") doesn't read as an oversight.
-- **Obsidian vault export** and **vault-as-source-of-truth** storage. Rejected at v1: SQLite is the source of truth, per-project isolation is a hard property. Subsumed by the same federation non-goal.
+- **Vault-as-source-of-truth storage** and **reverse sync (Obsidian → aelfrice)**. Hard non-goal: SQLite remains the source of truth, per-project isolation is a hard property. Subsumed by the same federation non-goal. (Note: **export-only** Obsidian rendering shipped in v3.1+ as `aelf export-obsidian` (#630). Export is one-way DB → vault; the vault is a regenerable artifact, not a content store. The v1 rejection above covered the broader vault-as-source-of-truth and reverse-sync surfaces, which remain rejected.)
 
 ## Compatibility
 
