@@ -133,6 +133,17 @@ Subsequent batches may be agent-assisted (machine pre-labelling, operator
 audits the rows in bulk). v0_2 may add inter-judge κ verification once
 two labellers exist.
 
+### Tooling: `aelf label` (#859)
+
+`aelf label rerank_relevance --input <stubs.jsonl> --output <v0_1.jsonl>`
+walks the labeller through steps 3–5 interactively. Input is a stub
+JSONL with `{id, query, beliefs[]}` (steps 1–2; produced upstream).
+The CLI prompts for `gold_top_k` indices, optional `gold_ordering`,
+and `labeller_note`, validates structure, and appends a schema-shaped
+row to the output. `--resume` skips ids already in output. The
+labelling *decision* stays with the operator; only the JSONL-typing
+friction moves to tooling.
+
 ---
 
 ## Discretion / directory-of-origin checklist
