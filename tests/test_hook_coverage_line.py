@@ -139,6 +139,20 @@ def test_coverage_line_prompt_appears_verbatim_when_short() -> None:
     assert short_prompt in result
 
 
+def test_coverage_line_fires_when_bfs_pads_n_above_l1_candidates() -> None:
+    """Regression: BFS hops should not suppress the coverage line.
+
+    If L1 candidates were trimmed by budget but BFS added enough hops
+    to keep n_injected high, the coverage line must still fire — the
+    L1 trim is real even when other lanes filled the gap.
+    """
+    # locked=2, l25=3, l1_packed=5, l1_candidates=10, bfs=5 → n=15, delta=5
+    tel = _tel(locked=2, l25=3, l1=5, l1_candidates=10)
+    result = _coverage_line(15, tel, "topic")
+    assert result != ""
+    assert "retrieved 15 of 20" in result
+
+
 # ---------------------------------------------------------------------------
 # Integration tests: hook output includes/omits coverage line
 # ---------------------------------------------------------------------------
