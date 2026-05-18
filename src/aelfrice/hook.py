@@ -852,6 +852,16 @@ def user_prompt_submit(
         if gate_skip:
             hits = []
         else:
+            # Reset the process-level LaneTelemetry before retrieval so
+            # that `last_lane_telemetry()` read after this call always
+            # reflects the current turn. Without this reset, stale
+            # telemetry from a prior call (or a mocked `_retrieve` in
+            # tests) would drive the coverage-line computation.
+            from aelfrice.retrieval import (  # noqa: PLC0415
+                LaneTelemetry as _LaneTelemetry,
+                _reset_last_telemetry,
+            )
+            _reset_last_telemetry(_LaneTelemetry())
             hits = _retrieve(prompt, budget)
             # #858 defect 3: drop hits whose stored project_context is
             # non-empty AND does not match the active in-process
@@ -917,6 +927,20 @@ def user_prompt_submit(
                 body = _format_hits_with_session_start(hits, session_start_block)
             else:
                 body = _format_hits(hits)
+            # #280 mitigation 3: per-turn audit of the rendered block.
+            # #321 additive fields: beliefs[], latency_ms, tokens.
+            # #741 additive fields: expansion_gate_reason +
+            # expansion_gate_skipped_bfs — read off the per-process
+            # LaneTelemetry snapshot left by the most recent retrieve()
+            # call so `aelf tail` can show what got gated and why.
+            from aelfrice.retrieval import (  # noqa: PLC0415
+                last_lane_telemetry,
+            )
+            tel = last_lane_telemetry()
+            # #857: coverage line — surface the retrieval/index asymmetry.
+            coverage = _coverage_line(len(hits), tel, prompt)
+            if coverage:
+                body = body + coverage
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
             sout.write(body)
             # AC1: append telemetry record for fires that produce a block.
@@ -929,16 +953,6 @@ def user_prompt_submit(
                 total_chars=total_chars,
                 stderr=serr,
             )
-            # #280 mitigation 3: per-turn audit of the rendered block.
-            # #321 additive fields: beliefs[], latency_ms, tokens.
-            # #741 additive fields: expansion_gate_reason +
-            # expansion_gate_skipped_bfs — read off the per-process
-            # LaneTelemetry snapshot left by the most recent retrieve()
-            # call so `aelf tail` can show what got gated and why.
-            from aelfrice.retrieval import (  # noqa: PLC0415
-                last_lane_telemetry,
-            )
-            tel = last_lane_telemetry()
             _write_hook_audit_record(
                 hook=AUDIT_HOOK_USER_PROMPT_SUBMIT,
                 prompt=prompt,
@@ -1539,6 +1553,34 @@ def _format_hits(hits: list[Belief]) -> str:
     lines.append(CLOSE_TAG)
     lines.append("")
     return "\n".join(lines)
+
+
+_COVERAGE_TOPIC_MAX_CHARS: Final[int] = 60
+
+
+def _coverage_line(
+    n_injected: int,
+    tel: Any,
+    prompt: str,
+) -> str:
+    """Return the coverage-line suffix when M > N, else empty string.
+
+    M = total candidates before token-budget trimming (locked + L2.5 +
+    all L1 candidates). N = beliefs actually injected. The line is
+    appended outside the XML block so no belief content is leaked —
+    only the counts and the user's own prompt keywords.
+    """
+    m_total = tel.locked + tel.l25 + tel.l1_candidates
+    if m_total <= n_injected:
+        return ""
+    raw_topic = prompt.strip()
+    truncated = len(raw_topic) > _COVERAGE_TOPIC_MAX_CHARS
+    search_topic = raw_topic[:_COVERAGE_TOPIC_MAX_CHARS] if truncated else raw_topic
+    display_topic = search_topic + "…" if truncated else raw_topic
+    return (
+        f"retrieved {n_injected} of {m_total} matching beliefs for "
+        f'"{display_topic}"; run `aelf search {search_topic}` to see the rest.\n'
+    )
 
 
 def _open_store() -> MemoryStore:

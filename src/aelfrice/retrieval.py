@@ -1951,6 +1951,11 @@ class LaneTelemetry:
     # LaneTelemetry surface keep working.
     expansion_gate_reason: str = ""
     expansion_gate_skipped_bfs: bool = False
+    # #857 coverage-line support. ``l1_candidates`` is the total number
+    # of L1 hits after BM25 scoring and dedup against L0/L2.5, before
+    # token-budget trimming. ``l1`` tracks what was packed; the delta
+    # is what the hook's coverage line surfaces to the user.
+    l1_candidates: int = 0
 
 
 # Per-process snapshot of the most recent retrieval call. Test-
@@ -1965,6 +1970,18 @@ def last_lane_telemetry() -> LaneTelemetry:
     """Return the LaneTelemetry of the most recent retrieve() call
     in this process. Used by `aelf doctor` and benchmark gates."""
     return _LAST_TELEMETRY
+
+
+def _reset_last_telemetry(tel: LaneTelemetry) -> None:
+    """Overwrite the process-level LaneTelemetry snapshot.
+
+    Exposed for the hook's pre-retrieval reset so that callers reading
+    `last_lane_telemetry()` after a mocked `_retrieve` see a fresh
+    zero-initialized snapshot rather than a stale one from a prior
+    real call.
+    """
+    global _LAST_TELEMETRY
+    _LAST_TELEMETRY = tel
 
 
 def warn_placeholder_flags(start: Path | None = None) -> list[str]:
@@ -2633,6 +2650,7 @@ def retrieve(
         posterior_weight=weight,
         expansion_gate_reason=gate_decision.reason,
         expansion_gate_skipped_bfs=gate_skipped_bfs,
+        l1_candidates=len(l1),
     )
 
     # v1.6.0 #191: enqueue one retrieval_exposure row per surfaced
@@ -2878,6 +2896,7 @@ def retrieve_with_tiers(
         posterior_weight=weight,
         expansion_gate_reason=gate_decision.reason,
         expansion_gate_skipped_bfs=gate_skipped_bfs,
+        l1_candidates=len(l1),
     )
     return out, locked_ids_list, l25_ids_list, l1_ids_list, bfs_chains
 
