@@ -9,7 +9,7 @@ aelfrice ships two benchmark surfaces with different purposes and cadences.
 
 The synthetic harness is a measurement instrument. It is **not** a proof of the central feedback claim — through v1.2 the posterior didn't drive ranking; v1.3 added partial Bayesian re-rank, v1.6 the eval harness + heat-kernel composition wiring, v1.7 BM25F default-on, and v2.1 the use_heat_kernel + use_hrr_structural default-flips. See [LIMITATIONS](../user/LIMITATIONS.md).
 
-The academic suite is the reproducibility deliverable. Most adapters scaffold against MAB, LoCoMo, LongMemEval, StructMemEval, and AMA-Bench but are inert at v1.0; they activate as their feature dependencies port forward. Per-adapter status: [`benchmarks/README.md`](../benchmarks/README.md).
+The academic suite is the reproducibility deliverable. Most adapters scaffold against MAB, LoCoMo, LongMemEval, StructMemEval, and AMA-Bench but are inert at v1.0; they activate as their feature dependencies port forward. Per-adapter status: [`benchmarks/README.md`](../../benchmarks/README.md).
 
 ## Run the synthetic harness
 
@@ -259,6 +259,6 @@ Required for the run to count. Runs without an audit record do not enter `benchm
 
 ## See also
 
-- [`src/aelfrice/benchmark.py`](../src/aelfrice/benchmark.py) — synthetic harness source.
-- [`benchmarks/README.md`](../benchmarks/README.md) — per-adapter activation status.
+- [`src/aelfrice/benchmark.py`](../../src/aelfrice/benchmark.py) — synthetic harness source.
+- [`benchmarks/README.md`](../../benchmarks/README.md) — per-adapter activation status.
 - [ROADMAP § v2.0.0](ROADMAP.md) — when the academic suite reproduces every headline number.

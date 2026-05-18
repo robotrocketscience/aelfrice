@@ -24,7 +24,7 @@ No usage tracking. No analytics. No phone-home. **Not opt-out — the capability
 
 aelfrice runs LLM-quality classification once per project, at onboard time. The runtime stays local; no day-to-day operation makes any outbound call.
 
-**The default flow at v1.5.0+ is host-driven and makes zero direct calls from the aelfrice CLI itself.** When the user runs `/aelf:onboard <path>` from a host that exposes a Task tool (Claude Code and similar), the slash command body in [`src/aelfrice/slash_commands/onboard.md`](../src/aelfrice/slash_commands/onboard.md) drives the classifier through the host's own model dispatch against the cheapest model in its stack. The host already has whatever credentials and billing it needs; aelfrice does not require an API key, and the aelfrice package never imports `anthropic` on this path. The user's data already goes to their host LLM — aelfrice just reuses the cheapest model in that stack to do classification once.
+**The default flow at v1.5.0+ is host-driven and makes zero direct calls from the aelfrice CLI itself.** When the user runs `/aelf:onboard <path>` from a host that exposes a Task tool (Claude Code and similar), the slash command body in [`src/aelfrice/slash_commands/onboard.md`](../../src/aelfrice/slash_commands/onboard.md) drives the classifier through the host's own model dispatch against the cheapest model in its stack. The host already has whatever credentials and billing it needs; aelfrice does not require an API key, and the aelfrice package never imports `anthropic` on this path. The user's data already goes to their host LLM — aelfrice just reuses the cheapest model in that stack to do classification once.
 
 **The direct-API fallback (`aelf onboard --llm-classify`) is explicit-opt-in and unchanged from v1.3.0.** It is the path for users who don't run a host with a Task tool and instead want aelfrice to call the Anthropic API directly. Four gates guard it; if any of these is missing, no outbound call is made:
 
@@ -81,7 +81,7 @@ Resolution order:
 
 ## Optional inbound prose inspection: `sentiment_from_prose` (v2.0 module, v3.0 hook wire-up)
 
-The regex sentiment detector module shipped at v2.0 but was not reached by any live hook until v3.0 #606. When `[feedback] sentiment_from_prose = true` is set in `.aelfrice.toml` (or `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE=1` is set in the environment), aelfrice runs each user prompt the host hook surfaces through a 24-pattern regex bank ([`src/aelfrice/sentiment_feedback.py`](../src/aelfrice/sentiment_feedback.py)) and writes one `feedback_history` row per matched pattern, distributed across the previous turn's retrieved beliefs.
+The regex sentiment detector module shipped at v2.0 but was not reached by any live hook until v3.0 #606. When `[feedback] sentiment_from_prose = true` is set in `.aelfrice.toml` (or `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE=1` is set in the environment), aelfrice runs each user prompt the host hook surfaces through a 24-pattern regex bank ([`src/aelfrice/sentiment_feedback.py`](../../src/aelfrice/sentiment_feedback.py)) and writes one `feedback_history` row per matched pattern, distributed across the previous turn's retrieved beliefs.
 
 **Default off.** Existing users see no behavior change.
 
@@ -125,7 +125,7 @@ Directory basenames also count: a directory named `INEDIBLE/` (or `INEDIBLE_draf
 
 The check is on the basename, not the content. When `is_inedible(path)` returns True, aelfrice does not open, read, or hash the file. The check happens before any classification, before any tokenization, before any noise filter — earlier in the pipeline than any other exclusion in the codebase.
 
-Mechanism: see [`src/aelfrice/inedible.py`](../src/aelfrice/inedible.py). The predicate is the only opt-out aelfrice respects deterministically across every ingest path; reproduce with `python3 -c "from aelfrice.inedible import is_inedible; print(is_inedible('your/path.md'))"`.
+Mechanism: see [`src/aelfrice/inedible.py`](../../src/aelfrice/inedible.py). The predicate is the only opt-out aelfrice respects deterministically across every ingest path; reproduce with `python3 -c "from aelfrice.inedible import is_inedible; print(is_inedible('your/path.md'))"`.
 
 ## Reproducible from source
 

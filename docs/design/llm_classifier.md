@@ -4,8 +4,8 @@ Design memo for the v1.3.0 milestone. Tracking issue: [#145](https://github.com/
 
 Cross-references: [ROADMAP.md § v1.3.0](../concepts/ROADMAP.md#v130--retrieval-wave),
 [PRIVACY.md § Optional outbound calls](../user/PRIVACY.md#optional-outbound-calls),
-[`src/aelfrice/classification.py`](../src/aelfrice/classification.py),
-[`src/aelfrice/scanner.py`](../src/aelfrice/scanner.py),
+[`src/aelfrice/classification.py`](../../src/aelfrice/classification.py),
+[`src/aelfrice/scanner.py`](../../src/aelfrice/scanner.py),
 [CONFIG.md](../user/CONFIG.md), [COMMANDS.md](../user/COMMANDS.md#memory-operations).
 
 Status: shipped opt-in at v1.3.0; default-on at v1.5.0 via host-driven
@@ -15,7 +15,7 @@ direct-API path (`aelf onboard --llm-classify`) remains the
 API-key-user fallback. The v1.5.0 default-on flow is layered on top
 via two additive CLI flags (`--emit-candidates` /
 `--accept-classifications`) that wrap the existing polymorphic
-handshake in [`classification.py`](../src/aelfrice/classification.py)
+handshake in [`classification.py`](../../src/aelfrice/classification.py)
 without changing it. Implementation tracking issue:
 [#238](https://github.com/robotrocketscience/aelfrice/issues/238).
 
@@ -52,7 +52,7 @@ the aelfrice CLI itself.
 ## 1. Motivation
 
 The v1.0/v1.2 onboard classifier in
-[`classification.py`](../src/aelfrice/classification.py) is a regex
+[`classification.py`](../../src/aelfrice/classification.py) is a regex
 keyword matcher over four belief types (`factual`, `correction`,
 `preference`, `requirement`). It is fast, deterministic, offline, and
 has known recall ceilings on prose-heavy content:
@@ -66,7 +66,7 @@ has known recall ceilings on prose-heavy content:
   `factual`.
 - Provenance origin (`document_recent` / `agent_inferred` /
   `user_corrected` / `user_stated`, see
-  [`models.py:55-75`](../src/aelfrice/models.py)) is set unconditionally
+  [`models.py:55-75`](../../src/aelfrice/models.py)) is set unconditionally
   to `agent_inferred` by `scan_repo`, with no signal from the source
   text. The LLM-classify path is the first place we get to differentiate
   origin from text content (e.g., a CHANGELOG entry → `document_recent`;
@@ -77,7 +77,7 @@ the four-type taxonomy. Trading cost (and one outbound call at onboard
 time) for higher recall is the v1.3.0 deliverable.
 
 The polymorphic onboard handshake
-([`classification.py:start_onboard_session` / `accept_classifications`](../src/aelfrice/classification.py))
+([`classification.py:start_onboard_session` / `accept_classifications`](../../src/aelfrice/classification.py))
 already exists for the case where a host LLM (Claude Code, an MCP
 client) is available and willing to classify in its own context. The
 LLM-classify path is the **non-host case**: `aelf onboard` invoked
@@ -103,7 +103,7 @@ calling Haiku directly.
 - Regex-fallback path on Haiku unreachable / timeout / rate-limit /
   malformed response, with an audit-row note.
 - Activation of `benchmarks/mab_llm_entity_adapter.py` (currently
-  not present, per [benchmarks/README.md:41-44](../benchmarks/README.md)).
+  not present, per [benchmarks/README.md:41-44](../../benchmarks/README.md)).
 
 ### Out of scope
 
@@ -513,7 +513,7 @@ is the right call.
 
 Per the issue: `mab_llm_entity_adapter`. This adapter is currently
 **not present** in the public repo
-([benchmarks/README.md:41-44](../benchmarks/README.md)) — it is
+([benchmarks/README.md:41-44](../../benchmarks/README.md)) — it is
 listed alongside `mab_triple_adapter.py` and
 `mab_entity_index_adapter.py` as deferred until the upstream features
 land.

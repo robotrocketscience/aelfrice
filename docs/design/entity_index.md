@@ -7,9 +7,9 @@
 **Shipped at milestone:** v1.3.0 (named on the public roadmap as
 "entity-index retrieval"; ported forward from the earlier research line).
 **Dependencies:** v1.2.0 triple-extraction port (already shipped). Stdlib
-only — no new third-party deps. Consumes the v1.2.0 [`Belief.session_id`](../src/aelfrice/models.py),
-the v1.2.0 [`Edge.anchor_text`](../src/aelfrice/models.py), and the
-existing [`MemoryStore`](../src/aelfrice/store.py) callback registry.
+only — no new third-party deps. Consumes the v1.2.0 [`Belief.session_id`](../../src/aelfrice/models.py),
+the v1.2.0 [`Edge.anchor_text`](../../src/aelfrice/models.py), and the
+existing [`MemoryStore`](../../src/aelfrice/store.py) callback registry.
 **Risk:** medium. New retrieval tier sitting between L0 + L1 (FTS5/BM25)
 and the eventual BFS multi-hop layer. Correctness depends on the entity
 patterns generalising to real prose; latency depends on the on-write
@@ -17,7 +17,7 @@ extraction cost staying off the hot path.
 **Prior art:** the earlier research line shipped `entity_extractor.py`
 producing an entity → belief inverted index against the same SQLite
 substrate. This spec reasons from
-[`src/aelfrice/triple_extractor.py`](../src/aelfrice/triple_extractor.py)
+[`src/aelfrice/triple_extractor.py`](../../src/aelfrice/triple_extractor.py)
 (noun-phrase regexes already in tree) plus the new identifier patterns
 named below; the predecessor module is referenced for design intent
 only and is not lifted verbatim.
@@ -214,7 +214,7 @@ target.
 ### Pattern bank
 
 The extractor ports the noun-phrase pattern from
-[`triple_extractor.py`](../src/aelfrice/triple_extractor.py) (already
+[`triple_extractor.py`](../../src/aelfrice/triple_extractor.py) (already
 in tree) and adds six identifier-shaped kinds. Each is listed here
 with its regex and a one-line rationale.
 

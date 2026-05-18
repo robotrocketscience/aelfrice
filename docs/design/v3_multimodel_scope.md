@@ -14,7 +14,7 @@ The five reasons in [`v2_multimodel.md`](v2_multimodel.md) § *Recommendation* (
 
 What changed is the alternative surface. At v2.0 the only way to get "this question deserves more than one angle" was multi-provider voting on a single prompt. At v2.1 the wonder-dispatch surface ships:
 
-- `wonder.dispatch.analyze_gaps(query, …)` — pure function, fixed-store snapshot in, named gap set out. No LLM, no randomness. ([`src/aelfrice/wonder/dispatch.py`](../src/aelfrice/wonder/dispatch.py))
+- `wonder.dispatch.analyze_gaps(query, …)` — pure function, fixed-store snapshot in, named gap set out. No LLM, no randomness. ([`src/aelfrice/wonder/dispatch.py`](../../src/aelfrice/wonder/dispatch.py))
 - `wonder.dispatch.generate_research_axes(gap_analysis, agent_count)` — 2–6 orthogonal axes per query, deterministic given the analysis.
 - MCP `wonder()` tool + `aelf wonder <query> --axes` CLI — both wrap the same two pure functions.
 - Skill-layer integration ([#552](https://github.com/robotrocketscience/aelfrice/issues/552) in flight) — the host harness fans out one research agent per axis, each agent runs its own model call with its own credentials, results pipe back through `wonder_ingest`.
@@ -57,7 +57,7 @@ Multi-provider voting on a single prompt is a narrower mechanism than research-a
 - [`v3_relatedness_philosophy.md`](v3_relatedness_philosophy.md) — sibling v3 design-cut memo; same determinism-property posture
 - [`PHILOSOPHY.md`](../concepts/PHILOSOPHY.md) § *Determinism is the property*
 - [`PRIVACY.md`](../user/PRIVACY.md) § *Optional outbound*
-- [`src/aelfrice/wonder/dispatch.py`](../src/aelfrice/wonder/dispatch.py) — subsuming surface
+- [`src/aelfrice/wonder/dispatch.py`](../../src/aelfrice/wonder/dispatch.py) — subsuming surface
 - [#198](https://github.com/robotrocketscience/aelfrice/issues/198) — multi-LLM consensus (CLOSED COMPLETED, deferred to v2.x; superseded here)
 - [#542](https://github.com/robotrocketscience/aelfrice/issues/542) — wonder-consolidation umbrella
 - [#551](https://github.com/robotrocketscience/aelfrice/issues/551) — research-agent dispatch core (shipped 2026-05-10)

@@ -63,7 +63,7 @@ score(b)          = log(bm25_score(b)) + posterior_weight * f(b)
 
 Two implementation notes follow from existing code:
 
-1. **Use the existing `scoring.posterior_mean(α, β)`.** Per [`src/aelfrice/scoring.py`](../src/aelfrice/scoring.py), `posterior_mean(α, β) = α / (α + β)` already returns 0.5 for unobserved beliefs (which start at `(α, β) = (0.5, 0.5)`, the Jeffreys prior, per the existing decay target). **Do not switch to the Laplace form `(α + 1) / (α + β + 2)`** that issue #151 sketches: aelfrice's prior is Jeffreys, not Laplace, and conditioning the existing posterior on a different prior at the ranking layer would silently disagree with `aelf stats`, the MCP, and `decay()`. Cold-belief neutrality holds either way (both forms read 0.5 at the prior); use the form that matches the rest of the codebase.
+1. **Use the existing `scoring.posterior_mean(α, β)`.** Per [`src/aelfrice/scoring.py`](../../src/aelfrice/scoring.py), `posterior_mean(α, β) = α / (α + β)` already returns 0.5 for unobserved beliefs (which start at `(α, β) = (0.5, 0.5)`, the Jeffreys prior, per the existing decay target). **Do not switch to the Laplace form `(α + 1) / (α + β + 2)`** that issue #151 sketches: aelfrice's prior is Jeffreys, not Laplace, and conditioning the existing posterior on a different prior at the ranking layer would silently disagree with `aelf stats`, the MCP, and `decay()`. Cold-belief neutrality holds either way (both forms read 0.5 at the prior); use the form that matches the rest of the codebase.
 
 2. **Numerical safety.** `α` and `β` are `float`. Both start at `0.5` and only grow under feedback; `decay()` shrinks the deltas-from-prior factor toward zero, so post-decay `(α, β)` asymptote at `(0.5, 0.5)` from above. `posterior_mean` is therefore in the open interval `(0, 1)` for any observable belief, and `log(posterior_mean(b))` is finite. No clamp needed; assert `posterior_mean(b) > 0` in dev builds.
 
@@ -103,7 +103,7 @@ Three options were considered:
 
 **Recommended: rely on the existing invalidation path. No new hook needed.**
 
-The store already exposes `add_invalidation_callback`, and `RetrievalCache.__init__` already subscribes. Every store mutation that changes a belief — `insert_belief`, `update_belief`, `delete_belief`, the three callable mutators in `store.py` — calls `_fire_invalidation()`, which clears the cache. `apply_feedback` writes the new posterior via `store.update_belief(b)` (see [`src/aelfrice/feedback.py:150`](../src/aelfrice/feedback.py)), which triggers the wipe.
+The store already exposes `add_invalidation_callback`, and `RetrievalCache.__init__` already subscribes. Every store mutation that changes a belief — `insert_belief`, `update_belief`, `delete_belief`, the three callable mutators in `store.py` — calls `_fire_invalidation()`, which clears the cache. `apply_feedback` writes the new posterior via `store.update_belief(b)` (see [`src/aelfrice/feedback.py:150`](../../src/aelfrice/feedback.py)), which triggers the wipe.
 
 In other words: option (a) is what already happens, just one indirection deeper. Option (b) is unnecessary because the existing wipe is finer-grained than a serial counter would be (it also invalidates on edge mutations, lock changes, demotion-pressure increments, and content updates — anything that could reorder retrieval). Option (c) is wrong on its own because it permits stale results within the TTL window.
 
@@ -115,7 +115,7 @@ If two threads share a `RetrievalCache` and one calls `apply_feedback` while the
 
 ## Calibration on synthetic harness
 
-`aelf bench` (per [`src/aelfrice/benchmark.py`](../src/aelfrice/benchmark.py)) currently runs 16 queries against 16 beliefs, BM25-only. The v1.3 implementation extends it as follows:
+`aelf bench` (per [`src/aelfrice/benchmark.py`](../../src/aelfrice/benchmark.py)) currently runs 16 queries against 16 beliefs, BM25-only. The v1.3 implementation extends it as follows:
 
 - **Phase A** (`bench --baseline`): no feedback applied. Posterior weight = 0.0 (v1.0.x ordering). Reports hit@1 / hit@3 / hit@5 / MRR — current floor `hit_at_5 >= 0.75` preserved.
 - **Phase B** (`bench --partial-uplift`): one round of feedback applied. For each query, the harness applies `apply_feedback(expected_belief, valence=+1.0, source="bench-synthetic")` once before re-running retrieval at the v1.3 default `posterior_weight = 0.5`. Reports the same metrics, plus the delta from Phase A.
@@ -242,6 +242,6 @@ In each case the rerank reverts to `partial_bayesian_score(bm25, alpha, beta, po
 - Issue [#151](https://github.com/robotrocketscience/aelfrice/issues/151) — full log-additive Beta-Bernoulli, no milestone (proposed: re-scope to v2.0.0 follow-up).
 - [`docs/concepts/ROADMAP.md`](../concepts/ROADMAP.md) § v1.3.0 and § v2.0.0.
 - [`docs/user/LIMITATIONS.md`](../user/LIMITATIONS.md) § "The big one: feedback doesn't drive ranking".
-- [`src/aelfrice/retrieval.py`](../src/aelfrice/retrieval.py), [`src/aelfrice/scoring.py`](../src/aelfrice/scoring.py), [`src/aelfrice/feedback.py`](../src/aelfrice/feedback.py), [`src/aelfrice/store.py`](../src/aelfrice/store.py).
+- [`src/aelfrice/retrieval.py`](../../src/aelfrice/retrieval.py), [`src/aelfrice/scoring.py`](../../src/aelfrice/scoring.py), [`src/aelfrice/feedback.py`](../../src/aelfrice/feedback.py), [`src/aelfrice/store.py`](../../src/aelfrice/store.py).
 - Robertson 1977, *The Probability Ranking Principle in IR* — canonical reference for mixing IR scores with prior probabilities log-additively.
 - Croft & Lafferty (eds.) 2003, *Language Modeling for Information Retrieval* — Bayesian smoothing background.

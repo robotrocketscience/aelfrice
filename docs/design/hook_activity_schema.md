@@ -10,7 +10,7 @@ in the user's HOME repo (`~/.claude/hooks/log-tool-failure.py`) and
 is tracked separately from this codebase.
 **Risk:** low. This document reserves an event-name namespace; it does
 not introduce new code. The companion regression test
-([`tests/test_hook_activity_schema.py`](../tests/test_hook_activity_schema.py))
+([`tests/test_hook_activity_schema.py`](../../tests/test_hook_activity_schema.py))
 guards against future aelfrice-side writers colliding on the namespace.
 
 ## Summary
@@ -70,7 +70,7 @@ prefix as an event name in `hook-activity.jsonl` or any other
 JSONL surface.
 
 The companion test
-([`tests/test_hook_activity_schema.py`](../tests/test_hook_activity_schema.py))
+([`tests/test_hook_activity_schema.py`](../../tests/test_hook_activity_schema.py))
 greps `src/aelfrice/` for the literal string and fails with a
 descriptive message if any future writer collides.
 

@@ -9,9 +9,9 @@ discussion below pre-dates the flip; treat the "default-OFF" / "gated
 on telemetry" notes as the original v1.5.0 framing rather than current
 state.
 **Dependencies:** stdlib only. Consumes the v1.0 retrieval pipeline
-([`aelfrice.retrieval.retrieve`](../src/aelfrice/retrieval.py)) and
+([`aelfrice.retrieval.retrieve`](../../src/aelfrice/retrieval.py)) and
 the v1.1.0 per-project DB resolution
-([`aelfrice.cli.db_path`](../src/aelfrice/cli.py)).
+([`aelfrice.cli.db_path`](../../src/aelfrice/cli.py)).
 **Risk:** medium. Hook fires on every Grep/Glob tool call, so the
 latency budget must be tight enough that the user does not perceive
 the hook as making search "feel slow."

@@ -7,8 +7,8 @@ reads this to decide whether the proposed surface is the one v1.2.0
 should ship.
 
 Cross-references: [LIMITATIONS.md § Onboarding](../user/LIMITATIONS.md#onboarding--v101--v110)
-(the gap), [`src/aelfrice/contradiction.py`](../src/aelfrice/contradiction.py)
-(the precedence ordering this slots into), [`src/aelfrice/feedback.py`](../src/aelfrice/feedback.py)
+(the gap), [`src/aelfrice/contradiction.py`](../../src/aelfrice/contradiction.py)
+(the precedence ordering this slots into), [`src/aelfrice/feedback.py`](../../src/aelfrice/feedback.py)
 (the audit-row format and `apply_feedback` semantics).
 
 Status: design only. No code changes implied by merging this file.
@@ -16,7 +16,7 @@ Status: design only. No code changes implied by merging this file.
 ## 1. What is being promoted
 
 A belief whose provenance is the onboarding scanner —
-[`src/aelfrice/scanner.py:146-158`](../src/aelfrice/scanner.py)
+[`src/aelfrice/scanner.py:146-158`](../../src/aelfrice/scanner.py)
 inserts every onboard hit with `lock_level=LOCK_NONE` and no
 origin signal — graduating to a state that is recognisably
 "user has acknowledged this is correct" without being upgraded
@@ -24,7 +24,7 @@ to a full lock.
 
 ### Schema as it exists today (v1.0.x)
 
-[`src/aelfrice/models.py:65-83`](../src/aelfrice/models.py) defines `Belief`
+[`src/aelfrice/models.py:65-83`](../../src/aelfrice/models.py) defines `Belief`
 with these fields relevant to provenance:
 
 | Field | Type | Notes |
@@ -34,7 +34,7 @@ with these fields relevant to provenance:
 | `locked_at` | `str \| None` | Set when `lock_level == LOCK_USER`. |
 
 There is **no `origin` field**. The contradiction tie-breaker
-([`src/aelfrice/contradiction.py:30-42`](../src/aelfrice/contradiction.py))
+([`src/aelfrice/contradiction.py:30-42`](../../src/aelfrice/contradiction.py))
 calls this out explicitly:
 
 > The fourth — `agent_inferred` — needs a `Belief.origin` field that
@@ -81,9 +81,9 @@ TBD: whether `unknown` rows surface in separate listings. Not load-bearing for p
   is correct" not "this is non-negotiable."
 - It does **not** change `type`. A `factual` belief stays `factual`;
   promotion is orthogonal to the four `BELIEF_TYPES`
-  ([`src/aelfrice/models.py:18-23`](../src/aelfrice/models.py)).
+  ([`src/aelfrice/models.py:18-23`](../../src/aelfrice/models.py)).
 - It does **not** insert any edges. Compare `aelf lock` which
-  doesn't either ([`src/aelfrice/cli.py:151-180`](../src/aelfrice/cli.py)).
+  doesn't either ([`src/aelfrice/cli.py:151-180`](../../src/aelfrice/cli.py)).
 
 ## 2. Trigger
 
@@ -94,7 +94,7 @@ Explicit user action only. No implicit promotion path.
 Three implicit paths suggest themselves and all three are rejected:
 
 1. **Promote on N positive feedback events.** Conflates two signals.
-   `apply_feedback` ([`src/aelfrice/feedback.py:106`](../src/aelfrice/feedback.py))
+   `apply_feedback` ([`src/aelfrice/feedback.py:106`](../../src/aelfrice/feedback.py))
    already moves posteriors on positive valence. Adding a side effect
    that flips `origin` introduces a hidden state-machine edge that
    isn't visible from the feedback row — and the threshold (3? 5?
@@ -130,13 +130,13 @@ Naming rationale, against the existing surface:
 
 | Name | Existing usage | Why not |
 |---|---|---|
-| `lock` | [`cli.py:151`](../src/aelfrice/cli.py) — α=9.0, β=0.5, lock_level=user | Wrong tier. Lock is non-negotiable; validate is "yes, correct." |
+| `lock` | [`cli.py:151`](../../src/aelfrice/cli.py) — α=9.0, β=0.5, lock_level=user | Wrong tier. Lock is non-negotiable; validate is "yes, correct." |
 | `confirm` | reserved for v2.0.0 ([ROADMAP.md § v2.0.0](../concepts/ROADMAP.md#v200--feature-parity-and-reproducibility)) | Already claimed by the wonder/reason/core/unlock/delete/confirm tranche. |
 | `accept` | unused | Acceptable alternative. Lukewarm — it reads like one-shot triage rather than a state change. TBD. |
 | `validate` | unused | Verb matches `user_validated` literal. Recommended. |
 | `endorse` | unused | Reads odd in CLI. Rejected. |
 
-The inverse (`aelf demote` at [`cli.py:203`](../src/aelfrice/cli.py))
+The inverse (`aelf demote` at [`cli.py:203`](../../src/aelfrice/cli.py))
 already takes a single `belief_id` and is an explicit user act with
 no implicit state change. `aelf validate` mirrors that surface shape.
 
@@ -145,7 +145,7 @@ no implicit state change. `aelf validate` mirrors that surface shape.
 - `belief_id` (positional, required): the belief to promote.
 - `--source` (optional, default `"user"`): audit-row source label,
   same semantics as `aelf feedback --source`
-  ([`cli.py:874-875`](../src/aelfrice/cli.py)). Lets a UI client
+  ([`cli.py:874-875`](../../src/aelfrice/cli.py)). Lets a UI client
   tag promotions distinctly (`"mcp:validate"`, `"slash:aelf:validate"`).
 
 No bulk operation in v1.2.0 — bulk validate is parked under the
@@ -159,7 +159,7 @@ Three options were considered.
 
 | Option | What it does | Cost |
 |---|---|---|
-| **A. Lock-style prior bump** | Set α=9.0, β=0.5 (matches `aelf lock` at [`cli.py:163-164`](../src/aelfrice/cli.py)) | Promotion would carry the same confidence floor as locks. Defeats the tier distinction — a promoted onboard belief would outrank a high-feedback regular belief on retrieval. |
+| **A. Lock-style prior bump** | Set α=9.0, β=0.5 (matches `aelf lock` at [`cli.py:163-164`](../../src/aelfrice/cli.py)) | Promotion would carry the same confidence floor as locks. Defeats the tier distinction — a promoted onboard belief would outrank a high-feedback regular belief on retrieval. |
 | **B. Flag-only flip** | Change `origin`, do not touch `alpha` / `beta` | Posterior is preserved as-is. Cleanest: validation is provenance, not evidence. |
 | **C. Positive `apply_feedback` event** | Call `apply_feedback(belief_id, valence=+1.0, source='validation')` | One row in `feedback_history`, one Beta-Bernoulli increment. Reversible by replaying with negative valence. |
 
@@ -175,7 +175,7 @@ provided new evidence; they have provided a label.
 ### Why not C (apply_feedback)
 
 `apply_feedback` rejects zero valence
-([`feedback.py:135-136`](../src/aelfrice/feedback.py)). Using it
+([`feedback.py:135-136`](../../src/aelfrice/feedback.py)). Using it
 as the promotion path would couple promotion semantics to the
 feedback math, which is precisely what we don't want — promotion
 is a provenance label, not an evidence event.
@@ -184,7 +184,7 @@ C is also irreversible-in-place. To "undo" you'd `apply_feedback`
 with negative valence, but the audit log then shows two real
 feedback events for what was a UI accident. Replay of the audit
 trail (deferred but real, see the `feedback_history` design at
-[`feedback.py:7-9`](../src/aelfrice/feedback.py)) would treat
+[`feedback.py:7-9`](../../src/aelfrice/feedback.py)) would treat
 both as evidence rather than as one provenance flip and one undo.
 
 ### Why not A
@@ -198,13 +198,13 @@ and `user_stated` is that the floor is **softer**.
 
 Even with option B, the promotion writes one `feedback_history`
 row (zero valence, like the contradiction-tiebreaker pattern at
-[`contradiction.py:55-66`](../src/aelfrice/contradiction.py)).
+[`contradiction.py:55-66`](../../src/aelfrice/contradiction.py)).
 Replay logic ignores zero-valence rows; the row exists for
 "who promoted what when" reconstruction. See § 6.
 
 ## 4. Effect on contradiction tie-breaker
 
-v1.0.1 precedence ([`contradiction.py:9-22`](../src/aelfrice/contradiction.py)):
+v1.0.1 precedence ([`contradiction.py:9-22`](../../src/aelfrice/contradiction.py)):
 
 ```
 user_stated > user_corrected > document_recent
@@ -249,7 +249,7 @@ should outrank unvalidated peers under contradiction.
 
 **(v) Two `user_validated` beliefs contradict.** Within-class:
 fall through to recency, then id, exactly as
-[`_pick_winner` at `contradiction.py:155-200`](../src/aelfrice/contradiction.py)
+[`_pick_winner` at `contradiction.py:155-200`](../../src/aelfrice/contradiction.py)
 already does. No new tiebreak axis.
 
 ### Implementation impact on contradiction.py
@@ -270,11 +270,11 @@ PRECEDENCE_AGENT_INFERRED   = 1  (new)
 `belief.origin` as its primary axis once that field exists, with
 `lock_level == LOCK_USER` continuing to short-circuit to
 `user_stated` (preserves the lock-takes-priority test at
-[`tests/test_contradiction.py:86-92`](../tests/test_contradiction.py)).
+[`tests/test_contradiction.py:86-92`](../../tests/test_contradiction.py)).
 
 ### `aelf resolve` behaviour
 
-`aelf resolve` ([`cli.py:223-252`](../src/aelfrice/cli.py))
+`aelf resolve` ([`cli.py:223-252`](../../src/aelfrice/cli.py))
 operates on unresolved CONTRADICTS edges and writes one
 `feedback_history` row per resolution. With `user_validated` in the
 order, a `user_validated`-vs-`document_recent` contradiction
@@ -296,7 +296,7 @@ schema-level surgery.
 
 ### Recommended mechanism: extend `aelf demote`
 
-`aelf demote <id>` ([`cli.py:203-220`](../src/aelfrice/cli.py))
+`aelf demote <id>` ([`cli.py:203-220`](../../src/aelfrice/cli.py))
 currently flips `lock_level=LOCK_USER` → `LOCK_NONE`. Extend it to
 also flip `origin=user_validated` → `agent_inferred` when
 `lock_level` is already `none`.
@@ -329,7 +329,7 @@ See § 6.
 
 Every promotion writes one row to `feedback_history`. Format
 matches the contradiction-tiebreaker pattern
-([`contradiction.py:243-251`](../src/aelfrice/contradiction.py)).
+([`contradiction.py:243-251`](../../src/aelfrice/contradiction.py)).
 
 ### Promotion row
 
@@ -339,7 +339,7 @@ matches the contradiction-tiebreaker pattern
 | `belief_id` | the promoted belief's id | the subject of promotion |
 | `valence` | `0.0` | bookkeeping; replay logic ignores zero-valence rows. Same as the tie-breaker convention. |
 | `source` | `"promotion:user_validated"` | wire-format string. Source prefix is `"promotion"` so all promotion-related events filter together. |
-| `created_at` | ISO-8601 UTC, `Z`-suffixed | as `_utc_now_iso()` at [`feedback.py:48-50`](../src/aelfrice/feedback.py) |
+| `created_at` | ISO-8601 UTC, `Z`-suffixed | as `_utc_now_iso()` at [`feedback.py:48-50`](../../src/aelfrice/feedback.py) |
 
 The `source` field carries the new origin as the suffix so a future
 `origin=agent_validated` (if such a tier ever lands) doesn't
@@ -389,7 +389,7 @@ validated: 8f3a2b1c4d5e6f78 (origin: agent_inferred -> user_validated)
 
 **Already validated (idempotent).** Does not re-write an audit row.
 Same convention as `aelf setup` already-installed
-([`cli.py:444-449`](../src/aelfrice/cli.py)).
+([`cli.py:444-449`](../../src/aelfrice/cli.py)).
 
 ```
 $ aelf validate 8f3a2b1c4d5e6f78
@@ -458,7 +458,7 @@ consistency.
 ```
 
 Mirrors the `FeedbackResult` return shape from
-[`feedback.py:32-45`](../src/aelfrice/feedback.py) — caller can read
+[`feedback.py:32-45`](../../src/aelfrice/feedback.py) — caller can read
 prior+new state and the audit-row id without re-reading the store.
 
 Errors as MCP tool errors with the same exit-code semantics as the
@@ -468,7 +468,7 @@ CLI: `belief not found`, `cannot validate locked belief`,
 ## 8. Test plan
 
 Atomic property tests in `tests/test_promotion.py`. Style matches
-[`tests/test_contradiction.py`](../tests/test_contradiction.py):
+[`tests/test_contradiction.py`](../../tests/test_contradiction.py):
 in-memory store via `_seed`, one property per test, no fixtures
 beyond a builder helper.
 
@@ -482,15 +482,15 @@ beyond a builder helper.
 
 ### Refusal cases
 
-- `test_validate_raises_on_missing_belief` — ValueError, parallel to `test_resolve_raises_on_missing_a` at [`tests/test_contradiction.py:262-265`](../tests/test_contradiction.py).
+- `test_validate_raises_on_missing_belief` — ValueError, parallel to `test_resolve_raises_on_missing_a` at [`tests/test_contradiction.py:262-265`](../../tests/test_contradiction.py).
 - `test_validate_refuses_locked_belief` — exit 1, error message includes "locked".
 - `test_validate_refuses_user_stated_origin` — exit 1.
 
 ### Audit row shape
 
 - `test_validate_writes_audit_row_with_source_prefix` — `source.startswith("promotion:")`.
-- `test_validate_audit_row_has_zero_valence` — replay-safe (mirrors `test_resolve_audit_row_zero_valence_does_not_affect_replay` at [`tests/test_contradiction.py:246-256`](../tests/test_contradiction.py)).
-- `test_validate_audit_row_carries_now_kwarg` — clock injection, parallel to [`tests/test_contradiction.py:236-243`](../tests/test_contradiction.py).
+- `test_validate_audit_row_has_zero_valence` — replay-safe (mirrors `test_resolve_audit_row_zero_valence_does_not_affect_replay` at [`tests/test_contradiction.py:246-256`](../../tests/test_contradiction.py)).
+- `test_validate_audit_row_carries_now_kwarg` — clock injection, parallel to [`tests/test_contradiction.py:236-243`](../../tests/test_contradiction.py).
 - `test_validate_audit_row_belief_id_is_subject` — the row's `belief_id` is the promoted belief, not anything else.
 
 ### Tie-breaker integration
@@ -525,7 +525,7 @@ Marked `TBD` for items that need implementation feedback to settle.
 - **TBD: column name.** `origin` is the recommended name. Alternatives
   considered: `provenance`, `source_type`, `tier`. `origin` is short
   and matches the prose in
-  [`contradiction.py:30-38`](../src/aelfrice/contradiction.py).
+  [`contradiction.py:30-38`](../../src/aelfrice/contradiction.py).
   Locked unless an SQLite reserved word collision surfaces.
 - **TBD: backfill of pre-v1.1.0 rows.** Recommendation in § 1 is to
   leave non-locked, non-correction rows as `unknown` rather than

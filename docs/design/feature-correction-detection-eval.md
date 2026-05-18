@@ -3,7 +3,7 @@
 **Status:** spec, no implementation
 **Issue:** #438
 **Recovery-inventory line:** [`docs/concepts/ROADMAP.md`](../concepts/ROADMAP.md) — *"Correction-detection eval — five-codebase labeled fixture, scored by both the zero-LLM detector and the LLM-judge path"*
-**Substrate prereqs:** [`relationship_detector.py`](../src/aelfrice/relationship_detector.py) (`LABEL_CONTRADICTS`/`LABEL_REFINES`/`LABEL_UNRELATED`, #201/#422), [`value_compare.py`](../src/aelfrice/value_compare.py) (slot conflict, #422), [`correction.py`](../src/aelfrice/correction.py) (utterance-level detector, distinct surface), v2.0 corpus scaffold + bench-gate harness (#307, #311), `bench_gated` autouse marker
+**Substrate prereqs:** [`relationship_detector.py`](../../src/aelfrice/relationship_detector.py) (`LABEL_CONTRADICTS`/`LABEL_REFINES`/`LABEL_UNRELATED`, #201/#422), [`value_compare.py`](../../src/aelfrice/value_compare.py) (slot conflict, #422), [`correction.py`](../../src/aelfrice/correction.py) (utterance-level detector, distinct surface), v2.0 corpus scaffold + bench-gate harness (#307, #311), `bench_gated` autouse marker
 
 ---
 
