@@ -350,6 +350,25 @@ def test_malformed_stub_row_raises(tmp_path: Path) -> None:
         cmd_label(args, io.StringIO())
 
 
+def test_nonpositive_k_rejected(tmp_path: Path) -> None:
+    stubs = _stub_rows(tmp_path, _row("rr-zk", "b-a"))
+    out_path = tmp_path / "out.jsonl"
+    args = _Args(
+        module="rerank_relevance",
+        input=str(stubs),
+        output=str(out_path),
+        resume=False,
+        k=0,
+        no_ordering=False,
+        stdin=io.StringIO(""),
+    )
+    buf = io.StringIO()
+    rc = cmd_label(args, buf)
+    assert rc == 2
+    assert "--k must be >= 1" in buf.getvalue()
+    assert not out_path.exists()
+
+
 def test_malformed_belief_item_raises(tmp_path: Path) -> None:
     p = tmp_path / "bad.jsonl"
     # belief is a bare string instead of {id, text}

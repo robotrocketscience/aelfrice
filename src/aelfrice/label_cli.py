@@ -229,6 +229,11 @@ def cmd_label(args: argparse.Namespace, out: object) -> int:
     stream: TextIO = out if hasattr(out, "write") else sys.stdout  # type: ignore[assignment]
     stdin: TextIO = getattr(args, "stdin", None) or sys.stdin
 
+    default_k = int(args.k)
+    if default_k < 1:
+        print(f"error: --k must be >= 1, got {default_k}", file=stream)
+        return 2
+
     input_path = Path(args.input)
     output_path = Path(args.output)
     if not input_path.exists():
@@ -259,7 +264,7 @@ def cmd_label(args: argparse.Namespace, out: object) -> int:
                 stub,
                 stdin=stdin,
                 out=stream,
-                default_k=int(args.k),
+                default_k=default_k,
                 no_ordering=bool(args.no_ordering),
             )
             if row is None:
