@@ -9,7 +9,7 @@ backs the v1.4.0 context-rebuilder eval harness ([#136][i136]).
 
 Per [`docs/eval_fixture_policy.md`][p] (decided at [#142][i142]):
 
-[p]: ../../../docs/eval_fixture_policy.md
+[p]: ../../../docs/design/eval_fixture_policy.md
 [i142]: https://github.com/robotrocketscience/aelfrice/issues/142
 
 - **Public repo (this directory).** Synthetic, generator-built
@@ -42,7 +42,7 @@ Each fixture is a `turns.jsonl` file matching the v1.2.0
 [transcript-ingest schema][ts]. Per-line shape, lifted from
 `aelfrice.transcript_logger._build_turn_line`:
 
-[ts]: ../../../docs/transcript_ingest.md
+[ts]: ../../../docs/design/transcript_ingest.md
 
 ```json
 {

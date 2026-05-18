@@ -1,6 +1,6 @@
 # context-rebuilder eval harness
 
-Eval harness that backs [`docs/context_rebuilder.md`](../../docs/context_rebuilder.md).
+Eval harness that backs [`docs/context_rebuilder.md`](../../docs/design/context_rebuilder.md).
 Two layers ship in this directory:
 
 1. **v1.2.0 skeleton** at [`eval_harness.py`](eval_harness.py). Locks
@@ -93,7 +93,7 @@ can correlate the per-task-type fidelity numbers with the failure
 modes the spec calls out
 ([`docs/context_rebuilder.md` § Failure modes][spec]).
 
-[spec]: ../../docs/context_rebuilder.md
+[spec]: ../../docs/design/context_rebuilder.md
 
 ### Why LLM-judge is parked
 
@@ -253,7 +253,7 @@ skeleton when the integration points fill in.
 
 Synthetic fixtures (this repo) and captured fixtures (lab repo)
 follow the policy decided in
-[`docs/eval_fixture_policy.md`](../../docs/eval_fixture_policy.md):
+[`docs/eval_fixture_policy.md`](../../docs/design/eval_fixture_policy.md):
 
 - **Public repo (`benchmarks/context-rebuilder/fixtures/`).**
   Synthetic, generator-built fixtures. Tracked in git. CI runs
@@ -377,7 +377,7 @@ separation. Letting the judge see the rebuilt block would allow
 it to patch the candidate using context the candidate did not in
 fact produce, inflating fidelity.
 
-[b]: ../../docs/BENCHMARKS.md
+[b]: ../../docs/concepts/BENCHMARKS.md
 
 ### Operator flow
 
