@@ -958,8 +958,9 @@ def user_prompt_submit(
             # #816 hot-path: record belief_touches alongside the ring
             # append, sharing the ring's fire_idx so JSON ring + sidecar
             # table track the same monotonic counter. v1 is write-only;
-            # the rerank consumer is gated on R7c (DESIGN.md v1 ship
-            # list item 7). Fail-soft: never breaks the hook.
+            # the originally-modelled rerank consumer is
+            # deferred-with-evidence post-R7c (see #848). Fail-soft:
+            # never breaks the hook.
             if _next_fire >= 1 and injected_ids:
                 _record_touches(
                     session_id=session_id,
@@ -1191,8 +1192,10 @@ def _record_touches(
 
     v1 ships INJECTION-only events (DESIGN.md v1 §"Event kinds — H4
     FAIL → INJECTION-only"); only bit 0 of ``event_kinds_bitmask`` is
-    set. v1 writes but does not read this state — the rerank consumer
-    is gated on the H3 fidelity test post-R7c.
+    set. v1 writes but does not read this state — the
+    originally-modelled posterior-rerank touch-temperature multiplier
+    consumer is deferred-with-evidence post-R7c and is not scheduled
+    (see #848).
 
     Fail-soft: path-resolution, store-open, or insert failure prints
     one line to stderr and never propagates. Touch state is

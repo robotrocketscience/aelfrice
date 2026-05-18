@@ -488,8 +488,11 @@ _SCHEMA: tuple[str, ...] = (
     # the per-session reset semantic from locked federation decision
     # #661 — touch state is local to the owning project DB; foreign
     # federated beliefs come in cold every read. Rerank consumer is
-    # NOT wired in v1 (DESIGN.md v1 ship list item 7); writes
-    # accumulate against the eventual H3 fidelity test, gated on R7c.
+    # NOT wired in v1 (DESIGN.md v1 ship list item 7); the
+    # originally-modelled posterior-rerank touch-temperature multiplier
+    # is deferred-with-evidence post-R7c and is not scheduled (#848).
+    # Writes are retained as substrate for any future H3 mechanism
+    # that pre-registers different falsification criteria.
     """
     CREATE TABLE IF NOT EXISTS belief_touches (
         belief_id           TEXT    NOT NULL,
