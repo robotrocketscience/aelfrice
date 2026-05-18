@@ -38,7 +38,7 @@ from pathlib import Path
 from typing import IO, Any, Final, cast
 
 try:
-    from aelfrice.db_paths import db_path
+    from aelfrice.db_paths import active_project_context, db_path
     from aelfrice.context_rebuilder import (
         TRIGGER_MODE_DYNAMIC,
         TRIGGER_MODE_MANUAL,
@@ -55,6 +55,7 @@ try:
     from aelfrice.hook_search import search_for_prompt
     from aelfrice.models import (
         BELIEF_CORRECTION,
+        BELIEF_SCOPE_PROJECT,
         LOCK_NONE,
         LOCK_USER,
         ORIGIN_AGENT_INFERRED,
@@ -852,6 +853,15 @@ def user_prompt_submit(
             hits = []
         else:
             hits = _retrieve(prompt, budget)
+            # #858 defect 3: drop hits whose stored project_context is
+            # non-empty AND does not match the active in-process
+            # context. '' on either side means "no filter": legacy
+            # rows (project_context='') always pass, and an unset
+            # AELFRICE_PROJECT_CONTEXT means the lane doesn't filter
+            # anything. scope != 'project' rows (federation 'global' /
+            # 'shared:*' / promoted 'user') bypass the filter too — a
+            # user-promoted belief is cross-context by definition.
+            hits = _filter_by_project_context(hits)
         if hits:
             # AC1 telemetry: record pre-collapse counts.
             n_returned = len(hits)
@@ -1431,6 +1441,49 @@ def _retrieve(prompt: str, token_budget: int) -> list[Belief]:
         return search_for_prompt(store, prompt, token_budget=token_budget)
     finally:
         store.close()
+
+
+def _filter_by_project_context(hits: list[Belief]) -> list[Belief]:
+    """Drop hits whose stored project_context disagrees with the active one.
+
+    Rule (#858 defect 3):
+
+    * Active context = `active_project_context()`. Empty string ('') is
+      the no-filter marker (`AELFRICE_PROJECT_CONTEXT` unset or blank)
+      — return hits unchanged.
+    * `scope != 'project'` (federation 'global' / 'shared:*' or
+      user-promoted 'user') bypasses the filter. A federation-shared or
+      user-promoted belief is cross-context by definition.
+    * For scope='project' rows: keep iff `project_context == '' OR
+      project_context == active`. Drop otherwise.
+
+    Empty-input fast path: returns the empty list without resolving
+    the env var. The resolver is itself cheap, but skipping it removes
+    the only side effect (`os.environ.get`) from the hot path when
+    retrieval already returned nothing.
+
+    This is a post-`_retrieve()` filter rather than a SQL WHERE clause
+    pushed into `MemoryStore.search_beliefs`: the retrieval surface is
+    layered (L0 locks, L2.5 entity-index, L1 BM25, L3 BFS), and
+    filtering after the orchestrator collapses everything keeps the
+    matrix of "which tier sees what" trivial. Federation peer hits
+    (`search_peer_beliefs`) flow through the same final list and get
+    the same scope='project' check, which is the right semantics —
+    a peer's local-only row is not visible to us in any context.
+    """
+    if not hits:
+        return hits
+    active = active_project_context()
+    if not active:
+        return hits
+    out: list[Belief] = []
+    for b in hits:
+        if b.scope != BELIEF_SCOPE_PROJECT:
+            out.append(b)
+            continue
+        if b.project_context == "" or b.project_context == active:
+            out.append(b)
+    return out
 
 
 def _format_hits(hits: list[Belief]) -> str:
