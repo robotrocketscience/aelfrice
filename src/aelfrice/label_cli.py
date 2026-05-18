@@ -51,6 +51,17 @@ def _read_stub_rows(path: Path) -> list[dict[str, Any]]:
                 raise SystemExit(
                     f"{path}:{lineno}: 'beliefs' must be a non-empty list"
                 )
+            for bidx, belief in enumerate(row["beliefs"], 1):
+                if not isinstance(belief, dict):
+                    raise SystemExit(
+                        f"{path}:{lineno}: beliefs[{bidx}] must be an object, "
+                        f"got {type(belief).__name__}"
+                    )
+                bid = belief.get("id")
+                if not isinstance(bid, str) or not bid:
+                    raise SystemExit(
+                        f"{path}:{lineno}: beliefs[{bidx}] missing non-empty string 'id'"
+                    )
             rows.append(row)
     return rows
 

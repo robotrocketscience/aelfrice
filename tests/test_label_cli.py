@@ -350,6 +350,45 @@ def test_malformed_stub_row_raises(tmp_path: Path) -> None:
         cmd_label(args, io.StringIO())
 
 
+def test_malformed_belief_item_raises(tmp_path: Path) -> None:
+    p = tmp_path / "bad.jsonl"
+    # belief is a bare string instead of {id, text}
+    p.write_text(
+        json.dumps({"id": "rr-x", "query": "q", "beliefs": ["just-a-string"]}) + "\n",
+        encoding="utf-8",
+    )
+    args = _Args(
+        module="rerank_relevance",
+        input=str(p),
+        output=str(tmp_path / "out.jsonl"),
+        resume=False,
+        k=10,
+        no_ordering=False,
+        stdin=io.StringIO(""),
+    )
+    with pytest.raises(SystemExit, match="must be an object"):
+        cmd_label(args, io.StringIO())
+
+
+def test_belief_missing_id_raises(tmp_path: Path) -> None:
+    p = tmp_path / "bad.jsonl"
+    p.write_text(
+        json.dumps({"id": "rr-y", "query": "q", "beliefs": [{"text": "no id here"}]}) + "\n",
+        encoding="utf-8",
+    )
+    args = _Args(
+        module="rerank_relevance",
+        input=str(p),
+        output=str(tmp_path / "out.jsonl"),
+        resume=False,
+        k=10,
+        no_ordering=False,
+        stdin=io.StringIO(""),
+    )
+    with pytest.raises(SystemExit, match="missing non-empty string 'id'"):
+        cmd_label(args, io.StringIO())
+
+
 def test_cli_main_dispatches_to_label(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     stubs = _stub_rows(tmp_path, _row("rr-014", "b-a"))
     out_path = tmp_path / "out.jsonl"
