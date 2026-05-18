@@ -1451,9 +1451,10 @@ def _filter_by_project_context(hits: list[Belief]) -> list[Belief]:
     * Active context = `active_project_context()`. Empty string ('') is
       the no-filter marker (`AELFRICE_PROJECT_CONTEXT` unset or blank)
       — return hits unchanged.
-    * `scope != 'project'` (federation 'global' / 'shared:*' or
-      user-promoted 'user') bypasses the filter. A federation-shared or
-      user-promoted belief is cross-context by definition.
+    * `scope != 'project'` (federation 'global' / 'shared:*')
+      bypasses the filter. A federation-shared belief is cross-context
+      by definition. (`scope='user'` does not exist; user-promotion is
+      tracked via `lock_level == LOCK_USER`, orthogonal to scope.)
     * For scope='project' rows: keep iff `project_context == '' OR
       project_context == active`. Drop otherwise.
 
