@@ -121,6 +121,11 @@ def save_exclusions(
             tmp_path.unlink(missing_ok=True)
             raise
     except Exception:
+        # Fail-soft per docstring contract: save_exclusions must not
+        # raise. Hook retrieval reads this file every turn; a write
+        # failure (disk full, perms, ENOSPC) cannot break the session.
+        # The user can re-issue `aelf scope-out` if the persisted set
+        # is stale.
         pass
 
 
