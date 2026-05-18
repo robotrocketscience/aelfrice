@@ -607,6 +607,16 @@ _MIGRATIONS: tuple[str, ...] = (
     # DB (the column was never created) the same way it catches
     # "duplicate column name" on prior ALTER TABLE ADD COLUMN entries.
     "ALTER TABLE beliefs DROP COLUMN demotion_pressure",
+    # v3.2 #858 project-scoped retrieval filter. Default '' means
+    # "cross-context — visible regardless of active project context",
+    # which preserves pre-migration behaviour for every existing row.
+    # Hook retrieval drops project-scope beliefs whose project_context
+    # is non-empty AND does not match the active context resolved by
+    # active_project_context(). Distinct from `scope` (federation
+    # visibility): a row may be scope='project' (local-only across
+    # peers) AND project_context='retrieval-v3' (visible only to that
+    # within-repo context).
+    "ALTER TABLE beliefs ADD COLUMN project_context TEXT NOT NULL DEFAULT ''",
 )
 
 # Indexes that depend on migrated columns. Run after _MIGRATIONS so
@@ -619,6 +629,12 @@ _POST_MIGRATION_INDEXES: tuple[str, ...] = (
     "ON beliefs(origin, created_at) WHERE valid_to IS NULL",
     # v3.0 #688: scope visibility index for federation overlay filter.
     "CREATE INDEX IF NOT EXISTS idx_beliefs_scope ON beliefs(scope)",
+    # v3.2 #858: project_context index for retrieval-time filter. Most
+    # rows are '' (the legacy default), so the index is small in
+    # practice and supports the "AND project_context IN ('', :ctx)"
+    # branch of the hook filter.
+    "CREATE INDEX IF NOT EXISTS idx_beliefs_project_context "
+    "ON beliefs(project_context)",
 )
 
 # One-shot backfill for v1.0/v1.1 stores opening on v1.2+. Each row
