@@ -1,7 +1,7 @@
 # R_final — wonder-consolidation bake-off ship decision (#228)
 
 Companion result memo to [`v2_wonder_consolidation.md`](v2_wonder_consolidation.md).
-Cites the bake-off output JSON in [`bake_off_results/`](bake_off_results/) and applies
+Cites the bake-off output JSON in [`bake_off_results/`](../bake_off_results/) and applies
 the spec's four-rule adoption decision tree.
 
 ## Decision

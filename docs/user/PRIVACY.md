@@ -137,4 +137,4 @@ No external database, no vector DB, no cloud storage. WAL journaling for crash s
 
 ## Reporting
 
-See [SECURITY.md](../SECURITY.md). Privacy issues are treated as security issues.
+See [SECURITY.md](../../SECURITY.md). Privacy issues are treated as security issues.

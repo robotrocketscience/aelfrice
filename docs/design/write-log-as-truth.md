@@ -100,7 +100,7 @@ This is a v2.0 candidate. It is foundational work; it does not move user-visible
 
 ## Cross-references
 
-- Determinism contract: [PHILOSOPHY § Determinism is the property](../PHILOSOPHY.md#determinism-is-the-property)
+- Determinism contract: [PHILOSOPHY § Determinism is the property](../concepts/PHILOSOPHY.md#determinism-is-the-property)
 - Current schema: `src/aelfrice/store.py`
 - Current ingest path: `src/aelfrice/scanner.py`
 - v3 federation: [federation-primitives.md](federation-primitives.md) — the ingest log is the natural unit of inter-scope replication.

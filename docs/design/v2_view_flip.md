@@ -1,6 +1,6 @@
 # v2.x spec: view-flip — `ingest_log` becomes canonical
 
-Spec for issue [#265](https://github.com/robotrocketscience/aelfrice/issues/265). Terminal step of [`design/write-log-as-truth.md`](design/write-log-as-truth.md). Highest-risk issue in the chain.
+Spec for issue [#265](https://github.com/robotrocketscience/aelfrice/issues/265). Terminal step of [`design/write-log-as-truth.md`](write-log-as-truth.md). Highest-risk issue in the chain.
 
 Status: spec, no implementation. Recommendation included; decision is the user's.
 
@@ -87,8 +87,8 @@ The chain's correctness is verified up to this point against canonical-as-author
 
 ## Provenance
 
-- Source-of-truth: [`docs/design/write-log-as-truth.md`](design/write-log-as-truth.md) §§ "The contract", "What changes under the proposed contract".
-- Federation cross-link: [`docs/design/federation-primitives.md`](design/federation-primitives.md).
+- Source-of-truth: [`docs/design/write-log-as-truth.md`](write-log-as-truth.md) §§ "The contract", "What changes under the proposed contract".
+- Federation cross-link: [`docs/design/federation-primitives.md`](federation-primitives.md).
 - Upstream chain: #205 → #261 → #262 → #264 → **#265 this issue**.
 - Equality contract this issue's `aelf doctor --replay` invokes: [`v2_replay.md`](v2_replay.md).
 - Worker contract this issue assumes: [`v2_derivation_worker.md`](v2_derivation_worker.md).

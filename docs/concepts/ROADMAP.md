@@ -3,7 +3,7 @@
 Release history and forward-looking design cuts. As of v3.0 the v1.0→v2.0
 parity arc is complete and v3.0 has shipped; see the per-version rows below.
 
-Per-issue tracking: [LIMITATIONS.md](../user/LIMITATIONS.md). Release log: [CHANGELOG.md](../CHANGELOG.md).
+Per-issue tracking: [LIMITATIONS.md](../user/LIMITATIONS.md). Release log: [CHANGELOG.md](../../CHANGELOG.md).
 
 ## Origin
 
@@ -144,7 +144,7 @@ After v2.0.0, `benchmarks/` reproduces every published headline number on a fres
 
 ### v3.0.0 — completion + design cut (shipped 2026-05-13)
 
-v3.0 closed the wonder-lifecycle wave, shipped HRR persistence with split-format on-disk migration, shipped type-aware compression at the A2 recall@k bench gate, shipped read-only federation, and ratified four v3-level design decisions. Replaced the prior v2.2 row, whose three referenced issues turned out to be stale (#197 WONTFIX; #193 evaluation shipped without hook successor; #194 was `ingest_turn(bulk=)`, also shipped). Per-entry detail: [CHANGELOG.md § 3.0.0](../CHANGELOG.md). Milestone tracker: [#608](https://github.com/robotrocketscience/aelfrice/issues/608).
+v3.0 closed the wonder-lifecycle wave, shipped HRR persistence with split-format on-disk migration, shipped type-aware compression at the A2 recall@k bench gate, shipped read-only federation, and ratified four v3-level design decisions. Replaced the prior v2.2 row, whose three referenced issues turned out to be stale (#197 WONTFIX; #193 evaluation shipped without hook successor; #194 was `ingest_turn(bulk=)`, also shipped). Per-entry detail: [CHANGELOG.md § 3.0.0](../../CHANGELOG.md). Milestone tracker: [#608](https://github.com/robotrocketscience/aelfrice/issues/608).
 
 Substrate completion (all shipped):
 
@@ -160,11 +160,11 @@ Design ratifications (all closed, doc-only follow-through):
 - **NL-relatedness philosophy** ([#605](https://github.com/robotrocketscience/aelfrice/issues/605), ratified 2026-05-10). Option 1 — stay deterministic, narrow surface. Dedup, contradiction, and relatedness gates live in the consuming agent, not aelfrice. Memo: [`docs/design/v3_relatedness_philosophy.md`](../design/v3_relatedness_philosophy.md).
 - **Sentiment-feedback hook production wire-up** ([#606](https://github.com/robotrocketscience/aelfrice/issues/606), ratified 2026-05-10). `UserPromptSubmit` lane, default-off opt-in, most-recent-window decay policy. Shipped behind `[feedback] sentiment_from_prose = true` / `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE=1`.
 - **Multimodel scope** ([#607](https://github.com/robotrocketscience/aelfrice/issues/607), deferred 2026-05-11). No maintainer validation path for third-party LLM CLIs; the wonder-dispatch lane (#542/#551) covers the in-tree story.
-- **Federation write model** ([#661](https://github.com/robotrocketscience/aelfrice/issues/661), ratified 2026-05-11). Option B — read-only federation. Per-project DB is sole writer; peers open foreign DBs read-only and UNION FTS5 results. Mutation tools reject foreign belief IDs at the API surface. CRDT-primitives sub-issues (#651-#654) closed WONTFIX. See [`docs/design/federation-primitives.md`](design/federation-primitives.md) §1 for the forward-compat version-vector substrate; §2-§5 are flagged as deferred multi-writer extension.
+- **Federation write model** ([#661](https://github.com/robotrocketscience/aelfrice/issues/661), ratified 2026-05-11). Option B — read-only federation. Per-project DB is sole writer; peers open foreign DBs read-only and UNION FTS5 results. Mutation tools reject foreign belief IDs at the API surface. CRDT-primitives sub-issues (#651-#654) closed WONTFIX. See [`docs/design/federation-primitives.md`](../design/federation-primitives.md) §1 for the forward-compat version-vector substrate; §2-§5 are flagged as deferred multi-writer extension.
 
 ### v3.0.1 — install-surface collapse + default-on agent-side retrieval (shipped 2026-05-13)
 
-Patch release on top of v3.0.0. No public API change; the user-facing surface narrows on the install side and broadens on the retrieval side. Per-entry detail: [CHANGELOG.md § 3.0.1](../CHANGELOG.md).
+Patch release on top of v3.0.0. No public API change; the user-facing surface narrows on the install side and broadens on the retrieval side. Per-entry detail: [CHANGELOG.md § 3.0.1](../../CHANGELOG.md).
 
 - **Install / upgrade surface collapsed to `uv tool` only** ([#730](https://github.com/robotrocketscience/aelfrice/issues/730)). `aelf upgrade-cmd` (and `/aelf:upgrade`) emit a single in-place form (`uv tool upgrade aelfrice`) for uv-managed installs and a migration chain (`pipx uninstall aelfrice && uv tool install aelfrice`, or the pip equivalent) for any other installer. `UpgradeAdvice.context` collapses `uv_tool` / `pipx` / `venv` / `system` → `uv_tool` / `non_uv`. README and `docs/user/INSTALL.md` rewritten around `uv tool install`; the pipx/venv/system helpers in `lifecycle.py` remain internal but no longer surface as supported channels.
 - **Auto-migrate non-uv installs on first 3.0.1 setup** ([#733](https://github.com/robotrocketscience/aelfrice/issues/733), follow-up [#774](https://github.com/robotrocketscience/aelfrice/issues/774) for the uv-not-found runnable one-liner). `aelf setup` runs `lifecycle.maybe_migrate_to_uv()` before hook reconciliation; on a pipx/pip install with `uv` on `$PATH`, runs `uv tool install --force aelfrice` (120s timeout) once per machine behind a `~/.aelfrice/migrated-to-uv` sentinel. The fresh uv-tool shim overwrites the existing `~/.local/bin/aelf` so subsequent invocations resolve through the uv-tool venv. A pipx-only user without `uv` now sees a copy-pasteable installer hint (`curl -LsSf https://astral.sh/uv/install.sh | sh` and `brew install uv` on macOS), not just a docs URL.
