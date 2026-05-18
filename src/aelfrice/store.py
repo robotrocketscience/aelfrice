@@ -692,6 +692,10 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
     # scope column added in v3.0 (#688). Pre-migration rows default to
     # 'project' (the correct local-only semantics for existing beliefs).
     scope = row["scope"] if "scope" in keys else BELIEF_SCOPE_PROJECT
+    # project_context column added in v3.2 (#858). Pre-migration rows
+    # and queries that project a custom column list without it default
+    # to '' — the cross-context "no filter" marker.
+    project_context = row["project_context"] if "project_context" in keys else ""
     return Belief(
         id=row["id"],
         content=row["content"],
@@ -711,6 +715,7 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
         retention_class=retention_class,
         valid_to=valid_to,
         scope=scope,
+        project_context=project_context,
     )
 
 
@@ -1814,15 +1819,15 @@ class MemoryStore:
                 lock_level, locked_at,
                 created_at, last_retrieved_at, session_id, origin,
                 hibernation_score, activation_condition,
-                retention_class, valid_to, scope
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                retention_class, valid_to, scope, project_context
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 b.id, b.content, b.content_hash, b.alpha, b.beta, b.type,
                 b.lock_level, b.locked_at,
                 b.created_at, b.last_retrieved_at, b.session_id, b.origin,
                 b.hibernation_score, b.activation_condition,
-                b.retention_class, b.valid_to, b.scope,
+                b.retention_class, b.valid_to, b.scope, b.project_context,
             ),
         )
         self._conn.execute(
@@ -1898,7 +1903,8 @@ class MemoryStore:
                 activation_condition = ?,
                 retention_class = ?,
                 valid_to = ?,
-                scope = ?
+                scope = ?,
+                project_context = ?
             WHERE id = ?
             """,
             (
@@ -1906,7 +1912,7 @@ class MemoryStore:
                 b.lock_level, b.locked_at,
                 b.created_at, b.last_retrieved_at, b.session_id,
                 b.origin, b.hibernation_score, b.activation_condition,
-                b.retention_class, b.valid_to, b.scope, b.id,
+                b.retention_class, b.valid_to, b.scope, b.project_context, b.id,
             ),
         )
         self._conn.execute("DELETE FROM beliefs_fts WHERE id = ?", (b.id,))

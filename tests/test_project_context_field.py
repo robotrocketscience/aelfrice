@@ -22,7 +22,38 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from aelfrice.models import (
+    BELIEF_FACTUAL,
+    BELIEF_SCOPE_PROJECT,
+    LOCK_NONE,
+    ORIGIN_AGENT_INFERRED,
+    Belief,
+)
 from aelfrice.store import MemoryStore
+
+
+def _belief(
+    id_: str,
+    content: str,
+    *,
+    project_context: str = "",
+    scope: str = BELIEF_SCOPE_PROJECT,
+) -> Belief:
+    return Belief(
+        id=id_,
+        content=content,
+        content_hash=id_ + "-hash",
+        alpha=1.0,
+        beta=1.0,
+        type=BELIEF_FACTUAL,
+        lock_level=LOCK_NONE,
+        locked_at=None,
+        created_at="2026-05-18T00:00:00Z",
+        last_retrieved_at=None,
+        origin=ORIGIN_AGENT_INFERRED,
+        scope=scope,
+        project_context=project_context,
+    )
 
 
 def _column_names(db_path: Path, table: str) -> list[str]:
@@ -161,5 +192,58 @@ def test_migration_adds_column_to_legacy_db(tmp_path: Path) -> None:
         assert "project_context" in cols_after, (
             f"migration did not add project_context: {cols_after!r}"
         )
+    finally:
+        store.close()
+
+
+def test_belief_dataclass_default_empty(tmp_path: Path) -> None:
+    """Belief() without project_context defaults to '' (cross-context)."""
+    b = _belief("b1", "hello")  # no project_context passed
+    assert b.project_context == ""
+
+
+def test_insert_belief_round_trip(tmp_path: Path) -> None:
+    """insert_belief stamps project_context; get_belief reads it back."""
+    p = tmp_path / "rt.db"
+    store = MemoryStore(str(p))
+    try:
+        b = _belief("b-rt-1", "tagged content", project_context="retrieval-v3")
+        store.insert_belief(b)
+        got = store.get_belief("b-rt-1")
+        assert got is not None
+        assert got.project_context == "retrieval-v3"
+        # Federation scope unchanged by project_context.
+        assert got.scope == BELIEF_SCOPE_PROJECT
+    finally:
+        store.close()
+
+
+def test_update_belief_round_trip(tmp_path: Path) -> None:
+    """update_belief persists project_context changes on existing rows."""
+    p = tmp_path / "upd.db"
+    store = MemoryStore(str(p))
+    try:
+        b = _belief("b-upd-1", "starts cross-context", project_context="")
+        store.insert_belief(b)
+        # Mutate and write back.
+        b.project_context = "retrieval-v3"
+        store.update_belief(b)
+        got = store.get_belief("b-upd-1")
+        assert got is not None
+        assert got.project_context == "retrieval-v3"
+    finally:
+        store.close()
+
+
+def test_search_beliefs_returns_project_context_field(tmp_path: Path) -> None:
+    """search_beliefs() result rows carry project_context (no silent loss)."""
+    p = tmp_path / "search.db"
+    store = MemoryStore(str(p))
+    try:
+        b = _belief("b-srch-1", "needle", project_context="retrieval-v3")
+        store.insert_belief(b)
+        hits = store.search_beliefs("needle", limit=10)
+        assert len(hits) == 1
+        assert hits[0].project_context == "retrieval-v3"
     finally:
         store.close()

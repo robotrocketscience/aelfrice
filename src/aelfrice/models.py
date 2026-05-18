@@ -311,6 +311,13 @@ class Belief:
     of 'project' (local-only, default), 'global' (any dependent peer),
     or 'shared:<name>' (named peer group). Validated at write time by
     `validate_belief_scope`; invalid values raise ``ValueError``.
+
+    `project_context` (v3.2 #858) is the within-repo retrieval scope
+    tag. Default '' means "cross-context — visible regardless of active
+    project context". Distinct from `scope` (federation visibility):
+    `project_context` filters retrieval against the active in-process
+    context resolved by `db_paths.active_project_context()`, whereas
+    `scope` controls whether peer DBs may surface the row.
     """
 
     id: str
@@ -331,6 +338,7 @@ class Belief:
     retention_class: str = RETENTION_UNKNOWN
     valid_to: str | None = None
     scope: str = BELIEF_SCOPE_PROJECT
+    project_context: str = ""
 
 
 ANCHOR_TEXT_MAX_LEN: Final[int] = 1000
