@@ -293,7 +293,6 @@ def test_keyboard_interrupt_flushes_progress(tmp_path: Path, monkeypatch: pytest
     out_path = tmp_path / "out.jsonl"
     # First row labelled; second row raises KeyboardInterrupt at top-k.
     call_count = {"n": 0}
-    real_readline = io.StringIO("1\n\nnote-12\n").readline
     pre_stdin = io.StringIO("1\n\nnote-12\n")
 
     class IntStdin:
