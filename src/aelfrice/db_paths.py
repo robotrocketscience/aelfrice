@@ -83,3 +83,39 @@ def _open_store() -> MemoryStore:
     if str(p) != ":memory:":
         _ensure_parent_dir(p)
     return MemoryStore(str(p))
+
+
+# v3.2 #858 active project context resolver.
+PROJECT_CONTEXT_ENV: Final[str] = "AELFRICE_PROJECT_CONTEXT"
+"""Env var name read by `active_project_context()`. Stable public name;
+callers may set this per-shell to scope retrieval to a named within-repo
+context. Empty / unset means "cross-context — no retrieval filter
+applied", which is the pre-#858 default behaviour."""
+
+
+def active_project_context() -> str:
+    """Resolve the active within-repo project-context tag.
+
+    Returns the value of `$AELFRICE_PROJECT_CONTEXT` after stripping
+    surrounding whitespace; empty string when unset or whitespace-only.
+
+    The empty-string return value is the "no filter" marker: callers
+    (today, the UserPromptSubmit hook) treat it as "show every belief,
+    regardless of its stored project_context". A non-empty value tells
+    the filter to drop project-scope beliefs whose stored
+    project_context is neither '' nor an exact match.
+
+    Distinct from `db_path()` (which picks WHICH DB to read). Two
+    worktrees of the same repo share one DB via --git-common-dir; this
+    resolver is what lets those two worktrees see DIFFERENT slices of
+    the shared DB based on the active context.
+
+    Empty-only-on-unset semantics deliberately omit a `.aelfrice/context`
+    state-file fallback at this commit. State-file discovery is a
+    follow-up surface (an `aelf context set <name>` CLI subcommand
+    writes the file; the resolver consults env var first, file second).
+    Env var alone is sufficient for interactive agent sessions and
+    CI pipelines that set context at startup.
+    """
+    raw = os.environ.get(PROJECT_CONTEXT_ENV, "")
+    return raw.strip()
