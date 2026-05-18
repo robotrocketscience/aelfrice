@@ -232,6 +232,11 @@ HIDDEN_SUBCOMMANDS = frozenset({
     # edge-type) live in --help and the end-of-run NOTE lines so users
     # see them either way.
     "export-obsidian",
+    # `label` is the interactive corpus-row labelling driver (#859,
+    # enabler for #819). No slash command — it's a dev/operator
+    # tooling surface for building bench-gate corpora, not a workflow
+    # verb.
+    "label",
 })
 
 

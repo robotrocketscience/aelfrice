@@ -2593,6 +2593,12 @@ def _cmd_eval(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_label(args: argparse.Namespace, out: object) -> int:
+    """Thin shim: dispatch to label_cli.cmd_label (#859)."""
+    from aelfrice.label_cli import cmd_label
+    return cmd_label(args, out)
+
+
 def _effective_scope(args: argparse.Namespace) -> SettingsScope:
     """Return the explicit `--scope` if given, else auto-detect."""
     scope = getattr(args, "scope", None)
@@ -6520,6 +6526,38 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="emit machine-readable JSON instead of text block.",
     )
     p_eval.set_defaults(func=_cmd_eval)
+
+    # Hidden: `aelf label` — interactive corpus-row labelling driver
+    # (#859, enabler for #819's operator-time hand-labelling). Consumes
+    # a stub-row JSONL (id, query, beliefs[]) and emits schema-valid
+    # output rows with gold_top_k + labeller_note. Hidden because it's
+    # an operator/dev tooling surface, not a workflow verb.
+    p_label = sub.add_parser("label", help=argparse.SUPPRESS)
+    p_label.add_argument(
+        "module",
+        help="corpus module name (e.g. rerank_relevance). Recorded on the row only.",
+    )
+    p_label.add_argument(
+        "--input", dest="input", required=True,
+        help="stub-row JSONL with id, query, beliefs[]",
+    )
+    p_label.add_argument(
+        "--output", dest="output", required=True,
+        help="destination JSONL; append-only, created if missing",
+    )
+    p_label.add_argument(
+        "--resume", dest="resume", action="store_true",
+        help="skip stub ids already present in --output",
+    )
+    p_label.add_argument(
+        "--k", dest="k", type=int, default=10,
+        help="default k for rows that omit it (default 10)",
+    )
+    p_label.add_argument(
+        "--no-ordering", dest="no_ordering", action="store_true",
+        help="never prompt for gold_ordering",
+    )
+    p_label.set_defaults(func=_cmd_label)
 
     # Hidden: invoked by the CwdChanged hook (HOME repo). Pre-loads the
     # active project's SQLite + OS page caches so the next aelf call
