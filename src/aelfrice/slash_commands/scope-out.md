@@ -20,6 +20,6 @@ Display the output verbatim. Do not add commentary.
 - `--list` to show active exclusions
 - `--clear` to empty the list
 
-The exclusion list is scoped to the current Claude Code session; it is
+The exclusion list is scoped to the current session; it is
 cleared automatically when a new session starts (session_id mismatch).
 </process>
