@@ -63,6 +63,10 @@ EXPECTED_COMMANDS = (
     # export (#630, sibling) can point users at `aelf graph` as the
     # graph-view escape hatch.
     "graph",
+    # v3.x (#856) — session-scoped retrieval exclusion list. Lets the
+    # user tell the memory hook to stop re-injecting beliefs that
+    # match a substring for the rest of the active session.
+    "scope-out",
 )
 
 

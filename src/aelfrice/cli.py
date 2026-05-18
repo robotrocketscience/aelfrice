@@ -1882,6 +1882,72 @@ def _cmd_locked(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_scope_out(args: argparse.Namespace, out: object) -> int:
+    """Manage the active session's retrieval-exclusion list (#856).
+
+    Reads the active session_id from session_first_prompt.json (written
+    by the UserPromptSubmit hook on the first prompt of a session) and
+    operates on session_exclusions.json in the same dir. The hook reads
+    that file on every fire and drops beliefs whose content contains
+    any listed substring (case-insensitive).
+    """
+    from aelfrice.session_exclusions import (
+        add_exclusion,
+        clear_exclusions,
+        exclusions_path,
+        load_exclusions,
+        read_current_session_id,
+    )
+
+    db = db_path()
+    if str(db) == ":memory:":
+        print(
+            "scope-out unavailable: in-memory store has no session "
+            "state directory",
+            file=sys.stderr,
+        )
+        return 1
+    state_dir = db.parent
+    sid = read_current_session_id(state_dir)
+    if sid is None:
+        print(
+            "scope-out unavailable: no active session "
+            f"(session_first_prompt.json missing under {state_dir}). "
+            "The memory hook writes this file on the first prompt of "
+            "each session.",
+            file=sys.stderr,
+        )
+        return 1
+    path = exclusions_path(state_dir)
+
+    if args.clear:
+        clear_exclusions(path, sid)
+        print("scope-out: cleared", file=out)  # type: ignore[arg-type]
+        return 0
+    if args.list_:
+        patterns = load_exclusions(path, sid)
+        if not patterns:
+            print("scope-out: no active exclusions", file=out)  # type: ignore[arg-type]
+            return 0
+        for p in patterns:
+            print(p, file=out)  # type: ignore[arg-type]
+        return 0
+    pattern = (args.pattern or "").strip()
+    if not pattern:
+        print(
+            "scope-out: pattern required (or use --list / --clear)",
+            file=sys.stderr,
+        )
+        return 1
+    updated = add_exclusion(path, sid, pattern)
+    print(
+        f"scope-out: {len(updated)} active exclusion(s) "
+        f"(added {pattern!r})",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
 def _apply_scope_change(
     store: object,
     belief_id: str,
@@ -5465,6 +5531,35 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
 
     p_locked = sub.add_parser("locked", help="list locked beliefs")
     p_locked.set_defaults(func=_cmd_locked)
+
+    # v3.x (#856) — session-scoped retrieval exclusion list. Reads/writes
+    # session_exclusions.json keyed by the hook-written session_first_prompt.json;
+    # the hook consults it on every fire and drops matching beliefs from
+    # injection. Auto-clears when the session_id changes.
+    p_scope_out = sub.add_parser(
+        "scope-out",
+        help=(
+            "suppress beliefs matching a pattern from this session's "
+            "memory retrieval (#856)"
+        ),
+    )
+    p_scope_out.add_argument(
+        "pattern", nargs="?", default=None,
+        help=(
+            "case-insensitive literal substring; any belief whose "
+            "content contains this string is filtered out of hook "
+            "injection for the rest of the active session"
+        ),
+    )
+    p_scope_out.add_argument(
+        "--list", dest="list_", action="store_true",
+        help="show active exclusion patterns",
+    )
+    p_scope_out.add_argument(
+        "--clear", action="store_true",
+        help="empty the exclusion list for the active session",
+    )
+    p_scope_out.set_defaults(func=_cmd_scope_out)
 
     # Read-only lens: load-bearing beliefs (locked ∪ corroborated ∪ high-posterior).
     p_core = sub.add_parser(
