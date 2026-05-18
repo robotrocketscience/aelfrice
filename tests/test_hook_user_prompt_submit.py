@@ -609,3 +609,136 @@ def test_gate_disabled_via_toml_still_retrieves(
         stdout=io.StringIO(),
     )
     assert called == ["yes"], "search_for_prompt must be called when gate is disabled"
+
+
+# ---------------------------------------------------------------------------
+# Session-scoped exclusion filter (#856)
+# ---------------------------------------------------------------------------
+
+
+def _write_exclusions(
+    state_dir: Path, session_id: str, patterns: list[str]
+) -> None:
+    """Test helper: pre-seed session_exclusions.json under state_dir."""
+    from aelfrice.session_exclusions import save_exclusions
+    state_dir.mkdir(parents=True, exist_ok=True)
+    save_exclusions(state_dir / "session_exclusions.json", session_id, patterns)
+
+
+def test_hook_filters_belief_matching_active_exclusion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A belief whose content contains an exclusion pattern must not appear."""
+    db = tmp_path / "memory.db"
+    _seed_db(db, [
+        _mk("F1", "the kitchen is full of bananas"),
+        _mk("F2", "the lab smells like apples"),
+    ])
+    _set_db(monkeypatch, db)
+    _write_exclusions(tmp_path, "s1", ["banana"])
+    sin = io.StringIO(_payload("food in the kitchen and lab", session_id="s1"))
+    sout = io.StringIO()
+    rc = user_prompt_submit(stdin=sin, stdout=sout, stderr=io.StringIO())
+    assert rc == 0
+    out = sout.getvalue()
+    assert "bananas" not in out
+    assert "apples" in out
+
+
+def test_hook_filters_case_insensitive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "memory.db"
+    _seed_db(db, [_mk("F1", "the kitchen is FULL of BANANAS")])
+    _set_db(monkeypatch, db)
+    _write_exclusions(tmp_path, "s1", ["banana"])
+    sin = io.StringIO(_payload("food in the kitchen", session_id="s1"))
+    sout = io.StringIO()
+    rc = user_prompt_submit(stdin=sin, stdout=sout, stderr=io.StringIO())
+    assert rc == 0
+    assert "BANANAS" not in sout.getvalue()
+
+
+def test_hook_does_not_filter_when_no_exclusions_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No exclusions file → no filtering, even when scope-out has never run."""
+    db = tmp_path / "memory.db"
+    _seed_db(db, [_mk("F1", "the kitchen is full of bananas")])
+    _set_db(monkeypatch, db)
+    sin = io.StringIO(_payload("food in the kitchen", session_id="s1"))
+    sout = io.StringIO()
+    rc = user_prompt_submit(stdin=sin, stdout=sout, stderr=io.StringIO())
+    assert rc == 0
+    assert "bananas" in sout.getvalue()
+
+
+def test_hook_does_not_filter_when_session_id_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exclusions written for an old session must not leak into a new one."""
+    db = tmp_path / "memory.db"
+    _seed_db(db, [_mk("F1", "the kitchen is full of bananas")])
+    _set_db(monkeypatch, db)
+    _write_exclusions(tmp_path, "s-old", ["banana"])
+    sin = io.StringIO(_payload("food in the kitchen", session_id="s-new"))
+    sout = io.StringIO()
+    rc = user_prompt_submit(stdin=sin, stdout=sout, stderr=io.StringIO())
+    assert rc == 0
+    assert "bananas" in sout.getvalue()
+
+
+def test_hook_filters_locked_belief_on_per_turn_path_when_excluded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """scope-out overrides L0 re-injection on the every-turn retrieval
+    path. The lock itself remains in the DB; only injection is
+    suppressed.
+
+    Note: the one-shot SessionStart sub-block (which dumps L0 on the
+    first prompt of a session) is a separate path that runs BEFORE the
+    user can have typed `/aelf:scope-out`, so it is not filtered. This
+    test simulates a non-first prompt by pre-writing
+    session_first_prompt.json so the SessionStart sub-block does not
+    fire on the test hook call.
+    """
+    db = tmp_path / "memory.db"
+    _seed_db(db, [
+        _mk("L1", "bananas are yellow",
+            lock_level=LOCK_USER, locked_at="2026-04-26T00:00:00Z"),
+        _mk("F2", "apples grow on trees"),
+    ])
+    _set_db(monkeypatch, db)
+    # Mark session as already seen so SessionStart does not fire.
+    (tmp_path / "session_first_prompt.json").write_text(
+        json.dumps({"session_id": "s1"}), encoding="utf-8"
+    )
+    _write_exclusions(tmp_path, "s1", ["banana"])
+    sin = io.StringIO(_payload("fruit colors and trees", session_id="s1"))
+    sout = io.StringIO()
+    rc = user_prompt_submit(stdin=sin, stdout=sout, stderr=io.StringIO())
+    assert rc == 0
+    out = sout.getvalue()
+    assert "bananas are yellow" not in out
+    assert "apples" in out
+
+
+def test_hook_filters_multiple_patterns_drop_only_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = tmp_path / "memory.db"
+    _seed_db(db, [
+        _mk("F1", "the kitchen is full of bananas"),
+        _mk("F2", "the lab smells like apples"),
+        _mk("F3", "oranges are citrus"),
+    ])
+    _set_db(monkeypatch, db)
+    _write_exclusions(tmp_path, "s1", ["banana", "apple"])
+    sin = io.StringIO(_payload("food kitchen lab citrus", session_id="s1"))
+    sout = io.StringIO()
+    rc = user_prompt_submit(stdin=sin, stdout=sout, stderr=io.StringIO())
+    assert rc == 0
+    out = sout.getvalue()
+    assert "bananas" not in out
+    assert "apples" not in out
+    assert "oranges" in out

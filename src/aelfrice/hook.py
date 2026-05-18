@@ -862,6 +862,10 @@ def user_prompt_submit(
             # 'shared:*' / promoted 'user') bypass the filter too — a
             # user-promoted belief is cross-context by definition.
             hits = _filter_by_project_context(hits)
+            # #856: drop beliefs the user has scope-out'd this session
+            # BEFORE telemetry / dedup / format so downstream counts
+            # reflect what was actually injected.
+            hits = _filter_session_exclusions(hits, session_id)
         if hits:
             # AC1 telemetry: record pre-collapse counts.
             n_returned = len(hits)
@@ -1485,6 +1489,43 @@ def _filter_by_project_context(hits: list[Belief]) -> list[Belief]:
         if b.project_context == "" or b.project_context == active:
             out.append(b)
     return out
+
+
+def _filter_session_exclusions(
+    hits: list[Belief], session_id: str | None
+) -> list[Belief]:
+    """Drop hits whose content matches any active session-scoped exclusion (#856).
+
+    Reads ``<git-common-dir>/aelfrice/session_exclusions.json`` and removes
+    any belief whose content contains a listed pattern (case-insensitive
+    substring). Returns the input unchanged when ``session_id`` is None,
+    the store is in-memory, the file is absent, or the stored session_id
+    does not match. Fail-soft: any error returns the input unchanged.
+
+    Locked (L0) beliefs are filtered too — scope-out is the user
+    instructing the hook to stop injecting a topic for the session, and
+    that instruction overrides ground-truth re-injection. The belief
+    itself remains in the store; only injection is suppressed.
+    """
+    if not hits or not session_id:
+        return hits
+    try:
+        state_path = _session_state_path()
+        if state_path is None:
+            return hits
+        from aelfrice.session_exclusions import (  # noqa: PLC0415
+            exclusions_path,
+            is_excluded,
+            load_exclusions,
+        )
+        patterns = load_exclusions(
+            exclusions_path(state_path.parent), session_id
+        )
+        if not patterns:
+            return hits
+        return [h for h in hits if not is_excluded(h.content, patterns)]
+    except Exception:
+        return hits
 
 
 def _format_hits(hits: list[Belief]) -> str:
