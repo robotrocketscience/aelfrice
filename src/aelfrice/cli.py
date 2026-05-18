@@ -6535,7 +6535,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_label = sub.add_parser("label", help=argparse.SUPPRESS)
     p_label.add_argument(
         "module",
-        help="corpus module name (e.g. rerank_relevance). Recorded on the row only.",
+        help="corpus module name (e.g. rerank_relevance). Used in the startup log line; not written into output rows (module grouping is by output path).",
     )
     p_label.add_argument(
         "--input", dest="input", required=True,
