@@ -1563,16 +1563,19 @@ def _coverage_line(
     tel: Any,
     prompt: str,
 ) -> str:
-    """Return the coverage-line suffix when M > N, else empty string.
+    """Return the coverage-line suffix when L1 candidates were trimmed, else "".
 
-    M = total candidates before token-budget trimming (locked + L2.5 +
-    all L1 candidates). N = beliefs actually injected. The line is
-    appended outside the XML block so no belief content is leaked —
-    only the counts and the user's own prompt keywords.
+    delta = l1_candidates - l1_packed: how many L1 beliefs the token budget
+    dropped. When delta <= 0, nothing was cut and the line is omitted.
+
+    M = n_injected + delta: what was injected plus what was trimmed. This
+    formulation is independent of any non-L1 surfaced lane (BFS hops, etc.),
+    which may have padded n_injected without affecting the L1 trim count.
     """
-    m_total = tel.locked + tel.l25 + tel.l1_candidates
-    if m_total <= n_injected:
+    delta = tel.l1_candidates - tel.l1
+    if delta <= 0:
         return ""
+    m_total = n_injected + delta
     raw_topic = prompt.strip()
     truncated = len(raw_topic) > _COVERAGE_TOPIC_MAX_CHARS
     search_topic = raw_topic[:_COVERAGE_TOPIC_MAX_CHARS] if truncated else raw_topic
