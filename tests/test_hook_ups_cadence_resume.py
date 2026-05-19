@@ -9,14 +9,12 @@ from __future__ import annotations
 import io
 import json
 import os
-import textwrap
 import time
 from pathlib import Path
 
 import pytest
 
 from aelfrice import hook
-from aelfrice.cadence import CONFIG_FILENAME
 
 
 # --- Fixtures -------------------------------------------------------------

@@ -6,7 +6,6 @@ module covers only the surface introduced by #871.
 from __future__ import annotations
 
 import json
-import os
 from collections.abc import Generator
 from pathlib import Path
 
@@ -20,7 +19,6 @@ from aelfrice.cadence import (
     DEFAULT_POLICY,
     ENV_CADENCE_CTX_BYTE_WINDOW,
     ENV_CADENCE_CTX_THRESHOLD,
-    POLICY_OFF,
     POLICY_P1_EVERY_K_TURNS,
     POLICY_P2_CTX_THRESHOLD,
     CadenceConfig,

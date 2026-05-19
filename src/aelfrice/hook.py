@@ -2764,9 +2764,16 @@ def _maybe_fire_cadence_checkpoint(
             ctx_byte_window=ctx_byte_window,
         )
         tp_obj = payload.get(_TRANSCRIPT_PATH_KEY)
-        tp: Path | None = (
-            Path(tp_obj) if isinstance(tp_obj, str) and tp_obj else None
-        )
+        # Accept both str (the JSON-payload form) and PathLike (test /
+        # replay callers that pass a real Path object). Bot review
+        # caught the str-only check missing the PathLike case.
+        tp: Path | None
+        if isinstance(tp_obj, str) and tp_obj:
+            tp = Path(tp_obj)
+        elif isinstance(tp_obj, os.PathLike):
+            tp = Path(tp_obj)
+        else:
+            tp = None
         last_prompt = read_last_user_prompt(tp)
         if not should_fire_p2(
             transcript_path=tp,
@@ -2870,13 +2877,24 @@ def _write_cadence_resume_cache(
             "policy": policy,
             "body": body,
         }
-        # Atomic replace via sibling tmp file.
+        # Atomic replace via sibling tmp file. If the write or
+        # replace fails, clean up the orphan tmp file so it doesn't
+        # accumulate on disk (matches the pattern in _append_telemetry
+        # and _write_session_state).
         tmp_path = cache_path.with_suffix(".tmp")
-        tmp_path.write_text(
-            json.dumps(record, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        os.replace(tmp_path, cache_path)
+        try:
+            tmp_path.write_text(
+                json.dumps(record, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            os.replace(tmp_path, cache_path)
+        except OSError:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+            raise
     except OSError as exc:
         print(
             f"aelfrice: cadence resume cache write failed (non-fatal): {exc}",

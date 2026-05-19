@@ -606,8 +606,16 @@ def is_phase_boundary_signal(prompt: str | None) -> bool:
     return False
 
 
-def estimate_transcript_bytes(transcript_path: Path | None) -> int:
+def estimate_transcript_bytes(
+    transcript_path: Path | str | os.PathLike[str] | None,
+) -> int:
     """Return transcript file size in bytes, 0 on missing/unreadable.
+
+    Accepts ``Path``, ``str``, or any ``os.PathLike[str]`` (the hook
+    surface receives the transcript path as a JSON string and converts
+    to ``Path`` upstream, but other callers — tests, replay — may pass
+    either form). Returns 0 on ``None``, missing file, or any I/O
+    error. Never raises.
 
     Used by P2 (ctx-threshold) as the byte-count input. Deterministic
     per #605: same on-disk file → same byte count → same fire
@@ -618,7 +626,11 @@ def estimate_transcript_bytes(transcript_path: Path | None) -> int:
     if transcript_path is None:
         return 0
     try:
-        path = transcript_path if isinstance(transcript_path, Path) else Path(transcript_path)
+        path = (
+            transcript_path
+            if isinstance(transcript_path, Path)
+            else Path(transcript_path)
+        )
     except TypeError:
         return 0
     try:
@@ -729,7 +741,12 @@ def should_fire_p2(
     if config.ctx_threshold <= 0 or config.ctx_threshold > 1:
         return False
     bytes_used = estimate_transcript_bytes(transcript_path)
-    watermark = int(config.ctx_threshold * config.ctx_byte_window)
+    # Floor watermark at 1 byte so pathological configs (e.g.
+    # ctx_byte_window=1, ctx_threshold=0.5 → int(0.5)=0) don't
+    # turn the ctx half of the predicate into a no-op gate. With
+    # the floor, a literally empty transcript (0 bytes) still
+    # cannot trip the threshold, no matter how small the window.
+    watermark = max(1, int(config.ctx_threshold * config.ctx_byte_window))
     if bytes_used < watermark:
         return False
     if not is_phase_boundary_signal(last_user_prompt):
