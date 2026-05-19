@@ -2893,6 +2893,9 @@ def _write_cadence_resume_cache(
                 try:
                     tmp_path.unlink()
                 except OSError:
+                    # Best-effort cleanup: if even unlink fails (perms,
+                    # racing rename, etc.) we still want to surface the
+                    # original write/replace error to the outer handler.
                     pass
             raise
     except OSError as exc:
