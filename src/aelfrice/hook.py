@@ -2552,22 +2552,33 @@ def stop(
         try:
             store = _open_store()
         except Exception:
-            return 0
+            store = None
+        if store is not None:
+            try:
+                candidates = _collect_lock_candidates(store, session_id)
+                if candidates:
+                    if _autolock_enabled(env):
+                        _autolock_candidates(store, candidates, serr)
+                    else:
+                        block = _format_stop_prompt(candidates)
+                        if block:
+                            # stderr per the Stop-hook contract: any
+                            # prompt-shaped output to the human reading
+                            # the session must go to stderr, not stdout
+                            # (Stop has no additionalContext channel).
+                            serr.write(block)
+            finally:
+                store.close()
+        # Cadence checkpoint (#749 P1) runs independently of the lock-
+        # prompt path so an empty-candidates session still fires when
+        # the configured policy says it should.
         try:
-            candidates = _collect_lock_candidates(store, session_id)
-            if not candidates:
-                return 0
-            if _autolock_enabled(env):
-                _autolock_candidates(store, candidates, serr)
-                return 0
-            block = _format_stop_prompt(candidates)
-            if block:
-                # stderr per the Stop-hook contract: any prompt-shaped
-                # output to the human reading the session must go to stderr,
-                # not stdout (Stop has no additionalContext channel).
-                serr.write(block)
-        finally:
-            store.close()
+            _maybe_fire_cadence_checkpoint(payload, session_id, serr)
+        except Exception as exc:  # pragma: no cover — defensive
+            print(
+                f"aelfrice: cadence checkpoint failed (non-fatal): {exc}",
+                file=serr,
+            )
     except Exception as exc:
         # Last-resort fail-soft. Surface to stderr so the hook log shows
         # the trace; never bubble to the harness.
@@ -2576,6 +2587,79 @@ def stop(
             file=serr,
         )
     return 0
+
+
+def _maybe_fire_cadence_checkpoint(
+    payload: dict[str, object],
+    session_id: str,
+    serr: IO[str],
+) -> None:
+    """Fire a P1 every-K-turns cadence checkpoint when conditions hold.
+
+    Reads ``[cadence]`` config from ``payload['cwd']``'s parent chain,
+    the current session's ``next_fire_idx`` from the session ring,
+    and ``[rebuilder]`` config for the checkpoint pass. When
+    :func:`cadence.should_fire` returns True, runs the same
+    :func:`_rebuild_and_format` path PreCompact uses and discards the
+    body — Stop has no ``additionalContext`` channel, so the value is
+    in the rebuild_log + touch-state side effects.
+
+    Fail-soft: any error short-circuits to a stderr line; never raises.
+    Default-OFF: an unset ``[cadence] enabled`` flag means this function
+    returns before reading anything substantive.
+    """
+    # Local imports keep the Stop hot path free of cadence overhead
+    # when the feature is unused (the module-level imports load only
+    # on first cadence-enabled session).
+    from aelfrice.cadence import (  # noqa: PLC0415
+        CadenceConfig,
+        POLICY_P1_EVERY_K_TURNS,
+        resolve_cadence_enabled,
+        resolve_cadence_k,
+        resolve_cadence_policy,
+        should_fire,
+    )
+    from aelfrice.session_ring import read_ring_state  # noqa: PLC0415
+
+    cwd_obj = payload.get(_CWD_KEY)
+    cwd = (
+        Path(cwd_obj) if isinstance(cwd_obj, str) and cwd_obj
+        else Path.cwd()
+    )
+    if not resolve_cadence_enabled(start=cwd):
+        return
+    policy = resolve_cadence_policy(start=cwd)
+    if policy != POLICY_P1_EVERY_K_TURNS:
+        return
+    k = resolve_cadence_k(start=cwd)
+    cfg = CadenceConfig(enabled=True, policy=policy, k=k)
+    state = read_ring_state(session_id)
+    raw_idx: Any = state.get("next_fire_idx") if isinstance(state, dict) else None
+    if isinstance(raw_idx, bool) or not isinstance(raw_idx, int):
+        return
+    fire_idx = raw_idx
+    if not should_fire(fire_idx, cfg):
+        return
+    rebuilder_cfg = load_rebuilder_config(cwd)
+    recent = _read_recent_for_pre_compact(payload, rebuilder_cfg.turn_window_n)
+    if not recent:
+        return
+    p = db_path()
+    if str(p) != ":memory:" and not p.exists():
+        return
+    _rebuild_and_format(
+        recent,
+        rebuilder_cfg.token_budget,
+        rebuild_log_enabled=rebuilder_cfg.rebuild_log_enabled,
+        floor_session=rebuilder_cfg.floor_session,
+        floor_l1=rebuilder_cfg.floor_l1,
+        query_strategy=rebuilder_cfg.query_strategy,
+    )
+    print(
+        f"aelfrice: cadence checkpoint fired @ fire_idx={fire_idx} "
+        f"(policy={policy}, k={k})",
+        file=serr,
+    )
 
 
 def main() -> int:
