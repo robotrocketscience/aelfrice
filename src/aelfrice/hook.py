@@ -2589,35 +2589,48 @@ def stop(
     return 0
 
 
+_CADENCE_RESUME_CACHE_FILENAME: Final[str] = "cadence_resume_cache.json"
+
+
 def _maybe_fire_cadence_checkpoint(
     payload: dict[str, object],
     session_id: str,
     serr: IO[str],
 ) -> None:
-    """Fire a P1 every-K-turns cadence checkpoint when conditions hold.
+    """Dispatch to the active cadence policy's fire logic.
 
-    Reads ``[cadence]`` config from ``payload['cwd']``'s parent chain,
-    the current session's ``next_fire_idx`` from the session ring,
-    and ``[rebuilder]`` config for the checkpoint pass. When
-    :func:`cadence.should_fire` returns True, runs the same
-    :func:`_rebuild_and_format` path PreCompact uses and discards the
-    body — Stop has no ``additionalContext`` channel, so the value is
-    in the rebuild_log + touch-state side effects.
+    P1 (every-K-turns, #749 / #869): fires deterministically at
+    ``fire_idx % k == 0`` boundaries from the monotonic session-ring
+    counter. Value: rebuild_log entry + touch-state refresh.
 
-    Fail-soft: any error short-circuits to a stderr line; never raises.
-    Default-OFF: an unset ``[cadence] enabled`` flag means this function
-    returns before reading anything substantive.
+    P2 (ctx-threshold + phase-boundary, #871): fires when transcript
+    byte-count exceeds ``ctx_threshold × ctx_byte_window`` AND the
+    most-recent user prompt looks like a task-boundary signal. Value:
+    operator-visible stderr nudge recommending manual ``/clear``,
+    plus a resume-cache file the UPS hook injects on the next
+    session's first prompt.
+
+    Both policies also write the resume cache so the UPS-side resume
+    injection works regardless of which policy fired.
+
+    Fail-soft: any error short-circuits with a stderr trace; never
+    raises. Default-OFF: unset ``[cadence] enabled`` returns early.
     """
     # Local imports keep the Stop hot path free of cadence overhead
-    # when the feature is unused (the module-level imports load only
-    # on first cadence-enabled session).
+    # when the feature is unused.
     from aelfrice.cadence import (  # noqa: PLC0415
         CadenceConfig,
         POLICY_P1_EVERY_K_TURNS,
+        POLICY_P2_CTX_THRESHOLD,
+        estimate_transcript_bytes,
+        read_last_user_prompt,
+        resolve_cadence_ctx_byte_window,
+        resolve_cadence_ctx_threshold,
         resolve_cadence_enabled,
         resolve_cadence_k,
         resolve_cadence_policy,
         should_fire,
+        should_fire_p2,
     )
     from aelfrice.session_ring import read_ring_state  # noqa: PLC0415
 
@@ -2629,25 +2642,90 @@ def _maybe_fire_cadence_checkpoint(
     if not resolve_cadence_enabled(start=cwd):
         return
     policy = resolve_cadence_policy(start=cwd)
-    if policy != POLICY_P1_EVERY_K_TURNS:
+
+    if policy == POLICY_P1_EVERY_K_TURNS:
+        k = resolve_cadence_k(start=cwd)
+        cfg = CadenceConfig(enabled=True, policy=policy, k=k)
+        state = read_ring_state(session_id)
+        raw_idx: Any = state.get("next_fire_idx") if isinstance(state, dict) else None
+        if isinstance(raw_idx, bool) or not isinstance(raw_idx, int):
+            return
+        fire_idx = raw_idx
+        if not should_fire(fire_idx, cfg):
+            return
+        body = _run_cadence_rebuild(payload, cwd)
+        if body is None:
+            return
+        _write_cadence_resume_cache(body, session_id, policy, serr)
+        print(
+            f"aelfrice: cadence checkpoint fired @ fire_idx={fire_idx} "
+            f"(policy={policy}, k={k})",
+            file=serr,
+        )
         return
-    k = resolve_cadence_k(start=cwd)
-    cfg = CadenceConfig(enabled=True, policy=policy, k=k)
-    state = read_ring_state(session_id)
-    raw_idx: Any = state.get("next_fire_idx") if isinstance(state, dict) else None
-    if isinstance(raw_idx, bool) or not isinstance(raw_idx, int):
+
+    if policy == POLICY_P2_CTX_THRESHOLD:
+        ctx_threshold = resolve_cadence_ctx_threshold(start=cwd)
+        ctx_byte_window = resolve_cadence_ctx_byte_window(start=cwd)
+        cfg = CadenceConfig(
+            enabled=True,
+            policy=policy,
+            ctx_threshold=ctx_threshold,
+            ctx_byte_window=ctx_byte_window,
+        )
+        tp_obj = payload.get(_TRANSCRIPT_PATH_KEY)
+        tp: Path | None = (
+            Path(tp_obj) if isinstance(tp_obj, str) and tp_obj else None
+        )
+        last_prompt = read_last_user_prompt(tp)
+        if not should_fire_p2(
+            transcript_path=tp,
+            last_user_prompt=last_prompt,
+            config=cfg,
+        ):
+            return
+        body = _run_cadence_rebuild(payload, cwd)
+        if body is None:
+            return
+        _write_cadence_resume_cache(body, session_id, policy, serr)
+        bytes_used = estimate_transcript_bytes(tp)
+        ctx_pct = bytes_used / max(1, ctx_byte_window) * 100
+        boundary_snippet = (last_prompt or "").strip().replace("\n", " ")[:40]
+        print(
+            f"aelfrice: cadence boundary @ ctx≈{ctx_pct:.0f}% "
+            f"({bytes_used}/{ctx_byte_window} bytes), "
+            f"boundary {boundary_snippet!r}.\n"
+            f"  → /clear now to compact — UPS will inject rebuilder "
+            f"synthesis on your next prompt.",
+            file=serr,
+        )
         return
-    fire_idx = raw_idx
-    if not should_fire(fire_idx, cfg):
-        return
+
+    # Unknown policy / POLICY_OFF — no-op.
+
+
+def _run_cadence_rebuild(
+    payload: dict[str, object],
+    cwd: Path,
+) -> str | None:
+    """Run the cadence rebuilder pass; return formatted body or None.
+
+    Shared by P1 and P2 fires. Returns None when:
+      * the recent-turns window is empty,
+      * the brain-graph DB is missing.
+
+    The returned body is the same string PreCompact would emit. P1
+    uses it only for the resume cache write; P2 uses it for both
+    cache + the operator-facing nudge context.
+    """
     rebuilder_cfg = load_rebuilder_config(cwd)
     recent = _read_recent_for_pre_compact(payload, rebuilder_cfg.turn_window_n)
     if not recent:
-        return
+        return None
     p = db_path()
     if str(p) != ":memory:" and not p.exists():
-        return
-    _rebuild_and_format(
+        return None
+    return _rebuild_and_format(
         recent,
         rebuilder_cfg.token_budget,
         rebuild_log_enabled=rebuilder_cfg.rebuild_log_enabled,
@@ -2655,11 +2733,65 @@ def _maybe_fire_cadence_checkpoint(
         floor_l1=rebuilder_cfg.floor_l1,
         query_strategy=rebuilder_cfg.query_strategy,
     )
-    print(
-        f"aelfrice: cadence checkpoint fired @ fire_idx={fire_idx} "
-        f"(policy={policy}, k={k})",
-        file=serr,
-    )
+
+
+def _cadence_resume_cache_path() -> Path | None:
+    """Resolve the cadence resume cache path for the active project.
+
+    Returns ``<git-common-dir>/aelfrice/cadence_resume_cache.json``.
+    Returns None when the brain-graph DB is in-memory (test runs) so
+    callers can skip the cache step cleanly.
+    """
+    from aelfrice.context_rebuilder import _rebuild_log_dir_for_db  # noqa: PLC0415
+
+    p = db_path()
+    if str(p) == ":memory:":
+        return None
+    return _rebuild_log_dir_for_db(p).parent / _CADENCE_RESUME_CACHE_FILENAME
+
+
+def _write_cadence_resume_cache(
+    body: str,
+    session_id: str,
+    policy: str,
+    serr: IO[str],
+) -> None:
+    """Persist the cadence-fired rebuilder body for UPS resume injection.
+
+    Schema (single-file overwrite, JSON):
+
+    ``{"ts": "ISO-8601 Z", "session_id": str, "policy": str, "body": str}``
+
+    The UPS hook reads this file on the first prompt of a new session;
+    a TTL check (mtime within last hour) gates injection so stale
+    snapshots don't bleed into unrelated sessions.
+
+    Fail-soft: any I/O / encoding error traces a stderr line and
+    returns. Never raises. In-memory DB (tests / replay) is a no-op.
+    """
+    try:
+        cache_path = _cadence_resume_cache_path()
+        if cache_path is None:
+            return
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "session_id": session_id,
+            "policy": policy,
+            "body": body,
+        }
+        # Atomic replace via sibling tmp file.
+        tmp_path = cache_path.with_suffix(".tmp")
+        tmp_path.write_text(
+            json.dumps(record, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        os.replace(tmp_path, cache_path)
+    except OSError as exc:
+        print(
+            f"aelfrice: cadence resume cache write failed (non-fatal): {exc}",
+            file=serr,
+        )
 
 
 def main() -> int:
