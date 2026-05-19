@@ -612,7 +612,7 @@ def estimate_transcript_bytes(transcript_path: Path | None) -> int:
     Used by P2 (ctx-threshold) as the byte-count input. Deterministic
     per #605: same on-disk file → same byte count → same fire
     decision. The byte-count is an approximation of token usage; the
-    operator-side ctx% reading from the Claude Code statusline is
+    operator-side ctx% reading from the host harness statusline is
     ground truth.
     """
     if transcript_path is None:
@@ -634,11 +634,11 @@ def read_last_user_prompt(transcript_path: Path | None) -> str | None:
     transcript JSONL, or None if not findable.
 
     Fail-soft: any I/O or parse error returns None. The transcript
-    file format is Claude Code's per-session jsonl with one JSON
+    file format is the host harness's per-session jsonl with one JSON
     object per line. Schema (best-effort): each line is a dict with
     a ``message`` sub-dict (or the fields inlined at top level)
     carrying ``role`` and ``content``. ``content`` may be a string
-    or a list of ``{type, text}`` blocks (Claude API format).
+    or a list of ``{type, text}`` blocks.
 
     Reads the tail of the file (last 64KB) to avoid loading huge
     transcripts into memory.
