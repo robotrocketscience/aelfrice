@@ -817,10 +817,23 @@ def user_prompt_submit(
         # <session-start> sub-block if needed. Fail-soft: any error in
         # detection or block-building leaves session_start_block="" so
         # the rest of the hook is unaffected.
+        # #871: also read the cadence-resume cache on first prompt of
+        # a new session — when the prior session ended after a P1 or
+        # P2 cadence fire (which wrote the cache), the new session
+        # inherits the rebuilder synthesis as a "pick up where you
+        # left off" block prepended to the session-start sub-block.
         session_start_block = ""
         try:
             if is_session_first_prompt(session_id):
                 session_start_block = _retrieve_session_start_block(serr)
+                cadence_resume_block = _maybe_read_cadence_resume(serr)
+                if cadence_resume_block:
+                    if session_start_block:
+                        session_start_block = (
+                            cadence_resume_block + "\n\n" + session_start_block
+                        )
+                    else:
+                        session_start_block = cadence_resume_block
         except Exception:
             pass
         budget = (
@@ -2590,6 +2603,83 @@ def stop(
 
 
 _CADENCE_RESUME_CACHE_FILENAME: Final[str] = "cadence_resume_cache.json"
+
+_CADENCE_RESUME_TTL_SECONDS: Final[int] = 3600
+"""How long a resume cache entry stays valid. After this, a new
+session's first UPS won't inject — the prior synthesis is considered
+stale. 1 hour matches the typical sit-and-resume gap; longer gaps
+mean the operator has likely moved on and old state would mislead."""
+
+
+def _maybe_read_cadence_resume(serr: IO[str]) -> str:
+    """Read the cadence resume cache for the active project; return its
+    wrapped body string if fresh, else "".
+
+    Triggered from :func:`user_prompt_submit` on the first prompt of a
+    new session. Returns "" when:
+
+    * No cache file exists (no prior cadence fire in this project).
+    * The cache mtime is older than :data:`_CADENCE_RESUME_TTL_SECONDS`.
+    * The cache JSON is malformed or missing the ``body`` field.
+
+    The cache is **not** deleted on read — leaving it lets a series of
+    rapid-fire sessions all resume from the same synthesis point. The
+    TTL is the only freshness gate. Fail-soft: any I/O / parse error
+    traces stderr and returns "".
+
+    The returned block is wrapped in a ``<cadence-resume>`` tag so the
+    model can see this is resume content and distinguish it from
+    locked-belief baselines.
+    """
+    try:
+        cache_path = _cadence_resume_cache_path()
+        if cache_path is None or not cache_path.exists():
+            return ""
+        try:
+            mtime = cache_path.stat().st_mtime
+        except OSError:
+            return ""
+        if (time.time() - mtime) > _CADENCE_RESUME_TTL_SECONDS:
+            return ""
+        try:
+            record_obj: Any = json.loads(
+                cache_path.read_text(encoding="utf-8"),
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            print(
+                f"aelfrice: cadence resume read failed (non-fatal): {exc}",
+                file=serr,
+            )
+            return ""
+        if not isinstance(record_obj, dict):
+            return ""
+        body_obj: Any = record_obj.get("body")
+        if not isinstance(body_obj, str) or not body_obj:
+            return ""
+        ts = record_obj.get("ts", "?")
+        prev_sid = record_obj.get("session_id", "?")
+        policy = record_obj.get("policy", "?")
+        prev_sid_short = prev_sid[:8] if isinstance(prev_sid, str) else "?"
+        ts_short = ts if isinstance(ts, str) else "?"
+        policy_short = policy if isinstance(policy, str) else "?"
+        wrapper = (
+            f"<cadence-resume from='{prev_sid_short}' "
+            f"policy='{policy_short}' ts='{ts_short}'>\n"
+            f"{body_obj}\n"
+            f"</cadence-resume>"
+        )
+        print(
+            f"aelfrice: cadence-resume injection "
+            f"(from {prev_sid_short} @ {ts_short}, policy={policy_short})",
+            file=serr,
+        )
+        return wrapper
+    except Exception as exc:  # pragma: no cover — defensive
+        print(
+            f"aelfrice: cadence-resume read unexpected error (non-fatal): {exc}",
+            file=serr,
+        )
+        return ""
 
 
 def _maybe_fire_cadence_checkpoint(
