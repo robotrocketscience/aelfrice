@@ -857,7 +857,11 @@ def user_prompt_submit(
                         f"<cadence-checkpoint>\n{ck_body}\n</cadence-checkpoint>"
                     )
         except Exception:
-            pass
+            # Fail-soft per the surrounding hook contract, but surface
+            # the trace so misconfigurations are not silently invisible
+            # — mirrors the traceback in the outer except at end of
+            # user_prompt_submit. CodeRabbit / Sourcery feedback on PR #874.
+            traceback.print_exc(file=serr)
         if cadence_checkpoint_block:
             sout.write(cadence_checkpoint_block + "\n\n")
         budget = (
