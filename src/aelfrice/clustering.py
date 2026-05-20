@@ -24,7 +24,7 @@ without a hot-path edit.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final, Iterable
+from typing import Callable, Final, Iterable
 
 from aelfrice.models import Belief, Edge
 
@@ -180,6 +180,7 @@ def pack_with_clusters(
     token_budget: int,
     cluster_diversity_target: int = DEFAULT_CLUSTER_DIVERSITY_TARGET,
     fallback_to_score: bool = True,
+    cost_fn: Callable[[Belief], int] | None = None,
 ) -> list[Belief]:
     """Diversity-aware greedy fill at fixed ``token_budget``.
 
@@ -198,7 +199,14 @@ def pack_with_clusters(
     cluster; missing ids are silently skipped (treated as "deleted
     between rank and pack", same race-handling pattern as the existing
     L2.5 pack loop).
+
+    ``cost_fn`` (#878 compose-reconciliation): per-belief token cost
+    callable. Defaults to the raw ``_belief_tokens`` estimator. Callers
+    composing with ``use_type_aware_compression`` pass a callable that
+    returns the compressed ``rendered_tokens`` so the cluster pack
+    accounts in the same currency as the outer pack loop.
     """
+    cost = cost_fn or _belief_tokens
     out: list[Belief] = []
     used_tokens = 0
     seen: set[str] = set()
@@ -216,14 +224,14 @@ def pack_with_clusters(
         rep = belief_by_id.get(rep_id)
         if rep is None:
             continue
-        cost = _belief_tokens(rep)
-        if used_tokens + cost > token_budget:
+        rep_cost = cost(rep)
+        if used_tokens + rep_cost > token_budget:
             if fallback_to_score:
                 break
             continue
         out.append(rep)
         seen.add(rep_id)
-        used_tokens += cost
+        used_tokens += rep_cost
         covered_clusters.add(cluster.cluster_id)
 
     # Stage 2: score-ranked tail. Cluster traversal in descending seed
@@ -237,11 +245,11 @@ def pack_with_clusters(
             b = belief_by_id.get(mid)
             if b is None:
                 continue
-            cost = _belief_tokens(b)
-            if used_tokens + cost > token_budget:
+            b_cost = cost(b)
+            if used_tokens + b_cost > token_budget:
                 continue
             out.append(b)
             seen.add(mid)
-            used_tokens += cost
+            used_tokens += b_cost
 
     return out
