@@ -2,8 +2,9 @@
 
 Covers flag-precedence resolution, byte-identical default-OFF behavior,
 the diversity-aware pack on graph-connected candidates, locked-belief
-pre-include, and the mutual-exclusion guard against type-aware
-compression at v2.0.0.
+pre-include, and the compose-reconciliation with type-aware compression
+(#878 — was a mutual-exclusion guard at v2.0.0, now composes via the
+cluster pack's cost_fn parameter).
 """
 from __future__ import annotations
 
@@ -229,20 +230,29 @@ def test_locked_pre_included_when_clustering_on(
     )
 
 
-def test_mutual_exclusion_with_compression_raises(
+def test_composes_with_compression(
     _no_env_override: None, _isolated_cwd: Path
 ) -> None:
-    """At v2.0.0, clustering + compression together raise ValueError —
-    the cluster pack accounts in raw token cost, composing it with the
-    compressed cost is a v2.x follow-up."""
+    """#878 compose-reconciliation: clustering + compression together
+    no longer raise. Both arms account in the same currency via the
+    cluster pack's cost_fn parameter; compressed_beliefs is populated
+    in parallel to beliefs as it would be without clustering."""
     s = _populate_clustered_store()
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        retrieve_v2(
-            s, "deploy sqlite",
-            budget=2400,
-            use_entity_index=False,
-            use_intentional_clustering=True,
-            use_type_aware_compression=True,
+    result = retrieve_v2(
+        s, "deploy sqlite",
+        budget=2400,
+        use_entity_index=False,
+        use_intentional_clustering=True,
+        use_type_aware_compression=True,
+    )
+    assert result.beliefs, "expected non-empty result under composition"
+    assert len(result.compressed_beliefs) == len(result.beliefs), (
+        "compressed_beliefs must be parallel to beliefs when "
+        "compression resolves True, regardless of clustering"
+    )
+    for b, cb in zip(result.beliefs, result.compressed_beliefs, strict=True):
+        assert cb.belief.id == b.id, (
+            "compressed_beliefs ordering must match beliefs"
         )
 
 

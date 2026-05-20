@@ -153,12 +153,13 @@ def test_compressed_beliefs_populated_when_flag_on(
     _no_env_override: None, _isolated_cwd: Path
 ) -> None:
     s = _populate_store()
-    # use_intentional_clustering=False explicit: post-#436 default-flip,
-    # the clustering flag is default-on and would mutex with compression.
+    # #878: clustering ON is now compose-compatible with compression.
+    # Leaving the default-on clustering flag in place exercises the
+    # composed path (cluster pack reads compressed rendered_tokens
+    # via cost_fn).
     result = retrieve_v2(
         s, "sqlite system",
         use_type_aware_compression=True,
-        use_intentional_clustering=False,
     )
     assert len(result.compressed_beliefs) == len(result.beliefs)
     # Same order, same belief ids.

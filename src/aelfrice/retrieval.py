@@ -165,9 +165,9 @@ TYPE_AWARE_COMPRESSION_FLAG: Final[str] = "use_type_aware_compression"
 # budget). When ON, the L1 pack loop is replaced with a diversity-
 # aware greedy fill that biases the top-K toward distinct graph-
 # connected clusters; locked + L2.5 are pre-included unchanged.
-# Mutually exclusive with use_type_aware_compression at v2.0.0 — the
-# cluster pack uses raw token cost, composing it with compressed cost
-# is a v2.x follow-up. Opt out via the kwarg,
+# Composes with use_type_aware_compression since #878 — the cluster
+# pack accepts a cost callable and reads compressed rendered_tokens
+# when the compression flag is also ON. Opt out via the kwarg,
 # AELFRICE_INTENTIONAL_CLUSTERING=0, or
 # `[retrieval] use_intentional_clustering = false`.
 INTENTIONAL_CLUSTERING_FLAG: Final[str] = "use_intentional_clustering"
@@ -2720,10 +2720,10 @@ def retrieve_with_tiers(
     When `use_intentional_clustering` resolves True (#436 v2.0), the L1
     score-ranked greedy fill is replaced with `pack_with_clusters` over
     the candidate-induced edge subgraph; locked + L2.5 are pre-included
-    unchanged, BFS expansion runs after as before. Mutually exclusive
-    with `use_type_aware_compression` at v2.0.0 — the cluster pack
-    accounts in raw tokens, composing it with compressed cost is a v2.x
-    follow-up; passing both raises ValueError.
+    unchanged, BFS expansion runs after as before. Since #878 the
+    cluster pack accepts a `cost_fn` and composes with
+    `use_type_aware_compression`: both arms account in the same
+    currency (raw token estimate or compressed `rendered_tokens`).
     """
     global _LAST_TELEMETRY
     enabled = is_entity_index_enabled(entity_index_enabled)
@@ -2762,14 +2762,12 @@ def retrieve_with_tiers(
     cluster_on = resolve_use_intentional_clustering(
         use_intentional_clustering,
     )
-    if cluster_on and compress_on:
-        raise ValueError(
-            "use_intentional_clustering and use_type_aware_compression "
-            "are mutually exclusive at v2.0.0 — the cluster pack uses "
-            "raw token cost; composing it with compressed cost is a "
-            "v2.x follow-up. See docs/design/feature-intentional-clustering.md "
-            "§ Reconciliation vs. type-aware compression (#434).",
-        )
+    # #878: compose-reconciliation. The cluster pack reads the same
+    # _cost closure the non-cluster L1 path uses; both arms account
+    # in the same currency (raw token estimate or compressed
+    # rendered_tokens depending on compress_on). The v2.0.0 mutex
+    # (clustering + compression → ValueError) is dropped now that the
+    # currencies match.
     warn_placeholder_flags()
 
     def _cost(b: Belief) -> int:
@@ -2847,6 +2845,7 @@ def retrieve_with_tiers(
             clusters, l1_by_id,
             token_budget=l1_remaining_budget,
             cluster_diversity_target=DEFAULT_CLUSTER_DIVERSITY_TARGET,
+            cost_fn=_cost,
         )
         for b in l1_packed:
             out.append(b)
