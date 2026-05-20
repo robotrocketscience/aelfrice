@@ -836,6 +836,30 @@ def user_prompt_submit(
                         session_start_block = cadence_resume_block
         except Exception:
             pass
+        # #870: in-session cadence injection. Runs the cadence dispatch
+        # at start of UPS, reads next_fire_idx from the same session
+        # ring Stop-side cadence (#869/#871) reads. On fire, the
+        # rebuilder body is wrapped in <cadence-checkpoint> and written
+        # to stdout ahead of any retrieval body — distinct from #871's
+        # <cadence-resume> first-prompt mechanism. Default-OFF,
+        # fail-soft: any error leaves cadence_checkpoint_block="" and
+        # the rest of the hook is unaffected.
+        cadence_checkpoint_block = ""
+        try:
+            payload_obj: Any = json.loads(raw) if raw.strip() else {}
+            if isinstance(payload_obj, dict):
+                payload_dict = cast(dict[str, object], payload_obj)
+                ck_body = _maybe_run_ups_cadence_checkpoint(
+                    payload_dict, session_id or "", serr,
+                )
+                if ck_body:
+                    cadence_checkpoint_block = (
+                        f"<cadence-checkpoint>\n{ck_body}\n</cadence-checkpoint>"
+                    )
+        except Exception:
+            pass
+        if cadence_checkpoint_block:
+            sout.write(cadence_checkpoint_block + "\n\n")
         budget = (
             token_budget
             if token_budget is not None
