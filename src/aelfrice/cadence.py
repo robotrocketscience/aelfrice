@@ -524,34 +524,63 @@ def resolve_cadence_ctx_byte_window(
     return load_cadence_config(start).ctx_byte_window
 
 
+def would_fire_p1(
+    *, fire_idx: int, config: CadenceConfig
+) -> tuple[bool, str]:
+    """P1 policy-agnostic predicate — every-K-turns.
+
+    Pure function of ``(fire_idx, config)``. Determinism (#605): a
+    replay with the same inputs reproduces the same ``(bool, reason)``.
+    No wall-clock, no I/O.
+
+    Unlike :func:`should_fire`, this does **not** check
+    ``config.policy``. It answers "would P1 fire here, evaluated as
+    if it were the selected policy" — the predicate used by shadow-
+    evaluation mode (#875) to log non-selected policy decisions.
+
+    Conditions for True:
+      * ``config.enabled`` is True.
+      * ``config.k`` is positive.
+      * ``fire_idx`` is positive.
+      * ``fire_idx % config.k == 0``.
+
+    Returns ``(False, reason)`` on any condition unmet, where
+    ``reason`` is a short human-readable diagnostic string suitable
+    for logging.
+    """
+    if not config.enabled:
+        return (False, "cadence disabled")
+    if config.k <= 0:
+        return (False, f"k={config.k} not positive")
+    if fire_idx <= 0:
+        return (False, f"fire_idx={fire_idx} not positive")
+    rem = fire_idx % config.k
+    if rem != 0:
+        return (False, f"fire_idx={fire_idx} mod k={config.k} = {rem}")
+    return (True, f"fire_idx={fire_idx} mod k={config.k} = 0")
+
+
 def should_fire(fire_idx: int, config: CadenceConfig) -> bool:
-    """P1 firing predicate — every-K-turns.
+    """P1 firing predicate — every-K-turns, policy-gated.
 
     Pure function of ``(fire_idx, config)``. Determinism (#605): a
     replay with the same fire_idx sequence and same config produces
     the same fire decisions. No wall-clock, no I/O.
 
     Conditions:
-      * ``config.enabled`` is True.
       * ``config.policy`` is ``p1_every_k_turns``.
-      * ``config.k`` is positive.
-      * ``fire_idx`` is positive.
-      * ``fire_idx % config.k == 0``.
+      * :func:`would_fire_p1` returns True for ``(fire_idx, config)``.
 
     Returns False on any condition unmet. Never raises.
 
     For P2 firing decisions, callers must use :func:`should_fire_p2`
-    — the inputs and predicate differ.
+    — the inputs and predicate differ. For shadow-evaluation (non-
+    selected policy logging), see :func:`would_fire_p1`.
     """
-    if not config.enabled:
-        return False
     if config.policy != POLICY_P1_EVERY_K_TURNS:
         return False
-    if config.k <= 0:
-        return False
-    if fire_idx <= 0:
-        return False
-    return fire_idx % config.k == 0
+    fired, _ = would_fire_p1(fire_idx=fire_idx, config=config)
+    return fired
 
 
 def _normalize_for_boundary(text: str) -> str:
@@ -708,13 +737,71 @@ def read_last_user_prompt(transcript_path: Path | None) -> str | None:
     return last_user
 
 
+def would_fire_p2(
+    *,
+    transcript_path: Path | None,
+    last_user_prompt: str | None,
+    config: CadenceConfig,
+) -> tuple[bool, str]:
+    """P2 policy-agnostic predicate — ctx-threshold AND phase-boundary.
+
+    Pure function of ``(transcript bytes, last_user_prompt, config)``.
+    Determinism (#605): replay with the same on-disk transcript file
+    and same prompt input reproduces the same ``(bool, reason)``. No
+    wall-clock, no random sampling.
+
+    Unlike :func:`should_fire_p2`, this does **not** check
+    ``config.policy``. Shadow-evaluation mode (#875) calls this to
+    log what P2 would have decided when another policy was selected.
+
+    Conditions for True (all must hold):
+      * ``config.enabled`` is True.
+      * ``config.ctx_byte_window`` is positive.
+      * ``config.ctx_threshold`` is in ``(0, 1]``.
+      * Transcript file size (in bytes) is >=
+        ``ctx_threshold * ctx_byte_window``.
+      * ``last_user_prompt`` passes :func:`is_phase_boundary_signal`.
+
+    Returns ``(False, reason)`` on any condition unmet, where
+    ``reason`` is a short human-readable diagnostic string.
+    """
+    if not config.enabled:
+        return (False, "cadence disabled")
+    if config.ctx_byte_window <= 0:
+        return (False, f"ctx_byte_window={config.ctx_byte_window} not positive")
+    if config.ctx_threshold <= 0 or config.ctx_threshold > 1:
+        return (
+            False,
+            f"ctx_threshold={config.ctx_threshold} out of (0, 1]",
+        )
+    bytes_used = estimate_transcript_bytes(transcript_path)
+    # Floor watermark at 1 byte so pathological configs (e.g.
+    # ctx_byte_window=1, ctx_threshold=0.5 -> int(0.5)=0) don't
+    # turn the ctx half of the predicate into a no-op gate. With
+    # the floor, a literally empty transcript (0 bytes) still
+    # cannot trip the threshold, no matter how small the window.
+    watermark = max(1, int(config.ctx_threshold * config.ctx_byte_window))
+    if bytes_used < watermark:
+        return (
+            False,
+            f"transcript bytes={bytes_used} < watermark={watermark}",
+        )
+    if not is_phase_boundary_signal(last_user_prompt):
+        return (False, "last_user_prompt not a phase-boundary signal")
+    return (
+        True,
+        f"transcript bytes={bytes_used} >= watermark={watermark}, phase-boundary",
+    )
+
+
 def should_fire_p2(
     *,
     transcript_path: Path | None,
     last_user_prompt: str | None,
     config: CadenceConfig,
 ) -> bool:
-    """P2 firing predicate — ctx-threshold AND phase-boundary.
+    """P2 firing predicate — ctx-threshold AND phase-boundary,
+    policy-gated.
 
     Pure function of ``(transcript bytes, last_user_prompt, config)``.
     Determinism (#605): replay with the same on-disk transcript file
@@ -722,33 +809,19 @@ def should_fire_p2(
     wall-clock, no random sampling.
 
     Conditions (all must hold):
-      * ``config.enabled`` is True.
       * ``config.policy`` is ``p2_ctx_threshold``.
-      * ``config.ctx_byte_window`` is positive.
-      * ``config.ctx_threshold`` is in ``(0, 1]``.
-      * Transcript file size (in bytes) is ≥
-        ``ctx_threshold × ctx_byte_window``.
-      * ``last_user_prompt`` passes :func:`is_phase_boundary_signal`.
+      * :func:`would_fire_p2` returns True for the same inputs.
 
     Returns False on any condition unmet. Never raises.
+
+    For shadow-evaluation (non-selected policy logging), see
+    :func:`would_fire_p2`.
     """
-    if not config.enabled:
-        return False
     if config.policy != POLICY_P2_CTX_THRESHOLD:
         return False
-    if config.ctx_byte_window <= 0:
-        return False
-    if config.ctx_threshold <= 0 or config.ctx_threshold > 1:
-        return False
-    bytes_used = estimate_transcript_bytes(transcript_path)
-    # Floor watermark at 1 byte so pathological configs (e.g.
-    # ctx_byte_window=1, ctx_threshold=0.5 → int(0.5)=0) don't
-    # turn the ctx half of the predicate into a no-op gate. With
-    # the floor, a literally empty transcript (0 bytes) still
-    # cannot trip the threshold, no matter how small the window.
-    watermark = max(1, int(config.ctx_threshold * config.ctx_byte_window))
-    if bytes_used < watermark:
-        return False
-    if not is_phase_boundary_signal(last_user_prompt):
-        return False
-    return True
+    fired, _ = would_fire_p2(
+        transcript_path=transcript_path,
+        last_user_prompt=last_user_prompt,
+        config=config,
+    )
+    return fired

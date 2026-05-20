@@ -84,6 +84,93 @@ def test_should_fire_k1_fires_every_turn() -> None:
         assert cadence.should_fire(fire_idx, cfg) is True
 
 
+# --- would_fire_p1 (policy-agnostic shadow predicate) ---------------------
+
+
+def test_would_fire_p1_disabled_returns_reason() -> None:
+    cfg = cadence.CadenceConfig()  # default: enabled=False
+    fired, reason = cadence.would_fire_p1(fire_idx=15, config=cfg)
+    assert fired is False
+    assert "disabled" in reason
+
+
+def test_would_fire_p1_k_zero_or_negative_returns_reason() -> None:
+    for bad_k in (0, -1, -15):
+        cfg = cadence.CadenceConfig(
+            enabled=True,
+            policy=cadence.POLICY_P1_EVERY_K_TURNS,
+            k=bad_k,
+        )
+        fired, reason = cadence.would_fire_p1(fire_idx=15, config=cfg)
+        assert fired is False
+        assert f"k={bad_k}" in reason
+
+
+def test_would_fire_p1_zero_or_negative_fire_idx_returns_reason() -> None:
+    cfg = _on_cfg(k=15)
+    for bad_idx in (0, -1, -100):
+        fired, reason = cadence.would_fire_p1(fire_idx=bad_idx, config=cfg)
+        assert fired is False
+        assert f"fire_idx={bad_idx}" in reason
+
+
+def test_would_fire_p1_not_divisible_returns_remainder_reason() -> None:
+    cfg = _on_cfg(k=15)
+    fired, reason = cadence.would_fire_p1(fire_idx=7, config=cfg)
+    assert fired is False
+    assert "fire_idx=7" in reason
+    assert "k=15" in reason
+    assert "7" in reason  # remainder
+
+
+def test_would_fire_p1_divisible_returns_true_with_reason() -> None:
+    cfg = _on_cfg(k=15)
+    for idx in (15, 30, 45, 150):
+        fired, reason = cadence.would_fire_p1(fire_idx=idx, config=cfg)
+        assert fired is True
+        assert f"fire_idx={idx}" in reason
+        assert "k=15" in reason
+
+
+def test_would_fire_p1_ignores_policy_field() -> None:
+    # The whole point of would_fire_p1 vs should_fire: shadow-mode
+    # evaluates "would P1 fire if it WERE selected", so the predicate
+    # does not gate on config.policy. Same config with three different
+    # policies; the verdict only depends on (enabled, k, fire_idx).
+    for policy in (
+        cadence.POLICY_OFF,
+        cadence.POLICY_P1_EVERY_K_TURNS,
+        cadence.POLICY_P2_CTX_THRESHOLD,
+    ):
+        cfg = cadence.CadenceConfig(enabled=True, policy=policy, k=15)
+        fired, _ = cadence.would_fire_p1(fire_idx=15, config=cfg)
+        assert fired is True, f"policy={policy!r} should not block P1 predicate"
+
+
+def test_would_fire_p1_determinism_replay() -> None:
+    # Same inputs -> same (bool, str) tuple, character-for-character.
+    cfg = _on_cfg(k=15)
+    inputs = [0, 1, 14, 15, 16, 29, 30, 31, 45]
+    first = [cadence.would_fire_p1(fire_idx=i, config=cfg) for i in inputs]
+    second = [cadence.would_fire_p1(fire_idx=i, config=cfg) for i in inputs]
+    assert first == second
+
+
+def test_should_fire_delegates_to_would_fire_p1() -> None:
+    # Behavior invariant: should_fire returns True iff would_fire_p1's
+    # bool is True AND config.policy == p1_every_k_turns.
+    cfg_p1 = _on_cfg(k=5)
+    cfg_off = cadence.CadenceConfig(
+        enabled=True, policy=cadence.POLICY_OFF, k=5,
+    )
+    for idx in range(0, 20):
+        would, _ = cadence.would_fire_p1(fire_idx=idx, config=cfg_p1)
+        assert cadence.should_fire(idx, cfg_p1) is would
+        # Same idx, policy=off -> should_fire False even when would_fire_p1 True
+        assert cadence.should_fire(idx, cfg_off) is False
+
+
+
 # --- load_cadence_config (TOML parser) ------------------------------------
 
 

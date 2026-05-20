@@ -30,6 +30,8 @@ from aelfrice.cadence import (
     resolve_cadence_ctx_threshold,
     should_fire,
     should_fire_p2,
+    would_fire_p1,
+    would_fire_p2,
 )
 
 
@@ -525,3 +527,163 @@ def test_non_dict_cadence_section_logs_to_stderr(
     assert cfg == CadenceConfig()
     captured = capfd.readouterr()
     assert "cadence" in captured.err
+
+
+# --- would_fire_p2 (policy-agnostic shadow predicate) --------------------
+
+
+def _wf_p2_cfg(
+    *,
+    enabled: bool = True,
+    threshold: float = 0.5,
+    window: int = 100,
+) -> CadenceConfig:
+    return CadenceConfig(
+        enabled=enabled,
+        policy=POLICY_P2_CTX_THRESHOLD,
+        ctx_threshold=threshold,
+        ctx_byte_window=window,
+    )
+
+
+def test_would_fire_p2_disabled_returns_reason(empty_dir: Path) -> None:
+    cfg = _wf_p2_cfg(enabled=False)
+    fired, reason = would_fire_p2(
+        transcript_path=None, last_user_prompt="ok", config=cfg
+    )
+    assert fired is False
+    assert "disabled" in reason
+
+
+def test_would_fire_p2_non_positive_window_returns_reason() -> None:
+    for bad in (0, -1, -100):
+        cfg = CadenceConfig(
+            enabled=True,
+            policy=POLICY_P2_CTX_THRESHOLD,
+            ctx_threshold=0.5,
+            ctx_byte_window=bad,
+        )
+        fired, reason = would_fire_p2(
+            transcript_path=None, last_user_prompt="ok", config=cfg
+        )
+        assert fired is False
+        assert "ctx_byte_window" in reason
+
+
+def test_would_fire_p2_out_of_range_threshold_returns_reason() -> None:
+    for bad in (0.0, -0.5, 1.5, 2.0):
+        cfg = CadenceConfig(
+            enabled=True,
+            policy=POLICY_P2_CTX_THRESHOLD,
+            ctx_threshold=bad,
+            ctx_byte_window=100,
+        )
+        fired, reason = would_fire_p2(
+            transcript_path=None, last_user_prompt="ok", config=cfg
+        )
+        assert fired is False
+        assert "ctx_threshold" in reason
+
+
+def test_would_fire_p2_below_watermark_returns_reason(empty_dir: Path) -> None:
+    cfg = _wf_p2_cfg(threshold=0.5, window=100)
+    # Write a 30-byte file, well below the 50-byte watermark.
+    fp = empty_dir / "transcript.jsonl"
+    fp.write_text("x" * 30)
+    fired, reason = would_fire_p2(
+        transcript_path=fp, last_user_prompt="ok", config=cfg
+    )
+    assert fired is False
+    assert "bytes=30" in reason
+    assert "watermark=50" in reason
+
+
+def test_would_fire_p2_above_watermark_but_no_boundary_returns_reason(
+    empty_dir: Path,
+) -> None:
+    cfg = _wf_p2_cfg(threshold=0.5, window=100)
+    fp = empty_dir / "transcript.jsonl"
+    fp.write_text("x" * 80)  # above 50-byte watermark
+    fired, reason = would_fire_p2(
+        transcript_path=fp,
+        last_user_prompt="please continue the deep architectural refactor",
+        config=cfg,
+    )
+    assert fired is False
+    assert "phase-boundary" in reason
+
+
+def test_would_fire_p2_fires_when_all_conditions_met(empty_dir: Path) -> None:
+    cfg = _wf_p2_cfg(threshold=0.5, window=100)
+    fp = empty_dir / "transcript.jsonl"
+    fp.write_text("x" * 80)  # above 50-byte watermark
+    fired, reason = would_fire_p2(
+        transcript_path=fp, last_user_prompt="ok thanks", config=cfg
+    )
+    assert fired is True
+    assert "watermark" in reason
+    assert "phase-boundary" in reason
+
+
+def test_would_fire_p2_ignores_policy_field(empty_dir: Path) -> None:
+    # As with would_fire_p1: policy-agnostic, for shadow-mode use.
+    fp = empty_dir / "transcript.jsonl"
+    fp.write_text("x" * 80)
+    for policy in (
+        cadence_POLICY_OFF := "off",
+        POLICY_P1_EVERY_K_TURNS,
+        POLICY_P2_CTX_THRESHOLD,
+    ):
+        cfg = CadenceConfig(
+            enabled=True,
+            policy=policy,
+            ctx_threshold=0.5,
+            ctx_byte_window=100,
+        )
+        fired, _ = would_fire_p2(
+            transcript_path=fp, last_user_prompt="ok", config=cfg
+        )
+        assert fired is True, f"policy={policy!r} should not block P2 predicate"
+
+
+def test_would_fire_p2_determinism_replay(empty_dir: Path) -> None:
+    cfg = _wf_p2_cfg(threshold=0.5, window=100)
+    fp = empty_dir / "transcript.jsonl"
+    fp.write_text("x" * 80)
+    prompts = [None, "ok", "ok thanks", "please continue", "done"]
+    first = [
+        would_fire_p2(
+            transcript_path=fp, last_user_prompt=pr, config=cfg
+        )
+        for pr in prompts
+    ]
+    second = [
+        would_fire_p2(
+            transcript_path=fp, last_user_prompt=pr, config=cfg
+        )
+        for pr in prompts
+    ]
+    assert first == second
+
+
+def test_should_fire_p2_delegates_to_would_fire_p2(empty_dir: Path) -> None:
+    fp = empty_dir / "transcript.jsonl"
+    fp.write_text("x" * 80)
+    cfg_p2 = _wf_p2_cfg(threshold=0.5, window=100)
+    cfg_off = CadenceConfig(
+        enabled=True,
+        policy="off",
+        ctx_threshold=0.5,
+        ctx_byte_window=100,
+    )
+    # When policy matches, should_fire_p2 mirrors would_fire_p2's bool.
+    would, _ = would_fire_p2(
+        transcript_path=fp, last_user_prompt="ok", config=cfg_p2
+    )
+    assert should_fire_p2(
+        transcript_path=fp, last_user_prompt="ok", config=cfg_p2
+    ) is would
+    # Policy off: should_fire_p2 returns False even when conditions match.
+    assert should_fire_p2(
+        transcript_path=fp, last_user_prompt="ok", config=cfg_off
+    ) is False
