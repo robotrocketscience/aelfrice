@@ -2801,6 +2801,116 @@ def _maybe_fire_cadence_checkpoint(
     # Unknown policy / POLICY_OFF — no-op.
 
 
+def _maybe_run_ups_cadence_checkpoint(
+    payload: dict[str, object],
+    session_id: str,
+    serr: IO[str],
+) -> str | None:
+    """UPS-side cadence dispatch — return body to inject or None.
+
+    Mirrors :func:`_maybe_fire_cadence_checkpoint` (Stop-side) but
+    returns the rebuilder body for in-session UPS injection via
+    ``additionalContext`` rather than only writing the resume cache.
+    Closes the loop #870 framed: the rebuilder synthesis lands inside
+    the live conversation at K-boundaries (P1) or ctx-threshold
+    boundaries (P2) instead of only on the next session start.
+
+    Counter sharing: reads ``next_fire_idx`` from the same session ring
+    Stop reads. The read happens *before* this turn's
+    :func:`_ring_append_ids`, so UPS sees the same fire_idx Stop saw
+    at end of the prior turn — the two consumers fire on the same
+    boundary by construction. The Stop-side fire still writes the
+    resume cache; UPS does not, so the cache stays single-sourced.
+
+    Fail-soft: returns None on any error. Default-OFF: returns None
+    when ``[cadence] enabled`` is unset. The caller is responsible
+    for wrapping / injecting the returned body.
+    """
+    if not session_id:
+        return None
+    # Local imports keep the UPS hot path free of cadence overhead
+    # when the feature is unused, matching Stop-side discipline.
+    from aelfrice.cadence import (  # noqa: PLC0415
+        CadenceConfig,
+        POLICY_P1_EVERY_K_TURNS,
+        POLICY_P2_CTX_THRESHOLD,
+        read_last_user_prompt,
+        resolve_cadence_ctx_byte_window,
+        resolve_cadence_ctx_threshold,
+        resolve_cadence_enabled,
+        resolve_cadence_k,
+        resolve_cadence_policy,
+        should_fire,
+        should_fire_p2,
+    )
+    from aelfrice.session_ring import read_ring_state  # noqa: PLC0415
+
+    cwd_obj = payload.get(_CWD_KEY)
+    cwd = (
+        Path(cwd_obj) if isinstance(cwd_obj, str) and cwd_obj
+        else Path.cwd()
+    )
+    if not resolve_cadence_enabled(start=cwd):
+        return None
+    policy = resolve_cadence_policy(start=cwd)
+
+    if policy == POLICY_P1_EVERY_K_TURNS:
+        k = resolve_cadence_k(start=cwd)
+        cfg = CadenceConfig(enabled=True, policy=policy, k=k)
+        state = read_ring_state(session_id)
+        raw_idx: Any = state.get("next_fire_idx") if isinstance(state, dict) else None
+        if isinstance(raw_idx, bool) or not isinstance(raw_idx, int):
+            return None
+        fire_idx = raw_idx
+        if not should_fire(fire_idx, cfg):
+            return None
+        body = _run_cadence_rebuild(payload, cwd)
+        if body is None:
+            return None
+        print(
+            f"aelfrice: ups cadence checkpoint fired @ fire_idx={fire_idx} "
+            f"(policy={policy}, k={k})",
+            file=serr,
+        )
+        return body
+
+    if policy == POLICY_P2_CTX_THRESHOLD:
+        ctx_threshold = resolve_cadence_ctx_threshold(start=cwd)
+        ctx_byte_window = resolve_cadence_ctx_byte_window(start=cwd)
+        cfg = CadenceConfig(
+            enabled=True,
+            policy=policy,
+            ctx_threshold=ctx_threshold,
+            ctx_byte_window=ctx_byte_window,
+        )
+        tp_obj = payload.get(_TRANSCRIPT_PATH_KEY)
+        tp: Path | None
+        if isinstance(tp_obj, str) and tp_obj:
+            tp = Path(tp_obj)
+        elif isinstance(tp_obj, os.PathLike):
+            tp = Path(tp_obj)
+        else:
+            tp = None
+        last_prompt = read_last_user_prompt(tp)
+        if not should_fire_p2(
+            transcript_path=tp,
+            last_user_prompt=last_prompt,
+            config=cfg,
+        ):
+            return None
+        body = _run_cadence_rebuild(payload, cwd)
+        if body is None:
+            return None
+        print(
+            f"aelfrice: ups cadence checkpoint fired (policy={policy})",
+            file=serr,
+        )
+        return body
+
+    # Unknown policy / POLICY_OFF — no-op.
+    return None
+
+
 def _run_cadence_rebuild(
     payload: dict[str, object],
     cwd: Path,
