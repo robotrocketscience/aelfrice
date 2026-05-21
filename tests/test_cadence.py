@@ -426,3 +426,68 @@ def test_resolve_policy_env_unknown_falls_through(
     assert cadence.resolve_cadence_policy(start=tmp_path) == (
         cadence.POLICY_P1_EVERY_K_TURNS
     )
+
+# --- resolve_cadence_shadow_mode_enabled (#875) ---------------------------
+
+
+def test_resolve_shadow_mode_default_false(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.delenv("AELFRICE_CADENCE_SHADOW_MODE_ENABLED", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert cadence.resolve_cadence_shadow_mode_enabled() is False
+
+
+def test_resolve_shadow_mode_env_wins_over_toml(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _write_toml(tmp_path, "[cadence]\nshadow_mode_enabled = false\n")
+    monkeypatch.setenv("AELFRICE_CADENCE_SHADOW_MODE_ENABLED", "true")
+    monkeypatch.chdir(tmp_path)
+    assert cadence.resolve_cadence_shadow_mode_enabled() is True
+
+
+def test_resolve_shadow_mode_kwarg_wins_over_toml(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _write_toml(tmp_path, "[cadence]\nshadow_mode_enabled = false\n")
+    monkeypatch.delenv("AELFRICE_CADENCE_SHADOW_MODE_ENABLED", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert cadence.resolve_cadence_shadow_mode_enabled(explicit=True) is True
+
+
+def test_resolve_shadow_mode_env_beats_kwarg(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("AELFRICE_CADENCE_SHADOW_MODE_ENABLED", "false")
+    monkeypatch.chdir(tmp_path)
+    assert cadence.resolve_cadence_shadow_mode_enabled(explicit=True) is False
+
+
+def test_resolve_shadow_mode_unparseable_env_falls_through(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _write_toml(tmp_path, "[cadence]\nshadow_mode_enabled = true\n")
+    monkeypatch.setenv("AELFRICE_CADENCE_SHADOW_MODE_ENABLED", "garbage-value")
+    monkeypatch.chdir(tmp_path)
+    # Env is unparseable -> falls through to TOML, which says true.
+    assert cadence.resolve_cadence_shadow_mode_enabled() is True
+
+
+def test_load_config_shadow_mode_true(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _write_toml(tmp_path, "[cadence]\nshadow_mode_enabled = true\n")
+    monkeypatch.chdir(tmp_path)
+    cfg = cadence.load_cadence_config()
+    assert cfg.shadow_mode_enabled is True
+
+
+def test_load_config_shadow_mode_wrong_type_ignored(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_toml(tmp_path, '[cadence]\nshadow_mode_enabled = "yes"\n')
+    monkeypatch.chdir(tmp_path)
+    cfg = cadence.load_cadence_config()
+    assert cfg.shadow_mode_enabled is False  # falls back to default
+    captured = capsys.readouterr()
+    assert "shadow_mode_enabled" in captured.err

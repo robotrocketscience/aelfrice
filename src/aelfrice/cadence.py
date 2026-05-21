@@ -61,12 +61,14 @@ POLICY_KEY: Final[str] = "policy"
 K_KEY: Final[str] = "k"
 CTX_THRESHOLD_KEY: Final[str] = "ctx_threshold"
 CTX_BYTE_WINDOW_KEY: Final[str] = "ctx_byte_window"
+SHADOW_MODE_ENABLED_KEY: Final[str] = "shadow_mode_enabled"
 
 ENV_CADENCE_ENABLED: Final[str] = "AELFRICE_CADENCE_ENABLED"
 ENV_CADENCE_POLICY: Final[str] = "AELFRICE_CADENCE_POLICY"
 ENV_CADENCE_K: Final[str] = "AELFRICE_CADENCE_K"
 ENV_CADENCE_CTX_THRESHOLD: Final[str] = "AELFRICE_CADENCE_CTX_THRESHOLD"
 ENV_CADENCE_CTX_BYTE_WINDOW: Final[str] = "AELFRICE_CADENCE_CTX_BYTE_WINDOW"
+ENV_CADENCE_SHADOW_MODE_ENABLED: Final[str] = "AELFRICE_CADENCE_SHADOW_MODE_ENABLED"
 
 POLICY_OFF: Final[str] = "off"
 POLICY_P1_EVERY_K_TURNS: Final[str] = "p1_every_k_turns"
@@ -94,6 +96,16 @@ DEFAULT_CTX_BYTE_WINDOW: Final[int] = 600_000
 average ~3.5 bytes/token, code-heavy ~4-5; the operator-side ctx%
 reading is ground truth and this default gets re-tuned after
 empirical use. Configurable per-project via TOML."""
+
+DEFAULT_SHADOW_MODE_ENABLED: Final[bool] = False
+"""Shadow-evaluation mode (#875): when True, every Stop-hook tick
+evaluates would_fire_* for every implemented policy and logs a row
+to .git/aelfrice/cadence_shadow/<session_id>.jsonl. The selected
+policy still drives live firing; the log is for offline scoring of
+non-selected policy decisions on identical workload. Ships default-
+OFF: most operators do not need the comparison data, and the per-
+tick predicate evaluations + JSONL write are a non-trivial extra
+I/O cost."""
 
 _ENV_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 _ENV_FALSY: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
@@ -163,9 +175,10 @@ ack token, so treating it as a boundary would over-fire."""
 class CadenceConfig:
     """Resolved `[cadence]` section of `.aelfrice.toml`.
 
-    Five fields. ``enabled`` gates the whole feature: when False, no
+    Six fields. ``enabled`` gates the whole feature: when False, no
     cadence fire ever happens regardless of policy. ``policy`` selects
-    the firing pattern.
+    the firing pattern. ``shadow_mode_enabled`` is an independent
+    opt-in for #875 shadow-evaluation logging.
 
     P1-specific: ``k`` parameterises the every-K-turns interval.
     P2-specific: ``ctx_threshold`` (fraction of window) and
@@ -173,14 +186,15 @@ class CadenceConfig:
     ctx-threshold predicate. The phase-boundary half of P2 is not
     configurable here — its allowlist lives at module scope.
 
-    Defaults are off / off / 15 / 0.50 / 600000. Each field has a
-    default that makes a half-configured TOML well-defined.
+    Defaults are off / off / 15 / 0.50 / 600000 / off. Each field
+    has a default that makes a half-configured TOML well-defined.
     """
     enabled: bool = DEFAULT_ENABLED
     policy: str = DEFAULT_POLICY
     k: int = DEFAULT_K
     ctx_threshold: float = DEFAULT_CTX_THRESHOLD
     ctx_byte_window: int = DEFAULT_CTX_BYTE_WINDOW
+    shadow_mode_enabled: bool = DEFAULT_SHADOW_MODE_ENABLED
 
 
 def _env_bool(name: str) -> bool | None:
@@ -296,12 +310,17 @@ def load_cadence_config(start: Path | None = None) -> CadenceConfig:
                 section, CTX_BYTE_WINDOW_KEY, DEFAULT_CTX_BYTE_WINDOW,
                 candidate, serr,
             )
+            shadow_mode_enabled = _read_bool(
+                section, SHADOW_MODE_ENABLED_KEY,
+                DEFAULT_SHADOW_MODE_ENABLED, candidate, serr,
+            )
             return CadenceConfig(
                 enabled=enabled,
                 policy=policy,
                 k=k,
                 ctx_threshold=ctx_threshold,
                 ctx_byte_window=ctx_byte_window,
+                shadow_mode_enabled=shadow_mode_enabled,
             )
         if current.parent == current:
             break
@@ -522,6 +541,37 @@ def resolve_cadence_ctx_byte_window(
     if explicit is not None and explicit > 0:
         return explicit
     return load_cadence_config(start).ctx_byte_window
+
+
+def resolve_cadence_shadow_mode_enabled(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the cadence shadow-mode opt-in flag (#875).
+
+    Precedence (first decisive wins):
+      1. ``AELFRICE_CADENCE_SHADOW_MODE_ENABLED`` env var.
+      2. Explicit ``explicit`` kwarg from the caller.
+      3. ``[cadence] shadow_mode_enabled`` in ``.aelfrice.toml``.
+      4. Default: ``False`` — shadow logging is opt-in.
+
+    When True, the Stop-hook computes :func:`would_fire_p1` /
+    :func:`would_fire_p2` for every implemented policy on each tick
+    and writes one row to ``.git/aelfrice/cadence_shadow/<sid>.jsonl``.
+    Selected policy still drives live firing; non-selected decisions
+    are log-only. Designed to unblock the P1 vs P2 vs (eventual) P3
+    comparison that the #749 campaign was opened to produce, without
+    requiring longitudinal flip-and-rebake with workload-drift
+    confounds.
+    """
+    env = _env_bool(ENV_CADENCE_SHADOW_MODE_ENABLED)
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    return load_cadence_config(start).shadow_mode_enabled
+
 
 
 def would_fire_p1(
