@@ -518,14 +518,15 @@ def test_rebuild_v14_pack_size_matches_compression_flag(tmp_path: Path) -> None:
     )
 
 
-def test_rebuild_v14_compression_off_byte_identical_default(
+def test_rebuild_v14_compression_on_byte_identical_default(
     tmp_path: Path,
 ) -> None:
-    """#798: default-OFF leaves the byte-identical contract intact.
+    """#769: post-flip the byte-identity invariant is default == explicit-ON.
 
     `rebuild_v14(...)` with no kwarg and no env override must produce the
-    same block as `rebuild_v14(..., use_type_aware_compression=False)` —
-    the #139 / #288 regression contract.
+    same block as `rebuild_v14(..., use_type_aware_compression=True)`.
+    Supersedes the prior OFF-byte-identity invariant (#798 / #139 / #288)
+    which held while default-OFF; same shape, only the explicit arm flips.
     """
     import os
 
@@ -544,11 +545,11 @@ def test_rebuild_v14_compression_off_byte_identical_default(
     prior_env = os.environ.pop("AELFRICE_TYPE_AWARE_COMPRESSION", None)
     try:
         default_block = rebuild_v14(turns, store, token_budget=120)
-        off_block = rebuild_v14(
-            turns, store, token_budget=120, use_type_aware_compression=False,
+        on_block = rebuild_v14(
+            turns, store, token_budget=120, use_type_aware_compression=True,
         )
     finally:
         store.close()
         if prior_env is not None:
             os.environ["AELFRICE_TYPE_AWARE_COMPRESSION"] = prior_env
-    assert default_block == off_block
+    assert default_block == on_block
