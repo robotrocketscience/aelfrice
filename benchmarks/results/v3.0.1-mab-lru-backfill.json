@@ -1,0 +1,51 @@
+{
+  "_calibration_notes": "Back-fill measurement of MAB Long_Range_Understanding (171q) — one of the TBDs noted in v3.0.1.json _calibration_notes. Measured 2026-05-21 against current main HEAD (e5e5c20c, post-PR #887/#888/#893/#896, none of which changed retrieve_v2 ranking behaviour vs v3.0.1 tag commit 0e91fd1d). Methodology: full retrieve-then-reader pipeline. Step 1 — `uv run python benchmarks/mab_adapter.py --split Long_Range_Understanding --retrieve-only` produced 171 (question, context) pairs across 110 source rows; budget=2000 per retrieve call, retrieve_v2 via the v1.0.x lab-compat shim with use_bfs=True. Step 2 — six in-process LLM helpers dispatched in parallel (one per chunk_<N>.json slice of ~29 questions), each writing predictions_<N>.json. Locked rule honored: bench LLM calls go through in-process helpers, never via a direct SDK / API-key path. Step 3 — score via mab_adapter.score_multi_answer (substring_exact_match + token-level F1) joined on (row_idx, id). All 171 items had non-empty retrieval context (median 7930 chars, max 7997). Source mix: infbench_sum_eng_shots2 (summary task, ~13 books) plus detective_qa (multiple-choice mystery comprehension across 7 stories). Single-run capture; no variance band. Bench fixtures downloaded fresh per run. Not pinned by checksum.",
+  "aelfrice_version": "3.0.1",
+  "captured_at_utc": "2026-05-21T20:31:00Z",
+  "git_commit": "e5e5c20cbc8e66caf4a269778c2ebf8925be1e03",
+  "harness_version": "1",
+  "headline_cut": {
+    "mab": [
+      {
+        "args": ["--split", "Long_Range_Understanding"],
+        "sub_key": "long_range_understanding"
+      }
+    ]
+  },
+  "label": "v3.0.1 MAB LRU back-fill",
+  "metric_overrides": {},
+  "results": {
+    "mab": {
+      "long_range_understanding": {
+        "_elapsed_sec": null,
+        "_status": "ok",
+        "output": {
+          "metric": "substring_exact_match",
+          "score_pct": 23.4,
+          "correct": 40,
+          "total": 171,
+          "f1_pct": 32.0,
+          "exact_match_pct": 16.4,
+          "n_runs": 1,
+          "variance_probed": false,
+          "by_source": {
+            "detective_qa": {
+              "n": 71,
+              "exact_match_pct": 39.4,
+              "substring_exact_match_pct": 56.3,
+              "f1_pct": 43.1
+            },
+            "infbench_sum_eng_shots2": {
+              "n": 100,
+              "exact_match_pct": 0.0,
+              "substring_exact_match_pct": 0.0,
+              "f1_pct": 24.1
+            }
+          },
+          "source_breakdown_note": "Mixed-source split. detective_qa (71 items) is multiple-choice mystery-novel reading comprehension; short letter+option answers favour SEM when the correct option text matches retrieval. infbench_sum_eng_shots2 (100 items) is multi-paragraph book-summary generation; long-form prose answers never match SEM substring rules but contribute to F1 via token overlap. The aggregate 23.4% SEM is dominated by detective_qa (56.3% SEM × 71/171 = 23.4 pp). The 32.0% F1 is closer to the summary task's contribution (24.1% × 100/171 + 43.1% × 71/171 ≈ 32.0)."
+        }
+      }
+    }
+  },
+  "schema_version": "1.0"
+}
