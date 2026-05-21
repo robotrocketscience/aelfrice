@@ -25,7 +25,7 @@ import math
 
 import pytest
 
-from aelfrice.scoring import partial_bayesian_score, posterior_mean
+from aelfrice.scoring import partial_bayesian_score, posterior_mean, uncertainty_score
 
 
 def beta_entropy(alpha: float, beta: float) -> float:
@@ -151,11 +151,38 @@ def test_beta_entropy_loc_under_50() -> None:
     # pending that port — see test_uncertainty_score_port placeholder.
 
 
-@pytest.mark.skip(reason="awaits #195 implementation under ratified option")
 def test_uncertainty_score_port() -> None:
-    """Once #195 lands, import scoring.uncertainty_score and assert
-    it matches beta_entropy() values to within a documented tolerance.
+    """`scoring.uncertainty_score` (#195) must match this file's
+    `beta_entropy()` reference implementation to within float tolerance
+    across the substrate-memo's representative (α, β) shapes.
+
+    The reference `beta_entropy()` is the memo's stdlib-only ~15-LOC
+    formulation; the ported `scoring.uncertainty_score` is the production
+    implementation. Both compute Beta(α, β) differential entropy via
+    `math.lgamma` + a truncated digamma asymptotic series. They use
+    different truncation depths (`scoring._digamma` keeps the x⁻⁶ term;
+    the reference here stops at x⁻⁴), so agreement is empirical at the
+    truncation-error floor rather than bit-identical.
     """
+    cases: list[tuple[float, float]] = [
+        (1.0, 1.0),    # uniform
+        (2.0, 2.0),    # unimodal-symmetric
+        (3.0, 5.0),    # unimodal-skewed
+        (10.0, 10.0),  # concentrated
+        (50.0, 5.0),   # heavy α
+        (1.5, 4.5),    # fractional
+    ]
+    # Tolerance covers the difference between a 3-term and a 4-term
+    # truncation of the digamma asymptotic series, accumulated through
+    # the entropy formula. Tight enough to catch sign flips / formula
+    # errors but loose enough to accommodate truncation-depth variation.
+    for alpha, beta in cases:
+        ref = beta_entropy(alpha, beta)
+        port = uncertainty_score(alpha, beta)
+        assert port == pytest.approx(ref, rel=1e-5, abs=1e-9), (
+            f"uncertainty_score({alpha}, {beta}) = {port!r} vs "
+            f"beta_entropy = {ref!r}"
+        )
 
 
 # --- Option A claim: vector → scalar projection compatibility ----------
