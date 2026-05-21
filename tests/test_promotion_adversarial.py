@@ -92,7 +92,8 @@ def _build_param_list(category: str) -> list:
 
 @pytest.mark.skipif(
     not _surface_b_available(),
-    reason="Surface B (find_phantom_lock_matches) not yet on main — gated on #616 merge",
+    reason="Surface B (find_phantom_lock_matches) not importable — shipped via #616 "
+           "but the predicate stays defensive for back-revision benches against pre-#616 trees",
 )
 class TestPromotionAdversarial:
     """Adversarial bench fixture for Surface B."""
