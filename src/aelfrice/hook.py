@@ -1919,6 +1919,46 @@ def _resolve_branch(cwd: Path | None = None) -> tuple[str | None, str | None]:
     return (branch, upstream)
 
 
+def _resolve_recent_commits(
+    cwd: Path | None, limit: int,
+) -> list[tuple[str, str]]:
+    """Return [(short_sha, subject), ...] for commits on this branch.
+
+    Newest first. When a `main` ref resolves and HEAD has commits ahead
+    of it, returns up to `limit` commits between merge-base(HEAD, main)
+    and HEAD. Otherwise — main missing, HEAD is main, branchpoint
+    unresolvable — falls back to the last `limit` commits reachable
+    from HEAD.
+
+    Returns [] for non-git cwds, empty repos, or any subprocess failure.
+    """
+    if limit <= 0:
+        return []
+    branchpoint = _git_text(["merge-base", "HEAD", "main"], cwd)
+    if branchpoint is not None:
+        ahead = _git_text(
+            ["log", "-n", str(limit), "--format=%h %s",
+             f"{branchpoint}..HEAD"],
+            cwd,
+        )
+        if ahead:
+            return [_parse_commit_line(ln) for ln in ahead.splitlines()]
+    fallback = _git_text(
+        ["log", "-n", str(limit), "--format=%h %s", "HEAD"], cwd,
+    )
+    if fallback is None:
+        return []
+    return [_parse_commit_line(ln) for ln in fallback.splitlines()]
+
+
+def _parse_commit_line(line: str) -> tuple[str, str]:
+    """Split a `%h %s` git-log line into (sha, subject)."""
+    parts = line.split(" ", 1)
+    if len(parts) == 1:
+        return (parts[0], "")
+    return (parts[0], parts[1])
+
+
 # ---------------------------------------------------------------------------
 # Session-start sub-block builder (#578)
 # ---------------------------------------------------------------------------
