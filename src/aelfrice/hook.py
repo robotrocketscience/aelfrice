@@ -1959,6 +1959,41 @@ def _parse_commit_line(line: str) -> tuple[str, str]:
     return (parts[0], parts[1])
 
 
+# Match either `#42` (hash style) or `issue-42` / `issues/42` (slug style).
+# Anchored to word boundaries on the trailing digits to avoid sweeping up
+# trailing SHA-ish substrings.
+_ISSUE_REF_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?:#|issues?[/-])(\d+)\b",
+)
+
+# Cap the rendered list — a long-running branch can accumulate many
+# refs; the block is an orientation aid, not a full audit log.
+_MAX_LINKED_ISSUES: Final[int] = 16
+
+
+def _extract_linked_issues(
+    branch: str | None, commit_subjects: list[str],
+) -> list[str]:
+    """Return sorted unique `#N` refs from branch name + commit subjects.
+
+    Numerical sort ascending so output is stable regardless of input
+    order. Capped at `_MAX_LINKED_ISSUES`. Pure function; no IO.
+    """
+    found: set[int] = set()
+    haystacks: list[str] = []
+    if branch:
+        haystacks.append(branch)
+    haystacks.extend(commit_subjects)
+    for text in haystacks:
+        for match in _ISSUE_REF_RE.finditer(text):
+            try:
+                found.add(int(match.group(1)))
+            except ValueError:
+                continue
+    ordered = sorted(found)[:_MAX_LINKED_ISSUES]
+    return [f"#{n}" for n in ordered]
+
+
 # ---------------------------------------------------------------------------
 # Session-start sub-block builder (#578)
 # ---------------------------------------------------------------------------
