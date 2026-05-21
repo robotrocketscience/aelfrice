@@ -241,6 +241,12 @@ HIDDEN_SUBCOMMANDS = frozenset({
     # tooling surface for building bench-gate corpora, not a workflow
     # verb.
     "label",
+    # `cadence-score` (#875) reports the cadence shadow-evaluation
+    # agreement matrix + per-policy fire-rate over the on-disk
+    # shadow log. Hidden — research / R&D tooling for the #749
+    # campaign, not a daily workflow verb. May graduate to a slash
+    # command if the surface stabilises.
+    "cadence-score",
 })
 
 

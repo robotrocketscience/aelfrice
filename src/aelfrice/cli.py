@@ -5051,6 +5051,47 @@ def _cmd_scan_derivation(args: argparse.Namespace, out: object) -> int:
     return 1 if any_matched else 0
 
 
+def _cmd_cadence_score(args: argparse.Namespace, out: object) -> int:
+    """Score the cadence shadow log (#875).
+
+    Reads ``<project>/.git/aelfrice/cadence_shadow/*.jsonl`` and emits
+    aggregate per-policy fire-rate + 2x2 P1 vs P2 agreement matrix.
+    Defaults to a human-readable report; ``--json`` emits a single
+    JSON object on stdout. ``--session`` filters to one session_id.
+    ``--project`` overrides the project root (default: cwd).
+
+    Exit codes:
+      0  report emitted (even on zero rows)
+      2  project path is not a directory
+    """
+    from pathlib import Path as _Path
+
+    from aelfrice.cadence_score import (
+        compute_summary,
+        format_report,
+        iter_shadow_rows,
+        resolve_shadow_dir,
+    )
+
+    project_raw: str | None = getattr(args, "project", None)
+    project = _Path(project_raw) if project_raw else _Path.cwd()
+    if not project.is_dir():
+        print(
+            f"aelf cadence-score: project path not a directory: {project}",
+            file=sys.stderr,
+        )
+        return 2
+
+    shadow_dir = resolve_shadow_dir(project)
+    session_filter: str | None = getattr(args, "session", None) or None
+    rows = iter_shadow_rows(shadow_dir)
+    summary = compute_summary(rows, session_filter=session_filter)
+    as_json = bool(getattr(args, "json", False))
+    report = format_report(summary, as_json=as_json)
+    print(report, end="", file=out)  # type: ignore[arg-type]
+    return 0
+
+
 def _known_cli_subcommands() -> frozenset[str]:
     """Snapshot of the subcommands the running `aelf` parser knows.
 
@@ -6848,6 +6889,29 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_scan_deriv.set_defaults(func=_cmd_scan_derivation)
+
+    # #875: cadence shadow-evaluation scoring. Hidden — research / R&D
+    # tooling for #749 campaign, not a daily workflow verb.
+    p_cadence_score = sub.add_parser("cadence-score", help=argparse.SUPPRESS)
+    p_cadence_score.add_argument(
+        "--project",
+        default=None,
+        metavar="PATH",
+        help="project root (default: current directory)",
+    )
+    p_cadence_score.add_argument(
+        "--session",
+        default=None,
+        metavar="SESSION_ID",
+        help="filter to one session_id (default: aggregate all sessions)",
+    )
+    p_cadence_score.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="emit a single JSON object instead of the human-readable report",
+    )
+    p_cadence_score.set_defaults(func=_cmd_cadence_score)
 
     return parser
 

@@ -200,3 +200,116 @@ def test_format_report_json_roundtrips() -> None:
 def test_resolve_shadow_dir_layout() -> None:
     p = resolve_shadow_dir(Path("/proj"))
     assert p == Path("/proj/.git/aelfrice/cadence_shadow")
+
+
+# --- CLI surface ---------------------------------------------------------
+
+
+def test_cli_cadence_score_emits_report(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`aelf cadence-score --project PATH` reads the project's shadow log."""
+    import io as _io
+    from aelfrice import cli
+
+    sd = tmp_path / ".git" / "aelfrice" / CADENCE_SHADOW_DIRNAME
+    sd.mkdir(parents=True)
+    (sd / "s1.jsonl").write_text(
+        json.dumps({
+            "ts": "2026-05-20T00:00:00Z",
+            "session_id": "s1",
+            "selected": POLICY_P2_CTX_THRESHOLD,
+            "fired": True,
+            "shadow": {
+                POLICY_P1_EVERY_K_TURNS: {"would_fire": False, "reason": "p1r"},
+                POLICY_P2_CTX_THRESHOLD: {"would_fire": True, "reason": "p2r"},
+            },
+        }) + "\n",
+    )
+    out = _io.StringIO()
+    rc = cli.main(
+        ["cadence-score", "--project", str(tmp_path)], out=out,
+    )
+    assert rc == 0
+    text = out.getvalue()
+    assert "total rows:    1" in text
+    assert "p2_ctx_threshold" in text
+    assert "agreement matrix" in text
+
+
+def test_cli_cadence_score_json_emits_object(tmp_path: Path) -> None:
+    import io as _io
+    from aelfrice import cli
+
+    sd = tmp_path / ".git" / "aelfrice" / CADENCE_SHADOW_DIRNAME
+    sd.mkdir(parents=True)
+    (sd / "s.jsonl").write_text(json.dumps({
+        "ts": "2026-05-20T00:00:00Z",
+        "session_id": "s",
+        "selected": POLICY_OFF,
+        "fired": False,
+        "shadow": {
+            POLICY_P1_EVERY_K_TURNS: {"would_fire": True, "reason": "x"},
+            POLICY_P2_CTX_THRESHOLD: {"would_fire": False, "reason": "y"},
+        },
+    }) + "\n")
+    out = _io.StringIO()
+    rc = cli.main(
+        ["cadence-score", "--project", str(tmp_path), "--json"], out=out,
+    )
+    assert rc == 0
+    parsed = json.loads(out.getvalue())
+    assert parsed["total_rows"] == 1
+    assert parsed["per_policy_fire_count"][POLICY_P1_EVERY_K_TURNS] == 1
+
+
+def test_cli_cadence_score_session_filter(tmp_path: Path) -> None:
+    import io as _io
+    from aelfrice import cli
+
+    sd = tmp_path / ".git" / "aelfrice" / CADENCE_SHADOW_DIRNAME
+    sd.mkdir(parents=True)
+    rows = []
+    for sid, p1 in (("alpha", True), ("beta", False), ("alpha", True)):
+        rows.append(json.dumps({
+            "ts": "2026-05-20T00:00:00Z",
+            "session_id": sid,
+            "selected": POLICY_OFF,
+            "fired": False,
+            "shadow": {
+                POLICY_P1_EVERY_K_TURNS: {"would_fire": p1, "reason": "x"},
+                POLICY_P2_CTX_THRESHOLD: {"would_fire": False, "reason": "y"},
+            },
+        }))
+    (sd / "log.jsonl").write_text("\n".join(rows) + "\n")
+
+    out = _io.StringIO()
+    rc = cli.main([
+        "cadence-score", "--project", str(tmp_path),
+        "--session", "alpha", "--json",
+    ], out=out)
+    assert rc == 0
+    parsed = json.loads(out.getvalue())
+    assert parsed["total_rows"] == 2
+    assert parsed["per_policy_fire_count"][POLICY_P1_EVERY_K_TURNS] == 2
+
+
+def test_cli_cadence_score_missing_project_returns_2(tmp_path: Path) -> None:
+    import io as _io
+    from aelfrice import cli
+    out = _io.StringIO()
+    rc = cli.main([
+        "cadence-score", "--project", str(tmp_path / "does-not-exist"),
+    ], out=out)
+    assert rc == 2
+
+
+def test_cli_cadence_score_empty_dir_emits_zero_report(tmp_path: Path) -> None:
+    """Project with no shadow log -> exit 0, all zeros."""
+    import io as _io
+    from aelfrice import cli
+    out = _io.StringIO()
+    rc = cli.main([
+        "cadence-score", "--project", str(tmp_path), "--json",
+    ], out=out)
+    assert rc == 0
+    parsed = json.loads(out.getvalue())
+    assert parsed["total_rows"] == 0
