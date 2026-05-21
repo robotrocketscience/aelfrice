@@ -142,6 +142,12 @@ _ESCAPE_TAGS: Final[tuple[str, ...]] = (
     "<aelfrice-memory>", "</aelfrice-memory>",
     "<aelfrice-baseline>", "</aelfrice-baseline>",
     "<session-start>", "</session-start>",
+    "<recent-work>", "</recent-work>",
+    "<branch>", "</branch>",
+    "<upstream>", "</upstream>",
+    "<commits>", "</commits>",
+    "<commit", "</commit>",
+    "<linked-issues>", "</linked-issues>",
     "<belief", "</belief>",
 )
 
@@ -1992,6 +1998,49 @@ def _extract_linked_issues(
                 continue
     ordered = sorted(found)[:_MAX_LINKED_ISSUES]
     return [f"#{n}" for n in ordered]
+
+
+def _build_recent_work_subblock(
+    cwd: Path | None = None,
+    commit_limit: int = DEFAULT_RECENT_WORK_COMMIT_LIMIT,
+) -> str:
+    """Render the <recent-work> sub-block, or "" when nothing to inject.
+
+    The block surfaces transient, per-session state — branch, upstream,
+    last N commits on this branch, linked issue refs — distinct from
+    the locked-belief pool. Built from filesystem-state-only inputs
+    (git plumbing under the cwd) to keep determinism per #605.
+
+    Returns "" on: detached HEAD, non-git cwd, or any subprocess failure.
+    Fail-soft: callers treat "" as no-op.
+    """
+    branch, upstream = _resolve_branch(cwd)
+    if branch is None:
+        return ""
+    commits = _resolve_recent_commits(cwd, commit_limit)
+    subjects = [s for _, s in commits]
+    linked = _extract_linked_issues(branch, subjects)
+
+    lines: list[str] = [RECENT_WORK_OPEN_TAG]
+    lines.append(f"<branch>{_escape_for_hook_block(branch)}</branch>")
+    if upstream:
+        lines.append(
+            f"<upstream>{_escape_for_hook_block(upstream)}</upstream>",
+        )
+    if commits:
+        lines.append("<commits>")
+        for sha, subject in commits:
+            lines.append(
+                f'<commit sha="{_escape_for_hook_block(sha)}">'
+                f"{_escape_for_hook_block(subject)}</commit>",
+            )
+        lines.append("</commits>")
+    if linked:
+        lines.append(
+            f"<linked-issues>{' '.join(linked)}</linked-issues>",
+        )
+    lines.append(RECENT_WORK_CLOSE_TAG)
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
