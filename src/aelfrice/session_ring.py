@@ -435,11 +435,13 @@ def update_bytes_at_last_fire(
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
             except OSError:
+                # Best-effort cleanup; lock_fd may already be closed.
                 pass
     finally:
         try:
             os.close(lock_fd)
         except OSError:
+            # Best-effort cleanup; fd may already be closed.
             pass
 
 
@@ -509,11 +511,13 @@ def push_classification(
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
             except OSError:
+                # Best-effort cleanup; lock_fd may already be closed.
                 pass
     finally:
         try:
             os.close(lock_fd)
         except OSError:
+            # Best-effort cleanup; fd may already be closed.
             pass
 
 
