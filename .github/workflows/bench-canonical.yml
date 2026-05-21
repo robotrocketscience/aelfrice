@@ -57,7 +57,7 @@ jobs:
           cache-dependency-glob: "uv.lock"
 
       - name: Install dev group
-        run: uv sync --frozen --group dev --extra archive
+        run: uv sync --frozen --group dev --extra archive --extra benchmarks
 
       - name: Bootstrap bench-canonical-results worktree
         run: |
