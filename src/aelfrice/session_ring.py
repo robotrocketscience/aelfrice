@@ -171,6 +171,7 @@ def _normalize_for_session(
             "next_fire_idx": 0,
             "evicted_total": 0,
             "bytes_at_last_fire": 0,
+            "fire_idx_at_last_fire": 0,
             "classifications": [],
         }
     ring = data.get("ring")
@@ -182,7 +183,9 @@ def _normalize_for_session(
     evicted = data.get("evicted_total")
     if not isinstance(evicted, int) or evicted < 0:
         evicted = 0
-    # P3-velocity state — non-negative int; default 0 for pre-#876 rings
+    # P3-velocity state — non-negative ints; default 0 for pre-#876 rings.
+    # fire_idx_at_last_fire pairs with bytes_at_last_fire so the dispatcher
+    # can compute turns_since_last_fire = next_fire_idx - fire_idx_at_last_fire.
     bytes_at_last_fire = data.get("bytes_at_last_fire")
     if (
         not isinstance(bytes_at_last_fire, int)
@@ -190,6 +193,13 @@ def _normalize_for_session(
         or bytes_at_last_fire < 0
     ):
         bytes_at_last_fire = 0
+    fire_idx_at_last_fire = data.get("fire_idx_at_last_fire")
+    if (
+        not isinstance(fire_idx_at_last_fire, int)
+        or isinstance(fire_idx_at_last_fire, bool)
+        or fire_idx_at_last_fire < 0
+    ):
+        fire_idx_at_last_fire = 0
     # P3-substantive state — list of bools; default [] for pre-#876 rings
     classifications_raw = data.get("classifications")
     if isinstance(classifications_raw, list):
@@ -203,6 +213,7 @@ def _normalize_for_session(
         "next_fire_idx": next_idx,
         "evicted_total": evicted,
         "bytes_at_last_fire": bytes_at_last_fire,
+        "fire_idx_at_last_fire": fire_idx_at_last_fire,
         "classifications": classifications,
     }
 
@@ -388,20 +399,74 @@ def update_bytes_at_last_fire(
 ) -> bool:
     """Update the p3_velocity ``bytes_at_last_fire`` slot (#876).
 
+    Kept for backward-compat with the PR 2 surface; new callers should
+    prefer :func:`update_p3_velocity_state` which updates both
+    ``bytes_at_last_fire`` and ``fire_idx_at_last_fire`` atomically so
+    the velocity predicate's two state inputs stay in sync.
+
+    Takes the same advisory lock as :func:`append_ids`. Fail-soft.
+    """
+    return _update_p3_velocity_fields(
+        session_id, bytes_at_last_fire=transcript_bytes, fire_idx_at_last_fire=None,
+        stderr=stderr,
+    )
+
+
+def update_p3_velocity_state(
+    session_id: str | None,
+    *,
+    transcript_bytes: int,
+    fire_idx: int,
+    stderr: IO[str] | None = None,
+) -> bool:
+    """Update both p3_velocity state slots atomically (#876).
+
     Called by the cadence dispatcher after a p3_velocity fire — the
-    predicate's next evaluation reads this value to compute density
-    ``(transcript_bytes - bytes_at_last_fire) / turns_since_last_fire``.
+    next predicate evaluation reads both values to compute:
 
-    Takes the same advisory lock as :func:`append_ids` so concurrent
-    UPS + Stop hooks can't clobber each other's writes. Fail-soft:
-    returns False on any error (file missing, lock failure, malformed
-    JSON, etc.); the caller continues without raising.
+      density = (current_transcript_bytes - bytes_at_last_fire)
+              / (current_next_fire_idx - fire_idx_at_last_fire)
 
-    Returns True on successful write, False on no-op or error.
+    Keeping these two in lock-step under a single ring write avoids the
+    sub-window where one is updated and the other isn't (which would
+    distort the density calculation on the next fire).
+
+    Takes the same advisory lock as :func:`append_ids`. Fail-soft:
+    returns False on any error.
+    """
+    if not isinstance(transcript_bytes, int) or transcript_bytes < 0:
+        return False
+    if not isinstance(fire_idx, int) or fire_idx < 0:
+        return False
+    return _update_p3_velocity_fields(
+        session_id,
+        bytes_at_last_fire=transcript_bytes,
+        fire_idx_at_last_fire=fire_idx,
+        stderr=stderr,
+    )
+
+
+def _update_p3_velocity_fields(
+    session_id: str | None,
+    *,
+    bytes_at_last_fire: int | None,
+    fire_idx_at_last_fire: int | None,
+    stderr: IO[str] | None,
+) -> bool:
+    """Shared inner for ``update_bytes_at_last_fire`` + ``update_p3_velocity_state``.
+
+    Either field can be None to mean 'leave unchanged'. Validation of
+    non-None values happens at the public callers.
     """
     if not session_id:
         return False
-    if not isinstance(transcript_bytes, int) or transcript_bytes < 0:
+    if bytes_at_last_fire is not None and (
+        not isinstance(bytes_at_last_fire, int) or bytes_at_last_fire < 0
+    ):
+        return False
+    if fire_idx_at_last_fire is not None and (
+        not isinstance(fire_idx_at_last_fire, int) or fire_idx_at_last_fire < 0
+    ):
         return False
     ring_path = _session_ring_path()
     if ring_path is None:
@@ -422,13 +487,16 @@ def update_bytes_at_last_fire(
         try:
             data = _read_ring_unlocked(ring_path)
             data = _normalize_for_session(data, session_id, ring_max)
-            data["bytes_at_last_fire"] = transcript_bytes
+            if bytes_at_last_fire is not None:
+                data["bytes_at_last_fire"] = bytes_at_last_fire
+            if fire_idx_at_last_fire is not None:
+                data["fire_idx_at_last_fire"] = fire_idx_at_last_fire
             _atomic_write(ring_path, json.dumps(data))
             return True
         except Exception as exc:
             _warn(
                 stderr,
-                f"session_ring: update_bytes_at_last_fire failed (non-fatal): {exc}",
+                f"session_ring: update_p3_velocity_state failed (non-fatal): {exc}",
             )
             return False
         finally:

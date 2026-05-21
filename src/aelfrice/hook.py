@@ -2741,6 +2741,7 @@ def _maybe_fire_cadence_checkpoint(
         POLICY_OFF,
         POLICY_P1_EVERY_K_TURNS,
         POLICY_P2_CTX_THRESHOLD,
+        POLICY_P3_VELOCITY,
         append_shadow_row,
         estimate_transcript_bytes,
         format_shadow_row,
@@ -2749,15 +2750,20 @@ def _maybe_fire_cadence_checkpoint(
         resolve_cadence_ctx_threshold,
         resolve_cadence_enabled,
         resolve_cadence_k,
+        resolve_cadence_p3_velocity_threshold,
         resolve_cadence_policy,
         resolve_cadence_shadow_mode_enabled,
         shadow_log_path,
         should_fire,
         should_fire_p2,
+        should_fire_p3_velocity,
         would_fire_p1,
         would_fire_p2,
     )
-    from aelfrice.session_ring import read_ring_state  # noqa: PLC0415
+    from aelfrice.session_ring import (  # noqa: PLC0415
+        read_ring_state,
+        update_p3_velocity_state,
+    )
 
     cwd_obj = payload.get(_CWD_KEY)
     cwd = (
@@ -2845,6 +2851,66 @@ def _maybe_fire_cadence_checkpoint(
         )
         return
 
+    if policy == POLICY_P3_VELOCITY:
+        threshold = resolve_cadence_p3_velocity_threshold(start=cwd)
+        cfg = CadenceConfig(
+            enabled=True, policy=policy, p3_velocity_threshold=threshold,
+        )
+        state = read_ring_state(session_id)
+        if not isinstance(state, dict):
+            return
+        raw_next: Any = state.get("next_fire_idx")
+        raw_bytes_last: Any = state.get("bytes_at_last_fire", 0)
+        raw_fire_last: Any = state.get("fire_idx_at_last_fire", 0)
+        if (
+            isinstance(raw_next, bool) or not isinstance(raw_next, int)
+            or isinstance(raw_bytes_last, bool) or not isinstance(raw_bytes_last, int)
+            or isinstance(raw_fire_last, bool) or not isinstance(raw_fire_last, int)
+        ):
+            return
+        next_fire_idx = raw_next
+        bytes_at_last_fire = raw_bytes_last
+        fire_idx_at_last_fire = raw_fire_last
+        turns_since_last_fire = next_fire_idx - fire_idx_at_last_fire
+        if turns_since_last_fire <= 0:
+            return
+        tp_obj = payload.get(_TRANSCRIPT_PATH_KEY)
+        tp: Path | None
+        if isinstance(tp_obj, str) and tp_obj:
+            tp = Path(tp_obj)
+        elif isinstance(tp_obj, os.PathLike):
+            tp = Path(tp_obj)
+        else:
+            tp = None
+        transcript_bytes = estimate_transcript_bytes(tp)
+        if not should_fire_p3_velocity(
+            bytes_at_last_fire=bytes_at_last_fire,
+            transcript_bytes=transcript_bytes,
+            turns_since_last_fire=turns_since_last_fire,
+            config=cfg,
+        ):
+            return
+        body = _run_cadence_rebuild(payload, cwd)
+        if body is None:
+            return
+        _write_cadence_resume_cache(body, session_id, policy, serr)
+        # Update both p3-velocity state slots atomically so the next fire's
+        # density calculation sees consistent (bytes, fire_idx) inputs.
+        update_p3_velocity_state(
+            session_id,
+            transcript_bytes=transcript_bytes,
+            fire_idx=next_fire_idx,
+            stderr=serr,
+        )
+        density = (transcript_bytes - bytes_at_last_fire) / turns_since_last_fire
+        print(
+            f"aelfrice: cadence checkpoint fired @ fire_idx={next_fire_idx} "
+            f"(policy={policy}, velocity={density:.1f} bytes/turn, "
+            f"threshold={threshold})",
+            file=serr,
+        )
+        return
+
     # Unknown policy / POLICY_OFF — no-op.
 
 
@@ -2881,16 +2947,23 @@ def _maybe_run_ups_cadence_checkpoint(
         CadenceConfig,
         POLICY_P1_EVERY_K_TURNS,
         POLICY_P2_CTX_THRESHOLD,
+        POLICY_P3_VELOCITY,
+        estimate_transcript_bytes,
         read_last_user_prompt,
         resolve_cadence_ctx_byte_window,
         resolve_cadence_ctx_threshold,
         resolve_cadence_enabled,
         resolve_cadence_k,
+        resolve_cadence_p3_velocity_threshold,
         resolve_cadence_policy,
         should_fire,
         should_fire_p2,
+        should_fire_p3_velocity,
     )
-    from aelfrice.session_ring import read_ring_state  # noqa: PLC0415
+    from aelfrice.session_ring import (  # noqa: PLC0415
+        read_ring_state,
+        update_p3_velocity_state,
+    )
 
     cwd_obj = payload.get(_CWD_KEY)
     cwd = (
@@ -2950,6 +3023,67 @@ def _maybe_run_ups_cadence_checkpoint(
             return None
         print(
             f"aelfrice: ups cadence checkpoint fired (policy={policy})",
+            file=serr,
+        )
+        return body
+
+    if policy == POLICY_P3_VELOCITY:
+        threshold = resolve_cadence_p3_velocity_threshold(start=cwd)
+        cfg = CadenceConfig(
+            enabled=True, policy=policy, p3_velocity_threshold=threshold,
+        )
+        state = read_ring_state(session_id)
+        if not isinstance(state, dict):
+            return None
+        raw_next: Any = state.get("next_fire_idx")
+        raw_bytes_last: Any = state.get("bytes_at_last_fire", 0)
+        raw_fire_last: Any = state.get("fire_idx_at_last_fire", 0)
+        if (
+            isinstance(raw_next, bool) or not isinstance(raw_next, int)
+            or isinstance(raw_bytes_last, bool) or not isinstance(raw_bytes_last, int)
+            or isinstance(raw_fire_last, bool) or not isinstance(raw_fire_last, int)
+        ):
+            return None
+        next_fire_idx = raw_next
+        bytes_at_last_fire = raw_bytes_last
+        fire_idx_at_last_fire = raw_fire_last
+        turns_since_last_fire = next_fire_idx - fire_idx_at_last_fire
+        if turns_since_last_fire <= 0:
+            return None
+        tp_obj = payload.get(_TRANSCRIPT_PATH_KEY)
+        tp: Path | None
+        if isinstance(tp_obj, str) and tp_obj:
+            tp = Path(tp_obj)
+        elif isinstance(tp_obj, os.PathLike):
+            tp = Path(tp_obj)
+        else:
+            tp = None
+        transcript_bytes = estimate_transcript_bytes(tp)
+        if not should_fire_p3_velocity(
+            bytes_at_last_fire=bytes_at_last_fire,
+            transcript_bytes=transcript_bytes,
+            turns_since_last_fire=turns_since_last_fire,
+            config=cfg,
+        ):
+            return None
+        body = _run_cadence_rebuild(payload, cwd)
+        if body is None:
+            return None
+        # Update both p3-velocity state slots atomically — mirrors Stop-side.
+        # When Stop and UPS both fire on the same boundary (the post-#874
+        # counter-sharing pattern), the second writer just overwrites with
+        # identical values, so the race is benign.
+        update_p3_velocity_state(
+            session_id,
+            transcript_bytes=transcript_bytes,
+            fire_idx=next_fire_idx,
+            stderr=serr,
+        )
+        density = (transcript_bytes - bytes_at_last_fire) / turns_since_last_fire
+        print(
+            f"aelfrice: ups cadence checkpoint fired @ fire_idx={next_fire_idx} "
+            f"(policy={policy}, velocity={density:.1f} bytes/turn, "
+            f"threshold={threshold})",
             file=serr,
         )
         return body
