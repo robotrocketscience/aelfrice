@@ -63,6 +63,9 @@ CTX_THRESHOLD_KEY: Final[str] = "ctx_threshold"
 CTX_BYTE_WINDOW_KEY: Final[str] = "ctx_byte_window"
 SHADOW_MODE_ENABLED_KEY: Final[str] = "shadow_mode_enabled"
 CADENCE_SHADOW_DIRNAME: Final[str] = "cadence_shadow"
+P3_VELOCITY_THRESHOLD_KEY: Final[str] = "p3_velocity_threshold"
+P3_SUBSTANTIVE_WINDOW_KEY: Final[str] = "p3_substantive_window"
+P3_SUBSTANTIVE_THRESHOLD_KEY: Final[str] = "p3_substantive_threshold"
 
 ENV_CADENCE_ENABLED: Final[str] = "AELFRICE_CADENCE_ENABLED"
 ENV_CADENCE_POLICY: Final[str] = "AELFRICE_CADENCE_POLICY"
@@ -70,15 +73,28 @@ ENV_CADENCE_K: Final[str] = "AELFRICE_CADENCE_K"
 ENV_CADENCE_CTX_THRESHOLD: Final[str] = "AELFRICE_CADENCE_CTX_THRESHOLD"
 ENV_CADENCE_CTX_BYTE_WINDOW: Final[str] = "AELFRICE_CADENCE_CTX_BYTE_WINDOW"
 ENV_CADENCE_SHADOW_MODE_ENABLED: Final[str] = "AELFRICE_CADENCE_SHADOW_MODE_ENABLED"
+ENV_CADENCE_P3_VELOCITY_THRESHOLD: Final[str] = (
+    "AELFRICE_CADENCE_P3_VELOCITY_THRESHOLD"
+)
+ENV_CADENCE_P3_SUBSTANTIVE_WINDOW: Final[str] = (
+    "AELFRICE_CADENCE_P3_SUBSTANTIVE_WINDOW"
+)
+ENV_CADENCE_P3_SUBSTANTIVE_THRESHOLD: Final[str] = (
+    "AELFRICE_CADENCE_P3_SUBSTANTIVE_THRESHOLD"
+)
 
 POLICY_OFF: Final[str] = "off"
 POLICY_P1_EVERY_K_TURNS: Final[str] = "p1_every_k_turns"
 POLICY_P2_CTX_THRESHOLD: Final[str] = "p2_ctx_threshold"
+POLICY_P3_VELOCITY: Final[str] = "p3_velocity"
+POLICY_P3_SUBSTANTIVE: Final[str] = "p3_substantive"
 
 _VALID_POLICIES: Final[frozenset[str]] = frozenset({
     POLICY_OFF,
     POLICY_P1_EVERY_K_TURNS,
     POLICY_P2_CTX_THRESHOLD,
+    POLICY_P3_VELOCITY,
+    POLICY_P3_SUBSTANTIVE,
 })
 
 DEFAULT_ENABLED: Final[bool] = False
@@ -107,6 +123,26 @@ non-selected policy decisions on identical workload. Ships default-
 OFF: most operators do not need the comparison data, and the per-
 tick predicate evaluations + JSONL write are a non-trivial extra
 I/O cost."""
+
+DEFAULT_P3_VELOCITY_THRESHOLD: Final[int] = 3000
+"""Bytes-per-turn floor that triggers p3_velocity (#876 axis 1).
+3000 bytes/turn ≈ ~1000 tokens/turn (English) or ~750 tokens/turn
+(code-heavy) — the rough boundary between exploratory back-and-forth
+and dense working session. Placeholder per the issue body; the
+operator tunes via `[cadence] p3_velocity_threshold = N` after
+empirical use, same posture as K=15 for P1."""
+
+DEFAULT_P3_SUBSTANTIVE_WINDOW: Final[int] = 10
+"""Number of last-N turns over which p3_substantive counts
+substantive turns. 10-turn window mirrors P1's K=15 starting point
+at a tighter horizon — the substantive predicate is denser than
+P1's pure counter so a smaller window is more sensitive."""
+
+DEFAULT_P3_SUBSTANTIVE_THRESHOLD: Final[float] = 0.6
+"""Substantive-ratio floor (0.0-1.0). p3_substantive fires when
+substantive_count / p3_substantive_window >= threshold. 0.6 ≈
+6-of-10 turns must be substantive (non-boundary). Same placeholder
+posture as p3_velocity_threshold."""
 
 _ENV_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 _ENV_FALSY: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
@@ -196,6 +232,9 @@ class CadenceConfig:
     ctx_threshold: float = DEFAULT_CTX_THRESHOLD
     ctx_byte_window: int = DEFAULT_CTX_BYTE_WINDOW
     shadow_mode_enabled: bool = DEFAULT_SHADOW_MODE_ENABLED
+    p3_velocity_threshold: int = DEFAULT_P3_VELOCITY_THRESHOLD
+    p3_substantive_window: int = DEFAULT_P3_SUBSTANTIVE_WINDOW
+    p3_substantive_threshold: float = DEFAULT_P3_SUBSTANTIVE_THRESHOLD
 
 
 def _env_bool(name: str) -> bool | None:
@@ -315,6 +354,18 @@ def load_cadence_config(start: Path | None = None) -> CadenceConfig:
                 section, SHADOW_MODE_ENABLED_KEY,
                 DEFAULT_SHADOW_MODE_ENABLED, candidate, serr,
             )
+            p3_velocity_threshold = _read_positive_int(
+                section, P3_VELOCITY_THRESHOLD_KEY,
+                DEFAULT_P3_VELOCITY_THRESHOLD, candidate, serr,
+            )
+            p3_substantive_window = _read_positive_int(
+                section, P3_SUBSTANTIVE_WINDOW_KEY,
+                DEFAULT_P3_SUBSTANTIVE_WINDOW, candidate, serr,
+            )
+            p3_substantive_threshold = _read_unit_float(
+                section, P3_SUBSTANTIVE_THRESHOLD_KEY,
+                DEFAULT_P3_SUBSTANTIVE_THRESHOLD, candidate, serr,
+            )
             return CadenceConfig(
                 enabled=enabled,
                 policy=policy,
@@ -322,6 +373,9 @@ def load_cadence_config(start: Path | None = None) -> CadenceConfig:
                 ctx_threshold=ctx_threshold,
                 ctx_byte_window=ctx_byte_window,
                 shadow_mode_enabled=shadow_mode_enabled,
+                p3_velocity_threshold=p3_velocity_threshold,
+                p3_substantive_window=p3_substantive_window,
+                p3_substantive_threshold=p3_substantive_threshold,
             )
         if current.parent == current:
             break
@@ -573,6 +627,85 @@ def resolve_cadence_shadow_mode_enabled(
         return explicit
     return load_cadence_config(start).shadow_mode_enabled
 
+
+def resolve_cadence_p3_velocity_threshold(
+    explicit: int | None = None,
+    *,
+    start: Path | None = None,
+) -> int:
+    """Resolve the P3 velocity threshold (bytes/turn) — #876 axis 1.
+
+    Precedence (first decisive wins):
+      1. ``AELFRICE_CADENCE_P3_VELOCITY_THRESHOLD`` env var (positive int).
+      2. Explicit ``explicit`` kwarg from the caller.
+      3. ``[cadence] p3_velocity_threshold`` in ``.aelfrice.toml``.
+      4. Default: ``3000`` bytes/turn.
+    """
+    env = _env_positive_int(ENV_CADENCE_P3_VELOCITY_THRESHOLD)
+    if env is not None:
+        return env
+    if explicit is not None and explicit > 0:
+        return explicit
+    return load_cadence_config(start).p3_velocity_threshold
+
+
+def resolve_cadence_p3_substantive_window(
+    explicit: int | None = None,
+    *,
+    start: Path | None = None,
+) -> int:
+    """Resolve the P3 substantive-turn window (turns) — #876 axis 1.
+
+    Precedence (first decisive wins):
+      1. ``AELFRICE_CADENCE_P3_SUBSTANTIVE_WINDOW`` env var (positive int).
+      2. Explicit ``explicit`` kwarg from the caller.
+      3. ``[cadence] p3_substantive_window`` in ``.aelfrice.toml``.
+      4. Default: ``10`` turns.
+    """
+    env = _env_positive_int(ENV_CADENCE_P3_SUBSTANTIVE_WINDOW)
+    if env is not None:
+        return env
+    if explicit is not None and explicit > 0:
+        return explicit
+    return load_cadence_config(start).p3_substantive_window
+
+
+def resolve_cadence_p3_substantive_threshold(
+    explicit: float | None = None,
+    *,
+    start: Path | None = None,
+) -> float:
+    """Resolve the P3 substantive-ratio threshold (0.0-1.0) — #876 axis 1.
+
+    Precedence (first decisive wins):
+      1. ``AELFRICE_CADENCE_P3_SUBSTANTIVE_THRESHOLD`` env var (unit float).
+      2. Explicit ``explicit`` kwarg from the caller.
+      3. ``[cadence] p3_substantive_threshold`` in ``.aelfrice.toml``.
+      4. Default: ``0.6``.
+    """
+    env = _env_unit_float(ENV_CADENCE_P3_SUBSTANTIVE_THRESHOLD)
+    if env is not None:
+        return env
+    if explicit is not None and 0.0 <= explicit <= 1.0:
+        return explicit
+    return load_cadence_config(start).p3_substantive_threshold
+
+
+def is_substantive_turn(prompt: str | None) -> bool:
+    """Classify a user prompt as substantive (vs phase-boundary).
+
+    Pure function, inverse of :func:`is_phase_boundary_signal`. A turn
+    is "substantive" when the user prompt does NOT match the closed
+    phase-boundary allowlist used by P2. Empty or None prompts return
+    False (no signal to count).
+
+    Used by P3 substantive-window counting (#876 axis 1, option C).
+    The classifier reuses P2's allowlist by inversion so the same
+    closed-set maintenance burden covers both predicates.
+    """
+    if not prompt or not prompt.strip():
+        return False
+    return not is_phase_boundary_signal(prompt)
 
 
 def would_fire_p1(
@@ -873,6 +1006,167 @@ def should_fire_p2(
     fired, _ = would_fire_p2(
         transcript_path=transcript_path,
         last_user_prompt=last_user_prompt,
+        config=config,
+    )
+    return fired
+
+
+def would_fire_p3_velocity(
+    *,
+    bytes_at_last_fire: int,
+    transcript_bytes: int,
+    turns_since_last_fire: int,
+    config: CadenceConfig,
+) -> tuple[bool, str]:
+    """P3-velocity policy-agnostic predicate — bytes/turn density.
+
+    Pure function over the four inputs. Determinism (#605): same
+    inputs reproduce same ``(bool, reason)``. No wall-clock, no I/O.
+
+    Density = ``(transcript_bytes - bytes_at_last_fire) / turns_since_last_fire``.
+    Fires when density exceeds ``config.p3_velocity_threshold``.
+
+    Unlike :func:`should_fire_p3_velocity`, this does NOT check
+    ``config.policy``. Answers "would p3_velocity fire here" — the
+    predicate the shadow-evaluation log (#875) writes for non-selected
+    policy decisions.
+
+    Conditions for True:
+      * ``config.enabled`` is True.
+      * ``turns_since_last_fire`` is positive (no division-by-zero).
+      * ``transcript_bytes >= bytes_at_last_fire`` (monotonic transcript).
+      * ``config.p3_velocity_threshold`` is positive.
+      * computed density >= threshold.
+    """
+    if not config.enabled:
+        return (False, "cadence disabled")
+    if turns_since_last_fire <= 0:
+        return (False, f"turns_since_last_fire={turns_since_last_fire} not positive")
+    if transcript_bytes < bytes_at_last_fire:
+        return (
+            False,
+            f"transcript_bytes={transcript_bytes} below "
+            f"bytes_at_last_fire={bytes_at_last_fire}",
+        )
+    threshold = config.p3_velocity_threshold
+    if threshold <= 0:
+        return (False, f"p3_velocity_threshold={threshold} not positive")
+    delta_bytes = transcript_bytes - bytes_at_last_fire
+    velocity = delta_bytes / turns_since_last_fire
+    if velocity < threshold:
+        return (
+            False,
+            f"velocity={velocity:.1f} bytes/turn below threshold={threshold}",
+        )
+    return (
+        True,
+        f"velocity={velocity:.1f} bytes/turn >= threshold={threshold}",
+    )
+
+
+def should_fire_p3_velocity(
+    *,
+    bytes_at_last_fire: int,
+    transcript_bytes: int,
+    turns_since_last_fire: int,
+    config: CadenceConfig,
+) -> bool:
+    """P3-velocity firing predicate — policy-gated.
+
+    Pure function. Determinism (#605): same inputs → same decision.
+
+    Conditions:
+      * ``config.policy`` is ``p3_velocity``.
+      * :func:`would_fire_p3_velocity` returns True.
+
+    Never raises. For shadow-evaluation, see :func:`would_fire_p3_velocity`.
+    """
+    if config.policy != POLICY_P3_VELOCITY:
+        return False
+    fired, _ = would_fire_p3_velocity(
+        bytes_at_last_fire=bytes_at_last_fire,
+        transcript_bytes=transcript_bytes,
+        turns_since_last_fire=turns_since_last_fire,
+        config=config,
+    )
+    return fired
+
+
+def would_fire_p3_substantive(
+    *,
+    substantive_count: int,
+    config: CadenceConfig,
+) -> tuple[bool, str]:
+    """P3-substantive policy-agnostic predicate — substantive-ratio.
+
+    Pure function over ``(substantive_count, config)``. Determinism
+    (#605): same inputs reproduce same decision.
+
+    Predicate: ``substantive_count / config.p3_substantive_window >=
+    config.p3_substantive_threshold``. The caller computes
+    ``substantive_count`` by classifying the last N prompts via
+    :func:`is_substantive_turn` and summing the True count; the
+    session-ring maintenance of that rolling window is separate
+    (lands in the next PR of the #876 stack).
+
+    Conditions for True:
+      * ``config.enabled`` is True.
+      * ``config.p3_substantive_window`` is positive.
+      * ``0.0 <= substantive_count <= window`` (sanity).
+      * ratio >= ``config.p3_substantive_threshold``.
+
+    Threshold is treated as a unit-float; values outside [0, 1] are
+    rejected as misconfigured (return False with a reason).
+    """
+    if not config.enabled:
+        return (False, "cadence disabled")
+    window = config.p3_substantive_window
+    if window <= 0:
+        return (False, f"p3_substantive_window={window} not positive")
+    if substantive_count < 0 or substantive_count > window:
+        return (
+            False,
+            f"substantive_count={substantive_count} outside [0, {window}]",
+        )
+    threshold = config.p3_substantive_threshold
+    if not 0.0 <= threshold <= 1.0:
+        return (
+            False,
+            f"p3_substantive_threshold={threshold} outside [0.0, 1.0]",
+        )
+    ratio = substantive_count / window
+    if ratio < threshold:
+        return (
+            False,
+            f"ratio={ratio:.3f} below threshold={threshold:.3f}",
+        )
+    return (
+        True,
+        f"ratio={ratio:.3f} >= threshold={threshold:.3f} "
+        f"({substantive_count}/{window})",
+    )
+
+
+def should_fire_p3_substantive(
+    *,
+    substantive_count: int,
+    config: CadenceConfig,
+) -> bool:
+    """P3-substantive firing predicate — policy-gated.
+
+    Pure function. Determinism (#605): same inputs → same decision.
+
+    Conditions:
+      * ``config.policy`` is ``p3_substantive``.
+      * :func:`would_fire_p3_substantive` returns True.
+
+    Never raises. For shadow-evaluation, see
+    :func:`would_fire_p3_substantive`.
+    """
+    if config.policy != POLICY_P3_SUBSTANTIVE:
+        return False
+    fired, _ = would_fire_p3_substantive(
+        substantive_count=substantive_count,
         config=config,
     )
     return fired
