@@ -54,7 +54,7 @@ The function is pure and deterministic. No store reads, no clock reads, no env r
 | `transient` | verbatim | **stub** | Stub = belief id + retention class only, no content. Compressed-out content is recoverable via `store.get_belief(id)` if the consumer needs it. |
 | `unknown` | verbatim | verbatim | Migration-safety. Don't compress beliefs whose retention class hasn't been classified yet — that is a separate audit (#290 §6) before type-aware compression can fire on them. |
 
-The `locked → verbatim` rule mirrors the existing rule that L0 beliefs are never trimmed (`retrieval.py:950`: *"L0 beliefs are never trimmed."*) — locks override every retention-class decision the same way they override hibernation (#196) and the relevance floor (#289).
+The `locked → verbatim` rule mirrors the existing rule that L0 beliefs are never trimmed (`retrieval.py:2451`: *"L0 beliefs are never trimmed."*) — locks override every retention-class decision the same way they override hibernation (#196) and the relevance floor (#289).
 
 ### Headline strategy details
 
@@ -72,7 +72,7 @@ The `locked → verbatim` rule mirrors the existing rule that L0 beliefs are nev
 
 ## Where compression sits
 
-The compressor runs **after** lane fan-out and ranking, **before** the budget pack. The current pack loop at `retrieval.py:1048-1085` (and the parallel block at `:1197-1232`) reads:
+The compressor runs **after** lane fan-out and ranking, **before** the budget pack. The current pack loop at `retrieval.py:2615-2620` (and the parallel block in `retrieve_v2` at `:2859-2866`) reads:
 
 ```python
 used: int = locked_used + sum(_belief_tokens(b) for b in l25)
@@ -99,7 +99,7 @@ for cb in compressed_candidates:
 
 ### Configuration
 
-A new `use_type_aware_compression` flag follows the established convention at `retrieval.py:118-131`:
+A new `use_type_aware_compression` flag follows the established convention at `retrieval.py:1703-1731` (`resolve_use_type_aware_compression`):
 
 1. `retrieve(..., use_type_aware_compression=True)` kwarg (highest precedence).
 2. `AELFRICE_TYPE_AWARE_COMPRESSION=1` env var.
@@ -128,7 +128,7 @@ If a future revision needs to memoise compressed renders (e.g. for very large be
 
 ### vs. the existing tail-trim
 
-The current pack drops beliefs from the tail when `token_budget` is hit (`retrieval.py:744`, `:1052`, `:1202`). Type-aware compression does not replace this; it **runs ahead of it**. Compression reduces per-belief cost; tail-trim still fires on the post-compression cost list when it must. The two compose: a `transient` belief that costs ~10 tokens after stub-compression rarely gets tail-trimmed; a verbatim `fact` belief still gets trimmed if the budget is pathologically tight.
+The current pack drops beliefs from the tail when `token_budget` is hit (`retrieval.py:2617` in `retrieve()` and `:2861` in the `retrieve_v2` non-clustered branch; the clustered branch at `:2848-2854` delegates to `pack_with_clusters` which applies the same break-on-budget rule via its `cost_fn`). Type-aware compression does not replace this; it **runs ahead of it**. Compression reduces per-belief cost; tail-trim still fires on the post-compression cost list when it must. The two compose: a `transient` belief that costs ~10 tokens after stub-compression rarely gets tail-trimmed; a verbatim `fact` belief still gets trimmed if the budget is pathologically tight.
 
 ### vs. retention-class soft-downweight
 
@@ -157,7 +157,7 @@ A labeled `compression_uplift` corpus lives under `tests/corpus/v2_0/compression
 
 ### A2 — token-budget recovery
 
-At a fixed `token_budget` (default `2400` per `retrieval.py:97 DEFAULT_TOKEN_BUDGET`):
+At a fixed `token_budget` (default `2400` per `retrieval.py:119 DEFAULT_TOKEN_BUDGET`):
 
 ```
 recall@k(use_type_aware_compression=ON)  >  recall@k(use_type_aware_compression=OFF)
@@ -210,9 +210,9 @@ The #154 composition tracker doc gains a row for `use_type_aware_compression`: i
 ## Implementation prereqs
 
 - `src/aelfrice/models.py` — `RETENTION_*` constants, `Belief.retention_class` field. Shipped v1.6.0 (#290).
-- `src/aelfrice/retrieval.py:215` — `_belief_tokens(b)` and `_estimate_tokens()`. The compressor reuses the same estimator on `rendered`.
-- `src/aelfrice/retrieval.py:118-131` — flag-resolution convention.
-- `src/aelfrice/retrieval.py:1048-1085, :1197-1232` — pack loops to rewrite.
+- `src/aelfrice/retrieval.py:507, :514` — `_estimate_tokens()` / `_belief_tokens(b)`. The compressor reuses the same estimator on `rendered`.
+- `src/aelfrice/retrieval.py:1703-1731` — `resolve_use_type_aware_compression` flag-resolution convention.
+- `src/aelfrice/retrieval.py:2615-2620, :2845-2866` — pack loops. (Note: the spec text below was written when these lived at `:1048-1085, :1197-1232`; the structural claim is preserved but the parallel block in `retrieve_v2` now branches between an inline pack (else, `:2859`) and a clustered pack (`pack_with_clusters`, `:2848-2854`). The cluster pack went through compose-reconciliation with `use_type_aware_compression` in #878 so both arms now honour the flag.)
 - `src/aelfrice/context_rebuilder.py` — consumer of compressed output for A4.
 - `tests/corpus/v2_0/` — corpus scaffold + autouse `bench_gated` marker. Shipped v1.6.0 (#307 / #311).
 - `tests/bench_gate/` — harness. Shipped v1.6.0 (#319 / #320).
