@@ -17,22 +17,33 @@ from datetime import datetime, timezone
 from typing import Final
 
 from aelfrice.classification_core import (
+    USER_SOURCE,
     classify_sentence,
     get_source_adjusted_prior,
 )
 from aelfrice.models import (
     BELIEF_FACTUAL,
     INGEST_SOURCE_CLI_REMEMBER,
+    INGEST_SOURCE_FILESYSTEM,
     INGEST_SOURCE_GIT,
     INGEST_SOURCE_MCP_REMEMBER,
     LOCK_NONE,
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
     ORIGIN_USER_STATED,
+    ORIGIN_USER_TRANSCRIPT,
     Belief,
     Edge,
     retention_class_for_source,
 )
+
+# Source label used by the transcript-ingest path
+# (`_handle_pre_compact` -> `aelf ingest-transcript`). When combined
+# with `raw_meta["role"] == "user"`, `derive()` recognises this as
+# user-typed chat content (#888) and applies the undeflated prior +
+# ORIGIN_USER_TRANSCRIPT, distinguishing it from scanner-extracted
+# document content (origin=agent_inferred, deflated alpha).
+_TRANSCRIPT_SOURCE_LABEL: Final[str] = "transcript"
 
 _BELIEF_ID_HEX_LEN: Final[int] = 16
 
@@ -204,7 +215,10 @@ def derive(inp: DerivationInput) -> DerivationOutput:
        `triple_extractor._belief_id_for_phrase`.
     3. All other paths (filesystem, python_ast, feedback_loop_synthesis,
        legacy_unknown): run `classify_sentence`; skip when
-       `persist=False`.
+       `persist=False`. Transcript-ingest rows that carry
+       `raw_meta["role"]=="user"` (#888) get the undeflated USER_SOURCE
+       prior and `origin=user_transcript`; all other classifier-path
+       rows get the deflated prior and `origin=agent_inferred`.
 
     The belief `id` is derived deterministically from the input so that
     re-deriving the same input yields the same id — replay equality is
@@ -306,7 +320,24 @@ def derive(inp: DerivationInput) -> DerivationOutput:
         )
         return DerivationOutput(belief=belief, edges=[])
 
-    result = classify_sentence(raw, source)
+    # 4. Transcript ingest, role=user (#888). User-typed chat content
+    #    enters via the same source_kind=filesystem path scanner output
+    #    does, distinguished only by source_path="transcript" +
+    #    raw_meta["role"]=="user". Without this branch, the user's own
+    #    statements get the agent-inferred deflated prior (alpha *= 0.2)
+    #    that is calibrated for scanner-extracted document text — which
+    #    means user-typed facts can sit below uniform-prior distractors
+    #    in posterior rerank and never escape the noise floor. Treat
+    #    them as USER_SOURCE for the prior; tag with ORIGIN_USER_TRANSCRIPT
+    #    so they remain distinct from explicit `aelf lock` intent.
+    raw_meta = inp.raw_meta or {}
+    is_user_transcript = (
+        inp.source_kind == INGEST_SOURCE_FILESYSTEM
+        and source == _TRANSCRIPT_SOURCE_LABEL
+        and raw_meta.get("role") == "user"
+    )
+    classify_source = USER_SOURCE if is_user_transcript else source
+    result = classify_sentence(raw, classify_source)
     if not result.persist:
         return DerivationOutput(
             belief=None,
@@ -327,7 +358,10 @@ def derive(inp: DerivationInput) -> DerivationOutput:
         created_at=ts,
         last_retrieved_at=None,
         session_id=inp.session_id,
-        origin=ORIGIN_AGENT_INFERRED,
+        origin=(
+            ORIGIN_USER_TRANSCRIPT if is_user_transcript
+            else ORIGIN_AGENT_INFERRED
+        ),
         retention_class=retention_class_for_source(inp.source_kind),
     )
     return DerivationOutput(belief=belief, edges=[])

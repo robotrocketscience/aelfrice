@@ -34,6 +34,7 @@ from aelfrice.models import (
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
     ORIGIN_USER_STATED,
+    ORIGIN_USER_TRANSCRIPT,
 )
 
 _TS = "2026-01-01T00:00:00Z"
@@ -90,6 +91,113 @@ def test_filesystem_factual_belief() -> None:
     assert out.belief.lock_level == LOCK_NONE
     assert out.belief.origin == ORIGIN_AGENT_INFERRED
     assert out.belief.created_at == _TS
+
+
+# ---------------------------------------------------------------------------
+# transcript ingest, role=user (#888)
+# ---------------------------------------------------------------------------
+
+
+def test_transcript_user_role_origin_is_user_transcript() -> None:
+    """Hypothesis: filesystem ingest with source_path='transcript' and
+    raw_meta={'role': 'user'} yields ORIGIN_USER_TRANSCRIPT, not the
+    default ORIGIN_AGENT_INFERRED used by the scanner path."""
+    out = derive(DerivationInput(
+        raw_text="The K2 interview is a Microsoft Teams call.",
+        source_kind=INGEST_SOURCE_FILESYSTEM,
+        source_path="transcript",
+        raw_meta={"role": "user"},
+        ts=_TS,
+    ))
+    assert out.belief is not None
+    assert out.belief.origin == ORIGIN_USER_TRANSCRIPT
+
+
+def test_transcript_user_role_gets_undeflated_factual_prior() -> None:
+    """Hypothesis: user-role transcripts skip the agent-inferred alpha
+    deflation. For a plain factual sentence the resulting belief has the
+    full TYPE_PRIORS[BELIEF_FACTUAL] = (3.0, 1.0); falsifiable if alpha
+    matches the deflated (0.6, 1.0) value scanner output gets."""
+    out = derive(DerivationInput(
+        raw_text="K2 is on Tuesday at 3pm.",
+        source_kind=INGEST_SOURCE_FILESYSTEM,
+        source_path="transcript",
+        raw_meta={"role": "user"},
+        ts=_TS,
+    ))
+    assert out.belief is not None
+    assert out.belief.type == BELIEF_FACTUAL
+    assert out.belief.alpha == 3.0
+    assert out.belief.beta == 1.0
+
+
+def test_transcript_non_user_role_falls_through_to_agent_inferred() -> None:
+    """Hypothesis: transcript ingest without role=='user' (assistant or
+    missing) keeps the scanner-default ORIGIN_AGENT_INFERRED + deflated
+    prior. Falsifiable by any user_transcript origin for non-user roles."""
+    for role in ("assistant", "system", None):
+        meta = {"role": role} if role is not None else None
+        out = derive(DerivationInput(
+            raw_text="Some assistant-produced statement here.",
+            source_kind=INGEST_SOURCE_FILESYSTEM,
+            source_path="transcript",
+            raw_meta=meta,
+            ts=_TS,
+        ))
+        assert out.belief is not None
+        assert out.belief.origin == ORIGIN_AGENT_INFERRED, (
+            f"role={role!r} should not produce user_transcript"
+        )
+        # Deflated prior: 3.0 * 0.2 = 0.6
+        assert out.belief.alpha == pytest.approx(0.6)
+
+
+def test_transcript_user_role_question_still_skipped() -> None:
+    """Hypothesis: persist=False from classify_sentence still applies on
+    the user-transcript path — questions in chat don't become beliefs.
+    Falsifiable if a question-form prompt produces a belief."""
+    out = derive(DerivationInput(
+        raw_text="Where did we leave off yesterday?",
+        source_kind=INGEST_SOURCE_FILESYSTEM,
+        source_path="transcript",
+        raw_meta={"role": "user"},
+        ts=_TS,
+    ))
+    assert out.belief is None
+    assert out.skip_reason == "persist=False"
+
+
+def test_transcript_user_role_preserves_belief_type_routing() -> None:
+    """Hypothesis: requirement / preference / correction keyword routing
+    still fires on the user-transcript path; the only change vs. scanner
+    is the source-adjusted prior and the origin label."""
+    out = derive(DerivationInput(
+        raw_text="I prefer atomic commits over batched ones.",
+        source_kind=INGEST_SOURCE_FILESYSTEM,
+        source_path="transcript",
+        raw_meta={"role": "user"},
+        ts=_TS,
+    ))
+    assert out.belief is not None
+    assert out.belief.type == BELIEF_PREFERENCE
+    assert out.belief.origin == ORIGIN_USER_TRANSCRIPT
+
+
+def test_non_transcript_source_with_user_role_meta_still_agent_inferred() -> None:
+    """Hypothesis: the user-transcript branch requires source_path ==
+    'transcript' specifically. A scanner-path row that happens to carry
+    raw_meta={'role': 'user'} (defensive: should not happen in practice)
+    keeps the scanner default. Falsifiable if any source label produces
+    user_transcript when role=user."""
+    out = derive(DerivationInput(
+        raw_text="The default port is 8080.",
+        source_kind=INGEST_SOURCE_FILESYSTEM,
+        source_path="doc:README.md:p0",
+        raw_meta={"role": "user"},
+        ts=_TS,
+    ))
+    assert out.belief is not None
+    assert out.belief.origin == ORIGIN_AGENT_INFERRED
 
 
 def test_filesystem_requirement_belief() -> None:
