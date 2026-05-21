@@ -820,6 +820,20 @@ def user_prompt_submit(
         if prompt is None:
             return 0
         session_id = _extract_session_id(raw)
+        # #887: thread the UserPromptSubmit payload's cwd through to
+        # the session-start builder so the <recent-work> sub-block
+        # resolves against the project the user is in, not the hook
+        # process's incidental cwd.
+        payload_cwd: Path | None = None
+        try:
+            payload_obj = json.loads(raw) if raw else {}
+            cwd_field = payload_obj.get(_CWD_KEY) if isinstance(
+                payload_obj, dict,
+            ) else None
+            if isinstance(cwd_field, str) and cwd_field:
+                payload_cwd = Path(cwd_field)
+        except Exception:
+            payload_cwd = None
         # #578: detect first prompt of a new session and build the
         # <session-start> sub-block if needed. Fail-soft: any error in
         # detection or block-building leaves session_start_block="" so
@@ -832,7 +846,9 @@ def user_prompt_submit(
         session_start_block = ""
         try:
             if is_session_first_prompt(session_id):
-                session_start_block = _retrieve_session_start_block(serr)
+                session_start_block = _retrieve_session_start_block(
+                    serr, cwd=payload_cwd,
+                )
                 cadence_resume_block = _maybe_read_cadence_resume(serr)
                 if cadence_resume_block:
                     if session_start_block:
@@ -2072,24 +2088,27 @@ def _belief_qualifies_core(b: "Belief") -> bool:
     return False
 
 
-def _build_session_start_subblock(store: "MemoryStore") -> str:
+def _build_session_start_subblock(
+    store: "MemoryStore", *, cwd: Path | None = None,
+) -> str:
     """Build the <session-start> sub-block for first-prompt enrichment.
 
-    Contains two tagged sections:
-      <locked> — all user-locked beliefs (L0), same order as
-                 list_locked_beliefs() (locked_at DESC).
-      <core>   — load-bearing unlocked beliefs: corroboration>=2 OR
-                 posterior_mean>=2/3 with alpha+beta>=4. Excludes beliefs
-                 already in <locked>. Sorted by posterior_mean DESC.
+    Contains tagged sections:
+      <locked>      — all user-locked beliefs (L0), same order as
+                      list_locked_beliefs() (locked_at DESC).
+      <core>        — load-bearing unlocked beliefs: corroboration>=2 OR
+                      posterior_mean>=2/3 with alpha+beta>=4. Excludes
+                      beliefs already in <locked>. Sorted by
+                      posterior_mean DESC.
+      <recent-work> — branch / upstream / last N commits / linked
+                      issue refs (#887). Transient per-session state
+                      distinct from the ratified-decision pool above.
+                      Omitted on non-git cwds.
 
-    Pause-handoff: not included. No pause-work implementation exists in
-    this codebase; the issue spec says "gated on existence" and the
-    artifact does not exist, so this section is absent.
+    `cwd` defaults to None (process cwd at runtime), which is what the
+    SessionStart hook fires under. Tests pass a tmp_path explicitly.
 
-    Returns "" when both sections are empty (nothing to inject).
-    Cost: one list_locked_beliefs() + one list_belief_ids() + one
-    get_belief() per non-locked belief id. No LLM, no filesystem walk,
-    no new SQL.
+    Returns "" when all sections are empty (nothing to inject).
     """
     locked = store.list_locked_beliefs()
     locked_ids: set[str] = {b.id for b in locked}
@@ -2115,7 +2134,9 @@ def _build_session_start_subblock(store: "MemoryStore") -> str:
 
     core_candidates.sort(key=_posterior_key)
 
-    if not locked and not core_candidates:
+    recent_work_block = _build_recent_work_subblock(cwd=cwd)
+
+    if not locked and not core_candidates and not recent_work_block:
         return ""
 
     lines: list[str] = [SESSION_START_SUBBLOCK_OPEN]
@@ -2141,6 +2162,11 @@ def _build_session_start_subblock(store: "MemoryStore") -> str:
             f' posterior="{mu}">{content}</belief>'
         )
     lines.append("</core>")
+
+    # <recent-work> section (#887). Appended only when the resolver
+    # returned a non-empty block — non-git cwds get nothing.
+    if recent_work_block:
+        lines.append(recent_work_block)
 
     lines.append(SESSION_START_SUBBLOCK_CLOSE)
     return "\n".join(lines)
@@ -2170,8 +2196,15 @@ def _format_hits_with_session_start(
 
 def _retrieve_session_start_block(
     stderr: IO[str] | None = None,
+    *,
+    cwd: Path | None = None,
 ) -> str:
     """Open the store, build the session-start sub-block, close the store.
+
+    `cwd` is forwarded to `_build_session_start_subblock` so the
+    <recent-work> resolver (#887) uses the payload's cwd, not the
+    process cwd. Tests pass tmp_path to suppress that section; the
+    hook caller passes the UserPromptSubmit payload's cwd field.
 
     Returns "" on any error so the caller can treat it as a no-op. Fail-soft.
     """
@@ -2179,7 +2212,7 @@ def _retrieve_session_start_block(
     try:
         store = _open_store()
         try:
-            return _build_session_start_subblock(store)
+            return _build_session_start_subblock(store, cwd=cwd)
         finally:
             store.close()
     except Exception as exc:

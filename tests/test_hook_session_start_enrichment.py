@@ -152,7 +152,8 @@ def test_is_session_first_prompt_writes_state_file(
 def test_build_subblock_empty_on_empty_store(tmp_path: Path) -> None:
     store = MemoryStore(str(tmp_path / "memory.db"))
     try:
-        result = _build_session_start_subblock(store)
+        # tmp_path is not a git work-tree, so <recent-work> is also empty.
+        result = _build_session_start_subblock(store, cwd=tmp_path)
     finally:
         store.close()
     assert result == ""
@@ -229,7 +230,8 @@ def test_build_subblock_ignores_low_quality_unlocked(tmp_path: Path) -> None:
     _seed_db(db, [_mk("F1", "weak belief", alpha=1.0, beta=2.0)])  # mu=0.33 < 2/3
     store = MemoryStore(str(db))
     try:
-        result = _build_session_start_subblock(store)
+        # tmp_path is not a git work-tree, so <recent-work> is also empty.
+        result = _build_session_start_subblock(store, cwd=tmp_path)
     finally:
         store.close()
     assert result == ""
