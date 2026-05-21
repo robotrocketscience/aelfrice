@@ -491,3 +491,107 @@ def test_load_config_shadow_mode_wrong_type_ignored(
     assert cfg.shadow_mode_enabled is False  # falls back to default
     captured = capsys.readouterr()
     assert "shadow_mode_enabled" in captured.err
+
+# --- Shadow-log writer (#875) ---------------------------------------------
+
+
+def test_shadow_log_path_layout() -> None:
+    d = Path("/some/proj/.git/aelfrice")
+    path = cadence.shadow_log_path(
+        project_aelfrice_dir=d, session_id="abc-123",
+    )
+    assert path == Path("/some/proj/.git/aelfrice/cadence_shadow/abc-123.jsonl")
+
+
+def test_shadow_log_path_does_not_touch_disk(tmp_path: Path) -> None:
+    path = cadence.shadow_log_path(
+        project_aelfrice_dir=tmp_path, session_id="x",
+    )
+    # Resolving the path must not create any directories.
+    assert not (tmp_path / cadence.CADENCE_SHADOW_DIRNAME).exists()
+    assert not path.exists()
+
+
+def test_format_shadow_row_schema_and_newline() -> None:
+    import json as _json
+    line = cadence.format_shadow_row(
+        session_id="sid",
+        selected_policy="p2_ctx_threshold",
+        fired=True,
+        shadow={
+            "p1_every_k_turns": {"would_fire": False, "reason": "r1"},
+            "p2_ctx_threshold": {"would_fire": True, "reason": "r2"},
+        },
+        now="2026-05-20T23:59:00Z",
+    )
+    assert line.endswith("\n")
+    parsed = _json.loads(line.rstrip("\n"))
+    assert parsed == {
+        "ts": "2026-05-20T23:59:00Z",
+        "session_id": "sid",
+        "selected": "p2_ctx_threshold",
+        "fired": True,
+        "shadow": {
+            "p1_every_k_turns": {"would_fire": False, "reason": "r1"},
+            "p2_ctx_threshold": {"would_fire": True, "reason": "r2"},
+        },
+    }
+
+
+def test_format_shadow_row_determinism() -> None:
+    # Same inputs -> identical string, byte-for-byte.
+    args = dict(
+        session_id="sid",
+        selected_policy="p1_every_k_turns",
+        fired=False,
+        shadow={"p1_every_k_turns": {"would_fire": False, "reason": "x"}},
+        now="2026-05-20T00:00:00Z",
+    )
+    a = cadence.format_shadow_row(**args)  # type: ignore[arg-type]
+    b = cadence.format_shadow_row(**args)  # type: ignore[arg-type]
+    assert a == b
+
+
+def test_format_shadow_row_extra_keys_passthrough() -> None:
+    import json as _json
+    line = cadence.format_shadow_row(
+        session_id="sid",
+        selected_policy="off",
+        fired=False,
+        shadow={
+            "p3_turn_density": {
+                "would_fire": True,
+                "reason": "density=0.92",
+                "density": 0.92,
+                "window_size": 10,
+            },
+        },
+        now="2026-05-20T00:00:00Z",
+    )
+    parsed = _json.loads(line.rstrip("\n"))
+    p3 = parsed["shadow"]["p3_turn_density"]
+    assert p3["density"] == 0.92
+    assert p3["window_size"] == 10
+
+
+def test_append_shadow_row_creates_parent_and_appends(tmp_path: Path) -> None:
+    lp = cadence.shadow_log_path(
+        project_aelfrice_dir=tmp_path, session_id="s",
+    )
+    cadence.append_shadow_row(log_path=lp, row_line='{"a":1}\n')
+    cadence.append_shadow_row(log_path=lp, row_line='{"a":2}\n')
+    assert lp.exists()
+    assert lp.read_text() == '{"a":1}\n{"a":2}\n'
+
+
+def test_append_shadow_row_failsoft_on_unwritable(tmp_path: Path) -> None:
+    # Make the parent of the cadence_shadow dir unwritable. The
+    # function must NOT raise; it must swallow the OSError.
+    shadow_dir = tmp_path / "cadence_shadow"
+    # Pre-create as a *file* so mkdir(parents=True, exist_ok=True)
+    # fails with FileExistsError (a subclass of OSError).
+    shadow_dir.write_text("not a dir")
+    lp = shadow_dir / "s.jsonl"
+    cadence.append_shadow_row(log_path=lp, row_line='{"a":1}\n')
+    # No raise -> pass. File-as-dir blocks any write.
+    assert shadow_dir.read_text() == "not a dir"

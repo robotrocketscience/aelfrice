@@ -62,6 +62,7 @@ K_KEY: Final[str] = "k"
 CTX_THRESHOLD_KEY: Final[str] = "ctx_threshold"
 CTX_BYTE_WINDOW_KEY: Final[str] = "ctx_byte_window"
 SHADOW_MODE_ENABLED_KEY: Final[str] = "shadow_mode_enabled"
+CADENCE_SHADOW_DIRNAME: Final[str] = "cadence_shadow"
 
 ENV_CADENCE_ENABLED: Final[str] = "AELFRICE_CADENCE_ENABLED"
 ENV_CADENCE_POLICY: Final[str] = "AELFRICE_CADENCE_POLICY"
@@ -875,3 +876,92 @@ def should_fire_p2(
         config=config,
     )
     return fired
+
+
+# --- Shadow-evaluation log (#875) ----------------------------------------
+
+
+def shadow_log_path(
+    *,
+    project_aelfrice_dir: Path,
+    session_id: str,
+) -> Path:
+    """Resolve the per-session shadow-log path.
+
+    Layout: ``<project_aelfrice_dir>/cadence_shadow/<session_id>.jsonl``.
+
+    ``project_aelfrice_dir`` is the project's ``.git/aelfrice/`` (the
+    parent of ``rebuild_logs/``). Caller derives it from
+    ``_rebuild_log_dir_for_db(db_path).parent`` to keep the layout
+    aligned with existing per-session artifacts (rebuild_logs,
+    cadence_resume_cache).
+
+    Pure path computation — does not touch disk. Caller decides
+    whether to mkdir / write.
+    """
+    return project_aelfrice_dir / CADENCE_SHADOW_DIRNAME / f"{session_id}.jsonl"
+
+
+def format_shadow_row(
+    *,
+    session_id: str,
+    selected_policy: str,
+    fired: bool,
+    shadow: dict[str, dict[str, Any]],
+    now: str,
+) -> str:
+    """Format one shadow-log row as a JSON line (trailing newline).
+
+    Pure function. Determinism (#605): same inputs reproduce the same
+    JSON string, byte-for-byte. ``now`` is supplied by the caller as
+    an ISO-8601 UTC string — keeping wall-clock outside the formatter
+    preserves replay-ability in tests and scoring.
+
+    ``shadow`` maps each policy name (e.g. ``"p1_every_k_turns"``) to
+    a dict with at minimum ``{"would_fire": bool, "reason": str}``.
+    Extra keys are passed through, so future policies can carry
+    additional state (e.g. P3 density metrics) without a schema bump.
+
+    The row schema is intentionally flat and deterministic — no
+    auto-generated UUIDs, no random ordering. ``json.dumps`` is
+    called with ``sort_keys=False``: the caller controls field order
+    via the order they pass ``shadow`` (Python 3.7+ dict insertion
+    order).
+    """
+    row: dict[str, Any] = {
+        "ts": now,
+        "session_id": session_id,
+        "selected": selected_policy,
+        "fired": fired,
+        "shadow": shadow,
+    }
+    return json.dumps(row, ensure_ascii=False) + "\n"
+
+
+def append_shadow_row(
+    *,
+    log_path: Path,
+    row_line: str,
+) -> None:
+    """Append one pre-formatted JSON line to the shadow log.
+
+    Creates the parent directory if missing. Opens in append mode
+    with ``encoding="utf-8"``. Caller is responsible for the trailing
+    newline on ``row_line`` (``format_shadow_row`` includes one).
+
+    Never raises: any ``OSError`` is swallowed silently. The caller
+    is the Stop hook hot-path; a missing shadow row is recoverable
+    (the next tick writes a fresh one) but a propagating exception
+    would tear down the hook, which is not. Fail-soft matches the
+    rebuild_log emit contract.
+    """
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(row_line)
+    except OSError:
+        # Fail-soft: hot-path stays alive even if disk is full /
+        # permissions wrong / parent unwritable. Diagnostic is the
+        # absence of a row for this tick, which the operator can
+        # detect post-hoc.
+        return
