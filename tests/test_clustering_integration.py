@@ -19,6 +19,7 @@ from aelfrice.models import (
     LOCK_USER,
     RETENTION_FACT,
     RETENTION_SNAPSHOT,
+    RETENTION_TRANSIENT,
     Belief,
     Edge,
 )
@@ -254,6 +255,79 @@ def test_composes_with_compression(
         assert cb.belief.id == b.id, (
             "compressed_beliefs ordering must match beliefs"
         )
+
+
+def _populate_clustered_compressible_store() -> MemoryStore:
+    """Two graph-connected clusters where the non-representative
+    members are long `transient`-class beliefs whose compressed render
+    is a short stub. Under a tight budget the cluster pack admits more
+    of them when cost_fn reads compressed `rendered_tokens` than when
+    it reads raw `_belief_tokens`. Lets the composed-path test
+    differentiate "cost_fn honored" from "cost_fn ignored"."""
+    s = MemoryStore(":memory:")
+    # Cluster A: one fact representative + two long transient members.
+    s.insert_belief(_mk(
+        "A1",
+        "deploy A1: the system uses sqlite for persistence",
+        retention_class=RETENTION_FACT,
+    ))
+    for bid in ("A2", "A3"):
+        s.insert_belief(_mk(
+            bid,
+            f"deploy {bid}: " + ("scratch about sqlite deploy persistence " * 40),
+            retention_class=RETENTION_TRANSIENT,
+        ))
+    s.insert_edge(Edge(src="A1", dst="A2", type=EDGE_SUPPORTS, weight=0.8))
+    s.insert_edge(Edge(src="A2", dst="A3", type=EDGE_SUPPORTS, weight=0.8))
+    # Cluster B: same shape — fact rep + long transient member.
+    s.insert_belief(_mk(
+        "B1",
+        "deploy B1: prerequisite is sqlite being installed on every host",
+        retention_class=RETENTION_FACT,
+    ))
+    s.insert_belief(_mk(
+        "B2",
+        "deploy B2: " + ("scratch about sqlite host install prereq " * 40),
+        retention_class=RETENTION_TRANSIENT,
+    ))
+    s.insert_edge(Edge(src="B1", dst="B2", type=EDGE_SUPPORTS, weight=0.8))
+    return s
+
+
+def test_compose_cost_fn_actually_honored_under_tight_budget(
+    _no_env_override: None, _isolated_cwd: Path
+) -> None:
+    """Tight-budget differentiation: under the same budget, the composed
+    path (clustering + compression both ON) must admit more beliefs than
+    the cluster-only path (compression OFF) because the cluster pack
+    accounts in compressed `rendered_tokens` (short stubs for the
+    transient-class members) instead of raw `_belief_tokens` (the full
+    long content). If `pack_with_clusters` silently ignored `cost_fn`,
+    the two arms would return the same id set and this test would fail.
+    """
+    s = _populate_clustered_compressible_store()
+    raw = retrieve_v2(
+        s, "deploy sqlite",
+        budget=100,  # tight: long transient members blow this at raw cost
+        use_entity_index=False,
+        use_intentional_clustering=True,
+        use_type_aware_compression=False,
+    )
+    composed = retrieve_v2(
+        s, "deploy sqlite",
+        budget=100,
+        use_entity_index=False,
+        use_intentional_clustering=True,
+        use_type_aware_compression=True,
+    )
+    assert len(composed.beliefs) > len(raw.beliefs), (
+        "composed (clustering+compression) must admit more beliefs than "
+        "cluster-only under the same tight budget — proves "
+        "pack_with_clusters honors cost_fn rather than falling back to "
+        "raw _belief_tokens. "
+        f"raw={[b.id for b in raw.beliefs]} "
+        f"composed={[b.id for b in composed.beliefs]}"
+    )
 
 
 def test_env_var_alone_enables_clustering(
