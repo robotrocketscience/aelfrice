@@ -1,6 +1,6 @@
 # Feature spec: Type-aware compression (#434)
 
-**Status:** implemented behind default-OFF flag; pack-loop budget rewrite landed; lab bench A2 / A4 pending
+**Status:** default-ON since #769 (A2 + A4 bench gates cleared on the lab-side `compression_a*` corpora — A2 mean recall@k uplift +0.3267 / n=25 / 0 regressions; A4 mean fidelity delta +0.0085 / n=15 / 0 regressions). Composes with `use_intentional_clustering` since #878.
 **Issue:** #434
 **Recovery-inventory line:** [`docs/concepts/ROADMAP.md`](../concepts/ROADMAP.md) — *"Type-aware compression | v2.0.0"*
 **Substrate prereqs:** #290 (retention class column + per-source defaults, shipped v1.6.0), #141 (context rebuilder, shipped v1.4.0)

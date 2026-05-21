@@ -9,7 +9,7 @@ This is the reference for power users whose project has a documentation idiom or
 A single optional TOML file at the root of a project (or any ancestor). It exposes two power-user surfaces:
 
 - `[noise]` — onboard-time belief filter. Changes how `aelf onboard` ingests beliefs; nothing else.
-- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, default-on since v2.1), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, opt-in since v2.1), `use_intentional_clustering` (co-locating related beliefs, default-on since v3.0). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
+- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, default-on since v2.1), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, default-on since #769), `use_intentional_clustering` (co-locating related beliefs, default-on since v3.0). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
 - `[rebuilder]` (v1.7+) — context-rebuilder knobs. Selects the query-understanding stack (`query_strategy`) and sets token-budget floors for the session-scoped and L1 belief lanes (`[rebuild_floor] session` and `[rebuild_floor] l1`).
 - `[feedback]` (v3.0+) — feedback-lane opt-ins. `sentiment_from_prose` (default `false`) wires the sentiment-feedback detector into `UserPromptSubmit` (#606).
 - `[user_prompt_submit_hook]` (v3.0+) — UPS hook knobs. `prompt_shape_gate_enabled` (default `true`) gates trivial-prompt and system-envelope short-circuits before BM25 retrieval runs (#674).
@@ -92,15 +92,16 @@ use_hrr_structural = true
 # paths.
 hrr_persist = true
 
-# v2.1+. Default `false`, opt-in. Enables type-aware compression
-# (#434) — populates RetrievalResult.compressed_beliefs with per-
-# belief renderings keyed by retention_class (snapshot → headline,
-# transient → stub, fact + locked → verbatim). The pack-loop budget
-# rewrite that turns the parallel field into recall@k uplift is a
-# follow-up; this flag at v2.1 just exposes the mechanism behind a
-# default-OFF gate. AELFRICE_TYPE_AWARE_COMPRESSION=1 env var
-# overrides.
-use_type_aware_compression = false
+# v2.1+ (#434), default `true` since #769 (A2 + A4 bench gates
+# cleared on the lab-side compression_a* corpora). Type-aware
+# compression: populates RetrievalResult.compressed_beliefs with
+# per-belief renderings keyed by retention_class (snapshot →
+# headline, transient → stub, fact + locked → verbatim). The
+# pack-loop budget rewrite accounts in compressed rendered_tokens
+# so a tight budget admits more transient/snapshot beliefs at
+# their stub/headline cost. Composes with use_intentional_clustering
+# since #878. AELFRICE_TYPE_AWARE_COMPRESSION=0 reverts.
+use_type_aware_compression = true
 
 # v3.0+ (#436). Default `true` since the multi-store production sweep
 # cleared 60/60 PASS at p99 0.328 ms (~15-30x margin under the 5 ms A4
@@ -402,7 +403,7 @@ Precedence (first decisive wins): env var `AELFRICE_HRR_PERSIST` (truthy `"1"`/`
 
 ### `use_type_aware_compression`
 
-Boolean, default `false`, opt-in (v2.1+, #434). Populates `RetrievalResult.compressed_beliefs` with per-belief renderings dispatched by `belief.retention_class`:
+Boolean, default `true` since #769 (v2.1+, #434). Populates `RetrievalResult.compressed_beliefs` with per-belief renderings dispatched by `belief.retention_class`:
 
 | Retention class | Locked | Unlocked | Notes |
 |---|---|---|---|
@@ -413,9 +414,9 @@ Boolean, default `false`, opt-in (v2.1+, #434). Populates `RetrievalResult.compr
 
 Compression is pure and deterministic — no store, clock, env, or random reads. The `compressed_beliefs` field is parallel to `beliefs` (same length, same order); consumers that want the raw belief read `.beliefs[i]`, consumers that want the compressed render read `.compressed_beliefs[i].rendered`.
 
-When disabled (default), `compressed_beliefs` is empty and `beliefs` is byte-identical to the v1.x return shape.
+Enabled by default: `compressed_beliefs` is parallel to `beliefs` (same length, same order). To disable for v2.x parity, set the env var or TOML key to `false`; with that, `compressed_beliefs` is empty and the pack accounts in raw `_belief_tokens`.
 
-Precedence (first decisive wins): env var `AELFRICE_TYPE_AWARE_COMPRESSION=0`/`1` > explicit Python kwarg `use_type_aware_compression=<bool>` > TOML `[retrieval] use_type_aware_compression` > default `false`. The default-on flip is gated on the lab-side bench in `tests/bench_gate/test_compression_uplift.py` plus the pack-loop budget rewrite (follow-up).
+Precedence (first decisive wins): env var `AELFRICE_TYPE_AWARE_COMPRESSION=0`/`1` > explicit Python kwarg `use_type_aware_compression=<bool>` > TOML `[retrieval] use_type_aware_compression` > default `true`. The default-on flip landed in #769 after the A2 + A4 bench gates (`docs/design/feature-type-aware-compression.md` §"Bench-gate / ship-or-defer policy") cleared on the lab-side `compression_a*` corpora. Composes with `use_intentional_clustering` since #878.
 
 ### Placeholder flags
 
