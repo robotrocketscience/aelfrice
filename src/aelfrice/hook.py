@@ -27,6 +27,7 @@ import os
 import re
 import secrets
 import string
+import subprocess
 import sys
 import tempfile
 import time
@@ -1856,6 +1857,66 @@ def _write_sentiment_feedback_audit(
         "n_beliefs": len(applied_ids),
     }
     _append_audit(audit_path, record, cfg.max_bytes, stderr=stderr)
+
+
+# ---------------------------------------------------------------------------
+# Recent-work resolver (#887)
+# ---------------------------------------------------------------------------
+
+# Subprocess timeout. SessionStart fires before the first prompt; the
+# user is blocked on the hook returning, so a slow git invocation must
+# fail fast rather than stall the session.
+_RECENT_WORK_GIT_TIMEOUT_S: Final[float] = 1.5
+
+# Cap on commit subjects emitted into <recent-work>. The block is a
+# transient orientation aid, not a full git log; a tight ceiling keeps
+# the SessionStart budget bounded.
+DEFAULT_RECENT_WORK_COMMIT_LIMIT: Final[int] = 8
+
+# Sub-block tags for the recent-work surface inside <session-start>.
+RECENT_WORK_OPEN_TAG: Final[str] = "<recent-work>"
+RECENT_WORK_CLOSE_TAG: Final[str] = "</recent-work>"
+
+
+def _git_text(args: list[str], cwd: Path | None) -> str | None:
+    """Run `git <args>` from cwd and return stripped stdout, or None.
+
+    Returns None for: missing git binary, non-zero exit, timeout, empty
+    stdout. Never raises — callers fail-soft on None. Mirrors the
+    subprocess shape used in `aelfrice.db_paths._git_common_dir` and
+    `project_warm._git_resolve`.
+    """
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd) if cwd is not None else None,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_RECENT_WORK_GIT_TIMEOUT_S,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    raw = result.stdout.strip()
+    return raw if raw else None
+
+
+def _resolve_branch(cwd: Path | None = None) -> tuple[str | None, str | None]:
+    """Return (branch_name, upstream_ref) at `cwd`, or (None, None).
+
+    `branch_name` is the short symbolic ref of HEAD; None for detached
+    HEAD or non-git cwds. `upstream_ref` is the tracking ref (e.g.
+    `github/main`); None when no upstream is configured.
+    """
+    branch = _git_text(["symbolic-ref", "--short", "HEAD"], cwd)
+    if branch is None:
+        return (None, None)
+    upstream = _git_text(
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd,
+    )
+    return (branch, upstream)
 
 
 # ---------------------------------------------------------------------------
