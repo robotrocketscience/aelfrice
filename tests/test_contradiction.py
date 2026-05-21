@@ -13,6 +13,7 @@ from aelfrice.contradiction import (
     PRECEDENCE_DOCUMENT_RECENT,
     PRECEDENCE_USER_CORRECTED,
     PRECEDENCE_USER_STATED,
+    PRECEDENCE_USER_TRANSCRIPT,
     PRECEDENCE_USER_VALIDATED,
     SOURCE_PREFIX,
     auto_resolve_all_contradictions,
@@ -29,6 +30,7 @@ from aelfrice.models import (
     LOCK_NONE,
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
+    ORIGIN_USER_TRANSCRIPT,
     ORIGIN_USER_VALIDATED,
     Belief,
     Edge,
@@ -106,6 +108,42 @@ def test_agent_inferred_origin_maps_to_agent_inferred_class() -> None:
     b = _mk("X", origin=ORIGIN_AGENT_INFERRED)
     assert precedence_class(b) == PRECEDENCE_AGENT_INFERRED
     assert precedence_class_name(b) == "agent_inferred"
+
+
+def test_user_transcript_origin_maps_to_user_transcript_class() -> None:
+    b = _mk("X", origin=ORIGIN_USER_TRANSCRIPT)
+    assert precedence_class(b) == PRECEDENCE_USER_TRANSCRIPT
+    assert precedence_class_name(b) == "user_transcript"
+
+
+def test_user_transcript_beats_document_recent() -> None:
+    a = _mk("A", origin=ORIGIN_USER_TRANSCRIPT)
+    b = _mk("B")  # origin=unknown -> document_recent
+    s = _seed(a, b)
+    s.insert_edge(Edge(src="A", dst="B", type=EDGE_CONTRADICTS, weight=1.0))
+    result = resolve_contradiction(s, "A", "B")
+    assert result.winner_id == "A"
+    assert result.rule_fired == "user_transcript_beats_document_recent"
+
+
+def test_user_transcript_beats_agent_inferred() -> None:
+    a = _mk("A", origin=ORIGIN_USER_TRANSCRIPT)
+    b = _mk("B", origin=ORIGIN_AGENT_INFERRED)
+    s = _seed(a, b)
+    s.insert_edge(Edge(src="A", dst="B", type=EDGE_CONTRADICTS, weight=1.0))
+    result = resolve_contradiction(s, "A", "B")
+    assert result.winner_id == "A"
+    assert result.rule_fired == "user_transcript_beats_agent_inferred"
+
+
+def test_user_validated_beats_user_transcript() -> None:
+    a = _mk("A", origin=ORIGIN_USER_VALIDATED)
+    b = _mk("B", origin=ORIGIN_USER_TRANSCRIPT)
+    s = _seed(a, b)
+    s.insert_edge(Edge(src="A", dst="B", type=EDGE_CONTRADICTS, weight=1.0))
+    result = resolve_contradiction(s, "A", "B")
+    assert result.winner_id == "A"
+    assert result.rule_fired == "user_validated_beats_user_transcript"
 
 
 def test_unknown_origin_falls_through_to_document_recent() -> None:

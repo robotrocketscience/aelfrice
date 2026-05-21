@@ -71,6 +71,7 @@ from aelfrice.models import (
     ORIGIN_AGENT_INFERRED,
     ORIGIN_USER_CORRECTED,
     ORIGIN_USER_STATED,
+    ORIGIN_USER_TRANSCRIPT,
     ORIGIN_USER_VALIDATED,
     Belief,
     Edge,
@@ -80,9 +81,12 @@ from aelfrice.store import MemoryStore
 # Precedence classes. Higher value wins. Names are stable wire-format
 # strings — they appear in feedback_history.source — so do not rename
 # without a migration.
-PRECEDENCE_USER_STATED: Final[int] = 5
-PRECEDENCE_USER_CORRECTED: Final[int] = 4
-PRECEDENCE_USER_VALIDATED: Final[int] = 3
+PRECEDENCE_USER_STATED: Final[int] = 6
+PRECEDENCE_USER_CORRECTED: Final[int] = 5
+PRECEDENCE_USER_VALIDATED: Final[int] = 4
+# v3.x #888: user-typed chat content sits above scanner-extracted
+# document content but below explicit promote/lock intent.
+PRECEDENCE_USER_TRANSCRIPT: Final[int] = 3
 PRECEDENCE_DOCUMENT_RECENT: Final[int] = 2
 PRECEDENCE_AGENT_INFERRED: Final[int] = 1
 
@@ -90,6 +94,7 @@ CLASS_NAMES: Final[dict[int, str]] = {
     PRECEDENCE_USER_STATED: "user_stated",
     PRECEDENCE_USER_CORRECTED: "user_corrected",
     PRECEDENCE_USER_VALIDATED: "user_validated",
+    PRECEDENCE_USER_TRANSCRIPT: "user_transcript",
     PRECEDENCE_DOCUMENT_RECENT: "document_recent",
     PRECEDENCE_AGENT_INFERRED: "agent_inferred",
 }
@@ -133,8 +138,11 @@ class ResolutionResult:
 def precedence_class(belief: Belief) -> int:
     """Return the precedence class for `belief`.
 
-    v1.2+ five-class precedence (highest first): user_stated,
-    user_corrected, user_validated, document_recent, agent_inferred.
+    v3.x six-class precedence (highest first): user_stated,
+    user_corrected, user_validated, user_transcript, document_recent,
+    agent_inferred. user_transcript (#888) sits above document_recent —
+    user-typed chat content outranks scanner-extracted document content
+    — but below user_validated, which carries explicit promote intent.
 
     Resolution order:
       1. lock_level=user short-circuits to user_stated regardless of
@@ -157,6 +165,8 @@ def precedence_class(belief: Belief) -> int:
         return PRECEDENCE_USER_CORRECTED
     if belief.origin == ORIGIN_USER_VALIDATED:
         return PRECEDENCE_USER_VALIDATED
+    if belief.origin == ORIGIN_USER_TRANSCRIPT:
+        return PRECEDENCE_USER_TRANSCRIPT
     if belief.origin == ORIGIN_AGENT_INFERRED:
         return PRECEDENCE_AGENT_INFERRED
     if belief.type == BELIEF_CORRECTION:
