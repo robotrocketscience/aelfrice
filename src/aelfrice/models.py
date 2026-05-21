@@ -151,6 +151,13 @@ def retention_class_for_source(source_kind: str) -> str:
 ORIGIN_USER_STATED: Final[str] = "user_stated"
 ORIGIN_USER_CORRECTED: Final[str] = "user_corrected"
 ORIGIN_USER_VALIDATED: Final[str] = "user_validated"
+# v3.x #888: user-typed chat content captured via the transcript-ingest
+# pipeline (UserPromptSubmit -> turns.jsonl -> PreCompact -> ingest_jsonl).
+# Distinct from user_stated (which requires explicit `aelf lock` /
+# `aelf remember` intent) and from agent_inferred (which covers
+# scanner-extracted code beliefs at deflated prior). Carries the full
+# undeflated factual prior because the user actually typed the words.
+ORIGIN_USER_TRANSCRIPT: Final[str] = "user_transcript"
 ORIGIN_AGENT_INFERRED: Final[str] = "agent_inferred"
 ORIGIN_AGENT_REMEMBERED: Final[str] = "agent_remembered"
 ORIGIN_DOCUMENT_RECENT: Final[str] = "document_recent"
@@ -166,6 +173,7 @@ ORIGINS: Final[frozenset[str]] = frozenset({
     ORIGIN_USER_STATED,
     ORIGIN_USER_CORRECTED,
     ORIGIN_USER_VALIDATED,
+    ORIGIN_USER_TRANSCRIPT,
     ORIGIN_AGENT_INFERRED,
     ORIGIN_AGENT_REMEMBERED,
     ORIGIN_DOCUMENT_RECENT,
