@@ -69,8 +69,10 @@ def _isolated_cwd(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 # --- Flag resolution ---------------------------------------------------
 
 
-def test_default_is_off(_no_env_override: None, _isolated_cwd: Path) -> None:
-    assert resolve_use_type_aware_compression() is False
+def test_default_is_on(_no_env_override: None, _isolated_cwd: Path) -> None:
+    # #769 flipped the default from False → True after A2 + A4 bench
+    # gates cleared (post-#878 compose-reconciliation).
+    assert resolve_use_type_aware_compression() is True
 
 
 def test_explicit_kwarg_overrides_default(
@@ -94,10 +96,10 @@ def test_env_garbage_falls_through(
 ) -> None:
     monkeypatch.setenv(ENV_TYPE_AWARE_COMPRESSION, "maybe")
     # Garbage env reverts to the next layer; with no kwarg/toml,
-    # default OFF wins.
-    assert resolve_use_type_aware_compression() is False
+    # default ON wins (#769 default-flip).
+    assert resolve_use_type_aware_compression() is True
     # And a kwarg now decides.
-    assert resolve_use_type_aware_compression(True) is True
+    assert resolve_use_type_aware_compression(False) is False
 
 
 def test_toml_resolves_when_kwarg_and_env_unset(
@@ -200,12 +202,14 @@ def test_env_var_alone_enables_compression(
     assert len(result.compressed_beliefs) == len(result.beliefs)
 
 
-def test_default_call_leaves_compressed_empty(
+def test_default_call_populates_compressed(
     _no_env_override: None, _isolated_cwd: Path
 ) -> None:
+    # Post-#769 default-flip: default call resolves compression ON, so
+    # compressed_beliefs is parallel to beliefs.
     s = _populate_store()
-    result = retrieve_v2(s, "sqlite system")  # no kwarg, no env, default OFF
-    assert result.compressed_beliefs == []
+    result = retrieve_v2(s, "sqlite system")  # no kwarg, no env, default ON
+    assert len(result.compressed_beliefs) == len(result.beliefs)
 
 
 # --- Pack-loop budget rewrite (#434 phase 2) ---------------------------
@@ -251,29 +255,31 @@ def test_pack_widens_when_flag_on(
     assert len(on.beliefs) > len(off.beliefs)
 
 
-def test_pack_byte_identical_when_flag_off(
+def test_pack_byte_identical_when_flag_on(
     _no_env_override: None, _isolated_cwd: Path
 ) -> None:
-    """Flag OFF reproduces pre-#434-phase-2 selection at the same budget.
+    """Default-ON byte-identity invariant.
 
-    Two calls — explicit OFF vs default OFF — must agree byte-for-byte
-    on the merged belief id list. This is the byte-identity invariant
-    that makes the pack-loop change safe to land default-OFF.
+    Post-#769 the default resolves compression ON; an explicit ON call
+    and a default call must agree byte-for-byte on the merged belief
+    id list. This is the ON-byte-identity invariant that supersedes the
+    earlier OFF-byte-identity invariant (renamed mirroring the #436
+    precedent for use_intentional_clustering's default flip).
     """
     s = _populate_pack_widening_store()
-    explicit_off = retrieve_v2(
+    explicit_on = retrieve_v2(
         s, "sqlite system",
         budget=80,
         use_entity_index=False,
-        use_type_aware_compression=False,
+        use_type_aware_compression=True,
     )
-    default_off = retrieve_v2(
+    default_on = retrieve_v2(
         s, "sqlite system",
         budget=80,
         use_entity_index=False,
     )
-    assert [b.id for b in explicit_off.beliefs] \
-        == [b.id for b in default_off.beliefs]
+    assert [b.id for b in explicit_on.beliefs] \
+        == [b.id for b in default_on.beliefs]
 
 
 def test_pack_locked_unchanged_when_flag_on(
@@ -333,40 +339,41 @@ def test_retrieve_pack_widens_when_flag_on(
     assert len(on) > len(off)
 
 
-def test_retrieve_pack_byte_identical_when_flag_off(
+def test_retrieve_pack_byte_identical_when_flag_on(
     _no_env_override: None, _isolated_cwd: Path
 ) -> None:
-    """Default-OFF: id list matches an explicit OFF call byte-for-byte."""
+    """Default-ON: id list matches an explicit ON call byte-for-byte
+    (#769 default-flip, ON-byte-identity invariant)."""
     s = _populate_pack_widening_store()
-    explicit_off = retrieve(
+    explicit_on = retrieve(
         s, "sqlite system",
         token_budget=80,
         entity_index_enabled=False,
-        use_type_aware_compression=False,
+        use_type_aware_compression=True,
     )
-    default_off = retrieve(
+    default_on = retrieve(
         s, "sqlite system",
         token_budget=80,
         entity_index_enabled=False,
     )
-    assert [b.id for b in explicit_off] == [b.id for b in default_off]
+    assert [b.id for b in explicit_on] == [b.id for b in default_on]
 
 
-def test_retrieve_env_var_enables_compression(
+def test_retrieve_env_var_disables_compression(
     monkeypatch: pytest.MonkeyPatch, _isolated_cwd: Path
 ) -> None:
-    """`AELFRICE_TYPE_AWARE_COMPRESSION=1` flips the pack via the resolver.
+    """`AELFRICE_TYPE_AWARE_COMPRESSION=0` reverts the pack via the resolver.
 
-    This is the path the A4 bench harness uses: it sets the env var around
-    `rebuild_v14`, and `rebuild_v14` calls `retrieve()`. Without the
-    wiring this test guards, the env var has no effect.
+    Post-#769 the default is ON; the env var path now tests that an
+    explicit OFF env reverts to raw-token accounting. This is the path
+    operators use to roll back to v2.x parity without editing TOML.
     """
     s = _populate_pack_widening_store()
-    monkeypatch.delenv(ENV_TYPE_AWARE_COMPRESSION, raising=False)
+    monkeypatch.setenv(ENV_TYPE_AWARE_COMPRESSION, "0")
     off = retrieve(
         s, "sqlite system", token_budget=80, entity_index_enabled=False,
     )
-    monkeypatch.setenv(ENV_TYPE_AWARE_COMPRESSION, "1")
+    monkeypatch.delenv(ENV_TYPE_AWARE_COMPRESSION, raising=False)
     on = retrieve(
         s, "sqlite system", token_budget=80, entity_index_enabled=False,
     )

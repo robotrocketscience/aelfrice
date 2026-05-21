@@ -1711,9 +1711,13 @@ def resolve_use_type_aware_compression(
       1. AELFRICE_TYPE_AWARE_COMPRESSION env var (truthy / falsy normalised).
       2. Explicit `explicit` kwarg from the caller.
       3. `[retrieval] use_type_aware_compression` in `.aelfrice.toml`.
-      4. Default: False — ships behind the flag at v2.0.0; the bench gate
-         (A2 + A4 in docs/design/feature-type-aware-compression.md) flips the
-         default after lab-side benchmark evidence clears.
+      4. Default: True — flipped from False after the A2 + A4 bench
+         gates (docs/design/feature-type-aware-compression.md) cleared
+         on the lab-side compression_a* corpora (#769: A2 mean recall@k
+         uplift +0.3267 on n=25 with zero per-row regressions; A4 mean
+         fidelity delta +0.0085 on n=15). Compose-compatibility with
+         `use_intentional_clustering` shipped in #878 (pack_with_clusters
+         cost_fn seam); both flags resolving True is supported.
     """
     env = _env_type_aware_compression_override()
     if env is not None:
@@ -1723,7 +1727,7 @@ def resolve_use_type_aware_compression(
     toml_value = _read_toml_flag_for(TYPE_AWARE_COMPRESSION_FLAG, start)
     if toml_value is not None:
         return toml_value
-    return False
+    return True
 
 
 def resolve_use_intentional_clustering(
