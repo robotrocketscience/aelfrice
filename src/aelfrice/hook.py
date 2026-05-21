@@ -2738,17 +2738,24 @@ def _maybe_fire_cadence_checkpoint(
     # when the feature is unused.
     from aelfrice.cadence import (  # noqa: PLC0415
         CadenceConfig,
+        POLICY_OFF,
         POLICY_P1_EVERY_K_TURNS,
         POLICY_P2_CTX_THRESHOLD,
+        append_shadow_row,
         estimate_transcript_bytes,
+        format_shadow_row,
         read_last_user_prompt,
         resolve_cadence_ctx_byte_window,
         resolve_cadence_ctx_threshold,
         resolve_cadence_enabled,
         resolve_cadence_k,
         resolve_cadence_policy,
+        resolve_cadence_shadow_mode_enabled,
+        shadow_log_path,
         should_fire,
         should_fire_p2,
+        would_fire_p1,
+        would_fire_p2,
     )
     from aelfrice.session_ring import read_ring_state  # noqa: PLC0415
 
@@ -2760,6 +2767,18 @@ def _maybe_fire_cadence_checkpoint(
     if not resolve_cadence_enabled(start=cwd):
         return
     policy = resolve_cadence_policy(start=cwd)
+
+    # #875 shadow-evaluation mode: when [cadence] shadow_mode_enabled is
+    # opt-in true, log every implemented policy's would_fire decision on
+    # this tick. Selected policy still drives live firing below; the
+    # shadow log is purely diagnostic. Fail-soft.
+    _maybe_log_cadence_shadow_tick(
+        cwd=cwd,
+        payload=payload,
+        session_id=session_id,
+        policy=policy,
+        serr=serr,
+    )
 
     if policy == POLICY_P1_EVERY_K_TURNS:
         k = resolve_cadence_k(start=cwd)
@@ -2937,6 +2956,137 @@ def _maybe_run_ups_cadence_checkpoint(
 
     # Unknown policy / POLICY_OFF — no-op.
     return None
+
+
+
+def _maybe_log_cadence_shadow_tick(
+    *,
+    cwd: Path,
+    payload: dict[str, object],
+    session_id: str,
+    policy: str,
+    serr: IO[str],
+) -> None:
+    """Write one shadow-evaluation row for this Stop-hook tick (#875).
+
+    No-op when ``[cadence] shadow_mode_enabled`` is false (default).
+    When true, evaluates would_fire_p1 and would_fire_p2 against the
+    same inputs the live dispatch would use, derives ``fired`` from
+    the selected policy's decision, and appends one JSONL row to
+    ``<aelfrice-dir>/cadence_shadow/<session_id>.jsonl``.
+
+    The function intentionally re-resolves the same knobs the live
+    dispatch reads (k, ctx_threshold, ctx_byte_window, transcript
+    path, last user prompt). The duplicate work is bounded by
+    shadow_mode_enabled defaulting to false — when off, this
+    function returns on the first line at no measurable cost.
+
+    Fail-soft: any exception traces a stderr line and returns. The
+    log is diagnostic; a missing row is recoverable.
+    """
+    # Local imports already pulled into the caller's namespace.
+    from aelfrice.cadence import (  # noqa: PLC0415
+        CadenceConfig,
+        POLICY_OFF,
+        POLICY_P1_EVERY_K_TURNS,
+        POLICY_P2_CTX_THRESHOLD,
+        append_shadow_row,
+        format_shadow_row,
+        read_last_user_prompt,
+        resolve_cadence_ctx_byte_window,
+        resolve_cadence_ctx_threshold,
+        resolve_cadence_k,
+        resolve_cadence_shadow_mode_enabled,
+        shadow_log_path,
+        would_fire_p1,
+        would_fire_p2,
+    )
+    from aelfrice.context_rebuilder import _rebuild_log_dir_for_db  # noqa: PLC0415
+    from aelfrice.session_ring import read_ring_state  # noqa: PLC0415
+
+    try:
+        if not resolve_cadence_shadow_mode_enabled(start=cwd):
+            return
+
+        # Gather all policy inputs into one full config. Shadow predicates
+        # are policy-agnostic, so a single cfg with every knob populated
+        # is enough to evaluate any policy.
+        k = resolve_cadence_k(start=cwd)
+        ctx_threshold = resolve_cadence_ctx_threshold(start=cwd)
+        ctx_byte_window = resolve_cadence_ctx_byte_window(start=cwd)
+        cfg = CadenceConfig(
+            enabled=True,
+            policy=policy,
+            k=k,
+            ctx_threshold=ctx_threshold,
+            ctx_byte_window=ctx_byte_window,
+        )
+
+        # P1 input: fire_idx from session ring state. Tolerate missing /
+        # malformed by defaulting to 0 (which would_fire_p1 rejects).
+        state = read_ring_state(session_id)
+        raw_idx: Any = (
+            state.get("next_fire_idx") if isinstance(state, dict) else None
+        )
+        fire_idx = raw_idx if isinstance(raw_idx, int) and not isinstance(raw_idx, bool) else 0
+
+        # P2 inputs: transcript path + last user prompt.
+        tp_obj = payload.get(_TRANSCRIPT_PATH_KEY)
+        tp: Path | None
+        if isinstance(tp_obj, str) and tp_obj:
+            tp = Path(tp_obj)
+        elif isinstance(tp_obj, os.PathLike):
+            tp = Path(tp_obj)
+        else:
+            tp = None
+        last_prompt = read_last_user_prompt(tp)
+
+        p1_fires, p1_reason = would_fire_p1(fire_idx=fire_idx, config=cfg)
+        p2_fires, p2_reason = would_fire_p2(
+            transcript_path=tp,
+            last_user_prompt=last_prompt,
+            config=cfg,
+        )
+
+        if policy == POLICY_P1_EVERY_K_TURNS:
+            fired = p1_fires
+        elif policy == POLICY_P2_CTX_THRESHOLD:
+            fired = p2_fires
+        else:
+            # POLICY_OFF or unknown — selected policy never fires.
+            fired = False
+
+        # Resolve the per-project shadow-log path. In-memory DB (tests)
+        # skips the write — same fail-soft as _write_cadence_resume_cache.
+        p = db_path()
+        if str(p) == ":memory:":
+            return
+        log_path = shadow_log_path(
+            project_aelfrice_dir=_rebuild_log_dir_for_db(p).parent,
+            session_id=session_id,
+        )
+        row = format_shadow_row(
+            session_id=session_id,
+            selected_policy=policy,
+            fired=fired,
+            shadow={
+                POLICY_P1_EVERY_K_TURNS: {
+                    "would_fire": p1_fires,
+                    "reason": p1_reason,
+                },
+                POLICY_P2_CTX_THRESHOLD: {
+                    "would_fire": p2_fires,
+                    "reason": p2_reason,
+                },
+            },
+            now=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        append_shadow_row(log_path=log_path, row_line=row)
+    except Exception as exc:
+        print(
+            f"aelfrice: cadence shadow-log write failed (non-fatal): {exc}",
+            file=serr,
+        )
 
 
 def _run_cadence_rebuild(
