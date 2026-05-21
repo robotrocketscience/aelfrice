@@ -13,7 +13,6 @@ from aelfrice.cadence import (
     POLICY_P2_CTX_THRESHOLD,
 )
 from aelfrice.cadence_score import (
-    ShadowSummary,
     compute_summary,
     format_report,
     iter_shadow_rows,
