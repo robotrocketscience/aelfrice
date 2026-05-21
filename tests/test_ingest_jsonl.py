@@ -5,7 +5,10 @@ import json
 from pathlib import Path
 
 from aelfrice.ingest import ingest_jsonl
-from aelfrice.models import EDGE_DERIVED_FROM
+from aelfrice.models import (
+    EDGE_DERIVED_FROM,
+    ORIGIN_USER_TRANSCRIPT,
+)
 from aelfrice.store import MemoryStore
 
 
@@ -45,6 +48,38 @@ def test_ingest_writes_beliefs_with_session_id(tmp_path: Path) -> None:
         ).fetchall()
         for row in rows:
             assert row["session_id"] == "S1"
+    finally:
+        store.close()
+
+
+def test_user_role_turns_become_user_transcript_origin(tmp_path: Path) -> None:
+    """#888: a role='user' turn ingested via ingest_jsonl produces a
+    belief with origin=user_transcript and the undeflated factual
+    prior (alpha=3.0, beta=1.0). Without role plumbing the belief
+    would land at origin=agent_inferred with alpha=0.6, identical to
+    scanner output."""
+    p = tmp_path / "turns.jsonl"
+    _write_jsonl(p, [
+        {
+            "schema_version": 1, "ts": "2026-04-27T00:00:00Z",
+            "role": "user",
+            "text": "The K2 interview is a Microsoft Teams call.",
+            "session_id": "S1", "turn_id": "t1",
+        },
+    ])
+    store = MemoryStore(":memory:")
+    try:
+        r = ingest_jsonl(store, p)
+        assert r.turns_ingested == 1
+        assert r.beliefs_inserted >= 1
+        rows = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+            "SELECT origin, alpha, beta FROM beliefs"
+        ).fetchall()
+        assert rows, "expected at least one belief row"
+        for row in rows:
+            assert row["origin"] == ORIGIN_USER_TRANSCRIPT
+            assert row["alpha"] == 3.0
+            assert row["beta"] == 1.0
     finally:
         store.close()
 

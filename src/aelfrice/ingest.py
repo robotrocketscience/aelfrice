@@ -170,6 +170,7 @@ def _ingest_turn_ids(
     created_at: str | None = None,
     *,
     bulk: bool = False,  # noqa: ARG001
+    role: str | None = None,
 ) -> list[str]:
     """Internal variant of ingest_turn returning the derived belief ids.
 
@@ -222,6 +223,18 @@ def _ingest_turn_ids(
     # that `ingest_turn` returns the count of newly-inserted beliefs.
     ids_before: set[str] = set(store.list_belief_ids())
 
+    # #888: when the caller supplies a `role` (typically 'user' from
+    # ingest_jsonl after the #785 assistant-row gate), stamp it on the
+    # ingest_log row so `derive()` can read it from raw_meta and route
+    # user-typed transcript text to the undeflated, user_transcript-
+    # origin branch. Without the role tag every transcript row falls
+    # into the scanner-origin agent_inferred path.
+    raw_meta: dict[str, object] = {
+        "call_site": CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+    }
+    if role is not None:
+        raw_meta["role"] = role
+
     log_ids: list[str] = []
     for sentence in full_sentences:
         log_id = store.record_ingest(
@@ -230,7 +243,7 @@ def _ingest_turn_ids(
             raw_text=sentence,
             session_id=session_id,
             ts=ts,
-            raw_meta={"call_site": CORROBORATION_SOURCE_TRANSCRIPT_INGEST},
+            raw_meta=raw_meta,
         )
         log_ids.append(log_id)
 
@@ -455,6 +468,7 @@ def ingest_jsonl(
             ids = _ingest_turn_ids(
                 store=store, text=cast(str, text), source=source_label,
                 session_id=sess_str, created_at=created_at,
+                role=cast(str, role) if isinstance(role, str) else None,
             )
             turns_ingested += 1
             beliefs_inserted += len(ids)
