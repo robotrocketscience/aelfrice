@@ -155,6 +155,12 @@ def _normalize_for_session(
     If the stored ``session_id`` differs (or is missing), start a fresh
     ring. Otherwise normalize the existing ring shape (clamp ring_max,
     coerce missing fields, trim oversize).
+
+    P3 cadence state (#876): ``bytes_at_last_fire`` and
+    ``classifications`` are optional slots used by p3_velocity and
+    p3_substantive respectively. Pre-#876 ring files lack these fields;
+    we default them on read so backward-compat is automatic — no
+    schema migration needed.
     """
     stored_sid = data.get("session_id") if isinstance(data, dict) else None
     if not isinstance(stored_sid, str) or stored_sid != session_id:
@@ -164,6 +170,8 @@ def _normalize_for_session(
             "ring_max": ring_max,
             "next_fire_idx": 0,
             "evicted_total": 0,
+            "bytes_at_last_fire": 0,
+            "classifications": [],
         }
     ring = data.get("ring")
     if not isinstance(ring, list):
@@ -174,12 +182,28 @@ def _normalize_for_session(
     evicted = data.get("evicted_total")
     if not isinstance(evicted, int) or evicted < 0:
         evicted = 0
+    # P3-velocity state — non-negative int; default 0 for pre-#876 rings
+    bytes_at_last_fire = data.get("bytes_at_last_fire")
+    if (
+        not isinstance(bytes_at_last_fire, int)
+        or isinstance(bytes_at_last_fire, bool)
+        or bytes_at_last_fire < 0
+    ):
+        bytes_at_last_fire = 0
+    # P3-substantive state — list of bools; default [] for pre-#876 rings
+    classifications_raw = data.get("classifications")
+    if isinstance(classifications_raw, list):
+        classifications = [bool(c) for c in classifications_raw if isinstance(c, bool)]
+    else:
+        classifications = []
     return {
         "session_id": session_id,
         "ring": [e for e in ring if isinstance(e, dict) and isinstance(e.get("id"), str)],
         "ring_max": ring_max,
         "next_fire_idx": next_idx,
         "evicted_total": evicted,
+        "bytes_at_last_fire": bytes_at_last_fire,
+        "classifications": classifications,
     }
 
 
@@ -336,6 +360,8 @@ def append_ids(
             data["next_fire_idx"] = next_fire_idx
             data["evicted_total"] = int(data.get("evicted_total", 0)) + evicted
             data["ring_max"] = ring_max
+            # P3 state slots (#876) are preserved through normalize_for_session
+            # at read time and round-trip unchanged through this append path.
             _atomic_write(ring_path, json.dumps(data))
             return next_fire_idx
         except Exception as exc:
@@ -346,6 +372,143 @@ def append_ids(
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
             except OSError:
                 # Best-effort cleanup; lock_fd may already be closed.
+                pass
+    finally:
+        try:
+            os.close(lock_fd)
+        except OSError:
+            pass
+
+
+def update_bytes_at_last_fire(
+    session_id: str | None,
+    transcript_bytes: int,
+    *,
+    stderr: IO[str] | None = None,
+) -> bool:
+    """Update the p3_velocity ``bytes_at_last_fire`` slot (#876).
+
+    Called by the cadence dispatcher after a p3_velocity fire — the
+    predicate's next evaluation reads this value to compute density
+    ``(transcript_bytes - bytes_at_last_fire) / turns_since_last_fire``.
+
+    Takes the same advisory lock as :func:`append_ids` so concurrent
+    UPS + Stop hooks can't clobber each other's writes. Fail-soft:
+    returns False on any error (file missing, lock failure, malformed
+    JSON, etc.); the caller continues without raising.
+
+    Returns True on successful write, False on no-op or error.
+    """
+    if not session_id:
+        return False
+    if not isinstance(transcript_bytes, int) or transcript_bytes < 0:
+        return False
+    ring_path = _session_ring_path()
+    if ring_path is None:
+        return False
+    ring_max = _resolve_ring_max()
+    lock_path = _session_ring_lock_path(ring_path)
+    try:
+        lock_fd = _open_lock(lock_path)
+    except OSError as exc:
+        _warn(stderr, f"session_ring: lock open failed (non-fatal): {exc}")
+        return False
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        except OSError as exc:
+            _warn(stderr, f"session_ring: flock failed (non-fatal): {exc}")
+            return False
+        try:
+            data = _read_ring_unlocked(ring_path)
+            data = _normalize_for_session(data, session_id, ring_max)
+            data["bytes_at_last_fire"] = transcript_bytes
+            _atomic_write(ring_path, json.dumps(data))
+            return True
+        except Exception as exc:
+            _warn(
+                stderr,
+                f"session_ring: update_bytes_at_last_fire failed (non-fatal): {exc}",
+            )
+            return False
+        finally:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        try:
+            os.close(lock_fd)
+        except OSError:
+            pass
+
+
+def push_classification(
+    session_id: str | None,
+    is_substantive: bool,
+    *,
+    window_cap: int,
+    stderr: IO[str] | None = None,
+) -> bool:
+    """Push one classification onto the p3_substantive rolling window (#876).
+
+    Called by the cadence dispatcher per turn (Stop or UPS) regardless
+    of whether cadence fires — the window is a running classification
+    history independent of fire decisions. The predicate sums True
+    values across the window to compute the substantive-ratio.
+
+    ``window_cap`` caps the list length: oldest classifications are
+    evicted FIFO once the cap is exceeded. The cap typically equals
+    ``CadenceConfig.p3_substantive_window`` but the ring module stays
+    cadence-config-agnostic — caller passes the cap explicitly.
+
+    Takes the same advisory lock as :func:`append_ids`. Fail-soft:
+    returns False on any error.
+
+    Returns True on successful write, False on no-op or error.
+    """
+    if not session_id:
+        return False
+    if not isinstance(is_substantive, bool):
+        return False
+    if not isinstance(window_cap, int) or window_cap < 1:
+        return False
+    ring_path = _session_ring_path()
+    if ring_path is None:
+        return False
+    ring_max = _resolve_ring_max()
+    lock_path = _session_ring_lock_path(ring_path)
+    try:
+        lock_fd = _open_lock(lock_path)
+    except OSError as exc:
+        _warn(stderr, f"session_ring: lock open failed (non-fatal): {exc}")
+        return False
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        except OSError as exc:
+            _warn(stderr, f"session_ring: flock failed (non-fatal): {exc}")
+            return False
+        try:
+            data = _read_ring_unlocked(ring_path)
+            data = _normalize_for_session(data, session_id, ring_max)
+            classifications: list[bool] = data["classifications"]
+            classifications.append(is_substantive)
+            if len(classifications) > window_cap:
+                classifications[:] = classifications[-window_cap:]
+            data["classifications"] = classifications
+            _atomic_write(ring_path, json.dumps(data))
+            return True
+        except Exception as exc:
+            _warn(
+                stderr,
+                f"session_ring: push_classification failed (non-fatal): {exc}",
+            )
+            return False
+        finally:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except OSError:
                 pass
     finally:
         try:
