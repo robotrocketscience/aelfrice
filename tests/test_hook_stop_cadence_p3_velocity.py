@@ -18,7 +18,6 @@ from aelfrice import hook
 from aelfrice.cadence import (
     CONFIG_FILENAME,
     ENV_CADENCE_P3_VELOCITY_THRESHOLD,
-    POLICY_P3_VELOCITY,
 )
 
 
