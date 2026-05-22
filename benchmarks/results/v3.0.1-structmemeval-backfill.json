@@ -1,0 +1,91 @@
+{
+  "_calibration_notes": "Back-fill measurement of StructMemEval per-sub-task (location, accounting, recommendations, tree) — the v2.0.0 canonical 4-task cut that was NOT re-measured at v3.0.1 (per v3.0.1.json _calibration_notes). Measured 2026-05-22 against current main HEAD db75384b (post-PR #907 CR back-fill and #908 TTL back-fill; no retrieve-side changes since v3.0.1 tag commit 0e91fd1d). Methodology per benchmarks/run.py CANONICAL_INVOCATIONS: `uv run python benchmarks/structmemeval_adapter.py --task <T> --bench big` for each of the 4 tasks. The adapter ingests each multi-session conversation into a fresh in-memory MemoryStore, queries with the state-tracking question, and scores via check_state_correctness (binary correct/incorrect per query). Single-run captures; no variance band probed in this pass (the existing v3.0.1.json structmemeval _ row carries a documented variance asterisk where the 14-row aggregate landed at [0%, 7%, 100%, 100%] across 4 attempts — that asterisk applies to the small_bench 14-row aggregate, not the big_bench per-sub-task counts here; the per-sub-task big_bench captures span 15-1104 queries each, which provides materially more denominator than the n=14 aggregate). Data dir at /tmp/StructMemEval/benchmark/data per the design contract in docs/design/v2_reproducibility_harness.md §140 (manual download; adapter exits 2 / status=skipped_data_missing when absent). HEADLINE: striking spread across the 4 sub-tasks. Location 90.5% (38/42 queries, 38/42 cases perfect) — substrate excels at single-value state tracking when the answer is a noun-phrase in prose. Recommendations 15.4% (170/1104 queries, 0/84 perfect cases) — partial credit per-query but never a complete case; substrate surfaces some preference-relevant chunks but cannot aggregate them. Accounting 0.0% (0/15) and Tree 0.0% (0/43) — total failure on the two sub-tasks that require state-aware computation: accounting needs arithmetic over a ledger history, tree needs hierarchical-knowledge traversal. The pattern is the post-#605 deterministic-substrate signature: byte-identical chunk projection serves prose-grounded state tracking (location) well, partially serves preference-aggregation (recommendations), and structurally fails on tasks that require derivation beyond what chunks carry verbatim (accounting, tree). This is consistent with the operator's 2026-05-22 #897 reaffirmation of #605 (closing #895 as wontfix-via-philosophy) — the back-fill anchors the per-sub-task v3.0.1 baseline as the honest post-#605 reality. Re-open triggers: NONE under the current ratification. If a future RFC re-opens #605 with a state-derivation substrate proposal, re-run accounting + tree first (the cuts with the largest substrate-gap signal). Variance follow-up: a multi-run probe on location specifically would tighten the 90.5% point estimate; accounting/tree are pinned at 0% by structure (re-runs cannot move them) so variance probe is bounded above by structural ceiling. Bench fixtures downloaded fresh per run; not pinned by checksum.",
+  "aelfrice_version": "3.0.1",
+  "captured_at_utc": "2026-05-22T19:35:00Z",
+  "git_commit": "db75384bd2a292d2f69eef2bf1cb90643af5c023",
+  "harness_version": "1",
+  "headline_cut": {
+    "structmemeval": [
+      {"args": ["--task", "location", "--bench", "big"], "sub_key": "location"},
+      {"args": ["--task", "accounting", "--bench", "big"], "sub_key": "accounting"},
+      {"args": ["--task", "recommendations", "--bench", "big"], "sub_key": "recommendations"},
+      {"args": ["--task", "tree", "--bench", "big"], "sub_key": "tree"}
+    ]
+  },
+  "label": "v3.0.1 StructMemEval per-sub-task back-fill",
+  "metric_overrides": {},
+  "results": {
+    "structmemeval": {
+      "location": {
+        "_elapsed_sec": null,
+        "_status": "ok",
+        "output": {
+          "metric": "accuracy",
+          "score_pct": 90.5,
+          "correct": 38,
+          "total": 42,
+          "perfect_cases": 38,
+          "total_cases": 42,
+          "n_runs": 1,
+          "variance_probed": false,
+          "interpretation": "Substrate excels at single-value state tracking — when the answer is a noun-phrase grounded in retrieved prose, the deterministic chunk-projection lane surfaces it reliably. 4 failures are state-transition cases where the most-recent state requires picking between conflicting prose statements; substrate has no recency-or-supersedes signal beyond ingest order, which sometimes mis-orders the chunks."
+        }
+      },
+      "accounting": {
+        "_elapsed_sec": null,
+        "_status": "ok",
+        "output": {
+          "metric": "accuracy",
+          "score_pct": 0.0,
+          "correct": 0,
+          "total": 15,
+          "perfect_cases": 0,
+          "total_cases": 15,
+          "n_runs": 1,
+          "variance_probed": false,
+          "interpretation": "Total failure. Accounting requires arithmetic over a ledger history (sum / delta / running balance) that no chunk carries verbatim — the answer must be DERIVED from the chunks, not retrieved from them. Post-#605 substrate is chunk-projection only; no derivation lane. Score pinned at 0% by structure; re-runs cannot move it without a derivation substrate."
+        }
+      },
+      "recommendations": {
+        "_elapsed_sec": null,
+        "_status": "ok",
+        "output": {
+          "metric": "accuracy",
+          "score_pct": 15.4,
+          "correct": 170,
+          "total": 1104,
+          "perfect_cases": 0,
+          "total_cases": 84,
+          "n_runs": 1,
+          "variance_probed": false,
+          "interpretation": "Partial credit per-query but zero perfect cases. The substrate surfaces SOME preference-relevant chunks (15.4% per-query hit rate), but no case has every relevant chunk surfaced together. Recommendation tasks need preference AGGREGATION across the full session history; the chunk-projection lane lacks the aggregation primitive. Useful diagnostic: per-query > 0% with cases = 0% is the signature of partial-retrieval-no-aggregation."
+        }
+      },
+      "tree": {
+        "_elapsed_sec": null,
+        "_status": "ok",
+        "output": {
+          "metric": "accuracy",
+          "score_pct": 0.0,
+          "correct": 0,
+          "total": 43,
+          "perfect_cases": 0,
+          "total_cases": 22,
+          "n_runs": 1,
+          "variance_probed": false,
+          "interpretation": "Total failure. Tree tasks require hierarchical-knowledge traversal (parent->child->grandchild relationships across the conversation). Post-#605 substrate has no graph-traversal primitive in retrieval; chunk projection alone cannot reconstruct multi-level hierarchies. Score pinned at 0% by structure; re-runs cannot move it without a traversal substrate."
+        }
+      },
+      "_aggregate": {
+        "_status": "info",
+        "output": {
+          "per_task_pct": {"location": 90.5, "accounting": 0.0, "recommendations": 15.4, "tree": 0.0},
+          "mean_pct": 26.5,
+          "spread_pp": 90.5,
+          "interpretation": "Mean across the 4 tasks is 26.5%, but the spread (0%-90.5%) is the load-bearing signal — not the mean. Mean would change with task weights; the per-task pattern (prose-grounded state works; arithmetic / aggregation / hierarchy fails) is the post-#605 substrate signature. Replaces the small_bench 14-row aggregate (existing v3.0.1.json structmemeval._) which had a documented [0,7,100,100] variance asterisk; the big_bench per-sub-task captures here are denominator-larger and structurally-distinct enough that variance does not collapse them to the same number."
+        }
+      }
+    }
+  },
+  "schema_version": "1.0"
+}
