@@ -1,0 +1,51 @@
+{
+  "_calibration_notes": "Back-fill measurement of MAB Test_Time_Learning (700q) — one of the TBDs noted in v3.0.1.json _calibration_notes. Measured 2026-05-22 against current main HEAD (post-PR #907 CR back-fill land; no retrieve-side changes since v3.0.1 tag commit 0e91fd1d). Methodology per the #899 spec: full retrieve-then-reader pipeline. Step 1 — `uv run python benchmarks/mab_adapter.py --split Test_Time_Learning --retrieve-only /tmp/899_ttl/retrieval.json` produced 700 (question, context) pairs across 6 source rows: 5 in-context learning intent-classification sources (banking77, clinic150, NLU, TREC coarse, TREC fine — 100q each) plus recsys_redial_full (200q movie recommendation dialog). ISOLATION verified. Step 2 — seven in-process LLM helpers dispatched in parallel (one per source row, with recsys split into two 100q chunks), each writing predictions_<N>.json. Locked rule honored. Step 3 — score via mab_adapter.score_multi_answer joined on (row_idx, id) using a position-preserving join from chunk source files (one chunk-0 helper mis-recorded row_idx as a per-item counter; the position-preserving join recovers the correct keys). Single-run capture per the #899 spec. HEADLINE: 0.0% across ALL 6 sources (SEM=EM=F1=0.0). This is a substrate-incapability finding, not a measurement error. The deterministic chunk-projection retrieval lane (post-#605, locked) returns prose context for each question but strips the structural metadata that TTL tasks require to score: (a) for the 5 ICL sources, retrieved context contains similar example questions but the few-shot label annotations (`banking77` intent labels, `CLINIC150` intent labels, NLU intent labels, TREC `ABBR/ENTY/DESC/HUM/LOC/NUM` and `COARSE:fine` labels) are not surfaced in the retrieval output, so the reader has no vocabulary to classify against; (b) for recsys_redial_full, retrieved context contains movie titles formatted as `Title (Year)` but no `@<movieId>` tokens, while the ground truth is numeric movie IDs — title-to-ID resolution requires a structural mapping the substrate does not preserve. Multiple readers independently flagged this pattern in their completion notes (trec_coarse: 'zero matches for all-caps label tokens across all 100 items'; trec_fine: 'no `COARSE:fine` label annotations anywhere'; recsys: 'zero `@<movieId>` tokens and zero numeric ID patterns'). The pattern is consistent with the #605 deterministic-substrate ratification (locked) and aligns with the operator's 2026-05-22 disposition of #897 to reaffirm #605 (closing #895 as wontfix-via-philosophy). It is the visible cost of trading away label-preserving / metadata-aware chunking lanes that ICL and ID-resolution benchmarks need. Paper-side note: the MAB paper's published TTL baselines under the 'All methods' envelope are low for memory-system entrants on these splits (the paper notes TTL as one of the hardest splits for retrieval-only systems without label-aware ingestion). The 0.0% headline therefore calibrates against a low-but-nonzero paper expectation; the substrate-side finding is the *mechanism* (chunk-projection strips labels), and the closing of #895 means the gap is intentional going forward. Re-open trigger: NONE under the current ratification — this back-fill anchors the TTL baseline at 0.0% as the post-#605 reality. If a future RFC re-opens #605 with a label-preserving lane proposal, re-run TTL and update. Bench fixtures (MAB HF dataset) downloaded fresh per run; not pinned by checksum.",
+  "aelfrice_version": "3.0.1",
+  "captured_at_utc": "2026-05-22T19:05:00Z",
+  "git_commit": "3af82bc3d5b0548144ece69a30fc5e63f5aeedfc",
+  "harness_version": "1",
+  "headline_cut": {
+    "mab": [
+      {
+        "args": ["--split", "Test_Time_Learning"],
+        "sub_key": "test_time_learning"
+      }
+    ]
+  },
+  "label": "v3.0.1 MAB Test_Time_Learning back-fill",
+  "metric_overrides": {},
+  "results": {
+    "mab": {
+      "test_time_learning": {
+        "_elapsed_sec": null,
+        "_status": "ok",
+        "output": {
+          "metric": "substring_exact_match",
+          "score_pct": 0.0,
+          "total": 700,
+          "f1_pct": 0.0,
+          "exact_match_pct": 0.0,
+          "n_runs": 1,
+          "variance_probed": false,
+          "variance_probed_note": "Single-run capture per #899 spec. At 0.0% headline, multi-run variance is bounded above by the substrate's structural inability to surface labels/IDs — re-running would not materially change the result without a substrate change.",
+          "by_source": {
+            "icl_banking77_5900shot_balance":   {"n": 100, "exact_match_pct": 0.0, "substring_exact_match_pct": 0.0, "f1_pct": 0.0},
+            "icl_clinic150_7050shot_balance":   {"n": 100, "exact_match_pct": 0.0, "substring_exact_match_pct": 0.0, "f1_pct": 0.0},
+            "icl_nlu_8296shot_balance":         {"n": 100, "exact_match_pct": 0.0, "substring_exact_match_pct": 0.0, "f1_pct": 0.0},
+            "icl_trec_coarse_6600shot_balance": {"n": 100, "exact_match_pct": 0.0, "substring_exact_match_pct": 0.0, "f1_pct": 0.0},
+            "icl_trec_fine_6400shot_balance":   {"n": 100, "exact_match_pct": 0.0, "substring_exact_match_pct": 0.0, "f1_pct": 0.0},
+            "recsys_redial_full":               {"n": 200, "exact_match_pct": 0.0, "substring_exact_match_pct": 0.0, "f1_pct": 0.0}
+          },
+          "substrate_finding": {
+            "headline": "Deterministic chunk-projection (post-#605) strips structural metadata that ICL and ID-resolution tasks require.",
+            "icl_sources_n": 5,
+            "icl_finding": "Retrieved context contains similar example questions but no label annotations. Reader has no vocabulary to classify against.",
+            "recsys_finding": "Retrieved context contains movie titles but no @<movieId> tokens; ground truth is numeric IDs.",
+            "ratification_alignment": "Aligned with operator's 2026-05-22 #897 disposition reaffirming #605 (closing #895 as wontfix-via-philosophy). The 0.0% is the visible cost of trading away label-preserving chunking lanes that ICL/recsys need."
+          }
+        }
+      }
+    }
+  },
+  "schema_version": "1.0"
+}
