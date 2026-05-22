@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import tempfile
 import time
@@ -422,20 +423,101 @@ def score_tree_prediction(prediction: str, reference_text: str) -> bool:
     return ref_pol is not None and ref_pol == pred_pol
 
 
+# Settlement transaction parsing for the accounting task. Two forms are
+# accepted: the reference's "Payer -> Payee : amount EUR" and the
+# question's requested answer format "Payer pays amount to Payee".
+_SETTLE_ARROW_RE: Final = re.compile(
+    r"([A-Za-z]+)\s*->\s*([A-Za-z]+)\s*:\s*([\d]+(?:\.[\d]+)?)",
+)
+_SETTLE_PAYS_RE: Final = re.compile(
+    r"([A-Za-z]+)\s+pays\s+(?:€|EUR\s*)?([\d]+(?:\.[\d]+)?)\s*(?:€|EUR)?\s+to\s+([A-Za-z]+)",
+    re.IGNORECASE,
+)
+_ACCT_AMOUNT_TOLERANCE: Final[float] = 0.5
+
+
+def _parse_settlement_transactions(text: str) -> set[tuple[str, str, float]]:
+    """Parse settlement transactions into a set of (payer, payee, amount).
+
+    Accepts both the reference arrow form ("Alice -> Bob : 91.00 EUR") and
+    the requested answer form ("Alice pays 91 to Bob"). Names are
+    lower-cased; amounts are floats. A directed (payer, payee) pair plus
+    amount uniquely keys a transaction.
+    """
+    out: set[tuple[str, str, float]] = set()
+    for payer, payee, amt in _SETTLE_ARROW_RE.findall(text):
+        out.add((payer.lower(), payee.lower(), float(amt)))
+    for payer, amt, payee in _SETTLE_PAYS_RE.findall(text):
+        out.add((payer.lower(), payee.lower(), float(amt)))
+    return out
+
+
+def _transaction_sets_match(
+    pred: set[tuple[str, str, float]],
+    ref: set[tuple[str, str, float]],
+    tolerance: float = _ACCT_AMOUNT_TOLERANCE,
+) -> bool:
+    """True iff pred and ref have the same directed transactions with
+    amounts within `tolerance`. Same cardinality required (no extra or
+    missing transactions)."""
+    if not ref or len(pred) != len(ref):
+        return False
+    remaining: list[tuple[str, str, float]] = list(pred)
+    for r_payer, r_payee, r_amt in ref:
+        match_idx: int | None = None
+        for i, (p_payer, p_payee, p_amt) in enumerate(remaining):
+            if (
+                p_payer == r_payer
+                and p_payee == r_payee
+                and abs(p_amt - r_amt) <= tolerance
+            ):
+                match_idx = i
+                break
+        if match_idx is None:
+            return False
+        remaining.pop(match_idx)
+    return True
+
+
+def score_accounting_prediction(prediction: str, reference_text: str) -> bool:
+    """Correct iff the prediction's settlement transactions match ANY of
+    the acceptable reference alternatives.
+
+    The reference is a `" | "`-joined list of alternative settlements
+    (the benchmark accepts several valid resolutions of ambiguous
+    split instructions). Each alternative and the prediction are parsed
+    into directed (payer, payee, amount) sets; the prediction is correct
+    if its set matches any alternative within an amount tolerance. This
+    replaces the word-overlap heuristic, which never checked amounts or
+    directions.
+    """
+    pred_tx: set[tuple[str, str, float]] = _parse_settlement_transactions(
+        prediction,
+    )
+    if not pred_tx:
+        return False
+    for alternative in reference_text.split(" | "):
+        ref_tx = _parse_settlement_transactions(alternative)
+        if _transaction_sets_match(pred_tx, ref_tx):
+            return True
+    return False
+
+
 def score_prediction(
     prediction: str, reference_text: str, task: str,
 ) -> bool:
     """Dispatch prediction scoring by task.
 
-    `location` and `tree` have dedicated scorers; `accounting` and any
-    other task fall back to the legacy word-overlap heuristic (which is
-    a recall proxy, not a correctness check — accounting needs a
-    settlement-tuple comparison, tracked separately).
+    `location`, `tree`, and `accounting` have dedicated scorers; any
+    other task falls back to the legacy word-overlap heuristic (a recall
+    proxy, not a correctness check).
     """
     if task == "location":
         return score_location_prediction(prediction, reference_text)
     if task == "tree":
         return score_tree_prediction(prediction, reference_text)
+    if task == "accounting":
+        return score_accounting_prediction(prediction, reference_text)
     return check_state_correctness(
         prediction, ReferenceAnswer(text=reference_text),
     )
