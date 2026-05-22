@@ -27,6 +27,7 @@ import pytest
 from aelfrice.hook import (
     DEFAULT_CONV_AWARE_WEIGHT,
     DEFAULT_CONV_AWARE_WINDOW,
+    MAX_CONV_AWARE_WEIGHT,
     UserPromptSubmitConfig,
     _build_conversation_aware_query,
     load_user_prompt_submit_config,
@@ -192,6 +193,19 @@ def test_config_rejects_bad_types_falls_back(tmp_path: Path) -> None:
     assert cfg.conversation_aware_turn_window == DEFAULT_CONV_AWARE_WINDOW
     assert cfg.conversation_aware_prompt_weight == DEFAULT_CONV_AWARE_WEIGHT
     assert "conversation_aware" in serr.getvalue()
+
+
+def test_config_rejects_weight_above_ceiling(tmp_path: Path) -> None:
+    # An unbounded weight balloons `[prompt] * weight` on the UPS hot
+    # path; values above MAX_CONV_AWARE_WEIGHT fall back to the default.
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[user_prompt_submit_hook]\n"
+        f"conversation_aware_prompt_weight = {MAX_CONV_AWARE_WEIGHT + 1}\n"
+    )
+    serr = io.StringIO()
+    cfg = load_user_prompt_submit_config(start=tmp_path, stderr=serr)
+    assert cfg.conversation_aware_prompt_weight == DEFAULT_CONV_AWARE_WEIGHT
+    assert "conversation_aware_prompt_weight" in serr.getvalue()
 
 
 # --------------------------------------------------------------------------

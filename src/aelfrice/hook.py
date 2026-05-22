@@ -194,6 +194,12 @@ _CONV_AWARE_WEIGHT_KEY: Final[str] = "conversation_aware_prompt_weight"
 DEFAULT_CONV_AWARE_ENABLED: Final[bool] = True
 DEFAULT_CONV_AWARE_WINDOW: Final[int] = 4
 DEFAULT_CONV_AWARE_WEIGHT: Final[int] = 3
+# Upper bound on the prompt weight. `_build_conversation_aware_query()`
+# materializes `[prompt] * weight`, so an unbounded value (e.g. a typo
+# like 100000) would balloon the FTS query on the UPS hot path and
+# violate the hook's non-blocking contract. Out-of-range values fall
+# back to the default, mirroring the < 1 floor handling.
+MAX_CONV_AWARE_WEIGHT: Final[int] = 8
 
 
 @dataclass(frozen=True)
@@ -296,13 +302,16 @@ def load_user_prompt_submit_config(
             weight_obj: Any = section.get(
                 _CONV_AWARE_WEIGHT_KEY, DEFAULT_CONV_AWARE_WEIGHT,
             )
-            if not isinstance(weight_obj, int) or isinstance(
-                weight_obj, bool,
-            ) or weight_obj < 1:
+            if (
+                not isinstance(weight_obj, int)
+                or isinstance(weight_obj, bool)
+                or weight_obj < 1
+                or weight_obj > MAX_CONV_AWARE_WEIGHT
+            ):
                 print(
                     f"aelfrice hook: ignoring [{_UPS_SECTION}] "
                     f"{_CONV_AWARE_WEIGHT_KEY} in {candidate} "
-                    f"(expected int >= 1)",
+                    f"(expected int in [1, {MAX_CONV_AWARE_WEIGHT}])",
                     file=serr,
                 )
                 weight_obj = DEFAULT_CONV_AWARE_WEIGHT
