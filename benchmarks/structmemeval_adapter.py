@@ -312,6 +312,136 @@ def check_state_correctness(retrieved: str, reference: ReferenceAnswer) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Task-aware prediction scoring (#899)
+#
+# `check_state_correctness` above is a single word-overlap heuristic over
+# the *whole* reference text. It is invalid for scoring a reader's
+# prediction for three independent reasons, one per task:
+#
+#   * location: the reference embeds an exclusion note ("should NOT
+#     mention <previous cities>"). Those distractor tokens land in the
+#     word-set, so raw retrieval (which contains every stale city)
+#     matches them and scores high, while a concise *correct* answer
+#     that omits them falls below the 0.5 threshold and scores 0.
+#   * tree: the answer is binary (Yes/No) wrapped in boilerplate
+#     ("...indirect colleagues according to their graph relations"). A
+#     correct "No" prediction shares almost none of the boilerplate
+#     word-set, so polarity is never actually tested.
+#   * accounting: the reference is a set of settlement tuples
+#     ("Charlie -> Bob : 218.33 EUR | ..."); word overlap on names and
+#     bare numbers does not check that the amounts and directions match.
+#
+# The functions below score a *prediction* (not raw retrieval) with
+# task-appropriate logic. `score_prediction` dispatches by task name.
+# ---------------------------------------------------------------------------
+
+_LOC_EXCLUSION_MARKERS: Final[tuple[str, ...]] = (
+    "should not mention",
+    "not mention",
+    "do not mention",
+)
+_STOPWORDS: Final[frozenset[str]] = frozenset({
+    "the", "that", "this", "with", "from", "should", "their", "about",
+    "your", "since", "currently", "live", "answer", "previous", "cities",
+    "city", "activities", "activity", "neighbor", "neighbors", "mention",
+    "based", "where", "now", "and", "for", "you",
+})
+
+
+def _significant_words(text: str) -> list[str]:
+    return [
+        w.strip(".,()") for w in text.lower().split()
+        if len(w.strip(".,()")) > 3 and w.strip(".,()") not in _STOPWORDS
+    ]
+
+
+def _split_location_reference(reference_text: str) -> tuple[str, str]:
+    """Split a location reference into (expected_portion, exclusion_portion).
+
+    The exclusion portion is everything from the first exclusion marker
+    onward; the expected portion is the text before it. When no marker
+    is present the whole reference is the expected portion and the
+    exclusion portion is empty.
+    """
+    low: str = reference_text.lower()
+    for marker in _LOC_EXCLUSION_MARKERS:
+        idx: int = low.find(marker)
+        if idx != -1:
+            return reference_text[:idx], reference_text[idx:]
+    return reference_text, ""
+
+
+def score_location_prediction(
+    prediction: str, reference_text: str, present_threshold: float = 0.5,
+) -> bool:
+    """Correct iff the prediction reflects the current state AND omits
+    the excluded (stale) distractors.
+
+    * expected_present: at least `present_threshold` of the significant
+      words in the expected portion appear in the prediction.
+    * exclusion_clean: no significant word that appears ONLY in the
+      exclusion portion (i.e. a distractor not also part of the current
+      answer) appears in the prediction.
+
+    Both conditions must hold. The exclusion-clean check is the fix that
+    `check_state_correctness` lacked.
+    """
+    expected_text, exclusion_text = _split_location_reference(reference_text)
+    pred_lower: str = prediction.lower()
+    expected_words: list[str] = _significant_words(expected_text)
+    if not expected_words:
+        return False
+    present: int = sum(1 for w in expected_words if w in pred_lower)
+    expected_present: bool = (present / len(expected_words)) >= present_threshold
+    expected_set: set[str] = set(expected_words)
+    exclusion_only: set[str] = {
+        w for w in _significant_words(exclusion_text) if w not in expected_set
+    }
+    leaked: bool = any(w in pred_lower for w in exclusion_only)
+    return expected_present and not leaked
+
+
+def _polarity(text: str) -> str | None:
+    """Return 'yes' / 'no' from the first polarity token, else None."""
+    for tok in text.lower().replace(",", " ").replace(".", " ").split():
+        if tok == "yes":
+            return "yes"
+        if tok == "no":
+            return "no"
+    return None
+
+
+def score_tree_prediction(prediction: str, reference_text: str) -> bool:
+    """Correct iff the prediction's Yes/No polarity matches the reference.
+
+    Tree answers are binary connectivity verdicts wrapped in boilerplate;
+    only the polarity is load-bearing.
+    """
+    ref_pol: str | None = _polarity(reference_text)
+    pred_pol: str | None = _polarity(prediction)
+    return ref_pol is not None and ref_pol == pred_pol
+
+
+def score_prediction(
+    prediction: str, reference_text: str, task: str,
+) -> bool:
+    """Dispatch prediction scoring by task.
+
+    `location` and `tree` have dedicated scorers; `accounting` and any
+    other task fall back to the legacy word-overlap heuristic (which is
+    a recall proxy, not a correctness check — accounting needs a
+    settlement-tuple comparison, tracked separately).
+    """
+    if task == "location":
+        return score_location_prediction(prediction, reference_text)
+    if task == "tree":
+        return score_tree_prediction(prediction, reference_text)
+    return check_state_correctness(
+        prediction, ReferenceAnswer(text=reference_text),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------
 
