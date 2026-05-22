@@ -963,7 +963,11 @@ def user_prompt_submit(
             if token_budget is not None
             else DEFAULT_HOOK_TOKEN_BUDGET
         )
-        config = load_user_prompt_submit_config(stderr=serr)
+        # #909/#887: resolve config from the payload's cwd, not the hook
+        # process's incidental cwd — same project-relative reasoning as the
+        # <recent-work> builder above. Falls back to process cwd when the
+        # payload carries no cwd (start=None → Path.cwd()).
+        config = load_user_prompt_submit_config(start=payload_cwd, stderr=serr)
         # #606: sentiment-feedback lane — apply correction signals from
         # this prompt to the prior UPS turn's retrieved beliefs BEFORE
         # this turn's retrieval, so demoted posteriors are reflected in

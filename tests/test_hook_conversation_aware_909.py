@@ -323,9 +323,10 @@ def test_e2e_hook_flag_off_is_prompt_only(
     db = tmp_path / "memory.db"
     _seed(db)
     monkeypatch.setenv("AELFRICE_DB", str(db))
-    # Disable the feature via process-cwd .aelfrice.toml (the hook loads
-    # config from the process cwd, not the payload cwd).
-    monkeypatch.chdir(tmp_path)
+    # Disable the feature via .aelfrice.toml in the *payload* cwd. The hook
+    # resolves config from the payload cwd (#909/#887), not the process cwd,
+    # so a project's config is honored even when the launcher starts the
+    # hook elsewhere. No chdir — the payload cwd alone must carry the config.
     (tmp_path / ".aelfrice.toml").write_text(
         "[user_prompt_submit_hook]\n"
         "conversation_aware_query_enabled = false\n"
