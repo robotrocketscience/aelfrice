@@ -41,8 +41,7 @@ from aelfrice.store import MemoryStore
 # --- corpus: load-bearing jargon (zero overlap with the prompt) plus
 # noise that incidentally shares the prompt's generic recall words. ---
 _LOADBEARING = [
-    "Brew ratio one to two point five, eighteen gram dose, "
-    "twenty-eight second pull, ninety-three celsius.",
+    "Brew ratio one to two point five, eighteen gram dose, twenty-eight second pull, ninety-three celsius.",
     "Grind at fourteen clicks; pre-infusion six seconds for even extraction.",
     "Yield forty-five grams from eighteen in on the house blend.",
 ]
