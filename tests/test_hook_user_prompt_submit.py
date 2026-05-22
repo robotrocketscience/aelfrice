@@ -48,12 +48,12 @@ def _seed_db(db_path: Path, beliefs: list[Belief]) -> None:
         store.close()
 
 
-def _payload(prompt: str, session_id: str = "s1") -> str:
+def _payload(prompt: str, session_id: str = "s1", cwd: str = "/tmp") -> str:
     return json.dumps(
         {
             "session_id": session_id,
             "transcript_path": "/dev/null",
-            "cwd": "/tmp",
+            "cwd": cwd,
             "hook_event_name": "UserPromptSubmit",
             "prompt": prompt,
         }
@@ -579,15 +579,15 @@ def test_gate_disabled_via_toml_still_retrieves(
     db = tmp_path / "memory.db"
     _seed_db(db, [_mk("F1", "yes affirmative confirmed")])
     _set_db(monkeypatch, db)
-    # Write TOML to disable the gate
+    # Write TOML to disable the gate in the payload cwd — the hook resolves
+    # config from the payload cwd (#909), not the process cwd.
     (tmp_path / ".aelfrice.toml").write_text(
         "[user_prompt_submit_hook]\nprompt_shape_gate_enabled = false\n",
         encoding="utf-8",
     )
-    monkeypatch.chdir(tmp_path)
     sout = io.StringIO()
     rc = user_prompt_submit(
-        stdin=io.StringIO(_payload("yes")),
+        stdin=io.StringIO(_payload("yes", cwd=str(tmp_path))),
         stdout=sout,
     )
     assert rc == 0
@@ -605,7 +605,7 @@ def test_gate_disabled_via_toml_still_retrieves(
 
     monkeypatch.setattr(hook_mod, "search_for_prompt", spy)
     user_prompt_submit(
-        stdin=io.StringIO(_payload("yes")),
+        stdin=io.StringIO(_payload("yes", cwd=str(tmp_path))),
         stdout=io.StringIO(),
     )
     assert called == ["yes"], "search_for_prompt must be called when gate is disabled"
