@@ -1,0 +1,85 @@
+{
+  "_calibration_notes": "Back-fill measurement of MAB Accurate_Retrieval (full split, 2000q across 6 sources: ruler_qa1_197K (100), ruler_qa2_421K (100), longmemeval_s* (300), eventqa_full / eventqa_65536 / eventqa_131072 (500 each)) \u2014 one of the TBDs noted in v3.0.1.json _calibration_notes. Measured 2026-05-22 against current main HEAD (3af82bc3, post-PR #900/#906/#907; all benchmarks/results JSON-only additions that did not touch retrieve_v2 ranking vs the v3.0.1 tag commit 0e91fd1d, so this is effectively a v3.0.1-substrate measurement). Methodology: full retrieve-then-reader pipeline. Step 1 \u2014 `mab_adapter.py --split Accurate_Retrieval --retrieve-only` (budget=2000, retrieve_v2 via the v1.0.x lab-compat shim, use_bfs=True) produced 2000 (question, context) pairs; all non-empty (median 7941 chars). Step 2 \u2014 in-process LLM helpers answered strictly from each question's own retrieved context (no outside knowledge; locked rule: no SDK/API-key path). Step 3 \u2014 score via mab_adapter.score_multi_answer (substring_exact_match + token-level F1) joined on (row_idx, id). IMPORTANT METHODOLOGY NOTE \u2014 EventQA cross-question-leakage correction: EventQA items are 'what event happens next' questions whose preamble lists all events that have already occurred. A naive first pass that batched many same-story questions into one reader was contaminated: question N+1's preamble reveals question N's answer (the next event), so a reader seeing both could recover answers without using retrieval. The naive pass scored EventQA at SEM 95-98%. This capture instead uses LEAKAGE-FREE chunking: each reader saw at most ONE question per story (position-band chunks of one question from each of the 15 EventQA rows), so no same-story chain could be reconstructed. EventQA was measured on a leakage-free subsample of 170/500 per source (positions 0,3,6,...,99). ruler_* and longmemeval are independent-question tasks with no chain leakage and were scored on the full set. Leakage-free EventQA still scores 84-94% SEM \u2014 the cross-question leak was only a ~5-11pp inflator; the underlying score is high because the 6 answer options are near-identical paraphrases differing only in specific nouns, so a correct pick genuinely requires retrieval to surface the distinguishing detail (a real Accurate_Retrieval signal, not an artifact). Headline score_pct/exact_match_pct/f1_pct are SPLIT-REPRESENTATIVE: per-source leakage-free means weighted by the true split source sizes (eventqa 500 each, longmemeval 300, ruler 100 each; total 2000). The literal scored set was n=1010 (510 leakage-free EventQA + 200 ruler + 300 longmemeval) at SEM 70.1% / EM 68.9% / F1 76.6%; the split-representative weighting (SEM 79.6% / EM 78.9% / F1 84.9%) extrapolates the EventQA subsample means to the full 1500 EventQA questions. Per-source breakdown: ruler_qa1 87% / ruler_qa2 56% (single-needle vs multi-needle QA over 197K/421K-token haystacks); longmemeval 37% (temporal/aggregation questions over multi-session chat \u2014 the weakest cut, consistent with the deterministic narrow-surface substrate not doing cross-session temporal math); eventqa 84-94% (strong next-event retrieval). Single-run capture (n=1); variance band TBD on a future multi-run. Bench fixtures downloaded fresh per run; not pinned by checksum.",
+  "aelfrice_version": "3.0.1",
+  "captured_at_utc": "2026-05-22T18:55:00Z",
+  "git_commit": "3af82bc3d5b0548144ece69a30fc5e63f5aeedfc",
+  "harness_version": "1",
+  "headline_cut": {
+    "mab": [
+      {
+        "args": [
+          "--split",
+          "Accurate_Retrieval"
+        ],
+        "sub_key": "accurate_retrieval"
+      }
+    ]
+  },
+  "label": "v3.0.1 MAB Accurate_Retrieval back-fill",
+  "metric_overrides": {},
+  "results": {
+    "mab": {
+      "accurate_retrieval": {
+        "_elapsed_sec": null,
+        "_status": "ok",
+        "output": {
+          "metric": "substring_exact_match",
+          "score_pct": 79.6,
+          "total": 2000,
+          "f1_pct": 84.9,
+          "exact_match_pct": 78.9,
+          "n_runs": 1,
+          "variance_probed": false,
+          "scored_set_note": "Literal scored set n=1010 (510 leakage-free EventQA subsample + 200 ruler + 300 longmemeval): SEM 70.1 / EM 68.9 / F1 76.6. Headline above is split-representative: per-source leakage-free means weighted by true split source sizes (total 2000).",
+          "eventqa_leakage_correction": "EventQA measured leakage-free (<=1 question per story per reader) on a 170/500-per-source subsample; a naive same-story-batched pass over-scored EventQA by ~5-11pp (95-98% vs 84-94%) via cross-question preamble leakage. See _calibration_notes.",
+          "by_source": {
+            "ruler_qa1_197K": {
+              "n": 100,
+              "exact_match_pct": 79.0,
+              "substring_exact_match_pct": 87.0,
+              "f1_pct": 86.9,
+              "scoring": "full"
+            },
+            "ruler_qa2_421K": {
+              "n": 100,
+              "exact_match_pct": 53.0,
+              "substring_exact_match_pct": 56.0,
+              "f1_pct": 70.9,
+              "scoring": "full"
+            },
+            "longmemeval_s*": {
+              "n": 300,
+              "exact_match_pct": 36.3,
+              "substring_exact_match_pct": 36.7,
+              "f1_pct": 46.2,
+              "scoring": "full"
+            },
+            "eventqa_full": {
+              "n": 170,
+              "exact_match_pct": 84.1,
+              "substring_exact_match_pct": 84.1,
+              "f1_pct": 89.7,
+              "scoring": "leakage_free_subsample_of_500"
+            },
+            "eventqa_65536": {
+              "n": 170,
+              "exact_match_pct": 94.1,
+              "substring_exact_match_pct": 94.1,
+              "f1_pct": 96.7,
+              "scoring": "leakage_free_subsample_of_500"
+            },
+            "eventqa_131072": {
+              "n": 170,
+              "exact_match_pct": 89.4,
+              "substring_exact_match_pct": 89.4,
+              "f1_pct": 94.0,
+              "scoring": "leakage_free_subsample_of_500"
+            }
+          },
+          "source_breakdown_note": "ruler_* = needle-in-haystack QA over 197K/421K-token contexts (single-needle 87%, multi-needle 56%); longmemeval = multi-session temporal/aggregation QA (37%, weakest cut); eventqa = next-event retrieval where options are near-identical paraphrases requiring the distinguishing detail from retrieval (84-94%, leakage-free)."
+        }
+      }
+    }
+  },
+  "schema_version": "1.0"
+}
