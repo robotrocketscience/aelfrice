@@ -176,6 +176,24 @@ _UPS_SECTION: Final[str] = "user_prompt_submit_hook"
 _COLLAPSE_KEY: Final[str] = "collapse_duplicate_hashes"
 _PROMPT_SHAPE_GATE_KEY: Final[str] = "prompt_shape_gate_enabled"
 _CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
+# #909: conversation-aware retrieval. The live per-prompt UPS retrieval
+# BM25s the literal prompt only; when the topic vocabulary lives in the
+# dialog history (paraphrase / pronoun / numeric reference) and not in
+# the current prompt, the load-bearing thread scores ~0 lexically and is
+# never surfaced. Folding a SMALL window of recent turns into the query
+# restores it. Deliberately NOT the rebuilder's `turn_window_n` (default
+# 50): a large window re-buries the thread on topic-drift (empirically
+# verified). Small window + prompt-weighting keeps the current prompt
+# dominant and avoids dragging in stale topics.
+_CONV_AWARE_KEY: Final[str] = "conversation_aware_query_enabled"
+_CONV_AWARE_WINDOW_KEY: Final[str] = "conversation_aware_turn_window"
+_CONV_AWARE_WEIGHT_KEY: Final[str] = "conversation_aware_prompt_weight"
+# Default ON: this is the fix for #909, opt-out via config. Window kept
+# small; weight repeats the current prompt's tokens to keep its BM25
+# term-frequency contribution dominant over the appended turn text.
+DEFAULT_CONV_AWARE_ENABLED: Final[bool] = True
+DEFAULT_CONV_AWARE_WINDOW: Final[int] = 4
+DEFAULT_CONV_AWARE_WEIGHT: Final[int] = 3
 
 
 @dataclass(frozen=True)
@@ -189,6 +207,9 @@ class UserPromptSubmitConfig:
 
     collapse_duplicate_hashes: bool = False
     prompt_shape_gate_enabled: bool = True
+    conversation_aware_query_enabled: bool = DEFAULT_CONV_AWARE_ENABLED
+    conversation_aware_turn_window: int = DEFAULT_CONV_AWARE_WINDOW
+    conversation_aware_prompt_weight: int = DEFAULT_CONV_AWARE_WEIGHT
 
 
 def load_user_prompt_submit_config(
@@ -247,9 +268,50 @@ def load_user_prompt_submit_config(
                     file=serr,
                 )
                 gate_obj = True
+            conv_obj: Any = section.get(
+                _CONV_AWARE_KEY, DEFAULT_CONV_AWARE_ENABLED,
+            )
+            if not isinstance(conv_obj, bool):
+                print(
+                    f"aelfrice hook: ignoring [{_UPS_SECTION}] "
+                    f"{_CONV_AWARE_KEY} in {candidate} (expected bool)",
+                    file=serr,
+                )
+                conv_obj = DEFAULT_CONV_AWARE_ENABLED
+            window_obj: Any = section.get(
+                _CONV_AWARE_WINDOW_KEY, DEFAULT_CONV_AWARE_WINDOW,
+            )
+            # bool is a subclass of int — reject it explicitly so a
+            # stray `true` doesn't silently become window=1.
+            if not isinstance(window_obj, int) or isinstance(
+                window_obj, bool,
+            ) or window_obj < 0:
+                print(
+                    f"aelfrice hook: ignoring [{_UPS_SECTION}] "
+                    f"{_CONV_AWARE_WINDOW_KEY} in {candidate} "
+                    f"(expected non-negative int)",
+                    file=serr,
+                )
+                window_obj = DEFAULT_CONV_AWARE_WINDOW
+            weight_obj: Any = section.get(
+                _CONV_AWARE_WEIGHT_KEY, DEFAULT_CONV_AWARE_WEIGHT,
+            )
+            if not isinstance(weight_obj, int) or isinstance(
+                weight_obj, bool,
+            ) or weight_obj < 1:
+                print(
+                    f"aelfrice hook: ignoring [{_UPS_SECTION}] "
+                    f"{_CONV_AWARE_WEIGHT_KEY} in {candidate} "
+                    f"(expected int >= 1)",
+                    file=serr,
+                )
+                weight_obj = DEFAULT_CONV_AWARE_WEIGHT
             return UserPromptSubmitConfig(
                 collapse_duplicate_hashes=collapse_obj,
                 prompt_shape_gate_enabled=gate_obj,
+                conversation_aware_query_enabled=conv_obj,
+                conversation_aware_turn_window=window_obj,
+                conversation_aware_prompt_weight=weight_obj,
             )
         parent = current.parent
         if parent == current:
@@ -926,7 +988,42 @@ def user_prompt_submit(
                 _reset_last_telemetry,
             )
             _reset_last_telemetry(_LaneTelemetry())
-            hits = _retrieve(prompt, budget)
+            # #909: condition the BM25 query on recent dialog turns so a
+            # paraphrased / pronoun / numeric-reference prompt still
+            # surfaces the load-bearing thread (the topic vocabulary the
+            # prompt lacks lives in the conversation history). Fail-soft:
+            # any failure reading turns falls back to the prompt-only
+            # query, preserving legacy behaviour. The prompt-shape gate
+            # above and all telemetry/audit below still key on the raw
+            # `prompt`, not this augmented query.
+            retrieval_query = prompt
+            if config.conversation_aware_query_enabled:
+                try:
+                    payload_for_turns: dict[str, object] = (
+                        cast(dict[str, object], json.loads(raw))
+                        if raw.strip()
+                        else {}
+                    )
+                    recent_turns = _read_recent_for_pre_compact(
+                        payload_for_turns,
+                        config.conversation_aware_turn_window,
+                    )
+                    if recent_turns:
+                        retrieval_query = _build_conversation_aware_query(
+                            prompt,
+                            recent_turns,
+                            turn_window=(
+                                config.conversation_aware_turn_window
+                            ),
+                            prompt_weight=(
+                                config.conversation_aware_prompt_weight
+                            ),
+                        )
+                except Exception:
+                    # Fail-soft: surface the trace, retrieve on prompt.
+                    traceback.print_exc(file=serr)
+                    retrieval_query = prompt
+            hits = _retrieve(retrieval_query, budget)
             # #858 defect 3: drop hits whose stored project_context is
             # non-empty AND does not match the active in-process
             # context. '' on either side means "no filter": legacy
@@ -1508,6 +1605,42 @@ def _extract_prompt(raw: str) -> str | None:
     if not prompt.strip():
         return None
     return prompt
+
+
+def _build_conversation_aware_query(
+    prompt: str,
+    recent_turns: "list[RecentTurn]",
+    *,
+    turn_window: int = DEFAULT_CONV_AWARE_WINDOW,
+    prompt_weight: int = DEFAULT_CONV_AWARE_WEIGHT,
+) -> str:
+    """Compose the BM25 query from the prompt plus recent-turn text (#909).
+
+    The live prompt's tokens are repeated `prompt_weight` times so they
+    keep the dominant BM25 term-frequency contribution; the last
+    `turn_window` turns are appended once to inject topic vocabulary the
+    prompt itself may lack (paraphrase / pronoun / numeric reference).
+
+    Pure and fail-soft:
+
+    * `prompt_weight < 1` is clamped to 1 (the prompt always appears).
+    * `turn_window <= 0` or an empty `recent_turns` yields a
+      prompt-only query repeated `prompt_weight` times — which, for
+      `prompt_weight == 1`, is byte-identical to the legacy raw prompt
+      (BM25 term frequencies are unchanged by tokenising the same
+      string once). Callers that want exact legacy behaviour should
+      gate on the config flag rather than rely on this.
+    * Only the last `turn_window` turns are used; their `text` is joined
+      with single spaces. Non-string / empty turn text is skipped.
+    """
+    weight = prompt_weight if prompt_weight >= 1 else 1
+    parts: list[str] = [prompt] * weight
+    if turn_window > 0 and recent_turns:
+        for turn in recent_turns[-turn_window:]:
+            text = getattr(turn, "text", "")
+            if isinstance(text, str) and text.strip():
+                parts.append(text)
+    return " ".join(parts)
 
 
 def _retrieve(prompt: str, token_budget: int) -> list[Belief]:
