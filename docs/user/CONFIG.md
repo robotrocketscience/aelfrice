@@ -12,7 +12,7 @@ A single optional TOML file at the root of a project (or any ancestor). It expos
 - `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, default-on since v2.1), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, default-on since #769), `use_intentional_clustering` (co-locating related beliefs, default-on since v3.0). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
 - `[rebuilder]` (v1.7+) — context-rebuilder knobs. Selects the query-understanding stack (`query_strategy`) and sets token-budget floors for the session-scoped and L1 belief lanes (`[rebuild_floor] session` and `[rebuild_floor] l1`).
 - `[feedback]` (v3.0+) — feedback-lane opt-ins. `sentiment_from_prose` (default `false`) wires the sentiment-feedback detector into `UserPromptSubmit` (#606).
-- `[user_prompt_submit_hook]` (v3.0+) — UPS hook knobs. `prompt_shape_gate_enabled` (default `true`) gates trivial-prompt and system-envelope short-circuits before BM25 retrieval runs (#674).
+- `[user_prompt_submit_hook]` (v3.0+) — UPS hook knobs. `prompt_shape_gate_enabled` (default `true`) gates trivial-prompt and system-envelope short-circuits before BM25 retrieval runs (#674). `conversation_aware_query_enabled` (default `true`, v3.x #909) folds a small window of recent dialog turns into the BM25 query so paraphrase / pronoun / numeric-reference follow-ups still surface the load-bearing thread; tuned by `conversation_aware_turn_window` (default `4`) and `conversation_aware_prompt_weight` (default `3`).
 
 Locks, hooks, MCP tools, and the Bayesian feedback math are not affected.
 
@@ -166,6 +166,22 @@ sentiment_from_prose = false
 # "system-tag:<task-notification>", etc.). The session-start
 # sub-block is preserved unaffected. Set to false to disable.
 prompt_shape_gate_enabled = true
+# v3.x (#909). Default `true`. Conditions the per-prompt BM25 query on
+# a small window of recent dialog turns, so paraphrase / pronoun /
+# numeric-reference follow-ups still surface the load-bearing thread
+# (the topic vocabulary the prompt lacks lives in the conversation
+# history). The current prompt is repeated `conversation_aware_prompt_weight`
+# times so its terms stay dominant; the last `conversation_aware_turn_window`
+# turns are appended once. Fail-soft: any error reading turns falls back
+# to the prompt-only query. Set enabled to false for v3.2-and-earlier
+# prompt-only behaviour.
+conversation_aware_query_enabled = true
+# Number of trailing turns folded into the query (default 4). Kept small
+# on purpose: a large window re-buries the thread on topic-drift.
+conversation_aware_turn_window = 4
+# Prompt repeat count for BM25 term-frequency weighting (default 3,
+# minimum 1). Higher = the current prompt dominates the appended turns.
+conversation_aware_prompt_weight = 3
 
 [onboard.llm]
 # v1.3.0+; default flipped to true in v1.5.0 (#238). Host-driven
