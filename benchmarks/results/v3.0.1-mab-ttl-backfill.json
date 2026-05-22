@@ -1,0 +1,63 @@
+{
+  "_calibration_notes": "Back-fill measurement of MAB Test_Time_Learning (700q) — one of the TBDs noted in v3.0.1.json _calibration_notes. Measured 2026-05-22 against main HEAD 3af82bc3 (post-PR #887/#888/#891; the subsequent CR back-fill at 64d56bd6 is result-only and did not change retrieve_v2 ranking behaviour). Methodology: full retrieve-then-reader pipeline, identical to the LRU back-fill. Step 1 — `uv run --extra benchmarks python benchmarks/mab_adapter.py --split Test_Time_Learning --retrieve-only` produced 700 (question, context) pairs across 6 source rows; budget=2000 per retrieve call, retrieve_v2 via the v1.0.x lab-compat shim with use_bfs=True. All 700 items had non-empty retrieval context (median 2348 chars, max 6121). Step 2 — seven in-process LLM helpers dispatched in parallel (one per 100-item chunk), each writing predictions_<N>.json. Locked rule honored: bench LLM calls go through in-process helpers, never via a direct SDK / API-key path. Step 3 — score via mab_adapter.score_multi_answer (exact_match + substring_exact_match + token-level F1) joined on (row_idx, id). HEADLINE: 0.0% on every metric and every source (700/700 items scored 0; zero items had any nonzero metric). THIS IS A MEASUREMENT-VALIDITY ZERO, NOT A MODEL-QUALITY ZERO — see _not_measurable below. n=1 single run; no variance probe was taken because the score is structurally pinned at 0 (re-running cannot move it). Bench fixtures downloaded fresh. Not pinned by checksum.",
+  "_not_measurable": {
+    "verdict": "Test_Time_Learning is structurally unscorable under the current MAB adapter ingest + string-match scoring. The 0.0% headline reflects a data/scoring incompatibility, NOT aelfrice retrieval or reader quality. Do not compare this number to any reader-based writeup or to the LRU/CR back-fills. There are TWO DIFFERENT failure modes across the 6 sources (not one shared cause); both were verified empirically.",
+    "icl_sources_root_cause": {
+      "applies_to": ["icl_banking77_5900shot_balance", "icl_clinic150_7050shot_balance", "icl_nlu_8296shot_balance", "icl_trec_coarse_6600shot_balance", "icl_trec_fine_6400shot_balance"],
+      "cause": "The demonstration label annotations are discarded at INGESTION, not at retrieval. The raw MAB row context is (utterance, label) pairs formatted 'utterance label: N'. mab_adapter.ingest_context chunks the context and feeds each chunk to aelfrice.ingest.ingest_turn, whose belief extraction atomizes each chunk into per-utterance belief statements and drops the 'label: N' annotation. Verified: ingesting one banking77 row produced 4293 beliefs, of which 0 contain a 'label:' token and 0 are number-only — the label space is simply not stored. retrieve_v2 then faithfully returns label-free utterances because the labels were never persisted. (Earlier framing that blamed retrieve_v2 for 'stripping' labels was wrong: retrieve_v2 cannot return what ingest never stored.)",
+      "integer_gt_is_not_an_independent_blocker": "The opaque integer ground truth (e.g. '28') does NOT independently force 0. If the (utterance, label) demonstrations survived ingestion and co-retrieved, the reader would perform in-context learning — see 'similar-utterance label: 28' and output '28', matching GT exactly. The integer-ness of GT is only why the missing-label failure produces precisely 0 with no partial credit; it is a consequence amplifier, not a second independent defect.",
+      "fix": "Ingest each demonstration as an atomic (utterance, label) unit (or attach the label as belief metadata) so the label co-retrieves with its utterance. No GT-format change is needed for the ICL sources."
+    },
+    "recsys_root_cause": {
+      "applies_to": ["recsys_redial_full"],
+      "cause": "Distinct from the ICL sources. GT is a ReDial movie-database integer id (e.g. '7008'); the demonstration context references movies by TITLE+YEAR ('From Dusk till Dawn (1996)'), never by id. So even with perfect retrieval and a correct recommendation, a context-grounded reader emits a title that can never string-match the id. This is a genuine GT-decode gap independent of ingestion.",
+      "fix": "Decode the reader's predicted title to a ReDial movie id before scoring (title -> id lookup), or score recommendations in title space against a decoded GT."
+    },
+    "relationship_to_891": "Distinct from the #891 LoCoMo finding (the dispatcher ran no reader at all). Here the reader pipeline runs correctly end-to-end; the ICL failure is at ingestion (labels not persisted) and the recsys failure is at scoring (GT id absent from context). The reader pipeline that rescued LRU does not rescue TTL.",
+    "empirical_confirmation": "A stratified 42-item probe (12 recsys + 6 per ICL source) scored 0.0% before the full run; the full 700-item run reproduced 0.0% on all 6 sources (0 items with any nonzero metric). Ingest mechanism verified directly: 0 of 4293 beliefs from a banking77 row retained any label token. Example reader outputs: 'bill_balance' / 'DESC' (ICL, no label to match) and 'Dumb and Dumber (1994)' where GT was movie-id '7008' (recsys)."
+  },
+  "aelfrice_version": "3.0.1",
+  "captured_at_utc": "2026-05-22T18:39:16Z",
+  "git_commit": "3af82bc3d5b0548144ece69a30fc5e63f5aeedfc",
+  "harness_version": "1",
+  "headline_cut": {
+    "mab": [
+      {
+        "args": ["--split", "Test_Time_Learning"],
+        "sub_key": "test_time_learning"
+      }
+    ]
+  },
+  "label": "v3.0.1 MAB Test_Time_Learning back-fill (NOT MEASURABLE — see _not_measurable)",
+  "metric_overrides": {},
+  "results": {
+    "mab": {
+      "test_time_learning": {
+        "_elapsed_sec": null,
+        "_status": "not_measurable",
+        "output": {
+          "metric": "substring_exact_match",
+          "score_pct": 0.0,
+          "total": 700,
+          "f1_pct": 0.0,
+          "exact_match_pct": 0.0,
+          "n_runs": 1,
+          "variance_probed": false,
+          "items_with_any_nonzero_metric": 0,
+          "not_measurable": true,
+          "score_validity_note": "0.0% is a measurement-validity zero, not a model-quality zero. ICL sources: demonstration labels discarded at ingestion (0/4293 beliefs retained a label). recsys: GT movie-id never present in context (titles only). See top-level _not_measurable.",
+          "by_source": {
+            "recsys_redial_full": {"n": 200, "exact_match_pct": 0.0, "substring_exact_match_pct": 0.0, "f1_pct": 0.0},
+            "icl_banking77_5900shot_balance": {"n": 100, "exact_match_pct": 0.0, "substring_exact_match_pct": 0.0, "f1_pct": 0.0},
+            "icl_clinic150_7050shot_balance": {"n": 100, "exact_match_pct": 0.0, "substring_exact_match_pct": 0.0, "f1_pct": 0.0},
+            "icl_nlu_8296shot_balance": {"n": 100, "exact_match_pct": 0.0, "substring_exact_match_pct": 0.0, "f1_pct": 0.0},
+            "icl_trec_coarse_6600shot_balance": {"n": 100, "exact_match_pct": 0.0, "substring_exact_match_pct": 0.0, "f1_pct": 0.0},
+            "icl_trec_fine_6400shot_balance": {"n": 100, "exact_match_pct": 0.0, "substring_exact_match_pct": 0.0, "f1_pct": 0.0}
+          },
+          "source_breakdown_note": "Two failure modes. The 5 icl_* sources: ingest_turn discards the demonstration 'label: N' annotations (verified 0/4293 beliefs retain a label), so the reader has no label space to learn from; integer GT would score fine if labels co-retrieved. recsys_redial_full: GT is a movie-db id absent from context (titles only), so a title prediction can never match without a title->id decode. Both independently yield 0 here but require different fixes (atomic label-bearing ingest vs GT decode)."
+        }
+      }
+    }
+  },
+  "schema_version": "1.0"
+}
