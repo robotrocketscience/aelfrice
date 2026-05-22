@@ -523,6 +523,71 @@ def score_prediction(
     )
 
 
+def score_predictions(
+    predictions: list[dict[str, object]],
+    ground_truth: list[dict[str, object]],
+    default_task: str | None = None,
+) -> dict[str, object]:
+    """Score reader predictions against ground truth with `score_prediction`.
+
+    This is the reader seam that completes the `--retrieve-only` workflow
+    (#915): `--retrieve-only` writes context (NO answers) for an external
+    reader (a sub-agent — bench LLM calls do not run in this adapter), and
+    this function grades the reader's predictions with the task-aware
+    scorer instead of the raw-retrieval `check_state_correctness` path.
+
+    `predictions` items must carry `case_id`, `question`, and `prediction`;
+    `task` is read per-item when present, else `default_task`. `ground_truth`
+    items carry `case_id`, `question`, and `reference_answer` (the GT file
+    written alongside the retrieval file). Predictions are matched to GT on
+    the `(case_id, question)` key.
+
+    Returns an aggregate dict mirroring the `--output` schema: `task`,
+    `total`, `correct`, `score_pct`, `unmatched` (predictions with no GT
+    row), and `per_query` rows.
+    """
+    gt_index: dict[tuple[str, str], str] = {}
+    for row in ground_truth:
+        key = (str(row.get("case_id", "")), str(row.get("question", "")))
+        gt_index[key] = str(row.get("reference_answer", ""))
+
+    per_query: list[dict[str, object]] = []
+    correct: int = 0
+    unmatched: int = 0
+    for pred in predictions:
+        case_id: str = str(pred.get("case_id", ""))
+        question: str = str(pred.get("question", ""))
+        prediction: str = str(pred.get("prediction", ""))
+        task: str = str(pred.get("task") or default_task or "")
+        key = (case_id, question)
+        if key not in gt_index:
+            unmatched += 1
+            continue
+        reference: str = gt_index[key]
+        is_correct: bool = score_prediction(prediction, reference, task)
+        if is_correct:
+            correct += 1
+        per_query.append({
+            "case_id": case_id,
+            "question": question,
+            "task": task,
+            "prediction": prediction,
+            "reference_answer": reference,
+            "correct": is_correct,
+        })
+
+    total: int = len(per_query)
+    score_pct: float = round(correct / total * 100, 1) if total else 0.0
+    return {
+        "task": default_task,
+        "total": total,
+        "correct": correct,
+        "score_pct": score_pct,
+        "unmatched": unmatched,
+        "per_query": per_query,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Results
 # ---------------------------------------------------------------------------
@@ -709,7 +774,58 @@ def main() -> None:
         "--retrieve-only", default=None, metavar="PATH",
         help="Run retrieval only, write question+context+reference for LLM judge scoring",
     )
+    parser.add_argument(
+        "--score-predictions", default=None, metavar="PATH",
+        help=(
+            "Score reader predictions JSON against ground truth with the "
+            "task-aware scorer (#915 reader seam). Pairs with --ground-truth; "
+            "skips retrieval/ingest. No reader runs here — predictions come "
+            "from an external sub-agent."
+        ),
+    )
+    parser.add_argument(
+        "--ground-truth", default=None, metavar="PATH",
+        help=(
+            "Ground-truth JSON for --score-predictions (the *_gt file written "
+            "by --retrieve-only). Defaults to the predictions path's _gt sibling."
+        ),
+    )
     args: argparse.Namespace = parser.parse_args()
+
+    # #915 reader seam: score externally-produced reader predictions with
+    # the task-aware scorer. No retrieval/ingest — predictions come from a
+    # sub-agent reader fed by an earlier --retrieve-only run.
+    if args.score_predictions:
+        preds_path: Path = Path(args.score_predictions)
+        gt_path: Path = (
+            Path(args.ground_truth)
+            if args.ground_truth
+            else preds_path.with_name(preds_path.stem + "_gt" + preds_path.suffix)
+        )
+        if not preds_path.exists() or not gt_path.exists():
+            print(
+                f"score-predictions: missing input "
+                f"(predictions={preds_path}, ground_truth={gt_path})",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        with preds_path.open(encoding="utf-8") as f:
+            predictions: list[dict[str, object]] = json.load(f)
+        with gt_path.open(encoding="utf-8") as f:
+            ground_truth: list[dict[str, object]] = json.load(f)
+        scored: dict[str, object] = score_predictions(
+            predictions, ground_truth, default_task=args.task,
+        )
+        print(
+            f"Scored {scored['total']} predictions "
+            f"({scored['correct']} correct = {scored['score_pct']}%); "
+            f"{scored['unmatched']} unmatched",
+        )
+        if args.output:
+            with Path(args.output).open("w", encoding="utf-8") as f:
+                json.dump(scored, f, indent=2)
+            print(f"Detailed scoring written to {args.output}")
+        return
 
     print(f"Loading StructMemEval cases: task={args.task}, bench={args.bench}")
     cases: list[Case] = discover_cases(args.data, args.task, args.bench)
