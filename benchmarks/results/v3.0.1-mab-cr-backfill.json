@@ -1,0 +1,52 @@
+{
+  "_calibration_notes": "Back-fill measurement of MAB Conflict_Resolution (800q) — one of the TBDs noted in v3.0.1.json _calibration_notes. Measured 2026-05-22 against current main HEAD (3af82bc3, post-PR #906 LoCoMo paragraph land; no retrieve-side changes since v3.0.1 tag commit 0e91fd1d). Methodology: full retrieve-then-reader pipeline per the #899 spec. Step 1 — `uv run python benchmarks/mab_adapter.py --split Conflict_Resolution --retrieve-only /tmp/899_cr/retrieval.json` produced 800 (question, context) pairs across 8 source rows (one row per source: factconsolidation_{mh,sh}_{6k,32k,64k,262k}, 100 questions each). ISOLATION verified: retrieval file contains zero ground truth answers. Median context size 2700 chars (~675 tokens); tight retrieve-side filtering — the substrate already projects per-question relevant chunks. Step 2 — eight in-process LLM helpers dispatched in parallel (one per source-row chunk_<N>.json of 100q), each writing predictions_<N>.json. Locked rule honored: bench LLM calls go through in-process helpers, never via a direct SDK / API-key path. Step 3 — score via mab_adapter.score_multi_answer (substring_exact_match + exact_match + token-level F1) joined on (row_idx, id). Single-run capture; multi-run variance probe TBD per the #899 issue body (matches v3.0.1.json single-run methodology, does not match the LRU back-fill's 3-run upgrade — operator may commission a follow-up multi-run pass as a separate PR if variance band is decision-relevant). Headline finding: sharp SH-vs-MH split. SH (single-hop) cuts at SEM 60-69% across context lengths, with SH 262K=61% calibrating cleanly against the existing v3.0.1.json sh_262k=57% headline (delta 4pp within tolerance band). MH (multi-hop) cuts at SEM 3-16%, with MH 262K=3% sitting inside the paper's published 'All methods (MH 262K) <= 7%' envelope and below the existing v3.0.1.json mh_262k=6% baseline. The pattern is consistent with the #605 deterministic-substrate ratification (locked) — SH retrieval is well-served by the byte-identical chunk-projection lane; MH retrieval benefits from chain-traversal mechanisms (HRR-class, supersedes-edge resolution) that were intentionally removed under #605. Re-open triggers: (a) if #895 lands and the (subject, predicate)-collision SUPERSEDES emission is ported to public, re-run MH cuts and update; (b) if #897 dispositions outcome 2 or 3 (re-open #605), re-run all cuts under whatever new substrate the disposition picks. Bench fixtures (MAB HF dataset) downloaded fresh per run; not pinned by checksum.",
+  "aelfrice_version": "3.0.1",
+  "captured_at_utc": "2026-05-22T17:55:00Z",
+  "git_commit": "3af82bc3d5b0548144ece69a30fc5e63f5aeedfc",
+  "harness_version": "1",
+  "headline_cut": {
+    "mab": [
+      {
+        "args": ["--split", "Conflict_Resolution"],
+        "sub_key": "conflict_resolution"
+      }
+    ]
+  },
+  "label": "v3.0.1 MAB Conflict_Resolution back-fill",
+  "metric_overrides": {},
+  "results": {
+    "mab": {
+      "conflict_resolution": {
+        "_elapsed_sec": null,
+        "_status": "ok",
+        "output": {
+          "metric": "substring_exact_match",
+          "score_pct": 37.1,
+          "total": 800,
+          "f1_pct": 38.2,
+          "exact_match_pct": 37.0,
+          "n_runs": 1,
+          "variance_probed": false,
+          "variance_probed_note": "Single-run capture per #899 spec ('Single-run capture; variance band TBD on a future multi-run pass'). Reader-pass variance not probed; retrieval is deterministic per #605 (same retrieval.json across hypothetical reruns) so any future variance would live entirely in the reader pass. Operator may commission a multi-run pass as a follow-up PR if the variance band is decision-relevant; LRU back-fill (PR #900) precedent showed an F1 spread up to 17pp across 3 runs.",
+          "by_source": {
+            "factconsolidation_mh_262k": {"n": 100, "exact_match_pct": 3.0, "substring_exact_match_pct": 3.0, "f1_pct": 3.0},
+            "factconsolidation_mh_32k":  {"n": 100, "exact_match_pct": 15.0, "substring_exact_match_pct": 15.0, "f1_pct": 15.4},
+            "factconsolidation_mh_64k":  {"n": 100, "exact_match_pct": 8.0,  "substring_exact_match_pct": 8.0,  "f1_pct": 8.4},
+            "factconsolidation_mh_6k":   {"n": 100, "exact_match_pct": 16.0, "substring_exact_match_pct": 16.0, "f1_pct": 17.3},
+            "factconsolidation_sh_262k": {"n": 100, "exact_match_pct": 61.0, "substring_exact_match_pct": 61.0, "f1_pct": 63.7},
+            "factconsolidation_sh_32k":  {"n": 100, "exact_match_pct": 60.0, "substring_exact_match_pct": 61.0, "f1_pct": 63.2},
+            "factconsolidation_sh_64k":  {"n": 100, "exact_match_pct": 69.0, "substring_exact_match_pct": 69.0, "f1_pct": 70.5},
+            "factconsolidation_sh_6k":   {"n": 100, "exact_match_pct": 64.0, "substring_exact_match_pct": 64.0, "f1_pct": 64.0}
+          },
+          "by_hop_class": {
+            "multi_hop_mean_sem_pct": 10.5,
+            "single_hop_mean_sem_pct": 63.75,
+            "split_delta_pp": 53.25,
+            "interpretation": "Deterministic chunk-projection substrate (post-#605) serves single-hop questions well (SEM 60-69%) but cannot resolve multi-hop chains that require HRR-class or supersedes-edge traversal removed under the #605 ratification (SEM 3-16%). MH 262K=3% sits inside paper's All-methods-MH-262K <= 7% envelope. SH 262K=61% calibrates cleanly against existing v3.0.1.json sh_262k=57% (delta 4pp, within tolerance band)."
+          }
+        }
+      }
+    }
+  },
+  "schema_version": "1.0"
+}
