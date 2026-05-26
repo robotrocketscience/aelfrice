@@ -20,7 +20,7 @@ The Python side owns the contract; this markdown is the dispatch script.
 <process>
 Run: `uv run aelf reason "$ARGUMENTS" --json`
 
-Parse the payload. It has these top-level keys: `query`, `seeds`, `hops`, `verdict`, `impasses`, `dispatch`, `suggested_updates`.
+Parse the payload. It has these top-level keys: `query`, `seeds`, `hops`, `paths`, `verdict`, `impasses`, `dispatch`, `suggested_updates`.
 
 **Step 1 — present the chain.** For every verdict except `INSUFFICIENT`, print the seeds and hop tree from `payload.hops` in indented form so the operator can read the answer. If the verdict is `INSUFFICIENT`, print only the seeds and the impasse summary.
 
@@ -30,7 +30,7 @@ Parse the payload. It has these top-level keys: `query`, `seeds`, `hops`, `verdi
 
 - **Verifier** — "A locked belief at IDs {belief_ids} is on a CONTRADICTS edge: {note}. Verify whether the locked belief is still accurate against authoritative sources; if not, propose `aelf unlock` + a replacement lock. Do not run the commands yourself; surface them as suggested follow-ups."
 - **Gap-filler** — "The reasoning walk dead-ended at belief(s) {belief_ids} ({note}). Research what's missing: extract entities, find authoritative sources, summarize what should be ingested. Surface suggested `aelf onboard` / `aelf` commands; do not run them."
-- **Fork-resolver** — "Two beliefs at IDs {belief_ids} contradict each other with similar posterior strength ({note}). Find evidence that adjudicates; propose `aelf feedback <id> --direction help|reject` calls for each side. Do not run them yourself."
+- **Fork-resolver** — "Two beliefs at IDs {belief_ids} contradict each other with similar posterior strength ({note}). Find evidence that adjudicates; propose `aelf feedback <id> used` (for the supported side) and `aelf feedback <id> harmful` (for the rejected side). Do not run them yourself."
 
 **Step 3 — emit SUGGESTED UPDATES.** After step 2 returns, print exactly:
 
@@ -43,7 +43,7 @@ SUGGESTED UPDATES
 
 …with one row per element in `payload.suggested_updates`. If the list is empty, print `SUGGESTED UPDATES (none)`. Direction values are `+1` (helpful — on the answer chain), `?` (uncertain — on an impasse), or `-1` (rejected — currently unreachable from this surface; the field exists for forward compatibility with R2's fork-path data).
 
-The caller (or the operator, depending on policy) pipes the `+1` rows into `aelf feedback <belief_id> --direction help` to bump the Beta-Bernoulli posterior. `?` rows are surfaced for manual review and never auto-piped.
+The caller (or the operator, depending on policy) pipes the `+1` rows into `aelf feedback <belief_id> used` to bump the Beta-Bernoulli posterior (and `-1` rows into `aelf feedback <belief_id> harmful` if a policy uses them). `?` rows are surfaced for manual review and never auto-piped.
 
 Do not add commentary outside the steps above. The CLI text-mode output is for human reading; this `--json`-driven path is the agent-side acting protocol.
 </process>
