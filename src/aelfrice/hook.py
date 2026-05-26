@@ -3109,26 +3109,32 @@ def _maybe_fire_cadence_checkpoint(
         POLICY_OFF,
         POLICY_P1_EVERY_K_TURNS,
         POLICY_P2_CTX_THRESHOLD,
+        POLICY_P3_SUBSTANTIVE,
         POLICY_P3_VELOCITY,
         append_shadow_row,
         estimate_transcript_bytes,
         format_shadow_row,
+        is_substantive_turn,
         read_last_user_prompt,
         resolve_cadence_ctx_byte_window,
         resolve_cadence_ctx_threshold,
         resolve_cadence_enabled,
         resolve_cadence_k,
+        resolve_cadence_p3_substantive_threshold,
+        resolve_cadence_p3_substantive_window,
         resolve_cadence_p3_velocity_threshold,
         resolve_cadence_policy,
         resolve_cadence_shadow_mode_enabled,
         shadow_log_path,
         should_fire,
         should_fire_p2,
+        should_fire_p3_substantive,
         should_fire_p3_velocity,
         would_fire_p1,
         would_fire_p2,
     )
     from aelfrice.session_ring import (  # noqa: PLC0415
+        push_classification,
         read_ring_state,
         update_p3_velocity_state,
     )
@@ -3279,6 +3285,58 @@ def _maybe_fire_cadence_checkpoint(
         )
         return
 
+    if policy == POLICY_P3_SUBSTANTIVE:
+        window = resolve_cadence_p3_substantive_window(start=cwd)
+        threshold = resolve_cadence_p3_substantive_threshold(start=cwd)
+        cfg = CadenceConfig(
+            enabled=True,
+            policy=policy,
+            p3_substantive_window=window,
+            p3_substantive_threshold=threshold,
+        )
+        tp_obj = payload.get(_TRANSCRIPT_PATH_KEY)
+        tp: Path | None
+        if isinstance(tp_obj, str) and tp_obj:
+            tp = Path(tp_obj)
+        elif isinstance(tp_obj, os.PathLike):
+            tp = Path(tp_obj)
+        else:
+            tp = None
+        last_prompt = read_last_user_prompt(tp)
+        # Stop owns the per-turn classification push; UPS reads the window
+        # without pushing so the rolling history advances exactly once per
+        # turn — a double-push would distort the substantive ratio. The push
+        # happens every turn the policy is active, regardless of fire.
+        push_classification(
+            session_id,
+            is_substantive_turn(last_prompt),
+            window_cap=window,
+            stderr=serr,
+        )
+        state = read_ring_state(session_id)
+        if not isinstance(state, dict):
+            return
+        classifications = state.get("classifications")
+        if not isinstance(classifications, list):
+            return
+        substantive_count = sum(1 for c in classifications[-window:] if c is True)
+        if not should_fire_p3_substantive(
+            substantive_count=substantive_count,
+            config=cfg,
+        ):
+            return
+        body = _run_cadence_rebuild(payload, cwd)
+        if body is None:
+            return
+        _write_cadence_resume_cache(body, session_id, policy, serr)
+        print(
+            f"aelfrice: cadence checkpoint fired "
+            f"(policy={policy}, substantive={substantive_count}/{window}, "
+            f"threshold={threshold})",
+            file=serr,
+        )
+        return
+
     # Unknown policy / POLICY_OFF — no-op.
 
 
@@ -3315,6 +3373,7 @@ def _maybe_run_ups_cadence_checkpoint(
         CadenceConfig,
         POLICY_P1_EVERY_K_TURNS,
         POLICY_P2_CTX_THRESHOLD,
+        POLICY_P3_SUBSTANTIVE,
         POLICY_P3_VELOCITY,
         estimate_transcript_bytes,
         read_last_user_prompt,
@@ -3322,10 +3381,13 @@ def _maybe_run_ups_cadence_checkpoint(
         resolve_cadence_ctx_threshold,
         resolve_cadence_enabled,
         resolve_cadence_k,
+        resolve_cadence_p3_substantive_threshold,
+        resolve_cadence_p3_substantive_window,
         resolve_cadence_p3_velocity_threshold,
         resolve_cadence_policy,
         should_fire,
         should_fire_p2,
+        should_fire_p3_substantive,
         should_fire_p3_velocity,
     )
     from aelfrice.session_ring import (  # noqa: PLC0415
@@ -3451,6 +3513,43 @@ def _maybe_run_ups_cadence_checkpoint(
         print(
             f"aelfrice: ups cadence checkpoint fired @ fire_idx={next_fire_idx} "
             f"(policy={policy}, velocity={density:.1f} bytes/turn, "
+            f"threshold={threshold})",
+            file=serr,
+        )
+        return body
+
+    if policy == POLICY_P3_SUBSTANTIVE:
+        window = resolve_cadence_p3_substantive_window(start=cwd)
+        threshold = resolve_cadence_p3_substantive_threshold(start=cwd)
+        cfg = CadenceConfig(
+            enabled=True,
+            policy=policy,
+            p3_substantive_window=window,
+            p3_substantive_threshold=threshold,
+        )
+        # Stop owns the per-turn classification push (see Stop-side note);
+        # UPS reads the window only. The window therefore reflects
+        # classifications through the prior turn's Stop tick — a one-turn
+        # read lag, consistent with the p3_velocity counter-sharing
+        # semantics above.
+        state = read_ring_state(session_id)
+        if not isinstance(state, dict):
+            return None
+        classifications = state.get("classifications")
+        if not isinstance(classifications, list):
+            return None
+        substantive_count = sum(1 for c in classifications[-window:] if c is True)
+        if not should_fire_p3_substantive(
+            substantive_count=substantive_count,
+            config=cfg,
+        ):
+            return None
+        body = _run_cadence_rebuild(payload, cwd)
+        if body is None:
+            return None
+        print(
+            f"aelfrice: ups cadence checkpoint fired "
+            f"(policy={policy}, substantive={substantive_count}/{window}, "
             f"threshold={threshold})",
             file=serr,
         )
