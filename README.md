@@ -127,7 +127,7 @@ Every belief carries a `(α, β)` Beta-Bernoulli posterior: `α / (α+β)` is th
 | `aelf lock "never commit .env files"` | Permanent rule. Returned on every retrieval. |
 | `aelf onboard .` | Walks the project — git log, prose headings, code structure — and ingests structural facts as `agent_inferred` beliefs. |
 | `aelf feedback <id> used` | `α += 1`. Strengthens the belief's posterior. |
-| `aelf feedback <id> harmful` | `β += 1`. Weakens it. Five independent harmfuls through `CONTRADICTS` edges to a lock auto-demote it. |
+| `aelf feedback <id> harmful` | `β += 1`. Weakens it. Locks resist passive feedback by design — change with `aelf unlock` / `aelf delete`. |
 | `aelf promote <id>` | Flips `origin` from `agent_inferred` to `user_validated`. With `--to-scope <SCOPE>`, also moves federation visibility (`project` / `global` / `shared:<name>`). |
 | `/aelf:wonder <topic>` | Researches the topic and writes the findings as `speculative` phantoms; `/aelf:reason <topic>` can then walk them. |
 | _(passive — no command)_ | Default-on auto-capture: every prompt/response turn is logged and ingested at compaction; successful `git commit` events are ingested too. Opt out via `aelf setup --no-transcript-ingest --no-commit-ingest`. |
