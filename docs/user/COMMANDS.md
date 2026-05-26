@@ -36,7 +36,9 @@ DB resolves from `$AELFRICE_DB`, then `<git-common-dir>/aelfrice/memory.db` when
 |---|---|
 | `stats` | Belief / thread / lock / feedback counts. |
 | `health [--json]` | Structural auditor: orphan threads, FTS5 sync, locked contradictions, corpus volume. Includes a per-edge-type count breakdown (sorted by count desc, then alphabetically); empty store prints `no edges yet`. `--json` emits `{"audit": {...}, "features": {"edges_by_type": {...}}}`. Exits 1 on structural failure; corpus-volume warnings are informational. |
-| `status` | Alias for `health`. v3.0+ adds an `hrr.persist_state` summary line — see *HRR persistence reporter* below. |
+| `status` | Alias for `stats` — belief / thread / lock / feedback counts. v3.0+ adds an `hrr.persist_state` summary line — see *HRR persistence reporter* below. The structural auditor is `aelf doctor graph` (the `health` verb is hidden). |
+| `graph [--belief-id ID] [--hops N] [--format dot\|json] [--preview-chars N]` | (v3.0+, [#629](https://github.com/robotrocketscience/aelfrice/issues/629)) Emit a subgraph centered on a belief or seed list, with color-coded edges (`SUPERSEDES`, `CONTRADICTS`, `RESOLVES`, `SUPPORTS`, `DERIVED_FROM`) and origin-shaded nodes. `--format dot` (default) for Graphviz; `--format json` for tooling. Default `--hops 2`, `--preview-chars 80`. |
+| `scope-out <pattern> [--list] [--clear]` | (v3.0+, [#856](https://github.com/robotrocketscience/aelfrice/issues/856)) Manage the project-scope denylist — paths or globs whose ingested beliefs are excluded from federation visibility. Positional `pattern` adds; `--list` lists; `--clear` empties. |
 | `regime` | The v1.0 regime classifier output (`supersede` / `ignore` / `mixed` / `insufficient_data`). Informational; always exits 0. |
 | `doctor` | Verify hook + statusline commands resolve. Inspects `bash <script>` wrappers, flags `2>/dev/null \|\| true` patterns. Surfaces empty-store warning. Exits 1 on broken hooks. v1.6+ flags: `--gc-orphan-feedback` (delete `feedback_history` rows whose `belief_id` no longer exists, #223); `--promote-retention` (one-shot reclassification pass over low-prior beliefs based on accumulated retrieval / corroboration evidence, #290 phase-3). v3.0+ adds three HRR persistence rows (`hrr.persist_enabled`, `hrr.on_disk_bytes`, `hrr.last_build_seconds`) — see *HRR persistence reporter* below. |
 | `bench [--top-k N]` | Run the deterministic 16-belief × 16-query benchmark. Prints a JSON `BenchmarkReport`. |
@@ -94,7 +96,7 @@ See [CONFIG § `hrr_persist`](CONFIG.md) for the underlying flag, [`docs/design/
 
 ## Help flags
 
-`aelf --help` shows the everyday surface (visible subcommands). `aelf --help --advanced` (or `aelf --advanced`) shows the full surface including hidden subcommands (`bench`, `clamp-ghosts`, `demote`, `feedback`, `gate`, `health`, `ingest-transcript`, `project-warm`, `regime`, `resolve`, `session-delta`, `stats`, `statusline`, `uninstall`, `unsetup`, `upgrade`, `upgrade-cmd`, `validate`). The `--advanced` flag was wired in v1.4 (PR #174).
+`aelf --help` shows the everyday surface (visible subcommands). `aelf --help --advanced` (or `aelf --advanced`) shows the full surface including hidden subcommands (`bench`, `cadence-score`, `clamp-ghosts`, `demote`, `export-canvas`, `export-obsidian`, `feedback`, `gate`, `health`, `ingest-transcript`, `label`, `project-warm`, `regime`, `resolve`, `session-delta`, `stats`, `statusline`, `uninstall`, `unsetup`, `upgrade`, `upgrade-cmd`, `validate`). The `--advanced` flag was wired in v1.4 (PR #174).
 
 ## Output and exit codes
 
