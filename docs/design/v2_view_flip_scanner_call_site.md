@@ -9,15 +9,17 @@ require a memo.
 ## Why scanner is the hard one
 
 The regex path was already migrated to the worker in #264 part 2
-(scanner.py:312-335). The remaining bypass is the **LLM-classify path**
-(scanner.py:262-310). The inline comment at scanner.py:230-232 names the
+(see `_run_regex_extraction` in scanner.py — note: line refs in this
+memo drifted since v2.x; grep by symbol name). The remaining bypass
+is the **LLM-classify path** (around scanner.py:240-290, by `LLMRouter`/
+`LLMRoute`). The inline comment naming the
 blocker:
 
 > The LLM path remains direct-write — its alpha/beta/origin/audit_source
 > are not yet representable in `raw_meta` for the worker to reconstruct.
 
 The router emits per-candidate `LLMRoute(belief_type, origin, persist, alpha,
-beta, audit_source)` (scanner.py:128-142). `derive()` produces these fields
+beta, audit_source)` (around scanner.py:126, `class LLMRoute`). `derive()` produces these fields
 from deterministic classification — it does not know about the router's
 output. Routing through the worker today would silently drop the router's
 decisions on the floor.

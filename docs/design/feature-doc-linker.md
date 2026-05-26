@@ -3,7 +3,7 @@
 **Status:** implementation shipped (PR for #435), bench-gate pending lab-side corpus
 **Issue:** #435
 **Recovery-inventory line:** [`docs/concepts/ROADMAP.md`](../concepts/ROADMAP.md) — *"Doc / semantic linker | v2.0.0"*
-**Substrate prereqs:** belief schema (foundation), `ingest_log` (#205, v1.6.0), `belief_corroborations` (#190, v1.5.0), `DerivationInput.source_path` (`src/aelfrice/derivation.py:64`)
+**Substrate prereqs:** belief schema (foundation), `ingest_log` (#205, v1.6.0), `belief_corroborations` (#190, v1.5.0), `DerivationInput.source_path` (`src/aelfrice/derivation.py:106`)
 
 ---
 
@@ -11,7 +11,7 @@
 
 Connect a belief to the **document anchor** it describes — a file path, a section, a URL — so retrieval can return the canonical reference alongside the bare belief snippet. Distinct from `EDGE_CITES` (`models.py:27`), which is belief→belief: this is **belief↔document**.
 
-The research line shipped this so a query like *"how does X work?"* surfaces the belief plus a pointer to the source file or doc section, letting the consumer route to the document for context the snippet doesn't carry. Today aelfrice records `source_path` on `ingest_log` rows (`store.py:242`) and on `DerivationInput` during a single ingest pass, but it does not persist a queryable mapping from `belief_id` to its canonical document.
+The research line shipped this so a query like *"how does X work?"* surfaces the belief plus a pointer to the source file or doc section, letting the consumer route to the document for context the snippet doesn't carry. Today aelfrice records `source_path` on `ingest_log` rows (`store.py:267`) and on `DerivationInput` during a single ingest pass, but it does not persist a queryable mapping from `belief_id` to its canonical document.
 
 ---
 

@@ -3,7 +3,7 @@
 **Status:** implementation spec
 **Issue:** #440
 **Sibling:** `aelf unlock` (`src/aelfrice/cli.py:_cmd_unlock`)
-**Storage primitive:** `MemoryStore.delete_belief` (`src/aelfrice/store.py:1315`)
+**Storage primitive:** `MemoryStore.delete_belief` (`src/aelfrice/store.py:1934`)
 
 ---
 

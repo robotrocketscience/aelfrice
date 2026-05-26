@@ -3,7 +3,7 @@
 **Status:** implementation spec  
 **Issue:** #441  
 **MCP sibling:** `aelf_confirm` / `tool_confirm` — shipped in #390  
-**`tool_confirm` location:** `src/aelfrice/mcp_server.py:432-476`
+**`tool_confirm` location:** `src/aelfrice/mcp_server.py:748`
 
 ---
 
