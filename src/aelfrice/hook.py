@@ -759,6 +759,8 @@ def _write_hook_audit_record(
         return
     try:
         p = db_path()
+        if str(p) == ":memory:":
+            return
         audit_path = _audit_path_for_db(p)
     except Exception:
         return
@@ -2008,6 +2010,8 @@ def _write_sentiment_feedback_audit(
         return
     try:
         p = db_path()
+        if str(p) == ":memory:":
+            return
         audit_path = _audit_path_for_db(p)
     except Exception:
         return

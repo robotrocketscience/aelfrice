@@ -448,3 +448,29 @@ def test_audit_write_failsoft_on_unwriteable_path(
     # Hook still produced its output block; only the audit failed.
     assert sout.getvalue().startswith("<aelfrice-memory>")
     assert "hook audit write failed" in serr.getvalue()
+
+
+def test_write_audit_record_memory_db_no_cwd_pollution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """:memory: DB has no real parent directory, so the audit write must be
+    a clean no-op — NOT a stray ``hook_audit.jsonl`` in the process CWD.
+
+    Regression: ``Path(":memory:").parent`` is ``.``, so the audit log was
+    being written relative to the working directory. Any session running
+    against an in-memory DB (tests, ``--bench``) scattered the log to the
+    git-worktree root, where it sat untracked and at risk of being committed.
+    """
+    monkeypatch.setenv("AELFRICE_DB", ":memory:")
+    monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    _write_hook_audit_record(
+        hook=AUDIT_HOOK_USER_PROMPT_SUBMIT,
+        prompt="how many bananas",
+        rendered_block='<belief id="F1">the kitchen is full of bananas</belief>',
+        n_beliefs=1,
+        n_locked=0,
+        session_id="mem-sess",
+    )
+    assert not (tmp_path / AUDIT_FILENAME).exists()
+    assert list(tmp_path.glob("**/" + AUDIT_FILENAME)) == []
