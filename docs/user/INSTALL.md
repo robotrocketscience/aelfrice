@@ -68,7 +68,7 @@ aelf doctor hooks      # hook resolution only
 aelf doctor graph      # structural auditor only
 ```
 
-`aelf health` and `aelf stats` remain callable as back-compat aliases — hidden from default `--help` output but listed under `aelf --help --advanced`. The canonical replacements are `aelf doctor graph` and `aelf status`.
+`aelf health` and `aelf stats` remain callable as back-compat aliases — hidden from default `--help` output but listed under `aelf --help --advanced`. The canonical replacements are `aelf doctor graph` (structural auditor, replaces `health`) and `aelf status` (counts, aliases `stats`).
 
 ## 4. Onboard a project
 
