@@ -9,9 +9,9 @@ Per-issue tracking: [LIMITATIONS.md](../user/LIMITATIONS.md). Release log: [CHAN
 
 aelfrice is a rebuild of an earlier research line on Bayesian + graph-backed memory for AI coding agents. The research codebase explored FTS5 retrieval, vocabulary bridging, BFS multi-hop traversal, entity-indexed retrieval, type-aware compression, correction detection, and a multi-tool MCP surface, with results against MAB, LoCoMo, LongMemEval, StructMemEval, and AMA-Bench.
 
-aelfrice **v1.0 is the foundation for that surface, not the surface itself.** v1.0 ships a stable core (SQLite store, Beta-Bernoulli scoring, BM25 retrieval, CLI, MCP, Claude Code wiring, a synthetic benchmark harness). The v1.x line recovers the remaining features incrementally with evidence required for each. v2.0 is the planned feature-parity release.
+v1.0 shipped the foundation (SQLite store, Beta-Bernoulli scoring, BM25 retrieval, CLI, MCP, Claude Code wiring, synthetic benchmark harness). The v1.x line recovered the remaining features incrementally; v2.0 reached feature parity with the research line plus the reproducibility-harness scaffolding; v3.0 added wonder lifecycle, wonder/reason parity, read-only federation, and the eval-harness completion. The current line is **v3.3.0**.
 
-This is a rebuild, not a port. Structural issues that survived the research line are being fixed at the foundation layer. Every behavioural claim is backed by a test or a benchmark, with a transparent issue trail for items that are not.
+This is a rebuild, not a port. Structural issues that survived the research line were fixed at the foundation layer. Every behavioural claim is backed by a test or a benchmark, with a transparent issue trail for items that are not.
 
 ## Versions at a glance
 
@@ -31,6 +31,9 @@ This is a rebuild, not a port. Structural issues that survived the research line
 | **v2.1.0** | shipped | reproducibility-harness gate cleared 11/11 (#437); `use_heat_kernel` + `use_hrr_structural` defaults flipped on (#154); HRR `dim` default 2048→512 (#538); default-on transcript / commit / session-start hooks (#529); query-strategy uplift bench gate (#291); vocab-bridge bench gate (#433) |
 | **v3.0.0** | shipped 2026-05-13 | wonder lifecycle complete (#542 umbrella + #547/#550/#552); wonder/reason parity #645 (Verdict/ImpasseKind, ConsequencePath fork on CONTRADICTS, VERDICT-driven dispatch + close-the-loop suggested-updates); HRR persistence default-ON + split-format save/load (#553); type-aware compression A2 bench gate (#434); eval-harness host-agent replay + LLM-judge stage + Cohen's-κ runner (#592, #600, #687); read-only federation — `scope` field + peer DB FTS5/BFS + foreign-id rejection (#650, #655, #688, #690, #713); `query_strategy` default flipped legacy-bm25 → stack-r1-r3 (#718); phantom-promotion Surface A + Surface B (#550, #616); sentiment-feedback UPS hook (#606); self-installing hook manifest (#623); merge-train label-driven serialized merger (#602). Ratified design decisions: PHILOSOPHY stays deterministic (#605); multimodel deferred (#607); federation read-only (#661). Milestone tracker: [#608](https://github.com/robotrocketscience/aelfrice/issues/608). |
 | **v3.0.1** | shipped 2026-05-13 | install-surface collapse: pipx/pip/venv channels removed, `uv tool install` is the single supported path (#730); auto-migrate non-uv installs to `uv tool` on first 3.0.1 `aelf setup` (#733, follow-up #774 for the uv-not-found one-liner); `search-tool` + `search-tool-bash` `PreToolUse` hooks default-on so the agent's own Grep/Glob/Bash-search calls go through the belief store first (#738); cross-fire injection dedup ring so back-to-back UPS + PreToolUse fires don't re-surface the same belief in the same turn (#740); transitive `authlib` 1.7.0 → 1.7.2 for CVE-2026-44681 (zero-exposure surface — `[mcp]` extra, aelfrice has no OIDC authorization endpoint). |
+| **v3.1.0** | shipped | `DEFAULT_TRIGGER_MODE` for the PreCompact rebuilder flipped from `manual` → `threshold` (#746); contradict-edge auto-demote machinery removed — `Belief.demotion_pressure` column dropped, `apply_feedback(propagate=)` kwarg dropped, `FeedbackResult.pressured_locks` / `.demoted_locks` fields gone (#814 / PR #820). Lock correction now goes through `aelf lock` overwrite per PHILOSOPHY #605. |
+| **v3.2.0** | shipped | (see [CHANGELOG/v3.md § 3.2.0](../../CHANGELOG/v3.md) for the per-entry detail) |
+| **v3.3.0** | shipped 2026-05-21 | `user_transcript` origin tier added (#888 — distinguishes user-stated content captured from transcript ingest from `user_stated` explicit-lock content and `agent_inferred` derivation); UPS retrieval conversation-aware (#909 — folds recent turns into BM25 query); session-start recent-work block (#887 — surfaces current branch, recent commits, referenced issue numbers); P3 cadence policy + turn-density scoring (#876); aelf graph CLI for DOT/JSON subgraph emission (#629); aelf scope-out for federation denylist control (#856); aelf label CLI for relevance-corpus labelling (#859); aelf export-obsidian for one-way Obsidian rendering (#630). |
 
 ## What shipped
 
@@ -110,29 +113,21 @@ A consolidation release rather than the originally-planned graph-signal wave. Ra
 - **Onboard / scanner / MCP `session_id` propagation to inserted beliefs** ([#192](https://github.com/robotrocketscience/aelfrice/issues/192)). Phantom-prereqs T3 of the #190 session-tracking story.
 - **Reachable-install detection + multi-install upgrade warning** ([#345](https://github.com/robotrocketscience/aelfrice/issues/345)). `aelf upgrade` enumerates every reachable install before upgrading, so users on multi-install machines see what they're about to update.
 
-## Planned
+### v1.7.0 — graph signal wave + structural retrieval lane (shipped)
 
-### v1.2.x — search-tool hook (planned patch)
-
-Pulled forward from v1.3.0 to validate the `PreToolUse` retrieval surface ahead of the bigger retrieval wave. Ships against the v1.0 retrieval pipeline + v1.1.0 per-project DB resolution; no dependency on entity-index, BFS, or LLM classifier work.
-
-- **Search-tool `PreToolUse` hook** ([search_tool_hook.md](../design/search_tool_hook.md)). Fires before `Grep` and `Glob` tool calls, lifts the agent's search query out of `tool_input.pattern`, runs the same query against the per-project belief store, and emits results as `additionalContext` so the agent sees them *before* the tool runs. First retrieval-shaped hook on the agent's *own* tool intent (the v1.0.1 `UserPromptSubmit` hook covers user-initiated retrieval; this covers agent-initiated). Opt-in via `aelf setup --search-tool` at v1.2.x; matcher extension to other tools tracked at #155 for v1.5.
-
-### v1.7.0 — graph signal wave + structural retrieval lane
-
-The release where ranking moves beyond BM25 + L2.5 + BFS into graph-authority and full posterior-weighted territory. Originally targeted at v1.6; lifted to v1.7 because the v1.6 cycle absorbed the hook-hardening + observability + retention surface ahead of it. The eval harness (#151) and heat-kernel composition wiring (#310) shipped at v1.6 in default-OFF form so the math could land in front of the bake-off; v1.7 flips the lane defaults once #154's gate criteria pass.
+The release where ranking moved beyond BM25 + L2.5 + BFS into graph-authority and full posterior-weighted territory. The eval harness (#151) and heat-kernel composition wiring (#310) shipped at v1.6 in default-OFF form so the math could land in front of the bake-off; v1.7 flipped the lane defaults once #154's gate criteria passed.
 
 - **Signed normalized Laplacian + offline eigenbasis (top-K=200) builder** ([#149](https://github.com/robotrocketscience/aelfrice/issues/149)). Offline-only build step; no runtime cost. Hard prerequisite for #150.
-- **Heat kernel authority signal via precomputed eigenbasis** ([#150](https://github.com/robotrocketscience/aelfrice/issues/150)). +0.41 NDCG @ +7.8 ms p50 on a 50k-belief store — biggest single retrieval gain in the bake-off. Ships default-on; latency stays inside the v1.2.x search-tool hook's 50 ms median budget.
-- **Plate FFT HRR primitives — port to public repo** ([#216](https://github.com/robotrocketscience/aelfrice/issues/216)). Hard prerequisite for the HRR structural-query lane (#152).
-- **HRR structural-query lane (bind/probe over outgoing edges)** ([#152](https://github.com/robotrocketscience/aelfrice/issues/152)). A separate retrieval lane, not a projection — naive HRR projection into BM25 ranking was rejected at -0.10 NDCG (R9 in the bake-off). Bind/probe over outgoing edges is the structural-query path that survives. Persists `id_vec` per belief; `enable_hrr` config flag default-off until any belief has HRR vectors written.
-- **`uri_baki` post-rank adjuster retest with relevance-aware locked set** ([#153](https://github.com/robotrocketscience/aelfrice/issues/153)). Named after Uri and Baki, the two Fire Aelfmaidens in Gene Wolfe's *The Wizard Knight* (2004) — bound attendants who operate after the main action to tilt outcomes for their bound knight. Locked-floor (Uri's protection), supersession demote (Baki's undermining), recency decay (the Aelfrice time-tilt). The pattern is publicly described as Google's "Twiddler" in Pandu Nayak's DOJ testimony (October 2023) and the May 2024 Content Warehouse API leak; aelfrice uses neutral naming to avoid trading on Google's term-of-art. A prior random-pinned synthetic regressed -0.05 NDCG due to a methodology bug (random pinning drowned signal). The relevance-aware retest uses `Belief.lock_state` and decides whether the lane is dead or just needed a fairer eval. Research item; ships only if the retest beats the BM25F + heat-kernel + posterior baseline.
-- **Posterior-weighted ranking — full default-flip** ([#151](https://github.com/robotrocketscience/aelfrice/issues/151)). Harness + composition shipped at v1.6.0 in default-OFF form. v1.7 flips the lane defaults once the harness clears the MRR-uplift / ECE thresholds against the v2.0 corpus.
-- **Benchmark-gate default-on flip** ([#154](https://github.com/robotrocketscience/aelfrice/issues/154)). Composition tracker shipped at v1.5.0 with the per-lane gate; v1.7 promotes the heat-kernel and posterior lanes from default-OFF to default-ON.
+- **Heat kernel authority signal via precomputed eigenbasis** ([#150](https://github.com/robotrocketscience/aelfrice/issues/150)). +0.41 NDCG @ +7.8 ms p50 on a 50k-belief store — biggest single retrieval gain in the bake-off.
+- **Plate FFT HRR primitives — port to public repo** ([#216](https://github.com/robotrocketscience/aelfrice/issues/216)).
+- **HRR structural-query lane (bind/probe over outgoing edges)** ([#152](https://github.com/robotrocketscience/aelfrice/issues/152)). A separate retrieval lane, not a projection — naive HRR projection into BM25 ranking was rejected at -0.10 NDCG (R9 in the bake-off). Bind/probe over outgoing edges is the structural-query path that survives.
+- **`uri_baki` post-rank adjuster** ([#153](https://github.com/robotrocketscience/aelfrice/issues/153)). Named after Uri and Baki, the two Fire Aelfmaidens in Gene Wolfe's *The Wizard Knight* (2004) — bound attendants who operate after the main action to tilt outcomes for their bound knight. Locked-floor (Uri's protection), supersession demote (Baki's undermining), recency decay (the Aelfrice time-tilt). The pattern is publicly described as Google's "Twiddler" in Pandu Nayak's DOJ testimony (October 2023) and the May 2024 Content Warehouse API leak; aelfrice uses neutral naming to avoid trading on Google's term-of-art.
+- **Posterior-weighted ranking — full default-flip** ([#151](https://github.com/robotrocketscience/aelfrice/issues/151)). Harness + composition shipped at v1.6.0 in default-OFF form; v1.7 flipped the lane defaults after the harness cleared the MRR-uplift / ECE thresholds.
+- **Benchmark-gate default-on flip** ([#154](https://github.com/robotrocketscience/aelfrice/issues/154)). Composition tracker shipped at v1.5.0 with the per-lane gate; v1.7 promoted the heat-kernel and posterior lanes from default-OFF to default-ON.
 
-### v2.0.0 — feature parity and reproducibility
+### v2.0.0 — feature parity and reproducibility (shipped)
 
-After v2.0.0, `benchmarks/` reproduces every published headline number on a fresh clone with `uv sync && aelf bench all`, within documented tolerance bands.
+`benchmarks/` reproduces every published headline number on a fresh clone with `uv sync && aelf bench all` within documented tolerance bands.
 
 - ~~HRR vocabulary bridge~~ — **closed by the structural-query lane (#152, default-on as of v2.1)**. The lab campaign (`exp/hrr-vocabulary-bridge`) reframed "vocabulary bridge" as "typed-edge structural retrieval" and that mechanism shipped via `src/aelfrice/hrr_index.py`. See [feature-hrr-integration.md](../design/feature-hrr-integration.md). #433 closed; #536 (the parallel `vocab_bridge.py` query-rewrite module) removed.
 - Type-aware compression — tokens-per-belief reductions on retrieved output.
@@ -226,9 +221,11 @@ The research line also shipped the following capabilities that aelfrice does **n
 
 aelfrice follows semver:
 
-- **Patch (v1.0.x):** API and schema preserved.
-- **Minor (v1.x.0):** API preserved; migrations are forward-compatible (new columns/tables only).
-- **v2.0.0:** may break the v1 API only where a benchmark or eval justifies the break. Migrations are documented and tested before tag.
+- **Patch (v3.x.y):** API and schema preserved.
+- **Minor (v3.x.0):** API preserved; migrations are forward-compatible (new columns/tables only).
+- **Major (v4.0.0):** may break the v3 API only where a benchmark or eval justifies the break. Migrations are documented and tested before tag.
+
+Pre-v3 minor and major boundaries followed the same shape (v1.x.0 / v2.0.0 / v3.0.0). The v1→v2 and v2→v3 transitions documented all breaking changes in `CHANGELOG/v2.md` and `CHANGELOG/v3.md` respectively.
 
 ## Non-goals
 
@@ -239,6 +236,4 @@ aelfrice follows semver:
 
 ## Validation
 
-Every release with a behavioural claim ships with a benchmark or test that demonstrates it. v1.0's central claim is that `apply_feedback` updates posteriors mathematically — proven by tests and the synthetic harness. v1.0 makes *no* claim that BM25 ranking moves under feedback, because it doesn't yet. v1.3 is the release where that claim becomes testable; v2.0 is where the published MRR uplift is reproduced or retracted.
-
-That is what "early access" means: the surface is stable, the central feedback-into-ranking claim is a future deliverable, and the benchmark harness ships now so the eventual delivery is auditable.
+Every release with a behavioural claim ships with a benchmark or test that demonstrates it. v1.0's central claim — `apply_feedback` updates posteriors mathematically — was proven by tests and the synthetic harness at tag. v1.3 added the BM25-moves-under-feedback claim and shipped it behind the partial posterior-weighted ranking lane. v2.0 reproduced the published MRR uplift against the academic corpus on a fresh clone. v3.0 added the eval-harness completion (host-agent replay, LLM-judge, Cohen's-κ gate) and the read-only federation determinism check. The benchmark harness is canonical at every minor: `benchmarks/results/<version>.json` is the durable record per release.
