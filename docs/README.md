@@ -1,6 +1,8 @@
 # aelfrice docs
 
-Project documentation, organized by audience.
+aelfrice is a persistent memory layer for AI coding agents: a local SQLite store + `UserPromptSubmit` hook that injects matched beliefs into every prompt before the model sees it. Deterministic, auditable, no embeddings. See [`../README.md`](../README.md) for the install pitch.
+
+Documentation, organized by audience.
 
 | Bucket                                       | What's in it                                                       |
 | -------------------------------------------- | ------------------------------------------------------------------ |
