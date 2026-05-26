@@ -9,7 +9,7 @@ Per-issue tracking: [LIMITATIONS.md](../user/LIMITATIONS.md). Release log: [CHAN
 
 aelfrice is a rebuild of an earlier research line on Bayesian + graph-backed memory for AI coding agents. The research codebase explored FTS5 retrieval, vocabulary bridging, BFS multi-hop traversal, entity-indexed retrieval, type-aware compression, correction detection, and a multi-tool MCP surface, with results against MAB, LoCoMo, LongMemEval, StructMemEval, and AMA-Bench.
 
-v1.0 shipped the foundation (SQLite store, Beta-Bernoulli scoring, BM25 retrieval, CLI, MCP, Claude Code wiring, synthetic benchmark harness). The v1.x line recovered the remaining features incrementally; v2.0 reached feature parity with the research line plus the reproducibility-harness scaffolding; v3.0 added wonder lifecycle, wonder/reason parity, read-only federation, and the eval-harness completion. The current line is **v3.3.0**.
+v1.0 shipped the foundation (SQLite store, Beta-Bernoulli scoring, BM25 retrieval, CLI, MCP, host hook wiring, synthetic benchmark harness). The v1.x line recovered the remaining features incrementally; v2.0 reached feature parity with the research line plus the reproducibility-harness scaffolding; v3.0 added wonder lifecycle, wonder/reason parity, read-only federation, and the eval-harness completion. The current line is **v3.3.0**.
 
 This is a rebuild, not a port. Structural issues that survived the research line were fixed at the foundation layer. Every behavioural claim is backed by a test or a benchmark, with a transparent issue trail for items that are not.
 
@@ -39,7 +39,7 @@ This is a rebuild, not a port. Structural issues that survived the research line
 
 ### v1.0.x — surface
 
-Stable core: SQLite + FTS5 store, Beta-Bernoulli scoring, L0+L1 retrieval at a 2,400-token budget, `apply_feedback` with audit log, onboarding scanner (filesystem + git log + Python AST), CLI, MCP server, Claude Code hook wiring, synthetic benchmark harness, contradiction tie-breaker (`aelf resolve`), per-project install routing (`aelf doctor`), release-docs CI gate.
+Stable core: SQLite + FTS5 store, Beta-Bernoulli scoring, L0+L1 retrieval at a 2,400-token budget, `apply_feedback` with audit log, onboarding scanner (filesystem + git log + Python AST), CLI, MCP server, host hook wiring, synthetic benchmark harness, contradiction tie-breaker (`aelf resolve`), per-project install routing (`aelf doctor`), release-docs CI gate.
 
 ### v1.1.0 — project identity
 

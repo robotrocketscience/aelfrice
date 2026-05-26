@@ -1,11 +1,11 @@
 ---
 name: aelf:setup
-description: Install the aelfrice hooks (UserPromptSubmit, Stop, PreToolUse, PostToolUse, SessionStart) in Claude Code's settings.json and the statusline snippet.
+description: Install the aelfrice hooks (UserPromptSubmit, Stop, PreToolUse, PostToolUse, SessionStart) in the host's settings.json and the statusline snippet.
 allowed-tools:
   - Bash
 ---
 <objective>
-Wire aelfrice into Claude Code so that every user prompt is augmented
+Wire aelfrice into the host so that every user prompt is augmented
 with the most relevant locked beliefs and FTS5 hits from the local
 memory store, and so that session activity flows back into the belief
 graph without manual `aelf` invocations. By default `setup` installs
