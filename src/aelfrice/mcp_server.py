@@ -1,5 +1,5 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUntypedFunctionDecorator=false, reportUnusedFunction=false
-"""MCP server exposing the 14 user-visible tools.
+"""MCP server exposing the 15 user-visible tools.
 
 The same surface as the CLI, accessible from any host that speaks the
 Model Context Protocol. The handlers are pure Python — they take a
@@ -994,9 +994,9 @@ def tool_wonder_gc(
 
 
 def serve() -> None:
-    """Start a FastMCP server with the 14 tools registered.
+    """Start a FastMCP server with the 15 tools registered.
 
-    Requires the `[mcp]` extra: `pip install aelfrice[mcp]`. Raises
+    Requires the `[mcp]` extra: `uv tool install "aelfrice[mcp]"`. Raises
     `RuntimeError` with an actionable message if `fastmcp` is missing.
 
     fastmcp itself ships no type stubs, so its surface is cast to `Any`
@@ -1007,7 +1007,7 @@ def serve() -> None:
         from fastmcp import FastMCP as _FastMCPCls  # type: ignore[import-not-found]
     except ImportError as exc:
         raise RuntimeError(
-            "fastmcp is not installed. Install with: pip install aelfrice[mcp]"
+            "fastmcp is not installed. Install with: uv tool install \"aelfrice[mcp]\""
         ) from exc
 
     # pydantic is a transitive dep of fastmcp — import here, not at

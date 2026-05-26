@@ -1,10 +1,12 @@
 # Quickstart
 
-Five minutes from `pip install` to your first locked rule.
+Five minutes from `uv tool install` to your first locked rule.
 
 ```bash
-pip install aelfrice
+uv tool install aelfrice    # requires uv — https://docs.astral.sh/uv/
 ```
+
+aelfrice is uv-only as of v3.0.1 ([#730](https://github.com/robotrocketscience/aelfrice/issues/730)); see [INSTALL](INSTALL.md) for the migration line if you have an older pipx-based install.
 
 ## 1. Onboard
 

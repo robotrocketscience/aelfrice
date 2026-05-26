@@ -76,7 +76,7 @@ One DB writes at a time. Beliefs written in project A do not get *written* into 
 
 - Python 3.12 or 3.13.
 - macOS and Linux are routinely tested. Windows should work but is not exercised on every release.
-- `uv` recommended; `pip` works.
+- `uv tool install aelfrice` is the only supported install channel as of v3.0.1 ([#730](https://github.com/robotrocketscience/aelfrice/issues/730)).
 
 ## Reporting
 

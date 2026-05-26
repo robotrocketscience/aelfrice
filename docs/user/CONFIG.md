@@ -1,6 +1,6 @@
 # Configuration: `.aelfrice.toml`
 
-Most users never need this file. The defaults are tuned so `pip install aelfrice && aelf onboard .` does the right thing.
+Most users never need this file. The defaults are tuned so `uv tool install aelfrice && aelf onboard .` does the right thing.
 
 This is the reference for power users whose project has a documentation idiom or naming convention the default filter mishandles.
 

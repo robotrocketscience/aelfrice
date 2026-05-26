@@ -9,12 +9,11 @@ Lifecycle commands (`setup`, `unsetup`, `migrate`, `doctor`, `upgrade-cmd`, `uni
 The MCP server ships in every install of aelfrice, but the FastMCP runtime is gated behind the `[mcp]` extra:
 
 ```bash
-# pip
-pip install "aelfrice[mcp]"
-
-# uv tool
-uv tool install --with fastmcp aelfrice
+uv tool install "aelfrice[mcp]"          # extra-syntax
+uv tool install --with fastmcp aelfrice  # equivalent --with form
 ```
+
+aelfrice is uv-only as of v3.0.1 ([#730](https://github.com/robotrocketscience/aelfrice/issues/730)).
 
 Two equivalent ways to start the server (both speak stdio):
 
@@ -23,7 +22,7 @@ aelf mcp                           # console-script entry (preferred)
 python -m aelfrice.mcp_server      # module-exec fallback
 ```
 
-If `fastmcp` is missing, `aelf mcp` exits 1 with an actionable message (`error: fastmcp is not installed. Install with: pip install aelfrice[mcp]`) — no traceback, no half-started server.
+If `fastmcp` is missing, `aelf mcp` exits 1 with an actionable message (`error: fastmcp is not installed. Install with: uv tool install "aelfrice[mcp]"`) — no traceback, no half-started server.
 
 Host config — any MCP-capable host:
 

@@ -3695,8 +3695,8 @@ def _cmd_statusline(args: argparse.Namespace, out: object) -> int:
 def _cmd_mcp(args: argparse.Namespace, out: object) -> int:
     """Start the FastMCP stdio server exposing the aelfrice tool surface.
 
-    Requires the `[mcp]` extra: `pip install 'aelfrice[mcp]'` (or
-    `uv tool install --with fastmcp aelfrice`). Blocks until the host
+    Requires the `[mcp]` extra: `uv tool install "aelfrice[mcp]"` (or
+    the equivalent `uv tool install --with fastmcp aelfrice`). Blocks until the host
     closes the stdio pipes; SIGINT exits cleanly with status 0.
 
     stdio MCP servers must never write to stdout — that channel carries
@@ -6287,7 +6287,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "find beliefs with type='unknown' and no feedback signal "
             "(alpha+beta <= 2), then re-classify them via Haiku batch. "
             "Requires ANTHROPIC_API_KEY and the [onboard-llm] extra "
-            "(pip install aelfrice[onboard-llm]). "
+            "(uv tool install \"aelfrice[onboard-llm]\"). "
             "Bypasses the hooks/graph checks. "
             "Combine with --dry-run to count orphans without LLM calls. "
             "Combine with --max N to cap classifications per run "
@@ -6805,7 +6805,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--archive", default=None,
         help=(
             "encrypt the DB to this path with a password, then delete "
-            "the original (requires: pip install 'aelfrice[archive]')"
+            "the original (requires: uv tool install \"aelfrice[archive]\")"
         ),
     )
     p_uninstall.add_argument(
