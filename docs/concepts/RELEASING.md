@@ -4,8 +4,7 @@ How to cut a new version. Maintainer reference.
 
 ## Versioning
 
-- `0.x.y` — milestones on the v1.0 path. Surface may change.
-- `1.0.0` and after — semver in force.
+Semver in force. Current line: v3.x. The historical `0.x.y` milestones on the v1.0 path are no longer cut; pre-v1.0 surface guarantees do not apply (see `CHANGELOG/v0.md` for the historical record).
 
 ## Cut a release
 
@@ -39,7 +38,7 @@ Tags SSH-signed (`gpg.format = ssh`, key `~/.ssh/id_rrs`). Tag push triggers `.g
 2. Generate Sigstore attestation.
 3. Upload to PyPI via [Trusted Publishing](https://docs.pypi.org/trusted-publishers/).
 
-> PyPI publish gated until `v1.0.0`. Workflow wired but not invoked until then.
+PyPI publish has been live since v1.0; `pip index versions aelfrice` (or `uv tool install aelfrice`) reflects the current released set.
 
 ## Verify
 
@@ -73,23 +72,15 @@ Then bump to `vX.Y.Z+1` with the fix.
 
 ## Pre-releases
 
-`v0.9.0-rc1`, `v1.0.0-rc1`. PyPI treats `-rc` as pre-release — won't appear as default install candidate.
+PyPI treats `-rc` as pre-release — won't appear as default install candidate. Naming follows the current major (e.g. `v3.4.0-rc1` for a v3.4.0 candidate).
 
 ```bash
-uv tool install --pre aelfrice==1.0.0rc1
+uv tool install --pre aelfrice==3.4.0rc1
 ```
 
-## Branch protection (post-public-flip)
+## Branch protection
 
-Free-tier GitHub doesn't expose branch-protection APIs while the repo is private. After v1.0 flip, enable on `main`:
-
-- Required PR review (1 approving)
-- Required checks: `staging-gate / secrets-scan`, `staging-gate / pii-scan`, `staging-gate / commit-history-audit`, `staging-gate / pytest`
-- Required signed commits
-- Required linear history
-- Block force-push and deletion
-
-Until then, enforced by convention + local pre-push hook.
+The public repo enforces `main` protection through a combination of the merge-train workflow (concurrency-1 FF-only pushes, signature-verified, see `.github/workflows/merge-train.yml`) and required staging-gate checks (`secrets-scan`, `pii-scan`, `commit-history-audit`, `pytest`). GitHub's native branch-protection APIs may be configured in addition — check `gh api repos/robotrocketscience/aelfrice/branches/main/protection` for the current state.
 
 ## Sign keys
 
