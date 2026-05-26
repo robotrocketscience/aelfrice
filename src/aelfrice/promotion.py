@@ -92,7 +92,7 @@ class UnlockResult:
 
 # --- Surface B: phantom lock-match helper (#550) -------------------------
 
-# Jaccard threshold from docs/design/v2_phantom_promotion_trigger.md § Surface B.
+# Jaccard threshold from docs/design/historical/v2_phantom_promotion_trigger.md § Surface B.
 # Tunable post-benchmark; constant lives here so tests can read it.
 PHANTOM_LOCK_JACCARD_THRESHOLD: Final[float] = 0.9
 

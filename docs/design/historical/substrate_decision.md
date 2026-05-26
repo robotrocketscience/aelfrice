@@ -12,7 +12,7 @@ aelfrice v1.x scores every belief with a **single-axis** Beta-Bernoulli posterio
 posterior_mean = α / (α + β)
 ```
 
-One `(α, β)` pair per belief. A wrong belief is wrong overall; a useful belief is useful overall. This was made explicit in [`docs/concepts/PHILOSOPHY.md § Bayesian, not vector`](../concepts/PHILOSOPHY.md#bayesian-not-vector) at commit `1afdc04`.
+One `(α, β)` pair per belief. A wrong belief is wrong overall; a useful belief is useful overall. This was made explicit in [`docs/concepts/PHILOSOPHY.md § Bayesian, not vector`](../../concepts/PHILOSOPHY.md#bayesian-not-vector) at commit `1afdc04`.
 
 The research-line codebase shipped a **multi-axis** `UncertaintyVector` — per-aspect `(α_i, β_i)` across four dimensions (existence / semantics / mechanism / cost) — in `uncertainty.py` (~242 LOC, stdlib-only). The vector backed `wonder.analyze_gaps`, `voi`, `hibernate`, and `propagate`.
 

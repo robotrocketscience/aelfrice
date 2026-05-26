@@ -78,7 +78,7 @@ downstream. Order matters here.
 
 | # | Title | Status | Dep | Notes |
 |---|---|---|---|---|
-| 196 | Multi-axis vs single-axis substrate | S (substrate decision in `docs/design/substrate_decision.md`; cascade landed) | — | **gate for everything below** |
+| 196 | Multi-axis vs single-axis substrate | S (substrate decision in `docs/design/historical/substrate_decision.md`; cascade landed) | — | **gate for everything below** |
 | 151 | Posterior-weighted ranking (Beta-Bernoulli, log-additive) | S (PR #277 spec) | #196 | implementation after #196 final ratify |
 | 228 | Wonder-consolidation strategy bake-off (RW/TC/STS) | R (spec-ready, bench-gated) | #196, #229 (consumes promotion trigger) | research lane |
 | 229 | Phantom promotion-trigger rule | R (spec-ready, bench-gated) | #196, #190 (✅), #228 (informs trigger calibration) | research lane |
@@ -100,7 +100,7 @@ the next.
 
 | # | Title | Status | Dep | Notes |
 |---|---|---|---|---|
-| 262 | replay_full_equality probe | S (spec in PR #267 docs/design/v2_replay.md) | #205 (✅ ingest_log), #271 (✅ legacy_unknown) | probe lands first |
+| 262 | replay_full_equality probe | S (spec in PR #267 docs/design/historical/v2_replay.md) | #205 (✅ ingest_log), #271 (✅ legacy_unknown) | probe lands first |
 | 264 | Derivation worker | S | #262 (probe must pass) | beliefs become materialized |
 | 265 | View-flip — beliefs/edges as views over ingest_log | S | #264, #262 | terminal step of v2.x materialization |
 

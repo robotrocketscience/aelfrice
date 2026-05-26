@@ -35,7 +35,7 @@ Each row references its public spec memo and the GitHub issue that tracks re-ent
 
 ### Phantom promotion-trigger rule — issue #229
 
-- **Spec:** [`docs/design/v2_phantom_promotion_trigger.md`](v2_phantom_promotion_trigger.md)
+- **Spec:** [`docs/design/historical/v2_phantom_promotion_trigger.md`](v2_phantom_promotion_trigger.md)
 - **Disposition:** bench-gated for v2.0 ship.
 - **Gate:** ≥90% precision and ≥70% recall on the labeled corpus described in the spec's § Labeled-corpus benchmark. The rule itself is binary (`aelf:validate` typed, or content-matching `aelf:lock` typed) and has no tunable threshold; the benchmark verifies that the rule has acceptable recall against phantoms users would validate if asked, and acceptable precision against phantoms users would reject.
 - **Why bench-gated:** three naive triggers (N positive feedback, retrieval count, user_corrected adjacency) were rejected for conflating posterior movement with explicit validation, selection bias on user query distribution, and adjacency ≠ acknowledgment respectively. Without the benchmark, there is no way to verify the explicit-acknowledgment rule has acceptable recall — and a low-recall promotion path is silently equivalent to "no promotion path" for most users.

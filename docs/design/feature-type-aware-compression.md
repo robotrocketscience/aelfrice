@@ -9,7 +9,7 @@
 
 ## Purpose
 
-At a fixed retrieval `token_budget`, today's path either includes a belief verbatim or trims it from the tail. Per [`docs/design/belief_retention_class.md`](belief_retention_class.md), beliefs vary in expected lifetime: `fact` rows describe stable codebase state; `snapshot` rows are research-thought; `transient` rows are PR-window scratch. The retrieval pack treats them identically. Type-aware compression spends fewer tokens per `snapshot` and `transient` belief so more total beliefs fit, without sacrificing fidelity on the `fact` rows that carry load.
+At a fixed retrieval `token_budget`, today's path either includes a belief verbatim or trims it from the tail. Per [`docs/design/historical/belief_retention_class.md`](belief_retention_class.md), beliefs vary in expected lifetime: `fact` rows describe stable codebase state; `snapshot` rows are research-thought; `transient` rows are PR-window scratch. The retrieval pack treats them identically. Type-aware compression spends fewer tokens per `snapshot` and `transient` belief so more total beliefs fit, without sacrificing fidelity on the `fact` rows that carry load.
 
 The compressor is **structural**: deterministic, byte-stable, no LLM. The contract is "same belief input → same compressed output, byte-for-byte" — issue #434 acceptance #3 makes this explicit, and is the single line that distinguishes this from a summariser.
 
@@ -132,7 +132,7 @@ The current pack drops beliefs from the tail when `token_budget` is hit (`retrie
 
 ### vs. retention-class soft-downweight
 
-Per `docs/design/belief_retention_class.md` § "Recommendation summary": *"Soft down-weight in ranking, not hard expiry. Beliefs don't expire; their `final_score` gets a class-and-age multiplier before the floor (#289) is applied."* That is a **ranking-stage** mechanism — it changes what enters the pack. Type-aware compression is a **packing-stage** mechanism — it changes how many of the entered beliefs fit. They compose: ranking decides who is in, compression decides how many get the full-text treatment.
+Per `docs/design/historical/belief_retention_class.md` § "Recommendation summary": *"Soft down-weight in ranking, not hard expiry. Beliefs don't expire; their `final_score` gets a class-and-age multiplier before the floor (#289) is applied."* That is a **ranking-stage** mechanism — it changes what enters the pack. Type-aware compression is a **packing-stage** mechanism — it changes how many of the entered beliefs fit. They compose: ranking decides who is in, compression decides how many get the full-text treatment.
 
 ### vs. context rebuilder (#141, v1.4)
 
@@ -144,7 +144,7 @@ The rebuilder does not need a separate config knob; it inherits the retrieval-si
 
 Belief carries three orthogonal axes: `belief.belief_type` (factual / correction / preference / requirement, `models.py:13-22`), `belief.source_kind` (the ingest path), and `belief.retention_class` (this spec's input). The compressor reads only `retention_class`. Other axes are out of scope:
 
-- `belief.belief_type` does not predict expected-lifetime — a `factual` belief can be `transient` (#281 example in `docs/design/belief_retention_class.md`), and a `preference` belief can be `fact`-class.
+- `belief.belief_type` does not predict expected-lifetime — a `factual` belief can be `transient` (#281 example in `docs/design/historical/belief_retention_class.md`), and a `preference` belief can be `fact`-class.
 - `belief.source_kind` is upstream of `retention_class` (the per-source defaults in `models.py:_RETENTION_DEFAULT_BY_SOURCE`); the compressor consumes the materialised retention class, not the source.
 
 ---

@@ -26,7 +26,7 @@ remains hypothetical.
 
 ## Problem
 
-The substrate decision (`docs/design/substrate_decision.md`) ratified
+The substrate decision (`docs/design/historical/substrate_decision.md`) ratified
 hibernation as a separable lifecycle feature on the scalar
 Beta-Bernoulli substrate. The columns are now in place but unused.
 Until behavior lands, `hibernation_score` is always `NULL`, no belief
@@ -245,7 +245,7 @@ Once this memo is ratified, the implementation is roughly three PRs:
 ## Provenance
 
 - Storage half: PR #282 (squash-merged 2026-04-29).
-- Substrate ratification: `docs/design/substrate_decision.md` § Decision
+- Substrate ratification: `docs/design/historical/substrate_decision.md` § Decision
   asks #3 + #4.
 - Issue #196 stays open as the v2.0 substrate tracking issue until
   the three implementation PRs above ship.

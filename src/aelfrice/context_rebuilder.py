@@ -154,14 +154,14 @@ REBUILD_FLOOR_L1_KEY: Final[str] = "l1"
 DEFAULT_FLOOR_SESSION: Final[float] = 0.10
 """Soft floor for session-scoped (L2) hits. Beliefs from the current
 session have a high prior of relevance; reject only on near-zero
-composite scores. Placeholder per `docs/design/relevance_floor.md` §4 — the
+composite scores. Placeholder per `docs/design/historical/relevance_floor.md` §4 — the
 production value lands in a follow-up after #288 phase-1b
 calibration. Operator-tunable via `[rebuild_floor] session`."""
 
 DEFAULT_FLOOR_L1: Final[float] = 0.40
 """Hard floor for L1 BM25 / L2.5 entity hits. Most candidates that
 fall below this composite score are off-topic for the recent-turn
-query. Placeholder per `docs/design/relevance_floor.md` §4. Operator-tunable
+query. Placeholder per `docs/design/historical/relevance_floor.md` §4. Operator-tunable
 via `[rebuild_floor] l1`."""
 
 FLOOR_SCORED_QUERY_LIMIT: Final[int] = 200
@@ -343,7 +343,7 @@ def rebuild_v14(
     L1 / L2.5 packs above `floor_l1`. When all hits are floored out
     AND no locks exist the function returns the empty string —
     `rebuild_v14`'s "I don't know — say nothing" path. See
-    `docs/design/relevance_floor.md` for the composite-score formula and
+    `docs/design/historical/relevance_floor.md` for the composite-score formula and
     the rationale for the split.
 
     The function-signature defaults are `floor_session=0.0,
@@ -1094,7 +1094,7 @@ def floor_composite_score(
     callers should not call this for them.
 
     Composite formula and clamp behavior pinned by
-    `docs/design/relevance_floor.md` §1. Coefficient 0.5/0.5 is the
+    `docs/design/historical/relevance_floor.md` §1. Coefficient 0.5/0.5 is the
     placeholder split; tuning lands post-#288.
     """
     if bm25_raw is None:
@@ -1252,7 +1252,7 @@ def record_user_prompt_submit_log(
     phase-1b cannot accumulate data.
 
     Schema is the same Layer-1 record the spec ratifies in
-    ``docs/design/rebuild_eval_harness.md``: synthesise a single
+    ``docs/design/historical/rebuild_eval_harness.md``: synthesise a single
     ``RecentTurn`` from the prompt so the existing
     ``_build_rebuild_log_record`` machinery (hash, extracted_query,
     extracted_entities) applies unchanged. Candidates are the

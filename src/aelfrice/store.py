@@ -174,7 +174,7 @@ _SCHEMA: tuple[str, ...] = (
         -- for validation (ALTER TABLE ADD COLUMN can't carry the
         -- CHECK across SQLite versions reliably). 'unknown' is the
         -- migration default; new writes pick one of the three live
-        -- values per docs/design/belief_retention_class.md § 2 defaults.
+        -- values per docs/design/historical/belief_retention_class.md § 2 defaults.
         retention_class     TEXT NOT NULL DEFAULT 'unknown'
             CHECK (retention_class IN ('fact', 'snapshot', 'transient', 'unknown'))
     )
@@ -3496,7 +3496,7 @@ class MemoryStore:
     ) -> list[Belief]:
         """Return snapshot beliefs eligible for promotion to ``fact``.
 
-        Per docs/design/belief_retention_class.md §4 the promotion rule is:
+        Per docs/design/historical/belief_retention_class.md §4 the promotion rule is:
 
           retention_class = 'snapshot'
           AND COUNT(corroborations) >= min_corroborations

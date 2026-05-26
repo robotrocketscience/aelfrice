@@ -81,7 +81,7 @@ arithmetic (e.g. "soak-locked through YYYY-MM-DD") is superseded.
 The fixture under `tests/corpus/replay_soak/v0.1/` is the public-side
 input — 60 hand-authored rows across the 6 non-`legacy_unknown` source
 kinds. The schema contract lives at
-[`tests/corpus/replay_soak/README.md`](../../tests/corpus/replay_soak/README.md).
+[`tests/corpus/replay_soak/README.md`](../../../tests/corpus/replay_soak/README.md).
 
 ## Provenance
 

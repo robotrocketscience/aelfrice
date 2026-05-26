@@ -4763,7 +4763,7 @@ def _cmd_doctor_derive_pending(
     """Run the derivation worker over every unstamped ingest_log row (#264).
 
     Manual escape hatch for the recover-by-replay crash semantics from
-    `docs/design/v2_derivation_worker.md`. If a worker died between batches and
+    `docs/design/historical/v2_derivation_worker.md`. If a worker died between batches and
     left log rows with `derived_belief_ids IS NULL`, this sweep walks
     them, derives, and stamps each.
 
@@ -4921,7 +4921,7 @@ def _cmd_doctor_promote_retention(
 
     A snapshot is promoted when corroborated >= 3 times across >= 2
     distinct sessions with no inbound CONTRADICTS edge. See
-    docs/design/belief_retention_class.md §4.
+    docs/design/historical/belief_retention_class.md §4.
 
     Opt-in by design (mirrors --classify-orphans from #206). Use
     --dry-run to count candidates without mutating; --max N to cap
