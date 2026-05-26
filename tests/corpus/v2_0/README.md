@@ -43,9 +43,7 @@ tests/corpus/v2_0/
 │   └── *.jsonl
 ├── tests_edge/                        #384 (Track A edge: TESTS)
 │   └── *.jsonl
-├── retrieve_uplift/                   #154 (v1.7 default-on flip — per-flag NDCG@k)
-│   └── *.jsonl
-├── bfs_potentially_stale/             #421 (rerank-consumer demotion gate)
+├── implements_edge/                   (Track A edge: IMPLEMENTS)
 │   └── *.jsonl
 ├── reasoning/                         #389 (Track B: aelf reason)
 │   └── *.jsonl
