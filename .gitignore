@@ -13,3 +13,10 @@ build/
 !tests/e2e/fixtures/*.db
 telemetry/
 .agents/
+
+# aelfrice hook audit log (per-turn UserPromptSubmit retrieval records).
+# Canonical home is <git-common-dir>/aelfrice/ (inside .git, never tracked),
+# but it can land at a working-tree root; it may contain prompt content, so
+# never commit it. Covers the single-slot rotation sibling (.1) too.
+hook_audit.jsonl
+hook_audit.jsonl.*
