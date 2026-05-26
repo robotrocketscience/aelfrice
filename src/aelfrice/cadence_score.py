@@ -32,9 +32,17 @@ class ShadowSummary:
     """Aggregate statistics over a set of shadow-log rows.
 
     ``per_policy_fire_count`` and ``per_policy_total`` are keyed by
-    policy name. ``selected_fire_count`` counts rows where the
-    selected policy fired live. ``agreement_matrix`` is a 2x2
-    ``{(p1_fire, p2_fire): count}`` dict — keys are bool pairs.
+    policy name — these already span every policy present in the rows
+    (p1, p2, p3_velocity, p3_substantive). ``selected_fire_count``
+    counts rows where the selected policy fired live.
+
+    ``agreement_matrix`` is the legacy 2x2 ``{(p1_fire, p2_fire):
+    count}`` dict, retained for backward compatibility.
+    ``pairwise_agreement`` generalises it to every unordered policy
+    pair present in the rows (#876 four-policy bake): keyed by a
+    lexicographically-ordered ``(policy_a, policy_b)`` tuple, the value
+    is a count dict with ``both`` / ``a_only`` / ``b_only`` / ``neither``
+    — the head-to-head divergence the bake reads to pick a winner.
     """
     total_rows: int
     sessions: int
@@ -45,6 +53,9 @@ class ShadowSummary:
     selected_fire_count: dict[str, int] = field(default_factory=dict)
     selected_total: dict[str, int] = field(default_factory=dict)
     agreement_matrix: dict[tuple[bool, bool], int] = field(default_factory=dict)
+    pairwise_agreement: dict[tuple[str, str], dict[str, int]] = field(
+        default_factory=dict
+    )
 
 
 def iter_shadow_rows(shadow_dir: Path) -> Iterator[dict[str, Any]]:
@@ -85,8 +96,9 @@ def compute_summary(
     ``session_id`` field does not exactly match. Used by the CLI
     ``--session`` flag.
 
-    Returns a frozen summary with totals, per-policy counts, and the
-    2x2 P1/P2 agreement matrix. Empty input -> all zeros.
+    Returns a frozen summary with totals, per-policy counts, the legacy
+    2x2 P1/P2 agreement matrix, and the generalised pairwise-agreement
+    table across every policy pair present. Empty input -> all zeros.
     """
     total = 0
     sessions: set[str] = set()
@@ -102,6 +114,7 @@ def compute_summary(
         (False, True): 0,
         (False, False): 0,
     }
+    pairwise: dict[tuple[str, str], dict[str, int]] = {}
 
     for row in rows:
         sid = row.get("session_id")
@@ -130,6 +143,7 @@ def compute_summary(
 
         p1_fire = False
         p2_fire = False
+        row_fire: dict[str, bool] = {}
         for policy, decision in shadow.items():
             if not isinstance(decision, dict):
                 continue
@@ -139,11 +153,33 @@ def compute_summary(
             per_policy_total[policy] = per_policy_total.get(policy, 0) + 1
             if would:
                 per_policy_fire[policy] = per_policy_fire.get(policy, 0) + 1
+            row_fire[policy] = would
             if policy == POLICY_P1_EVERY_K_TURNS:
                 p1_fire = would
             elif policy == POLICY_P2_CTX_THRESHOLD:
                 p2_fire = would
         agreement[(p1_fire, p2_fire)] += 1
+
+        # Generalised pairwise agreement over every unordered policy pair
+        # whose decision was logged on this row. The pair key is ordered
+        # lexicographically (a < b); ``a_only``/``b_only`` follow that order.
+        policies = sorted(row_fire)
+        for i in range(len(policies)):
+            for j in range(i + 1, len(policies)):
+                a, b = policies[i], policies[j]
+                cell = pairwise.setdefault(
+                    (a, b),
+                    {"both": 0, "a_only": 0, "b_only": 0, "neither": 0},
+                )
+                fa, fb = row_fire[a], row_fire[b]
+                if fa and fb:
+                    cell["both"] += 1
+                elif fa:
+                    cell["a_only"] += 1
+                elif fb:
+                    cell["b_only"] += 1
+                else:
+                    cell["neither"] += 1
 
     return ShadowSummary(
         total_rows=total,
@@ -155,6 +191,7 @@ def compute_summary(
         selected_fire_count=selected_fire,
         selected_total=selected_total,
         agreement_matrix=agreement,
+        pairwise_agreement=pairwise,
     )
 
 
@@ -184,6 +221,10 @@ def format_report(summary: ShadowSummary, *, as_json: bool = False) -> str:
             "agreement_matrix": {
                 f"p1={int(k[0])},p2={int(k[1])}": v
                 for k, v in summary.agreement_matrix.items()
+            },
+            "pairwise_agreement": {
+                f"{a}|{b}": cell
+                for (a, b), cell in summary.pairwise_agreement.items()
             },
         }
         return json.dumps(payload, indent=2, sort_keys=True)
@@ -219,6 +260,23 @@ def format_report(summary: ShadowSummary, *, as_json: bool = False) -> str:
         f"{summary.agreement_matrix.get((False, True), 0):>9}"
         f"{summary.agreement_matrix.get((False, False), 0):>9}"
     )
+    if summary.pairwise_agreement:
+        lines.append("")
+        lines.append("pairwise policy agreement (both / a-only / b-only / neither):")
+        for (a, b) in sorted(summary.pairwise_agreement):
+            cell = summary.pairwise_agreement[(a, b)]
+            both = cell.get("both", 0)
+            a_only = cell.get("a_only", 0)
+            b_only = cell.get("b_only", 0)
+            neither = cell.get("neither", 0)
+            n = both + a_only + b_only + neither
+            diverge = a_only + b_only
+            div_pct = (diverge / n * 100) if n else 0.0
+            lines.append(
+                f"  {a} vs {b}: "
+                f"{both}/{a_only}/{b_only}/{neither} "
+                f"(diverge {diverge}/{n} = {div_pct:.1f}%)"
+            )
     return "\n".join(lines) + "\n"
 
 
