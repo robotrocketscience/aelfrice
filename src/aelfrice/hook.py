@@ -3571,16 +3571,20 @@ def _maybe_log_cadence_shadow_tick(
     """Write one shadow-evaluation row for this Stop-hook tick (#875).
 
     No-op when ``[cadence] shadow_mode_enabled`` is false (default).
-    When true, evaluates would_fire_p1 and would_fire_p2 against the
-    same inputs the live dispatch would use, derives ``fired`` from
-    the selected policy's decision, and appends one JSONL row to
-    ``<aelfrice-dir>/cadence_shadow/<session_id>.jsonl``.
+    When true, evaluates every implemented policy's would_fire
+    predicate (p1, p2, p3_velocity, p3_substantive) against the same
+    inputs the live dispatch would use, derives ``fired`` from the
+    selected policy's decision, and appends one JSONL row to
+    ``<aelfrice-dir>/cadence_shadow/<session_id>.jsonl``. The four
+    decisions let ``aelf cadence-score`` compare policies head-to-head
+    on identical workload (#876 axis-3 bake).
 
     The function intentionally re-resolves the same knobs the live
-    dispatch reads (k, ctx_threshold, ctx_byte_window, transcript
-    path, last user prompt). The duplicate work is bounded by
-    shadow_mode_enabled defaulting to false — when off, this
-    function returns on the first line at no measurable cost.
+    dispatch reads (k, ctx_threshold, ctx_byte_window, p3_velocity_
+    threshold, p3_substantive_window/threshold, transcript path, last
+    user prompt, ring fire/byte/classification state). The duplicate
+    work is bounded by shadow_mode_enabled defaulting to false — when
+    off, this function returns on the first line at no measurable cost.
 
     Fail-soft: any exception traces a stderr line and returns. The
     log is diagnostic; a missing row is recoverable.
@@ -3591,16 +3595,24 @@ def _maybe_log_cadence_shadow_tick(
         POLICY_OFF,
         POLICY_P1_EVERY_K_TURNS,
         POLICY_P2_CTX_THRESHOLD,
+        POLICY_P3_SUBSTANTIVE,
+        POLICY_P3_VELOCITY,
         append_shadow_row,
+        estimate_transcript_bytes,
         format_shadow_row,
         read_last_user_prompt,
         resolve_cadence_ctx_byte_window,
         resolve_cadence_ctx_threshold,
         resolve_cadence_k,
+        resolve_cadence_p3_substantive_threshold,
+        resolve_cadence_p3_substantive_window,
+        resolve_cadence_p3_velocity_threshold,
         resolve_cadence_shadow_mode_enabled,
         shadow_log_path,
         would_fire_p1,
         would_fire_p2,
+        would_fire_p3_substantive,
+        would_fire_p3_velocity,
     )
     from aelfrice.context_rebuilder import _rebuild_log_dir_for_db  # noqa: PLC0415
     from aelfrice.session_ring import read_ring_state  # noqa: PLC0415
@@ -3615,12 +3627,18 @@ def _maybe_log_cadence_shadow_tick(
         k = resolve_cadence_k(start=cwd)
         ctx_threshold = resolve_cadence_ctx_threshold(start=cwd)
         ctx_byte_window = resolve_cadence_ctx_byte_window(start=cwd)
+        p3_velocity_threshold = resolve_cadence_p3_velocity_threshold(start=cwd)
+        p3_substantive_window = resolve_cadence_p3_substantive_window(start=cwd)
+        p3_substantive_threshold = resolve_cadence_p3_substantive_threshold(start=cwd)
         cfg = CadenceConfig(
             enabled=True,
             policy=policy,
             k=k,
             ctx_threshold=ctx_threshold,
             ctx_byte_window=ctx_byte_window,
+            p3_velocity_threshold=p3_velocity_threshold,
+            p3_substantive_window=p3_substantive_window,
+            p3_substantive_threshold=p3_substantive_threshold,
         )
 
         # P1 input: fire_idx from session ring state. Tolerate missing /
@@ -3642,10 +3660,51 @@ def _maybe_log_cadence_shadow_tick(
             tp = None
         last_prompt = read_last_user_prompt(tp)
 
+        # P3-velocity inputs: byte delta since last fire / turns since.
+        # Tolerate missing / malformed slots by defaulting to 0 (the
+        # predicate rejects non-positive turns and non-monotonic bytes).
+        raw_bytes_last: Any = (
+            state.get("bytes_at_last_fire", 0) if isinstance(state, dict) else 0
+        )
+        raw_fire_last: Any = (
+            state.get("fire_idx_at_last_fire", 0) if isinstance(state, dict) else 0
+        )
+        bytes_at_last_fire = (
+            raw_bytes_last
+            if isinstance(raw_bytes_last, int) and not isinstance(raw_bytes_last, bool)
+            else 0
+        )
+        fire_idx_at_last_fire = (
+            raw_fire_last
+            if isinstance(raw_fire_last, int) and not isinstance(raw_fire_last, bool)
+            else 0
+        )
+        transcript_bytes = estimate_transcript_bytes(tp)
+        turns_since_last_fire = fire_idx - fire_idx_at_last_fire
+
+        # P3-substantive input: substantive ratio over the rolling window.
+        raw_classes: Any = (
+            state.get("classifications") if isinstance(state, dict) else None
+        )
+        classifications = raw_classes if isinstance(raw_classes, list) else []
+        substantive_count = sum(
+            1 for c in classifications[-p3_substantive_window:] if c is True
+        )
+
         p1_fires, p1_reason = would_fire_p1(fire_idx=fire_idx, config=cfg)
         p2_fires, p2_reason = would_fire_p2(
             transcript_path=tp,
             last_user_prompt=last_prompt,
+            config=cfg,
+        )
+        p3v_fires, p3v_reason = would_fire_p3_velocity(
+            bytes_at_last_fire=bytes_at_last_fire,
+            transcript_bytes=transcript_bytes,
+            turns_since_last_fire=turns_since_last_fire,
+            config=cfg,
+        )
+        p3s_fires, p3s_reason = would_fire_p3_substantive(
+            substantive_count=substantive_count,
             config=cfg,
         )
 
@@ -3653,6 +3712,10 @@ def _maybe_log_cadence_shadow_tick(
             fired = p1_fires
         elif policy == POLICY_P2_CTX_THRESHOLD:
             fired = p2_fires
+        elif policy == POLICY_P3_VELOCITY:
+            fired = p3v_fires
+        elif policy == POLICY_P3_SUBSTANTIVE:
+            fired = p3s_fires
         else:
             # POLICY_OFF or unknown — selected policy never fires.
             fired = False
@@ -3678,6 +3741,14 @@ def _maybe_log_cadence_shadow_tick(
                 POLICY_P2_CTX_THRESHOLD: {
                     "would_fire": p2_fires,
                     "reason": p2_reason,
+                },
+                POLICY_P3_VELOCITY: {
+                    "would_fire": p3v_fires,
+                    "reason": p3v_reason,
+                },
+                POLICY_P3_SUBSTANTIVE: {
+                    "would_fire": p3s_fires,
+                    "reason": p3s_reason,
                 },
             },
             now=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),

@@ -15,6 +15,8 @@ from aelfrice.cadence import (
     POLICY_OFF,
     POLICY_P1_EVERY_K_TURNS,
     POLICY_P2_CTX_THRESHOLD,
+    POLICY_P3_SUBSTANTIVE,
+    POLICY_P3_VELOCITY,
 )
 
 
@@ -297,3 +299,96 @@ def test_shadow_env_override(
         stderr=io.StringIO(),
     )
     assert _shadow_log(db, "sess-G").exists()
+
+
+def _write_ring_state_p3(
+    state_dir: Path,
+    session_id: str,
+    *,
+    next_fire_idx: int,
+    bytes_at_last_fire: int,
+    fire_idx_at_last_fire: int,
+    classifications: list[bool],
+) -> None:
+    state_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "session_id": session_id,
+        "ring": [],
+        "ring_max": 200,
+        "next_fire_idx": next_fire_idx,
+        "evicted_total": 0,
+        "bytes_at_last_fire": bytes_at_last_fire,
+        "fire_idx_at_last_fire": fire_idx_at_last_fire,
+        "classifications": classifications,
+    }
+    (state_dir / "session_injected_ids.json").write_text(json.dumps(payload))
+
+
+def _write_transcript(path: Path, size_bytes: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    filler = json.dumps({
+        "message": {"role": "assistant", "content": "x" * 800},
+    }) + "\n"
+    n = max(1, size_bytes // len(filler))
+    path.write_text(filler * n)
+
+
+def test_shadow_row_captures_all_four_policies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#876: the shadow row now carries p3_velocity + p3_substantive too.
+
+    Selected policy is p1 (not firing), but the row records would_fire
+    for all four implemented policies. p3_velocity is rigged to fire
+    (high byte velocity) and p3_substantive to fire (all-substantive
+    window), so the row proves both P3 predicates are evaluated and
+    logged independently of the selected policy.
+    """
+    db = tmp_path / "memory.db"
+    _set_db(monkeypatch, db)
+    _seed_db(db)
+    _write_toml(tmp_path, """\
+        [cadence]
+        enabled = true
+        policy = "p1_every_k_turns"
+        k = 15
+        shadow_mode_enabled = true
+        p3_velocity_threshold = 3000
+        p3_substantive_window = 5
+        p3_substantive_threshold = 0.6
+    """)
+    # next_fire_idx=7 (p1 no-fire @ k=15); 70k bytes over 7 turns since last
+    # fire = 10k bytes/turn >= 3000 → p3_velocity fires. classifications all
+    # True over window 5 → 1.0 >= 0.6 → p3_substantive fires.
+    _write_ring_state_p3(
+        db.parent, "sess-P3",
+        next_fire_idx=7,
+        bytes_at_last_fire=0,
+        fire_idx_at_last_fire=0,
+        classifications=[True, True, True, True, True],
+    )
+    transcript = tmp_path / "transcript.jsonl"
+    _write_transcript(transcript, 70_000)
+    _stub_rebuild_no_op(monkeypatch)
+
+    rc = hook.stop(
+        stdin=io.StringIO(_stop_payload("sess-P3", tmp_path, transcript)),
+        stderr=io.StringIO(),
+    )
+    assert rc == 0
+    log = _shadow_log(db, "sess-P3")
+    rows = [json.loads(line) for line in log.read_text().splitlines() if line]
+    assert len(rows) == 1
+    shadow = rows[0]["shadow"]
+    # All four policies present
+    assert set(shadow) >= {
+        POLICY_P1_EVERY_K_TURNS,
+        POLICY_P2_CTX_THRESHOLD,
+        POLICY_P3_VELOCITY,
+        POLICY_P3_SUBSTANTIVE,
+    }
+    # Selected p1 did not fire; both P3 predicates did (independently logged)
+    assert rows[0]["selected"] == POLICY_P1_EVERY_K_TURNS
+    assert rows[0]["fired"] is False
+    assert shadow[POLICY_P3_VELOCITY]["would_fire"] is True
+    assert shadow[POLICY_P3_SUBSTANTIVE]["would_fire"] is True
