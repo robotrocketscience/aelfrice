@@ -59,13 +59,13 @@ harmful ⟹ β += 1
 
 No embedding model. No hyperparameter search. No opaque ranking. Every score is one division and the audit trail is one table. The Bayesian update is itself one of the named rules traceability bottoms out in.
 
-The posterior is **single-axis**. One `(α, β)` pair per belief, not a vector. A wrong belief is wrong overall; a useful belief is useful overall. The research line shipped a multi-axis `UncertaintyVector` (per-aspect `(α_i, β_i)` across existence / semantics / mechanism / cost) used by the speculative-belief surface (`wonder`, `reason`). aelfrice v1.x is single-axis only. Whether v2.0 adopts the multi-axis substrate is a load-bearing architectural decision tracked at [#196](https://github.com/robotrocketscience/aelfrice/issues/196); until that lands, assume single-axis when porting.
+The posterior is **single-axis**. One `(α, β)` pair per belief, not a vector. A wrong belief is wrong overall; a useful belief is useful overall. The research line shipped a multi-axis `UncertaintyVector` (per-aspect `(α_i, β_i)` across existence / semantics / mechanism / cost) used by the speculative-belief surface (`wonder`, `reason`). aelfrice stays single-axis at v3.x; the multi-axis substrate question tracked at [#196](https://github.com/robotrocketscience/aelfrice/issues/196) was not reopened after v2.0 shipped — assume single-axis when porting.
 
 The cost: dense semantic similarity is gone. The benefit: a learning loop that converges on what works *for you*, not what's textually similar — and a retrieval pipeline that preserves determinism end to end.
 
-What's intentionally absent: an exploration term in retrieval. The research-line requirement was that ≥15% of retrievals surface high-uncertainty beliefs to keep the feedback loop from collapsing into a filter bubble — confident beliefs reinforced, uncertain beliefs never re-tested. aelfrice does not yet address that requirement. Any exploration mechanism (bandit-style, entropy-weighted, sampling-based) breaks the "same query, same beliefs" property, which v1.x prioritises higher. v1.3 ships posterior reranking with no exploration term. If a future benchmark shows filter-bubble cost outweighs the determinism gain, exploration ships behind a flag in a future version.
+What's intentionally absent: an exploration term in retrieval. The research-line requirement was that ≥15% of retrievals surface high-uncertainty beliefs to keep the feedback loop from collapsing into a filter bubble — confident beliefs reinforced, uncertain beliefs never re-tested. aelfrice does not yet address that requirement. Any exploration mechanism (bandit-style, entropy-weighted, sampling-based) breaks the "same query, same beliefs" property, which aelfrice prioritises higher. Posterior reranking has shipped since v1.3 with no exploration term; if a future benchmark shows filter-bubble cost outweighs the determinism gain, exploration ships behind a flag in a future version.
 
-> At v1.0–v1.2 the posterior is computed and stored, but L1 retrieval still ranks by BM25 alone. The v1.3 retrieval wave wires the posterior into ranking. Until then, feedback updates the audit trail but doesn't yet move what the agent sees. See [LIMITATIONS](../user/LIMITATIONS.md).
+> Historical note: at v1.0–v1.2 the posterior was computed and stored but L1 retrieval ranked by BM25 alone. The v1.3 retrieval wave wired the posterior into ranking; v1.7 made BM25F default-on; v3.0 added type-aware compression and intentional clustering as default-on flags. Feedback now moves what the agent sees end-to-end. See [LIMITATIONS](../user/LIMITATIONS.md).
 
 ## Locks, not just decay
 
@@ -112,7 +112,7 @@ The 2,400-token default is a calibrated choice, not an arbitrary one. The hypoth
 
 The v1 surface is small. Every belief mutation goes through `apply_feedback`. Every lock through one path. There is one writer of `(α, β)`, one place that runs decay, one entry point for retrieval. When the system misbehaves, there is one place to look.
 
-The earlier research line had a much bigger surface — twenty-nine MCP tools, `wonder`, `reason`, snapshot/diff. It delivered value but also delivered ambiguity. The rebuild starts narrow on purpose. v1.x reintroduces breadth, each addition gated on evidence — a benchmark, an experiment, a clear case where the existing operations don't suffice.
+The earlier research line had a much bigger surface — twenty-nine MCP tools, `wonder`, `reason`, snapshot/diff. It delivered value but also delivered ambiguity. The rebuild started narrow on purpose; v1.x–v3.x have reintroduced breadth (15 MCP tools at v3.3, plus `/aelf:wonder` / `/aelf:reason` / `/aelf:graph` slash surfaces), each addition gated on evidence — a benchmark, an experiment, a clear case where the existing operations don't suffice.
 
 ## Pure stdlib
 
@@ -129,8 +129,8 @@ aelfrice is a memory substrate, not an LLM. The honest decomposition for any "th
 | 1. Storage | SQLite WAL + locked belief | The rule is durably written and never lost. |
 | 2. Injection | L0 always-loaded into every prompt | The rule is in the model's context on every retrieval. |
 | 3. Compression survival | PreCompact rebuilder + locks-first ordering | The rule survives a context-window compaction. |
-| 4. Violation detection | Not implemented at v1.x | — |
-| 5. Violation blocking | Not implemented at v1.x | — |
+| 4. Violation detection | Not implemented | — |
+| 5. Violation blocking | Not implemented | — |
 | 6. LLM compliance | The model actually obeys the injected rule | **Not under aelfrice's control.** |
 
 Tiers 1–3 hold mechanically. Tiers 4–5 (post-execution detection, pre-execution blocking) are research-line capabilities deferred to v2.x. Tier 6 is the LLM's own training and decoding, which aelfrice cannot constrain. If the model ignores an injected lock, the failure mode is in the model, not in aelfrice — but that distinction does not console a user whose agent just ran `git push` despite a clear directive.
@@ -139,12 +139,12 @@ Two recovery angles fall out of the same substrate:
 
 - **Session recovery, not just write durability.** SQLite WAL guarantees that every acknowledged write survives a crash. That is the storage-engine claim. The product-level claim is that the *working context* of an interrupted session is reconstructable on restart — not from a snapshot file, but from the same belief store the next session retrieves against, augmented by a `<recent-work>` SessionStart sub-block carrying the current branch, the last N commits, and any issue numbers referenced in the recent work (#887). Re-open the terminal next week, ask "where were we?", and the locks plus the per-project working state are still there.
 - **Confidence does not auto-flag.** A belief whose posterior drifts below 0.5 is not surfaced as a warning. No automatic state change is driven by negative evidence — locked beliefs hold by design (the v2.x auto-demote mechanism was removed at v3.1 [#814](https://github.com/robotrocketscience/aelfrice/issues/814)). If you want to know which beliefs are losing the feedback loop, you ask `aelf stats`; the system does not interrupt to tell you.
-- **The append-only substrate at v1 is `feedback_history`, not observations.** The research line had a separate `observations` table that was insert-only — every observation that produced a belief was permanently recorded. aelfrice v1 does not have that table. Beliefs are the substrate, and beliefs *are* mutated (decay adjusts age weighting; feedback updates `(α, β)`). What aelfrice v1 *does* keep append-only is `feedback_history`: every `apply_feedback` event writes a row, and rows are never updated. That is the immutable substrate at v1, and it is sufficient for "did the user actually correct this?" audit. Full ingest-log immutability — recording every observation that produced or refreshed a belief, not only every feedback event — is the v2.0 contract; see [`design/write-log-as-truth.md`](../design/write-log-as-truth.md) for the proposed table and the migration story.
+- **Append-only substrate.** The research line had a separate `observations` table — insert-only, every observation that produced a belief permanently recorded. v1.x kept only `feedback_history` immutable (every `apply_feedback` writes a row, rows are never updated). v1.6 (#205) added the append-only `ingest_log` table, and v2.0 (#264 / #265) wired the derivation worker so `beliefs` and `edges` are a materialized projection of the log. Beliefs are still mutated for decay and feedback, but the full write log is durable and replay-capable. See [`design/write-log-as-truth.md`](../design/write-log-as-truth.md) for the architectural memo.
 
 ## What this design buys
 
 - **Continuity.** Close the terminal, come back next week, "where were we?" — the memory restores it.
-- **Compounding.** At v1.0 the graph fills on explicit `onboard`/`lock`/`feedback`. v1.1 closes the hook→feedback loop. v1.2 adds commit-ingest and transcript-ingest hooks. v1.3 wires the posterior into ranking.
+- **Compounding.** The graph fills on explicit `onboard` / `lock` / `feedback` (since v1.0), the default-on transcript-ingest / commit-ingest / session-start hooks (since v2.1 #529), and posterior-aware ranking (since v1.3, with BM25F default-on since v1.7 and type-aware compression default-on since #769). Every layer compounds: more sessions → more feedback → better ranking → more accurate retrieval.
 - **Self-correction.** Stale rules decay. Wrong locks demote.
 - **Auditability.** Every belief has a content hash and timestamp. Every feedback event has an audit row. Every score is `α / (α + β)`. Read the database; reproduce the system's claims about itself.
 - **Locality.** No service to fail, no account to lose, no quota to exceed.
