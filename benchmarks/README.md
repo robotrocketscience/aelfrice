@@ -16,10 +16,8 @@ which is a small in-tree corpus that runs in CI on every PR.
 
 ## Activation status (aelfrice v3.x)
 
-The adapters were ported from the private lab repo
-(`aelfrice-lab/benchmarks/`). All five academic adapters run
-end-to-end under `aelfrice.retrieval.retrieve_v2` + the `[benchmarks]`
-extra. v3.x adapters target the canonical post-#605 substrate (HRR
+All five academic adapters run end-to-end under
+`aelfrice.retrieval.retrieve_v2` + the `[benchmarks]` extra. v3.x adapters target the canonical post-#605 substrate (HRR
 structural lane + BFS multi-hop + posterior-weighted ranking all
 default-on per v2.1; type-aware compression default-on per v3.0
 #769). The reproducibility harness (#437) is the canonical entry
