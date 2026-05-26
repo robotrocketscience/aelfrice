@@ -151,16 +151,20 @@ settings.json  hooks.UserPromptSubmit: [{command: "aelf-hook"}]
 
 Non-blocking contract: every failure path exits 0 with no stdout. A hook problem must never block your prompt.
 
-## v1.2+ hooks
+## Default-on hooks (v2.1+ / v3.0+)
 
-| Hook | Event | Purpose |
-|---|---|---|
-| `aelf-transcript-logger` | `UserPromptSubmit`, `Stop`, `PreCompact`, `PostCompact` | One JSONL line per conversation turn; PreCompact rotates and re-ingests. |
-| `aelf-commit-ingest` | `PostToolUse:Bash` | After `git commit`, ingest the commit message via the triple extractor. |
-| `aelf-session-start-hook` | `SessionStart` | Inject locked beliefs as `<aelfrice-baseline>` once per session. |
-| `aelf-pre-compact-hook` | `PreCompact` | Context rebuilder alpha — surfaces retrieval before Claude Code summarises. |
+| Hook | Event | Purpose | Default since |
+|---|---|---|---|
+| `aelf-hook` | `UserPromptSubmit` | Retrieval injection — the core mechanism. | v1.0 |
+| `aelf-transcript-logger` | `UserPromptSubmit`, `Stop`, `PreCompact`, `PostCompact` | One JSONL line per conversation turn; PreCompact rotates and re-ingests. | v2.1 (#529) |
+| `aelf-commit-ingest` | `PostToolUse:Bash` | After `git commit`, ingest the commit message via the triple extractor. | v2.1 (#529) |
+| `aelf-session-start-hook` | `SessionStart` | Inject locked beliefs as `<aelfrice-baseline>` once per session; emit `<recent-work>` sub-block (#887). | v2.1 (#529) |
+| `aelf-stop-hook` | `Stop` | Cadence Stop dispatch — emits `<recent-work>` and feeds cadence policy (#749 / #871 / #876). | v3.0 |
+| `aelf-search-tool` | `PreToolUse:Grep|Glob` | Surface relevant beliefs adjacent to tool-driven search (#674). | v3.0.1 (#738) |
+| `aelf-search-tool-bash` | `PreToolUse:Bash` | Same surface for bash search invocations. | v3.0.1 (#738) |
+| `aelf-pre-compact-hook` | `PreCompact` | Context rebuilder — opt-in via `--rebuilder`; default trigger flipped from `manual` to `threshold` at v3.1 (#746). | opt-in |
 
-All opt-in via `aelf setup --<flag>`. All non-blocking.
+Each lane is opt-out via `aelf setup --no-<lane>`. All non-blocking: every failure path exits 0 with no stdout.
 
 The `PostToolUseFailure:<tool_name>` event-name namespace inside
 `~/.aelfrice/hook-activity.jsonl` is reserved for raw tool-failure
@@ -168,7 +172,7 @@ observation produced by a HOME-side hook (tracked separately). See
 [hook_activity_schema](../design/hook_activity_schema.md) for the field schema
 and the consumer-side dedupe-by-fingerprint warning.
 
-## PreCompact rebuilder (v1.4)
+## PreCompact rebuilder
 
 When Claude Code approaches its context limit it fires `PreCompact`. The `aelf-pre-compact-hook` intercepts this event and injects a curated retrieval block before the harness summarises:
 
@@ -187,7 +191,7 @@ emitted as additionalContext — both the aelfrice block
 and the harness's own summary land in the new context (augment mode)
 ```
 
-`aelf rebuild [--transcript PATH] [--n N] [--budget N]` runs the same codepath manually (prints block to stdout). Install via `aelf setup --rebuilder`. Spec: [context_rebuilder.md](../design/context_rebuilder.md). Eval fixture policy: [eval_fixture_policy.md](../design/eval_fixture_policy.md).
+`aelf rebuild [--transcript PATH] [--n N] [--budget N]` runs the same codepath manually (prints block to stdout). Install via `aelf setup --rebuilder`. Default `DEFAULT_TRIGGER_MODE` flipped from `"manual"` to `"threshold"` at v3.1 ([#746](https://github.com/robotrocketscience/aelfrice/issues/746)). Spec: [context_rebuilder.md](../design/context_rebuilder.md). Eval fixture policy: [eval_fixture_policy.md](../design/eval_fixture_policy.md).
 
 ## Tests
 
