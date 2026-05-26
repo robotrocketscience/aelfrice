@@ -1,7 +1,7 @@
 [project]
 name = "aelfrice"
 version = "3.3.0"
-description = "Persistent memory for AI agents. Set up once. Stays out of your way. Local SQLite, auditable, no GPU, no network."
+description = "Persistent memory for AI coding agents. Local SQLite + UserPromptSubmit hook — matched beliefs in the prompt before the model sees it. Deterministic, auditable, no embeddings, no cloud."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
