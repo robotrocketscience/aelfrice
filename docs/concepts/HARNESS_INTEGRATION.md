@@ -3,10 +3,12 @@
 Operational guide for users running aelfrice alongside Claude Code's
 built-in auto-memory system.
 
-If you only want one rule of thumb: **after `aelf setup --transcript-ingest`,
-both stores coexist productively and you do not need to do anything
-else.** The rest of this document is for users who want a more
-opinionated arrangement.
+If you only want one rule of thumb: **after `aelf setup`, both stores
+coexist productively and you do not need to do anything else.** The
+v2.1+ default-on hook bundle (transcript-ingest, commit-ingest,
+session-start) wires aelfrice into normal session activity without
+your touching `CLAUDE.md`. The rest of this document is for users who
+want a more opinionated arrangement.
 
 ## The two stores
 
@@ -16,9 +18,9 @@ mechanisms.
 
 | | Claude Code auto-memory | aelfrice |
 |---|---|---|
-| Storage | `~/.claude/projects/<slug>/memory/*.md` + `MEMORY.md` index | `<git-common-dir>/.git/aelfrice/memory.db` (SQLite) |
+| Storage | `~/.claude/projects/<slug>/memory/*.md` + `MEMORY.md` index | `<git-common-dir>/aelfrice/memory.db` (SQLite) per-project; `~/.aelfrice/memory.db` only outside a git working tree |
 | Format | Markdown files with YAML frontmatter | FTS5-indexed beliefs with α/β posteriors and typed edges |
-| Write path | Harness directive in `~/.claude/CLAUDE.md` ("If the user explicitly asks you to remember something, save it…") | Explicit `aelf remember` / `aelf:remember` / `aelf onboard`, plus the v1.2 hooks (transcript-ingest, commit-ingest) |
+| Write path | Harness directive in `~/.claude/CLAUDE.md` ("If the user explicitly asks you to remember something, save it…") | Explicit `aelf lock` / `aelf:lock` / `aelf onboard`, plus the v2.1+ default-on hooks (transcript-ingest, commit-ingest, session-start) |
 | Read path | Auto-loaded into every prompt by Claude Code itself | The `UserPromptSubmit` hook injects retrieval results above each prompt |
 | Determinism | None (LLM decides what to write and when) | Bit-level reproducible — write log replay reconstructs every state |
 | Apply feedback | No | Yes — every retrieval moves posteriors, contradictions resolve via tie-breaker |
@@ -26,13 +28,15 @@ mechanisms.
 The two stores capture different things by design and they do not
 merge automatically.
 
-## What v1.2 changes
+## What the hook bundle does
 
 Earlier versions of this guide (`LIMITATIONS.md § harness conflict`,
 v1.0–v1.1) recommended hand-editing `~/.claude/CLAUDE.md` to disable
-the auto-memory directive and route everything to the MCP. v1.2
-ships three hook-based capture paths that close the original
-limitation without requiring you to fight the harness:
+the auto-memory directive and route everything to the MCP. The
+hook-based capture paths shipped at v1.2 and went default-on at v2.1
+([#529](https://github.com/robotrocketscience/aelfrice/issues/529)),
+which closes the original limitation without requiring you to fight
+the harness:
 
 - **`SessionStart`** ([context_rebuilder.md](../design/context_rebuilder.md)).
   Injects L0 locked beliefs at session open under the
@@ -40,7 +44,7 @@ limitation without requiring you to fight the harness:
 - **`UserPromptSubmit` + `Stop` + `PreCompact` + `PostCompact`
   transcript-ingest** ([transcript_ingest.md](../design/transcript_ingest.md)).
   Every conversation turn is appended to
-  `<git-common-dir>/.git/aelfrice/transcripts/turns.jsonl`. On
+  `<git-common-dir>/aelfrice/transcripts/turns.jsonl`. On
   compaction the JSONL rotates and `aelf ingest-transcript` lowers
   the rotated file into beliefs and edges in the brain graph.
 - **`PostToolUse:Bash` commit-ingest** ([commit_ingest_hook.md](../design/commit_ingest_hook.md)).
@@ -49,8 +53,10 @@ limitation without requiring you to fight the harness:
   resulting beliefs and edges under a deterministic
   `sha256(branch + ":" + commit_hash)[:16]` session id.
 
-After running `aelf setup --transcript-ingest --commit-ingest
---session-start`, aelfrice receives fresh beliefs from normal
+After running `aelf setup` (these three hooks are default-on since
+v2.1 [#529](https://github.com/robotrocketscience/aelfrice/issues/529);
+opt out per-hook with `--no-transcript-ingest` / `--no-commit-ingest`
+/ `--no-session-start`), aelfrice receives fresh beliefs from normal
 session activity without the auto-memory directive being involved
 either way. The two stores coexist; one is no longer starving the
 other.
@@ -67,12 +73,12 @@ mechanism.
 
 ### Mode 1 — Coexist (recommended default)
 
-Both stores active. `aelf setup --transcript-ingest --commit-ingest
---session-start` plus the default `aelf setup` (UserPromptSubmit hook
-for retrieval). Auto-memory continues to write `.md` files; you read
-them from `MEMORY.md` like before. aelfrice writes SQLite rows; you
-query them with `aelf search` or get them injected via the retrieval
-hook on every prompt.
+Both stores active. `aelf setup` installs the full default-on bundle
+(UserPromptSubmit retrieval + transcript-ingest + commit-ingest +
+session-start, all v2.1+). Auto-memory continues to write `.md` files;
+you read them from `MEMORY.md` like before. aelfrice writes SQLite rows;
+you query them with `aelf search` or get them injected via the
+retrieval hook on every prompt.
 
 When this is right:
 - You like having the human-readable `.md` index for grep-able review.
@@ -100,9 +106,9 @@ with:
 # Memory
 
 This project uses aelfrice as the canonical memory store. To save
-something durable, call `aelf:remember` or `aelf:lock` (MCP tools).
-Do NOT create new files under .claude/projects/.../memory/ — those
-are read-only legacy.
+something durable, call `aelf:lock` (MCP / slash). Do NOT create
+new files under .claude/projects/.../memory/ — those are read-only
+legacy.
 ```
 
 When this is right:
@@ -155,7 +161,10 @@ constraints you want locked.
 
 The migration is one-shot. Re-running `aelf onboard` on the same
 directory after edits is idempotent — content-hash skips
-already-ingested rows.
+already-ingested rows. Use `aelf promote <id>` (preferred at v3.0+
+[#689](https://github.com/robotrocketscience/aelfrice/issues/689))
+to flip the origin to `user_validated` and optionally re-scope; the
+older `aelf validate <id>` verb still works as an alias.
 
 ## Decision matrix
 
@@ -164,9 +173,8 @@ already-ingested rows.
 | Just install and have it work | Mode 1 (default) |
 | One canonical answer to "what is remembered" | Mode 2 |
 | Pure aelfrice, no harness `.md` files | Mode 3 (after migration) |
-| Save something durable right now | `aelf:remember` (MCP) or `aelf remember` (CLI) |
 | Save something the agent must never forget | `aelf:lock` |
-| Acknowledge an onboard belief without locking it | `aelf:validate` |
+| Acknowledge an onboard belief without locking it | `aelf:promote` |
 | See what aelfrice currently holds | `aelf search "<query>"` or `aelf:search` |
 | See what auto-memory currently holds | `cat ~/.claude/projects/<slug>/memory/MEMORY.md` |
 
@@ -179,8 +187,13 @@ already-ingested rows.
   sync; that is out of scope at v1.2.
 - **Cross-project federation.** Each git project gets its own
   aelfrice store. Auto-memory has its own per-project directory.
-  Cross-project knowledge sharing is on the v1.3 retrieval-wave
-  roadmap.
+  v3.0 shipped *read-only* cross-project federation via
+  `knowledge_deps.json` ([#650](https://github.com/robotrocketscience/aelfrice/issues/650)
+  / [#655](https://github.com/robotrocketscience/aelfrice/issues/655)
+  / [#661](https://github.com/robotrocketscience/aelfrice/issues/661)):
+  peer DBs are opened read-only, foreign-id mutations are rejected
+  at the API surface. Multi-writer federation is out of scope per
+  the v3.0 ratification.
 - **Deleting auto-memory entries from inside aelfrice.** If you
   migrate `.md` content into aelfrice and later edit the originals
   externally, aelfrice will not notice. Re-run `aelf onboard` after
@@ -188,18 +201,18 @@ already-ingested rows.
 
 ## Troubleshooting
 
-**"I called `aelf:remember` but the belief isn't appearing in `MEMORY.md`."**
-Expected. `aelf:remember` writes to the aelfrice DB only. Use
+**"I called `aelf:lock` but the belief isn't appearing in `MEMORY.md`."**
+Expected. `aelf:lock` writes to the aelfrice DB only. Use
 `aelf search` or `aelf:locked` to confirm the write landed. The two
 stores do not mirror each other.
 
 **"I see the same fact in both stores."**
 Expected if you ran the migration in § "Migrating existing
 auto-memory content" or if the auto-memory directive captured the
-same fact during a session where you also called `aelf:remember`.
-Use `aelf:validate` to mark the aelfrice copy as
-`user_validated`; the duplicate in `.md` form is harmless and you
-can ignore or delete it.
+same fact during a session where you also called `aelf:lock`.
+Use `aelf:promote` to mark the aelfrice copy as `user_validated`;
+the duplicate in `.md` form is harmless and you can ignore or
+delete it.
 
 **"Auto-memory is creating new `.md` files faster than I want."**
 This is a harness behaviour, not an aelfrice one. Edit
