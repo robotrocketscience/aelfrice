@@ -77,7 +77,7 @@ $ aelf feedback 91e02d3c harmful
 α 1.0→1.0, β 0.5→1.5
 ```
 
-`used` bumps α; `harmful` bumps β. Five harmful events through `CONTRADICTS` edges to a lock auto-demote it.
+`used` bumps α; `harmful` bumps β. Locks resist passive feedback by design ([#814](https://github.com/robotrocketscience/aelfrice/issues/814) removed the v2.x auto-demote mechanism at v3.1); change a wrong lock with `aelf unlock` / `aelf delete`, or re-lock the corrected statement.
 
 > Partial Bayesian re-rank shipped at v1.3; BM25F default-on at v1.7. See [LIMITATIONS](LIMITATIONS.md) for what's still partial.
 

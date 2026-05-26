@@ -75,7 +75,7 @@ Resolution order:
 ## You control all writes
 
 - New beliefs from `onboard` and ingest hooks are inserted unlocked. Only an explicit `aelf lock` (or MCP `aelf:lock`) marks something permanent.
-- Lock prior is `(α, β) = (9.0, 0.5)` — durable but not unkillable. Five contradicting feedback events auto-demote the lock.
+- Lock prior is `(α, β) = (9.0, 0.5)` — durable. Passive feedback does not move a lock at v3.x ([#814](https://github.com/robotrocketscience/aelfrice/issues/814) removed the v2.x auto-demote); change a lock via `aelf unlock` / `aelf delete` / `aelf demote`.
 - `aelf demote` removes a lock immediately. The belief itself remains; you can also delete it via the store API.
 - Every Bayesian update goes through `apply_feedback` and writes one `feedback_history` audit row. Provenance is queryable.
 

@@ -7,8 +7,9 @@ allowed-tools:
 ---
 <objective>
 Lock a statement as user-asserted ground truth. Locked beliefs auto-load
-above keyword search results (L0 layer) and resist demotion until 5+
-contradicting feedback events arrive.
+above keyword search results (L0 layer) and resist passive feedback by
+design — change a wrong lock via `aelf unlock` / `aelf delete`, or
+re-lock the corrected statement (per #605, #814).
 </objective>
 
 <process>
