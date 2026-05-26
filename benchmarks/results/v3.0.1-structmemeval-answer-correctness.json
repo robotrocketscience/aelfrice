@@ -1,0 +1,141 @@
+{
+  "_calibration_notes": "ANSWER-CORRECTNESS re-measure of the StructMemEval v2.0.0 4-task cut, the companion to v3.0.1-structmemeval-backfill.json (#912). That capture reported RAW-RETRIEVAL RECALL scored with the invalid check_state_correctness word-overlap heuristic (location 90.5% inflated by exclusion-note distractor tokens, tree/accounting 0% drowned by boilerplate); #914 established that path is not answer-correctness and shipped task-aware scorers, and #918 added the reader-prediction scoring seam (--score-predictions). This capture instead reports ANSWER-CORRECTNESS: an external reader is given the retrieved context (12 reader chunks per query, retrieve-then-read pipeline) and its prediction is graded by the CANONICAL StructMemEval judge -- the verbatim lenient binary key-fact judge from the upstream benchmark (github.com/yandex-research/StructMemEval, judge/judge.py + judge/prompt.txt; temp 0; returns 1/0; prompt: 'Does the model response contain the same KEY FACT as the reference? Score 1 if the model mentions the same key fact (person, place, activity, object) - even if worded differently or with extra commentary. Score 0 if the key fact is missing or the model says I don't know.'). The same judge scores all 4 tasks, matching how the benchmark scores the memory agents it was built for. The #914/#917 deterministic per-task scorers were validated to track this canonical judge almost exactly (location/tree identical; recommendations 54.3% pure-fn vs 56.5% judge on the stratified sample), so either is admissible; the canonical judge is reported here as the benchmark-canonical metric. Retrieve-side substrate is unchanged from the raw-retrieval capture (git_commit db75384b; no retrieve-side changes since v3.0.1 tag 0e91fd1d), so the delta between this file and the back-fill file is entirely the scoring method (correctness vs recall), not a substrate change. SOURCE: operator re-measure posted as data on issue #915 (comments 2026-05-22T21:33Z canonical-judge per-task table; 2026-05-22T23:07Z full 1104-case recommendations pass). Denominators are per the operator's reader-prediction cut (location n=14, tree n=43, accounting n=15 small/full cuts; recommendations the full big-bench n=1104) and differ from the raw-retrieval capture's per-query denominators (e.g. location n=42) because this grades per-case reader answers, not per-query retrieval hits. HEADLINE under the canonical judge: location 57.1%, recommendations 47.4%, tree 7.0%, accounting 0.0%. The post-#605 substrate signature holds but is far less stark than the inverted raw-retrieval numbers suggested: solid on single-state and single-entity preference lookup, weak on AGGREGATION (recommendations count/fraction/ratio), CONNECTIVITY (tree), and ARITHMETIC DERIVATION (accounting). CAVEAT (accounting): the 0% is confirmed by the canonical judge, but the accounting REFERENCE net-balance direction is independently flagged (#917) as inconsistent with the parsed expense log (e.g. accounting_10%_1: top-payer Alice nets +188 EUR yet all 3 reference alternatives make Bob the creditor; retrieval complete at 45/45 lines) -- a reference-validity check is owed before treating accounting 0% as purely a substrate result. This capture does not re-run any bench; it transcribes the operator's authoritative re-measure into the results schema with methodology. Bench fixtures downloaded fresh; not pinned by checksum.",
+  "aelfrice_version": "3.0.1",
+  "captured_at_utc": "2026-05-22T23:07:00Z",
+  "git_commit": "db75384bd2a292d2f69eef2bf1cb90643af5c023",
+  "harness_version": "1",
+  "label": "v3.0.1 StructMemEval per-sub-task answer-correctness (canonical judge)",
+  "scoring_method": "canonical_structmemeval_judge",
+  "companion_capture": "benchmarks/results/v3.0.1-structmemeval-backfill.json",
+  "source": "operator re-measure posted on issue #915 (comments 2026-05-22T21:33Z, 2026-05-22T23:07Z)",
+  "metric_overrides": {},
+  "results": {
+    "structmemeval": {
+      "location": {
+        "_elapsed_sec": null,
+        "_status": "ok",
+        "output": {
+          "metric": "answer_correctness",
+          "scorer": "canonical_structmemeval_judge",
+          "score_pct": 57.1,
+          "correct": 8,
+          "total": 14,
+          "n_runs": 1,
+          "variance_probed": false,
+          "interpretation": "Single-value state tracking. Under the canonical key-fact judge a reader given the retrieved context answers the most-recent-location question correctly 8/14. Far below the 90.5% the raw-retrieval recall metric reported (that number was inverted by exclusion-note distractor tokens). Failures are state-transition cases where the substrate has no recency/supersedes signal beyond ingest order."
+        }
+      },
+      "accounting": {
+        "_elapsed_sec": null,
+        "_status": "ok",
+        "output": {
+          "metric": "answer_correctness",
+          "scorer": "canonical_structmemeval_judge",
+          "score_pct": 0.0,
+          "correct": 0,
+          "total": 15,
+          "n_runs": 1,
+          "variance_probed": false,
+          "interpretation": "Total failure. Accounting requires arithmetic over a ledger history (sum / delta / running balance) that no chunk carries verbatim; post-#605 chunk-projection substrate has no derivation lane. NOTE: 0% is judge-confirmed, but the reference net-balance direction is flagged (#917) as inconsistent with the expense log -- a reference-validity check is owed before reading this as a pure substrate result."
+        }
+      },
+      "recommendations": {
+        "_elapsed_sec": null,
+        "_status": "ok",
+        "output": {
+          "metric": "answer_correctness",
+          "scorer": "canonical_structmemeval_judge",
+          "score_pct": 47.4,
+          "correct": 523,
+          "total": 1104,
+          "n_runs": 1,
+          "variance_probed": false,
+          "interpretation": "Full 1104-case canonical-judge pass (vs the back-fill's 15.4% word-overlap recall). Strong on single-entity / binary preference lookup (binary_choice 100%, single_mixed 100%, set_list 100%) but weak on AGGREGATION: count 28.5%, fraction 36.4%, ratio 22.5%. The reader systematically under-counts (predicts 5-6 where truth is 10-13) because retrieval surfaces a PARTIAL set, not the exhaustive set a 'how many across all conversations' query needs -- a retrieval-coverage limit, same root as the tree connectivity gap. See per_qtype for the full breakdown.",
+          "per_qtype_pct": {
+            "binary_choice": {
+              "correct": 20,
+              "total": 20,
+              "score_pct": 100.0
+            },
+            "single_mixed": {
+              "correct": 6,
+              "total": 6,
+              "score_pct": 100.0
+            },
+            "set_list": {
+              "correct": 4,
+              "total": 4,
+              "score_pct": 100.0
+            },
+            "other_compound": {
+              "correct": 291,
+              "total": 509,
+              "score_pct": 57.2
+            },
+            "which_other": {
+              "correct": 18,
+              "total": 33,
+              "score_pct": 54.5
+            },
+            "single_neg": {
+              "correct": 3,
+              "total": 6,
+              "score_pct": 50.0
+            },
+            "range_mc": {
+              "correct": 52,
+              "total": 104,
+              "score_pct": 50.0
+            },
+            "fraction": {
+              "correct": 51,
+              "total": 140,
+              "score_pct": 36.4
+            },
+            "count": {
+              "correct": 69,
+              "total": 242,
+              "score_pct": 28.5
+            },
+            "ratio": {
+              "correct": 9,
+              "total": 40,
+              "score_pct": 22.5
+            }
+          }
+        }
+      },
+      "tree": {
+        "_elapsed_sec": null,
+        "_status": "ok",
+        "output": {
+          "metric": "answer_correctness",
+          "scorer": "canonical_structmemeval_judge",
+          "score_pct": 7.0,
+          "correct": 3,
+          "total": 43,
+          "n_runs": 1,
+          "variance_probed": false,
+          "interpretation": "Near-total failure. Tree tasks require hierarchical-knowledge traversal (parent->child relationships across the conversation) and binary Yes/No polarity that the word-overlap metric never tested. The substrate has no graph-traversal primitive in retrieval; chunk projection alone cannot reconstruct multi-level hierarchies. 3/43 correct."
+        }
+      },
+      "_aggregate": {
+        "_status": "info",
+        "output": {
+          "per_task_pct": {
+            "location": 57.1,
+            "accounting": 0.0,
+            "recommendations": 47.4,
+            "tree": 7.0
+          },
+          "task_mean_pct": 27.9,
+          "query_weighted_pct": 45.4,
+          "query_weighted_fraction": "534/1176",
+          "spread_pp": 57.1,
+          "interpretation": "Task-mean 27.9% (equal task weight); query-weighted 45.4% (534/1176, dominated by the n=1104 recommendations denominator). The per-task spread (0%-57.1%) is the load-bearing signal, not either aggregate. Compared to the raw-retrieval recall capture (location 90.5% / rec 15.4% / acct 0% / tree 0%, mean 26.5%), answer-correctness REORDERS the tasks: location drops from inflated 90.5% to 57.1%, recommendations RISES from 15.4% recall to 47.4% correctness, tree rises 0%->7%. The post-#605 chunk-projection signature (prose-grounded state works; aggregation / hierarchy / arithmetic fail) holds, but is less stark than the inverted recall numbers implied."
+        }
+      }
+    }
+  },
+  "schema_version": "1.0"
+}
