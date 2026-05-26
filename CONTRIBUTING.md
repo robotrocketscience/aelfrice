@@ -4,20 +4,20 @@ Thanks for considering a contribution. aelfrice is a one-author project — the 
 
 ## Status
 
-v1.0 has shipped. Issues are welcome. PRs are evaluated on a case-by-case basis — the bar is "moves the system measurably forward, justifies the change with a test."
+Current line: **v3.3.0** (see [ROADMAP](docs/concepts/ROADMAP.md)). Issues are welcome. PRs are evaluated on a case-by-case basis — the bar is "moves the system measurably forward, justifies the change with a test."
 
 Best categories of PR:
 
 - Bug fixes with a regression test that fails before and passes after.
 - Doc fixes (typo, broken link, stale claim against current code).
-- Closing one of the [known issues at v1.0](docs/user/LIMITATIONS.md#known-issues-at-v10) — but ping in an issue first to align on approach.
+- Closing one of the [known limitations](docs/user/LIMITATIONS.md) — but ping in an issue first to align on approach.
 
 Hard to land without prior alignment:
 
 - New CLI subcommands or MCP tools.
 - Schema changes.
 - Anything that adds a hard dependency.
-- Reintroducing v2.0 features without a benchmark / experiment showing the impact.
+- Reintroducing earlier research-line features without a benchmark / experiment showing the impact.
 
 ## How to file a useful issue
 
@@ -70,17 +70,15 @@ output but are excluded from the "next actionable" list. Adding the
 right label at file-time prevents the issue from being re-evaluated
 on every fresh scan.
 
-## What's likely to land where
+## Where to look for work
 
-The v1.x roadmap is bucketed. See [LIMITATIONS](docs/user/LIMITATIONS.md#known-issues-at-v10) for each issue's target version.
+[ROADMAP](docs/concepts/ROADMAP.md) carries the version-by-version landing record (v1.0 → v3.3) plus the current active line. [LIMITATIONS](docs/user/LIMITATIONS.md) lists known gaps against current HEAD. The issue tracker is the canonical source of in-flight work — `aelf-scan.sh` queries it directly.
 
-- **v1.0.1** — launch fix-up. Hook → `aelfrice.retrieval.retrieve()` rewrite + `feedback_history` recording (highest-impact gap). `aelf --version` flag. Onboard noise filters. CONTRADICTS auto-supersession. Onboard performance regression baseline.
-- **v1.1.0** — project identity (`.git/aelfrice/memory.db`, `.aelfrice.toml`, orphan-DB cleanup, worktree concurrency). Onboard behavior (git-recency weighting, `agent_inferred` → `user_validated` promotion). Cosmetic surface (edges→threads, split `aelf status` from `aelf health`).
-- **v1.2.0** — commit-ingest PostToolUse hook for automatic capture. Full hook performance audit. Seed files for git-tracked knowledge bootstrapping.
-- **v1.3** — retrieval wave. HRR / vocabulary bridging. LLM-Haiku classification on the onboard path (~$0.005/session, opt-in). Cross-project knowledge federation. Posterior consumed in ranking. 6–9 weeks estimated.
-- **v2.0** — full academic benchmark suite (LoCoMo, MAB, LongMemEval, StructMemEval, AmaBench) + the v2-line feature surface (`wonder`, `reason`, `core`, snapshot/timeline tools).
+Highest-leverage contributions tend to land in three places:
 
-Highest-leverage contributions right now are tied to **v1.0.1** — the launch fix-up — because they unblock the "feedback-driven memory" claim end-to-end.
+- **Bench gates.** Several `bench-gated` issues are waiting on benchmark runs to decide whether to flip a default or revert (see `gh issue list --label bench-gated`).
+- **Triage drift.** Issues labeled `Blocked` whose blockers have since closed; surface a status flip rather than implement.
+- **Stale-doc fixes.** Anything where the docs lie about the code at current HEAD (a docs audit lives in [docs/audits/](docs/audits/) — the latest pass enumerates what's outstanding).
 
 ## What's not on the path
 
@@ -90,8 +88,6 @@ Highest-leverage contributions right now are tied to **v1.0.1** — the launch f
 - Integration with chat platforms outside MCP.
 
 ## Development setup
-
-Once contributions are open:
 
 ```bash
 git clone https://github.com/robotrocketscience/aelfrice.git
