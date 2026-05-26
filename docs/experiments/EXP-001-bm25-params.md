@@ -1,6 +1,6 @@
 # EXP-001: BM25 parameter tuning (`k1`, `b`)
 
-**Status:** design memo + negative finding. Not implemented as a running experiment.
+**Status:** shipped. Phase 1 (Python-side BM25 reranker) landed at v1.5.0 as `src/aelfrice/bm25.py` — a BM25F module with configurable `k1` and `b`, sparse matvec, and anchor-text support. Phase 2 (the 25-cell `(k1, b)` sweep + calibrated defaults) has not been run on the public corpus as a single experiment. This memo is retained as the original design + negative finding write-up.
 **Origin:** v1 research-brief Section C — *"BM25 has tunable parameters (k1, b) that almost everyone leaves at defaults. The defaults are tuned for general web search (long documents, varied lengths). Behavioral directives are short; high `b` (length normalization) probably hurts you. This is concrete, low-risk experimentation worth doing."*
 **Question:** Does retuning `k1` and `b` for aelfrice's typical short, behavioural-directive content improve MRR / hit@k on the synthetic harness without harming latency?
 
@@ -36,7 +36,7 @@ Option 3 is the only path consistent with aelfrice's architectural commitments.
 Sketch:
 
 ```python
-# pseudocode — aelfrice/retrieval/bm25.py (does not exist)
+# pseudocode — original sketch; shipped at src/aelfrice/bm25.py (v1.5.0)
 @dataclass(frozen=True)
 class BM25Params:
     k1: float = 1.2
@@ -93,16 +93,11 @@ Two outcomes considered acceptable:
 
 Either outcome is publishable. The failure mode is implementing the reranker without the sweep, leaving `(k1, b)` exposed but uncalibrated.
 
-## Recommendation
+## Outcome
 
-Do not block on this experiment. The brief framed it as low-risk; it is medium-risk implementation, low-risk experiment-once-implementation-lands. Park as **v1.x candidate** with the work scoped:
+Phase 1 shipped at v1.5.0: `src/aelfrice/bm25.py` is a BM25F module with configurable `k1` / `b`, anchor-text support, and sparse matvec. Default-on as part of the BM25F retrieval lane (`use_bm25f_anchors`). Phase 2 (the 25-cell `(k1, b)` sweep + calibrated defaults on the synthetic + academic corpora) has not been run as a single labeled experiment under this EXP number; the BM25F module ships with the original `(1.2, 0.75)` defaults.
 
-- Phase 1: implement Python-side reranker in `aelfrice.retrieval.bm25`. Pin agreement with FTS5 ordering on the synthetic corpus to within machine epsilon at `(1.2, 0.75)`. Behind a feature flag.
-- Phase 2: enable the flag, run the 25-cell sweep, write up the result, ship the calibrated defaults.
-
-Phase 1 alone is a meaningful artifact (controllable BM25, documented in the architecture). Phase 2 is the experiment payoff.
-
-**Do not** ship a partial reranker that drifts from FTS5 ordering at the default parameters — that's a regression with no offsetting win.
+If you re-open this experiment, the Phase 2 work is: enable the existing knobs, run the sweep against `benchmarks/results/v3.0.1.json` baselines, and either pin a new default or close out with a documented null result.
 
 ## What this memo establishes
 
