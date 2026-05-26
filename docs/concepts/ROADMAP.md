@@ -36,7 +36,7 @@ This is a rebuild, not a port. Structural issues that survived the research line
 
 ### v1.0.x — surface
 
-Stable core: SQLite + FTS5 store, Beta-Bernoulli scoring, L0+L1 retrieval at a 2,000-token budget, `apply_feedback` with audit log, onboarding scanner (filesystem + git log + Python AST), CLI, MCP server, Claude Code hook wiring, synthetic benchmark harness, contradiction tie-breaker (`aelf resolve`), per-project install routing (`aelf doctor`), release-docs CI gate.
+Stable core: SQLite + FTS5 store, Beta-Bernoulli scoring, L0+L1 retrieval at a 2,400-token budget, `apply_feedback` with audit log, onboarding scanner (filesystem + git log + Python AST), CLI, MCP server, Claude Code hook wiring, synthetic benchmark harness, contradiction tie-breaker (`aelf resolve`), per-project install routing (`aelf doctor`), release-docs CI gate.
 
 ### v1.1.0 — project identity
 
