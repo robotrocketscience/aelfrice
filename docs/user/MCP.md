@@ -113,7 +113,7 @@ tool_confirm(store, belief_id="<id>", note="spot-checked correct")
 
 ## Architecture
 
-The server is a thin `FastMCP` shell over twelve pure handlers. Each `aelf_*` wrapper opens a default `MemoryStore`, delegates to the matching `tool_*` handler, and returns the handler's `dict` — formatted as JSON or markdown depending on the caller's `response_format` choice.
+The server is a thin `FastMCP` shell over fifteen pure handlers. Each `aelf_*` wrapper opens a default `MemoryStore`, delegates to the matching `tool_*` handler, and returns the handler's `dict` — formatted as JSON or markdown depending on the caller's `response_format` choice.
 
 ### `aelf mcp` startup + tool dispatch
 

@@ -8,7 +8,7 @@ Please include:
 
 - A description of the issue and its impact (data exposure, integrity, availability).
 - Reproduction steps or a proof-of-concept.
-- The version of aelfrice you're running (`aelf --help` prints it indirectly via the CLI; otherwise check `pyproject.toml`).
+- The version of aelfrice you're running (`aelf --version`).
 - Your environment (OS, Python version, MCP host if relevant).
 
 We will acknowledge receipt within **48 hours** and aim to provide an initial assessment within **5 business days**.
@@ -17,7 +17,7 @@ We will acknowledge receipt within **48 hours** and aim to provide an initial as
 
 In scope:
 
-- The published Python package on PyPI (once `v1.0.0` ships).
+- The published Python package on PyPI (`pip index versions aelfrice`).
 - Anything in `src/aelfrice/` on `main`.
 - The MCP server's input handling (`aelfrice.mcp_server`).
 - The CLI's argument handling (`aelfrice.cli`).
@@ -33,7 +33,7 @@ Out of scope:
 ## What aelfrice promises
 
 - **No telemetry.** The shipped package contains no network code in the retrieval, scoring, scanner, store, or feedback paths. The optional `[mcp]` extra adds `fastmcp`, which speaks MCP over stdio (local IPC), not the network.
-- **All data is local.** Your beliefs live in a single SQLite file at `~/.aelfrice/memory.db` (or `$AELFRICE_DB`). aelfrice does not back this up, sync this, or transmit any portion of it.
+- **All data is local.** Your beliefs live in a single SQLite file, resolved per `src/aelfrice/db_paths.py`: `$AELFRICE_DB` overrides; otherwise `<git-common-dir>/aelfrice/memory.db` per-project; otherwise `~/.aelfrice/memory.db` as a legacy fallback for non-git cwds. aelfrice does not back this up, sync this, or transmit any portion of it.
 - **Auditable update math.** Every Bayesian update is one function (`apply_feedback`). Every retrieval ordering is one function (`retrieve`). Both are short, plain, and reviewable.
 
 See [docs/user/PRIVACY.md](docs/user/PRIVACY.md) for verifiable details.
