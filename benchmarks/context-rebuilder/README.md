@@ -3,13 +3,15 @@
 Eval harness that backs [`docs/context_rebuilder.md`](../../docs/design/context_rebuilder.md).
 Two layers ship in this directory:
 
-1. **v1.2.0 skeleton** at [`eval_harness.py`](eval_harness.py). Locks
+1. **Spec skeleton** at [`eval_harness.py`](eval_harness.py). Locks
    metric names, JSON output format, and run-mode list against the
-   spec's acceptance criteria. Four integration points
+   spec's acceptance criteria. Originally shipped as a v1.2.0
+   skeleton with four `NotImplementedError` integration points
    (`replay_to_fork`, `run_rebuilder`, `replay_post_fork`,
-   `measure_token_cost`) raise `NotImplementedError` -- they fill
-   in as the rebuilder implementation completes.
-2. **v1.4.0 scaffolding** at [`../context_rebuilder/`](../context_rebuilder/)
+   `measure_token_cost`); current rebuilder implementation (v1.4.0+,
+   default trigger flipped manual → threshold at v3.1 #746) fills
+   them in via the scaffolding layer.
+2. **Scaffolding** at [`../context_rebuilder/`](../context_rebuilder/)
    (note: underscore -- importable Python package). End-to-end
    replay loader + midpoint-clear injection + token-cost / latency
    measurement that runs today against synthetic fixtures and emits
@@ -313,7 +315,7 @@ operator-driven loop, or a private skill).
    eval index. `prompt` is the canonical post-clear replay prompt
    built by `_assemble_post_clear_prompt`, prepending
    `POST_CLEAR_INSTRUCTION` (the cooperative-reader instruction
-   documented in `docs/BENCHMARKS.md` § "Bench measurement scope"
+   documented in `docs/concepts/BENCHMARKS.md` § "Bench measurement scope"
    and ratified per #797). All rows in the harness JSON output
    carry `reason=pending_replay`; `score_fidelity` returns 0 on
    this pass.
@@ -372,7 +374,7 @@ misconfigured run cannot exceed its budget.
 
 The judge sees only `(turn_idx, expected, actual)`. Retrieval
 context -- the rebuilt block and the user turn -- never reaches
-the judge prompt, per [`docs/BENCHMARKS.md`][b] Pass 1 / Pass 2
+the judge prompt, per [`docs/concepts/BENCHMARKS.md`][b] Pass 1 / Pass 2
 separation. Letting the judge see the rebuilt block would allow
 it to patch the candidate using context the candidate did not in
 fact produce, inflating fidelity.
