@@ -753,7 +753,8 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
         else:
             n_beliefs = -1  # not consulted on the success path
         # #938: pre-extract locked-set slots once per invocation (hot path).
-        # Zero cost when feature is off.
+        # Zero cost when feature is off — name only bound under the gate;
+        # all reads of locked_pairs below are inside `if show_conflicts:`.
         if show_conflicts:
             from aelfrice.contradiction import _slot_conflict_preextracted
             from aelfrice.value_compare import extract_values
@@ -761,8 +762,6 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
             locked_pairs = [
                 (b, extract_values(b.content)) for b in locked_beliefs
             ]
-        else:
-            locked_pairs = []
     finally:
         store.close()
     if not hits and not peer_hits:

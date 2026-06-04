@@ -12,9 +12,6 @@ Covers:
 from __future__ import annotations
 
 import time
-from typing import Sequence
-
-import pytest
 
 from aelfrice.contradiction import _slot_conflict, _slot_conflict_preextracted
 from aelfrice.models import (
@@ -23,7 +20,7 @@ from aelfrice.models import (
     LOCK_USER,
     Belief,
 )
-from aelfrice.value_compare import ValueSlots, extract_values
+from aelfrice.value_compare import extract_values
 
 
 # ---------------------------------------------------------------------------
