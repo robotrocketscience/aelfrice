@@ -3501,6 +3501,13 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
             f"slash commands already up to date in {sc_result.dest_dir}",
             file=out,  # type: ignore[arg-type]
         )
+    if not getattr(args, "sessionstart_recap", True):
+        from aelfrice.hook import ENV_SESSIONSTART_RECAP
+        print(
+            f"SessionStart recap disabled. To persist across shells, add "
+            f"{ENV_SESSIONSTART_RECAP}=0 to your shell profile.",
+            file=out,  # type: ignore[arg-type]
+        )
     _sync_setup_opt_outs_and_stamp(args)
     _print_setup_next_step(out)
     _print_setup_jsonl_history_hint(out)
@@ -7134,6 +7141,18 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "(see #582). Coexists with the transcript-ingest Stop entry. "
             "Default: ON. Pass --no-stop-hook to skip. "
             "Set AELF_AUTOLOCK_CORRECTIONS=1 to auto-lock instead of prompt."
+        ),
+    )
+    p_setup.add_argument(
+        "--sessionstart-recap", dest="sessionstart_recap",
+        action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "enable the SessionStart belief-write recap: if K belief writes "
+            "occurred since the last session and K >= threshold (default 3), "
+            "inject one `aelfrice: N beliefs written since last session` line "
+            "into context. Default: ON. Pass --no-sessionstart-recap to "
+            "disable (sets AELFRICE_SESSIONSTART_RECAP=0). Threshold "
+            "configurable via AELFRICE_SESSIONSTART_RECAP_THRESHOLD."
         ),
     )
     p_setup.add_argument(
