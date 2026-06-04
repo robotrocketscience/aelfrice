@@ -500,3 +500,29 @@ If the file is malformed, unreadable, or contains wrong-typed values, the filter
 - [COMMANDS § `onboard`](COMMANDS.md) — the CLI surface.
 - [ARCHITECTURE § Modules](../concepts/ARCHITECTURE.md) — where `noise_filter.py` sits.
 - [LIMITATIONS § Onboarding scope](LIMITATIONS.md) — what's still on the horizon for onboard behaviour.
+
+## Pre-issue-create guard (`aelf-pre-issue-hook`, v3.4.0+)
+
+A `PreToolUse:Bash` hook that fires when the agent is about to run `gh issue create`. It
+checks the proposed title against open and closed issues (via `gh issue list --state all`)
+and recent commit messages (via `git log --grep`) and blocks the call (exit 2) if any
+candidate's Jaccard token-overlap with the title exceeds 0.5.
+
+**Default:** on. Installed automatically by `aelf setup` and the auto-install manifest.
+
+**Opt-out per-call:**
+
+```bash
+ALLOW_DUP_ISSUE=1 gh issue create --title "..."   # bypass once
+```
+
+**Opt-out globally (persists across upgrades):**
+
+```bash
+AELFRICE_NO_PRE_ISSUE_GUARD=1   # set in shell profile to disable entirely
+aelf setup --no-pre-issue-guard  # remove from settings.json + persist opt-out
+```
+
+The guard is deterministic (no embeddings, no LLM calls). Tokenization strips the
+conventional-commit prefix (`feat(scope):`, `fix:`, etc.), lowercases, splits on
+non-alphanumeric runs, and drops a small stop-word set before scoring.

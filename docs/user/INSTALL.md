@@ -145,6 +145,7 @@ Bare `aelf setup` wires the v1.2.0 auto-capture pipeline alongside the read-side
 | stop-lock-prompt | `Stop` | **on** | prompt to lock correction-class beliefs from this session (#582) |
 | search-tool | `PreToolUse:Grep` / `Glob` | **on** (v3.0.1+) | belief-store check before the agent's own Grep/Glob fires |
 | search-tool-bash | `PreToolUse:Bash` | **on** (v3.0.1+) | belief-store check before shell grep/rg/find/fd/ack fires |
+| pre-issue-guard | `PreToolUse:Bash` | **on** (v3.4.0+) | blocks `gh issue create` when the title overlaps an existing issue or shipped commit above 0.5 Jaccard (#941) |
 | rebuilder | `PreCompact` | off | retrieval-curated context rebuilder (augment-mode, v1.4 alpha) |
 
 Opt out per-hook (persists across upgrades via `~/.aelfrice/opt-out-hooks.json`):
@@ -156,6 +157,7 @@ aelf setup --no-session-start          # skip the SessionStart locked-belief inj
 aelf setup --no-stop-hook              # skip the Stop lock-prompt hook
 aelf setup --no-search-tool            # skip the PreToolUse:Grep|Glob hook
 aelf setup --no-search-tool-bash       # skip the PreToolUse:Bash hook
+aelf setup --no-pre-issue-guard        # skip the issue-dup detection guard
 ```
 
 Opt in to the off-by-default hooks:
