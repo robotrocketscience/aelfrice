@@ -82,6 +82,10 @@ EXPECTED_COMMANDS = (
     # (#935) — cross-store dedup audit between locked aelfrice beliefs and
     # the claude-memory MEMORY.md index. Pure read-only report.
     "audit-claude-memory",
+    # (#937) — read-only L1 (non-user-locked) belief listing. Complement
+    # of `locked`; shows agent-inferred / ingested / wonder-generated
+    # beliefs sorted by alpha descending.
+    "speculative",
 )
 
 

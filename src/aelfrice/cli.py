@@ -2221,6 +2221,50 @@ def _cmd_review(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_speculative(args: argparse.Namespace, out: object) -> int:
+    """List non-user-locked (L1) beliefs, sorted by alpha descending.
+
+    Complementary read-only lens to `aelf locked`. Shows every active
+    belief that has not been user-asserted (lock_level = 'none'), grouped
+    by origin tag. Use ``--origin TAG`` to restrict to a single origin;
+    use ``--json`` for machine-readable JSONL output.
+    """
+    store = _open_store()
+    try:
+        origin_filter: str | None = getattr(args, "origin", None) or None
+        limit: int | None = getattr(args, "limit", None)
+        beliefs = store.list_speculative_beliefs(
+            origin_filter=origin_filter,
+            limit=limit,
+        )
+    finally:
+        store.close()
+
+    if not beliefs:
+        print("no speculative beliefs", file=out)  # type: ignore[arg-type]
+        return 0
+
+    if getattr(args, "json", False):
+        for b in beliefs:
+            row = {
+                "id": b.id,
+                "origin": b.origin,
+                "alpha": float(b.alpha),
+                "beta": float(b.beta),
+                "created_at": b.created_at,
+                "snippet": b.content[:120],
+            }
+            print(json.dumps(row), file=out)  # type: ignore[arg-type]
+        return 0
+
+    for b in beliefs:
+        print(
+            f"{b.id} [{b.origin}] α={b.alpha:.1f}/β={b.beta:.1f}: {b.content}",
+            file=out,  # type: ignore[arg-type]
+        )
+    return 0
+
+
 def _cmd_scope_out(args: argparse.Namespace, out: object) -> int:
     """Manage the active session's retrieval-exclusion list (#856).
 
@@ -6212,6 +6256,46 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="--apply only: emit ApplyReport as JSON instead of human prose",
     )
     p_review.set_defaults(func=_cmd_review)
+
+    # (#937) — read-only L1 (non-user-locked) belief listing. Complementary
+    # to `locked`; shows agent-inferred / wonder-generated / ingested beliefs.
+    def _positive_int(s: str) -> int:
+        n = int(s)
+        if n <= 0:
+            raise argparse.ArgumentTypeError(
+                f"--limit must be a positive integer (got {n!r}); SQLite "
+                "treats negative LIMIT as uncapped, which would surface "
+                "the entire L1 tier."
+            )
+        return n
+
+    p_speculative = sub.add_parser(
+        "speculative",
+        help="list non-user-locked (L1) beliefs sorted by alpha descending",
+    )
+    p_speculative.add_argument(
+        "--origin",
+        default=None,
+        metavar="TAG",
+        help=(
+            "restrict to beliefs with this exact origin tag "
+            "(e.g. 'agent_inferred', 'speculative', 'unknown')"
+        ),
+    )
+    p_speculative.add_argument(
+        "--limit",
+        type=_positive_int,
+        default=20,
+        metavar="N",
+        help="maximum number of rows to return (default: 20)",
+    )
+    p_speculative.add_argument(
+        "--json",
+        action="store_true",
+        dest="json",
+        help="emit one JSON object per line (JSONL)",
+    )
+    p_speculative.set_defaults(func=_cmd_speculative)
 
     # v3.x (#856) — session-scoped retrieval exclusion list. Reads/writes
     # session_exclusions.json keyed by the hook-written session_first_prompt.json;

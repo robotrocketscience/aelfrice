@@ -3527,6 +3527,50 @@ class MemoryStore:
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
 
+    def list_speculative_beliefs(
+        self,
+        *,
+        origin_filter: str | None = None,
+        limit: int | None = None,
+    ) -> list["Belief"]:
+        """Active beliefs with lock_level = 'none', sorted by alpha DESC.
+
+        These are the L1 (non-user-locked) beliefs: agent-inferred,
+        wonder-generated, document-ingested, etc. Complementary to
+        list_locked_beliefs(), which returns the L0 user-asserted tier.
+
+        Args:
+            origin_filter: if given, restrict to beliefs with this exact
+                origin tag (e.g. 'agent_inferred', 'speculative').
+            limit: cap the result count. When None all matching rows
+                are returned; callers can also slice afterwards but
+                passing it here lets the DB do the work.
+        """
+        params: list[object] = []
+        origin_clause = ""
+        if origin_filter is not None:
+            origin_clause = "AND b.origin = ?"
+            params.append(origin_filter)
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = "LIMIT ?"
+            params.append(limit)
+        cur = self._conn.execute(
+            f"""
+            SELECT b.*,
+                   (SELECT COUNT(*) FROM belief_corroborations bc
+                    WHERE bc.belief_id = b.id) AS corroboration_count
+            FROM beliefs b
+            WHERE b.lock_level = 'none'
+              AND b.valid_to IS NULL
+              {origin_clause}
+            ORDER BY b.alpha DESC, b.id ASC
+            {limit_clause}
+            """,
+            params,
+        )
+        return [_row_to_belief(r) for r in cur.fetchall()]
+
     def find_orphan_beliefs(self, *, max_n: int | None = None) -> list[Belief]:
         """Return beliefs that have no classified type and no feedback signal.
 
