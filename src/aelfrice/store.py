@@ -3546,29 +3546,26 @@ class MemoryStore:
                 are returned; callers can also slice afterwards but
                 passing it here lets the DB do the work.
         """
+        # Build the query from static fragments (no interpolation of caller
+        # input into the SQL text) so the static-analysis pass that flags
+        # f-string SQL doesn't fire. All caller-supplied values go through
+        # the parameterised ? placeholders.
         params: list[object] = []
-        origin_clause = ""
+        sql_parts: list[str] = [
+            "SELECT b.*, "
+            "(SELECT COUNT(*) FROM belief_corroborations bc "
+            "WHERE bc.belief_id = b.id) AS corroboration_count "
+            "FROM beliefs b "
+            "WHERE b.lock_level = 'none' AND b.valid_to IS NULL",
+        ]
         if origin_filter is not None:
-            origin_clause = "AND b.origin = ?"
+            sql_parts.append("AND b.origin = ?")
             params.append(origin_filter)
-        limit_clause = ""
+        sql_parts.append("ORDER BY b.alpha DESC, b.id ASC")
         if limit is not None:
-            limit_clause = "LIMIT ?"
+            sql_parts.append("LIMIT ?")
             params.append(limit)
-        cur = self._conn.execute(
-            f"""
-            SELECT b.*,
-                   (SELECT COUNT(*) FROM belief_corroborations bc
-                    WHERE bc.belief_id = b.id) AS corroboration_count
-            FROM beliefs b
-            WHERE b.lock_level = 'none'
-              AND b.valid_to IS NULL
-              {origin_clause}
-            ORDER BY b.alpha DESC, b.id ASC
-            {limit_clause}
-            """,
-            params,
-        )
+        cur = self._conn.execute(" ".join(sql_parts), params)
         return [_row_to_belief(r) for r in cur.fetchall()]
 
     def find_orphan_beliefs(self, *, max_n: int | None = None) -> list[Belief]:
