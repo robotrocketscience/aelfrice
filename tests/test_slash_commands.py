@@ -71,6 +71,10 @@ EXPECTED_COMMANDS = (
     # Deterministic threshold-based listing over existing
     # created_at + last_retrieved_at; no decay model.
     "stale",
+    # v3.5 (#931) — read the per-project belief-write event log.
+    # Writer is aelfrice.feed_log; 5 write paths emit one JSONL row
+    # each on lock/onboard/wonder-promote/feedback events.
+    "feed",
 )
 
 

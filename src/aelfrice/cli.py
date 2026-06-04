@@ -2017,6 +2017,74 @@ def _cmd_stale(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_feed(args: argparse.Namespace, out: object) -> int:
+    """Read the belief-write event log (#931).
+
+    Mirrors `aelf tail`'s ergonomics: `--since 5m` / `--since 2h` /
+    `--since 1d` for relative-duration filtering, `--limit N` for the
+    last N rows, `--json` for passthrough.
+    """
+    from datetime import datetime, timezone as _tz
+
+    from aelfrice import feed_log
+    from aelfrice.hook_tail import parse_since
+
+    p = feed_log.feed_path()
+    rows = feed_log.read_rows(p)
+
+    if args.since:
+        try:
+            delta = parse_since(args.since)
+        except ValueError as e:
+            print(str(e), file=out)  # type: ignore[arg-type]
+            return 2
+        cutoff = datetime.now(_tz.utc) - delta
+        kept: list[dict[str, object]] = []
+        for row in rows:
+            ts = str(row.get("ts", ""))
+            normalised = ts.rstrip()
+            if normalised.endswith("Z"):
+                normalised = normalised[:-1] + "+00:00"
+            try:
+                dt = datetime.fromisoformat(normalised)
+            except ValueError:
+                continue
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=_tz.utc)
+            if dt >= cutoff:
+                kept.append(row)
+        rows = kept
+
+    if args.limit and args.limit > 0:
+        rows = rows[-args.limit:]
+
+    if args.json:
+        import json as _json
+        for row in rows:
+            print(_json.dumps(row, ensure_ascii=False), file=out)  # type: ignore[arg-type]
+        return 0
+
+    if not rows:
+        print("no feed entries", file=out)  # type: ignore[arg-type]
+        return 0
+    for row in rows:
+        ts = str(row.get("ts", ""))[:19]  # YYYY-MM-DDTHH:MM:SS
+        event = str(row.get("event", "?"))
+        bid = row.get("id") or row.get("belief_id") or ""
+        snippet = (str(row.get("snippet") or ""))[:60].replace("\n", " ")
+        extras: list[str] = []
+        for k, v in row.items():
+            if k in {"ts", "event", "id", "belief_id", "snippet"}:
+                continue
+            extras.append(f"{k}={v}")
+        extra = (" " + " ".join(extras)) if extras else ""
+        print(  # type: ignore[arg-type]
+            f"{ts}  {event:24}  {str(bid)[:12]:12}  {snippet}{extra}",
+            file=out,
+        )
+    return 0
+
+
 def _cmd_scope_out(args: argparse.Namespace, out: object) -> int:
     """Manage the active session's retrieval-exclusion list (#856).
 
@@ -5746,6 +5814,28 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="cap rows (default 20)",
     )
     p_stale.set_defaults(func=_cmd_stale)
+
+    # v3.5 (#931) — per-project JSONL belief-write event log reader.
+    # Mirrors `aelf tail` ergonomics. Writer is in aelfrice.feed_log;
+    # 5 write paths emit one row each on lock/onboard/wonder-promote/
+    # feedback. AELFRICE_FEED_LOG=0 disables.
+    p_feed = sub.add_parser(
+        "feed",
+        help="read the belief-write event log (.aelfrice/feed.jsonl)",
+    )
+    p_feed.add_argument(
+        "--since", default=None,
+        help="filter to rows within the last duration (e.g. 5m / 2h / 1d)",
+    )
+    p_feed.add_argument(
+        "--limit", type=int, default=0,
+        help="show only the last N rows (0 = all; default 0)",
+    )
+    p_feed.add_argument(
+        "--json", action="store_true",
+        help="emit raw JSONL rows verbatim",
+    )
+    p_feed.set_defaults(func=_cmd_feed)
 
     # v3.x (#856) — session-scoped retrieval exclusion list. Reads/writes
     # session_exclusions.json keyed by the hook-written session_first_prompt.json;
