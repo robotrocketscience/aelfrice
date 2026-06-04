@@ -1,0 +1,191 @@
+{
+  "aelfrice_version": "3.3.0",
+  "captured_at_utc": "2026-06-04T09:29:36Z",
+  "git_commit": "51cea5c46574790e5d3b15ddb7e10146047689ae",
+  "harness_version": "1",
+  "headline_cut": {
+    "amabench": [
+      {
+        "args": [],
+        "sub_key": null
+      }
+    ],
+    "locomo": [
+      {
+        "args": [],
+        "sub_key": null
+      }
+    ],
+    "longmemeval": [
+      {
+        "args": [],
+        "sub_key": null
+      }
+    ],
+    "mab": [
+      {
+        "args": [
+          "--split",
+          "Conflict_Resolution"
+        ],
+        "sub_key": "Conflict_Resolution"
+      },
+      {
+        "args": [
+          "--split",
+          "Test_Time_Learning"
+        ],
+        "sub_key": "Test_Time_Learning"
+      },
+      {
+        "args": [
+          "--split",
+          "Long_Range_Understanding"
+        ],
+        "sub_key": "Long_Range_Understanding"
+      },
+      {
+        "args": [
+          "--split",
+          "Accurate_Retrieval"
+        ],
+        "sub_key": "Accurate_Retrieval"
+      }
+    ],
+    "structmemeval": [
+      {
+        "args": [
+          "--task",
+          "location",
+          "--bench",
+          "big"
+        ],
+        "sub_key": "location"
+      },
+      {
+        "args": [
+          "--task",
+          "accounting",
+          "--bench",
+          "big"
+        ],
+        "sub_key": "accounting"
+      },
+      {
+        "args": [
+          "--task",
+          "recommendations",
+          "--bench",
+          "big"
+        ],
+        "sub_key": "recommendations"
+      },
+      {
+        "args": [
+          "--task",
+          "tree",
+          "--bench",
+          "big"
+        ],
+        "sub_key": "tree"
+      }
+    ]
+  },
+  "label": "v2.0.0 canonical",
+  "results": {
+    "amabench": {
+      "_": {
+        "_elapsed_sec": 24.14,
+        "_error_message": "HTTP Error 429 thrown while requesting HEAD https://huggingface.co/datasets/AMA-bench/AMA-bench/resolve/main/README.md\nRetrying in 1s [Retry 1/5].\nHTTP Error 429 thrown while requesting HEAD https://huggingface.co/datasets/AMA-bench/AMA-bench/resolve/main/README.md\nRetrying in 2s [Retry 2/5].\nHTTP Error 429 thrown while requesting HEAD https://huggingface.co/datasets/AMA-bench/AMA-bench/resolve/main/README.md\nRetrying in 4s [Retry 3/5].\nHTTP Error 429 thrown while requesting HEAD https://hugging",
+        "_status": "error"
+      }
+    },
+    "locomo": {
+      "_": {
+        "_elapsed_sec": 0.913,
+        "_error_message": "LoCoMo data not found at /tmp/LoCoMo/data/locomo10.json: [Errno 2] No such file or directory: '/tmp/LoCoMo/data/locomo10.json'",
+        "_status": "skipped_data_missing"
+      }
+    },
+    "longmemeval": {
+      "_": {
+        "_elapsed_sec": 24.168,
+        "_error_message": "HTTP Error 429 thrown while requesting HEAD https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/README.md\nRetrying in 1s [Retry 1/5].\nHTTP Error 429 thrown while requesting HEAD https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/README.md\nRetrying in 2s [Retry 2/5].\nHTTP Error 429 thrown while requesting HEAD https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/README.md\nRetrying in 4s [Retry 3/5].\nHTTP Error 429 thrown whil",
+        "_status": "skipped_data_missing"
+      }
+    },
+    "mab": {
+      "Accurate_Retrieval": {
+        "_elapsed_sec": 858.249,
+        "_status": "ok",
+        "output": {
+          "exact_match": 0.0,
+          "f1": 0.0105,
+          "source_filter": null,
+          "split": "Accurate_Retrieval",
+          "substring_exact_match": 0.1535,
+          "total_questions": 2000
+        }
+      },
+      "Conflict_Resolution": {
+        "_elapsed_sec": 148.954,
+        "_status": "ok",
+        "output": {
+          "exact_match": 0.0,
+          "f1": 0.0065,
+          "source_filter": null,
+          "split": "Conflict_Resolution",
+          "substring_exact_match": 0.7025,
+          "total_questions": 800
+        }
+      },
+      "Long_Range_Understanding": {
+        "_elapsed_sec": 1090.07,
+        "_status": "ok",
+        "output": {
+          "exact_match": 0.0,
+          "f1": 0.1805,
+          "source_filter": null,
+          "split": "Long_Range_Understanding",
+          "substring_exact_match": 0.0234,
+          "total_questions": 171
+        }
+      },
+      "Test_Time_Learning": {
+        "_elapsed_sec": 591.442,
+        "_status": "ok",
+        "output": {
+          "exact_match": 0.0,
+          "f1": 0.0001,
+          "source_filter": null,
+          "split": "Test_Time_Learning",
+          "substring_exact_match": 0.0929,
+          "total_questions": 700
+        }
+      }
+    },
+    "structmemeval": {
+      "accounting": {
+        "_elapsed_sec": 0.347,
+        "_error_message": "No cases found. Check --data path and --task/--bench options.",
+        "_status": "skipped_data_missing"
+      },
+      "location": {
+        "_elapsed_sec": 0.35,
+        "_error_message": "No cases found. Check --data path and --task/--bench options.",
+        "_status": "skipped_data_missing"
+      },
+      "recommendations": {
+        "_elapsed_sec": 0.352,
+        "_error_message": "No cases found. Check --data path and --task/--bench options.",
+        "_status": "skipped_data_missing"
+      },
+      "tree": {
+        "_elapsed_sec": 0.346,
+        "_error_message": "No cases found. Check --data path and --task/--bench options.",
+        "_status": "skipped_data_missing"
+      }
+    }
+  },
+  "schema_version": 2
+}
