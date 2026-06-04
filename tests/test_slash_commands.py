@@ -79,6 +79,9 @@ EXPECTED_COMMANDS = (
     # checkbox file of the oldest-unconfirmed beliefs and applies
     # verdicts (keep/remove/lock) from it.
     "review",
+    # (#935) — cross-store dedup audit between locked aelfrice beliefs and
+    # the claude-memory MEMORY.md index. Pure read-only report.
+    "audit-claude-memory",
 )
 
 

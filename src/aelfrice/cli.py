@@ -2287,6 +2287,144 @@ def _cmd_scope_out(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_audit_claude_memory(args: argparse.Namespace, out: object) -> int:
+    """Cross-store dedup audit between aelfrice and the claude-memory file (#935).
+
+    Reads ``~/.claude/projects/<encoded-project>/memory/MEMORY.md``,
+    parses its bullets into slot tuples, and compares them against the
+    locked aelfrice beliefs from the current store.  Emits a report in
+    four buckets:
+
+    - **duplicates** — same slot key and value in both stores
+    - **contradictions** — same slot key, different value
+    - **aelfrice-only** — locked belief with no matching claude-memory slot
+    - **claude-memory-only** — bullet with no matching aelfrice slot
+
+    Default output is human-readable text.  Pass ``--json`` for a single
+    JSON object containing the four lists.  Never writes to either store.
+    """
+    from aelfrice.claude_memory import (
+        compare_slots,
+        derive_memory_dir,
+        parse_memory_bullets,
+        slot_row_from_belief,
+        slot_row_from_bullet,
+    )
+
+    # Resolve the project path (default: cwd).
+    project_path: str = getattr(args, "project", None) or os.getcwd()
+    memory_dir = derive_memory_dir(project_path)
+    memory_md = memory_dir / "MEMORY.md"
+
+    # Parse the claude-memory index file.
+    if memory_md.exists():
+        raw = memory_md.read_text(encoding="utf-8", errors="replace")
+        bullets = parse_memory_bullets(raw, source_path=str(memory_md))
+    else:
+        bullets = []
+
+    claude_rows = [
+        r for b in bullets
+        if (r := slot_row_from_bullet(b)) is not None
+    ]
+
+    # Collect locked aelfrice beliefs and extract slots.
+    store = _open_store()
+    try:
+        locked = store.list_locked_beliefs()
+        db = db_path()
+    finally:
+        store.close()
+
+    aelfrice_rows = [
+        r for b in locked
+        if (r := slot_row_from_belief(b.id, b.content, str(db))) is not None
+    ]
+
+    result = compare_slots(aelfrice_rows, claude_rows)
+
+    if getattr(args, "json", False):
+        def _row_dict(row: object) -> dict[str, object]:
+            from aelfrice.claude_memory import SlotRow as _SlotRow
+            assert isinstance(row, _SlotRow)
+            return {
+                "slot_subject": row.slot_subject,
+                "slot_predicate": row.slot_predicate,
+                "slot_value": row.slot_value,
+                "raw_text": row.raw_text,
+                "source": row.source,
+                "source_path": row.source_path,
+            }
+
+        payload: dict[str, object] = {
+            "project_path": project_path,
+            "memory_md": str(memory_md),
+            "memory_md_found": memory_md.exists(),
+            "duplicates": [
+                {"aelfrice": _row_dict(a), "claude": _row_dict(c)}
+                for a, c in result.duplicates
+            ],
+            "contradictions": [
+                {"aelfrice": _row_dict(a), "claude": _row_dict(c)}
+                for a, c in result.contradictions
+            ],
+            "aelfrice_only": [_row_dict(r) for r in result.aelfrice_only],
+            "claude_only": [_row_dict(r) for r in result.claude_only],
+        }
+        print(json.dumps(payload, indent=2), file=out)  # type: ignore[arg-type]
+        return 0
+
+    # Text output.
+    def _hdr(label: str, count: int) -> None:
+        print(f"\n{label} ({count})", file=out)  # type: ignore[arg-type]
+        print("-" * 40, file=out)  # type: ignore[arg-type]
+
+    print(
+        f"audit-claude-memory: project={project_path}",
+        file=out,  # type: ignore[arg-type]
+    )
+    if not memory_md.exists():
+        print(
+            f"  note: MEMORY.md not found at {memory_md}",
+            file=out,  # type: ignore[arg-type]
+        )
+
+    _hdr("Potential duplicates (same slot, same value)", len(result.duplicates))
+    for arow, crow in result.duplicates:
+        print(
+            f"  [{arow.slot_subject} {arow.slot_predicate}] "
+            f"aelf={arow.source!r} claude={crow.source!r} "
+            f"value={arow.slot_value!r}",
+            file=out,  # type: ignore[arg-type]
+        )
+
+    _hdr("Potential contradictions (same slot, different value)", len(result.contradictions))
+    for arow, crow in result.contradictions:
+        print(
+            f"  [{arow.slot_subject} {arow.slot_predicate}] "
+            f"aelf={arow.slot_value!r} vs claude={crow.slot_value!r}",
+            file=out,  # type: ignore[arg-type]
+        )
+
+    _hdr("aelfrice-only (not in claude-memory)", len(result.aelfrice_only))
+    for r in result.aelfrice_only:
+        print(
+            f"  [{r.slot_subject} {r.slot_predicate}] {r.slot_value!r} "
+            f"(belief {r.source})",
+            file=out,  # type: ignore[arg-type]
+        )
+
+    _hdr("claude-memory-only (not in aelfrice)", len(result.claude_only))
+    for r in result.claude_only:
+        print(
+            f"  [{r.slot_subject} {r.slot_predicate}] {r.slot_value!r} "
+            f"(bullet {r.source!r})",
+            file=out,  # type: ignore[arg-type]
+        )
+
+    return 0
+
+
 def _apply_scope_change(
     store: object,
     belief_id: str,
@@ -6103,6 +6241,36 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="empty the exclusion list for the active session",
     )
     p_scope_out.set_defaults(func=_cmd_scope_out)
+
+    # (#935) — cross-store dedup audit between aelfrice locked beliefs and
+    # the claude-memory MEMORY.md index. Pure read-only report; never writes
+    # to either store.
+    p_audit_cm = sub.add_parser(
+        "audit-claude-memory",
+        help=(
+            "compare locked aelfrice beliefs against the claude-memory "
+            "MEMORY.md index and report duplicates, contradictions, and "
+            "store-exclusive entries (#935)"
+        ),
+    )
+    p_audit_cm.add_argument(
+        "--project",
+        default=None,
+        metavar="PATH",
+        help=(
+            "absolute path to the project directory whose claude-memory "
+            "store to audit (default: current working directory). The "
+            "MEMORY.md path is derived from this using the same encoding "
+            "the upstream tool applies."
+        ),
+    )
+    p_audit_cm.add_argument(
+        "--json",
+        action="store_true",
+        dest="json",
+        help="emit a single JSON object instead of human-readable text",
+    )
+    p_audit_cm.set_defaults(func=_cmd_audit_claude_memory)
 
     # Read-only lens: load-bearing beliefs (locked ∪ corroborated ∪ high-posterior).
     p_core = sub.add_parser(
