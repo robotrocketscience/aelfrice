@@ -69,6 +69,7 @@ aelf-commit-ingest = "aelfrice.hook_commit_ingest:main"
 aelf-search-tool-hook = "aelfrice.hook_search_tool:main"
 aelf-session-start-hook = "aelfrice.hook:main_session_start"
 aelf-stop-hook = "aelfrice.hook:main_stop"
+aelf-pre-issue-hook = "aelfrice.pre_issue_create_hook:main"
 
 [project.optional-dependencies]
 mcp = [
