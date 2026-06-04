@@ -49,5 +49,5 @@ If `--apply` exits non-zero, show the error and do not retry automatically.
 ## Flags
 
 - `--out PATH` — use a custom path for the review file (both generate and apply).
-- `--json` — emit the apply report as JSON (machine-readable).
+- `--json` — (apply only) emit the apply report as JSON; ignored on generate.
 </process>

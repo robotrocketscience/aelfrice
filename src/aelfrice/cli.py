@@ -2144,8 +2144,9 @@ def _cmd_review(args: argparse.Namespace, out: object) -> int:
 
     --generate (default): write .aelfrice/review.md (or --out PATH)
       with up to 10 oldest-unconfirmed beliefs.
-    --apply [PATH]: parse verdicts from the file, apply them,
-      print a human report (or --json for machine-readable output).
+    --apply: parse verdicts from --out PATH (default .aelfrice/review.md),
+      apply them, print a human report (or --json for machine-readable
+      output — apply-only; ignored on --generate).
     """
     import json as _json
 

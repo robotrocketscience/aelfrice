@@ -22,8 +22,6 @@ from aelfrice.models import (
 )
 from aelfrice.review import (
     AmbiguousRowError,
-    ApplyReport,
-    MalformedRowError,
     ParsedDecision,
     apply_decisions,
     parse_review_file,

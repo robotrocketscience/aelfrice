@@ -1997,16 +1997,20 @@ class MemoryStore:
 
         Candidates are active (``valid_to IS NULL``) non-user-locked beliefs,
         ordered by:
-          1. ``last_confirmed_at ASC NULLS FIRST`` — never-confirmed first
-          2. ``last_retrieved_at ASC NULLS FIRST`` — oldest-retrieved next
-          3. ``created_at ASC`` — oldest-created as final tiebreak
+          1. never-confirmed first (``last_confirmed_at IS NULL`` then ASC)
+          2. oldest-retrieved next (``last_retrieved_at IS NULL`` then ASC)
+          3. oldest-created as final tiebreak
+
+        SQLite-portable equivalent of ``NULLS FIRST`` is the
+        ``(col IS NULL) DESC, col ASC`` pair, matching the convention
+        used by ``aelf stale`` (#933).
 
         This ordering surfaces beliefs that have drifted furthest from
         any human-confirmation signal, making them the highest-priority
         candidates for the keep/remove/lock verdict.
         """
         cur = self._conn.execute(
-            f"""
+            """
             SELECT b.*,
                    (SELECT COUNT(*) FROM belief_corroborations bc
                     WHERE bc.belief_id = b.id) AS corroboration_count
@@ -2014,11 +2018,12 @@ class MemoryStore:
             WHERE b.valid_to IS NULL
               AND b.lock_level != 'user'
             ORDER BY
-                b.last_confirmed_at ASC NULLS FIRST,
-                b.last_retrieved_at ASC NULLS FIRST,
+                (b.last_confirmed_at IS NULL) DESC, b.last_confirmed_at ASC,
+                (b.last_retrieved_at IS NULL) DESC, b.last_retrieved_at ASC,
                 b.created_at ASC
-            LIMIT {int(limit)}
-            """
+            LIMIT ?
+            """,
+            (int(limit),),
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
 
