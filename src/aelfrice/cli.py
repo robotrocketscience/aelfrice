@@ -1920,6 +1920,103 @@ def _cmd_locked(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_stale(args: argparse.Namespace, out: object) -> int:
+    """List beliefs that look stale by age + retrieval recency (#933).
+
+    Deterministic threshold-based listing. Two windows:
+      * created_at is more than --older-than days ago, AND
+      * last_retrieved_at is NULL OR more than --cold-for days ago.
+
+    No decay model, no relevance score — the user sets the thresholds
+    and the SQL returns exactly the rows that match. Per #605, the
+    consuming agent (or user) decides what to do with the list.
+    """
+    from datetime import datetime, timedelta, timezone as _tz
+
+    older_than_days = int(args.older_than)
+    cold_for_days = int(args.cold_for)
+    locked_only = bool(args.locked_only)
+    limit = int(args.limit)
+    use_json = bool(args.json)
+
+    now = datetime.now(_tz.utc)
+    older_cutoff = (now - timedelta(days=older_than_days)).isoformat()
+    cold_cutoff = (now - timedelta(days=cold_for_days)).isoformat()
+
+    sql_parts = [
+        "SELECT id, lock_level, content, created_at, last_retrieved_at",
+        "FROM beliefs",
+        "WHERE created_at < ?",
+        "  AND (last_retrieved_at IS NULL OR last_retrieved_at < ?)",
+    ]
+    params: list[object] = [older_cutoff, cold_cutoff]
+    if locked_only:
+        sql_parts.append("AND lock_level != 'none'")
+    # Sort: never-retrieved (cold infinity) first, then oldest cold, then oldest creation.
+    sql_parts.append(
+        "ORDER BY (last_retrieved_at IS NULL) DESC, "
+        "last_retrieved_at ASC, created_at ASC"
+    )
+    sql_parts.append("LIMIT ?")
+    params.append(limit)
+    sql = " ".join(sql_parts)
+
+    store = _open_store()
+    try:
+        rows = list(store._conn.execute(sql, params).fetchall())
+    finally:
+        store.close()
+
+    def _days_since(ts: str | None) -> int | None:
+        if ts is None:
+            return None
+        # The store writes `Z`-suffixed ISO strings; fromisoformat on
+        # Python <3.11 doesn't accept that, so normalise.
+        normalised = ts.rstrip()
+        if normalised.endswith("Z"):
+            normalised = normalised[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(normalised)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=_tz.utc)
+        return (now - dt).days
+
+    if use_json:
+        import json as _json
+        for r in rows:
+            payload = {
+                "id": r["id"],
+                "age_days": _days_since(r["created_at"]),
+                "cold_days": _days_since(r["last_retrieved_at"]),
+                "locked": r["lock_level"] != "none",
+                "snippet": (r["content"] or "")[:120],
+            }
+            print(_json.dumps(payload), file=out)  # type: ignore[arg-type]
+        return 0
+
+    if not rows:
+        print("no stale beliefs", file=out)  # type: ignore[arg-type]
+        return 0
+    print(  # type: ignore[arg-type]
+        f"{'ID':10} {'AGE':>5} {'COLD':>5}  {'LOCKED':6}  SNIPPET",
+        file=out,
+    )
+    for r in rows:
+        age = _days_since(r["created_at"])
+        age_str = f"{age}d" if age is not None else "?"
+        cold = _days_since(r["last_retrieved_at"])
+        cold_str = "∞" if cold is None else f"{cold}d"
+        locked_mark = "✓" if r["lock_level"] != "none" else "✗"
+        snippet = (r["content"] or "")[:70].replace("\n", " ")
+        print(  # type: ignore[arg-type]
+            f"{r['id'][:10]:10} {age_str:>5} {cold_str:>5}  {locked_mark:6}  {snippet}",
+            file=out,
+        )
+    return 0
+
+
 def _cmd_scope_out(args: argparse.Namespace, out: object) -> int:
     """Manage the active session's retrieval-exclusion list (#856).
 
@@ -5614,6 +5711,41 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
 
     p_locked = sub.add_parser("locked", help="list locked beliefs")
     p_locked.set_defaults(func=_cmd_locked)
+
+    # v3.5 (#933) — surface beliefs by age + retrieval recency.
+    # Pure threshold-based listing over existing created_at +
+    # last_retrieved_at; no decay model, no relevance score.
+    p_stale = sub.add_parser(
+        "stale",
+        help=(
+            "list beliefs by age + retrieval recency "
+            "(--older-than DAYS, --cold-for DAYS)"
+        ),
+    )
+    p_stale.add_argument(
+        "--older-than", type=int, default=30,
+        help="created_at is more than N days ago (default 30)",
+    )
+    p_stale.add_argument(
+        "--cold-for", type=int, default=14,
+        help=(
+            "last_retrieved_at is NULL or more than N days ago "
+            "(default 14)"
+        ),
+    )
+    p_stale.add_argument(
+        "--locked-only", action="store_true",
+        help="restrict to user-locked beliefs only",
+    )
+    p_stale.add_argument(
+        "--json", action="store_true",
+        help="emit one JSON object per line",
+    )
+    p_stale.add_argument(
+        "--limit", type=int, default=20,
+        help="cap rows (default 20)",
+    )
+    p_stale.set_defaults(func=_cmd_stale)
 
     # v3.x (#856) — session-scoped retrieval exclusion list. Reads/writes
     # session_exclusions.json keyed by the hook-written session_first_prompt.json;

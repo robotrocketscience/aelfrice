@@ -67,6 +67,10 @@ EXPECTED_COMMANDS = (
     # user tell the memory hook to stop re-injecting beliefs that
     # match a substring for the rest of the active session.
     "scope-out",
+    # v3.5 (#933) — surface beliefs by age + retrieval recency.
+    # Deterministic threshold-based listing over existing
+    # created_at + last_retrieved_at; no decay model.
+    "stale",
 )
 
 
