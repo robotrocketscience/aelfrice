@@ -2729,6 +2729,25 @@ def session_start(
             )
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
+    if _recap_enabled():
+        try:
+            from aelfrice.feed_log import (
+                feed_path as _feed_path,
+                read_rows as _read_rows,
+            )
+            rows = _read_rows(_feed_path())
+            last_ts = _read_recap_last_ts()
+            line = build_session_start_recap_line(
+                feed_rows=rows,
+                last_ts=last_ts,
+                threshold=_recap_threshold(),
+            )
+            if line:
+                print(line, file=sout)
+            _write_recap_last_ts(_utc_now_iso())
+        except Exception:
+            # never break SessionStart on recap-side errors
+            pass
     return 0
 
 
@@ -3863,6 +3882,115 @@ def _write_cadence_resume_cache(
             f"aelfrice: cadence resume cache write failed (non-fatal): {exc}",
             file=serr,
         )
+
+
+# ---------------------------------------------------------------------------
+# SessionStart recap helpers (#934)
+# ---------------------------------------------------------------------------
+
+_RECAP_BELIEF_WRITE_EVENTS: Final[frozenset[str]] = frozenset({
+    "belief.locked",
+    "belief.ingested",
+    "wonder.promoted",
+    "feedback.applied",
+})
+
+ENV_SESSIONSTART_RECAP: Final[str] = "AELFRICE_SESSIONSTART_RECAP"
+"""Set to '0' to suppress the SessionStart belief-write recap line."""
+
+ENV_SESSIONSTART_RECAP_THRESHOLD: Final[str] = (
+    "AELFRICE_SESSIONSTART_RECAP_THRESHOLD"
+)
+"""Minimum belief-write count to trigger the recap line (default 3)."""
+
+_DEFAULT_RECAP_THRESHOLD: Final[int] = 3
+_RECAP_LAST_TS_FILENAME: Final[str] = "sessionstart_last.txt"
+
+
+def _recap_threshold(env: dict[str, str] | None = None) -> int:
+    """Return the recap threshold, defaulting to _DEFAULT_RECAP_THRESHOLD."""
+    src = os.environ if env is None else env
+    raw = src.get(ENV_SESSIONSTART_RECAP_THRESHOLD, "").strip()
+    try:
+        val = int(raw)
+        return val if val > 0 else _DEFAULT_RECAP_THRESHOLD
+    except ValueError:
+        return _DEFAULT_RECAP_THRESHOLD
+
+
+def _recap_enabled(env: dict[str, str] | None = None) -> bool:
+    """Return True unless AELFRICE_SESSIONSTART_RECAP=0."""
+    src = os.environ if env is None else env
+    return src.get(ENV_SESSIONSTART_RECAP) != "0"
+
+
+def _recap_last_ts_path() -> Path | None:
+    """Return the path to the recap last-timestamp file, or None on error."""
+    try:
+        from aelfrice.db_paths import db_path as _db_path
+        return _db_path().parent / _RECAP_LAST_TS_FILENAME
+    except Exception:
+        return None
+
+
+def _read_recap_last_ts() -> str | None:
+    """Read the previous SessionStart ISO-Z timestamp, or None if absent."""
+    try:
+        p = _recap_last_ts_path()
+        if p is None or not p.exists():
+            return None
+        return p.read_text(encoding="utf-8").strip() or None
+    except Exception:
+        return None
+
+
+def _write_recap_last_ts(ts: str) -> None:
+    """Write the current ISO-Z timestamp to the recap last-ts file."""
+    try:
+        p = _recap_last_ts_path()
+        if p is None:
+            return
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(ts, encoding="utf-8")
+    except Exception:
+        pass
+
+
+def build_session_start_recap_line(
+    *,
+    feed_rows: list[dict[str, Any]] | None = None,
+    last_ts: str | None = None,
+    threshold: int | None = None,
+) -> str | None:
+    """Return the one-line recap, or None if below threshold.
+
+    Pure function for unit-testing: all inputs are injectable. The
+    integration wrapper inside session_start() supplies the live values.
+
+    Counts feed-log rows with event in _RECAP_BELIEF_WRITE_EVENTS and
+    ts > last_ts (or all rows when last_ts is None / first run).
+    Returns the recap string when count >= threshold, else None.
+    """
+    rows = feed_rows if feed_rows is not None else []
+    effective_threshold = (
+        threshold if threshold is not None else _DEFAULT_RECAP_THRESHOLD
+    )
+    count = 0
+    for row in rows:
+        event = row.get("event", "")
+        if event not in _RECAP_BELIEF_WRITE_EVENTS:
+            continue
+        if last_ts is not None:
+            ts = row.get("ts", "")
+            if ts <= last_ts:
+                continue
+        count += 1
+    if count < effective_threshold:
+        return None
+    return (
+        f"aelfrice: {count} beliefs written since last session"
+        f" — `aelf:feed -n {count}` to review."
+    )
 
 
 def main() -> int:
