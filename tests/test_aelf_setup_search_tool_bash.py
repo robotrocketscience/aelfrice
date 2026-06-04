@@ -68,6 +68,7 @@ def _run_setup(settings_path: Path, *extra_args: str) -> tuple[int, str]:
         argv=[
             "setup",
             "--settings-path", str(settings_path),
+            "--no-pre-issue-guard",  # isolate: these tests cover search-tool-bash only
             *extra_args,
         ],
         out=out,
@@ -82,6 +83,7 @@ def _run_unsetup(settings_path: Path, *extra_args: str) -> tuple[int, str]:
             "unsetup",
             "--settings-path", str(settings_path),
             "--command", "aelf-hook-stub",  # avoid touching the real hook
+            "--no-pre-issue-guard",  # isolate: these tests cover search-tool-bash only
             *extra_args,
         ],
         out=out,

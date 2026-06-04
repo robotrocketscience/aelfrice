@@ -136,3 +136,34 @@ def test_setup_bare_rescinds_search_tool_opt_outs(
     opt_outs = auto_install.read_opt_outs(opt_out)
     assert "search_tool" not in opt_outs
     assert "search_tool_bash" not in opt_outs
+
+def test_setup_no_pre_issue_guard_adds_opt_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """`aelf setup --no-pre-issue-guard` persists the opt-out (#941)."""
+    _, opt_out = _patch_paths(monkeypatch, tmp_path)
+    settings = tmp_path / "settings.json"
+    monkeypatch.setenv("AELF_NO_UPDATE_CHECK", "1")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cli.main([
+        "setup", "--settings", str(settings), "--scope", "project",
+        "--no-statusline", "--no-pre-issue-guard",
+    ])
+    assert "pre_issue_guard" in auto_install.read_opt_outs(opt_out)
+
+
+def test_setup_bare_rescinds_pre_issue_guard_opt_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Bare `aelf setup` after a prior --no-pre-issue-guard rescinds the opt-out."""
+    _, opt_out = _patch_paths(monkeypatch, tmp_path)
+    settings = tmp_path / "settings.json"
+    monkeypatch.setenv("AELF_NO_UPDATE_CHECK", "1")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    auto_install.add_opt_out("pre_issue_guard", opt_out)
+    cli.main([
+        "setup", "--settings", str(settings), "--scope", "project",
+        "--no-statusline",
+    ])
+    opt_outs = auto_install.read_opt_outs(opt_out)
+    assert "pre_issue_guard" not in opt_outs

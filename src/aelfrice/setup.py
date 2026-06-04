@@ -1026,6 +1026,101 @@ def uninstall_stop_hook(
     return UninstallResult(path=settings_path, removed=removed)
 
 
+# --- Pre-issue-create guard wiring (#941) --------------------------------
+
+
+PRE_ISSUE_GUARD_EVENT: Final[str] = "PreToolUse"
+PRE_ISSUE_GUARD_MATCHER: Final[str] = "Bash"
+PRE_ISSUE_GUARD_SCRIPT_NAME: Final[str] = "aelf-pre-issue-hook"
+
+
+def resolve_pre_issue_guard_command(scope: SettingsScope) -> str:
+    """Pick the absolute aelf-pre-issue-hook path for `scope`.
+
+    Same routing primitive as resolve_search_tool_bash_command: project
+    scope pins to the venv next to sys.executable; user scope prefers
+    $PATH (typically a uv tool install).
+    """
+    return _resolve_script(PRE_ISSUE_GUARD_SCRIPT_NAME, scope)
+
+
+def install_pre_issue_guard_hook(
+    settings_path: Path, *, command: str, timeout: int | None = None,
+) -> InstallResult:
+    """Add a PreToolUse:Bash hook entry running *command* for issue-dup detection.
+
+    Idempotent: a second call with the same *command* is a no-op.  Coexists
+    with the search-tool Bash-matcher entry — both hooks have the same
+    ``matcher`` value but different ``command`` values, so the dedup key
+    (basename) distinguishes them.
+    """
+    if not command:
+        raise ValueError("command must be a non-empty string")
+    data = _load_settings(settings_path)
+    entries = _get_event_list(data, PRE_ISSUE_GUARD_EVENT, create=True)
+    if _install_or_replace_entry(
+        entries,
+        command=command,
+        timeout=timeout,
+        status_message=None,
+        matcher=PRE_ISSUE_GUARD_MATCHER,
+    ):
+        return InstallResult(
+            path=settings_path, installed=False, already_present=True,
+        )
+    _atomic_write(settings_path, data)
+    return InstallResult(
+        path=settings_path, installed=True, already_present=False,
+    )
+
+
+def uninstall_pre_issue_guard_hook(
+    settings_path: Path, *,
+    command: str | None = None,
+    command_basename: str | None = None,
+) -> UninstallResult:
+    """Strip PreToolUse Bash-matcher entries for the pre-issue guard.
+
+    Pass exactly one of *command* (exact) or *command_basename* (basename
+    match).  Only entries whose ``matcher`` field is ``"Bash"`` and whose
+    command matches are removed; other PreToolUse entries are left alone.
+    """
+    if command is None and command_basename is None:
+        raise ValueError("provide command or command_basename")
+    if command is not None and command_basename is not None:
+        raise ValueError("command and command_basename are mutually exclusive")
+    if not settings_path.exists():
+        return UninstallResult(path=settings_path, removed=0)
+    data = _load_settings(settings_path)
+    entries = _get_event_list(data, PRE_ISSUE_GUARD_EVENT, create=False)
+    if entries is None:
+        return UninstallResult(path=settings_path, removed=0)
+    before = len(entries)
+    if command is not None:
+        kept = [
+            e for e in entries
+            if not (
+                e.get("matcher") == PRE_ISSUE_GUARD_MATCHER
+                and _entry_matches(e, command)
+            )
+        ]
+    else:
+        assert command_basename is not None
+        kept = [
+            e for e in entries
+            if not (
+                e.get("matcher") == PRE_ISSUE_GUARD_MATCHER
+                and _entry_matches_basename(e, command_basename)
+            )
+        ]
+    removed = before - len(kept)
+    if removed == 0:
+        return UninstallResult(path=settings_path, removed=0)
+    entries[:] = kept
+    _atomic_write(settings_path, data)
+    return UninstallResult(path=settings_path, removed=removed)
+
+
 # --- Statusline auto-wiring ---------------------------------------------
 
 

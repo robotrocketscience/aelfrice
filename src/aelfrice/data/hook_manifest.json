@@ -56,6 +56,14 @@
       "default_on": true,
       "since": "3.0.1",
       "description": "PreToolUse:Bash memory-first check on grep/rg/find/fd/ack shell commands (#738)."
+    },
+    {
+      "name": "pre_issue_guard",
+      "basename": "aelf-pre-issue-hook",
+      "installer": "pre_issue_guard",
+      "default_on": true,
+      "since": "3.4.0",
+      "description": "PreToolUse:Bash duplicate-detection guard before gh issue create (#941)."
     }
   ]
 }

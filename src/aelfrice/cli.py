@@ -149,6 +149,7 @@ from aelfrice.scanner import scan_repo
 from aelfrice.session_resolution import resolve_session_id
 from aelfrice.setup import (
     COMMIT_INGEST_SCRIPT_NAME,
+    PRE_ISSUE_GUARD_SCRIPT_NAME,
     SEARCH_TOOL_BASH_SCRIPT_NAME,
     SEARCH_TOOL_SCRIPT_NAME,
     SESSION_START_HOOK_SCRIPT_NAME,
@@ -160,6 +161,7 @@ from aelfrice.setup import (
     default_settings_path,
     detect_default_scope,
     install_commit_ingest_hook,
+    install_pre_issue_guard_hook,
     install_search_tool_bash_hook,
     install_search_tool_hook,
     install_pre_compact_hook,
@@ -170,6 +172,7 @@ from aelfrice.setup import (
     install_transcript_ingest_hooks,
     install_user_prompt_submit_hook,
     resolve_commit_ingest_command,
+    resolve_pre_issue_guard_command,
     resolve_search_tool_bash_command,
     resolve_search_tool_command,
     resolve_hook_command,
@@ -178,6 +181,7 @@ from aelfrice.setup import (
     resolve_stop_hook_command,
     resolve_transcript_logger_command,
     uninstall_commit_ingest_hook,
+    uninstall_pre_issue_guard_hook,
     uninstall_search_tool_bash_hook,
     uninstall_search_tool_hook,
     uninstall_pre_compact_hook,
@@ -3193,6 +3197,23 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 f"{stb_result.path} (command={stb_command!r})",
                 file=out,  # type: ignore[arg-type]
             )
+    if getattr(args, "pre_issue_guard", True):
+        pig_command = resolve_pre_issue_guard_command(scope)
+        pig_result = install_pre_issue_guard_hook(
+            path, command=pig_command, timeout=args.timeout,
+        )
+        if pig_result.already_present:
+            print(
+                f"pre-issue-guard hook already installed in {pig_result.path} "
+                f"(command={pig_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed pre-issue-guard PreToolUse:Bash hook in "
+                f"{pig_result.path} (command={pig_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
     slash_dest = getattr(args, "slash_commands_dir", None)
     slash_dest_path = Path(slash_dest) if slash_dest else None
     sc_result = install_slash_commands(slash_dest_path)
@@ -3229,6 +3250,7 @@ _SETUP_FLAG_TO_HOOK_NAME: Final[dict[str, str]] = {
     "stop_hook": "stop_lock_prompt",
     "search_tool": "search_tool",
     "search_tool_bash": "search_tool_bash",
+    "pre_issue_guard": "pre_issue_guard",
 }
 
 
@@ -3463,6 +3485,21 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
             print(
                 f"removed {stb_result.removed} search-tool-bash entr"
                 f"{'y' if stb_result.removed == 1 else 'ies'} from {stb_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "pre_issue_guard", True):
+        pig_result = uninstall_pre_issue_guard_hook(
+            path, command_basename=PRE_ISSUE_GUARD_SCRIPT_NAME,
+        )
+        if pig_result.removed == 0:
+            print(
+                f"no pre-issue-guard hook in {pig_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"removed {pig_result.removed} pre-issue-guard entr"
+                f"{'y' if pig_result.removed == 1 else 'ies'} from {pig_result.path}",
                 file=out,  # type: ignore[arg-type]
             )
     slash_dest = getattr(args, "slash_commands_dir", None)
@@ -6733,6 +6770,19 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "docs/design/search_tool_hook.md § Bash extension."
         ),
     )
+    p_setup.add_argument(
+        "--pre-issue-guard", dest="pre_issue_guard",
+        action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "wire the PreToolUse:Bash duplicate-detection guard so that "
+            "gh issue create calls are checked against open and closed "
+            "issues and recent commits before filing. Blocks on Jaccard "
+            "overlap >= 0.5 and prints the top candidates. Default: ON. "
+            "Pass --no-pre-issue-guard to skip. Override per-call with "
+            "ALLOW_DUP_ISSUE=1 or disable globally with "
+            "AELFRICE_NO_PRE_ISSUE_GUARD=1."
+        ),
+    )
     p_setup.set_defaults(func=_cmd_setup)
 
     # Hidden: install lifecycle, surfaced by docs not by --help.
@@ -6883,6 +6933,14 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help=(
             "remove the PreToolUse:Bash search-tool-bash hook entry. "
             "Default: ON. Pass --no-search-tool-bash to leave it in place."
+        ),
+    )
+    p_unsetup.add_argument(
+        "--pre-issue-guard", dest="pre_issue_guard",
+        action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "remove the PreToolUse:Bash pre-issue-guard hook entry. "
+            "Default: ON. Pass --no-pre-issue-guard to leave it in place."
         ),
     )
     p_unsetup.set_defaults(func=_cmd_unsetup)
