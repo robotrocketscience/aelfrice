@@ -738,6 +738,7 @@ def _run_llm_onboard(
 
 
 def _cmd_search(args: argparse.Namespace, out: object) -> int:
+    show_conflicts = os.environ.get("AELF_SHOW_CONFLICTS", "0") == "1"
     store = _open_store()
     try:
         hits = retrieve(store, args.query, token_budget=args.budget)
@@ -751,6 +752,17 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
             n_beliefs = store.count_beliefs()
         else:
             n_beliefs = -1  # not consulted on the success path
+        # #938: pre-extract locked-set slots once per invocation (hot path).
+        # Zero cost when feature is off.
+        if show_conflicts:
+            from aelfrice.contradiction import _slot_conflict_preextracted
+            from aelfrice.value_compare import extract_values
+            locked_beliefs = store.list_locked_beliefs()
+            locked_pairs = [
+                (b, extract_values(b.content)) for b in locked_beliefs
+            ]
+        else:
+            locked_pairs = []
     finally:
         store.close()
     if not hits and not peer_hits:
@@ -767,12 +779,39 @@ def _cmd_search(args: argparse.Namespace, out: object) -> int:
                 file=out,  # type: ignore[arg-type]
             )
         return 0
+    if getattr(args, "json", False):
+        import json as _json
+        rows = []
+        for h in hits:
+            row: dict = {"id": h.id, "content": h.content, "locked": h.lock_level == LOCK_USER}
+            if show_conflicts:
+                conflict_id = _slot_conflict_preextracted(h, locked_pairs)
+                if conflict_id is not None:
+                    row["slot_conflict_with"] = conflict_id
+            rows.append(row)
+        for belief, peer_name, _score in peer_hits:
+            row = {"id": belief.id, "content": belief.content, "scope": peer_name}
+            if show_conflicts:
+                conflict_id = _slot_conflict_preextracted(belief, locked_pairs)
+                if conflict_id is not None:
+                    row["slot_conflict_with"] = conflict_id
+            rows.append(row)
+        print(_json.dumps(rows, indent=2), file=out)  # type: ignore[arg-type]
+        return 0
     for h in hits:
         prefix = "[locked]" if h.lock_level == LOCK_USER else "        "
-        print(f"{prefix} {h.id}: {h.content}", file=out)  # type: ignore[arg-type]
+        conflict_marker = ""
+        if show_conflicts:
+            if _slot_conflict_preextracted(h, locked_pairs) is not None:
+                conflict_marker = "[!] "
+        print(f"{prefix} {conflict_marker}{h.id}: {h.content}", file=out)  # type: ignore[arg-type]
     for belief, peer_name, _score in peer_hits:
+        conflict_marker = ""
+        if show_conflicts:
+            if _slot_conflict_preextracted(belief, locked_pairs) is not None:
+                conflict_marker = "[!] "
         print(
-            f"[scope:{peer_name}] {belief.id}: {belief.content}",
+            f"[scope:{peer_name}] {conflict_marker}{belief.id}: {belief.content}",
             file=out,  # type: ignore[arg-type]
         )
     return 0
@@ -5285,6 +5324,10 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_search.add_argument(
         "--budget", type=int, default=DEFAULT_TOKEN_BUDGET,
         help="output token budget (default 2000)",
+    )
+    p_search.add_argument(
+        "--json", action="store_true", default=False,
+        help="emit results as a JSON array",
     )
     p_search.set_defaults(func=_cmd_search)
 
