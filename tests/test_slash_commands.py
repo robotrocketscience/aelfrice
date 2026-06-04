@@ -75,6 +75,10 @@ EXPECTED_COMMANDS = (
     # Writer is aelfrice.feed_log; 5 write paths emit one JSONL row
     # each on lock/onboard/wonder-promote/feedback events.
     "feed",
+    # v3.5 (#936) — weekly belief-review checkpoint. Generates a
+    # checkbox file of the oldest-unconfirmed beliefs and applies
+    # verdicts (keep/remove/lock) from it.
+    "review",
 )
 
 

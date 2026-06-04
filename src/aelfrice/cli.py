@@ -2136,6 +2136,90 @@ def _cmd_feed(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+_REVIEW_DEFAULT_PATH = ".aelfrice/review.md"
+
+
+def _cmd_review(args: argparse.Namespace, out: object) -> int:
+    """Generate or apply the weekly review checkbox file (#936).
+
+    --generate (default): write .aelfrice/review.md (or --out PATH)
+      with up to 10 oldest-unconfirmed beliefs.
+    --apply [PATH]: parse verdicts from the file, apply them,
+      print a human report (or --json for machine-readable output).
+    """
+    import json as _json
+
+    from aelfrice.review import (
+        AmbiguousRowError,
+        MalformedRowError,
+        apply_decisions,
+        parse_review_file,
+        render_review_file,
+        select_candidates,
+    )
+
+    now = _utc_now_iso()
+
+    if args.apply:
+        # --- Apply mode ---
+        path = Path(args.out)
+        if not path.exists():
+            print(
+                f"review: file not found: {path}",
+                file=sys.stderr,
+            )
+            return 1
+        text = path.read_text(encoding="utf-8")
+        try:
+            decisions = parse_review_file(text)
+        except AmbiguousRowError as exc:
+            print(f"review: ambiguous row — {exc}", file=sys.stderr)
+            return 1
+        except MalformedRowError as exc:
+            print(f"review: malformed row — {exc}", file=sys.stderr)
+            return 1
+        store = _open_store()
+        try:
+            report = apply_decisions(store, decisions, now=now)
+        finally:
+            store.close()
+        if args.json:
+            import dataclasses
+            print(
+                _json.dumps(dataclasses.asdict(report)),
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"review applied: "
+                f"{len(report.kept)} kept, "
+                f"{len(report.removed)} removed, "
+                f"{len(report.locked)} locked, "
+                f"{len(report.skipped)} skipped",
+                file=out,  # type: ignore[arg-type]
+            )
+            for err in report.errors:
+                print(f"  warning: {err}", file=out)  # type: ignore[arg-type]
+        return 0
+
+    # --- Generate mode ---
+    store = _open_store()
+    try:
+        now_dt = datetime.now(timezone.utc)
+        candidates = select_candidates(store)
+    finally:
+        store.close()
+    content = render_review_file(candidates, now=now_dt)
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(content, encoding="utf-8")
+    print(
+        f"review: wrote {len(candidates)} candidate(s) to {out_path}",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
 def _cmd_scope_out(args: argparse.Namespace, out: object) -> int:
     """Manage the active session's retrieval-exclusion list (#856).
 
@@ -5946,6 +6030,49 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="emit raw JSONL rows verbatim",
     )
     p_feed.set_defaults(func=_cmd_feed)
+
+    # v3.5 (#936) — weekly review workflow. Generate a checkbox file with
+    # the oldest-unconfirmed beliefs and apply verdicts from it.
+    p_review = sub.add_parser(
+        "review",
+        help="generate or apply a weekly belief-review checkpoint",
+    )
+    p_review_mode = p_review.add_mutually_exclusive_group()
+    p_review_mode.add_argument(
+        "--generate",
+        action="store_true",
+        default=False,
+        help=(
+            "write the review file (default when no other flag is set). "
+            "Up to 10 oldest-unconfirmed beliefs are written as checkboxes."
+        ),
+    )
+    p_review_mode.add_argument(
+        "--apply",
+        action="store_true",
+        default=False,
+        help=(
+            "read the review file, parse verdicts, and apply them. "
+            "Rejects any row with more than one checked box (fail-closed)."
+        ),
+    )
+    p_review.add_argument(
+        "--out",
+        default=_REVIEW_DEFAULT_PATH,
+        metavar="PATH",
+        help=(
+            f"path to the review file "
+            f"(default: {_REVIEW_DEFAULT_PATH}). "
+            f"Used as output path for --generate and input path for --apply."
+        ),
+    )
+    p_review.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="--apply only: emit ApplyReport as JSON instead of human prose",
+    )
+    p_review.set_defaults(func=_cmd_review)
 
     # v3.x (#856) — session-scoped retrieval exclusion list. Reads/writes
     # session_exclusions.json keyed by the hook-written session_first_prompt.json;
