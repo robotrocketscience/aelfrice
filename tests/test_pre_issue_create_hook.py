@@ -11,7 +11,6 @@ from typing import Any
 import pytest
 
 from aelfrice.pre_issue_create_hook import (
-    BLOCK_THRESHOLD,
     jaccard,
     run_guard,
     score_candidate,

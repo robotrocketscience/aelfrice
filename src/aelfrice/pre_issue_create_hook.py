@@ -186,7 +186,7 @@ def _safe_read_body_file(path_str: str) -> str:
     """
     if not path_str:
         return ""
-    p = Path(path_str)
+    p = Path(path_str).expanduser()
     try:
         resolved = p.resolve()
     except (OSError, ValueError):
@@ -196,11 +196,15 @@ def _safe_read_body_file(path_str: str) -> str:
         resolved.relative_to(_CLAUDE_DIR.resolve())
         return ""  # inside ~/.claude/ — refuse
     except ValueError:
+        # relative_to raises ValueError when resolved is NOT under
+        # _CLAUDE_DIR — that's the path we want to read. Fall through.
         pass
     try:
         if resolved.is_file():
             return resolved.read_text(encoding="utf-8", errors="replace")
     except OSError:
+        # Unreadable / permission-denied / vanished mid-read — treat as
+        # empty body so the guard fails open rather than aborting.
         pass
     return ""
 
@@ -238,6 +242,9 @@ def _build_gh_candidates(
         if isinstance(parsed, list):
             return parsed  # type: ignore[return-value]
     except (json.JSONDecodeError, ValueError):
+        # Malformed JSON from `gh` (network hiccup, auth prompt to stderr
+        # leaking into stdout, etc.) — treat as no candidates and fall
+        # through so the guard fails open.
         pass
     return []
 
