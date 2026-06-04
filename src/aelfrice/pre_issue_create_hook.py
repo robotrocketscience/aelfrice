@@ -1,12 +1,12 @@
 """PreToolUse:Bash guard — duplicate-detection before `gh issue create`.
 
-Fires when Claude Code is about to execute a Bash command that starts with
+Fires when the host harness is about to execute a Bash command that starts with
 `gh issue create`. Runs two parallel dup-detection sweeps and blocks the call
 (exit 2) when any candidate scores above the Jaccard threshold.
 
 Hook contract
 -------------
-* stdin  — Claude Code PreToolUse JSON:
+* stdin  — PreToolUse hook JSON envelope:
     {"tool_name": "Bash", "tool_input": {"command": "...", "description": "..."}, ...}
 * stdout — human-readable additionalContext block (on PASS, may be empty).
 * stderr — block message + candidate list (on BLOCK, exit 2).
@@ -334,8 +334,8 @@ def run_guard(
     """Evaluate *stdin_json* and return an exit code.
 
     Returns:
-      0 — PASS (transparent; Claude Code continues normally).
-      2 — BLOCK (Claude Code surfaces the stderr message and aborts the tool call).
+      0 — PASS (transparent; the host harness continues normally).
+      2 — BLOCK (the host harness surfaces the stderr message and aborts the tool call).
 
     *gh_runner* and *git_runner* are injectable callables
     ``(argv: list[str]) -> stdout_str`` used during testing.  When None, real
