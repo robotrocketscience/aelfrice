@@ -219,3 +219,23 @@ def test_speculative_json_sorted_alpha_descending(isolated_db: Path) -> None:
     rows = [json.loads(ln) for ln in out.splitlines() if ln.strip()]
     alphas = [r["alpha"] for r in rows]
     assert alphas == sorted(alphas, reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# --limit validation (CodeRabbit #944 finding)
+# ---------------------------------------------------------------------------
+
+
+def test_speculative_negative_limit_rejected(isolated_db: Path) -> None:
+    """`--limit -1` must be rejected — SQLite treats negative LIMIT as uncapped."""
+    with pytest.raises(SystemExit) as exc:
+        _run("speculative", "--limit", "-1")
+    assert exc.value.code == 2
+
+
+def test_speculative_zero_limit_rejected(isolated_db: Path) -> None:
+    """`--limit 0` must be rejected — returning zero rows is silly, and the
+    type-check is structurally `n > 0`."""
+    with pytest.raises(SystemExit) as exc:
+        _run("speculative", "--limit", "0")
+    assert exc.value.code == 2

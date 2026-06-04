@@ -6282,6 +6282,16 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "(e.g. 'agent_inferred', 'speculative', 'unknown')"
         ),
     )
+    def _positive_int(s: str) -> int:
+        n = int(s)
+        if n <= 0:
+            raise argparse.ArgumentTypeError(
+                f"--limit must be a positive integer (got {n!r}); SQLite "
+                "treats negative LIMIT as uncapped, which would surface "
+                "the entire L1 tier."
+            )
+        return n
+
     p_speculative.add_argument(
         "--limit",
         type=_positive_int,
