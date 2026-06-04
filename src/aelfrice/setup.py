@@ -454,17 +454,7 @@ def resolve_transcript_logger_command(scope: SettingsScope) -> str:
     pins to the venv next to sys.executable; user scope prefers
     $PATH (typically a pipx install).
     """
-    venv_bin = _venv_bin_dir()
-    venv_hook = _executable_in_dir(venv_bin, TRANSCRIPT_LOGGER_SCRIPT_NAME)
-    path_hook_str = shutil.which(TRANSCRIPT_LOGGER_SCRIPT_NAME)
-    path_hook = Path(path_hook_str) if path_hook_str else None
-    if scope == "project":
-        chosen = venv_hook or path_hook
-    else:
-        chosen = path_hook or venv_hook
-    if chosen is None:
-        return TRANSCRIPT_LOGGER_SCRIPT_NAME
-    return str(chosen)
+    return _resolve_script(TRANSCRIPT_LOGGER_SCRIPT_NAME, scope)
 
 
 @dataclass(frozen=True)
@@ -579,17 +569,7 @@ def resolve_commit_ingest_command(scope: SettingsScope) -> str:
     pins to the venv next to sys.executable; user scope prefers
     $PATH (typically a pipx install).
     """
-    venv_bin = _venv_bin_dir()
-    venv_hook = _executable_in_dir(venv_bin, COMMIT_INGEST_SCRIPT_NAME)
-    path_hook_str = shutil.which(COMMIT_INGEST_SCRIPT_NAME)
-    path_hook = Path(path_hook_str) if path_hook_str else None
-    if scope == "project":
-        chosen = venv_hook or path_hook
-    else:
-        chosen = path_hook or venv_hook
-    if chosen is None:
-        return COMMIT_INGEST_SCRIPT_NAME
-    return str(chosen)
+    return _resolve_script(COMMIT_INGEST_SCRIPT_NAME, scope)
 
 
 def install_commit_ingest_hook(
@@ -676,17 +656,7 @@ def resolve_search_tool_command(scope: SettingsScope) -> str:
     scope pins to the venv next to sys.executable; user scope prefers
     $PATH (typically a pipx install).
     """
-    venv_bin = _venv_bin_dir()
-    venv_hook = _executable_in_dir(venv_bin, SEARCH_TOOL_SCRIPT_NAME)
-    path_hook_str = shutil.which(SEARCH_TOOL_SCRIPT_NAME)
-    path_hook = Path(path_hook_str) if path_hook_str else None
-    if scope == "project":
-        chosen = venv_hook or path_hook
-    else:
-        chosen = path_hook or venv_hook
-    if chosen is None:
-        return SEARCH_TOOL_SCRIPT_NAME
-    return str(chosen)
+    return _resolve_script(SEARCH_TOOL_SCRIPT_NAME, scope)
 
 
 def install_search_tool_hook(
@@ -859,17 +829,7 @@ def resolve_session_start_hook_command(scope: SettingsScope) -> str:
     resolve_transcript_logger_command: project scope pins to the venv
     next to sys.executable; user scope prefers $PATH.
     """
-    venv_bin = _venv_bin_dir()
-    venv_hook = _executable_in_dir(venv_bin, SESSION_START_HOOK_SCRIPT_NAME)
-    path_hook_str = shutil.which(SESSION_START_HOOK_SCRIPT_NAME)
-    path_hook = Path(path_hook_str) if path_hook_str else None
-    if scope == "project":
-        chosen = venv_hook or path_hook
-    else:
-        chosen = path_hook or venv_hook
-    if chosen is None:
-        return SESSION_START_HOOK_SCRIPT_NAME
-    return str(chosen)
+    return _resolve_script(SESSION_START_HOOK_SCRIPT_NAME, scope)
 
 
 def install_session_start_hook(
@@ -961,17 +921,7 @@ def resolve_stop_hook_command(scope: SettingsScope) -> str:
     scope pins to the venv next to sys.executable; user scope prefers
     $PATH.
     """
-    venv_bin = _venv_bin_dir()
-    venv_hook = _executable_in_dir(venv_bin, STOP_HOOK_SCRIPT_NAME)
-    path_hook_str = shutil.which(STOP_HOOK_SCRIPT_NAME)
-    path_hook = Path(path_hook_str) if path_hook_str else None
-    if scope == "project":
-        chosen = venv_hook or path_hook
-    else:
-        chosen = path_hook or venv_hook
-    if chosen is None:
-        return STOP_HOOK_SCRIPT_NAME
-    return str(chosen)
+    return _resolve_script(STOP_HOOK_SCRIPT_NAME, scope)
 
 
 def install_stop_hook(
