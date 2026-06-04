@@ -3945,15 +3945,22 @@ def _read_recap_last_ts() -> str | None:
 
 
 def _write_recap_last_ts(ts: str) -> None:
-    """Write the current ISO-Z timestamp to the recap last-ts file."""
+    """Write the current ISO-Z timestamp to the recap last-ts file.
+
+    Errors are swallowed: a failed timestamp write degrades the next
+    SessionStart's recap accuracy (we'll see a wider belief-write
+    window than intended) but must never break the SessionStart hook.
+    """
     try:
         p = _recap_last_ts_path()
         if p is None:
             return
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(ts, encoding="utf-8")
-    except Exception:
-        pass
+    except OSError:
+        # Disk full, perms revoked, parent dir gone. Recap accuracy
+        # degrades on next session; SessionStart contract is preserved.
+        return
 
 
 def build_session_start_recap_line(
@@ -3972,9 +3979,12 @@ def build_session_start_recap_line(
     Returns the recap string when count >= threshold, else None.
     """
     rows = feed_rows if feed_rows is not None else []
-    effective_threshold = (
+    # Normalise threshold: ≤0 collapses to 1 so a caller-supplied 0 or
+    # negative value doesn't make the recap fire on every session.
+    raw_threshold = (
         threshold if threshold is not None else _DEFAULT_RECAP_THRESHOLD
     )
+    effective_threshold = max(1, raw_threshold)
     count = 0
     for row in rows:
         event = row.get("event", "")
