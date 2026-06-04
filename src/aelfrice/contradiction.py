@@ -61,7 +61,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Final
+from typing import Final, Optional, Sequence
 
 from aelfrice.models import (
     BELIEF_CORRECTION,
@@ -77,6 +77,7 @@ from aelfrice.models import (
     Edge,
 )
 from aelfrice.store import MemoryStore
+from aelfrice.value_compare import ValueSlots, extract_values, find_conflicts
 
 # Precedence classes. Higher value wins. Names are stable wire-format
 # strings — they appear in feedback_history.source — so do not rename
@@ -349,3 +350,51 @@ def auto_resolve_all_contradictions(
             # Either endpoint missing — skip, do not abort batch.
             continue
     return out
+
+
+# ---------------------------------------------------------------------------
+# Slot-conflict check (#938)
+# ---------------------------------------------------------------------------
+
+
+def _slot_conflict(
+    belief: Belief,
+    locked_set: Sequence[Belief],
+) -> Optional[str]:
+    """Return the id of the first locked belief whose value-slots conflict
+    with ``belief``'s, or None if no conflict.
+
+    Conflict = ``value_compare.find_conflicts`` returns ≥1 SlotConflict.
+
+    Pure: no DB access, no state. Caller pre-computes ``locked_set`` once
+    per invocation.
+    """
+    if not locked_set:
+        return None
+    b_slots = extract_values(belief.content)
+    for locked in locked_set:
+        l_slots = extract_values(locked.content)
+        if find_conflicts(b_slots, l_slots):
+            return locked.id
+    return None
+
+
+def _slot_conflict_preextracted(
+    belief: Belief,
+    locked_pairs: Sequence[tuple[Belief, ValueSlots]],
+) -> Optional[str]:
+    """Hot-path variant accepting pre-extracted locked-set slots.
+
+    Avoids re-running ``extract_values`` on each locked belief per search
+    hit. Caller builds ``locked_pairs`` once per query:
+    ``[(b, extract_values(b.content)) for b in list_locked_beliefs()]``
+
+    Returns the id of the first conflicting locked belief, or None.
+    """
+    if not locked_pairs:
+        return None
+    b_slots = extract_values(belief.content)
+    for locked, l_slots in locked_pairs:
+        if find_conflicts(b_slots, l_slots):
+            return locked.id
+    return None
