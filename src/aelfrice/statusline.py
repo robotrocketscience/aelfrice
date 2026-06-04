@@ -17,7 +17,9 @@ Design (mirrors GSD's gsd-statusline.js):
 from __future__ import annotations
 
 import os
-from typing import Final
+import sqlite3
+from pathlib import Path
+from typing import Callable, Final
 
 from aelfrice.lifecycle import (
     UpdateStatus,
@@ -93,9 +95,71 @@ def format_snippet(
     return f"{color_on}{body}{color_off}{SEPARATOR}"
 
 
+COUNTS_ENV: Final[str] = "AELF_STATUSLINE_COUNTS"
+"""Env var: set to '0' to suppress the L0/L1/? count badges. Statusline
+integration is itself opt-in (the user wires `aelf statusline` into
+their shell); the badges follow that opt-in, but this escape hatch
+lets a user keep the upgrade prefix only."""
+
+
+def _count_badges(
+    env: dict[str, str] | None = None,
+    db_path_fn: Callable[[], Path] | None = None,
+) -> str:
+    """Return the `aelf L0=N L1=N [?=M]` count snippet.
+
+    Empty string when: counts suppressed via env var; DB file does
+    not exist (no aelfrice setup in this repo); DB read raises (the
+    statusline must never break the user's shell prompt); or the
+    store is empty (no L0 and no L1).
+
+    The `?=M` badge is omitted when M==0 — a clean store should not
+    draw user attention to a non-existent problem.
+    """
+    src = os.environ if env is None else env
+    if src.get(COUNTS_ENV) == "0":
+        return ""
+    try:
+        if db_path_fn is None:
+            from aelfrice.db_paths import db_path as _db_path
+            p = _db_path()
+        else:
+            p = db_path_fn()
+        if not p.exists():
+            return ""
+        from aelfrice.models import EDGE_POTENTIALLY_STALE
+        conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+        try:
+            l0 = conn.execute(
+                "SELECT COUNT(*) FROM beliefs WHERE lock_level != 'none'"
+            ).fetchone()[0]
+            l1 = conn.execute(
+                "SELECT COUNT(*) FROM beliefs WHERE lock_level = 'none'"
+            ).fetchone()[0]
+            stale = conn.execute(
+                "SELECT COUNT(DISTINCT dst) FROM edges WHERE type = ?",
+                (EDGE_POTENTIALLY_STALE,),
+            ).fetchone()[0]
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError, ImportError):
+        return ""
+    if l0 == 0 and l1 == 0:
+        return ""
+    parts = [f"L0={l0}", f"L1={l1}"]
+    if stale > 0:
+        parts.append(f"?={stale}")
+    return f"aelf {' '.join(parts)}"
+
+
 def render() -> str:
     """Read the cache and return the statusline snippet.
 
-    Convenience wrapper: this is what the CLI subcommand prints.
+    Composition: `[upgrade-snippet-with-separator][count-badges]`.
+    Either or both may be empty. When the upgrade snippet is present
+    it carries its own trailing ' │ '; when only counts are present
+    the output has no leading separator.
     """
-    return format_snippet(read_cache())
+    upgrade = format_snippet(read_cache())
+    counts = _count_badges()
+    return upgrade + counts
