@@ -204,6 +204,32 @@ _FEEDBACK_VALENCES: Final[dict[str, float]] = {"used": 1.0, "harmful": -1.0}
 _VALID_SCOPES: Final[tuple[SettingsScope, ...]] = ("user", "project")
 
 
+def _feed_log_event(
+    event: str,
+    belief_id: str | None,
+    args: argparse.Namespace | None = None,
+    **extra: object,
+) -> None:
+    """Append a row to the belief-write feed log (#931).
+
+    Pulls a snippet from the args namespace when present (covers
+    lock / wonder etc that have a `text` or `content` attribute).
+    All errors swallowed by `feed_log.append`; this wrapper exists
+    only to keep the call sites terse.
+    """
+    from aelfrice import feed_log
+    payload: dict[str, object] = dict(extra)
+    if belief_id is not None:
+        payload["id"] = belief_id
+    if args is not None and "snippet" not in payload:
+        for attr in ("statement", "text", "content", "message"):
+            val = getattr(args, attr, None)
+            if isinstance(val, str) and val:
+                payload["snippet"] = val[:120]
+                break
+    feed_log.append(event, **payload)
+
+
 def _git_first_commit_age_days() -> int | None:
     """Days since cwd's first git commit, or None when unknown.
 
@@ -460,6 +486,15 @@ def _cmd_onboard_accept_classifications(
         ),
         file=out,  # type: ignore[arg-type]
     )
+    if result.inserted:
+        _feed_log_event(
+            "belief.ingested",
+            None,
+            None,
+            source="onboard",
+            session_id=result.session_id,
+            count=result.inserted,
+        )
     return 0
 
 
@@ -1561,6 +1596,15 @@ def _cmd_wonder_persist_docs(args: argparse.Namespace, out: object) -> int:
         f"skipped={result.skipped} edges_created={result.edges_created}",
         file=out,  # type: ignore[arg-type]
     )
+    if result.inserted:
+        _feed_log_event(
+            "belief.ingested",
+            None,
+            None,
+            source="wonder.persist-docs",
+            count=result.inserted,
+            edges_created=result.edges_created,
+        )
     return 0
 
 
@@ -1856,12 +1900,15 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
                 existing.origin = ORIGIN_USER_STATED
                 store.update_belief(existing)
             print(f"upgraded existing belief to lock: {actual_id}", file=out)  # type: ignore[arg-type]
+            _feed_log_event("belief.locked", actual_id, args, kind="upgrade")
         elif actual_id in ids_before:
             # content_hash collision with a different-source belief —
             # worker corroborated; preserve the prior surface message.
             print(f"locked: {actual_id} (corroborated existing)", file=out)  # type: ignore[arg-type]
+            _feed_log_event("belief.locked", actual_id, args, kind="corroborated")
         else:
             print(f"locked: {actual_id}", file=out)  # type: ignore[arg-type]
+            _feed_log_event("belief.locked", actual_id, args, kind="new")
 
         # #435 doc-linker manual anchor. Idempotent on (belief_id,
         # doc_uri); subsequent lock --doc with the same URI is a no-op
@@ -2283,6 +2330,13 @@ def _cmd_validate(args: argparse.Namespace, out: object) -> int:
             f"(origin: {result.prior_origin} -> {result.new_origin})",
             file=out,  # type: ignore[arg-type]
         )
+        _feed_log_event(
+            "wonder.promoted",
+            args.belief_id,
+            None,
+            from_origin=result.prior_origin,
+            to_origin=result.new_origin,
+        )
     finally:
         store.close()
     return 0
@@ -2397,6 +2451,15 @@ def _cmd_confirm(args: argparse.Namespace, out: object) -> int:
     if result.get("note"):
         msg += f" [{result['note']}]"
     print(msg, file=out)  # type: ignore[arg-type]
+    _feed_log_event(
+        "feedback.applied",
+        args.belief_id,
+        None,
+        kind="confirm",
+        source=args.source,
+        prior_alpha=prior_alpha,
+        new_alpha=new_alpha,
+    )
     return 0
 
 
@@ -2576,6 +2639,16 @@ def _cmd_feedback(args: argparse.Namespace, out: object) -> int:
         f"alpha {result.prior_alpha:.3f}->{result.new_alpha:.3f}, "
         f"beta {result.prior_beta:.3f}->{result.new_beta:.3f}",
         file=out,  # type: ignore[arg-type]
+    )
+    _feed_log_event(
+        "feedback.applied",
+        args.belief_id,
+        None,
+        kind="feedback",
+        signal=args.signal,
+        source=args.source,
+        prior_alpha=result.prior_alpha,
+        new_alpha=result.new_alpha,
     )
     return 0
 
