@@ -6,8 +6,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from aelfrice.claude_memory import (
     ComparisonResult,
     MemoryBullet,

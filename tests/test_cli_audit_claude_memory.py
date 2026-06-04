@@ -26,9 +26,16 @@ from aelfrice.store import MemoryStore
 
 @pytest.fixture(autouse=True)
 def isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point AELFRICE_DB at a fresh per-test DB."""
+    """Point AELFRICE_DB at a fresh per-test DB and sandbox Path.home.
+
+    Path.home is monkeypatched so derive_memory_dir() resolves under
+    tmp_path rather than the runner's real ~/.claude/projects/ tree.
+    Without this, _make_memory_md (which calls derive_memory_dir) would
+    write into the actual user home on every test run.
+    """
     p = tmp_path / "aelf.db"
     monkeypatch.setenv("AELFRICE_DB", str(p))
+    monkeypatch.setattr("aelfrice.claude_memory.Path.home", lambda: tmp_path)
     return p
 
 
