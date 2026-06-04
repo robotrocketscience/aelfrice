@@ -24,7 +24,7 @@ candidate count from the output line.
 
 Open `.aelfrice/review.md` for the user to review. Each row looks like:
 
-```
+```text
 - [ ] keep   [ ] remove   [ ] lock   | <id> (<age>d old, <cold>d cold) — <snippet>
 ```
 
