@@ -84,6 +84,61 @@ def test_resolve_hook_command_last_resort_is_bare_name(
     assert resolve_hook_command("user") == "aelf-hook"
 
 
+# --- #928: refuse worktree-pathed venv hooks ---------------------------
+
+
+def test_resolve_hook_command_project_skips_worktree_venv_falls_back_to_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Simulate a harness-worktree shell: sys.prefix is a venv inside
+    # <repo>/.claude/worktrees/<id>/.venv. Even at project scope, we must
+    # NOT pin that ephemeral path into settings.json.
+    worktree_venv = tmp_path / "repo" / ".claude" / "worktrees" / "095830" / ".venv"
+    worktree_bin = worktree_venv / "bin"
+    worktree_hook = worktree_bin / "aelf-hook"
+    _make_executable(worktree_hook)
+    stable_dir = tmp_path / "stable" / "bin"
+    stable_hook = stable_dir / "aelf-hook"
+    _make_executable(stable_hook)
+    monkeypatch.setattr(sys, "prefix", str(worktree_venv))
+    monkeypatch.setenv("PATH", str(stable_dir))
+
+    assert resolve_hook_command("project") == str(stable_hook)
+    assert resolve_hook_command("user") == str(stable_hook)
+
+
+def test_resolve_hook_command_skips_worktree_venv_no_path_returns_bare(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Worktree venv is the only thing available, $PATH is empty: the
+    # resolver must refuse the worktree path and fall through to the
+    # bare name, so doctor can flag it instead of writing a stale path.
+    worktree_venv = tmp_path / "repo" / ".claude" / "worktrees" / "abc" / ".venv"
+    worktree_bin = worktree_venv / "bin"
+    worktree_hook = worktree_bin / "aelf-hook"
+    _make_executable(worktree_hook)
+    monkeypatch.setattr(sys, "prefix", str(worktree_venv))
+    monkeypatch.setenv("PATH", "/nonexistent")
+
+    assert resolve_hook_command("project") == "aelf-hook"
+    assert resolve_hook_command("user") == "aelf-hook"
+
+
+def test_resolve_hook_command_non_worktree_venv_unaffected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression guard: a normal project venv (no .claude/worktrees/
+    # segment in the path) must still be selected at project scope.
+    project_venv = tmp_path / "myrepo" / ".venv"
+    venv_bin = project_venv / "bin"
+    venv_hook = venv_bin / "aelf-hook"
+    _make_executable(venv_hook)
+    monkeypatch.setattr(sys, "prefix", str(project_venv))
+    monkeypatch.setenv("PATH", "/nonexistent")
+
+    assert resolve_hook_command("project") == str(venv_hook)
+
+
 # --- detect_default_scope -----------------------------------------------
 
 

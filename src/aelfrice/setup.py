@@ -150,6 +150,24 @@ def _executable_in_dir(directory: Path, name: str) -> Path | None:
     return None
 
 
+def _is_worktree_path(path: Path) -> bool:
+    """True if `path` lives under a `.claude/worktrees/<id>/` directory.
+
+    Worktrees there are ephemeral — the surrounding agent harness
+    creates and removes them around individual sessions. Pinning a
+    hook into a worktree's `.venv/bin/` produces a settings.json
+    entry that survives the worktree's deletion, causing non-blocking
+    "No such file or directory" errors on every subsequent session.
+    Detect this structural pattern so resolvers can skip the worktree
+    binary in favor of a stable `$PATH` entry.
+    """
+    parts = path.parts
+    for i, part in enumerate(parts[:-1]):
+        if part == ".claude" and i + 1 < len(parts) and parts[i + 1] == "worktrees":
+            return True
+    return False
+
+
 def resolve_hook_command(scope: SettingsScope) -> str:
     """Pick the absolute `aelf-hook` path appropriate for `scope`.
 
@@ -182,6 +200,10 @@ def resolve_pre_compact_hook_command(scope: SettingsScope) -> str:
 def _resolve_script(script_name: str, scope: SettingsScope) -> str:
     venv_bin = _venv_bin_dir()
     venv_hook = _executable_in_dir(venv_bin, script_name)
+    # #928: a venv under .claude/worktrees/<id>/ is ephemeral; refuse to
+    # write its absolute path into settings.json regardless of scope.
+    if venv_hook is not None and _is_worktree_path(venv_hook):
+        venv_hook = None
     path_hook_str = shutil.which(script_name)
     path_hook = Path(path_hook_str) if path_hook_str else None
     if scope == "project":
