@@ -375,6 +375,131 @@ def test_search_with_dot_in_query_does_not_crash(isolated_db: Path) -> None:
     assert "regex" in out
 
 
+# --- AELF_SHOW_CONFLICTS (#938) -----------------------------------------
+
+
+def test_search_conflict_marker_shown_when_env_on(
+    isolated_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With AELF_SHOW_CONFLICTS=1, [!] appears next to a conflicting hit."""
+    # Lock a belief with alpha=1.0
+    _run("lock", "alpha = 1.0 is the configured value")
+    # Add a second belief (non-locked) with a conflicting alpha value
+    from aelfrice.store import MemoryStore
+    from aelfrice.models import Belief, BELIEF_FACTUAL, LOCK_NONE
+    import os
+    db = isolated_db
+    s = MemoryStore(str(db))
+    s.insert_belief(Belief(
+        id="b_conflict",
+        content="alpha = 0.5 in experiment",
+        content_hash="h_conflict",
+        alpha=1.0,
+        beta=1.0,
+        type=BELIEF_FACTUAL,
+        lock_level=LOCK_NONE,
+        locked_at=None,
+        created_at="2026-04-26T00:00:00Z",
+        last_retrieved_at=None,
+    ))
+    s.close()
+    monkeypatch.setenv("AELF_SHOW_CONFLICTS", "1")
+    code, out = _run("search", "alpha")
+    assert code == 0
+    assert "[!]" in out
+
+
+def test_search_conflict_marker_absent_when_env_off(
+    isolated_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without AELF_SHOW_CONFLICTS, [!] is never emitted even if conflict exists."""
+    _run("lock", "alpha = 1.0 is the configured value")
+    from aelfrice.store import MemoryStore
+    from aelfrice.models import Belief, BELIEF_FACTUAL, LOCK_NONE
+    db = isolated_db
+    s = MemoryStore(str(db))
+    s.insert_belief(Belief(
+        id="b_conflict",
+        content="alpha = 0.5 in experiment",
+        content_hash="h_conflict",
+        alpha=1.0,
+        beta=1.0,
+        type=BELIEF_FACTUAL,
+        lock_level=LOCK_NONE,
+        locked_at=None,
+        created_at="2026-04-26T00:00:00Z",
+        last_retrieved_at=None,
+    ))
+    s.close()
+    monkeypatch.delenv("AELF_SHOW_CONFLICTS", raising=False)
+    code, out = _run("search", "alpha")
+    assert code == 0
+    assert "[!]" not in out
+
+
+def test_search_json_includes_slot_conflict_field_when_env_on(
+    isolated_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--json + AELF_SHOW_CONFLICTS=1: slot_conflict_with field present on conflict rows."""
+    _run("lock", "alpha = 1.0 is the configured value")
+    from aelfrice.store import MemoryStore
+    from aelfrice.models import Belief, BELIEF_FACTUAL, LOCK_NONE
+    db = isolated_db
+    s = MemoryStore(str(db))
+    s.insert_belief(Belief(
+        id="b_conflict",
+        content="alpha = 0.5 in experiment",
+        content_hash="h_conflict",
+        alpha=1.0,
+        beta=1.0,
+        type=BELIEF_FACTUAL,
+        lock_level=LOCK_NONE,
+        locked_at=None,
+        created_at="2026-04-26T00:00:00Z",
+        last_retrieved_at=None,
+    ))
+    s.close()
+    monkeypatch.setenv("AELF_SHOW_CONFLICTS", "1")
+    code, out = _run("search", "--json", "alpha")
+    assert code == 0
+    rows = json.loads(out)
+    conflict_rows = [r for r in rows if "slot_conflict_with" in r]
+    assert len(conflict_rows) >= 1
+
+
+def test_search_json_no_slot_conflict_field_when_env_off(
+    isolated_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--json without AELF_SHOW_CONFLICTS: slot_conflict_with never appears."""
+    _run("lock", "alpha = 1.0 is the configured value")
+    from aelfrice.store import MemoryStore
+    from aelfrice.models import Belief, BELIEF_FACTUAL, LOCK_NONE
+    db = isolated_db
+    s = MemoryStore(str(db))
+    s.insert_belief(Belief(
+        id="b_conflict",
+        content="alpha = 0.5 in experiment",
+        content_hash="h_conflict",
+        alpha=1.0,
+        beta=1.0,
+        type=BELIEF_FACTUAL,
+        lock_level=LOCK_NONE,
+        locked_at=None,
+        created_at="2026-04-26T00:00:00Z",
+        last_retrieved_at=None,
+    ))
+    s.close()
+    monkeypatch.delenv("AELF_SHOW_CONFLICTS", raising=False)
+    code, out = _run("search", "--json", "alpha")
+    assert code == 0
+    rows = json.loads(out)
+    assert all("slot_conflict_with" not in r for r in rows)
+
+
 # --- stats --------------------------------------------------------------
 
 
