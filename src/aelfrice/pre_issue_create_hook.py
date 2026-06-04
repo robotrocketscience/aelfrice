@@ -391,14 +391,17 @@ def run_guard(
     top_tokens = _top_query_tokens(query_tokens)
 
     # --- Set up runners ------------------------------------------------------
+    # subprocess.run on a list (no shell=True) is shell-injection-safe; the
+    # argv comes from constants + tokens we built ourselves. nosec to silence
+    # the static-analysis flag without changing the call shape.
     def _default_gh_runner(argv: list[str]) -> str:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603
             argv, capture_output=True, text=True, timeout=10,
         )
         return result.stdout
 
     def _default_git_runner(argv: list[str]) -> str:
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S603
             argv, capture_output=True, text=True, timeout=5,
         )
         return result.stdout
