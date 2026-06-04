@@ -617,6 +617,12 @@ _MIGRATIONS: tuple[str, ...] = (
     # peers) AND project_context='retrieval-v3' (visible only to that
     # within-repo context).
     "ALTER TABLE beliefs ADD COLUMN project_context TEXT NOT NULL DEFAULT ''",
+    # v3.5 #936 review workflow. Records when the user last explicitly
+    # confirmed a belief via `aelf review --apply` (verdict=keep).
+    # NULL = never confirmed through the review workflow. The review
+    # candidate sorter treats NULL as the oldest possible timestamp so
+    # unreviewed beliefs surface before recently-confirmed ones.
+    "ALTER TABLE beliefs ADD COLUMN last_confirmed_at TEXT",
 )
 
 # Indexes that depend on migrated columns. Run after _MIGRATIONS so
@@ -696,6 +702,10 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
     # and queries that project a custom column list without it default
     # to '' — the cross-context "no filter" marker.
     project_context = row["project_context"] if "project_context" in keys else ""
+    # last_confirmed_at column added in v3.5 (#936). Pre-migration rows
+    # and queries that project a custom column list without it default
+    # to None — meaning never confirmed through the review workflow.
+    last_confirmed_at = row["last_confirmed_at"] if "last_confirmed_at" in keys else None
     return Belief(
         id=row["id"],
         content=row["content"],
@@ -716,6 +726,7 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
         valid_to=valid_to,
         scope=scope,
         project_context=project_context,
+        last_confirmed_at=last_confirmed_at,
     )
 
 
@@ -1819,8 +1830,9 @@ class MemoryStore:
                 lock_level, locked_at,
                 created_at, last_retrieved_at, session_id, origin,
                 hibernation_score, activation_condition,
-                retention_class, valid_to, scope, project_context
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                retention_class, valid_to, scope, project_context,
+                last_confirmed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 b.id, b.content, b.content_hash, b.alpha, b.beta, b.type,
@@ -1828,6 +1840,7 @@ class MemoryStore:
                 b.created_at, b.last_retrieved_at, b.session_id, b.origin,
                 b.hibernation_score, b.activation_condition,
                 b.retention_class, b.valid_to, b.scope, b.project_context,
+                b.last_confirmed_at,
             ),
         )
         self._conn.execute(
@@ -1904,7 +1917,8 @@ class MemoryStore:
                 retention_class = ?,
                 valid_to = ?,
                 scope = ?,
-                project_context = ?
+                project_context = ?,
+                last_confirmed_at = ?
             WHERE id = ?
             """,
             (
@@ -1912,7 +1926,8 @@ class MemoryStore:
                 b.lock_level, b.locked_at,
                 b.created_at, b.last_retrieved_at, b.session_id,
                 b.origin, b.hibernation_score, b.activation_condition,
-                b.retention_class, b.valid_to, b.scope, b.project_context, b.id,
+                b.retention_class, b.valid_to, b.scope, b.project_context,
+                b.last_confirmed_at, b.id,
             ),
         )
         self._conn.execute("DELETE FROM beliefs_fts WHERE id = ?", (b.id,))
@@ -1960,6 +1975,52 @@ class MemoryStore:
         self._bump_belief_version(belief_id)
         self._conn.commit()
         self._fire_invalidation()
+
+    def update_last_confirmed_at(self, belief_id: str, ts_iso: str) -> None:
+        """Set ``last_confirmed_at`` on a belief (v3.5 #936 review workflow).
+
+        Called by ``aelf review --apply`` when the user marks a belief
+        ``keep``. Updates only active beliefs (``valid_to IS NULL``) —
+        a no-op on soft-deleted rows. Idempotent: calling again with a
+        later timestamp advances the confirmation clock.
+        """
+        self._conn.execute(
+            "UPDATE beliefs SET last_confirmed_at = ? WHERE id = ? AND valid_to IS NULL",
+            (ts_iso, belief_id),
+        )
+        self._bump_belief_version(belief_id)
+        self._conn.commit()
+        self._fire_invalidation()
+
+    def list_review_candidates(self, *, limit: int = 10) -> list[Belief]:
+        """Return active beliefs to surface in the weekly review file (#936).
+
+        Candidates are active (``valid_to IS NULL``) non-user-locked beliefs,
+        ordered by:
+          1. ``last_confirmed_at ASC NULLS FIRST`` — never-confirmed first
+          2. ``last_retrieved_at ASC NULLS FIRST`` — oldest-retrieved next
+          3. ``created_at ASC`` — oldest-created as final tiebreak
+
+        This ordering surfaces beliefs that have drifted furthest from
+        any human-confirmation signal, making them the highest-priority
+        candidates for the keep/remove/lock verdict.
+        """
+        cur = self._conn.execute(
+            f"""
+            SELECT b.*,
+                   (SELECT COUNT(*) FROM belief_corroborations bc
+                    WHERE bc.belief_id = b.id) AS corroboration_count
+            FROM beliefs b
+            WHERE b.valid_to IS NULL
+              AND b.lock_level != 'user'
+            ORDER BY
+                b.last_confirmed_at ASC NULLS FIRST,
+                b.last_retrieved_at ASC NULLS FIRST,
+                b.created_at ASC
+            LIMIT {int(limit)}
+            """
+        )
+        return [_row_to_belief(r) for r in cur.fetchall()]
 
     def query_wonder_gc_candidates(
         self,

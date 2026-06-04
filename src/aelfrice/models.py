@@ -326,6 +326,12 @@ class Belief:
     `project_context` filters retrieval against the active in-process
     context resolved by `db_paths.active_project_context()`, whereas
     `scope` controls whether peer DBs may surface the row.
+
+    `last_confirmed_at` (v3.5 #936) is an ISO timestamp set by
+    `aelf review --apply` when the user marks a belief `keep`. NULL
+    means the belief has never been explicitly confirmed through the
+    review workflow. The review candidate sorter treats NULL as the
+    oldest possible timestamp so unreviewed beliefs surface first.
     """
 
     id: str
@@ -347,6 +353,7 @@ class Belief:
     valid_to: str | None = None
     scope: str = BELIEF_SCOPE_PROJECT
     project_context: str = ""
+    last_confirmed_at: str | None = None
 
 
 ANCHOR_TEXT_MAX_LEN: Final[int] = 1000
