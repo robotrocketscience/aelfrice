@@ -77,7 +77,7 @@ push the release
 
 ## Day-to-day
 
-After `aelf setup` you rarely type `aelf` again. The everyday surface is six commands:
+After `aelf setup` you rarely type `aelf` again. The everyday surface:
 
 ```text
 aelf onboard .                      # once per project — scan and ingest
@@ -86,6 +86,9 @@ aelf locked                          # see what rules are active
 aelf search "push to main"           # check what the agent will see
 aelf status                          # quick health summary
 aelf setup / aelf doctor            # initial install + verification
+aelf feed                            # read the belief-write event log (v3.4+)
+aelf stale --older-than 90 --cold-for 30   # surface forgotten beliefs (v3.4+)
+aelf review --generate               # weekly keep / remove / lock checkpoint (v3.5+)
 ```
 
 `aelf --help` shows the everyday surface; `aelf --help --advanced` lists the rest. Full reference: [COMMANDS](docs/user/COMMANDS.md). The same operations are exposed as MCP tools and `/aelf:*` slash commands — same library underneath. See [MCP](docs/user/MCP.md) and [SLASH_COMMANDS](docs/user/SLASH_COMMANDS.md).
