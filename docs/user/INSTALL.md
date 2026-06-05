@@ -182,7 +182,7 @@ What auto-install does:
 * Reuses the same install primitives `aelf setup` calls; the on-disk shape of settings.json is byte-identical.
 * Adds only entries the manifest claims by basename — anything the user added to settings.json by hand is preserved.
 * Respects opt-outs: if you ever ran `aelf setup --no-transcript-ingest`, that choice is persisted at `~/.aelfrice/opt-out-hooks.json` and survives upgrades. Re-running `aelf setup` (without the `--no-*` flag) rescinds the opt-out.
-* Prints a single stderr line when entries were actually added: `aelfrice: hooks updated to v2.2.0 (was v2.1.0) — added: stop_lock_prompt`.
+* Prints a single stderr line when entries were actually added: `aelfrice: hooks updated to v3.5.0 (was v3.4.0) — added: pre_issue_guard`.
 
 Opt-out controls:
 
