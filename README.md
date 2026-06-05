@@ -184,7 +184,7 @@ Running in the background. No action required after `aelf setup`.
 
 ## Status
 
-Latest stable: **v3.3.0** (2026-05-21). Per-entry detail in [CHANGELOG § 3.3.0](CHANGELOG.md). Per-version history: [docs/concepts/ROADMAP.md](docs/concepts/ROADMAP.md). Known limits: [docs/user/LIMITATIONS.md](docs/user/LIMITATIONS.md).
+Latest stable: **v3.5.0** (2026-06-04). Per-entry detail in [CHANGELOG § 3.5.0](CHANGELOG.md). Per-version history: [docs/concepts/ROADMAP.md](docs/concepts/ROADMAP.md). Known limits: [docs/user/LIMITATIONS.md](docs/user/LIMITATIONS.md).
 
 ---
 
