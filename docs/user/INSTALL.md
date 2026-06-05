@@ -155,6 +155,7 @@ aelf setup --no-transcript-ingest      # skip the four transcript-logger hooks
 aelf setup --no-commit-ingest          # skip the commit-message ingest hook
 aelf setup --no-session-start          # skip the SessionStart locked-belief injection
 aelf setup --no-stop-hook              # skip the Stop lock-prompt hook
+aelf setup --no-sessionstart-recap     # skip the "N beliefs written since last session" recap line (v3.5+, #934)
 aelf setup --no-search-tool            # skip the PreToolUse:Grep|Glob hook
 aelf setup --no-search-tool-bash       # skip the PreToolUse:Bash hook
 aelf setup --no-pre-issue-guard        # skip the issue-dup detection guard
