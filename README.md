@@ -11,10 +11,6 @@
 [![Python](https://img.shields.io/pypi/pyversions/aelfrice.svg)](https://pypi.org/project/aelfrice/)
 [![License](https://img.shields.io/pypi/l/aelfrice.svg)](LICENSE)
 [![CI](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml/badge.svg)](https://github.com/robotrocketscience/aelfrice/actions/workflows/ci.yml)
-[![OSSInsight](https://img.shields.io/badge/OSSInsight-analytics-blue)](https://ossinsight.io/analyze/robotrocketscience/aelfrice)
-<!-- bench-canonical-badge:start -->
-[![Reproducibility](https://img.shields.io/badge/reproducibility-partial%20%286%2F11%20adapters%29-yellow)](docs/design/v2_reproducibility_harness.md)
-<!-- bench-canonical-badge:end -->
 
 You correct your agent. *"Got it,"* it says. Next session, same mistake.
 
@@ -35,31 +31,9 @@ That's it. The next prompt that mentions "push" already has the rule. From here 
 
 ---
 
-## What it does for you
+## What you'll see
 
-- **Stops the AI forgetting your rules.** Lock a rule once with `aelf lock "..."` — it comes back attached to every prompt after that, in every new session. You don't have to remind the AI; aelfrice does.
-- **The AI can't skip it.** What aelfrice remembers is in the prompt *before* the model sees it — not stored in a file the AI is supposed to check on its own. The reminding happens for the AI, not by you.
-- **Stays on your computer.** One file on your machine. No cloud account. No telemetry. If you stop trusting aelfrice, `aelf uninstall` removes it cleanly in one command.
-- **Set up once. Forget it's there.** Three commands at install time. After that, you reach for `aelf` rarely. The background hooks do the rest.
-
----
-
-## How it works
-
-In plain English: four searches run in parallel over your stored rules, the best matches get prepended to your prompt, and the model reads the lot as one message. Below is the wiring for readers who want the receipts.
-
-When you submit a prompt, aelfrice's `UserPromptSubmit` hook fires before the model sees your message. It runs four retrieval lanes in parallel, merges the result, and prepends the matched beliefs as an `<aelfrice-memory>` block:
-
-```text
-L0: locked beliefs   -> rules you marked permanent (always returned, never trimmed)
-L1: FTS5 keyword     -> SQLite full-text search, BM25 + posterior-weighted rerank
-L2: graph walk       -> typed-edge BFS from L1 seeds (SUPPORTS, CONTRADICTS, SUPERSEDES, DERIVED_FROM, ...)
-L2.5: structural HRR -> Plate-FFT bind/probe against anchor text + structural markers
-```
-
-L0 always ships. L1, L2, and L2.5 are budget-trimmed against the merged candidate set in score-descending order; locked beliefs win every overflow. Default budget: 2,400 tokens per prompt. The default ranking stack is `stack-r1-r3` (entity expansion + per-store IDF clipping); bench evidence on the labelled query-strategy corpus measured **+0.2851 absolute NDCG@k (+94.8%)** versus the v1.4 raw-BM25 baseline at +0.96 ms p99 over legacy-bm25 (v3.0 30-row corpus, 2026-05-12, #718; gate budget +5 ms delta; see [`tests/bench_gate/test_query_strategy.py`](tests/bench_gate/test_query_strategy.py)). Full lane wiring, composition, and federation peer DBs: [ARCHITECTURE § Retrieval](docs/concepts/ARCHITECTURE.md#retrieval).
-
-The result is prepended to your prompt verbatim:
+You type a message in your agent. aelfrice's hook fires before the model sees it and prepends matched beliefs as an `<aelfrice-memory>` block:
 
 ```text
 <aelfrice-memory>
@@ -71,7 +45,16 @@ The result is prepended to your prompt verbatim:
 push the release
 ```
 
-**Lock count is the operator's baseline-context budget knob.** If you lock 200 things, every session opens with all 200, by design. Everything non-locked is BM25-ranked and budget-trimmed. The first prompt of a new session carries one extra block — a `<session-start>` sub-block listing all locks plus load-bearing unlocked beliefs (corroboration ≥ 2, or posterior mean ≥ ⅔ with α+β ≥ 4); subsequent prompts in the same session skip it. One extra block per new session, not per prompt.
+The model reads the whole thing as one message. Your rules arrive every relevant time, not when the agent decides to check a file.
+
+---
+
+## What it does for you
+
+- **Stops the AI forgetting your rules.** Lock a rule once with `aelf lock "..."` — it comes back attached to every prompt after that, in every new session. You don't have to remind the AI; aelfrice does.
+- **The AI can't skip it.** What aelfrice remembers is in the prompt *before* the model sees it — not stored in a file the AI is supposed to check on its own. The reminding happens for the AI, not by you.
+- **Stays on your computer.** One file on your machine. No cloud account. No telemetry. If you stop trusting aelfrice, `aelf uninstall` removes it cleanly in one command.
+- **Set up once. Forget it's there.** Three commands at install time. After that, you reach for `aelf` rarely. The background hooks do the rest.
 
 ---
 
@@ -95,31 +78,34 @@ aelf review --generate               # weekly keep / remove / lock checkpoint (v
 
 ---
 
+## How it works
+
+Four retrieval lanes run in parallel, the best matches get prepended to your prompt, and the model reads the lot as one message:
+
+```text
+L0: locked beliefs   -> rules you marked permanent (always returned, never trimmed)
+L1: FTS5 keyword     -> SQLite full-text search, BM25 + posterior-weighted rerank
+L2: graph walk       -> typed-edge BFS from L1 seeds (SUPPORTS, CONTRADICTS, SUPERSEDES, DERIVED_FROM, ...)
+L2.5: structural HRR -> Plate-FFT bind/probe against anchor text + structural markers
+```
+
+L0 always ships. L1, L2, and L2.5 are budget-trimmed against the merged candidate set in score-descending order; locked beliefs win every overflow. Default budget: 2,400 tokens per prompt.
+
+**Lock count is the operator's baseline-context budget knob.** If you lock 200 things, every session opens with all 200, by design. Everything non-locked is BM25-ranked and budget-trimmed. The first prompt of a new session carries one extra block — a `<session-start>` sub-block listing all locks plus load-bearing unlocked beliefs (corroboration ≥ 2, or posterior mean ≥ ⅔ with α+β ≥ 4); subsequent prompts in the same session skip it.
+
+Bench evidence on the labelled query-strategy corpus measured **+0.2851 absolute NDCG@k (+94.8%)** versus the v1.4 raw-BM25 baseline at +0.96 ms p99 over legacy-bm25 (v3.0 30-row corpus, 2026-05-12, gate budget +5 ms delta; see [`tests/bench_gate/test_query_strategy.py`](tests/bench_gate/test_query_strategy.py)). Full lane wiring, composition, and federation peer DBs: [ARCHITECTURE § Retrieval](docs/concepts/ARCHITECTURE.md#retrieval).
+
+---
+
 ## Reasoning surfaces
 
 Two slash commands let the agent reach back into the belief graph mid-turn, beyond the auto-injected retrieval block. They pair: `/aelf:wonder` grows the graph by researching; `/aelf:reason` walks the enriched graph for structured verdicts.
 
-**`/aelf:wonder <topic>`** — the research surface. Given a topic, aelfrice runs gap analysis on what the store already knows, generates 2–6 orthogonal research axes (always-on `domain_research` + `internal_gap_analysis`; conditional `contradiction_resolution` / `uncertainty_deep_dive` / `coverage_extension`), fans out one subagent per axis to research and write up findings, then persists the merged research as new speculative beliefs via `wonder_ingest`. Those phantoms sit in the graph at low evidence — discoverable by retrieval and by the next `/aelf:reason <topic>` — until you promote them with `aelf promote` (or lock the underlying statement, which auto-promotes a matching phantom per [#550](https://github.com/robotrocketscience/aelfrice/issues/550)). Agent-count shorthand `quick 2-agent` / `deep 4-agent` is recognised in the query string.
+**`/aelf:wonder <topic>`** — the research surface. Given a topic, aelfrice runs gap analysis on what the store already knows, generates 2–6 orthogonal research axes (always-on `domain_research` + `internal_gap_analysis`; conditional `contradiction_resolution` / `uncertainty_deep_dive` / `coverage_extension`), fans out one subagent per axis to research and write up findings, then persists the merged research as new speculative beliefs via `wonder_ingest`. Those phantoms sit in the graph at low evidence — discoverable by retrieval and by the next `/aelf:reason <topic>` — until you promote them with `aelf promote` (or lock the underlying statement, which auto-promotes a matching phantom). Agent-count shorthand `quick 2-agent` / `deep 4-agent` is recognised in the query string.
 
 **`/aelf:reason <query>`** — the structured-walk surface. Walks the belief graph from BM25-seeded starting points and emits a typed reasoning trace: hops with edge-type breadcrumbs, a `VERDICT` (`SUFFICIENT` / `INCOMPLETE` / `CONTRADICTED` / `IMPASSE`), `IMPASSES` (typed gaps, ties, or constraint failures), and `SUGGESTED UPDATES` — `(belief_id, direction, note)` rows that map straight to `aelf feedback` so the conclusion closes the loop on the beliefs that fed it. Each impasse is dispatched to a role-tagged subagent (Verifier / Gap-filler / Fork-resolver). Peer hops in foreign federation scopes are annotated `[scope:<name>]`.
 
-The pair-rhythm is the point: `/aelf:wonder` adds fresh thinking to the graph, then `/aelf:reason` draws conclusions across it. Both surfaces are deterministic in the aelfrice layer (verdict classification, impasse derivation, axis generation, suggested-update mapping). The only LLM calls happen when the host agent dispatches a subagent per impasse or research axis — and those calls run under the host's own credentials, not aelfrice's. Specs: [COMMANDS § `wonder`](docs/user/COMMANDS.md), [COMMANDS § `reason`](docs/user/COMMANDS.md), [v3.0 wonder+reason parity (#645)](https://github.com/robotrocketscience/aelfrice/issues/645).
-
----
-
-## Obsidian export
-
-If you already live in Obsidian, `aelf export-obsidian <vault-path>` emits the belief graph as one Markdown note per belief under `<vault>/aelfrice/`. Typed edges land in YAML front-matter for [Dataview](https://blacksmithgu.github.io/obsidian-dataview/); the same edges appear in the note body as wikilinks so the graph view has something to draw. The export is **one-way (DB → vault)**: SQLite stays the source of truth, and the `<vault>/aelfrice/` subdirectory is wiped and rewritten on each run.
-
-Scopes: `--scope all` (everything, capped by `--max-notes`), `--scope recent` (newest first), `--scope query "<text>"` (BM25 seeds + N-hop neighbourhood). Default cap is 500 notes; the hard ceiling is 5000 unless `--force` is passed.
-
-Two structural limits ship with the feature, not as later documentation drift:
-
-> **Obsidian's built-in graph view does not scale.** Force-directed layout chokes around a few thousand nodes; every zoom or hover re-runs layout. Do not export your full belief store and expect the graph view to be usable. Use `--scope query` or `--max-notes` to bound the export, or use `aelf graph` ([#629](https://github.com/robotrocketscience/aelfrice/issues/629)) for query-anchored visualization that works at any store size.
->
-> **Obsidian's graph view is untyped.** Wikilinks are wikilinks; the aelfrice edge types are not distinguishable in the graph. Edge types are preserved in YAML front-matter and queryable via the [Dataview plugin](https://blacksmithgu.github.io/obsidian-dataview/), but graph view will not show them. This is an Obsidian limitation, not an export bug.
-
-Spec: [#630](https://github.com/robotrocketscience/aelfrice/issues/630).
+The pair-rhythm is the point: `/aelf:wonder` adds fresh thinking to the graph, then `/aelf:reason` draws conclusions across it. Both surfaces are deterministic in the aelfrice layer (verdict classification, impasse derivation, axis generation, suggested-update mapping). The only LLM calls happen when the host agent dispatches a subagent per impasse or research axis — and those calls run under the host's own credentials, not aelfrice's. Specs: [COMMANDS § `wonder`](docs/user/COMMANDS.md), [COMMANDS § `reason`](docs/user/COMMANDS.md).
 
 ---
 
@@ -141,36 +127,17 @@ Each belief has an `origin` column tying it to the action that wrote it — one 
 
 ---
 
-## Why files alone don't solve this
+## Obsidian export
 
-The standard workaround for "agent keeps forgetting" is more files: `STATE.md`, `DECISIONS.md`, a `CLAUDE.md` with cross-references to runbooks. Every cross-reference is a bet that the agent will read the file, find the right section, and follow what it says.
+If you already live in Obsidian, `aelf export-obsidian <vault-path>` emits the belief graph as one Markdown note per belief under `<vault>/aelfrice/`. Typed edges land in YAML front-matter for [Dataview](https://blacksmithgu.github.io/obsidian-dataview/); the same edges appear in the note body as wikilinks so the graph view has something to draw. The export is **one-way (DB → vault)**: SQLite stays the source of truth, and the `<vault>/aelfrice/` subdirectory is wiped and rewritten on each run.
 
-The failure modes are predictable: the agent reads the rule and runs `git push` anyway; cross-references break silently after compaction; state files rot the moment someone forgets to update them. Each new failure mode begets another file.
+Scopes: `--scope all` (everything, capped by `--max-notes`), `--scope recent` (newest first), `--scope query "<text>"` (BM25 seeds + N-hop neighbourhood). Default cap is 500 notes; the hard ceiling is 5000 unless `--force` is passed.
 
-aelfrice replaces the chain with a mechanism. Matched beliefs are in the prompt, prepended by the hook before the model sees your message. Not voluntary; nothing the agent can skip.
+Two structural limits ship with the feature, not as later documentation drift:
 
-| Manual approach | What breaks | aelfrice |
-|---|---|---|
-| Rules in `CLAUDE.md` | Agent reads them; doesn't follow them | Injected per-prompt, not per-session |
-| Cross-references | Agent skips or reads the wrong section | Matched beliefs injected directly |
-| Hand-maintained state files | One missed update breaks the chain | State is the SQLite DB; no manual sync |
-
----
-
-## Why this is a memory system, not a key-value store
-
-[Leonard Lin's review of agentic-memory implementations](https://github.com/lhl/agentic-memory/blob/main/ANALYSIS.md) frames the bar bluntly:
-
-> The biggest differentiator is not "vector DB vs SQLite" — it's **write correctness and governance**: provenance / audit trail, write gates / confirmation, conflict handling, reversibility (inspect / edit / delete).
-
-By that bar, "a vector store with a similarity query" is not a memory system — it is a search index. A memory system has to answer *who wrote this, when, via what ingress, what supersedes it, and how do I take it back*. Here is how aelfrice v3.0 answers each.
-
-| Lin's pillar | What it means | aelfrice mechanism (v3.0) |
-|---|---|---|
-| **Provenance / audit trail** | Every row traces back to the action that wrote it: who, when, via what ingress channel. | `origin` column on every belief — nine tier values including `speculative` for `/aelf:wonder` phantoms ([`src/aelfrice/models.py`](src/aelfrice/models.py)). v3.0 adds a `scope` column (`project` / `global` / `shared:<name>`, [#688](https://github.com/robotrocketscience/aelfrice/issues/688)) tagging federation visibility. Append-only [`ingest_log`](src/aelfrice/store.py) records every raw input — tear the DB down and rebuild from this log alone. Open the file in any SQLite browser; nothing hidden. |
-| **Write gates / confirmation** | Persistence is not unconditional. Some writes need explicit approval; external-origin claims cannot be laundered into ground truth. | `aelf lock` is the only path to user-asserted ground truth. `aelf confirm` bumps the `(α, β)` posterior but cannot flip `origin`. Phantom promotion has two explicit surfaces (v3.0, [#550](https://github.com/robotrocketscience/aelfrice/issues/550)): `aelf promote <id>` for the explicit path, and `aelf lock <text>` with Jaccard ≥ 0.9 substring match for the implicit auto-promote — both write audit rows. Feedback accumulates rather than overwrites: one harmful click nudges the mean, it doesn't erase a belief. |
-| **Conflict handling** | Competing claims about the same thing are surfaced, not silently overwritten. | First-class edge types `CONTRADICTS`, `SUPERSEDES`, `RESOLVES` — disagreement is a graph relation, not a vanished row. v3.0's `/aelf:reason` emits a typed `VERDICT` (`SUFFICIENT` / `INCOMPLETE` / `CONTRADICTED` / `IMPASSE`) plus typed `IMPASSES` (`TIE` / `GAP` / `CONSTRAINT_FAILURE` / `NO_CHANGE`) so a downstream agent can act on the disagreement ([#645](https://github.com/robotrocketscience/aelfrice/issues/645) classifiers, [#658](https://github.com/robotrocketscience/aelfrice/issues/658) `ConsequencePath` fork-on-`CONTRADICTS`). Per-scope version vectors preserve causal ordering across worktrees and federation peers. |
-| **Reversibility (inspect / edit / delete)** | Mutations remain auditable and partially undoable. The user is the boss of their memories. | `aelf delete`, `aelf unlock`, `aelf promote --to-scope`, and `aelf feedback` all write audit rows; the `ingest_log` is append-only and replay-capable. Read-only federation (v3.0, [#650](https://github.com/robotrocketscience/aelfrice/issues/650) / [#655](https://github.com/robotrocketscience/aelfrice/issues/655)) lets a project surface peer beliefs via `knowledge_deps.json` without taking ownership — foreign-id mutations raise `ForeignBeliefError` at the API surface. Top level: `aelf uninstall --archive backup.aenc` encrypts and removes; `--purge` wipes; `--keep-db` leaves data untouched. No vendor lock-in. |
+> **Obsidian's built-in graph view does not scale.** Force-directed layout chokes around a few thousand nodes; every zoom or hover re-runs layout. Do not export your full belief store and expect the graph view to be usable. Use `--scope query` or `--max-notes` to bound the export, or use `aelf graph` for query-anchored visualization that works at any store size.
+>
+> **Obsidian's graph view is untyped.** Wikilinks are wikilinks; the aelfrice edge types are not distinguishable in the graph. Edge types are preserved in YAML front-matter and queryable via the [Dataview plugin](https://blacksmithgu.github.io/obsidian-dataview/), but graph view will not show them. This is an Obsidian limitation, not an export bug.
 
 ---
 
@@ -180,8 +147,14 @@ Running in the background. No action required after `aelf setup`.
 
 - **Passive capture.** Eight default-on hooks: `UserPromptSubmit` retrieval, four-event transcript-ingest, `PostToolUse:Bash` commit-ingest, `SessionStart` locked-belief injection, `SessionStart` belief-write recap (v3.5+), `Stop` lock-prompt, `PreToolUse:Grep|Glob` and `PreToolUse:Bash` memory-first search, and the `PreToolUse:Bash` issue-dup guard. Session activity flows into the belief graph without you typing `aelf` at all; opt out per-hook via `aelf setup --no-transcript-ingest`, `--no-commit-ingest`, `--no-session-start`, `--no-stop-hook`, `--no-sessionstart-recap`, `--no-search-tool`, `--no-search-tool-bash`, `--no-pre-issue-guard`. See [INSTALL § default-on hooks](docs/user/INSTALL.md).
 - **Determinism.** Stdlib + SQLite. No embeddings, no learned re-rankers, no LLM in the retrieval path. Every result traces to the action that wrote it.
-- **Local-only.** SQLite at `<git-common-dir>/aelfrice/memory.db`. aelfrice itself makes no network calls and emits no telemetry; no accounts. (Subagent LLM dispatches in `/aelf:wonder` / `/aelf:reason` flows do reach the network — under the host agent's credentials, not aelfrice's. The retrieval path stays local.) Per-project isolation by construction. v3.0 ships *read-only* cross-project federation via `knowledge_deps.json` — peer DBs are opened read-only, foreign-id mutations are rejected at the API surface, no multi-writer extension. See [PRIVACY.md](docs/user/PRIVACY.md).
+- **Local-only.** SQLite at `<git-common-dir>/aelfrice/memory.db`. aelfrice itself makes no network calls and emits no telemetry; no accounts. (Subagent LLM dispatches in `/aelf:wonder` / `/aelf:reason` flows do reach the network — under the host agent's credentials, not aelfrice's. The retrieval path stays local.) Per-project isolation by construction. Read-only cross-project federation via `knowledge_deps.json` — peer DBs are opened read-only, foreign-id mutations are rejected at the API surface. See [PRIVACY.md](docs/user/PRIVACY.md).
 - **Removable.** `aelf uninstall --archive backup.aenc` encrypts the DB to a file, then deletes it. Or `--purge` for a full wipe.
+
+---
+
+## A memory system, not a key-value store
+
+By [Leonard Lin's bar](https://github.com/lhl/agentic-memory/blob/main/ANALYSIS.md), "a vector store with a similarity query" is not a memory system — it is a search index. A memory system has to answer *who wrote this, when, via what ingress, what supersedes it, and how do I take it back.* aelfrice meets the four pillars (provenance, write gates, conflict handling, reversibility) directly. The full breakdown lives in [COMPARISON.md](docs/concepts/COMPARISON.md), including the side-by-side against `CLAUDE.md` and hand-maintained state files.
 
 ---
 
@@ -189,13 +162,18 @@ Running in the background. No action required after `aelf setup`.
 
 Latest stable: **v3.5.0** (2026-06-04). Per-entry detail in [CHANGELOG § 3.5.0](CHANGELOG.md). Per-version history: [docs/concepts/ROADMAP.md](docs/concepts/ROADMAP.md). Known limits: [docs/user/LIMITATIONS.md](docs/user/LIMITATIONS.md).
 
+[![OSSInsight](https://img.shields.io/badge/OSSInsight-analytics-blue)](https://ossinsight.io/analyze/robotrocketscience/aelfrice)
+<!-- bench-canonical-badge:start -->
+[![Reproducibility](https://img.shields.io/badge/reproducibility-partial%20%286%2F11%20adapters%29-yellow)](docs/design/v2_reproducibility_harness.md)
+<!-- bench-canonical-badge:end -->
+
 ---
 
 ## Documentation
 
 - **Getting started:** [Install](docs/user/INSTALL.md) · [Quickstart](docs/user/QUICKSTART.md)
 - **Reference:** [Commands](docs/user/COMMANDS.md) · [MCP](docs/user/MCP.md) · [Slash commands](docs/user/SLASH_COMMANDS.md) · [Config](docs/user/CONFIG.md)
-- **Background:** [Architecture](docs/concepts/ARCHITECTURE.md) · [Philosophy](docs/concepts/PHILOSOPHY.md) · [Privacy](docs/user/PRIVACY.md) · [Limitations](docs/user/LIMITATIONS.md)
+- **Background:** [Architecture](docs/concepts/ARCHITECTURE.md) · [Philosophy](docs/concepts/PHILOSOPHY.md) · [Comparison](docs/concepts/COMPARISON.md) · [Privacy](docs/user/PRIVACY.md) · [Limitations](docs/user/LIMITATIONS.md)
 - **Development:** [Releasing](docs/concepts/RELEASING.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
 ## Citation

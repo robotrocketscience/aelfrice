@@ -4,6 +4,7 @@ Background and project context.
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — system shape, retrieval lanes, edge model.
 - [`PHILOSOPHY.md`](PHILOSOPHY.md) — design principles aelfrice locks in.
+- [`COMPARISON.md`](COMPARISON.md) — how aelfrice meets the four pillars of memory systems vs. retrieval indexes.
 - [`ROADMAP.md`](ROADMAP.md) — version-by-version plan and recovery inventory.
 - [`BENCHMARKS.md`](BENCHMARKS.md) — bench harness, adapters, activation status.
 - [`RELEASING.md`](RELEASING.md) — maintainer release checklist.
