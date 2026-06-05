@@ -97,7 +97,7 @@ See [CONFIG § `hrr_persist`](CONFIG.md) for the underlying flag, [`docs/design/
 
 ## Help flags
 
-`aelf --help` shows the everyday surface (visible subcommands). `aelf --help --advanced` (or `aelf --advanced`) shows the full surface including hidden subcommands (`bench`, `cadence-score`, `clamp-ghosts`, `demote`, `export-canvas`, `export-obsidian`, `feedback`, `gate`, `health`, `ingest-transcript`, `label`, `project-warm`, `regime`, `resolve`, `session-delta`, `stats`, `statusline`, `uninstall`, `unsetup`, `upgrade`, `upgrade-cmd`, `validate`). The `--advanced` flag was wired in v1.4 (PR #174).
+`aelf --help` shows the everyday surface (visible subcommands). `aelf --help --advanced` (or `aelf --advanced`) shows the full surface including hidden subcommands (`bench`, `cadence-score`, `clamp-ghosts`, `export-canvas`, `feedback`, `gate`, `health`, `label`, `project-warm`, `regime`, `session-delta`, `stats`, `statusline`, `unsetup`). The `--advanced` flag was wired in v1.4 (PR #174). Subcommands previously listed as hidden — `demote`, `export-obsidian`, `ingest-transcript`, `resolve`, `uninstall`, `upgrade`, `upgrade-cmd`, `validate` — are now visible in the everyday `--help`.
 
 ## Output and exit codes
 

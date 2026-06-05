@@ -66,7 +66,7 @@ Imports are one-directional — modules lower in the table import from higher.
 
 - `type ∈ {factual, correction, preference, requirement}`
 - `lock_level ∈ {none, user}`
-- `origin ∈ {user_stated, user_corrected, user_validated, agent_inferred, agent_remembered, document_recent, speculative, unknown}` (v1.2+; `speculative` added with the v2.0 wonder substrate for phantom beliefs)
+- `origin ∈ {user_stated, user_corrected, user_validated, user_transcript, agent_inferred, agent_remembered, document_recent, speculative, unknown}` (v1.2+; `user_transcript` added with the v2.1 transcript-ingest lane; `speculative` added with the v2.0 wonder substrate for phantom beliefs and now written by `wonder/lifecycle.py`)
 - `scope ∈ {project, global, shared:<name>}` (v3.0+, #688). `project` is the default and local-only; `global` is surfaced to any peer DB that declares this DB in its `knowledge_deps.json`; `shared:<name>` is surfaced only to peers that also list `shared:<name>` as a dep.
 
 **Edge** — `src, dst, type, weight, anchor_text, created_at`. Ten edge types in `EDGE_VALENCE`:

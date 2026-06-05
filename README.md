@@ -92,7 +92,7 @@ aelf setup / aelf doctor            # initial install + verification
 
 ---
 
-## Reasoning surfaces (v3.0)
+## Reasoning surfaces
 
 Two slash commands let the agent reach back into the belief graph mid-turn, beyond the auto-injected retrieval block. They pair: `/aelf:wonder` grows the graph by researching; `/aelf:reason` walks the enriched graph for structured verdicts.
 
