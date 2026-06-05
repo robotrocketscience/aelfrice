@@ -64,7 +64,7 @@ The result is prepended to your prompt verbatim:
 ```text
 <aelfrice-memory>
 [locked] never push directly to main; use scripts/publish.sh
-[locked] commits must be SSH-signed with ~/.ssh/id_rrs
+[locked] commits must be SSH-signed with ~/.ssh/id_ed25519
          the publish script runs gitleaks before tagging
 </aelfrice-memory>
 
