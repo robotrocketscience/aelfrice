@@ -1,26 +1,8 @@
-"""Eleven-command CLI matching the MVP user surface.
+"""Command-line interface for aelfrice persistent memory.
 
-Commands:
-  onboard <path>                   scan a project and ingest beliefs
-  search <query> [--budget N]      L0 locked + L1 FTS5 retrieval
-  lock <statement>                 insert (or upgrade) a user-locked belief
-  locked                           list locked beliefs
-  demote <id>                      manually demote a lock to none
-  confirm <id> [--source S]        explicitly affirm a belief (bumps Beta-Bernoulli alpha)
-  feedback <id> <used|harmful>     apply one Bayesian feedback event
-  stats                            summary of belief / lock / history counts
-  health                           structural auditor (orphan threads, FTS5 sync, locked contradictions)
-  status                           alias for health
-  regime                           v1.0 regime classifier (supersede / ignore / mixed)
-  migrate                          copy beliefs from legacy ~/.aelfrice/memory.db
-  doctor                           verify hook commands resolve in settings.json
-  setup                            install UserPromptSubmit hook in Claude Code
-  unsetup                          remove UserPromptSubmit hook from Claude Code
-  upgrade-cmd                      print the right pip-upgrade command line (renamed from `upgrade` at #427)
-  uninstall                        tear down aelfrice locally + handle DB
-  statusline                       emit Claude Code statusline snippet
-  bench                            run the v0.9.0-rc benchmark harness
-  project-warm <path>              CwdChanged hook entry — pre-load the project's belief cache
+This module defines every `aelf` subcommand. The full, current command
+list lives in `aelf --help` and `docs/user/COMMANDS.md`; the inventory
+is too large (and changes too often) to duplicate here.
 
 DB path resolves from AELFRICE_DB environment variable when set,
 otherwise from <git-common-dir>/aelfrice/memory.db when cwd is inside
