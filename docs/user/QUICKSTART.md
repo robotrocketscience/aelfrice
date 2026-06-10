@@ -35,7 +35,7 @@ Fresh locks start at `(α, β) = (9.0, 0.5)` ≈ 0.95 posterior. They short-circ
 ```bash
 $ aelf search "deploy to production"
 [locked] a1f3c2d09e1b4f7a: never push to main; use scripts/publish.sh
-         91e02d3c: scripts/publish.sh wraps gitleaks + PII scan + tag verify
+         91e02d3c: scripts/publish.sh runs the release checklist before tagging
 ```
 
 L0 (locked) is always returned first. L1 is BM25-ranked FTS5 hits, token-budgeted (default 2,400).

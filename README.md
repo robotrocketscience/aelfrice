@@ -40,7 +40,7 @@ You type a message in your agent. aelfrice's hook fires before the model sees it
 The following are retrieved beliefs from the local memory store. ...
 <belief id="a1f3c2d0" lock="user">never push directly to main; use scripts/publish.sh</belief>
 <belief id="91e02d3c" lock="user">commits must be SSH-signed with ~/.ssh/id_ed25519</belief>
-<belief id="77c01b2a">the publish script runs gitleaks before tagging</belief>
+<belief id="77c01b2a">the publish script runs the release checks before tagging</belief>
 </aelfrice-memory>
 
 push the release
