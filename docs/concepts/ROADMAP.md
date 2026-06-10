@@ -9,7 +9,7 @@ Per-issue tracking: [LIMITATIONS.md](../user/LIMITATIONS.md). Release log: [CHAN
 
 aelfrice is a rebuild of an earlier research line on Bayesian + graph-backed memory for AI coding agents. The research codebase explored FTS5 retrieval, vocabulary bridging, BFS multi-hop traversal, entity-indexed retrieval, type-aware compression, correction detection, and a multi-tool MCP surface, with results against MAB, LoCoMo, LongMemEval, StructMemEval, and AMA-Bench.
 
-v1.0 shipped the foundation (SQLite store, Beta-Bernoulli scoring, BM25 retrieval, CLI, MCP, host hook wiring, synthetic benchmark harness). The v1.x line recovered the remaining features incrementally; v2.0 reached feature parity with the research line plus the reproducibility-harness scaffolding; v3.0 added wonder lifecycle, wonder/reason parity, read-only federation, and the eval-harness completion. The current line is **v3.5.0**.
+v1.0 shipped the foundation (SQLite store, Beta-Bernoulli scoring, BM25 retrieval, CLI, MCP, host hook wiring, synthetic benchmark harness). The v1.x line recovered the remaining features incrementally; v2.0 reached feature parity with the research line plus the reproducibility-harness scaffolding; v3.0 added wonder lifecycle, wonder/reason parity, read-only federation, and the eval-harness completion. The current line is **v3.5.1**.
 
 This is a rebuild, not a port. Structural issues that survived the research line were fixed at the foundation layer. Every behavioural claim is backed by a test or a benchmark, with a transparent issue trail for items that are not.
 
@@ -36,6 +36,7 @@ This is a rebuild, not a port. Structural issues that survived the research line
 | **v3.3.0** | shipped 2026-05-21 | `user_transcript` origin tier added (#888 — distinguishes user-stated content captured from transcript ingest from `user_stated` explicit-lock content and `agent_inferred` derivation); session-start recent-work block (#887 — surfaces current branch, recent commits, referenced issue numbers); P3 cadence policy + turn-density scoring (#876); aelf graph CLI for DOT/JSON subgraph emission (#629); aelf scope-out for federation denylist control (#856); aelf label CLI for relevance-corpus labelling (#859); aelf export-obsidian for one-way Obsidian rendering (#630). |
 | **v3.4.0** | merged 2026-05-26; never tagged standalone — published with the v3.5.0 cut (see [CHANGELOG/v3.md § 3.4.0](../../CHANGELOG/v3.md)) | cadence-policy completion + conversation-aware retrieval — `p3_substantive` policy live, 4-policy shadow capture, offline cadence replay bench (#876, #920); UPS retrieval conversation-aware (#909 — folds recent turns into BM25 query) |
 | **v3.5.0** | shipped 2026-06-04 | visibility/observability wave — per-project feed log + `aelf feed` (#931), SessionStart recap (#934), contradiction marker on `aelf search` (#938), `aelf speculative` (#937), `aelf stale` (#933), `aelf audit-claude-memory` (#935), `aelf review` (#936), duplicate-issue PreToolUse guard (#941), statusline counts (#932) |
+| **v3.5.1** | shipped 2026-06-10 | patch — scanner skips `.claude/` on onboard (#955); INEDIBLE marker propagation to ingest-transcript paths (#958); v3.5.0 docs-vs-code reconciliation wave (#952, #957, #964) |
 
 ## What shipped
 
