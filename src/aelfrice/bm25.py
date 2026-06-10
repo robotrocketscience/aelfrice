@@ -24,12 +24,13 @@ Two complementary changes:
    plus a length-normalisation broadcast — constant overhead per
    query rather than O(n_docs) Python work.
 
-The standard FTS5 BM25 path in `aelfrice.store.search_beliefs`
-remains the default L1 lane at v1.5.0. `BM25Index` lands as an
-**opt-in alternative** behind the `use_bm25f_anchors` flag in
-`aelfrice.retrieval`. Default-on flip is gated on a benchmark
-follow-up after v1.5.x telemetry — see #154 for the composition
-tracker that handles that flip.
+`BM25Index` is the **default L1 lane** since v1.7.0: the
+`use_bm25f_anchors` flag defaults to True per the #154 bench
+evidence (see `resolve_use_bm25f_anchors` in `aelfrice.retrieval`,
+precedence step 4). The standard FTS5 BM25 path in
+`aelfrice.store.search_beliefs` remains available by disabling the
+flag — set `AELFRICE_BM25F=0`, pass `use_bm25f_anchors=False`, or
+write `[retrieval] use_bm25f_anchors = false` in `.aelfrice.toml`.
 
 The module imports numpy + scipy unconditionally. The v1.5.0
 release promotes both to runtime deps; see CHANGELOG and
