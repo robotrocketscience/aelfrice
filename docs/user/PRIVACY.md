@@ -121,7 +121,7 @@ Any file whose basename contains the literal string `INEDIBLE` (case-sensitive, 
 
 Examples that match: `INEDIBLE.md`, `INEDIBLE_secrets.txt`, `notes_INEDIBLE.txt`, `partINEDIBLEpart.py`. Examples that do not: `inedible.md`, `Inedible.md`. Case sensitivity is intentional — the marker should be unmistakable in directory listings.
 
-Directory basenames count for `aelf onboard` only: both the filesystem walk and the AST walk prune a directory named `INEDIBLE/` (or `INEDIBLE_drafts/`) without descending it. The `aelf ingest-transcript` paths (single-file and `--batch`) check only the file's own basename — a transcript JSONL inside an INEDIBLE-named directory **is** ingested unless the file name itself carries the marker. Directory-scoped exclusion for transcript ingest is deferred (see the [`src/aelfrice/inedible.py`](../../src/aelfrice/inedible.py) module docstring).
+Directory basenames also count, across every ingest path: a directory named `INEDIBLE/` (or `INEDIBLE_drafts/`) is excluded along with everything beneath it. `aelf onboard` prunes such directories during its filesystem and AST walks; the `aelf ingest-transcript` paths (single-file and `--batch`) check the file's basename **and** its ancestor directory names via `is_inedible_path` (#958), so a transcript JSONL inside an INEDIBLE-named directory is never ingested regardless of the file's own name.
 
 The check is on the basename, not the content. When `is_inedible(path)` returns True, aelfrice does not open, read, or hash the file. The check happens before any classification, before any tokenization, before any noise filter — before any file content is read.
 
