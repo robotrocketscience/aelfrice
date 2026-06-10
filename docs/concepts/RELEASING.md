@@ -34,9 +34,11 @@ git push github vX.Y.Z
 
 Tags SSH-signed (`gpg.format = ssh`, key `~/.ssh/id_rrs`). Tag push triggers `.github/workflows/publish.yml`:
 
-1. Build sdist + wheel.
-2. Generate Sigstore attestation.
-3. Upload to PyPI via [Trusted Publishing](https://docs.pypi.org/trusted-publishers/).
+1. Run pytest (gate).
+2. Build sdist + wheel.
+3. Generate Sigstore attestation.
+4. Upload to PyPI via [Trusted Publishing](https://docs.pypi.org/trusted-publishers/).
+5. Promote the drafted GitHub Release to published + Latest.
 
 PyPI publish has been live since v1.0; `pip index versions aelfrice` (or `uv tool install aelfrice`) reflects the current released set.
 
@@ -72,7 +74,7 @@ Then bump to `vX.Y.Z+1` with the fix.
 
 ## Pre-releases
 
-PyPI treats `-rc` as pre-release — won't appear as default install candidate. Naming follows the current major (e.g. `v3.4.0-rc1` for a v3.4.0 candidate).
+PyPI treats `-rc` as pre-release — won't appear as default install candidate. Naming follows the current major (e.g. `v3.4.0-rc1` for a v3.4.0 candidate). Note: `publish.yml` fires only on final-release tags matching `v[0-9]+.[0-9]+.[0-9]+` — pushing an rc tag triggers nothing (the existing `v0.9.0rc0` tag never reached PyPI). To ship an rc, publish manually (`uv build` + `uv publish`) or extend the workflow's tag filter first.
 
 ```bash
 uv tool install --pre aelfrice==3.4.0rc1

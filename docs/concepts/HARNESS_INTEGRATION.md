@@ -20,7 +20,7 @@ mechanisms.
 |---|---|---|
 | Storage | `~/.claude/projects/<slug>/memory/*.md` + `MEMORY.md` index | `<git-common-dir>/aelfrice/memory.db` (SQLite) per-project; `~/.aelfrice/memory.db` only outside a git working tree |
 | Format | Markdown files with YAML frontmatter | FTS5-indexed beliefs with α/β posteriors and typed edges |
-| Write path | Harness directive in `~/.claude/CLAUDE.md` ("If the user explicitly asks you to remember something, save it…") | Explicit `aelf lock` / `aelf:lock` / `aelf onboard`, plus the v2.1+ default-on hooks (transcript-ingest, commit-ingest, session-start) |
+| Write path | Harness directive in `~/.claude/CLAUDE.md` ("If the user explicitly asks you to remember something, save it…") | Explicit `aelf lock` / `aelf:lock` / `aelf onboard`, plus the v2.1+ default-on capture hooks (transcript-ingest, commit-ingest) |
 | Read path | Auto-loaded into every prompt by Claude Code itself | The `UserPromptSubmit` hook injects retrieval results above each prompt |
 | Determinism | None (LLM decides what to write and when) | Bit-level reproducible — write log replay reconstructs every state |
 | Apply feedback | No | Yes — every retrieval moves posteriors, contradictions resolve via tie-breaker |
@@ -38,7 +38,7 @@ hook-based capture paths shipped at v1.2 and went default-on at v2.1
 which closes the original limitation without requiring you to fight
 the harness:
 
-- **`SessionStart`** ([context_rebuilder.md](../design/context_rebuilder.md)).
+- **`SessionStart`** ([hook_hardening.md](../design/hook_hardening.md)).
   Injects L0 locked beliefs at session open under the
   `<aelfrice-baseline>` tag, before any user prompt fires.
 - **`UserPromptSubmit` + `Stop` + `PreCompact` + `PostCompact`
@@ -73,9 +73,11 @@ mechanism.
 
 ### Mode 1 — Coexist (recommended default)
 
-Both stores active. `aelf setup` installs the full default-on bundle
-(UserPromptSubmit retrieval + transcript-ingest + commit-ingest +
-session-start, all v2.1+). Auto-memory continues to write `.md` files;
+Both stores active. `aelf setup` installs the full default-on bundle:
+UserPromptSubmit retrieval, transcript-ingest, commit-ingest,
+session-start (all v2.1+), plus the Stop correction-lock hook, the
+PreToolUse search-tool hooks, the pre-issue duplicate guard, and the
+session-start recap (v3.x additions). Auto-memory continues to write `.md` files;
 you read them from `MEMORY.md` like before. aelfrice writes SQLite rows;
 you query them with `aelf search` or get them injected via the
 retrieval hook on every prompt.
@@ -146,22 +148,25 @@ If you've accumulated `.md` files under
 beliefs:
 
 ```bash
-cd ~/.claude/projects/<slug>/memory
-aelf onboard .
+cd <your-project-root>
+aelf onboard ~/.claude/projects/<slug>/memory
 ```
+
+Run it from the project root, not from the memory directory: the DB is resolved from the working directory (`$AELFRICE_DB` → cwd's git-common-dir → `~/.aelfrice/memory.db`), so onboarding *from inside* `~/.claude/...` would write the beliefs into the global fallback DB instead of the project's.
 
 `aelf onboard` is the standard scanner path — it will walk the
 directory, parse Markdown headings and prose, classify candidate
 sentences, and insert the survivors as beliefs with
 `origin=agent_inferred`. To upgrade the ones you actually
-acknowledge, use `aelf validate <id>` (v1.2+) on each — that flips
+acknowledge, use `aelf promote <id>` on each — that flips
 the origin to `user_validated` without locking, which is the right
 tier for "I read this and confirmed it" content. Use `aelf lock` for
 constraints you want locked.
 
 The migration is one-shot. Re-running `aelf onboard` on the same
 directory after edits is idempotent — content-hash skips
-already-ingested rows. Use `aelf promote <id>` (preferred at v3.0+
+already-ingested rows. Use `aelf promote <id>` (shipped v1.7.0 #391; `--to-scope` re-scoping
+added at v3.0
 [#689](https://github.com/robotrocketscience/aelfrice/issues/689))
 to flip the origin to `user_validated` and optionally re-scope; the
 older `aelf validate <id>` verb still works as an alias.
@@ -184,7 +189,7 @@ older `aelf validate <id>` verb still works as an alias.
   and is not git-tracked. Auto-memory's `.md` files live under
   `~/.claude/projects/` and are also not synced unless you set up
   your own dotfiles repository. Neither store handles multi-machine
-  sync; that is out of scope at v1.2.
+  sync; that remains out of scope as of v3.5 (see [LIMITATIONS § Sharing, sync, or distributed-write federation](../user/LIMITATIONS.md)).
 - **Cross-project federation.** Each git project gets its own
   aelfrice store. Auto-memory has its own per-project directory.
   v3.0 shipped *read-only* cross-project federation via
@@ -226,7 +231,7 @@ traces back to a venv mismatch or a missing `aelf-*` console script.
 ## See also
 
 - [LIMITATIONS.md § harness conflict](../user/LIMITATIONS.md) — the original
-  v1.0/v1.1 limitation this doc closes.
+  v1.0/v1.1 harness-conflict limitation this doc closed (the entry was removed from that file at v1.2).
 - [transcript_ingest.md](../design/transcript_ingest.md) — the per-turn
   capture pipeline.
 - [commit_ingest_hook.md](../design/commit_ingest_hook.md) — the git-commit
