@@ -33,7 +33,7 @@ Step 1 — fetch the canonical upgrade command.
 Run `aelf upgrade-cmd` (no flags) to ask aelfrice itself what command
 would upgrade the active install. Use the no-flag form deliberately:
 the `--check` form short-circuited the `run:` line on aelfrice ≤2.0.1
-(#522 lands the symmetry fix in ≥2.0.2), so users who first hit
+(#522 lands the symmetry fix in v2.1.0), so users who first hit
 `/aelf:upgrade` against a pre-fix CLI got no parseable command and
 the slash silently did nothing (#530). The no-flag form has emitted
 `run:` on every released CLI since the subcommand existed.

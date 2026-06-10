@@ -41,9 +41,9 @@ SUGGESTED UPDATES
   ...
 ```
 
-…with one row per element in `payload.suggested_updates`. If the list is empty, print `SUGGESTED UPDATES (none)`. Direction values are `+1` (helpful — on the answer chain), `?` (uncertain — on an impasse), or `-1` (rejected — currently unreachable from this surface; the field exists for forward compatibility with R2's fork-path data).
+…with one row per element in `payload.suggested_updates`. If the list is empty, print `SUGGESTED UPDATES (none)`. Direction values are `+1` (helpful — on the answer chain), `?` (uncertain — on an impasse), or `-1` (rejected — never emitted by the current surface; R2's fork-path data has shipped (#658) but the `-1` derivation over fork-losing paths is deferred to a follow-up).
 
-The caller (or the operator, depending on policy) pipes the `+1` rows into `aelf feedback <belief_id> used` to bump the Beta-Bernoulli posterior (and `-1` rows into `aelf feedback <belief_id> harmful` if a policy uses them). `?` rows are surfaced for manual review and never auto-piped.
+The caller (or the operator, depending on policy) pipes the `+1` rows into `aelf feedback <belief_id> used` to bump the Beta-Bernoulli posterior (and `-1` rows into `aelf feedback <belief_id> harmful` if a policy uses them). `?` rows are surfaced for manual review and never auto-piped. Skip any row whose `owning_scope` is non-null — that belief lives in a read-only federation peer store and `aelf feedback` rejects mutations on foreign ids (ForeignBeliefError, exit 1); only local rows are pipeable.
 
 Do not add commentary outside the steps above. The CLI text-mode output is for human reading; this `--json`-driven path is the agent-side acting protocol.
 </process>

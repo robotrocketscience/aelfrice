@@ -1,6 +1,6 @@
 ---
 name: aelf:search
-description: Retrieve beliefs by keyword. Locked beliefs come first (L0), then FTS5 BM25 hits (L1).
+description: Retrieve beliefs by keyword. Locked beliefs come first (L0), then entity-index hits (L2.5) and FTS5 BM25 hits (L1); peer-scope hits, if federated, are listed last.
 argument-hint: Keyword query (e.g. "deployment process")
 allowed-tools:
   - Bash

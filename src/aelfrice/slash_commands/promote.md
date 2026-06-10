@@ -1,15 +1,15 @@
 ---
 name: aelf:promote
-description: Promote an agent_inferred belief to user_validated origin. Optionally flip the belief's visibility scope with --to-scope. Alias of aelf:validate with identical semantics.
+description: Promote an agent_inferred belief to user_validated origin. Optionally flip the belief's visibility scope with --to-scope. CLI-level alias of the hidden `aelf validate` subcommand (same handler and origin-promotion semantics); --to-scope is accepted by aelf promote only.
 argument-hint: The belief ID to promote, optionally followed by --to-scope <scope>
 allowed-tools:
   - Bash
 ---
 <objective>
-Promote an agent_inferred belief to the user_validated origin tier. This is
+Promote a non-user-tier belief (agent_inferred, agent_remembered, document_recent, unknown, or a speculative phantom) to the user_validated origin tier. This is
 a provenance change only — alpha/beta posteriors are unchanged. Idempotent:
 promoting an already-validated belief exits 0 with an "already validated"
-message. This command is a first-class alias of `aelf validate`.
+message. This command is a superset of the hidden `aelf validate` CLI subcommand: same handler and origin-promotion semantics, plus the promote-only `--to-scope` flag.
 
 Optionally, flip the belief's visibility scope with `--to-scope`. Valid scope
 values are `project` (local-only, default), `global` (any dependent peer), or
@@ -26,11 +26,11 @@ is `agent_inferred`; only the scope changes when the belief is already
                        global    — visible to any dependent peer
                        shared:<name>  — named peer group
                      Writes audit row 'scope:<old>-><new>'. Rejected for
-                     foreign belief ids. Invalid scope values are rejected at
-                     parse time.
+                     foreign belief ids. Invalid scope values are rejected before
+                     any change is written (ValueError, exit 1).
 </flags>
 
 <process>
-Run: `uv run aelf promote "$ARGUMENTS"`
+Run: `uv run aelf promote $ARGUMENTS`
 Display the output verbatim. Do not add commentary.
 </process>

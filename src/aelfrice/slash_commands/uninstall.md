@@ -6,14 +6,16 @@ allowed-tools:
 ---
 <objective>
 Remove aelfrice's local footprint -- the Claude Code hook + statusline
-wiring, plus an explicit choice for the brain-graph SQLite DB at
-`~/.aelfrice/memory.db`. The user must pick exactly one of:
+wiring, plus an explicit choice for the brain-graph SQLite DB at the path
+`aelf` resolves for the current directory — `$AELFRICE_DB` if set,
+else `<git-common-dir>/aelfrice/memory.db` inside a git work-tree,
+else the legacy global `~/.aelfrice/memory.db`. The user must pick exactly one of:
 
   --keep-db       leave the DB in place (safe default for review)
   --purge         permanently delete the DB (redundant gates: type
                   'PURGE' verbatim, then [y/N], unless --yes)
   --archive PATH  encrypt the DB to PATH with a password, then delete
-                  the original (requires `pip install 'aelfrice[archive]'`)
+                  the original (requires `uv tool install "aelfrice[archive]"`)
 
 After data disposition, runs `unsetup` to remove the hook + statusline
 unless `--keep-hook` is passed. Tail message points the user at

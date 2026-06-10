@@ -10,7 +10,7 @@ Manually trigger the v1.4 context rebuilder. Same code path as the
 PreCompact hook in `trigger_mode = "threshold"`, but explicit and
 unconditional — useful for inspecting what the hook would emit, for
 the eval harness, and for users running `trigger_mode = "manual"`
-(the v1.4.0 default) who want to fire the rebuild on demand.
+(manual was only the v1.4.0 default — the ship default has been `threshold` since v3.1.0, #746) who want to fire the rebuild on demand.
 </objective>
 
 <process>

@@ -15,7 +15,7 @@ roundtrip, no extra billing. Falls back to the regex classifier on
 
 <process>
 1. Parse `$ARGUMENTS`. If it contains `--no-subagents`, run
-   `uv run aelf onboard "<path>"` (regex path) and display the output
+   `uv run aelf onboard "<path>" --llm-classify=false` (deterministic regex path) and display the output
    verbatim. Stop. Otherwise extract `<path>` (everything that isn't
    `--no-subagents`).
 

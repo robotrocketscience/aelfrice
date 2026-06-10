@@ -8,7 +8,7 @@ allowed-tools:
 <objective>
 Permanently remove one belief from the store, including its FTS entry,
 all edges (both src and dst), and entity index rows. One audit row is
-written to feedback_history (valence=-1.0, source=user_deleted) before
+written to feedback_history (valence=-1.0, source=user_deleted, or user_deleted_force when --force is used) before
 the cascade, so the forensic record of "belief X existed and was deleted
 at T" survives.
 
@@ -23,6 +23,6 @@ prompt the user must explicitly pass `--yes`.
 </objective>
 
 <process>
-Run: `uv run aelf delete "$ARGUMENTS"`
+Run: `uv run aelf delete $ARGUMENTS`
 Display the output verbatim. Do not add commentary.
 </process>

@@ -10,9 +10,11 @@ Score retrieval relevance against a labeled corpus of
 `(query, known_belief, noise_beliefs)` rows and print the calibration
 metrics ratified at #365 (P@K, ROC-AUC, Spearman ρ).
 
-With no arguments, runs against the bundled public synthetic corpus —
-deterministic at fixed seed, so two consecutive runs produce
-bytes-identical output.
+With no arguments, runs against the public synthetic corpus at
+`benchmarks/posterior_ranking/fixtures/default.jsonl` — present only in
+a repo checkout, not in the installed wheel; wheel installs must pass
+`--corpus PATH`. Deterministic at fixed seed, so two consecutive runs
+produce bytes-identical output.
 </objective>
 
 <process>

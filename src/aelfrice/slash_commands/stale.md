@@ -12,6 +12,6 @@ the windows.
 </objective>
 
 <process>
-Run: `uv run aelf stale "$@"`
+Run: `uv run aelf stale $ARGUMENTS`
 Display the output verbatim. Do not add commentary.
 </process>

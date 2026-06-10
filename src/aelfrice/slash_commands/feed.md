@@ -11,6 +11,6 @@ lock / onboard / wonder-promote / feedback event. The log lives at
 </objective>
 
 <process>
-Run: `uv run aelf feed "$@"`
+Run: `uv run aelf feed $ARGUMENTS`
 Display the output verbatim. Do not add commentary.
 </process>
