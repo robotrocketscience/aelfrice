@@ -5,7 +5,7 @@ How aelfrice fits together. Maps directly to source under `src/aelfrice/`.
 ## Principles
 
 1. **Determinism end to end.** Every retrieval result is bit-identical given the same write log and the same code. Every result traces to named beliefs and named rules. See [PHILOSOPHY § Determinism is the property](PHILOSOPHY.md#determinism-is-the-property).
-2. **Stdlib + SQLite only.** No vector DB, no embeddings, no LLM in the hot path. The `[mcp]` extra (`fastmcp`) is the only optional runtime dep.
+2. **SQLite plus a small numeric stack.** No vector DB, no embeddings, no LLM in the hot path. Required deps beyond stdlib: `numpy` and `scipy` (added v1.5.0, #148, for the BM25 sparse-matvec lane; now also used by the HRR and spectral-graph lanes) and `snowballstemmer` (added v1.7.0, #154, for Porter stemming). Optional extras: `[mcp]` (fastmcp), `[onboard-llm]` (anthropic, for `aelf onboard --llm-classify`), `[archive]` (cryptography, for `aelf uninstall --archive`), `[benchmarks]` (dev-side adapters).
 3. **Bayesian, not vibes.** Confidence is `α / (α + β)`. Every update has a closed-form rule. At v1.3.0+ the posterior is combined log-additively with BM25 on the L1 tier — see [LIMITATIONS](../user/LIMITATIONS.md) for what the partial ranking does and doesn't cover.
 4. **`apply_feedback` is the central endpoint.** One writer of `(α, β)`. One audit row per successful update.
 5. **Locks are user-asserted ground truth.** A user-locked belief short-circuits decay. Lock correction is an explicit user act via `aelf lock` overwriting (PHILOSOPHY [#605](https://github.com/robotrocketscience/aelfrice/issues/605)); contradiction-driven auto-demotion was removed in [#814](https://github.com/robotrocketscience/aelfrice/issues/814).
@@ -27,7 +27,7 @@ Imports are one-directional — modules lower in the table import from higher.
 | Module | Responsibility |
 |---|---|
 | `models.py` | `Belief`, `Edge`, `FeedbackEvent`, `OnboardSession` dataclasses; type / lock / origin constants. No I/O. |
-| `scoring.py` | `posterior_mean`, `decay`, `relevance_combiner`. Type half-lives. Lock-floor short-circuit. Decay target: Jeffreys `(0.5, 0.5)`. |
+| `scoring.py` | `posterior_mean`, `decay`, `partial_bayesian_score`. Type half-lives. Lock-floor short-circuit. Decay target: Jeffreys `(0.5, 0.5)`. |
 | `store.py` | SQLite WAL + FTS5 + CRUD. `propagate_valence` BFS with broker-confidence attenuation. |
 | `retrieval.py` | `retrieve(store, query, token_budget=2400)` — L0 locked + L2.5 entity-index (v1.3+) + L1 FTS5 BM25/BM25F (BM25F default-on since v1.7.0) with Bayesian log-additive reranking (v1.3+) + L3 BFS multi-hop (v1.3+, default-off) over the L0+L2.5+L1 seed set. L0 never trimmed. |
 | `feedback.py` | `apply_feedback(store, belief_id, valence, source)` — only Bayesian-update path. Writes `feedback_history`. |
@@ -62,14 +62,15 @@ Imports are one-directional — modules lower in the table import from higher.
 
 ## Data model
 
-**Belief** — `id, content, content_hash, alpha, beta, type, lock_level, locked_at, origin, session_id, created_at, last_retrieved_at`.
+**Belief** — `id, content, content_hash, alpha, beta, type, lock_level, locked_at, origin, session_id, created_at, last_retrieved_at, corroboration_count, hibernation_score, activation_condition, retention_class, valid_to, scope, project_context` (v3.2+, #858)`, last_confirmed_at` (v3.5+, #936).
 
-- `type ∈ {factual, correction, preference, requirement}`
+- `type ∈ {factual, correction, preference, requirement, speculative}` (`speculative` added with the v3.0 wonder lifecycle, #548, for phantom beliefs)
+- `retention_class ∈ {fact, snapshot, transient, unknown}` — drives type-aware compression (#769)
 - `lock_level ∈ {none, user}`
 - `origin ∈ {user_stated, user_corrected, user_validated, user_transcript, agent_inferred, agent_remembered, document_recent, speculative, unknown}` (v1.2+; `user_transcript` added with the v2.1 transcript-ingest lane; `speculative` added with the v2.0 wonder substrate for phantom beliefs and now written by `wonder/lifecycle.py`)
 - `scope ∈ {project, global, shared:<name>}` (v3.0+, #688). `project` is the default and local-only; `global` is surfaced to any peer DB that declares this DB in its `knowledge_deps.json`; `shared:<name>` is surfaced only to peers that also list `shared:<name>` as a dep.
 
-**Edge** — `src, dst, type, weight, anchor_text, created_at`. Ten edge types in `EDGE_VALENCE`:
+**Edge** — `src, dst, type, weight, anchor_text`. Ten edge types in `EDGE_VALENCE`:
 
 | Type | Valence | |
 |---|---|---|
@@ -86,7 +87,7 @@ Imports are one-directional — modules lower in the table import from higher.
 
 A separate `POTENTIALLY_STALE` edge type exists as a producer-only signal from `aelf doctor` (#387) and is deliberately not in `EDGE_TYPES` — it does not participate in valence propagation. The research line carried 17 edge types — additional speculative/causal markers (`SPECULATES`, `DEPENDS_ON`, `HIBERNATED`) and additional structural extractors (`CALLS`, `CO_CHANGED`, `CONTAINS`, `COMMIT_TOUCHES`) remain parked until the extractors that produce them ship. The current ten-type set covers the v2.0 wonder lifecycle (`RESOLVES`, `SUPERSEDES`, `CONTRADICTS`) and the v1.x code/test linkage (`IMPLEMENTS`, `TESTS`); see [ROADMAP § Recovery inventory](ROADMAP.md#recovery-inventory) for the deferred set.
 
-**SQLite tables:** `beliefs` (with `scope` column since v3.0), `beliefs_fts` (virtual, porter unicode61), `edges` PK `(src, dst, type)`, `feedback_history`, `sessions`, `onboard_sessions`, `belief_corroborations` (sibling table, v1.5.1+), `ingest_log` (append-only, v1.6+), `belief_versions` + `edge_versions` (per-scope version vectors, v1.5+), `schema_meta`. The `scope` column has an `idx_beliefs_scope` index; both column and index land idempotently via the migration runner.
+**Core SQLite tables include:** `beliefs` (with `scope` column since v3.0), `beliefs_fts` (virtual, porter unicode61), `edges` PK `(src, dst, type)`, `feedback_history`, `sessions`, `onboard_sessions`, `belief_corroborations` (sibling table, v1.5.1+), `ingest_log` (append-only, v1.6+), `belief_versions` + `edge_versions` (per-scope version vectors, v1.5+), `belief_entities` (L2.5 entity index, v1.3+), `deferred_feedback_queue` (v1.6+, #191), `belief_documents` (wonder research docs, v3.0), `injection_events` (relevance signal, v3.x), `belief_touches` (hot-path ring, v3.x #748), `schema_meta`. The `scope` column has an `idx_beliefs_scope` index; both column and index land idempotently via the migration runner.
 
 ## Bayesian update
 
@@ -121,7 +122,7 @@ Token estimate: `(len(content) + 3) // 4`. Empty query: L0 only. L0 always wins 
 
 Spec docs: [entity_index.md](../design/entity_index.md) (L2.5), [bfs_multihop.md](../design/bfs_multihop.md) (L3), [bayesian_ranking.md](../design/bayesian_ranking.md) (L1 Bayesian reranking).
 
-**BFS temporal-coherence caveat:** L3 resolves each hop to the globally latest serial of its target belief. For recall queries this is correct. For audit queries (what did the agent believe at decision-time?) a post-seed supersession can appear mid-chain. The temporal-coherence fix is targeted at v2.0.0 — see [LIMITATIONS § BFS multi-hop temporal coherence](../user/LIMITATIONS.md#bfs-multi-hop-temporal-coherence).
+**BFS temporal-coherence caveat:** L3 resolves each hop to the globally latest serial of its target belief. For recall queries this is correct. For audit queries (what did the agent believe at decision-time?) a post-seed supersession can appear mid-chain. The temporal-coherence fix was originally targeted at v2.0.0 but slipped and is not scheduled on a current milestone — see [LIMITATIONS § BFS multi-hop temporal coherence](../user/LIMITATIONS.md#bfs-multi-hop-temporal-coherence).
 
 ## Onboarding
 
@@ -133,7 +134,7 @@ Spec docs: [entity_index.md](../design/entity_index.md) (L2.5), [bfs_multihop.md
 
 Classification via priors + regex fallback. Idempotent on `content_hash`.
 
-**LLM-Haiku onboard classifier (v1.3+, default-OFF):** `aelf onboard --llm-classify` routes each candidate through Claude Haiku instead of the regex path. Four consent gates enforce the privacy boundary: flag presence, `ANTHROPIC_API_KEY` present, stored sentinel, interactive prompt. `--dry-run` previews candidates without calling the API. Spec: [llm_classifier.md](../design/llm_classifier.md). This is the only path in aelfrice that transmits user content outbound — see [PRIVACY § Optional outbound calls](../user/PRIVACY.md#optional-outbound-calls).
+**LLM-Haiku onboard classifier (v1.3+, default-OFF):** `aelf onboard --llm-classify` routes each candidate through Claude Haiku instead of the regex path. Four consent gates enforce the privacy boundary: the `[onboard-llm]` extra installed, `ANTHROPIC_API_KEY` present, the `--llm-classify` flag (or `[onboard.llm].enabled` TOML key), and a one-time interactive consent prompt recorded in a sentinel file. `--dry-run` previews candidates without calling the API. Spec: [llm_classifier.md](../design/llm_classifier.md). This is the only path in aelfrice that transmits user content outbound — see [PRIVACY § Onboard-time outbound call](../user/PRIVACY.md#onboard-time-outbound-call).
 
 ## Claude Code hook
 
@@ -159,9 +160,10 @@ Non-blocking contract: every failure path exits 0 with no stdout. A hook problem
 | `aelf-transcript-logger` | `UserPromptSubmit`, `Stop`, `PreCompact`, `PostCompact` | One JSONL line per conversation turn; PreCompact rotates and re-ingests. | v2.1 (#529) |
 | `aelf-commit-ingest` | `PostToolUse:Bash` | After `git commit`, ingest the commit message via the triple extractor. | v2.1 (#529) |
 | `aelf-session-start-hook` | `SessionStart` | Inject locked beliefs as `<aelfrice-baseline>` once per session; emit `<recent-work>` sub-block (#887). | v2.1 (#529) |
-| `aelf-stop-hook` | `Stop` | Cadence Stop dispatch — emits `<recent-work>` and feeds cadence policy (#749 / #871 / #876). | v3.0 |
-| `aelf-search-tool` | `PreToolUse:Grep|Glob` | Surface relevant beliefs adjacent to tool-driven search (#674). | v3.0.1 (#738) |
-| `aelf-search-tool-bash` | `PreToolUse:Bash` | Same surface for bash search invocations. | v3.0.1 (#738) |
+| `aelf-stop-hook` | `Stop` | End-of-session lock prompt — surfaces session-scoped unlocked correction-class beliefs as `<aelfrice-session-end>` with pre-filled `aelf lock` commands (#582); also hosts the default-off cadence checkpoint dispatch (#749 / #871 / #876). | v3.0 |
+| `aelf-search-tool-hook` | `PreToolUse:Grep|Glob` | Surface relevant beliefs adjacent to tool-driven search (#674). | v3.0.1 (#738) |
+| `aelf-search-tool-hook` | `PreToolUse:Bash` | Same entry point, separate settings.json matcher, for bash search invocations. | v3.0.1 (#738) |
+| `aelf-pre-issue-hook` | `PreToolUse:Bash` | Duplicate-detection guard before `gh issue create` — blocks (exit 2) on Jaccard title overlap ≥ 0.5 against open issues and shipped commits (#941). | v3.5.0 |
 | `aelf-pre-compact-hook` | `PreCompact` | Context rebuilder — opt-in via `--rebuilder`; default trigger flipped from `manual` to `threshold` at v3.1 (#746). | opt-in |
 
 Each lane is opt-out via `aelf setup --no-<lane>`. All non-blocking: every failure path exits 0 with no stdout.
@@ -201,7 +203,7 @@ and the harness's own summary land in the new context (augment mode)
 | Property | default | Pre-registered invariants: Bayesian inertia, decay-required, lock-floor sharpness, token-budget invariant, broker-attenuation. |
 | Regression | `@pytest.mark.regression` | Cross-module scenarios: retrieval round-trip, feedback loop, onboarding, setup→hook→unsetup, `aelf bench` end-to-end. |
 
-`uv run pytest` (2,700+ tests at v2.0.0).
+`uv run pytest` (5,300+ tests at v3.5.0).
 
 ## Out of scope through v1.x
 
@@ -218,7 +220,7 @@ The following were previously listed here and have since shipped:
 - LLM in the hot path (optional onboard classifier) → **shipped v1.3.0** ([llm_classifier.md](../design/llm_classifier.md))
 - BM25F anchor-text retrieval → **shipped v1.7.0**, default-on (#148/#154; +0.6650 NDCG@k uplift on the v0.1 retrieve_uplift fixture)
 - HRR primitives + structural lane → **shipped v1.7.0**, default-on as of v2.1 ([feature-hrr-integration.md](../design/feature-hrr-integration.md); source at `src/aelfrice/hrr_index.py`; closes the vocabulary-gap-recovery claim, #154 composition tracker, #437 reproducibility-harness 11/11)
-- Heat-kernel authority scorer → **shipped v1.7.0**, default-on as of v2.1 (#154 composition tracker)
+- Heat-kernel authority scorer → **shipped v1.6.0** (opt-in), default-on as of v2.1 (#154 composition tracker)
 - HRR persistence (split-format `.npy` + `.npz` save/load, default-on) → **shipped v3.0** (#553)
 - Wonder lifecycle (graph-walk + axes-dispatch + phantom promotion Surfaces A+B) → **shipped v2.0/v3.0** ([#542](https://github.com/robotrocketscience/aelfrice/issues/542) umbrella)
 - Read-only cross-project federation → **shipped v3.0** (#650 / #655 / #688)
