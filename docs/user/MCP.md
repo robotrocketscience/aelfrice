@@ -50,35 +50,35 @@ Working from a source checkout instead? Point the host at `uv` so it picks up th
 }
 ```
 
-Tools register under the `aelf:` namespace.
+Tools register under the `aelf:` namespace. On the wire the registered tool names use an underscore — `aelf_search`, `aelf_confirm`, ... — `aelf:` is display shorthand throughout this doc.
 
 ## Tools
 
 | Tool | Required | Optional | Returns |
 |---|---|---|---|
 | `aelf:onboard` | — | `path`, `session_id`, `classifications` | polymorphic — see below |
-| `aelf:search` | `query` | `budget` (default 2,400) | `{kind, n_hits, hits[]}` |
+| `aelf:search` | `query` | `budget` (default 2,400), `response_format` (default `json`) | `{kind, n_hits, hits[]}` |
 | `aelf:lock` | `statement` | — | `{kind, id, action}` |
 | `aelf:locked` | — | `limit`, `offset`, `response_format` | `{kind, n, total, next_offset, locked[]}` |
-| `aelf:demote` | `belief_id` | `to_scope` (v3.0+, [#689](https://github.com/robotrocketscience/aelfrice/issues/689)) | `{kind, id, demoted}`; with `to_scope` set, also flips federation visibility and writes a `scope:<old>-><new>` audit row. |
+| `aelf:demote` | `belief_id` | `to_scope` (v3.0+, [#689](https://github.com/robotrocketscience/aelfrice/issues/689)) | `{kind, id, demoted}`; with `to_scope` set, the call performs only the scope flip (no tier demotion) — it flips federation visibility, writes a `scope:<old>-><new>` audit row, and returns `{kind: "scope.updated", id, scope_updated, prior_scope, new_scope, audit_event_id}`. |
 | `aelf:unlock` | `belief_id` | — | `{kind, id, unlocked, audit_event_id?}` |
-| `aelf:validate` | `belief_id` | `source` (default `user_validated`), `to_scope` (v3.0+) | `{kind, id, prior_origin, new_origin, audit_event_id?}` on success; `{kind: "validate.error", id, error}` on invalid request |
-| `aelf:promote` | `belief_id` | `source` (default `user_validated`), `to_scope` (v3.0+) | same union as `aelf:validate` |
+| `aelf:validate` | `belief_id` | `source` (default `user_validated`) | `{kind, id, prior_origin, new_origin, audit_event_id?}` on success; `{kind: "validate.error", id, error}` on invalid request |
+| `aelf:promote` | `belief_id` | `source` (default `user_validated`), `to_scope` (v3.0+) | same union as `aelf:validate`; with `to_scope` set, the payload includes an additional `scope` key with the scope-change result |
 | `aelf:feedback` | `belief_id`, `signal` | `source` | `{kind, id, signal, prior_alpha, new_alpha, prior_beta, new_beta}` |
 | `aelf:confirm` | `belief_id` | `source` (default `user_confirmed`), `note` | `{kind, id, source, prior_alpha, new_alpha, prior_beta, new_beta, note?}` |
-| `aelf:stats` | — | — | `{kind, beliefs, threads, locked, feedback_events, ...}` |
-| `aelf:health` | — | — | `{kind, regime, description, classification_confidence?, features?}` |
-| `aelf:wonder` | — | `query`, `axes_agents`, `seed_id`, `top` | gap-analysis + research-axes payload (`{gap_analysis, research_axes, agent_count, speculative_anchor_ids}`) when `query` is set; graph-walk consolidation candidates when not — v3.0+ (#551). |
-| `aelf:wonder_persist` | — | `seed_id`, `top` | `{kind, inserted, skipped, edges_created}` — runs `wonder_ingest` against BFS phantom candidates. `destructiveHint: true`. v3.0+ (#549). |
-| `aelf:wonder_gc` | — | `ttl_days` (default 14), `dry_run` (default `true`) | `{kind, scanned, deleted_or_would_delete, surviving}` — runs the `wonder_gc` lifecycle sweep. `destructiveHint: true`. v3.0+ (#549). |
+| `aelf:stats` | — | `response_format` (default `json`) | `{kind, beliefs, threads, locked, feedback_events, ...}` |
+| `aelf:health` | — | `response_format` (default `json`) | `{kind, regime, description, classification_confidence?, features?}` |
+| `aelf:wonder` | `query` | `budget` (default 24), `depth` (default 2), `agent_count` (default 4) | `{kind: "wonder.axes", gap_analysis, research_axes, agent_count, speculative_anchor_ids}` — v3.0+ (#551). The no-query graph-walk consolidation mode is CLI-only (`aelf wonder` with no positional query); the MCP tool always requires `query`. |
+| `aelf:wonder_persist` | `query` (ignored in BFS mode — kept for API symmetry with `aelf:wonder`) | `budget` (default 24), `depth` (default 2), `top` (default 10), `seed` (explicit seed belief ID; default = highest-degree non-locked belief) | `{kind, inserted, skipped, edges_created}` — runs `wonder_ingest` against BFS phantom candidates. `destructiveHint: true`. v3.0+ (#549). |
+| `aelf:wonder_gc` | — | `ttl_days` (default 14), `dry_run` (default `false` — pass `dry_run=true` to preview candidates without mutating the store) | `{kind, scanned, deleted, surviving}` (`deleted` is 0 when `dry_run=true`) — runs the `wonder_gc` lifecycle sweep. `destructiveHint: true`. v3.0+ (#549). |
 
-`signal` is `"used"` or `"harmful"`. `aelf:unlock` drops a user-lock without touching origin and writes a `lock:unlock` audit row when a lock is actually removed; idempotent on already-unlocked beliefs (no row written). `aelf:promote` is a first-class alias of `aelf:validate` — identical semantics and return shape. Both `aelf:validate` and `aelf:promote` promote an `agent_inferred` belief to a user-validated origin tier (v1.2+).
+`signal` is `"used"` or `"harmful"`. `aelf:unlock` drops a user-lock without touching origin and writes a `lock:unlock` audit row when a lock is actually removed; idempotent on already-unlocked beliefs (no row written). `aelf:promote` is an alias of `aelf:validate` for the promotion semantics and return shape; unlike `aelf:validate`, it additionally accepts `to_scope` for federation scope moves. Both `aelf:validate` and `aelf:promote` promote an `agent_inferred` belief to a user-validated origin tier (v1.2+).
 
-`aelf:confirm` is a thin specialization of `aelf:feedback` that always applies a unit positive valence (+1.0). Use it when the model has independently verified a belief and wants to register that affirmation explicitly. The default `source` tag (`user_confirmed`) is distinct from the `used` source emitted by implicit retrieval feedback, so confirm events are queryable separately in the history table. The optional `note` field is a free-text annotation surfaced in the return payload only; it is not persisted.
+`aelf:confirm` is a thin specialization of `aelf:feedback` that always applies a unit positive valence (+1.0). Use it when the model has independently verified a belief and wants to register that affirmation explicitly. The default `source` tag (`user_confirmed`) is distinct from the `hook` source written by implicit retrieval feedback (and from the default `user` source on explicit `aelf:feedback` calls), so confirm events are queryable separately in the history table. The optional `note` field is a free-text annotation surfaced in the return payload only; it is not persisted.
 
 ```json
 // Example
-{"tool": "aelf:confirm", "belief_id": "abc123", "note": "verified against project docs"}
+{"tool": "aelf_confirm", "belief_id": "abc123", "note": "verified against project docs"}
 // Returns
 {"kind": "confirm.applied", "id": "abc123", "source": "user_confirmed",
  "prior_alpha": 1.0, "new_alpha": 2.0, "prior_beta": 1.0, "new_beta": 1.0,
