@@ -1,6 +1,6 @@
 # Triple extractor
 
-**Status:** spec.
+**Status:** shipped in v1.2.0 (#112) as `src/aelfrice/triple_extractor.py`. Historical design record below.
 **Target milestone:** v1.2.0 (named on the public roadmap as
 "triple-extraction port").
 **Dependencies:** stdlib only (regex). No LLM. Consumes the

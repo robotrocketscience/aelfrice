@@ -12,7 +12,7 @@ on this PR.
 | Mitigation 2 — render-time belief-content escape | Landed | `_escape_for_hook_block` in `src/aelfrice/hook.py` |
 | Mitigation 3 — per-turn audit log (`hook_audit.jsonl`) | Landed | PR #314 — `_write_hook_audit_record` and `[hook_audit]` config in `src/aelfrice/hook.py`; tests in `tests/test_hook_audit.py` |
 
-The decision-asks below (lines 240-252) were ratified for all three
+The decision-asks below (§ Decision asks) were ratified for all three
 mitigations by the implementations landing in #292 and #314.
 
 The two suggestions from the original #280 body that this memo
@@ -24,7 +24,7 @@ also drop legitimate beliefs; render-time escape is the right shape)
 The model-behavior side of "reference-existence check" is captured
 as a residual-risk note in `LIMITATIONS.md` and a trust-boundary
 paragraph in `PHILOSOPHY.md`, per the spec's own implementation
-tracker (lines 273-276).
+tracker (§ Implementation tracker).
 
 ## Problem
 

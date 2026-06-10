@@ -1,6 +1,6 @@
 # Ingest enrichment
 
-**Status:** spec.
+**Status:** shipped in v1.2.0 — `beliefs.session_id`, `edges.anchor_text`, and `belief_versions`/`edge_versions` all live in `store.py`. Historical design record below.
 **Target milestone:** v1.2.0 (alongside the commit-ingest hook,
 transcript-ingest, and triple-extraction port already on the public
 roadmap).

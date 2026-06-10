@@ -1,6 +1,6 @@
 # Design Memo: CRDT Primitives for v3 Cross-Project Federation
 
-**Status:** v3 architectural direction. Pre-implementation; identifies the shape of the work and the one schema change worth landing forward-compatibly in v1.x to avoid losing user data later.
+**Status:** §1 version vectors shipped v1.x (#204 / PR #210; `belief_versions` / `edge_versions` in `store.py`). Read-only federation (Option B, #650/#655/#661) shipped v3.0.0 — see `src/aelfrice/federation.py`. §2–§5 multi-writer CRDT primitives: deferred extension (#651–#654 closed wontfix).
 
 > **Update 2026-05-11 (#661 ratification).** v3.0 ships **read-only federation only** (Option B): the per-project DB is the sole writer; peers open foreign DBs read-only (SQLite ATTACH) and UNION FTS5 results, and mutation tools (`feedback` / `lock` / `delete`) reject foreign belief IDs at the API surface. Under that model there are no concurrent writers, so the CRDT primitives in §2–§5 below are **not in v3.0 scope**: `CONTRADICTS` / lock / counter / GC mechanics stay on their current single-writer encoding. §2–§5 are retained as forward reference if multi-writer federation is ever reopened. **§1 (version vectors) remains valid forward-compat substrate** per the v1.x ship plan in #204 / #205; it is harmless under read-only federation and avoids a painful migration if the model ever changes.
 >

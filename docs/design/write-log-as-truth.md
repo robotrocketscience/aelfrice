@@ -1,6 +1,6 @@
 # Design Memo: Write Log as Source of Truth
 
-**Status:** v2.0 architectural direction. Documents the proposed contract change; not yet implemented.
+**Status:** historical design memo (pre-v2.0). The `ingest_log` table shipped at v1.5 (#205); replay/validation (#262), derivation-worker call-site migration (#264), and the view-flip (#265, gated default-off behind `AELFRICE_WRITE_LOG_AUTHORITATIVE`) have all since landed.
 
 ---
 

@@ -1,9 +1,9 @@
 # Feature spec: `aelf delete` CLI (#440)
 
-**Status:** implementation spec
+**Status:** shipped (#440 — `_cmd_delete` in `src/aelfrice/cli.py`); historical design record
 **Issue:** #440
 **Sibling:** `aelf unlock` (`src/aelfrice/cli.py:_cmd_unlock`)
-**Storage primitive:** `MemoryStore.delete_belief` (`src/aelfrice/store.py:1934`)
+**Storage primitive:** `MemoryStore.delete_belief` (`store.py::MemoryStore.delete_belief`)
 
 ---
 

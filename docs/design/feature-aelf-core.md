@@ -1,6 +1,6 @@
 # Feature spec: `aelf core` CLI (#439)
 
-**Status:** implementation spec
+**Status:** shipped (#439 — `_cmd_core` in `src/aelfrice/cli.py`); historical design record
 **Issue:** #439
 **Sibling commands:** `aelf locked` (`src/aelfrice/cli.py:_cmd_locked`), `aelf unlock` (`src/aelfrice/cli.py:_cmd_unlock`)
 **ROADMAP slot:** v2.0.0 — *"`core` / `unlock` / `delete` / `confirm` (CLI surface)"*

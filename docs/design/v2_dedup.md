@@ -2,7 +2,7 @@
 
 Spec for issue [#197](https://github.com/robotrocketscience/aelfrice/issues/197). Substrate-cascade addendum to [`substrate_decision.md`](historical/substrate_decision.md) (#196 ratified Option B).
 
-Status: read-path shipped. `src/aelfrice/dedup.py` is wired and exposed via `aelf doctor dedup` (audit-only mode); it's also imported by `relationship_detector.py`. The write-path `SUPERSEDES` hook (collapse-on-ingest) is bench-gated behind the corpus benchmark and remains deferred per V2_REENTRY_QUEUE.
+Status: read-path shipped. `src/aelfrice/dedup.py` is wired and exposed via `aelf doctor --dedup` (audit-only mode); it's also imported by `relationship_detector.py`. The write-path `SUPERSEDES` hook (collapse-on-ingest) is bench-gated behind the corpus benchmark and remains deferred per V2_REENTRY_QUEUE.
 
 ## What's being decided
 
@@ -33,7 +33,7 @@ Three reasons:
 
 - `LIMITATIONS.md § Sharp edges`: the "INSERT OR IGNORE only catches exact matches" caveat shrinks (or disappears, depending on dedup confidence).
 - `docs/concepts/PHILOSOPHY.md`: one paragraph noting that v2.0 dedup is deterministic (token + edit distance, no embedding).
-- New CLI surface: `aelf doctor dedup` audit command, returning candidate clusters without auto-merging. Lets users review before committing.
+- New CLI surface: `aelf doctor --dedup` audit command, returning candidate clusters without auto-merging. Lets users review before committing.
 - `aelf:dedup` MCP tool would be the natural pairing; defer to per-tool bench-impact gate per `V2_REENTRY_QUEUE.md` decision #1.
 
 ## Provenance

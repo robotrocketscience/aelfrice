@@ -2,7 +2,7 @@
 
 Spec for issue [#228](https://github.com/robotrocketscience/aelfrice/issues/228). Substrate-cascade addendum to [`substrate_decision.md`](historical/substrate_decision.md) (#196 ratified Option B). Companion to [`v2_phantom_promotion_trigger.md`](historical/v2_phantom_promotion_trigger.md) (#229) — that issue specifies the rule applied to the phantoms this issue's strategy generates.
 
-Status: lifecycle and dispatch shipped at v2.1+. `src/aelfrice/wonder_consolidation.py` is wired; the `aelf:wonder` MCP tool and the `aelf wonder --axes` CLI verb both ship. The generation-strategy bake-off (RW / TC / STS / ensemble) below is still the open question — gated on lab pre-registration close.
+Status: lifecycle and dispatch shipped at v2.1+. `src/aelfrice/wonder_consolidation.py` is wired; the `aelf:wonder` MCP tool and the `aelf wonder --axes` CLI verb both ship. The generation-strategy bake-off has been run and decided — see [`v2_wonder_consolidation_R_final.md`](v2_wonder_consolidation_R_final.md) (v2.0 run: defer, closes #228; v2.1 post-substrate revisit: RW+STS ensemble verdict).
 
 ## What's being decided
 

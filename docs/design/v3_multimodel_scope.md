@@ -46,7 +46,7 @@ Multi-provider voting on a single prompt is a narrower mechanism than research-a
 
 ## Out of scope
 
-- Implementing wonder-dispatch's skill-layer integration. That is [#552](https://github.com/robotrocketscience/aelfrice/issues/552), in-flight, tracked separately on the v3.0 milestone.
+- Implementing wonder-dispatch's skill-layer integration. That was [#552](https://github.com/robotrocketscience/aelfrice/issues/552), since shipped — `src/aelfrice/wonder/skill_integration.py`.
 - Editing `PHILOSOPHY.md` § *Determinism* or `PRIVACY.md` § *Optional outbound*. The decision is to leave them as-is; no doc surgery beyond cross-references.
 - Closing [#198](https://github.com/robotrocketscience/aelfrice/issues/198). Already CLOSED COMPLETED 2026-05-02 under the v2 deferral; this memo is the v3 successor decision, not a re-close.
 

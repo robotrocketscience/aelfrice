@@ -11,7 +11,7 @@ Cross-references: [LIMITATIONS.md § Onboarding](../user/LIMITATIONS.md#onboardi
 (the precedence ordering this slots into), [`src/aelfrice/feedback.py`](../../src/aelfrice/feedback.py)
 (the audit-row format and `apply_feedback` semantics).
 
-Status: design only. No code changes implied by merging this file.
+Status: shipped in v1.2.0 (#124) as `src/aelfrice/promotion.py` + `aelf validate` / `aelf demote`; the memo below is the historical design record.
 
 ## 1. What is being promoted
 

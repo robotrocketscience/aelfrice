@@ -1,6 +1,6 @@
 # Feature spec: Ingest speaker-gate + sentiment routing + SVO length floor (#785)
 
-**Status:** spec (no implementation yet)
+**Status:** shipped — §1 landed in `ingest.py` via PR #795 (placed there, not `transcript_logger.py`, to preserve the #592 hot-start replay path); §3 superseded by the #809 subfloor noise-pattern filter (PR #810); #785 closed 2026-05-14
 **Issue:** #785
 **Substrate prereqs:** #606 (sentiment hook, shipped), #290 (retention class column, shipped v1.6.0)
 

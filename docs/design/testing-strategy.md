@@ -44,12 +44,11 @@ the way an external user would experience it?
   - on every push to `main` (post-merge regression catch),
   - across an install-method matrix: `uv-tool`, `pipx`, `venv-pip`.
 - **No in-process imports of `aelfrice.*`.** Tests invoke the installed
-  `aelf` binary or `python -m aelfrice.mcp_server.serve` via `subprocess.run`
+  `aelf` binary (e.g. `aelf mcp` for the MCP server) via `subprocess.run`
   and assert on its observable output.
-- No mocks at all. Fixtures: `tmp_path` DB, the public-safe project under
-  `tests/e2e/fixtures/tiny-project/`, and the synthetic v1.4 snapshot at
+- No mocks at all. Fixtures: `tmp_path` DB, the synthetic project built inline by the `tiny_project` fixture in `tests/e2e/conftest.py`, and the synthetic v1.4 snapshot at
   `tests/e2e/fixtures/v14-snapshot.db` (rebuildable via
-  `tests/e2e/build-v14-snapshot.sh`).
+  `tests/e2e/fixtures/build-v14-snapshot.sh`).
 - Failure surfacing (#370): a push:main failure opens an
   `attn:e2e-failure` issue; a PR failure adds the `attn:e2e-failure` label.
   Both surface in `aelf-scan §1`.

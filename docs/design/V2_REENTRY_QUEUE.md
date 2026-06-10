@@ -21,22 +21,22 @@ Each row references its public spec memo and the GitHub issue that tracks re-ent
 ### Multi-LLM consensus (multimodel) — issue #198
 
 - **Spec:** [`docs/design/v2_multimodel.md`](v2_multimodel.md)
-- **Disposition:** defer to v2.x.
+- **Disposition:** closed at v3.0 — subsumed by wonder-dispatch (#551/#542) per [v3_multimodel_scope.md](v3_multimodel_scope.md) (#607); any re-open goes through that memo's amendment gate.
 - **Gate:** ≥3pp improvement on a classification-accuracy or onboard-quality `aelf bench` number, **and** a PRIVACY.md rewrite documenting per-provider trust surface and consent gate.
 - **Why deferred:** privacy regression (outbound to *N* providers vs. 1), determinism regression (non-deterministic by construction), *N×* per-onboard token cost, no published evidence that cross-model consensus measurably improves classification quality. Substrate-decision (#196 Option B) removed the strongest historical justification.
 
-### Directive detection (enforcement H1) — issue #374
+### Directive detection (enforcement H1) — issue #374 (auto-closed by PR #467's merge 2026-05-07 without the gate passing; the deferral stands — re-entry tracking continues on this row / umbrella #199)
 
 - **Spec:** [`docs/design/v2_enforcement.md`](v2_enforcement.md) § H1
 - **Iteration spec:** [`docs/design/v2_directive_detection.md`](v2_directive_detection.md) (paths to clear the gate, given the candidate detector's measured P=0.664 / R=0.937 against lab corpus v0.1).
-- **Disposition:** defer to v2.x. (H3 selective injection ships at v2.0; H2 compliance audit is dropped, not deferred.)
+- **Disposition:** defer to v2.x. (H3 was reframed and superseded by #379 — locked beliefs are the always-injected pool, no top-K on locks; H2 compliance audit is dropped, not deferred.)
 - **Gate:** ≥80% precision and ≥60% recall on a labeled sample of 200 coding prompts. Below that bar, the 29-verb regex's false-positive rate (e.g., "I never push to main when I'm tired" misclassified as a directive) pollutes the belief graph faster than the captured directives help.
 - **Why deferred:** high false-positive risk on coding prompts; no published precision/recall numbers from the research line; ~150 LOC + TODO lifecycle is meaningful surface to ship without evidence.
 
 ### Phantom promotion-trigger rule — issue #229
 
 - **Spec:** [`docs/design/historical/v2_phantom_promotion_trigger.md`](historical/v2_phantom_promotion_trigger.md)
-- **Disposition:** bench-gated for v2.0 ship.
+- **Disposition:** shipped at v2.1 via #550 — Surface A (`aelf promote <id>`) + Surface B (`aelf lock` auto-promote, Jaccard ≥ 0.9); the count-threshold trigger was explicitly rejected under #229. Row retained for the historical record.
 - **Gate:** ≥90% precision and ≥70% recall on the labeled corpus described in the spec's § Labeled-corpus benchmark. The rule itself is binary (`aelf:validate` typed, or content-matching `aelf:lock` typed) and has no tunable threshold; the benchmark verifies that the rule has acceptable recall against phantoms users would validate if asked, and acceptable precision against phantoms users would reject.
 - **Why bench-gated:** three naive triggers (N positive feedback, retrieval count, user_corrected adjacency) were rejected for conflating posterior movement with explicit validation, selection bias on user query distribution, and adjacency ≠ acknowledgment respectively. Without the benchmark, there is no way to verify the explicit-acknowledgment rule has acceptable recall — and a low-recall promotion path is silently equivalent to "no promotion path" for most users.
 - **Failure mode:** if the gate is missed, #229 stays open and the wonder line item ships without auto-promotion (phantoms remain `origin = speculative` indefinitely until the user manually validates).

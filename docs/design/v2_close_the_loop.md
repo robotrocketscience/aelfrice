@@ -1,7 +1,7 @@
 # Close the loop — measuring injection relevance against Bayesian posterior
 
 **Issue:** [#317](https://github.com/robotrocketscience/aelfrice/issues/317)
-**Status:** spec, no implementation. Implementation lands as a follow-up
+**Status:** superseded — #317 closed 2026-05-03; the loop-closure measurement was re-ratified and shipped via child issue #365 as the `aelf eval` relevance-calibration harness (P@K / ROC-AUC / Spearman ρ). Originally: implementation to land as a follow-up
 PR against this spec's acceptance list.
 **Target:** v2.x — deferred per V2_REENTRY_QUEUE; original v2.0.0 anchor
 slipped past the v2.0/v2.1 cuts without a `close_the_loop` module landing.
@@ -66,7 +66,7 @@ operation. No new logging is required for the v2.0 slice.
 | Artifact | Path | Producer |
 |---|---|---|
 | Hook audit | `<git-common-dir>/aelfrice/hook_audit.jsonl` | `aelfrice.hook:_write_hook_audit_record` |
-| Feedback events | `feedback_history` table | `MemoryStore.append_feedback_history` |
+| Feedback events | `feedback_history` table | `MemoryStore.insert_feedback_event` |
 | Belief snapshot | `beliefs` table (current `(α, β)`) | live store |
 
 The hook audit gives a per-turn record of `(prompt_prefix,

@@ -1,6 +1,6 @@
 # EXP-001: BM25 parameter tuning (`k1`, `b`)
 
-**Status:** shipped. Phase 1 (Python-side BM25 reranker) landed at v1.5.0 as `src/aelfrice/bm25.py` — a BM25F module with configurable `k1` and `b`, sparse matvec, and anchor-text support. Phase 2 (the 25-cell `(k1, b)` sweep + calibrated defaults) has not been run on the public corpus as a single experiment. This memo is retained as the original design + negative finding write-up.
+**Status:** shipped. Phase 1 landed at v1.5.0 as `src/aelfrice/bm25.py` — not the FTS5-candidate reranker sketched in Option 3 below, but a standalone BM25F sparse-matvec index (configurable `k1` and `b`, anchor-text support) that replaces the FTS5 lane entirely when `use_bm25f_anchors=True` (default-on since v1.7.0). Phase 2 (the 25-cell `(k1, b)` sweep + calibrated defaults) has not been run on the public corpus as a single experiment. This memo is retained as the original design + negative finding write-up.
 **Origin:** v1 research-brief Section C — *"BM25 has tunable parameters (k1, b) that almost everyone leaves at defaults. The defaults are tuned for general web search (long documents, varied lengths). Behavioral directives are short; high `b` (length normalization) probably hurts you. This is concrete, low-risk experimentation worth doing."*
 **Question:** Does retuning `k1` and `b` for aelfrice's typical short, behavioural-directive content improve MRR / hit@k on the synthetic harness without harming latency?
 
@@ -95,7 +95,7 @@ Either outcome is publishable. The failure mode is implementing the reranker wit
 
 ## Outcome
 
-Phase 1 shipped at v1.5.0: `src/aelfrice/bm25.py` is a BM25F module with configurable `k1` / `b`, anchor-text support, and sparse matvec. Default-on as part of the BM25F retrieval lane (`use_bm25f_anchors`). Phase 2 (the 25-cell `(k1, b)` sweep + calibrated defaults on the synthetic + academic corpora) has not been run as a single labeled experiment under this EXP number; the BM25F module ships with the original `(1.2, 0.75)` defaults.
+Phase 1 shipped at v1.5.0: `src/aelfrice/bm25.py` is a BM25F module with configurable `k1` / `b`, anchor-text support, and sparse matvec. Default-on as part of the BM25F retrieval lane (`use_bm25f_anchors`). Phase 2 (the 25-cell `(k1, b)` sweep + calibrated defaults on the synthetic + academic corpora) has not been run as a single labeled experiment under this EXP number; the BM25F module ships with `(k1=1.5, b=0.75)` defaults (`DEFAULT_K1` / `DEFAULT_B` in `src/aelfrice/bm25.py`), unchanged since the module's introduction at v1.5.0 — note `k1` already differs from FTS5's hardcoded `(1.2, 0.75)`.
 
 If you re-open this experiment, the Phase 2 work is: enable the existing knobs, run the sweep against `benchmarks/results/v3.0.1.json` baselines, and either pin a new default or close out with a documented null result.
 
@@ -103,7 +103,7 @@ If you re-open this experiment, the Phase 2 work is: enable the existing knobs, 
 
 - The brief was wrong about FTS5 exposing `k1` and `b`. The empirical proof is captured at `python -c "..."` above, reproducible against any standard `sqlite3`.
 - The experiment is still valuable; it is just bigger than the brief estimated.
-- The path forward is consistent with aelfrice's stdlib-only and determinism commitments.
+- The path forward was consistent with the then-current stdlib-only commitment as sketched; the implementation that actually shipped at v1.5.0 added numpy + scipy runtime deps (snowballstemmer at v1.7.0) — see ARCHITECTURE § principles for the current dependency posture. Determinism holds.
 - This memo is the formal write-up of a finding the brief did not anticipate; the file lives in `docs/experiments/` so future research-driven proposals have a home.
 
 ## References

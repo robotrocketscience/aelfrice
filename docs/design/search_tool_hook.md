@@ -311,8 +311,7 @@ The hook closes the gap on the agent-search code path.
 
 ## Bash extension (v1.5.0, #155)
 
-**Status:** spec.
-**Target milestone:** v1.5.0.
+**Status:** shipped (v1.5.0, #155); default-on as of v3.0.1 (#738) per the banner at the top of this document. Historical spec below.
 **Dependencies:** v1.2.x search-tool hook (this document § Design).
 Reuses the `aelfrice.hook_search_tool` entry point, the
 `retrieve()` plumbing it already calls, and the v1.5.0 BM25F lane

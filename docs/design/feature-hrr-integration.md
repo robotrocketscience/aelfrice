@@ -1,8 +1,8 @@
 # Feature spec: HRR integration — v2.1 ship plan
 
-**Status:** spec (ready for implementation)
+**Status:** shipped (#553, PRs #693/#701/#703/#704; N=50k cold-start bench artifact tracked on #697) — historical design record
 **Issue:** #553
-**Target milestone:** v2.1
+**Milestone:** v2.1/v2.2 (shipped)
 **Recovery-inventory line:** [`docs/concepts/ROADMAP.md`](../concepts/ROADMAP.md) — v2.1 row (HRR persistence + format migration)
 **Substrate prereqs:** `src/aelfrice/{hrr,hrr_index,retrieval}.py` at v1.7+ (Plate primitives shipped #216; `HRRStructIndex` for `KIND:target_id` queries shipped #152).
 
@@ -143,7 +143,7 @@ AELFRICE_HRR_PERSIST=0       # opt-out for disk-constrained envs
 AELFRICE_HRR_PERSIST=1       # force-on, overrides ephemeral-path auto-disable
 ```
 
-Resolution precedence is the existing `retrieval.py` convention: explicit kwarg → env var → TOML → default. The ephemeral-path heuristic (below) sits between the default and the env-var: an unset env var on an ephemeral path resolves to OFF; an explicit `AELFRICE_HRR_PERSIST=1` overrides.
+Resolution precedence is the existing `retrieval.py` convention: env var → explicit kwarg → TOML → default. The ephemeral-path heuristic (below) sits between the default and the env-var: an unset env var on an ephemeral path resolves to OFF; an explicit `AELFRICE_HRR_PERSIST=1` overrides.
 
 ### Ephemeral-path auto-disable
 

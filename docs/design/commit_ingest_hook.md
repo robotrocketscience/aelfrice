@@ -1,6 +1,6 @@
 # Commit-ingest hook
 
-**Status:** spec.
+**Status:** shipped (v1.2.0, #119); default-on as of v2.1.0 (#529) — installed by `aelf setup`, opt out with `--no-commit-ingest`. Historical design record below.
 **Target milestone:** v1.2.0 (named on the public roadmap as
 "commit-ingest `PostToolUse` hook").
 **Dependencies:** stdlib only. Consumes the

@@ -1,6 +1,6 @@
 # Transcript ingest
 
-**Status:** spec.
+**Status:** shipped in v1.2.0 (#111) — `aelfrice.transcript_logger`, `ingest.ingest_jsonl`, `aelf ingest-transcript`, and setup hook wiring. Historical design record below.
 **Target milestone:** v1.2.0 (rides alongside the commit-ingest hook
 and triple-extraction port; same machinery, different producer).
 **Dependencies:** the v1.2.0 ingest enrichment work — needs

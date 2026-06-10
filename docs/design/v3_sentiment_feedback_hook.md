@@ -2,7 +2,7 @@
 
 Spec for issue [#606](https://github.com/robotrocketscience/aelfrice/issues/606).
 Production wire-up of `aelfrice.sentiment_feedback` (shipped at v2.0 per #193) into a
-live `UserPromptSubmit` hook lane. Module is pure today; nothing calls it on a
+live `UserPromptSubmit` hook lane. Shipped: the UPS hook lane now calls `apply_sentiment_feedback` (`src/aelfrice/hook.py`) per this spec. At spec time the module was pure with no caller on a
 real hook fire.
 
 ## What's being decided
@@ -124,7 +124,7 @@ config key, which they will not have set. No additional plumbing needed.
 | 1. Spec memo + hook lane + decay policy | this memo |
 | 2. Determinism property | §Determinism above; existing module + regex |
 | 3. Privacy property | §5 Privacy posture above |
-| 4. Two-session bench fixture | `tests/test_hook_sentiment_feedback.py::test_correction_lowers_subsequent_ranking` |
+| 4. Two-session bench fixture | `tests/test_hook_sentiment_feedback.py::test_correction_lowers_subsequent_ranking_across_sessions` |
 | 5. Audit row per fire | §3 above; new tag `sentiment_feedback` |
 
 ## Out of scope

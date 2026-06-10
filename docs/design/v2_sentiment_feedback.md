@@ -2,7 +2,7 @@
 
 Spec for issue [#193](https://github.com/robotrocketscience/aelfrice/issues/193). Substrate-cascade addendum to [`substrate_decision.md`](historical/substrate_decision.md) (#196 ratified Option B).
 
-Status: module shipped, hook integration pending. `src/aelfrice/sentiment_feedback.py` ports the research-line module (detect_sentiment, distribute, is_enabled). `aelf health` surfaces enabled/disabled state via `_sentiment_from_prose_state`. The transcript-ingest hook does not yet call `detect_sentiment` per turn — that wire-up is the open work. Recommended posture is unchanged: opt-in via `.aelfrice.toml`, off by default.
+Status: shipped end-to-end. `src/aelfrice/sentiment_feedback.py` ports the research-line module (detect_sentiment, distribute, is_enabled); the hook wire-up shipped at v3.0 via #606 — the UserPromptSubmit lane calls `detect_sentiment` per prompt and applies the signal to the prior turn's retrieved beliefs. `aelf health` surfaces enabled/disabled state. Posture unchanged: opt-in via `.aelfrice.toml`, off by default.
 
 ## What's being decided
 
