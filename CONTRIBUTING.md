@@ -4,7 +4,7 @@ Thanks for considering a contribution. aelfrice is a one-author project — the 
 
 ## Status
 
-Current line: **v3.3.0** (see [ROADMAP](docs/concepts/ROADMAP.md)). Issues are welcome. PRs are evaluated on a case-by-case basis — the bar is "moves the system measurably forward, justifies the change with a test."
+Current line: see [CHANGELOG.md](CHANGELOG.md) for the latest release and [ROADMAP](docs/concepts/ROADMAP.md) for the landing record. Issues are welcome. PRs are evaluated on a case-by-case basis — the bar is "moves the system measurably forward, justifies the change with a test."
 
 Best categories of PR:
 
@@ -34,14 +34,16 @@ Body should include:
 - **Environment** — OS, Python version (`python --version`), aelfrice version, MCP host (if relevant).
 - **A minimal repro.** A directory you can `aelf onboard <here>` and reproduce, or the smallest sequence of CLI calls that triggers it.
 
-Don't include `~/.aelfrice/memory.db` from a real project — it contains your private beliefs. Reproduce on a scratch DB (`AELFRICE_DB=/tmp/scratch.db`) and share that.
+Don't include your real memory.db (at `<repo>/.git/aelfrice/memory.db`, or `~/.aelfrice/memory.db` for non-git directories) — it contains your private beliefs. Reproduce on a scratch DB (`AELFRICE_DB=/tmp/scratch.db`) and share that.
 
 ## Triage labels
 
-The issue tracker uses a small label vocabulary that gh-driven tooling
-(`aelf-scan.sh`, `aelf-claim.sh`; see `src/aelfrice/cli.py` and
-`src/aelfrice/gate_list.py`) reads to decide whether an open issue is
-ready to be claimed or should be hidden from the active queue. Apply
+The issue tracker uses a small label vocabulary. The in-repo `aelf gate
+list` aggregator (`src/aelfrice/gate_list.py`) reads `gate:ratify` /
+`gate:prereq` / `bench-gated` / `gate:license` via `gh`; the remaining
+labels are read by operator-side scan tooling (not shipped in this
+repo) to decide whether an open issue is ready to be claimed or should
+be hidden from the active queue. Apply
 one or more of these at file-time when an issue isn't immediately
 actionable:
 
@@ -72,7 +74,7 @@ on every fresh scan.
 
 ## Where to look for work
 
-[ROADMAP](docs/concepts/ROADMAP.md) carries the version-by-version landing record (v1.0 → v3.3) plus the current active line. [LIMITATIONS](docs/user/LIMITATIONS.md) lists known gaps against current HEAD. The issue tracker is the canonical source of in-flight work — `aelf-scan.sh` queries it directly.
+[ROADMAP](docs/concepts/ROADMAP.md) carries the version-by-version landing record plus the current active line. [LIMITATIONS](docs/user/LIMITATIONS.md) lists known gaps against current HEAD. The issue tracker is the canonical source of in-flight work.
 
 Highest-leverage contributions tend to land in three places:
 
