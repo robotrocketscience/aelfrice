@@ -29,6 +29,7 @@ Tool surface (all under the `aelf:` namespace at the host):
   aelf:confirm         {belief_id, source?, note?}       -> affirmed priors
   aelf:stats           {}                                -> counts
   aelf:health          {}                                -> regime report
+  aelf:wonder          {query, budget?, depth?, agent_count?} -> research axes
   aelf:wonder_persist  {query, budget?, depth?, top?, seed?} -> insert summary
   aelf:wonder_gc       {ttl_days?, dry_run?}            -> gc summary
 
@@ -800,9 +801,11 @@ def tool_stats(
         "kind": "stats.snapshot",
         "version": _aelf_version,
         "beliefs": store.count_beliefs(),
-        # `edges` is the v1.0 key. v1.1.0 adds `threads` as the
-        # forward-compatible alias and emits both for one minor; v1.2.0
-        # drops `edges`. Clients should migrate now.
+        # `edges` is the v1.0 key; v1.1.0 added `threads` as the
+        # forward-compatible alias. Both are emitted with the same value.
+        # The originally-planned v1.2.0 drop of `edges` did not happen
+        # and is no longer scheduled — both remain emitted indefinitely.
+        # Prefer `threads` in new code; legacy `edges` clients keep working.
         "edges": n_edges,
         "threads": n_edges,
         "locked": store.count_locked(),
@@ -1603,7 +1606,7 @@ def serve() -> None:
 
         Returns: {"kind": "stats.snapshot",
                   "beliefs": int,
-                  "edges": int,    # v1.0 key (deprecated, removed v1.2)
+                  "edges": int,    # v1.0 key (retained indefinitely; prefer threads)
                   "threads": int,  # v1.1 key (forward-compatible alias)
                   "locked": int,
                   "feedback_events": int,
