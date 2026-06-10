@@ -6,15 +6,17 @@ This is the reference for power users whose project has a documentation idiom or
 
 ## What it does
 
-A single optional TOML file at the root of a project (or any ancestor). It exposes two power-user surfaces:
+A single optional TOML file at the root of a project (or any ancestor). It exposes the following power-user surfaces:
 
 - `[noise]` — onboard-time belief filter. Changes how `aelf onboard` ingests beliefs; nothing else.
-- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, default-on since v2.1), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, default-on since #769), `use_intentional_clustering` (co-locating related beliefs, default-on since v3.0). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
-- `[rebuilder]` (v1.7+) — context-rebuilder knobs. Selects the query-understanding stack (`query_strategy`) and sets token-budget floors for the session-scoped and L1 belief lanes (`[rebuild_floor] session` and `[rebuild_floor] l1`).
+- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, default-on since v2.1), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, default-on since #769), `use_intentional_clustering` (co-locating related beliefs, default-on since v3.0), `expansion_gate_enabled`, `use_gamma_posterior_temperature` (default off), and `use_zeta_posterior_rerank` (default off; mutually exclusive with the γ flag — `retrieve()` raises `ValueError` when both are on). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
+- `[rebuilder]` (v1.4+) — context-rebuilder knobs: `turn_window_n` (default 50), `token_budget` (default 4000), `trigger_mode` (`manual`|`threshold`|`dynamic`, default `threshold`), `threshold_fraction` (default 0.6), and `query_strategy` (v1.7+, default `stack-r1-r3` since v3.0). `[rebuild_floor]` (v1.7+) sets the token-budget floors for the session-scoped and L1 belief lanes (`[rebuild_floor] session` and `[rebuild_floor] l1`).
+- `[onboard.llm]` (v1.3.0+) — direct-API onboard classifier gate; documented under [Keys § `[onboard.llm]`](#onboardllm-v130) below.
+- `[cadence]`, `[implicit_feedback]`, and `[hook_audit]` — feedback-cadence scoring, deferred retrieval-exposure feedback, and the per-turn hook audit log. Recognised here but documented in their module docstrings (`src/aelfrice/cadence.py`, `src/aelfrice/deferred_feedback.py`, `src/aelfrice/hook.py`).
 - `[feedback]` (v3.0+) — feedback-lane opt-ins. `sentiment_from_prose` (default `false`) wires the sentiment-feedback detector into `UserPromptSubmit` (#606).
 - `[user_prompt_submit_hook]` (v3.0+) — UPS hook knobs. `prompt_shape_gate_enabled` (default `true`) gates trivial-prompt and system-envelope short-circuits before BM25 retrieval runs (#674). `conversation_aware_query_enabled` (default `true`, v3.x #909) folds a small window of recent dialog turns into the BM25 query so paraphrase / pronoun / numeric-reference follow-ups still surface the load-bearing thread; tuned by `conversation_aware_turn_window` (default `4`) and `conversation_aware_prompt_weight` (default `3`).
 
-Locks, hooks, MCP tools, and the Bayesian feedback math are not affected.
+Locks and the MCP tool surface are not affected. Hook behavior IS configurable here (`[user_prompt_submit_hook]`, `[feedback]`, `[cadence]`, `[hook_audit]`); the Bayesian update math itself is not.
 
 `scan_repo` walks up from the scan root looking for `.aelfrice.toml`. The first one found wins. The walk stops at the filesystem root — there is no global / per-user config.
 
@@ -124,8 +126,8 @@ use_intentional_clustering = true
 # the context rebuilder. Default `"stack-r1-r3"` since v3.0; runs
 # entity expansion + per-store IDF clipping via aelfrice.query_understanding.
 # Set to `"legacy-bm25"` for the v1.4-byte-identical escape hatch.
-# `"legacy-bm25"` is sequenced for removal as PR-4 (#291) one minor
-# release after the flip.
+# `"legacy-bm25"` remains available as an escape hatch; its removal
+# (PR-4 of #291) is deferred and currently unscheduled.
 query_strategy = "stack-r1-r3"
 
 [rebuild_floor]
@@ -159,7 +161,7 @@ sentiment_from_prose = false
 # prompt shapes: system-envelope echoes (prompts that start with a
 # <task-notification> / <system-*> / <tool-result> tag) and trivial
 # acks (stripped length < 12, <= 2 words after punctuation strip,
-# or a normalized match against a fixed 17-word ack set: "yes",
+# or a normalized match against a fixed 16-entry ack set: "yes",
 # "ok", "continue", "keep going", etc.). When the gate fires,
 # hits = [] and the hook-audit row records the reason
 # (prompt_shape_gate_skip="trivial:ack:yes",
@@ -184,7 +186,7 @@ conversation_aware_turn_window = 4
 conversation_aware_prompt_weight = 3
 
 [onboard.llm]
-# v1.3.0+; default flipped to true in v1.5.0 (#238). Host-driven
+# v1.3.0+; default flipped to true in v1.5.1 (#238). Host-driven
 # classification routes through the host model's Task tool — no API
 # key required for the default path. The direct-API path (when the
 # host has no Task tool reachable) requires the [onboard-llm] extra
@@ -383,7 +385,7 @@ query string -> parse_structural_marker
               miss: textual lane (BM25F + heat-kernel + BFS)
 ```
 
-A marker is a leading uppercase edge-type token followed by `:` and a non-empty target belief id. Recognised kinds match `aelfrice.models.EDGE_TYPES` (currently `SUPPORTS`, `CITES`, `RELATES_TO`, `SUPERSEDES`, `CONTRADICTS`, `DERIVED_FROM`). Case-sensitive: `contradicts:b/abc` does not match and falls through to the textual lane on the literal string. Whitespace inside the target is preserved; leading/trailing whitespace on the query is stripped.
+A marker is a leading uppercase edge-type token followed by `:` and a non-empty target belief id. Recognised kinds match `aelfrice.models.EDGE_TYPES` — the full current set is `SUPPORTS`, `CITES`, `CONTRADICTS`, `SUPERSEDES`, `RELATES_TO`, `DERIVED_FROM`, `IMPLEMENTS`, `TEMPORAL_NEXT`, `TESTS`, `RESOLVES`; treat the constant as the source of truth. Case-sensitive: `contradicts:b/abc` does not match and falls through to the textual lane on the literal string. Whitespace inside the target is preserved; leading/trailing whitespace on the query is stripped.
 
 Examples:
 
@@ -415,7 +417,7 @@ Set `AELFRICE_HRR_PERSIST=1` to override the auto-disable. The TOML key cannot o
 
 Precedence (first decisive wins): env var `AELFRICE_HRR_PERSIST` (truthy `"1"`/`"true"`/`"yes"`/`"on"` forces on; falsy `"0"`/`"false"`/`"no"`/`"off"` disables) > explicit `persist_enabled=<bool>` on `HRRStructIndexCache(...)` > TOML `[retrieval] hrr_persist` > default `true`. Non-boolean TOML values trace to stderr and fall through to the default. The canonical construction site is `aelfrice.retrieval.make_hrr_struct_cache(...)`, which threads the resolved value into the cache for callers that don't manage flag resolution themselves.
 
-**When to disable.** Disk-constrained deployments (the on-disk blob is 328 MB at N=10k, 1.64 GB at N=50k; federation × multiple stores amplifies) and read-only filesystems are the two cases the opt-out exists for. Operators see the resolved state via `aelf doctor` (`hrr.persist_enabled` row) and `aelf status` (`hrr.persist_state` summary line).
+**When to disable.** Disk-constrained deployments (the on-disk blob is 8·N·dim bytes — ~41 MB at N=10k and ~200 MB at N=50k at the default dim=512, ~800 MB at N=50k with the dim=2048 escape hatch; federation × multiple stores amplifies) and read-only filesystems are the two cases the opt-out exists for. Operators see the resolved state via `aelf doctor` (`hrr.persist_enabled` row) and `aelf status` (`hrr.persist_state` summary line).
 
 ### `use_type_aware_compression`
 
@@ -449,7 +451,7 @@ String, one of `"stack-r1-r3"` or `"legacy-bm25"`. Default `"stack-r1-r3"` since
 | Value | Effect |
 |---|---|
 | `"stack-r1-r3"` (default since v3.0) | Runs the R1+R3 query-understanding stack: entity expansion followed by per-store IDF clipping. See `aelfrice.query_understanding` for the rewriter contract. Bench evidence (2026-05-12, 30-row corpus): mean NDCG@k 0.3006 → 0.5858 (+0.2851 absolute). |
-| `"legacy-bm25"` | Byte-identical to the v1.4 raw-BM25 path. Opt-in escape hatch for operators who need the exact pre-v3.0 retrieval shape. Removal is sequenced as PR-4 (#291), one minor release after the flip. |
+| `"legacy-bm25"` | Byte-identical to the v1.4 raw-BM25 path. Opt-in escape hatch for operators who need the exact pre-v3.0 retrieval shape. Removal (PR-4 of #291) is deferred and currently unscheduled; the escape hatch remains available. |
 
 Unrecognised values trace to stderr and fall back to `"stack-r1-r3"`.
 
@@ -478,7 +480,7 @@ Locks, manually inserted beliefs, and feedback history will be lost. For a less 
 
 ## What this file does not do
 
-- Does not affect retrieval. The filter only runs at onboard time.
+- The `[noise]` table does not affect retrieval — the noise filter only runs at onboard time. (Retrieval-time behavior is governed by `[retrieval]`, `[rebuilder]`, and `[user_prompt_submit_hook]` above.)
 - Does not affect `aelf lock` or `aelf:lock`. Manually-asserted beliefs bypass the noise filter.
 - Does not redefine the four built-in categories. You can disable them, not modify what they match. Use `exclude_words` / `exclude_phrases` for custom rules.
 - Does not load from `pyproject.toml`, env vars, or CLI flags.
@@ -501,26 +503,24 @@ If the file is malformed, unreadable, or contains wrong-typed values, the filter
 - [ARCHITECTURE § Modules](../concepts/ARCHITECTURE.md) — where `noise_filter.py` sits.
 - [LIMITATIONS § Onboarding scope](LIMITATIONS.md) — what's still on the horizon for onboard behaviour.
 
-## Pre-issue-create guard (`aelf-pre-issue-hook`, v3.4.0+)
+## Pre-issue-create guard (`aelf-pre-issue-hook`, v3.5.0+)
 
 A `PreToolUse:Bash` hook that fires when the agent is about to run `gh issue create`. It
 checks the proposed title against open and closed issues (via `gh issue list --state all`)
 and recent commit messages (via `git log --grep`) and blocks the call (exit 2) if any
-candidate's Jaccard token-overlap with the title exceeds 0.5.
+candidate's Jaccard token-overlap with the title is >= 0.5.
 
 **Default:** on. Installed automatically by `aelf setup` and the auto-install manifest.
 
-**Opt-out per-call:**
-
-```bash
-ALLOW_DUP_ISSUE=1 gh issue create --title "..."   # bypass once
-```
+**Opt-out per-call:** there is no inline per-call bypass — an `ALLOW_DUP_ISSUE=1` prefix on the `gh` command itself never reaches the hook (the guard reads the env var from the *host process's* environment, and its command parser strips leading `KEY=VAL` assignments before matching). To bypass once, set `ALLOW_DUP_ISSUE=1` in the host's environment (e.g. launch the host with it set), run the command, then unset it.
 
 **Opt-out globally (persists across upgrades):**
 
 ```bash
 AELFRICE_NO_PRE_ISSUE_GUARD=1   # set in shell profile to disable entirely
-aelf setup --no-pre-issue-guard  # remove from settings.json + persist opt-out
+aelf setup --no-pre-issue-guard  # persist opt-out (~/.aelfrice/opt-out-hooks.json) so upgrades skip it;
+                                 # does NOT remove an already-installed settings.json entry — use
+                                 # `aelf unsetup` (removes all aelfrice hook entries) for that
 ```
 
 The guard is deterministic (no embeddings, no LLM calls). Tokenization strips the
