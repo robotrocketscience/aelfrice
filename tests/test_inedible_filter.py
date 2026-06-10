@@ -60,6 +60,23 @@ def test_is_inedible_path_matches_basename() -> None:
     assert is_inedible_path("/path/INEDIBLE_secrets.txt")
 
 
+def test_is_inedible_path_accepts_path_or_string(tmp_path: Path) -> None:
+    """is_inedible_path accepts Path or str for both `path` and `root`,
+    mirroring test_is_inedible_accepts_path_or_string and keeping the
+    polymorphic API contract explicit (`root` is keyword-only)."""
+    root = tmp_path / "root"
+    nested = root / "INEDIBLE_drafts"
+    nested.mkdir(parents=True)
+    f = nested / "notes.jsonl"
+    assert is_inedible_path(f, root=root)
+    assert is_inedible_path(str(f), root=root)
+    assert is_inedible_path(f, root=str(root))
+    assert is_inedible_path(str(f), root=str(root))
+    # root=None path also accepts both types
+    assert is_inedible_path("/a/INEDIBLE/b.jsonl")
+    assert is_inedible_path(Path("/a/INEDIBLE/b.jsonl"))
+
+
 def test_is_inedible_path_propagates_from_ancestor_dir() -> None:
     """Unlike is_inedible, the path-aware helper excludes a file beneath
     an INEDIBLE-named directory (#958)."""
