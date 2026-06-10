@@ -7,7 +7,9 @@ without duplicating code.
 
 Public API:
 
-- ``DEFAULT_CALIBRATION_CORPUS`` — bundled synthetic corpus path.
+- ``DEFAULT_CALIBRATION_CORPUS`` — repo-checkout synthetic corpus path
+  (``benchmarks/posterior_ranking/fixtures/default.jsonl``; not packaged
+  in the wheel — wheel installs must pass ``--corpus``).
 - ``DEFAULT_K`` / ``DEFAULT_SEED`` — defaults.
 - ``load_calibration_fixtures(path)`` — fail-soft JSONL loader.
 - ``build_calibration_store(fixture, seed)`` — fresh in-memory store.

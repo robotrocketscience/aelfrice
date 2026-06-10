@@ -3135,8 +3135,10 @@ def _cmd_eval(args: argparse.Namespace, out: object) -> int:
     Reuses ``aelfrice.eval_harness`` to score a synthetic corpus of
     ``(query, known_belief, noise_beliefs)`` fixtures and report
     P@K / ROC-AUC / Spearman ρ. Default corpus is the public synthetic
-    fixture bundled with the wheel; ``--corpus PATH`` points at any
-    JSONL with the same row schema.
+    fixture at ``benchmarks/posterior_ranking/fixtures/default.jsonl``,
+    present only in a repo checkout (not packaged in the wheel — wheel
+    installs must pass ``--corpus PATH``); ``--corpus PATH`` points at
+    any JSONL with the same row schema.
 
     Determinism contract (#365 ship gate): same ``(corpus, --k, --seed)``
     -> bytes-identical output across reruns.
@@ -7449,8 +7451,9 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         metavar="PATH",
         help=(
             "JSONL corpus with (query, known_belief_content, "
-            "noise_belief_contents) rows. Default: bundled public "
-            "synthetic corpus."
+            "noise_belief_contents) rows. Default: the repo-checkout "
+            "synthetic corpus (not in the wheel; required for wheel "
+            "installs)."
         ),
     )
     p_eval.add_argument(
