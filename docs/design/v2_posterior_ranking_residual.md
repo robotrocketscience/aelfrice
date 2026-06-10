@@ -121,6 +121,6 @@ The five calls above are the queen work. Once thresholds and sequencing are sett
 - v1.3 partial spec: [`bayesian_ranking.md`](bayesian_ranking.md). This memo extends rather than replaces.
 - Pipeline contract: [#154](https://github.com/robotrocketscience/aelfrice/issues/154) defines `retrieve()` composing the three terms.
 - Re-scope comment: [#151 closing comment](https://github.com/robotrocketscience/aelfrice/issues/151#issuecomment) handed v2.0 the residual after #146 shipped the core.
-- Substrate: [`substrate_decision.md`](substrate_decision.md) — independent of this spec; either substrate option preserves the scalar `posterior_mean` interface this spec consumes.
+- Substrate: [`substrate_decision.md`](historical/substrate_decision.md) — independent of this spec; either substrate option preserves the scalar `posterior_mean` interface this spec consumes.
 - BM25F dependency: #148 (shipped). Heat-kernel dependency: #150 (not started).
-- Adjacent specs: [`v2_replay.md`](v2_replay.md), [`v2_view_flip.md`](v2_view_flip.md), [`v2_derivation_worker.md`](v2_derivation_worker.md) — all v2.x cascade addenda; this memo follows the same pattern.
+- Adjacent specs: [`v2_replay.md`](historical/v2_replay.md), [`v2_view_flip.md`](historical/v2_view_flip.md), [`v2_derivation_worker.md`](historical/v2_derivation_worker.md) — all v2.x cascade addenda; this memo follows the same pattern.

@@ -1,6 +1,6 @@
 # v2.x spec: derivation worker — beliefs become materialized state
 
-Spec for issue [#264](https://github.com/robotrocketscience/aelfrice/issues/264). Cascade addendum to [`design/write-log-as-truth.md`](write-log-as-truth.md). The actual refactor; #261/#262/#263 are scaffolding for this.
+Spec for issue [#264](https://github.com/robotrocketscience/aelfrice/issues/264). Cascade addendum to [`design/write-log-as-truth.md`](../write-log-as-truth.md). The actual refactor; #261/#262/#263 are scaffolding for this.
 
 Status: spec, no implementation. Recommendation included; decision is the user's.
 
@@ -85,6 +85,6 @@ The four decisions above are the design work. The body the issue lists at ~400 L
 
 ## Provenance
 
-- Source-of-truth: [`docs/design/write-log-as-truth.md`](write-log-as-truth.md) §§ "What changes under the proposed contract", "Costs and risks".
+- Source-of-truth: [`docs/design/write-log-as-truth.md`](../write-log-as-truth.md) §§ "What changes under the proposed contract", "Costs and risks".
 - Upstream chain: #205 → #261 → #262 → **#264 this issue** → #265.
 - Equality contract that the worker must satisfy: [`v2_replay.md`](v2_replay.md).

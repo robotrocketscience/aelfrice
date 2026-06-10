@@ -53,7 +53,7 @@ Multi-provider voting on a single prompt is a narrower mechanism than research-a
 ## Refs
 
 - [`v2_multimodel.md`](v2_multimodel.md) — predecessor deferral memo (five reasons reaffirmed)
-- [`substrate_decision.md`](substrate_decision.md) — Option B ratified; removes multimodel's strongest historical justification (per-aspect classification)
+- [`substrate_decision.md`](historical/substrate_decision.md) — Option B ratified; removes multimodel's strongest historical justification (per-aspect classification)
 - [`v3_relatedness_philosophy.md`](v3_relatedness_philosophy.md) — sibling v3 design-cut memo; same determinism-property posture
 - [`PHILOSOPHY.md`](../concepts/PHILOSOPHY.md) § *Determinism is the property*
 - [`PRIVACY.md`](../user/PRIVACY.md) § *Optional outbound*

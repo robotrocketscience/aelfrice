@@ -1,6 +1,6 @@
 # v2.0 evaluation: sentiment-from-prose feedback
 
-Spec for issue [#193](https://github.com/robotrocketscience/aelfrice/issues/193). Substrate-cascade addendum to [`substrate_decision.md`](substrate_decision.md) (#196 ratified Option B).
+Spec for issue [#193](https://github.com/robotrocketscience/aelfrice/issues/193). Substrate-cascade addendum to [`substrate_decision.md`](historical/substrate_decision.md) (#196 ratified Option B).
 
 Status: module shipped, hook integration pending. `src/aelfrice/sentiment_feedback.py` ports the research-line module (detect_sentiment, distribute, is_enabled). `aelf health` surfaces enabled/disabled state via `_sentiment_from_prose_state`. The transcript-ingest hook does not yet call `detect_sentiment` per turn — that wire-up is the open work. Recommended posture is unchanged: opt-in via `.aelfrice.toml`, off by default.
 
@@ -50,4 +50,4 @@ The privacy story is "we are now doing more with prompts you already submitted t
 
 Research-line module: `agentmemory/sentiment_feedback.py` (~174 LOC, stdlib-only).
 Lab parity audit: `aelfrice-lab/docs/agentmemory-parity-audit-2026-04-28.md` § 9.
-Substrate ratification: [substrate_decision.md](substrate_decision.md) (Option B). Substrate-neutral; this module emits scalar feedback events.
+Substrate ratification: [substrate_decision.md](historical/substrate_decision.md) (Option B). Substrate-neutral; this module emits scalar feedback events.

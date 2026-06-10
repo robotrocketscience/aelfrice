@@ -1,6 +1,6 @@
 # v2.0 spec: phantom promotion-trigger rule
 
-Spec for issue [#229](https://github.com/robotrocketscience/aelfrice/issues/229). Substrate-cascade addendum to [`substrate_decision.md`](substrate_decision.md) (#196 ratified Option B). Companion to [`v2_wonder_consolidation.md`](v2_wonder_consolidation.md) (#228) — that issue specifies the strategy that generates phantoms; this issue specifies the rule that promotes them to `origin = user_validated`.
+Spec for issue [#229](https://github.com/robotrocketscience/aelfrice/issues/229). Substrate-cascade addendum to [`substrate_decision.md`](substrate_decision.md) (#196 ratified Option B). Companion to [`v2_wonder_consolidation.md`](../v2_wonder_consolidation.md) (#228) — that issue specifies the strategy that generates phantoms; this issue specifies the rule that promotes them to `origin = user_validated`.
 
 Status: spec, no implementation. **Recommendation included** for the rule shape; threshold tuning requires the labeled-corpus benchmark below.
 
@@ -176,5 +176,5 @@ deterministic-narrow-surface approach to phantom-lock matching.
 ## Provenance
 
 Lab memory cited in issue body: `103307e54dc4ee70` (2026-04-28).
-Companion: [v2_wonder_consolidation.md](v2_wonder_consolidation.md) (#228).
+Companion: [v2_wonder_consolidation.md](../v2_wonder_consolidation.md) (#228).
 Substrate ratification: [substrate_decision.md](substrate_decision.md) (Option B). Substrate-compatible; no per-axis state involved.

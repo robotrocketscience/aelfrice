@@ -1,6 +1,6 @@
 # v2.0 research spec: wonder-consolidation generation strategy bake-off
 
-Spec for issue [#228](https://github.com/robotrocketscience/aelfrice/issues/228). Substrate-cascade addendum to [`substrate_decision.md`](substrate_decision.md) (#196 ratified Option B). Companion to [`v2_phantom_promotion_trigger.md`](v2_phantom_promotion_trigger.md) (#229) — that issue specifies the rule applied to the phantoms this issue's strategy generates.
+Spec for issue [#228](https://github.com/robotrocketscience/aelfrice/issues/228). Substrate-cascade addendum to [`substrate_decision.md`](historical/substrate_decision.md) (#196 ratified Option B). Companion to [`v2_phantom_promotion_trigger.md`](historical/v2_phantom_promotion_trigger.md) (#229) — that issue specifies the rule applied to the phantoms this issue's strategy generates.
 
 Status: lifecycle and dispatch shipped at v2.1+. `src/aelfrice/wonder_consolidation.py` is wired; the `aelf:wonder` MCP tool and the `aelf wonder --axes` CLI verb both ship. The generation-strategy bake-off (RW / TC / STS / ensemble) below is still the open question — gated on lab pre-registration close.
 
@@ -70,4 +70,4 @@ These commit the public side regardless of campaign outcome:
 
 Lab pre-registration: `aelfrice-lab/experiments/wonder-consolidation/HYPOTHESES.md` (2026-04-28).
 Lab beliefs cited in the issue body: `c7202e80`, `85951e1d`, `2677f4f2`, `0ebc73d68a`.
-Substrate ratification: [substrate_decision.md](substrate_decision.md) (Option B). Substrate-compatible; `α ≥ 12` promotion threshold uses scalar form.
+Substrate ratification: [substrate_decision.md](historical/substrate_decision.md) (Option B). Substrate-compatible; `α ≥ 12` promotion threshold uses scalar form.

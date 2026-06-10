@@ -1,6 +1,6 @@
 # v2.x spec: `replay_full_equality` — flip-readiness probe
 
-Spec for issue [#262](https://github.com/robotrocketscience/aelfrice/issues/262). Cascade addendum to [`design/write-log-as-truth.md`](write-log-as-truth.md). Gates the view-flip in [`v2_view_flip.md`](v2_view_flip.md).
+Spec for issue [#262](https://github.com/robotrocketscience/aelfrice/issues/262). Cascade addendum to [`design/write-log-as-truth.md`](../write-log-as-truth.md). Gates the view-flip in [`v2_view_flip.md`](v2_view_flip.md).
 
 Status: spec, no implementation. Recommendation included; decision is the user's.
 
@@ -85,6 +85,6 @@ kinds. The schema contract lives at
 
 ## Provenance
 
-- Source-of-truth: [`docs/design/write-log-as-truth.md`](write-log-as-truth.md) §§ "What changes under the proposed contract", "Smallest first step".
+- Source-of-truth: [`docs/design/write-log-as-truth.md`](../write-log-as-truth.md) §§ "What changes under the proposed contract", "Smallest first step".
 - Substrate ratification: [`substrate_decision.md`](substrate_decision.md) (#196 Option B). Beta-Bernoulli's posterior drift behavior is what motivates shape-equality over bit-equality here.
 - Upstream chain: #205 (parallel-write phase, merged) → #261 (derivation function) → **#262 this issue** → #403 (soak gate operationalization) → #264 (worker) → #265 (view-flip).

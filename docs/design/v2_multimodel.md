@@ -1,6 +1,6 @@
 # v2.0 evaluation: multi-LLM consensus module
 
-Spec for issue [#198](https://github.com/robotrocketscience/aelfrice/issues/198). Substrate-cascade addendum to [`substrate_decision.md`](substrate_decision.md) (#196 ratified Option B).
+Spec for issue [#198](https://github.com/robotrocketscience/aelfrice/issues/198). Substrate-cascade addendum to [`substrate_decision.md`](historical/substrate_decision.md) (#196 ratified Option B).
 
 Status: spec, no implementation. **Recommendation: defer to v2.x with a strict evidence-gate.**
 
@@ -42,4 +42,4 @@ Five reasons:
 
 Research-line module: `agentmemory/multimodel.py` (~143-189 LOC depending on extension surface).
 Lab parity audit: `aelfrice-lab/docs/agentmemory-parity-audit-2026-04-28.md` § 5.
-Substrate ratification: [substrate_decision.md](substrate_decision.md) (Option B). Note: the substrate decision removed multimodel's strongest historical justification.
+Substrate ratification: [substrate_decision.md](historical/substrate_decision.md) (Option B). Note: the substrate decision removed multimodel's strongest historical justification.

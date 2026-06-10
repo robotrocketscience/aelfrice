@@ -408,7 +408,7 @@ the new edge will participate.
 
 This was the load-bearing reason `RetrievalCache` was specified
 with edge mutators in the invalidation set at v1.0.1 — see
-[lru_query_cache.md § Invalidation](lru_query_cache.md#invalidation).
+[lru_query_cache.md § Invalidation](historical/lru_query_cache.md#invalidation).
 The v1.0.1 spec said: "A finer-grained policy ... is a later
 optimization. v1.0.1 ships the wipe-on-write version." v1.3.0
 inherits that decision.

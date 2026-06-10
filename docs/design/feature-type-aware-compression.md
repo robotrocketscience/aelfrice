@@ -9,7 +9,7 @@
 
 ## Purpose
 
-At a fixed retrieval `token_budget`, today's path either includes a belief verbatim or trims it from the tail. Per [`docs/design/historical/belief_retention_class.md`](belief_retention_class.md), beliefs vary in expected lifetime: `fact` rows describe stable codebase state; `snapshot` rows are research-thought; `transient` rows are PR-window scratch. The retrieval pack treats them identically. Type-aware compression spends fewer tokens per `snapshot` and `transient` belief so more total beliefs fit, without sacrificing fidelity on the `fact` rows that carry load.
+At a fixed retrieval `token_budget`, today's path either includes a belief verbatim or trims it from the tail. Per [`docs/design/historical/belief_retention_class.md`](historical/belief_retention_class.md), beliefs vary in expected lifetime: `fact` rows describe stable codebase state; `snapshot` rows are research-thought; `transient` rows are PR-window scratch. The retrieval pack treats them identically. Type-aware compression spends fewer tokens per `snapshot` and `transient` belief so more total beliefs fit, without sacrificing fidelity on the `fact` rows that carry load.
 
 The compressor is **structural**: deterministic, byte-stable, no LLM. The contract is "same belief input → same compressed output, byte-for-byte" — issue #434 acceptance #3 makes this explicit, and is the single line that distinguishes this from a summariser.
 

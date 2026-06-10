@@ -1,6 +1,6 @@
 # v2.0 evaluation: enforcement triad
 
-Spec for issue [#199](https://github.com/robotrocketscience/aelfrice/issues/199). Substrate-cascade addendum to [`substrate_decision.md`](substrate_decision.md) (#196 ratified Option B).
+Spec for issue [#199](https://github.com/robotrocketscience/aelfrice/issues/199). Substrate-cascade addendum to [`substrate_decision.md`](historical/substrate_decision.md) (#196 ratified Option B).
 
 Status: H3 reframed and superseded by [#379](https://github.com/robotrocketscience/aelfrice/issues/379) (locked beliefs are the always-injected pool — see § Downstream impact below); H1 split + deferred + bench-gated ([#374](https://github.com/robotrocketscience/aelfrice/issues/374)); H2 dropped per § H2 below.
 
@@ -60,4 +60,4 @@ If a future user actually needs compliance auditing, the right path is a separat
 
 Research-line module: `agentmemory/enforcement.py` (~347-373 LOC depending on extension surface).
 Lab parity audit: `aelfrice-lab/docs/agentmemory-parity-audit-2026-04-28.md` § 14.
-Substrate ratification: [substrate_decision.md](substrate_decision.md) (Option B). Substrate-neutral; H3 scoring works on scalar `posterior_mean`.
+Substrate ratification: [substrate_decision.md](historical/substrate_decision.md) (Option B). Substrate-neutral; H3 scoring works on scalar `posterior_mean`.

@@ -1,6 +1,6 @@
 # v2.0 evaluation: dedup module
 
-Spec for issue [#197](https://github.com/robotrocketscience/aelfrice/issues/197). Substrate-cascade addendum to [`substrate_decision.md`](substrate_decision.md) (#196 ratified Option B).
+Spec for issue [#197](https://github.com/robotrocketscience/aelfrice/issues/197). Substrate-cascade addendum to [`substrate_decision.md`](historical/substrate_decision.md) (#196 ratified Option B).
 
 Status: read-path shipped. `src/aelfrice/dedup.py` is wired and exposed via `aelf doctor dedup` (audit-only mode); it's also imported by `relationship_detector.py`. The write-path `SUPERSEDES` hook (collapse-on-ingest) is bench-gated behind the corpus benchmark and remains deferred per V2_REENTRY_QUEUE.
 
@@ -40,4 +40,4 @@ Three reasons:
 
 Research-line module: `agentmemory/dedup.py` (254 LOC, stdlib-only).
 Lab parity audit: `aelfrice-lab/docs/agentmemory-parity-audit-2026-04-28.md` § 2.
-Substrate ratification: [substrate_decision.md](substrate_decision.md) (Option B).
+Substrate ratification: [substrate_decision.md](historical/substrate_decision.md) (Option B).
