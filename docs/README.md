@@ -8,7 +8,7 @@ Documentation, organized by audience.
 | -------------------------------------------- | ------------------------------------------------------------------ |
 | [`user/`](user/)                             | Operational reference: install, commands, slash commands, MCP, config, privacy, limitations. Start here if you're using aelfrice. |
 | [`concepts/`](concepts/)                     | Background and project context: architecture, philosophy, roadmap, benchmarks, releasing, harness integration. |
-| [`design/`](design/)                         | Internal design specs and feature notes. Not user-facing — read these if you're contributing to a specific subsystem. |
+| [`design/`](design/)                         | Internal design specs and feature notes. Not user-facing — read these if you're contributing to a specific subsystem. (In-flight feature specs — `feature-*.md` — sit at the `docs/` root until they graduate.) |
 | [`adr/`](adr/)                               | Architecture decision records. One file per decision; see [`adr/README.md`](adr/README.md). |
 | [`audits/`](audits/)                         | Point-in-time analysis snapshots (e.g. CLI surface audits). Frozen at the date stamped in each file. |
 | [`assets/`](assets/)                         | Images and other binary assets referenced from docs and the README. |
