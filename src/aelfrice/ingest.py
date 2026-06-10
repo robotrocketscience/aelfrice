@@ -409,7 +409,7 @@ def ingest_jsonl(
     snapshots, tool-result entries, malformed) are counted under
     `skipped_lines` and ignored without raising.
     """
-    from aelfrice.inedible import is_inedible
+    from aelfrice.inedible import is_inedible_path
 
     path = Path(jsonl_path)
     lines_read = 0
@@ -422,9 +422,10 @@ def ingest_jsonl(
 
     if not path.is_file():
         return IngestJsonlResult(0, 0, 0, 0, 0)
-    if is_inedible(path):
-        # Privacy opt-out — file is excluded from the brain graph by
-        # name. No content read, zero side effects on the store.
+    if is_inedible_path(path):
+        # Privacy opt-out — file (or an ancestor directory) carries the
+        # INEDIBLE marker, so it is excluded from the brain graph by
+        # name. No content read, zero side effects on the store (#958).
         return IngestJsonlResult(0, 0, 0, 0, 0)
 
     with path.open("r", encoding="utf-8") as f:
@@ -540,7 +541,7 @@ def ingest_jsonl_dir(
     `ingest_jsonl`'s per-line dedup. Skips files that do not exist
     or cannot be stat'd without raising. Issue #115.
     """
-    from aelfrice.inedible import is_inedible
+    from aelfrice.inedible import is_inedible_path
 
     root = Path(directory)
     if not root.is_dir():
@@ -559,7 +560,7 @@ def ingest_jsonl_dir(
         if not path.is_file():
             continue
         walked += 1
-        if is_inedible(path):
+        if is_inedible_path(path, root=root):
             skipped_inedible += 1
             continue
         if cutoff_ts is not None:

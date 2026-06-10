@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from aelfrice.inedible import INEDIBLE_MARKER, is_inedible
+from aelfrice.inedible import INEDIBLE_MARKER, is_inedible, is_inedible_path
 from aelfrice.ingest import ingest_jsonl, ingest_jsonl_dir
 from aelfrice.scanner import scan_repo
 from aelfrice.store import MemoryStore
@@ -46,10 +46,46 @@ def test_is_inedible_does_not_match_titlecase() -> None:
 
 
 def test_is_inedible_only_inspects_basename() -> None:
-    """A directory ancestor named INEDIBLE does NOT propagate to
-    files; users want directory-scoped exclusion via gitignore-style
+    """The `is_inedible` primitive inspects the basename only — a
+    directory ancestor named INEDIBLE does NOT propagate through it.
+    Directory-scoped exclusion is `is_inedible_path`'s job (see
     patterns, deferred."""
     assert not is_inedible("/path/INEDIBLE/file.md")
+
+
+# --- is_inedible_path (directory-aware) --------------------------------
+
+
+def test_is_inedible_path_matches_basename() -> None:
+    assert is_inedible_path("/path/INEDIBLE_secrets.txt")
+
+
+def test_is_inedible_path_propagates_from_ancestor_dir() -> None:
+    """Unlike is_inedible, the path-aware helper excludes a file beneath
+    an INEDIBLE-named directory (#958)."""
+    assert is_inedible_path("/path/INEDIBLE_drafts/notes.jsonl")
+    assert is_inedible_path("/a/b/INEDIBLE/c/d/session.jsonl")
+
+
+def test_is_inedible_path_clean_path_is_not_inedible() -> None:
+    assert not is_inedible_path("/path/projects/myapp/session.jsonl")
+
+
+def test_is_inedible_path_root_bounds_ancestor_check() -> None:
+    """With `root` set, the root's own name (and anything above it) is
+    not inspected — matching scan_repo, which pushes its walk root
+    unconditionally. Components strictly between root and the file are."""
+    root = Path("/home/u/INEDIBLE_x/proj")
+    # root itself carries the marker, but it is not inspected:
+    assert not is_inedible_path(root / "a/session.jsonl", root=root)
+    # a directory between root and the file IS inspected:
+    assert is_inedible_path(root / "INEDIBLE_sub/session.jsonl", root=root)
+
+
+def test_is_inedible_path_root_unrelated_falls_back_to_full_walk() -> None:
+    """If the path is not under `root`, the helper walks all ancestors
+    rather than silently passing."""
+    assert is_inedible_path("/other/INEDIBLE_dir/x.jsonl", root=Path("/home/u"))
 
 
 def test_is_inedible_accepts_path_or_string() -> None:
@@ -196,3 +232,59 @@ def test_ingest_jsonl_dir_skips_inedible_and_counts(tmp_path: Path) -> None:
     assert "secret content" not in contents
     assert "uv for environment management" in contents
     assert "atomic commits" in contents
+
+
+def test_ingest_jsonl_single_file_skips_inedible_ancestor_dir(
+    tmp_path: Path,
+) -> None:
+    """A single-file ingest of a JSONL beneath an INEDIBLE-named
+    directory is a no-op, even though the file's own name is clean
+    (#958)."""
+    nested = tmp_path / "INEDIBLE_old" / "projects"
+    nested.mkdir(parents=True)
+    p = nested / "session.jsonl"
+    p.write_text(
+        '{"role": "user", "text": "the production database password is secret content", '
+        '"session_id": "s1", "ts": "2026-01-01T00:00:00Z"}\n'
+    )
+    s = MemoryStore(":memory:")
+    try:
+        result = ingest_jsonl(s, p)
+        rows = s._conn.execute(  # type: ignore[attr-defined]
+            "SELECT content FROM beliefs"
+        ).fetchall()
+    finally:
+        s.close()
+    assert result.lines_read == 0
+    assert rows == []
+
+
+def test_ingest_jsonl_dir_skips_files_under_inedible_dir(
+    tmp_path: Path,
+) -> None:
+    """The batch path prunes files nested under an INEDIBLE-named
+    directory, matching scan_repo's directory pruning (#958)."""
+    (tmp_path / "ok.jsonl").write_text(
+        '{"role": "user", "text": "this project always uses uv for environment management", '
+        '"session_id": "s1", "ts": "2026-01-01T00:00:00Z"}\n'
+    )
+    secret_dir = tmp_path / "INEDIBLE_drafts"
+    secret_dir.mkdir()
+    (secret_dir / "clean_name.jsonl").write_text(
+        '{"role": "user", "text": "the production database password is secret content", '
+        '"session_id": "s2", "ts": "2026-01-01T00:00:00Z"}\n'
+    )
+    s = MemoryStore(":memory:")
+    try:
+        result = ingest_jsonl_dir(s, tmp_path)
+        rows = s._conn.execute(  # type: ignore[attr-defined]
+            "SELECT content FROM beliefs"
+        ).fetchall()
+    finally:
+        s.close()
+    # Both files are walked; the nested one is skipped as inedible.
+    assert result.files_walked == 2
+    assert result.files_skipped_inedible == 1
+    contents = "\n".join(row["content"] for row in rows)
+    assert "secret content" not in contents
+    assert "uv for environment management" in contents
