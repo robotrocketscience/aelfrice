@@ -320,8 +320,10 @@ def _format_block_message(
         lines.append(f"    {ref:>7}  [{state_str}]  score={score:.2f}  {title!r}")
     lines += [
         "",
-        "  To bypass: set ALLOW_DUP_ISSUE=1 before the command,",
-        "  or pass --no-pre-issue-guard to `aelf setup` to disable globally.",
+        "  To bypass: set ALLOW_DUP_ISSUE=1 in the host's environment",
+        "  (an inline KEY=VAL prefix on the gh command does not reach this",
+        "  hook), or pass --no-pre-issue-guard to `aelf setup` to disable",
+        "  globally.",
     ]
     return "\n".join(lines)
 
