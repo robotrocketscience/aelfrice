@@ -26,7 +26,7 @@ aelfrice runs LLM-quality classification once per project, at onboard time. The 
 
 **The default flow at v1.5.0+ is host-driven and makes zero direct calls from the aelfrice CLI itself.** When the user runs `/aelf:onboard <path>` from a host that exposes a Task tool (Claude Code and similar), the slash command body in [`src/aelfrice/slash_commands/onboard.md`](../../src/aelfrice/slash_commands/onboard.md) drives the classifier through the host's own model dispatch against the cheapest model in its stack. The host already has whatever credentials and billing it needs; aelfrice does not require an API key, and the aelfrice package never imports `anthropic` on this path. The user's data already goes to their host LLM — aelfrice just reuses the cheapest model in that stack to do classification once.
 
-**The direct-API fallback (`aelf onboard --llm-classify`) requires explicit opt-in on three of its four gates.** It is the path for users who don't run a host with a Task tool and instead want aelfrice to call the Anthropic API directly. Four gates guard it; if any of these is missing, no outbound call is made:
+**The direct-API fallback (`aelf onboard --llm-classify`) requires explicit opt-in on three of its four gates.** It is the path for users who don't run a host with a Task tool and instead want aelfrice to call the vendor API directly. Four gates guard it; if any of these is missing, no outbound call is made:
 
 1. The user installed the optional extra: `pip install aelfrice[onboard-llm]`.
 2. The user set `ANTHROPIC_API_KEY` in their environment.

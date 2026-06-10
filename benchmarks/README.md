@@ -28,7 +28,7 @@ point — `aelf bench all` runs the full academic suite.
 |---|---|---|---|
 | `verify_clean.py` | OK | runs | stdlib only |
 | `mab_adapter.py` | OK with `[benchmarks]` extras | runs | needs `nltk` + `tiktoken` |
-| `mab_reader.py` | needs `anthropic` (install the `[onboard-llm]` extra or `pip install anthropic`; not covered by `[benchmarks]`) | runs | LLM reader; operator-run only — never invoked by CI |
+| `mab_reader.py` | needs the `[onboard-llm]` extra's SDK dependency (not covered by `[benchmarks]`) | runs | LLM reader; operator-run only — never invoked by CI |
 | `locomo_adapter.py` | OK with `[benchmarks]` extras | runs | needs `nltk` |
 | `locomo_generate.py` | OK | runs | stdlib only |
 | `locomo_score.py` | OK with `[benchmarks]` extras | runs | scoring after adapter |
