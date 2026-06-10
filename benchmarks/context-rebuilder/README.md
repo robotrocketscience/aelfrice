@@ -44,11 +44,11 @@ What the v1.4.0 harness still does **NOT** do:
 * **Real tokenization.** The harness uses the same 4-chars/token
   heuristic as `aelfrice.context_rebuilder._CHARS_PER_TOKEN`. A
   real tokenizer (tiktoken or model-specific) is parked for v1.5.x.
-* **Real rebuilder integration.** The synthetic clear still
-  injects a fixed-overhead rebuild block. Calling
-  `aelfrice.context_rebuilder.rebuild()` on a real store and
-  feeding the agent's actual post-clear answers into the scorer
-  is [#139][i139] -- the rebuilder hook itself.
+* **Real rebuilder integration in the replay scaffolding.** The
+  `benchmarks.context_rebuilder.replay` path still injects a fixed
+  32-token synthetic block; `eval_harness.py`'s `run_rebuilder`
+  calls the real `rebuild_v14()` since [#139][i139] (shipped
+  v1.4.0, PR #177).
 
 [i138]: https://github.com/robotrocketscience/aelfrice/issues/138
 [i139]: https://github.com/robotrocketscience/aelfrice/issues/139
@@ -213,7 +213,7 @@ metrics. `cleared` is `true` for exactly the turn at which
 benchmarks/
   context-rebuilder/                (this directory)
     README.md                       (this file)
-    eval_harness.py                 (v1.2.0 skeleton)
+    eval_harness.py                 (implemented harness)
     eval_corpus/                    (.gitignored, local-only)
     fixtures/
       README.md                     (fixture policy)
@@ -235,7 +235,7 @@ The hyphenated `context-rebuilder/` and underscored
 the importable Python package (Python identifiers can't contain
 hyphens). Both share the same v1.4.0 milestone.
 
-## Run modes (v1.2.0 skeleton; not yet wired in scaffolding)
+## Run modes
 
 - `--mode threshold-sweep` -- sweep PreCompact trigger thresholds
   per task type, emit the fidelity-vs-trigger curve. Default for
@@ -246,10 +246,10 @@ hyphens). Both share the same v1.4.0 milestone.
 - `--mode regression` -- fixed config, pass/fail against the
   v1.0.0 baseline numbers.
 
-These modes live on the v1.2.0 skeleton and are gated on the
-fidelity-scorer landing (#138). The v1.4.0 scaffolding uses the
-simpler `--clear-at` injection surface; it converges with the
-skeleton when the integration points fill in.
+`threshold-sweep` and `budget-sweep` are implemented and runnable
+(they produced `calibration_v1_4_0.json`); `dynamic` and
+`regression` still raise `NotImplementedError` pending the
+heuristic / a recorded baseline.
 
 ## Fixture policy
 
@@ -271,13 +271,13 @@ fixture contract (deterministic, bounded, schema-conformant).
 
 ## Open questions answered by the eval, not the spec
 
-These remain open for the fidelity scorer (#138):
+Q1-Q3 are answered; Q4 stays open:
 
-1. The default trigger threshold for v1.4.0.
-2. The default token budget for v1.4.0.
-3. Whether dynamic-mode improves over a fixed threshold.
+1. Default trigger threshold: **0.6** (`calibration_v1_4_0.json`; ship default since #746).
+2. Default token budget: **4000**.
+3. Dynamic-mode vs fixed threshold: **parked** — no win at v1.5 (`calibration_v1_5_0_dynamic.json`).
 4. Whether augment-mode loses fidelity vs. suppress-mode (matters
-   for v2.x suppress-mode promotion decision).
+   for v2.x suppress-mode promotion decision) — still open.
 
 ## Host-agent eval-replay (#600)
 
@@ -399,9 +399,10 @@ import json, sys
 sys.path.insert(0, "benchmarks/context-rebuilder")
 from judges import llm_judge
 
-rows = [json.loads(l) for l in
-        Path("run_dir/replay_results.jsonl").read_text().splitlines()
-        if l.strip()]
+# No tool writes a replay_results.jsonl — export the replay rows
+# from the harness --out report (runs[].failures) first:
+report = json.loads(Path("sweep.json").read_text())
+rows = [f for run in report["runs"] for f in run["failures"]]
 n = llm_judge.write_judge_requests(rows, Path("run_dir"),
                                     max_judge_calls=50)
 print(f"wrote {n} judge requests")
@@ -420,20 +421,20 @@ import json, sys
 sys.path.insert(0, "benchmarks/context-rebuilder")
 from judges import llm_judge
 
-rows = [json.loads(l) for l in
-        Path("run_dir/replay_results.jsonl").read_text().splitlines()
-        if l.strip()]
+report = json.loads(Path("sweep.json").read_text())
+rows = [f for run in report["runs"] for f in run["failures"]]
 responses = llm_judge.read_judge_responses(Path("run_dir"))
 folded = llm_judge.apply_judge_verdicts(rows, responses)
 Path("run_dir/replay_results.jsonl").write_text(
     "\n".join(json.dumps(r) for r in folded) + "\n"
-)
+)  # judged rows land here for downstream kappa; the file is
+   # created by THIS step, not by the harness
 PY
 ```
 
 Wiring this stage into the harness's main flow -- so steps 1 and
 3 ride on the same `eval_harness.py` invocation -- is a follow-up
-that joins onto the `--run-dir` plumbing landing in PR #601.
+that joins onto the `--run-dir` plumbing that landed with #600.
 
 ## Status
 
@@ -446,9 +447,8 @@ that joins onto the `--run-dir` plumbing landing in PR #601.
   `tests/test_continuation_fidelity_scorer.py`. Produces the
   headline-fidelity number against the synthetic corpus.
   `embedding` / `llm-judge` methods parked for v1.5.x.
-* **#139 -- rebuilder hook integration:** waits on real
-  agent-output capture; will replace the synthetic
-  fixed-overhead block with `aelfrice.context_rebuilder.rebuild()`
-  and feed the agent's actual post-clear answers into the
-  scorer's `post_clear_answers` parameter.
-* **#141 -- threshold-mode calibration:** waits on #139.
+* **#139 -- rebuilder hook integration:** SHIPPED in v1.4.0
+  (PR #177; default trigger flipped to `threshold` at v3.1 #746).
+* **#141 -- threshold-mode calibration:** SHIPPED in v1.4.0
+  (PR #179; calibrated default 0.6 in `calibration_v1_4_0.json`;
+  dynamic re-parked at v1.5).

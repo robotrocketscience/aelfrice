@@ -18,21 +18,22 @@ which is a small in-tree corpus that runs in CI on every PR.
 
 All five academic adapters run end-to-end under
 `aelfrice.retrieval.retrieve_v2` + the `[benchmarks]` extra. v3.x adapters target the canonical post-#605 substrate (HRR
-structural lane + BFS multi-hop + posterior-weighted ranking all
-default-on per v2.1; type-aware compression default-on per v3.0
-#769). The reproducibility harness (#437) is the canonical entry
+structural lane + posterior-weighted ranking default-on since v2.1
+per #154/#437; BFS multi-hop remains default-off — adapters opt in
+via `use_bfs=True`, default-flip bench-gated under #739; type-aware
+compression default-on per v3.3 #769). The reproducibility harness (#437) is the canonical entry
 point — `aelf bench all` runs the full academic suite.
 
 | File | Imports | Retrieve-only | Notes |
 |---|---|---|---|
 | `verify_clean.py` | OK | runs | stdlib only |
 | `mab_adapter.py` | OK with `[benchmarks]` extras | runs | needs `nltk` + `tiktoken` |
-| `mab_reader.py` | OK | runs | LLM reader; gated behind workflow_dispatch in CI |
+| `mab_reader.py` | needs `anthropic` (install the `[onboard-llm]` extra or `pip install anthropic`; not covered by `[benchmarks]`) | runs | LLM reader; operator-run only — never invoked by CI |
 | `locomo_adapter.py` | OK with `[benchmarks]` extras | runs | needs `nltk` |
 | `locomo_generate.py` | OK | runs | stdlib only |
 | `locomo_score.py` | OK with `[benchmarks]` extras | runs | scoring after adapter |
 | `locomo_score_protocol.py` | OK with `[benchmarks]` extras | runs | scoring after adapter |
-| `longmemeval_adapter.py` | OK | **smoked** (15 Q, baseline in `results/v1.2.0-pre.json`) | retrieve-only path validated; reader/judge passes deferred |
+| `longmemeval_adapter.py` | OK | runs (full 500-Q retrieve-only cut in `results/v2.0.0.json` + nightly bench-canonical) | first 15-Q smoke preserved in `results/v1.2.0-pre.json`; reader/judge passes still operator-driven |
 | `longmemeval_budget_sweep.py` | OK | runs | depends on adapter |
 | `longmemeval_score.py` | OK | runs | stdlib only |
 | `structmemeval_adapter.py` | OK | runs | retrieve-only path |
@@ -47,16 +48,19 @@ shipped and is in tree.
 Retrieve-only runs under the current substrate exercise the full
 post-#605 retrieval stack:
 
-- Public `retrieve()` covers L0 (locked) + L1 (FTS5 BM25/BM25F) +
-  L2 (BFS multi-hop, default-on since v1.3) + L2.5 (HRR structural
-  lane, default-on since v2.1 #154) with Bayesian log-additive
-  reranking.
+- Public `retrieve()` covers L0 (locked) + L2.5 (entity-index,
+  default-on since v1.3) + L1 (FTS5 BM25/BM25F) + L3 (BFS
+  multi-hop, shipped v1.3, default-off — adapters opt in with
+  `use_bfs=True`) with Bayesian log-additive reranking;
+  `retrieve_v2` additionally routes structural-marker queries to
+  the HRR lane (default-on since v2.1 #154).
 - Adapters call `retrieve_v2(...)` directly; the legacy `use_hrr`
   alias was retired (see #536). The live kwarg is
   `use_hrr_structural`.
 - LongMemEval session-level Recall@5 ≥ 0.634 (paper baseline) is
-  the floor; benchmarks/results/v2.0.0.json onward records actual
-  measurements.
+  the floor; benchmarks/results/v2.0.0.json onward records
+  retrieve-only telemetry (latency, beliefs-per-query) — Recall@5
+  against that floor is not yet captured in the results files.
 
 ### Running benchmarks locally
 
@@ -77,11 +81,11 @@ uv run aelf bench all --smoke --out /tmp/bench-smoke.json
 
 ## Protocol
 
-See [`docs/concepts/BENCHMARKS.md`](../docs/concepts/BENCHMARKS.md) for the 5-step run protocol (env check, data acquisition, retrieval-only, contamination check, reader generation, scoring). The protocol is stable across phases; only the activation status of individual adapters changes.
+See [`docs/concepts/BENCHMARKS.md`](../docs/concepts/BENCHMARKS.md) for the run protocol (retrieval-only, contamination check, reader generation, scoring, audit record). The protocol is stable across phases; only the activation status of individual adapters changes.
 
 ## Datasets
 
-Adapters pull from upstream sources rather than vendoring data. Each adapter pins its own dataset SHA in its module header.
+Adapters pull from upstream sources rather than vendoring data. Each adapter pins its upstream dataset identifier (HuggingFace dataset id or expected local path) in its module header; no immutable revision/SHA is pinned.
 
 | Benchmark | Source (actual, per adapter pin) | License |
 |---|---|---|
