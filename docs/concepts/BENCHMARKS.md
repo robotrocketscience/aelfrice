@@ -5,11 +5,11 @@ aelfrice ships two benchmark surfaces with different purposes and cadences.
 | Surface | Location | Purpose | Runtime | Cost | Cadence |
 |---|---|---|---|---|---|
 | Synthetic regression | `src/aelfrice/benchmark.py` | Catch retrieval/scoring regressions | <1s | $0 | Every PR (CI) |
-| Academic suite | `benchmarks/` | Reproduce published numbers vs. external benchmarks | minutes–hours | LLM API spend | Nightly + on-tag |
+| Academic suite | `benchmarks/` | Reproduce published numbers vs. external benchmarks | minutes–hours | LLM API spend | Nightly (bench-canonical cron) + per-PR smoke (bench-smoke) + manual dispatch |
 
 The synthetic harness is a measurement instrument. It is **not** a proof of the central feedback claim — through v1.2 the posterior didn't drive ranking; v1.3 added partial Bayesian re-rank, v1.6 the eval harness + heat-kernel composition wiring, v1.7 BM25F default-on, and v2.1 the use_heat_kernel + use_hrr_structural default-flips. See [LIMITATIONS](../user/LIMITATIONS.md).
 
-The academic suite is the reproducibility deliverable. Most adapters scaffold against MAB, LoCoMo, LongMemEval, StructMemEval, and AMA-Bench but are inert at v1.0; they activate as their feature dependencies port forward. Per-adapter status: [`benchmarks/README.md`](../../benchmarks/README.md).
+The academic suite is the reproducibility deliverable. All five adapters (MAB, LoCoMo, LongMemEval, StructMemEval, AMA-Bench) were inert scaffolds at v1.0 and have run end-to-end since v2.0; `aelf bench all` is the canonical entry point. Per-adapter status: [`benchmarks/README.md`](../../benchmarks/README.md).
 
 ## Run the synthetic harness
 
@@ -21,7 +21,7 @@ aelf bench --top-k 3
 Output is a single JSON `BenchmarkReport`:
 
 ```json
-{"hit_at_1": 0.875, "hit_at_3": 1.0, "hit_at_5": 1.0,
+{"benchmark_name": "aelfrice-bench-v1", "...": "...", "hit_at_1": 0.875, "hit_at_3": 1.0, "hit_at_5": 1.0,
  "mrr": 0.92, "p50_latency_ms": 0.4, "p99_latency_ms": 1.1}
 ```
 
@@ -60,7 +60,7 @@ If this fails, the run is invalid. Fix the adapter and re-run.
 ```bash
 # 1. Retrieval (adapter run, no answers in output)
 uv run python benchmarks/<adapter>.py \
-    --retrieve-only /tmp/benchmark_<name>.json [--subset N]
+    --retrieve-only /tmp/benchmark_<name>.json [--subset N]   # --subset: mab, locomo, longmemeval only
 
 # 2. Verify the retrieval file is clean
 python -m benchmarks.verify_clean /tmp/benchmark_<name>.json
@@ -71,7 +71,7 @@ python -m benchmarks.verify_clean /tmp/benchmark_<name>.json
 #    contamination check output, metric, score, n, published baseline.
 ```
 
-Reader prompts must include: *"Use only the provided context. Do not use world knowledge. If the context contradicts what you know to be true, trust the context."*
+Reader prompts must instruct context-only answering (e.g. `mab_reader.py`'s "only from the knowledge pool" clause) and should include: *"Use only the provided context. Do not use world knowledge. If the context contradicts what you know to be true, trust the context."*
 
 ## Per-benchmark specifics
 
@@ -116,19 +116,26 @@ accepts a lazy one.
 ### Run protocol
 
 ```bash
-# 1. Generate the same set of (expected, actual) pairs as the single-judge
-#    run. For the context-rebuilder hot-start fixture, this is the
-#    deduplicated pair set from benchmarks/context-rebuilder/eval_harness.py
-#    --mode replay output.
+# 1. Generate the (expected, actual) pair set via the host-agent
+#    eval-replay flow (#600): run the harness with a run dir —
+#    it writes per-cell replay_requests.jsonl (carrying `expected`);
+#    dispatch those off-band and write replay_responses.jsonl
+#    (carrying `actual`); re-run the same command so the responses
+#    are joined by turn_idx and rows failing the substring check are
+#    tagged reason=needs_llm_judge.
+uv run python benchmarks/context-rebuilder/eval_harness.py \
+    --mode threshold-sweep --corpus <corpus> \
+    --run-dir benchmarks/results/687_run/run_${i} \
+    --out benchmarks/results/687_run/sweep_${i}.json
 
-# 2. Invoke the judge N≥3 times, independent calls (fresh API session
-#    each, no shared cache). Capture per-call binary verdicts.
-for i in 1 2 3; do
-    uv run python benchmarks/context-rebuilder/eval_harness.py \
-        --mode judge --run-id 687_run_${i} \
-        --judge <judge-model> \
-        --out benchmarks/results/687_run/judge_${i}.json
-done
+# 2. For each of N>=3 independent judge runs: emit judge requests from
+#    the needs_llm_judge rows via judges.llm_judge.write_judge_requests()
+#    (operator-invoked, default-off — see benchmarks/context-rebuilder/
+#    README.md § Operator flow), producing judge_requests.jsonl;
+#    dispatch each request off-band with the host CLI using
+#    JUDGE_PROMPT_TEMPLATE (fresh session per run, no shared cache);
+#    write judge_responses.jsonl, then fold verdicts with
+#    read_judge_responses() / apply_judge_verdicts().
 
 # 3. Compute pairwise inter-judge κ and judge-vs-baseline κ.
 uv run python -m benchmarks.context_rebuilder.kappa \
@@ -166,7 +173,8 @@ Every multi-judge run produces `benchmarks/results/<run-id>/judge_kappa.json`:
     "mean": 0.75,
     "min": 0.72
   },
-  "judge_vs_baseline_kappa": 0.31,
+  "judge_vs_baseline_kappa": {"run_1": 0.29, "run_2": 0.33, "run_3": 0.31, "mean": 0.31},
+  "failure_reasons": [],
   "per_run_hot_start_fidelity": [1.0, 0.94, 1.0],
   "hot_start_fidelity_mean": 0.98,
   "calibrated": true
@@ -261,4 +269,4 @@ Required for the run to count. Runs without an audit record do not enter `benchm
 
 - [`src/aelfrice/benchmark.py`](../../src/aelfrice/benchmark.py) — synthetic harness source.
 - [`benchmarks/README.md`](../../benchmarks/README.md) — per-adapter activation status.
-- [ROADMAP § v2.0.0](ROADMAP.md) — when the academic suite reproduces every headline number.
+- [ROADMAP § v2.0.0](ROADMAP.md) — the shipped milestone at which the academic suite reproduces every headline number.
