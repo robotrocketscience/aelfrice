@@ -9,7 +9,7 @@
 ## 1. Install the package
 
 ```bash
-uv tool install aelfrice                # core, zero runtime deps
+uv tool install aelfrice                # core (deps: numpy, scipy, snowballstemmer — local-only)
 uv tool install "aelfrice[mcp]"         # add the MCP server (fastmcp)
 uv tool install "aelfrice[archive]"     # add the encrypted-archive uninstall path
 ```
@@ -21,14 +21,14 @@ git clone https://github.com/robotrocketscience/aelfrice.git
 cd aelfrice && uv sync
 ```
 
-This installs two console scripts: `aelf` (the CLI) and `aelf-hook` (the hook entry-point Claude Code spawns on each prompt).
+This installs nine console scripts: `aelf` (the CLI) and eight hook entry-points the host spawns (`aelf-hook` for per-prompt retrieval, plus `aelf-transcript-logger`, `aelf-pre-compact-hook`, `aelf-commit-ingest`, `aelf-search-tool-hook`, `aelf-session-start-hook`, `aelf-stop-hook`, `aelf-pre-issue-hook`).
 
 > **Migrating from pipx / pip?** As of v3.0.x aelfrice is uv-only (#730). If you previously installed via pipx, run `pipx uninstall aelfrice && uv tool install aelfrice` once. `aelf upgrade-cmd` will surface the same migration line on the next upgrade check. pip-installed users: `pip uninstall -y aelfrice && uv tool install aelfrice`.
 
 Verify:
 
 ```bash
-aelf --version       # aelfrice X.Y.Z
+aelf --version       # aelf X.Y.Z
 which aelf           # which env owns the binary
 ```
 
@@ -42,6 +42,7 @@ This is idempotent. Run it again any time you change Python envs or move project
 
 1. **A `UserPromptSubmit` hook** to `settings.json` so each prompt routes through `aelf-hook` for retrieval before the agent sees it.
 2. **A `statusLine` notifier** that surfaces a one-line update banner only when a new release is available (empty otherwise).
+3. **The full default-on auto-capture hook set and the bundled `/aelf:*` slash commands** — see § "Hooks installed by `aelf setup`" below.
 
 Auto-detection picks the right scope and command path:
 
@@ -145,7 +146,7 @@ Bare `aelf setup` wires the v1.2.0 auto-capture pipeline alongside the read-side
 | stop-lock-prompt | `Stop` | **on** | prompt to lock correction-class beliefs from this session (#582) |
 | search-tool | `PreToolUse:Grep` / `Glob` | **on** (v3.0.1+) | belief-store check before the agent's own Grep/Glob fires |
 | search-tool-bash | `PreToolUse:Bash` | **on** (v3.0.1+) | belief-store check before shell grep/rg/find/fd/ack fires |
-| pre-issue-guard | `PreToolUse:Bash` | **on** (v3.4.0+) | blocks `gh issue create` when the title overlaps an existing issue or shipped commit above 0.5 Jaccard (#941) |
+| pre-issue-guard | `PreToolUse:Bash` | **on** (v3.4.0+) | blocks `gh issue create` when the title overlaps an existing issue or shipped commit at or above 0.5 Jaccard (#941) |
 | rebuilder | `PreCompact` | off | retrieval-curated context rebuilder (augment-mode, v1.4 alpha) |
 
 Opt out per-hook (persists across upgrades via `~/.aelfrice/opt-out-hooks.json`):
@@ -155,11 +156,12 @@ aelf setup --no-transcript-ingest      # skip the four transcript-logger hooks
 aelf setup --no-commit-ingest          # skip the commit-message ingest hook
 aelf setup --no-session-start          # skip the SessionStart locked-belief injection
 aelf setup --no-stop-hook              # skip the Stop lock-prompt hook
-aelf setup --no-sessionstart-recap     # skip the "N beliefs written since last session" recap line (v3.5+, #934)
 aelf setup --no-search-tool            # skip the PreToolUse:Grep|Glob hook
 aelf setup --no-search-tool-bash       # skip the PreToolUse:Bash hook
 aelf setup --no-pre-issue-guard        # skip the issue-dup detection guard
 ```
+
+The SessionStart recap line ("N beliefs written since last session", v3.5+, #934) rides on the SessionStart hook rather than having its own manifest entry — `aelf setup --no-sessionstart-recap` suppresses it at install time but is not persisted in `opt-out-hooks.json`.
 
 Opt in to the off-by-default hooks:
 
@@ -169,7 +171,7 @@ aelf setup --rebuilder                 # PreCompact context rebuilder (alpha)
 
 `aelf unsetup` mirrors: bare invocation removes every default-on hook. `--no-*` flags suppress per-hook removal.
 
-All hooks are non-blocking. Every failure path returns exit 0 — a hook problem must never break a prompt or a commit.
+All hooks fail open: every failure path returns exit 0 — a hook problem must never break a prompt or a commit. The one intentional exception to non-blocking behavior is the pre-issue-guard, which exits 2 to block a duplicate `gh issue create` (bypass by setting `ALLOW_DUP_ISSUE=1` in the host's environment); its own failure paths still exit 0.
 
 ### Self-installing hook manifest (v3.0+)
 
@@ -191,9 +193,9 @@ export AELFRICE_NO_AUTO_INSTALL=1   # power user: I manage settings.json by hand
 aelf setup --no-stop-hook           # disable one hook; persists across upgrades
 ```
 
-`aelf doctor` continues to flag drift — manual edits to settings.json that diverge from the manifest, or hooks the auto-installer would write that the file is missing.
+`aelf doctor` flags broken or unresolvable hook commands and nags when any of the four v2.1 auto-capture hooks (transcript-ingest, commit-ingest, session-start, stop-hook) is missing. It does not reconcile settings.json against the manifest, so newer manifest hooks (search-tool, pre-issue-guard) are not flagged when absent — the auto-installer is the reconciliation path.
 
-> **Privacy note.** Default-on transcript-ingest means every turn you type lands in the per-project SQLite DB on `PreCompact` rotation. The DB is local-only (no network, no telemetry — see § "Your data stays yours" in the README) but the JSONL has no PII scrubber. If you paste secrets, customer data, or anything you don't want indexed in chat, opt out with `--no-transcript-ingest` and use `aelf lock` / `aelf onboard` for explicit ingestion only.
+> **Privacy note.** Default-on transcript-ingest means every turn you type lands in the per-project SQLite DB on `PreCompact` rotation. The DB is local-only (no network, no telemetry — see § "What you get for free" in the README and [PRIVACY.md](PRIVACY.md)) but the JSONL has no PII scrubber. If you paste secrets, customer data, or anything you don't want indexed in chat, opt out with `--no-transcript-ingest` and use `aelf lock` / `aelf onboard` for explicit ingestion only.
 
 ### Legacy-schema detection + auto-migrate (`aelf doctor`, v3.0+)
 
@@ -243,7 +245,8 @@ The dormant scan is schema-agnostic — both pre-v1.x and modern-schema DBs are 
 ## Update notifier
 
 ```bash
-aelf upgrade-cmd          # prints the canonical upgrade command (`run: …`)
+aelf upgrade-cmd          # prints the canonical upgrade command (`run: …`) when an
+                          # update is available; otherwise `aelfrice is up to date`
 aelf upgrade-cmd --check  # same output, no behaviour difference
 /aelf:upgrade             # imperative slash: detect + run + re-setup
 ```
@@ -268,8 +271,9 @@ uv tool uninstall aelfrice            # finally remove the wheel
 `--archive` uses Fernet (AES-128-CBC + HMAC, scrypt-derived key). Recover later:
 
 ```python
+from pathlib import Path
 from aelfrice.lifecycle import decrypt_archive
-open("out.db","wb").write(decrypt_archive("backup.aenc","password"))
+open("out.db","wb").write(decrypt_archive(Path("backup.aenc"), "password"))
 ```
 
 Requires the `[archive]` extra.
