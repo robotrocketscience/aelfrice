@@ -626,9 +626,10 @@ class RebuilderConfig:
     v1.4 (issue #141) adds two trigger-mode fields:
 
     * `trigger_mode`  -- one of `manual`, `threshold`, `dynamic`.
-                         Default `manual`. `dynamic` is parked at
-                         v1.4 and raises in the hook path.
-    * `threshold_fraction` -- float in (0.0, 1.0]; default 0.7 from
+                         Default `threshold` since v3.1 (#746; was
+                         `manual` at v1.4). `dynamic` is parked and
+                         raises in the hook path.
+    * `threshold_fraction` -- float in (0.0, 1.0]; default 0.6 from
                               calibration. Documents the operating
                               point at which threshold-mode is tuned;
                               the actual gate is the harness's own
