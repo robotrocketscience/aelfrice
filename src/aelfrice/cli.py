@@ -5832,9 +5832,12 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         const=True,
         default=None,
         help=(
-            "opt in to the LLM-Haiku classifier (v1.3.0+). Requires the "
-            "[onboard-llm] extra and ANTHROPIC_API_KEY. Default: off. "
-            "Pass --llm-classify=false to override [onboard.llm].enabled."
+            "control the direct-API LLM classifier (v1.3.0+). Requires "
+            "the [onboard-llm] extra and ANTHROPIC_API_KEY. The classifier "
+            "resolves ON by default since v1.5.0, but soft-falls to the "
+            "regex path when the extra/key/consent gates are unmet. Pass "
+            "--llm-classify=false to force off; default reads "
+            "[onboard.llm].enabled."
         ),
     )
     p_onboard.add_argument(
