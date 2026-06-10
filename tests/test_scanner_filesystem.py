@@ -139,6 +139,17 @@ def test_dot_git_directory_is_skipped(tmp_path: Path) -> None:
     assert extract_filesystem(tmp_path) == []
 
 
+def test_dot_claude_directory_is_skipped(tmp_path: Path) -> None:
+    """Coding-agent worktree copies under .claude/ are not project content (#954)."""
+    wt = tmp_path / ".claude" / "worktrees" / "abc123"
+    wt.mkdir(parents=True)
+    (wt / "README.md").write_text(
+        "the project ships only the regex fallback at v0.5",
+        encoding="utf-8",
+    )
+    assert extract_filesystem(tmp_path) == []
+
+
 def test_node_modules_directory_is_skipped(tmp_path: Path) -> None:
     nm = tmp_path / "node_modules"
     nm.mkdir()

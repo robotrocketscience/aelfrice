@@ -44,12 +44,15 @@ from aelfrice.store import MemoryStore
 from typing import Protocol
 
 # Directories the scanner never descends into. Standard "build artefact"
-# locations and version-control internals.
+# locations, version-control internals, and coding-agent host config
+# (.claude holds settings plus full repo copies under worktrees/ —
+# scanning it inflates candidates ~27x and pollutes provenance, #954).
 _SKIP_DIRS: Final[frozenset[str]] = frozenset({
     ".venv",
     "venv",
     "__pycache__",
     ".git",
+    ".claude",
     "node_modules",
     ".egg-info",
     "target",
