@@ -1,8 +1,8 @@
 # Feature spec: labeled rerank-relevance corpus (#819)
 
-**Status:** scaffold landed; v0_1 row delivery pending (operator-time)
+**Status:** scaffold landed; v0_1 delivered lab-side 2026-05-21 (consumed by `tests/bench_gate/test_cluster_edge_floor.py`); v0_2 (typed-edge extension, #724 re-bench) pending; no synthetic rows in the public tree yet
 **Issue:** [#819](https://github.com/robotrocketscience/aelfrice/issues/819)
-**Unblocks:** [#769](https://github.com/robotrocketscience/aelfrice/issues/769),
+**Unblocks:** [#769](https://github.com/robotrocketscience/aelfrice/issues/769) (satisfied separately 2026-05-20 via the dedicated `compression_a2_recall` corpus),
 [#724](https://github.com/robotrocketscience/aelfrice/issues/724),
 [#800 R5](https://github.com/robotrocketscience/aelfrice/issues/800),
 [#817](https://github.com/robotrocketscience/aelfrice/issues/817) flip-default,
@@ -117,7 +117,7 @@ operator time → ~4–8 hours of labeller-time for v0_1 delivery.
      public tree.
 2. **Assemble the candidate pool.** 20–200 beliefs. Mix in 3–5
    *intentional* distractors per row to keep precision-at-k informative.
-   For real-store rows the pool comes from `retrieve_v2(query, k=200)`
+   For real-store rows the pool comes from `retrieve_v2(store, query, l1_limit=200)` (`retrieve_v2` has no `k` kwarg; `l1_limit` caps the L1 BM25 candidate pool, default 50 — pass a generous `budget` too, since the returned set is token-budget-trimmed)
    on the store; for synthetic rows the labeller writes them.
 3. **Pick `gold_top_k`.** The beliefs the labeller would expect a
    well-ranked retrieval to surface in the top-K. Independent of any
@@ -194,9 +194,9 @@ The issue lists four boxes:
 
 - [x] **Scaffold:** module dir, README row, schema validator entry,
       bench-gate smoke harness, protocol doc.
-- [ ] **v0_1 corpus committed.** Operator-time work; this PR does not
+- [x] **v0_1 corpus delivered** (lab-side, 2026-05-21; public-tree synthetic rows still absent). Original framing: operator-time work; this PR does not
       ship rows.
-- [ ] **Downstream consumer wired.** Either #769 (A2 recall@k) or #817
+- [x] **Downstream consumer wired** — #724 cluster-edge-floor substrate bench (`tests/bench_gate/test_cluster_edge_floor.py`); #769 was satisfied separately via `compression_a2_recall`. Original framing: either #769 (A2 recall@k) or #817
       (ζ rerank R5) connects to the corpus rows and clears OR fails.
       Out of scope for the scaffold — lands with the consumer's own PR.
 - [ ] **Schema validation in CI.** `tests/test_corpus_schema.py` already

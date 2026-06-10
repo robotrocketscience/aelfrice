@@ -41,8 +41,8 @@ from aelfrice.scoring import (
 
 score: float = zeta_posterior_score(
     bm25_raw,
-    alpha,    # ζ magnitude — defaults to 1.0
-    beta,     # ζ sharpness — defaults to 0.25
+    alpha,    # ζ magnitude — pinned constant ZETA_ALPHA_DEFAULT = 1.0; no kwarg default, callers pass it
+    beta,     # ζ sharpness — pinned constant ZETA_BETA_DEFAULT = 0.25; no kwarg default
     scale,    # ζ global multiplier — defaults to 14.5
     posterior_mean,  # the Beta-Bernoulli posterior mean (already computed)
 )
@@ -73,13 +73,13 @@ log(p) − log(0.5) = 0
 score = log(max(-bm25, EPS))     # identical to BM25-only ordering
 ```
 
-A store of all-uniform posteriors is rank-equivalent to log-BM25 alone — the same edge-case property `partial_bayesian_score` has at `posterior_weight = 0.0`. Tests: `test_posterior_half_is_log_bm_only`.
+A store of all-uniform posteriors is rank-equivalent to log-BM25 alone — the same edge-case property `partial_bayesian_score` has at `posterior_weight = 0.0`. Tests: `test_posterior_half_is_log_bm25_only`.
 
 ---
 
 ## Flag
 
-Resolved at `retrieve()` / `retrieve_with_tiers()` entry, once per call. Five-path precedence (first decisive wins):
+Resolved at `retrieve()` / `retrieve_with_tiers()` entry, once per call. Four-path precedence (first decisive wins):
 
 | Layer | Surface | Resolver |
 |---|---|---|
@@ -122,7 +122,7 @@ Tests: `test_retrieve_raises_when_both_flags_on`, `test_retrieve_with_tiers_rais
 
 ## Composition with heat-rerank
 
-ζ and the heat-kernel rerank (`use_heat_kernel`) are mutually exclusive on a given call, same as γ. When both ζ and heat are on AND a non-stale eigenbasis is available, the heat-rerank fires and ζ is a no-op for that call. The byte-identical short-circuit detects this and routes through the existing `combine_log_scores` path. Composition with heat is the same deferred-scoping question as γ-with-heat.
+ζ and the heat-kernel rerank (`use_heat_kernel`) are mutually exclusive on a given call, same as γ. When both ζ and heat are on AND a non-stale eigenbasis is available, the heat branch (`combine_log_scores`) takes precedence and the ζ branch is skipped for that call; the byte-identical short-circuit is bypassed entirely whenever ζ is on. Composition with heat is the same deferred-scoping question as γ-with-heat.
 
 ---
 
@@ -133,7 +133,7 @@ Tests: `test_retrieve_raises_when_both_flags_on`, `test_retrieve_with_tiers_rais
 
 - `USE_ZETA_POSTERIOR_RERANK_FLAG`, `ENV_USE_ZETA_POSTERIOR_RERANK` — surface names.
 - `_env_use_zeta_posterior_rerank_override()` — env decoder.
-- `resolve_use_zeta_posterior_rerank(explicit=None, *, start=None)` — five-path resolver.
+- `resolve_use_zeta_posterior_rerank(explicit=None, *, start=None)` — four-path resolver.
 - `_assert_gamma_zeta_mutual_exclusion(gamma_on, zeta_on)` — mutex helper.
 - `_l1_hits` — rerank loop; `zeta_params: tuple[float, float, float] | None` kwarg.
 - `retrieve()` / `retrieve_with_tiers()` — call sites.
@@ -146,11 +146,11 @@ Tests: `test_retrieve_raises_when_both_flags_on`, `test_retrieve_with_tiers_rais
 |---|---|---|
 | **G1** — surface lands behind a default-OFF flag | shipped | this PR |
 | **G2** — R&D campaign R0–R4 verdict ADOPT | shipped | `experiments/zeta-posterior/` (lab-side) |
-| **G3** — labeled relevance corpus exists | **pending** | corpus authoring tracked separately; same gate as γ's G3 |
+| **G3** — labeled relevance corpus exists | **done** (v0_1 delivered lab-side 2026-05-21, #819) | same gate as γ's G3 |
 | **G4** — ζ@defaults vs γ@T=1.0 on labeled corpus shows discriminable rank-overlap deltas | **pending G3** | adoption verdict gate |
 | **G5** — flip default to True if G4 clears with effect size ≥ 1σ | **pending G3, G4** | follow-up PR |
 
-Same shape as `feature-posterior-temperature.md` § "Bench-gate / ship-or-defer policy". Until G3 lands, ζ is plumbing — no behavioural change on any default code path. The R&D campaign already cleared the "ζ is plausibly better than γ on synthetic corpora" gate; G3+G4 are the production-fidelity gate.
+Same shape as `feature-posterior-temperature.md` § "Bench-gate / ship-or-defer policy". Until G4 clears, ζ is plumbing — no behavioural change on any default code path (G3 cleared 2026-05-21; the pending head-to-head is ζ@defaults vs γ@T=1.0 on the v0_1 labeled corpus). The R&D campaign already cleared the "ζ is plausibly better than γ on synthetic corpora" gate; G3+G4 are the production-fidelity gate.
 
 ---
 

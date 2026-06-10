@@ -16,7 +16,7 @@ score = log(max(-bm25_raw, EPS)) + posterior_weight · log(posterior_mean)
 
 `posterior_weight` is a process-wide scalar tuned at v1.3.0 (default `0.5`). Two independent operator concerns motivate the γ surface:
 
-1. The intended consumer for `meta:retrieval.posterior_temperature` (a softmax / Boltzmann temperature `T`) does not exist on `github/main` — pre-claim analysis on #758 confirmed `git grep -E 'softmax|boltzmann|temperature' github/main -- 'src/aelfrice/'` returns zero hits in src. Issue #796 is the load-bearing precursor: ship the temperature surface so `meta:retrieval.posterior_temperature` has something to bind to.
+1. The intended consumer for `meta:retrieval.posterior_temperature` (a softmax / Boltzmann temperature `T`) did not exist on `github/main` when #796 was filed — pre-claim analysis on #758 confirmed at the time that `git grep -E 'softmax|boltzmann|temperature' github/main -- 'src/aelfrice/'` returns zero hits in src. Issue #796 is the load-bearing precursor: ship the temperature surface so `meta:retrieval.posterior_temperature` has something to bind to.
 2. PR@5 + Spearman ρ alone cannot discriminate top-K reorderings from middle-of-list churn (#796 R4). The bench panel needs `ordered_top_k_overlap` and `rank_biased_overlap` to make γ-vs-log-additive comparisons load-bearing.
 
 γ is **reparametrised log-additive**, not a new family — see *Contract* below. At `T = 1.0` it is byte-identical to `partial_bayesian_score(..., posterior_weight=1.0)`. Lower `T` sharpens the posterior contribution; higher `T` flattens toward BM25-only ranking.
@@ -87,7 +87,7 @@ else:
 s = _hash_n_boosted(s, b.content, hash_n_literals)
 ```
 
-`_hash_n_boost` runs after the rerank, unchanged from the log-additive path — the R2 / R2b finding that path-B-literal divergence was entirely the boost interaction is informational, not a code change.
+`_hash_n_boosted` runs after the rerank, unchanged from the log-additive path — the R2 / R2b finding that path-B-literal divergence was entirely the boost interaction is informational, not a code change.
 
 The byte-identical short-circuit (`posterior_weight == 0.0 and not heat_active and not hash_n_literals`) extends to require `gamma_temperature is None` so γ-on always exercises the rerank loop.
 
@@ -103,16 +103,16 @@ The byte-identical short-circuit (`posterior_weight == 0.0 and not heat_active a
 | **G4** — γ@T=1.0 vs γ@T=0.5 / T=2.0 on labeled corpus shows discriminable rank-overlap deltas | **pending G3** | adoption verdict gate |
 | **G5** — flip default to True if G4 clears with effect size ≥ 1σ | **pending G3, G4** | follow-up PR |
 
-The bench-gate / ship-or-defer policy is the same shape as `feature-type-aware-compression.md` § *"Bench-gate / ship-or-defer policy"* and `feature-bfs-multihop.md` § *"Bench-gate posture"*. Until G3 lands, the flag is off and γ is plumbing — no behavioural change on any default code path.
+The bench-gate / ship-or-defer policy is the same shape as `docs/design/feature-type-aware-compression.md` § *"Bench-gate / ship-or-defer policy"*. Until G3 lands, the flag is off and γ is plumbing — no behavioural change on any default code path.
 
 ---
 
 ## Out of scope (separate issues)
 
-- **Adaptive `T`** — the evidence-signal loop that moves the meta-belief away from its `static_default = 0.5` prior. That is #758. Until #758 ships, the meta-belief is never updated; flag-on cold installs decode to `T = 1.0` and stay there.
-- **ζ follow-up** — a bounded / sigmoid posterior-contribution parametrisation that gives `T` subtler dynamics than γ's global re-weighting. Filed as a separate R&D campaign after R&D refuted the α/β/γ trichotomy (see #800).
+- **Adaptive `T`** — the evidence-signal loop that moves the meta-belief away from its `static_default = 0.5` prior. That shipped as #758 (v3.2.0) behind the default-OFF `AELFRICE_META_BELIEF_POSTERIOR_TEMPERATURE` env flag. With the delivery flag off (the default), the meta-belief is never updated; flag-on cold installs decode to `T = 1.0` and stay there.
+- **ζ follow-up** — shipped as #817 behind a default-OFF flag (see [feature-zeta-posterior-rerank.md](feature-zeta-posterior-rerank.md)). γ and ζ are mutually exclusive: both flags on raises at flag-resolution time via `_assert_gamma_zeta_mutual_exclusion`.
 - **Composition with heat-rerank** — both flags can be on but γ is a no-op on heat-active calls. Composing the two scoring paths is a separate scoping decision.
-- **Composition with `_hash_n_boost`** — boost interaction is informational, not a code change. R2 / R2b finding.
+- **Composition with `_hash_n_boosted`** — boost interaction is informational, not a code change. R2 / R2b finding.
 
 ---
 

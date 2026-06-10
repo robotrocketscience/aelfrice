@@ -191,11 +191,11 @@ re-measurement, not by config knob.
 | `src/aelfrice/store.py` | Schema DDL, `record_touch`, `read_touch_set_in_window`, `count_touches_for_session`, `list_touch_sessions`. |
 | `src/aelfrice/hook.py` | `_record_touches` helper; UPS call site after `_ring_append_ids`. |
 | `src/aelfrice/cli.py` | `aelf doctor --hot-path` surface. |
-| `tests/test_hot_path_touch_state.py` | Schema + store + helper + hook integration tests (21). |
+| `tests/test_hot_path_touch_state.py` | Schema + store + helper + hook integration tests. |
 
 ## Related issues
 
-- [#748](https://github.com/robotrocketscience/aelfrice/issues/748) — R&D campaign tracker (closes once consumer ships and H3 reports).
+- [#748](https://github.com/robotrocketscience/aelfrice/issues/748) — R&D campaign tracker (closed after the R7c deferred-with-evidence verdict; see #848 for re-opening conditions).
 - [#816](https://github.com/robotrocketscience/aelfrice/issues/816) — this storage substrate.
 - [#779](https://github.com/robotrocketscience/aelfrice/issues/779) — `injection_events` sibling.
 - [#744](https://github.com/robotrocketscience/aelfrice/issues/744) / [#740](https://github.com/robotrocketscience/aelfrice/issues/740) — JSON injection ring (predecessor; v1 shares its `fire_idx` counter but does NOT migrate ring entries — forward-only).
