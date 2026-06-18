@@ -91,7 +91,15 @@ def _identity_from_git_common_dir(git_dir: Path) -> str:
     name is the repo root basename — included for human legibility in
     `aelf` output and migrate provenance. The 8-hex BLAKE2b digest of the
     absolute git-common-dir disambiguates two same-named repos.
+
+    `git_dir` is resolved to an absolute path before hashing so the same
+    physical repo yields one identity regardless of how the path reached
+    here. `repo_identity()` already passes a resolved path, but `migrate`
+    can receive a relative `--from` legacy path; without this a relative
+    source would digest a different string than the in-repo `repo_identity`
+    and break cross-tool consistency.
     """
+    git_dir = git_dir.resolve()
     root = git_dir.parent
     basename = root.name or "repo"
     digest = hashlib.blake2b(str(git_dir).encode("utf-8"), digest_size=4).hexdigest()
