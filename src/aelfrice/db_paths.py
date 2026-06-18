@@ -16,12 +16,17 @@ imports `models` + `ulid`) is the only intra-package dep.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 from pathlib import Path
 from typing import Final
 
 from aelfrice.store import MemoryStore
+
+# #970 repo-store on-disk layout: db_path() places the store at
+# <git-common-dir>/aelfrice/memory.db, so the parent dir name is this.
+_REPO_STORE_PARENT_DIRNAME: Final[str] = "aelfrice"
 
 DEFAULT_DB_DIR: Final[Path] = Path.home() / ".aelfrice"
 DEFAULT_DB_FILENAME: Final[str] = "memory.db"
@@ -78,11 +83,62 @@ def _ensure_parent_dir(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _identity_from_git_common_dir(git_dir: Path) -> str:
+    """Build a stable repo-identity token from a git-common-dir (#970).
+
+    Format: ``<repo-root-basename>-<8 hex>``. git-common-dir is
+    ``<root>/.git`` (shared across a repo's worktrees), so its parent's
+    name is the repo root basename — included for human legibility in
+    `aelf` output and migrate provenance. The 8-hex BLAKE2b digest of the
+    absolute git-common-dir disambiguates two same-named repos.
+    """
+    root = git_dir.parent
+    basename = root.name or "repo"
+    digest = hashlib.blake2b(str(git_dir).encode("utf-8"), digest_size=4).hexdigest()
+    return f"{basename}-{digest}"
+
+
+def repo_identity_from_db_path(p: Path) -> str:
+    """Repo identity for a store at `p`, derived from its on-disk layout.
+
+    The repo store lives at ``<git-common-dir>/aelfrice/memory.db``
+    (`db_path()`), so the git-common-dir is `p.parent.parent` when the
+    parent dir is the `aelfrice` subdir. Returns '' for the home-dir
+    fallback (`~/.aelfrice/memory.db`), an in-memory DB, or any path that
+    does not match the repo-store layout — those stores carry no repo
+    identity, so their rows stay cross-context. Reuses the already-resolved
+    path instead of re-forking `git`, so it adds no subprocess cost to the
+    store-open hot path.
+    """
+    if str(p) == ":memory:":
+        return ""
+    if p.parent.name != _REPO_STORE_PARENT_DIRNAME:
+        return ""
+    return _identity_from_git_common_dir(p.parent.parent)
+
+
+def repo_identity() -> str:
+    """Stable repo identity for the cwd's git repo, or '' outside one.
+
+    Reuses the git-common-dir `db_path()` keys on, so two worktrees of one
+    repo share an identity. This is the value a user exports as
+    ``AELFRICE_PROJECT_CONTEXT`` to activate project-context retrieval
+    scoping for the current repo (the column is populated and migrate-safe
+    regardless; the resolver default stays env-driven per #970). Forks
+    `git` once; prefer `repo_identity_from_db_path()` when a resolved DB
+    path is already in hand.
+    """
+    git_dir = _git_common_dir()
+    if git_dir is None:
+        return ""
+    return _identity_from_git_common_dir(git_dir)
+
+
 def _open_store() -> MemoryStore:
     p = db_path()
     if str(p) != ":memory:":
         _ensure_parent_dir(p)
-    return MemoryStore(str(p))
+    return MemoryStore(str(p), project_context_default=repo_identity_from_db_path(p))
 
 
 # v3.2 #858 active project context resolver.
