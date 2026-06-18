@@ -35,7 +35,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from aelfrice.models import ORIGIN_UNKNOWN, Belief, Edge
+from aelfrice.db_paths import repo_identity_from_db_path
+from aelfrice.models import (
+    BELIEF_SCOPE_PROJECT,
+    LOCK_USER,
+    ORIGIN_UNKNOWN,
+    Belief,
+    Edge,
+)
 from aelfrice.store import MemoryStore
 
 LEGACY_DB_NAME: Final[str] = "memory.db"
@@ -79,12 +86,37 @@ def _belongs_to_project(content: str, project_root: Path) -> bool:
     return abs_root in content
 
 
-def _read_legacy_beliefs(conn: sqlite3.Connection) -> list[Belief]:
+def _read_legacy_beliefs(
+    conn: sqlite3.Connection, *, source_identity: str = "",
+) -> list[Belief]:
+    """Read beliefs from a source DB, preserving project_context provenance.
+
+    #970: a migrate must not collapse every row to project_context=''. An
+    already-stamped source value is carried over verbatim. A source row
+    still at '' (pre-#970 data) is stamped with `source_identity` — the
+    repo identity of the *source* store — when it is project-scope and not
+    user-locked, so the merged store can still tell which repo each belief
+    came from. Locked/global rows stay '' (cross-context). `source_identity`
+    is '' for a home-dir / non-repo source, which leaves rows '' as before.
+    """
     cur = conn.execute("SELECT * FROM beliefs")
     rows = cur.fetchall()
-    has_origin = bool(rows) and "origin" in rows[0].keys()
+    keys = set(rows[0].keys()) if rows else set()
+    has_origin = "origin" in keys
+    has_scope = "scope" in keys
+    has_project_context = "project_context" in keys
     out: list[Belief] = []
     for row in rows:
+        scope = row["scope"] if has_scope else BELIEF_SCOPE_PROJECT
+        lock_level = row["lock_level"]
+        pc = row["project_context"] if has_project_context else ""
+        if (
+            pc == ""
+            and source_identity
+            and scope == BELIEF_SCOPE_PROJECT
+            and lock_level != LOCK_USER
+        ):
+            pc = source_identity
         out.append(Belief(
             id=row["id"],
             content=row["content"],
@@ -92,11 +124,13 @@ def _read_legacy_beliefs(conn: sqlite3.Connection) -> list[Belief]:
             alpha=float(row["alpha"]),
             beta=float(row["beta"]),
             type=row["type"],
-            lock_level=row["lock_level"],
+            lock_level=lock_level,
             locked_at=row["locked_at"],
             created_at=row["created_at"],
             last_retrieved_at=row["last_retrieved_at"],
             origin=row["origin"] if has_origin else ORIGIN_UNKNOWN,
+            scope=scope,
+            project_context=pc,
         ))
     return out
 
@@ -149,8 +183,14 @@ def migrate(
     legacy_uri = f"file:{legacy_path}?mode=ro"
     legacy_conn = sqlite3.connect(legacy_uri, uri=True)
     legacy_conn.row_factory = sqlite3.Row
+    # #970: stamp source-'' project rows with the SOURCE repo identity so
+    # provenance survives the merge instead of collapsing to ''. '' for a
+    # home-dir / non-repo source.
+    source_identity = repo_identity_from_db_path(legacy_path)
     try:
-        legacy_beliefs = _read_legacy_beliefs(legacy_conn)
+        legacy_beliefs = _read_legacy_beliefs(
+            legacy_conn, source_identity=source_identity,
+        )
         legacy_edges = _read_legacy_edges(legacy_conn)
     finally:
         legacy_conn.close()
