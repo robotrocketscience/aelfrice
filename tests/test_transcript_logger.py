@@ -230,6 +230,130 @@ def test_turn_ids_unique_across_sequential_writes(tdir: Path) -> None:
     assert len(ids) == 5
 
 
+def test_duplicate_burst_collapses_to_one_line(tdir: Path) -> None:
+    """#968: N identical hook fires (duplicated registration) -> one line.
+
+    Same session/role/text within the dedup window; distinct turn_ids and
+    sub-second spacing — the burst shape the issue describes.
+    """
+    for _ in range(4):
+        rc = _run_main({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "what storage does this use?",
+            "session_id": "sess-burst",
+        })
+        assert rc == 0
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 1
+    assert lines[0]["text"] == "what storage does this use?"
+
+
+def test_assistant_stub_burst_collapses(tdir: Path) -> None:
+    """A repeated Stop with no accessible text writes one empty stub, not N."""
+    for _ in range(3):
+        _run_main({"hook_event_name": "Stop", "session_id": "sess-stop"})
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 1
+    assert lines[0]["role"] == "assistant"
+    assert lines[0]["text"] == ""
+
+
+def test_distinct_text_within_window_not_deduped(tdir: Path) -> None:
+    """Acceptance: distinct-text appends within the window are unaffected."""
+    _run_main({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "first", "session_id": "s",
+    })
+    _run_main({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "second", "session_id": "s",
+    })
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 2
+    assert [line["text"] for line in lines] == ["first", "second"]
+
+
+def test_same_text_different_session_not_deduped(tdir: Path) -> None:
+    for sid in ("sess-a", "sess-b"):
+        _run_main({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "identical", "session_id": sid,
+        })
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 2
+
+
+def test_duplicate_inside_window_is_dropped(
+    tdir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stamps = iter(["2026-06-18T00:00:00+00:00", "2026-06-18T00:00:01+00:00"])
+    monkeypatch.setattr(tl, "_now_iso", lambda: next(stamps))
+    for _ in range(2):
+        _run_main({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "dup", "session_id": "s",
+        })
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 1
+
+
+def test_duplicate_outside_window_is_appended(
+    tdir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same text deliberately resent past the window still logs (not a burst)."""
+    stamps = iter(["2026-06-18T00:00:00+00:00", "2026-06-18T00:00:05+00:00"])
+    monkeypatch.setattr(tl, "_now_iso", lambda: next(stamps))
+    for _ in range(2):
+        _run_main({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "dup", "session_id": "s",
+        })
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 2
+
+
+def test_compaction_markers_never_deduped(tdir: Path) -> None:
+    """Markers append directly and are exempt from the turn-dedup guard."""
+    _run_main({"hook_event_name": "PostCompact"})
+    _run_main({"hook_event_name": "PostCompact"})
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 2
+    assert all(line["event"] == "compaction_complete" for line in lines)
+
+
+def test_turn_after_marker_is_appended(tdir: Path) -> None:
+    """A turn whose previous line is a compaction marker is never dropped."""
+    _run_main({"hook_event_name": "PostCompact"})
+    _run_main({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "after marker", "session_id": "s",
+    })
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 2
+    assert lines[0]["event"] == "compaction_complete"
+    assert lines[1]["text"] == "after marker"
+
+
+def test_skipped_duplicate_recorded_in_hook_audit(
+    tdir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#968 acceptance: skip count is observable in hook_audit.jsonl."""
+    monkeypatch.setenv("AELFRICE_DB", str(tmp_path / "memory.db"))
+    monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
+    for _ in range(4):
+        _run_main({
+            "hook_event_name": "UserPromptSubmit",
+            "prompt": "dup", "session_id": "sess-audit",
+        })
+    assert len(_read_jsonl(tdir / "turns.jsonl")) == 1
+    audit = _read_jsonl(tmp_path / "hook_audit.jsonl")
+    skips = [r for r in audit if r.get("event") == "skipped_duplicate"]
+    assert len(skips) == 3
+    assert skips[0]["hook"] == "transcript_logger"
+    assert skips[0]["role"] == "user"
+    assert skips[0]["session_id"] == "sess-audit"
+
+
 def test_per_turn_latency_under_budget(tdir: Path) -> None:
     """Sub-10ms p99 is the spec target; we run 50 turns and assert p95
     stays under 50ms locally as a soft guard. p99 timing on dev

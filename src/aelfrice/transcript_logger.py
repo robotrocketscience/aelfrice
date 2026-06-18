@@ -56,6 +56,17 @@ EVENT_STOP: Final[str] = "Stop"
 EVENT_PRE_COMPACT: Final[str] = "PreCompact"
 EVENT_POST_COMPACT: Final[str] = "PostCompact"
 
+# #968: consecutive-duplicate guard. A turn whose (session_id, role, text)
+# matches the file's previous turn line within this window is treated as a
+# re-fire of one event (duplicated hook registration produces N identical
+# lines ~20ms apart) and dropped. Wide enough to absorb a burst, narrow
+# enough that a deliberate resend of the same prompt seconds later still logs.
+DUP_WINDOW_SECONDS: Final[float] = 2.0
+# Bytes scanned from the tail of turns.jsonl to find the previous line.
+# Bounds the dedup read at O(1) in file size, holding the per-append cost
+# inside the sub-10ms budget even when rotation has not run recently.
+_TAIL_READ_BYTES: Final[int] = 65536
+
 
 def transcripts_dir() -> Path:
     """Resolve the transcripts directory path.
@@ -127,6 +138,135 @@ def _append_jsonl(path: Path, line: dict[str, object]) -> None:
     with path.open("a", encoding="utf-8") as f:
         f.write(serialized)
         f.write("\n")
+
+
+def _parse_iso(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _read_last_turn_line(path: Path) -> dict[str, object] | None:
+    """Return the last non-empty JSONL record in `path`, or None.
+
+    Bounded tail read: only the final `_TAIL_READ_BYTES` are scanned, so
+    the cost is O(1) in file size. A record whose serialized form is the
+    sole line in the window but begins before it (truncated) fails to
+    parse and yields None — the guard then fails open to append, never
+    dropping a turn it cannot positively confirm as a duplicate.
+    """
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            start = max(0, size - _TAIL_READ_BYTES)
+            _ = f.seek(start)
+            chunk = f.read()
+    except OSError:
+        return None
+    if not chunk:
+        return None
+    segments = chunk.split(b"\n")
+    # When the window starts mid-file the first segment is a partial line;
+    # drop it so a truncated record is never mistaken for a complete one.
+    if start > 0 and len(segments) > 1:
+        segments = segments[1:]
+    for raw in reversed(segments):
+        if not raw.strip():
+            continue
+        try:
+            obj = json.loads(raw.decode("utf-8"))  # pyright: ignore[reportAny]
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        if isinstance(obj, dict):
+            return cast(dict[str, object], obj)
+        return None
+    return None
+
+
+def _is_consecutive_duplicate(
+    last: dict[str, object] | None, candidate: dict[str, object],
+) -> bool:
+    """True when `candidate` repeats `last` within DUP_WINDOW_SECONDS.
+
+    Match key is (session_id, role, text); turn_id is deliberately not in
+    the key — the burst that motivates this guard carries distinct
+    turn_ids (#968). Compaction markers (no role/text) and any record
+    missing a parseable `ts` compare unequal, so they never trigger a skip.
+    """
+    if last is None:
+        return False
+    for field in ("role", "text", "session_id"):
+        if last.get(field) != candidate.get(field):
+            return False
+    last_ts = _parse_iso(last.get("ts"))
+    cand_ts = _parse_iso(candidate.get("ts"))
+    if last_ts is None or cand_ts is None:
+        return False
+    return abs((cand_ts - last_ts).total_seconds()) <= DUP_WINDOW_SECONDS
+
+
+def _record_skipped_duplicate(*, role: str, session_id: str | None) -> None:
+    """Note a dropped consecutive-duplicate turn in hook_audit.jsonl.
+
+    Observability only (#968 acceptance): reuses the hook-audit sink so
+    `aelf tail` and other readers see the skip alongside belief-injection
+    rows, and inherits its rotation. Lazy import keeps this off the normal
+    append path — it runs only when a duplicate is actually detected, which
+    is rare. Fully fail-soft: audit-disabled, an in-memory DB, or any
+    import / I/O error is swallowed per the non-blocking contract.
+    """
+    try:
+        from aelfrice.db_paths import db_path  # noqa: PLC0415
+        from aelfrice.hook_audit import (  # noqa: PLC0415
+            _append_audit,
+            _audit_path_for_db,
+            load_hook_audit_config,
+        )
+
+        cfg = load_hook_audit_config()
+        if not cfg.enabled:
+            return
+        p = db_path()
+        if str(p) == ":memory:":
+            return
+        record: dict[str, object] = {
+            "ts": _now_iso(),
+            "hook": "transcript_logger",
+            "event": "skipped_duplicate",
+            "role": role,
+            "session_id": session_id,
+        }
+        _append_audit(_audit_path_for_db(p), record, cfg.max_bytes)
+    except Exception:
+        pass
+
+
+def _append_turn(line: dict[str, object]) -> None:
+    """Append a turn line, dropping a consecutive duplicate (#968).
+
+    Guards only turn lines (user/assistant); compaction markers append via
+    `_append_jsonl` directly and are never deduped. When the previous
+    record in turns.jsonl matches on (session_id, role, text) within
+    DUP_WINDOW_SECONDS, the write is skipped and the drop is noted in
+    hook_audit.jsonl. The guard targets the sequential burst of re-fires a
+    duplicated hook registration produces; it adds no locking, preserving
+    the lock-free non-blocking contract.
+    """
+    path = turns_path()
+    last = _read_last_turn_line(path)
+    if _is_consecutive_duplicate(last, line):
+        role = line.get("role")
+        sid = line.get("session_id")
+        _record_skipped_duplicate(
+            role=role if isinstance(role, str) else "",
+            session_id=sid if isinstance(sid, str) else None,
+        )
+        return
+    _append_jsonl(path, line)
 
 
 def _build_turn_line(
@@ -225,7 +365,7 @@ def _handle_user_prompt_submit(payload: dict[str, object]) -> None:
     line = _build_turn_line(
         role="user", text=prompt, session_id=sid, ctx=_turn_context(),
     )
-    _append_jsonl(turns_path(), line)
+    _append_turn(line)
 
 
 def _handle_stop(payload: dict[str, object]) -> None:
@@ -243,7 +383,7 @@ def _handle_stop(payload: dict[str, object]) -> None:
     line = _build_turn_line(
         role="assistant", text=text, session_id=sid, ctx=_turn_context(),
     )
-    _append_jsonl(turns_path(), line)
+    _append_turn(line)
 
 
 def _handle_pre_compact(payload: dict[str, object]) -> None:
