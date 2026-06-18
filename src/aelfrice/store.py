@@ -21,6 +21,7 @@ from typing import Callable, Final, Iterable, Iterator
 
 from aelfrice.models import (
     BELIEF_SCOPE_PROJECT,
+    LOCK_USER,
     CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION,
     CORROBORATION_SOURCE_TYPES,
     CORROBORATION_SOURCE_WONDER_INGEST,
@@ -520,6 +521,16 @@ SCHEMA_META_ENTITY_BACKFILL: Final[str] = "entity_backfill_complete"
 # just a UUID. When federation ships at v3, peer scopes appear
 # alongside this one in the version-vector dicts.
 SCHEMA_META_LOCAL_SCOPE_ID: Final[str] = "local_scope_id"
+# v3.x #970. Marker for the one-shot backfill that stamps the store's
+# repo identity (passed in as `project_context_default`) onto every
+# pre-existing project-scope, non-user-locked belief whose
+# project_context is still '' (the #858 default). Locked/global rows
+# stay '' (always-visible) per the #970 convention. ISO timestamp on
+# completion; absence triggers the backfill on next open when a
+# non-empty default is supplied.
+SCHEMA_META_PROJECT_CONTEXT_BACKFILL: Final[str] = (
+    "project_context_backfill_complete"
+)
 # Marker for the v1.5.0 backfill that stamps `{local_scope: 1}`
 # on every pre-#204 belief and edge row. ISO timestamp on
 # completion; absence triggers the backfill on next open.
@@ -841,7 +852,13 @@ def _row_to_onboard_session(row: sqlite3.Row) -> OnboardSession:
 class MemoryStore:
     """SQLite store. Pass `:memory:` for tests, a path otherwise."""
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, *, project_context_default: str = "") -> None:
+        # #970: repo identity stamped on new project-scope, non-user-locked
+        # beliefs whose project_context is ''. Empty (the default) disables
+        # stamping and the backfill — direct callers that open a store
+        # without a repo identity keep the pre-#970 cross-context behaviour.
+        # db_paths._open_store() injects the value derived from the DB path.
+        self._project_context_default: str = project_context_default
         self._conn: sqlite3.Connection = sqlite3.connect(path)
         self._conn.row_factory = sqlite3.Row
         # WAL only meaningful on-disk; harmless on :memory:.
@@ -893,6 +910,11 @@ class MemoryStore:
         # `{local_scope: 1}` on every pre-existing belief and edge
         # the first time a v1.5+ binary opens this DB. Idempotent.
         self._maybe_backfill_version_vectors()
+        # v3.x #970 project_context backfill. Stamps the repo identity
+        # onto pre-existing eligible rows the first time a binary opens
+        # this DB with a non-empty default. Idempotent; no-op when the
+        # default is '' (direct opens). Locked/global rows stay ''.
+        self._maybe_backfill_project_context()
         # v2.x #263 legacy log synthesis. Must run BEFORE the log
         # version-vector backfill so synthesized rows are included in
         # the backfill's INSERT OR IGNORE pass on the same open.
@@ -1108,6 +1130,40 @@ class MemoryStore:
             datetime.now(timezone.utc).isoformat(),
         )
         return belief_inserted + edge_inserted
+
+    def _maybe_backfill_project_context(self) -> int:
+        """One-shot backfill stamping the repo identity on eligible rows.
+
+        Stamps `_project_context_default` onto every project-scope,
+        non-user-locked belief whose `project_context` is still '' (the
+        #858 default). Locked (L0) and federation-shared rows are left ''
+        so user-global truths and shared beliefs stay visible across
+        contexts and survive an `aelf migrate` without being scoped to one
+        repo (#970 decision 3).
+
+        Idempotent: stamped marker short-circuits subsequent opens. No-op
+        when no default is set (direct opens), so it never touches a store
+        opened without a repo identity. Reversible by design —
+        `UPDATE beliefs SET project_context=''` restores the prior state.
+
+        Returns the count of rows stamped.
+        """
+        if not self._project_context_default:
+            return 0
+        if self.get_schema_meta(SCHEMA_META_PROJECT_CONTEXT_BACKFILL):
+            return 0
+        cur = self._conn.execute(
+            "UPDATE beliefs SET project_context = ? "
+            "WHERE project_context = '' AND scope = ? AND lock_level != ?",
+            (self._project_context_default, BELIEF_SCOPE_PROJECT, LOCK_USER),
+        )
+        stamped = cur.rowcount or 0
+        self._conn.commit()
+        self.set_schema_meta(
+            SCHEMA_META_PROJECT_CONTEXT_BACKFILL,
+            datetime.now(timezone.utc).isoformat(),
+        )
+        return stamped
 
     def _maybe_backfill_log_version_vectors(self) -> int:
         """Stamp `{local_scope: 1}` on every pre-existing ingest_log row.
@@ -1815,6 +1871,25 @@ class MemoryStore:
 
     # --- Belief CRUD ------------------------------------------------------
 
+    def _project_context_for_insert(self, b: Belief) -> str:
+        """Resolve the project_context to persist for a new belief (#970).
+
+        An explicit non-empty `b.project_context` is always honoured. An
+        empty one is stamped with the store's repo identity
+        (`_project_context_default`) only for project-scope, non-user-locked
+        beliefs — federation-shared rows (`scope != 'project'`) and L0
+        user-locked truths stay '' so they remain cross-context / always
+        visible. When no default is set (direct opens), the value is left ''
+        and behaviour is identical to pre-#970.
+        """
+        if b.project_context != "":
+            return b.project_context
+        if not self._project_context_default:
+            return ""
+        if b.scope != BELIEF_SCOPE_PROJECT or b.lock_level == LOCK_USER:
+            return ""
+        return self._project_context_default
+
     def insert_belief(self, b: Belief) -> None:
         _check_insert_belief_authority()
         if b.retention_class not in RETENTION_CLASSES:
@@ -1823,6 +1898,7 @@ class MemoryStore:
                 f"must be one of {sorted(RETENTION_CLASSES)}"
             )
         validate_belief_scope(b.scope)
+        project_context = self._project_context_for_insert(b)
         self._conn.execute(
             """
             INSERT INTO beliefs (
@@ -1839,7 +1915,7 @@ class MemoryStore:
                 b.lock_level, b.locked_at,
                 b.created_at, b.last_retrieved_at, b.session_id, b.origin,
                 b.hibernation_score, b.activation_condition,
-                b.retention_class, b.valid_to, b.scope, b.project_context,
+                b.retention_class, b.valid_to, b.scope, project_context,
                 b.last_confirmed_at,
             ),
         )
