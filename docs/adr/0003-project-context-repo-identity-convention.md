@@ -28,7 +28,7 @@ Mechanics: `insert_belief` stamps the store's repo identity onto new eligible ro
 ## Alternatives considered
 
 - **Within-repo slice (keep #858 intent).** Rejected: nothing populated it for nine months, and it provides no merge/federation provenance, which was the concrete gap. An explicit `project_context` value on a belief is still honoured verbatim, so per-slice tagging remains possible by opting in; it is just not the default.
-- **Flip the resolver default to repo identity (auto-consult, decision 4 = yes).** Rejected for now: it reverses the documented "unset = no filter" contract and changes retrieval behaviour for every store (a no-op for a single repo, but a silent semantics change). Left as a follow-up the operator can ratify; the column and migrate provenance land first.
+- **Flip the resolver default to repo identity (auto-consult, decision 4 = yes).** Rejected for now: it reverses the documented "unset = no filter" contract and changes retrieval behaviour for every store (a no-op for a single repo, but a silent semantics change). Left as a follow-up that the operator can ratify; the column and migrate provenance land first.
 - **A separate provenance column (e.g. reuse `local_scope_id`).** `local_scope_id` (#204) is an opaque per-DB UUID for version-vector provenance, not a stable, legible, cross-repo retrieval-scope key. Keeping provenance on `project_context` avoids a second axis for the chosen convention.
 
 ## Consequences
