@@ -320,12 +320,17 @@ class Belief:
     or 'shared:<name>' (named peer group). Validated at write time by
     `validate_belief_scope`; invalid values raise ``ValueError``.
 
-    `project_context` (v3.2 #858) is the within-repo retrieval scope
-    tag. Default '' means "cross-context — visible regardless of active
-    project context". Distinct from `scope` (federation visibility):
-    `project_context` filters retrieval against the active in-process
-    context resolved by `db_paths.active_project_context()`, whereas
-    `scope` controls whether peer DBs may surface the row.
+    `project_context` (v3.2 #858) is the retrieval scope tag. Per ADR
+    0003 (#970) the convention is **repo identity** (the
+    `<repo-root-basename>-<hash>` token from `db_paths.repo_identity`),
+    auto-stamped on write for project-scope, non-user-locked beliefs.
+    Default '' means "cross-context — visible regardless of active project
+    context"; L0 user-locked truths and federation-shared rows keep ''.
+    Distinct from `scope` (federation visibility): `project_context`
+    filters retrieval against the active in-process context resolved by
+    `db_paths.active_project_context()` (opt-in via
+    `AELFRICE_PROJECT_CONTEXT`), whereas `scope` controls whether peer DBs
+    may surface the row.
 
     `last_confirmed_at` (v3.5 #936) is an ISO timestamp set by
     `aelf review --apply` when the user marks a belief `keep`. NULL

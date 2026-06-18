@@ -6,6 +6,7 @@ Each ADR documents one technical decision: context, the choice made, alternative
 
 - [0001 — Record architecture decisions](0001-record-architecture-decisions.md)
 - [0002 — Two-repo physical separation for public/private boundary](0002-two-repo-physical-separation.md)
+- [0003 — `project_context` holds repo identity](0003-project-context-repo-identity-convention.md)
 
 ## Format
 

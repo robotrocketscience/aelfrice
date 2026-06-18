@@ -161,6 +161,15 @@ def active_project_context() -> str:
     the filter to drop project-scope beliefs whose stored
     project_context is neither '' nor an exact match.
 
+    Per ADR 0003 (#970) the stored project_context convention is repo
+    identity (see `repo_identity`). Scoping is opt-in: this resolver
+    stays env-driven, so the default (unset) is still "no filter". To
+    activate per-repo scoping, export
+    ``AELFRICE_PROJECT_CONTEXT="$(python -c 'from aelfrice.db_paths import
+    repo_identity; print(repo_identity())')"`` (or set it to the repo
+    identity by any means). The column is populated and migrate-safe
+    regardless of whether the filter is active.
+
     Distinct from `db_path()` (which picks WHICH DB to read). Two
     worktrees of the same repo share one DB via --git-common-dir; this
     resolver is what lets those two worktrees see DIFFERENT slices of
