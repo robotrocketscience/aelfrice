@@ -9,8 +9,6 @@ federation-shared rows stay '' (always-visible).
 """
 from __future__ import annotations
 
-import pytest
-
 from aelfrice.models import (
     BELIEF_FACTUAL,
     BELIEF_SCOPE_GLOBAL,
