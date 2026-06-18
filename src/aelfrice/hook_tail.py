@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import IO, Final, Iterable
 
-from aelfrice.hook import (
+from aelfrice.hook_audit import (
     AUDIT_FILENAME,
     AUDIT_ROTATED_SUFFIX,
     _audit_path_for_db,
