@@ -242,6 +242,9 @@ def _record_skipped_duplicate(*, role: str, session_id: str | None) -> None:
         }
         _append_audit(_audit_path_for_db(p), record, cfg.max_bytes)
     except Exception:
+        # Fail-soft by design: this audit write is observability-only, so
+        # any import or I/O error must be swallowed rather than propagate
+        # and break the non-blocking transcript-logger hook path (#968).
         pass
 
 
