@@ -2591,6 +2591,7 @@ class MemoryStore:
                     FROM beliefs b
                     JOIN beliefs_fts f ON f.id = b.id
                     WHERE beliefs_fts MATCH ?
+                      AND b.valid_to IS NULL
                     {scope_sql}
                     ORDER BY bm25(beliefs_fts)
                     LIMIT ?

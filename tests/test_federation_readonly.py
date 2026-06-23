@@ -98,6 +98,41 @@ def _wire_peer(tmp_path: Path, peer_path: Path, monkeypatch) -> Path:
     return deps_file
 
 
+def test_search_peer_beliefs_excludes_soft_deleted(
+    tmp_path: Path, monkeypatch
+):
+    """A soft-deleted belief on a peer must not surface via the federation
+    overlay (#980 invariant extends to the peer-search lane).
+
+    valid_to is set directly here, leaving the peer's FTS row intact, to
+    simulate a peer that has not run the FTS-pruning soft_delete (or a
+    legacy pre-#980 soft-delete). That isolates the read-side
+    `valid_to IS NULL` filter in search_peer_beliefs: without it, the
+    soft-deleted row still MATCHes and surfaces.
+    """
+    peer_path = tmp_path / "peerA.db"
+    peer = MemoryStore(str(peer_path))
+    try:
+        peer.insert_belief(_belief("peer-active", "shared cat token active"))
+        peer.insert_belief(_belief("peer-removed", "shared cat token removed"))
+        peer._conn.execute(
+            "UPDATE beliefs SET valid_to = ? WHERE id = ?",
+            ("2026-05-12T00:00:00+00:00", "peer-removed"),
+        )
+        peer._conn.commit()
+    finally:
+        peer.close()
+    _wire_peer(tmp_path, peer_path, monkeypatch)
+
+    local = MemoryStore(str(tmp_path / "local.db"))
+    try:
+        ids = [b.id for b, _, _ in local.search_peer_beliefs("shared cat token")]
+        assert "peer-active" in ids
+        assert "peer-removed" not in ids
+    finally:
+        local.close()
+
+
 def test_two_scope_smoke_peer_belief_surfaces_in_local_search(
     tmp_path: Path, monkeypatch
 ):
