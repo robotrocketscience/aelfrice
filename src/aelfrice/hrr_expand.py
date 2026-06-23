@@ -44,7 +44,7 @@ from typing import TYPE_CHECKING, Final
 
 import numpy as np
 
-from aelfrice.hrr import Vector, unbind
+from aelfrice.hrr import unbind
 from aelfrice.models import EDGE_TYPES
 
 if TYPE_CHECKING:  # pragma: no cover - typing only

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import pathlib
 
-import numpy as np
 import pytest
 
 from aelfrice import hrr_expand as hx
