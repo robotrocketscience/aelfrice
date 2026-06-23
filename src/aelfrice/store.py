@@ -508,6 +508,25 @@ _SCHEMA: tuple[str, ...] = (
     """,
     "CREATE INDEX IF NOT EXISTS idx_belief_touches_session_fire "
     "ON belief_touches(session_id, last_fire_idx DESC)",
+    # #981 HRR vocabulary-bridge expansion lane. Precomputed single-hop
+    # semantic neighbours (forward + reverse) for the FTS5-seed expansion
+    # step. A derived cache, rebuilt wholesale by
+    # `hrr_expand.precompute_expand_neighbors`; no FK so the rebuild does not
+    # depend on insert order or cascade timing. `similarity` is the raw HRR
+    # inner product (REAL, 8-byte IEEE round-trip → byte-stable table). The
+    # PRIMARY KEY prefix (belief_id) backs the `WHERE belief_id IN (...)`
+    # runtime lookup.
+    """
+    CREATE TABLE IF NOT EXISTS hrr_expand_neighbors (
+        belief_id   TEXT NOT NULL,
+        neighbor_id TEXT NOT NULL,
+        similarity  REAL NOT NULL,
+        edge_type   TEXT NOT NULL,
+        direction   TEXT NOT NULL,
+        created_at  TEXT NOT NULL,
+        PRIMARY KEY (belief_id, neighbor_id, edge_type, direction)
+    )
+    """,
 )
 
 # Marker key for the entity-index one-shot backfill. Empty value =
