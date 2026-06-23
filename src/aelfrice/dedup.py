@@ -65,6 +65,11 @@ MAX_CANDIDATE_PAIRS_KEY: Final[str] = "max_candidate_pairs"
 DEFAULT_JACCARD_MIN: Final[float] = 0.8
 DEFAULT_LEVENSHTEIN_MIN: Final[float] = 0.85
 DEFAULT_MAX_CANDIDATE_PAIRS: Final[int] = 5000
+# Write-gate for the #999 SUPERSEDES edge writer: per-belief cap on
+# auto-written edges (the Exp-48 coverage-dilution guard, mirroring the
+# relationship_detector default). Defined locally — dedup must not import
+# relationship_detector (that module imports this one at load time).
+DEFAULT_MAX_EDGES_PER_BELIEF: Final[int] = 8
 
 # --- Similarity primitives ---------------------------------------------
 
@@ -385,6 +390,121 @@ def dedup_audit(
         truncated=truncated,
         pairs=tuple(pairs),
         clusters=clusters,
+    )
+
+
+# --- SUPERSEDES edge writer (#999 — the #197-deferred cluster hook) ------
+
+
+@dataclass(frozen=True)
+class SupersedesWriteReport:
+    """Summary of one ``write_supersedes_edges`` run.
+
+    ``n_clusters``
+        Near-duplicate clusters returned by ``dedup_audit`` — the
+        candidate set this writer acts on.
+
+    ``n_edges_written``
+        Member→oldest edges newly written this run.
+
+    ``n_edges_skipped_existing``
+        Edges whose triple already existed (idempotency guard fired).
+
+    ``n_edges_skipped_gated``
+        Edges dropped because an endpoint hit ``max_edges_per_belief``.
+    """
+
+    n_clusters: int
+    n_edges_written: int
+    n_edges_skipped_existing: int
+    n_edges_skipped_gated: int
+
+
+def write_supersedes_edges(
+    store: MemoryStore,
+    *,
+    jaccard_min: float = DEFAULT_JACCARD_MIN,
+    levenshtein_min: float = DEFAULT_LEVENSHTEIN_MIN,
+    max_candidate_pairs: int = DEFAULT_MAX_CANDIDATE_PAIRS,
+    max_edges_per_belief: int = DEFAULT_MAX_EDGES_PER_BELIEF,
+) -> SupersedesWriteReport:
+    """Emit SUPERSEDES edges within near-duplicate clusters (#999).
+
+    Activates the write-path ``dedup_audit`` documented but deferred
+    behind the #197 bench gate: within each duplicate cluster, the
+    **oldest** member (min ``created_at``, tie-break min ``id``) is the
+    SUPERSEDES *target*; every other member emits one directional edge
+    ``src = member`` → ``dst = oldest`` (the newer belief supersedes the
+    older one it duplicates).
+
+    Wired into ingest only behind the default-off ``auto_detect`` flag
+    (``relationship_detector.is_auto_relationship_detection_enabled``); a
+    fresh install writes no edges and the #605/#897 scope decision stands.
+
+    **Idempotent.** Each ``(member, oldest, SUPERSEDES)`` triple is checked
+    before insert and skipped if present.
+
+    **Write-gated.** ``max_edges_per_belief`` caps how many SUPERSEDES
+    edges any one belief accretes; pre-existing edges count toward the
+    budget for a hard per-belief bound across re-runs.
+
+    **Deterministic.** Clusters are sorted by ``representative_id`` and
+    members are lexicographically sorted, so the oldest-member resolution
+    and the write-gate survivors are stable across runs.
+
+    Stdlib-only: no LLM, no embedding. Delegates clustering to
+    ``dedup_audit``.
+    """
+    from aelfrice.models import Edge, EDGE_SUPERSEDES
+
+    report = dedup_audit(
+        store,
+        jaccard_min=jaccard_min,
+        levenshtein_min=levenshtein_min,
+        max_candidate_pairs=max_candidate_pairs,
+    )
+
+    edges_per_belief: dict[str, int] = {}
+    n_written = 0
+    n_skipped_existing = 0
+    n_gated = 0
+    for cluster in report.clusters:
+        members = [
+            b
+            for mid in cluster.member_ids
+            if (b := store.get_belief(mid)) is not None
+        ]
+        if len(members) < 2:
+            continue
+        # Oldest member is the SUPERSEDES target (dedup.py cluster note).
+        oldest = min(members, key=lambda b: (b.created_at, b.id))
+        for b in members:
+            if b.id == oldest.id:
+                continue
+            src_id, dst_id = b.id, oldest.id
+            if (
+                edges_per_belief.get(src_id, 0) >= max_edges_per_belief
+                or edges_per_belief.get(dst_id, 0) >= max_edges_per_belief
+            ):
+                n_gated += 1
+                continue
+            if store.get_edge(src_id, dst_id, EDGE_SUPERSEDES) is not None:
+                n_skipped_existing += 1
+                edges_per_belief[src_id] = edges_per_belief.get(src_id, 0) + 1
+                edges_per_belief[dst_id] = edges_per_belief.get(dst_id, 0) + 1
+                continue
+            store.insert_edge(
+                Edge(src=src_id, dst=dst_id, type=EDGE_SUPERSEDES, weight=1.0)
+            )
+            n_written += 1
+            edges_per_belief[src_id] = edges_per_belief.get(src_id, 0) + 1
+            edges_per_belief[dst_id] = edges_per_belief.get(dst_id, 0) + 1
+
+    return SupersedesWriteReport(
+        n_clusters=len(report.clusters),
+        n_edges_written=n_written,
+        n_edges_skipped_existing=n_skipped_existing,
+        n_edges_skipped_gated=n_gated,
     )
 
 
