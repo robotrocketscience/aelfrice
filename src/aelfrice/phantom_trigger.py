@@ -1,200 +1,410 @@
-"""Deterministic phantom-opportunity trigger for normal turns (#980 item 3).
+"""Trigger-driven phantom-generation opportunity detection (#980).
 
-The #980 audit found phantoms are structurally under-generated: they only
-appear when the user explicitly types ``/aelf:wonder`` (74 phantoms across
-all stores in months). The operator's headline ask is a *trigger* that
-flags a phantom-generation opportunity during ordinary conversation turns.
+The upstream feature (``/aelf:wonder``) only generates speculative
+("phantom") beliefs when the user explicitly invokes it, so the phantom
+layer is structurally under-exercised. This module adds the deterministic
+**detect + flag** half of an automatic trigger that surfaces
+phantom-generation *opportunities* during ordinary conversation turns.
 
-Per the locked PHILOSOPHY decision (#605) and the determinism property,
-aelfrice owns only the **deterministic flag**; the actual phantom synthesis
-is an LLM dispatch under the host agent's credentials (the same boundary as
-``/aelf:wonder``), never in aelfrice's retrieval path. This module is that
-deterministic half:
+**Load-bearing boundary.** aelfrice never calls an LLM (see
+``docs/design/phantom_trigger_generation.md`` §2). This module does **not**
+generate phantoms — it cannot. It deterministically detects that an
+opportunity exists and emits a small ``<aelfrice-phantom-opportunity>`` note
+into the UserPromptSubmit context. The *host agent* reads the
+note and may run the existing ``/aelf:wonder`` dispatch (Task subagents under
+the host's credentials) or surface it to the user. Synthesis and persistence
+stay on the existing explicit path; this module only decides *when*.
 
-* :func:`detect_phantom_opportunity` — a pure function over the turn's
-  prompt and retrieval-hit count. Returns a :class:`PhantomOpportunity`
-  when the turn is a genuine knowledge gap (a real query that retrieved
-  fewer beliefs than a floor), else ``None``. No I/O, no LLM, no clock.
+**Three signals (all default-off, ratified 2026-06-23):**
+  (a) ``gap``         — the prompt retrieved zero beliefs.
+  (b) ``new_entity``  — an extracted entity resolves to zero stored beliefs.
+  (c) ``contradiction`` — a CONTRADICTS pair appeared since the per-session
+      snapshot (poll + set-diff; inert unless the #988 substrate mints edges).
 
-* :func:`register_opportunity` — bounds the flag: per-session dedup on the
-  normalized-query key plus a per-session rate cap, backed by a small
-  sidecar JSON file. Keeps the trigger a *trickle*, not a spammer.
-
-The host hook (``user_prompt_submit``) consumes both behind a default-off
-env flag and surfaces the opportunity; it never generates the phantom
-itself. See ``docs/feature-phantom-trigger-generation.md``.
+**Bounds:** opt-in master flag (default off), a per-session fire budget
+(default 3, shared across signals), and per-signal dedup — all carried in
+``session_ring`` state. The predicate is cheap: it reuses the retrieval the
+hook already ran (signal a), the L2.5 entity primitives (signal b), and a
+single small ``SELECT`` (signal c).
 """
 from __future__ import annotations
 
-import hashlib
-import json
+import os
 import re
+import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO, TYPE_CHECKING, Any, Final
 
-# Tuning defaults. All deterministic; the hook may override via env.
-DEFAULT_MIN_HITS: int = 1
-"""Gap iff the turn retrieved fewer than this many beliefs (default: 0 hits)."""
+from aelfrice.session_ring import (
+    read_phantom_state,
+    record_phantom_fire,
+    update_phantom_contradicts,
+)
 
-DEFAULT_MIN_QUERY_TOKENS: int = 3
-"""A query thinner than this many meaningful tokens can't anchor a phantom."""
+if TYPE_CHECKING:
+    from aelfrice.store import MemoryStore
 
-DEFAULT_MAX_PER_SESSION: int = 3
-"""At most this many opportunities are flagged per session (rate cap)."""
+# ---------------------------------------------------------------------------
+# Opt-in flag + config (default-off, env > kwarg > TOML > False)
+# ---------------------------------------------------------------------------
 
-_KEYS_CAP: int = 64
-"""Retain at most this many recent dedup keys per session sidecar."""
+ENV_PHANTOM_GENERATION: Final[str] = "AELFRICE_PHANTOM_GENERATION"
+_CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
+_SECTION: Final[str] = "phantom_generation"
+_ENABLED_KEY: Final[str] = "enabled"
+_MAX_FIRES_KEY: Final[str] = "max_fires_per_session"
+_AUTO_DISPATCH_KEY: Final[str] = "auto_dispatch"
 
-_MIN_TOKEN_LEN: int = 3
-"""Tokens shorter than this are dropped before keying / counting."""
+_DEFAULT_MAX_FIRES: Final[int] = 3
+# Cap on entities extracted per prompt for signal (b). Matches the L2.5
+# query-side extraction cap so the novelty probe costs no more than retrieval.
+_ENTITY_CAP: Final[int] = 16
+# Truncate the topic shown in a note so a long prompt cannot bloat the block.
+_TOPIC_MAX: Final[int] = 160
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_ENV_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
+_ENV_FALSY: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
+
+
+@dataclass(frozen=True)
+class PhantomGenerationConfig:
+    """Resolved #980 phantom-generation knobs."""
+
+    enabled: bool = False
+    max_fires_per_session: int = _DEFAULT_MAX_FIRES
+    auto_dispatch: bool = False
+
+
+def _env_override() -> bool | None:
+    """True/False when ``AELFRICE_PHANTOM_GENERATION`` is set to a recognised
+    truthy/falsy value, else None (a lower-precedence source decides)."""
+    raw = os.environ.get(ENV_PHANTOM_GENERATION)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def _read_section(start: Path | None = None) -> dict[str, Any] | None:
+    """Walk up from ``start`` for a ``.aelfrice.toml`` with a
+    ``[phantom_generation]`` table; return it (else None). Tolerant: malformed
+    TOML / wrong-typed section returns None and traces to stderr without
+    raising. Mirrors ``claude_memory._read_mirror_toml`` semantics.
+    """
+    serr: IO[str] = sys.stderr
+    current = (start if start is not None else Path.cwd()).resolve()
+    seen: set[Path] = set()
+    while current not in seen:
+        seen.add(current)
+        candidate = current / _CONFIG_FILENAME
+        if candidate.is_file():
+            try:
+                parsed: dict[str, Any] = tomllib.loads(
+                    candidate.read_bytes().decode("utf-8", errors="replace"),
+                )
+            except (OSError, tomllib.TOMLDecodeError) as exc:
+                print(
+                    f"aelfrice phantom_generation: cannot read {candidate}: {exc}",
+                    file=serr,
+                )
+                return None
+            section = parsed.get(_SECTION)
+            return section if isinstance(section, dict) else None
+        if current.parent == current:
+            break
+        current = current.parent
+    return None
+
+
+def should_trigger_phantom_generation(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the #980 master flag.
+
+    Precedence (first decisive wins):
+      1. ``AELFRICE_PHANTOM_GENERATION`` env var (truthy/falsy normalised).
+      2. Explicit ``explicit`` kwarg from the caller.
+      3. ``[phantom_generation] enabled`` in ``.aelfrice.toml``.
+      4. Default: **False** — opt-in, per the narrow-surface PHILOSOPHY
+         (#605) and the opt-in-default posture (#606 / ADR-0003 dec-4).
+    """
+    env = _env_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    section = _read_section(start)
+    if section is not None:
+        value = section.get(_ENABLED_KEY)
+        if isinstance(value, bool):
+            return value
+    return False
+
+
+def load_phantom_generation_config(
+    start: Path | None = None,
+) -> PhantomGenerationConfig:
+    """Resolve the full #980 config: ``enabled`` (env > TOML > False),
+    ``max_fires_per_session`` (TOML > 3), ``auto_dispatch`` (TOML > False).
+
+    Only ``enabled`` honours the env override; the numeric / posture knobs are
+    TOML-only, matching the cadence-config precedent. Wrong-typed values fall
+    back to the default.
+    """
+    section = _read_section(start)
+    max_fires = _DEFAULT_MAX_FIRES
+    auto_dispatch = False
+    if section is not None:
+        raw_max = section.get(_MAX_FIRES_KEY)
+        if isinstance(raw_max, int) and not isinstance(raw_max, bool) and raw_max >= 1:
+            max_fires = raw_max
+        raw_auto = section.get(_AUTO_DISPATCH_KEY)
+        if isinstance(raw_auto, bool):
+            auto_dispatch = raw_auto
+    return PhantomGenerationConfig(
+        enabled=should_trigger_phantom_generation(start=start),
+        max_fires_per_session=max_fires,
+        auto_dispatch=auto_dispatch,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Opportunity model + predicates
+# ---------------------------------------------------------------------------
+
+REASON_GAP: Final[str] = "gap"
+REASON_NEW_ENTITY: Final[str] = "new_entity"
+REASON_CONTRADICTION: Final[str] = "contradiction"
+
+_WS_RE = re.compile(r"\s+")
 
 
 @dataclass(frozen=True)
 class PhantomOpportunity:
-    """A deterministic flag that this turn is a phantom-generation gap.
+    """One detected phantom-generation opportunity.
 
-    Pure data. ``dedup_key`` is a stable hash of the normalized query
-    tokens — two prompts that normalize to the same token set share a key
-    and so dedup against each other within a session.
+    ``reason`` is one of the ``REASON_*`` constants; ``topic`` is the
+    human-facing subject shown in the note; ``dedup_key`` is the
+    session-dedup key (signal-prefixed) so the same opportunity is not
+    re-surfaced within a session.
     """
 
-    query: str
-    n_hits: int
-    reason: str  # "no_hits" | "below_floor"
+    reason: str
+    topic: str
     dedup_key: str
 
 
-def normalize_query(prompt: str) -> tuple[str, ...]:
-    """Lowercase, tokenize on ``[a-z0-9]+``, drop short tokens, sort-unique.
-
-    Deterministic and order-independent so ``"about session ids"`` and
-    ``"session id about"`` key identically. No stopword list — short-token
-    pruning alone keeps the key stable without a non-deterministic lexicon.
-    """
-    toks = {
-        t
-        for t in _TOKEN_RE.findall(prompt.lower())
-        if len(t) >= _MIN_TOKEN_LEN
-    }
-    return tuple(sorted(toks))
+def _truncate(text: str) -> str:
+    text = text.strip()
+    return text if len(text) <= _TOPIC_MAX else text[:_TOPIC_MAX].rstrip() + "…"
 
 
-def dedup_key_for(prompt: str) -> str:
-    """Stable 16-hex-char key over the normalized query tokens."""
-    toks = normalize_query(prompt)
-    digest = hashlib.sha256("\x1f".join(toks).encode("utf-8")).hexdigest()
-    return digest[:16]
+def _normalize_topic(text: str) -> str:
+    return _WS_RE.sub(" ", text.strip().lower())
 
 
-def detect_phantom_opportunity(
-    prompt: str,
-    n_hits: int,
-    *,
-    gate_skipped: bool,
-    min_hits: int = DEFAULT_MIN_HITS,
-    min_query_tokens: int = DEFAULT_MIN_QUERY_TOKENS,
-) -> PhantomOpportunity | None:
-    """Return a :class:`PhantomOpportunity` iff this turn is a real gap.
+def _pair_key(a: str, b: str) -> str:
+    lo, hi = (a, b) if a <= b else (b, a)
+    return f"{lo}|{hi}"
 
-    A gap requires ALL of:
 
-    * ``gate_skipped`` is False — trivial acks and system envelopes that
-      the prompt-shape gate (#674) skips are not knowledge gaps; they need
-      no belief, so they must never trigger generation.
-    * the normalized query carries ≥ ``min_query_tokens`` meaningful
-      tokens — too thin a query can't anchor a useful phantom.
-    * the turn retrieved fewer than ``min_hits`` beliefs — the query
-      seeded nothing (or nothing above the floor).
-
-    Pure: no I/O, no clock, no randomness. ``reason`` is ``"no_hits"``
-    when nothing was retrieved, else ``"below_floor"``.
-    """
-    if gate_skipped:
+def detect_gap(prompt: str, hit_count: int) -> PhantomOpportunity | None:
+    """Signal (a): fire when retrieval returned **zero** beliefs for a
+    non-empty prompt (zero-hits-only, per §7 decision 3)."""
+    if hit_count != 0:
         return None
-    toks = normalize_query(prompt)
-    if len(toks) < min_query_tokens:
+    topic = prompt.strip()
+    if not topic:
         return None
-    if n_hits >= min_hits:
-        return None
-    reason = "no_hits" if n_hits <= 0 else "below_floor"
     return PhantomOpportunity(
-        query=prompt.strip(),
-        n_hits=n_hits,
-        reason=reason,
-        dedup_key=dedup_key_for(prompt),
+        reason=REASON_GAP,
+        topic=_truncate(topic),
+        dedup_key=f"gap:{_normalize_topic(topic)}",
     )
 
 
-def _state_path(state_dir: Path, session_id: str) -> Path:
-    safe = re.sub(r"[^A-Za-z0-9_-]", "_", session_id or "nosession")[:64]
-    return state_dir / f"phantom_trigger_{safe}.json"
-
-
-def _load_state(path: Path) -> dict[str, object]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {"keys": [], "count": 0}
-    if not isinstance(data, dict):
-        return {"keys": [], "count": 0}
-    keys = data.get("keys")
-    count = data.get("count")
-    return {
-        "keys": keys if isinstance(keys, list) else [],
-        "count": count if isinstance(count, int) else 0,
-    }
-
-
-def register_opportunity(
-    state_dir: Path | None,
-    session_id: str,
-    opportunity: PhantomOpportunity,
+def detect_novel_entities(
+    prompt: str,
+    store: "MemoryStore",
     *,
-    max_per_session: int = DEFAULT_MAX_PER_SESSION,
-) -> bool:
-    """Decide whether to surface ``opportunity``, bounding the trigger.
+    max_entities: int = _ENTITY_CAP,
+) -> list[PhantomOpportunity]:
+    """Signal (b): for each **named** entity extracted from ``prompt``, fire
+    when it resolves to **zero** stored beliefs (a genuinely new entity).
 
-    Returns True (and records the flag) only when, within this session:
-
-    * the opportunity's ``dedup_key`` has not already been flagged, AND
-    * fewer than ``max_per_session`` opportunities have been flagged.
-
-    State lives in a per-session sidecar JSON next to the store. Fail-soft:
-    when ``state_dir`` is None (in-memory store) or any file op fails, the
-    bound can't be enforced, so the function returns False rather than risk
-    unbounded emission — the trigger errs quiet, never spammy.
+    Loose ``noun_phrase`` entities are excluded: they match nearly any
+    prompt, would make this signal fire constantly, and largely duplicate the
+    gap signal. A novel CamelCase identifier, file path, URL, error code,
+    version, or branch is a far stronger "new entity the store has never
+    seen" signal.
     """
-    if state_dir is None:
-        return False
-    try:
-        path = _state_path(state_dir, session_id)
-        state = _load_state(path)
-        keys = list(state["keys"])  # type: ignore[arg-type]
-        count = int(state["count"])  # type: ignore[arg-type]
-        if opportunity.dedup_key in keys:
-            return False
-        if count >= max_per_session:
-            return False
-        keys.append(opportunity.dedup_key)
-        if len(keys) > _KEYS_CAP:
-            keys = keys[-_KEYS_CAP:]
-        new_state = {"keys": keys, "count": count + 1}
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(new_state), encoding="utf-8")
-        return True
-    except OSError:
-        return False
+    from aelfrice.entity_extractor import (  # noqa: PLC0415
+        KIND_NOUN_PHRASE,
+        extract_entities,
+    )
+
+    out: list[PhantomOpportunity] = []
+    seen: set[str] = set()
+    for ent in extract_entities(prompt, max_entities=max_entities):
+        if ent.kind == KIND_NOUN_PHRASE:
+            continue
+        key = ent.lower
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        if not store.lookup_entities([key], limit=1):
+            out.append(
+                PhantomOpportunity(
+                    reason=REASON_NEW_ENTITY,
+                    topic=_truncate(ent.raw),
+                    dedup_key=f"new_entity:{key}",
+                )
+            )
+    return out
 
 
-__all__ = [
-    "DEFAULT_MAX_PER_SESSION",
-    "DEFAULT_MIN_HITS",
-    "DEFAULT_MIN_QUERY_TOKENS",
-    "PhantomOpportunity",
-    "dedup_key_for",
-    "detect_phantom_opportunity",
-    "normalize_query",
-    "register_opportunity",
-]
+def detect_new_contradicts(
+    store: "MemoryStore",
+    prev_snapshot: set[str],
+) -> list[PhantomOpportunity]:
+    """Signal (c): diff the live CONTRADICTS pair-set against
+    ``prev_snapshot``; fire one opportunity per newly-appeared pair. The
+    caller is responsible for the baseline guard (do not call on a session
+    whose snapshot has not been initialised) and for refreshing the snapshot.
+    """
+    live = {_pair_key(a, b) for a, b in store.list_contradicts_pairs()}
+    out: list[PhantomOpportunity] = []
+    for key in sorted(live - prev_snapshot):
+        a, _, b = key.partition("|")
+        out.append(
+            PhantomOpportunity(
+                reason=REASON_CONTRADICTION,
+                topic=f"beliefs {a} and {b}",
+                dedup_key=f"contradiction:{key}",
+            )
+        )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
+
+
+def evaluate_opportunities(
+    *,
+    prompt: str,
+    store: "MemoryStore",
+    session_id: str | None,
+    hit_count: int,
+    config: PhantomGenerationConfig | None = None,
+    stderr: IO[str] | None = None,
+) -> list[PhantomOpportunity]:
+    """Detect this turn's phantom-generation opportunities, apply the
+    per-session budget and dedup, record the fires, and refresh the
+    CONTRADICTS snapshot. Returns the opportunities to surface (possibly
+    empty). Pure-deterministic; never raises (fail-soft via session_ring).
+
+    Order of precedence among candidates when the budget is tight: gap →
+    new-entity → contradiction (gap is the cheapest and most directly the
+    operator's framing).
+    """
+    cfg = config if config is not None else load_phantom_generation_config()
+    if not cfg.enabled:
+        return []
+
+    state = read_phantom_state(session_id)
+    fires = int(state["phantom_fires"])
+    if fires >= cfg.max_fires_per_session:
+        return []
+    remaining = cfg.max_fires_per_session - fires
+    seen: set[str] = set(state["phantom_dedup"])
+
+    candidates: list[PhantomOpportunity] = []
+    gap = detect_gap(prompt, hit_count)
+    if gap is not None:
+        candidates.append(gap)
+    candidates.extend(detect_novel_entities(prompt, store))
+
+    # Signal (c): only diff once the session's snapshot has been baselined,
+    # so pre-existing contradictions don't burst on turn 1.
+    live_keys = {_pair_key(a, b) for a, b in store.list_contradicts_pairs()}
+    if bool(state["phantom_init"]):
+        candidates.extend(
+            detect_new_contradicts(store, set(state["phantom_contradicts"]))
+        )
+
+    fired: list[PhantomOpportunity] = []
+    for opp in candidates:
+        if len(fired) >= remaining:
+            break
+        if opp.dedup_key in seen:
+            continue
+        seen.add(opp.dedup_key)
+        fired.append(opp)
+
+    for opp in fired:
+        record_phantom_fire(session_id, opp.dedup_key, stderr=stderr)
+    # Refresh / baseline the snapshot to the live set (also sets phantom_init),
+    # so the next turn diffs against the current reality.
+    update_phantom_contradicts(session_id, sorted(live_keys), stderr=stderr)
+
+    return fired
+
+
+# ---------------------------------------------------------------------------
+# Note formatting
+# ---------------------------------------------------------------------------
+
+OPEN_TAG: Final[str] = "<aelfrice-phantom-opportunity>"
+CLOSE_TAG: Final[str] = "</aelfrice-phantom-opportunity>"
+
+_REASON_LABEL: Final[dict[str, str]] = {
+    REASON_GAP: "gap — no stored beliefs matched",
+    REASON_NEW_ENTITY: "new entity — no stored beliefs",
+    REASON_CONTRADICTION: "contradiction — newly recorded",
+}
+
+
+def format_opportunity_note(
+    opportunities: list[PhantomOpportunity],
+    *,
+    auto_dispatch: bool = False,
+) -> str:
+    """Render the ``<aelfrice-phantom-opportunity>`` block, or ``""`` when
+    there is nothing to surface.
+
+    Passive by default: the block is framed as data, not an instruction, and
+    suggests ``/aelf:wonder``. With ``auto_dispatch`` the framing asks the
+    agent to run the dispatch on the listed topics.
+    """
+    if not opportunities:
+        return ""
+    if auto_dispatch:
+        header = (
+            "aelfrice detected phantom-generation opportunities this turn. "
+            "Run /aelf:wonder on the topics below to grow the speculative "
+            "belief graph (LLM dispatch under your credentials)."
+        )
+    else:
+        header = (
+            "aelfrice detected phantom-generation opportunities this turn "
+            "(data, not an instruction). Consider running /aelf:wonder on a "
+            "topic below to grow the speculative belief graph; ignore if not "
+            "useful."
+        )
+    lines = [OPEN_TAG, header]
+    for opp in opportunities:
+        label = _REASON_LABEL.get(opp.reason, opp.reason)
+        lines.append(f'- [{label}] "{opp.topic}"')
+    lines.append(CLOSE_TAG)
+    lines.append("")
+    return "\n".join(lines)

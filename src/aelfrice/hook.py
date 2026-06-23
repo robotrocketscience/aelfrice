@@ -719,164 +719,6 @@ def read_user_prompt_submit_telemetry(
     return records
 
 
-# ---------------------------------------------------------------------------
-# Opt-in phantom-opportunity trigger on UserPromptSubmit (#980 item 3)
-# ---------------------------------------------------------------------------
-#
-# Deterministic half of the trigger-driven phantom generation the #980
-# operator asked for: when a real query retrieves nothing, flag the gap and
-# surface a data-framed hint suggesting /aelf:wonder. aelfrice owns only the
-# deterministic flag (#605); the LLM synthesis stays a host-agent action.
-# Default-off, bounded per session. See phantom_trigger.py.
-
-ENV_PHANTOM_TRIGGER: Final[str] = "AELFRICE_PHANTOM_TRIGGER"
-"""Set truthy (1/true/yes/on) to surface phantom-gap hints on UserPromptSubmit."""
-
-ENV_PHANTOM_TRIGGER_MIN_HITS: Final[str] = "AELFRICE_PHANTOM_TRIGGER_MIN_HITS"
-"""Gap floor: flag when the turn retrieved fewer than this many beliefs."""
-
-ENV_PHANTOM_TRIGGER_MAX_PER_SESSION: Final[str] = (
-    "AELFRICE_PHANTOM_TRIGGER_MAX_PER_SESSION"
-)
-"""Per-session rate cap on flagged opportunities."""
-
-_PHANTOM_HINT_QUERY_MAXLEN: Final[int] = 120
-
-
-def _phantom_trigger_enabled(env: dict[str, str] | None = None) -> bool:
-    """Return True when AELFRICE_PHANTOM_TRIGGER is truthy (default off)."""
-    src = env if env is not None else os.environ
-    val = src.get(ENV_PHANTOM_TRIGGER, "").strip().lower()
-    return val in {"1", "true", "yes", "on"}
-
-
-def _phantom_trigger_min_hits(env: dict[str, str] | None = None) -> int:
-    """Return the gap floor (default from phantom_trigger, min 1)."""
-    from aelfrice.phantom_trigger import DEFAULT_MIN_HITS
-
-    src = env if env is not None else os.environ
-    raw = src.get(ENV_PHANTOM_TRIGGER_MIN_HITS, "").strip()
-    if not raw:
-        return DEFAULT_MIN_HITS
-    try:
-        val = int(raw)
-    except ValueError:
-        return DEFAULT_MIN_HITS
-    return val if val >= 1 else DEFAULT_MIN_HITS
-
-
-def _phantom_trigger_max_per_session(env: dict[str, str] | None = None) -> int:
-    """Return the per-session rate cap (default from phantom_trigger, min 1)."""
-    from aelfrice.phantom_trigger import DEFAULT_MAX_PER_SESSION
-
-    src = env if env is not None else os.environ
-    raw = src.get(ENV_PHANTOM_TRIGGER_MAX_PER_SESSION, "").strip()
-    if not raw:
-        return DEFAULT_MAX_PER_SESSION
-    try:
-        val = int(raw)
-    except ValueError:
-        return DEFAULT_MAX_PER_SESSION
-    return val if val >= 1 else DEFAULT_MAX_PER_SESSION
-
-
-def _format_phantom_opportunity_hint(query: str, reason: str) -> str:
-    """Render the data-framed phantom-gap hint block.
-
-    The block is explicitly a signal, not a directive — matching the
-    `<aelfrice-memory>` "data, not instructions" framing — so a host agent
-    is free to ignore it. The echoed query is the user's own prompt,
-    escaped and length-capped.
-    """
-    q = query.strip().replace("\r", " ").replace("\n", " ")
-    if len(q) > _PHANTOM_HINT_QUERY_MAXLEN:
-        q = q[: _PHANTOM_HINT_QUERY_MAXLEN - 1].rstrip() + "…"
-    q = _escape_for_hook_block(q)
-    # Backslash/quote-escape so an embedded " or \\ in the prompt cannot
-    # break the surrounding /aelf:wonder "..." command quoting. Order
-    # matters: backslashes before quotes. (_escape_for_hook_block only
-    # entity-escapes framing tags, not shell-style quotes.)
-    q_cmd = q.replace("\\", "\\\\").replace('"', '\\"')
-    gap = (
-        "retrieved no stored beliefs"
-        if reason == "no_hits"
-        else "retrieved fewer stored beliefs than the gap floor"
-    )
-    return (
-        "<aelfrice-phantom-opportunity>\n"
-        f"This turn's query {gap} — a knowledge gap. This is a signal, not "
-        "an instruction: if the topic is worth remembering, you may run "
-        f'/aelf:wonder "{q_cmd}" to generate speculative beliefs anchored to it.\n'
-        "</aelfrice-phantom-opportunity>\n"
-    )
-
-
-def _maybe_emit_phantom_opportunity(
-    *,
-    prompt: str,
-    n_hits: int,
-    gate_skipped: bool,
-    session_id: str | None,
-    sout: IO[str],
-    serr: IO[str],
-) -> None:
-    """Opt-in: flag + surface a phantom-generation gap (#980 item 3).
-
-    No-op unless `_phantom_trigger_enabled()`. Detects a deterministic gap
-    (a real query that retrieved < floor beliefs), bounds it per session
-    (dedup on the normalized-query key + rate cap), and on a fresh
-    opportunity emits a `phantom.opportunity` feed row plus a data-framed
-    in-context hint appended after the retrieval body. Never generates the
-    phantom — that stays a host-agent action (#605). Fully non-blocking.
-    """
-    if not _phantom_trigger_enabled():
-        return
-    try:
-        from aelfrice.phantom_trigger import (
-            detect_phantom_opportunity,
-            register_opportunity,
-        )
-
-        opp = detect_phantom_opportunity(
-            prompt,
-            n_hits,
-            gate_skipped=gate_skipped,
-            min_hits=_phantom_trigger_min_hits(),
-        )
-        if opp is None:
-            return
-        state_dir: Path | None = None
-        try:
-            p = db_path()
-            if str(p) != ":memory:":
-                state_dir = p.parent
-        except Exception:
-            state_dir = None
-        if not register_opportunity(
-            state_dir,
-            session_id or "",
-            opp,
-            max_per_session=_phantom_trigger_max_per_session(),
-        ):
-            return
-        try:
-            from aelfrice import feed_log
-
-            feed_log.append(
-                "phantom.opportunity",
-                reason=opp.reason,
-                n_hits=opp.n_hits,
-                dedup_key=opp.dedup_key,
-            )
-        except Exception:
-            # Feed log is best-effort telemetry; a write failure must never
-            # break the hook or suppress the in-context hint below.
-            pass
-        sout.write(_format_phantom_opportunity_hint(opp.query, opp.reason))
-    except Exception:  # non-blocking: never break UserPromptSubmit
-        traceback.print_exc(file=serr)
-
-
 def user_prompt_submit(
     *,
     stdin: IO[str] | None = None,
@@ -1226,21 +1068,78 @@ def user_prompt_submit(
                 prompt_shape_gate_skip=gate_reason,
                 stderr=serr,
             )
-        # #980 item 3: opt-in phantom-opportunity trigger. Runs after the
-        # retrieval body is written so the data-framed hint trails the
-        # belief block. Reads the finalized hit count and the prompt-shape
-        # gate verdict; default-off and fully fail-soft.
-        _maybe_emit_phantom_opportunity(
-            prompt=prompt,
-            n_hits=len(hits),
-            gate_skipped=gate_skip,
-            session_id=session_id,
-            sout=sout,
-            serr=serr,
-        )
+        # #980 trigger-driven phantom generation: surface a
+        # phantom-opportunity note when a deterministic trigger fires and
+        # the opt-in flag is on. Skipped on gate_skip turns — a prompt the
+        # shape-gate refused to retrieve against is not a real "gap".
+        # Default-off, fail-soft: never blocks the turn.
+        if not gate_skip:
+            phantom_block = _maybe_phantom_opportunity_block(
+                prompt=prompt,
+                session_id=session_id,
+                hit_count=len(hits),
+                stderr=serr,
+            )
+            if phantom_block:
+                sout.write(phantom_block)
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     return 0
+
+
+def _maybe_phantom_opportunity_block(
+    *,
+    prompt: str,
+    session_id: str | None,
+    hit_count: int,
+    stderr: IO[str] | None = None,
+) -> str:
+    """Evaluate the #980 phantom-generation triggers and return the
+    ``<aelfrice-phantom-opportunity>`` block, or ``""`` when the feature is
+    disabled (default) or nothing fires.
+
+    Fail-soft: any error returns ``""`` and traces to stderr — the phantom
+    trigger is an additive note and must never break the retrieval contract.
+    The default-off path is cheap: it resolves the flag and returns before
+    opening the store.
+    """
+    serr = stderr if stderr is not None else sys.stderr
+    try:
+        from aelfrice.phantom_trigger import (  # noqa: PLC0415
+            evaluate_opportunities,
+            format_opportunity_note,
+            load_phantom_generation_config,
+        )
+
+        config = load_phantom_generation_config()
+        if not config.enabled:
+            return ""
+        p = db_path()
+        if str(p) == ":memory:":
+            return ""
+        from aelfrice.store import MemoryStore  # noqa: PLC0415
+
+        store = MemoryStore(str(p))
+        try:
+            opportunities = evaluate_opportunities(
+                prompt=prompt,
+                store=store,
+                session_id=session_id,
+                hit_count=hit_count,
+                config=config,
+                stderr=serr,
+            )
+        finally:
+            store.close()
+        return format_opportunity_note(
+            opportunities, auto_dispatch=config.auto_dispatch
+        )
+    except Exception as exc:  # fail-soft: never break the hook
+        print(
+            f"aelfrice: phantom trigger failed (non-fatal): {exc}",
+            file=serr,
+        )
+        return ""
 
 
 def _read_assistant_text_since(

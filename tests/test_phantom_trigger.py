@@ -1,299 +1,341 @@
-"""Deterministic phantom-opportunity trigger (#980 item 3).
+"""Tests for #980 trigger-driven phantom-generation detection.
 
-Covers the pure detector (gap conditions, gate-skip exclusion, thin-query
-floor, reason classification), the normalize/dedup-key stability, and the
-per-session bound (dedup + rate cap + fail-soft on no state dir).
+Covers the opt-in flag/config resolver, the three predicates, the
+budget/dedup/baseline orchestrator, and the note formatter. Real
+``MemoryStore`` + tmp session-ring state; no mocks.
 """
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
 
-from aelfrice.phantom_trigger import (
-    DEFAULT_MAX_PER_SESSION,
-    PhantomOpportunity,
-    dedup_key_for,
-    detect_phantom_opportunity,
-    normalize_query,
-    register_opportunity,
+from aelfrice.models import (
+    BELIEF_FACTUAL,
+    EDGE_CONTRADICTS,
+    LOCK_NONE,
+    Belief,
+    Edge,
 )
+from aelfrice.phantom_trigger import (
+    ENV_PHANTOM_GENERATION,
+    PhantomGenerationConfig,
+    PhantomOpportunity,
+    REASON_CONTRADICTION,
+    REASON_GAP,
+    REASON_NEW_ENTITY,
+    detect_gap,
+    detect_new_contradicts,
+    detect_novel_entities,
+    evaluate_opportunities,
+    format_opportunity_note,
+    load_phantom_generation_config,
+    should_trigger_phantom_generation,
+)
+from aelfrice.store import MemoryStore
 
 
-# ---------------------------------------------------------------------------
-# normalize_query / dedup_key_for — deterministic, order-independent
-# ---------------------------------------------------------------------------
+@pytest.fixture
+def db_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    aelf_dir = tmp_path / ".git" / "aelfrice"
+    aelf_dir.mkdir(parents=True)
+    db = aelf_dir / "memory.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    monkeypatch.delenv(ENV_PHANTOM_GENERATION, raising=False)
+    MemoryStore(str(db)).close()
+    return aelf_dir
 
 
-def test_normalize_drops_short_tokens_and_sorts() -> None:
-    # "in", "a", "db" are < 3 chars and dropped; result is sorted-unique.
-    assert normalize_query("About Session IDs in a DB") == (
-        "about",
-        "ids",
-        "session",
-    )
+def _store(db_root: Path) -> MemoryStore:
+    return MemoryStore(str(db_root / "memory.db"))
 
 
-def test_normalize_is_order_independent() -> None:
-    assert normalize_query("session id propagation") == normalize_query(
-        "propagation id session"
-    )
-
-
-def test_dedup_key_stable_across_word_order() -> None:
-    assert dedup_key_for("session id propagation") == dedup_key_for(
-        "propagation session id"
-    )
-
-
-def test_dedup_key_differs_for_different_topics() -> None:
-    assert dedup_key_for("session id propagation") != dedup_key_for(
-        "retrieval ranking lanes"
-    )
-
-
-# ---------------------------------------------------------------------------
-# detect_phantom_opportunity — gap conditions
-# ---------------------------------------------------------------------------
-
-
-def test_no_hits_real_query_is_a_gap() -> None:
-    opp = detect_phantom_opportunity(
-        "how does session id propagation work", 0, gate_skipped=False
-    )
-    assert opp is not None
-    assert opp.reason == "no_hits"
-    assert opp.n_hits == 0
-
-
-def test_hits_present_is_not_a_gap() -> None:
-    assert (
-        detect_phantom_opportunity(
-            "how does session id propagation work", 3, gate_skipped=False
+def _belief(store: MemoryStore, bid: str, content: str) -> None:
+    store.insert_belief(
+        Belief(
+            id=bid,
+            content=content,
+            content_hash=hashlib.sha256(content.encode()).hexdigest(),
+            alpha=1.0,
+            beta=1.0,
+            type=BELIEF_FACTUAL,
+            lock_level=LOCK_NONE,
+            locked_at=None,
+            created_at="2026-01-01T00:00:00Z",
+            last_retrieved_at=None,
         )
-        is None
     )
 
 
-def test_gate_skipped_is_never_a_gap() -> None:
-    # Trivial acks / system envelopes the prompt-shape gate skips need no
-    # belief — they must never trigger generation even with zero hits.
-    assert (
-        detect_phantom_opportunity("ok thanks", 0, gate_skipped=True) is None
+def _contradicts(store: MemoryStore, a: str, b: str) -> None:
+    store.insert_edge(Edge(src=a, dst=b, type=EDGE_CONTRADICTS, weight=-0.5))
+
+
+_ON = PhantomGenerationConfig(enabled=True, max_fires_per_session=3)
+
+
+# --- flag resolver --------------------------------------------------
+
+
+def test_flag_default_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(ENV_PHANTOM_GENERATION, raising=False)
+    assert should_trigger_phantom_generation(start=tmp_path) is False
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [("1", True), ("true", True), ("ON", True), ("0", False), ("off", False)],
+)
+def test_flag_env_override(
+    raw: str, expected: bool, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv(ENV_PHANTOM_GENERATION, raw)
+    assert should_trigger_phantom_generation(start=tmp_path) is expected
+
+
+def test_flag_env_unrecognised_falls_through(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv(ENV_PHANTOM_GENERATION, "maybe")
+    assert should_trigger_phantom_generation(start=tmp_path) is False
+    assert should_trigger_phantom_generation(True, start=tmp_path) is True
+
+
+def test_flag_kwarg_beats_toml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(ENV_PHANTOM_GENERATION, raising=False)
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[phantom_generation]\nenabled = false\n"
+    )
+    assert should_trigger_phantom_generation(True, start=tmp_path) is True
+
+
+def test_flag_toml_enables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(ENV_PHANTOM_GENERATION, raising=False)
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[phantom_generation]\nenabled = true\n"
+    )
+    assert should_trigger_phantom_generation(start=tmp_path) is True
+
+
+def test_env_beats_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[phantom_generation]\nenabled = true\n"
+    )
+    monkeypatch.setenv(ENV_PHANTOM_GENERATION, "0")
+    assert should_trigger_phantom_generation(start=tmp_path) is False
+
+
+# --- config loader --------------------------------------------------
+
+
+def test_config_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(ENV_PHANTOM_GENERATION, raising=False)
+    cfg = load_phantom_generation_config(start=tmp_path)
+    assert cfg == PhantomGenerationConfig(
+        enabled=False, max_fires_per_session=3, auto_dispatch=False
     )
 
 
-def test_thin_query_is_not_a_gap() -> None:
-    # Fewer than min_query_tokens meaningful tokens → can't anchor a phantom.
-    assert detect_phantom_opportunity("hi", 0, gate_skipped=False) is None
-
-
-def test_below_floor_reason_when_min_hits_raised() -> None:
-    opp = detect_phantom_opportunity(
-        "how does session id propagation work",
-        2,
-        gate_skipped=False,
-        min_hits=3,
+def test_config_reads_knobs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(ENV_PHANTOM_GENERATION, raising=False)
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[phantom_generation]\n"
+        "enabled = true\n"
+        "max_fires_per_session = 7\n"
+        "auto_dispatch = true\n"
     )
+    cfg = load_phantom_generation_config(start=tmp_path)
+    assert cfg == PhantomGenerationConfig(
+        enabled=True, max_fires_per_session=7, auto_dispatch=True
+    )
+
+
+def test_config_rejects_bad_max_fires(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(ENV_PHANTOM_GENERATION, raising=False)
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[phantom_generation]\nmax_fires_per_session = 0\n"
+    )
+    assert load_phantom_generation_config(start=tmp_path).max_fires_per_session == 3
+
+
+# --- predicates -----------------------------------------------------
+
+
+def test_detect_gap_fires_on_zero_hits() -> None:
+    opp = detect_gap("how does foo work", 0)
     assert opp is not None
-    assert opp.reason == "below_floor"
-    assert opp.n_hits == 2
+    assert opp.reason == REASON_GAP
+    assert opp.dedup_key == "gap:how does foo work"
 
 
-def test_two_token_query_rejected_by_default_floor() -> None:
-    assert (
-        detect_phantom_opportunity("session propagation", 0, gate_skipped=False)
-        is None
+def test_detect_gap_silent_on_hits() -> None:
+    assert detect_gap("how does foo work", 3) is None
+
+
+def test_detect_gap_silent_on_empty_prompt() -> None:
+    assert detect_gap("   ", 0) is None
+
+
+def test_detect_novel_entities_fires_on_unknown(db_root: Path) -> None:
+    store = _store(db_root)
+    opps = detect_novel_entities("what is FooBarWidget", store)
+    assert [o.dedup_key for o in opps] == ["new_entity:foobarwidget"]
+    assert opps[0].reason == REASON_NEW_ENTITY
+
+
+def test_detect_novel_entities_silent_on_known(db_root: Path) -> None:
+    store = _store(db_root)
+    _belief(store, "b1", "FooBarWidget is a documented component")
+    assert detect_novel_entities("tell me about FooBarWidget", store) == []
+
+
+def test_detect_new_contradicts_diffs_snapshot(db_root: Path) -> None:
+    store = _store(db_root)
+    _belief(store, "a", "alpha")
+    _belief(store, "b", "beta")
+    _contradicts(store, "a", "b")
+    # Nothing in snapshot → the pair is new.
+    opps = detect_new_contradicts(store, set())
+    assert [o.dedup_key for o in opps] == ["contradiction:a|b"]
+    # Already in snapshot → no fire.
+    assert detect_new_contradicts(store, {"a|b"}) == []
+
+
+# --- orchestrator ---------------------------------------------------
+
+
+def test_evaluate_disabled_returns_empty(db_root: Path) -> None:
+    store = _store(db_root)
+    out = evaluate_opportunities(
+        prompt="anything",
+        store=store,
+        session_id="s1",
+        hit_count=0,
+        config=PhantomGenerationConfig(enabled=False),
     )
+    assert out == []
 
 
-def test_two_token_query_accepted_with_lower_floor() -> None:
-    opp = detect_phantom_opportunity(
-        "session propagation", 0, gate_skipped=False, min_query_tokens=2
+def test_evaluate_gap_fires_and_records(db_root: Path) -> None:
+    store = _store(db_root)
+    out = evaluate_opportunities(
+        prompt="unmatched query",
+        store=store,
+        session_id="s1",
+        hit_count=0,
+        config=_ON,
     )
-    assert opp is not None
+    assert [o.reason for o in out] == [REASON_GAP]
+    from aelfrice.session_ring import read_phantom_state
+
+    st = read_phantom_state("s1")
+    assert st["phantom_fires"] == 1
+    assert st["phantom_dedup"] == ["gap:unmatched query"]
 
 
-# ---------------------------------------------------------------------------
-# register_opportunity — dedup + rate cap + fail-soft
-# ---------------------------------------------------------------------------
-
-
-def _opp(query: str) -> PhantomOpportunity:
-    got = detect_phantom_opportunity(query, 0, gate_skipped=False)
-    assert got is not None
-    return got
-
-
-def test_register_first_time_emits(tmp_path: Path) -> None:
-    assert register_opportunity(
-        tmp_path, "sess", _opp("session identifier propagation")
+def test_evaluate_dedups_same_gap_across_turns(db_root: Path) -> None:
+    store = _store(db_root)
+    a = evaluate_opportunities(
+        prompt="same query", store=store, session_id="s1", hit_count=0, config=_ON
     )
-
-
-def test_register_dedups_same_topic(tmp_path: Path) -> None:
-    opp = _opp("session identifier propagation")
-    assert register_opportunity(tmp_path, "sess", opp) is True
-    # Same normalized topic (different word order) → deduped.
-    again = _opp("propagation identifier session")
-    assert register_opportunity(tmp_path, "sess", again) is False
-
-
-def test_register_distinct_topics_both_emit(tmp_path: Path) -> None:
-    assert register_opportunity(
-        tmp_path, "sess", _opp("session identifier propagation")
+    b = evaluate_opportunities(
+        prompt="same query", store=store, session_id="s1", hit_count=0, config=_ON
     )
-    assert register_opportunity(tmp_path, "sess", _opp("retrieval ranking lanes"))
+    assert len(a) == 1
+    assert b == []  # deduped
 
 
-def test_register_rate_cap(tmp_path: Path) -> None:
-    queries = [
-        "session identifier propagation",
-        "retrieval ranking lanes",
-        "belief posterior temperature",
-        "phantom lifecycle audit",  # 4th — exceeds default cap of 3
-    ]
-    results = [
-        register_opportunity(tmp_path, "sess", _opp(q)) for q in queries
-    ]
-    assert results == [True, True, True, False]
-    assert DEFAULT_MAX_PER_SESSION == 3
-
-
-def test_register_per_session_isolation(tmp_path: Path) -> None:
-    opp = _opp("session identifier propagation")
-    assert register_opportunity(tmp_path, "sess-a", opp) is True
-    # Same topic, different session → not deduped (separate sidecar).
-    assert register_opportunity(tmp_path, "sess-b", opp) is True
-
-
-def test_register_failsoft_when_no_state_dir() -> None:
-    # In-memory store (None state dir): can't bound → errs quiet (no emit).
-    assert (
-        register_opportunity(None, "sess", _opp("session identifier propagation"))
-        is False
-    )
-
-
-# ---------------------------------------------------------------------------
-# Full user_prompt_submit() integration
-# ---------------------------------------------------------------------------
-
-import io  # noqa: E402
-import json  # noqa: E402
-
-from aelfrice.hook import user_prompt_submit  # noqa: E402
-
-_HINT_OPEN = "<aelfrice-phantom-opportunity>"
-
-
-def _ups_payload(prompt: str, session_id: str = "s1") -> str:
-    return json.dumps(
-        {
-            "session_id": session_id,
-            "transcript_path": "/dev/null",
-            "cwd": "/tmp",
-            "hook_event_name": "UserPromptSubmit",
-            "prompt": prompt,
-        }
-    )
-
-
-def _feed_events(db_dir: Path) -> list[dict[str, object]]:
-    feed = db_dir / "feed.jsonl"
-    if not feed.exists():
-        return []
-    return [json.loads(x) for x in feed.read_text().splitlines() if x]
-
-
-def test_ups_emits_hint_on_gap_when_enabled(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    db = tmp_path / "memory.db"  # empty store → real query gets 0 hits
-    monkeypatch.setenv("AELFRICE_DB", str(db))
-    monkeypatch.setenv("AELFRICE_PHANTOM_TRIGGER", "1")
-    monkeypatch.setenv("AELFRICE_SESSIONSTART_RECAP", "0")
-
-    sout, serr = io.StringIO(), io.StringIO()
-    rc = user_prompt_submit(
-        stdin=io.StringIO(
-            _ups_payload("how does the submarine deployment pipeline work")
-        ),
-        stdout=sout,
-        stderr=serr,
-    )
-    assert rc == 0
-    out = sout.getvalue()
-    assert _HINT_OPEN in out
-    assert "/aelf:wonder" in out
-    gc = [e for e in _feed_events(tmp_path) if e.get("event") == "phantom.opportunity"]
-    assert len(gc) == 1
-    assert gc[0]["reason"] == "no_hits"
-
-
-def test_ups_no_hint_by_default(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    db = tmp_path / "memory.db"
-    monkeypatch.setenv("AELFRICE_DB", str(db))
-    monkeypatch.delenv("AELFRICE_PHANTOM_TRIGGER", raising=False)
-    monkeypatch.setenv("AELFRICE_SESSIONSTART_RECAP", "0")
-
-    sout = io.StringIO()
-    rc = user_prompt_submit(
-        stdin=io.StringIO(
-            _ups_payload("how does the submarine deployment pipeline work")
-        ),
-        stdout=sout,
-        stderr=io.StringIO(),
-    )
-    assert rc == 0
-    assert _HINT_OPEN not in sout.getvalue()
-    assert _feed_events(tmp_path) == []
-
-
-def test_ups_hint_deduped_within_session(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    db = tmp_path / "memory.db"
-    monkeypatch.setenv("AELFRICE_DB", str(db))
-    monkeypatch.setenv("AELFRICE_PHANTOM_TRIGGER", "1")
-    monkeypatch.setenv("AELFRICE_SESSIONSTART_RECAP", "0")
-
-    def _fire(prompt: str) -> str:
-        sout = io.StringIO()
-        user_prompt_submit(
-            stdin=io.StringIO(_ups_payload(prompt)),
-            stdout=sout,
-            stderr=io.StringIO(),
+def test_evaluate_budget_exhaustion(db_root: Path) -> None:
+    store = _store(db_root)
+    cfg = PhantomGenerationConfig(enabled=True, max_fires_per_session=2)
+    for i in range(3):
+        evaluate_opportunities(
+            prompt=f"distinct query {i}",
+            store=store,
+            session_id="s1",
+            hit_count=0,
+            config=cfg,
         )
-        return sout.getvalue()
+    from aelfrice.session_ring import read_phantom_state
 
-    first = _fire("how does the submarine deployment pipeline work")
-    # Same normalized topic, reworded → deduped, no second hint.
-    second = _fire("the submarine deployment pipeline — how does work")
-    assert _HINT_OPEN in first
-    assert _HINT_OPEN not in second
+    assert read_phantom_state("s1")["phantom_fires"] == 2  # capped
 
 
-def test_ups_hint_escapes_quotes_in_command(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A prompt with " or \\ must not break the /aelf:wonder "..." quoting."""
-    db = tmp_path / "memory.db"  # empty store → real query gets 0 hits
-    monkeypatch.setenv("AELFRICE_DB", str(db))
-    monkeypatch.setenv("AELFRICE_PHANTOM_TRIGGER", "1")
-    monkeypatch.setenv("AELFRICE_SESSIONSTART_RECAP", "0")
-
-    sout = io.StringIO()
-    user_prompt_submit(
-        stdin=io.StringIO(_ups_payload('how do I parse "json" config files')),
-        stdout=sout,
-        stderr=io.StringIO(),
+def test_evaluate_contradicts_baseline_then_fire(db_root: Path) -> None:
+    store = _store(db_root)
+    _belief(store, "a", "alpha")
+    _belief(store, "b", "beta")
+    _contradicts(store, "a", "b")
+    # Turn 1: snapshot uninitialised → pre-existing contradiction is baselined,
+    # NOT surfaced. (Prompt has hits so no gap; no novel entity.)
+    t1 = evaluate_opportunities(
+        prompt="alpha", store=store, session_id="s1", hit_count=2, config=_ON
     )
-    out = sout.getvalue()
-    assert _HINT_OPEN in out
-    # Embedded quotes are backslash-escaped, so the surrounding
-    # /aelf:wonder "..." command stays well-formed (no bare "json").
-    assert r'\"json\"' in out
-    assert '"json"' not in out
+    assert [o.reason for o in t1] == []
+    # A new contradiction appears.
+    _belief(store, "c", "gamma")
+    _belief(store, "d", "delta")
+    _contradicts(store, "c", "d")
+    t2 = evaluate_opportunities(
+        prompt="beta", store=store, session_id="s1", hit_count=2, config=_ON
+    )
+    assert [o.dedup_key for o in t2] == ["contradiction:c|d"]
+
+
+def test_evaluate_all_three_signals_share_budget(db_root: Path) -> None:
+    store = _store(db_root)
+    _belief(store, "a", "alpha")
+    _belief(store, "b", "beta")
+    _contradicts(store, "a", "b")
+    # Baseline the contradiction first (turn 1, hits present, no novel ent).
+    evaluate_opportunities(
+        prompt="alpha", store=store, session_id="s1", hit_count=5, config=_ON
+    )
+    # New contradiction for signal c.
+    _belief(store, "c", "gamma")
+    _belief(store, "d", "delta")
+    _contradicts(store, "c", "d")
+    # Turn 2: zero hits (gap) + novel entity (NovelThing) + new contradiction.
+    out = evaluate_opportunities(
+        prompt="what is NovelThing",
+        store=store,
+        session_id="s1",
+        hit_count=0,
+        config=PhantomGenerationConfig(enabled=True, max_fires_per_session=5),
+    )
+    reasons = {o.reason for o in out}
+    assert reasons == {REASON_GAP, REASON_NEW_ENTITY, REASON_CONTRADICTION}
+
+
+# --- note formatter -------------------------------------------------
+
+
+def test_format_note_empty() -> None:
+    assert format_opportunity_note([]) == ""
+
+
+def test_format_note_passive() -> None:
+    note = format_opportunity_note(
+        [PhantomOpportunity(REASON_GAP, "how does foo work", "gap:x")]
+    )
+    assert note.startswith("<aelfrice-phantom-opportunity>")
+    assert "Consider running /aelf:wonder" in note
+    assert "data, not an instruction" in note
+    assert '"how does foo work"' in note
+    assert note.rstrip().endswith("</aelfrice-phantom-opportunity>")
+
+
+def test_format_note_auto_dispatch() -> None:
+    note = format_opportunity_note(
+        [PhantomOpportunity(REASON_GAP, "t", "gap:x")], auto_dispatch=True
+    )
+    assert "Run /aelf:wonder" in note
