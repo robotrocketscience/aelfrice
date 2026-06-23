@@ -130,7 +130,10 @@ def run_arm_on_store(
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data", default=DEFAULT_DATA_PATH)
-    ap.add_argument("--out", default="/tmp/hrr_expand_ablation.json")
+    ap.add_argument(
+        "--out",
+        default=os.path.join(tempfile.gettempdir(), "hrr_expand_ablation.json"),
+    )
     ap.add_argument("--budget", type=int, default=2000)
     ap.add_argument("--subset-convs", type=int, default=None)
     ap.add_argument("--subset-qa", type=int, default=None)
