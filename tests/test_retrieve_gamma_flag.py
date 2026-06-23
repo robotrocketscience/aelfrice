@@ -161,3 +161,46 @@ def test_flag_on_versus_off_runs_clean(populated_store, monkeypatch) -> None:
     # Both produced something; the content / order is the bench's job.
     assert isinstance(off, list)
     assert isinstance(on, list)
+
+
+def test_flag_on_reorders_by_posterior(populated_store, monkeypatch) -> None:
+    """γ at the default T=1.0 keeps high-posterior beliefs ranked above
+    low-posterior beliefs when BM25 is similar across rows.
+
+    The corpus has α/β = (10,1), (1,10), (5,5), (1,1) — posterior means
+    0.91, 0.09, 0.5, 0.5. On a generic ``letter`` query (all four rows
+    match equally well), the high-posterior ``alpha`` belief must outrank
+    the low-posterior ``beta`` belief with γ on. This is the γ analogue of
+    ``tests/test_retrieve_zeta_flag.py::test_flag_on_reorders_by_posterior``
+    and proves γ actually consumes the posterior through ``retrieve()`` —
+    not merely that the flag-on path runs without raising.
+    """
+    monkeypatch.setenv(_ENV_FLAG, "1")
+    out = retrieve(populated_store, "letter alphabet")
+    contents = [b.content for b in out]
+    assert any(c.startswith("alpha") for c in contents), contents
+    assert any(c.startswith("beta") for c in contents), contents
+    alpha_idx = next(i for i, c in enumerate(contents) if c.startswith("alpha"))
+    beta_idx = next(i for i, c in enumerate(contents) if c.startswith("beta"))
+    assert alpha_idx < beta_idx
+
+
+def test_flag_on_t_one_matches_posterior_weight_one(
+    populated_store, monkeypatch,
+) -> None:
+    """``retrieve()``-level T=1.0 contract.
+
+    With no meta-belief the resolver pins T=1.0, at which
+    ``gamma_posterior_score`` is byte-identical to
+    ``partial_bayesian_score(.., posterior_weight=1.0)`` (the scorer-level
+    contract in ``tests/test_scoring_gamma.py``). So γ-on must produce the
+    same belief ordering as the γ-off log-additive path pinned to
+    ``posterior_weight=1.0``. Both calls fix ``posterior_weight=1.0`` so the
+    only difference is the γ flag; this lifts the scorer contract up to the
+    ``retrieve()`` surface.
+    """
+    monkeypatch.delenv(_ENV_FLAG, raising=False)
+    baseline = retrieve(populated_store, "letter alphabet", posterior_weight=1.0)
+    monkeypatch.setenv(_ENV_FLAG, "1")
+    gamma_on = retrieve(populated_store, "letter alphabet", posterior_weight=1.0)
+    assert [b.id for b in gamma_on] == [b.id for b in baseline]
