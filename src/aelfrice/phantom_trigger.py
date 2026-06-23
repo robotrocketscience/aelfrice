@@ -29,6 +29,7 @@ single small ``SELECT`` (signal c).
 """
 from __future__ import annotations
 
+import html
 import os
 import re
 import sys
@@ -211,6 +212,17 @@ def _normalize_topic(text: str) -> str:
     return _WS_RE.sub(" ", text.strip().lower())
 
 
+def _note_topic(text: str) -> str:
+    """Whitespace-collapse + XML-escape a topic for the note.
+
+    The note is a tag-delimited block the host agent reads as data. A
+    prompt/entity-derived topic containing newlines or a literal
+    ``</aelfrice-phantom-opportunity>`` would otherwise break the data
+    boundary and could turn user text into apparent instructions.
+    """
+    return html.escape(_truncate(_WS_RE.sub(" ", text.strip())), quote=True)
+
+
 def _pair_key(a: str, b: str) -> str:
     lo, hi = (a, b) if a <= b else (b, a)
     return f"{lo}|{hi}"
@@ -320,6 +332,11 @@ def evaluate_opportunities(
     cfg = config if config is not None else load_phantom_generation_config()
     if not cfg.enabled:
         return []
+    if not session_id:
+        # Without a session_id the budget/dedup mutators are no-ops, so the
+        # same opportunities would re-fire every turn. Stay quiet rather
+        # than surface unbounded notes (matches the fail-soft posture).
+        return []
 
     state = read_phantom_state(session_id)
     fires = int(state["phantom_fires"])
@@ -404,7 +421,7 @@ def format_opportunity_note(
     lines = [OPEN_TAG, header]
     for opp in opportunities:
         label = _REASON_LABEL.get(opp.reason, opp.reason)
-        lines.append(f'- [{label}] "{opp.topic}"')
+        lines.append(f'- [{label}] "{_note_topic(opp.topic)}"')
     lines.append(CLOSE_TAG)
     lines.append("")
     return "\n".join(lines)
