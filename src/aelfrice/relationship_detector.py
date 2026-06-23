@@ -1044,128 +1044,6 @@ def write_semantic_edges(
     )
 
 
-# --- SUPPORTS edge writer (#999 — REFINES verdict → SUPPORTS edge) -------
-
-
-@dataclass(frozen=True)
-class SupportsWriteReport:
-    """Summary of one ``write_supports_edges`` run.
-
-    ``n_refines``
-        REFINES pairs returned by the audit — the candidate set this
-        writer acts on. REFINES carries no confidence gradient (score is
-        fixed 0.0); the residual-overlap floor cleared in ``analyze`` is
-        the relatedness gate, so every REFINES pair is eligible.
-
-    ``n_edges_written``
-        Pairs that produced a new SUPPORTS edge this run.
-
-    ``n_edges_skipped_existing``
-        Pairs whose edge already existed (idempotency guard fired).
-
-    ``n_edges_skipped_gated``
-        Pairs dropped because an endpoint hit ``max_edges_per_belief``.
-
-    ``n_edges_skipped_self_pair``
-        Defensive counter — should always be 0; pairs where a == b.
-    """
-
-    n_refines: int
-    n_edges_written: int
-    n_edges_skipped_existing: int
-    n_edges_skipped_gated: int
-    n_edges_skipped_self_pair: int
-
-
-def write_supports_edges(
-    store: "MemoryStore",
-    *,
-    jaccard_min: float = DEFAULT_JACCARD_MIN,
-    residual_overlap_min: float = DEFAULT_RESIDUAL_OVERLAP_MIN,
-    confidence_min: float = DEFAULT_CONFIDENCE_MIN,
-    max_candidate_pairs: int = DEFAULT_MAX_CANDIDATE_PAIRS,
-    max_edges_per_belief: int = DEFAULT_MAX_EDGES_PER_BELIEF,
-) -> SupportsWriteReport:
-    """Emit SUPPORTS edges for REFINES (mutual-agreement) pairs (#999).
-
-    The deterministic detector already returns a ``refines`` verdict for
-    pairs with residual-content overlap above the relatedness floor *and*
-    agreeing modality — same subject, no contradiction. This writer turns
-    that already-computed verdict into a SUPPORTS edge, the agreement
-    counterpart to ``write_semantic_edges``'s CONTRADICTS.
-
-    Wired into ingest only behind the default-off ``auto_detect`` flag
-    (``is_auto_relationship_detection_enabled``); a fresh install writes no
-    edges and the #605/#897 scope decision stands unchanged.
-
-    Unlike CONTRADICTS, REFINES has no confidence gradient (score is fixed
-    0.0), so there is no high/sub-confidence partition — every REFINES pair
-    the audit returns is eligible. The relation is symmetric, so the edge
-    direction is canonicalised to ``src = min(id)``, ``dst = max(id)``.
-
-    **Idempotent.** Each ``(src, dst, SUPPORTS)`` triple is checked before
-    insert and skipped if present.
-
-    **Write-gated.** ``max_edges_per_belief`` caps how many SUPPORTS edges
-    any one belief accretes; pre-existing edges count toward the budget for
-    a hard per-belief bound across re-runs. Pairs are processed in the
-    audit's deterministic ``(belief_a_id, belief_b_id)`` order.
-
-    Stdlib-only: no LLM, no embedding. Delegates detection to
-    ``relationships_audit``.
-    """
-    from aelfrice.models import Edge, EDGE_SUPPORTS
-
-    report = relationships_audit(
-        store,
-        jaccard_min=jaccard_min,
-        residual_overlap_min=residual_overlap_min,
-        confidence_min=confidence_min,
-        max_candidate_pairs=max_candidate_pairs,
-    )
-
-    refines_pairs = [p for p in report.pairs if p.label == LABEL_REFINES]
-    # `report.pairs` is already sorted by (belief_a_id, belief_b_id);
-    # preserve that order so the write-gate is deterministic.
-
-    edges_per_belief: dict[str, int] = {}
-    n_written = 0
-    n_skipped_existing = 0
-    n_gated = 0
-    n_self = 0
-    for pair in refines_pairs:
-        a_id, b_id = pair.belief_a_id, pair.belief_b_id
-        if a_id == b_id:
-            n_self += 1
-            continue
-        if (
-            edges_per_belief.get(a_id, 0) >= max_edges_per_belief
-            or edges_per_belief.get(b_id, 0) >= max_edges_per_belief
-        ):
-            n_gated += 1
-            continue
-        src_id, dst_id = (a_id, b_id) if a_id < b_id else (b_id, a_id)
-        if store.get_edge(src_id, dst_id, EDGE_SUPPORTS) is not None:
-            n_skipped_existing += 1
-            edges_per_belief[a_id] = edges_per_belief.get(a_id, 0) + 1
-            edges_per_belief[b_id] = edges_per_belief.get(b_id, 0) + 1
-            continue
-        store.insert_edge(
-            Edge(src=src_id, dst=dst_id, type=EDGE_SUPPORTS, weight=1.0)
-        )
-        n_written += 1
-        edges_per_belief[a_id] = edges_per_belief.get(a_id, 0) + 1
-        edges_per_belief[b_id] = edges_per_belief.get(b_id, 0) + 1
-
-    return SupportsWriteReport(
-        n_refines=len(refines_pairs),
-        n_edges_written=n_written,
-        n_edges_skipped_existing=n_skipped_existing,
-        n_edges_skipped_gated=n_gated,
-        n_edges_skipped_self_pair=n_self,
-    )
-
-
 __all__ = [
     "DEFAULT_CONFIDENCE_MIN",
     "DEFAULT_JACCARD_MIN",
@@ -1181,7 +1059,6 @@ __all__ = [
     "RelationshipVerdict",
     "RelationshipsAuditReport",
     "SemanticEdgeWriteReport",
-    "SupportsWriteReport",
     "Signals",
     "analyze",
     "classify",
@@ -1193,5 +1070,4 @@ __all__ = [
     "relationships_audit",
     "write_potentially_stale_edges",
     "write_semantic_edges",
-    "write_supports_edges",
 ]
