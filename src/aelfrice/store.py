@@ -2040,14 +2040,22 @@ class MemoryStore:
 
         Only moves beliefs from active (valid_to IS NULL) to soft-deleted.
         Calling this on an already-GC'd belief is a no-op (idempotent via
-        the WHERE clause). Does not remove edges or corroboration rows —
-        the phantom's evidence trail is preserved for audit.
+        the WHERE clause). Does not remove edges, entity-index, or
+        corroboration rows — the phantom's evidence trail is preserved for
+        audit. The derived FTS index row *is* pruned (mirrors
+        ``delete_belief``) so the soft-deleted belief stops matching
+        keyword search; read-side queries also filter ``valid_to IS NULL``,
+        so this is index hygiene plus defense-in-depth (#980).
         """
         now = ts if ts is not None else datetime.now(timezone.utc).isoformat()
-        self._conn.execute(
+        cur = self._conn.execute(
             "UPDATE beliefs SET valid_to = ? WHERE id = ? AND valid_to IS NULL",
             (now, belief_id),
         )
+        if cur.rowcount > 0:
+            self._conn.execute(
+                "DELETE FROM beliefs_fts WHERE id = ?", (belief_id,)
+            )
         self._bump_belief_version(belief_id)
         self._conn.commit()
         self._fire_invalidation()
@@ -2242,12 +2250,19 @@ class MemoryStore:
         # 16 entities per call so this is generous).
         keys = list(dict.fromkeys(keys))[:512]
         placeholders = ",".join("?" * len(keys))
+        # JOIN beliefs to exclude soft-deleted rows (valid_to NOT NULL):
+        # a GC'd phantom or review-removed belief must not surface via the
+        # entity-index lane. The belief_entities rows themselves are left
+        # intact so the soft-deleted belief's entity audit trail survives;
+        # the filter is applied at read time only (#980).
         sql = (
-            "SELECT belief_id, COUNT(DISTINCT entity_lower) AS overlap "
-            "FROM belief_entities "
-            f"WHERE entity_lower IN ({placeholders}) "
-            "GROUP BY belief_id "
-            "ORDER BY overlap DESC, belief_id ASC "
+            "SELECT be.belief_id, COUNT(DISTINCT be.entity_lower) AS overlap "
+            "FROM belief_entities be "
+            "JOIN beliefs b ON b.id = be.belief_id "
+            f"WHERE be.entity_lower IN ({placeholders}) "
+            "AND b.valid_to IS NULL "
+            "GROUP BY be.belief_id "
+            "ORDER BY overlap DESC, be.belief_id ASC "
             "LIMIT ?"
         )
         cur = self._conn.execute(sql, (*keys, limit))
@@ -2353,6 +2368,7 @@ class MemoryStore:
             FROM beliefs b
             JOIN beliefs_fts f ON f.id = b.id
             WHERE beliefs_fts MATCH ?
+              AND b.valid_to IS NULL
             ORDER BY bm25(beliefs_fts)
             LIMIT ?
             """,
@@ -2388,6 +2404,7 @@ class MemoryStore:
             FROM beliefs b
             JOIN beliefs_fts f ON f.id = b.id
             WHERE beliefs_fts MATCH ?
+              AND b.valid_to IS NULL
             ORDER BY bm25(beliefs_fts)
             LIMIT ?
             """,
@@ -3598,6 +3615,7 @@ class MemoryStore:
                     WHERE bc.belief_id = b.id) AS corroboration_count
             FROM beliefs b
             WHERE b.lock_level != 'none'
+              AND b.valid_to IS NULL
             ORDER BY b.locked_at DESC, b.id ASC
             """
         )
@@ -4183,8 +4201,14 @@ class MemoryStore:
             yield (str(row["dst"]), str(row["anchor_text"]))
 
     def list_beliefs_for_indexing(self) -> list[tuple[str, str]]:
-        """Return `[(belief_id, content)]` for every belief, ordered by
-        `belief_id ASC` for deterministic indexing.
+        """Return `[(belief_id, content)]` for every active belief, ordered
+        by `belief_id ASC` for deterministic indexing.
+
+        Soft-deleted beliefs (`valid_to NOT NULL` — GC'd phantoms or
+        review-removed beliefs) are excluded so they cannot resurface via
+        the BM25/BM25F retrieval lane, dedup, or relationship detection
+        (#980). Determinism is preserved: the same store state yields the
+        same id-ASC filtered set.
 
         Used by `aelfrice.bm25.BM25Index.build` to walk the corpus once
         and assemble the (n_docs × n_terms) sparse term-frequency
@@ -4193,7 +4217,8 @@ class MemoryStore:
         `tf` and entry `i` of `dl`.
         """
         cur = self._conn.execute(
-            "SELECT id, content FROM beliefs ORDER BY id ASC"
+            "SELECT id, content FROM beliefs "
+            "WHERE valid_to IS NULL ORDER BY id ASC"
         )
         return [(str(r["id"]), str(r["content"])) for r in cur.fetchall()]
 
