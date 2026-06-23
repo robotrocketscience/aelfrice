@@ -41,8 +41,11 @@ in any CLI surface.
 from __future__ import annotations
 
 import re
+import os
+import sys
+import tomllib
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, Final, NamedTuple
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +109,36 @@ class ComparisonResult(NamedTuple):
     claude_only: list[SlotRow]
 
 
+class MemoryFile(NamedTuple):
+    """A parsed per-memory ``.md`` file from the claude-memory store (#985).
+
+    The upstream auto-memory writes one fact per file with a YAML-ish
+    frontmatter block:
+
+    .. code-block:: text
+
+        ---
+        name: gitea-token-trap
+        description: Bash tool uses a frozen zshrc snapshot
+        metadata:
+          type: feedback
+        ---
+
+        <the fact body>
+
+    :param name: the ``name:`` slug (stable identity across edits); empty
+      string when the file has no ``name`` key.
+    :param description: the one-line ``description:`` value; may be empty.
+    :param memory_type: ``metadata.type`` (``user`` / ``feedback`` /
+      ``project`` / ``reference``); empty string when absent or unparseable.
+    :param body: the markdown body after the closing ``---`` fence, stripped.
+    """
+    name: str
+    description: str
+    memory_type: str
+    body: str
+
+
 # ---------------------------------------------------------------------------
 # Path derivation
 # ---------------------------------------------------------------------------
@@ -128,6 +161,220 @@ def derive_memory_dir(project_path: str | Path) -> Path:
     abs_path = str(Path(project_path).resolve())
     encoded = _LEADING_SLASH_RE.sub("", abs_path).replace("/", "-")
     return Path.home() / ".claude" / "projects" / f"-{encoded}" / "memory"
+
+
+def is_memory_index(path: str | Path) -> bool:
+    """True when ``path`` is the MEMORY.md index rather than a fact file.
+
+    The index is a list of pointers, not a fact; the #985 write-through
+    mirror skips it (each individual fact file is mirrored instead).
+    """
+    return Path(path).name == "MEMORY.md"
+
+
+def is_memory_fact_path(path: str | Path) -> bool:
+    """True when ``path`` is a per-memory fact ``.md`` file in a claude-memory
+    store: ``.../.claude/projects/<encoded>/memory/<name>.md``.
+
+    Structural match on the path shape rather than the cwd-derived directory
+    so the #985 mirror works under git worktrees (where ``cwd`` encodes a
+    different project path than the one the memory directory is keyed on).
+    The ``MEMORY.md`` index is excluded — only individual fact files mirror.
+    """
+    p = Path(path)
+    if p.suffix != ".md" or p.name == "MEMORY.md":
+        return False
+    parent = p.parent
+    if parent.name != "memory":
+        return False
+    projects = parent.parent.parent
+    return projects.name == "projects" and projects.parent.name == ".claude"
+
+
+# ---------------------------------------------------------------------------
+# Write-through mirror flag (#985) — default OFF / opt-in
+# ---------------------------------------------------------------------------
+
+_CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
+_MEMORY_SECTION: Final[str] = "memory"
+_MIRROR_TOML_KEY: Final[str] = "mirror_claude_memory"
+ENV_MIRROR_CLAUDE_MEMORY: Final[str] = "AELFRICE_MIRROR_CLAUDE_MEMORY"
+
+_ENV_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
+# Mirrors retrieval._ENV_FALSY: an explicitly-empty value is *not* falsy —
+# it falls through to None (no override) so a lower-precedence source decides.
+_ENV_FALSY: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
+
+
+def _env_mirror_override() -> bool | None:
+    """True/False when AELFRICE_MIRROR_CLAUDE_MEMORY is set to a recognised
+    truthy/falsy value, else None (so a lower-precedence source decides)."""
+    raw = os.environ.get(ENV_MIRROR_CLAUDE_MEMORY)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def _read_mirror_toml(start: Path | None = None) -> bool | None:
+    """Walk up from ``start`` for a ``.aelfrice.toml`` with
+    ``[memory] mirror_claude_memory``. Returns the bool when found, else
+    None. Tolerant: malformed TOML or a wrong-typed value returns None and
+    traces to stderr without raising — the default wins. Mirrors
+    ``retrieval._read_toml_flag_for`` semantics for the ``[memory]`` section.
+    """
+    current = (start if start is not None else Path.cwd()).resolve()
+    seen: set[Path] = set()
+    while current not in seen:
+        seen.add(current)
+        candidate = current / _CONFIG_FILENAME
+        if candidate.is_file():
+            try:
+                parsed: dict[str, Any] = tomllib.loads(
+                    candidate.read_bytes().decode("utf-8", errors="replace"),
+                )
+            except (OSError, tomllib.TOMLDecodeError) as exc:
+                print(
+                    f"aelfrice claude-memory: cannot read {candidate}: {exc}",
+                    file=sys.stderr,
+                )
+                return None
+            section_obj: Any = parsed.get(_MEMORY_SECTION, {})
+            if not isinstance(section_obj, dict):
+                return None
+            if _MIRROR_TOML_KEY not in section_obj:  # type: ignore[operator]
+                return None
+            value: Any = section_obj[_MIRROR_TOML_KEY]  # type: ignore[index]
+            if isinstance(value, bool):
+                return value
+            print(
+                f"aelfrice claude-memory: ignoring [{_MEMORY_SECTION}] "
+                f"{_MIRROR_TOML_KEY} in {candidate} (expected bool)",
+                file=sys.stderr,
+            )
+            return None
+        if current.parent == current:
+            break
+        current = current.parent
+    return None
+
+
+def is_mirror_enabled(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the #985 claude-memory write-through mirror flag.
+
+    Precedence (first decisive wins):
+      1. ``AELFRICE_MIRROR_CLAUDE_MEMORY`` env var (truthy/falsy normalised).
+      2. Explicit ``explicit`` kwarg from the caller.
+      3. ``[memory] mirror_claude_memory`` in ``.aelfrice.toml``.
+      4. Default: **False** — the mirror is opt-in, consistent with the
+         narrow-surface PHILOSOPHY (#605) and the opt-in default posture
+         ratified for new behaviours (ADR 0003 decision 4, #606). With the
+         mirror off, ``/aelf:audit-claude-memory`` remains the bridge.
+    """
+    env = _env_mirror_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    toml_value = _read_mirror_toml(start)
+    if toml_value is not None:
+        return toml_value
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Per-memory file frontmatter parser (#985)
+# ---------------------------------------------------------------------------
+
+# A frontmatter block is delimited by a ``---`` fence on its own line at the
+# very start of the file and a closing ``---`` fence. We parse the keys we
+# need with stdlib regex only — no YAML dependency, consistent with the
+# locked PHILOSOPHY decision (#605) to prefer deterministic stdlib gates.
+_FRONTMATTER_RE = re.compile(
+    r"\A---[ \t]*\n(?P<fm>.*?\n)---[ \t]*\n(?P<body>.*)\Z",
+    re.DOTALL,
+)
+# Top-level ``key: value`` (no leading indentation). Used for name/description.
+_FM_TOP_KEY_RE = re.compile(
+    r"^(?P<key>[A-Za-z0-9_-]+):[ \t]*(?P<val>.*?)[ \t]*$",
+)
+# ``type:`` nested one level under ``metadata:``. The upstream format places
+# it as an indented child of ``metadata:``; accept any leading indentation so
+# we tolerate 2- or 4-space styles.
+_FM_TYPE_RE = re.compile(
+    r"^[ \t]+type:[ \t]*(?P<val>[A-Za-z_]+)[ \t]*$",
+)
+
+# The four documented metadata.type values. Unknown values parse to "" so the
+# derive() mapping falls back to the conservative agent-inferred prior.
+_KNOWN_MEMORY_TYPES = frozenset({"user", "feedback", "project", "reference"})
+
+
+def _strip_quotes(value: str) -> str:
+    """Remove a single matching pair of surrounding quotes, if present."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def parse_memory_file(text: str) -> MemoryFile | None:
+    """Parse a per-memory ``.md`` file into a :class:`MemoryFile`.
+
+    Returns ``None`` when the text has no parseable frontmatter fence or
+    when the body is empty after stripping — callers skip those files
+    rather than minting a content-free belief.
+
+    The parser is intentionally conservative and line-oriented:
+
+    * ``name`` and ``description`` are read from top-level (unindented)
+      ``key: value`` lines inside the frontmatter block.
+    * ``metadata.type`` is read from the first indented ``type:`` line whose
+      value is one of the four documented types; any other value yields an
+      empty ``memory_type``.
+
+    No filesystem I/O. Pure function of the input text.
+    """
+    m = _FRONTMATTER_RE.match(text)
+    if m is None:
+        return None
+    fm = m.group("fm")
+    body = m.group("body").strip()
+    if not body:
+        return None
+
+    name = ""
+    description = ""
+    memory_type = ""
+    for line in fm.splitlines():
+        type_m = _FM_TYPE_RE.match(line)
+        if type_m is not None:
+            val = type_m.group("val")
+            if val in _KNOWN_MEMORY_TYPES:
+                memory_type = val
+            continue
+        top_m = _FM_TOP_KEY_RE.match(line)
+        if top_m is None:
+            continue
+        key = top_m.group("key")
+        if key == "name" and not name:
+            name = _strip_quotes(top_m.group("val").strip())
+        elif key == "description" and not description:
+            description = _strip_quotes(top_m.group("val").strip())
+
+    return MemoryFile(
+        name=name,
+        description=description,
+        memory_type=memory_type,
+        body=body,
+    )
 
 
 # ---------------------------------------------------------------------------
