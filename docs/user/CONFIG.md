@@ -465,6 +465,29 @@ Float ≥ 0, default `0.40` (v1.7+, #289 / #364). Minimum composite score for an
 
 Negative values and non-numeric values are rejected; the default applies and the rejection is traced to stderr.
 
+## `[phantom_generation]` (v3.6+)
+
+Opt-in trigger-driven phantom generation (#980). On every `UserPromptSubmit` turn aelfrice deterministically detects whether the turn is a *phantom-generation opportunity* and, if so, appends a small `<aelfrice-phantom-opportunity>` note to the injected context suggesting `/aelf:wonder`. Per the #605 determinism boundary, aelfrice only **flags** the opportunity; the LLM synthesis stays a host-agent action on the existing `/aelf:wonder` path — aelfrice never dispatches an LLM. Default-off; the lane is inert until enabled.
+
+Three signals are ORed under one flag and one per-session budget (the note's `reason` names which fired):
+- **gap** — the prompt retrieved zero stored beliefs.
+- **new_entity** — a *named* entity (identifier, file path, URL, error code, version, branch — loose noun-phrases excluded) resolves to zero stored beliefs.
+- **contradiction** — a CONTRADICTS pair appeared since the per-session snapshot (poll + set-diff; inert unless the #988 semantic-edge substrate is also enabled to mint the edges).
+
+### `enabled`
+
+Boolean, default `false`. Master opt-in. Precedence (first decisive wins): env var `AELFRICE_PHANTOM_GENERATION=1`/`0` (truthy/falsy normalised) > explicit Python kwarg > TOML `[phantom_generation] enabled` > default `false`. Mirrors the `bfs_enabled` resolver shape; a fresh install is unaffected.
+
+### `max_fires_per_session`
+
+Integer ≥ 1, default `3`. Per-session cap on opportunity notes, shared across all three signals and tracked in `session_ring` state. Per-signal dedup (normalised prompt-topic for gap, entity string for new_entity, sorted belief-id pair for contradiction) prevents re-surfacing the same opportunity within a session. TOML-only (no env override), matching the cadence-config precedent.
+
+### `auto_dispatch`
+
+Boolean, default `false`. When `false` (default) the note is a passive surface — it states the opportunity and the agent or user decides. When `true` the note instructs the agent to run the `/aelf:wonder` dispatch on the listed topics. TOML-only.
+
+The trigger is skipped on prompt-shape-gated turns (#674) and is fully fail-soft: any error yields no note and never breaks the hook. Full spec: [phantom_trigger_generation.md](../design/phantom_trigger_generation.md).
+
 ## When changes apply
 
 Edits apply on the next `aelf onboard` run for `[noise]` keys. `[retrieval] entity_index_enabled` applies on the next `retrieve()` call. They do not retroactively re-filter beliefs already in the store — config controls ingestion and retrieval, not retention.
