@@ -3886,6 +3886,35 @@ class MemoryStore:
         )
         return [(str(r["a"]), str(r["b"])) for r in cur.fetchall()]
 
+    def list_contradicts_pairs(self) -> list[tuple[str, str]]:
+        """All `(a_id, b_id)` CONTRADICTS pairs between two active beliefs.
+
+        Canonicalised `(min, max)` and deduplicated, ordered by `(a, b)`,
+        so the result is a stable set. Soft-deleted endpoints
+        (`valid_to NOT NULL`) are excluded, consistent with the #980
+        soft-delete retrieval contract — a contradiction touching a GC'd
+        belief is not a live contradiction.
+
+        The #980 phantom-generation signal (c) diffs this set against a
+        per-session snapshot to detect newly-minted contradictions without
+        an edge-creation event or an edge timestamp.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT DISTINCT
+                MIN(e.src, e.dst) AS a,
+                MAX(e.src, e.dst) AS b
+            FROM edges e
+            JOIN beliefs ba ON ba.id = e.src
+            JOIN beliefs bb ON bb.id = e.dst
+            WHERE e.type = 'CONTRADICTS'
+              AND ba.valid_to IS NULL
+              AND bb.valid_to IS NULL
+            ORDER BY a, b
+            """
+        )
+        return [(str(r["a"]), str(r["b"])) for r in cur.fetchall()]
+
     def count_edges_by_type(self) -> dict[str, int]:
         """`{edge_type: count}` for every edge type in the store.
 
