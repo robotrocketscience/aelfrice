@@ -95,6 +95,10 @@ L3: graph walk       -> typed-edge BFS from the L0+L2.5+L1 seed set (SUPPORTS, C
                         SUPERSEDES, DERIVED_FROM, ...) — opt-in: [retrieval] bfs_enabled = true
 ```
 
+<p align="center"><img src="docs/assets/retrieval-lanes.png" width="88%" alt="Illustrative schematic of aelfrice retrieval lanes over a belief graph: L0 locked beliefs pinned at the query, L1 FTS5/BM25 keyword seeds fanning out, the opt-in L3 typed-edge graph walk reaching outward hop by hop, and structural-HRR bridges leaping to vocab-gap matches."></p>
+
+<p align="center"><sub><i>Illustrative — not a trace of any real store. L0 locked rules always return; an FTS5/BM25 query seeds L1; the opt-in L3 graph walk steps along typed edges hop by hop; the separate structural-HRR lane (<code>retrieve_v2</code>) bridges to matches that share no vocabulary with the query. Color is the lane; distance from center is graph-walk depth. The L2.5 entity-index lane is omitted for legibility. Rendered by <a href="docs/assets/render_retrieval_lanes.py">render_retrieval_lanes.py</a>.</i></sub></p>
+
 L0 always ships. L1, L2.5, and (when enabled) L3 are budget-trimmed against the merged candidate set in score-descending order; locked beliefs win every overflow. Default budget: 1,500 tokens per hook-injected prompt (the `aelf search` / library `retrieve()` default is 2,400). A separate structural-HRR lane (Plate-FFT bind/probe) routes queries that parse as structural markers in the `retrieve_v2` API; ordinary prompts never touch it.
 
 **Lock count is the operator's baseline-context budget knob.** If you lock 200 things, every session opens with all 200, by design. Everything non-locked is BM25-ranked and budget-trimmed. The first prompt of a new session carries one extra block — a `<session-start>` sub-block listing all locks plus load-bearing unlocked beliefs (corroboration ≥ 2, or posterior mean ≥ ⅔ with α+β ≥ 4); subsequent prompts in the same session skip it.
