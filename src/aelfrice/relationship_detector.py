@@ -108,7 +108,8 @@ AUTO_DETECT_KEY: Final[str] = "auto_detect"
 # Write-gate: per-belief cap on auto-written semantic edges. Bounds the
 # Exp-48 coverage-dilution failure mode (unbounded edge growth tanks
 # retrieval coverage) by capping how many edges any one belief accretes.
-MAX_EDGES_PER_BELIEF_KEY: Final[str] = "max_edges_per_belief"
+# Caller-supplied kwarg only (no TOML key wired yet); falls back to this
+# default.
 DEFAULT_MAX_EDGES_PER_BELIEF: Final[int] = 8
 
 _ENV_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
