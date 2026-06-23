@@ -657,6 +657,89 @@ def uninstall_commit_ingest_hook(
     return UninstallResult(path=settings_path, removed=removed)
 
 
+# --- Claude-memory mirror wiring (#985) -------------------------------
+
+
+CLAUDE_MEMORY_MIRROR_EVENT: Final[str] = "PostToolUse"
+CLAUDE_MEMORY_MIRROR_MATCHER: Final[str] = "Write|Edit|MultiEdit"
+CLAUDE_MEMORY_MIRROR_SCRIPT_NAME: Final[str] = "aelf-claude-memory-mirror"
+
+
+def resolve_claude_memory_mirror_command(scope: SettingsScope) -> str:
+    """Pick the absolute aelf-claude-memory-mirror path for `scope`.
+
+    Same routing primitive as `resolve_commit_ingest_command`.
+    """
+    return _resolve_script(CLAUDE_MEMORY_MIRROR_SCRIPT_NAME, scope)
+
+
+def install_claude_memory_mirror_hook(
+    settings_path: Path, *, command: str, timeout: int | None = None,
+) -> InstallResult:
+    """Add a PostToolUse:matcher=Write|Edit|MultiEdit hook entry (#985).
+
+    Idempotent against the same `command`. Coexists with the commit-ingest
+    PostToolUse:Bash entry — the matcher-aware dedup in
+    `_install_or_replace_entry` keys on (command, matcher), so the two
+    PostToolUse hooks never collide.
+
+    The installed hook is inert until the user enables the mirror flag
+    (`AELFRICE_MIRROR_CLAUDE_MEMORY` env or `[memory] mirror_claude_memory`
+    in `.aelfrice.toml`); see `claude_memory.is_mirror_enabled`.
+    """
+    if not command:
+        raise ValueError("command must be a non-empty string")
+    data = _load_settings(settings_path)
+    entries = _get_event_list(data, CLAUDE_MEMORY_MIRROR_EVENT, create=True)
+    if _install_or_replace_entry(
+        entries,
+        command=command,
+        timeout=timeout,
+        status_message=None,
+        matcher=CLAUDE_MEMORY_MIRROR_MATCHER,
+    ):
+        return InstallResult(
+            path=settings_path, installed=False, already_present=True,
+        )
+    _atomic_write(settings_path, data)
+    return InstallResult(
+        path=settings_path, installed=True, already_present=False,
+    )
+
+
+def uninstall_claude_memory_mirror_hook(
+    settings_path: Path, *,
+    command: str | None = None,
+    command_basename: str | None = None,
+) -> UninstallResult:
+    """Strip the PostToolUse mirror entry matching `command` or
+    `command_basename`. Pass exactly one. Other PostToolUse entries
+    (commit-ingest Bash, other tools) are left alone.
+    """
+    if command is None and command_basename is None:
+        raise ValueError("provide command or command_basename")
+    if command is not None and command_basename is not None:
+        raise ValueError("command and command_basename are mutually exclusive")
+    if not settings_path.exists():
+        return UninstallResult(path=settings_path, removed=0)
+    data = _load_settings(settings_path)
+    entries = _get_event_list(data, CLAUDE_MEMORY_MIRROR_EVENT, create=False)
+    if entries is None:
+        return UninstallResult(path=settings_path, removed=0)
+    before = len(entries)
+    if command is not None:
+        kept = [e for e in entries if not _entry_matches(e, command)]
+    else:
+        assert command_basename is not None
+        kept = [e for e in entries if not _entry_matches_basename(e, command_basename)]
+    removed = before - len(kept)
+    if removed == 0:
+        return UninstallResult(path=settings_path, removed=0)
+    entries[:] = kept
+    _atomic_write(settings_path, data)
+    return UninstallResult(path=settings_path, removed=removed)
+
+
 # --- Search-tool wiring -----------------------------------------------
 
 

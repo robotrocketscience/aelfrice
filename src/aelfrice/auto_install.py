@@ -51,6 +51,7 @@ from typing import Callable, Final
 from aelfrice.setup import (
     SettingsScope,
     USER_SETTINGS_PATH,
+    install_claude_memory_mirror_hook,
     install_commit_ingest_hook,
     install_pre_issue_guard_hook,
     install_search_tool_bash_hook,
@@ -59,6 +60,7 @@ from aelfrice.setup import (
     install_stop_hook,
     install_transcript_ingest_hooks,
     install_user_prompt_submit_hook,
+    resolve_claude_memory_mirror_command,
     resolve_commit_ingest_command,
     resolve_hook_command,
     resolve_pre_issue_guard_command,
@@ -328,6 +330,10 @@ _DISPATCH: Final[dict[str, _DispatchEntry]] = {
     "pre_issue_guard": (
         resolve_pre_issue_guard_command,
         install_pre_issue_guard_hook,
+    ),
+    "claude_memory_mirror": (
+        resolve_claude_memory_mirror_command,
+        install_claude_memory_mirror_hook,
     ),
 }
 

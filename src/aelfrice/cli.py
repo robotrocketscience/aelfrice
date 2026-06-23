@@ -130,6 +130,7 @@ from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
 from aelfrice.session_resolution import resolve_session_id
 from aelfrice.setup import (
+    CLAUDE_MEMORY_MIRROR_SCRIPT_NAME,
     COMMIT_INGEST_SCRIPT_NAME,
     PRE_ISSUE_GUARD_SCRIPT_NAME,
     SEARCH_TOOL_BASH_SCRIPT_NAME,
@@ -142,6 +143,7 @@ from aelfrice.setup import (
     clean_dangling_shims,
     default_settings_path,
     detect_default_scope,
+    install_claude_memory_mirror_hook,
     install_commit_ingest_hook,
     install_pre_issue_guard_hook,
     install_search_tool_bash_hook,
@@ -153,6 +155,7 @@ from aelfrice.setup import (
     install_stop_hook,
     install_transcript_ingest_hooks,
     install_user_prompt_submit_hook,
+    resolve_claude_memory_mirror_command,
     resolve_commit_ingest_command,
     resolve_pre_issue_guard_command,
     resolve_search_tool_bash_command,
@@ -162,6 +165,7 @@ from aelfrice.setup import (
     resolve_session_start_hook_command,
     resolve_stop_hook_command,
     resolve_transcript_logger_command,
+    uninstall_claude_memory_mirror_hook,
     uninstall_commit_ingest_hook,
     uninstall_pre_issue_guard_hook,
     uninstall_search_tool_bash_hook,
@@ -533,7 +537,7 @@ def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
         return _cmd_onboard_check(args, out)
     # --emit-candidates / --accept-classifications: low-level entry
     # points used by the /aelf:onboard slash command to drive the
-    # polymorphic onboard handshake from a Claude Code session via
+    # polymorphic onboard handshake from a the upstream auto-memory tool session via
     # Haiku Task subagents (no API key, no network from this CLI).
     if getattr(args, "emit_candidates", False):
         return _cmd_onboard_emit_candidates(args, out)
@@ -1790,7 +1794,7 @@ def _cmd_rebuild(args: argparse.Namespace, out: object) -> int:
     """Manual rebuild — same code path as the PreCompact hook.
 
     Reads recent turns from the canonical aelfrice transcript log if
-    present, otherwise from a Claude Code internal transcript path
+    present, otherwise from a the upstream auto-memory tool internal transcript path
     given by --transcript. Prints the rebuild block to stdout. Useful
     for inspecting what the PreCompact hook would emit without
     triggering the actual hook.
@@ -3233,7 +3237,7 @@ def _cmd_project_warm(args: argparse.Namespace, out: object) -> int:
     no-op for unknown paths, denied paths, and the debounce window —
     we never block, never error, and never write to stdout. The hook
     fires fan-out across many cd events and any noise on stdout would
-    leak into Claude Code's session log.
+    leak into the upstream tool's session log.
     """
     del out  # silent path
     debounce = args.debounce if args.debounce is not None else _PROJECT_WARM_DEBOUNCE
@@ -3475,6 +3479,25 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 f"{pig_result.path} (command={pig_command!r})",
                 file=out,  # type: ignore[arg-type]
             )
+    if getattr(args, "claude_memory_mirror", True):
+        cmm_command = resolve_claude_memory_mirror_command(scope)
+        cmm_result = install_claude_memory_mirror_hook(
+            path, command=cmm_command, timeout=args.timeout,
+        )
+        if cmm_result.already_present:
+            print(
+                f"claude-memory-mirror hook already installed in "
+                f"{cmm_result.path} (command={cmm_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed claude-memory-mirror PostToolUse hook in "
+                f"{cmm_result.path} (command={cmm_command!r}); inert until "
+                f"AELFRICE_MIRROR_CLAUDE_MEMORY or [memory] "
+                f"mirror_claude_memory is set",
+                file=out,  # type: ignore[arg-type]
+            )
     slash_dest = getattr(args, "slash_commands_dir", None)
     slash_dest_path = Path(slash_dest) if slash_dest else None
     sc_result = install_slash_commands(slash_dest_path)
@@ -3586,7 +3609,7 @@ _CLAUDE_PROJECTS_DIR: Final[Path] = Path.home() / ".claude" / "projects"
 
 
 def _print_setup_jsonl_history_hint(out: object) -> None:
-    """One-line hint when historical Claude Code JSONLs exist on disk.
+    """One-line hint when historical the upstream auto-memory tool JSONLs exist on disk.
 
     Issue #115: a fresh aelf setup gives no signal that the user
     already has hundreds of session logs sitting unindexed at
@@ -3723,6 +3746,21 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
             print(
                 f"removed {ci_result.removed} commit-ingest entr"
                 f"{'y' if ci_result.removed == 1 else 'ies'} from {ci_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "claude_memory_mirror", True):
+        cmm_result = uninstall_claude_memory_mirror_hook(
+            path, command_basename=CLAUDE_MEMORY_MIRROR_SCRIPT_NAME,
+        )
+        if cmm_result.removed == 0:
+            print(
+                f"no claude-memory-mirror hook in {cmm_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"removed {cmm_result.removed} claude-memory-mirror entr"
+                f"{'y' if cmm_result.removed == 1 else 'ies'} from {cmm_result.path}",
                 file=out,  # type: ignore[arg-type]
             )
     if getattr(args, "search_tool", True):
@@ -4419,7 +4457,7 @@ def _cmd_ingest_transcript(args: argparse.Namespace, out: object) -> int:
         rotation) and by manual recovery / replay.
       - `aelf ingest-transcript --batch DIR` — recurse into DIR for
         every `*.jsonl` and ingest each. Handles the v1.2.0
-        transcript-logger format AND the Claude Code internal
+        transcript-logger format AND the the upstream auto-memory tool internal
         session-log format under `~/.claude/projects/` (issue #115).
       - `aelf ingest-transcript --batch DIR --since YYYY-MM-DD` —
         same, but skip files whose mtime is older than the cutoff.
@@ -6115,7 +6153,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_rebuild.add_argument(
         "--transcript", default=None,
         help=(
-            "path to a Claude Code session JSONL to read recent turns "
+            "path to a the upstream auto-memory tool session JSONL to read recent turns "
             "from. Default: walk upward from cwd for "
             ".git/aelfrice/transcripts/turns.jsonl."
         ),
@@ -6624,7 +6662,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--batch", default=None,
         help=(
             "ingest every *.jsonl under DIR (recursive). Handles both "
-            "transcript-logger turns.jsonl and Claude Code session "
+            "transcript-logger turns.jsonl and the upstream auto-memory tool session "
             "JSONLs at ~/.claude/projects/. Mutually exclusive with PATH."
         ),
     )
@@ -7065,13 +7103,13 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
 
     p_setup = sub.add_parser(
         "setup",
-        help="install the UserPromptSubmit hook in Claude Code settings.json",
+        help="install the UserPromptSubmit hook in the upstream auto-memory tool settings.json",
     )
     _add_hook_scope_args(p_setup)
     p_setup.add_argument(
         "--command", default=None,
         help=(
-            "hook command Claude Code will spawn. Default: auto-resolved "
+            "hook command the upstream auto-memory tool will spawn. Default: auto-resolved "
             "absolute path to aelf-hook (project venv for project scope, "
             "$PATH for user scope)."
         ),
@@ -7082,7 +7120,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     p_setup.add_argument(
         "--status-message", default=None,
-        help="status message Claude Code shows while the hook runs",
+        help="status message the upstream auto-memory tool shows while the hook runs",
     )
     p_setup.add_argument(
         "--no-statusline", action="store_true",
@@ -7117,6 +7155,18 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "commit message and persists the resulting beliefs and "
             "edges under a session derived from git context. Default: ON. "
             "Pass --no-commit-ingest to skip."
+        ),
+    )
+    p_setup.add_argument(
+        "--claude-memory-mirror", dest="claude_memory_mirror",
+        action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "wire the PostToolUse:Write|Edit hook that mirrors the upstream auto-memory tool "
+            "memory writes into the belief graph (#985). The hook is "
+            "installed ON by default but stays INERT until you opt in via "
+            "AELFRICE_MIRROR_CLAUDE_MEMORY=1 or [memory] "
+            "mirror_claude_memory in .aelfrice.toml. "
+            "Pass --no-claude-memory-mirror to skip installing it."
         ),
     )
     p_setup.add_argument(
@@ -7227,7 +7277,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     p_uninstall.add_argument(
         "--keep-hook", action="store_true",
-        help="do not run unsetup; leave the Claude Code hook in place",
+        help="do not run unsetup; leave the the upstream auto-memory tool hook in place",
     )
     p_uninstall.add_argument(
         "--settings-path", default=None,
@@ -7307,6 +7357,14 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help=(
             "remove the PostToolUse:Bash commit-ingest entry. "
             "Default: ON. Pass --no-commit-ingest to leave it in place."
+        ),
+    )
+    p_unsetup.add_argument(
+        "--claude-memory-mirror", dest="claude_memory_mirror",
+        action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "remove the PostToolUse claude-memory-mirror entry (#985). "
+            "Default: ON. Pass --no-claude-memory-mirror to leave it in place."
         ),
     )
     p_unsetup.add_argument(
@@ -7521,7 +7579,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_session_delta = sub.add_parser("session-delta", help=argparse.SUPPRESS)
     p_session_delta.add_argument(
         "--id", dest="session_id", default=None,
-        help="Claude Code session id to compute telemetry for",
+        help="the upstream auto-memory tool session id to compute telemetry for",
     )
     p_session_delta.add_argument(
         "--telemetry-path", dest="telemetry_path", default=None,

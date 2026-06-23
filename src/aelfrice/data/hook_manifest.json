@@ -64,6 +64,14 @@
       "default_on": true,
       "since": "3.4.0",
       "description": "PreToolUse:Bash duplicate-detection guard before gh issue create (#941)."
+    },
+    {
+      "name": "claude_memory_mirror",
+      "basename": "aelf-claude-memory-mirror",
+      "installer": "claude_memory_mirror",
+      "default_on": true,
+      "since": "3.7.0",
+      "description": "PostToolUse:Write|Edit|MultiEdit mirror of claude-memory writes into the belief graph; inert until AELFRICE_MIRROR_CLAUDE_MEMORY / [memory] mirror_claude_memory is set (#985)."
     }
   ]
 }
