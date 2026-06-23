@@ -269,28 +269,29 @@ def precompute_expand_neighbors(
         ).fetchall()
     ]
 
-    conn.execute("DELETE FROM hrr_expand_neighbors")
-    written = 0
-    for seed_id in seed_ids:
-        rows = neighbor_rows(
+    # Compute every neighbour row *before* mutating the table so a mid-loop
+    # probe failure cannot leave a partially-rebuilt (or empty-after-DELETE)
+    # cache visible to a later same-connection read. The DELETE + insert then
+    # run as one transaction via ``with conn`` (commit on success, rollback on
+    # error), keeping the rebuild atomic (#981 robustness fix).
+    insert_rows: list[tuple[str, str, float, str, str, str]] = [
+        (seed_id, nid, sim, etype, direction, now_iso)
+        for seed_id in seed_ids
+        for (nid, etype, direction, sim) in neighbor_rows(
             index, seed_id,
             id_matrix=id_matrix, kinds=kinds,
             per_probe_k=per_probe_k, sim_floor=sim_floor,
         )
-        if not rows:
-            continue
+    ]
+    with conn:
+        conn.execute("DELETE FROM hrr_expand_neighbors")
         conn.executemany(
             "INSERT OR REPLACE INTO hrr_expand_neighbors "
             "(belief_id, neighbor_id, similarity, edge_type, direction, "
             "created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            [
-                (seed_id, nid, sim, etype, direction, now_iso)
-                for (nid, etype, direction, sim) in rows
-            ],
+            insert_rows,
         )
-        written += len(rows)
-    conn.commit()
-    return written
+    return len(insert_rows)
 
 
 def _neighbors_from_table(
