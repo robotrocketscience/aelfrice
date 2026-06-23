@@ -394,6 +394,7 @@ def relationships_audit(
     residual_overlap_min: float = DEFAULT_RESIDUAL_OVERLAP_MIN,
     confidence_min: float = DEFAULT_CONFIDENCE_MIN,
     max_candidate_pairs: int = DEFAULT_MAX_CANDIDATE_PAIRS,
+    restrict_to_ids: set[str] | frozenset[str] | None = None,
 ) -> RelationshipsAuditReport:
     """Walk the store, classify near-pair relationships, return a report.
 
@@ -404,6 +405,12 @@ def relationships_audit(
     by sharing the full classifier.
 
     ``unrelated`` verdicts are dropped from the pair list.
+
+    When ``restrict_to_ids`` is provided, candidate-pair generation is
+    scoped to pairs where at least one endpoint is in the set. Passes
+    the filter through to ``_jaccard_prefiltered_pairs`` unchanged.
+    Default ``None`` ⇒ full-store audit, byte-identical to prior
+    behaviour.
 
     Raises ``ValueError`` on malformed thresholds.
     """
@@ -431,10 +438,14 @@ def relationships_audit(
             truncated=False,
         )
 
+    _restrict: frozenset[str] | None = (
+        frozenset(restrict_to_ids) if restrict_to_ids is not None else None
+    )
     candidates, raw_count, truncated = _jaccard_prefiltered_pairs(
         beliefs,
         jaccard_min=jaccard_min,
         max_pairs=max_candidate_pairs,
+        restrict_to_ids=_restrict,
     )
 
     pairs: list[RelationshipPair] = []
