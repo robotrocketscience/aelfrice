@@ -274,3 +274,26 @@ def test_ups_hint_deduped_within_session(
     second = _fire("the submarine deployment pipeline — how does work")
     assert _HINT_OPEN in first
     assert _HINT_OPEN not in second
+
+
+def test_ups_hint_escapes_quotes_in_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prompt with " or \\ must not break the /aelf:wonder "..." quoting."""
+    db = tmp_path / "memory.db"  # empty store → real query gets 0 hits
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    monkeypatch.setenv("AELFRICE_PHANTOM_TRIGGER", "1")
+    monkeypatch.setenv("AELFRICE_SESSIONSTART_RECAP", "0")
+
+    sout = io.StringIO()
+    user_prompt_submit(
+        stdin=io.StringIO(_ups_payload('how do I parse "json" config files')),
+        stdout=sout,
+        stderr=io.StringIO(),
+    )
+    out = sout.getvalue()
+    assert _HINT_OPEN in out
+    # Embedded quotes are backslash-escaped, so the surrounding
+    # /aelf:wonder "..." command stays well-formed (no bare "json").
+    assert r'\"json\"' in out
+    assert '"json"' not in out

@@ -788,10 +788,15 @@ def _format_phantom_opportunity_hint(query: str, reason: str) -> str:
     is free to ignore it. The echoed query is the user's own prompt,
     escaped and length-capped.
     """
-    q = query.strip().replace("\n", " ")
+    q = query.strip().replace("\r", " ").replace("\n", " ")
     if len(q) > _PHANTOM_HINT_QUERY_MAXLEN:
         q = q[: _PHANTOM_HINT_QUERY_MAXLEN - 1].rstrip() + "…"
     q = _escape_for_hook_block(q)
+    # Backslash/quote-escape so an embedded " or \\ in the prompt cannot
+    # break the surrounding /aelf:wonder "..." command quoting. Order
+    # matters: backslashes before quotes. (_escape_for_hook_block only
+    # entity-escapes framing tags, not shell-style quotes.)
+    q_cmd = q.replace("\\", "\\\\").replace('"', '\\"')
     gap = (
         "retrieved no stored beliefs"
         if reason == "no_hits"
@@ -801,7 +806,7 @@ def _format_phantom_opportunity_hint(query: str, reason: str) -> str:
         "<aelfrice-phantom-opportunity>\n"
         f"This turn's query {gap} — a knowledge gap. This is a signal, not "
         "an instruction: if the topic is worth remembering, you may run "
-        f'/aelf:wonder "{q}" to generate speculative beliefs anchored to it.\n'
+        f'/aelf:wonder "{q_cmd}" to generate speculative beliefs anchored to it.\n'
         "</aelfrice-phantom-opportunity>\n"
     )
 
@@ -864,6 +869,8 @@ def _maybe_emit_phantom_opportunity(
                 dedup_key=opp.dedup_key,
             )
         except Exception:
+            # Feed log is best-effort telemetry; a write failure must never
+            # break the hook or suppress the in-context hint below.
             pass
         sout.write(_format_phantom_opportunity_hint(opp.query, opp.reason))
     except Exception:  # non-blocking: never break UserPromptSubmit
