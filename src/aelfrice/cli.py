@@ -2916,6 +2916,7 @@ def _cmd_stats(args: argparse.Namespace, out: object) -> int:
         n_threads = store.count_edges()
         n_locked = store.count_locked()
         n_history = store.count_feedback_events()
+        phantoms = store.count_phantom_lifecycle()
     finally:
         store.close()
     print(f"version:           {_aelf_version}", file=out)  # type: ignore[arg-type]
@@ -2925,6 +2926,15 @@ def _cmd_stats(args: argparse.Namespace, out: object) -> int:
     print(f"threads:           {n_threads}", file=out)  # type: ignore[arg-type]
     print(f"locked:            {n_locked}", file=out)  # type: ignore[arg-type]
     print(f"feedback events:   {n_history}", file=out)  # type: ignore[arg-type]
+    # #980: phantom (speculative) lifecycle visibility. `latest` is the
+    # ISO timestamp of the most recent live phantom; show the date only.
+    ph_latest = phantoms.latest[:10] if phantoms.latest else "—"
+    print(  # type: ignore[arg-type]
+        f"phantoms:          {phantoms.active} active · "
+        f"{phantoms.promoted} promoted · {phantoms.retired} retired "
+        f"(latest: {ph_latest})",
+        file=out,
+    )
     print(_format_hrr_persist_status_line(), file=out)  # type: ignore[arg-type]
     return 0
 

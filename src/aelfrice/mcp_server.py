@@ -183,6 +183,8 @@ def _render_locked_markdown(payload: dict[str, Any]) -> str:
 
 
 def _render_stats_markdown(payload: dict[str, Any]) -> str:
+    ph = payload.get("phantoms", {})
+    ph_latest = ph.get("latest") or "—"
     return (
         "# Aelfrice store snapshot\n\n"
         f"- Version: {payload.get('version', 'unknown')}\n"
@@ -192,6 +194,9 @@ def _render_stats_markdown(payload: dict[str, Any]) -> str:
         f"- Feedback events: {payload.get('feedback_events', 0)}\n"
         f"- Onboard sessions (total): "
         f"{payload.get('onboard_sessions_total', 0)}\n"
+        f"- Phantoms: {ph.get('active', 0)} active, "
+        f"{ph.get('promoted', 0)} promoted, {ph.get('retired', 0)} retired "
+        f"(latest: {ph_latest})\n"
     )
 
 
@@ -811,6 +816,15 @@ def tool_stats(
         "locked": store.count_locked(),
         "feedback_events": store.count_feedback_events(),
         "onboard_sessions_total": store.count_onboard_sessions(),
+    }
+    # #980: phantom (speculative) lifecycle visibility, parallel to the
+    # `aelf status` CLI line.
+    _phantoms = store.count_phantom_lifecycle()
+    payload["phantoms"] = {
+        "active": _phantoms.active,
+        "promoted": _phantoms.promoted,
+        "retired": _phantoms.retired,
+        "latest": _phantoms.latest,
     }
     if response_format == _RESPONSE_FORMAT_MARKDOWN:
         return _wrap_markdown(payload, _render_stats_markdown(payload))

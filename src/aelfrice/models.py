@@ -463,3 +463,21 @@ class Phantom:
     score: float
 
 
+@dataclass(frozen=True)
+class PhantomLifecycleCounts:
+    """Snapshot of the phantom (speculative) belief lifecycle (#980).
+
+    Produced by ``MemoryStore.count_phantom_lifecycle`` and surfaced by
+    ``aelf status`` / the MCP ``aelf:stats`` tool so phantom generation,
+    promotion, and GC are observable rather than silent. The three counts
+    partition every ``type='speculative'`` belief into mutually exclusive
+    lifecycle states; ``latest`` is the ISO ``created_at`` of the most
+    recent live phantom, or ``None`` when none exist.
+    """
+
+    active: int
+    promoted: int
+    retired: int
+    latest: str | None
+
+

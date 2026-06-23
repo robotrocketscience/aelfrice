@@ -38,6 +38,7 @@ from aelfrice.models import (
     Edge,
     FeedbackEvent,
     OnboardSession,
+    PhantomLifecycleCounts,
     Session,
     validate_belief_scope,
 )
@@ -3766,6 +3767,53 @@ class MemoryStore:
             "SELECT type, COUNT(*) AS n FROM beliefs GROUP BY type ORDER BY type"
         )
         return {str(r["type"]): int(r["n"]) for r in cur.fetchall()}
+
+    def count_phantom_lifecycle(self) -> PhantomLifecycleCounts:
+        """Lifecycle snapshot of phantom (``type='speculative'``) beliefs (#980).
+
+        ``type='speculative'`` is the immutable phantom marker: it is set at
+        ``wonder_ingest`` and is *not* changed by promotion (which flips only
+        ``origin``) or GC (which sets only ``valid_to``). So the type column
+        partitions every belief that was ever born a phantom into three
+        mutually exclusive lifecycle states, computed in a single scan:
+
+        - ``active``   — still a phantom (``origin='speculative'``) and live
+          (``valid_to IS NULL``); awaiting promotion or GC.
+        - ``promoted`` — origin flipped off ``'speculative'`` (``aelf promote``
+          / lock-auto-promote, #550) and still live.
+        - ``retired``  — soft-deleted (``valid_to IS NOT NULL``), i.e. GC'd by
+          ``wonder_gc``. GC only ever soft-deletes speculative-origin rows, so
+          this count is exactly the GC'd phantoms.
+
+        ``latest`` is the ISO ``created_at`` of the most recent *live* phantom
+        ingest, or ``None`` when no live phantoms exist. Read-only and
+        deterministic — no clock, no network.
+        """
+        row = self._conn.execute(
+            """
+            SELECT
+              COALESCE(SUM(
+                CASE WHEN origin = 'speculative' AND valid_to IS NULL
+                     THEN 1 ELSE 0 END), 0) AS active,
+              COALESCE(SUM(
+                CASE WHEN origin != 'speculative' AND valid_to IS NULL
+                     THEN 1 ELSE 0 END), 0) AS promoted,
+              COALESCE(SUM(
+                CASE WHEN valid_to IS NOT NULL
+                     THEN 1 ELSE 0 END), 0) AS retired,
+              MAX(CASE WHEN origin = 'speculative' AND valid_to IS NULL
+                       THEN created_at ELSE NULL END) AS latest
+            FROM beliefs
+            WHERE type = 'speculative'
+            """
+        ).fetchone()
+        latest = row["latest"]
+        return PhantomLifecycleCounts(
+            active=int(row["active"]),
+            promoted=int(row["promoted"]),
+            retired=int(row["retired"]),
+            latest=str(latest) if latest is not None else None,
+        )
 
     def count_beliefs_by_scope(self) -> dict[str, int]:
         """Return a mapping of scope value → count across all beliefs.
