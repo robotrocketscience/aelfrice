@@ -128,6 +128,7 @@ _RETENTION_DEFAULT_BY_SOURCE: Final[dict[str, str]] = {
     "python_ast": RETENTION_FACT,
     "mcp_remember": RETENTION_FACT,
     "cli_remember": RETENTION_FACT,
+    "claude_memory": RETENTION_FACT,
     "feedback_loop_synthesis": RETENTION_SNAPSHOT,
     "legacy_unknown": RETENTION_UNKNOWN,
 }
@@ -205,6 +206,10 @@ CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION: Final[str] = "consolidation_migrat
 # `"<generator>@<score:.4f>"` so the provenance is auditable without a
 # dedicated audit_log table (Track A3 is deferred).
 CORROBORATION_SOURCE_WONDER_INGEST: Final[str] = "wonder_ingest"
+# v3 #985 claude-memory write-through mirror. Records a re-assertion when a
+# claude-memory file is re-written with byte-identical body content;
+# the mirror hook calls insert_or_corroborate with this source_type.
+CORROBORATION_SOURCE_CLAUDE_MEMORY: Final[str] = "claude_memory_mirror"
 
 CORROBORATION_SOURCE_TYPES: Final[frozenset[str]] = frozenset({
     CORROBORATION_SOURCE_COMMIT_INGEST,
@@ -214,6 +219,7 @@ CORROBORATION_SOURCE_TYPES: Final[frozenset[str]] = frozenset({
     CORROBORATION_SOURCE_CLI_REMEMBER,
     CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION,
     CORROBORATION_SOURCE_WONDER_INGEST,
+    CORROBORATION_SOURCE_CLAUDE_MEMORY,
 })
 
 # v2.0 #205 ingest_log source_kind enum. Wire-format strings; do not
@@ -224,6 +230,10 @@ INGEST_SOURCE_PYTHON_AST: Final[str] = "python_ast"
 INGEST_SOURCE_MCP_REMEMBER: Final[str] = "mcp_remember"
 INGEST_SOURCE_CLI_REMEMBER: Final[str] = "cli_remember"
 INGEST_SOURCE_FEEDBACK_LOOP_SYNTHESIS: Final[str] = "feedback_loop_synthesis"
+# v3 #985 claude-memory write-through. A per-memory `.md` fact file mirrored
+# from the upstream auto-memory store. Carries `raw_meta["memory_type"]`
+# (the file's `metadata.type`) so derive() can map it to an origin.
+INGEST_SOURCE_CLAUDE_MEMORY: Final[str] = "claude_memory"
 # `legacy_unknown` is reserved for migration: pre-v2.0 beliefs get
 # synthesized log rows at their `created_at` timestamp.
 INGEST_SOURCE_LEGACY_UNKNOWN: Final[str] = "legacy_unknown"
@@ -235,6 +245,7 @@ INGEST_SOURCE_KINDS: Final[frozenset[str]] = frozenset({
     INGEST_SOURCE_MCP_REMEMBER,
     INGEST_SOURCE_CLI_REMEMBER,
     INGEST_SOURCE_FEEDBACK_LOOP_SYNTHESIS,
+    INGEST_SOURCE_CLAUDE_MEMORY,
     INGEST_SOURCE_LEGACY_UNKNOWN,
 })
 
