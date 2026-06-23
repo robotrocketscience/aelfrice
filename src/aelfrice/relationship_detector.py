@@ -51,6 +51,7 @@ Detection is regex / token-set heuristics — no LLM, no embedding.
 """
 from __future__ import annotations
 
+import os
 import re
 import sys
 import tomllib
@@ -93,6 +94,25 @@ DEFAULT_RESIDUAL_OVERLAP_MIN: Final[float] = 0.4
 # the deferred write-path hook.
 DEFAULT_CONFIDENCE_MIN: Final[float] = 0.5
 DEFAULT_MAX_CANDIDATE_PAIRS: Final[int] = 5000
+
+# --- Ingest-time auto-detection flag + write-gate (#988) ----------------
+
+# Default-OFF flag that wires the deterministic detector into the ingest
+# path so it writes CONTRADICTS / REFINES edges (the #201-ratified R2
+# write-path hook, until now deferred). When off, ingest is byte-identical
+# to today — no edges are written. Resolution precedence mirrors the
+# retrieval flags: env > explicit kwarg > `[relationship_detector]
+# auto_detect` in `.aelfrice.toml` > default False.
+ENV_AUTO_RELATIONSHIPS: Final[str] = "AELFRICE_AUTO_RELATIONSHIPS"
+AUTO_DETECT_KEY: Final[str] = "auto_detect"
+# Write-gate: per-belief cap on auto-written semantic edges. Bounds the
+# Exp-48 coverage-dilution failure mode (unbounded edge growth tanks
+# retrieval coverage) by capping how many edges any one belief accretes.
+MAX_EDGES_PER_BELIEF_KEY: Final[str] = "max_edges_per_belief"
+DEFAULT_MAX_EDGES_PER_BELIEF: Final[int] = 8
+
+_ENV_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
+_ENV_FALSY: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
 
 # --- Modality vocabulary -----------------------------------------------
 
@@ -570,6 +590,86 @@ def load_relationship_detector_config(
             break
         current = current.parent
     return RelationshipDetectorConfig()
+
+
+# --- Ingest-time auto-detection resolver (#988) ------------------------
+
+
+def _env_auto_relationships_override() -> bool | None:
+    """Return True/False if ``AELFRICE_AUTO_RELATIONSHIPS`` is set to a
+    recognised truthy / falsy value, else None (env not decisive)."""
+    raw = os.environ.get(ENV_AUTO_RELATIONSHIPS)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_TRUTHY:
+        return True
+    if norm in _ENV_FALSY:
+        return False
+    return None
+
+
+def _read_auto_detect_toml(start: Path | None = None) -> bool | None:
+    """Read ``[relationship_detector] auto_detect`` from the nearest
+    `.aelfrice.toml`. Returns None on missing file / section / key /
+    malformed TOML / non-bool value; never raises."""
+    serr: IO[str] = sys.stderr
+    current = (start if start is not None else Path.cwd()).resolve()
+    seen: set[Path] = set()
+    while current not in seen:
+        seen.add(current)
+        candidate = current / CONFIG_FILENAME
+        if candidate.is_file():
+            try:
+                parsed: dict[str, Any] = tomllib.loads(
+                    candidate.read_bytes().decode("utf-8", errors="replace"),
+                )
+            except (OSError, tomllib.TOMLDecodeError) as exc:
+                print(
+                    f"aelfrice relationship_detector: cannot read "
+                    f"{AUTO_DETECT_KEY} in {candidate}: {exc}",
+                    file=serr,
+                )
+                return None
+            section_obj: Any = parsed.get(SECTION, {})
+            if not isinstance(section_obj, dict):
+                return None
+            val: Any = cast(dict[str, Any], section_obj).get(AUTO_DETECT_KEY)
+            if isinstance(val, bool):
+                return val
+            return None
+        if current.parent == current:
+            break
+        current = current.parent
+    return None
+
+
+def is_auto_relationship_detection_enabled(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the ingest-time auto-relationship-detection flag (#988).
+
+    Precedence (first decisive wins):
+      1. ``AELFRICE_AUTO_RELATIONSHIPS`` env var (truthy / falsy normalised).
+      2. Explicit ``explicit`` kwarg from the caller.
+      3. ``[relationship_detector] auto_detect`` in `.aelfrice.toml`.
+      4. Default: False (default-OFF).
+
+    Default-off is load-bearing: a fresh install must not start writing
+    semantic edges at ingest, which would reverse the #605/#897 scope
+    ratification. Flipping the default requires re-opening #897.
+    """
+    env = _env_auto_relationships_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    toml_value = _read_auto_detect_toml(start)
+    if toml_value is not None:
+        return toml_value
+    return False
 
 
 # --- Report formatter --------------------------------------------------
