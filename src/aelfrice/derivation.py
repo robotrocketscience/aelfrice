@@ -268,6 +268,15 @@ def derive(inp: DerivationInput) -> DerivationOutput:
         )
         return DerivationOutput(belief=belief, edges=[])
 
+    # claude-memory write-through mirror (#985) has no dedicated branch
+    # here: it flows through the route_overrides path (below) when the mirror
+    # hook supplies a frozen (origin=user_validated) decision for a
+    # `type: user`/`feedback` file, and otherwise through the deterministic
+    # classifier path as origin=agent_inferred. Keeping the per-type origin
+    # decision out of the deterministic path (it depends on the file's
+    # frontmatter, carried in raw_meta, which replay nulls) is what lets the
+    # mirror stay replay-equality-stable — see `hook_claude_memory_mirror`.
+
     # 3. Classifier paths (filesystem, python_ast, etc.) ------------------
     source = inp.source_path or inp.source_kind
 
