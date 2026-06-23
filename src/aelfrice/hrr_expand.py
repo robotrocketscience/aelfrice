@@ -79,13 +79,18 @@ DEFAULT_SEED_CAP: Final[int] = 5
 DEFAULT_PER_PROBE_K: Final[int] = 3
 DEFAULT_EXPAND_TOP_K: Final[int] = 5
 DEFAULT_MAX_NODES: Final[int] = 2000
-# Similarity floor on the raw HRR inner product. A true single-hop bound term
-# scores ~1.0 (bind/unbind of unit vectors); orthogonal noise from unrelated
-# bindings is ~1/sqrt(dim) (~0.044 at the default dim=512). 0.1 sits well
-# above the noise floor and well below a true match, rejecting cleanup spuria
-# in both directions (forward unbind-cleanup and reverse probe use the same
-# raw-dot scale).
-DEFAULT_SIM_FLOOR: Final[float] = 0.1
+# Similarity floor on the raw HRR inner product. Single-hop typed edges are
+# *bimodal* under this algebra: a present edge recovers its bound term exactly
+# (``unbind(role_k, bind(role_k, id_t)) · id_t == 1.0`` forward; the matching
+# ``bind`` self-dot ``≈ 1.0`` reverse), independent of the belief's degree —
+# only the additive crosstalk from the belief's *other* bindings varies, at
+# ~1/sqrt(dim) (~0.044 at the default dim=512) per term. So true matches
+# cluster at ~1.0 and absent edges at ~noise; 0.5 sits squarely in the gap,
+# keeping every present edge while rejecting cleanup spuria. (Empirically a
+# spurious TESTS-typed hit on a no-TESTS-edge belief scores ~0.12-0.17 at
+# dim=512 — well below 0.5; a false positive would need ~128 same-role
+# crosstalk terms to clear the floor.)
+DEFAULT_SIM_FLOOR: Final[float] = 0.5
 
 FORWARD: Final[str] = "forward"
 REVERSE: Final[str] = "reverse"
@@ -243,7 +248,7 @@ def precompute_expand_neighbors(
     ``None`` the current UTC time is used (the table's byte-equality test
     pins it, production does not need to).
     """
-    conn: sqlite3.Connection = store.connection
+    conn: sqlite3.Connection = store._conn  # noqa: SLF001 — same pattern as replay.py/telemetry.py
     if now_iso is None:
         now_iso = datetime.now(timezone.utc).isoformat()
     kinds = hrr_expand_edge_types()
@@ -293,7 +298,7 @@ def _neighbors_from_table(
     missing table (pre-migration DB) returns ``None`` so the caller falls back
     to a live probe.
     """
-    conn: sqlite3.Connection = store.connection
+    conn: sqlite3.Connection = store._conn  # noqa: SLF001 — same pattern as replay.py/telemetry.py
     placeholders = ",".join("?" for _ in seed_ids)
     try:
         rows = conn.execute(
