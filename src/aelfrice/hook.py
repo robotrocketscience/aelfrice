@@ -2782,6 +2782,7 @@ def session_start(
         except Exception:
             # never break SessionStart on recap-side errors
             pass
+    _maybe_run_wonder_autogc(serr)
     return 0
 
 
@@ -3956,6 +3957,98 @@ def _recap_enabled(env: dict[str, str] | None = None) -> bool:
     """Return True unless AELFRICE_SESSIONSTART_RECAP=0."""
     src = os.environ if env is None else env
     return src.get(ENV_SESSIONSTART_RECAP) != "0"
+
+
+# ---------------------------------------------------------------------------
+# Opt-in phantom auto-GC on SessionStart (#980 item 2)
+# ---------------------------------------------------------------------------
+#
+# The wonder GC exit (`wonder_gc`) is wired and correct but has never run in
+# any store — the #980 audit found 0 phantoms GC'd, ever, so stale phantoms
+# accumulate forever. This opt-in flag makes GC actually run: once per
+# session, behind a default-off env switch (the #606 sentiment-hook
+# precedent — host-side lanes ship opt-in, never default-on destructive).
+
+ENV_WONDER_AUTOGC: Final[str] = "AELFRICE_WONDER_AUTOGC"
+"""Set truthy (1/true/yes/on) to run wonder GC once per SessionStart."""
+
+ENV_WONDER_AUTOGC_TTL_DAYS: Final[str] = "AELFRICE_WONDER_AUTOGC_TTL_DAYS"
+"""Override the auto-GC age threshold in days (default 14, min 1)."""
+
+_WONDER_AUTOGC_DEFAULT_TTL_DAYS: Final[int] = 14
+
+
+def _wonder_autogc_enabled(env: dict[str, str] | None = None) -> bool:
+    """Return True when AELFRICE_WONDER_AUTOGC is truthy (default off).
+
+    Opt-in, mirroring the autolock flag: a SessionStart auto-GC is a
+    host-side, store-mutating lane, so it stays default-off until the
+    operator turns it on (#606 precedent, #980 item 2).
+    """
+    src = env if env is not None else os.environ
+    val = src.get(ENV_WONDER_AUTOGC, "").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
+def _wonder_autogc_ttl_days(env: dict[str, str] | None = None) -> int:
+    """Return the auto-GC TTL in days (default 14, min 1).
+
+    Honors AELFRICE_WONDER_AUTOGC_TTL_DAYS; blank, malformed, or
+    sub-1 values fall back to the 14-day default the CLI/MCP GC paths use.
+    """
+    src = env if env is not None else os.environ
+    raw = src.get(ENV_WONDER_AUTOGC_TTL_DAYS, "").strip()
+    if not raw:
+        return _WONDER_AUTOGC_DEFAULT_TTL_DAYS
+    try:
+        val = int(raw)
+    except ValueError:
+        return _WONDER_AUTOGC_DEFAULT_TTL_DAYS
+    return val if val >= 1 else _WONDER_AUTOGC_DEFAULT_TTL_DAYS
+
+
+def _maybe_run_wonder_autogc(stderr: IO[str]) -> None:
+    """Opt-in: soft-delete stale phantoms on SessionStart (#980 item 2).
+
+    No-op unless `_wonder_autogc_enabled()`. Runs `wonder_gc` once and,
+    when anything is collected, emits a `wonder.gc` feed-log row — the
+    first GC feed emission in the codebase, so swept phantoms show up in
+    `aelf feed` and the #991 lifecycle status line — plus a concise
+    stderr notice. Fully non-blocking: every failure path is swallowed
+    so the SessionStart hook still returns 0.
+    """
+    if not _wonder_autogc_enabled():
+        return
+    try:
+        from aelfrice.wonder.lifecycle import wonder_gc
+
+        ttl_days = _wonder_autogc_ttl_days()
+        store = _open_store()
+        try:
+            result = wonder_gc(store, ttl_days=ttl_days)
+        finally:
+            store.close()
+        if result.deleted > 0:
+            try:
+                from aelfrice import feed_log
+
+                feed_log.append(
+                    "wonder.gc",
+                    scanned=result.scanned,
+                    deleted=result.deleted,
+                    surviving=result.surviving,
+                    ttl_days=ttl_days,
+                    trigger="sessionstart_autogc",
+                )
+            except Exception:
+                pass
+            print(
+                f"aelf-hook: wonder auto-GC swept {result.deleted} stale "
+                f"phantom(s) (ttl={ttl_days}d)",
+                file=stderr,
+            )
+    except Exception:  # non-blocking: never break SessionStart
+        traceback.print_exc(file=stderr)
 
 
 def _recap_last_ts_path() -> Path | None:
