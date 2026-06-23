@@ -55,6 +55,7 @@ import os
 import re
 import sys
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, IO, cast
@@ -904,6 +905,7 @@ def write_semantic_edges(
     confidence_min: float = DEFAULT_CONFIDENCE_MIN,
     max_candidate_pairs: int = DEFAULT_MAX_CANDIDATE_PAIRS,
     max_edges_per_belief: int = DEFAULT_MAX_EDGES_PER_BELIEF,
+    new_belief_ids: Sequence[str] | None = None,
 ) -> SemanticEdgeWriteReport:
     """Emit CONTRADICTS edges for high-confidence contradicting pairs (#988).
 
@@ -936,10 +938,31 @@ def write_semantic_edges(
     ``(belief_a_id, belief_b_id)`` order, so which edges survive the cap is
     itself deterministic.
 
+    **Incremental mode** (``new_belief_ids`` is not ``None``): candidate-pair
+    generation is scoped to pairs touching at least one belief in
+    ``new_belief_ids`` (the delta inserted during the current turn).
+    Every old-old pair (both endpoints from prior turns) was already
+    generated and processed when the later of its two endpoints was first
+    inserted, so restricting to delta-involving pairs produces the same new
+    edges as a full-store audit would — without re-scanning the whole store.
+
+    In incremental mode the write-gate budget for each endpoint is seeded
+    from its existing CONTRADICTS edge count in the store before the write
+    loop runs. This makes the ``max_edges_per_belief`` cap a true hard bound
+    across turns (matching the docstring's stated intent) without needing to
+    re-visit old-old pairs to discover prior edges. In full-store mode
+    (``new_belief_ids`` is ``None``) the loop itself counts existing edges
+    as they are encountered, preserving the original behaviour exactly.
+
     Stdlib-only: no LLM, no embedding. Delegates detection to
     ``relationships_audit``.
     """
     from aelfrice.models import Edge, EDGE_CONTRADICTS
+
+    restrict: frozenset[str] | None = (
+        frozenset(new_belief_ids) if new_belief_ids is not None else None
+    )
+    incremental = restrict is not None
 
     report = relationships_audit(
         store,
@@ -947,6 +970,7 @@ def write_semantic_edges(
         residual_overlap_min=residual_overlap_min,
         confidence_min=confidence_min,
         max_candidate_pairs=max_candidate_pairs,
+        restrict_to_ids=restrict,
     )
 
     high_pairs = [
@@ -956,7 +980,28 @@ def write_semantic_edges(
     # `report.pairs` is already sorted by (belief_a_id, belief_b_id);
     # preserve that order so the write-gate is deterministic.
 
-    edges_per_belief: dict[str, int] = {}
+    # In incremental mode, seed each endpoint's budget from its existing
+    # CONTRADICTS edge count so the hard per-belief cap is enforced across
+    # turns, not just within this call.
+    if incremental:
+        endpoint_ids = {
+            eid
+            for p in high_pairs
+            for eid in (p.belief_a_id, p.belief_b_id)
+        }
+        existing_edges = store.edges_for_beliefs(list(endpoint_ids))
+        edges_per_belief: dict[str, int] = {}
+        for e in existing_edges:
+            if e.type == EDGE_CONTRADICTS:
+                edges_per_belief[e.src] = edges_per_belief.get(e.src, 0) + 1
+                edges_per_belief[e.dst] = edges_per_belief.get(e.dst, 0) + 1
+    else:
+        edges_per_belief = {}
+    # In full-store mode, existing-skip branch increments edges_per_belief
+    # (original behaviour). In incremental mode it must NOT — the seed
+    # already reflects those edges.
+    count_existing_in_loop = not incremental
+
     n_written = 0
     n_skipped_existing = 0
     n_gated = 0
@@ -976,10 +1021,12 @@ def write_semantic_edges(
         src_id, dst_id = (a_id, b_id) if a_id < b_id else (b_id, a_id)
         if store.get_edge(src_id, dst_id, EDGE_CONTRADICTS) is not None:
             n_skipped_existing += 1
-            # Count existing edges toward the budget for a hard per-belief
-            # bound across re-runs.
-            edges_per_belief[a_id] = edges_per_belief.get(a_id, 0) + 1
-            edges_per_belief[b_id] = edges_per_belief.get(b_id, 0) + 1
+            if count_existing_in_loop:
+                # Count existing edges toward the budget for a hard per-belief
+                # bound across re-runs (full-store mode only; incremental mode
+                # seeds the budget from the store before the loop).
+                edges_per_belief[a_id] = edges_per_belief.get(a_id, 0) + 1
+                edges_per_belief[b_id] = edges_per_belief.get(b_id, 0) + 1
             continue
         store.insert_edge(
             Edge(src=src_id, dst=dst_id, type=EDGE_CONTRADICTS, weight=1.0)
