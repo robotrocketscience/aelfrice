@@ -39,7 +39,6 @@ locked #605 determinism philosophy and is routed to a re-opened #897.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Final
 
 import numpy as np
@@ -91,6 +90,11 @@ DEFAULT_MAX_NODES: Final[int] = 2000
 # dim=512 — well below 0.5; a false positive would need ~128 same-role
 # crosstalk terms to clear the floor.)
 DEFAULT_SIM_FLOOR: Final[float] = 0.5
+# ``created_at`` is an audit-only column never read by retrieval. The cache
+# is a derived, wholesale-rebuilt table, so its default rebuild timestamp is a
+# fixed sentinel (not wall-clock) — two rebuilds over an unchanged store stay
+# byte-identical (#981 AC2).
+_REBUILD_CREATED_AT: Final[str] = "1970-01-01T00:00:00+00:00"
 
 FORWARD: Final[str] = "forward"
 REVERSE: Final[str] = "reverse"
@@ -244,13 +248,15 @@ def precompute_expand_neighbors(
     run. Insertion order is the total order from :func:`neighbor_rows`, so two
     runs over an unchanged store produce a byte-identical table (#981 AC2).
 
-    ``now_iso`` pins the ``created_at`` column for determinism in tests; when
-    ``None`` the current UTC time is used (the table's byte-equality test
-    pins it, production does not need to).
+    ``now_iso`` pins the ``created_at`` column; it defaults to a fixed rebuild
+    sentinel (not wall-clock) so two rebuilds over an unchanged store stay
+    byte-identical (#981 AC2). ``created_at`` is audit-only and never read by
+    retrieval, so this derived cache prefers an idempotent rebuild over a real
+    timestamp.
     """
     conn: sqlite3.Connection = store._conn  # noqa: SLF001 — same pattern as replay.py/telemetry.py
     if now_iso is None:
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = _REBUILD_CREATED_AT
     kinds = hrr_expand_edge_types()
     id_matrix = _id_matrix(index)
 
