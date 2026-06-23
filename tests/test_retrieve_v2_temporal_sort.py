@@ -30,8 +30,9 @@ def _belief(
     content: str,
     age_seconds: float,
     locked: bool = False,
+    anchor: datetime = NOW,
 ) -> Belief:
-    created = NOW - timedelta(seconds=age_seconds)
+    created = anchor - timedelta(seconds=age_seconds)
     return Belief(
         id=f"b{idx}",
         content=content,
@@ -226,9 +227,22 @@ def store(tmp_path: Path) -> Iterator[MemoryStore]:
     s.close()
 
 
-def _insert(store: MemoryStore, idx: int, content: str, age_days: float, locked: bool = False) -> None:
+def _insert(
+    store: MemoryStore,
+    idx: int,
+    content: str,
+    age_days: float,
+    locked: bool = False,
+    anchor: datetime = NOW,
+) -> None:
     store.insert_belief(
-        _belief(idx=idx, content=content, age_seconds=age_days * 86400.0, locked=locked)
+        _belief(
+            idx=idx,
+            content=content,
+            age_seconds=age_days * 86400.0,
+            locked=locked,
+            anchor=anchor,
+        )
     )
 
 
@@ -270,8 +284,16 @@ def test_retrieve_v2_temporal_sort_explicit_half_life_kwarg(
     very short half-life, even a moderately old belief gets crushed
     relative to a fresh one regardless of upstream rank order."""
     monkeypatch.delenv(ENV_TEMPORAL_HALF_LIFE, raising=False)
-    _insert(store, 1, "alpha factual statement old", age_days=10)
-    _insert(store, 2, "alpha factual statement new", age_days=0)
+    # retrieve_v2 decays against real wall-clock now (it accepts no clock
+    # injection), so anchor these fixtures to real now rather than the module's
+    # fixed NOW. With a 1h half-life and a "fresh" belief that is dozens of days
+    # old in real time, both decay weights underflow to 0.0 in float64, the
+    # temporal signal collapses to a tie, and the ordering this test asserts is
+    # lost. Anchoring to real now keeps b2 genuinely age~=0 (weight 1.0) and b1
+    # crushed (2**-240), so b2 strictly outranks b1 regardless of the date.
+    real_now = datetime.now(timezone.utc)
+    _insert(store, 1, "alpha factual statement old", age_days=10, anchor=real_now)
+    _insert(store, 2, "alpha factual statement new", age_days=0, anchor=real_now)
     result = retrieve_v2(
         store,
         "alpha factual statement",
