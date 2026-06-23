@@ -1078,6 +1078,7 @@ def user_prompt_submit(
                 prompt=prompt,
                 session_id=session_id,
                 hit_count=len(hits),
+                cwd=payload_cwd,
                 stderr=serr,
             )
             if phantom_block:
@@ -1092,6 +1093,7 @@ def _maybe_phantom_opportunity_block(
     prompt: str,
     session_id: str | None,
     hit_count: int,
+    cwd: Path | None = None,
     stderr: IO[str] | None = None,
 ) -> str:
     """Evaluate the #980 phantom-generation triggers and return the
@@ -1111,7 +1113,7 @@ def _maybe_phantom_opportunity_block(
             load_phantom_generation_config,
         )
 
-        config = load_phantom_generation_config()
+        config = load_phantom_generation_config(start=cwd)
         if not config.enabled:
             return ""
         p = db_path()
