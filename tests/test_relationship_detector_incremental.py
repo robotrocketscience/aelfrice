@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import hashlib
 
-import pytest
-
 from aelfrice.dedup import _jaccard_prefiltered_pairs
 from aelfrice.models import (
     BELIEF_FACTUAL,
@@ -23,10 +21,7 @@ from aelfrice.models import (
     LOCK_NONE,
     Belief,
 )
-from aelfrice.relationship_detector import (
-    DEFAULT_MAX_EDGES_PER_BELIEF,
-    write_semantic_edges,
-)
+from aelfrice.relationship_detector import write_semantic_edges
 from aelfrice.store import MemoryStore
 
 
