@@ -73,6 +73,7 @@ _OPT_OUT_AUTO_CAPTURE = (
     "--no-commit-ingest",
     "--no-session-start",
     "--no-stop-hook",
+    "--no-claude-memory-mirror",
 )
 
 
