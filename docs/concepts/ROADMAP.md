@@ -9,7 +9,7 @@ Per-issue tracking: [LIMITATIONS.md](../user/LIMITATIONS.md). Release log: [CHAN
 
 aelfrice is a rebuild of an earlier research line on Bayesian + graph-backed memory for AI coding agents. The research codebase explored FTS5 retrieval, vocabulary bridging, BFS multi-hop traversal, entity-indexed retrieval, type-aware compression, correction detection, and a multi-tool MCP surface, with results against MAB, LoCoMo, LongMemEval, StructMemEval, and AMA-Bench.
 
-v1.0 shipped the foundation (SQLite store, Beta-Bernoulli scoring, BM25 retrieval, CLI, MCP, host hook wiring, synthetic benchmark harness). The v1.x line recovered the remaining features incrementally; v2.0 reached feature parity with the research line plus the reproducibility-harness scaffolding; v3.0 added wonder lifecycle, wonder/reason parity, read-only federation, and the eval-harness completion. The current line is **v3.6.0**.
+v1.0 shipped the foundation (SQLite store, Beta-Bernoulli scoring, BM25 retrieval, CLI, MCP, host hook wiring, synthetic benchmark harness). The v1.x line recovered the remaining features incrementally; v2.0 reached feature parity with the research line plus the reproducibility-harness scaffolding; v3.0 added wonder lifecycle, wonder/reason parity, read-only federation, and the eval-harness completion. The current line is **v3.7.0**.
 
 This is a rebuild, not a port. Structural issues that survived the research line were fixed at the foundation layer. Every behavioural claim is backed by a test or a benchmark, with a transparent issue trail for items that are not.
 
@@ -38,6 +38,7 @@ This is a rebuild, not a port. Structural issues that survived the research line
 | **v3.5.0** | shipped 2026-06-04 | visibility/observability wave — per-project feed log + `aelf feed` (#931), SessionStart recap (#934), contradiction marker on `aelf search` (#938), `aelf speculative` (#937), `aelf stale` (#933), `aelf audit-claude-memory` (#935), `aelf review` (#936), duplicate-issue PreToolUse guard (#941), statusline counts (#932) |
 | **v3.5.1** | shipped 2026-06-10 | patch — scanner skips `.claude/` on onboard (#955); INEDIBLE marker propagation to ingest-transcript paths (#958); v3.5.0 docs-vs-code reconciliation wave (#952, #957, #964) |
 | **v3.6.0** | shipped 2026-06-19 | `project_context` provenance — repo-identity auto-stamp on write + idempotent backfill + migrate provenance preservation (#970, ADR 0003; decision 4 ratified keep-opt-in #973); transcript-logger consecutive-duplicate turn guard so duplicated hook registrations don't inflate turn density (#968); `hook_audit` sink extracted from `hook.py` off the heavy retrieval import path (#968) |
+| **v3.7.0** | shipped 2026-06-23 | graph-substrate + phantom-lifecycle wave — `CONTRADICTS` semantic-edge substrate at ingest, default-off + incremental per-turn (#988, #1000); `claude-memory` write-through mirror into the belief graph (#985); phantom lifecycle made observable + self-maintaining — trigger-driven generation, opt-in SessionStart auto-GC, status/stats surface, soft-delete retrieval hygiene (#980); default-off HRR vocabulary-bridge expansion lane wired + ablated recall-neutral (#981); denser `SUPPORTS`/`SUPERSEDES` edges reverted per `CONTRADICTS`-only ratification (#998 A4, revert #999) |
 
 ## What shipped
 
