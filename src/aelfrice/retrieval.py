@@ -153,6 +153,14 @@ SIGNED_LAPLACIAN_FLAG: Final[str] = "use_signed_laplacian"
 HEAT_KERNEL_FLAG: Final[str] = "use_heat_kernel"
 POSTERIOR_RANKING_FLAG: Final[str] = "use_posterior_ranking"
 HRR_STRUCTURAL_FLAG: Final[str] = "use_hrr_structural"
+# #981 HRR vocabulary-bridge *expansion* lane flag. Distinct from the #152
+# structural lane (HRR_STRUCTURAL_FLAG): structural is a marker-routed query
+# path that replaces the textual lane; expansion is an additive candidate
+# source that probes the same struct index for single-hop semantic
+# neighbours of the FTS5 seeds and merges them before scoring. Default-OFF
+# (resolver default False) — landing the lane + ablation only; a default
+# flip reverses locked #605 and is routed to a re-opened #897.
+HRR_EXPAND_FLAG: Final[str] = "use_hrr_expand"
 # v2.1 #434 type-aware compression flag. Default-OFF at v2.0.0 until the
 # lab-side bench gate (A2 + A4 in docs/design/feature-type-aware-compression.md)
 # clears. ON populates RetrievalResult.compressed_beliefs with per-belief
@@ -215,6 +223,8 @@ ENV_BM25F: Final[str] = "AELFRICE_BM25F"
 ENV_HEAT_KERNEL: Final[str] = "AELFRICE_HEAT_KERNEL"
 # v1.7.0 HRR structural-query env override. Tri-state like ENV_BM25F.
 ENV_HRR_STRUCTURAL: Final[str] = "AELFRICE_HRR_STRUCTURAL"
+# #981 HRR expansion-lane env override. Tri-state like ENV_BM25F; default-OFF.
+ENV_HRR_EXPAND: Final[str] = "AELFRICE_HRR_EXPAND"
 # #698 HRR persist env override. "0" disables; "1" forces on.
 # Mirrors _ENV_PERSIST in hrr_index (same value; imported at call site).
 ENV_HRR_PERSIST: Final[str] = "AELFRICE_HRR_PERSIST"
@@ -581,6 +591,21 @@ def _env_hrr_structural_override() -> bool | None:
     recognised truthy/falsy value, else None. Symmetric to
     `_env_bm25f_override`."""
     raw = os.environ.get(ENV_HRR_STRUCTURAL)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def _env_hrr_expand_override() -> bool | None:
+    """Return True/False if AELFRICE_HRR_EXPAND is set to a recognised
+    truthy/falsy value, else None. Symmetric to
+    `_env_hrr_structural_override`."""
+    raw = os.environ.get(ENV_HRR_EXPAND)
     if raw is None:
         return None
     norm = raw.strip().lower()
@@ -1579,6 +1604,37 @@ def is_hrr_structural_enabled(
     return True
 
 
+def is_hrr_expand_enabled(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the HRR vocabulary-bridge expansion-lane flag (#981).
+
+    Precedence (first decisive wins):
+      1. AELFRICE_HRR_EXPAND env var (truthy / falsy normalised).
+      2. Explicit `explicit` kwarg from the caller.
+      3. `[retrieval] use_hrr_expand` in `.aelfrice.toml`.
+      4. Default: **False** — the expansion lane is OFF by default. #981
+         lands the lane + its ablation arm only; flipping the default
+         reverses the locked #605 determinism philosophy and is routed to a
+         re-opened #897. Opt in for the ablation via the env var, kwarg, or
+         TOML key.
+
+    Passing the flag (any rung) never raises — an unset / unrecognised value
+    falls through to the next rung and ultimately to False (AC1).
+    """
+    env = _env_hrr_expand_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    toml_value = _read_toml_flag_for(HRR_EXPAND_FLAG, start)
+    if toml_value is not None:
+        return toml_value
+    return False
+
+
 def is_hrr_persist_enabled(
     explicit: bool | None = None,
     *,
@@ -1960,6 +2016,10 @@ class LaneTelemetry:
     # token-budget trimming. ``l1`` tracks what was packed; the delta
     # is what the hook's coverage line surfaces to the user.
     l1_candidates: int = 0
+    # #981 HRR expansion lane. Count of beliefs the vocabulary-bridge
+    # expansion lane merged into the candidate set (0 when the lane is off,
+    # the default). Lets the ablation read the lane's contribution per call.
+    hrr_expand: int = 0
 
 
 # Per-process snapshot of the most recent retrieval call. Test-
@@ -2700,6 +2760,8 @@ def retrieve_with_tiers(
     eigenbasis_cache: GraphEigenbasisCache | None = None,
     use_type_aware_compression: bool | None = None,
     use_intentional_clustering: bool | None = None,
+    hrr_expand_enabled: bool | None = None,
+    hrr_struct_index_cache: HRRStructIndexCache | None = None,
 ) -> tuple[
     list[Belief], list[str], list[str], list[str], list[list[str]],
 ]:
@@ -2865,9 +2927,45 @@ def retrieve_with_tiers(
             used += cost
             l1_ids_list.append(b.id)
 
+    # #981 HRR vocabulary-bridge expansion lane (additive, default-OFF).
+    # Probes the shared struct index for single-hop semantic neighbours of
+    # the FTS5 seeds (the packed L1 hits) and merges them into the candidate
+    # set before BFS. On a miss — flag off (the default), no index cache, no
+    # seeds, or an empty index — it is a no-op and the output is byte-
+    # identical to the pre-#981 path. The lane is deterministic (numpy FFT /
+    # matvec over the seeded struct index; no random / betavariate).
+    hrr_expand_ids_list: list[str] = []
+    hrr_expanded: list[Belief] = []
+    if (
+        is_hrr_expand_enabled(hrr_expand_enabled)
+        and query.strip()
+        and hrr_struct_index_cache is not None
+        and l1_packed
+    ):
+        from aelfrice.hrr_expand import expand_seeds
+
+        seen_pre: set[str] = locked_ids | l25_ids | set(l1_ids_list)
+        for b in expand_seeds(
+            store,
+            hrr_struct_index_cache.get(),
+            [b.id for b in l1_packed],
+        ):
+            if b.id in seen_pre:
+                continue
+            cost = _cost(b)
+            if used + cost > effective_budget:
+                break
+            out.append(b)
+            hrr_expanded.append(b)
+            hrr_expand_ids_list.append(b.id)
+            seen_pre.add(b.id)
+            used += cost
+
     bfs_chains: list[list[str]] = []
     if bfs_on and query.strip():
-        seeds: list[Belief] = list(locked) + list(l25) + list(l1_packed)
+        seeds: list[Belief] = (
+            list(locked) + list(l25) + list(l1_packed) + list(hrr_expanded)
+        )
         if seeds:
             hops = expand_bfs(
                 seeds,
@@ -2879,6 +2977,7 @@ def retrieve_with_tiers(
             )
             seen_ids: set[str] = (
                 locked_ids | l25_ids | set(l1_ids_list)
+                | set(hrr_expand_ids_list)
             )
             for hop in hops:
                 if hop.belief.id in seen_ids:
@@ -2900,6 +2999,7 @@ def retrieve_with_tiers(
         expansion_gate_reason=gate_decision.reason,
         expansion_gate_skipped_bfs=gate_skipped_bfs,
         l1_candidates=len(l1),
+        hrr_expand=len(hrr_expand_ids_list),
     )
     return out, locked_ids_list, l25_ids_list, l1_ids_list, bfs_chains
 
@@ -2924,6 +3024,7 @@ def retrieve_v2(
     use_type_aware_compression: bool | None = None,
     use_intentional_clustering: bool | None = None,
     use_hrr_structural: bool | None = None,
+    use_hrr_expand: bool | None = None,
     hrr_struct_index_cache: HRRStructIndexCache | None = None,
     with_doc_anchors: bool = False,
     now_ts: int | None = None,
@@ -2980,6 +3081,19 @@ def retrieve_v2(
       no env / kwarg / TOML override is set. Opt out via
       `AELFRICE_HRR_STRUCTURAL=0`, `use_hrr_structural=False`, or
       `[retrieval] use_hrr_structural = false` in `.aelfrice.toml`.
+    - `use_hrr_expand` (#981) — when True, the HRR vocabulary-bridge
+      *expansion* lane runs as an additive candidate source: it probes
+      the struct index for single-hop semantic neighbours of the FTS5
+      seeds and merges them into the candidate set before BFS. Distinct
+      from `use_hrr_structural` (a marker-routed replacement lane).
+      Default-OFF — #981 lands the lane + ablation only; a default flip
+      reverses locked #605 and is routed to a re-opened #897. Opt in via
+      `AELFRICE_HRR_EXPAND=1`, the kwarg, or
+      `[retrieval] use_hrr_expand = true`. The lane is a no-op (byte-
+      identical output) unless a `hrr_struct_index_cache` is available;
+      when the flag is on and no cache is passed, an ephemeral in-memory
+      cache is built so the lane still fires (callers running the lane
+      hot should pass an explicit cache to amortise the build).
     - `hrr_struct_index_cache` (#152) — explicit
       `HRRStructIndexCache` to reuse an already-built index across
       calls. None falls through to a fresh build per call.
@@ -3019,6 +3133,15 @@ def retrieve_v2(
         ),
     )
 
+    # #981 expansion-lane index cache. When the lane resolves ON but no cache
+    # was passed, build an ephemeral in-memory cache so the lane still fires
+    # (no persistence — store_path is not threaded into this wrapper). When
+    # the lane is OFF (the default) the cache stays None and the build is
+    # skipped entirely, so the default path is unchanged.
+    expand_cache = hrr_struct_index_cache
+    if is_hrr_expand_enabled(use_hrr_expand) and expand_cache is None:
+        expand_cache = HRRStructIndexCache(store=store)
+
     retrieve_start = time.perf_counter()
     (
         out,
@@ -3041,6 +3164,8 @@ def retrieve_v2(
         bm25f_cache=bm25f_cache,
         use_type_aware_compression=use_type_aware_compression,
         use_intentional_clustering=use_intentional_clustering,
+        hrr_expand_enabled=use_hrr_expand,
+        hrr_struct_index_cache=expand_cache,
     )
     retrieve_elapsed = time.perf_counter() - retrieve_start
     if include_locked:
