@@ -197,6 +197,7 @@ def _jaccard_prefiltered_pairs(
     *,
     jaccard_min: float,
     max_pairs: int,
+    restrict_to_ids: frozenset[str] | None = None,
 ) -> tuple[
     list[tuple[str, str, str, str, frozenset[str], frozenset[str], float]],
     int,
@@ -204,13 +205,18 @@ def _jaccard_prefiltered_pairs(
 ]:
     """Return `[(id_a, content_a, id_b, content_b, tokens_a, tokens_b,
     jaccard)]` for every pair clearing `jaccard_min`, plus the raw
-    candidate count (all O(n^2) pairs visited) and a `truncated`
-    boolean.
+    candidate count (pairs actually scored) and a `truncated` boolean.
 
     Tokens are cached per belief id so each belief tokenises once
     even if it participates in many pairs. The pair list is sorted
     deterministically by `(id_a, id_b)` and truncated to `max_pairs`
     if larger.
+
+    When ``restrict_to_ids`` is provided, only pairs where at least one
+    endpoint ID is in the set are scored and counted. Pairs where both
+    endpoints are absent from the set are skipped before Jaccard
+    computation. When ``restrict_to_ids`` is ``None`` (the default),
+    behavior is identical to before this parameter was added.
     """
     n = len(beliefs)
     token_cache: list[frozenset[str]] = [
@@ -229,6 +235,12 @@ def _jaccard_prefiltered_pairs(
             id_b, content_b = beliefs[j]
             tb = token_cache[j]
             if not content_b.strip():
+                continue
+            if (
+                restrict_to_ids is not None
+                and id_a not in restrict_to_ids
+                and id_b not in restrict_to_ids
+            ):
                 continue
             raw_count += 1
             j_score = jaccard(ta, tb)
