@@ -2927,6 +2927,7 @@ def retrieve_v2(
     hrr_struct_index_cache: HRRStructIndexCache | None = None,
     with_doc_anchors: bool = False,
     now_ts: int | None = None,
+    now: datetime | None = None,
 ) -> RetrievalResult:
     """Lab-compatible retrieval wrapper for academic-suite adapters.
 
@@ -3052,7 +3053,12 @@ def retrieve_v2(
             now_ts=effective_now_ts,
             explicit=temporal_half_life_seconds,
         )
-        beliefs = _apply_temporal_decay(beliefs, half_life)
+        # `now` pins the temporal-decay clock so retrieve_v2-level temporal
+        # tests are deterministic; default None -> _apply_temporal_decay uses
+        # datetime.now(timezone.utc), leaving the production path unchanged.
+        # Distinct from `now_ts`, which pins the meta-belief *resolver* clock
+        # (half-life / BFS-depth resolvers). (#986)
+        beliefs = _apply_temporal_decay(beliefs, half_life, now=now)
         # #756 latency-signal update. Only fires when the meta-belief
         # feature flag is on; the env check matches the resolver above
         # so the read/write paths flip together. update_meta_belief is

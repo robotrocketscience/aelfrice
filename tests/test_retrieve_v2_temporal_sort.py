@@ -30,9 +30,8 @@ def _belief(
     content: str,
     age_seconds: float,
     locked: bool = False,
-    anchor: datetime = NOW,
 ) -> Belief:
-    created = anchor - timedelta(seconds=age_seconds)
+    created = NOW - timedelta(seconds=age_seconds)
     return Belief(
         id=f"b{idx}",
         content=content,
@@ -233,7 +232,6 @@ def _insert(
     content: str,
     age_days: float,
     locked: bool = False,
-    anchor: datetime = NOW,
 ) -> None:
     store.insert_belief(
         _belief(
@@ -241,7 +239,6 @@ def _insert(
             content=content,
             age_seconds=age_days * 86400.0,
             locked=locked,
-            anchor=anchor,
         )
     )
 
@@ -284,22 +281,20 @@ def test_retrieve_v2_temporal_sort_explicit_half_life_kwarg(
     very short half-life, even a moderately old belief gets crushed
     relative to a fresh one regardless of upstream rank order."""
     monkeypatch.delenv(ENV_TEMPORAL_HALF_LIFE, raising=False)
-    # retrieve_v2 decays against real wall-clock now (it accepts no clock
-    # injection), so anchor these fixtures to real now rather than the module's
-    # fixed NOW. With a 1h half-life and a "fresh" belief that is dozens of days
-    # old in real time, both decay weights underflow to 0.0 in float64, the
-    # temporal signal collapses to a tie, and the ordering this test asserts is
-    # lost. Anchoring to real now keeps b2 genuinely age~=0 (weight 1.0) and b1
-    # crushed (2**-240), so b2 strictly outranks b1 regardless of the date.
-    real_now = datetime.now(timezone.utc)
-    _insert(store, 1, "alpha factual statement old", age_days=10, anchor=real_now)
-    _insert(store, 2, "alpha factual statement new", age_days=0, anchor=real_now)
+    # retrieve_v2 now accepts a `now` clock seam (#986), so pin it to the
+    # module's fixed NOW like the sibling temporal tests rather than anchoring
+    # the fixtures to real wall-clock. The fresh belief (age 0) keeps decay
+    # weight 1.0 and the 10-day-old belief is crushed (2**-240), so b2 strictly
+    # outranks b1 deterministically, irrespective of the calendar date.
+    _insert(store, 1, "alpha factual statement old", age_days=10)
+    _insert(store, 2, "alpha factual statement new", age_days=0)
     result = retrieve_v2(
         store,
         "alpha factual statement",
         budget=10_000,
         temporal_sort=True,
         temporal_half_life_seconds=3600.0,
+        now=NOW,
     )
     ids = [b.id for b in result.beliefs]
     assert ids.index("b2") < ids.index("b1")
