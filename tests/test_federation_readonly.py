@@ -108,7 +108,7 @@ def test_search_peer_beliefs_excludes_soft_deleted(
     simulate a peer that has not run the FTS-pruning soft_delete (or a
     legacy pre-#980 soft-delete). That isolates the read-side
     `valid_to IS NULL` filter in search_peer_beliefs: without it, the
-    soft-deleted row still MATCHes and surfaces.
+    soft-deleted row still matches the FTS query and surfaces.
     """
     peer_path = tmp_path / "peerA.db"
     peer = MemoryStore(str(peer_path))
