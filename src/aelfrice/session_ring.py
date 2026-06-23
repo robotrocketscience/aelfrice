@@ -424,6 +424,7 @@ def append_ids(
         try:
             os.close(lock_fd)
         except OSError:
+            # Best-effort close; nothing actionable if the fd is gone.
             pass
 
 
@@ -669,11 +670,13 @@ def _locked_phantom_mutate(
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
             except OSError:
+                # Best-effort unlock; the fd is closed below regardless.
                 pass
     finally:
         try:
             os.close(lock_fd)
         except OSError:
+            # Best-effort close; nothing actionable if the fd is gone.
             pass
 
 
@@ -757,11 +760,14 @@ def read_phantom_state(session_id: str | None) -> dict[str, Any]:
         if isinstance(contradicts_raw, list)
         else []
     )
+    init_raw = state.get("phantom_init")
     return {
         "phantom_fires": fires,
         "phantom_dedup": dedup,
         "phantom_contradicts": contradicts,
-        "phantom_init": bool(state.get("phantom_init")),
+        # Strict bool: a malformed truthy non-bool (e.g. the string
+        # "false") must default to False, not enable contradiction diffing.
+        "phantom_init": init_raw if isinstance(init_raw, bool) else False,
     }
 
 
