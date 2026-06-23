@@ -4041,6 +4041,8 @@ def _maybe_run_wonder_autogc(stderr: IO[str]) -> None:
                     trigger="sessionstart_autogc",
                 )
             except Exception:
+                # Feed log is best-effort telemetry; a write failure must
+                # not suppress the operator-facing stderr notice below.
                 pass
             print(
                 f"aelf-hook: wonder auto-GC swept {result.deleted} stale "
