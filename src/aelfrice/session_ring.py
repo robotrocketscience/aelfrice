@@ -36,6 +36,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import IO, Any, Final
 
 from aelfrice.db_paths import db_path
@@ -173,6 +174,10 @@ def _normalize_for_session(
             "bytes_at_last_fire": 0,
             "fire_idx_at_last_fire": 0,
             "classifications": [],
+            "phantom_fires": 0,
+            "phantom_dedup": [],
+            "phantom_contradicts": [],
+            "phantom_init": False,
         }
     ring = data.get("ring")
     if not isinstance(ring, list):
@@ -206,6 +211,33 @@ def _normalize_for_session(
         classifications = [bool(c) for c in classifications_raw if isinstance(c, bool)]
     else:
         classifications = []
+    # Phantom-generation state (#980) — fire counter + dedup-key list +
+    # CONTRADICTS-snapshot list; default for pre-#980 rings, no migration.
+    phantom_fires = data.get("phantom_fires")
+    if (
+        not isinstance(phantom_fires, int)
+        or isinstance(phantom_fires, bool)
+        or phantom_fires < 0
+    ):
+        phantom_fires = 0
+    phantom_dedup_raw = data.get("phantom_dedup")
+    phantom_dedup = (
+        [s for s in phantom_dedup_raw if isinstance(s, str)]
+        if isinstance(phantom_dedup_raw, list)
+        else []
+    )
+    phantom_contradicts_raw = data.get("phantom_contradicts")
+    phantom_contradicts = (
+        [s for s in phantom_contradicts_raw if isinstance(s, str)]
+        if isinstance(phantom_contradicts_raw, list)
+        else []
+    )
+    # phantom_init guards signal (c): until the CONTRADICTS snapshot has been
+    # baselined once this session, pre-existing contradictions are not treated
+    # as "newly minted" (avoids a turn-1 false-positive burst).
+    phantom_init = bool(data.get("phantom_init")) if isinstance(
+        data.get("phantom_init"), bool
+    ) else False
     return {
         "session_id": session_id,
         "ring": [e for e in ring if isinstance(e, dict) and isinstance(e.get("id"), str)],
@@ -215,6 +247,10 @@ def _normalize_for_session(
         "bytes_at_last_fire": bytes_at_last_fire,
         "fire_idx_at_last_fire": fire_idx_at_last_fire,
         "classifications": classifications,
+        "phantom_fires": phantom_fires,
+        "phantom_dedup": phantom_dedup,
+        "phantom_contradicts": phantom_contradicts,
+        "phantom_init": phantom_init,
     }
 
 
@@ -587,6 +623,146 @@ def push_classification(
         except OSError:
             # Best-effort cleanup; fd may already be closed.
             pass
+
+
+def _locked_phantom_mutate(
+    session_id: str | None,
+    apply_fn: Callable[[dict[str, Any]], None],
+    *,
+    stderr: IO[str] | None,
+) -> bool:
+    """Run ``apply_fn`` against the normalized ring dict under the advisory
+    lock, then atomically write it back. Fail-soft: returns False on any
+    error. Shares the lock discipline of :func:`push_classification` (#980).
+    """
+    if not session_id:
+        return False
+    ring_path = _session_ring_path()
+    if ring_path is None:
+        return False
+    ring_max = _resolve_ring_max()
+    lock_path = _session_ring_lock_path(ring_path)
+    try:
+        lock_fd = _open_lock(lock_path)
+    except OSError as exc:
+        _warn(stderr, f"session_ring: lock open failed (non-fatal): {exc}")
+        return False
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        except OSError as exc:
+            _warn(stderr, f"session_ring: flock failed (non-fatal): {exc}")
+            return False
+        try:
+            data = _read_ring_unlocked(ring_path)
+            data = _normalize_for_session(data, session_id, ring_max)
+            apply_fn(data)
+            _atomic_write(ring_path, json.dumps(data))
+            return True
+        except Exception as exc:
+            _warn(
+                stderr,
+                f"session_ring: phantom mutate failed (non-fatal): {exc}",
+            )
+            return False
+        finally:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        try:
+            os.close(lock_fd)
+        except OSError:
+            pass
+
+
+def record_phantom_fire(
+    session_id: str | None,
+    dedup_key: str,
+    *,
+    stderr: IO[str] | None = None,
+) -> bool:
+    """Record one phantom-opportunity fire (#980): bump the per-session
+    fire counter and remember ``dedup_key`` so the same opportunity is not
+    re-surfaced this session.
+
+    Idempotent on ``dedup_key`` within the dedup list, but the fire counter
+    increments on every call — callers must check the budget (and dedup)
+    *before* calling, exactly as the cadence dispatcher checks its predicate
+    before firing. Fail-soft: returns False on any error.
+    """
+    if not isinstance(dedup_key, str) or not dedup_key:
+        return False
+
+    def _apply(data: dict[str, Any]) -> None:
+        data["phantom_fires"] = int(data.get("phantom_fires", 0)) + 1
+        dedup = data.get("phantom_dedup")
+        if not isinstance(dedup, list):
+            dedup = []
+        if dedup_key not in dedup:
+            dedup.append(dedup_key)
+        data["phantom_dedup"] = dedup
+
+    return _locked_phantom_mutate(session_id, _apply, stderr=stderr)
+
+
+def update_phantom_contradicts(
+    session_id: str | None,
+    pair_keys: list[str],
+    *,
+    stderr: IO[str] | None = None,
+) -> bool:
+    """Replace the per-session CONTRADICTS-edge snapshot (#980).
+
+    ``pair_keys`` is the full current set of CONTRADICTS pair keys (sorted,
+    deduped on write). The next turn's signal-(c) predicate diffs the live
+    edge set against this snapshot to detect newly-minted contradictions.
+    Writing the snapshot also marks the session's CONTRADICTS baseline as
+    initialised (``phantom_init``), so the first write is a silent baseline
+    and only later diffs fire. Fail-soft: returns False on any error.
+    """
+    if not isinstance(pair_keys, list):
+        return False
+    clean = sorted({k for k in pair_keys if isinstance(k, str) and k})
+
+    def _apply(data: dict[str, Any]) -> None:
+        data["phantom_contradicts"] = clean
+        data["phantom_init"] = True
+
+    return _locked_phantom_mutate(session_id, _apply, stderr=stderr)
+
+
+def read_phantom_state(session_id: str | None) -> dict[str, Any]:
+    """Return the phantom-generation state for ``session_id`` (#980).
+
+    Shape: ``{"phantom_fires": int, "phantom_dedup": list[str],
+    "phantom_contradicts": list[str], "phantom_init": bool}`` with safe
+    defaults when the ring is absent, cross-session, or predates the phantom
+    fields. Read-only.
+    """
+    state = read_ring_state(session_id)
+    fires = state.get("phantom_fires", 0)
+    if not isinstance(fires, int) or isinstance(fires, bool) or fires < 0:
+        fires = 0
+    dedup_raw = state.get("phantom_dedup")
+    dedup = (
+        [s for s in dedup_raw if isinstance(s, str)]
+        if isinstance(dedup_raw, list)
+        else []
+    )
+    contradicts_raw = state.get("phantom_contradicts")
+    contradicts = (
+        [s for s in contradicts_raw if isinstance(s, str)]
+        if isinstance(contradicts_raw, list)
+        else []
+    )
+    return {
+        "phantom_fires": fires,
+        "phantom_dedup": dedup,
+        "phantom_contradicts": contradicts,
+        "phantom_init": bool(state.get("phantom_init")),
+    }
 
 
 def read_ring_state(session_id: str | None) -> dict[str, Any]:
