@@ -850,6 +850,141 @@ def format_write_report(report: PotentiallyStaleWriteReport) -> str:
     return "\n".join(lines)
 
 
+# --- CONTRADICTS edge writer (#988 — the #201-ratified R2 hook) ---------
+
+
+@dataclass(frozen=True)
+class SemanticEdgeWriteReport:
+    """Summary of one ``write_semantic_edges`` run.
+
+    ``n_contradicts_high``
+        High-confidence (``score >= confidence_min``) contradicting pairs
+        returned by the audit — the candidate set this writer acts on.
+        (Sub-confidence contradicts are the ``write_potentially_stale_edges``
+        domain; the two writers partition the contradicts pairs by score.)
+
+    ``n_edges_written``
+        Pairs that produced a new CONTRADICTS edge this run.
+
+    ``n_edges_skipped_existing``
+        Pairs whose edge already existed (idempotency guard fired).
+
+    ``n_edges_skipped_gated``
+        Pairs dropped because an endpoint hit ``max_edges_per_belief``
+        (the Exp-48 coverage-dilution write-gate).
+
+    ``n_edges_skipped_self_pair``
+        Defensive counter — should always be 0; pairs where a == b.
+    """
+
+    n_contradicts_high: int
+    n_edges_written: int
+    n_edges_skipped_existing: int
+    n_edges_skipped_gated: int
+    n_edges_skipped_self_pair: int
+
+
+def write_semantic_edges(
+    store: "MemoryStore",
+    *,
+    jaccard_min: float = DEFAULT_JACCARD_MIN,
+    residual_overlap_min: float = DEFAULT_RESIDUAL_OVERLAP_MIN,
+    confidence_min: float = DEFAULT_CONFIDENCE_MIN,
+    max_candidate_pairs: int = DEFAULT_MAX_CANDIDATE_PAIRS,
+    max_edges_per_belief: int = DEFAULT_MAX_EDGES_PER_BELIEF,
+) -> SemanticEdgeWriteReport:
+    """Emit CONTRADICTS edges for high-confidence contradicting pairs (#988).
+
+    This is the #201-ratified R2 write-path hook, deferred until a corpus
+    benchmark could measure it. It is wired into ingest only behind the
+    default-off ``auto_detect`` flag (``is_auto_relationship_detection_enabled``),
+    so a fresh install writes no edges and the #605/#897 scope decision
+    stands unchanged.
+
+    Scope: **CONTRADICTS only.** The deterministic detector emits exactly
+    ``contradicts`` / ``refines``; of those only CONTRADICTS has a model
+    edge type, and it is the verdict the #201 ratification names. REFINES
+    (no ``EDGE_REFINES`` type) and SUPPORTS (not produced by the detector)
+    are out of scope for this writer.
+
+    For each ``contradicts`` pair whose score is **>=** ``confidence_min``
+    (the complement of the ``write_potentially_stale_edges`` sub-confidence
+    set), insert one CONTRADICTS edge. The relation is symmetric, so the
+    edge direction is canonicalised to ``src = min(id)``, ``dst = max(id)``
+    — stable regardless of audit pair ordering.
+
+    **Idempotent.** Each ``(src, dst, CONTRADICTS)`` triple is checked
+    before insert and skipped if present.
+
+    **Write-gated.** ``max_edges_per_belief`` caps how many CONTRADICTS
+    edges any one belief accretes (Exp-48 coverage-dilution guard).
+    Pre-existing edges encountered for an endpoint count toward its
+    budget, so the cap is a hard per-belief bound across repeated runs,
+    not merely per-call. Pairs are processed in the audit's deterministic
+    ``(belief_a_id, belief_b_id)`` order, so which edges survive the cap is
+    itself deterministic.
+
+    Stdlib-only: no LLM, no embedding. Delegates detection to
+    ``relationships_audit``.
+    """
+    from aelfrice.models import Edge, EDGE_CONTRADICTS
+
+    report = relationships_audit(
+        store,
+        jaccard_min=jaccard_min,
+        residual_overlap_min=residual_overlap_min,
+        confidence_min=confidence_min,
+        max_candidate_pairs=max_candidate_pairs,
+    )
+
+    high_pairs = [
+        p for p in report.pairs
+        if p.label == LABEL_CONTRADICTS and p.score >= confidence_min
+    ]
+    # `report.pairs` is already sorted by (belief_a_id, belief_b_id);
+    # preserve that order so the write-gate is deterministic.
+
+    edges_per_belief: dict[str, int] = {}
+    n_written = 0
+    n_skipped_existing = 0
+    n_gated = 0
+    n_self = 0
+    for pair in high_pairs:
+        a_id, b_id = pair.belief_a_id, pair.belief_b_id
+        if a_id == b_id:
+            n_self += 1
+            continue
+        # Write-gate: drop if either endpoint is already at the cap.
+        if (
+            edges_per_belief.get(a_id, 0) >= max_edges_per_belief
+            or edges_per_belief.get(b_id, 0) >= max_edges_per_belief
+        ):
+            n_gated += 1
+            continue
+        src_id, dst_id = (a_id, b_id) if a_id < b_id else (b_id, a_id)
+        if store.get_edge(src_id, dst_id, EDGE_CONTRADICTS) is not None:
+            n_skipped_existing += 1
+            # Count existing edges toward the budget for a hard per-belief
+            # bound across re-runs.
+            edges_per_belief[a_id] = edges_per_belief.get(a_id, 0) + 1
+            edges_per_belief[b_id] = edges_per_belief.get(b_id, 0) + 1
+            continue
+        store.insert_edge(
+            Edge(src=src_id, dst=dst_id, type=EDGE_CONTRADICTS, weight=1.0)
+        )
+        n_written += 1
+        edges_per_belief[a_id] = edges_per_belief.get(a_id, 0) + 1
+        edges_per_belief[b_id] = edges_per_belief.get(b_id, 0) + 1
+
+    return SemanticEdgeWriteReport(
+        n_contradicts_high=len(high_pairs),
+        n_edges_written=n_written,
+        n_edges_skipped_existing=n_skipped_existing,
+        n_edges_skipped_gated=n_gated,
+        n_edges_skipped_self_pair=n_self,
+    )
+
+
 __all__ = [
     "DEFAULT_CONFIDENCE_MIN",
     "DEFAULT_JACCARD_MIN",
@@ -864,13 +999,16 @@ __all__ = [
     "RelationshipPair",
     "RelationshipVerdict",
     "RelationshipsAuditReport",
+    "SemanticEdgeWriteReport",
     "Signals",
     "analyze",
     "classify",
     "extract_signals",
     "format_audit_report",
     "format_write_report",
+    "is_auto_relationship_detection_enabled",
     "load_relationship_detector_config",
     "relationships_audit",
     "write_potentially_stale_edges",
+    "write_semantic_edges",
 ]
