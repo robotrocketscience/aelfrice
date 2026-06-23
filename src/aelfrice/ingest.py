@@ -296,20 +296,25 @@ def _ingest_turn_ids(
             anchor_text=anchor,
         ))
 
-    # #988: optionally build the semantic-edge substrate at ingest. Writes
-    # CONTRADICTS edges across the store for this turn's new beliefs so the
-    # graph lanes (HRR-expand #981, BFS) are no longer inert on benchmark
-    # corpora. Default-OFF (is_auto_relationship_detection_enabled): when
-    # off, this branch is never entered and ingest is byte-identical to
-    # today. Gated on `inserted` so corroboration-only turns skip the audit.
+    # #988/#999: optionally build the semantic-edge substrate at ingest.
+    # Writes CONTRADICTS (#988), SUPPORTS (REFINES verdicts, #999), and
+    # SUPERSEDES (dedup clusters, #999) edges across the store so the graph
+    # lanes (HRR-expand #981, BFS) are no longer starved on a CONTRADICTS-only
+    # graph. Default-OFF (is_auto_relationship_detection_enabled): when off,
+    # this branch is never entered and ingest is byte-identical to today.
+    # Gated on `inserted` so corroboration-only turns skip the audit.
     if inserted:
+        from aelfrice.dedup import write_supersedes_edges
         from aelfrice.relationship_detector import (
             is_auto_relationship_detection_enabled,
             write_semantic_edges,
+            write_supports_edges,
         )
 
         if is_auto_relationship_detection_enabled():
             write_semantic_edges(store)
+            write_supports_edges(store)
+            write_supersedes_edges(store)
 
     return inserted
 
