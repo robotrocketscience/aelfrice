@@ -488,6 +488,14 @@ Boolean, default `false`. When `false` (default) the note is a passive surface �
 
 The trigger is skipped on prompt-shape-gated turns (#674) and is fully fail-soft: any error yields no note and never breaks the hook. Full spec: [phantom_trigger_generation.md](../design/phantom_trigger_generation.md).
 
+## `[memory]` (v3.7.0+)
+
+Controls the claude-memory mirror (#985) — a one-way `PostToolUse:Write|Edit|MultiEdit` hook that ingests host claude-memory fact-file writes into the belief graph so the two stores do not drift. The hook is installed default-on by `aelf setup` but **inert until the flag below is set**; when off it returns after three cheap checks (tool name, path shape, flag) and never imports the store. aelfrice is never authoritative over the memory files; the mirror never locks (L0 stays reserved for explicit `aelf lock`).
+
+### `mirror_claude_memory`
+
+Boolean, default `false`. Master opt-in. Precedence (first decisive wins): env var `AELFRICE_MIRROR_CLAUDE_MEMORY` (truthy/falsy normalised) > TOML `[memory] mirror_claude_memory` > default `false`. When enabled, a `metadata.type` of `user`/`feedback` ingests as `origin=user_validated` (undeflated prior); `project`/`reference`/absent ingests as `origin=agent_inferred` (deflated prior). Belief ids are content-derived, so a byte-identical re-write corroborates rather than duplicates.
+
 ## When changes apply
 
 Edits apply on the next `aelf onboard` run for `[noise]` keys. `[retrieval] entity_index_enabled` applies on the next `retrieve()` call. They do not retroactively re-filter beliefs already in the store — config controls ingestion and retrieval, not retention.

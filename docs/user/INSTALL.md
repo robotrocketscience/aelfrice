@@ -21,7 +21,7 @@ git clone https://github.com/robotrocketscience/aelfrice.git
 cd aelfrice && uv sync
 ```
 
-This installs nine console scripts: `aelf` (the CLI) and eight hook entry-points the host spawns (`aelf-hook` for per-prompt retrieval, plus `aelf-transcript-logger`, `aelf-pre-compact-hook`, `aelf-commit-ingest`, `aelf-search-tool-hook`, `aelf-session-start-hook`, `aelf-stop-hook`, `aelf-pre-issue-hook`).
+This installs ten console scripts: `aelf` (the CLI) and nine hook entry-points the host spawns (`aelf-hook` for per-prompt retrieval, plus `aelf-transcript-logger`, `aelf-pre-compact-hook`, `aelf-commit-ingest`, `aelf-search-tool-hook`, `aelf-session-start-hook`, `aelf-stop-hook`, `aelf-pre-issue-hook`, `aelf-claude-memory-mirror`).
 
 > **Migrating from pipx / pip?** As of v3.0.x aelfrice is uv-only (#730). If you previously installed via pipx, run `pipx uninstall aelfrice && uv tool install aelfrice` once. `aelf upgrade-cmd` will surface the same migration line on the next upgrade check. pip-installed users: `pip uninstall -y aelfrice && uv tool install aelfrice`.
 
@@ -147,6 +147,7 @@ Bare `aelf setup` wires the v1.2.0 auto-capture pipeline alongside the read-side
 | search-tool | `PreToolUse:Grep` / `Glob` | **on** (v3.0.1+) | belief-store check before the agent's own Grep/Glob fires |
 | search-tool-bash | `PreToolUse:Bash` | **on** (v3.0.1+) | belief-store check before shell grep/rg/find/fd/ack fires |
 | pre-issue-guard | `PreToolUse:Bash` | **on** (v3.4.0+) | blocks `gh issue create` when the title overlaps an existing issue or shipped commit at or above 0.5 Jaccard (#941) |
+| claude-memory-mirror | `PostToolUse:Write` / `Edit` / `MultiEdit` | **on** (v3.7.0+) | one-way mirror of host claude-memory fact-file writes into the belief graph; inert until `AELFRICE_MIRROR_CLAUDE_MEMORY` / `[memory] mirror_claude_memory` is set (#985) |
 | rebuilder | `PreCompact` | off | retrieval-curated context rebuilder (augment-mode, v1.4 alpha) |
 
 Opt out per-hook (persists across upgrades via `~/.aelfrice/opt-out-hooks.json`):
@@ -159,6 +160,7 @@ aelf setup --no-stop-hook              # skip the Stop lock-prompt hook
 aelf setup --no-search-tool            # skip the PreToolUse:Grep|Glob hook
 aelf setup --no-search-tool-bash       # skip the PreToolUse:Bash hook
 aelf setup --no-pre-issue-guard        # skip the issue-dup detection guard
+aelf setup --no-claude-memory-mirror   # skip the claude-memory → belief-graph mirror hook
 ```
 
 The SessionStart recap line ("N beliefs written since last session", v3.5+, #934) rides on the SessionStart hook rather than having its own manifest entry — `aelf setup --no-sessionstart-recap` suppresses it at install time but is not persisted in `opt-out-hooks.json`.
