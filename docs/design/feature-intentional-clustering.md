@@ -146,8 +146,8 @@ When the flag is OFF, the existing pack loop runs unchanged. When ON, both `clus
 
 `use_intentional_clustering` follows the convention at `retrieval.py:118-131`:
 
-1. `retrieve(..., use_intentional_clustering=True|False)` kwarg.
-2. `AELFRICE_INTENTIONAL_CLUSTERING=1|0` env var.
+1. `AELFRICE_INTENTIONAL_CLUSTERING=1|0` env var (highest precedence; truthy/falsy normalised).
+2. `retrieve(..., use_intentional_clustering=True|False)` kwarg.
 3. `[retrieval] use_intentional_clustering = true|false` in `.aelfrice.toml`.
 4. Default ON since v3.0 (#436 R6, 60/60 PASS at p99 0.328ms — ~15-30x margin under the 5ms A4 budget). Opt out via any of the three paths above for v2.0.x ranking parity.
 

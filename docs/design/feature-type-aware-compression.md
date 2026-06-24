@@ -101,10 +101,10 @@ for cb in compressed_candidates:
 
 A new `use_type_aware_compression` flag follows the established convention at `retrieval.py:1703-1731` (`resolve_use_type_aware_compression`):
 
-1. `retrieve(..., use_type_aware_compression=True)` kwarg (highest precedence).
-2. `AELFRICE_TYPE_AWARE_COMPRESSION=1` env var.
+1. `AELFRICE_TYPE_AWARE_COMPRESSION=1` env var (highest precedence; truthy/falsy normalised).
+2. `retrieve(..., use_type_aware_compression=True)` kwarg.
 3. `[retrieval] use_type_aware_compression = true` in `.aelfrice.toml`.
-4. Default OFF at v2.0.0 until bench-gate clears (acceptance #2).
+4. Default ON since #769 (flipped from OFF after the A2 + A4 bench gates cleared on the lab-side compression_a* corpora).
 
 When OFF, the compressor short-circuits to `verbatim` for every belief, making `rendered_tokens == _belief_tokens(belief)` and `out` element-equivalent to today's `Belief` list (a `CompressedBelief` with `strategy="verbatim"` is rendered identically to its `belief.content`). This preserves the v1.x retrieval contract under the default.
 

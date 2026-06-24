@@ -512,7 +512,7 @@ ship.
    showing fidelity-vs-trigger curves on at least 3 task types.
 4. Default trigger threshold is set from the calibration, not
    hardcoded. The chosen threshold is documented in
-   `benchmarks/context-rebuilder/calibration_v1.4.0.json` and
+   `benchmarks/context-rebuilder/calibration_v1_4_0.json` and
    referenced from the spec when v1.4.0 cuts.
 5. Manual mode (`/aelf-rebuild`) works as an explicit testing
    surface and ships before threshold mode auto-triggers.

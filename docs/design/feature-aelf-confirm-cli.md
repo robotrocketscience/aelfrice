@@ -3,7 +3,7 @@
 **Status:** shipped (#441 — `_cmd_confirm` in `src/aelfrice/cli.py`); historical design record  
 **Issue:** #441  
 **MCP sibling:** `aelf_confirm` / `tool_confirm` — shipped in #390  
-**`tool_confirm` location:** `src/aelfrice/mcp_server.py:748`
+**`tool_confirm` location:** `src/aelfrice/mcp_server.py` (`def tool_confirm`)
 
 ---
 

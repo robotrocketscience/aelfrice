@@ -1,6 +1,17 @@
 # Workflow-agnostic project identity
 
-**Status:** spec.
+> **⚠️ UNIMPLEMENTED / SUPERSEDED (historical R&D).** This v1.5.0 proposal
+> was never built as specified, and several claims here are the *inverse* of
+> shipped behavior. The shipped identity/DB-resolution scheme is the
+> `<git-common-dir>/aelfrice/memory.db` path with `~/.aelfrice/memory.db`
+> fallback and `$AELFRICE_DB` override — see [`src/aelfrice/db_paths.py`](../../src/aelfrice/db_paths.py)
+> and [ADR 0003](../adr/0003-project-context-repo-identity-convention.md) (#970).
+> In particular: there is no `$AELFRICE_PROJECT_ID`, no tracked
+> `.aelfrice/project-id` file, no root-commit-OID id derivation, and no
+> `migrate()`/`.migrated-to` sentinel. Retained only as a record of the
+> design that was considered and not taken.
+
+**Status:** spec (not implemented — see banner above).
 **Target milestone:** v1.5.0 (TBD).
 **Tracking issue:** TBD.
 **Dependencies:** stdlib only (subprocess, hashlib, pathlib, tempfile,

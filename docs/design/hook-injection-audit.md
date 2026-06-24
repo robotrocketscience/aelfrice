@@ -246,7 +246,7 @@ PreToolUse hook invocations. Each invocation:
 - Emits an `additionalContext` block (empty or non-empty).
 
 Even on the no-match path, the sentinel string
-`"no matching beliefs in store; your query is not in the indexed graph"`
+`"no matching beliefs in store; the tool result will fill the gap"`
 is emitted. With 10 tool calls that is 10 × (sentinel string ≈ 80
 chars ≈ 20 tokens), so ~200 tokens of overhead per investigation pass
 even when the store has nothing relevant.
