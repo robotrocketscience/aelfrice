@@ -21,7 +21,7 @@ Semver in force. Current line: v3.x. The historical `0.x.y` milestones on the v1
    uv build                        # wheels build clean
    ```
 7. Open PR `release: vX.Y.Z`. Body = CHANGELOG entries.
-8. `staging-gate` must be green: gitleaks, PII pattern scan, history audit, pytest matrix.
+8. `staging-gate` must be green — its jobs are `secrets-scan`, `pattern-scan`, `history-scan`, `release-docs-check`, and the commit-msg / PR-title / PR-body prefix checks — and the `pytest` jobs in the separate `ci.yml` workflow (Python 3.12 / 3.13) must pass.
 9. Merge — linear history, no merge commits.
 
 ## Tag and publish
@@ -82,7 +82,7 @@ uv tool install --pre aelfrice==3.4.0rc1
 
 ## Branch protection
 
-The public repo enforces `main` protection through a combination of the merge-train workflow (concurrency-1 FF-only pushes, signature-verified, see `.github/workflows/merge-train.yml`) and required staging-gate checks (`secrets-scan`, `pii-scan`, `commit-history-audit`, `pytest`). GitHub's native branch-protection APIs may be configured in addition — check `gh api repos/robotrocketscience/aelfrice/branches/main/protection` for the current state.
+The public repo enforces `main` protection through a combination of the merge-train workflow (concurrency-1 FF-only pushes, signature-verified, see `.github/workflows/merge-train.yml`) and required checks: the staging-gate jobs (`secrets-scan`, `pattern-scan`, `history-scan`, `release-docs-check`) plus the `pytest` matrix from the separate `ci.yml` workflow. GitHub's native branch-protection APIs may be configured in addition — check `gh api repos/robotrocketscience/aelfrice/branches/main/protection` for the current state.
 
 ## Sign keys
 

@@ -145,7 +145,7 @@ Two recovery angles fall out of the same substrate:
 
 - **Continuity.** Close the terminal, come back next week, "where were we?" — the memory restores it.
 - **Compounding.** The graph fills on explicit `onboard` / `lock` / `feedback` (since v1.0), the default-on transcript-ingest / commit-ingest / session-start hooks (since v2.1 #529), and posterior-aware ranking (since v1.3, with BM25F default-on since v1.7 and type-aware compression default-on since #769). Every layer compounds: more sessions → more feedback → better ranking → more accurate retrieval.
-- **Self-correction.** Stale unlocked rules decay. Wrong locks are corrected by overwriting via `aelf lock`, or removed via `aelf unlock` / `aelf delete` — the v2.x auto-demote mechanism was removed at v3.1 ([#814](https://github.com/robotrocketscience/aelfrice/issues/814)).
+- **Self-correction.** Stale unlocked rules decay. Wrong locks are corrected by overwriting via `aelf lock`, or removed via `aelf unlock` / `aelf delete` — the v2.x auto-demote mechanism was removed at v3.2.0 ([#814](https://github.com/robotrocketscience/aelfrice/issues/814)).
 - **Auditability.** Every belief has a content hash and timestamp. Every feedback event has an audit row. Every score is `α / (α + β)`. Read the database; reproduce the system's claims about itself.
 - **Locality.** No service to fail, no account to lose, no quota to exceed.
 
