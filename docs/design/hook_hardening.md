@@ -10,7 +10,7 @@ on this PR.
 | Spec memo (this doc) | Landed | PR #292 |
 | Mitigation 1 — framing-tag contract | Landed | `_FRAMING_HEADER`, `<belief id=… lock=…>` inner element in `src/aelfrice/hook.py` (`_format_hits`, `_format_baseline_hits`) |
 | Mitigation 2 — render-time belief-content escape | Landed | `_escape_for_hook_block` in `src/aelfrice/hook.py` |
-| Mitigation 3 — per-turn audit log (`hook_audit.jsonl`) | Landed | PR #314 — `_write_hook_audit_record` and `[hook_audit]` config in `src/aelfrice/hook.py`; tests in `tests/test_hook_audit.py` |
+| Mitigation 3 — per-turn audit log (`hook_audit.jsonl`) | Landed | PR #314 — `_write_hook_audit_record` and `[hook_audit]` config (`load_hook_audit_config`), extracted to `src/aelfrice/hook_audit.py` in #968; tests in `tests/test_hook_audit.py` |
 
 The decision-asks below (§ Decision asks) were ratified for all three
 mitigations by the implementations landing in #292 and #314.
