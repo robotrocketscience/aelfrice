@@ -1,0 +1,37 @@
+{
+  "_calibration_notes": "Clean-protocol LoCoMo capture at git_commit 5b88fd49 (tag v3.6.0). Methodology: contamination-free protocol per docs/concepts/BENCHMARKS.md. Retrieval = retrieve_v2(use_bfs=True, budget=2000, include_locked=False) via benchmarks/locomo_adapter.py ingest_conversation + query_aelfrice (the real current substrate, not the 2.0.0 retrieve() surface). Gold answers were physically isolated into a separate ground-truth file; the reader received only {id, question, context} and was blind to category. Pre-reader gate benchmarks.verify_clean returned CLEAN (exit 0). Reader = off-band host-agent subagent (mid capability tier; concrete model id recorded out-of-band, not committed here per repo discretion policy), context-only, no API-key/SDK path, no self-judging. Scoring = a SEPARATE pass reading predictions + GT (never the context) with the adapter's official score_qa: Porter-stemmed token-F1 for categories 1-4, abstention-correct for category 5. Sampling = fixed-seed (42) simple RANDOM sample of n=200 from the full pooled 1986 questions, deliberately NOT first-N-per-conversation (which yields 0% cat4/cat5 and is non-representative); realized category mix tracks the full-set proportions. 95% CI is percentile bootstrap (10k resamples, seed 2024) over per-item scores. Consistency check: overall 40.3% sits within noise of the v3.0.1 capture's 40.88% (benchmarks/results/v3.0.1.json), corroborating the post-#605 deterministic substrate. Honesty caveats: (1) n=200 subset, not the full 1986 \u2014 CI is +/-6pp; rerun at full n to tighten a headline. (2) Number is 'aelfrice retrieval + a mid-tier reader' and moves with the reader. (3) token-F1, NOT LLM-judge accuracy \u2014 do not cross-compare against judge-accuracy LoCoMo numbers. Reproduce: checkout 5b88fd49, stage locomo10.json from snap-research/locomo, seed=42, n=200, budget=2000. Datasets downloaded fresh per run; not pinned by checksum.",
+  "benchmark": "locomo",
+  "aelfrice_version": "3.6.0",
+  "captured_at_utc": "2026-06-26T03:07:07Z",
+  "git_commit": "5b88fd49e09f9d915dcad5ce659e46836063ed5e",
+  "harness_version": "clean-protocol-1",
+  "reader": "off-band subagent, mid capability tier (model id out-of-band)",
+  "sampling": "fixed-seed(42) simple random, n=200 of 1986 pooled questions",
+  "contamination_check": "CLEAN (benchmarks.verify_clean, exit 0)",
+  "metric": "token-F1 (Porter-stemmed) cat1-4; abstention-correct cat5 (score_qa)",
+  "overall_f1": 0.4026,
+  "ci95_bootstrap": [
+    0.3432,
+    0.4634
+  ],
+  "n": 200,
+  "category_f1": {
+    "1": 0.2654,
+    "2": 0.1995,
+    "3": 0.1688,
+    "4": 0.5273,
+    "5": 0.46
+  },
+  "category_n": {
+    "1": 34,
+    "2": 31,
+    "3": 7,
+    "4": 78,
+    "5": 50
+  },
+  "published_baseline": {
+    "human": 0.879,
+    "gpt4turbo_128k": 0.516,
+    "rag_dragon_gpt35": 0.433
+  }
+}
