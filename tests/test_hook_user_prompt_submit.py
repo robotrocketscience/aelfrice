@@ -328,11 +328,25 @@ def test_framing_header_splits_trust_by_provenance() -> None:
     # locked tier framed as authoritative standing instructions
     assert "locked" in h
     assert "standing instructions" in h
+    assert "honor" in h
     # verify-clause preserves stale-lock catching
     assert "verify" in h
     assert "conflict" in h
     # non-locked tier keeps the data-not-instructions disclaimer (#280)
     assert "not instructions" in h
+    # ...and the disclaimer is SCOPED to the non-locked tier, not applied
+    # globally: the "non-locked" introduction must follow the locked tier's
+    # "standing instructions" and precede "not instructions". A header that
+    # blanket-disclaimed everything would fail this ordering.
+    assert h.index("standing instructions") < h.index("non-locked")
+    assert h.index("non-locked") < h.index("not instructions")
+    # The header must embed no literal framing tags — the audit / token
+    # accounting splits the rendered block on the locked-section tag, so a
+    # copy here would corrupt the section boundary (see hook.py comment).
+    assert "<locked>" not in _FRAMING_HEADER
+    assert "</locked>" not in _FRAMING_HEADER
+    assert OPEN_TAG not in _FRAMING_HEADER
+    assert SESSION_START_SUBBLOCK_OPEN not in _FRAMING_HEADER
 
 
 def test_hook_escapes_framing_tags_inside_belief_content(
