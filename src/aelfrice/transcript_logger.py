@@ -443,12 +443,17 @@ def _handle_post_compact(payload: dict[str, object]) -> None:
     })
 
 
-def _spawn_background_ingest(archive_file: Path) -> None:
+def _spawn_background_ingest(archive_file: Path) -> bool:
     """Spawn `aelf ingest-transcript <archive>` detached. Best-effort.
 
     Detached so the PreCompact hook returns within budget regardless
     of ingest progress. Stdin/out/err -> /dev/null; the ingest
     process owns its own logging via the store's normal pathways.
+
+    Returns True iff the subprocess was launched. The Stop-cadence
+    caller (`_maybe_stop_flush`) uses this to advance its cursor only
+    on a successful spawn, so a failed launch is retried at the next
+    Stop rather than being silently marked flushed (#1012 review).
     """
     try:
         with open(os.devnull, "w") as devnull:
@@ -461,7 +466,8 @@ def _spawn_background_ingest(archive_file: Path) -> None:
         # `aelf` not on PATH (highly unusual) or fork failure.
         # Non-blocking: leave the archive in place; a later
         # `aelf ingest-transcript` run picks it up.
-        pass
+        return False
+    return True
 
 
 def _stop_flush_threshold() -> int:
@@ -502,6 +508,9 @@ def _write_flush_cursor(tdir: Path, value: int) -> None:
     try:
         (tdir / STOP_FLUSH_CURSOR_FILENAME).write_text(str(value))
     except OSError:
+        # Fail-soft: a non-writable transcripts dir must never break the
+        # Stop hook. The cursor simply isn't advanced, so the next Stop
+        # re-evaluates and re-flushes (ingestion is idempotent).
         pass
 
 
@@ -530,7 +539,11 @@ def _maybe_stop_flush(tdir: Path) -> bool:
         last = 0
     if now - last < threshold:
         return False
-    _spawn_background_ingest(src)
+    # Advance the cursor only on a successful spawn (#1012 review): if the
+    # ingest can't launch, leave the cursor so the next Stop retries rather
+    # than silently marking these turns flushed and reopening the recall gap.
+    if not _spawn_background_ingest(src):
+        return False
     _write_flush_cursor(tdir, now)
     return True
 

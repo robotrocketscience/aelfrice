@@ -395,9 +395,15 @@ def _write_turns(tdir: Path, n: int) -> None:
 
 @pytest.fixture
 def captured_ingest(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
-    """Record _spawn_background_ingest targets instead of forking `aelf`."""
+    """Record _spawn_background_ingest targets instead of forking `aelf`.
+
+    Returns True like a successful spawn so the cursor advances; the
+    spawn-failure path is covered by test_stop_flush_failed_spawn_*.
+    """
     calls: list[Path] = []
-    monkeypatch.setattr(tl, "_spawn_background_ingest", lambda p: calls.append(p))
+    monkeypatch.setattr(
+        tl, "_spawn_background_ingest", lambda p: bool(calls.append(p)) or True
+    )
     return calls
 
 
@@ -467,3 +473,25 @@ def test_stop_flush_resets_cursor_after_rotation(
     rc = _run_main({"hook_event_name": "Stop"})  # fresh count 3 < cursor -> reset to 0
     assert rc == 0
     assert captured_ingest == [tdir / "turns.jsonl"]
+
+
+def test_stop_flush_failed_spawn_does_not_advance_cursor(
+    tdir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # #1012 review: if the ingest can't be spawned, the cursor must NOT
+    # advance, so the next Stop retries rather than silently dropping the
+    # turns and reopening the recall gap.
+    monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
+    monkeypatch.setattr(tl, "_spawn_background_ingest", lambda p: False)
+    _write_turns(tdir, 3)
+    assert tl._maybe_stop_flush(tdir) is False
+    assert not (tdir / tl.STOP_FLUSH_CURSOR_FILENAME).exists()
+
+    # Next Stop with a working spawn flushes and advances the cursor.
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        tl, "_spawn_background_ingest", lambda p: bool(calls.append(p)) or True
+    )
+    assert tl._maybe_stop_flush(tdir) is True
+    assert calls == [tdir / "turns.jsonl"]
+    assert (tdir / tl.STOP_FLUSH_CURSOR_FILENAME).read_text().strip() == "3"
