@@ -200,6 +200,23 @@ USE_GAMMA_POSTERIOR_TEMPERATURE_FLAG: Final[str] = (
 # decision per issue #817 §"Out of scope" deferred composition).
 USE_ZETA_POSTERIOR_RERANK_FLAG: Final[str] = "use_zeta_posterior_rerank"
 
+# #1011 origin-tier rerank lane. Default-OFF. When ON, the L1 rerank adds a
+# log-additive per-origin multiplier so user-stated facts outrank bulk
+# document-chunk beliefs that merely share keyword overlap — the signal/noise
+# failure where a store flooded with ingested article chunks (origin
+# document_recent / agent_inferred) drowns the few user_stated facts. Inert
+# (byte-identical) when off; the weight map is ablation-pending (LoCoMo)
+# before any default-on flip — mirrors the #981 HRR-lane pattern. Origins
+# absent from the map keep multiplier 1.0.
+ORIGIN_TIER_RERANK_FLAG: Final[str] = "use_origin_tier_rerank"
+ENV_USE_ORIGIN_TIER_RERANK: Final[str] = "AELFRICE_USE_ORIGIN_TIER_RERANK"
+DEFAULT_ORIGIN_TIER_WEIGHTS: Final[dict[str, float]] = {
+    "user_stated": 3.0,
+    "user_validated": 3.0,
+    "user_transcript": 1.5,
+    "document_recent": 0.5,
+}
+
 PLACEHOLDER_FLAGS: Final[tuple[str, ...]] = (
     SIGNED_LAPLACIAN_FLAG,
     POSTERIOR_RANKING_FLAG,
@@ -445,6 +462,21 @@ def _extract_hash_n_literals(query: str) -> list[str]:
     boost, keep the byte-identical FTS5 short-circuit".
     """
     return _HASH_N_LITERAL_RE.findall(query)
+
+
+def _origin_tier_boosted(
+    score: float, origin: str, tiers: dict[str, float] | None,
+) -> float:
+    """Add `log(tiers[origin])` to `score` — log-additive, the same space as
+    `partial_bayesian_score` / `_hash_n_boosted`. A None map (lane off), an
+    unmapped origin, or a unit / non-positive multiplier leaves `score`
+    unchanged, so the lane is a strict no-op by default (#1011)."""
+    if tiers is None:
+        return score
+    mult = tiers.get(origin)
+    if mult is None or mult <= 0.0 or mult == 1.0:
+        return score
+    return score + math.log(mult)
 
 
 def _hash_n_boosted(score: float, content: str, literals: list[str]) -> float:
@@ -1958,6 +1990,50 @@ def resolve_use_zeta_posterior_rerank(
     return False
 
 
+def _env_use_origin_tier_rerank_override() -> bool | None:
+    """Return True/False if AELFRICE_USE_ORIGIN_TIER_RERANK is set to a
+    recognised truthy/falsy value, else None. Symmetric to
+    `_env_use_zeta_posterior_rerank_override`."""
+    raw = os.environ.get(ENV_USE_ORIGIN_TIER_RERANK)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def resolve_origin_tier_rerank(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> dict[str, float] | None:
+    """Resolve the #1011 origin-tier rerank lane.
+
+    Returns the per-origin weight map when enabled, else None (lane off —
+    the default, a byte-identical no-op). Precedence mirrors
+    `resolve_use_zeta_posterior_rerank`:
+      1. AELFRICE_USE_ORIGIN_TIER_RERANK env var.
+      2. Explicit `explicit` kwarg.
+      3. `[retrieval] use_origin_tier_rerank` in `.aelfrice.toml`.
+      4. Default: False.
+
+    Weights are not yet operator-tunable; the default map ships pending a
+    LoCoMo ablation before any default-on flip.
+    """
+    env = _env_use_origin_tier_rerank_override()
+    if env is not None:
+        on = env
+    elif explicit is not None:
+        on = explicit
+    else:
+        toml_value = _read_toml_flag_for(ORIGIN_TIER_RERANK_FLAG, start)
+        on = toml_value if toml_value is not None else False
+    return dict(DEFAULT_ORIGIN_TIER_WEIGHTS) if on else None
+
+
 def _assert_gamma_zeta_mutual_exclusion(
     gamma_on: bool, zeta_on: bool,
 ) -> None:
@@ -2254,6 +2330,7 @@ def _l1_hits(
     heat_kernel_on: bool = False,
     gamma_temperature: float | None = None,
     zeta_params: tuple[float, float, float] | None = None,
+    origin_tier: dict[str, float] | None = None,
 ) -> list[Belief]:
     """Run L1: FTS5 BM25 search (default) or BM25F sparse-matvec
     (v1.5.0 opt-in), optionally reranked by partial-Bayesian score.
@@ -2385,6 +2462,7 @@ def _l1_hits(
             and not hash_n_literals
             and gamma_temperature is None
             and zeta_params is None
+            and origin_tier is None
         ):
             return [b for b, _ in beliefs]
         # BM25F scores are non-negative; the rerank uses `raw` as the
@@ -2424,6 +2502,7 @@ def _l1_hits(
                     -raw, b.alpha, b.beta, posterior_weight,
                 )
             s = _hash_n_boosted(s, b.content, hash_n_literals)
+            s = _origin_tier_boosted(s, b.origin, origin_tier)
             keyed.append((s, b.id, b))
         keyed.sort(key=lambda x: (-x[0], x[1]))
         return [b for _, _, b in keyed]
@@ -2434,6 +2513,7 @@ def _l1_hits(
         and not hash_n_literals
         and gamma_temperature is None
         and zeta_params is None
+        and origin_tier is None
     ):
         return store.search_beliefs(query, limit=l1_limit)
     scored = store.search_beliefs_scored(query, limit=l1_limit)
@@ -2475,6 +2555,7 @@ def _l1_hits(
                 bm25_raw, b.alpha, b.beta, posterior_weight,
             )
         s = _hash_n_boosted(s, b.content, hash_n_literals)
+        s = _origin_tier_boosted(s, b.origin, origin_tier)
         keyed.append((s, b.id, b))
     # Higher score = more relevant. Tie-break on id ASC for
     # determinism (matches the convention in bfs_multihop and L2.5).
@@ -2582,6 +2663,7 @@ def retrieve(
         (ZETA_ALPHA_DEFAULT, ZETA_BETA_DEFAULT, ZETA_SCALE_DEFAULT)
         if zeta_on else None
     )
+    origin_tier = resolve_origin_tier_rerank()
     compress_on = resolve_use_type_aware_compression(
         use_type_aware_compression,
     )
@@ -2661,6 +2743,7 @@ def retrieve(
             eigenbasis_cache=eigenbasis_cache, heat_kernel_on=heat_on,
             gamma_temperature=gamma_t,
             zeta_params=zeta_params,
+            origin_tier=origin_tier,
         )
         l1 = [
             b for b in raw_l1
@@ -2812,6 +2895,7 @@ def retrieve_with_tiers(
         (ZETA_ALPHA_DEFAULT, ZETA_BETA_DEFAULT, ZETA_SCALE_DEFAULT)
         if zeta_on else None
     )
+    origin_tier = resolve_origin_tier_rerank()
     # #741 adaptive expansion-gate. Same shape as retrieve(): short-
     # circuit BFS on broad prompts; L0 / L1 / L2.5-entity unaffected.
     # #760: pass store + now_ts for the meta-belief token-threshold
@@ -2882,6 +2966,7 @@ def retrieve_with_tiers(
             eigenbasis_cache=eigenbasis_cache, heat_kernel_on=heat_on,
             gamma_temperature=gamma_t,
             zeta_params=zeta_params,
+            origin_tier=origin_tier,
         )
         l1 = [
             b for b in raw_l1
