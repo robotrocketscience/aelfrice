@@ -18,10 +18,13 @@ from pathlib import Path
 import pytest
 
 from aelfrice.hook import (
+    DEFAULT_SESSION_START_CORE_TOKEN_BUDGET,
+    SESSION_START_CORE_BUDGET_ENV,
     SESSION_START_SUBBLOCK_CLOSE,
     SESSION_START_SUBBLOCK_OPEN,
     SESSION_STATE_FILENAME,
     _build_session_start_subblock,
+    _session_start_core_budget,
     is_session_first_prompt,
     user_prompt_submit,
 )
@@ -235,6 +238,91 @@ def test_build_subblock_ignores_low_quality_unlocked(tmp_path: Path) -> None:
     finally:
         store.close()
     assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# <core> token-budget cap (#578 follow-up — unbounded-injection fix)
+# ---------------------------------------------------------------------------
+
+
+def _seed_many_core(db_path: Path, n: int, pad: int = 116) -> list[str]:
+    """Seed n unlocked beliefs that all qualify as core (posterior arm),
+    with a strictly descending posterior so ordering is testable. Returns
+    the ids in descending-posterior (= retained-first) order."""
+    beliefs = []
+    ids = []
+    for i in range(n):
+        bid = f"K{i:03d}"
+        ids.append(bid)
+        # alpha descends 30.0 -> ... ; beta=3 -> mu=alpha/(alpha+3) >= 0.667, ab>=4
+        content = f"core fact {i:03d} " + ("x" * pad)
+        beliefs.append(_mk(bid, content, alpha=30.0 - i * 0.1, beta=3.0))
+    _seed_db(db_path, beliefs)
+    return ids
+
+
+def test_core_section_capped_by_token_budget(tmp_path: Path) -> None:
+    """A store with far more core-qualifying beliefs than the budget allows
+    must emit a bounded <core> section, not all of them."""
+    db = tmp_path / "memory.db"
+    ids = _seed_many_core(db, n=200)  # ~200 * ~33 tok = ~6600 tok >> 1500
+    store = MemoryStore(str(db))
+    try:
+        result = _build_session_start_subblock(store, cwd=tmp_path)
+    finally:
+        store.close()
+    emitted = result.count("<belief ")
+    assert emitted < 200, "core section was not capped"
+    # budget is 1500 tok; per belief ~33 tok -> ~45 kept, never the full 200
+    assert emitted <= 70
+    # highest-posterior belief retained; lowest dropped
+    assert f'id="{ids[0]}"' in result
+    assert f'id="{ids[-1]}"' not in result
+
+
+def test_core_cap_disabled_with_zero_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Setting the budget to 0 restores uncapped (pre-fix) behaviour."""
+    monkeypatch.setenv(SESSION_START_CORE_BUDGET_ENV, "0")
+    db = tmp_path / "memory.db"
+    ids = _seed_many_core(db, n=120)
+    store = MemoryStore(str(db))
+    try:
+        result = _build_session_start_subblock(store, cwd=tmp_path)
+    finally:
+        store.close()
+    assert result.count("<belief ") == 120
+    assert f'id="{ids[-1]}"' in result
+
+
+def test_core_cap_never_trims_locked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even a tiny core budget must not drop locked beliefs (#379)."""
+    monkeypatch.setenv(SESSION_START_CORE_BUDGET_ENV, "1")
+    db = tmp_path / "memory.db"
+    locks = [_mk(f"L{i}", "rule " + "y" * 80, LOCK_USER,
+                 f"2026-01-0{i}T00:00:00Z") for i in range(1, 6)]
+    _seed_db(db, locks)
+    store = MemoryStore(str(db))
+    try:
+        result = _build_session_start_subblock(store, cwd=tmp_path)
+    finally:
+        store.close()
+    for i in range(1, 6):
+        assert f'id="L{i}"' in result
+
+
+def test_session_start_core_budget_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(SESSION_START_CORE_BUDGET_ENV, raising=False)
+    assert _session_start_core_budget() == DEFAULT_SESSION_START_CORE_TOKEN_BUDGET
+    monkeypatch.setenv(SESSION_START_CORE_BUDGET_ENV, "500")
+    assert _session_start_core_budget() == 500
+    monkeypatch.setenv(SESSION_START_CORE_BUDGET_ENV, "garbage")
+    assert _session_start_core_budget() == DEFAULT_SESSION_START_CORE_TOKEN_BUDGET
 
 
 # ---------------------------------------------------------------------------

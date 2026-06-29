@@ -126,6 +126,27 @@ durable baseline knowledge already in context. Per-prompt
 retrieval continues to fire on every UserPromptSubmit thereafter.
 """
 
+DEFAULT_SESSION_START_CORE_TOKEN_BUDGET: Final[int] = 1500
+"""Token budget for the <core> section of the first-prompt session-start
+sub-block (#578).
+
+The <core> section surfaces load-bearing UNLOCKED beliefs (high
+corroboration or high posterior). Unlike <locked> — which is bounded by
+the lock count and never trimmed (#379) — the core-qualifying set grows
+without bound as the store matures: on a mature store thousands of
+beliefs qualify, so an uncapped section injected ~700KB into the first
+prompt of every session (and the per-turn injection telemetry never saw
+it). Candidates are packed highest-posterior-first up to this budget;
+the rest are dropped. Posterior-first ordering also deprioritises the
+low-posterior corroboration noise that inflates the candidate set.
+
+Override with `AELFRICE_SESSION_START_CORE_BUDGET`; set it to 0 (or any
+non-positive value) to restore the uncapped pre-fix behaviour.
+"""
+
+SESSION_START_CORE_BUDGET_ENV: Final[str] = "AELFRICE_SESSION_START_CORE_BUDGET"
+_CORE_CHARS_PER_TOKEN: Final[int] = 4
+
 OPEN_TAG: Final[str] = "<aelfrice-memory>"
 CLOSE_TAG: Final[str] = "</aelfrice-memory>"
 SESSION_START_OPEN_TAG: Final[str] = "<aelfrice-baseline>"
@@ -2189,6 +2210,19 @@ def _belief_qualifies_core(b: "Belief") -> bool:
     return False
 
 
+def _session_start_core_budget() -> int:
+    """Token budget for the <core> section. `AELFRICE_SESSION_START_CORE_BUDGET`
+    overrides the default; a non-positive value disables the cap (uncapped,
+    pre-fix behaviour). Malformed values fall back to the default."""
+    raw = os.environ.get(SESSION_START_CORE_BUDGET_ENV)
+    if raw is None:
+        return DEFAULT_SESSION_START_CORE_TOKEN_BUDGET
+    try:
+        return int(raw)
+    except ValueError:
+        return DEFAULT_SESSION_START_CORE_TOKEN_BUDGET
+
+
 def _build_session_start_subblock(
     store: "MemoryStore", *, cwd: Path | None = None,
 ) -> str:
@@ -2234,6 +2268,24 @@ def _build_session_start_subblock(
         return (-mu, b.id)
 
     core_candidates.sort(key=_posterior_key)
+
+    # Cap the <core> section by token budget (#578 follow-up). The
+    # core-qualifying set is unbounded as the store matures — uncapped it
+    # injected ~700KB into the first prompt of every session. Pack
+    # highest-posterior-first (already sorted) up to the budget; a
+    # non-positive budget disables the cap. <locked> is intentionally NOT
+    # capped (always-injected ground truth, #379).
+    core_budget = _session_start_core_budget()
+    if core_budget > 0:
+        capped: list[Belief] = []
+        used = 0
+        for b in core_candidates:
+            cost = max(1, len(b.content) // _CORE_CHARS_PER_TOKEN)
+            if used + cost > core_budget:
+                break
+            capped.append(b)
+            used += cost
+        core_candidates = capped
 
     recent_work_block = _build_recent_work_subblock(cwd=cwd)
 
