@@ -311,10 +311,11 @@ def test_rotation_at_max_bytes(
     _set_db(monkeypatch, db)
     monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
     # Threshold tuned so one record fits, two records exceed. Bumped
-    # from 500 → 1000 when #321 added beliefs[]/latency_ms/tokens fields
-    # to the audit record schema (one fire is now ~650B, two ~1300B).
+    # 500 → 1000 when #321 added beliefs[]/latency_ms/tokens fields, then
+    # 1000 → 1500 when #1016 enlarged the _FRAMING_HEADER (one fire is now
+    # ~1100B, two ~2200B).
     (tmp_path / ".aelfrice.toml").write_text(
-        "[hook_audit]\nmax_bytes = 1000\n", encoding="utf-8",
+        "[hook_audit]\nmax_bytes = 1500\n", encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
     audit_path = _audit_path_for_db(db)
