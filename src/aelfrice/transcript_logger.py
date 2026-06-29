@@ -67,6 +67,20 @@ DUP_WINDOW_SECONDS: Final[float] = 2.0
 # inside the sub-10ms budget even when rotation has not run recently.
 _TAIL_READ_BYTES: Final[int] = 65536
 
+# #1011: Stop-cadence ingestion flush. Belief ingestion historically fired
+# ONLY on the PreCompact rotation (`_handle_pre_compact`). A session that
+# ends without compacting logged its turns to turns.jsonl but never folded
+# them into beliefs, so a fresh session could not recall what the user
+# stated — the core-capture failure. On Stop, once >= STOP_FLUSH_TURNS new
+# turns have accumulated since the last flush, spawn `aelf ingest-transcript`
+# over the LIVE turns.jsonl. Ingestion is idempotent per (source_label,
+# sentence), so re-ingesting the live file captures only new statements and
+# never inflates the store; the file is NOT rotated, so the rebuilder / UPS
+# recent-turns window (which reads the live turns.jsonl) is left intact.
+DEFAULT_STOP_FLUSH_TURNS: Final[int] = 12
+STOP_FLUSH_TURNS_ENV: Final[str] = "AELFRICE_INGEST_STOP_FLUSH_TURNS"
+STOP_FLUSH_CURSOR_FILENAME: Final[str] = ".stop_flush_cursor"
+
 
 def transcripts_dir() -> Path:
     """Resolve the transcripts directory path.
@@ -387,6 +401,9 @@ def _handle_stop(payload: dict[str, object]) -> None:
         role="assistant", text=text, session_id=sid, ctx=_turn_context(),
     )
     _append_turn(line)
+    # #1011: fold accumulated turns into beliefs without waiting for a
+    # compaction. Fail-soft — a flush error must never break turn logging.
+    _maybe_stop_flush(transcripts_dir())
 
 
 def _handle_pre_compact(payload: dict[str, object]) -> None:
@@ -445,6 +462,77 @@ def _spawn_background_ingest(archive_file: Path) -> None:
         # Non-blocking: leave the archive in place; a later
         # `aelf ingest-transcript` run picks it up.
         pass
+
+
+def _stop_flush_threshold() -> int:
+    """New turns required since the last flush before a Stop triggers an
+    ingest. `AELFRICE_INGEST_STOP_FLUSH_TURNS` overrides the default; a
+    value <= 0 disables Stop-cadence flushing (PreCompact-only, the
+    pre-#1011 behaviour)."""
+    raw = os.environ.get(STOP_FLUSH_TURNS_ENV)
+    if raw is None:
+        return DEFAULT_STOP_FLUSH_TURNS
+    try:
+        return int(raw)
+    except ValueError:
+        return DEFAULT_STOP_FLUSH_TURNS
+
+
+def _count_turn_lines(path: Path) -> int:
+    """Count role-bearing turn lines in turns.jsonl. The cheap `'"role"'`
+    substring test avoids JSON-parsing every line on the hook hot path —
+    event markers (compaction_start, etc.) carry no `role` key, so they
+    are excluded. Returns 0 on any read error (fail-soft)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return sum(1 for line in f if '"role"' in line)
+    except OSError:
+        return 0
+
+
+def _read_flush_cursor(tdir: Path) -> int:
+    try:
+        text = (tdir / STOP_FLUSH_CURSOR_FILENAME).read_text().strip()
+        return int(text) if text else 0
+    except (OSError, ValueError):
+        return 0
+
+
+def _write_flush_cursor(tdir: Path, value: int) -> None:
+    try:
+        (tdir / STOP_FLUSH_CURSOR_FILENAME).write_text(str(value))
+    except OSError:
+        pass
+
+
+def _maybe_stop_flush(tdir: Path) -> bool:
+    """#1011: on Stop, ingest the live turns.jsonl once >= threshold new
+    turns have accumulated since the last flush. Returns True iff a flush
+    fired.
+
+    No rotation: `ingest_jsonl` reads the whole file and dedupes per
+    (source_label, sentence), so re-ingesting the live file captures only
+    statements not yet in the store — never inflating it — while leaving
+    the rebuilder / UPS recent-turns window (which reads the live
+    turns.jsonl) intact. The cursor records the turn count at the last
+    flush; a count below the cursor means turns.jsonl was rotated
+    (PreCompact) or reset, so the cursor is treated as 0.
+    """
+    threshold = _stop_flush_threshold()
+    if threshold <= 0:
+        return False
+    src = tdir / TURNS_FILENAME
+    if not src.exists():
+        return False
+    now = _count_turn_lines(src)
+    last = _read_flush_cursor(tdir)
+    if now < last:
+        last = 0
+    if now - last < threshold:
+        return False
+    _spawn_background_ingest(src)
+    _write_flush_cursor(tdir, now)
+    return True
 
 
 _Handler = Callable[[dict[str, object]], None]

@@ -377,3 +377,93 @@ def test_per_turn_latency_under_budget(tdir: Path) -> None:
     assert p95 < 50.0, f"p95={p95:.2f}ms exceeds 50ms regression guard"
     assert (tdir / "turns.jsonl").is_file()
     assert os.path.getsize(tdir / "turns.jsonl") > 0
+
+
+# ---------------------------------------------------------------------------
+# #1011: Stop-cadence ingestion flush (ingest live turns.jsonl, no rotation).
+# ---------------------------------------------------------------------------
+
+
+def _write_turns(tdir: Path, n: int) -> None:
+    """Pre-populate turns.jsonl with n distinct role-bearing turn lines."""
+    lines = [
+        json.dumps({"role": "user", "text": f"fact number {i}", "session_id": "s"})
+        for i in range(n)
+    ]
+    (tdir / "turns.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@pytest.fixture
+def captured_ingest(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Record _spawn_background_ingest targets instead of forking `aelf`."""
+    calls: list[Path] = []
+    monkeypatch.setattr(tl, "_spawn_background_ingest", lambda p: calls.append(p))
+    return calls
+
+
+def test_count_turn_lines_excludes_markers(tdir: Path) -> None:
+    src = tdir / "turns.jsonl"
+    src.write_text(
+        json.dumps({"role": "user", "text": "a"}) + "\n"
+        + json.dumps({"event": "compaction_start"}) + "\n"
+        + json.dumps({"role": "assistant", "text": "b"}) + "\n",
+        encoding="utf-8",
+    )
+    assert tl._count_turn_lines(src) == 2
+
+
+def test_stop_flush_fires_at_threshold(
+    tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
+    _write_turns(tdir, 2)
+    rc = _run_main({"hook_event_name": "Stop"})  # +1 assistant stub -> 3
+    assert rc == 0
+    # Ingest the LIVE turns.jsonl in place; no rotation/archive.
+    assert captured_ingest == [tdir / "turns.jsonl"]
+    assert (tdir / "turns.jsonl").is_file()
+    archive = tdir / "archive"
+    assert not archive.exists() or not list(archive.glob("*"))
+    assert (tdir / tl.STOP_FLUSH_CURSOR_FILENAME).read_text().strip() == "3"
+
+
+def test_stop_flush_below_threshold_no_fire(
+    tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "12")
+    _write_turns(tdir, 2)
+    rc = _run_main({"hook_event_name": "Stop"})  # -> 3 turns, < 12
+    assert rc == 0
+    assert captured_ingest == []
+
+
+def test_stop_flush_disabled_when_zero(
+    tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "0")
+    _write_turns(tdir, 100)
+    rc = _run_main({"hook_event_name": "Stop"})
+    assert rc == 0
+    assert captured_ingest == []
+
+
+def test_stop_flush_does_not_refire_until_next_threshold(
+    tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
+    _write_turns(tdir, 3)
+    tl._write_flush_cursor(tdir, 3)  # already flushed at 3
+    rc = _run_main({"hook_event_name": "Stop"})  # -> 4 turns, 4-3 < 3
+    assert rc == 0
+    assert captured_ingest == []
+
+
+def test_stop_flush_resets_cursor_after_rotation(
+    tdir: Path, captured_ingest: list[Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AELFRICE_INGEST_STOP_FLUSH_TURNS", "3")
+    tl._write_flush_cursor(tdir, 500)  # stale cursor from a rotated session
+    _write_turns(tdir, 2)
+    rc = _run_main({"hook_event_name": "Stop"})  # fresh count 3 < cursor -> reset to 0
+    assert rc == 0
+    assert captured_ingest == [tdir / "turns.jsonl"]
