@@ -118,6 +118,20 @@ LEGACY_TOKEN_BUDGET: Final[int] = 2000
 # behaviour byte-for-byte on queries where L2.5 returns nothing.
 DEFAULT_TOKEN_BUDGET: Final[int] = 2400
 
+# Reserved relevance-budget floor. L0 locked beliefs are injected
+# unconditionally and never trimmed (#379), so a store whose locks alone
+# meet or exceed `effective_budget` left ZERO budget for query-relevant
+# L2.5/L1 hits — every retrieval returned only the locks, regardless of the
+# prompt (observed on a real 12-lock store: 2485 lock tokens vs a 2400
+# budget → 0 relevance tokens). This reserves at least
+# `floor(effective_budget * RELEVANCE_BUDGET_FLOOR_FRACTION)` tokens for
+# L2.5+L1. It is a strict no-op (byte-identical) whenever the locks leave at
+# least that much room — i.e. it only fires in the lock-saturated regime —
+# so lock-free corpora (e.g. LoCoMo) are unaffected. Locks are still never
+# trimmed; in the saturated regime total output may exceed the nominal
+# budget by up to the floor, the intended trade for never going blind.
+RELEVANCE_BUDGET_FLOOR_FRACTION: Final[float] = 0.25
+
 _CHARS_PER_TOKEN: Final[float] = 4.0
 DEFAULT_L1_LIMIT: Final[int] = 50
 
@@ -2635,7 +2649,14 @@ def retrieve(
     # tokens back than they asked for, while still letting the
     # default 2400-budget caller see the full 400-token L2.5 slice.
     locked_used: int = sum(_belief_tokens(b) for b in locked)
-    l25_room: int = max(0, effective_budget - locked_used)
+    # #379 locks are uncapped + never trimmed; reserve a relevance floor so
+    # they can't starve L2.5/L1 to zero. No-op (byte-identical) unless locks
+    # leave less than the floor — see RELEVANCE_BUDGET_FLOOR_FRACTION.
+    relevance_budget: int = max(
+        int(effective_budget * RELEVANCE_BUDGET_FLOOR_FRACTION),
+        effective_budget - locked_used,
+    )
+    l25_room: int = max(0, relevance_budget)
     effective_l25_subbudget: int = min(l25_token_subbudget, l25_room)
 
     l25: list[Belief]
@@ -2674,7 +2695,7 @@ def retrieve(
     l1_packed: list[Belief] = []
     for b in l1:
         cost: int = _cost(b)
-        if used + cost > effective_budget:
+        if used + cost > locked_used + relevance_budget:
             break
         out.append(b)
         l1_packed.append(b)
@@ -2700,7 +2721,7 @@ def retrieve(
                 if hop.belief.id in seen_ids:
                     continue
                 cost = _cost(hop.belief)
-                if used + cost > effective_budget:
+                if used + cost > locked_used + relevance_budget:
                     break
                 out.append(hop.belief)
                 seen_ids.add(hop.belief.id)
@@ -2856,7 +2877,14 @@ def retrieve_with_tiers(
         else LEGACY_TOKEN_BUDGET
     )
     locked_used: int = sum(_belief_tokens(b) for b in locked)
-    l25_room: int = max(0, effective_budget - locked_used)
+    # #379 locks are uncapped + never trimmed; reserve a relevance floor so
+    # they can't starve L2.5/L1 to zero. No-op (byte-identical) unless locks
+    # leave less than the floor — see RELEVANCE_BUDGET_FLOOR_FRACTION.
+    relevance_budget: int = max(
+        int(effective_budget * RELEVANCE_BUDGET_FLOOR_FRACTION),
+        effective_budget - locked_used,
+    )
+    l25_room: int = max(0, relevance_budget)
     effective_l25_subbudget: int = min(l25_token_subbudget, l25_room)
 
     if enabled and query.strip():
@@ -2906,7 +2934,7 @@ def retrieve_with_tiers(
             edge_weight_floor=DEFAULT_CLUSTER_EDGE_FLOOR,
         )
         l1_by_id: dict[str, Belief] = {b.id: b for b in l1}
-        l1_remaining_budget = max(0, effective_budget - used)
+        l1_remaining_budget = max(0, locked_used + relevance_budget - used)
         l1_packed = pack_with_clusters(
             clusters, l1_by_id,
             token_budget=l1_remaining_budget,
@@ -2920,7 +2948,7 @@ def retrieve_with_tiers(
     else:
         for b in l1:
             cost: int = _cost(b)
-            if used + cost > effective_budget:
+            if used + cost > locked_used + relevance_budget:
                 break
             out.append(b)
             l1_packed.append(b)
@@ -2953,7 +2981,7 @@ def retrieve_with_tiers(
             if b.id in seen_pre:
                 continue
             cost = _cost(b)
-            if used + cost > effective_budget:
+            if used + cost > locked_used + relevance_budget:
                 break
             out.append(b)
             hrr_expanded.append(b)
@@ -2983,7 +3011,7 @@ def retrieve_with_tiers(
                 if hop.belief.id in seen_ids:
                     continue
                 cost = _cost(hop.belief)
-                if used + cost > effective_budget:
+                if used + cost > locked_used + relevance_budget:
                     break
                 out.append(hop.belief)
                 bfs_chains.append(list(hop.path))
