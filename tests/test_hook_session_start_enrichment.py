@@ -280,6 +280,29 @@ def test_core_section_capped_by_token_budget(tmp_path: Path) -> None:
     assert f'id="{ids[-1]}"' not in result
 
 
+def test_core_cap_skips_oversized_keeps_smaller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An oversized belief is skipped, not a hard stop: smaller lower-ranked
+    beliefs that still fit are kept (no prefix truncation)."""
+    monkeypatch.setenv(SESSION_START_CORE_BUDGET_ENV, "100")  # 100 tok = 400 chars
+    db = tmp_path / "memory.db"
+    # B0 highest posterior but oversized (~250 tok); B1/B2 small and fit.
+    _seed_db(db, [
+        _mk("B0", "huge " + "z" * 1000, alpha=30.0, beta=1.0),  # ~251 tok > 100
+        _mk("B1", "small one " + "a" * 40, alpha=20.0, beta=3.0),
+        _mk("B2", "small two " + "b" * 40, alpha=19.0, beta=3.0),
+    ])
+    store = MemoryStore(str(db))
+    try:
+        result = _build_session_start_subblock(store, cwd=tmp_path)
+    finally:
+        store.close()
+    assert 'id="B0"' not in result  # oversized skipped
+    assert 'id="B1"' in result      # smaller still packed despite B0 skip
+    assert 'id="B2"' in result
+
+
 def test_core_cap_disabled_with_zero_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

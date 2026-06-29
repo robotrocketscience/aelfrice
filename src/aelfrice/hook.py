@@ -2282,7 +2282,11 @@ def _build_session_start_subblock(
         for b in core_candidates:
             cost = max(1, len(b.content) // _CORE_CHARS_PER_TOKEN)
             if used + cost > core_budget:
-                break
+                # Skip (not break): a single oversized belief must not
+                # truncate the whole section — keep packing smaller
+                # lower-ranked beliefs that still fit. (An oversized FIRST
+                # belief would otherwise empty the section entirely.)
+                continue
             capped.append(b)
             used += cost
         core_candidates = capped
