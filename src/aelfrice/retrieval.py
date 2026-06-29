@@ -2524,6 +2524,13 @@ def retrieve(
     until the estimated total token count is at or below
     `token_budget`. L0 beliefs are never trimmed.
 
+    Exception (#1014): because L0 locks are never trimmed, a store whose
+    locks alone meet or exceed `token_budget` reserves a relevance floor
+    (`RELEVANCE_BUDGET_FLOOR_FRACTION` of the budget) for L2.5/L1 so locks
+    can't starve query-relevant hits to zero. In that lock-saturated
+    regime the returned total may exceed `token_budget` by up to that
+    floor; outside it the budget cap holds exactly (byte-identical).
+
     L2.5 (v1.3.0): entity-index lookup. Default-on; gated by
     `is_entity_index_enabled()` (env override → kwarg → TOML →
     default True). When disabled the path collapses to v1.2's L0+L1
