@@ -71,9 +71,10 @@ def test_floor_engages_at_moderate_lock_load() -> None:
     total output exceeds the nominal budget by up to the floor."""
     assert RELEVANCE_BUDGET_FLOOR_FRACTION >= 0.5
     s = MemoryStore(":memory:")
-    # Each padded belief ~150 tok. ~10 locks ~= 1500 tok ~= 62% of 2400.
+    # Each padded belief ~250 tok. 6 locks ~= 1494 tok ~= 62% of 2400 — in
+    # the 50%-75% window where the 0.5 floor engages but 0.25 would not.
     locks = [_mk(f"L{i}", f"unrelated locked fact topic alpha {i}", locked=True)
-             for i in range(10)]
+             for i in range(6)]
     for b in locks:
         s.insert_belief(b)
     for i in range(12):
