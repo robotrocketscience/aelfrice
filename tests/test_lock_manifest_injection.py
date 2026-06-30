@@ -164,6 +164,15 @@ def test_rebuild_block_manifestizes_reference_lock() -> None:
     assert LONG not in out  # full reference content not injected verbatim
 
 
+def test_rebuild_pack_costs_reference_lock_at_topic_size() -> None:
+    """rebuild_v14 pack accounting must budget a reference lock at topic
+    size, not full content, or it crowds out later hits (#1038 review)."""
+    from aelfrice.context_rebuilder import _estimate_belief_tokens
+    ref = _b("RF", LONG * 4, lock=LOCK_USER, tier=LOCK_TIER_REFERENCE)
+    frozen = _b("FZ", LONG * 4, lock=LOCK_USER, tier=LOCK_TIER_FROZEN)
+    assert _estimate_belief_tokens(ref) < _estimate_belief_tokens(frozen)
+
+
 def test_search_tool_manifestizes_reference_lock() -> None:
     from aelfrice.hook_search_tool import _format_results
     hits = [

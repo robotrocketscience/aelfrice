@@ -1351,6 +1351,14 @@ def _estimate_belief_tokens(b: Belief, *, compress_on: bool = False) -> int:
     # Locks always render verbatim (compress_for_retrieval honors locked=True).
     if not b.content:
         return 0
+    # #1016-B: a reference-tier lock renders as its bounded topic (see
+    # _format_block), so cost it at topic size — not full content — or it
+    # would over-budget the pack and crowd out later hits.
+    if is_reference_lock(b):
+        return int(
+            (len(_lock_topic(b.content)) + _CHARS_PER_TOKEN - 1)
+            // _CHARS_PER_TOKEN
+        )
     if compress_on:
         cb = compress_for_retrieval(b, locked=(b.lock_level == LOCK_USER))
         return cb.rendered_tokens
