@@ -548,13 +548,20 @@ def _format_results(
         )
     else:
         attrs = f'query="{query}"'
+    from aelfrice.retrieval import is_reference_lock, _lock_topic  # noqa: PLC0415
     lines: list[str] = []
     for b in beliefs:
         bid = getattr(b, "id", "") or ""
         content = getattr(b, "content", "") or ""
         if not bid or not content:
             continue
-        tier = "L0" if bid in locked_ids else "L1"
+        # #1016-B: a reference-tier lock shows its bounded topic (full
+        # text on demand via `aelf locked`), not full content.
+        if is_reference_lock(b):
+            tier = "L0-ref"
+            content = _lock_topic(content)
+        else:
+            tier = "L0" if bid in locked_ids else "L1"
         prefix = bid[:16]
         line = f"[{tier}] {prefix}: {content}".replace("\n", " ")
         if len(line) > PER_LINE_CHAR_CAP:
@@ -695,6 +702,9 @@ def _do_search(
             query,
             token_budget=token_budget,
             l1_limit=l1_limit,
+            # #1016-B: this injection path renders reference locks as a
+            # bounded topic, so budget them at manifest size too.
+            manifest_reference_locks=True,
         )
     finally:
         store.close()

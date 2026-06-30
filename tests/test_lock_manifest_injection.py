@@ -148,6 +148,34 @@ def test_formatter_byte_identical_without_reference_locks() -> None:
         assert '<belief id="N1" lock="none">a non-locked hit</belief>' in out
 
 
+# --- parity: rebuild block + search-tool renderers --------------------
+
+
+def test_rebuild_block_manifestizes_reference_lock() -> None:
+    from aelfrice.context_rebuilder import _format_block
+    hits = [
+        _b("FZ", "frozen verbatim fact", lock=LOCK_USER, tier=LOCK_TIER_FROZEN),
+        _b("RF", LONG, lock=LOCK_USER, tier=LOCK_TIER_REFERENCE),
+    ]
+    out = _format_block([], hits, set(), token_budget=2400)
+    assert 'id="FZ" locked="true"' in out
+    assert "frozen verbatim fact" in out
+    assert 'id="RF" locked="true" tier="reference"' in out
+    assert LONG not in out  # full reference content not injected verbatim
+
+
+def test_search_tool_manifestizes_reference_lock() -> None:
+    from aelfrice.hook_search_tool import _format_results
+    hits = [
+        _b("FZ", "frozen verbatim fact", lock=LOCK_USER, tier=LOCK_TIER_FROZEN),
+        _b("RF", LONG, lock=LOCK_USER, tier=LOCK_TIER_REFERENCE),
+    ]
+    out = _format_results("q", hits, {"FZ", "RF"})
+    assert "[L0] " in out  # frozen lock keeps the L0 tier label
+    assert "[L0-ref] " in out  # reference lock marked + bounded
+    assert LONG not in out
+
+
 # --- retrieve budget freed --------------------------------------------
 
 

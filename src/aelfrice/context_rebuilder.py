@@ -81,7 +81,12 @@ from aelfrice.query_understanding import (
     transform_query,
 )
 from aelfrice.compression import compress_for_retrieval
-from aelfrice.retrieval import resolve_use_type_aware_compression, retrieve
+from aelfrice.retrieval import (
+    _lock_topic,
+    is_reference_lock,
+    resolve_use_type_aware_compression,
+    retrieve,
+)
 from aelfrice.scoring import posterior_mean
 from aelfrice.store import MemoryStore
 from aelfrice.triple_extractor import extract_triples
@@ -383,6 +388,10 @@ def rebuild_v14(
         query,
         token_budget=token_budget,
         use_type_aware_compression=compress_on,
+        # #1016-B: this injection path renders reference locks as a bounded
+        # topic, so budget them at manifest size too (byte-identical until
+        # a lock is demoted to reference).
+        manifest_reference_locks=True,
     )
     # Drop L0 from retrieved (we'll prepend our own copy).
     non_locked_hits: list[Belief] = [
@@ -1367,17 +1376,27 @@ def _format_block(
     if working_state is not None and not working_state.is_empty():
         lines.extend(_format_working_state(working_state))
     if hits:
-        used_chars = sum(len(b.content) for b in hits)
+        # #1016-B: a reference-tier lock renders its bounded topic, not
+        # full content (full text on demand via `aelf locked`), so it
+        # cannot bloat the rebuild block. Frozen/other beliefs unchanged.
+        rendered: list[tuple[Belief, str, bool]] = [
+            (b, _lock_topic(b.content), True)
+            if is_reference_lock(b)
+            else (b, _normalize_turn_text(b.content), False)
+            for b in hits
+        ]
+        used_chars = sum(len(text) for _, text, _ in rendered)
         lines.append(
             f'  <retrieved-beliefs budget_used="{used_chars}/{token_budget * 4}">'
         )
-        for b in hits:
+        for b, content, is_ref in rendered:
             attrs: list[str] = [f'id="{_xml_attr_value(b.id)}"']
             is_locked = b.lock_level == LOCK_USER
             attrs.append(f'locked="{"true" if is_locked else "false"}"')
             if not is_locked and b.id in session_ids:
                 attrs.append('session_scoped="true"')
-            content = _normalize_turn_text(b.content)
+            if is_ref:
+                attrs.append('tier="reference"')
             lines.append(
                 f'    <belief {" ".join(attrs)}>{_xml_escape(content)}</belief>'
             )
