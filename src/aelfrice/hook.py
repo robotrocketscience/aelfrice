@@ -2717,8 +2717,11 @@ def session_start(
         raw = ""
         try:
             raw = sin.read()
-        except Exception:
-            pass
+        except Exception:  # non-blocking: log but continue
+            # A read failure drops both `session_id` (audit) and the
+            # `source`/`cwd` fields the compact-rebuild path needs, so
+            # surface it on stderr instead of swallowing silently.
+            traceback.print_exc(file=serr)
         session_id = _extract_session_id(raw)
         payload = _parse_pre_compact_payload(raw) or {}
         source_obj = payload.get(_SOURCE_KEY)
