@@ -3,9 +3,9 @@
     python -m benchmarks.pollution_recovery [--fixtures PATH] [-k K] [--json]
 
 Reports, per retrieval regime, whether user-stated facts survive a store
-flooded with keyword-overlapping document chunks. Pass
-`--origin-tier-rerank` to score a candidate fix instead of the baseline
-(no-op unless `retrieve()` grows that kwarg).
+flooded with keyword-overlapping document chunks. Baseline only — the
+#1011 R&D found no viable origin-rerank fix (see the PR / issue), so this
+is a characterization tool, not a fix harness.
 """
 from __future__ import annotations
 
@@ -31,19 +31,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--fixtures", default=None)
     parser.add_argument("-k", type=int, default=5)
-    parser.add_argument(
-        "--origin-tier-rerank",
-        action="store_true",
-        help="score with the (candidate) origin-tier rerank lane on",
-    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
     fixtures = Path(args.fixtures) if args.fixtures else _default_fixtures()
     cases = load_cases(fixtures)
-    report = evaluate(
-        cases, k=args.k, use_origin_tier_rerank=args.origin_tier_rerank
-    )
+    report = evaluate(cases, k=args.k)
     by_regime = regime_recall(report)
 
     if args.json:

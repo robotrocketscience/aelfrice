@@ -67,7 +67,6 @@ class CaseResult:
 class Report:
     n_cases: int
     k: int
-    use_origin_tier_rerank: bool
     fact_recall_at_k: float
     mean_fact_rank: float
     chunk_share_at_k: float
@@ -83,9 +82,7 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
     return cases
 
 
-def _score_case(
-    case: dict[str, Any], *, k: int, use_origin_tier_rerank: bool
-) -> CaseResult:
+def _score_case(case: dict[str, Any], *, k: int) -> CaseResult:
     fact_ids = {f["id"] for f in case["facts"]}
     relevant = set(case["relevant_fact_ids"])
     store = MemoryStore(":memory:")
@@ -97,10 +94,7 @@ def _score_case(
                 _mk(c["id"], c["content"], ORIGIN_DOCUMENT_RECENT)
             )
         # Large budget so ranking — not the budget trim — decides order.
-        kwargs: dict[str, Any] = {"token_budget": 100_000}
-        if use_origin_tier_rerank:
-            kwargs["use_origin_tier_rerank"] = True
-        hits = retrieve(store, case["query"], **kwargs)
+        hits = retrieve(store, case["query"], token_budget=100_000)
     finally:
         store.close()
     order = [h.id for h in hits]
@@ -134,21 +128,12 @@ def regime_recall(report: "Report") -> dict[str, float]:
     }
 
 
-def evaluate(
-    cases: list[dict[str, Any]],
-    *,
-    k: int = 5,
-    use_origin_tier_rerank: bool = False,
-) -> Report:
-    results = [
-        _score_case(c, k=k, use_origin_tier_rerank=use_origin_tier_rerank)
-        for c in cases
-    ]
+def evaluate(cases: list[dict[str, Any]], *, k: int = 5) -> Report:
+    results = [_score_case(c, k=k) for c in cases]
     n = len(results) or 1
     return Report(
         n_cases=len(results),
         k=k,
-        use_origin_tier_rerank=use_origin_tier_rerank,
         fact_recall_at_k=sum(r.fact_in_top_k for r in results) / n,
         mean_fact_rank=sum(r.fact_rank for r in results) / n,
         chunk_share_at_k=sum(r.chunk_share_top_k for r in results) / n,
