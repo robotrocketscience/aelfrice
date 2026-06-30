@@ -72,12 +72,18 @@ def test_floor_engages_at_moderate_lock_load() -> None:
     assert RELEVANCE_BUDGET_FLOOR_FRACTION >= 0.5
     s = MemoryStore(":memory:")
     # Each padded belief ~150 tok. ~10 locks ~= 1500 tok ~= 62% of 2400.
-    for i in range(10):
-        s.insert_belief(_mk(f"L{i}", f"unrelated locked fact topic alpha {i}", locked=True))
+    locks = [_mk(f"L{i}", f"unrelated locked fact topic alpha {i}", locked=True)
+             for i in range(10)]
+    for b in locks:
+        s.insert_belief(b)
     for i in range(12):
         s.insert_belief(
             _mk(f"T{i}", f"kubernetes deployment rollout pods replicas note {i}", locked=False)
         )
+    # Pin the fixture to the MODERATE regime: 50% < locked < 75% of budget,
+    # the window where the floor newly engages at 0.5 but not at 0.25.
+    locked_tokens = sum(_belief_tokens(b) for b in locks)
+    assert 0.5 * DEFAULT_TOKEN_BUDGET < locked_tokens < 0.75 * DEFAULT_TOKEN_BUDGET
     hits = retrieve(s, "kubernetes deployment rollout pods", token_budget=DEFAULT_TOKEN_BUDGET)
     relevant = [b for b in hits if b.id.startswith("T")]
     assert len(relevant) >= 2
