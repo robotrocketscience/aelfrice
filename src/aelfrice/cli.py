@@ -4746,6 +4746,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_prune_dormant(args, out)
     if getattr(args, "prune_noise", False):
         return _cmd_doctor_prune_noise(args, out)
+    if getattr(args, "backfill_ingest", False):
+        return _cmd_doctor_backfill_ingest(args, out)
     if getattr(args, "meta_beliefs", False):
         return _cmd_doctor_meta_beliefs(args, out)
     if getattr(args, "hot_path", False):
@@ -5408,6 +5410,45 @@ def _cmd_doctor_prune_noise(
         return 0
     finally:
         store.close()
+
+
+def _cmd_doctor_backfill_ingest(args: argparse.Namespace, out: object) -> int:
+    """Backfill the canonical `turns.jsonl` into beliefs (#1011).
+
+    The companion action to the `ingest_gap` audit check (#1034): when
+    turns were logged but never ingested (a session that ended without
+    compaction before the #1011 Stop-cadence flush existed, or env-
+    disabled flushing), fold the backlog in now. Idempotent — `ingest_jsonl`
+    dedupes per `(source_label, sentence)`, and we use the same default
+    `transcript` label the Stop/PreCompact flush uses, so re-running
+    captures only statements not already in the store. The live
+    `turns.jsonl` is not rotated; the rebuilder/UPS recent-turns window is
+    untouched.
+    """
+    from aelfrice.ingest import ingest_jsonl
+
+    _ = args
+    turns_path = db_path().parent / "transcripts" / "turns.jsonl"
+    if not turns_path.is_file():
+        print(
+            f"backfill-ingest: no transcript log at {turns_path}",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 0
+    store = _open_store()
+    try:
+        result = ingest_jsonl(store, turns_path, source_label="transcript")
+    finally:
+        store.close()
+    print(
+        f"backfill-ingest: read {result.lines_read} line(s), "
+        f"ingested {result.turns_ingested} turn(s) -> "
+        f"{result.beliefs_inserted} new belief(s), "
+        f"{result.edges_inserted} new edge(s) "
+        f"({result.skipped_lines} skipped). Idempotent; re-run is a no-op.",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
 
 
 def _cmd_doctor_prune_dormant(
@@ -7022,6 +7063,18 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "(sets valid_to; row + evidence preserved). Dry-run by "
             "default; combine with --apply to soft-delete, and --max N to "
             "cap. Never touches locked or user-sourced beliefs. #1029."
+        ),
+    )
+    p_doctor.add_argument(
+        "--backfill-ingest",
+        dest="backfill_ingest",
+        action="store_true",
+        default=False,
+        help=(
+            "fold the canonical turns.jsonl into beliefs now — the fix for "
+            "the ingest_gap warning (logged-but-not-ingested turns from "
+            "sessions that ended without compaction). Idempotent (dedupes "
+            "per source+sentence); does not rotate the live log. #1011."
         ),
     )
     p_doctor.add_argument(
