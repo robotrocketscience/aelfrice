@@ -548,7 +548,11 @@ def _format_results(
         )
     else:
         attrs = f'query="{query}"'
-    from aelfrice.retrieval import is_reference_lock, _lock_topic  # noqa: PLC0415
+    from aelfrice.models import (  # noqa: PLC0415
+        LOCK_TIER_REFERENCE,
+        LOCK_USER,
+    )
+    from aelfrice.retrieval import _lock_topic  # noqa: PLC0415
     lines: list[str] = []
     for b in beliefs:
         bid = getattr(b, "id", "") or ""
@@ -556,8 +560,14 @@ def _format_results(
         if not bid or not content:
             continue
         # #1016-B: a reference-tier lock shows its bounded topic (full
-        # text on demand via `aelf locked`), not full content.
-        if is_reference_lock(b):
+        # text on demand via `aelf locked`), not full content. getattr-based
+        # so this stays tolerant of the partial-stub `object` inputs the
+        # function already accepts (not the full is_reference_lock helper).
+        is_ref = (
+            getattr(b, "lock_level", "") == LOCK_USER
+            and getattr(b, "lock_tier", "") == LOCK_TIER_REFERENCE
+        )
+        if is_ref:
             tier = "L0-ref"
             content = _lock_topic(content)
         else:
