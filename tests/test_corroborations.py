@@ -563,10 +563,10 @@ def test_dedup_migration_exempts_consolidation_migration_rows(
     try:
         # 3 consolidation + 1 collapsed transcript = 4
         assert store.count_corroborations("leg1") == 4
-        n_consol = store._conn.execute(  # type: ignore[reportPrivateUsage]
+        n_consolidation = store._conn.execute(  # type: ignore[reportPrivateUsage]
             "SELECT COUNT(*) FROM belief_corroborations "
             "WHERE source_type='consolidation_migration'"
         ).fetchone()[0]
-        assert n_consol == 3
+        assert n_consolidation == 3
     finally:
         store.close()
