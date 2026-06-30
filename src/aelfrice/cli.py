@@ -1930,6 +1930,17 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
             print(f"locked: {actual_id}", file=out)  # type: ignore[arg-type]
             _feed_log_event("belief.locked", actual_id, args, kind="new")
 
+        # #1016-B layered locks: apply an explicit --reference/--frozen
+        # tier. None = no flag → leave the tier as-is (new locks keep the
+        # insert default 'frozen'; re-locks preserve their existing tier).
+        desired_tier = getattr(args, "lock_tier", None)
+        if desired_tier is not None:
+            tier_belief = store.get_belief(actual_id)
+            if tier_belief is not None and tier_belief.lock_tier != desired_tier:
+                tier_belief.lock_tier = desired_tier
+                store.update_belief(tier_belief)
+                print(f"  tier: {desired_tier}", file=out)  # type: ignore[arg-type]
+
         # #1016-C lock-dedup hygiene: warn when this lock is a near-
         # duplicate of an existing lock. Locks are injected unbounded and
         # never trimmed (#379), so near-dups accumulate and inflate the
@@ -2005,7 +2016,15 @@ def _cmd_locked(args: argparse.Namespace, out: object) -> int:
         print("no locked beliefs", file=out)  # type: ignore[arg-type]
         return 0
     for b in locked:
-        print(f"{b.id}: {b.content}", file=out)  # type: ignore[arg-type]
+        # #1016-B: annotate the bounded 'reference' tier; 'frozen' (the
+        # default, always-verbatim tier) is left unmarked to keep the
+        # common-case listing clean.
+        marker = (
+            " [reference]"
+            if getattr(b, "lock_tier", "frozen") == "reference"
+            else ""
+        )
+        print(f"{b.id}{marker}: {b.content}", file=out)  # type: ignore[arg-type]
     return 0
 
 
@@ -6337,6 +6356,26 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "optional doc URI to anchor on this belief (#435). Stored as "
             "anchor_type='manual' on belief_documents; opaque to the "
             "linker beyond non-empty (file:// or https:// recommended)."
+        ),
+    )
+    lock_tier_group = p_lock.add_mutually_exclusive_group()
+    lock_tier_group.add_argument(
+        "--reference", dest="lock_tier", action="store_const",
+        const="reference", default=None,
+        help=(
+            "lock at the bounded 'reference' tier (#1016-B): surfaced as a "
+            "one-line manifest with full text read on demand, so lock "
+            "injection stays bounded. New locks default to 'frozen' "
+            "(always injected verbatim). On an existing lock, demotes it."
+        ),
+    )
+    lock_tier_group.add_argument(
+        "--frozen", dest="lock_tier", action="store_const",
+        const="frozen",
+        help=(
+            "lock at the 'frozen' tier (always injected verbatim) — the "
+            "default for new locks. Use to promote an existing 'reference' "
+            "lock back to frozen."
         ),
     )
     p_lock.set_defaults(func=_cmd_lock)

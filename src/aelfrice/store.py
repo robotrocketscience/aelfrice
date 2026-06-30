@@ -21,6 +21,8 @@ from typing import Callable, Final, Iterable, Iterator
 
 from aelfrice.models import (
     BELIEF_SCOPE_PROJECT,
+    DEFAULT_LOCK_TIER,
+    LOCK_TIERS,
     LOCK_USER,
     CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION,
     CORROBORATION_SOURCE_TYPES,
@@ -178,7 +180,14 @@ _SCHEMA: tuple[str, ...] = (
         -- migration default; new writes pick one of the three live
         -- values per docs/design/historical/belief_retention_class.md § 2 defaults.
         retention_class     TEXT NOT NULL DEFAULT 'unknown'
-            CHECK (retention_class IN ('fact', 'snapshot', 'transient', 'unknown'))
+            CHECK (retention_class IN ('fact', 'snapshot', 'transient', 'unknown')),
+        -- #1016-B layered locks. Orthogonal to lock_level; only
+        -- meaningful when lock_level='user'. CHECK enforces the enum on
+        -- fresh stores; migrated stores rely on the python-side
+        -- LOCK_TIERS frozenset (ALTER ADD COLUMN can't carry the CHECK
+        -- reliably). Default 'frozen' = pre-#1016 always-verbatim.
+        lock_tier           TEXT NOT NULL DEFAULT 'frozen'
+            CHECK (lock_tier IN ('frozen', 'reference'))
     )
     """,
     """
@@ -665,6 +674,13 @@ _MIGRATIONS: tuple[str, ...] = (
     # candidate sorter treats NULL as the oldest possible timestamp so
     # unreviewed beliefs surface before recently-confirmed ones.
     "ALTER TABLE beliefs ADD COLUMN last_confirmed_at TEXT",
+    # v3.7 #1016-B layered locks. 'frozen' (always injected verbatim) vs
+    # 'reference' (bounded — manifest only). Default 'frozen' migrates
+    # every existing lock with no behaviour change (#379 no-silent-loss);
+    # the user opts bulky locks down to 'reference'. Only meaningful when
+    # lock_level='user'. CHECK omitted on ALTER (brittle across SQLite
+    # versions); python-side LOCK_TIERS validates writes.
+    "ALTER TABLE beliefs ADD COLUMN lock_tier TEXT NOT NULL DEFAULT 'frozen'",
 )
 
 # Indexes that depend on migrated columns. Run after _MIGRATIONS so
@@ -748,6 +764,10 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
     # and queries that project a custom column list without it default
     # to None — meaning never confirmed through the review workflow.
     last_confirmed_at = row["last_confirmed_at"] if "last_confirmed_at" in keys else None
+    # lock_tier column added in v3.7 (#1016-B). Pre-migration rows and
+    # queries projecting a custom column list without it default to
+    # 'frozen' — the always-verbatim tier, preserving prior behaviour.
+    lock_tier = row["lock_tier"] if "lock_tier" in keys else DEFAULT_LOCK_TIER
     return Belief(
         id=row["id"],
         content=row["content"],
@@ -769,6 +789,7 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
         scope=scope,
         project_context=project_context,
         last_confirmed_at=last_confirmed_at,
+        lock_tier=lock_tier,
     )
 
 
@@ -2025,6 +2046,11 @@ class MemoryStore:
                 f"invalid retention_class {b.retention_class!r}; "
                 f"must be one of {sorted(RETENTION_CLASSES)}"
             )
+        if b.lock_tier not in LOCK_TIERS:
+            raise ValueError(
+                f"invalid lock_tier {b.lock_tier!r}; "
+                f"must be one of {sorted(LOCK_TIERS)}"
+            )
         validate_belief_scope(b.scope)
         project_context = self._project_context_for_insert(b)
         self._conn.execute(
@@ -2035,8 +2061,8 @@ class MemoryStore:
                 created_at, last_retrieved_at, session_id, origin,
                 hibernation_score, activation_condition,
                 retention_class, valid_to, scope, project_context,
-                last_confirmed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_confirmed_at, lock_tier
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 b.id, b.content, b.content_hash, b.alpha, b.beta, b.type,
@@ -2044,7 +2070,7 @@ class MemoryStore:
                 b.created_at, b.last_retrieved_at, b.session_id, b.origin,
                 b.hibernation_score, b.activation_condition,
                 b.retention_class, b.valid_to, b.scope, project_context,
-                b.last_confirmed_at,
+                b.last_confirmed_at, b.lock_tier,
             ),
         )
         self._conn.execute(
@@ -2101,6 +2127,11 @@ class MemoryStore:
                 f"invalid retention_class {b.retention_class!r}; "
                 f"must be one of {sorted(RETENTION_CLASSES)}"
             )
+        if b.lock_tier not in LOCK_TIERS:
+            raise ValueError(
+                f"invalid lock_tier {b.lock_tier!r}; "
+                f"must be one of {sorted(LOCK_TIERS)}"
+            )
         validate_belief_scope(b.scope)
         self._conn.execute(
             """
@@ -2122,7 +2153,8 @@ class MemoryStore:
                 valid_to = ?,
                 scope = ?,
                 project_context = ?,
-                last_confirmed_at = ?
+                last_confirmed_at = ?,
+                lock_tier = ?
             WHERE id = ?
             """,
             (
@@ -2131,7 +2163,7 @@ class MemoryStore:
                 b.created_at, b.last_retrieved_at, b.session_id,
                 b.origin, b.hibernation_score, b.activation_condition,
                 b.retention_class, b.valid_to, b.scope, b.project_context,
-                b.last_confirmed_at, b.id,
+                b.last_confirmed_at, b.lock_tier, b.id,
             ),
         )
         self._conn.execute("DELETE FROM beliefs_fts WHERE id = ?", (b.id,))

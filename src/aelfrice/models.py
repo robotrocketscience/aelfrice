@@ -96,6 +96,20 @@ LOCK_USER: Final[str] = "user"
 
 LOCK_LEVELS: Final[frozenset[str]] = frozenset({LOCK_NONE, LOCK_USER})
 
+# --- Lock tiers (#1016-B layered locks) ---
+# Orthogonal to lock_level: only meaningful when lock_level == LOCK_USER.
+# 'frozen' locks are always injected verbatim (identity + always-relevant
+# invariants); 'reference' locks are bounded — surfaced as a one-line
+# manifest, full text read on demand — so lock injection stays ~constant
+# regardless of lock count (#379/#1016). Default 'frozen' preserves the
+# pre-#1016 always-verbatim behaviour for every existing lock.
+LOCK_TIER_FROZEN: Final[str] = "frozen"
+LOCK_TIER_REFERENCE: Final[str] = "reference"
+LOCK_TIERS: Final[frozenset[str]] = frozenset(
+    {LOCK_TIER_FROZEN, LOCK_TIER_REFERENCE}
+)
+DEFAULT_LOCK_TIER: Final[str] = LOCK_TIER_FROZEN
+
 # --- Retention class (#290) ---
 # Orthogonal axis to `type`: type describes the *form* of a claim
 # (factual / correction / preference / requirement); retention_class
@@ -348,6 +362,12 @@ class Belief:
     means the belief has never been explicitly confirmed through the
     review workflow. The review candidate sorter treats NULL as the
     oldest possible timestamp so unreviewed beliefs surface first.
+
+    `lock_tier` (v3.7 #1016-B) is the layered-lock tier — 'frozen'
+    (always injected verbatim) or 'reference' (bounded, manifest-only).
+    Only meaningful when `lock_level == LOCK_USER`. Defaults to 'frozen'
+    so every existing lock keeps its pre-#1016 always-verbatim behaviour
+    until the user opts a lock down to 'reference'.
     """
 
     id: str
@@ -370,6 +390,7 @@ class Belief:
     scope: str = BELIEF_SCOPE_PROJECT
     project_context: str = ""
     last_confirmed_at: str | None = None
+    lock_tier: str = DEFAULT_LOCK_TIER
 
 
 ANCHOR_TEXT_MAX_LEN: Final[int] = 1000
