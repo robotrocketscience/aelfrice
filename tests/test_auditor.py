@@ -13,6 +13,7 @@ import pytest
 from aelfrice.auditor import (
     CHECK_CORPUS_VOLUME,
     CHECK_FTS_SYNC,
+    CHECK_INGEST_GAP,
     CHECK_LOCK_BUDGET,
     CHECK_LOCKED_CONTRADICTS,
     CHECK_ORPHAN_EDGES,
@@ -29,6 +30,7 @@ from aelfrice.models import (
     EDGE_SUPPORTS,
     LOCK_NONE,
     LOCK_USER,
+    ORIGIN_AGENT_INFERRED,
     Belief,
     Edge,
 )
@@ -319,3 +321,82 @@ def test_lock_budget_info_notes_relevance_floor_engagement(
     f = _find(audit(store), CHECK_LOCK_BUDGET)
     assert f.severity == SEVERITY_INFO
     assert "relevance floor" in f.detail
+
+
+# --- ingest gap (#1011) ----------------------------------------------
+
+
+def _conv_belief(bid: str, created_at: str) -> Belief:
+    """A conversation-derived (agent_inferred) belief at `created_at`."""
+    return Belief(
+        id=bid,
+        content=f"conversational fact {bid}",
+        content_hash=f"hash-{bid}",
+        alpha=1.0,
+        beta=0.5,
+        type=BELIEF_FACTUAL,
+        lock_level=LOCK_NONE,
+        locked_at=None,
+        created_at=created_at,
+        last_retrieved_at=None,
+        origin=ORIGIN_AGENT_INFERRED,
+    )
+
+
+def test_ingest_gap_info_when_no_turn_ts(store: MemoryStore) -> None:
+    """No transcript supplied → no-op info (caller owns the FS read)."""
+    f = _find(audit(store), CHECK_INGEST_GAP)
+    assert f.severity == SEVERITY_INFO
+    assert f.count == 0
+
+
+def test_ingest_gap_info_when_turn_ts_unparseable(store: MemoryStore) -> None:
+    f = _find(audit(store, latest_turn_ts="not-a-timestamp"), CHECK_INGEST_GAP)
+    assert f.severity == SEVERITY_INFO
+
+
+def test_ingest_gap_warns_when_turns_newer_than_last_belief(
+    store: MemoryStore,
+) -> None:
+    store.insert_belief(_conv_belief("b1", "2026-06-20T00:00:00+00:00"))
+    report = audit(store, latest_turn_ts="2026-06-25T00:00:00+00:00")
+    f = _find(report, CHECK_INGEST_GAP)
+    assert f.severity == SEVERITY_WARN
+    assert f.count == 5  # ~5 days of gap
+    assert "#1011" in f.detail
+    assert report.failed is False  # advisory only
+
+
+def test_ingest_gap_warns_when_nothing_ingested(store: MemoryStore) -> None:
+    """Turns logged but zero conversation-derived beliefs → warn."""
+    f = _find(
+        audit(store, latest_turn_ts="2026-06-25T00:00:00+00:00"),
+        CHECK_INGEST_GAP,
+    )
+    assert f.severity == SEVERITY_WARN
+    assert "nothing has been ingested" in f.detail
+
+
+def test_ingest_gap_info_when_belief_newer_than_turns(
+    store: MemoryStore,
+) -> None:
+    store.insert_belief(_conv_belief("b1", "2026-06-25T00:00:00+00:00"))
+    f = _find(
+        audit(store, latest_turn_ts="2026-06-20T00:00:00+00:00"),
+        CHECK_INGEST_GAP,
+    )
+    assert f.severity == SEVERITY_INFO
+    assert "up to date" in f.detail
+
+
+def test_ingest_gap_handles_z_suffix_belief_vs_offset_turn(
+    store: MemoryStore,
+) -> None:
+    """Mixed ISO formats (belief `Z`, turn `+00:00`) compare correctly."""
+    store.insert_belief(_conv_belief("b1", "2026-06-20T00:00:00Z"))
+    f = _find(
+        audit(store, latest_turn_ts="2026-06-22T00:00:00+00:00"),
+        CHECK_INGEST_GAP,
+    )
+    assert f.severity == SEVERITY_WARN
+    assert f.count == 2

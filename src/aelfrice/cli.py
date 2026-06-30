@@ -257,6 +257,35 @@ def _git_first_commit_age_days() -> int | None:
     return max(0, delta.days)
 
 
+def _latest_turn_ts() -> str | None:
+    """Newest `ts` in the canonical `turns.jsonl`, or None.
+
+    Feeds the auditor's #1011 ingest-gap check, which compares the newest
+    logged turn against the newest conversation-derived belief. The
+    auditor stays pure-store, so the CLI owns this filesystem read. The
+    log lives beside the store at
+    `<git-common-dir>/aelfrice/transcripts/turns.jsonl`. Reads the raw
+    last line (not the noise-filtered tail) so a filtered newest turn
+    cannot hide a real gap. Fail-soft: any error returns None.
+    """
+    try:
+        log_path = db_path().parent / "transcripts" / "turns.jsonl"
+        if not log_path.exists():
+            return None
+        last = ""
+        with log_path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    last = line
+        if not last:
+            return None
+        obj = json.loads(last)
+        ts = obj.get("ts") if isinstance(obj, dict) else None
+        return ts if isinstance(ts, str) and ts else None
+    except (OSError, ValueError):
+        return None
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -4193,6 +4222,7 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
     use_json = getattr(args, "json", False)
     corpus_min = _resolve_corpus_min()
     project_age = _git_first_commit_age_days()
+    latest_turn_ts = _latest_turn_ts()
     # #655 surface knowledge_deps.json parse failures as a finding-style
     # warning rather than letting them crash health. Done outside the
     # store-open block so a malformed peer config doesn't block the
@@ -4209,6 +4239,7 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
             store,
             corpus_min=corpus_min,
             project_age_days=project_age,
+            latest_turn_ts=latest_turn_ts,
         )
         features = compute_features(store)
         peer_snapshot = store.peer_health()

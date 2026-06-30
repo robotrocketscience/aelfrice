@@ -14,6 +14,9 @@ Checks:
   - corpus_volume      established project has too few beliefs (warn)
   - lock_budget        locked beliefs meet/exceed the retrieval budget (warn,
                        #1016-D) — locks subtract from the relevance budget
+  - ingest_gap         turns.jsonl has turns newer than the last
+                       conversation-derived belief (warn, #1011) — logged
+                       but not ingested; needs caller-supplied newest turn ts
 
 Threshold-tuned checks (isolated clusters, decay anomalies) are deferred
 to v1.2.0+ — they require calibration data the v1.1.0 store doesn't yet
@@ -27,8 +30,10 @@ as a deprecated alias for the constant (same value as the new
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Final
 
+from aelfrice.models import ORIGIN_AGENT_INFERRED, ORIGIN_USER_TRANSCRIPT
 from aelfrice.store import MemoryStore
 
 SEVERITY_FAIL: Final[str] = "fail"
@@ -42,6 +47,15 @@ CHECK_FTS_SYNC: Final[str] = "fts_sync"
 CHECK_LOCKED_CONTRADICTS: Final[str] = "locked_contradicts"
 CHECK_CORPUS_VOLUME: Final[str] = "corpus_volume"
 CHECK_LOCK_BUDGET: Final[str] = "lock_budget"
+CHECK_INGEST_GAP: Final[str] = "ingest_gap"
+
+# Belief origins that come from conversational ingestion (vs explicit
+# commands or document chunks). The ingest-gap check (#1011) compares the
+# newest of these against the newest turn in turns.jsonl.
+CONVERSATION_ORIGINS: Final[tuple[str, ...]] = (
+    ORIGIN_AGENT_INFERRED,
+    ORIGIN_USER_TRANSCRIPT,
+)
 
 # Default minimum belief count below which the corpus_volume check warns.
 # Override via AELFRICE_CORPUS_MIN env var (read in the CLI handler).
@@ -254,6 +268,85 @@ def _check_lock_budget_pressure(store: MemoryStore) -> AuditFinding:
     )
 
 
+def _parse_iso(value: str | None) -> datetime | None:
+    """Parse an ISO-8601 timestamp, tolerating a trailing `Z`.
+
+    Belief `created_at` and turn `ts` are written by different code paths
+    (some `+00:00`, some `Z`), so string comparison is unsafe — parse both
+    sides to aware datetimes. Returns None on any malformedness.
+    """
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _check_ingest_gap(
+    store: MemoryStore,
+    *,
+    latest_turn_ts: str | None = None,
+) -> AuditFinding:
+    """Warn when logged turns are newer than the last ingested belief.
+
+    The #1011 logged-but-not-ingested signal: `turns.jsonl` captures every
+    turn in real time, but conversational *ingestion* only folds them into
+    beliefs on certain triggers — so a session can log turns that never
+    become retrievable. This check compares the newest turn timestamp
+    (supplied by the caller, which owns the filesystem read) against the
+    newest conversation-derived belief (`CONVERSATION_ORIGINS`).
+
+    Advisory only (`severity='warn'`, exit stays 0). When the caller does
+    not supply `latest_turn_ts` (no `turns.jsonl`), the check is a no-op
+    info — mirroring how `corpus_volume` skips without a project age.
+    """
+    if latest_turn_ts is None:
+        return AuditFinding(
+            check=CHECK_INGEST_GAP,
+            severity=SEVERITY_INFO,
+            count=0,
+            detail="no transcript log to evaluate",
+        )
+    turn_dt = _parse_iso(latest_turn_ts)
+    if turn_dt is None:
+        return AuditFinding(
+            check=CHECK_INGEST_GAP,
+            severity=SEVERITY_INFO,
+            count=0,
+            detail="newest transcript turn has no parseable timestamp",
+        )
+    belief_ts = store.latest_belief_created_at(CONVERSATION_ORIGINS)
+    belief_dt = _parse_iso(belief_ts)
+    if belief_dt is not None and belief_dt >= turn_dt:
+        return AuditFinding(
+            check=CHECK_INGEST_GAP,
+            severity=SEVERITY_INFO,
+            count=0,
+            detail="conversational capture up to date with the transcript",
+        )
+    gap_days = (turn_dt - belief_dt).days if belief_dt is not None else 0
+    if belief_dt is None:
+        detail = (
+            "transcript has logged turns but no conversation-derived belief "
+            "exists yet — nothing has been ingested. Run `aelf "
+            "ingest-transcript`, or check the Stop/PreCompact ingest hooks."
+        )
+    else:
+        detail = (
+            f"newest logged turn is ~{gap_days}d newer than the last "
+            f"conversation-derived belief — turns logged but not ingested "
+            f"(#1011). Run `aelf ingest-transcript --since`, or check the "
+            f"Stop/PreCompact ingest hooks."
+        )
+    return AuditFinding(
+        check=CHECK_INGEST_GAP,
+        severity=SEVERITY_WARN,
+        count=gap_days,
+        detail=detail,
+    )
+
+
 def _gather_metrics(store: MemoryStore) -> dict[str, float | int]:
     """Informational metrics displayed alongside the audit. Read-only."""
     n_beliefs = store.count_beliefs()
@@ -294,14 +387,16 @@ def audit(
     *,
     corpus_min: int = CORPUS_MIN_DEFAULT,
     project_age_days: int | None = None,
+    latest_turn_ts: str | None = None,
 ) -> AuditReport:
     """Run the v1.1.0+ mechanical-auditor checks against `store`.
 
     Pure read-only operation. Returns a structured report; the caller
     decides how to render it and what exit code to emit. The
     corpus-volume check (added in #116) needs `project_age_days`
-    supplied by the caller — auditor.py stays pure-store and never
-    shells out to git.
+    supplied by the caller; the ingest-gap check (#1011) needs
+    `latest_turn_ts` (the newest `turns.jsonl` timestamp) — auditor.py
+    stays pure-store and never reads the filesystem or shells out to git.
     """
     findings = [
         _check_orphan_edges(store),
@@ -313,5 +408,6 @@ def audit(
             project_age_days=project_age_days,
         ),
         _check_lock_budget_pressure(store),
+        _check_ingest_gap(store, latest_turn_ts=latest_turn_ts),
     ]
     return AuditReport(findings=findings, metrics=_gather_metrics(store))

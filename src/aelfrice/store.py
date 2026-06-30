@@ -3727,6 +3727,28 @@ class MemoryStore:
         row = cur.fetchone()
         return int(row["n"]) if row else 0
 
+    def latest_belief_created_at(self, origins: Iterable[str]) -> str | None:
+        """Most recent `created_at` among active beliefs with these origins.
+
+        Used by the #1011 ingest-gap detector to find the newest
+        conversation-derived belief (origins `agent_inferred` /
+        `user_transcript`) so it can be compared against the newest turn
+        in `turns.jsonl`. Returns None when no matching active belief
+        exists. The returned value is the raw stored ISO string.
+        """
+        origin_list = list(origins)
+        if not origin_list:
+            return None
+        placeholders = ",".join("?" for _ in origin_list)
+        cur = self._conn.execute(
+            "SELECT MAX(created_at) AS ts FROM beliefs "
+            f"WHERE valid_to IS NULL AND origin IN ({placeholders})",
+            tuple(origin_list),
+        )
+        row = cur.fetchone()
+        ts = row["ts"] if row else None
+        return ts if isinstance(ts, str) and ts else None
+
     def count_edges(self) -> int:
         cur = self._conn.execute("SELECT COUNT(*) AS n FROM edges")
         row = cur.fetchone()
