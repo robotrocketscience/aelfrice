@@ -33,9 +33,10 @@ from typing import cast
 import pytest
 
 from aelfrice.context_rebuilder import (
+    CLOSE_TAG as REBUILD_CLOSE_TAG,
     DEFAULT_REBUILDER_TOKEN_BUDGET,
     DEFAULT_TURN_WINDOW_N,
-    HOOK_EVENT_NAME,
+    OPEN_TAG as REBUILD_OPEN_TAG,
     RebuilderConfig,
     RecentTurn,
     emit_pre_compact_envelope,
@@ -43,7 +44,7 @@ from aelfrice.context_rebuilder import (
     main as context_rebuilder_main,
     rebuild_v14,
 )
-from aelfrice.hook import pre_compact
+from aelfrice.hook import pre_compact, session_start
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.store import MemoryStore
 
@@ -111,37 +112,52 @@ def _payload(
     *,
     cwd: Path | None = None,
     transcript_path: Path | None = None,
+    source: str = "",
+    event: str = "PreCompact",
 ) -> str:
-    return json.dumps(
-        {
-            "session_id": "s1",
-            "transcript_path": (
-                str(transcript_path) if transcript_path else ""
-            ),
-            "cwd": str(cwd) if cwd else "",
-            "hook_event_name": "PreCompact",
-        }
-    )
+    body: dict[str, object] = {
+        "session_id": "s1",
+        "transcript_path": str(transcript_path) if transcript_path else "",
+        "cwd": str(cwd) if cwd else "",
+        "hook_event_name": event,
+    }
+    if source:
+        body["source"] = source
+    return json.dumps(body)
 
 
-def _additional_context(stdout_value: str) -> str | None:
-    """Parse the PreCompact JSON envelope and return additionalContext.
+def _rebuild_block(stdout_value: str) -> str | None:
+    """Slice the `<aelfrice-rebuild>` block out of SessionStart stdout.
 
-    None when no envelope was written. Raises a clear AssertionError
-    on any shape mismatch.
+    The rebuild injection moved to the SessionStart hook on
+    `source == "compact"` (#1031), which writes the block as raw stdout
+    after the locked baseline. Returns None when no rebuild block was
+    written.
     """
-    if not stdout_value:
+    if REBUILD_OPEN_TAG not in stdout_value:
         return None
-    raw = json.loads(stdout_value)
-    assert isinstance(raw, dict)
-    payload = cast(dict[str, object], raw)
-    spec_obj = payload.get("hookSpecificOutput")
-    assert isinstance(spec_obj, dict)
-    spec = cast(dict[str, object], spec_obj)
-    assert spec.get("hookEventName") == HOOK_EVENT_NAME
-    ctx = spec.get("additionalContext")
-    assert isinstance(ctx, str)
-    return ctx
+    start = stdout_value.index(REBUILD_OPEN_TAG)
+    end = stdout_value.index(REBUILD_CLOSE_TAG) + len(REBUILD_CLOSE_TAG)
+    return stdout_value[start:end]
+
+
+def _start_compact(
+    *, cwd: Path | None = None, transcript_path: Path | None = None
+) -> str:
+    """Fire the SessionStart hook with `source == "compact"`."""
+    sin = io.StringIO(
+        _payload(
+            cwd=cwd,
+            transcript_path=transcript_path,
+            source="compact",
+            event="SessionStart",
+        )
+    )
+    sout = io.StringIO()
+    serr = io.StringIO()
+    rc = session_start(stdin=sin, stdout=sout, stderr=serr)
+    assert rc == 0
+    return sout.getvalue()
 
 
 # --- AC1: ordering --------------------------------------------------------
@@ -150,13 +166,14 @@ def _additional_context(stdout_value: str) -> str | None:
 def test_ac1_envelope_carries_locked_session_scoped_and_l1(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Hook emits an `additionalContext` envelope with all three tiers.
+    """SessionStart:compact emits a rebuild block with all three tiers.
 
     Seeds a store with one locked belief, one session-scoped belief
     matching the live session, and one general belief surfaced by
-    the recent-turn query. Verifies the envelope contains all three
-    and that the locked belief precedes the session-scoped belief
-    which precedes the L1 hit in document order.
+    the recent-turn query. Verifies the rebuild block contains all
+    three and that the locked belief precedes the session-scoped
+    belief which precedes the L1 hit in document order. The injection
+    rides the post-compaction SessionStart hook (#1031).
     """
     db = tmp_path / "memory.db"
     _seed_db(db, [
@@ -188,14 +205,9 @@ def test_ac1_envelope_carries_locked_session_scoped_and_l1(
             "session_id": "sess-live",
         },
     ])
-    sin = io.StringIO(_payload(cwd=cwd))
-    sout = io.StringIO()
-    serr = io.StringIO()
-    rc = pre_compact(stdin=sin, stdout=sout, stderr=serr)
-    assert rc == 0
-    ctx = _additional_context(sout.getvalue())
+    ctx = _rebuild_block(_start_compact(cwd=cwd))
     assert ctx is not None
-    # All three tiers surface.
+    # All three tiers surface in the rebuild block.
     assert 'id="L1lock"' in ctx
     assert 'id="S1sess"' in ctx
     # Locked precedes session-scoped precedes L1 hit (the F1gen
@@ -420,7 +432,7 @@ def test_ac2_module_main_entry_point_also_silent_on_missing_store(
 def test_ac3_two_fires_produce_byte_identical_additional_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Same transcript tail + same store state -> identical envelope."""
+    """Same transcript tail + same store state -> identical rebuild block."""
     db = tmp_path / "memory.db"
     _seed_db(db, [
         _mk(
@@ -439,18 +451,10 @@ def test_ac3_two_fires_produce_byte_identical_additional_context(
         {"role": "assistant", "text": "BM25 vs entity-index ranking"},
     ])
 
-    def _fire() -> str:
-        sin = io.StringIO(_payload(cwd=cwd))
-        sout = io.StringIO()
-        serr = io.StringIO()
-        rc = pre_compact(stdin=sin, stdout=sout, stderr=serr)
-        assert rc == 0
-        return sout.getvalue()
-
-    a = _fire()
-    b = _fire()
+    a = _rebuild_block(_start_compact(cwd=cwd))
+    b = _rebuild_block(_start_compact(cwd=cwd))
+    assert a is not None
     assert a == b
-    assert _additional_context(a) is not None
 
 
 # --- AC4: latency on synthetic 10k-belief store ---------------------------

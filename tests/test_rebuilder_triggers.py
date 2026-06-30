@@ -30,9 +30,10 @@ from typing import cast
 import pytest
 
 from aelfrice.context_rebuilder import (
+    CLOSE_TAG as REBUILD_CLOSE_TAG,
     DEFAULT_THRESHOLD_FRACTION,
     DEFAULT_TRIGGER_MODE,
-    HOOK_EVENT_NAME,
+    OPEN_TAG as REBUILD_OPEN_TAG,
     TRIGGER_MODE_DYNAMIC,
     TRIGGER_MODE_MANUAL,
     TRIGGER_MODE_THRESHOLD,
@@ -40,7 +41,7 @@ from aelfrice.context_rebuilder import (
     RebuilderConfig,
     load_rebuilder_config,
 )
-from aelfrice.hook import pre_compact
+from aelfrice.hook import pre_compact, session_start
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.store import MemoryStore
 
@@ -109,15 +110,35 @@ def _aelfrice_log(cwd: Path, lines: list[dict[str, object]]) -> Path:
     return p
 
 
-def _payload(cwd: Path) -> str:
-    return json.dumps(
-        {
-            "session_id": "s1",
-            "transcript_path": "",
-            "cwd": str(cwd),
-            "hook_event_name": "PreCompact",
-        }
-    )
+def _payload(cwd: Path, *, source: str = "", event: str = "PreCompact") -> str:
+    body: dict[str, object] = {
+        "session_id": "s1",
+        "transcript_path": "",
+        "cwd": str(cwd),
+        "hook_event_name": event,
+    }
+    if source:
+        body["source"] = source
+    return json.dumps(body)
+
+
+def _rebuild_block(stdout_value: str) -> str | None:
+    """Slice the `<aelfrice-rebuild>` block out of SessionStart stdout."""
+    if REBUILD_OPEN_TAG not in stdout_value:
+        return None
+    start = stdout_value.index(REBUILD_OPEN_TAG)
+    end = stdout_value.index(REBUILD_CLOSE_TAG) + len(REBUILD_CLOSE_TAG)
+    return stdout_value[start:end]
+
+
+def _start_compact_block(cwd: Path) -> str | None:
+    """Fire SessionStart with source=="compact"; return the rebuild block."""
+    sin = io.StringIO(_payload(cwd, source="compact", event="SessionStart"))
+    sout = io.StringIO()
+    serr = io.StringIO()
+    rc = session_start(stdin=sin, stdout=sout, stderr=serr)
+    assert rc == 0
+    return _rebuild_block(sout.getvalue())
 
 
 def _write_config(cwd: Path, body: str) -> None:
@@ -156,11 +177,12 @@ def test_tm1_no_config_file_defaults_to_threshold(tmp_path: Path) -> None:
 def test_tm1_manual_mode_pre_compact_hook_no_ops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """In manual mode, the PreCompact hook must NOT emit a block.
+    """In manual mode, neither hook emits a rebuild block.
 
-    Even with a populated store + a non-empty transcript, the hook
-    short-circuits before reading the transcript or opening the
-    store.
+    Even with a populated store + a non-empty transcript, the rebuild
+    path short-circuits on `trigger_mode = "manual"`: the PreCompact
+    hook is silent (it never emits regardless, #1031), and the
+    SessionStart:compact path declines via the trigger-mode gate.
     """
     db = tmp_path / "memory.db"
     _seed_db(db, [_mk(
@@ -180,8 +202,10 @@ def test_tm1_manual_mode_pre_compact_hook_no_ops(
     serr = io.StringIO()
     rc = pre_compact(stdin=sin, stdout=sout, stderr=serr)
     assert rc == 0
-    # Manual mode = silent on stdout. Block must not appear.
+    # PreCompact = silent on stdout. Block must not appear.
     assert sout.getvalue() == ""
+    # SessionStart:compact also declines in manual mode.
+    assert _start_compact_block(cwd) is None
 
 
 def test_tm1_manual_explicit_path_via_aelf_rebuild_still_fires(
@@ -221,10 +245,15 @@ def test_tm1_manual_explicit_path_via_aelf_rebuild_still_fires(
 # --- TM2: threshold mode fires ------------------------------------------
 
 
-def test_tm2_threshold_mode_pre_compact_emits_envelope(
+def test_tm2_threshold_mode_session_start_compact_emits_rebuild(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """trigger_mode='threshold' makes the hook fire as in v1.2.0a0."""
+    """trigger_mode='threshold' fires the rebuild on SessionStart:compact.
+
+    The injection moved off the PreCompact hook (#1031). The PreCompact
+    hook stays silent; the post-compaction SessionStart carries the
+    rebuild block.
+    """
     db = tmp_path / "memory.db"
     _seed_db(db, [_mk(
         "Lk", "user prefers uv",
@@ -238,24 +267,46 @@ def test_tm2_threshold_mode_pre_compact_emits_envelope(
         {"role": "user", "text": "explain uv"},
         {"role": "assistant", "text": "uv is a fast Python pkg mgr"},
     ])
+    # PreCompact stays silent.
     sin = io.StringIO(_payload(cwd))
     sout = io.StringIO()
     serr = io.StringIO()
     rc = pre_compact(stdin=sin, stdout=sout, stderr=serr)
     assert rc == 0
-    out = sout.getvalue()
-    assert out, "threshold-mode hook produced no envelope"
-    # Parse and verify shape.
-    parsed = json.loads(out)
-    assert isinstance(parsed, dict)
-    payload = cast(dict[str, object], parsed)
-    spec_obj = payload.get("hookSpecificOutput")
-    assert isinstance(spec_obj, dict)
-    spec = cast(dict[str, object], spec_obj)
-    assert spec.get("hookEventName") == HOOK_EVENT_NAME
-    ctx = spec.get("additionalContext")
-    assert isinstance(ctx, str)
-    assert 'id="Lk"' in ctx
+    assert sout.getvalue() == ""
+    # SessionStart:compact emits the rebuild block with the hit.
+    block = _start_compact_block(cwd)
+    assert block is not None
+    assert 'id="Lk"' in block
+
+
+def test_tm2_threshold_mode_non_compact_session_start_no_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Threshold mode still gates the rebuild on `source == "compact"`.
+
+    A normal (startup) SessionStart must not emit the rebuild block,
+    even with a populated transcript in threshold mode.
+    """
+    db = tmp_path / "memory.db"
+    _seed_db(db, [_mk(
+        "Lk", "user prefers uv",
+        lock_level=LOCK_USER, locked_at="2026-04-26T00:00:00Z",
+    )])
+    _set_db(monkeypatch, db)
+    cwd = tmp_path / "repo"
+    (cwd / ".git").mkdir(parents=True)
+    _write_config(cwd, '[rebuilder]\ntrigger_mode = "threshold"\n')
+    _aelfrice_log(cwd, [
+        {"role": "user", "text": "explain uv"},
+        {"role": "assistant", "text": "uv is a fast Python pkg mgr"},
+    ])
+    sin = io.StringIO(_payload(cwd, source="startup", event="SessionStart"))
+    sout = io.StringIO()
+    serr = io.StringIO()
+    rc = session_start(stdin=sin, stdout=sout, stderr=serr)
+    assert rc == 0
+    assert _rebuild_block(sout.getvalue()) is None
 
 
 def test_tm2_threshold_mode_default_fraction_is_calibrated_value(

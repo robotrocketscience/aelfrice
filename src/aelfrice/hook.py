@@ -57,7 +57,6 @@ try:
         TRIGGER_MODE_MANUAL,
         TRIGGER_MODE_THRESHOLD,
         RecentTurn,
-        emit_pre_compact_envelope,
         find_aelfrice_log,
         load_rebuilder_config,
         read_recent_turns_aelfrice,
@@ -216,6 +215,12 @@ def _escape_for_hook_block(content: str) -> str:
 _PROMPT_KEY: Final[str] = "prompt"
 _TRANSCRIPT_PATH_KEY: Final[str] = "transcript_path"
 _CWD_KEY: Final[str] = "cwd"
+# SessionStart payload `source` field (#1031). The harness fires
+# SessionStart with source=="compact" *after* a compaction completes;
+# that is where the rebuild block is injected, since a PreCompact hook
+# cannot emit `additionalContext` the harness will accept.
+_SOURCE_KEY: Final[str] = "source"
+_SESSION_SOURCE_COMPACT: Final[str] = "compact"
 
 # ---------------------------------------------------------------------------
 # Per-hook configuration (#218 AC6)
@@ -2469,40 +2474,30 @@ def pre_compact(
     stdin: IO[str] | None = None,
     stdout: IO[str] | None = None,
     stderr: IO[str] | None = None,
-    n_recent_turns: int | None = None,
-    token_budget: int | None = None,
 ) -> int:
-    """Run the PreCompact hook. Always returns 0.
+    """Run the PreCompact hook. Always returns 0, emits nothing on stdout.
 
-    Reads a Claude Code PreCompact JSON payload from `stdin`, locates
-    a transcript log (canonical aelfrice turns.jsonl preferred,
-    Claude Code internal transcript as fallback), runs the v1.4
-    context-rebuilder against it, and writes the rebuild block
-    wrapped in the harness's `additionalContext` JSON envelope to
-    `stdout`. Hook contract: never block, never raise.
+    #1031: a PreCompact hook cannot inject context. The host harness
+    rejects `additionalContext` emitted from PreCompact (PreCompact is
+    absent from the canonical list of additionalContext-supporting
+    events), so any rebuild block written here is discarded with a
+    validation error. The rebuild block is now emitted by the
+    SessionStart hook on `source == "compact"` (see
+    `session_start`), which fires after compaction and which the harness
+    honors.
 
-    Payload fields used:
-      * `cwd` -- working directory; used to find <cwd>/.git/aelfrice/
-        transcripts/turns.jsonl (the canonical log).
-      * `transcript_path` -- absolute path to Claude Code's per-session
-        transcript JSONL. Used as fallback when the canonical log is
-        absent (typical pre-transcript_ingest setup).
-
-    Empty transcript / missing store: returns exit 0 with no
-    `additionalContext` written. The tool path is unaffected.
-
-    Augment-mode only at v1.4.0. Claude Code will still run its
-    default compaction after this hook emits; the rebuild block is
-    additive context, not a replacement. Suppress mode is parked
-    for v2.x per the ROADMAP.
-
-    `n_recent_turns` and `token_budget` keyword overrides: when
-    None, the config (`.aelfrice.toml [rebuilder]` walking up from
-    the payload's `cwd`) wins; when set, the override wins.
+    This hook is retained for trigger-mode parity and protocol
+    compatibility: it still reads the payload, resolves the rebuilder
+    `trigger_mode`, and surfaces the `dynamic`-mode parked trace on
+    stderr — but it never writes to stdout. Hook contract: never block,
+    never raise.
     """
     sin = stdin if stdin is not None else sys.stdin
-    sout = stdout if stdout is not None else sys.stdout
     serr = stderr if stderr is not None else sys.stderr
+    # `stdout` is accepted for signature/protocol parity but is never
+    # written to (#1031); the rebuild block moved to the SessionStart
+    # hook. Reference it so the unused-arg lint stays quiet.
+    _ = stdout
     if not _IMPORTS_OK:
         missing = getattr(_IMPORT_ERR, "name", None) or str(_IMPORT_ERR)
         print(
@@ -2542,34 +2537,10 @@ def pre_compact(
             return 0
         # mode == TRIGGER_MODE_THRESHOLD
         assert mode == TRIGGER_MODE_THRESHOLD
-        n = (
-            n_recent_turns
-            if n_recent_turns is not None
-            else config.turn_window_n
-        )
-        budget = (
-            token_budget
-            if token_budget is not None
-            else config.token_budget
-        )
-        recent = _read_recent_for_pre_compact(payload, n)
-        if not recent:
-            # Empty transcript: exit 0 with no additionalContext.
-            return 0
-        # Missing store: exit 0 with no additionalContext.
-        p = db_path()
-        if str(p) != ":memory:" and not p.exists():
-            return 0
-        body = _rebuild_and_format(
-            recent,
-            budget,
-            rebuild_log_enabled=config.rebuild_log_enabled,
-            floor_session=config.floor_session,
-            floor_l1=config.floor_l1,
-            query_strategy=config.query_strategy,
-        )
-        if body:
-            sout.write(emit_pre_compact_envelope(body))
+        # #1031: emit nothing. The post-compaction SessionStart hook
+        # (source=="compact") carries the rebuild block on a channel
+        # the harness accepts; emitting it here only produces a
+        # rejected-output validation error.
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     return 0
@@ -2666,6 +2637,43 @@ def _rebuild_and_format(
         store.close()
 
 
+def _build_rebuild_block_from_payload(payload: dict[str, object]) -> str:
+    """Build the v1.4 rebuild block from a hook payload, or '' to skip.
+
+    Shared by the SessionStart(source=="compact") injection (#1031).
+    Honors the rebuilder `trigger_mode` config and the non-blocking hook
+    contract: returns '' on `manual`/`dynamic` mode, an empty transcript,
+    or a missing store. Never raises for control flow.
+
+    Behavior parity: mirrors the resolution the (now-neutered) PreCompact
+    hook used — canonical aelfrice `turns.jsonl` preferred, the host
+    transcript as fallback — via `_read_recent_for_pre_compact`.
+    """
+    cwd_obj = payload.get(_CWD_KEY)
+    cwd = (
+        Path(cwd_obj) if isinstance(cwd_obj, str) and cwd_obj else Path.cwd()
+    )
+    config = load_rebuilder_config(cwd)
+    if config.trigger_mode != TRIGGER_MODE_THRESHOLD:
+        # `manual` -> only explicit `aelf rebuild` emits; `dynamic` is
+        # parked at v1.4. Both decline the automatic compaction path.
+        return ""
+    recent = _read_recent_for_pre_compact(payload, config.turn_window_n)
+    if not recent:
+        return ""
+    p = db_path()
+    if str(p) != ":memory:" and not p.exists():
+        return ""
+    return _rebuild_and_format(
+        recent,
+        config.token_budget,
+        rebuild_log_enabled=config.rebuild_log_enabled,
+        floor_session=config.floor_session,
+        floor_l1=config.floor_l1,
+        query_strategy=config.query_strategy,
+    )
+
+
 def session_start(
     *,
     stdin: IO[str] | None = None,
@@ -2702,15 +2710,19 @@ def session_start(
         )
         return 0
     try:
-        # Drain stdin so the hook protocol is honored. We do read the
-        # session_id from the payload (best-effort) for audit-log
-        # cross-reference; no other fields are consumed.
+        # Drain stdin so the hook protocol is honored. We read the
+        # session_id (audit cross-reference) and, on a post-compaction
+        # fire (#1031), the `source`/`cwd`/`transcript_path` fields the
+        # rebuild path needs.
         raw = ""
         try:
             raw = sin.read()
         except Exception:
             pass
         session_id = _extract_session_id(raw)
+        payload = _parse_pre_compact_payload(raw) or {}
+        source_obj = payload.get(_SOURCE_KEY)
+        source = source_obj if isinstance(source_obj, str) else ""
         budget = (
             token_budget
             if token_budget is not None
@@ -2734,6 +2746,21 @@ def session_start(
                 latency_ms=latency_ms,
                 stderr=serr,
             )
+        # #1031: carry the context-rebuilder block on the post-compaction
+        # SessionStart, the channel the harness honors (PreCompact cannot
+        # inject `additionalContext`). Raw stdout here is added to context
+        # exactly as the baseline block above. Trigger-mode gating lives
+        # in the helper.
+        if source == _SESSION_SOURCE_COMPACT:
+            try:
+                rebuild_block = _build_rebuild_block_from_payload(payload)
+            except Exception:  # non-blocking: surface but do not fail
+                rebuild_block = ""
+                traceback.print_exc(file=serr)
+            if rebuild_block:
+                if body:
+                    sout.write("\n\n")
+                sout.write(rebuild_block)
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     if _recap_enabled():
