@@ -14,6 +14,7 @@ not here.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Final
 
@@ -80,6 +81,12 @@ _QUESTION_PREFIXES: Final[tuple[str, ...]] = (
     "could ",
 )
 
+# An internal sentence boundary: ./!/? followed by whitespace. Used to keep
+# the #1027 single-sentence-question rule from firing on multi-sentence
+# beliefs that merely close with a question (their declarative content is
+# real and must persist).
+_SENTENCE_BOUNDARY_RE: Final[re.Pattern[str]] = re.compile(r"[.!?]\s")
+
 
 # --- Output ---------------------------------------------------------------
 
@@ -135,7 +142,25 @@ def get_source_adjusted_prior(
 
 
 def _is_question(text_lower: str) -> bool:
-    return text_lower.startswith(_QUESTION_PREFIXES) and text_lower.endswith("?")
+    """True when the sentence is a question and therefore non-persistable.
+
+    Two arms, both requiring a trailing `?`:
+    - wh-prefixed interrogative (covers multi-clause "what … and how …?").
+    - #1027: any SINGLE-sentence interrogative ("want me to run it?",
+      "which way?") — conversational questions the wh-prefix list misses.
+      Restricted to single sentences (no internal `[.!?]\\s` boundary, no
+      newline) so a multi-sentence belief that merely closes with a
+      question keeps its declarative content. Questions are still LOGGED
+      to the transcript (this only blocks belief creation, not logging).
+    """
+    s = text_lower.strip()
+    if not s.endswith("?"):
+        return False
+    if s.startswith(_QUESTION_PREFIXES):
+        return True
+    if "\n" in s:
+        return False
+    return _SENTENCE_BOUNDARY_RE.search(s[:-1]) is None
 
 
 def _has_any(text_lower: str, keywords: tuple[str, ...]) -> bool:

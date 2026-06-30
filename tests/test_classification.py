@@ -117,6 +117,32 @@ def test_statement_ending_with_period_persists() -> None:
     assert r.persist is True
 
 
+def test_conversational_question_without_wh_prefix_no_persist() -> None:
+    """#1027: a single-sentence interrogative the wh-prefix list misses
+    ("want me to …?", "which way?") is still a question — no belief."""
+    for q in ("Want me to run it?", "Which way?", "ok so whats next?",
+              "are there any PRs that need review?"):
+        assert classify_sentence(q, "user").persist is False, q
+
+
+def test_multi_sentence_ending_in_question_persists() -> None:
+    """A belief with declarative content that merely closes with a
+    question must persist — only the WHOLE-sentence question is dropped."""
+    r = classify_sentence(
+        "Status: shipped. Phase 1 landed at v1.5. Want me to continue?",
+        "user",
+    )
+    assert r.persist is True
+
+
+def test_midsentence_question_mark_persists() -> None:
+    r = classify_sentence(
+        'Distinctive: turns "am I doing this right?" into a number.',
+        "user",
+    )
+    assert r.persist is True
+
+
 def test_what_in_middle_of_sentence_is_not_a_question() -> None:
     """Question heuristic checks prefix only; mid-sentence interrogatives
     don't trip the filter."""
