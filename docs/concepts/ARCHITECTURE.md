@@ -62,11 +62,12 @@ Imports are one-directional — modules lower in the table import from higher.
 
 ## Data model
 
-**Belief** — `id, content, content_hash, alpha, beta, type, lock_level, locked_at, origin, session_id, created_at, last_retrieved_at, corroboration_count, hibernation_score, activation_condition, retention_class, valid_to, scope, project_context` (v3.2+, #858)`, last_confirmed_at` (v3.5+, #936).
+**Belief** — `id, content, content_hash, alpha, beta, type, lock_level, locked_at, origin, session_id, created_at, last_retrieved_at, corroboration_count, hibernation_score, activation_condition, retention_class, valid_to, scope, project_context` (v3.2+, #858)`, last_confirmed_at` (v3.5+, #936)`, lock_tier` (v3.7+, #1016).
 
 - `type ∈ {factual, correction, preference, requirement, speculative}` (`speculative` added with the v3.0 wonder lifecycle, #548, for phantom beliefs)
 - `retention_class ∈ {fact, snapshot, transient, unknown}` — drives type-aware compression (#769)
 - `lock_level ∈ {none, user}`
+- `lock_tier ∈ {frozen, reference}` (v3.7+, #1016-B) — orthogonal to `lock_level`, only meaningful when `lock_level = user`. `frozen` (the default for every lock) is always injected verbatim; `reference` is bounded — injected as a one-line manifest entry, full text read on demand via `aelf locked` / `aelf search`. Demote bulky locks with `aelf lock <text> --reference`.
 - `origin ∈ {user_stated, user_corrected, user_validated, user_transcript, agent_inferred, agent_remembered, document_recent, speculative, unknown}` (v1.2+; `user_transcript` added with the v2.1 transcript-ingest lane; `speculative` added with the v2.0 wonder substrate for phantom beliefs and now written by `wonder/lifecycle.py`)
 - `scope ∈ {project, global, shared:<name>}` (v3.0+, #688). `project` is the default and local-only; `global` is surfaced to any peer DB that declares this DB in its `knowledge_deps.json`; `shared:<name>` is surfaced only to peers that also list `shared:<name>` as a dep.
 
@@ -101,7 +102,7 @@ A separate `POTENTIALLY_STALE` edge type exists as a producer-only signal from `
 
 ## Retrieval
 
-L0 (locked beliefs) is the **always-injected pool**: every lock ships on every retrieval, in full, no scoring, no top-K. Lock count is the operator's baseline-context budget knob — if you lock 200 things, every retrieval opens with all 200, by design. Only the non-locked pool (L1/L2.5/L3) is subject to relevance ranking and budget trim.
+L0 (locked beliefs) is the **always-injected pool**: every lock ships on every retrieval, no scoring, no top-K. Lock count is the operator's baseline-context budget knob. `frozen`-tier locks (the default) ship **in full**; `reference`-tier locks (v3.7+, #1016-B) ship as a **one-line manifest entry** and are budgeted at that size, so a large lock set stays bounded — demote bulky locks with `aelf lock <text> --reference` and read their full text on demand via `aelf locked` / `aelf search`. Only the non-locked pool (L1/L2.5/L3) is subject to relevance ranking and budget trim. When locks alone approach the budget, a reserved relevance floor (#1015) keeps query-relevant results from being starved, and `aelf doctor` warns (#1016-D).
 
 ```
 L0: store.list_locked()              always loaded; never trimmed
