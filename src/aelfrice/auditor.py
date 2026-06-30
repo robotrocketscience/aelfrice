@@ -277,8 +277,11 @@ def _parse_iso(value: str | None) -> datetime | None:
     """
     if not value:
         return None
+    # Normalize only a *trailing* Z (UTC designator) — never an interior
+    # character — before delegating to fromisoformat.
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(normalized)
     except ValueError:
         return None
 
