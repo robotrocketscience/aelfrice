@@ -143,6 +143,17 @@ def test_midsentence_question_mark_persists() -> None:
     assert r.persist is True
 
 
+def test_prior_sentence_ending_in_closer_then_question_persists() -> None:
+    """#1027 review: a prior sentence ending in `."` / `.)` is still a
+    sentence boundary, so a belief with declarative content that closes
+    with a question keeps that content."""
+    for c in (
+        'He said "done." Want me to continue?',
+        "The flag is on (default). Should we flip it?",
+    ):
+        assert classify_sentence(c, "user").persist is True, c
+
+
 def test_what_in_middle_of_sentence_is_not_a_question() -> None:
     """Question heuristic checks prefix only; mid-sentence interrogatives
     don't trip the filter."""

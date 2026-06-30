@@ -81,11 +81,13 @@ _QUESTION_PREFIXES: Final[tuple[str, ...]] = (
     "could ",
 )
 
-# An internal sentence boundary: ./!/? followed by whitespace. Used to keep
-# the #1027 single-sentence-question rule from firing on multi-sentence
-# beliefs that merely close with a question (their declarative content is
-# real and must persist).
-_SENTENCE_BOUNDARY_RE: Final[re.Pattern[str]] = re.compile(r"[.!?]\s")
+# An internal sentence boundary: ./!/? — optionally followed by a closing
+# quote/paren/bracket — then whitespace. The closers matter: a prior
+# sentence ending in `."` / `.)` / `?"` must still register as a boundary so
+# the #1027 single-sentence-question rule never drops a multi-sentence
+# belief that merely closes with a question (its declarative content is real
+# and must persist).
+_SENTENCE_BOUNDARY_RE: Final[re.Pattern[str]] = re.compile(r'''[.!?]['")\]]*\s''')
 
 
 # --- Output ---------------------------------------------------------------
