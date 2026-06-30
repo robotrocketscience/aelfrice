@@ -150,6 +150,14 @@ OPEN_TAG: Final[str] = "<aelfrice-memory>"
 CLOSE_TAG: Final[str] = "</aelfrice-memory>"
 SESSION_START_OPEN_TAG: Final[str] = "<aelfrice-baseline>"
 SESSION_START_CLOSE_TAG: Final[str] = "</aelfrice-baseline>"
+# #1016-B: reference-tier locks are injected as a one-line manifest
+# inside the memory/baseline block instead of verbatim, so lock injection
+# stays bounded; the agent reads full text on demand.
+LOCKS_MANIFEST_OPEN_TAG: Final[str] = (
+    '<aelfrice-locks-manifest note="bounded reference locks (#1016); read '
+    'full text on demand via `aelf locked` / `aelf search`">'
+)
+LOCKS_MANIFEST_CLOSE_TAG: Final[str] = "</aelfrice-locks-manifest>"
 
 # Sub-block tags injected on the first UserPromptSubmit of a session (#578).
 # Placed INSIDE <aelfrice-memory> before per-turn retrieval hits.
@@ -1731,14 +1739,49 @@ def _filter_session_exclusions(
         return hits
 
 
-def _format_hits(hits: list[Belief]) -> str:
-    lines: list[str] = [OPEN_TAG, _FRAMING_HEADER]
+def _split_belief_lines(
+    hits: list[Belief],
+) -> tuple[list[str], list[str]]:
+    """Render hits into verbatim `<belief>` lines + reference manifest lines.
+
+    #1016-B: a reference-tier lock is emitted as a single manifest entry
+    instead of full content (bounded injection); everything else — frozen
+    locks and non-locked hits — renders verbatim as before. Returns
+    `(belief_lines, manifest_lines)`; an empty `manifest_lines` means no
+    reference locks were present (byte-identical to the pre-#1016 output).
+    """
+    # Local import: keep the heavy retrieval module off hook.py's
+    # module-load path (these formatters run only after a retrieve()).
+    from aelfrice.retrieval import (  # noqa: PLC0415
+        is_reference_lock,
+        lock_manifest_line,
+    )
+    belief_lines: list[str] = []
+    manifest_lines: list[str] = []
     for h in hits:
+        if is_reference_lock(h):
+            manifest_lines.append("  " + lock_manifest_line(h))
+            continue
         lock_attr = "user" if h.lock_level == LOCK_USER else "none"
         content = _escape_for_hook_block(h.content)
-        lines.append(
+        belief_lines.append(
             f'<belief id="{h.id}" lock="{lock_attr}">{content}</belief>'
         )
+    return belief_lines, manifest_lines
+
+
+def _manifest_block_lines(manifest_lines: list[str]) -> list[str]:
+    """Wrap reference-lock manifest lines in their block, or [] if none."""
+    if not manifest_lines:
+        return []
+    return [LOCKS_MANIFEST_OPEN_TAG, *manifest_lines, LOCKS_MANIFEST_CLOSE_TAG]
+
+
+def _format_hits(hits: list[Belief]) -> str:
+    belief_lines, manifest_lines = _split_belief_lines(hits)
+    lines: list[str] = [OPEN_TAG, _FRAMING_HEADER]
+    lines.extend(belief_lines)
+    lines.extend(_manifest_block_lines(manifest_lines))
     lines.append(CLOSE_TAG)
     lines.append("")
     return "\n".join(lines)
@@ -2345,12 +2388,9 @@ def _format_hits_with_session_start(
     lines: list[str] = [OPEN_TAG, _FRAMING_HEADER]
     if session_start_block:
         lines.append(session_start_block)
-    for h in hits:
-        lock_attr = "user" if h.lock_level == LOCK_USER else "none"
-        content = _escape_for_hook_block(h.content)
-        lines.append(
-            f'<belief id="{h.id}" lock="{lock_attr}">{content}</belief>'
-        )
+    belief_lines, manifest_lines = _split_belief_lines(hits)
+    lines.extend(belief_lines)
+    lines.extend(_manifest_block_lines(manifest_lines))
     lines.append(CLOSE_TAG)
     lines.append("")
     return "\n".join(lines)
@@ -2812,7 +2852,12 @@ def _retrieve_baseline_with_block(
     """
     store = _open_store()
     try:
-        hits = retrieve(store, "", token_budget=token_budget)
+        # #1016-B: SessionStart renders reference-tier locks as a manifest,
+        # so budget them at manifest size (byte-identical until demotion).
+        hits = retrieve(
+            store, "", token_budget=token_budget,
+            manifest_reference_locks=True,
+        )
     finally:
         store.close()
     if not hits:
@@ -2828,13 +2873,10 @@ def _format_baseline_hits(hits: list[Belief]) -> str:
     the model can tell which channel a belief arrived through. Lock
     state is carried as a `lock` attribute on the inner <belief>.
     """
+    belief_lines, manifest_lines = _split_belief_lines(hits)
     lines: list[str] = [SESSION_START_OPEN_TAG, _FRAMING_HEADER]
-    for h in hits:
-        lock_attr = "user" if h.lock_level == LOCK_USER else "none"
-        content = _escape_for_hook_block(h.content)
-        lines.append(
-            f'<belief id="{h.id}" lock="{lock_attr}">{content}</belief>'
-        )
+    lines.extend(belief_lines)
+    lines.extend(_manifest_block_lines(manifest_lines))
     lines.append(SESSION_START_CLOSE_TAG)
     lines.append("")
     return "\n".join(lines)

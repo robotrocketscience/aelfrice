@@ -95,7 +95,12 @@ from aelfrice.graph_spectral import (
     heat_kernel_score,
     seeds_from_bm25,
 )
-from aelfrice.models import LOCK_NONE, LOCK_USER, Belief
+from aelfrice.models import (
+    LOCK_NONE,
+    LOCK_TIER_REFERENCE,
+    LOCK_USER,
+    Belief,
+)
 from aelfrice.scoring import (
     DEFAULT_POSTERIOR_WEIGHT,
     ZETA_ALPHA_DEFAULT,
@@ -544,6 +549,57 @@ def _estimate_tokens(text: str) -> int:
 
 def _belief_tokens(b: Belief) -> int:
     return _estimate_tokens(b.content)
+
+
+# --- #1016-B layered locks: reference-tier manifest -------------------
+
+# Cap on the manifest topic. A reference lock is surfaced as one line —
+# `ref <id>: "<topic>"` — so injection stays ~constant regardless of the
+# lock's full length; the agent reads full text on demand.
+_LOCK_TOPIC_MAX: Final[int] = 80
+
+
+def _lock_topic(content: str) -> str:
+    """Deterministic one-line topic for a reference lock's manifest entry.
+
+    Whitespace-collapsed; the first sentence if it ends within the cap,
+    else a hard char-cap with an ellipsis. No ML — a pure string
+    transform so the manifest is reproducible. Internal double-quotes are
+    flattened to single so the `"<topic>"` wrapper stays unambiguous.
+    """
+    collapsed = " ".join(content.split()).replace('"', "'")
+    if not collapsed:
+        return ""
+    for sep in (". ", "? ", "! "):
+        idx = collapsed.find(sep)
+        if 0 <= idx < _LOCK_TOPIC_MAX:
+            return collapsed[: idx + 1].strip()
+    if len(collapsed) <= _LOCK_TOPIC_MAX:
+        return collapsed
+    return collapsed[:_LOCK_TOPIC_MAX].rstrip() + "…"
+
+
+def lock_manifest_line(b: Belief) -> str:
+    """One-line manifest entry for a reference-tier lock (#1016-B)."""
+    return f'ref {b.id}: "{_lock_topic(b.content)}"'
+
+
+def is_reference_lock(b: Belief) -> bool:
+    """True iff `b` is a user lock demoted to the bounded reference tier."""
+    return b.lock_level == LOCK_USER and b.lock_tier == LOCK_TIER_REFERENCE
+
+
+def lock_injection_tokens(b: Belief, *, manifest_reference_locks: bool) -> int:
+    """Token cost of injecting a locked belief.
+
+    When `manifest_reference_locks` is on, a reference lock costs only its
+    one-line manifest entry (the #1016-B bound); otherwise — and for every
+    frozen lock — it costs full content, identical to `_belief_tokens`. So
+    the default (off) is byte-identical to pre-#1016 budgeting.
+    """
+    if manifest_reference_locks and is_reference_lock(b):
+        return _estimate_tokens(lock_manifest_line(b))
+    return _belief_tokens(b)
 
 
 # --- Config flag resolution ----------------------------------------------
@@ -2524,6 +2580,7 @@ def retrieve(
     heat_kernel_enabled: bool | None = None,
     eigenbasis_cache: GraphEigenbasisCache | None = None,
     use_type_aware_compression: bool | None = None,
+    manifest_reference_locks: bool = False,
 ) -> list[Belief]:
     """Return L0 locked + L2.5 entity + L1 BM25 + L3 BFS expansions.
 
@@ -2662,7 +2719,17 @@ def retrieve(
     # that callers passing a tight `token_budget` never get more
     # tokens back than they asked for, while still letting the
     # default 2400-budget caller see the full 400-token L2.5 slice.
-    locked_used: int = sum(_belief_tokens(b) for b in locked)
+    #
+    # #1016-B: when manifest_reference_locks is on (the hook injection
+    # paths), reference-tier locks cost only their one-line manifest entry,
+    # freeing relevance budget. Frozen locks (every lock by default) still
+    # cost full content, so this is byte-identical until a lock is demoted.
+    locked_used: int = sum(
+        lock_injection_tokens(
+            b, manifest_reference_locks=manifest_reference_locks
+        )
+        for b in locked
+    )
     # #379 locks are uncapped + never trimmed; reserve a relevance floor so
     # they can't starve L2.5/L1 to zero. No-op (byte-identical) unless locks
     # leave less than the floor — see RELEVANCE_BUDGET_FLOOR_FRACTION.

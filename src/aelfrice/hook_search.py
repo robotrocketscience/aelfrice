@@ -68,8 +68,13 @@ def search_for_prompt(
     read, calls `record_retrieval` to write one audit row per returned
     belief.
     """
+    # #1016-B: this is a hook injection path whose formatter renders
+    # reference-tier locks as a one-line manifest, so budget them at
+    # manifest size (frees relevance budget; byte-identical until a lock
+    # is demoted to reference).
     hits: list[Belief] = retrieve(
         store, prompt, token_budget=token_budget,
+        manifest_reference_locks=True,
     )
     record_retrieval(store, hits, stderr=stderr)
     return hits
