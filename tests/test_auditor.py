@@ -13,6 +13,7 @@ import pytest
 from aelfrice.auditor import (
     CHECK_CORPUS_VOLUME,
     CHECK_FTS_SYNC,
+    CHECK_LOCK_BUDGET,
     CHECK_LOCKED_CONTRADICTS,
     CHECK_ORPHAN_EDGES,
     CORPUS_MIN_DEFAULT,
@@ -259,3 +260,62 @@ def test_corpus_volume_does_not_affect_failed_flag(
 def test_corpus_volume_default_threshold_is_50() -> None:
     assert CORPUS_MIN_DEFAULT == 50
     assert CORPUS_MIN_PROJECT_AGE_DAYS == 7
+
+
+# --- lock budget pressure (#1016-D) ----------------------------------
+
+
+def _lock(bid: str, n_chars: int) -> Belief:
+    """A locked belief whose content is `n_chars` long (≈ n_chars/4 tok)."""
+    return Belief(
+        id=bid,
+        content="x" * n_chars,
+        content_hash=f"hash-{bid}",
+        alpha=9.0,
+        beta=0.5,
+        type=BELIEF_FACTUAL,
+        lock_level=LOCK_USER,
+        locked_at="2026-04-27T00:00:00Z",
+        created_at="2026-04-27T00:00:00Z",
+        last_retrieved_at=None,
+    )
+
+
+def test_lock_budget_info_when_no_locks(store: MemoryStore) -> None:
+    store.insert_belief(_belief("plain"))  # unlocked → not counted
+    f = _find(audit(store), CHECK_LOCK_BUDGET)
+    assert f.severity == SEVERITY_INFO
+    assert f.count == 0
+    assert "no locked beliefs" in f.detail
+
+
+def test_lock_budget_info_when_under_budget(store: MemoryStore) -> None:
+    store.insert_belief(_lock("small", 400))  # ≈100 tok, well under 2400
+    f = _find(audit(store), CHECK_LOCK_BUDGET)
+    assert f.severity == SEVERITY_INFO
+    assert 0 < f.count < 2400
+
+
+def test_lock_budget_warns_when_locks_meet_or_exceed_budget(
+    store: MemoryStore,
+) -> None:
+    # 12000 chars ≈ 3000 tok > the 2400-tok default retrieval budget.
+    store.insert_belief(_lock("fat", 12000))
+    report = audit(store)
+    f = _find(report, CHECK_LOCK_BUDGET)
+    assert f.severity == SEVERITY_WARN
+    assert f.count >= 2400
+    assert "#1016" in f.detail
+    # Advisory only — never flips the failed flag.
+    assert report.failed is False
+
+
+def test_lock_budget_info_notes_relevance_floor_engagement(
+    store: MemoryStore,
+) -> None:
+    # 6000 chars ≈ 1500 tok: between the 1200-tok floor and the 2400-tok
+    # budget — info, but the detail flags that the floor caps query results.
+    store.insert_belief(_lock("mid", 6000))
+    f = _find(audit(store), CHECK_LOCK_BUDGET)
+    assert f.severity == SEVERITY_INFO
+    assert "relevance floor" in f.detail

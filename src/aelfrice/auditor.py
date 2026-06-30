@@ -11,6 +11,9 @@ Checks:
                        no longer exists in beliefs
   - fts_sync           beliefs_fts row count matches the ACTIVE belief count
   - locked_contradicts pairs of locked beliefs joined by a CONTRADICTS thread
+  - corpus_volume      established project has too few beliefs (warn)
+  - lock_budget        locked beliefs meet/exceed the retrieval budget (warn,
+                       #1016-D) — locks subtract from the relevance budget
 
 Threshold-tuned checks (isolated clusters, decay anomalies) are deferred
 to v1.2.0+ — they require calibration data the v1.1.0 store doesn't yet
@@ -38,6 +41,7 @@ CHECK_ORPHAN_EDGES: Final[str] = CHECK_ORPHAN_THREADS
 CHECK_FTS_SYNC: Final[str] = "fts_sync"
 CHECK_LOCKED_CONTRADICTS: Final[str] = "locked_contradicts"
 CHECK_CORPUS_VOLUME: Final[str] = "corpus_volume"
+CHECK_LOCK_BUDGET: Final[str] = "lock_budget"
 
 # Default minimum belief count below which the corpus_volume check warns.
 # Override via AELFRICE_CORPUS_MIN env var (read in the CLI handler).
@@ -184,6 +188,72 @@ def _check_locked_contradicts(store: MemoryStore) -> AuditFinding:
     )
 
 
+def _check_lock_budget_pressure(store: MemoryStore) -> AuditFinding:
+    """Warn when locked beliefs alone meet or exceed the retrieval budget.
+
+    Locks are injected unconditionally and never trimmed (#379); their
+    tokens subtract from the L2.5/L1 relevance budget. When the locked
+    set alone reaches the default retrieval budget, query-relevant
+    retrieval is served only by the reserved relevance floor (#1015/#1023)
+    and the injection runs over the nominal budget — the #1016 lock-growth
+    problem. This is the #1016-D budget-pressure warning.
+
+    Advisory only (`severity='warn'`); `aelf health` keeps exiting 0 — a
+    fat lock set is a usage signal, not a structural failure. The token
+    figure is the same cheap char-based estimate retrieval uses, compared
+    against retrieval's documented default budget (the analysis baseline);
+    an operator who raises the budget sees an approximate threshold, which
+    is fine for an advisory.
+    """
+    # Local import: keeps the auditor's module-level surface store-only and
+    # defers retrieval's (heavier) import cost off the common audit path.
+    from aelfrice.retrieval import (  # noqa: PLC0415
+        DEFAULT_TOKEN_BUDGET,
+        RELEVANCE_BUDGET_FLOOR_FRACTION,
+        _belief_tokens,
+    )
+
+    locked = store.list_locked_beliefs()
+    if not locked:
+        return AuditFinding(
+            check=CHECK_LOCK_BUDGET,
+            severity=SEVERITY_INFO,
+            count=0,
+            detail="no locked beliefs",
+        )
+    total = sum(_belief_tokens(b) for b in locked)
+    budget = DEFAULT_TOKEN_BUDGET
+    floor_engages_at = int(budget * RELEVANCE_BUDGET_FLOOR_FRACTION)
+    if total < budget:
+        headroom = (
+            f"; {total}/{budget} tok"
+            + (
+                f" — past {floor_engages_at} the relevance floor (#1015) "
+                f"caps query results"
+                if total >= floor_engages_at
+                else ""
+            )
+        )
+        return AuditFinding(
+            check=CHECK_LOCK_BUDGET,
+            severity=SEVERITY_INFO,
+            count=total,
+            detail=f"{len(locked)} locked belief(s){headroom}",
+        )
+    return AuditFinding(
+        check=CHECK_LOCK_BUDGET,
+        severity=SEVERITY_WARN,
+        count=total,
+        detail=(
+            f"{len(locked)} locked belief(s) ≈{total} tok meet/exceed the "
+            f"{budget}-tok retrieval budget — query-relevant retrieval is "
+            f"served only by the reserved relevance floor (#1015) and the "
+            f"injection runs over budget. Trim with `aelf review` / lock "
+            f"hygiene, or see the frozen/reference lock tiers in #1016."
+        ),
+    )
+
+
 def _gather_metrics(store: MemoryStore) -> dict[str, float | int]:
     """Informational metrics displayed alongside the audit. Read-only."""
     n_beliefs = store.count_beliefs()
@@ -242,5 +312,6 @@ def audit(
             threshold=corpus_min,
             project_age_days=project_age_days,
         ),
+        _check_lock_budget_pressure(store),
     ]
     return AuditReport(findings=findings, metrics=_gather_metrics(store))
