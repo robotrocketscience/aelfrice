@@ -4972,7 +4972,10 @@ def _cmd_doctor_dedup(args: argparse.Namespace, out: object) -> int:
         ),
     )
 
-    locked_only = bool(getattr(args, "dedup_locks", False))
+    # getattr matches the sibling --dedup-* arg reads above and guards
+    # hand-built Namespaces in direct-call tests; store_true already
+    # yields a bool, so no bool() wrapper is needed.
+    locked_only = getattr(args, "dedup_locks", False)
     store = _open_store()
     try:
         report = dedup_audit(
