@@ -1930,6 +1930,28 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
             print(f"locked: {actual_id}", file=out)  # type: ignore[arg-type]
             _feed_log_event("belief.locked", actual_id, args, kind="new")
 
+        # #1016-C lock-dedup hygiene: warn when this lock is a near-
+        # duplicate of an existing lock. Locks are injected unbounded and
+        # never trimmed (#379), so near-dups accumulate and inflate the
+        # injection budget (#1016). Warning only — the lock still writes
+        # (it is user-asserted ground truth); the user decides what to prune.
+        from aelfrice.dedup import find_near_duplicate_locks
+        near_dups = find_near_duplicate_locks(
+            store, args.statement, exclude_id=actual_id
+        )
+        if near_dups:
+            shown = ", ".join(p.belief_a_id for p in near_dups[:3])
+            more = (
+                f" (+{len(near_dups) - 3} more)" if len(near_dups) > 3 else ""
+            )
+            print(  # type: ignore[arg-type]
+                f"  warning: near-duplicate of {len(near_dups)} existing "
+                f"lock(s): {shown}{more} — consider `aelf unlock`/`aelf "
+                f"delete` the redundant one(s) to bound lock injection "
+                f"(#1016).",
+                file=out,
+            )
+
         # #435 doc-linker manual anchor. Idempotent on (belief_id,
         # doc_uri); subsequent lock --doc with the same URI is a no-op
         # write. The lock entry-point passes source_path=None to the
@@ -4950,6 +4972,7 @@ def _cmd_doctor_dedup(args: argparse.Namespace, out: object) -> int:
         ),
     )
 
+    locked_only = bool(getattr(args, "dedup_locks", False))
     store = _open_store()
     try:
         report = dedup_audit(
@@ -4957,12 +4980,15 @@ def _cmd_doctor_dedup(args: argparse.Namespace, out: object) -> int:
             jaccard_min=config.jaccard_min,
             levenshtein_min=config.levenshtein_min,
             max_candidate_pairs=config.max_candidate_pairs,
+            locked_only=locked_only,
         )
     except ValueError as exc:
         print(f"aelf doctor dedup: {exc}", file=sys.stderr)
         return 1
     finally:
         store.close()
+    if locked_only:
+        print("(scanned user-locked beliefs only — #1016-C)", file=out)  # type: ignore[arg-type]
 
     print(format_audit_report(report), file=out)  # type: ignore[arg-type]
     return 0
@@ -7057,6 +7083,17 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "with --dedup: cap reported duplicate pairs after Jaccard "
             "prefilter; deterministic truncation by (id_a, id_b). "
             "Default: [dedup] max_candidate_pairs in .aelfrice.toml > 5000."
+        ),
+    )
+    p_doctor.add_argument(
+        "--dedup-locks",
+        dest="dedup_locks",
+        action="store_true",
+        default=False,
+        help=(
+            "with --dedup: scan only user-locked beliefs (#1016-C lock "
+            "hygiene) — the never-trimmed, budget-critical set where "
+            "near-duplicate locks accumulate. Default: scan all beliefs."
         ),
     )
     p_doctor.add_argument(

@@ -328,18 +328,83 @@ def cluster_pairs(pairs: Iterable[DuplicatePair]) -> tuple[DuplicateCluster, ...
 # --- Top-level audit entry point ---------------------------------------
 
 
+def _locked_beliefs_for_indexing(store: MemoryStore) -> list[tuple[str, str]]:
+    """`[(id, content)]` for active locked beliefs, sorted by id ASC.
+
+    The dedup pair machinery relies on the id-ASC ordering (it
+    canonicalises `id_a < id_b` from `i < j`), so re-sort here rather
+    than rely on `list_locked_beliefs()`'s `locked_at DESC` order.
+    """
+    return sorted(
+        ((b.id, b.content) for b in store.list_locked_beliefs()),
+        key=lambda t: t[0],
+    )
+
+
+def find_near_duplicate_locks(
+    store: MemoryStore,
+    text: str,
+    *,
+    exclude_id: str | None = None,
+    jaccard_min: float = DEFAULT_JACCARD_MIN,
+    levenshtein_min: float = DEFAULT_LEVENSHTEIN_MIN,
+) -> list[DuplicatePair]:
+    """Existing locks that are near-duplicates of `text` (#1016-C).
+
+    Powers the `aelf lock` write-time hygiene warning: before a new lock
+    silently accumulates next to an almost-identical one (locks are
+    injected unbounded and never trimmed, #379/#1016), flag the overlap
+    so the user can prune. Same two-signal test as `dedup_audit`
+    (Jaccard ≥ `jaccard_min` AND Levenshtein ratio ≥ `levenshtein_min`).
+
+    `exclude_id` drops the just-written lock from its own comparison.
+    Returns `DuplicatePair`s with `belief_a_id` = the existing lock and
+    `belief_b_id` = `exclude_id or ""` (the candidate), sorted strongest
+    match first. Read-only.
+    """
+    if not text.strip():
+        return []
+    ta = frozenset(tokenize(text))
+    out: list[DuplicatePair] = []
+    for bid, content in _locked_beliefs_for_indexing(store):
+        if bid == exclude_id or not content.strip():
+            continue
+        j_score = jaccard(ta, frozenset(tokenize(content)))
+        if j_score < jaccard_min:
+            continue
+        lr = levenshtein_ratio(text, content)
+        if lr < levenshtein_min:
+            continue
+        out.append(
+            DuplicatePair(
+                belief_a_id=bid,
+                belief_b_id=exclude_id or "",
+                jaccard_score=j_score,
+                levenshtein_score=lr,
+            )
+        )
+    out.sort(key=lambda p: (-p.jaccard_score, -p.levenshtein_score, p.belief_a_id))
+    return out
+
+
 def dedup_audit(
     store: MemoryStore,
     *,
     jaccard_min: float = DEFAULT_JACCARD_MIN,
     levenshtein_min: float = DEFAULT_LEVENSHTEIN_MIN,
     max_candidate_pairs: int = DEFAULT_MAX_CANDIDATE_PAIRS,
+    locked_only: bool = False,
 ) -> DedupAuditReport:
     """Walk the store, find near-duplicate belief pairs, return a report.
 
     Read-only: no edges are inserted, no beliefs are mutated. The
     write-path hook (insert SUPERSEDES edges) is deferred behind the
     #197 bench gate.
+
+    `locked_only` (#1016-C) restricts the scan to user-locked beliefs —
+    the budget-critical, never-trimmed set (#379) where near-duplicate
+    accumulation is the #1016 lock-growth problem. Off by default, so the
+    full-store audit is byte-identical to before.
 
     Raises `ValueError` on malformed thresholds; degrades gracefully
     on per-belief FTS5 errors (skips that belief, logs nothing).
@@ -357,7 +422,11 @@ def dedup_audit(
             f"max_candidate_pairs must be >= 1, got {max_candidate_pairs}",
         )
 
-    beliefs = store.list_beliefs_for_indexing()
+    beliefs = (
+        _locked_beliefs_for_indexing(store)
+        if locked_only
+        else store.list_beliefs_for_indexing()
+    )
     n_beliefs = len(beliefs)
     if n_beliefs < 2:
         return DedupAuditReport(

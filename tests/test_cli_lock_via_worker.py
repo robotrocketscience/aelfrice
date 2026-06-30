@@ -129,3 +129,33 @@ def test_lock_idempotent_on_canonical_state(store: MemoryStore) -> None:
     assert rows["n"] == 2
     # Same lock-id resolves both calls.
     assert store.get_belief(bid_1) is not None
+
+
+def test_lock_warns_on_near_duplicate_existing_lock(
+    store: MemoryStore,
+) -> None:
+    """#1016-C: locking a near-duplicate of an existing lock prints a
+    hygiene warning naming the prior lock. Falsifiable if no warning is
+    emitted, or it fires on a non-duplicate."""
+    out1 = io.StringIO()
+    _cmd_lock(_ns("always use uv for python environments, never pip"), out1)
+    first_id = out1.getvalue().split("locked: ")[1].split()[0].strip()
+
+    # Near-duplicate (trailing punctuation only → Jaccard 1.0).
+    out2 = io.StringIO()
+    rc = _cmd_lock(
+        _ns("always use uv for python environments, never pip."), out2
+    )
+    assert rc == 0
+    msg = out2.getvalue()
+    assert "near-duplicate of" in msg
+    assert first_id in msg
+    assert "#1016" in msg
+
+
+def test_lock_no_warning_when_not_duplicate(store: MemoryStore) -> None:
+    """A lock unlike any existing one emits no near-duplicate warning."""
+    _cmd_lock(_ns("always use uv for python environments"), io.StringIO())
+    out = io.StringIO()
+    _cmd_lock(_ns("the store lives under .git/aelfrice/memory.db"), out)
+    assert "near-duplicate" not in out.getvalue()

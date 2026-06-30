@@ -435,3 +435,135 @@ class TestCLIDoctorDedup:
         )
         assert rc2 == 0
         assert "Duplicate pairs         : 1" in out_relaxed.getvalue()
+
+
+# --- #1016-C lock-scoped dedup hygiene ---------------------------------
+
+
+def _insert_lock(store: MemoryStore, bid: str, content: str) -> None:
+    from aelfrice.models import LOCK_USER
+    store.insert_belief(
+        Belief(
+            id=bid,
+            content=content,
+            content_hash=f"h_{bid}",
+            alpha=9.0,
+            beta=0.5,
+            type=BELIEF_FACTUAL,
+            lock_level=LOCK_USER,
+            locked_at="2026-06-01T00:00:00Z",
+            created_at="2026-06-01T00:00:00Z",
+            last_retrieved_at=None,
+        )
+    )
+
+
+class TestFindNearDuplicateLocks:
+    def test_finds_near_duplicate_lock(self, store: MemoryStore) -> None:
+        from aelfrice.dedup import find_near_duplicate_locks
+        _insert_lock(
+            store, "L1", "always use uv for python environments, never pip"
+        )
+        hits = find_near_duplicate_locks(
+            store, "always use uv for python environments, never pip."
+        )
+        assert [p.belief_a_id for p in hits] == ["L1"]
+        assert hits[0].jaccard_score >= DEFAULT_JACCARD_MIN
+        assert hits[0].levenshtein_score >= DEFAULT_LEVENSHTEIN_MIN
+
+    def test_excludes_self(self, store: MemoryStore) -> None:
+        from aelfrice.dedup import find_near_duplicate_locks
+        _insert_lock(store, "L1", "always use uv for python environments")
+        hits = find_near_duplicate_locks(
+            store,
+            "always use uv for python environments",
+            exclude_id="L1",
+        )
+        assert hits == []
+
+    def test_ignores_unlocked_beliefs(self, store: MemoryStore) -> None:
+        from aelfrice.dedup import find_near_duplicate_locks
+        _insert(store, "u1", "always use uv for python environments")
+        hits = find_near_duplicate_locks(
+            store, "always use uv for python envs"
+        )
+        assert hits == []
+
+    def test_below_threshold_returns_empty(self, store: MemoryStore) -> None:
+        from aelfrice.dedup import find_near_duplicate_locks
+        _insert_lock(store, "L1", "always use uv for python environments")
+        hits = find_near_duplicate_locks(
+            store, "the database lives under the dot-git directory"
+        )
+        assert hits == []
+
+    def test_blank_text_returns_empty(self, store: MemoryStore) -> None:
+        from aelfrice.dedup import find_near_duplicate_locks
+        _insert_lock(store, "L1", "always use uv for python environments")
+        assert find_near_duplicate_locks(store, "   ") == []
+
+
+class TestDedupAuditLockedOnly:
+    def test_locked_only_ignores_unlocked_near_dups(
+        self, store: MemoryStore
+    ) -> None:
+        # Two unlocked near-dups + one isolated lock. locked_only must
+        # report zero pairs (it only scans the single lock).
+        _insert(store, "u1", "do not push directly to the main branch")
+        _insert(store, "u2", "do not push directly to the main branch!")
+        _insert_lock(store, "L1", "the store lives under .git/aelfrice")
+        report = dedup_audit(store, locked_only=True)
+        assert report.n_beliefs_scanned == 1
+        assert report.n_duplicate_pairs == 0
+
+    def test_locked_only_finds_locked_near_dups(
+        self, store: MemoryStore
+    ) -> None:
+        _insert_lock(
+            store, "L1", "always use uv for python environments, never pip"
+        )
+        _insert_lock(
+            store, "L2", "always use uv for python environments, never pip!"
+        )
+        _insert(store, "u1", "unrelated content about retrieval budgets")
+        report = dedup_audit(store, locked_only=True)
+        assert report.n_beliefs_scanned == 2
+        assert report.n_duplicate_pairs == 1
+        assert report.clusters[0].member_ids == ("L1", "L2")
+
+    def test_full_audit_unchanged_by_default(
+        self, store: MemoryStore
+    ) -> None:
+        # locked_only defaults False → full-store scan still sees unlocked.
+        _insert(store, "u1", "do not push directly to the main branch")
+        _insert(store, "u2", "do not push directly to the main branch")
+        report = dedup_audit(store)
+        assert report.n_beliefs_scanned == 2
+        assert report.n_duplicate_pairs == 1
+
+    def test_cli_dedup_locks_flag(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import io
+        from aelfrice.cli import main
+
+        db = str(tmp_path / "brain.db")
+        monkeypatch.setenv("AELFRICE_DB", db)
+        s = MemoryStore(db)
+        _insert_lock(
+            s, "L1", "always use uv for python environments, never pip"
+        )
+        _insert_lock(
+            s, "L2", "always use uv for python environments, never pip!"
+        )
+        _insert(s, "u1", "do not push directly to the main branch")
+        _insert(s, "u2", "do not push directly to the main branch")
+        s.close()
+
+        out = io.StringIO()
+        rc = main(["doctor", "--dedup", "--dedup-locks"], out=out)
+        assert rc == 0
+        text = out.getvalue()
+        assert "user-locked beliefs only" in text
+        assert "Beliefs scanned         : 2" in text  # only the 2 locks
+        assert "Duplicate pairs         : 1" in text
