@@ -3715,6 +3715,18 @@ class MemoryStore:
         row = cur.fetchone()
         return int(row["n"]) if row else 0
 
+    def count_active_beliefs(self) -> int:
+        """Count active beliefs (``valid_to IS NULL``). The FTS5 mirror
+        holds exactly these rows — soft-delete (#980/#1029) removes the
+        FTS row but keeps the tombstoned belief row — so this, not
+        ``count_beliefs()``, is the correct side of the fts-sync invariant.
+        """
+        cur = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM beliefs WHERE valid_to IS NULL"
+        )
+        row = cur.fetchone()
+        return int(row["n"]) if row else 0
+
     def count_edges(self) -> int:
         cur = self._conn.execute("SELECT COUNT(*) AS n FROM edges")
         row = cur.fetchone()

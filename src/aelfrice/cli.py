@@ -51,6 +51,7 @@ from aelfrice.models import (
     INGEST_SOURCE_CLI_REMEMBER,
     LOCK_NONE,
     LOCK_USER,
+    ORIGIN_AGENT_INFERRED,
     ORIGIN_USER_STATED,
     ORIGIN_USER_VALIDATED,
     Phantom,
@@ -4671,6 +4672,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_derive_pending(args, out)
     if getattr(args, "prune_dormant", False):
         return _cmd_doctor_prune_dormant(args, out)
+    if getattr(args, "prune_noise", False):
+        return _cmd_doctor_prune_noise(args, out)
     if getattr(args, "meta_beliefs", False):
         return _cmd_doctor_meta_beliefs(args, out)
     if getattr(args, "hot_path", False):
@@ -5244,6 +5247,88 @@ def _cmd_doctor_promote_retention(
         store.close()
     print(_format_promotion_report(report), file=out)  # type: ignore[arg-type]
     return 0
+
+
+def _cmd_doctor_prune_noise(
+    args: argparse.Namespace, out: object
+) -> int:
+    """Soft-delete active beliefs the current ingest filters would reject.
+
+    #1029 backfill GC. The forward filters (`is_transcript_noise` and the
+    classifier's `persist` gate) were tightened over #1025/#1027/#785 etc.,
+    but only block *new* ingestion — historical noise (harness tags, shell/
+    ack scaffolding, conversational questions) lingers in the store. This
+    pass re-applies those filters to existing beliefs and soft-deletes the
+    matches.
+
+    Safety scoping: only `agent_inferred`, non-locked, currently-active
+    beliefs are eligible — user-sourced and locked beliefs are never
+    touched even if they superficially match. Soft-delete sets `valid_to`
+    (reversible; the row, edges, and corroboration evidence are preserved),
+    so this is index/recall hygiene, not destruction.
+
+    Dry-run by default (count + sample). `--apply` performs the
+    soft-delete; `--max N` caps the number removed per run. Bypasses the
+    hooks/graph checks.
+    """
+    from aelfrice.classification_core import classify_sentence
+    from aelfrice.noise_filter import is_transcript_noise
+
+    apply = bool(getattr(args, "apply", False))
+    max_n_raw = getattr(args, "max", None)
+    max_n: int | None = int(max_n_raw) if max_n_raw is not None else None
+
+    def _is_noise_now(content: str) -> bool:
+        if is_transcript_noise(content):
+            return True
+        return not classify_sentence(content, ORIGIN_AGENT_INFERRED).persist
+
+    store = _open_store()
+    try:
+        candidates = [
+            b
+            for b in store.list_active_beliefs()
+            if b.origin == ORIGIN_AGENT_INFERRED
+            and b.lock_level == LOCK_NONE
+            and _is_noise_now(b.content)
+        ]
+        total = len(candidates)
+        selected = candidates[:max_n] if max_n is not None else candidates
+        capped_note = (
+            f" (capped to {len(selected)} via --max)"
+            if max_n is not None and total > len(selected)
+            else ""
+        )
+        print(
+            f"prune-noise: {total} active agent_inferred non-locked "
+            f"belief(s) match the current ingest filters{capped_note}.",
+            file=out,  # type: ignore[arg-type]
+        )
+        for b in selected[:15]:
+            print(f"  [{b.content.strip()[:72]}]", file=out)  # type: ignore[arg-type]
+        if total > 15:
+            print(f"  … and {total - 15} more.", file=out)  # type: ignore[arg-type]
+
+        if not apply:
+            print(
+                "dry-run: re-run with --apply to soft-delete "
+                "(reversible — sets valid_to).",
+                file=out,  # type: ignore[arg-type]
+            )
+            return 0
+
+        pruned = 0
+        for b in selected:
+            store.soft_delete_belief(b.id)
+            pruned += 1
+        print(
+            f"soft-deleted {pruned} belief(s). Reversible via valid_to; "
+            f"run `aelf doctor graph` to confirm store health.",
+            file=out,  # type: ignore[arg-type]
+        )
+        return 0
+    finally:
+        store.close()
 
 
 def _cmd_doctor_prune_dormant(
@@ -6824,6 +6909,20 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "Combine with --apply to be prompted [y/N] per DB and "
             "delete on 'y'. Bypasses the hooks/graph checks; never "
             "opens the canonical store. Issue #594."
+        ),
+    )
+    p_doctor.add_argument(
+        "--prune-noise",
+        dest="prune_noise",
+        action="store_true",
+        default=False,
+        help=(
+            "soft-delete active agent_inferred, non-locked beliefs that "
+            "the current ingest filters would now reject (harness tags, "
+            "shell/ack scaffolding, conversational questions). Reversible "
+            "(sets valid_to; row + evidence preserved). Dry-run by "
+            "default; combine with --apply to soft-delete, and --max N to "
+            "cap. Never touches locked or user-sourced beliefs. #1029."
         ),
     )
     p_doctor.add_argument(

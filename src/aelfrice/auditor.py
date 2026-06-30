@@ -9,7 +9,7 @@ not affect exit status.
 Checks:
   - orphan_threads     threads (graph relationships) whose src or dst
                        no longer exists in beliefs
-  - fts_sync           beliefs_fts row count matches beliefs row count
+  - fts_sync           beliefs_fts row count matches the ACTIVE belief count
   - locked_contradicts pairs of locked beliefs joined by a CONTRADICTS thread
 
 Threshold-tuned checks (isolated clusters, decay anomalies) are deferred
@@ -89,7 +89,11 @@ def _check_orphan_edges(store: MemoryStore) -> AuditFinding:
 
 
 def _check_fts_sync(store: MemoryStore) -> AuditFinding:
-    beliefs = store.count_beliefs()
+    # The FTS5 mirror holds one row per ACTIVE belief; soft-deleted
+    # (tombstoned) beliefs keep their `beliefs` row but have their FTS row
+    # removed (#980/#1029), so compare against the active count, not the
+    # total — otherwise every soft-delete reads as spurious drift.
+    beliefs = store.count_active_beliefs()
     fts = store.count_fts_rows()
     if beliefs == fts:
         return AuditFinding(
