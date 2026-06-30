@@ -420,6 +420,44 @@ def test_transcript_noise_prose_not_starting_with_xml_tag() -> None:
     assert is_transcript_noise("The worktree contains three branches.") is False
 
 
+# #1025: harness tool/usage tags, closing tags, and box-draw borders.
+
+
+def test_transcript_noise_tool_use_id_tag() -> None:
+    assert is_transcript_noise(
+        "<tool-use-id>toolu_0169kUbR49qwy1tZ7PLVBYdc</tool-use-id>"
+    ) is True
+
+
+def test_transcript_noise_usage_block() -> None:
+    assert is_transcript_noise(
+        "<usage><total_tokens>37658</total_tokens></usage>"
+    ) is True
+
+
+def test_transcript_noise_lone_closing_tag() -> None:
+    assert is_transcript_noise("</task-notification>") is True
+    assert is_transcript_noise("</event>") is True
+
+
+def test_transcript_noise_box_draw_border() -> None:
+    assert is_transcript_noise("┌────────────────┬─────────────┐") is True
+    assert is_transcript_noise("├──────────┤") is True
+
+
+def test_transcript_noise_prose_with_midline_closing_tag_is_not_noise() -> None:
+    # A closing tag mid-prose (not at the start) is real content (#1025).
+    assert is_transcript_noise(
+        "Use </div> to close the block when rendering HTML."
+    ) is False
+
+
+def test_transcript_noise_short_factual_belief_is_not_noise() -> None:
+    # Markup-specific detection must not regress short prose (no word gate).
+    assert is_transcript_noise("Recall@10 no regression") is False
+    assert is_transcript_noise("atomic commits beat batched") is False
+
+
 # --- is_transcript_noise: category 4 — single-word progress emit ----------
 
 

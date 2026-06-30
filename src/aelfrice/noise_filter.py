@@ -183,7 +183,24 @@ _TRANSCRIPT_XML_PREFIXES: Final[tuple[str, ...]] = (
     "<task-",
     "<summary>Background",
     "<summary>Monitor",
+    # #1025: harness tool/usage metadata blocks captured verbatim from
+    # transcripts (e.g. "<tool-use-id>toolu_…</tool-use-id>",
+    # "<usage><total_tokens>…</usage>"). Structured scaffolding, not beliefs.
+    "<tool-use-id",
+    "<usage",
+    "<event",
+    "<total_tokens",
 )
+
+# #1025: a sentence that begins with a CLOSING tag ("</…") is a stray
+# harness fragment (e.g. "</task-notification>", "</event>"). No prose
+# belief starts with a closing tag, so this is high-precision.
+_TRANSCRIPT_CLOSING_TAG_PREFIX: Final[str] = "</"
+
+# #1025: box-drawing glyphs begin rendered table/tree borders that some
+# transcript surfaces emit (┌─┐ ├ │ …). A leading box glyph marks a
+# layout fragment, never a belief.
+_TRANSCRIPT_BOXDRAW_CHARS: Final[frozenset[str]] = frozenset("┌┐└┘├┤┬┴┼─│╭╮╰╯╞╡═")
 
 # Single-word capitalised gerund followed by a full stop: "Polling.", "Running."
 _TRANSCRIPT_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
@@ -506,8 +523,11 @@ def is_transcript_noise(sentence: str) -> bool:
        Match is case-sensitive and position-anchored at index 0.
     2. **Tool-call rendering glyph** — starts with ⏺ (U+23FA).
     3. **Pseudo-XML structural tags** — starts with `<worktree`,
-       `<output-file`, `<task-`, `<summary>Background`, or
-       `<summary>Monitor`.
+       `<output-file`, `<task-`, `<summary>Background`,
+       `<summary>Monitor`, or a harness tool/usage tag (`<tool-use-id`,
+       `<usage`, `<event`, `<total_tokens`); OR begins with a closing
+       tag (`</…`) or a box-drawing glyph (┌─┐ …) — both stray
+       harness layout fragments (#1025).
     4. **Single-word progress emit** — matches `^[A-Z][a-z]+ing\\.$`
        (a lone capitalised gerund and a full stop, nothing else).
     5. **Agent ack emit** — matches
@@ -533,6 +553,13 @@ def is_transcript_noise(sentence: str) -> bool:
     for prefix in _TRANSCRIPT_XML_PREFIXES:
         if sentence.startswith(prefix):
             return True
+
+    # Category 3b (#1025): lone closing tag or box-draw border at the start.
+    stripped = sentence.lstrip()
+    if stripped.startswith(_TRANSCRIPT_CLOSING_TAG_PREFIX):
+        return True
+    if stripped and stripped[0] in _TRANSCRIPT_BOXDRAW_CHARS:
+        return True
 
     # Category 4: single-word progress emit
     if _TRANSCRIPT_PROGRESS_RE.match(sentence) is not None:
