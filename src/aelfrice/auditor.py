@@ -228,8 +228,8 @@ def _check_lock_budget_pressure(store: MemoryStore) -> AuditFinding:
         headroom = (
             f"; {total}/{budget} tok"
             + (
-                f" — past {floor_engages_at} the relevance floor (#1015) "
-                f"caps query results"
+                f" — past the {floor_engages_at}-tok mark the relevance "
+                f"floor (#1015) caps query results"
                 if total >= floor_engages_at
                 else ""
             )
