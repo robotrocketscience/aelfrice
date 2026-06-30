@@ -10,6 +10,7 @@ import pytest
 from aelfrice.models import (
     BELIEF_FACTUAL,
     CORROBORATION_SOURCE_COMMIT_INGEST,
+    CORROBORATION_SOURCE_MCP_REMEMBER,
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     LOCK_NONE,
     Belief,
@@ -112,7 +113,9 @@ def test_duplicate_hash_adds_corroboration_row() -> None:
 
 
 def test_corroboration_count_increments_per_hit() -> None:
-    """Three duplicate hits from different sources accumulate three rows."""
+    """Hits from DISTINCT sources accumulate distinct rows; #1020 dedupes
+    same-source repeats. Three distinct source_types -> three rows; a
+    fourth repeat of an existing source_type adds nothing."""
     store = _fresh_store()
     try:
         b1 = _belief("id-001", "The sky is blue.", "hash-aaa")
@@ -121,11 +124,17 @@ def test_corroboration_count_increments_per_hit() -> None:
         for src in [
             CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
             CORROBORATION_SOURCE_COMMIT_INGEST,
-            CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+            CORROBORATION_SOURCE_MCP_REMEMBER,
         ]:
             b_dup = _belief("id-dup", "The sky is blue.", "hash-aaa")
             store.insert_or_corroborate(b_dup, source_type=src)
+        assert store.count_corroborations("id-001") == 3
 
+        # #1020: a same-source repeat (same session/path/type) is ignored.
+        b_dup = _belief("id-dup", "The sky is blue.", "hash-aaa")
+        store.insert_or_corroborate(
+            b_dup, source_type=CORROBORATION_SOURCE_TRANSCRIPT_INGEST
+        )
         assert store.count_corroborations("id-001") == 3
     finally:
         store.close()

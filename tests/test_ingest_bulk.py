@@ -89,11 +89,11 @@ def test_bulk_is_now_a_noop_under_pr264() -> None:
     assert len(bulk_ids) == 1
 
     bid = bulk_ids[0]
-    # Two duplicate ingests after the first produce two corroboration
-    # rows in BOTH modes — the worker's insert_or_corroborate runs on
-    # every duplicate raw input regardless of bulk.
-    assert store_normal.count_corroborations(bid) == 2
-    assert store_bulk.count_corroborations(bid) == 2
+    # #1020: the duplicate ingests share one source (same null session +
+    # source_type), so they dedup to ONE corroboration in BOTH modes. The
+    # bulk/non-bulk parity this test guards still holds — both equal 1.
+    assert store_normal.count_corroborations(bid) == 1
+    assert store_bulk.count_corroborations(bid) == 1
     # And the log row count is also identical (3 raw inputs each).
     assert store_normal.count_ingest_log() == 3
     assert store_bulk.count_ingest_log() == 3

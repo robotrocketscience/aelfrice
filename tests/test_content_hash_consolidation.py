@@ -453,11 +453,14 @@ def test_pre_existing_corroborations_survive_unique_migration(
     con = sqlite3.connect(db)
     con.execute("PRAGMA foreign_keys=ON")
     for i in range(5):
+        # Distinct session_id per row so the #1020 same-source dedup keeps
+        # all five (independent re-assertions); still exercises the #336
+        # cascade-on-DROP survival path through the unique migration.
         con.execute(
             "INSERT INTO belief_corroborations "
-            "(belief_id, ingested_at, source_type) "
-            "VALUES ('can-A', ?, 'cli_remember')",
-            (f"2026-04-{i + 1:02d}T00:00:00Z",),
+            "(belief_id, ingested_at, source_type, session_id) "
+            "VALUES ('can-A', ?, 'cli_remember', ?)",
+            (f"2026-04-{i + 1:02d}T00:00:00Z", f"sess-{i}"),
         )
     con.commit()
     con.close()

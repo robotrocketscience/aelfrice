@@ -595,6 +595,17 @@ SCHEMA_META_SPECULATIVE_HASH_V2_COMPLETE: Final[str] = (
 SCHEMA_META_CORROBORATIONS_BELIEF_ID_RETYPED: Final[str] = (
     "belief_corroborations_belief_id_retyped"
 )
+# #1020. Set after the one-shot dedup + UNIQUE index that makes
+# corroboration recording idempotent per (belief_id, session_id,
+# source_path_hash). Before this, `record_corroboration` did an
+# unconditional INSERT, so re-ingesting the same source (e.g. the #1012
+# Stop-flush re-reading turns.jsonl) re-corroborated every sentence —
+# ~74% of corroboration rows on a real store were same-source repeats,
+# inflating `corroboration_count` and the "core" set. ISO timestamp on
+# completion; fresh stores stamp the marker after a no-op dedup.
+SCHEMA_META_CORROBORATION_SOURCE_DEDUP: Final[str] = (
+    "corroboration_source_dedup_complete"
+)
 
 # v1.0 -> v1.2 column additions. Each ALTER runs after _SCHEMA. ALTERs
 # are idempotent: a duplicate-column OperationalError on a v1.2-fresh
@@ -954,6 +965,13 @@ class MemoryStore:
         # #219 UNIQUE(content_hash). Table-swap migration; runs once
         # after the dedup pass guarantees no duplicates remain.
         self._maybe_apply_content_hash_unique()
+        # #1020 corroboration source dedup + UNIQUE(belief_id, session,
+        # source). Runs AFTER the content_hash consolidation above, which
+        # rewrites belief_corroborations FK ids and inserts synthetic
+        # rows — doing our dedup/UNIQUE first could collide with those
+        # rewrites on a store upgrading past both migrations at once.
+        # Idempotent; no-op on fresh / already-deduped stores.
+        self._maybe_dedup_corroboration_sources()
         # v3.0 #644 speculative_hash_v2 rehash. Re-derives
         # `content_hash` for every existing speculative belief using the
         # new (constituent_set, generator) key. Must run AFTER the
@@ -1409,6 +1427,96 @@ class MemoryStore:
             datetime.now(timezone.utc).isoformat(),
         )
         return True
+
+    def _maybe_dedup_corroboration_sources(self) -> int:
+        """One-shot: collapse same-source corroboration rows + add UNIQUE.
+
+        #1020. `record_corroboration` historically did an unconditional
+        INSERT, so re-ingesting the same source (notably the #1012
+        Stop-flush, which re-reads the live `turns.jsonl` every N turns)
+        recorded a fresh corroboration for every already-ingested
+        sentence. On a real store ~74% of rows were same-source repeats,
+        inflating `corroboration_count` (raw COUNT(*)) and the "core" set
+        (the `corr >= 2` arm dropped 4258 -> 211 qualifiers under dedup).
+
+        The corroboration signal means "independently re-asserted", which
+        is keyed by `(belief_id, session_id, source_path_hash, source_type)`
+        — the same source/channel in the same session is one corroboration,
+        not N (different `source_type`s are distinct evidence channels and
+        still count separately). This pass:
+
+          1. Deletes duplicate rows, keeping `MIN(id)` (earliest) per key.
+          2. Creates a UNIQUE index on that key so `record_corroboration`
+             can `INSERT OR IGNORE` and stay idempotent going forward.
+
+        The `consolidation_migration` source_type is EXEMPT (partial index
+        `WHERE source_type != 'consolidation_migration'`, and skipped by the
+        DELETE): #219 deliberately inserts one synthetic such row per
+        content-hash duplicate consumed to preserve the merged beliefs'
+        count signal, so those rows must not collapse into each other.
+
+        NULL `session_id` / `source_path_hash` are coalesced to '' so they
+        dedup (SQLite treats raw NULLs as distinct in a UNIQUE index).
+        Migration-only — the index is NOT in `_SCHEMA`, since creating it
+        there would fail on an existing dup-laden table before this pass
+        runs. Fresh stores: dedup is a no-op, the index is created empty.
+
+        Idempotent via `SCHEMA_META_CORROBORATION_SOURCE_DEDUP`. Returns
+        the number of duplicate rows removed (0 on fresh / already-applied).
+        """
+        if self.get_schema_meta(SCHEMA_META_CORROBORATION_SOURCE_DEDUP):
+            return 0
+
+        # The exempt source_type is inlined as a SQL literal below (a
+        # parameter cannot be bound in index DDL). Pin it to the model
+        # constant so a rename is caught here rather than silently
+        # disabling the exemption.
+        assert (
+            CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION
+            == "consolidation_migration"
+        )
+
+        removed = 0
+        self._conn.execute("BEGIN")
+        try:
+            cur = self._conn.execute(
+                """
+                DELETE FROM belief_corroborations
+                WHERE source_type != 'consolidation_migration'
+                  AND id NOT IN (
+                    SELECT MIN(id) FROM belief_corroborations
+                    WHERE source_type != 'consolidation_migration'
+                    GROUP BY belief_id,
+                             COALESCE(session_id, ''),
+                             COALESCE(source_path_hash, ''),
+                             source_type
+                )
+                """
+            )
+            removed = cur.rowcount if cur.rowcount is not None else 0
+            self._conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    uq_belief_corroborations_source
+                ON belief_corroborations(
+                    belief_id,
+                    COALESCE(session_id, ''),
+                    COALESCE(source_path_hash, ''),
+                    source_type
+                )
+                WHERE source_type != 'consolidation_migration'
+                """
+            )
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+
+        self.set_schema_meta(
+            SCHEMA_META_CORROBORATION_SOURCE_DEDUP,
+            datetime.now(timezone.utc).isoformat(),
+        )
+        return removed
 
     def _maybe_consolidate_content_hash_duplicates(self) -> int:
         """One-shot migration: collapse duplicate content_hash rows.
@@ -2877,6 +2985,13 @@ class MemoryStore:
 
         `session_id` and `source_path_hash` are nullable: pass None
         when unavailable; no exception is raised.
+
+        #1020: idempotent per `(belief_id, session_id, source_path_hash)`
+        via `INSERT OR IGNORE` against the `uq_belief_corroborations_source`
+        UNIQUE index. Re-ingesting the same source in the same session (the
+        #1012 Stop-flush re-reading `turns.jsonl`) no longer inflates the
+        count — corroboration measures *distinct* re-assertions, not raw
+        re-ingests. A genuinely new session or source still records a row.
         """
         if source_type not in CORROBORATION_SOURCE_TYPES:
             raise ValueError(
@@ -2886,7 +3001,7 @@ class MemoryStore:
         ts = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
             """
-            INSERT INTO belief_corroborations
+            INSERT OR IGNORE INTO belief_corroborations
                 (belief_id, ingested_at, source_type, session_id, source_path_hash)
             VALUES (?, ?, ?, ?, ?)
             """,

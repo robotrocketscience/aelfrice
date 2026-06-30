@@ -124,20 +124,29 @@ def test_reingest_records_corroboration_row(tmp_path: Path) -> None:
         store.close()
 
 
-def test_reingest_twice_records_two_corroborations(tmp_path: Path) -> None:
-    """Each subsequent ingest adds exactly one row to belief_corroborations."""
+def test_reingest_same_source_dedupes_distinct_source_counts(
+    tmp_path: Path,
+) -> None:
+    """#1020: re-ingesting the SAME source (same session) is one
+    corroboration however many times; a DISTINCT session counts again."""
     store = MemoryStore(str(tmp_path / "t.db"))
     try:
         text = "The configuration directory is /etc/aelfrice."
         source = "user"
-        ingest_turn(store, text, source=source)
+        ingest_turn(store, text, source=source, session_id="s1")  # insert
         beliefs = store.search_beliefs("configuration directory", limit=5)
         assert len(beliefs) >= 1
         bid = beliefs[0].id
 
-        ingest_turn(store, text, source=source)
-        ingest_turn(store, text, source=source)
+        # Same source+session, re-ingested twice -> one corroboration.
+        ingest_turn(store, text, source=source, session_id="s1")
+        ingest_turn(store, text, source=source, session_id="s1")
+        assert store.count_corroborations(bid) == 1
 
+        # A distinct session is an independent re-assertion -> +1, and
+        # repeating it does not inflate.
+        ingest_turn(store, text, source=source, session_id="s2")
+        ingest_turn(store, text, source=source, session_id="s2")
         assert store.count_corroborations(bid) == 2
     finally:
         store.close()
@@ -193,14 +202,14 @@ def test_corroboration_count_increments_on_retrieval(tmp_path: Path) -> None:
     try:
         text = "The scheduler runs every five minutes by default."
         source = "user"
-        ingest_turn(store, text, source=source)
+        ingest_turn(store, text, source=source, session_id="s1")
         beliefs = store.search_beliefs("scheduler", limit=5)
         assert beliefs
         bid = beliefs[0].id
 
-        # Two re-ingests => two corroboration rows
-        ingest_turn(store, text, source=source)
-        ingest_turn(store, text, source=source)
+        # Two re-ingests from two DISTINCT sessions => two rows (#1020).
+        ingest_turn(store, text, source=source, session_id="s1")
+        ingest_turn(store, text, source=source, session_id="s2")
 
         after = store.get_belief(bid)
         assert after is not None
@@ -371,13 +380,14 @@ def test_belief_deletion_cascades_to_corroborations(tmp_path: Path) -> None:
     try:
         text = "The retry backoff is exponential with a cap of sixty seconds."
         source = "user"
-        ingest_turn(store, text, source=source)
+        ingest_turn(store, text, source=source, session_id="s1")
         beliefs = store.search_beliefs("retry backoff", limit=5)
         assert beliefs
         bid = beliefs[0].id
 
-        ingest_turn(store, text, source=source)
-        ingest_turn(store, text, source=source)
+        # Two distinct sessions -> two corroboration rows (#1020).
+        ingest_turn(store, text, source=source, session_id="s1")
+        ingest_turn(store, text, source=source, session_id="s2")
         assert store.count_corroborations(bid) == 2
 
         store.delete_belief(bid)
@@ -460,5 +470,103 @@ def test_unknown_source_type_raises_valueerror() -> None:
 
         with pytest.raises(ValueError, match="Unknown source_type"):
             store.record_corroboration("b_err", source_type="not_a_real_source")
+    finally:
+        store.close()
+
+
+# ---------------------------------------------------------------------------
+# #1020 source-dedup migration + UNIQUE index
+# ---------------------------------------------------------------------------
+
+
+def _seed_legacy_corroborations(db: str, rows: list[tuple]) -> None:
+    """Write a belief + raw corroboration rows BEFORE any MemoryStore open,
+    bypassing the runtime INSERT OR IGNORE so we can stage pre-migration
+    duplicates. `rows` are (ingested_at, source_type, session_id, src_hash)."""
+    import sqlite3
+    s = MemoryStore(db)  # creates schema + runs migrations once (no rows yet)
+    try:
+        s.insert_belief(_belief("leg1", "legacy fact.", "hash-leg1"))
+    finally:
+        s.close()
+    # Drop the UNIQUE index so we can stage duplicates, then re-stage.
+    con = sqlite3.connect(db)
+    con.execute("DROP INDEX IF EXISTS uq_belief_corroborations_source")
+    con.execute(
+        "DELETE FROM schema_meta WHERE key='corroboration_source_dedup_complete'"
+    )
+    for ts, st, sess, sph in rows:
+        con.execute(
+            "INSERT INTO belief_corroborations "
+            "(belief_id, ingested_at, source_type, session_id, source_path_hash) "
+            "VALUES ('leg1', ?, ?, ?, ?)",
+            (ts, st, sess, sph),
+        )
+    con.commit()
+    con.close()
+
+
+def test_dedup_migration_collapses_same_source_keeps_distinct(
+    tmp_path: Path,
+) -> None:
+    """Opening a legacy store collapses same-(session,source,type) repeat
+    rows to one, keeps genuinely distinct ones, and is idempotent."""
+    db = str(tmp_path / "leg.db")
+    _seed_legacy_corroborations(db, [
+        # 3 same-source repeats (same session, type, null path) -> 1
+        ("2026-04-01T00:00:00Z", "transcript_ingest", "s1", None),
+        ("2026-04-02T00:00:00Z", "transcript_ingest", "s1", None),
+        ("2026-04-03T00:00:00Z", "transcript_ingest", "s1", None),
+        # distinct session -> kept
+        ("2026-04-04T00:00:00Z", "transcript_ingest", "s2", None),
+        # distinct source_type -> kept
+        ("2026-04-05T00:00:00Z", "commit_ingest", "s1", None),
+    ])
+    store = MemoryStore(db)  # triggers _maybe_dedup_corroboration_sources
+    try:
+        assert store.count_corroborations("leg1") == 3  # s1/transcript, s2, s1/commit
+        # earliest row of the collapsed group survives
+        rows = store.list_corroborations("leg1")
+        ts_for_s1_transcript = [
+            r[0] for r in rows
+            if r[1] == "transcript_ingest" and r[2] == "s1"
+        ]
+        assert ts_for_s1_transcript == ["2026-04-01T00:00:00Z"]
+        # idempotent re-run removes nothing
+        assert store._maybe_dedup_corroboration_sources() == 0  # type: ignore[reportPrivateUsage]
+        # UNIQUE index present
+        idx = store._conn.execute(  # type: ignore[reportPrivateUsage]
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND name='uq_belief_corroborations_source'"
+        ).fetchone()
+        assert idx is not None
+    finally:
+        store.close()
+
+
+def test_dedup_migration_exempts_consolidation_migration_rows(
+    tmp_path: Path,
+) -> None:
+    """consolidation_migration synthetic rows (#219 count-preservation) are
+    exempt: same-key repeats are NOT collapsed."""
+    db = str(tmp_path / "leg2.db")
+    _seed_legacy_corroborations(db, [
+        # 3 identical-key consolidation rows must all survive
+        ("2026-04-01T00:00:00Z", "consolidation_migration", None, None),
+        ("2026-04-02T00:00:00Z", "consolidation_migration", None, None),
+        ("2026-04-03T00:00:00Z", "consolidation_migration", None, None),
+        # but a normal same-source pair still collapses to 1
+        ("2026-04-04T00:00:00Z", "transcript_ingest", "s1", None),
+        ("2026-04-05T00:00:00Z", "transcript_ingest", "s1", None),
+    ])
+    store = MemoryStore(db)
+    try:
+        # 3 consolidation + 1 collapsed transcript = 4
+        assert store.count_corroborations("leg1") == 4
+        n_consol = store._conn.execute(  # type: ignore[reportPrivateUsage]
+            "SELECT COUNT(*) FROM belief_corroborations "
+            "WHERE source_type='consolidation_migration'"
+        ).fetchone()[0]
+        assert n_consol == 3
     finally:
         store.close()
