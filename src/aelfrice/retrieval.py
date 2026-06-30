@@ -126,11 +126,18 @@ DEFAULT_TOKEN_BUDGET: Final[int] = 2400
 # budget → 0 relevance tokens). This reserves at least
 # `floor(effective_budget * RELEVANCE_BUDGET_FLOOR_FRACTION)` tokens for
 # L2.5+L1. It is a strict no-op (byte-identical) whenever the locks leave at
-# least that much room — i.e. it only fires in the lock-saturated regime —
-# so lock-free corpora (e.g. LoCoMo) are unaffected. Locks are still never
-# trimmed; in the saturated regime total output may exceed the nominal
-# budget by up to the floor, the intended trade for never going blind.
-RELEVANCE_BUDGET_FLOOR_FRACTION: Final[float] = 0.25
+# least that much room — i.e. it only fires once locks consume more than
+# `(1 - fraction)` of the budget — so lock-light corpora (e.g. LoCoMo) are
+# unaffected. Locks are still never trimmed; in that regime total output may
+# exceed the nominal budget by up to the floor, the intended trade for never
+# going blind.
+#
+# #1023: raised 0.25 -> 0.50. On a real lock-saturated store (24 locks =
+# 3491 tok vs a 1500 budget) this doubles surfaced relevance hits (8 -> 16)
+# for ~9% more total tokens (3825 -> 4182) — cheap because the locks already
+# dominate the injection. It also widens engagement to locks > 50% of budget
+# (was > 75%); diminishing BM25-relevance past ~0.5 makes it the knee.
+RELEVANCE_BUDGET_FLOOR_FRACTION: Final[float] = 0.50
 
 _CHARS_PER_TOKEN: Final[float] = 4.0
 DEFAULT_L1_LIMIT: Final[int] = 50

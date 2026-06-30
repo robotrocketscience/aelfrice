@@ -13,6 +13,7 @@ from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.retrieval import (
     DEFAULT_TOKEN_BUDGET,
     RELEVANCE_BUDGET_FLOOR_FRACTION,
+    _belief_tokens,
     retrieve,
 )
 from aelfrice.store import MemoryStore
@@ -61,6 +62,30 @@ def test_floor_is_noop_when_locks_fit() -> None:
     hits = retrieve(s, "kubernetes deployment rollout", token_budget=DEFAULT_TOKEN_BUDGET)
     relevant = [b for b in hits if b.id.startswith("T")]
     assert len(relevant) == 3, "all relevant beliefs should surface when locks fit"
+
+
+def test_floor_engages_at_moderate_lock_load() -> None:
+    """#1023: with the 0.5 fraction the floor engages once locks exceed
+    50% of the budget (not only at >75%). Locks at ~60% of budget plus
+    abundant relevant content -> relevance is reserved (several hits) and
+    total output exceeds the nominal budget by up to the floor."""
+    assert RELEVANCE_BUDGET_FLOOR_FRACTION >= 0.5
+    s = MemoryStore(":memory:")
+    # Each padded belief ~150 tok. ~10 locks ~= 1500 tok ~= 62% of 2400.
+    for i in range(10):
+        s.insert_belief(_mk(f"L{i}", f"unrelated locked fact topic alpha {i}", locked=True))
+    for i in range(12):
+        s.insert_belief(
+            _mk(f"T{i}", f"kubernetes deployment rollout pods replicas note {i}", locked=False)
+        )
+    hits = retrieve(s, "kubernetes deployment rollout pods", token_budget=DEFAULT_TOKEN_BUDGET)
+    relevant = [b for b in hits if b.id.startswith("T")]
+    assert len(relevant) >= 2
+    # Distinguishes 0.5 from 0.25: at 0.25 the floor would NOT engage here
+    # (locks ~62% < 75%) so the cap holds at the budget; at 0.5 it engages
+    # and total overflows by up to floor(0.5 * budget).
+    total = sum(_belief_tokens(b) for b in hits)
+    assert total > DEFAULT_TOKEN_BUDGET
 
 
 def test_floor_fraction_sane() -> None:
