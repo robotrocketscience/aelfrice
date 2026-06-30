@@ -1760,7 +1760,13 @@ def _split_belief_lines(
     manifest_lines: list[str] = []
     for h in hits:
         if is_reference_lock(h):
-            manifest_lines.append("  " + lock_manifest_line(h))
+            # Escape framing tags in the manifest line exactly as belief
+            # content is escaped, so a reference lock cannot spoof the
+            # envelope (#1037 review). The belief id is a hex hash; only
+            # the topic could carry a tag.
+            manifest_lines.append(
+                "  " + _escape_for_hook_block(lock_manifest_line(h))
+            )
             continue
         lock_attr = "user" if h.lock_level == LOCK_USER else "none"
         content = _escape_for_hook_block(h.content)
