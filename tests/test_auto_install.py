@@ -16,6 +16,7 @@ Covers the #623 acceptance bullets:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -369,17 +370,78 @@ def test_auto_install_at_cli_entry_skips_when_not_uv_tool(
     assert captured.err == ""
 
 
-def test_is_running_from_uv_tool_install_delegates_to_lifecycle(
+def test_is_running_from_uv_tool_install_delegates_to_running_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The gate forwards to `lifecycle._is_uv_tool_install` so detection
-    stays in one place. Test both branches via that single seam."""
+    """The gate forwards to `lifecycle._running_from_uv_tool` (the
+    running-PROCESS check), not `_is_uv_tool_install` (disk presence).
+    Delegating to presence reintroduced the #834 downgrade from any
+    worktree whenever a uv-tool install existed on the box (#1044)."""
     from aelfrice import lifecycle
 
-    monkeypatch.setattr(lifecycle, "_is_uv_tool_install", lambda: True)
+    monkeypatch.setattr(lifecycle, "_running_from_uv_tool", lambda: True)
     assert auto_install.is_running_from_uv_tool_install() is True
-    monkeypatch.setattr(lifecycle, "_is_uv_tool_install", lambda: False)
+    monkeypatch.setattr(lifecycle, "_running_from_uv_tool", lambda: False)
     assert auto_install.is_running_from_uv_tool_install() is False
+
+
+def test_running_from_uv_tool_distinguishes_process_from_presence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """#1044 core regression: a uv-tool install existing on disk must NOT
+    make a worktree's `uv run aelf` look like the uv-tool install. The
+    auto-install gate keys off the running process, so it stays False."""
+    from aelfrice import lifecycle
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # A uv-tool install exists on the box ...
+    (tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice").mkdir(parents=True)
+    # ... but THIS process runs from a source worktree's venv elsewhere.
+    worktree_venv = tmp_path / "projects" / "aelfrice" / ".venv"
+    monkeypatch.setattr(sys, "prefix", str(worktree_venv))
+    monkeypatch.setattr(sys, "executable", str(worktree_venv / "bin" / "python"))
+
+    assert lifecycle._is_uv_tool_install() is True       # disk presence: yes
+    assert lifecycle._running_from_uv_tool() is False     # this process: no
+    # The gate must use the running-process answer, so it stays False —
+    # the worktree does NOT rewrite the user's global hooks.
+    assert auto_install.is_running_from_uv_tool_install() is False
+
+
+def test_running_from_uv_tool_true_under_tools_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """When the running process resolves under the uv tools root, it IS
+    the uv-tool install and the gate opens."""
+    from aelfrice import lifecycle
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    prefix = tmp_path / ".local" / "share" / "uv" / "tools" / "aelfrice"
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    monkeypatch.setattr(sys, "executable", str(prefix / "bin" / "python"))
+    assert lifecycle._running_from_uv_tool() is True
+
+
+def test_maybe_install_manifest_never_downgrades(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """#1044 defense in depth: a running older version must never stamp
+    the hook surface backwards. The merge is skipped (non-force) and the
+    stamp + settings are left untouched."""
+    stamp = tmp_path / "stamp"
+    auto_install.write_stamp(stamp, "3.8.0")
+    settings = tmp_path / "settings.json"
+    monkeypatch.setattr(auto_install, "OPT_OUT_PATH", tmp_path / "opt-out")
+
+    res = auto_install.maybe_install_manifest(
+        installed_version="3.6.0",
+        settings_path=settings,
+        stamp_path=stamp,
+    )
+    assert res.ran is False
+    assert "not downgrading" in res.message
+    assert auto_install.read_stamp(stamp) == "3.8.0"   # stamp untouched
+    assert not settings.exists()                        # global settings untouched
 
 
 def test_auto_install_at_cli_entry_runs_when_uv_tool(

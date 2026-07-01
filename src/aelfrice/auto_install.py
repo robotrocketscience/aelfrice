@@ -356,6 +356,45 @@ def _result_added_anything(result: object) -> bool:
 # --- main entry ----------------------------------------------------------
 
 
+def _version_key(v: str) -> tuple[int, ...]:
+    """Parse ``'X.Y.Z...'`` into a comparable int tuple.
+
+    Leading digits of each dot-segment; a non-numeric segment contributes
+    0. This is deliberately not full PEP 440 — it only needs to answer
+    "is A older than B" for the never-downgrade guard (#1044).
+    """
+    key: list[int] = []
+    for seg in v.split("."):
+        digits = ""
+        for ch in seg:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        key.append(int(digits) if digits else 0)
+    return tuple(key) or (0,)
+
+
+def _is_downgrade(installed_version: str, prev: str) -> bool:
+    """True iff running ``installed_version`` is strictly older than the
+    on-disk stamp ``prev`` (and prev is a real stamp, not the sentinel).
+    """
+    return prev != _UNSTAMPED and _version_key(installed_version) < _version_key(prev)
+
+
+def _downgrade_skip_result(installed_version: str, prev: str) -> AutoInstallResult:
+    return AutoInstallResult(
+        ran=False,
+        prev_version=prev,
+        new_version=installed_version,
+        message=(
+            f"aelfrice: skipped hook auto-install — running "
+            f"v{installed_version} is older than the installed v{prev}; "
+            f"not downgrading (run `aelf setup` to force)"
+        ),
+    )
+
+
 def maybe_install_manifest(
     *,
     installed_version: str,
@@ -395,6 +434,12 @@ def maybe_install_manifest(
         return AutoInstallResult(
             ran=False, prev_version=prev, new_version=installed_version
         )
+    # Defense in depth (#1044): a running binary must never stamp the hook
+    # surface backwards. The primary gate already excludes worktrees, but
+    # if an older aelfrice ever reaches here (non-force path), skip rather
+    # than silently downgrade the user's installed hooks.
+    if not force and _is_downgrade(installed_version, prev):
+        return _downgrade_skip_result(installed_version, prev)
     target_path = settings_path if settings_path is not None else USER_SETTINGS_PATH
 
     # Acquire exclusive lock on the stamp's parent dir (the stamp file
@@ -419,6 +464,8 @@ def maybe_install_manifest(
             return AutoInstallResult(
                 ran=False, prev_version=prev, new_version=installed_version
             )
+        if not force and _is_downgrade(installed_version, prev):
+            return _downgrade_skip_result(installed_version, prev)
         return _do_merge(
             prev_version=prev,
             installed_version=installed_version,
@@ -539,11 +586,15 @@ def is_running_from_uv_tool_install() -> bool:
     the user's installed-version hook surface to whatever the worktree
     happened to advertise.
 
-    Detection delegates to `lifecycle._is_uv_tool_install`, which checks
-    for `~/.local/share/uv/tools/aelfrice/` and falls back to a
-    `sys.prefix` scan against the uv tools root. Worktree-local venvs,
-    contributor `pytest` runs, system Python, and pipx installs all
-    return False here and are excluded from auto-install.
+    Detection delegates to `lifecycle._running_from_uv_tool`, which asks
+    whether *this process* resolves under the uv tools root
+    (`sys.prefix` / `sys.executable` scan) — NOT whether a uv-tool
+    install merely exists somewhere on the box. The earlier delegate
+    (`_is_uv_tool_install`) short-circuited True on a filesystem-presence
+    check, so any user who also had a uv-tool install saw a worktree's
+    `uv run aelf` reintroduce the #834 downgrade (#1044). Worktree-local
+    venvs, contributor `pytest` runs, system Python, and pipx installs
+    all return False here and are excluded from auto-install.
 
     Returning False means the gate skips merging — power users who
     want auto-install to run from a non-uv-tool context can still
@@ -552,9 +603,9 @@ def is_running_from_uv_tool_install() -> bool:
     """
     # Local import keeps `auto_install` importable when `lifecycle` has
     # not yet been imported by the caller (e.g. during early CLI bootstrap).
-    from aelfrice.lifecycle import _is_uv_tool_install
+    from aelfrice.lifecycle import _running_from_uv_tool
 
-    return _is_uv_tool_install()
+    return _running_from_uv_tool()
 
 
 def auto_install_at_cli_entry(installed_version: str) -> None:

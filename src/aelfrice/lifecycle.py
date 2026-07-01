@@ -332,27 +332,49 @@ class UpgradeAdvice:
     context: str  # 'uv_tool' | 'non_uv'
 
 
-def _is_uv_tool_install() -> bool:
-    """Detect a uv-tool-managed install.
+def _running_from_uv_tool() -> bool:
+    """True iff THIS running process is the uv-tool-managed install.
 
-    uv tool installs each package under ~/.local/share/uv/tools/<pkg>/.
-    We check for the package directory directly rather than shelling
-    out to `uv` (which may not be on PATH inside the managed env).
-    As a secondary signal, if sys.executable or sys.prefix resolves
-    under the uv tools directory we also consider it a uv-tool install.
+    Checks whether sys.prefix / sys.executable resolves *under* the uv
+    tools root (~/.local/share/uv/tools/). Unlike a filesystem-presence
+    check, this correctly returns False for a source worktree's
+    ``uv run aelf`` even when a uv-tool install exists elsewhere on the
+    box. Use this to gate the hook auto-install — the question there is
+    "is this process the install?", not "does an install exist anywhere?"
+    (#1044 — the ``.exists()`` short-circuit reintroduced the #834 bug for
+    any user who also had a uv-tool install).
+    """
+    import sys
+
+    # ~/.local/share/uv/tools/ is the canonical uv tools root on
+    # Linux/macOS. On Windows it is %APPDATA%\uv\tools\ but we only
+    # support the POSIX layout for now.
+    uv_tools_root = str(
+        Path.home() / ".local" / "share" / "uv" / "tools"
+    ).replace("\\", "/")
+    for candidate in (sys.prefix, sys.executable):
+        if candidate and candidate.replace("\\", "/").startswith(uv_tools_root):
+            return True
+    return False
+
+
+def _is_uv_tool_install() -> bool:
+    """Detect that a uv-tool-managed install EXISTS on this box.
+
+    Answers "is aelfrice installed via ``uv tool`` on this machine?" —
+    used by ``upgrade_advice()`` to recommend ``uv tool upgrade``. This
+    intentionally includes a filesystem-presence check: the install dir
+    may exist even when the *current* process runs from elsewhere (a
+    worktree, a venv), and the upgrade advice is still "upgrade your uv
+    tool copy". Do NOT use this to gate auto-install — that must ask
+    whether *this process* is the install; use ``_running_from_uv_tool()``
+    (#1044).
     """
     uv_tools_dir = Path.home() / ".local" / "share" / "uv" / "tools" / PACKAGE_NAME
     if uv_tools_dir.exists():
         return True
-    # Secondary: check if sys.prefix or sys.executable path contains the
-    # uv tools tree. Covers cases where the package dir name differs.
-    import sys
-    prefix_norm = sys.prefix.replace("\\", "/")
-    # ~/.local/share/uv/tools/ is the canonical uv tools root on
-    # Linux/macOS. On Windows it is %APPDATA%\uv\tools\ but we only
-    # support the POSIX layout for now.
-    uv_tools_root = str(Path.home() / ".local" / "share" / "uv" / "tools")
-    return prefix_norm.startswith(uv_tools_root.replace("\\", "/"))
+    # Secondary: this process is itself running under the uv tools tree.
+    return _running_from_uv_tool()
 
 
 def _is_pipx_install() -> bool:
