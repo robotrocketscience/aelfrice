@@ -9,7 +9,7 @@ This is the reference for power users whose project has a documentation idiom or
 A single optional TOML file at the root of a project (or any ancestor). It exposes the following power-user surfaces:
 
 - `[noise]` — onboard-time belief filter. Changes how `aelf onboard` ingests beliefs; nothing else.
-- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, default-on since v2.1), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, default-on since #769), `use_intentional_clustering` (co-locating related beliefs, default-on since v3.0), `expansion_gate_enabled`, `use_gamma_posterior_temperature` (default off), and `use_zeta_posterior_rerank` (default off; mutually exclusive with the γ flag — `retrieve()` raises `ValueError` when both are on). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
+- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `l1_limit` + `token_budget` (the #1045 wide-retrieval knobs — BM25 candidate cap + token budget, default 50/2400; raise both together for multi-hop recall), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, default-on since v2.1), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, default-on since #769), `use_intentional_clustering` (co-locating related beliefs, default-on since v3.0), `expansion_gate_enabled`, `use_gamma_posterior_temperature` (default off), and `use_zeta_posterior_rerank` (default off; mutually exclusive with the γ flag — `retrieve()` raises `ValueError` when both are on). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
 - `[rebuilder]` (v1.4+) — context-rebuilder knobs: `turn_window_n` (default 50), `token_budget` (default 4000), `trigger_mode` (`manual`|`threshold`|`dynamic`, default `threshold`), `threshold_fraction` (default 0.6), and `query_strategy` (v1.7+, default `stack-r1-r3` since v3.0). `[rebuild_floor]` (v1.7+) sets the token-budget floors for the session-scoped and L1 belief lanes (`[rebuild_floor] session` and `[rebuild_floor] l1`).
 - `[onboard.llm]` (v1.3.0+) — direct-API onboard classifier gate; documented under [Keys § `[onboard.llm]`](#onboardllm-v130) below.
 - `[cadence]`, `[implicit_feedback]`, and `[hook_audit]` — feedback-cadence scoring, deferred retrieval-exposure feedback, and the per-turn hook audit log. Recognised here but documented in their module docstrings (`src/aelfrice/cadence.py`, `src/aelfrice/deferred_feedback.py`, `src/aelfrice/hook.py`).
@@ -62,6 +62,21 @@ bfs_enabled = false
 # retrieve() / retrieve_v2() override TOML in turn. Locked beliefs
 # (L0) bypass scoring entirely.
 posterior_weight = 0.5
+
+# #1045. Wide-retrieval knobs — the multi-hop RECALL lever. `l1_limit`
+# is the BM25 candidate cap (default 50); `token_budget` is the retrieval
+# token budget (default 2400). Raising l1_limit recovers multi-session /
+# temporal answers a 50-candidate slice misses (LongMemEval-S 58.8% ->
+# 68.6% at l1_limit=200 / token_budget=8000), but ONLY when the budget is
+# raised too — candidates cap at l1_limit BEFORE the budget trim, so
+# budget alone is inert. Both default to the latency-sensitive hot-path
+# values; raising them widens retrieval (more recall, more tokens, more
+# latency), best for retrieval-heavy / large-context callers rather than
+# the per-prompt injection hook. AELFRICE_L1_LIMIT and
+# AELFRICE_RETRIEVAL_TOKEN_BUDGET env vars override; explicit kwargs on
+# retrieve() / retrieve_v2() override TOML in turn.
+l1_limit = 50
+token_budget = 2400
 
 # v1.7+. Default `true` since v1.7.0 (#154 bench gate). Enables the
 # BM25F sparse-matvec L1 path that augments belief content with

@@ -950,6 +950,100 @@ def resolve_posterior_weight(
     return weight
 
 
+# --- #1045 wide-retrieval knobs (l1_limit + retrieval token budget) ------
+# The BM25 candidate cap (`l1_limit`) is the multi-hop RECALL lever: raising
+# it — WITH a token budget large enough to hold the extra candidates —
+# recovers multi-session / temporal answers a 50-candidate slice misses
+# (LongMemEval-S 58.8% → 68.6% at l1=200 / budget=8000). Budget alone is
+# inert: candidates cap at `l1_limit` BEFORE the pack trim. Both stay at
+# their latency-sensitive hot-path defaults (50 / 2400) unless a caller
+# opts in via kwarg, env, or `.aelfrice.toml`. See #1045.
+ENV_L1_LIMIT: Final[str] = "AELFRICE_L1_LIMIT"
+L1_LIMIT_FLAG: Final[str] = "l1_limit"
+ENV_RETRIEVAL_TOKEN_BUDGET: Final[str] = "AELFRICE_RETRIEVAL_TOKEN_BUDGET"
+TOKEN_BUDGET_FLAG: Final[str] = "token_budget"
+
+
+def _env_positive_int(env_name: str) -> int | None:
+    """Return `env_name` as a positive int, or None when unset / invalid.
+
+    Non-numeric and non-positive values trace to stderr and fall through
+    (same fail-soft contract as `_env_posterior_weight`).
+    """
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    try:
+        value = int(stripped)
+    except ValueError:
+        print(
+            f"aelfrice retrieval: ignoring {env_name}={raw!r} (expected int)",
+            file=sys.stderr,
+        )
+        return None
+    if value <= 0:
+        print(
+            f"aelfrice retrieval: ignoring {env_name}={raw!r} (must be > 0)",
+            file=sys.stderr,
+        )
+        return None
+    return value
+
+
+def resolve_l1_limit(
+    explicit: int | None = None,
+    *,
+    start: Path | None = None,
+) -> int:
+    """Resolve the L1 (BM25) candidate cap per the standard precedence:
+
+      1. ``AELFRICE_L1_LIMIT`` env var (positive int).
+      2. Explicit ``explicit`` kwarg from the caller.
+      3. ``[retrieval] l1_limit`` in ``.aelfrice.toml``.
+      4. Default: ``DEFAULT_L1_LIMIT`` (50).
+
+    Mirrors `resolve_posterior_weight`. The default keeps the
+    latency-sensitive per-prompt hook narrow; opting into a larger cap is
+    the multi-hop recall lever (#1045) and only takes effect together with
+    a ``token_budget`` large enough to hold the extra candidates.
+    """
+    env = _env_positive_int(ENV_L1_LIMIT)
+    if env is not None:
+        return env
+    if explicit is not None:
+        return int(explicit)
+    toml_value = _read_toml_float_for(L1_LIMIT_FLAG, start)
+    return int(toml_value) if toml_value is not None else DEFAULT_L1_LIMIT
+
+
+def resolve_token_budget(
+    explicit: int | None = None,
+    *,
+    start: Path | None = None,
+) -> int:
+    """Resolve the retrieval token budget per the standard precedence:
+
+      1. ``AELFRICE_RETRIEVAL_TOKEN_BUDGET`` env var (positive int).
+      2. Explicit ``explicit`` kwarg from the caller.
+      3. ``[retrieval] token_budget`` in ``.aelfrice.toml``.
+      4. Default: ``DEFAULT_TOKEN_BUDGET`` (2400).
+
+    Companion to `resolve_l1_limit`: raising ``l1_limit`` only helps when
+    the budget is large enough to keep the extra candidates past the pack
+    trim (#1045).
+    """
+    env = _env_positive_int(ENV_RETRIEVAL_TOKEN_BUDGET)
+    if env is not None:
+        return env
+    if explicit is not None:
+        return int(explicit)
+    toml_value = _read_toml_float_for(TOKEN_BUDGET_FLAG, start)
+    return int(toml_value) if toml_value is not None else DEFAULT_TOKEN_BUDGET
+
+
 def _env_temporal_half_life() -> float | None:
     """Return AELFRICE_TEMPORAL_HALF_LIFE_SECONDS as a positive float,
     or None when unset / non-numeric / non-positive.
@@ -2562,8 +2656,8 @@ def _l1_hits(
 def retrieve(
     store: MemoryStore,
     query: str,
-    token_budget: int = DEFAULT_TOKEN_BUDGET,
-    l1_limit: int = DEFAULT_L1_LIMIT,
+    token_budget: int | None = None,
+    l1_limit: int | None = None,
     *,
     entity_index_enabled: bool | None = None,
     l25_limit: int = DEFAULT_L25_LIMIT,
@@ -2643,6 +2737,11 @@ def retrieve(
     bfs_on = is_bfs_enabled(bfs_enabled)
     bm25f_on = resolve_use_bm25f_anchors(use_bm25f_anchors)
     weight = resolve_posterior_weight(posterior_weight)
+    # #1045 wide-retrieval knobs: env / TOML may raise the candidate cap
+    # and token budget; both resolve to the hot-path defaults (50 / 2400)
+    # when unset, so this is byte-identical unless a caller opts in.
+    l1_limit = resolve_l1_limit(l1_limit)
+    token_budget = resolve_token_budget(token_budget)
     heat_on = is_heat_kernel_enabled(heat_kernel_enabled)
     # #796 γ rerank — resolve once per call so the temperature read
     # is consistent across BM25F / FTS5 branches and the audit-trail
@@ -2843,8 +2942,8 @@ def retrieve(
 def retrieve_with_tiers(
     store: MemoryStore,
     query: str,
-    token_budget: int = DEFAULT_TOKEN_BUDGET,
-    l1_limit: int = DEFAULT_L1_LIMIT,
+    token_budget: int | None = None,
+    l1_limit: int | None = None,
     *,
     entity_index_enabled: bool | None = None,
     l25_limit: int = DEFAULT_L25_LIMIT,
@@ -2898,6 +2997,9 @@ def retrieve_with_tiers(
     bfs_on = is_bfs_enabled(bfs_enabled)
     bm25f_on = resolve_use_bm25f_anchors(use_bm25f_anchors)
     weight = resolve_posterior_weight(posterior_weight)
+    # #1045 wide-retrieval knobs — same resolution as `retrieve()`.
+    l1_limit = resolve_l1_limit(l1_limit)
+    token_budget = resolve_token_budget(token_budget)
     heat_on = is_heat_kernel_enabled(heat_kernel_enabled)
     # #796 γ rerank — same resolution as `retrieve()`.
     gamma_on = resolve_use_gamma_posterior_temperature()
@@ -3116,11 +3218,11 @@ def retrieve_with_tiers(
 def retrieve_v2(
     store: MemoryStore,
     query: str,
-    budget: int = DEFAULT_TOKEN_BUDGET,
+    budget: int | None = None,
     include_locked: bool = True,
     use_bfs: bool | None = None,
     use_entity_index: bool | None = None,
-    l1_limit: int = DEFAULT_L1_LIMIT,
+    l1_limit: int | None = None,
     bfs_max_depth: int = BFS_DEFAULT_MAX_DEPTH,
     bfs_nodes_per_hop: int = BFS_DEFAULT_NODES_PER_HOP,
     bfs_total_budget_nodes: int = BFS_DEFAULT_TOTAL_BUDGET_NODES,
@@ -3213,6 +3315,11 @@ def retrieve_v2(
       `result.beliefs` (and stub diagnostics fields, plus the new
       v1.3 `entity_hits` and `bfs_chains`).
     """
+    # #1045 wide-retrieval knobs: resolve here so both the HRR-structural
+    # lane below and the retrieve_with_tiers delegation see the same
+    # env/TOML-resolved values (default 50 / 2400 keep the hot path narrow).
+    l1_limit = resolve_l1_limit(l1_limit)
+    budget = resolve_token_budget(budget)
     # v2.1 #152 HRR structural-query routing. Returns early on marker
     # hit; falls through on miss (non-marker query, marker-with-
     # unknown-target, or flag OFF) so the textual lane handles the

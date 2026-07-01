@@ -16,9 +16,13 @@ import pytest
 from aelfrice.feedback import apply_feedback
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.retrieval import (
+    DEFAULT_L1_LIMIT,
+    DEFAULT_TOKEN_BUDGET,
     POSTERIOR_WEIGHT_KEY_PRECISION,
     RetrievalCache,
+    resolve_l1_limit,
     resolve_posterior_weight,
+    resolve_token_budget,
     retrieve,
     retrieve_v2,
 )
@@ -412,6 +416,84 @@ def test_resolve_posterior_weight_explicit_overrides_toml(
 
 def test_resolve_posterior_weight_negative_clamps_to_zero() -> None:
     assert resolve_posterior_weight(-1.5) == 0.0
+
+
+# --- #1045 wide-retrieval knobs: l1_limit + retrieval token budget ------
+
+
+def test_resolve_l1_limit_precedence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("AELFRICE_L1_LIMIT", raising=False)
+    # default (no env, no toml, no kwarg)
+    assert resolve_l1_limit(start=tmp_path) == DEFAULT_L1_LIMIT == 50
+    # explicit kwarg over default
+    assert resolve_l1_limit(200, start=tmp_path) == 200
+    # TOML over default, but explicit kwarg still wins over TOML
+    (tmp_path / ".aelfrice.toml").write_text("[retrieval]\nl1_limit = 150\n")
+    assert resolve_l1_limit(start=tmp_path) == 150
+    assert resolve_l1_limit(200, start=tmp_path) == 200
+    # env overrides everything
+    monkeypatch.setenv("AELFRICE_L1_LIMIT", "400")
+    assert resolve_l1_limit(200, start=tmp_path) == 400
+
+
+def test_resolve_token_budget_precedence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("AELFRICE_RETRIEVAL_TOKEN_BUDGET", raising=False)
+    assert resolve_token_budget(start=tmp_path) == DEFAULT_TOKEN_BUDGET == 2400
+    assert resolve_token_budget(8000, start=tmp_path) == 8000
+    (tmp_path / ".aelfrice.toml").write_text("[retrieval]\ntoken_budget = 6000\n")
+    assert resolve_token_budget(start=tmp_path) == 6000
+    monkeypatch.setenv("AELFRICE_RETRIEVAL_TOKEN_BUDGET", "9000")
+    assert resolve_token_budget(2000, start=tmp_path) == 9000
+
+
+def test_resolve_l1_limit_invalid_env_falls_through(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # non-int and non-positive env values are ignored (fail-soft)
+    monkeypatch.setenv("AELFRICE_L1_LIMIT", "not-a-number")
+    assert resolve_l1_limit(200, start=tmp_path) == 200
+    monkeypatch.setenv("AELFRICE_L1_LIMIT", "0")
+    assert resolve_l1_limit(200, start=tmp_path) == 200
+    monkeypatch.setenv("AELFRICE_L1_LIMIT", "-5")
+    assert resolve_l1_limit(start=tmp_path) == DEFAULT_L1_LIMIT
+
+
+def test_env_l1_limit_widens_retrieve_v2(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End-to-end: AELFRICE_L1_LIMIT + a budget large enough to hold the
+    extra candidates surfaces more beliefs than the l1=50 default (#1045).
+    A store of 120 keyword-matching beliefs is capped at ~50 by default and
+    widened by the env knob."""
+    monkeypatch.delenv("AELFRICE_L1_LIMIT", raising=False)
+    monkeypatch.delenv("AELFRICE_RETRIEVAL_TOKEN_BUDGET", raising=False)
+    store = MemoryStore(":memory:")
+    try:
+        for i in range(120):
+            store.insert_belief(Belief(
+                id=f"b{i:04d}",
+                content=f"widget report entry number {i} about the project widget",
+                content_hash=f"h{i:04d}",
+                alpha=1.0, beta=1.0, type=BELIEF_FACTUAL,
+                lock_level=LOCK_NONE, locked_at=None,
+                created_at="2026-01-01T00:00:00+00:00",
+                last_retrieved_at=None, origin="user_stated",
+            ))
+        # default: l1_limit=50 caps candidates regardless of a big budget
+        base = retrieve_v2(store, "widget project report", budget=100_000,
+                           include_locked=False)
+        # env widens the candidate cap (with budget to hold them)
+        monkeypatch.setenv("AELFRICE_L1_LIMIT", "120")
+        wide = retrieve_v2(store, "widget project report", budget=100_000,
+                           include_locked=False)
+    finally:
+        store.close()
+    assert len(base.beliefs) <= 50
+    assert len(wide.beliefs) > len(base.beliefs)
 
 
 # --- Calibration regression: 5-belief synthetic, ≥1 strict promotion ---
