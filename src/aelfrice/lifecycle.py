@@ -349,9 +349,12 @@ def _running_from_uv_tool() -> bool:
     # ~/.local/share/uv/tools/ is the canonical uv tools root on
     # Linux/macOS. On Windows it is %APPDATA%\uv\tools\ but we only
     # support the POSIX layout for now.
+    # Trailing slash so we match true descendants only: a sibling like
+    # ``.../uv/toolshed`` must NOT satisfy a prefix test against
+    # ``.../uv/tools`` (Sourcery, #1044 review).
     uv_tools_root = str(
         Path.home() / ".local" / "share" / "uv" / "tools"
-    ).replace("\\", "/")
+    ).replace("\\", "/").rstrip("/") + "/"
     for candidate in (sys.prefix, sys.executable):
         if candidate and candidate.replace("\\", "/").startswith(uv_tools_root):
             return True

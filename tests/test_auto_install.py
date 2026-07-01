@@ -422,6 +422,21 @@ def test_running_from_uv_tool_true_under_tools_root(
     assert lifecycle._running_from_uv_tool() is True
 
 
+def test_running_from_uv_tool_rejects_sibling_of_tools_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """A directory that merely shares a name *prefix* with the uv tools
+    root (e.g. ``.../uv/toolshed``) is not a descendant and must not be
+    misread as the uv-tool install (#1044 review — prefix vs containment)."""
+    from aelfrice import lifecycle
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    sibling = tmp_path / ".local" / "share" / "uv" / "toolshed" / "aelfrice"
+    monkeypatch.setattr(sys, "prefix", str(sibling))
+    monkeypatch.setattr(sys, "executable", str(sibling / "bin" / "python"))
+    assert lifecycle._running_from_uv_tool() is False
+
+
 def test_maybe_install_manifest_never_downgrades(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
