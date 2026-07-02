@@ -1,15 +1,22 @@
 name: Bench Smoke
 
-# PR-smoke for the four benchmark adapters (#476).
+# PR-smoke for the four benchmark adapters (#476) plus adapter scorer
+# recalibration (#1048).
 #
-# Exercises each adapter's `--retrieve-only` CLI path against a
-# schema-matching micro-fixture under `tests/fixtures/bench_smoke/`,
-# asserting non-zero retrieved-belief counts per item. Two-minute
-# dispatcher-contract validation only — real-data shape coverage
-# stays with the nightly `bench-canonical` cron.
+# Two checks run on every relevant PR:
 #
-# Runs on every PR that touches code, adapters, fixtures, or the
-# smoke test itself. Docs-only PRs short-circuit to a pass.
+# 1. Adapter smoke (test_bench_smoke.py) — exercises each adapter's
+#    `--retrieve-only` CLI path against a schema-matching micro-fixture
+#    under `tests/fixtures/bench_smoke/`, asserting non-zero retrieved-
+#    belief counts.  Two-minute dispatcher-contract validation only.
+#
+# 2. Scorer recalibration (test_recalibrate.py) — runs each adapter's
+#    scorer function against a pinned oracle fixture and asserts the
+#    computed score falls within its expected band.  Catches scorer
+#    drift before it silently misreports a product regression.
+#
+# Real-data shape coverage stays with the nightly `bench-canonical` cron.
+# Docs-only PRs short-circuit to a pass.
 
 on:
   pull_request:
@@ -43,6 +50,7 @@ jobs:
               - 'src/**'
               - 'benchmarks/**'
               - 'tests/test_bench_smoke.py'
+              - 'tests/test_recalibrate.py'
               - 'tests/fixtures/bench_smoke/**'
               - 'pyproject.toml'
               - 'uv.lock'
@@ -62,6 +70,10 @@ jobs:
       - if: steps.filter.outputs.relevant == 'true'
         name: Run bench-smoke tests
         run: uv run pytest tests/test_bench_smoke.py -v --timeout=120
+
+      - if: steps.filter.outputs.relevant == 'true'
+        name: Run adapter scorer recalibration check
+        run: uv run pytest tests/test_recalibrate.py -v --timeout=60
 
       - if: steps.filter.outputs.relevant != 'true'
         run: echo "No bench-smoke-relevant paths changed; reporting pass."
