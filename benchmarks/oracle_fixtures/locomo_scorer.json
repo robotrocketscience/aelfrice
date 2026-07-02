@@ -1,0 +1,111 @@
+{
+  "adapter": "locomo",
+  "scorer": "benchmarks.locomo_adapter.score_qa",
+  "description": "Oracle fixtures for the LoCoMo token-F1 scorer (benchmarks/locomo_adapter.py::score_qa). Covers all five categories: single-hop (4), temporal (2), open-ended (3), multi-hop (1), adversarial (5). All inputs are synthetic and not derived from the LoCoMo upstream dataset (CC BY-NC 4.0).",
+  "oracles": [
+    {
+      "label": "cat4 perfect match",
+      "category": 4,
+      "prediction": "hello world",
+      "ground_truth": "hello world",
+      "expected_lower": 1.0,
+      "expected_upper": 1.0
+    },
+    {
+      "label": "cat4 zero overlap",
+      "category": 4,
+      "prediction": "three four five",
+      "ground_truth": "nine ten",
+      "expected_lower": 0.0,
+      "expected_upper": 0.0
+    },
+    {
+      "label": "cat4 partial overlap — one of two prediction tokens matches",
+      "category": 4,
+      "prediction": "hello world",
+      "ground_truth": "hello",
+      "expected_lower": 0.65,
+      "expected_upper": 0.68
+    },
+    {
+      "label": "cat2 temporal exact",
+      "category": 2,
+      "prediction": "monday morning",
+      "ground_truth": "monday morning",
+      "expected_lower": 1.0,
+      "expected_upper": 1.0
+    },
+    {
+      "label": "cat2 temporal zero",
+      "category": 2,
+      "prediction": "tuesday afternoon",
+      "ground_truth": "friday evening",
+      "expected_lower": 0.0,
+      "expected_upper": 0.0
+    },
+    {
+      "label": "cat3 open-ended exact — uses only first semicolon-delimited part of ground truth",
+      "category": 3,
+      "prediction": "hello",
+      "ground_truth": "hello; some extra text that should be ignored",
+      "expected_lower": 1.0,
+      "expected_upper": 1.0
+    },
+    {
+      "label": "cat3 open-ended zero",
+      "category": 3,
+      "prediction": "completely wrong answer",
+      "ground_truth": "totally different; or this",
+      "expected_lower": 0.0,
+      "expected_upper": 0.0
+    },
+    {
+      "label": "cat1 multi-hop perfect — both sub-answers present in prediction",
+      "category": 1,
+      "prediction": "red, blue",
+      "ground_truth": "red, blue",
+      "expected_lower": 1.0,
+      "expected_upper": 1.0
+    },
+    {
+      "label": "cat1 multi-hop partial — first sub-answer present, second absent",
+      "category": 1,
+      "prediction": "red",
+      "ground_truth": "red, blue",
+      "expected_lower": 0.49,
+      "expected_upper": 0.51
+    },
+    {
+      "label": "cat1 multi-hop zero — neither sub-answer present",
+      "category": 1,
+      "prediction": "green",
+      "ground_truth": "red, blue",
+      "expected_lower": 0.0,
+      "expected_upper": 0.0
+    },
+    {
+      "label": "cat5 adversarial correct refusal — contains 'no information available'",
+      "category": 5,
+      "prediction": "no information available about this",
+      "ground_truth": "",
+      "expected_lower": 1.0,
+      "expected_upper": 1.0
+    },
+    {
+      "label": "cat5 adversarial correct refusal — contains 'not mentioned'",
+      "category": 5,
+      "prediction": "this topic is not mentioned in the conversation",
+      "ground_truth": "",
+      "expected_lower": 1.0,
+      "expected_upper": 1.0
+    },
+    {
+      "label": "cat5 adversarial wrong — model guesses instead of refusing",
+      "category": 5,
+      "prediction": "yes definitely happened last Tuesday",
+      "ground_truth": "",
+      "expected_lower": 0.0,
+      "expected_upper": 0.0
+    }
+  ]
+}

@@ -1,0 +1,114 @@
+{
+  "adapter": "mab",
+  "scorer": "benchmarks.qa_scoring",
+  "description": "Oracle fixtures for the MAB/AMA-Bench QA scorer (benchmarks/qa_scoring.py). Tests score_exact_match, score_substring_exact_match, score_f1, and score_multi_answer. Pure stdlib — no nltk or LLM required. All inputs are synthetic.",
+  "oracles": [
+    {
+      "label": "sem hit — ground truth is substring of prediction",
+      "scorer_fn": "score_substring_exact_match",
+      "prediction": "paris is the capital of france",
+      "ground_truth": "paris",
+      "expected_lower": 1.0,
+      "expected_upper": 1.0
+    },
+    {
+      "label": "sem miss — ground truth absent from prediction",
+      "scorer_fn": "score_substring_exact_match",
+      "prediction": "berlin is the capital of germany",
+      "ground_truth": "paris",
+      "expected_lower": 0.0,
+      "expected_upper": 0.0
+    },
+    {
+      "label": "sem articles stripped in both sides",
+      "scorer_fn": "score_substring_exact_match",
+      "prediction": "we saw the moon last night",
+      "ground_truth": "the moon",
+      "expected_lower": 1.0,
+      "expected_upper": 1.0
+    },
+    {
+      "label": "sem empty ground truth is zero",
+      "scorer_fn": "score_substring_exact_match",
+      "prediction": "anything at all",
+      "ground_truth": "",
+      "expected_lower": 0.0,
+      "expected_upper": 0.0
+    },
+    {
+      "label": "em identical",
+      "scorer_fn": "score_exact_match",
+      "prediction": "paris",
+      "ground_truth": "paris",
+      "expected_lower": 1.0,
+      "expected_upper": 1.0
+    },
+    {
+      "label": "em case insensitive",
+      "scorer_fn": "score_exact_match",
+      "prediction": "Paris",
+      "ground_truth": "paris",
+      "expected_lower": 1.0,
+      "expected_upper": 1.0
+    },
+    {
+      "label": "em longer prediction fails",
+      "scorer_fn": "score_exact_match",
+      "prediction": "paris france",
+      "ground_truth": "paris",
+      "expected_lower": 0.0,
+      "expected_upper": 0.0
+    },
+    {
+      "label": "f1 perfect match",
+      "scorer_fn": "score_f1",
+      "prediction": "paris france",
+      "ground_truth": "paris france",
+      "expected_lower": 1.0,
+      "expected_upper": 1.0
+    },
+    {
+      "label": "f1 no overlap",
+      "scorer_fn": "score_f1",
+      "prediction": "paris",
+      "ground_truth": "berlin",
+      "expected_lower": 0.0,
+      "expected_upper": 0.0
+    },
+    {
+      "label": "f1 partial — 2 of 3 prediction tokens match both ground truth tokens",
+      "scorer_fn": "score_f1",
+      "prediction": "paris france capital",
+      "ground_truth": "paris france",
+      "expected_lower": 0.79,
+      "expected_upper": 0.81
+    },
+    {
+      "label": "multi_answer em — exact match found in candidate list",
+      "scorer_fn": "score_multi_answer",
+      "score_key": "exact_match",
+      "prediction": "paris",
+      "ground_truths": ["london", "paris", "berlin"],
+      "expected_lower": 1.0,
+      "expected_upper": 1.0
+    },
+    {
+      "label": "multi_answer sem — substring match found in candidate list",
+      "scorer_fn": "score_multi_answer",
+      "score_key": "substring_exact_match",
+      "prediction": "the capital is paris and it is beautiful",
+      "ground_truths": ["london", "paris", "berlin"],
+      "expected_lower": 1.0,
+      "expected_upper": 1.0
+    },
+    {
+      "label": "multi_answer all-zero — no candidate matches",
+      "scorer_fn": "score_multi_answer",
+      "score_key": "f1",
+      "prediction": "unknown city",
+      "ground_truths": ["london", "paris", "berlin"],
+      "expected_lower": 0.0,
+      "expected_upper": 0.0
+    }
+  ]
+}
