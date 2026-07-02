@@ -160,7 +160,7 @@ Scopes: `--scope all` (everything, capped by `--max-notes`), `--scope recent` (n
 
 ## Status
 
-Latest stable: **v3.7.0** (2026-06-23). Per-entry detail in [CHANGELOG § 3.7.0](CHANGELOG/v3.md). Per-version history: [docs/concepts/ROADMAP.md](docs/concepts/ROADMAP.md). Known limits: [docs/user/LIMITATIONS.md](docs/user/LIMITATIONS.md).
+Latest stable: **v3.8.0** (2026-06-30). Per-entry detail in [CHANGELOG § 3.8.0](CHANGELOG/v3.md). Per-version history: [docs/concepts/ROADMAP.md](docs/concepts/ROADMAP.md). Known limits: [docs/user/LIMITATIONS.md](docs/user/LIMITATIONS.md).
 
 [![OSSInsight](https://img.shields.io/badge/OSSInsight-analytics-blue)](https://ossinsight.io/analyze/robotrocketscience/aelfrice)
 <!-- bench-canonical-badge:start -->
