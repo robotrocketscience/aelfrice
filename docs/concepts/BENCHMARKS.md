@@ -306,6 +306,96 @@ JSONL files (`run_<i>.jsonl`, with `{turn_idx, matched, rationale}` rows
 read by `read_judge_responses`); kappa.json itself only carries per-pair
 agreement scores, not per-row verdicts.
 
+## Scorer recalibration
+
+Adapters can silently misreport scores when the adapter (not the product)
+regresses.  `verify_clean.py` guards against ground-truth contamination of
+retrieval files; `benchmarks/recalibrate.py` guards against scorer-logic
+drift by checking each scorer against a pinned oracle fixture.
+
+### Problem
+
+A subtly broken scorer — wrong field read, bag-of-words scoring where
+stemmed F1 was intended, stale category dispatch — reports a low number
+indistinguishable (to CI) from a real product regression.  This was the
+root cause of several "low benchmark number" investigations that turned out
+to be harness artifacts rather than product defects.
+
+### Mechanism
+
+Each scored adapter that has deterministic (stdlib-only) scoring logic has
+a pinned **oracle fixture** under `benchmarks/oracle_fixtures/` containing
+`(prediction, ground_truth[, category], expected_lower, expected_upper)`
+tuples.  The recalibration check:
+
+1. Loads each fixture JSON.
+2. Calls the scorer function directly on each tuple (no retrieval, no LLM).
+3. Asserts the returned score falls within `[expected_lower, expected_upper]`.
+4. Exits non-zero if any tuple is outside its band.
+
+Bands are explicit author-specified ranges, not relative-to-canonical
+computations.  A narrow band (e.g. `[1.0, 1.0]`) exercises exact
+correctness; a wider band (e.g. `[0.65, 0.68]`) tolerates minor floating-
+point differences while still catching the class of bugs that shift scores
+significantly (field swap, wrong branch, wrong formula).
+
+### Run the check
+
+```bash
+uv run python -m benchmarks.recalibrate          # all adapters
+uv run python -m benchmarks.recalibrate locomo   # one adapter
+uv run python -m benchmarks.recalibrate --list   # show registered adapters
+```
+
+The check also runs automatically in the `bench-smoke` CI job on every PR
+that touches `benchmarks/`.
+
+### Covered adapters
+
+| Adapter | Oracle fixture | Scorer checked | Notes |
+|---|---|---|---|
+| LoCoMo | `oracle_fixtures/locomo_scorer.json` | `locomo_adapter.score_qa` | All 5 categories (1=multi-hop, 2=temporal, 3=open-ended, 4=single-hop, 5=adversarial) |
+| MAB | `oracle_fixtures/mab_scorer.json` | `qa_scoring.*` | `score_exact_match`, `score_substring_exact_match`, `score_f1`, `score_multi_answer` |
+
+### Adapters not oracle-checked
+
+| Adapter | Reason |
+|---|---|
+| LongMemEval | The final "score" is a binary verdict produced by an LLM judge; the verdict-aggregation logic (`longmemeval_score.py`) is a trivial counter already covered by `tests/test_longmemeval_scoring.py`.  Oracle-checking the judge call itself requires a live model. |
+| StructMemEval | Same — per-task LLM judge; aggregation logic tested in `test_structmemeval_*`. |
+| AMA-Bench | Not oracle-checked end-to-end; only the shared `qa_scoring.score_multi_answer` helper is covered via the MAB fixture. |
+
+### Adding an oracle fixture for a new adapter
+
+1. Create `benchmarks/oracle_fixtures/<adapter>_scorer.json` following the
+   schema of the existing fixtures:
+   ```json
+   {
+     "adapter": "<adapter>",
+     "scorer": "<dotted.module.path.to.scorer_fn>",
+     "description": "...",
+     "oracles": [
+       {
+         "label": "descriptive name",
+         "<scorer-specific input fields>": "...",
+         "expected_lower": 0.0,
+         "expected_upper": 1.0
+       }
+     ]
+   }
+   ```
+2. Add a runner function `_run_<adapter>_oracle` in `benchmarks/recalibrate.py`
+   that calls the scorer and feeds each tuple through `_check_oracle_tuple`.
+3. Register the adapter in `ADAPTER_FIXTURES` and `_RUNNERS`.
+4. Add tests in `tests/test_recalibrate.py`:
+   - A `test_<adapter>_oracle_all_pass` that verifies the real scorer passes.
+   - A broken-scorer variant to prove the mechanism fires.
+5. Run `uv run python -m benchmarks.recalibrate <adapter>` and
+   `uv run pytest tests/test_recalibrate.py -v` to confirm.
+
+Oracle fixtures must be **synthetic** (not derived from upstream datasets)
+and should cover all branches / categories of the scorer logic.
+
 ## Audit record
 
 Every academic run produces:
