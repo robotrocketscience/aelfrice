@@ -1315,7 +1315,7 @@ def _sweep_relevance_signal(
             scored_by_event_id = dict(scored)
             now_iso = datetime.now(timezone.utc).isoformat()
             now_ts = int(time.time())
-            for eid, _tid, _bid, _at, _src, active_consumers in pending:
+            for eid, _tid, bid, _at, _src, active_consumers in pending:
                 referenced = scored_by_event_id.get(eid)
                 if referenced is None:
                     continue
@@ -1333,6 +1333,22 @@ def _sweep_relevance_signal(
                             f"{consumer_key!r} (non-fatal): {exc}",
                             file=serr,
                         )
+                # #779 → per-belief answer-worthiness accumulator (the
+                # query-independent prior consumed behind
+                # `use_answer_worthiness`). Fail-soft: a write error must
+                # not break the user-visible retrieval contract.
+                try:
+                    store.record_reference_observation(
+                        belief_id=bid,
+                        referenced=int(referenced),
+                        now_iso=now_iso,
+                    )
+                except Exception as exc:
+                    print(
+                        f"aelfrice: answer-worthiness update failed for "
+                        f"{bid!r} (non-fatal): {exc}",
+                        file=serr,
+                    )
                 store.update_injection_referenced(
                     eid,
                     referenced=int(referenced),
