@@ -60,18 +60,24 @@ EDGE_POTENTIALLY_STALE: Final[str] = "POTENTIALLY_STALE"
 # distinct because DERIVED_FROM carries stronger contextual coupling
 # (sibling becomes stale if A is superseded).
 # IMPLEMENTS (0.65): provenance-flavored — source is an implementation,
-# target is the spec/claim being implemented. Slightly below DERIVED_FROM
-# (0.70) because IMPLEMENTS is a more specific kind of derivation, but the
-# dependency is almost as strong: an implementation becomes stale when its
-# spec is superseded.
+# target is the spec/claim being implemented. Above DERIVED_FROM (0.5)
+# in this table: an implementation's confidence is coupled to its spec
+# more tightly than generic derivation couples sibling content — the
+# implementation becomes stale the moment its spec is superseded.
+# (The retrieval-tier BFS_EDGE_WEIGHTS table orders these two the other
+# way, 0.70/0.65 — that family tunes hop relevance, not valence, and
+# the numbers are deliberately independent; see
+# docs/design/bfs_multihop.md.)
 # TEMPORAL_NEXT (0.2): chronological-adjacency edge — source is the temporal
 # successor of target. Pure structural signal with no evidential or
 # argumentative content, so valence is positive-but-small. Placed below
 # RELATES_TO (0.3) because temporal ordering carries even less
 # content-correlation than the catch-all relational edge.
 # TESTS (0.55): evidential edge — source is a test belief, target is the
-# spec/claim under test. Placed just below SUPPORTS (0.60) because a test
-# asserts coverage of a claim rather than directly arguing for it.
+# spec/claim under test. Well below SUPPORTS (1.0) because a test
+# asserts coverage of a claim rather than directly arguing for it;
+# just above CITES / DERIVED_FROM (0.5) because passing coverage is
+# slightly stronger evidence than mere reference.
 # RESOLVES (0.0): wonder-lifecycle marker. No propagation valence because
 # resolution intent (phantom answers an existing belief) doesn't carry
 # evidential weight in the Bayesian update chain.
