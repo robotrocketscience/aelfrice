@@ -11,13 +11,13 @@ from pathlib import Path
 
 import pytest
 
-from aelfrice.auto_install import (
-    add_host_opt_out,
-    read_host_opt_outs,
-    read_opt_outs,
-    remove_host_opt_out,
-)
+import aelfrice.auto_install as ai
 from aelfrice.host_codex import claude_host_has_aelfrice_hooks
+
+add_host_opt_out = ai.add_host_opt_out
+read_host_opt_outs = ai.read_host_opt_outs
+read_opt_outs = ai.read_opt_outs
+remove_host_opt_out = ai.remove_host_opt_out
 
 
 # --- ledger round-trip -----------------------------------------------------
@@ -78,8 +78,6 @@ def test_cli_entry_skips_when_claude_opted_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """auto_install_at_cli_entry returns before any settings merge."""
-    import aelfrice.auto_install as ai
-
     ledger = tmp_path / "ledger.json"
     add_host_opt_out("claude", ledger)
     monkeypatch.setattr(ai, "OPT_OUT_PATH", ledger)
@@ -98,8 +96,6 @@ def test_cli_entry_skips_when_claude_opted_out(
 def test_cli_entry_proceeds_without_opt_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import aelfrice.auto_install as ai
-
     monkeypatch.setattr(ai, "OPT_OUT_PATH", tmp_path / "absent.json")
     called: list[str] = []
 

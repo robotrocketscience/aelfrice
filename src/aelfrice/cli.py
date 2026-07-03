@@ -3813,8 +3813,8 @@ def _cmd_doctor_codex(args: argparse.Namespace, out: object) -> int:
         else ("on" if report.feature_flag_on else "off")
     )
     print(
-        f"[i] codex_hooks feature flag: {flag}; trusted [hooks.state] "
-        f"entries: {report.trusted_state_entries}",
+        f"[i] codex_hooks feature flag: {flag}; approved [hooks.state] "
+        f"entries: {report.approved_state_count}",
         file=out,  # type: ignore[arg-type]
     )
     for warning in report.warnings:

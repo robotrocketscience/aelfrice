@@ -244,11 +244,15 @@ def install_codex_hooks(
         changed=changed,
         installed_events=sorted(desired.keys()),
         guidance=[
-            "Codex runs hooks only after per-hook trust approval: open a "
-            "Codex session and run /hooks to approve the new entries.",
-            "The codex_hooks feature flag must be enabled "
-            "(codex features enable codex_hooks) — it is off by default "
-            "while the hooks surface is under development upstream.",
+            (
+                "Codex runs hooks only after per-hook trust approval: open a "
+                + "Codex session and run /hooks to approve the new entries."
+            ),
+            (
+                "The codex_hooks feature flag must be enabled "
+                + "(codex features enable codex_hooks) — it is off by default "
+                + "while the hooks surface is under development upstream."
+            ),
         ],
     )
 
@@ -314,7 +318,7 @@ class CodexDoctorReport:
     missing_events: list[str] = field(default_factory=list[str])
     stale_commands: list[str] = field(default_factory=list[str])
     feature_flag_on: bool | None = None
-    trusted_state_entries: int = 0
+    approved_state_count: int = 0
     warnings: list[str] = field(default_factory=list[str])
 
 
@@ -366,7 +370,11 @@ def doctor_codex(codex_dir: Path | None = None) -> CodexDoctorReport:
                 cmd = hd.get("command")
                 if isinstance(cmd, str):
                     exe = Path(cmd.split()[0])
-                    if exe.is_absolute() and not exe.exists():
+                    if (
+                        exe.is_absolute()
+                        and not exe.exists()
+                        and cmd not in report.stale_commands
+                    ):
                         report.stale_commands.append(cmd)
     report.missing_events = sorted(expected_events - covered)
     for cmd in report.stale_commands:
@@ -395,24 +403,25 @@ def doctor_codex(codex_dir: Path | None = None) -> CodexDoctorReport:
             state = cast(dict[str, object], hooks_cfg).get("state")
             if isinstance(state, dict):
                 for entry in cast(dict[str, object], state).values():
-                    if (
-                        isinstance(entry, dict)
-                        and cast(dict[str, object], entry).get("trusted_hash")
-                    ):
-                        report.trusted_state_entries += 1
+                    # Key-membership only — the approval digest value
+                    # itself is never read, held, or logged.
+                    if isinstance(entry, dict) and "trusted_hash" in entry:
+                        report.approved_state_count += 1
     if report.feature_flag_on is False:
         report.warnings.append(
             "codex_hooks feature flag is off — Codex will not run any "
             "hooks (enable: codex features enable codex_hooks)",
         )
-    if (
-        report.owned_handler_count
-        and report.trusted_state_entries < report.owned_handler_count
-    ):
+    # Approval-state keying is positional today and slated to change
+    # upstream (per-handler keys vs per-group digests), so exact
+    # count arithmetic would false-positive on multi-handler groups.
+    # Warn only on the unambiguous condition: handlers configured,
+    # zero approvals recorded.
+    if report.owned_handler_count and report.approved_state_count == 0:
         report.warnings.append(
             f"{report.owned_handler_count} aelfrice handler(s) configured "
-            f"but only {report.trusted_state_entries} trusted "
-            "[hooks.state] entr(ies) exist — untrusted hooks are "
-            "silently skipped; run /hooks in a Codex session to approve",
+            "but no approved [hooks.state] entries exist — unapproved "
+            "hooks are silently skipped; run /hooks in a Codex session "
+            "to approve them",
         )
     return report

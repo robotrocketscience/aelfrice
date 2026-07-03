@@ -179,8 +179,8 @@ def test_doctor_healthy_install_reports_coverage(tmp_path: Path) -> None:
     assert report.owned_handler_count >= 6
     assert report.missing_events == []
     assert report.feature_flag_on is True
-    # Handlers configured but zero trusted entries -> untrusted warning.
-    assert any("untrusted" in w or "trusted" in w for w in report.warnings)
+    # Handlers configured but zero approvals -> unapproved warning.
+    assert any("unapproved" in w for w in report.warnings)
 
 
 def test_doctor_warns_on_feature_flag_off(tmp_path: Path) -> None:
@@ -191,7 +191,7 @@ def test_doctor_warns_on_feature_flag_off(tmp_path: Path) -> None:
     assert any("codex_hooks feature flag is off" in w for w in report.warnings)
 
 
-def test_doctor_counts_trusted_state_entries(tmp_path: Path) -> None:
+def test_doctor_counts_approved_state_entries(tmp_path: Path) -> None:
     install_codex_hooks(tmp_path / "hooks.json")
     (tmp_path / "config.toml").write_text(
         '[features]\ncodex_hooks = true\n'
@@ -200,4 +200,6 @@ def test_doctor_counts_trusted_state_entries(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     report = doctor_codex(tmp_path)
-    assert report.trusted_state_entries == 2
+    assert report.approved_state_count == 2
+    # Approvals exist -> the zero-approvals warning must NOT fire.
+    assert not any("unapproved" in w for w in report.warnings)
