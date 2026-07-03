@@ -3324,6 +3324,15 @@ def _cmd_project_warm(args: argparse.Namespace, out: object) -> int:
 def _cmd_setup(args: argparse.Namespace, out: object) -> int:
     if getattr(args, "host", "claude") == "codex":
         return _cmd_setup_codex(args, out)
+    # #1053: an explicit claude-host setup is explicit re-consent —
+    # clear any persistent claude auto-install opt-out.
+    from aelfrice.auto_install import remove_host_opt_out
+
+    if remove_host_opt_out("claude"):
+        print(
+            "cleared claude host auto-install opt-out (#1053)",
+            file=out,  # type: ignore[arg-type]
+        )
     # #733: auto-migrate non-uv aelfrice installs to uv tool on first
     # post-upgrade setup. Gated on a one-shot sentinel inside
     # maybe_migrate_to_uv so re-running setup for unrelated reasons
@@ -3732,6 +3741,29 @@ def _cmd_setup_codex(args: argparse.Namespace, out: object) -> int:
     )
     for line in result.guidance:
         print(f"  next: {line}", file=out)  # type: ignore[arg-type]
+    # #1053: Codex-only user (no aelfrice hooks on the Claude host) ->
+    # persist the claude auto-install opt-out so `aelf` invocations from
+    # Codex hooks stop rewriting ~/.claude/settings.json. Dual-host
+    # users (Claude hooks present) keep auto-install untouched.
+    from aelfrice.auto_install import add_host_opt_out, read_host_opt_outs
+    from aelfrice.host_codex import claude_host_has_aelfrice_hooks
+    from aelfrice.setup import USER_SETTINGS_PATH
+
+    if claude_host_has_aelfrice_hooks(USER_SETTINGS_PATH):
+        print(
+            "  note: Claude-host aelfrice hooks detected; leaving "
+            "Claude auto-install enabled (dual-host).",
+            file=out,  # type: ignore[arg-type]
+        )
+    elif "claude" not in read_host_opt_outs():
+        add_host_opt_out("claude")
+        print(
+            "  note: opted the claude host out of auto-install "
+            "(#1053) — aelf will no longer rewrite "
+            "~/.claude/settings.json at CLI entry. Undo with "
+            "`aelf setup` (default claude host).",
+            file=out,  # type: ignore[arg-type]
+        )
     return 0
 
 

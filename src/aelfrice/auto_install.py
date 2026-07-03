@@ -46,7 +46,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Final
+from typing import Callable, Final, cast
 
 from aelfrice.setup import (
     SettingsScope,
@@ -230,6 +230,67 @@ def read_opt_outs(opt_out_path: Path = OPT_OUT_PATH) -> frozenset[str]:
     if not isinstance(opt_outs, list):
         return frozenset()
     return frozenset(str(n) for n in opt_outs if isinstance(n, str))
+
+
+def read_host_opt_outs(opt_out_path: Path = OPT_OUT_PATH) -> frozenset[str]:
+    """Return the set of *hosts* whose auto-install the user opted out of.
+
+    Stored under the sibling `opt_out_hosts` key of the same ledger the
+    per-hook opt-outs use (#1053); older aelfrice versions ignore the
+    key. Missing / unreadable / malformed file returns the empty set —
+    a broken marker never blocks capture (fail-open; `aelf doctor
+    --host codex` surfaces the state).
+    """
+    if not opt_out_path.exists():
+        return frozenset()
+    try:
+        raw = opt_out_path.read_text(encoding="utf-8")
+    except OSError:
+        return frozenset()
+    if not raw.strip():
+        return frozenset()
+    try:
+        parsed: object = json.loads(raw)  # pyright: ignore[reportAny]
+    except json.JSONDecodeError:
+        return frozenset()
+    if not isinstance(parsed, dict):
+        return frozenset()
+    parsed_typed = cast(dict[str, object], parsed)
+    hosts = parsed_typed.get("opt_out_hosts", [])
+    if not isinstance(hosts, list):
+        return frozenset()
+    return frozenset(
+        str(h) for h in cast(list[object], hosts) if isinstance(h, str)
+    )
+
+
+def _write_host_opt_outs(
+    hosts: set[str], opt_out_path: Path = OPT_OUT_PATH,
+) -> None:
+    """Rewrite the ledger preserving the per-hook `opt_out` key."""
+    doc: dict[str, object] = {"opt_out": sorted(read_opt_outs(opt_out_path))}
+    if hosts:
+        doc["opt_out_hosts"] = sorted(hosts)
+    _atomic_write_json(opt_out_path, doc)
+
+
+def add_host_opt_out(host: str, opt_out_path: Path = OPT_OUT_PATH) -> None:
+    """Persist a host-level auto-install opt-out (#1053). Idempotent."""
+    current = set(read_host_opt_outs(opt_out_path))
+    if host in current:
+        return
+    current.add(host)
+    _write_host_opt_outs(current, opt_out_path)
+
+
+def remove_host_opt_out(host: str, opt_out_path: Path = OPT_OUT_PATH) -> bool:
+    """Drop a host-level opt-out. Returns True if one was removed."""
+    current = set(read_host_opt_outs(opt_out_path))
+    if host not in current:
+        return False
+    current.discard(host)
+    _write_host_opt_outs(current, opt_out_path)
+    return True
 
 
 def add_opt_out(hook_name: str, opt_out_path: Path = OPT_OUT_PATH) -> None:
@@ -620,6 +681,12 @@ def auto_install_at_cli_entry(installed_version: str) -> None:
     block the user's actual `aelf <cmd>` invocation.
     """
     if is_disabled_via_env():
+        return
+    # #1053: persistent host-level opt-out. A Codex-primary user (or
+    # anyone who opted the claude host out) gets no settings.json
+    # mutation at CLI entry, without per-command env prefixes. An
+    # explicit `aelf setup` still installs — and clears the opt-out.
+    if "claude" in read_host_opt_outs(OPT_OUT_PATH):
         return
     if not is_running_from_uv_tool_install():
         return

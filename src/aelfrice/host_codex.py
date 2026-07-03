@@ -140,6 +140,40 @@ def _group_is_owned(group: object) -> bool:
     )
 
 
+def claude_host_has_aelfrice_hooks(settings_path: Path) -> bool:
+    """True iff the Claude-host settings.json wires any aelfrice hook.
+
+    Used by `aelf setup --host codex` (#1053) to distinguish a
+    Codex-only machine (write the claude auto-install opt-out) from a
+    dual-host one (leave auto-install alone). Shape-tolerant and
+    fail-closed: a missing or unreadable settings file counts as "no
+    hooks" — the worst case of a false negative is an opt-out the user
+    can undo with one explicit `aelf setup`.
+    """
+    if not settings_path.is_file():
+        return False
+    try:
+        parsed = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    hooks = cast(dict[str, object], parsed).get("hooks")
+    if not isinstance(hooks, dict):
+        return False
+    for groups in cast(dict[str, object], hooks).values():
+        if not isinstance(groups, list):
+            continue
+        for group in cast(list[object], groups):
+            if not isinstance(group, dict):
+                continue
+            gd = cast(dict[str, object], group)
+            for handler in cast(list[object], gd.get("hooks", []) or []):
+                if _command_basename(handler).startswith("aelf-"):
+                    return True
+    return False
+
+
 @dataclass
 class CodexInstallResult:
     path: Path
