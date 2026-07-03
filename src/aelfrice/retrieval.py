@@ -226,6 +226,17 @@ USE_GAMMA_POSTERIOR_TEMPERATURE_FLAG: Final[str] = (
 # decision per issue #817 §"Out of scope" deferred composition).
 USE_ZETA_POSTERIOR_RERANK_FLAG: Final[str] = "use_zeta_posterior_rerank"
 
+# Answer-worthiness prior: when ON, the posterior term the L1 rerank
+# consumes is the per-belief accumulated referenced-rate
+# (`belief_relevance`) rather than the belief's own (α, β), for beliefs
+# with at least ANSWER_WORTHINESS_MIN_OBS observations. Default-OFF;
+# flip-default is gated on real accumulated coverage (relevance-corpus
+# campaign Phase D). `[retrieval] use_answer_worthiness` TOML key.
+USE_ANSWER_WORTHINESS_FLAG: Final[str] = "use_answer_worthiness"
+# Coverage gate: a belief uses its answer-worthiness posterior only after
+# this many injection observations; below it, cold-start to the type prior.
+ANSWER_WORTHINESS_MIN_OBS: Final[int] = 3
+
 PLACEHOLDER_FLAGS: Final[tuple[str, ...]] = (
     SIGNED_LAPLACIAN_FLAG,
     POSTERIOR_RANKING_FLAG,
@@ -268,6 +279,8 @@ ENV_USE_GAMMA_POSTERIOR_TEMPERATURE: Final[str] = (
 ENV_USE_ZETA_POSTERIOR_RERANK: Final[str] = (
     "AELFRICE_USE_ZETA_POSTERIOR_RERANK"
 )
+# Answer-worthiness prior env override. Tri-state, default-OFF.
+ENV_USE_ANSWER_WORTHINESS: Final[str] = "AELFRICE_USE_ANSWER_WORTHINESS"
 # v1.3.0 posterior-weight env override. Float-typed; "0.0" is the
 # only value that fully disables (collapsing to BM25-only ordering).
 # Empty / non-numeric values fall through to the next precedence
@@ -2124,6 +2137,49 @@ def resolve_use_zeta_posterior_rerank(
     toml_value = _read_toml_flag_for(
         USE_ZETA_POSTERIOR_RERANK_FLAG, start,
     )
+    if toml_value is not None:
+        return toml_value
+    return False
+
+
+def _env_use_answer_worthiness_override() -> bool | None:
+    """Return True/False if AELFRICE_USE_ANSWER_WORTHINESS is set to a
+    recognised truthy/falsy value, else None. Symmetric to
+    `_env_use_zeta_posterior_rerank_override`."""
+    raw = os.environ.get(ENV_USE_ANSWER_WORTHINESS)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def resolve_use_answer_worthiness(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the answer-worthiness prior flag.
+
+    Precedence (first decisive wins): AELFRICE_USE_ANSWER_WORTHINESS env
+    → `explicit` kwarg → `[retrieval] use_answer_worthiness` TOML →
+    default False. Mirror of `resolve_use_zeta_posterior_rerank`.
+
+    When True, `_l1_hits` substitutes each belief's accumulated
+    answer-worthiness posterior (`belief_relevance`) for its (α, β) in the
+    posterior term, for beliefs with ≥ ANSWER_WORTHINESS_MIN_OBS
+    observations. Independent of ζ/γ — it changes the posterior those
+    scorers read, it does not select a scorer.
+    """
+    env = _env_use_answer_worthiness_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    toml_value = _read_toml_flag_for(USE_ANSWER_WORTHINESS_FLAG, start)
     if toml_value is not None:
         return toml_value
     return False
