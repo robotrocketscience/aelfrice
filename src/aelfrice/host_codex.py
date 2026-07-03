@@ -19,13 +19,18 @@ triage:
   hooks.json is never overwritten without ``force`` — a real-world
   ``~/.codex/hooks.json`` has been observed holding truncated JSON, and
   clobbering user content on a parse error is worse than refusing.
-- **Portable hook subset.** Only host-agnostic hooks are installed:
+- **Portable hook subset.** Host-agnostic hooks are installed:
   retrieval injection (UserPromptSubmit), the transcript logger
   (UserPromptSubmit / Stop / PreCompact / PostCompact), session-start
   baseline injection (SessionStart, all sources — ``compact`` included,
-  which is the rebuild-at-compaction channel per #1054), and the stop
-  lock-prompt. Tool-matcher hooks (PreToolUse/PostToolUse) assume the
-  Claude tool namespace and are tracked separately in #1055.
+  which is the rebuild-at-compaction channel per #1054), the stop
+  lock-prompt, and the ``Bash``-matcher tool hooks (#1055): Codex
+  canonicalizes hook tool names to the compatible surface — shell
+  commands report ``tool_name == "Bash"`` — so the memory-first shell
+  search, pre-issue duplicate guard, and commit-ingest hooks match
+  unchanged. The ``Grep|Glob`` search hook is excluded (no such tools
+  exist on Codex; greps arrive via Bash and are covered by the Bash
+  matcher), as is the host-specific memory mirror.
 """
 from __future__ import annotations
 
@@ -37,7 +42,10 @@ from typing import Final, cast
 
 from aelfrice.setup import (
     SettingsScope,
+    resolve_commit_ingest_command,
     resolve_hook_command,
+    resolve_pre_issue_guard_command,
+    resolve_search_tool_bash_command,
     resolve_session_start_hook_command,
     resolve_stop_hook_command,
     resolve_transcript_logger_command,
@@ -61,6 +69,9 @@ _OWNED_BASENAMES: Final[frozenset[str]] = frozenset({
     "aelf-transcript-logger",
     "aelf-session-start-hook",
     "aelf-stop-hook",
+    "aelf-search-tool-hook",
+    "aelf-pre-issue-hook",
+    "aelf-commit-ingest",
 })
 
 
@@ -89,6 +100,9 @@ def desired_codex_hooks(scope: SettingsScope = "user") -> dict[str, list[dict[st
     logger_cmd = resolve_transcript_logger_command(scope)
     session_cmd = resolve_session_start_hook_command(scope)
     stop_cmd = resolve_stop_hook_command(scope)
+    search_bash_cmd = resolve_search_tool_bash_command(scope)
+    pre_issue_cmd = resolve_pre_issue_guard_command(scope)
+    commit_cmd = resolve_commit_ingest_command(scope)
     return {
         "UserPromptSubmit": [
             {"hooks": [_handler(hook_cmd), _handler(logger_cmd)]},
@@ -107,6 +121,18 @@ def desired_codex_hooks(scope: SettingsScope = "user") -> dict[str, list[dict[st
                 "matcher": _SESSION_START_MATCHER,
                 "hooks": [_handler(session_cmd)],
             },
+        ],
+        # #1055: Codex reports shell commands as tool_name "Bash", so the
+        # Bash-matcher hooks are host-portable verbatim. Grep|Glob is
+        # omitted — those tools do not exist on Codex.
+        "PreToolUse": [
+            {
+                "matcher": "Bash",
+                "hooks": [_handler(search_bash_cmd), _handler(pre_issue_cmd)],
+            },
+        ],
+        "PostToolUse": [
+            {"matcher": "Bash", "hooks": [_handler(commit_cmd)]},
         ],
     }
 

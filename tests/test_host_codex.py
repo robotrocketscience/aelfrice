@@ -25,15 +25,33 @@ def _read(path: Path) -> dict[str, object]:
 # --- desired set shape -----------------------------------------------------
 
 
-def test_desired_set_covers_portable_events_only() -> None:
+def test_desired_set_covers_portable_events() -> None:
     events = set(desired_codex_hooks().keys())
     assert events == {
         "UserPromptSubmit", "Stop", "PreCompact", "PostCompact",
-        "SessionStart",
+        "SessionStart", "PreToolUse", "PostToolUse",
     }
-    # Tool-matcher hooks are #1055 scope; they must NOT appear here.
-    assert "PreToolUse" not in events
-    assert "PostToolUse" not in events
+
+
+def test_tool_hooks_match_bash_only() -> None:
+    """#1055: Codex canonicalizes shell commands to tool_name "Bash";
+    Grep/Glob tools do not exist there and must not be matched."""
+    desired = desired_codex_hooks()
+    for event in ("PreToolUse", "PostToolUse"):
+        for group in desired[event]:
+            assert group["matcher"] == "Bash"
+    pre_cmds = [
+        h["command"] for g in desired["PreToolUse"] for h in g["hooks"]
+    ]
+    assert any("aelf-search-tool-hook" in c for c in pre_cmds)
+    assert any("aelf-pre-issue-hook" in c for c in pre_cmds)
+    post_cmds = [
+        h["command"] for g in desired["PostToolUse"] for h in g["hooks"]
+    ]
+    assert any("aelf-commit-ingest" in c for c in post_cmds)
+    # The Claude-memory mirror is host-specific and must stay out.
+    all_cmds = pre_cmds + post_cmds
+    assert not any("claude-memory-mirror" in c for c in all_cmds)
 
 
 def test_session_start_matcher_includes_compact() -> None:
@@ -87,8 +105,11 @@ def test_install_preserves_foreign_entries(tmp_path: Path) -> None:
     ]
     assert "/usr/local/bin/other-tool" in session_cmds
     assert any("aelf-session-start-hook" in c for c in session_cmds)
-    # Untouched foreign event survives verbatim.
-    assert doc["hooks"]["PreToolUse"] == foreign["hooks"]["PreToolUse"]
+    # The foreign PreToolUse group survives verbatim, with our Bash
+    # group appended after it (#1055).
+    pre = doc["hooks"]["PreToolUse"]
+    assert pre[0] == foreign["hooks"]["PreToolUse"][0]
+    assert any(g.get("matcher") == "Bash" for g in pre[1:])
 
 
 def test_install_refuses_broken_json_without_force(tmp_path: Path) -> None:
