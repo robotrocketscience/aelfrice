@@ -320,3 +320,38 @@ def test_answer_worthiness_coverage(tmp_path: Path) -> None:
         assert (total, any_obs, at_min) == (5, 2, 1), (total, any_obs, at_min)
     finally:
         s.close()
+
+
+# --- backfill from injection_events ----------------------------------
+
+def test_backfill_matches_incremental_and_idempotent(tmp_path: Path) -> None:
+    db = tmp_path / "m.db"
+    _seed(db, [_mk("B1", "x"), _mk("B2", "y")])
+    s = MemoryStore(str(db))
+    try:
+        e1 = s.record_injection_event(
+            session_id="s", turn_id="t1", belief_id="B1",
+            injected_at=_NOW, source="ups", active_consumers=[],
+        )
+        e2 = s.record_injection_event(
+            session_id="s", turn_id="t2", belief_id="B1",
+            injected_at=_NOW, source="ups", active_consumers=[],
+        )
+        e3 = s.record_injection_event(
+            session_id="s", turn_id="t3", belief_id="B2",
+            injected_at=_NOW, source="ups", active_consumers=[],
+        )
+        s.update_injection_referenced(e1, referenced=1, referenced_at=_NOW)
+        s.update_injection_referenced(e2, referenced=0, referenced_at=_NOW)
+        s.update_injection_referenced(e3, referenced=0, referenced_at=_NOW)
+        events, beliefs = s.rebuild_answer_worthiness_from_injections()
+        assert (events, beliefs) == (3, 2), (events, beliefs)
+        aw = s.read_answer_worthiness(["B1", "B2"])
+        # B1: 1 ref / 1 not → (2,2,2); B2: 0 ref / 1 not → (1,2,1).
+        assert aw["B1"] == (2.0, 2.0, 2), aw["B1"]
+        assert aw["B2"] == (1.0, 2.0, 1), aw["B2"]
+        # Idempotent.
+        s.rebuild_answer_worthiness_from_injections()
+        assert s.read_answer_worthiness(["B1", "B2"]) == aw
+    finally:
+        s.close()

@@ -3809,6 +3809,43 @@ class MemoryStore:
         ).fetchone()["n"]
         return int(total), int(any_obs), int(at_min)
 
+    def rebuild_answer_worthiness_from_injections(self) -> tuple[int, int]:
+        """(Re)build ``belief_relevance`` from all scored ``injection_events``.
+
+        Idempotent: clears the table, then replays every injection event with
+        ``referenced IS NOT NULL`` as one Beta observation via a single SQL
+        aggregate — ``ref_alpha = 1 + sum(referenced)``,
+        ``ref_beta = 1 + sum(1 - referenced)``, ``inj_count = count`` — matching
+        `record_reference_observation`'s semantics exactly. The join to
+        ``beliefs`` drops events whose belief was deleted. Returns
+        ``(n_events_applied, n_beliefs_covered)``. Deterministic.
+        """
+        self._conn.execute("DELETE FROM belief_relevance")
+        self._conn.execute(
+            """
+            INSERT INTO belief_relevance
+                (belief_id, ref_alpha, ref_beta, inj_count, updated_at)
+            SELECT ie.belief_id,
+                   1.0 + SUM(ie.referenced),
+                   1.0 + SUM(1 - ie.referenced),
+                   COUNT(*),
+                   MAX(COALESCE(ie.referenced_at, ie.injected_at))
+            FROM injection_events ie
+            JOIN beliefs b ON b.id = ie.belief_id
+            WHERE ie.referenced IS NOT NULL
+            GROUP BY ie.belief_id
+            """
+        )
+        self._conn.commit()
+        events = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM injection_events "
+            "WHERE referenced IS NOT NULL"
+        ).fetchone()["n"]
+        beliefs = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM belief_relevance"
+        ).fetchone()["n"]
+        return int(events), int(beliefs)
+
     def has_explicit_feedback_in_window(
         self,
         belief_id: str,
