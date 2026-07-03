@@ -2968,6 +2968,12 @@ def _cmd_feedback(args: argparse.Namespace, out: object) -> int:
         f"beta {result.prior_beta:.3f}->{result.new_beta:.3f}",
         file=out,  # type: ignore[arg-type]
     )
+    if result.propagated:
+        print(
+            f"propagated to {len(result.propagated)} connected belief(s) "
+            "via edge valence",
+            file=out,  # type: ignore[arg-type]
+        )
     _feed_log_event(
         "feedback.applied",
         args.belief_id,
