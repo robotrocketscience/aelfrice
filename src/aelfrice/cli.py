@@ -3322,6 +3322,8 @@ def _cmd_project_warm(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_setup(args: argparse.Namespace, out: object) -> int:
+    if getattr(args, "host", "claude") == "codex":
+        return _cmd_setup_codex(args, out)
     # #733: auto-migrate non-uv aelfrice installs to uv tool on first
     # post-upgrade setup. Gated on a one-shot sentinel inside
     # maybe_migrate_to_uv so re-running setup for unrelated reasons
@@ -3710,7 +3712,89 @@ def _print_setup_jsonl_history_hint(out: object) -> None:
     )
 
 
+def _cmd_setup_codex(args: argparse.Namespace, out: object) -> int:
+    """`aelf setup --host codex`: write ~/.codex/hooks.json (#1052)."""
+    from aelfrice.host_codex import codex_hooks_path, install_codex_hooks
+
+    result = install_codex_hooks(
+        codex_hooks_path(),
+        scope="user",
+        force=bool(getattr(args, "force", False)),
+    )
+    if result.error:
+        print(f"setup --host codex: {result.error}", file=sys.stderr)
+        return 1
+    verb = "wrote" if result.changed else "already current:"
+    print(
+        f"{verb} {result.path} "
+        f"(events: {', '.join(result.installed_events)})",
+        file=out,  # type: ignore[arg-type]
+    )
+    for line in result.guidance:
+        print(f"  next: {line}", file=out)  # type: ignore[arg-type]
+    return 0
+
+
+def _cmd_unsetup_codex(args: argparse.Namespace, out: object) -> int:
+    """`aelf unsetup --host codex`: remove aelfrice hooks.json entries."""
+    from aelfrice.host_codex import codex_hooks_path, remove_codex_hooks
+
+    _ = args
+    result = remove_codex_hooks(codex_hooks_path())
+    if result.error:
+        print(f"unsetup --host codex: {result.error}", file=sys.stderr)
+        return 1
+    if result.changed:
+        print(
+            f"removed aelfrice entries from {result.path} "
+            f"(events: {', '.join(result.installed_events)})",
+            file=out,  # type: ignore[arg-type]
+        )
+    else:
+        print(
+            f"no aelfrice entries in {result.path}",
+            file=out,  # type: ignore[arg-type]
+        )
+    return 0
+
+
+def _cmd_doctor_codex(args: argparse.Namespace, out: object) -> int:
+    """`aelf doctor --host codex`: scan the Codex host (#1052).
+
+    Exit 1 only on structural failure (hooks.json present but
+    unreadable); missing wiring, missing flag, and missing trust are
+    warnings — the host may simply not be set up yet.
+    """
+    from aelfrice.host_codex import doctor_codex
+
+    _ = args
+    report = doctor_codex()
+    ok = "ok" if report.hooks_file_valid else "-"
+    print(
+        f"[{ok}] codex hooks.json: present={report.hooks_file_present} "
+        f"valid={report.hooks_file_valid} "
+        f"aelfrice_handlers={report.owned_handler_count}",
+        file=out,  # type: ignore[arg-type]
+    )
+    flag = (
+        "unknown" if report.feature_flag_on is None
+        else ("on" if report.feature_flag_on else "off")
+    )
+    print(
+        f"[i] codex_hooks feature flag: {flag}; trusted [hooks.state] "
+        f"entries: {report.trusted_state_entries}",
+        file=out,  # type: ignore[arg-type]
+    )
+    for warning in report.warnings:
+        print(f"[warn] {warning}", file=out)  # type: ignore[arg-type]
+    if report.hooks_file_present and not report.hooks_file_valid:
+        return 1
+    return 0
+
+
 def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
+    if getattr(args, "host", "claude") == "codex":
+        return _cmd_unsetup_codex(args, out)
     path = _resolve_settings_path(args)
     if args.command is None:
         result = uninstall_user_prompt_submit_hook(
@@ -4726,6 +4810,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
     `aelf health` routes here with scope='graph' implicitly via
     `_cmd_health`.
     """
+    if getattr(args, "host", "claude") == "codex":
+        return _cmd_doctor_codex(args, out)
     if getattr(args, "classify_orphans", False):
         return _cmd_doctor_classify_orphans(args, out)
     if getattr(args, "gc_orphan_feedback", False):
@@ -6912,6 +6998,15 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_doctor.add_argument(
+        "--host", choices=("claude", "codex"), default="claude",
+        help=(
+            "host to diagnose. 'codex' scans ~/.codex/hooks.json shape, "
+            "aelfrice hook coverage, the codex_hooks feature flag, and "
+            "[hooks.state] trust coverage (#1052); brain-graph checks "
+            "are host-independent and are skipped in this mode."
+        ),
+    )
+    p_doctor.add_argument(
         "scope", nargs="?", choices=("hooks", "graph"), default=None,
         help=(
             "limit doctor to one check. 'hooks' validates settings.json "
@@ -7369,6 +7464,24 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     _add_hook_scope_args(p_setup)
     p_setup.add_argument(
+        "--host", choices=("claude", "codex"), default="claude",
+        help=(
+            "host to install hooks for. 'claude' (default) targets "
+            "settings.json; 'codex' writes the portable aelfrice hook "
+            "subset into ~/.codex/hooks.json and prints trust-approval "
+            "guidance (#1052). Tool-matcher hooks are Claude-only "
+            "pending #1055."
+        ),
+    )
+    p_setup.add_argument(
+        "--force", action="store_true",
+        help=(
+            "with --host codex: replace an existing hooks.json that is "
+            "unparseable instead of refusing. No effect on the claude "
+            "host path."
+        ),
+    )
+    p_setup.add_argument(
         "--command", default=None,
         help=(
             "hook command the upstream auto-memory tool will spawn. Default: auto-resolved "
@@ -7592,6 +7705,13 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     # Hidden: scriptable counterpart to setup. Humans use `aelf uninstall`.
     p_unsetup = sub.add_parser("unsetup", help=argparse.SUPPRESS)
     _add_hook_scope_args(p_unsetup)
+    p_unsetup.add_argument(
+        "--host", choices=("claude", "codex"), default="claude",
+        help=(
+            "host to remove hooks from. 'codex' removes only "
+            "aelfrice-owned entries from ~/.codex/hooks.json (#1052)."
+        ),
+    )
     p_unsetup.add_argument(
         "--command", default=None,
         help=(
