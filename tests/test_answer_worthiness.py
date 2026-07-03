@@ -13,6 +13,7 @@ import pytest
 
 from aelfrice.hook import _sweep_relevance_signal
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
+from aelfrice.retrieval import ENV_USE_ANSWER_WORTHINESS, retrieve
 from aelfrice.store import MemoryStore
 
 _NOW = "2026-07-02T00:00:00+00:00"
@@ -217,5 +218,88 @@ def test_sweeper_records_unreferenced_observation(
     try:
         # Not referenced → ref_beta grew (1,2), inj_count=1.
         assert s.read_answer_worthiness(["MISS1"])["MISS1"] == (1.0, 2.0, 1)
+    finally:
+        s.close()
+
+
+# --- read-time consumer (Phase C) ------------------------------------
+
+def _mk_content(bid: str, content: str) -> Belief:
+    return Belief(
+        id=bid, content=content, content_hash=f"h_{bid}",
+        alpha=1.0, beta=1.0, type=BELIEF_FACTUAL, lock_level=LOCK_NONE,
+        locked_at=None, created_at=_NOW, last_retrieved_at=None,
+    )
+
+
+_Q = "alpha report cellar storage capacity"
+_TEXT = "the alpha report on cellar storage capacity"
+
+
+def _seed_tied(db: Path) -> None:
+    # Identical content → identical BM25 → baseline order breaks on id ASC.
+    _seed(db, [_mk_content("b_aaa", _TEXT), _mk_content("b_zzz", _TEXT)])
+
+
+def test_consumer_flag_off_is_identical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "m.db"
+    _seed_tied(db)
+    s = MemoryStore(str(db))
+    try:
+        # Seed a strong answer-worthiness signal that FLAG-OFF must ignore.
+        for r in (1, 1, 1, 1):
+            s.record_reference_observation(
+                belief_id="b_zzz", referenced=r, now_iso=_NOW,
+            )
+        monkeypatch.delenv(ENV_USE_ANSWER_WORTHINESS, raising=False)
+        order = [b.id for b in retrieve(s, _Q, token_budget=2000)]
+        # Untouched → id-ascending tiebreak.
+        assert order == ["b_aaa", "b_zzz"], order
+    finally:
+        s.close()
+
+
+def test_consumer_flag_on_reranks_by_answer_worthiness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "m.db"
+    _seed_tied(db)
+    s = MemoryStore(str(db))
+    try:
+        # b_zzz highly answer-worthy, b_aaa not — enough obs to clear the gate.
+        for r in (1, 1, 1, 1):
+            s.record_reference_observation(
+                belief_id="b_zzz", referenced=r, now_iso=_NOW,
+            )
+        for r in (0, 0, 0, 0):
+            s.record_reference_observation(
+                belief_id="b_aaa", referenced=r, now_iso=_NOW,
+            )
+        monkeypatch.setenv(ENV_USE_ANSWER_WORTHINESS, "1")
+        order = [b.id for b in retrieve(s, _Q, token_budget=2000)]
+        # AW posterior overrides the id tiebreak → b_zzz first.
+        assert order == ["b_zzz", "b_aaa"], order
+    finally:
+        s.close()
+
+
+def test_consumer_cold_start_below_min_obs_no_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = tmp_path / "m.db"
+    _seed_tied(db)
+    s = MemoryStore(str(db))
+    try:
+        # Only 2 observations (< ANSWER_WORTHINESS_MIN_OBS=3) → cold-start,
+        # so even flag-ON must fall back to the type prior (no rerank).
+        for r in (1, 1):
+            s.record_reference_observation(
+                belief_id="b_zzz", referenced=r, now_iso=_NOW,
+            )
+        monkeypatch.setenv(ENV_USE_ANSWER_WORTHINESS, "1")
+        order = [b.id for b in retrieve(s, _Q, token_budget=2000)]
+        assert order == ["b_aaa", "b_zzz"], order
     finally:
         s.close()

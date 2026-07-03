@@ -2469,6 +2469,26 @@ def _heat_by_id(
     return {bid: float(heat[i]) for i, bid in enumerate(cache.belief_ids)}
 
 
+def _build_answer_worthiness_override(
+    store: MemoryStore, belief_ids: list[str],
+) -> dict[str, tuple[float, float]]:
+    """Map ``belief_id -> (ref_alpha, ref_beta)`` for beliefs whose
+    answer-worthiness accumulator has >= ANSWER_WORTHINESS_MIN_OBS
+    observations. Beliefs below the coverage gate (or with no row) are
+    omitted so the caller cold-starts them to the type prior. Fail-soft:
+    any store error yields an empty override, and retrieval falls back to
+    each belief's own (alpha, beta)."""
+    try:
+        aw = store.read_answer_worthiness(belief_ids)
+    except Exception:  # noqa: BLE001 — feedback substrate must not break retrieval
+        return {}
+    return {
+        bid: (a, b)
+        for bid, (a, b, n) in aw.items()
+        if n >= ANSWER_WORTHINESS_MIN_OBS
+    }
+
+
 def _l1_hits(
     store: MemoryStore,
     query: str,
@@ -2481,6 +2501,7 @@ def _l1_hits(
     heat_kernel_on: bool = False,
     gamma_temperature: float | None = None,
     zeta_params: tuple[float, float, float] | None = None,
+    use_answer_worthiness: bool = False,
 ) -> list[Belief]:
     """Run L1: FTS5 BM25 search (default) or BM25F sparse-matvec
     (v1.5.0 opt-in), optionally reranked by partial-Bayesian score.
@@ -2623,13 +2644,19 @@ def _l1_hits(
             _heat_by_id(eigenbasis_cache, bm25_pos_by_id)  # type: ignore[arg-type]
             if heat_active else None
         )
+        aw_override = (
+            _build_answer_worthiness_override(store, list(bm25_pos_by_id))
+            if use_answer_worthiness else {}
+        )
         keyed: list[tuple[float, str, Belief]] = []
         for b, raw in beliefs:
+            _ab = aw_override.get(b.id)
+            pa, pb = _ab if _ab is not None else (b.alpha, b.beta)
             if heat_map is not None:
                 s = combine_log_scores(
                     bm25f=max(float(raw), 1e-9),
                     heat=heat_map.get(b.id, HEAT_SCORE_FLOOR),
-                    posterior=posterior_mean(b.alpha, b.beta),
+                    posterior=posterior_mean(pa, pb),
                     heat_weight=DEFAULT_HEAT_KERNEL_WEIGHT,
                     posterior_weight=(
                         posterior_weight if posterior_weight > 0.0
@@ -2638,17 +2665,17 @@ def _l1_hits(
                 )
             elif gamma_temperature is not None:
                 s = gamma_posterior_score(
-                    -raw, b.alpha, b.beta, gamma_temperature,
+                    -raw, pa, pb, gamma_temperature,
                 )
             elif zeta_params is not None:
                 ζα, ζβ, ζscale = zeta_params
                 s = zeta_posterior_score(
                     -raw, ζα, ζβ, ζscale,
-                    posterior_mean(b.alpha, b.beta),
+                    posterior_mean(pa, pb),
                 )
             else:
                 s = partial_bayesian_score(
-                    -raw, b.alpha, b.beta, posterior_weight,
+                    -raw, pa, pb, posterior_weight,
                 )
             s = _hash_n_boosted(s, b.content, hash_n_literals)
             keyed.append((s, b.id, b))
@@ -2674,13 +2701,19 @@ def _l1_hits(
         _heat_by_id(eigenbasis_cache, bm25_pos_by_id)  # type: ignore[arg-type]
         if heat_active else None
     )
+    aw_override = (
+        _build_answer_worthiness_override(store, list(bm25_pos_by_id))
+        if use_answer_worthiness else {}
+    )
     keyed: list[tuple[float, str, Belief]] = []
     for b, bm25_raw in scored:
+        _ab = aw_override.get(b.id)
+        pa, pb = _ab if _ab is not None else (b.alpha, b.beta)
         if heat_map is not None:
             s = combine_log_scores(
                 bm25f=max(-bm25_raw, 1e-9),
                 heat=heat_map.get(b.id, HEAT_SCORE_FLOOR),
-                posterior=posterior_mean(b.alpha, b.beta),
+                posterior=posterior_mean(pa, pb),
                 heat_weight=DEFAULT_HEAT_KERNEL_WEIGHT,
                 posterior_weight=(
                     posterior_weight if posterior_weight > 0.0
@@ -2689,17 +2722,17 @@ def _l1_hits(
             )
         elif gamma_temperature is not None:
             s = gamma_posterior_score(
-                bm25_raw, b.alpha, b.beta, gamma_temperature,
+                bm25_raw, pa, pb, gamma_temperature,
             )
         elif zeta_params is not None:
             ζα, ζβ, ζscale = zeta_params
             s = zeta_posterior_score(
                 bm25_raw, ζα, ζβ, ζscale,
-                posterior_mean(b.alpha, b.beta),
+                posterior_mean(pa, pb),
             )
         else:
             s = partial_bayesian_score(
-                bm25_raw, b.alpha, b.beta, posterior_weight,
+                bm25_raw, pa, pb, posterior_weight,
             )
         s = _hash_n_boosted(s, b.content, hash_n_literals)
         keyed.append((s, b.id, b))
@@ -2822,6 +2855,7 @@ def retrieve(
         (ZETA_ALPHA_DEFAULT, ZETA_BETA_DEFAULT, ZETA_SCALE_DEFAULT)
         if zeta_on else None
     )
+    aw_on = resolve_use_answer_worthiness()
     compress_on = resolve_use_type_aware_compression(
         use_type_aware_compression,
     )
@@ -2918,6 +2952,7 @@ def retrieve(
             eigenbasis_cache=eigenbasis_cache, heat_kernel_on=heat_on,
             gamma_temperature=gamma_t,
             zeta_params=zeta_params,
+            use_answer_worthiness=aw_on,
         )
         l1 = [
             b for b in raw_l1
@@ -3072,6 +3107,7 @@ def retrieve_with_tiers(
         (ZETA_ALPHA_DEFAULT, ZETA_BETA_DEFAULT, ZETA_SCALE_DEFAULT)
         if zeta_on else None
     )
+    aw_on = resolve_use_answer_worthiness()
     # #741 adaptive expansion-gate. Same shape as retrieve(): short-
     # circuit BFS on broad prompts; L0 / L1 / L2.5-entity unaffected.
     # #760: pass store + now_ts for the meta-belief token-threshold
@@ -3149,6 +3185,7 @@ def retrieve_with_tiers(
             eigenbasis_cache=eigenbasis_cache, heat_kernel_on=heat_on,
             gamma_temperature=gamma_t,
             zeta_params=zeta_params,
+            use_answer_worthiness=aw_on,
         )
         l1 = [
             b for b in raw_l1
