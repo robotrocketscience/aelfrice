@@ -301,14 +301,15 @@ def _build_turn_line(
 
 
 def _last_assistant_text(transcript_path: str | None) -> str | None:
-    """Best-effort scan of Claude Code's transcript for the final
+    """Best-effort scan of the host transcript for the final
     assistant message text. Tolerant of format drift: returns None
     if anything goes wrong rather than raising.
 
-    The transcript is a JSONL file; lines vary in shape across
-    Claude Code versions. We scan from the tail for the most
-    recent line whose `type`/`role` indicates an assistant message
-    and pull its `message.content` text or `text` field.
+    The transcript is a JSONL file whose per-line shape depends on
+    the host (the Claude session transcript or the Codex CLI
+    rollout log) and varies across host versions. We scan from the
+    tail and try each known shape per line, so schema selection is
+    per-record rather than per-file.
     """
     if not transcript_path:
         return None
@@ -330,30 +331,82 @@ def _last_assistant_text(transcript_path: str | None) -> str | None:
         if not isinstance(obj, dict):
             continue
         obj_typed = cast(dict[str, object], obj)
-        # Try a few known shapes; degrade silently on miss.
-        role = obj_typed.get("role") or obj_typed.get("type")
-        if role != "assistant":
-            continue
-        msg = obj_typed.get("message")
-        if isinstance(msg, dict):
-            msg_typed = cast(dict[str, object], msg)
-            content = msg_typed.get("content")
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                # collected text segments
-                parts: list[str] = []
-                for seg in cast(list[object], content):
-                    if isinstance(seg, dict):
-                        seg_typed = cast(dict[str, object], seg)
-                        t = seg_typed.get("text")
-                        if isinstance(t, str):
-                            parts.append(t)
-                if parts:
-                    return "".join(parts)
-        text = obj_typed.get("text")
-        if isinstance(text, str):
+        # Try each known shape; degrade silently on miss.
+        text = _assistant_text_claude(obj_typed)
+        if text is None:
+            text = _assistant_text_codex(obj_typed)
+        if text is not None:
             return text
+    return None
+
+
+def _assistant_text_claude(obj: dict[str, object]) -> str | None:
+    """Extract assistant text from one Claude-host transcript record.
+
+    Shape: top-level `role` (or `type`) == "assistant"; text under
+    `message.content` as a string or a list of `{"text": ...}`
+    segments, with a top-level `text` field as fallback.
+    """
+    role = obj.get("role") or obj.get("type")
+    if role != "assistant":
+        return None
+    msg = obj.get("message")
+    if isinstance(msg, dict):
+        msg_typed = cast(dict[str, object], msg)
+        content = msg_typed.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            # collected text segments
+            parts: list[str] = []
+            for seg in cast(list[object], content):
+                if isinstance(seg, dict):
+                    seg_typed = cast(dict[str, object], seg)
+                    t = seg_typed.get("text")
+                    if isinstance(t, str):
+                        parts.append(t)
+            if parts:
+                return "".join(parts)
+    text = obj.get("text")
+    if isinstance(text, str):
+        return text
+    return None
+
+
+def _assistant_text_codex(obj: dict[str, object]) -> str | None:
+    """Extract assistant text from one Codex CLI rollout record (#1051).
+
+    Shape: {"type": "response_item", "payload": {"type": "message",
+    "role": "assistant", "content": [{"type": "output_text",
+    "text": "..."}]}}. Role and text are nested under `payload`, so
+    the Claude parser never matches these records and Stop events
+    used to fall through to an empty stub.
+    """
+    if obj.get("type") != "response_item":
+        return None
+    payload = obj.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    payload_typed = cast(dict[str, object], payload)
+    if payload_typed.get("type") != "message":
+        return None
+    if payload_typed.get("role") != "assistant":
+        return None
+    content = payload_typed.get("content")
+    if not isinstance(content, list):
+        return None
+    parts: list[str] = []
+    for seg in cast(list[object], content):
+        if not isinstance(seg, dict):
+            continue
+        seg_typed = cast(dict[str, object], seg)
+        if seg_typed.get("type") not in ("output_text", "text"):
+            continue
+        t = seg_typed.get("text")
+        if isinstance(t, str):
+            parts.append(t)
+    if parts:
+        return "".join(parts)
     return None
 
 

@@ -136,6 +136,77 @@ def test_stop_handles_segmented_content(tdir: Path, tmp_path: Path) -> None:
     assert lines[0]["text"] == "part1 part2"
 
 
+def _codex_rollout_line(role: str, *texts: str, item_type: str = "message") -> str:
+    return json.dumps({
+        "type": "response_item",
+        "payload": {
+            "type": item_type,
+            "role": role,
+            "content": [{"type": "output_text", "text": t} for t in texts],
+        },
+    })
+
+
+def test_stop_codex_rollout_writes_assistant_text(tdir: Path, tmp_path: Path) -> None:
+    """#1051: Codex rollout JSONL yields real assistant text, not a stub."""
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        _codex_rollout_line("user", "hi") + "\n" +
+        _codex_rollout_line("assistant", "hello ", "from codex") + "\n",
+        encoding="utf-8",
+    )
+    rc = _run_main({
+        "hook_event_name": "Stop",
+        "transcript_path": str(transcript),
+        "session_id": "01JCODEX0000000000000000",
+    })
+    assert rc == 0
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 1
+    assert lines[0]["role"] == "assistant"
+    assert lines[0]["text"] == "hello from codex"
+    assert lines[0]["session_id"] == "01JCODEX0000000000000000"
+
+
+def test_stop_codex_rollout_picks_last_assistant_message(
+    tdir: Path, tmp_path: Path,
+) -> None:
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        _codex_rollout_line("assistant", "first answer") + "\n" +
+        _codex_rollout_line("user", "follow-up") + "\n" +
+        _codex_rollout_line("assistant", "second answer") + "\n",
+        encoding="utf-8",
+    )
+    _run_main({
+        "hook_event_name": "Stop",
+        "transcript_path": str(transcript),
+    })
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert lines[0]["text"] == "second answer"
+
+
+def test_stop_codex_rollout_skips_non_message_items(
+    tdir: Path, tmp_path: Path,
+) -> None:
+    """Reasoning / tool-call response_items must not shadow the answer."""
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        _codex_rollout_line("assistant", "real answer") + "\n" +
+        _codex_rollout_line("assistant", "chain of thought", item_type="reasoning")
+        + "\n" +
+        json.dumps({"type": "response_item",
+                    "payload": {"type": "function_call", "name": "shell"}}) + "\n",
+        encoding="utf-8",
+    )
+    _run_main({
+        "hook_event_name": "Stop",
+        "transcript_path": str(transcript),
+    })
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert lines[0]["text"] == "real answer"
+
+
 def test_stop_writes_empty_text_when_no_transcript(tdir: Path) -> None:
     rc = _run_main({"hook_event_name": "Stop"})
     assert rc == 0
