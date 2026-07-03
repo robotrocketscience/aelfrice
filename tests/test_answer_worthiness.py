@@ -303,3 +303,20 @@ def test_consumer_cold_start_below_min_obs_no_change(
         assert order == ["b_aaa", "b_zzz"], order
     finally:
         s.close()
+
+
+# --- coverage diagnostic ---------------------------------------------
+
+def test_answer_worthiness_coverage(tmp_path: Path) -> None:
+    db = tmp_path / "m.db"
+    _seed(db, [_mk(f"b{i}", "x") for i in range(5)])
+    s = MemoryStore(str(db))
+    try:
+        # b0: 3 obs (>= min), b1: 1 obs (< min), b2-b4: none.
+        for r in (1, 0, 1):
+            s.record_reference_observation(belief_id="b0", referenced=r, now_iso=_NOW)
+        s.record_reference_observation(belief_id="b1", referenced=1, now_iso=_NOW)
+        total, any_obs, at_min = s.answer_worthiness_coverage(min_obs=3)
+        assert (total, any_obs, at_min) == (5, 2, 1), (total, any_obs, at_min)
+    finally:
+        s.close()

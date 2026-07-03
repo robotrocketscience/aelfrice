@@ -3786,6 +3786,29 @@ class MemoryStore:
             for r in cur.fetchall()
         }
 
+    def answer_worthiness_coverage(
+        self, *, min_obs: int = 3,
+    ) -> tuple[int, int, int]:
+        """Coverage of the answer-worthiness prior.
+
+        Returns ``(total_beliefs, n_with_any_observation,
+        n_at_or_above_min_obs)``. The read-time consumer only uses beliefs
+        at/above ``min_obs``; the Phase-D enable gate reads the
+        ``n_at_or_above_min_obs / total_beliefs`` ratio (target ~0.20).
+        Diagnostic surface for ``aelf doctor`` / ``aelf status``.
+        """
+        total = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM beliefs"
+        ).fetchone()["n"]
+        any_obs = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM belief_relevance WHERE inj_count > 0"
+        ).fetchone()["n"]
+        at_min = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM belief_relevance WHERE inj_count >= ?",
+            (min_obs,),
+        ).fetchone()["n"]
+        return int(total), int(any_obs), int(at_min)
+
     def has_explicit_feedback_in_window(
         self,
         belief_id: str,
