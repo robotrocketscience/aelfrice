@@ -3716,6 +3716,76 @@ class MemoryStore:
             for r in cur.fetchall()
         ]
 
+    def record_reference_observation(
+        self,
+        *,
+        belief_id: str,
+        referenced: int,
+        now_iso: str,
+    ) -> None:
+        """Accumulate one #779 relevance observation into the per-belief
+        answer-worthiness prior (``belief_relevance``).
+
+        ``referenced`` must be 0 or 1. Updates the Beta accumulator:
+        ``ref_alpha += referenced``, ``ref_beta += 1 - referenced``,
+        ``inj_count += 1``; a missing row is created from the (1, 1)
+        prior. Query-INDEPENDENT — one row per belief, not per query.
+
+        Raises ``ValueError`` on empty ``belief_id`` or ``referenced``
+        outside {0, 1}. The FK to ``beliefs(id)`` is enforced when
+        foreign keys are on (populate ``beliefs`` first in unit tests).
+        """
+        if not belief_id:
+            raise ValueError("belief_id must be a non-empty string")
+        if referenced not in (0, 1):
+            raise ValueError(f"referenced must be 0 or 1; got {referenced!r}")
+        r = float(referenced)
+        self._conn.execute(
+            """
+            INSERT INTO belief_relevance
+                (belief_id, ref_alpha, ref_beta, inj_count, updated_at)
+            VALUES (?, 1.0 + ?, 1.0 + ?, 1, ?)
+            ON CONFLICT(belief_id) DO UPDATE SET
+                ref_alpha = ref_alpha + ?,
+                ref_beta  = ref_beta + ?,
+                inj_count = inj_count + 1,
+                updated_at = excluded.updated_at
+            """,
+            (belief_id, r, 1.0 - r, now_iso, r, 1.0 - r),
+        )
+        self._conn.commit()
+
+    def read_answer_worthiness(
+        self, belief_ids: list[str],
+    ) -> dict[str, tuple[float, float, int]]:
+        """Batch-read the answer-worthiness accumulator for ``belief_ids``.
+
+        Returns ``{belief_id: (ref_alpha, ref_beta, inj_count)}`` for
+        beliefs that have at least one recorded observation. Beliefs with
+        no row are OMITTED — the read-time consumer treats a missing entry
+        as cold-start and falls back to the type prior. Empty input → {}.
+        """
+        ids = [b for b in belief_ids if b]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" for _ in ids)
+        cur = self._conn.execute(
+            f"""
+            SELECT belief_id, ref_alpha, ref_beta, inj_count
+            FROM belief_relevance
+            WHERE belief_id IN ({placeholders})
+            """,
+            tuple(ids),
+        )
+        return {
+            str(r["belief_id"]): (
+                float(r["ref_alpha"]),
+                float(r["ref_beta"]),
+                int(r["inj_count"]),
+            )
+            for r in cur.fetchall()
+        }
+
     def has_explicit_feedback_in_window(
         self,
         belief_id: str,
