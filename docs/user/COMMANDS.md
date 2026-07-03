@@ -118,7 +118,7 @@ See [CONFIG § `hrr_persist`](CONFIG.md) for the underlying flag, [`docs/design/
 | Decay target | Jeffreys prior `(0.5, 0.5)` |
 | Half-lives | factual 14d, requirement 30d, preference 12w, correction 24w |
 | Retrieval token budget | 2,400 (`DEFAULT_TOKEN_BUDGET` in `aelfrice.retrieval`; was 2,000 prior to v1.3) |
-| Valence propagation | BFS, max 3 hops, threshold 0.05 |
+| Valence propagation | BFS, max 3 hops, threshold 0.05; fires on every feedback event (off: `AELFRICE_VALENCE_PROPAGATION=0`) |
 | Benchmark hit-depth | top-5 |
 
 Half-lives and the decay target live in `aelfrice.scoring`; the token budget in `aelfrice.retrieval` (`DEFAULT_TOKEN_BUDGET`); the lock prior in `aelfrice.derivation` / `aelfrice.classification_core`; valence-propagation defaults on `MemoryStore.propagate_valence`; the benchmark hit-depth in `aelfrice.benchmark` (`DEFAULT_TOP_K`). See [ARCHITECTURE](../concepts/ARCHITECTURE.md).
