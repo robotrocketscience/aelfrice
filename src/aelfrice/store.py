@@ -4548,7 +4548,9 @@ class MemoryStore:
 
         Returns: dict mapping touched belief_id -> sum of applied deltas.
         The src_id itself is NOT included in the returned map (it's the
-        source, not a recipient).
+        source, not a recipient) — a cycle back into the source is
+        dropped rather than delivered, so the signal can never feed
+        back into the belief that emitted it (#1058).
         """
         applied: dict[str, float] = {}
         # Frontier entries: (belief_id, magnitude_carried_into_it, hops_taken)
@@ -4564,6 +4566,8 @@ class MemoryStore:
                 if abs(carried) < min_threshold:
                     continue
                 for edge in self.edges_from(current_id):
+                    if edge.dst == src_id:
+                        continue
                     multiplier = EDGE_VALENCE.get(edge.type, 0.0)
                     if multiplier == 0.0:
                         continue

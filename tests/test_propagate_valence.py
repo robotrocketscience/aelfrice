@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from aelfrice.models import (
     BELIEF_FACTUAL,
+    EDGE_CONTRADICTS,
     EDGE_SUPPORTS,
     LOCK_NONE,
     Belief,
@@ -76,5 +77,78 @@ def test_propagate_respects_max_hops() -> None:
     # max_hops=1 should reach B but not C.
     out = s.propagate_valence("A", valence=1.0, max_hops=1,
                               min_threshold=0.0001)
+    assert "B" in out
+    assert "C" not in out
+
+
+def test_cycle_back_to_source_never_delivers(  # #1058 src-leak fix
+) -> None:
+    """A->B, B->A: the source must not appear in the returned map.
+
+    Before the fix, delta delivery was unconditional, so the cycle
+    handed the source 0.25 of its own signal back — a
+    self-reinforcement channel once propagation feeds apply_feedback.
+    """
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk("A", alpha=5.0, beta=5.0))
+    s.insert_belief(_mk("B", alpha=5.0, beta=5.0))
+    s.insert_edge(Edge(src="A", dst="B", type=EDGE_SUPPORTS, weight=1.0))
+    s.insert_edge(Edge(src="B", dst="A", type=EDGE_SUPPORTS, weight=1.0))
+    out = s.propagate_valence("A", valence=1.0, max_hops=3,
+                              min_threshold=0.0001)
+    assert "A" not in out
+    assert out.keys() == {"B"}
+
+
+def test_contradicts_chain_flips_then_restores_sign() -> None:
+    """Characterization: signed propagation multiplies edge signs.
+
+    A -CONTRADICTS-> X -CONTRADICTS-> Y with positive source valence:
+    X is penalized (negative delta), Y is *reinforced* (positive delta,
+    enemy-of-my-enemy). This is structural-balance semantics, matching
+    the signed-graph treatment in the retrieval tier.
+    """
+    s = MemoryStore(":memory:")
+    for bid in ("A", "X", "Y"):
+        s.insert_belief(_mk(bid, alpha=5.0, beta=5.0))
+    s.insert_edge(Edge(src="A", dst="X", type=EDGE_CONTRADICTS, weight=1.0))
+    s.insert_edge(Edge(src="X", dst="Y", type=EDGE_CONTRADICTS, weight=1.0))
+    out = s.propagate_valence("A", valence=1.0, max_hops=3,
+                              min_threshold=0.0001)
+    assert out["X"] < 0.0
+    assert out["Y"] > 0.0
+
+
+def test_reconvergent_paths_accumulate_delivery_once_onward() -> None:
+    """Characterization: diamond A->{B1,B2}->C->D.
+
+    Delivery into C accumulates across both paths, but C's onward
+    propagation carries only the first-arriving delta (first-visit
+    frontier semantics). D therefore sees half of what naive
+    both-paths propagation would give. Documented as-is in #1058;
+    changing it would change delta magnitudes downstream.
+    """
+    s = MemoryStore(":memory:")
+    for bid in ("A", "B1", "B2", "C", "D"):
+        s.insert_belief(_mk(bid, alpha=5.0, beta=5.0))
+    for src, dst in (("A", "B1"), ("A", "B2"), ("B1", "C"),
+                     ("B2", "C"), ("C", "D")):
+        s.insert_edge(Edge(src=src, dst=dst, type=EDGE_SUPPORTS, weight=1.0))
+    out = s.propagate_valence("A", valence=1.0, max_hops=4,
+                              min_threshold=0.0001)
+    # Both paths deliver 0.25 into C (1.0 * 1.0 * 0.5 broker, twice over
+    # two hops); onward flow into D uses the first 0.25 only.
+    assert abs(out["C"] - 0.5) < 1e-9
+    assert abs(out["D"] - 0.125) < 1e-9
+
+
+def test_min_threshold_prunes_weak_deltas() -> None:
+    """A delta whose magnitude falls below min_threshold is not
+    delivered and does not extend the frontier."""
+    s = _build_chain(broker_alpha=5.0, broker_beta=5.0)
+    # Hop 1 delta = 0.5; hop 2 delta = 0.25. Threshold between the
+    # two keeps B and prunes C.
+    out = s.propagate_valence("A", valence=1.0, max_hops=3,
+                              min_threshold=0.3)
     assert "B" in out
     assert "C" not in out
