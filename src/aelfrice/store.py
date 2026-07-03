@@ -536,6 +536,27 @@ _SCHEMA: tuple[str, ...] = (
         PRIMARY KEY (belief_id, neighbor_id, edge_type, direction)
     )
     """,
+    # Per-belief answer-worthiness prior: a query-INDEPENDENT Beta
+    # accumulator of the #779 `referenced` signal, one row per belief.
+    # `ref_alpha`/`ref_beta` start at the Jeffreys-ish (1,1) prior and are
+    # incremented by the Layer-3 sweeper: ref_alpha += referenced,
+    # ref_beta += 1 - referenced. `inj_count` gates the read-time consumer
+    # (cold-start beliefs with inj_count < MIN_OBS fall back to the type
+    # prior). Orthogonal to beliefs.(alpha,beta) by design so the core
+    # confidence/decay semantics are untouched. Consumed behind the
+    # `use_answer_worthiness` flag (default OFF). See the relevance-corpus
+    # campaign (R5 ceiling +18.6pp recall@1; R6/R7 learnable).
+    """
+    CREATE TABLE IF NOT EXISTS belief_relevance (
+        belief_id   TEXT    NOT NULL,
+        ref_alpha   REAL    NOT NULL DEFAULT 1.0,
+        ref_beta    REAL    NOT NULL DEFAULT 1.0,
+        inj_count   INTEGER NOT NULL DEFAULT 0,
+        updated_at  TEXT    NOT NULL,
+        PRIMARY KEY (belief_id),
+        FOREIGN KEY (belief_id) REFERENCES beliefs(id) ON DELETE CASCADE
+    )
+    """,
 )
 
 # Marker key for the entity-index one-shot backfill. Empty value =
