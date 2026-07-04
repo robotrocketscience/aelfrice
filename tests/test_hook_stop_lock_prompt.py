@@ -192,7 +192,7 @@ def test_format_has_open_close_tags_and_lock_command() -> None:
     assert STOP_PROMPT_CLOSE_TAG in block
     assert "B1" in block
     assert "atomic commits beat batched" in block
-    assert "aelf lock --statement" in block
+    assert "aelf lock 'atomic commits beat batched'" in block
 
 
 def test_format_pluralizes_correctly() -> None:
@@ -324,7 +324,7 @@ def test_stop_emits_lock_prompt_on_stderr(
     out = serr.getvalue()
     assert STOP_PROMPT_OPEN_TAG in out
     assert "use uv not pip" in out
-    assert "aelf lock --statement" in out
+    assert "aelf lock 'use uv not pip'" in out
     # Belief should NOT be locked yet — prompt mode is informational only.
     s = MemoryStore(str(db))
     try:

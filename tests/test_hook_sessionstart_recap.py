@@ -174,7 +174,7 @@ class TestBuildSessionStartRecapLine:
         )
         assert line == (
             "aelfrice: 5 beliefs written since last session"
-            " — `aelf:feed -n 5` to review."
+            " — `aelf:feed --limit 5` to review."
         )
 
 
@@ -254,7 +254,7 @@ def test_session_start_integration_recap_injected(
     assert rc == 0
     output = sout.getvalue()
     assert "5 beliefs written since last session" in output
-    assert "`aelf:feed -n 5` to review." in output
+    assert "`aelf:feed --limit 5` to review." in output
 
 
 def test_session_start_integration_recap_suppressed_by_env(

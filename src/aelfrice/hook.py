@@ -88,7 +88,7 @@ except ImportError as _e:
 DEFAULT_HOOK_TOKEN_BUDGET: Final[int] = 1500
 """Conservative default budget for hook-injected context.
 
-Below the CLI default (2000) to leave headroom for the user's
+Below the CLI default (2400) to leave headroom for the user's
 prompt and other concurrent UserPromptSubmit hooks competing for
 the same context window.
 """
@@ -2977,7 +2977,7 @@ def _format_stop_prompt(candidates: list["Belief"]) -> str:
         if len(snippet) > 120:
             snippet = snippet[:117] + "..."
         lines.append(f"  - {b.id} ({b.type}, origin={b.origin}): {snippet}")
-        lines.append(f"    aelf lock --statement {_shell_quote(b.content)}")
+        lines.append(f"    aelf lock {_shell_quote(b.content)}")
     lines.append(STOP_PROMPT_CLOSE_TAG)
     lines.append("")
     return "\n".join(lines)
@@ -4180,7 +4180,7 @@ def build_session_start_recap_line(
         return None
     return (
         f"aelfrice: {count} beliefs written since last session"
-        f" — `aelf:feed -n {count}` to review."
+        f" — `aelf:feed --limit {count}` to review."
     )
 
 
