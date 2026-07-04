@@ -144,7 +144,7 @@ use_type_aware_compression = true
 # var overrides.
 use_intentional_clustering = true
 
-# v3.9+ (#1064). Default `false` — landing posture, not the end state:
+# v4.0.0+ (#1064). Default `false` — landing posture, not the end state:
 # the default-ON flip is gated on the pre-registered #1064 criteria
 # (see docs/design/feature-temporal-spine.md). When true, the
 # temporal-spine lane traverses TEMPORAL_NEXT chronological chains from
@@ -158,7 +158,7 @@ use_intentional_clustering = true
 # AELFRICE_TEMPORAL_SPINE env var overrides.
 use_temporal_spine = false
 
-# v3.9+ (#1064). Node budget for the temporal-spine lane traversal
+# v4.0.0+ (#1064). Node budget for the temporal-spine lane traversal
 # (default 32). The confirmatory budget curve is monotone (~+2.5pp
 # coverage per doubling at 32/64/128, no plateau) — this is the knob to
 # raise for retrieval-heavy callers with the token budget to hold the
@@ -174,7 +174,7 @@ temporal_spine_budget = 32
 # use_posterior_ranking = false
 
 [ingest]
-# v3.9+ (#1064). Default `false` (same flip gate as use_temporal_spine
+# v4.0.0+ (#1064). Default `false` (same flip gate as use_temporal_spine
 # above — the two flags flip together at release time but resolve
 # independently). When true, every belief insert chains to its session
 # predecessor with a TEMPORAL_NEXT edge (src = successor, weight 0.8),
@@ -500,7 +500,7 @@ Precedence (first decisive wins): env var `AELFRICE_TYPE_AWARE_COMPRESSION=0`/`1
 
 ### `use_temporal_spine` / `temporal_spine_budget`
 
-v3.9+ (#1064). Default `false` / `32`. The temporal-spine retrieval lane:
+v4.0.0+ (#1064). Default `false` / `32`. The temporal-spine retrieval lane:
 an additive candidate source after L1 that traverses `TEMPORAL_NEXT`
 chronological chains from the top-5 packed L1 seeds (both directions,
 depth 1) and appends the neighbours — never displacing L1 pre-packing.
@@ -517,7 +517,7 @@ posture; the default-ON flip is gated on the pre-registered criteria in
 
 `use_signed_laplacian` and `use_posterior_ranking` are reserved by #154 but their owning lanes have not yet shipped. The flags are recognised by `warn_placeholder_flags()` so writing them in `.aelfrice.toml` does not error; setting either to `true` emits a one-shot stderr deprecation warning and is otherwise a no-op. Source of truth: `PLACEHOLDER_FLAGS` in `src/aelfrice/retrieval.py`.
 
-## `[ingest]` (v3.9+)
+## `[ingest]` (v4.0.0+)
 
 ### `write_temporal_spine`
 
