@@ -112,6 +112,9 @@ L2.5: entity-index lookup (v1.3+)    NER-extracted entities → exact + stem mat
 L1: FTS5 BM25 / BM25F                limit l1_limit, query escaped;
         ↓                             v1.3+: score = log(bm25) + 0.5*log(posterior_mean)
                                       v1.7+: BM25F anchor-augmented sparse matvec, default-on (#148/#154)
+Temporal spine (#1064)               TEMPORAL_NEXT chain traversal from the top-5 L1 seeds,
+        ↓                             appended after L1; default-OFF, enable via
+                                      [retrieval] use_temporal_spine = true
 L3: BFS multi-hop expansion (v1.3+)  edge-weighted graph walk from L0+L2.5+L1 seed set;
         ↓                             default-OFF; enable via [retrieval] bfs_enabled = true
 Dedupe L1+L2.5+L3 against L0 ids
@@ -165,6 +168,8 @@ Non-blocking contract: every failure path exits 0 with no stdout. A hook problem
 | `aelf-search-tool-hook` | `PreToolUse:Grep|Glob` | Surface relevant beliefs adjacent to tool-driven search (#674). | v3.0.1 (#738) |
 | `aelf-search-tool-hook` | `PreToolUse:Bash` | Same entry point, separate settings.json matcher, for bash search invocations. | v3.0.1 (#738) |
 | `aelf-pre-issue-hook` | `PreToolUse:Bash` | Duplicate-detection guard before `gh issue create` — blocks (exit 2) on Jaccard title overlap ≥ 0.5 against open issues and shipped commits (#941). | v3.5.0 |
+| `aelf-claude-memory-mirror` | `PostToolUse:Write\|Edit\|MultiEdit` | One-way mirror of host claude-memory fact-file writes into the belief graph; installed default-on but inert until `AELFRICE_MIRROR_CLAUDE_MEMORY` / `[memory] mirror_claude_memory` is set (#985). | v3.7.0 |
+| `aelf-agent-context-hook` | `PreToolUse:Agent\|Task` | Worker-context injection — dispatched subagents inherit L0 locked + task-relevant beliefs via the harness `updatedInput` channel; fail-open passthrough, kill switch `AELFRICE_AGENT_CONTEXT=0` (#1068). | (unreleased) |
 | `aelf-pre-compact-hook` | `PreCompact` | Context rebuilder — opt-in via `--rebuilder`; default trigger flipped from `manual` to `threshold` at v3.1 (#746). | opt-in |
 
 Each lane is opt-out via `aelf setup --no-<lane>`. All non-blocking: every failure path exits 0 with no stdout.
