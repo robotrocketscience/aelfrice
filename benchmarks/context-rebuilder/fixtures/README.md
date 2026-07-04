@@ -7,7 +7,7 @@ backs the v1.4.0 context-rebuilder eval harness ([#136][i136]).
 
 ## Policy: synthetic only on the public repo
 
-Per [`docs/eval_fixture_policy.md`][p] (decided at [#142][i142]):
+Per [`docs/design/eval_fixture_policy.md`][p] (decided at [#142][i142]):
 
 [p]: ../../../docs/design/eval_fixture_policy.md
 [i142]: https://github.com/robotrocketscience/aelfrice/issues/142
@@ -15,7 +15,7 @@ Per [`docs/eval_fixture_policy.md`][p] (decided at [#142][i142]):
 - **Public repo (this directory).** Synthetic, generator-built
   fixtures only. Tracked in git. CI runs against this corpus.
   The headline continuation-fidelity number documented in
-  `docs/context_rebuilder.md § Headline metric` is computed on
+  `docs/design/context_rebuilder.md § Headline metric` is computed on
   this corpus.
 - **Lab repo (`~/projects/aelfrice-lab`).** Captured real-session
   `turns.jsonl` files held lab-side, never pushed to GitHub.
@@ -25,7 +25,7 @@ Per [`docs/eval_fixture_policy.md`][p] (decided at [#142][i142]):
   fixtures for individual developers' local calibration runs.
 
 The boundary between "public" and "lab" is the directory and the
-two-repo separation, not a filter. See `docs/eval_fixture_policy.md`
+two-repo separation, not a filter. See `docs/design/eval_fixture_policy.md`
 for the full reasoning.
 
 ## Layout
