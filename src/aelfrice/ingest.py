@@ -315,6 +315,20 @@ def _ingest_turn_ids(
         if is_auto_relationship_detection_enabled():
             write_semantic_edges(store, new_belief_ids=inserted)
 
+        # #1064: optionally chain this turn's new beliefs into the
+        # per-session temporal spine (TEMPORAL_NEXT, src = successor,
+        # dst = predecessor). Default-OFF (is_temporal_spine_write_enabled):
+        # when off, this branch is never entered and ingest is
+        # byte-identical to today. Gated on `inserted` so
+        # corroboration-only turns skip the predecessor lookups.
+        from aelfrice.temporal_spine import (
+            is_temporal_spine_write_enabled,
+            write_temporal_spine,
+        )
+
+        if is_temporal_spine_write_enabled():
+            write_temporal_spine(store, new_belief_ids=inserted)
+
     return inserted
 
 

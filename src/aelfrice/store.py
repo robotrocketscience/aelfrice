@@ -4366,6 +4366,41 @@ class MemoryStore:
         )
         return [_row_to_edge(r) for r in cur.fetchall()]
 
+    def session_predecessor_id(self, belief_id: str) -> str | None:
+        """Id of the belief immediately before `belief_id` in its session.
+
+        Ordering is `(created_at, rowid)` — creation time, with insertion
+        order as the tie-break for identical timestamps. Returns None when
+        the belief does not exist, carries a NULL `session_id`, or is the
+        first belief of its session. Soft-deleted (`valid_to` set) beliefs
+        are eligible predecessors — spine chain integrity must survive GC
+        (#1064; skip-but-continue happens at traversal time, not here).
+
+        Consumer: the #1064 temporal-spine writer
+        (`aelfrice.temporal_spine.write_temporal_spine`) and the
+        `aelf spine backfill` path. Uses `idx_beliefs_session`, so the
+        lookup is O(log n) per call.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT b2.id
+            FROM beliefs AS b1
+            JOIN beliefs AS b2
+              ON b2.session_id = b1.session_id
+            WHERE b1.id = ?
+              AND b1.session_id IS NOT NULL
+              AND (b2.created_at < b1.created_at
+                   OR (b2.created_at = b1.created_at
+                       AND b2.rowid < b1.rowid))
+            ORDER BY b2.created_at DESC, b2.rowid DESC
+            LIMIT 1
+            """,
+            (belief_id,),
+        )
+        row = cur.fetchone()
+        return str(row["id"]) if row is not None else None
+
+
     def edges_from_in_scope(
         self, src: str, owning_scope: str | None
     ) -> list[Edge]:
