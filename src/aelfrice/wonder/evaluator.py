@@ -20,9 +20,13 @@ ship":
   budget" as a proxy for "would gc within 14d" — the spec's
   threshold is qualitative, this makes it computable.
 
-Output is a single ``BakeoffResult`` dataclass with one
-``StrategyMetrics`` per strategy plus the cross-strategy Jaccard
-matrix and the adoption-criterion verdict.
+``BakeoffResult`` bundles one ``StrategyMetrics`` per strategy
+plus the cross-strategy Jaccard matrix and the adoption-criterion
+verdict, but it is a convenience dataclass only — never
+instantiated anywhere in this package. The actual bake-off entry
+point, ``wonder.runner.run_bakeoff``, assembles the same
+information into a plain ``{config, per_seed, aggregate}`` dict
+instead.
 """
 from __future__ import annotations
 
@@ -164,9 +168,11 @@ def adoption_verdict(
     1. **Drop** if all strategies fall below the H0 null floor.
     2. **Defer** if no strategy clears H0+10pp, or any strategy's
        junk_rate exceeds 60%.
-    3. **Single-strategy ship** if exactly one strategy clears the
-       floor with retrieval-per-cost within 25% of best, and the
-       others are not complementary (any pairwise Jaccard ≥ 0.6).
+    3. **Single-strategy ship** — the default outcome once at
+       least one strategy clears the floor and the top two are
+       not complementary (Jaccard ≥ 0.3); retrieval-per-cost
+       within 25% of best (``cost_window``) is computed but does
+       not currently gate the verdict.
     4. **Ensemble** if the top two strategies are complementary
        (Jaccard < 0.3) and each clears the floor.
 
