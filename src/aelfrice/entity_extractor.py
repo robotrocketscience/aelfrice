@@ -204,8 +204,10 @@ def extract_entities(
 ) -> list[Entity]:
     """Return entities in left-to-right order of match start.
 
-    Pure regex over `text`. No side effects, no I/O, no exceptions
-    (an empty / non-string-shaped input returns []). Earlier kinds in
+    Pure regex over `text`. No side effects, no I/O; falsy input
+    (None, "", 0, []) returns []. Non-string, non-empty input is
+    not validated and will raise `TypeError` from the underlying
+    compiled-pattern `pat.finditer(text)` call. Earlier kinds in
     `_PATTERN_BANK` win on overlap — once a span is accepted, later
     kinds skip any match that intersects it.
 
