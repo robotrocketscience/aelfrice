@@ -348,9 +348,9 @@ def append_ids(
 
     Returns the ``next_fire_idx`` written to the ring (i.e. one past the
     fire_idx these IDs were tagged with). Returns -1 on any error,
-    short-circuiting the caller without raising. Empty ``ids`` is a
-    no-op and returns the current ``next_fire_idx`` (or 0 if the ring
-    was just created).
+    short-circuiting the caller without raising. Empty ``ids`` is not a
+    no-op: ``next_fire_idx`` is still bumped by one and persisted, so the
+    call returns ``fire_idx + 1`` (1 on a freshly-created ring, not 0).
     """
     if not session_id:
         return -1
