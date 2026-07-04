@@ -106,9 +106,9 @@ class ClassificationResult:
       otherwise. Caller (scanner / onboarding) is responsible for
       skipping non-persisting sentences before insertion.
     - pending_classification: True when this was the regex-fallback path
-      and a future host-LLM pass could refine the type. Always True in
-      v1.0; the polymorphic-host-handshake path that flips this to False
-      lands in v0.6.0.
+      and a future host-LLM pass could refine the type. Always True as of
+      v3.8.0; no code path currently flips it to False — the
+      polymorphic-host-handshake integration remains unimplemented.
     """
 
     belief_type: str
