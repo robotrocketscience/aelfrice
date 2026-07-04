@@ -27,12 +27,12 @@ Semver in force. Current line: v3.x. The historical `0.x.y` milestones on the v1
 ## Tag and publish
 
 ```bash
-git switch main && git pull github main
-git tag -s vX.Y.Z -m "release: vX.Y.Z"
+git fetch github main
+git tag vX.Y.Z <merge-sha>   # lightweight tag on the merged release commit
 git push github vX.Y.Z
 ```
 
-Tags SSH-signed (`gpg.format = ssh`, key `~/.ssh/id_rrs`). Tag push triggers `.github/workflows/publish.yml`:
+The **release commit** is SSH-signed (`gpg.format = ssh`, key `~/.ssh/id_rrs`); the **tag itself is lightweight** (points directly at that commit — matching every release tag to date, e.g. `git cat-file -t v3.8.0` → `commit`). Tag push triggers `.github/workflows/publish.yml`:
 
 1. Run pytest (gate).
 2. Build sdist + wheel.
