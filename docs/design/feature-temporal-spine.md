@@ -98,6 +98,22 @@ one release, with the backfill path included for existing stores:
   trim binds in ≥21% of real injections — this gate answers "does it
   survive the trim." Read `LaneTelemetry.temporal_spine_candidates −
   temporal_spine` for the per-call trim loss.)
+  - **Bench-pool half: DONE.** `temporal_spine_ablation.py
+    --budget 1500 --l1-limit 50 --rank-invariance` on LoCoMo10 (1,986
+    questions): coverage **+19.45pp** (0.346 → 0.540; seeded shuffled
+    control +0.47pp) — survives the trim, gain *exceeds* the wide-budget
+    dev figure. Top-rank invariance: **1,986/1,986 questions
+    core-prefix invariant, 0 top-rank displacements, 0 core-length
+    mismatches** — the lane never displaces or reorders a
+    `[locked, l25, l1, hrr]` belief; it only appends its own hits below
+    the core (17,110 spine beliefs added across all questions, every
+    one below the core). The `--rank-invariance` pass reads
+    `last_lane_telemetry()` to locate the core boundary exactly, so the
+    invariant is checked against the real lane structure, not an
+    inferred one.
+  - **Shadow-eval half: OPEN.** Still needs the aggregate-only run on a
+    real hook-ingested backfilled store (see open question 1 —
+    chain-length distribution under production `session_id` semantics).
 - **G3 — latency delta (#739-style):** with spine present at ≥10k
   beliefs: p50 Δ ≤ 5 ms, p95 Δ ≤ 50 ms vs lane-off. (Generic BFS
   measured +1.0 ms p50 / +35.6 ms p95; this lane is narrower.)
