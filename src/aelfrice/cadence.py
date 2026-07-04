@@ -212,7 +212,7 @@ ack token, so treating it as a boundary would over-fire."""
 class CadenceConfig:
     """Resolved `[cadence]` section of `.aelfrice.toml`.
 
-    Six fields. ``enabled`` gates the whole feature: when False, no
+    Nine fields. ``enabled`` gates the whole feature: when False, no
     cadence fire ever happens regardless of policy. ``policy`` selects
     the firing pattern. ``shadow_mode_enabled`` is an independent
     opt-in for #875 shadow-evaluation logging.
@@ -222,9 +222,13 @@ class CadenceConfig:
     ``ctx_byte_window`` (absolute byte count) parameterise the
     ctx-threshold predicate. The phase-boundary half of P2 is not
     configurable here — its allowlist lives at module scope.
+    P3-specific (#876): ``p3_velocity_threshold`` (bytes/turn) drives
+    ``p3_velocity``; ``p3_substantive_window`` (turns) and
+    ``p3_substantive_threshold`` (ratio) drive ``p3_substantive``.
 
-    Defaults are off / off / 15 / 0.50 / 600000 / off. Each field
-    has a default that makes a half-configured TOML well-defined.
+    Defaults are off / off / 15 / 0.50 / 600000 / off / 3000 / 10 / 0.6.
+    Each field has a default that makes a half-configured TOML
+    well-defined.
     """
     enabled: bool = DEFAULT_ENABLED
     policy: str = DEFAULT_POLICY
@@ -524,8 +528,8 @@ def resolve_cadence_policy(
          policy means no fire ever happens.
 
     Currently recognised policies: ``off``, ``p1_every_k_turns``,
-    ``p2_ctx_threshold``. P3 (turn-density-aware) per #749 is
-    unimplemented; the policy string is forward-compatible.
+    ``p2_ctx_threshold``, ``p3_velocity``, ``p3_substantive`` (#876).
+    The policy string remains forward-compatible with future additions.
     """
     env = _env_policy()
     if env is not None:
