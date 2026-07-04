@@ -8,10 +8,12 @@
 > verified against code; every MEDIUM finding re-verified against a named code location before
 > the fix. 0 CRITICAL, 0 HIGH, 9 MEDIUM, 8 LOW, 1 code-side drift issue.
 >
-> **Scope carried forward (NOT done in this pass):** the in-code documentation layer — docstrings,
-> argparse/`--help` text, MCP tool descriptions and schemas across all 552 `.py` files — is
-> deferred to a tracked follow-up, matching the #959/#964 precedent from the 2026-06-10 audit.
-> The v4.0.0 gate is not closeable until that layer is audited. See § Deferred scope.
+> **Scope carried forward (NOT done in this pass):** (1) the in-code documentation layer —
+> docstrings, argparse/`--help` text, MCP tool descriptions and schemas across all 552 `.py`
+> files — matching the #959/#964 precedent from the 2026-06-10 audit; (2) the remaining
+> doc-file buckets — `CHANGELOG*`, `docs/design/*` (incl. `historical/`), `docs/adr/*`, prior
+> `docs/audits/*` snapshots, `docs/experiments/*`, `tests/` + `.github/` docs, `CITATION.cff`
+> (~90 files). The v4.0.0 gate is not closeable until both are audited. See § Deferred scope.
 
 ## Scope
 
@@ -48,7 +50,7 @@ into `[Unreleased]` after the 2026-06-10 audit are missing from the enumerative 
    predict a v3.9 that this audit's own release gate skips. Reconciled to **v4.0.0** per #1075.
 5. **RELEASING documents `git tag -s` (signed annotated tags)** — actual practice is *lightweight*
    tags on the merge SHA (`git cat-file -t v3.6.0/v3.7.0/v3.8.0` → `commit`; `git tag -v v3.8.0`
-   fails "non-tag object"). Matches the operator's stated v3.6.0-cut process. Non-breaking
+   fails "non-tag object"). Consistent with every release tag to date. Non-breaking
    (`publish.yml` fires on the ref regardless); doc corrected to describe lightweight tagging.
 
 ## Findings ledger
@@ -110,11 +112,21 @@ into `[Unreleased]` after the 2026-06-10 audit are missing from the enumerative 
 
 ## Deferred scope (blocks v4.0.0 gate closure)
 
-The **in-code documentation layer** — Python docstrings, argparse/`--help` strings, MCP tool
-descriptions + schemas, hook self-descriptions across all 552 `.py` files — was NOT audited in
-this pass. Prior audits (#959, #964) deferred the same layer to follow-ups; #1075 asks for it
-in-scope from the start, so it must be completed (as its own batched pass + fix PR) before the
-v4.0.0 tag. The `cli.py:6347` code-side drift (C1) is one instance already surfaced incidentally;
-a full pass will find more.
+Two tranches of the #1075 inventory were NOT audited in this pass. Per the issue's coverage
+rule, absence from this ledger means *unaudited*, not clean — both tranches block the v4.0.0
+tag:
 
-Acceptance criteria still open after this pass: in-code layer audited; v4.0.0 released.
+1. **In-code documentation layer** — Python docstrings, argparse/`--help` strings, MCP tool
+   descriptions + schemas, hook self-descriptions across all 552 `.py` files. Prior audits
+   (#959, #964) deferred the same layer to follow-ups; #1075 asks for it in-scope, so it must
+   be completed as its own batched pass + fix PR. The `cli.py:6347` code-side drift (C1) is
+   one instance already surfaced incidentally; a full pass will find more.
+2. **Remaining doc-file buckets (~90 files)** — `CHANGELOG.md` + `CHANGELOG/v0.md`–`v3.md`
+   (verify entries against code at the corresponding tags, per the #957 finding that some
+   entries were spec-written); `docs/design/*` incl. `historical/` (71 files — status banners
+   + present-tense current-behavior claims; bodies are historical record per
+   `docs/design/README.md`); `docs/adr/*`; prior `docs/audits/*` snapshots (links/banners
+   only; bodies frozen); `docs/experiments/*`; `tests/` READMEs; `.github/` docs;
+   `CITATION.cff`.
+
+Acceptance criteria still open after this pass: both tranches audited; v4.0.0 released.
