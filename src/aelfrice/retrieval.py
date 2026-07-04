@@ -3270,7 +3270,7 @@ def retrieve_with_tiers(
     # directions, depth 1 by default, and appends the neighbours after
     # the L1 candidates — never displacing them pre-packing. No-op
     # guard: a store with zero TEMPORAL_NEXT edges skips the traversal
-    # entirely (one indexed count), so spineless stores get byte-
+    # entirely (LIMIT-1 existence probe), so spineless stores get byte-
     # identical output at ~zero cost. Spine hits deliberately do NOT
     # seed the BFS expansion below: the #1064 confirmatory evidence
     # measured the lane as a depth-1 append-after-L1 source with BFS
@@ -3282,7 +3282,7 @@ def retrieve_with_tiers(
         is_temporal_spine_enabled(temporal_spine_enabled)
         and query.strip()
         and l1_packed
-        and store.count_edges_by_type().get(EDGE_TEMPORAL_NEXT, 0) > 0
+        and store.has_edge_type(EDGE_TEMPORAL_NEXT)
     ):
         from aelfrice.temporal_spine import (
             DEFAULT_SPINE_DEPTH,
