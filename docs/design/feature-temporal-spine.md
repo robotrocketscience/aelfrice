@@ -117,6 +117,18 @@ one release, with the backfill path included for existing stores:
 - **G3 — latency delta (#739-style):** with spine present at ≥10k
   beliefs: p50 Δ ≤ 5 ms, p95 Δ ≤ 50 ms vs lane-off. (Generic BFS
   measured +1.0 ms p50 / +35.6 ms p95; this lane is narrower.)
+  - **DONE.** `temporal_spine_latency.py` on a 10,000-belief / 200-session
+    store carrying a real 9,800-edge spine, at the production operating
+    point (budget 1500 / l1-limit 50), paired lane-off vs lane-on: **Δp50
+    ≤ +0.8 ms, Δp95 +25–28 ms** (3 runs: +0.78/+0.04/+0.83 p50, worst
+    +28.4 p95), tail ratio ~2.1× — inside the +5 ms / +50 ms / 10× band.
+    The lane fires on 30/30 queries (109 candidates → 82 packed
+    survivors), byte-identical across runs, so the delta is real work,
+    not a vacuous null. Absolute latencies are machine/load-dependent
+    (dev-run baseline p50 ~64 ms); the gate is a same-corpus *delta*, as
+    reframed for #739 in PR #754. Pure-logic + lane-fires unit tests run
+    in the CI matrix; the timed bench is run-on-demand (no wall-clock
+    assertion in pytest — latency gates flake on shared runners).
 - **G4 — migration:** backfill shipped + doctor row (DONE in the
   landing PRs); the flip release decides auto vs prompted backfill.
 - **G5 — determinism/repro:** two-build byte-identity of the spine
