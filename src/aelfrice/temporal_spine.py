@@ -38,6 +38,7 @@ from aelfrice.models import EDGE_TEMPORAL_NEXT, Edge
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from aelfrice.models import Belief
     from aelfrice.store import MemoryStore
 
 ENV_TEMPORAL_SPINE_WRITE: Final[str] = "AELFRICE_TEMPORAL_SPINE_WRITE"
@@ -322,3 +323,86 @@ def backfill_temporal_spine(
         n_edges_written=n_written,
         n_edges_existing=n_existing,
     )
+
+
+# --- Retrieval-lane traversal ---------------------------------------------
+
+DEFAULT_SPINE_SEED_COUNT: Final[int] = 5
+DEFAULT_SPINE_DEPTH: Final[int] = 1
+DEFAULT_SPINE_NODE_BUDGET: Final[int] = 32
+
+
+def spine_neighbors(
+    store: "MemoryStore",
+    seed_ids: "Sequence[str]",
+    *,
+    depth: int = DEFAULT_SPINE_DEPTH,
+    node_budget: int = DEFAULT_SPINE_NODE_BUDGET,
+) -> list["Belief"]:
+    """Chronological neighbours of ``seed_ids`` over TEMPORAL_NEXT edges.
+
+    Bidirectional: for each frontier belief, both its temporal
+    successors (edges whose ``dst`` is the belief) and its predecessor
+    (edges whose ``src`` is the belief) are visited. Traversal is
+    breadth-first to ``depth`` hops, emitting at most ``node_budget``
+    beliefs. The #1064 confirmatory evidence ran depth-1; the monotone
+    budget curve (~+2.5pp per doubling at 32/64/128) says the budget
+    knob is the one to revisit at flip time.
+
+    Deterministic: seeds are processed in input order; within one
+    frontier belief, successors come before the predecessor and each
+    group is sorted by belief id. No sampling, no scores.
+
+    Soft-deleted beliefs (``valid_to`` set) are skip-but-continue
+    (#1064 open question 2): they are traversed *through* — kept on the
+    frontier so a GC'd chain segment doesn't sever the spine — but are
+    never emitted and never consume ``node_budget``.
+
+    Seeds themselves are never emitted. Returns beliefs in discovery
+    order (the caller packs them within its token budget).
+    """
+    if depth <= 0 or node_budget <= 0 or not seed_ids:
+        return []
+
+    visited: set[str] = set(seed_ids)
+    emitted: list["Belief"] = []
+    frontier: list[str] = list(dict.fromkeys(seed_ids))
+
+    for _hop in range(depth):
+        if not frontier:
+            break
+        edges = [
+            e for e in store.edges_for_beliefs(list(frontier))
+            if e.type == EDGE_TEMPORAL_NEXT
+        ]
+        successors: dict[str, list[str]] = {}
+        predecessors: dict[str, list[str]] = {}
+        for e in edges:
+            # src = temporal successor of dst (models.py semantics).
+            successors.setdefault(e.dst, []).append(e.src)
+            predecessors.setdefault(e.src, []).append(e.dst)
+
+        next_frontier: list[str] = []
+        for node in frontier:
+            neighbours = (
+                sorted(successors.get(node, []))
+                + sorted(predecessors.get(node, []))
+            )
+            for nid in neighbours:
+                if nid in visited:
+                    continue
+                visited.add(nid)
+                belief = store.get_belief(nid)
+                if belief is None:
+                    continue
+                if belief.valid_to is not None:
+                    # skip-but-continue: traverse through GC'd segments.
+                    next_frontier.append(nid)
+                    continue
+                emitted.append(belief)
+                next_frontier.append(nid)
+                if len(emitted) >= node_budget:
+                    return emitted
+        frontier = next_frontier
+
+    return emitted

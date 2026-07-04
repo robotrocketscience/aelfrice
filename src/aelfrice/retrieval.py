@@ -96,6 +96,7 @@ from aelfrice.graph_spectral import (
     seeds_from_bm25,
 )
 from aelfrice.models import (
+    EDGE_TEMPORAL_NEXT,
     LOCK_NONE,
     LOCK_TIER_REFERENCE,
     LOCK_USER,
@@ -187,6 +188,8 @@ HRR_STRUCTURAL_FLAG: Final[str] = "use_hrr_structural"
 # (resolver default False) — landing the lane + ablation only; a default
 # flip reverses locked #605 and is routed to a re-opened #897.
 HRR_EXPAND_FLAG: Final[str] = "use_hrr_expand"
+TEMPORAL_SPINE_FLAG: Final[str] = "use_temporal_spine"
+TEMPORAL_SPINE_BUDGET_FLAG: Final[str] = "temporal_spine_budget"
 # v2.1 #434 type-aware compression flag. Default-OFF at v2.0.0 until the
 # lab-side bench gate (A2 + A4 in docs/design/feature-type-aware-compression.md)
 # clears. ON populates RetrievalResult.compressed_beliefs with per-belief
@@ -251,6 +254,9 @@ ENV_HEAT_KERNEL: Final[str] = "AELFRICE_HEAT_KERNEL"
 ENV_HRR_STRUCTURAL: Final[str] = "AELFRICE_HRR_STRUCTURAL"
 # #981 HRR expansion-lane env override. Tri-state like ENV_BM25F; default-OFF.
 ENV_HRR_EXPAND: Final[str] = "AELFRICE_HRR_EXPAND"
+# #1064 temporal-spine lane flag + node-budget knob.
+ENV_TEMPORAL_SPINE: Final[str] = "AELFRICE_TEMPORAL_SPINE"
+ENV_TEMPORAL_SPINE_BUDGET: Final[str] = "AELFRICE_TEMPORAL_SPINE_BUDGET"
 # #698 HRR persist env override. "0" disables; "1" forces on.
 # Mirrors _ENV_PERSIST in hrr_index (same value; imported at call site).
 ENV_HRR_PERSIST: Final[str] = "AELFRICE_HRR_PERSIST"
@@ -683,6 +689,21 @@ def _env_hrr_expand_override() -> bool | None:
     truthy/falsy value, else None. Symmetric to
     `_env_hrr_structural_override`."""
     raw = os.environ.get(ENV_HRR_EXPAND)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def _env_temporal_spine_override() -> bool | None:
+    """Return True/False if AELFRICE_TEMPORAL_SPINE is set to a
+    recognised truthy/falsy value, else None. Symmetric to
+    `_env_hrr_expand_override`."""
+    raw = os.environ.get(ENV_TEMPORAL_SPINE)
     if raw is None:
         return None
     norm = raw.strip().lower()
@@ -1806,6 +1827,68 @@ def is_hrr_expand_enabled(
     return False
 
 
+def is_temporal_spine_enabled(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the temporal-spine retrieval-lane flag (#1064).
+
+    Precedence (first decisive wins):
+      1. AELFRICE_TEMPORAL_SPINE env var (truthy / falsy normalised).
+      2. Explicit `explicit` kwarg from the caller.
+      3. `[retrieval] use_temporal_spine` in `.aelfrice.toml`.
+      4. Default: **False** — the lane lands default-OFF. The default-ON
+         flip is gated on the pre-registered #1064 criteria (G2-G5), a
+         release deliverable rather than a config change. Distinct from
+         `AELFRICE_TEMPORAL_SPINE_WRITE` (the ingest-time writer flag in
+         `aelfrice.temporal_spine`) — the two flip together at release
+         time but resolve independently.
+
+    Passing the flag (any rung) never raises — an unset / unrecognised
+    value falls through to the next rung and ultimately to False.
+    """
+    env = _env_temporal_spine_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    toml_value = _read_toml_flag_for(TEMPORAL_SPINE_FLAG, start)
+    if toml_value is not None:
+        return toml_value
+    return False
+
+
+def resolve_temporal_spine_budget(
+    explicit: int | None = None,
+    *,
+    start: Path | None = None,
+) -> int:
+    """Resolve the temporal-spine lane's node budget (#1064).
+
+      1. ``AELFRICE_TEMPORAL_SPINE_BUDGET`` env var (positive int).
+      2. Explicit ``explicit`` kwarg from the caller.
+      3. ``[retrieval] temporal_spine_budget`` in ``.aelfrice.toml``.
+      4. Default: ``temporal_spine.DEFAULT_SPINE_NODE_BUDGET`` (32).
+
+    The confirmatory budget curve is monotone (~+2.5pp coverage per
+    doubling at 32/64/128 with no plateau) — the effect is
+    budget-limited, so this is the knob the flip release revisits.
+    """
+    from aelfrice.temporal_spine import DEFAULT_SPINE_NODE_BUDGET
+
+    env = _env_positive_int(ENV_TEMPORAL_SPINE_BUDGET)
+    if env is not None:
+        return env
+    if explicit is not None:
+        return int(explicit)
+    toml_value = _read_toml_float_for(TEMPORAL_SPINE_BUDGET_FLAG, start)
+    return (
+        int(toml_value) if toml_value is not None
+        else DEFAULT_SPINE_NODE_BUDGET
+    )
+
+
 def is_hrr_persist_enabled(
     explicit: bool | None = None,
     *,
@@ -2191,6 +2274,13 @@ class LaneTelemetry:
     # expansion lane merged into the candidate set (0 when the lane is off,
     # the default). Lets the ablation read the lane's contribution per call.
     hrr_expand: int = 0
+    # #1064 temporal-spine lane. ``temporal_spine`` is the packed survivor
+    # count (what the lane actually added to the output within budget);
+    # ``temporal_spine_candidates`` is what the traversal discovered before
+    # dedup + token-budget packing. The delta is the lane's trim loss —
+    # the G2 flip-gate question ("does it survive the production trim").
+    temporal_spine: int = 0
+    temporal_spine_candidates: int = 0
 
 
 # Per-process snapshot of the most recent retrieval call. Test-
@@ -2963,6 +3053,9 @@ def retrieve_with_tiers(
     use_intentional_clustering: bool | None = None,
     hrr_expand_enabled: bool | None = None,
     hrr_struct_index_cache: HRRStructIndexCache | None = None,
+    temporal_spine_enabled: bool | None = None,
+    temporal_spine_depth: int | None = None,
+    temporal_spine_node_budget: int | None = None,
 ) -> tuple[
     list[Belief], list[str], list[str], list[str], list[list[str]],
 ]:
@@ -3172,6 +3265,58 @@ def retrieve_with_tiers(
             seen_pre.add(b.id)
             used += cost
 
+    # #1064 temporal-spine lane (additive, default-OFF). Traverses
+    # TEMPORAL_NEXT chains from the top-5 packed L1 seeds, both
+    # directions, depth 1 by default, and appends the neighbours after
+    # the L1 candidates — never displacing them pre-packing. No-op
+    # guard: a store with zero TEMPORAL_NEXT edges skips the traversal
+    # entirely (one indexed count), so spineless stores get byte-
+    # identical output at ~zero cost. Spine hits deliberately do NOT
+    # seed the BFS expansion below: the #1064 confirmatory evidence
+    # measured the lane as a depth-1 append-after-L1 source with BFS
+    # untouched, and feeding BFS is unmeasured surface (#977 keeps
+    # generic BFS off anyway).
+    temporal_spine_ids_list: list[str] = []
+    n_spine_candidates = 0
+    if (
+        is_temporal_spine_enabled(temporal_spine_enabled)
+        and query.strip()
+        and l1_packed
+        and store.count_edges_by_type().get(EDGE_TEMPORAL_NEXT, 0) > 0
+    ):
+        from aelfrice.temporal_spine import (
+            DEFAULT_SPINE_DEPTH,
+            DEFAULT_SPINE_SEED_COUNT,
+            spine_neighbors,
+        )
+
+        spine_hits = spine_neighbors(
+            store,
+            [b.id for b in l1_packed[:DEFAULT_SPINE_SEED_COUNT]],
+            depth=(
+                temporal_spine_depth if temporal_spine_depth is not None
+                else DEFAULT_SPINE_DEPTH
+            ),
+            node_budget=resolve_temporal_spine_budget(
+                temporal_spine_node_budget,
+            ),
+        )
+        n_spine_candidates = len(spine_hits)
+        seen_spine: set[str] = (
+            locked_ids | l25_ids | set(l1_ids_list)
+            | set(hrr_expand_ids_list)
+        )
+        for b in spine_hits:
+            if b.id in seen_spine:
+                continue
+            cost = _cost(b)
+            if used + cost > locked_used + relevance_budget:
+                break
+            out.append(b)
+            temporal_spine_ids_list.append(b.id)
+            seen_spine.add(b.id)
+            used += cost
+
     bfs_chains: list[list[str]] = []
     if bfs_on and query.strip():
         seeds: list[Belief] = (
@@ -3189,6 +3334,7 @@ def retrieve_with_tiers(
             seen_ids: set[str] = (
                 locked_ids | l25_ids | set(l1_ids_list)
                 | set(hrr_expand_ids_list)
+                | set(temporal_spine_ids_list)
             )
             for hop in hops:
                 if hop.belief.id in seen_ids:
@@ -3211,6 +3357,8 @@ def retrieve_with_tiers(
         expansion_gate_skipped_bfs=gate_skipped_bfs,
         l1_candidates=len(l1),
         hrr_expand=len(hrr_expand_ids_list),
+        temporal_spine=len(temporal_spine_ids_list),
+        temporal_spine_candidates=n_spine_candidates,
     )
     return out, locked_ids_list, l25_ids_list, l1_ids_list, bfs_chains
 
@@ -3236,6 +3384,9 @@ def retrieve_v2(
     use_intentional_clustering: bool | None = None,
     use_hrr_structural: bool | None = None,
     use_hrr_expand: bool | None = None,
+    use_temporal_spine: bool | None = None,
+    temporal_spine_depth: int | None = None,
+    temporal_spine_node_budget: int | None = None,
     hrr_struct_index_cache: HRRStructIndexCache | None = None,
     with_doc_anchors: bool = False,
     now_ts: int | None = None,
@@ -3305,6 +3456,19 @@ def retrieve_v2(
       when the flag is on and no cache is passed, an ephemeral in-memory
       cache is built so the lane still fires (callers running the lane
       hot should pass an explicit cache to amortise the build).
+    - `use_temporal_spine` (#1064) — when True, the temporal-spine lane
+      runs as an additive candidate source after L1: it traverses
+      TEMPORAL_NEXT chains from the top-5 packed L1 seeds (both
+      directions, depth 1 by default, node budget 32 by default) and
+      appends the chronological neighbours to the candidate set. The
+      lane is a no-op (byte-identical output) when the store has zero
+      TEMPORAL_NEXT edges. Default-OFF — the default-ON flip is gated
+      on the pre-registered #1064 criteria. Opt in via
+      `AELFRICE_TEMPORAL_SPINE=1`, the kwarg, or
+      `[retrieval] use_temporal_spine = true`.
+      `temporal_spine_depth` / `temporal_spine_node_budget` tune the
+      traversal (budget also via `AELFRICE_TEMPORAL_SPINE_BUDGET` env
+      or `[retrieval] temporal_spine_budget` TOML).
     - `hrr_struct_index_cache` (#152) — explicit
       `HRRStructIndexCache` to reuse an already-built index across
       calls. None falls through to a fresh build per call.
@@ -3382,6 +3546,9 @@ def retrieve_v2(
         use_intentional_clustering=use_intentional_clustering,
         hrr_expand_enabled=use_hrr_expand,
         hrr_struct_index_cache=expand_cache,
+        temporal_spine_enabled=use_temporal_spine,
+        temporal_spine_depth=temporal_spine_depth,
+        temporal_spine_node_budget=temporal_spine_node_budget,
     )
     retrieve_elapsed = time.perf_counter() - retrieve_start
     if include_locked:

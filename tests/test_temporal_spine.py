@@ -380,3 +380,151 @@ def test_backfill_empty_store(store: MemoryStore) -> None:
     assert report.n_sessions == 0
     assert report.n_beliefs_in_sessions == 0
     assert report.n_edges_written == 0
+
+
+# ---------------------------------------------------------------------------
+# spine_neighbors traversal
+# ---------------------------------------------------------------------------
+
+from aelfrice.temporal_spine import spine_neighbors  # noqa: E402
+
+
+def _chain(store: MemoryStore, ids: list[str], *, session: str = "s1") -> None:
+    for i, bid in enumerate(ids):
+        _make_belief(store, belief_id=bid, content=f"unique fact number {bid}",
+                     session_id=session,
+                     created_at=f"2026-01-01T00:00:{i:02d}Z")
+    backfill_temporal_spine(store)
+
+
+def test_neighbors_bidirectional_depth_one(store: MemoryStore) -> None:
+    _chain(store, ["b1", "b2", "b3"])
+    hits = spine_neighbors(store, ["b2"])
+    assert [b.id for b in hits] == ["b3", "b1"]  # successor first, then pred
+
+
+def test_neighbors_depth_two(store: MemoryStore) -> None:
+    _chain(store, ["b1", "b2", "b3", "b4", "b5"])
+    hits = spine_neighbors(store, ["b3"], depth=2)
+    assert {b.id for b in hits} == {"b1", "b2", "b4", "b5"}
+
+
+def test_neighbors_budget_caps_output(store: MemoryStore) -> None:
+    _chain(store, ["b1", "b2", "b3", "b4", "b5"])
+    hits = spine_neighbors(store, ["b3"], depth=2, node_budget=2)
+    assert len(hits) == 2
+    assert spine_neighbors(store, ["b3"], node_budget=0) == []
+
+
+def test_neighbors_skip_but_continue_soft_deleted(store: MemoryStore) -> None:
+    _chain(store, ["b1", "b2", "b3"])
+    store.soft_delete_belief("b2")
+    hits = spine_neighbors(store, ["b1"], depth=2)
+    # b2 is traversed through (chain integrity) but never emitted.
+    assert [b.id for b in hits] == ["b3"]
+
+
+def test_neighbors_seeds_never_emitted(store: MemoryStore) -> None:
+    _chain(store, ["b1", "b2"])
+    hits = spine_neighbors(store, ["b1", "b2"], depth=3)
+    assert hits == []
+
+
+# ---------------------------------------------------------------------------
+# Retrieval lane (retrieve_v2 wiring)
+# ---------------------------------------------------------------------------
+
+from aelfrice.retrieval import (  # noqa: E402
+    ENV_TEMPORAL_SPINE,
+    is_temporal_spine_enabled,
+    last_lane_telemetry,
+    resolve_temporal_spine_budget,
+    retrieve_v2,
+)
+
+# The query shares terms with the anchor belief only; the chronological
+# neighbours are lexically disjoint from it (the #1064 mechanism: ~84%
+# of missing gold shares zero salient terms with the question).
+_ANCHOR = "the kubernetes deployment rollout failed during the canary stage"
+_BEFORE = "morning standup covered vacation plans and a birthday cake"
+_AFTER = "someone watered the office plants and refilled the coffee pot"
+_QUERY = "kubernetes canary rollout failure"
+
+
+def _seed_lane_store(store: MemoryStore) -> None:
+    _make_belief(store, belief_id="before", content=_BEFORE,
+                 session_id="s1", created_at="2026-01-01T00:00:01Z")
+    _make_belief(store, belief_id="anchor", content=_ANCHOR,
+                 session_id="s1", created_at="2026-01-01T00:00:02Z")
+    _make_belief(store, belief_id="after", content=_AFTER,
+                 session_id="s1", created_at="2026-01-01T00:00:03Z")
+    backfill_temporal_spine(store)
+
+
+def test_lane_default_off_flag() -> None:
+    assert is_temporal_spine_enabled() is False
+    assert is_temporal_spine_enabled(explicit=True) is True
+    assert resolve_temporal_spine_budget() == 32
+    assert resolve_temporal_spine_budget(explicit=7) == 7
+
+
+def test_lane_off_omits_neighbours(store: MemoryStore) -> None:
+    _seed_lane_store(store)
+    result = retrieve_v2(store, _QUERY, use_temporal_spine=False)
+    ids = {b.id for b in result.beliefs}
+    assert "anchor" in ids
+    assert "before" not in ids and "after" not in ids
+    tel = last_lane_telemetry()
+    assert tel.temporal_spine == 0
+    assert tel.temporal_spine_candidates == 0
+
+
+def test_lane_on_appends_chronological_neighbours(store: MemoryStore) -> None:
+    _seed_lane_store(store)
+    result = retrieve_v2(store, _QUERY, use_temporal_spine=True)
+    ids = [b.id for b in result.beliefs]
+    assert "anchor" in ids
+    assert "before" in ids and "after" in ids
+    # Never displaces L1 pre-packing: neighbours come after the anchor.
+    assert ids.index("anchor") < ids.index("before")
+    assert ids.index("anchor") < ids.index("after")
+    tel = last_lane_telemetry()
+    assert tel.temporal_spine == 2
+    assert tel.temporal_spine_candidates == 2
+
+
+def test_lane_env_var_enables(
+    store: MemoryStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_lane_store(store)
+    monkeypatch.setenv(ENV_TEMPORAL_SPINE, "1")
+    result = retrieve_v2(store, _QUERY)
+    ids = {b.id for b in result.beliefs}
+    assert "before" in ids and "after" in ids
+
+
+def test_lane_noop_guard_without_spine_edges(store: MemoryStore) -> None:
+    # Same store shape but NO spine edges: lane on must be byte-identical
+    # to lane off (the no-op guard for spineless stores).
+    _make_belief(store, belief_id="anchor", content=_ANCHOR,
+                 session_id="s1", created_at="2026-01-01T00:00:02Z")
+    _make_belief(store, belief_id="other", content=_BEFORE,
+                 session_id="s1", created_at="2026-01-01T00:00:01Z")
+    off = retrieve_v2(store, _QUERY, use_temporal_spine=False)
+    on = retrieve_v2(store, _QUERY, use_temporal_spine=True)
+    assert [b.id for b in on.beliefs] == [b.id for b in off.beliefs]
+    tel = last_lane_telemetry()
+    assert tel.temporal_spine == 0
+
+
+def test_lane_node_budget_kwarg(store: MemoryStore) -> None:
+    _seed_lane_store(store)
+    result = retrieve_v2(
+        store, _QUERY, use_temporal_spine=True,
+        temporal_spine_node_budget=1,
+    )
+    ids = {b.id for b in result.beliefs}
+    # Budget 1 → exactly one neighbour emitted by the traversal.
+    assert len(ids & {"before", "after"}) == 1
+    tel = last_lane_telemetry()
+    assert tel.temporal_spine_candidates == 1
