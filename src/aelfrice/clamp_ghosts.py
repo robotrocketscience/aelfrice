@@ -31,7 +31,10 @@ Reversibility. Every clamp writes a single negative-valence row to
 ``feedback_history`` with ``source='clamp_ghosts'`` and
 ``valence = -(prior_alpha - target_alpha)``. To reverse a clamp:
 
-    UPDATE beliefs SET alpha = alpha + (-fh.valence)
+    UPDATE beliefs SET alpha = alpha + (
+        SELECT -fh.valence FROM feedback_history fh
+        WHERE fh.belief_id = beliefs.id AND fh.source = 'clamp_ghosts'
+    )
     WHERE id IN (SELECT belief_id FROM feedback_history
                  WHERE source = 'clamp_ghosts' AND belief_id = beliefs.id);
     DELETE FROM feedback_history WHERE source = 'clamp_ghosts';
@@ -78,9 +81,15 @@ threshold by design — anything matched (α > 4) gets pulled back to
 class ClampResult:
     """Outcome of one clamp_ghost_alphas invocation.
 
-    `matched` and `scanned` are equal under the current implementation
-    (no per-row skip logic beyond the SQL filter). The split is kept
-    for forward compatibility with future per-row predicates.
+    The count fields satisfy `matched == clamped + skipped`. `matched`
+    is the number of rows selected by the SQL filter, `clamped` the
+    number actually mutated, and `skipped` is `matched - clamped`.
+    In the dry-run path nothing is mutated, so `skipped == matched`
+    and `clamped == 0`. In the apply path a matched row is skipped
+    rather than clamped only when it fails the eligibility re-check
+    performed under the write lock (e.g. a concurrent --apply run
+    already clamped it), so `matched` and `skipped` are not
+    generally equal there.
     """
     matched: int
     clamped: int
