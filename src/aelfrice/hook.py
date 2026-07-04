@@ -205,6 +205,7 @@ _ESCAPE_TAGS: Final[tuple[str, ...]] = (
     "<commit", "</commit>",
     "<linked-issues>", "</linked-issues>",
     "<belief", "</belief>",
+    "<aelfrice-worker-context>", "</aelfrice-worker-context>",
 )
 
 
