@@ -13,10 +13,10 @@ Design:
   * Extraction is regex / vocabulary lookup — deterministic, no
     embeddings, no learned classifiers. Same run produces same
     slots byte-for-byte.
-  * Numeric slots: ``(key_token, value, unit?)``. The key is the
+  * Numeric slots: ``(key_token, value)``. The key is the
     nearest alphabetic token preceding the number; the value is
-    parsed as float; the unit is the alphabetic token immediately
-    after the number, when present.
+    parsed as float. Unit-aware extraction/comparison is explicitly
+    out of scope (see ``NumericSlot``).
   * Enum slots: ``(category, member)``. The category is the name
     of a curated mutual-exclusion group; member is the matching
     vocabulary token. Adding a category extends the gate to a new
@@ -272,10 +272,10 @@ def find_conflicts(
 ) -> tuple[SlotConflict, ...]:
     """Return all mutual-exclusion conflicts between two beliefs' slots.
 
-    Numeric conflict: same ``(key, unit)`` with values outside the
-    relative-tolerance band. Unit-mismatch is silent — different
-    units mean different scales and the comparator cannot adjudicate
-    without a unit-conversion table (out of scope).
+    Numeric conflict: same ``key`` with values outside the
+    relative-tolerance band. Units are not extracted or compared —
+    two values under the same key expressed in different units are
+    compared as raw numbers (out of scope; see ``NumericSlot``).
 
     Enum conflict: same ``category`` with different ``member`` values.
 
