@@ -639,7 +639,7 @@ def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
             return gate.exit_code
         # Soft-fall (default-derived path with missing SDK / key, or
         # an unrecognised configuration). Run the regex onboard.
-        return _run_regex_onboard(args, out)
+        return _run_regex_onboard(args, out, soft_fallback=True)
 
     # Gate 4: consent. --dry-run skips the prompt AND the network.
     sentinel = _llm_sentinel_path()
@@ -671,7 +671,7 @@ def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
                         "falling back to regex classifier.",
                         file=sys.stderr,
                     )
-                return _run_regex_onboard(args, out)
+                return _run_regex_onboard(args, out, soft_fallback=True)
             _llm_write_sentinel(sentinel, model=cfg.model)
 
     # Dry-run: print candidates without contacting the network.
@@ -682,8 +682,33 @@ def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
     return _run_llm_onboard(args, out, cfg)
 
 
-def _run_regex_onboard(args: argparse.Namespace, out: object) -> int:
-    """Default v1.0/v1.2 regex onboard. Unchanged behaviour."""
+def _run_regex_onboard(
+    args: argparse.Namespace,
+    out: object,
+    *,
+    soft_fallback: bool = False,
+) -> int:
+    """Default v1.0/v1.2 regex onboard. Unchanged behaviour.
+
+    ``soft_fallback`` marks the calls that reach here *without* the user
+    explicitly asking for the regex path — the LLM classifier was the
+    resolved intent but a gate (missing SDK / API key, declined or
+    non-interactive consent) silently downgraded it. In that case emit a
+    one-line pointer to the no-API-key subagent flow so agents and users
+    who never opted out of quality classification learn it exists. The
+    explicit-opt-out call site (``--llm-classify=false`` /
+    ``[onboard.llm].enabled = false``, which is also how the slash
+    command's ``--no-subagents`` fallback runs) passes ``False`` and
+    stays silent.
+    """
+    if soft_fallback:
+        print(
+            "aelf: classified via the deterministic regex path "
+            "(no LLM classifier available). For higher-quality "
+            "classification with no API key, run /aelf:onboard "
+            "(subagent-driven; no extra billing).",
+            file=sys.stderr,
+        )
     store = _open_store()
     try:
         result = scan_repo(store, Path(args.path))
@@ -6272,9 +6297,12 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         const=True,
         default=None,
         help=(
-            "control the direct-API LLM classifier (v1.3.0+). Requires "
-            "the [onboard-llm] extra and ANTHROPIC_API_KEY. The classifier "
-            "resolves ON by default since v1.5.0, but soft-falls to the "
+            "opt into the direct-API LLM classifier (v1.3.0+) — a "
+            "separate, optional route that needs the [onboard-llm] extra "
+            "and ANTHROPIC_API_KEY. This is NOT the only LLM-quality "
+            "path: the no-API-key, no-billing default is the subagent "
+            "flow, run via /aelf:onboard. The direct-API classifier "
+            "resolves ON by default since v1.5.0 but soft-falls to the "
             "regex path when the extra/key/consent gates are unmet. Pass "
             "--llm-classify=false to force off; default reads "
             "[onboard.llm].enabled."

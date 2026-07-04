@@ -189,6 +189,54 @@ def test_default_install_no_flag_no_config_makes_zero_outbound_calls(
     assert memdb.count_beliefs() > 0
 
 
+def test_bare_onboard_soft_fallback_points_to_slash_onboard(
+    tmp_home: Path,
+    repo: Path,
+    memdb: MemoryStore,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#1072: a bare `aelf onboard <path>` that silently downgrades to
+    the regex classifier must surface the no-API-key subagent flow.
+
+    With no key and no SDK the post-v1.5 default resolves enabled=True,
+    the gates soft-fail, and `_run_regex_onboard` runs. The pointer to
+    `/aelf:onboard` is emitted to stderr so agents and users who never
+    opted out of quality classification learn the better path exists
+    instead of silently accepting the crude regex store.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    rc = cli_module.main(["onboard", str(repo)], out=io.StringIO())
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "/aelf:onboard" in err
+    # The pointer names the no-key subagent flow (not a model identifier).
+    assert "subagent-driven" in err
+
+
+def test_explicit_llm_classify_false_stays_silent(
+    tmp_home: Path,
+    repo: Path,
+    memdb: MemoryStore,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#1072: an explicit opt-out must NOT be nagged with the pointer.
+
+    `--llm-classify=false` is a deliberate choice of the regex path —
+    and it is exactly how the slash command's `--no-subagents` fallback
+    invokes the CLI. Emitting the `/aelf:onboard` notice there would
+    pollute the slash command's verbatim regex output.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    rc = cli_module.main(
+        ["onboard", str(repo), "--llm-classify=false"], out=io.StringIO()
+    )
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "/aelf:onboard" not in err
+
+
 # --- 2. Opt-in path tested ----------------------------------------------
 
 
