@@ -23,7 +23,7 @@ aelfrice runs in the background and stops the amnesia. Write a rule once and eve
 ```bash
 uv tool install aelfrice    # requires uv — https://docs.astral.sh/uv/
 aelf setup                  # wire the UserPromptSubmit hook into your agent
-aelf onboard .              # one-shot project scan: filesystem, git log, code structure
+aelf onboard .              # deterministic project scan (regex classifier). For LLM-quality with no API key, run /aelf:onboard in your agent.
 aelf lock "never push directly to main; use scripts/publish.sh"
 ```
 
@@ -68,7 +68,7 @@ A rules file is advice the agent *may* read; aelfrice is context the model *has 
 After `aelf setup` you rarely type `aelf` again. The everyday surface:
 
 ```text
-aelf onboard .                      # once per project — scan and ingest
+aelf onboard .                      # once per project — deterministic scan (or /aelf:onboard for the no-key subagent flow)
 aelf lock "never push to main"      # add a permanent rule
 aelf locked                          # see what rules are active
 aelf search "push to main"           # check what the agent will see
@@ -114,7 +114,8 @@ Every belief carries a `(α, β)` Beta-Bernoulli posterior: `α / (α+β)` is th
 | You run | It stores |
 |---|---|
 | `aelf lock "never commit .env files"` | Permanent rule. Returned on every retrieval. |
-| `aelf onboard .` | Walks the project — git log, prose headings, code structure — and ingests structural facts as `agent_inferred` beliefs. |
+| `aelf onboard .` | Walks the project — git log, prose headings, code structure — and ingests structural facts as `agent_inferred` beliefs via the deterministic regex classifier. |
+| `/aelf:onboard` | Same scan, higher-quality classification driven by in-session subagents — no API key, no billing. The preferred path in an agent; bare `aelf onboard` is the deterministic fallback. |
 | `aelf feedback <id> used` | `α += 1`. Strengthens the belief's posterior. |
 | `aelf feedback <id> harmful` | `β += 1`. Weakens it. Locks resist passive feedback by design — change with `aelf unlock` / `aelf delete`. |
 | `aelf promote <id>` | Flips `origin` from `agent_inferred` to `user_validated`. With `--to-scope <SCOPE>`, also moves federation visibility (`project` / `global` / `shared:<name>`). |
