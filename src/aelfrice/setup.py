@@ -924,6 +924,92 @@ def uninstall_search_tool_bash_hook(
     return UninstallResult(path=settings_path, removed=removed)
 
 
+# --- Agent-context wiring (#1068) ----------------------------------------
+
+
+AGENT_CONTEXT_EVENT: Final[str] = "PreToolUse"
+# Anchored so the regex can never partial-match TaskCreate / TaskGet /
+# TaskUpdate etc. "Agent" is the current dispatch-tool name; "Task" the
+# legacy one. The hook re-checks tool_name exactly, so an over-broad
+# matcher would only waste process spawns — anchor anyway.
+AGENT_CONTEXT_MATCHER: Final[str] = "^(Agent|Task)$"
+AGENT_CONTEXT_SCRIPT_NAME: Final[str] = "aelf-agent-context-hook"
+
+
+def resolve_agent_context_command(scope: SettingsScope) -> str:
+    """Pick the absolute aelf-agent-context-hook path for `scope`.
+
+    Same routing primitive as resolve_search_tool_command: project
+    scope pins to the venv next to sys.executable; user scope prefers
+    $PATH.
+    """
+    return _resolve_script(AGENT_CONTEXT_SCRIPT_NAME, scope)
+
+
+def install_agent_context_hook(
+    settings_path: Path, *, command: str, timeout: int | None = None,
+) -> InstallResult:
+    """Add a PreToolUse:matcher=^(Agent|Task)$ hook entry running `command`.
+
+    Idempotent against the same `command`. Coexists with other PreToolUse
+    entries (Grep|Glob / Bash matchers) — appending only after confirming
+    no matching entry already exists for the same command.
+    """
+    if not command:
+        raise ValueError("command must be a non-empty string")
+    data = _load_settings(settings_path)
+    entries = _get_event_list(data, AGENT_CONTEXT_EVENT, create=True)
+    if _install_or_replace_entry(
+        entries,
+        command=command,
+        timeout=timeout,
+        status_message=None,
+        matcher=AGENT_CONTEXT_MATCHER,
+    ):
+        return InstallResult(
+            path=settings_path, installed=False, already_present=True,
+        )
+    _atomic_write(settings_path, data)
+    return InstallResult(
+        path=settings_path, installed=True, already_present=False,
+    )
+
+
+def uninstall_agent_context_hook(
+    settings_path: Path, *,
+    command: str | None = None,
+    command_basename: str | None = None,
+) -> UninstallResult:
+    """Strip PreToolUse entries matching `command` or `command_basename`.
+
+    Pass exactly one of the two. The script name is unique to this hook,
+    so basename matching cannot collide with the search-tool entries.
+    Other PreToolUse entries are left alone.
+    """
+    if command is None and command_basename is None:
+        raise ValueError("provide command or command_basename")
+    if command is not None and command_basename is not None:
+        raise ValueError("command and command_basename are mutually exclusive")
+    if not settings_path.exists():
+        return UninstallResult(path=settings_path, removed=0)
+    data = _load_settings(settings_path)
+    entries = _get_event_list(data, AGENT_CONTEXT_EVENT, create=False)
+    if entries is None:
+        return UninstallResult(path=settings_path, removed=0)
+    before = len(entries)
+    if command is not None:
+        kept = [e for e in entries if not _entry_matches(e, command)]
+    else:
+        assert command_basename is not None
+        kept = [e for e in entries if not _entry_matches_basename(e, command_basename)]
+    removed = before - len(kept)
+    if removed == 0:
+        return UninstallResult(path=settings_path, removed=0)
+    entries[:] = kept
+    _atomic_write(settings_path, data)
+    return UninstallResult(path=settings_path, removed=removed)
+
+
 # --- SessionStart wiring -----------------------------------------------
 
 

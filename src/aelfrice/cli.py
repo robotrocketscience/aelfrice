@@ -131,6 +131,7 @@ from aelfrice.retrieval import DEFAULT_TOKEN_BUDGET, retrieve
 from aelfrice.scanner import scan_repo
 from aelfrice.session_resolution import resolve_session_id
 from aelfrice.setup import (
+    AGENT_CONTEXT_SCRIPT_NAME,
     CLAUDE_MEMORY_MIRROR_SCRIPT_NAME,
     COMMIT_INGEST_SCRIPT_NAME,
     PRE_ISSUE_GUARD_SCRIPT_NAME,
@@ -144,6 +145,7 @@ from aelfrice.setup import (
     clean_dangling_shims,
     default_settings_path,
     detect_default_scope,
+    install_agent_context_hook,
     install_claude_memory_mirror_hook,
     install_commit_ingest_hook,
     install_pre_issue_guard_hook,
@@ -156,6 +158,7 @@ from aelfrice.setup import (
     install_stop_hook,
     install_transcript_ingest_hooks,
     install_user_prompt_submit_hook,
+    resolve_agent_context_command,
     resolve_claude_memory_mirror_command,
     resolve_commit_ingest_command,
     resolve_pre_issue_guard_command,
@@ -166,6 +169,7 @@ from aelfrice.setup import (
     resolve_session_start_hook_command,
     resolve_stop_hook_command,
     resolve_transcript_logger_command,
+    uninstall_agent_context_hook,
     uninstall_claude_memory_mirror_hook,
     uninstall_commit_ingest_hook,
     uninstall_pre_issue_guard_hook,
@@ -3586,6 +3590,23 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 f"mirror_claude_memory is set",
                 file=out,  # type: ignore[arg-type]
             )
+    if getattr(args, "agent_context", True):
+        ac_command = resolve_agent_context_command(scope)
+        ac_result = install_agent_context_hook(
+            path, command=ac_command, timeout=args.timeout,
+        )
+        if ac_result.already_present:
+            print(
+                f"agent-context hook already installed in {ac_result.path} "
+                f"(command={ac_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"installed agent-context PreToolUse:Agent hook in "
+                f"{ac_result.path} (command={ac_command!r})",
+                file=out,  # type: ignore[arg-type]
+            )
     slash_dest = getattr(args, "slash_commands_dir", None)
     slash_dest_path = Path(slash_dest) if slash_dest else None
     sc_result = install_slash_commands(slash_dest_path)
@@ -3630,6 +3651,7 @@ _SETUP_FLAG_TO_HOOK_NAME: Final[dict[str, str]] = {
     "search_tool": "search_tool",
     "search_tool_bash": "search_tool_bash",
     "pre_issue_guard": "pre_issue_guard",
+    "agent_context": "agent_context",
 }
 
 
@@ -3999,6 +4021,21 @@ def _cmd_unsetup(args: argparse.Namespace, out: object) -> int:
             print(
                 f"removed {pig_result.removed} pre-issue-guard entr"
                 f"{'y' if pig_result.removed == 1 else 'ies'} from {pig_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+    if getattr(args, "agent_context", True):
+        ac_result = uninstall_agent_context_hook(
+            path, command_basename=AGENT_CONTEXT_SCRIPT_NAME,
+        )
+        if ac_result.removed == 0:
+            print(
+                f"no agent-context hook in {ac_result.path}",
+                file=out,  # type: ignore[arg-type]
+            )
+        else:
+            print(
+                f"removed {ac_result.removed} agent-context entr"
+                f"{'y' if ac_result.removed == 1 else 'ies'} from {ac_result.path}",
                 file=out,  # type: ignore[arg-type]
             )
     slash_dest = getattr(args, "slash_commands_dir", None)
@@ -7652,6 +7689,17 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "AELFRICE_NO_PRE_ISSUE_GUARD=1."
         ),
     )
+    p_setup.add_argument(
+        "--agent-context", dest="agent_context",
+        action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "wire the PreToolUse:Agent hook so dispatched subagent prompts "
+            "carry the L0 locked beliefs plus prompt-relevant memory context "
+            "(injected via updatedInput). Default: ON. Pass "
+            "--no-agent-context to skip. Disable at runtime with "
+            "AELFRICE_AGENT_CONTEXT=0."
+        ),
+    )
     p_setup.set_defaults(func=_cmd_setup)
 
     # Hidden: install lifecycle, surfaced by docs not by --help.
@@ -7825,6 +7873,14 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help=(
             "remove the PreToolUse:Bash pre-issue-guard hook entry. "
             "Default: ON. Pass --no-pre-issue-guard to leave it in place."
+        ),
+    )
+    p_unsetup.add_argument(
+        "--agent-context", dest="agent_context",
+        action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "remove the PreToolUse:Agent agent-context hook entry. "
+            "Default: ON. Pass --no-agent-context to leave it in place."
         ),
     )
     p_unsetup.set_defaults(func=_cmd_unsetup)

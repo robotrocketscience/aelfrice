@@ -51,6 +51,7 @@ from typing import Callable, Final, cast
 from aelfrice.setup import (
     SettingsScope,
     USER_SETTINGS_PATH,
+    install_agent_context_hook,
     install_claude_memory_mirror_hook,
     install_commit_ingest_hook,
     install_pre_issue_guard_hook,
@@ -60,6 +61,7 @@ from aelfrice.setup import (
     install_stop_hook,
     install_transcript_ingest_hooks,
     install_user_prompt_submit_hook,
+    resolve_agent_context_command,
     resolve_claude_memory_mirror_command,
     resolve_commit_ingest_command,
     resolve_hook_command,
@@ -395,6 +397,10 @@ _DISPATCH: Final[dict[str, _DispatchEntry]] = {
     "claude_memory_mirror": (
         resolve_claude_memory_mirror_command,
         install_claude_memory_mirror_hook,
+    ),
+    "agent_context": (
+        resolve_agent_context_command,
+        install_agent_context_hook,
     ),
 }
 

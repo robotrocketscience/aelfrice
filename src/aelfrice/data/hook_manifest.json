@@ -72,6 +72,14 @@
       "default_on": true,
       "since": "3.7.0",
       "description": "PostToolUse:Write|Edit|MultiEdit mirror of claude-memory writes into the belief graph; inert until AELFRICE_MIRROR_CLAUDE_MEMORY / [memory] mirror_claude_memory is set (#985)."
+    },
+    {
+      "name": "agent_context",
+      "basename": "aelf-agent-context-hook",
+      "installer": "agent_context",
+      "default_on": true,
+      "since": "3.9.0",
+      "description": "PreToolUse:Agent worker-context injection — carry L0 locks + prompt-relevant beliefs into dispatched subagent prompts via updatedInput; disable with AELFRICE_AGENT_CONTEXT=0 (#1068)."
     }
   ]
 }
