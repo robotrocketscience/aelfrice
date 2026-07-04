@@ -6,7 +6,7 @@ rule and supersedes the loser. The result is a normal `SUPERSEDES`
 edge from winner → loser, plus an audit row in `feedback_history`
 recording which rule fired.
 
-## Precedence (v1.2+, five classes)
+## Precedence (v3.x #888, six classes)
 
 1. **`user_stated`** — `lock_level == LOCK_USER` (short-circuit) or
    `origin == 'user_stated'`. The user explicitly asserted this
@@ -15,9 +15,12 @@ recording which rule fired.
    or `origin == 'user_corrected'`. Explicit correction signal.
 3. **`user_validated`** — `origin == 'user_validated'`. The user
    acknowledged an onboard belief without locking it.
-4. **`document_recent`** — `origin in {'document_recent', 'unknown',
+4. **`user_transcript`** — `origin == 'user_transcript'`. User-typed
+   chat content; outranks scanner-extracted document content but
+   sits below explicit validation.
+5. **`document_recent`** — `origin in {'document_recent', 'unknown',
    'agent_remembered'}`. Within-class breaks by recency.
-5. **`agent_inferred`** — `origin == 'agent_inferred'`. Onboard
+6. **`agent_inferred`** — `origin == 'agent_inferred'`. Onboard
    scanner output that has not been validated. Lowest.
 
 When two beliefs have the same precedence class, **more recent
