@@ -3944,9 +3944,10 @@ class MemoryStore:
         """Targeted update of a belief's ``retention_class``.
 
         Phase-3 promotion writes through this rather than ``update_belief``
-        because ``update_belief`` rewrites the full row (including FTS5 +
-        entity index) and does not currently carry ``retention_class`` in
-        its UPDATE clause. A focused setter avoids the broader surgery
+        to avoid the full-row rewrite (including the FTS5 delete/insert and
+        entity re-extraction) that ``update_belief`` performs on every call
+        — even though ``update_belief`` does also carry ``retention_class``
+        in its UPDATE clause. A focused setter avoids that broader surgery
         and keeps the write atomic.
         """
         if retention_class not in RETENTION_CLASSES:
