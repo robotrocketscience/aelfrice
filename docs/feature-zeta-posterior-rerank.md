@@ -43,7 +43,7 @@ score: float = zeta_posterior_score(
     bm25_raw,
     alpha,    # ζ magnitude — pinned constant ZETA_ALPHA_DEFAULT = 1.0; no kwarg default, callers pass it
     beta,     # ζ sharpness — pinned constant ZETA_BETA_DEFAULT = 0.25; no kwarg default
-    scale,    # ζ global multiplier — defaults to 14.5
+    scale,    # ζ global multiplier — pinned constant ZETA_SCALE_DEFAULT = 14.5 (callers pass it; no kwarg default)
     posterior_mean,  # the Beta-Bernoulli posterior mean (already computed)
 )
 ```
