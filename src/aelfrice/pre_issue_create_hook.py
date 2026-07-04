@@ -8,7 +8,7 @@ Hook contract
 -------------
 * stdin  — PreToolUse hook JSON envelope:
     {"tool_name": "Bash", "tool_input": {"command": "...", "description": "..."}, ...}
-* stdout — human-readable additionalContext block (on PASS, may be empty).
+* stdout — unused; every PASS path returns silently (no additionalContext envelope is ever emitted by this hook).
 * stderr — block message + candidate list (on BLOCK, exit 2).
 * Non-Bash tools or non-gh-issue-create commands → exit 0 (transparent pass).
 
