@@ -319,9 +319,14 @@ def install_pre_compact_hook(
     """Add a PreCompact hook entry running `command`.
 
     Mirrors install_user_prompt_submit_hook for the PreCompact event,
-    which Claude Code fires before its default context compaction. The
-    aelfrice context-rebuilder lives behind this event; the command
-    string typically resolves to `aelf-pre-compact-hook`.
+    which the harness fires before its default context compaction.
+    Since #1031, this event no longer emits the rebuild block (the
+    harness rejects `additionalContext` from PreCompact); it is wired
+    only for trigger-mode config resolution and the parked
+    `dynamic`-mode trace. The context-rebuilder's actual output now
+    lives behind the SessionStart hook (`aelf-session-start-hook`) on
+    `source == "compact"`. The command string here typically resolves
+    to `aelf-pre-compact-hook`.
     """
     return _install_event_hook(
         settings_path,
