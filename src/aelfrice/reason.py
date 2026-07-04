@@ -214,8 +214,9 @@ def classify(
 
     ``paths`` (R2, #658): when supplied, the classifier additionally
     emits a ``TIE`` impasse when two CONTRADICTS-forked paths share a
-    common parent and have compound-confidence values within
-    :data:`CLOSE_MEAN_DELTA` of one another. This is in addition to
+    common parent and have compound-confidence values considered a tie
+    per :func:`_compound_paths_tie` (:data:`COMPOUND_TIE_FLOOR` +
+    :data:`COMPOUND_TIE_REL_TOL`, #668). This is in addition to
     the R1 posterior-mean TIE rule and trips ``CONTRADICTORY`` per the
     #658 acceptance criterion. Backwards-compat: when ``paths`` is
     ``None`` the R1-only behaviour holds.
