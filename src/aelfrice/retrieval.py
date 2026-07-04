@@ -1189,9 +1189,9 @@ def decode_bfs_depth_budget(value: float) -> int:
     :data:`BFS_DEPTH_BUDGET_CEIL` (6).
 
     `v=0.0` → 1, `v=1.0` → 6, `v=0.5` → 2 (rounded from ~2.45,
-    one hop below :data:`BFS_DEFAULT_MAX_DEPTH` so a cold-start
-    install with the meta-belief on gently trims the budget until
-    evidence accrues).
+    matching :data:`BFS_DEFAULT_MAX_DEPTH` exactly, so a cold-start
+    install with the meta-belief on is byte-identical to the
+    hardcoded default until evidence accrues).
 
     Values outside `[0, 1]` are clamped — the substrate's
     `posterior_mean` is mathematically bounded to `[0, 1]` but
