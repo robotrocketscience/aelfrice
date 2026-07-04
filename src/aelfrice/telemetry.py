@@ -451,7 +451,8 @@ def emit_session_delta(
 
     ``store``: open MemoryStore to read from. When None, the caller's
     environment variable / git-common-dir resolution is used (imports
-    cli.db_path() lazily to avoid a circular import). Callers that
+    ``aelfrice.db_paths._open_store()`` lazily to avoid a circular
+    import; it resolves the path and opens the store). Callers that
     already hold an open store should pass it explicitly.
 
     ``path``: telemetry JSONL path. Defaults to
