@@ -5,7 +5,8 @@ Two checks per the spec at docs/design/write-log-as-truth.md:
 1. **Reachability** (cheap): every belief in the canonical store has at
    least one ingest_log row that references its id in
    `derived_belief_ids`. This is the v2.0 contract guarantee — no
-   orphan beliefs. Runs by default in `aelf doctor`.
+   orphan beliefs. Not currently wired into any CLI entry point; call
+   `check_log_reachability(store)` directly.
 
 2. **Full equality** (expensive, opt-in): re-run classifier over each
    `ingest_log.raw_text` and compare to canonical `beliefs`. This is
@@ -81,15 +82,16 @@ class FullEqualityReport:
     Counts how many ingest_log rows, when re-derived, produce a belief
     that is shape-equal to the canonical belief in the store.
 
-    Shape-equality contract (ratified 2026-04-29):
+    Shape-equality contract (ratified 2026-04-29; edge-set check not yet
+    implemented):
     - content_hash matches, AND
     - type matches, AND
-    - origin matches OR canonical origin IS NULL (legacy backfill cohort), AND
-    - the deterministic edge set matches (only triple_extractor-style edges,
-      NOT feedback-driven edges).
+    - origin matches OR canonical origin IS NULL (legacy backfill cohort).
 
-    alpha/beta/last_retrieved_at/feedback-driven edges are tracked
-    separately but never trigger drift.
+    Edge-set equality is NOT currently checked: `derived_edge_ids` is
+    selected by the ingest_log query but never read off the row or
+    compared. alpha/beta/last_retrieved_at/edges are therefore excluded
+    from shape-equality and never trigger drift.
 
     Counters:
 
