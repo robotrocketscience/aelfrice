@@ -47,8 +47,11 @@ class WonderResult:
         Empty list in graph-walk mode.
     phantoms_created:
         Count of phantoms created (axes mode only); ``0`` in
-        graph-walk mode.  Sourced from the ``inserted`` count of the
-        ingest path when ``--persist-docs FILE`` is used.
+        graph-walk mode.  Currently always ``0`` in practice: the
+        ``_phantoms_created`` attribute it reads is never set, and
+        the ``--persist-docs FILE`` ingest path never builds a
+        ``WonderResult`` to wire its ``inserted`` count into this
+        field.
     candidates:
         Graph-walk-mode consolidation candidates ranked by combined
         BFS-path-score × token-relatedness.  Each row is
