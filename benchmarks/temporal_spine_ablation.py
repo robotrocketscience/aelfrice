@@ -38,7 +38,7 @@ import json
 import random
 import time
 from dataclasses import dataclass, field
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from aelfrice.ingest import _ingest_turn_ids
 from aelfrice.models import EDGE_TEMPORAL_NEXT
@@ -46,13 +46,14 @@ from aelfrice.retrieval import retrieve_v2
 from aelfrice.store import MemoryStore
 from aelfrice.temporal_spine import backfill_temporal_spine
 
-from benchmarks.locomo_adapter import (
-    CATEGORY_NAMES,
-    DEFAULT_DATA_PATH,
-    LoCoMoConversation,
-    _parse_locomo_datetime,
-    load_locomo,
-)
+# The LoCoMo dataset stack (``locomo_adapter`` → ``nltk``) is imported
+# lazily inside the functions that actually run the bench, so this module's
+# pure logic (``RankInvarianceAccumulator``, ``_lcp_len``) can be imported —
+# and unit-tested — without the benchmark dependency set. Annotations are
+# strings under ``from __future__ import annotations``, so the type-only
+# import lives under ``TYPE_CHECKING``.
+if TYPE_CHECKING:
+    from benchmarks.locomo_adapter import LoCoMoConversation
 
 ARM_BASELINE: Final[str] = "baseline"
 ARM_SPINE: Final[str] = "+spine"
@@ -106,6 +107,8 @@ def ingest_with_evidence_map(
     internal ``_ingest_turn_ids`` because the public ``ingest_turn``
     returns a count only.
     """
+    from benchmarks.locomo_adapter import _parse_locomo_datetime
+
     evidence_map: dict[str, list[str]] = {}
     for session in conv.sessions:
         am_session = store.create_session(
@@ -212,7 +215,137 @@ def run_arm_on_store(
         acc.add(qa.category, len(gold & retrieved) / len(gold))
 
 
+def _lcp_len(a: list[str], b: list[str]) -> int:
+    """Length of the longest common prefix of two id lists."""
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+@dataclass
+class RankInvarianceAccumulator:
+    """G2 top-rank invariance aggregates (#1064 flip gate).
+
+    The spine lane appends after the ``[locked, l25, l1, hrr]`` core and
+    before BFS (see ``retrieval.py`` § temporal-spine lane), so the core
+    prefix must stay byte-identical between the lane-off and lane-on arms;
+    the lane may only insert its own hits below the core and evict
+    BFS-tail items under the token budget. This accumulator measures
+    whether that holds empirically. A *top-rank regression* is any
+    core-ranked belief the lane displaces or reorders — the thing G2
+    forbids. BFS-tail eviction is by-design (BFS is the lowest-priority
+    lane and the spine legitimately spends budget above it) and is
+    reported separately, not counted as a regression.
+    """
+
+    n_questions: int = 0
+    head_invariant: int = 0          # core prefix identical, lane on vs off
+    top_rank_displacements: int = 0  # questions with a displaced core belief
+    core_mismatch: int = 0           # core length differed between arms
+    lcp_sum: int = 0
+    min_lcp: int | None = None
+    tail_eviction_questions: int = 0
+    tail_evicted_total: int = 0
+    spine_contributed_questions: int = 0
+    spine_added_sum: int = 0
+
+    def add(
+        self,
+        baseline_ids: list[str],
+        spine_ids: list[str],
+        core_len_base: int,
+        core_len_spine: int,
+        n_spine_added: int,
+    ) -> None:
+        self.n_questions += 1
+        if core_len_base != core_len_spine:
+            self.core_mismatch += 1
+        core = core_len_base
+        if baseline_ids[:core] == spine_ids[:core]:
+            self.head_invariant += 1
+        lcp = _lcp_len(baseline_ids, spine_ids)
+        self.lcp_sum += lcp
+        self.min_lcp = lcp if self.min_lcp is None else min(self.min_lcp, lcp)
+        spine_set = set(spine_ids)
+        displaced_ranks = [
+            i for i, bid in enumerate(baseline_ids) if bid not in spine_set
+        ]
+        if any(i < core for i in displaced_ranks):
+            self.top_rank_displacements += 1
+        tail_evicted = [i for i in displaced_ranks if i >= core]
+        if tail_evicted:
+            self.tail_eviction_questions += 1
+            self.tail_evicted_total += len(tail_evicted)
+        if n_spine_added > 0:
+            self.spine_contributed_questions += 1
+            self.spine_added_sum += n_spine_added
+
+    def head_invariant_rate(self) -> float:
+        return (
+            self.head_invariant / self.n_questions if self.n_questions else 0.0
+        )
+
+    def mean_lcp(self) -> float:
+        return self.lcp_sum / self.n_questions if self.n_questions else 0.0
+
+    def passed(self) -> bool:
+        """G2 top-rank invariance: no core belief displaced or reordered."""
+        return (
+            self.n_questions > 0
+            and self.head_invariant == self.n_questions
+            and self.top_rank_displacements == 0
+            and self.core_mismatch == 0
+        )
+
+
+def run_rank_invariance_on_store(
+    store: MemoryStore,
+    conv: LoCoMoConversation,
+    acc: RankInvarianceAccumulator,
+    *,
+    budget: int,
+    l1_limit: int,
+    subset_qa: int | None,
+) -> None:
+    """Paired lane-off / lane-on retrieval per question on one store.
+
+    Ingest is arm-independent (the flag only changes retrieval), so both
+    arms read the identical belief population and the real spine; the only
+    variable is ``use_temporal_spine``. Reads ``last_lane_telemetry()``
+    after each call to locate the core boundary
+    (``locked + l25 + l1 + hrr_expand``) exactly, rather than inferring it.
+    """
+    from aelfrice.retrieval import last_lane_telemetry
+
+    qa_pairs = conv.qa_pairs[:subset_qa] if subset_qa else conv.qa_pairs
+    for qa in qa_pairs:
+        base_result = retrieve_v2(
+            store, qa.question, budget=budget, l1_limit=l1_limit,
+            include_locked=False, use_temporal_spine=False,
+        )
+        base_ids = [b.id for b in base_result.beliefs]
+        tel_b = last_lane_telemetry()
+        core_b = tel_b.locked + tel_b.l25 + tel_b.l1 + tel_b.hrr_expand
+        spine_result = retrieve_v2(
+            store, qa.question, budget=budget, l1_limit=l1_limit,
+            include_locked=False, use_temporal_spine=True,
+        )
+        spine_ids = [b.id for b in spine_result.beliefs]
+        tel_s = last_lane_telemetry()
+        core_s = tel_s.locked + tel_s.l25 + tel_s.l1 + tel_s.hrr_expand
+        acc.add(base_ids, spine_ids, core_b, core_s, tel_s.temporal_spine)
+
+
 def main() -> None:
+    from benchmarks.locomo_adapter import (
+        CATEGORY_NAMES,
+        DEFAULT_DATA_PATH,
+        load_locomo,
+    )
+
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data", default=DEFAULT_DATA_PATH)
     ap.add_argument("--out", default="/tmp/temporal_spine_ablation.json")
@@ -221,6 +354,15 @@ def main() -> None:
     ap.add_argument("--shuffle-seed", type=int, default=1064)
     ap.add_argument("--subset-convs", type=int, default=None)
     ap.add_argument("--subset-qa", type=int, default=None)
+    ap.add_argument(
+        "--rank-invariance",
+        action="store_true",
+        help=(
+            "also run the G2 top-rank invariance pass (paired lane-off/on "
+            "retrieval per question; verifies the core prefix is never "
+            "displaced or reordered by the lane)"
+        ),
+    )
     args = ap.parse_args()
 
     conversations = load_locomo(args.data)
@@ -230,6 +372,7 @@ def main() -> None:
     accs: dict[str, CoverageAccumulator] = {
         arm: CoverageAccumulator() for arm in ARMS
     }
+    rank_acc = RankInvarianceAccumulator()
     started = time.time()
     spine_edges_total = 0
     for i, conv in enumerate(conversations):
@@ -238,6 +381,12 @@ def main() -> None:
             evidence_map = ingest_with_evidence_map(store, conv)
             spine_report = backfill_temporal_spine(store)
             spine_edges_total += spine_report.n_edges_written
+            if args.rank_invariance:
+                run_rank_invariance_on_store(
+                    store, conv, rank_acc,
+                    budget=args.budget, l1_limit=args.l1_limit,
+                    subset_qa=args.subset_qa,
+                )
             for arm in ARMS:
                 if arm == ARM_SHUFFLED:
                     shuffle_spine_edges(store, seed=args.shuffle_seed)
@@ -282,6 +431,23 @@ def main() -> None:
             for arm, acc in accs.items()
         },
     }
+    if args.rank_invariance:
+        report["rank_invariance"] = {
+            "n_questions": rank_acc.n_questions,
+            "head_invariant": rank_acc.head_invariant,
+            "head_invariant_rate": round(rank_acc.head_invariant_rate(), 4),
+            "top_rank_displacements": rank_acc.top_rank_displacements,
+            "core_length_mismatch": rank_acc.core_mismatch,
+            "mean_lcp": round(rank_acc.mean_lcp(), 2),
+            "min_lcp": rank_acc.min_lcp,
+            "tail_eviction_questions": rank_acc.tail_eviction_questions,
+            "tail_evicted_total": rank_acc.tail_evicted_total,
+            "spine_contributed_questions": (
+                rank_acc.spine_contributed_questions
+            ),
+            "spine_added_total": rank_acc.spine_added_sum,
+            "g2_top_rank_invariance_pass": rank_acc.passed(),
+        }
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
 
@@ -294,6 +460,37 @@ def main() -> None:
         f"shuffled-control coverage : {shuffled:.4f}  "
         f"(Δ {shuffled - base:+.4f})"
     )
+    if args.rank_invariance:
+        print(
+            f"\nG2 top-rank invariance ({rank_acc.n_questions} questions):"
+        )
+        print(
+            f"  core prefix invariant     : "
+            f"{rank_acc.head_invariant}/{rank_acc.n_questions} "
+            f"({rank_acc.head_invariant_rate():.4f})"
+        )
+        print(
+            f"  top-rank displacements    : "
+            f"{rank_acc.top_rank_displacements}  (must be 0)"
+        )
+        print(f"  core-length mismatches    : {rank_acc.core_mismatch}")
+        print(
+            f"  mean/min common prefix    : "
+            f"{rank_acc.mean_lcp():.2f} / {rank_acc.min_lcp}"
+        )
+        print(
+            f"  BFS-tail evictions        : "
+            f"{rank_acc.tail_evicted_total} across "
+            f"{rank_acc.tail_eviction_questions} q (by-design)"
+        )
+        print(
+            f"  spine contributed         : "
+            f"{rank_acc.spine_contributed_questions} q, "
+            f"{rank_acc.spine_added_sum} beliefs total"
+        )
+        print(
+            f"  G2 PASS                   : {rank_acc.passed()}"
+        )
     print(f"report -> {args.out}")
 
 
