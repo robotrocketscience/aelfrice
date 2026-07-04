@@ -6344,7 +6344,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_search.add_argument("query", help="keyword query")
     p_search.add_argument(
         "--budget", type=int, default=DEFAULT_TOKEN_BUDGET,
-        help="output token budget (default 2400)",
+        help="output token budget (default %(default)s)",
     )
     p_search.add_argument(
         "--json", action="store_true", default=False,
