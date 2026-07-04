@@ -46,8 +46,9 @@ MIN_TOKEN_LEN: Final[int] = 3
 Filters single-letter regex anchors (\\b, \\d) and 2-char noise."""
 
 INJECTED_TOKEN_BUDGET: Final[int] = 600
-"""Token budget for retrieve() — half the user-facing default. Auxiliary
-context should not crowd out the user's primary turn budget."""
+"""Token budget for retrieve() — one-quarter of the user-facing default
+(2400). Auxiliary context should not crowd out the user's primary turn
+budget."""
 
 INJECTED_L1_LIMIT: Final[int] = 10
 """L1 result cap. Lower than retrieval default to bound injection size."""
