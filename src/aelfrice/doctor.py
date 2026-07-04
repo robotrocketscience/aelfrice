@@ -1137,10 +1137,10 @@ def _format_missing_auto_capture_section(
     )
     lines.append(
         "fix: re-run 'aelf setup' to wire transcript-ingest, "
-        "commit-ingest, session-start, and stop-hook (default-on "
-        "since v2.1 / #582). to opt out per-hook: "
-        "`aelf setup --no-transcript-ingest --no-commit-ingest "
-        "--no-session-start --no-stop-hook`."
+        "commit-ingest, and session-start (default-on since v2.1 / "
+        "#529), and stop-hook (default-on since v3.0 / #582). to opt "
+        "out per-hook: `aelf setup --no-transcript-ingest "
+        "--no-commit-ingest --no-session-start --no-stop-hook`."
     )
 
 
@@ -1607,11 +1607,22 @@ def classify_orphans(
 def _belief_with_type(
     b: "object", new_type: str, new_origin: str
 ) -> "object":
-    """Return a copy of `b` (a Belief) with `type` and `origin` replaced.
+    """Return a modified copy of `b` (a Belief) with `type` and `origin`
+    replaced.
 
-    Uses dataclasses.replace-style reconstruction so we don't depend on
-    Belief being mutable.  The import is local to keep the doctor module
-    importable without triggering the full models chain at top level.
+    Does NOT use dataclasses.replace: only id, content, content_hash,
+    alpha, beta, type, lock_level, locked_at, created_at,
+    last_retrieved_at, session_id, and origin are carried over.
+    corroboration_count, hibernation_score, activation_condition,
+    retention_class, valid_to, scope, project_context,
+    last_confirmed_at, and lock_tier are silently reset to their
+    dataclass defaults on every call. `store.update_belief()`'s
+    subsequent full-row UPDATE then clobbers the stored values of all
+    of those except corroboration_count (which isn't part of that
+    UPDATE). Use `dataclasses.replace(belief, type=new_type,
+    origin=new_origin)` instead if full-fidelity preservation is
+    required. The import is local to keep the doctor module importable
+    without triggering the full models chain at top level.
     """
     from aelfrice.models import Belief  # noqa: PLC0415
     belief: Belief = b  # type: ignore[assignment]
