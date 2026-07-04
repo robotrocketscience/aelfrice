@@ -8,11 +8,13 @@ percentiles.
 
 This harness is the **measurement instrument**, not a proof of the
 central claim. It does not currently differentiate
-"with-feedback" vs "no-feedback" because retrieval ranking in
-v1.0 is BM25-only (posterior alpha/beta does not factor into
-search_beliefs ordering — see store.py:244). A v1.x retrieval
-upgrade that consumes posterior is the precondition for using this
-harness to claim feedback drives accuracy.
+"with-feedback" vs "no-feedback" as a controlled A/B: retrieval
+already combines BM25 with the Beta-Bernoulli posterior_mean by
+default (posterior_weight=0.5 since v1.3.0, see
+retrieval.resolve_posterior_weight). A feedback-vs-no-feedback
+comparison would need to pass posterior_weight=0.0 vs the default
+explicitly and diff the results — this harness does not do that
+comparison itself.
 
 What this harness DOES validate at v0.9.0-rc:
 - The full ingest -> retrieve pipeline runs end-to-end against a
@@ -61,7 +63,7 @@ Within a v1 series, hit@K numbers are directly comparable.
 
 DEFAULT_TOP_K: Final[int] = 5
 DEFAULT_TOKEN_BUDGET: Final[int] = 4000
-"""Higher than retrieval's default 2000 so the budget doesn't
+"""Higher than retrieval's default 2400 so the budget doesn't
 cap the harness at fewer than top_k results when belief contents
 are long."""
 
