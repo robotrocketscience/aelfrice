@@ -1,11 +1,14 @@
-"""Context-rebuilder: PreCompact-driven retrieval-curated context block.
+"""Context-rebuilder: post-compaction retrieval-curated context block.
 
-When Claude Code's context window approaches its compaction threshold,
-the harness fires a PreCompact hook. This module is the script-side
-half of that hook: it reads the most recent N turns from a transcript
+When the harness compacts context, it fires a SessionStart
+hook with `source == "compact"` immediately afterward. (Per #1031, a
+PreCompact hook cannot inject `additionalContext` and is neutered --
+see `aelfrice.hook.pre_compact`.) This module supplies the retrieval
+half of that path: it reads the most recent N turns from a transcript
 log, runs aelfrice retrieval against those turns to surface load-
-bearing beliefs, and emits a single XML-tag-delimited context block
-that Claude Code injects above the next prompt.
+bearing beliefs, and returns a single XML-tag-delimited context block
+that `aelfrice.hook.session_start()` writes to stdout when it fires
+post-compaction, which the harness then injects above the next prompt.
 
 v1.4.0 (closes #139) replaces the v1.2.0a0 alpha's per-token union
 retrieval workaround with the v1.3 `retrieve()` codepath (L0 + L1 +
@@ -21,10 +24,10 @@ L2.5 in one call). It also wires:
   * **Configurable budgets via `.aelfrice.toml`.** The
     `[rebuilder] turn_window_n` and `[rebuilder] token_budget`
     keys override the defaults of 50 and 4000 respectively.
-  * **`additionalContext` JSON envelope.** The hook emits the
-    Claude Code PreCompact harness contract (a JSON object with
-    `hookSpecificOutput.additionalContext`) instead of writing the
-    raw block to stdout.
+  * **Raw stdout, no JSON envelope.** Since #1031 the harness rejects
+    `additionalContext` emitted from a PreCompact hook, so the block
+    is written as raw text to stdout by `aelfrice.hook.session_start()`
+    on `source == "compact"` instead.
 
 Augment-mode only at v1.4.0. Both the harness's compaction summary
 and the rebuilder's block land in the new context. Suppress mode
@@ -102,9 +105,10 @@ use `DEFAULT_TURN_WINDOW_N` (50) instead. The hook entry point in
 `aelfrice.hook` reads the v1.4 default by default."""
 
 DEFAULT_TOKEN_BUDGET: Final[int] = 2000
-"""Legacy default kept for v1.2.0a0 callers (`rebuild()` and
-`aelf rebuild --budget`). The v1.4 hook path uses
-`DEFAULT_REBUILDER_TOKEN_BUDGET` (4000)."""
+"""Legacy default kept for v1.2.0a0 callers of the plain `rebuild()`
+function (exercised only by the unit-test suite). `aelf rebuild
+--budget` and the v1.4 hook path both resolve to
+`DEFAULT_REBUILDER_TOKEN_BUDGET` (4000) via `rebuild_v14()`."""
 
 DEFAULT_PER_TOKEN_LIMIT: Final[int] = 20
 MIN_QUERY_TOKEN_LENGTH: Final[int] = 4
@@ -191,10 +195,13 @@ VALID_TRIGGER_MODES: Final[tuple[str, ...]] = (
 `manual`:    PreCompact hook never fires the rebuild block; only
              explicit invocations (`aelf rebuild` / `/aelf:rebuild`)
              produce output. Default at v1.4.0.
-`threshold`: PreCompact hook fires when called by Claude Code's
-             harness; the harness's own threshold gating is the
-             trigger. The `threshold_fraction` documents the
-             calibrated operating point.
+`threshold`: the rebuild block fires on the SessionStart hook when
+             `source == "compact"` fires -- i.e. immediately after
+             the harness finishes a compaction (since #1031, a
+             PreCompact hook can no longer inject the block itself).
+             The harness's own decision to compact is the trigger;
+             `threshold_fraction` documents the calibrated operating
+             point.
 `dynamic`:   Heuristic-driven trigger. Parked at v1.4.0 -- see
              `docs/design/context_rebuilder.md § Dynamic mode (parked)`.
              Setting this raises a clear error in the hook path.
@@ -1628,13 +1635,18 @@ def main(
     stdout: IO[str] | None = None,
     stderr: IO[str] | None = None,
 ) -> int:
-    """PreCompact hook entry point for v1.4.
+    """Legacy v1.4 PreCompact entry point -- NOT the live hook.
 
-    Reads the Claude Code PreCompact JSON payload from stdin, locates
-    a transcript log (canonical aelfrice turns.jsonl preferred,
-    Claude Code internal transcript as fallback), runs the v1.4
-    rebuild against it, wraps the block in the harness's expected
-    `additionalContext` envelope, and writes the JSON to stdout.
+    Retained for tests/benchmarks parity only. Since #1031 the harness
+    rejects `additionalContext` emitted from a PreCompact hook, so
+    production wiring runs `aelfrice.hook.pre_compact()` (emits
+    nothing) and `aelfrice.hook.session_start()` (`source ==
+    "compact"`) instead. This function still reads the harness's
+    PreCompact JSON payload from stdin, locates a transcript log
+    (canonical aelfrice turns.jsonl preferred, harness-internal
+    transcript as fallback), runs the v1.4 rebuild against it, wraps
+    the block in the (harness-rejected) `additionalContext` envelope,
+    and writes the JSON to stdout, matching the pre-#1031 contract.
 
     Hook contract: never block, never raise, never propagate. Every
     failure mode (empty payload, malformed JSON, missing transcript,
