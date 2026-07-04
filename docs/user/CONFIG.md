@@ -75,6 +75,22 @@ posterior_weight = 0.5
 # the per-prompt injection hook. AELFRICE_L1_LIMIT and
 # AELFRICE_RETRIEVAL_TOKEN_BUDGET env vars override; explicit kwargs on
 # retrieve() / retrieve_v2() override TOML in turn.
+#
+# Measured characterization (LongMemEval oracle, 364 questions across dev
+# + held-out confirmation; per-turn gold labels; deterministic reruns):
+#   - The knobs are a PAIR. l1_limit=200 + token_budget=8000 lifts
+#     whole-set recall by +8.6pp (dev) / +9.5pp (held-out) over the
+#     defaults. l1_limit alone at the default budget is nearly inert
+#     (~+1pp): the extra candidates are trimmed before they can matter.
+#   - Recovery plateaus at l1_limit=200; 400 adds ~nothing for 40% more
+#     packed tokens.
+#   - Top-rank ordering is UNAFFECTED (MRR / recall@1 identical to three
+#     decimals in every measured cell): widening only adds beliefs deep
+#     in the packed set. Consumers that read the whole retrieval block
+#     benefit; consumers that act on the top few results will see no
+#     change.
+#   - Cost at 200/8000: ~4-5.7x injected tokens vs defaults. This is why
+#     the defaults stay put and wide retrieval is opt-in.
 l1_limit = 50
 token_budget = 2400
 
