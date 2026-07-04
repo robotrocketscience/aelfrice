@@ -154,9 +154,11 @@ def _utc_now_iso() -> str:
 def _belief_id(text: str, source: str) -> str:
     """Deterministic id from sha256(source + NUL + text)[:16].
 
-    Shared scheme with `ingest._belief_id` and `scanner._derive_belief_id`
-    so the same (text, source) pair always resolves to the same id
-    regardless of call site.
+    Shared scheme with the derivation-worker path used by `ingest.py`
+    and `scanner.py` — both route belief creation through
+    `derivation_worker.run_worker` -> `derive()` -> `_belief_id`; neither
+    module defines its own id helper — so the same (text, source) pair
+    always resolves to the same id regardless of call site.
     """
     h = hashlib.sha256(f"{source}\x00{text}".encode("utf-8")).hexdigest()
     return h[:_BELIEF_ID_HEX_LEN]
@@ -165,7 +167,10 @@ def _belief_id(text: str, source: str) -> str:
 def _lock_id(text: str) -> str:
     """Deterministic id for lock/remember call sites.
 
-    Matches `mcp_server._lock_id_for` and `cli._lock_id_for`.
+    This id becomes `derived.belief.id`; `mcp_server.py` and `cli.py`
+    call `derive()` directly and read that id rather than
+    re-deriving it locally — neither module defines its own id
+    helper.
     """
     h = hashlib.sha256(f"lock\x00{text}".encode("utf-8")).hexdigest()
     return h[:_BELIEF_ID_HEX_LEN]
@@ -174,7 +179,9 @@ def _lock_id(text: str) -> str:
 def _triple_belief_id(phrase: str) -> str:
     """Deterministic id for triple-extracted noun-phrase beliefs.
 
-    Matches `triple_extractor._belief_id_for_phrase`. Keyed on
+    Invoked via `triple_extractor.ingest_triples`, which drives this
+    function through the derivation worker (`triple_extractor.py` has
+    no local id helper of its own). Keyed on
     `_TRIPLE_BELIEF_SOURCE` so the same normalised phrase resolves to
     the same id across all extraction call sites.
     """
@@ -192,7 +199,9 @@ def _content_hash(text: str) -> str:
 def _triple_content_hash(phrase: str) -> str:
     """Content hash for triple-derived beliefs (normalised + lower).
 
-    Matches `triple_extractor._content_hash`.
+    Produced via the same derivation-worker path as
+    `_triple_belief_id`; no local hash helper exists in
+    `triple_extractor.py`.
     """
     normalized = " ".join(phrase.split()).lower()
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
@@ -211,8 +220,9 @@ def derive(inp: DerivationInput) -> DerivationOutput:
     1. Lock / remember paths (`source_kind` in {mcp_remember,
        cli_remember}): always persist with a USER lock, no classifier.
     2. Triple-extraction path (`source_kind == git`): always persist as
-       factual with alpha=1.0 / beta=1.0; id scheme matches
-       `triple_extractor._belief_id_for_phrase`.
+       factual with alpha=1.0 / beta=1.0; the id is assigned here,
+       invoked from `triple_extractor.ingest_triples` via the
+       derivation worker.
     3. All other paths (filesystem, python_ast, feedback_loop_synthesis,
        legacy_unknown): run `classify_sentence`; skip when
        `persist=False`. Transcript-ingest rows that carry
