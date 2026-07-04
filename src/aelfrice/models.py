@@ -464,14 +464,15 @@ class FeedbackEvent:
 
 @dataclass
 class Session:
-    """Ephemeral session identifier produced by MemoryStore.create_session.
+    """Session identifier produced by MemoryStore.create_session.
 
-    The public v1.0.0 schema does not persist sessions; this dataclass
-    exists so academic-suite benchmark adapters that group ingest calls
-    by session_id (LongMemEval, LoCoMo, MAB, StructMemEval, AMA-Bench)
-    have a stable handle to pass through. Lab v2.0.0 persists this as
-    a full sessions table with token/correction/velocity tracking; the
-    public shim exposes only what the adapters consume.
+    Persisted since v1.2.0 in a real `sessions` table: `create_session`
+    / `complete_session` write and update rows rather than acting as
+    no-op stubs. Fields mirror the table 1:1 and give academic-suite
+    benchmark adapters that group ingest calls by session_id
+    (LongMemEval, LoCoMo, MAB, StructMemEval, AMA-Bench) a stable
+    handle to pass through; `telemetry.py`'s per-session duration calc
+    reads this same table via `get_session`.
     """
 
     id: str
