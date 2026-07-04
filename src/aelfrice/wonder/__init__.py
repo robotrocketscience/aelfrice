@@ -5,9 +5,12 @@ synthetic corpus + feedback simulator + evaluator + runner that
 together close the v2.0 ship-decision per
 ``docs/design/v2_wonder_consolidation.md``.
 
-The harness is a research surface: nothing here writes to a live
-``Store`` outside the bake-off. The chosen-strategy production
-wiring is a follow-up issue per the spec.
+The generation strategies here (``random_walk``, ``triangle_closure``,
+``span_topic_sampling``) are research-only and do not write to a live
+``Store``. Production wiring ships separately as
+``aelfrice.wonder.lifecycle`` (``wonder_ingest`` / ``wonder_gc``,
+#548/#549), exposed via ``aelf wonder --persist`` / ``aelf wonder --gc``
+and the ``aelf_wonder_persist`` / ``aelf_wonder_gc`` MCP tools.
 """
 from __future__ import annotations
 
