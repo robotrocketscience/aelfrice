@@ -1564,7 +1564,7 @@ def _cmd_wonder_gc(args: argparse.Namespace, out: object) -> int:
 
     Wraps :func:`aelfrice.wonder.lifecycle.wonder_gc`. Candidate beliefs
     must be ``type='speculative'``, still active (``valid_to IS NULL``),
-    older than ``--ttl-days`` days, and have unchanged Bayesian priors +
+    older than ``--gc-ttl-days`` days, and have unchanged Bayesian priors +
     no feedback / RESOLVES edges.
 
     ``--dry-run`` reports candidates without mutating the store.
@@ -6340,11 +6340,11 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     p_onboard.set_defaults(func=_cmd_onboard)
 
-    p_search = sub.add_parser("search", help="L0 locked + L1 FTS5 retrieval")
+    p_search = sub.add_parser("search", help="L0 locked + L2.5 entity-index + L1 FTS5 retrieval")
     p_search.add_argument("query", help="keyword query")
     p_search.add_argument(
         "--budget", type=int, default=DEFAULT_TOKEN_BUDGET,
-        help="output token budget (default 2000)",
+        help="output token budget (default 2400)",
     )
     p_search.add_argument(
         "--json", action="store_true", default=False,

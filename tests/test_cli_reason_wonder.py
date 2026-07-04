@@ -548,12 +548,12 @@ def test_wonder_gc_non_dry_run_deletes_stale(_isolated_db: Path) -> None:
 
 
 def test_wonder_gc_ttl_days_override(_isolated_db: Path) -> None:
-    """--ttl-days should control which beliefs are eligible."""
+    """--gc-ttl-days should control which beliefs are eligible."""
     from datetime import datetime, timedelta, timezone
     from aelfrice.models import BELIEF_SPECULATIVE, LOCK_NONE, ORIGIN_SPECULATIVE
     from aelfrice.models import Belief as _Belief
 
-    # Insert a belief that is 5 days old — older than --ttl-days 3, younger than 14.
+    # Insert a belief that is 5 days old — older than --gc-ttl-days 3, younger than 14.
     ts_5d = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
     s = MemoryStore(str(_isolated_db))
     try:
