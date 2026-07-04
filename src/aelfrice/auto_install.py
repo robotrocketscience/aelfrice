@@ -2,7 +2,7 @@
 
 Closes the loop on #623: a bare `pipx upgrade aelfrice` does not re-run
 `aelf setup`, so any default-on hook added in a new release (e.g.
-`aelf-stop-hook` shipped in v2.1) is missing for users who never re-run
+`aelf-stop-hook` shipped in v3.0) is missing for users who never re-run
 setup. The catch-net (`aelf doctor` nag) only fires when the user runs
 doctor — passive users never see it.
 
