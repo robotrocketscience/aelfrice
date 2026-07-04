@@ -88,9 +88,10 @@ the current project. Tools fall into three groups:
 - WRITE (lock, validate, promote, unlock, feedback, confirm, onboard):
   introduce or refine beliefs based on user signals. Idempotent where
   marked; otherwise expect each call to shift posterior or audit state.
-- TIER (demote): the only destructively-flagged tool. Drops a lock or
-  devalidates a belief one tier; reversible only by re-locking with
-  fresh evidence.
+- TIER (demote): drops a lock or devalidates a belief one tier;
+  reversible only by re-locking with fresh evidence. Not the only
+  destructively-flagged tool: wonder_persist and wonder_gc also
+  carry destructiveHint=True (they write or soft-delete beliefs).
 
 When unsure what already exists, call aelf_search before aelf_lock.
 When the user explicitly asserts a non-negotiable rule, prefer aelf_lock
@@ -1484,9 +1485,17 @@ def serve() -> None:
                 tagged 'scope:<old>-><new>' is written alongside any
                 origin-flip audit row.
 
-        Returns: see aelf_validate. When to_scope is supplied, the
-            payload includes an additional 'scope' key containing the
-            scope-change result dict.
+        Returns: When to_scope resolves to scope.updated or
+            scope.unchanged, see aelf_validate — the payload is a
+            validate.* dict with an additional 'scope' key holding
+            the scope-change result. When to_scope is invalid,
+            targets a foreign belief, or targets a missing belief,
+            the scope-change result is returned directly and
+            unwrapped (kind: one of [scope.invalid,
+            scope.foreign_belief, scope.not_found]) — not nested
+            under 'scope' and not one of aelf_validate's
+            [validate.promoted, validate.already, validate.error]
+            kinds.
         """
         store = _open_default_store()
         try:
@@ -1779,7 +1788,14 @@ def serve() -> None:
         budget: Annotated[
             int,
             Field(
-                description="BFS expansion budget (total nodes, default 24).",
+                description=(
+                    "Currently unused by wonder_persist — the "
+                    "effective BFS node budget is `top * 2` (see "
+                    "the `top` parameter). Kept for API symmetry "
+                    "with aelf_wonder's `budget` field; changing "
+                    "this value has no effect on this tool's "
+                    "output."
+                ),
                 ge=1,
                 le=200,
             ),
