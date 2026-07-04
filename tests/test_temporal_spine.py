@@ -26,6 +26,7 @@ from aelfrice.store import MemoryStore
 from aelfrice.temporal_spine import (
     ENV_TEMPORAL_SPINE_WRITE,
     TEMPORAL_SPINE_EDGE_WEIGHT,
+    backfill_temporal_spine,
     is_temporal_spine_write_enabled,
     write_temporal_spine,
 )
@@ -308,3 +309,74 @@ def test_ingest_on_path_skips_other_sessions(
     ingest_turn(store, _TURN_TWO, "test-source", session_id="s2",
                 created_at="2026-01-01T00:00:02Z")
     assert _spine_edges(store) == []
+
+
+# ---------------------------------------------------------------------------
+# backfill_temporal_spine
+# ---------------------------------------------------------------------------
+
+
+def _seed_two_sessions(store: MemoryStore) -> None:
+    _make_belief(store, belief_id="a1", content="session a first",
+                 session_id="sa", created_at="2026-01-01T00:00:01Z")
+    _make_belief(store, belief_id="a2", content="session a second",
+                 session_id="sa", created_at="2026-01-01T00:00:02Z")
+    _make_belief(store, belief_id="a3", content="session a third",
+                 session_id="sa", created_at="2026-01-01T00:00:03Z")
+    _make_belief(store, belief_id="b1", content="session b first",
+                 session_id="sb", created_at="2026-01-01T00:00:02Z")
+    _make_belief(store, belief_id="b2", content="session b second",
+                 session_id="sb", created_at="2026-01-01T00:00:04Z")
+    _make_belief(store, belief_id="n1", content="no session fact",
+                 session_id=None)
+
+
+def test_backfill_chains_all_sessions(store: MemoryStore) -> None:
+    _seed_two_sessions(store)
+    report = backfill_temporal_spine(store)
+    assert report.n_sessions == 2
+    assert report.n_beliefs_in_sessions == 5
+    assert report.n_edges_written == 3
+    assert report.n_edges_existing == 0
+    assert _spine_edges(store) == [
+        ("a2", "a1", TEMPORAL_SPINE_EDGE_WEIGHT),
+        ("a3", "a2", TEMPORAL_SPINE_EDGE_WEIGHT),
+        ("b2", "b1", TEMPORAL_SPINE_EDGE_WEIGHT),
+    ]
+
+
+def test_backfill_dry_run_writes_nothing(store: MemoryStore) -> None:
+    _seed_two_sessions(store)
+    report = backfill_temporal_spine(store, dry_run=True)
+    assert report.n_edges_written == 3
+    assert _spine_edges(store) == []
+
+
+def test_backfill_idempotent(store: MemoryStore) -> None:
+    _seed_two_sessions(store)
+    first = backfill_temporal_spine(store)
+    second = backfill_temporal_spine(store)
+    assert first.n_edges_written == 3
+    assert second.n_edges_written == 0
+    assert second.n_edges_existing == 3
+    assert len(_spine_edges(store)) == 3
+
+
+def test_backfill_matches_writer_output(store: MemoryStore) -> None:
+    """A backfilled store and a writer-chained store produce the same
+    spine — the migration path and the ingest path are equivalent."""
+    _seed_two_sessions(store)
+    incremental = MemoryStore(":memory:")
+    _seed_two_sessions(incremental)
+    for bid in ("a1", "a2", "a3", "b1", "b2", "n1"):
+        write_temporal_spine(incremental, new_belief_ids=[bid])
+
+    backfill_temporal_spine(store)
+    assert _spine_edges(store) == _spine_edges(incremental)
+
+
+def test_backfill_empty_store(store: MemoryStore) -> None:
+    report = backfill_temporal_spine(store)
+    assert report.n_sessions == 0
+    assert report.n_beliefs_in_sessions == 0
+    assert report.n_edges_written == 0

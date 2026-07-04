@@ -4400,6 +4400,24 @@ class MemoryStore:
         row = cur.fetchone()
         return str(row["id"]) if row is not None else None
 
+    def session_belief_ids_ordered(self) -> list[tuple[str, str]]:
+        """All `(session_id, belief_id)` pairs with a non-NULL session,
+        ordered by `(session_id, created_at, rowid)`.
+
+        Consecutive rows within one session are exactly the pairs the
+        #1064 temporal-spine chain links. Consumer: `aelf spine backfill`
+        (`aelfrice.temporal_spine.backfill_temporal_spine`).
+        """
+        cur = self._conn.execute(
+            """
+            SELECT session_id, id
+            FROM beliefs
+            WHERE session_id IS NOT NULL
+            ORDER BY session_id, created_at, rowid
+            """
+        )
+        return [(str(r["session_id"]), str(r["id"])) for r in cur.fetchall()]
+
 
     def edges_from_in_scope(
         self, src: str, owning_scope: str | None

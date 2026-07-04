@@ -4510,6 +4510,21 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
         for edge_type, count in sorted_entries:
             print(f"  {edge_type:24s} {count}", file=out)  # type: ignore[arg-type]
     print("", file=out)  # type: ignore[arg-type]
+    # #1064 spine row: present/absent + edge count, so operators can see
+    # whether this store has a temporal spine to traverse (and whether
+    # `aelf spine backfill` is needed) without decoding edges-by-type.
+    n_spine = features.edges_by_type.get("TEMPORAL_NEXT", 0)
+    if n_spine:
+        print(
+            f"temporal spine: present ({n_spine} TEMPORAL_NEXT edges)",
+            file=out,  # type: ignore[arg-type]
+        )
+    else:
+        print(
+            "temporal spine: absent (run `aelf spine backfill` to build)",
+            file=out,  # type: ignore[arg-type]
+        )
+    print("", file=out)  # type: ignore[arg-type]
     sentiment_state, sentiment_count = _sentiment_from_prose_state()
     if sentiment_state == "enabled":
         print(
@@ -4607,6 +4622,35 @@ def _load_aelfrice_config_dict(root: Path) -> dict[str, Any] | None:
             return None
         candidate = candidate.parent
     return None
+
+
+def _cmd_spine(args: argparse.Namespace, out: object) -> int:
+    """`aelf spine backfill` — build per-session TEMPORAL_NEXT chains
+    over the existing store (#1064).
+
+    Existing stores predate the ingest-time spine writer; this is the
+    migration path (re-ingesting everything is not). Idempotent per
+    `(src, dst, TEMPORAL_NEXT)` triple; `--dry-run` counts what a real
+    run would write without touching the store. Exits 0 always — an
+    empty store and a fully-chained store are both no-ops, not errors.
+    """
+    from aelfrice.temporal_spine import backfill_temporal_spine
+
+    dry = bool(getattr(args, "dry_run", False))
+    store = _open_store()
+    try:
+        report = backfill_temporal_spine(store, dry_run=dry)
+    finally:
+        store.close()
+    verb = "would write" if dry else "wrote"
+    print(
+        f"temporal spine backfill: {verb} {report.n_edges_written} "
+        f"TEMPORAL_NEXT edge(s) across {report.n_sessions} session(s) "
+        f"({report.n_beliefs_in_sessions} session-tagged beliefs, "
+        f"{report.n_edges_existing} already present)",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
 
 
 def _cmd_migrate(args: argparse.Namespace, out: object) -> int:
@@ -7029,6 +7073,21 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="skip the confirmation prompt under --apply",
     )
     p_migrate.set_defaults(func=_cmd_migrate)
+
+    # Hidden: one-shot migration utility for stores that predate the
+    # #1064 temporal-spine writer (the default-ON flip release invokes
+    # it; manual runs are power-user only). No slash command — it's a
+    # migration surface, not a workflow verb.
+    p_spine = sub.add_parser("spine", help=argparse.SUPPRESS)
+    p_spine.add_argument(
+        "action", choices=["backfill"],
+        help="build per-session TEMPORAL_NEXT chains over the existing store",
+    )
+    p_spine.add_argument(
+        "--dry-run", action="store_true",
+        help="count what backfill would write without writing",
+    )
+    p_spine.set_defaults(func=_cmd_spine)
 
     # Hidden: spawned by the transcript-logger hook on rotation. Manual
     # invocation is for batch backfill of historical JSONL — power-user only.

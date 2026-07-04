@@ -218,6 +218,10 @@ def test_upgrade_slash_keeps_step_2_imperative() -> None:
 # callable indefinitely as scripting / hook entry points.
 HIDDEN_SUBCOMMANDS = frozenset({
     "statusline", "bench", "regime", "migrate", "unsetup",
+    # `spine` is the #1064 temporal-spine backfill (one-shot migration
+    # utility; the default-ON flip release invokes it). No slash
+    # command — it's a migration surface, not a workflow verb.
+    "spine",
     "health", "stats", "project-warm", "session-delta",
     "demote", "validate", "resolve", "feedback", "ingest-transcript",
     "sweep-feedback",

@@ -238,3 +238,87 @@ def write_temporal_spine(
         n_skipped_no_predecessor=n_no_predecessor,
         n_skipped_existing=n_existing,
     )
+
+
+# --- Backfill (existing stores predate the writer) ------------------------
+
+
+@dataclass(frozen=True)
+class SpineBackfillReport:
+    """Summary of one ``backfill_temporal_spine`` run.
+
+    ``n_sessions``
+        Distinct non-NULL sessions visited.
+
+    ``n_beliefs_in_sessions``
+        Beliefs carrying a session_id (chain members, including chain
+        heads that get no outgoing spine edge).
+
+    ``n_edges_written``
+        Consecutive pairs that produced a new TEMPORAL_NEXT edge — or,
+        under ``dry_run``, would have.
+
+    ``n_edges_existing``
+        Consecutive pairs whose spine edge already existed (idempotency
+        guard fired; re-running the backfill writes nothing new).
+    """
+
+    n_sessions: int
+    n_beliefs_in_sessions: int
+    n_edges_written: int
+    n_edges_existing: int
+
+
+def backfill_temporal_spine(
+    store: "MemoryStore",
+    *,
+    dry_run: bool = False,
+) -> SpineBackfillReport:
+    """Build per-session TEMPORAL_NEXT chains over an existing store.
+
+    Existing stores predate the ingest-time writer; the migration story
+    cannot be "re-ingest everything". This walks every session's beliefs
+    in ``(created_at, rowid)`` order and links each consecutive pair
+    with the same edge the writer would have produced (src = successor,
+    dst = predecessor, weight ``TEMPORAL_SPINE_EDGE_WEIGHT``).
+
+    **Idempotent** per ``(src, dst, TEMPORAL_NEXT)`` triple: pairs whose
+    edge exists are counted and skipped, so re-running after a partial
+    build (or on a store the writer is already chaining) is safe.
+
+    ``dry_run`` counts what a real run would write without touching the
+    store.
+    """
+    from aelfrice.models import EDGE_TEMPORAL_NEXT as _EDGE  # noqa: PLC0415
+
+    sessions: set[str] = set()
+    n_beliefs = 0
+    n_written = 0
+    n_existing = 0
+
+    prev_session: str | None = None
+    prev_belief: str | None = None
+    for session_id, belief_id in store.session_belief_ids_ordered():
+        sessions.add(session_id)
+        n_beliefs += 1
+        if session_id == prev_session and prev_belief is not None:
+            if store.get_edge(belief_id, prev_belief, _EDGE) is not None:
+                n_existing += 1
+            else:
+                if not dry_run:
+                    store.insert_edge(Edge(
+                        src=belief_id,
+                        dst=prev_belief,
+                        type=_EDGE,
+                        weight=TEMPORAL_SPINE_EDGE_WEIGHT,
+                    ))
+                n_written += 1
+        prev_session = session_id
+        prev_belief = belief_id
+
+    return SpineBackfillReport(
+        n_sessions=len(sessions),
+        n_beliefs_in_sessions=n_beliefs,
+        n_edges_written=n_written,
+        n_edges_existing=n_existing,
+    )
