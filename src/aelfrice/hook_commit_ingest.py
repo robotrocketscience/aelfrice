@@ -3,7 +3,7 @@ ingest event: parse the message, run the triple extractor, persist
 beliefs and edges under a session derived from git context.
 
 Closes the v1.0 limitation that the belief graph only grows on
-explicit `aelf onboard` / `aelf remember` calls. Each commit
+explicit `aelf onboard` / `aelf lock` calls. Each commit
 message becomes a typed-edge ingest, which is the first ingest path
 that densely populates `Edge.anchor_text`, `Belief.session_id`, and
 `DERIVED_FROM` edges in production data.
