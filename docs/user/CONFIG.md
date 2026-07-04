@@ -9,7 +9,7 @@ This is the reference for power users whose project has a documentation idiom or
 A single optional TOML file at the root of a project (or any ancestor). It exposes the following power-user surfaces:
 
 - `[noise]` — onboard-time belief filter. Changes how `aelf onboard` ingests beliefs; nothing else.
-- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `l1_limit` + `token_budget` (the #1045 wide-retrieval knobs — BM25 candidate cap + token budget, default 50/2400; raise both together for multi-hop recall), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, default-on since v2.1), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, default-on since #769), `use_intentional_clustering` (co-locating related beliefs, default-on since v3.0), `expansion_gate_enabled`, `use_gamma_posterior_temperature` (default off), and `use_zeta_posterior_rerank` (default off; mutually exclusive with the γ flag — `retrieve()` raises `ValueError` when both are on). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
+- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `l1_limit` + `token_budget` (the #1045 wide-retrieval knobs — BM25 candidate cap + token budget, default 50/2400; raise both together for multi-hop recall), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, default-on since v2.1), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, default-on since #769), `use_intentional_clustering` (co-locating related beliefs, default-on since v3.0), `expansion_gate_enabled`, `use_gamma_posterior_temperature` (default off), and `use_zeta_posterior_rerank` (default off; mutually exclusive with the γ flag — `retrieve()` raises `ValueError` when both are on), `use_temporal_spine` + `temporal_spine_budget` (the #1064 chronological-adjacency lane, default off/32; pairs with `[ingest] write_temporal_spine`). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
 - `[rebuilder]` (v1.4+) — context-rebuilder knobs: `turn_window_n` (default 50), `token_budget` (default 4000), `trigger_mode` (`manual`|`threshold`|`dynamic`, default `threshold`), `threshold_fraction` (default 0.6), and `query_strategy` (v1.7+, default `stack-r1-r3` since v3.0). `[rebuild_floor]` (v1.7+) sets the token-budget floors for the session-scoped and L1 belief lanes (`[rebuild_floor] session` and `[rebuild_floor] l1`).
 - `[onboard.llm]` (v1.3.0+) — direct-API onboard classifier gate; documented under [Keys § `[onboard.llm]`](#onboardllm-v130) below.
 - `[cadence]`, `[implicit_feedback]`, and `[hook_audit]` — feedback-cadence scoring, deferred retrieval-exposure feedback, and the per-turn hook audit log. Recognised here but documented in their module docstrings (`src/aelfrice/cadence.py`, `src/aelfrice/deferred_feedback.py`, `src/aelfrice/hook.py`).
@@ -144,6 +144,27 @@ use_type_aware_compression = true
 # var overrides.
 use_intentional_clustering = true
 
+# v3.9+ (#1064). Default `false` — landing posture, not the end state:
+# the default-ON flip is gated on the pre-registered #1064 criteria
+# (see docs/design/feature-temporal-spine.md). When true, the
+# temporal-spine lane traverses TEMPORAL_NEXT chronological chains from
+# the top-5 packed L1 seeds (both directions, depth 1) and appends the
+# neighbours after the L1 candidates. Reaches gold that shares zero
+# salient terms with the question through chronological adjacency —
+# confirmed +14.6pp gold-coverage on LoCoMo, 10x its shuffled control.
+# No-op on stores with zero TEMPORAL_NEXT edges (run `aelf spine
+# backfill` to build the spine on an existing store, and enable the
+# [ingest] write_temporal_spine writer to keep it growing).
+# AELFRICE_TEMPORAL_SPINE env var overrides.
+use_temporal_spine = false
+
+# v3.9+ (#1064). Node budget for the temporal-spine lane traversal
+# (default 32). The confirmatory budget curve is monotone (~+2.5pp
+# coverage per doubling at 32/64/128, no plateau) — this is the knob to
+# raise for retrieval-heavy callers with the token budget to hold the
+# extra candidates. AELFRICE_TEMPORAL_SPINE_BUDGET env var overrides.
+temporal_spine_budget = 32
+
 # Placeholder flags reserved by #154 — recognised so callers can
 # write forward-compat config, but their lanes have not yet
 # shipped. Setting either to true emits a one-shot stderr
@@ -151,6 +172,16 @@ use_intentional_clustering = true
 # otherwise a no-op.
 # use_signed_laplacian = false
 # use_posterior_ranking = false
+
+[ingest]
+# v3.9+ (#1064). Default `false` (same flip gate as use_temporal_spine
+# above — the two flags flip together at release time but resolve
+# independently). When true, every belief insert chains to its session
+# predecessor with a TEMPORAL_NEXT edge (src = successor, weight 0.8),
+# building the per-session temporal spine the retrieval lane traverses.
+# One edge per belief, O(1) per insert. Off-path ingest is
+# byte-identical. AELFRICE_TEMPORAL_SPINE_WRITE env var overrides.
+write_temporal_spine = false
 
 [rebuilder]
 # v3.0+ / #718 (PR #719). Selects the query-rewriting stack used by
@@ -467,9 +498,38 @@ Enabled by default: `compressed_beliefs` is parallel to `beliefs` (same length, 
 
 Precedence (first decisive wins): env var `AELFRICE_TYPE_AWARE_COMPRESSION=0`/`1` > explicit Python kwarg `use_type_aware_compression=<bool>` > TOML `[retrieval] use_type_aware_compression` > default `true`. The default-on flip landed in #769 after the A2 + A4 bench gates (`docs/design/feature-type-aware-compression.md` §"Bench-gate / ship-or-defer policy") cleared on the lab-side `compression_a*` corpora. Composes with `use_intentional_clustering` since #878.
 
+### `use_temporal_spine` / `temporal_spine_budget`
+
+v3.9+ (#1064). Default `false` / `32`. The temporal-spine retrieval lane:
+an additive candidate source after L1 that traverses `TEMPORAL_NEXT`
+chronological chains from the top-5 packed L1 seeds (both directions,
+depth 1) and appends the neighbours — never displacing L1 pre-packing.
+The mechanism is complementary to lexical matching: gold beliefs sharing
+zero salient terms with the question become reachable through
+chronological adjacency to beliefs that do match. No-op guard: stores
+with zero `TEMPORAL_NEXT` edges get byte-identical output at ~zero cost.
+Precedence: `AELFRICE_TEMPORAL_SPINE` / `AELFRICE_TEMPORAL_SPINE_BUDGET`
+env → explicit kwarg → TOML → default. Default-off is the landing
+posture; the default-ON flip is gated on the pre-registered criteria in
+[docs/design/feature-temporal-spine.md](../design/feature-temporal-spine.md).
+
 ### Placeholder flags
 
 `use_signed_laplacian` and `use_posterior_ranking` are reserved by #154 but their owning lanes have not yet shipped. The flags are recognised by `warn_placeholder_flags()` so writing them in `.aelfrice.toml` does not error; setting either to `true` emits a one-shot stderr deprecation warning and is otherwise a no-op. Source of truth: `PLACEHOLDER_FLAGS` in `src/aelfrice/retrieval.py`.
+
+## `[ingest]` (v3.9+)
+
+### `write_temporal_spine`
+
+Default `false`. When enabled, every belief insert links to the previous
+belief in the same session (`created_at` order, insertion-order
+tie-break) with a `TEMPORAL_NEXT` edge — the per-session temporal spine
+the `use_temporal_spine` retrieval lane traverses. One edge per belief,
+O(1) per insert, idempotent; the off-path is byte-identical to today.
+Existing stores predate the writer: `aelf spine backfill` builds their
+chains (idempotent, `--dry-run` supported), and `aelf doctor` reports
+spine presence + edge count. `AELFRICE_TEMPORAL_SPINE_WRITE` env var
+overrides.
 
 ## `[rebuilder]` and `[rebuild_floor]` (v1.7+)
 
