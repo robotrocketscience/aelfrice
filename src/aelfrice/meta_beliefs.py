@@ -37,8 +37,8 @@ Signal-class enum (umbrella #480 §3)
 
 Four signal classes are admitted today. Each meta-belief subscribes to
 a subset at install time (its ``signal_classes`` row); ``update_meta_belief``
-calls for a class not in the subscription list are recorded as no-op
-audit events rather than silently dropped.
+calls for a class not in the subscription list are silently dropped — no
+audit row is written (audit machinery is deferred to a later #480 sub-task).
 
 - ``SIGNAL_RELEVANCE`` — close-the-loop relevance signal (#365). Did
   the consumer reference / contradict / confirm the surfaced beliefs?
