@@ -135,8 +135,9 @@ def test_eval_empty_corpus_returns_1(tmp_path: Path) -> None:
 
 def test_eval_json_keys_sorted_for_diff_stability(tmp_path: Path) -> None:
     """JSON output keys are sorted so the line is diff-stable across
-    Python versions / dict-ordering changes — important for the future
-    R5 CI status-check surface that diffs runs."""
+    Python versions / dict-ordering changes — used by the #365 R5 CI
+    status-check surface (.github/workflows/eval-calibration.yml) that
+    diffs runs against a pinned baseline."""
     corpus = _toy_corpus(tmp_path / "toy.jsonl")
     rc, output = _run(["eval", "--corpus", str(corpus), "--json"])
     assert rc == 0
