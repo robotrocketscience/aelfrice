@@ -15,7 +15,7 @@ def test_promotion_trigger_against_corpus(aelfrice_corpus_root: Path) -> None:
         from aelfrice import promotion_trigger  # type: ignore[attr-defined]
     except ModuleNotFoundError as exc:
         if exc.name in {"aelfrice", "aelfrice.promotion_trigger"}:
-            pytest.skip("promotion_trigger rule not yet implemented (#229)")
+            pytest.skip("promotion_trigger module was never built — #229 shipped via a different design (aelf lock/validate); this bench-gate corpus is stale")
         raise
 
     correct = 0
