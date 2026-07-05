@@ -12,7 +12,7 @@ Acceptance map (#150 § "Acceptance criteria"):
 - AC5: per-query latency ≤ 10 ms at N=50k (perf-gated)
 - AC6: eigenbasis loaded once per process — covered structurally by
        the existing GraphEigenbasisCache tests
-- AC7: feature-flag default is False (use_heat_kernel)
+- AC7: feature-flag default is True (use_heat_kernel), opt-out via env/kwarg/TOML (flipped per #154 after the #437 11/11 gate)
 """
 from __future__ import annotations
 
