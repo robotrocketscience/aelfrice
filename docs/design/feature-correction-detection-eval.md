@@ -240,7 +240,7 @@ The corpus itself does not regress: rows added later strictly grow the fixture, 
 
 ## Implementation prereqs
 
-- `src/aelfrice/relationship_detector.py:73-78, :322` — verdict labels + `classify` entry point.
+- `src/aelfrice/relationship_detector.py:75-80, :344` — verdict labels + `classify` entry point.
 - `src/aelfrice/value_compare.py:194, :267` — `extract_values` + `find_conflicts`.
 - `tests/corpus/v2_0/contradiction/django_v0_1.jsonl` — schema precedent (relabel target).
 - `tests/bench_gate/test_contradiction.py`, `tests/bench_gate/test_contradiction_v3.py` — sibling bench-gate patterns to mirror.
