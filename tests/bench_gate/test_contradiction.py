@@ -15,7 +15,7 @@ def test_contradiction_detector_against_corpus(aelfrice_corpus_root: Path) -> No
         from aelfrice import relationship_detector  # type: ignore[attr-defined]
     except ModuleNotFoundError as exc:
         if exc.name in {"aelfrice", "aelfrice.relationship_detector"}:
-            pytest.skip("contradiction detector not yet implemented (#201)")
+            pytest.skip("contradiction detector module missing from this checkout")
         raise
 
     correct = 0
