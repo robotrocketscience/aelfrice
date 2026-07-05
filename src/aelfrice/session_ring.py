@@ -774,9 +774,9 @@ def read_phantom_state(session_id: str | None) -> dict[str, Any]:
 def read_ring_state(session_id: str | None) -> dict[str, Any]:
     """Return the ring shape for ``session_id``, or ``{}`` when absent.
 
-    Read-only. Surface for ``aelf doctor`` telemetry — callers should
-    treat the dict as opaque and read ``ring`` length, ``ring_max``, and
-    ``evicted_total`` for display.
+    Read-only. Primary surface for the hook's cadence dispatcher
+    (``aelfrice.hook``) to read P1/P3/phantom ring state on each fire;
+    ``aelf doctor`` instead uses the session-agnostic ``read_ring_file()``.
     """
     if not session_id:
         return {}
