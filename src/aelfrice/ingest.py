@@ -122,8 +122,9 @@ def ingest_turn(
       3. Insert classifications with `persist=True` as beliefs.
 
     Idempotent on (source, sentence) pairs: re-ingesting the same turn
-    triggers `INSERT OR IGNORE` semantics in the store (belief id
-    derives from the sha256 of source + sentence). Sentences whose
+    resolves to the same belief id (sha256 of source + sentence) via a
+    content-hash lookup in `insert_or_corroborate`, which corroborates
+    the existing row instead of re-inserting it. Sentences whose
     classification returns `persist=False` (questions, empty text) are
     skipped.
 
@@ -429,18 +430,22 @@ def ingest_jsonl(
         usable (issue #115 — retroactive ingestion of historical
         Claude Code session logs).
 
-    Within a session, consecutive turns are linked with DERIVED_FROM
+    Within a session, consecutive user turns are linked with DERIVED_FROM
     edges from turn N+1's last belief back to turn N's last belief,
     `anchor_text` set to the prior turn's text (truncated to
-    ANCHOR_TEXT_MAX_LEN).
+    ANCHOR_TEXT_MAX_LEN). Assistant-role lines are excluded from belief
+    creation and edge-wiring by the #785 speaker-attribution gate, so
+    edges bridge across any intervening assistant turns rather than
+    linking strictly consecutive lines.
 
     Idempotency: ingest_turn dedupes per (source_label, sentence), so
     re-running on the same file produces zero new beliefs. Edge
     inserts are wrapped in a duplicate-PK guard for the same reason.
 
     Lines without role/text (compaction markers, file-history
-    snapshots, tool-result entries, malformed) are counted under
-    `skipped_lines` and ignored without raising.
+    snapshots, tool-result entries, malformed), plus well-formed
+    assistant-role lines excluded by the #785 speaker-attribution gate,
+    are counted under `skipped_lines` and ignored without raising.
     """
     from aelfrice.inedible import is_inedible_path
 
