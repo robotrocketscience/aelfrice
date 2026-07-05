@@ -4,7 +4,9 @@ Reads ``<project>/.git/aelfrice/cadence_shadow/<session_id>.jsonl`` rows
 written by the Stop-hook shadow-evaluation path and emits aggregate
 statistics: per-policy fire-rate (counts of ``would_fire=true``),
 selected-policy live fire-rate, and a 2x2 agreement matrix between the
-two currently-implemented policies (P1 vs P2).
+original two policies (P1 vs P2), retained for backward compatibility —
+see ``pairwise_agreement`` on ``ShadowSummary`` for the generalised
+table across all four currently-implemented policies.
 
 Designed to surface as ``aelf cadence-score``. The scoring is offline:
 inputs are the already-written shadow log; no live cadence state is
