@@ -1,8 +1,10 @@
 """Bench gate for #197 deduplication module.
 
 Loads the lab-mounted corpus and runs the dedup detector against the
-labels. Skips on public CI (corpus absent) and skips again here until
-the detector module from #197 ships.
+labels. Skips on public CI (corpus absent). NOTE: ``aelfrice.dedup``
+now ships (#197 R1+) but exposes no ``classify(belief_a, belief_b)`` —
+this gate errors (AttributeError), not skips, once run against the
+lab corpus.
 """
 from __future__ import annotations
 
