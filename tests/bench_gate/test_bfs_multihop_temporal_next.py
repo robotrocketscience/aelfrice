@@ -5,7 +5,7 @@ https://github.com/robotrocketscience/aelfrice/issues/382#issuecomment-437268301
 `TEMPORAL_NEXT` ships only when it demonstrates **≥+5pp BFS multi-hop hit@k
 uplift** on the labeled fixture vs. the same fixture run with
 `BFS_EDGE_WEIGHTS[TEMPORAL_NEXT]` zeroed (which causes the BFS expander to
-skip TEMPORAL_NEXT edges per `bfs_multihop.py:155-160`).
+skip TEMPORAL_NEXT edges per `bfs_multihop.py:212-213`).
 
 Skips cleanly when `AELFRICE_CORPUS_ROOT` is unset (public CI), when the
 `temporal_next_edge/` module dir is missing, or when the corpus has fewer than
