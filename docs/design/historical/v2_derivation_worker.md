@@ -4,6 +4,8 @@ Spec for issue [#264](https://github.com/robotrocketscience/aelfrice/issues/264)
 
 Status: spec, no implementation. Recommendation included; decision is the user's.
 
+> **Audit note (2026-07-04, #1075):** the concurrency test referenced below as `tests/test_concurrency.py` was renamed post-ship; it now lives at `tests/test_worktree_concurrency.py`. Frozen spec body left as-authored.
+
 ## What's being decided
 
 Four contract calls left open by the issue body:
