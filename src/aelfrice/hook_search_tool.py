@@ -783,7 +783,7 @@ def _do_search(
 
 
 def _db_path_accepts_cwd(db_path_fn: object) -> bool:
-    """Best-effort detection: does aelfrice.cli.db_path() accept a cwd kw?
+    """Best-effort detection: does aelfrice.db_paths.db_path() accept a cwd kw?
 
     v1.1.0 db_path() reads cwd from os.getcwd(); a later patch may add a
     cwd parameter for callers that need to scope to a specific worktree.
