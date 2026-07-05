@@ -58,11 +58,6 @@ from typing import IO, Final, cast
 # Tools whose successful invocation can land a memory fact file on disk.
 _WRITE_TOOLS: Final[frozenset[str]] = frozenset({"Write", "Edit", "MultiEdit"})
 
-# Cap the body we ingest so a pathologically large memory file cannot
-# blow the latency budget or the belief content column.
-_BODY_BYTE_CAP: Final[int] = 16384
-
-
 def _read_payload(stdin: IO[str]) -> dict[str, object] | None:
     raw = stdin.read()
     if not raw.strip():
@@ -107,13 +102,6 @@ def _file_path_for_memory_write(payload: dict[str, object]) -> str | None:
     return path
 
 
-def _truncate(text: str) -> str:
-    encoded = text.encode("utf-8")
-    if len(encoded) <= _BODY_BYTE_CAP:
-        return text
-    return encoded[:_BODY_BYTE_CAP].decode("utf-8", errors="ignore")
-
-
 def _do_mirror(payload: dict[str, object]) -> None:
     """Core hook body. Returns silently on any failure."""
     path = _file_path_for_memory_write(payload)
@@ -135,71 +123,17 @@ def _do_mirror(payload: dict[str, object]) -> None:
     except OSError:
         return
 
-    from aelfrice.claude_memory import parse_memory_file  # noqa: PLC0415
-
-    parsed = parse_memory_file(text)
-    if parsed is None:
-        return  # no frontmatter / empty body -> nothing to mirror
-
-    body = _truncate(parsed.body)
-
-    # Lazy imports: the store / derivation cost is paid only when we
-    # actually ingest a memory fact.
-    from aelfrice.classification_core import (  # noqa: PLC0415
-        USER_SOURCE,
-        classify_sentence,
-        get_source_adjusted_prior,
+    # Lazy imports: the store / derivation cost (pulled in transitively by
+    # `claude_memory_reconcile`) is paid only when we actually ingest a
+    # memory fact — the hot path (non-memory writes / mirror off) returned
+    # above without touching it. `ingest_memory_text` is the single home for
+    # the #985 frontmatter -> origin/prior mapping, shared with the #1089
+    # reconcile sweep.
+    from aelfrice.claude_memory_reconcile import (  # noqa: PLC0415
+        ingest_memory_text,
     )
     from aelfrice.db_paths import db_path  # noqa: PLC0415
-    from aelfrice.derivation import (  # noqa: PLC0415
-        DerivationInput,
-        RouteOverrides,
-        derive,
-    )
-    from aelfrice.models import (  # noqa: PLC0415
-        BELIEF_FACTUAL,
-        CORROBORATION_SOURCE_CLAUDE_MEMORY,
-        INGEST_SOURCE_CLAUDE_MEMORY,
-        ORIGIN_USER_VALIDATED,
-    )
     from aelfrice.store import MemoryStore  # noqa: PLC0415
-
-    # Map metadata.type -> origin (ratified 2026-06-23, #985). `user` and
-    # `feedback` are user-curated -> origin=user_validated with the
-    # undeflated prior, frozen as a route_overrides decision (the
-    # frontmatter that drives it lives in raw_meta, which replay nulls, so
-    # we freeze the decision rather than recompute it deterministically).
-    # `project` / `reference` / absent -> route_overrides=None, which lets
-    # derive() run the deterministic classifier path -> origin=agent_inferred
-    # with the deflated prior. The mirror NEVER locks: L0 stays reserved for
-    # explicit `aelf lock`.
-    route_overrides = None
-    if parsed.memory_type in ("user", "feedback"):
-        result = classify_sentence(body, USER_SOURCE)
-        if result.persist:
-            belief_type, alpha, beta = (
-                result.belief_type, result.alpha, result.beta,
-            )
-        else:
-            belief_type = BELIEF_FACTUAL
-            alpha, beta = get_source_adjusted_prior(BELIEF_FACTUAL, USER_SOURCE)
-        route_overrides = RouteOverrides(
-            belief_type=belief_type,
-            origin=ORIGIN_USER_VALIDATED,
-            alpha=alpha,
-            beta=beta,
-        )
-
-    output = derive(
-        DerivationInput(
-            raw_text=body,
-            source_kind=INGEST_SOURCE_CLAUDE_MEMORY,
-            source_path=None,
-            route_overrides=route_overrides,
-        )
-    )
-    if output.belief is None:
-        return
 
     p = db_path()
     if str(p) != ":memory:":
@@ -207,10 +141,7 @@ def _do_mirror(payload: dict[str, object]) -> None:
 
     store = MemoryStore(str(p))
     try:
-        store.insert_or_corroborate(
-            output.belief,
-            source_type=CORROBORATION_SOURCE_CLAUDE_MEMORY,
-        )
+        ingest_memory_text(store, text)
     finally:
         store.close()
 
