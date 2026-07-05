@@ -2,10 +2,9 @@
 
 Status: **landed default-off** (writer + backfill + lane). The default-ON
 flip is gated on the pre-registered criteria in § Flip gate below.
-Evidence gates **G1, G2 (both halves), and G3 are DONE**; the flip is now
-blocked only on **G4** (the auto-vs-prompted backfill decision, a landing-PR
-review call) and **G5** (two-build byte-identity + ablation-bench-green in
-CI). The flip itself is an operator decision.
+Evidence gates **G1, G2 (both halves), G3, and G5 are DONE**; the flip is
+now blocked only on **G4** — the auto-vs-prompted backfill decision, a
+landing-PR review call. The flip itself is an operator decision.
 
 ## Mechanism
 
@@ -174,6 +173,19 @@ one release, with the backfill path included for existing stores:
   landing PRs); the flip release decides auto vs prompted backfill.
 - **G5 — determinism/repro:** two-build byte-identity of the spine
   table on a fixed corpus; ablation bench green in CI.
+  - **DONE.** `tests/test_temporal_spine_repro.py` pins both halves in the
+    ordinary pytest matrix (stdlib-only, no wall-clock — latency gates
+    flake on shared runners, #739/#754). *Byte-identity:* the same fixed
+    corpus fed to two independent stores yields a byte-identical
+    `TEMPORAL_NEXT` table, compared in stored/rowid order so any ordering
+    non-determinism (the created_at tie-break included) would fail; a
+    re-backfill on a built store changes zero bytes. *Ablation green:* a
+    gold belief with zero lexical overlap with the query is unreachable
+    lane-off and reachable lane-on via one `TEMPORAL_NEXT` hop, scored
+    through the bench's own `CoverageAccumulator` (0.0 → 1.0) and
+    `RankInvarianceAccumulator` (core-prefix invariant, 0 displacements) —
+    the ablation mechanism the bench measures, run green on a controlled
+    corpus without LoCoMo.
 
 ## Open questions (tracked for the flip review)
 
