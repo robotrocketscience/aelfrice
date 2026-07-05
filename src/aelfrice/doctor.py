@@ -351,10 +351,11 @@ class DoctorReport:
     missing_runtime_deps: list[str] = field(
         default_factory=lambda: cast(list[str], [])
     )
-    # Default-on auto-capture hook basenames (since v2.1, #529) that
-    # are absent from every scanned settings.json. Pre-v2.1 installs
-    # that ran `aelf setup` before the default flip end up here
-    # (#557): they have retrieval-only wiring and need a re-run.
+    # Default-on auto-capture hook basenames (v2.1/#529 for the first
+    # three; v3.0/#582 for the stop-hook) that are absent from every
+    # scanned settings.json. Installs that predate the relevant
+    # default flip end up here (#557): they have retrieval-only
+    # wiring and need a re-run.
     missing_auto_capture_hooks: list[str] = field(
         default_factory=lambda: cast(list[str], [])
     )
@@ -606,8 +607,10 @@ def _scan_orphan_slash_commands(
 ) -> list[str]:
     """Return slash-command basenames whose CLI subcommand is missing.
 
-    Ignores `aelf-*` files that wrap meta commands (none ship today
-    but reserved). Returns sorted basenames so the CLI report stable.
+    Checks every `.md` file directly under `slash_dir` against `known`;
+    there is no special-casing for any filename prefix (no bundled
+    slash-command file uses an `aelf-*` naming pattern today). Returns
+    sorted basenames so the CLI report is stable.
     """
     if not slash_dir.is_dir():
         return []
