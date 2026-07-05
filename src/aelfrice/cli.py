@@ -3386,6 +3386,23 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
                 f"aelfrice: {verb} — {migration.reason}",
                 file=sys.stderr,
             )
+    # #1064 G4: one-shot auto-backfill of the temporal spine over an
+    # existing store. Sentinel-gated inside maybe_backfill_temporal_spine
+    # and inert while the writer is default-off (pre-flip) — it re-arms and
+    # fires on the first setup after the flip turns the writer on. Opening
+    # the store is best-effort so a store-less/fresh host never breaks setup.
+    try:
+        from aelfrice.temporal_spine import maybe_backfill_temporal_spine
+
+        _spine_store = _open_store()
+        try:
+            spine_bf = maybe_backfill_temporal_spine(_spine_store)
+        finally:
+            _spine_store.close()
+        if spine_bf.ran:
+            print(f"aelfrice: temporal spine — {spine_bf.reason}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 — auto-backfill must never break setup
+        print(f"aelfrice: temporal spine backfill skipped — {exc}", file=sys.stderr)
     scope = _effective_scope(args)
     path = _resolve_settings_path(args)
     command = args.command if args.command is not None else resolve_hook_command(scope)
@@ -4650,20 +4667,38 @@ def _load_aelfrice_config_dict(root: Path) -> dict[str, Any] | None:
 
 
 def _cmd_spine(args: argparse.Namespace, out: object) -> int:
-    """`aelf spine backfill` — build per-session TEMPORAL_NEXT chains
-    over the existing store (#1064).
+    """`aelf spine {backfill,clear}` — manage the TEMPORAL_NEXT spine (#1064).
 
-    Existing stores predate the ingest-time spine writer; this is the
-    migration path (re-ingesting everything is not). Idempotent per
-    `(src, dst, TEMPORAL_NEXT)` triple; `--dry-run` counts what a real
-    run would write without touching the store. Exits 0 always — an
-    empty store and a fully-chained store are both no-ops, not errors.
+    `backfill` builds per-session chains over the existing store — the
+    migration path (re-ingesting everything is not) that the default-ON
+    flip release auto-runs once. Idempotent per `(src, dst, TEMPORAL_NEXT)`
+    triple; `--dry-run` counts what a real run would write without
+    touching the store.
+
+    `clear` deletes every TEMPORAL_NEXT edge — the reversibility path for
+    an auto-backfill (beliefs untouched). Deterministic backfill means a
+    later re-backfill rebuilds the identical spine (G5 byte-identity).
+
+    Exits 0 always — an empty store, a fully-chained store, and an
+    already-clear store are all no-ops, not errors.
     """
-    from aelfrice.temporal_spine import backfill_temporal_spine
+    from aelfrice.temporal_spine import (
+        backfill_temporal_spine,
+        clear_temporal_spine,
+    )
 
-    dry = bool(getattr(args, "dry_run", False))
+    action = getattr(args, "action", "backfill")
     store = _open_store()
     try:
+        if action == "clear":
+            removed = clear_temporal_spine(store)
+            print(
+                f"temporal spine clear: deleted {removed} "
+                f"TEMPORAL_NEXT edge(s)",
+                file=out,  # type: ignore[arg-type]
+            )
+            return 0
+        dry = bool(getattr(args, "dry_run", False))
         report = backfill_temporal_spine(store, dry_run=dry)
     finally:
         store.close()
@@ -7108,12 +7143,14 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     # migration surface, not a workflow verb.
     p_spine = sub.add_parser("spine", help=argparse.SUPPRESS)
     p_spine.add_argument(
-        "action", choices=["backfill"],
-        help="build per-session TEMPORAL_NEXT chains over the existing store",
+        "action", choices=["backfill", "clear"],
+        help="backfill: build per-session TEMPORAL_NEXT chains over the "
+             "existing store; clear: delete every TEMPORAL_NEXT edge "
+             "(reverses an auto-backfill; beliefs untouched)",
     )
     p_spine.add_argument(
         "--dry-run", action="store_true",
-        help="count what backfill would write without writing",
+        help="backfill only: count what it would write without writing",
     )
     p_spine.set_defaults(func=_cmd_spine)
 

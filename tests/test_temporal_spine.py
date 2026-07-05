@@ -27,7 +27,9 @@ from aelfrice.temporal_spine import (
     ENV_TEMPORAL_SPINE_WRITE,
     TEMPORAL_SPINE_EDGE_WEIGHT,
     backfill_temporal_spine,
+    clear_temporal_spine,
     is_temporal_spine_write_enabled,
+    maybe_backfill_temporal_spine,
     write_temporal_spine,
 )
 
@@ -528,3 +530,169 @@ def test_lane_node_budget_kwarg(store: MemoryStore) -> None:
     assert len(ids & {"before", "after"}) == 1
     tel = last_lane_telemetry()
     assert tel.temporal_spine_candidates == 1
+
+
+# ---------------------------------------------------------------------------
+# G4 — `aelf spine clear` (reversibility) + sentinel-gated auto-backfill
+# ---------------------------------------------------------------------------
+
+
+def _seed_two_session_beliefs(store: MemoryStore) -> None:
+    _make_belief(store, belief_id="a1", content="alpha one",
+                 session_id="s1", created_at="2026-01-01T00:00:00Z")
+    _make_belief(store, belief_id="a2", content="alpha two",
+                 session_id="s1", created_at="2026-01-01T00:01:00Z")
+    _make_belief(store, belief_id="b1", content="beta one",
+                 session_id="s2", created_at="2026-01-01T00:00:30Z")
+    _make_belief(store, belief_id="b2", content="beta two",
+                 session_id="s2", created_at="2026-01-01T00:02:00Z")
+
+
+def test_clear_temporal_spine_removes_all_edges(store: MemoryStore) -> None:
+    _seed_two_session_beliefs(store)
+    backfill_temporal_spine(store)
+    assert store.has_edge_type(EDGE_TEMPORAL_NEXT)
+    removed = clear_temporal_spine(store)
+    assert removed == 2                       # one edge per 2-belief session
+    assert not store.has_edge_type(EDGE_TEMPORAL_NEXT)
+
+
+def test_clear_temporal_spine_empty_is_zero(store: MemoryStore) -> None:
+    assert clear_temporal_spine(store) == 0
+
+
+def test_clear_leaves_beliefs_intact(store: MemoryStore) -> None:
+    _seed_two_session_beliefs(store)
+    backfill_temporal_spine(store)
+    clear_temporal_spine(store)
+    assert store.get_belief("a1") is not None
+    assert store.get_belief("b2") is not None
+
+
+def test_clear_then_rebuild_is_byte_identical(store: MemoryStore) -> None:
+    """Deterministic backfill: clear + re-backfill reproduces the exact
+    same spine (the G5 property the reversibility path relies on)."""
+    _seed_two_session_beliefs(store)
+    backfill_temporal_spine(store)
+    before = _spine_edges(store)
+    clear_temporal_spine(store)
+    backfill_temporal_spine(store)
+    assert _spine_edges(store) == before
+
+
+def test_delete_edges_by_type_counts_and_scopes(store: MemoryStore) -> None:
+    _seed_two_session_beliefs(store)
+    backfill_temporal_spine(store)
+    # A non-spine edge must survive a TEMPORAL_NEXT-scoped delete.
+    from aelfrice.models import Edge
+    store.insert_edge(Edge(src="a1", dst="b1", type="RELATES_TO", weight=0.5))
+    removed = store.delete_edges_by_type(EDGE_TEMPORAL_NEXT)
+    assert removed == 2
+    assert store.edges_from("a1")  # RELATES_TO edge still present
+
+
+# --- maybe_backfill_temporal_spine (sentinel-gated auto migration) ---------
+
+
+def test_auto_backfill_deferred_when_writer_off(store: MemoryStore, tmp_path) -> None:
+    _seed_two_session_beliefs(store)
+    sentinel = tmp_path / "spine-backfilled"
+    result = maybe_backfill_temporal_spine(
+        store, sentinel_path=sentinel, write_enabled=False,
+    )
+    assert result.ran is False
+    assert result.n_edges == 0
+    # Deferred, NOT sentinel-written — so it re-arms after the flip.
+    assert not sentinel.exists()
+    assert not store.has_edge_type(EDGE_TEMPORAL_NEXT)
+
+
+def test_auto_backfill_runs_when_enabled_and_writes_sentinel(
+    store: MemoryStore, tmp_path,
+) -> None:
+    _seed_two_session_beliefs(store)
+    sentinel = tmp_path / "spine-backfilled"
+    result = maybe_backfill_temporal_spine(
+        store, sentinel_path=sentinel, write_enabled=True,
+    )
+    assert result.ran is True
+    assert result.n_edges == 2
+    assert sentinel.exists()
+    assert store.has_edge_type(EDGE_TEMPORAL_NEXT)
+
+
+def test_auto_backfill_sentinel_makes_it_one_shot(
+    store: MemoryStore, tmp_path,
+) -> None:
+    _seed_two_session_beliefs(store)
+    sentinel = tmp_path / "spine-backfilled"
+    first = maybe_backfill_temporal_spine(
+        store, sentinel_path=sentinel, write_enabled=True,
+    )
+    second = maybe_backfill_temporal_spine(
+        store, sentinel_path=sentinel, write_enabled=True,
+    )
+    assert first.ran is True
+    assert second.ran is False
+    assert "sentinel" in second.reason
+
+
+def test_auto_backfill_rearms_after_flip(store: MemoryStore, tmp_path) -> None:
+    """Writer-off leaves the check un-armed; a later writer-on call (the
+    flip) fires it exactly once."""
+    _seed_two_session_beliefs(store)
+    sentinel = tmp_path / "spine-backfilled"
+    deferred = maybe_backfill_temporal_spine(
+        store, sentinel_path=sentinel, write_enabled=False,
+    )
+    fired = maybe_backfill_temporal_spine(
+        store, sentinel_path=sentinel, write_enabled=True,
+    )
+    assert deferred.ran is False
+    assert fired.ran is True
+    assert fired.n_edges == 2
+
+
+def test_auto_backfill_default_gate_reads_writer_flag(
+    store: MemoryStore, tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With write_enabled unset, the gate falls to the real resolver —
+    default-off means deferred without an explicit kwarg."""
+    monkeypatch.delenv(ENV_TEMPORAL_SPINE_WRITE, raising=False)
+    _seed_two_session_beliefs(store)
+    sentinel = tmp_path / "spine-backfilled"
+    result = maybe_backfill_temporal_spine(store, sentinel_path=sentinel)
+    assert result.ran is False
+    assert not sentinel.exists()
+
+
+# --- CLI dispatch (`aelf spine {backfill,clear}`) --------------------------
+
+
+def test_cli_spine_clear_dispatches(tmp_path, monkeypatch, capsys) -> None:
+    from aelfrice import cli
+
+    db = tmp_path / "store.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    seed = MemoryStore(str(db))
+    _seed_two_session_beliefs(seed)
+    backfill_temporal_spine(seed)
+    seed.close()
+
+    assert cli.main(["spine", "clear"]) == 0
+    out = capsys.readouterr().out
+    assert "deleted 2 TEMPORAL_NEXT edge(s)" in out
+
+    check = MemoryStore(str(db))
+    assert not check.has_edge_type(EDGE_TEMPORAL_NEXT)
+    check.close()
+
+
+def test_cli_spine_clear_empty_store_is_zero(tmp_path, monkeypatch, capsys) -> None:
+    from aelfrice import cli
+
+    db = tmp_path / "store.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    MemoryStore(str(db)).close()
+    assert cli.main(["spine", "clear"]) == 0
+    assert "deleted 0 TEMPORAL_NEXT edge(s)" in capsys.readouterr().out

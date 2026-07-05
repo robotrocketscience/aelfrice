@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -322,6 +323,109 @@ def backfill_temporal_spine(
         n_beliefs_in_sessions=n_beliefs,
         n_edges_written=n_written,
         n_edges_existing=n_existing,
+    )
+
+
+def clear_temporal_spine(store: "MemoryStore") -> int:
+    """Delete every ``TEMPORAL_NEXT`` edge; return the count removed.
+
+    The reversibility counterpart to ``backfill_temporal_spine`` — backs
+    ``aelf spine clear`` (#1064 G4). Beliefs are untouched; only the
+    per-session chain edges are dropped, so a later backfill rebuilds
+    them byte-identically (the G5 determinism property).
+    """
+    return store.delete_edges_by_type(EDGE_TEMPORAL_NEXT)
+
+
+# --- Auto-backfill migration (G4) -----------------------------------------
+
+# Sentinel marking that the one-shot auto-backfill has run on this host.
+# Persists across versions (lives beside the uv-migration + auto_install
+# stamps under ~/.aelfrice/); once written, `aelf setup` short-circuits
+# the check. Reversal is `aelf spine clear`, not deleting this file.
+SPINE_BACKFILLED_SENTINEL: Final[Path] = (
+    Path.home() / ".aelfrice" / "spine-backfilled"
+)
+
+
+@dataclass(frozen=True)
+class SpineAutoBackfillResult:
+    """Outcome of a ``maybe_backfill_temporal_spine()`` call.
+
+    ``ran`` is True iff the backfill actually executed (the sentinel was
+    absent and the writer was enabled). ``n_edges`` is what it wrote (0 on
+    a fresh/empty or already-chained store). ``reason`` is a one-line
+    description suitable for a stderr notice, populated in the skipped
+    paths too.
+    """
+
+    ran: bool
+    n_edges: int
+    reason: str
+
+
+def maybe_backfill_temporal_spine(
+    store: "MemoryStore",
+    *,
+    sentinel_path: Path = SPINE_BACKFILLED_SENTINEL,
+    write_enabled: bool | None = None,
+) -> SpineAutoBackfillResult:
+    """One-shot auto-backfill of the spine on the flip release (#1064 G4).
+
+    The default-ON flip starts the ingest writer chaining *new* beliefs,
+    but existing stores have no spine over their history. This builds it
+    once so the lane is effective on day one rather than only after enough
+    new turns accrue.
+
+    Sentinel-gated + idempotent, so it fires exactly once per host and is
+    safe to call from every ``aelf setup``. Short-circuit order (cheapest
+    first):
+
+      1. sentinel exists -> no-op (already ran).
+      2. the spine writer is disabled (default-off, pre-flip) -> no-op,
+         and the sentinel is NOT written, so the check re-arms and fires
+         on the first setup after the flip turns the writer on (a host
+         that opts the writer on early via env/toml triggers it early).
+      3. otherwise run ``backfill_temporal_spine`` (idempotent), write the
+         sentinel, and report the edge count.
+
+    Reversible via ``aelf spine clear``. Never raises — any failure
+    returns a result describing it and leaves the store untouched.
+    """
+    if sentinel_path.exists():
+        return SpineAutoBackfillResult(
+            False, 0, "already backfilled (sentinel exists)"
+        )
+    enabled = (
+        write_enabled if write_enabled is not None
+        else is_temporal_spine_write_enabled()
+    )
+    if not enabled:
+        return SpineAutoBackfillResult(
+            False, 0, "spine writer disabled — backfill deferred until the flip"
+        )
+    try:
+        report = backfill_temporal_spine(store)
+    except Exception as exc:  # noqa: BLE001 — never break `aelf setup`
+        return SpineAutoBackfillResult(False, 0, f"backfill failed: {exc}")
+    try:
+        sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+        sentinel_path.write_text(
+            f"spine auto-backfilled {report.n_edges_written} edges "
+            f"at {time.time():.0f}\n"
+        )
+    except OSError as exc:
+        # Backfill is done + idempotent; a missing sentinel only costs a
+        # harmless re-run next setup (which writes 0 new edges).
+        return SpineAutoBackfillResult(
+            True, report.n_edges_written,
+            f"backfilled {report.n_edges_written} edges "
+            f"(sentinel write failed: {exc})",
+        )
+    return SpineAutoBackfillResult(
+        True, report.n_edges_written,
+        f"backfilled {report.n_edges_written} TEMPORAL_NEXT edge(s) over "
+        f"{report.n_sessions} session(s)",
     )
 
 

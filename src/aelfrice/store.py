@@ -4378,6 +4378,22 @@ class MemoryStore:
         self._conn.commit()
         self._fire_invalidation()
 
+    def delete_edges_by_type(self, type_: str) -> int:
+        """Delete every edge of ``type_``; return how many were removed.
+
+        Bulk counterpart to ``delete_edge`` — one statement, one commit.
+        Backs ``aelf spine clear`` (the #1064 reversibility path for the
+        auto-backfilled TEMPORAL_NEXT spine). Beliefs are untouched; only
+        the edges are dropped.
+        """
+        cur = self._conn.execute(
+            "DELETE FROM edges WHERE type = ?", (type_,)
+        )
+        removed = cur.rowcount
+        self._conn.commit()
+        self._fire_invalidation()
+        return removed
+
     def edges_from(self, src: str) -> list[Edge]:
         cur = self._conn.execute(
             "SELECT * FROM edges WHERE src = ?", (src,)
