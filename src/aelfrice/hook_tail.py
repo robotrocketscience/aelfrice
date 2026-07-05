@@ -136,7 +136,7 @@ def format_record(
 ) -> str:
     """Render one audit record as multi-line text suitable for tail output.
 
-    Header line: `<HH:MM:SS>  <hook>  <tokens>tok  <latency>ms  L0×N L1×M`.
+    Header line: `<HH:MM:SS>  <hook>  <tokens> tok  <latency> ms  L0×N L1×M`.
     Then one indented line per belief from `beliefs[]` (when present).
     `include_blob=False` suppresses the per-belief snippet bodies and
     leaves just the header line + per-belief identifiers.
