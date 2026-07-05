@@ -316,7 +316,7 @@ def test_find_aelfrice_log_returns_none_outside_git(
 
 
 def test_default_token_budget_matches_spec_default() -> None:
-    """Spec docs/specs/context_rebuilder.md sets default 2000."""
+    """Spec docs/design/context_rebuilder.md sets default 2000."""
     assert DEFAULT_TOKEN_BUDGET == 2000
 
 
