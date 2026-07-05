@@ -36,7 +36,7 @@ Resolution order for `resolve_project_root(path)`:
 Deny-glob defaults catch the common false-positive cases:
 `/tmp/**`, `/var/folders/**`, `~/Downloads/**`, `~/Desktop/**`.
 Override via `~/.aelfrice/config.json`'s `project_warm.deny_globs`
-key (list of strings; `~` expanded at load time).
+key (list of strings; `~` expanded at match time, not at config-load time).
 """
 from __future__ import annotations
 
