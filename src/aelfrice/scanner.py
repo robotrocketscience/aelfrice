@@ -107,7 +107,7 @@ class LLMRouter(Protocol):
     """Minimal interface scanner needs from an LLM-classify driver.
 
     Production callers pass `aelfrice.llm_classifier.ScannerRouter`
-    (defined in cli.py to keep the SDK lazily-imported); tests pass a
+    (defined there, with the SDK import kept lazy inside its methods); tests pass a
     mock. The protocol decouples scanner.py from the optional
     `anthropic` SDK at module-load.
 
@@ -169,7 +169,9 @@ def scan_repo(
 
     Idempotent: a belief id is `sha256(source\\x00text)[:16]`, so
     re-scanning the same tree produces no duplicates. Existing beliefs
-    are detected via `MemoryStore.get_belief(id)` and skipped.
+    are detected via `MemoryStore.insert_or_corroborate()`'s content-hash
+    lookup (`get_belief_by_content_hash`) and corroborated instead of
+    re-inserted.
 
     Non-persistable candidates (classifier returned `persist=False` —
     empty paragraphs, question-form sentences) are counted in
