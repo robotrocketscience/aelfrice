@@ -7698,7 +7698,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--claude-memory-mirror", dest="claude_memory_mirror",
         action=argparse.BooleanOptionalAction, default=True,
         help=(
-            "wire the PostToolUse:Write|Edit hook that mirrors the upstream auto-memory tool "
+            "wire the PostToolUse:Write|Edit|MultiEdit hook that mirrors the upstream auto-memory tool "
             "memory writes into the belief graph (#985). The hook is "
             "installed ON by default but stays INERT until you opt in via "
             "AELFRICE_MIRROR_CLAUDE_MEMORY=1 or [memory] "
