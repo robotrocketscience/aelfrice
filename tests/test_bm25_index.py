@@ -14,9 +14,10 @@ Plus L1-lane integration tests for the `use_bm25f_anchors` opt-in plumb
 into `retrieve()`, and a rebuild-on-mutation test for the
 `BM25IndexCache` invalidation hookup.
 
-All tests are deterministic. Per project policy the perf test is
-opt-in via `--run-perf`; in CI it is collected but skipped by
-default to keep wall-clock under the 5s pytest timeout.
+All tests are deterministic. The perf test is gated by `_has_run_perf`,
+but no `--run-perf` CLI option is registered in this suite (see the
+no-op `pytest_addoption` stub below), so it is always skipped unless
+the guard is edited — it cannot be opted into via `pytest --run-perf`.
 """
 from __future__ import annotations
 
@@ -36,8 +37,12 @@ from aelfrice.store import MemoryStore
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:  # pragma: no cover
-    """Hook so the --run-perf flag is accepted at the per-file level
-    without polluting the suite-wide conftest. pytest collects this
+    """Historical no-op stub: pytest does not invoke `pytest_addoption`
+    for a plain test module, and this body never calls
+    `parser.addoption`, so `--run-perf` is not registered here or
+    anywhere; `_has_run_perf` always falls back to False. Kept as a
+    marker; wire into `tests/conftest.py` to actually enable the flag.
+    (Former intent below, retained for context.) pytest collects this
     if the suite imports this file with `pytest -p tests.test_bm25_index`,
     but since we register it inline, we just guard the perf test with
     a skip when the flag is missing."""
@@ -179,7 +184,9 @@ def test_score_latency_under_5ms_n50k(request: pytest.FixtureRequest) -> None:
     """AC5: median sparse-matvec score latency <= 5ms at N=50k.
 
     Skipped by default to keep CI under the per-test 5s wall-clock
-    cap. Run locally with `pytest --run-perf`.
+    cap. NOTE: `--run-perf` is not a registered pytest option (the
+    stub above is a no-op), so it always skips; to run locally,
+    temporarily bypass the `_has_run_perf` guard.
     """
     if not _has_run_perf(request):
         pytest.skip("perf test gated on --run-perf")
