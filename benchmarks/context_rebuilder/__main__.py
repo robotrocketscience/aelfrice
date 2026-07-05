@@ -20,9 +20,9 @@ The issue's acceptance phrasing (`python -m
 benchmarks.context_rebuilder.replay <fixture>`) names the `replay`
 submodule explicitly, so this file mirrors `python -m
 benchmarks.context_rebuilder` to the same CLI for both invocation
-forms. `replay.py` does not have its own `if __name__ ==
-"__main__":` block; it routes through here via the
-`benchmarks.context_rebuilder.replay` module's import-time alias
+forms. `replay.py` has its own `if __name__ ==
+"__main__":` block (at its end) that uses `runpy.run_module` to
+invoke this file's CLI, so both invocation forms produce identical
 established at the bottom of this file.
 """
 from __future__ import annotations
