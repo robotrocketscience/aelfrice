@@ -1452,7 +1452,7 @@ def _record_injection_events(
     """Append one ``injection_events`` row per injected belief.
 
     Fires from the UPS hook after retrieval has decided which beliefs
-    will appear in the rendered ``<aelfrice-rebuild>`` block. The
+    will appear in the rendered ``<aelfrice-memory>`` block. The
     sweeper at the *next* UPS turn (#779 Layer 3) reads these rows,
     scores ``referenced`` against the assistant transcript, and pushes
     one update per active consumer into the meta-belief substrate.
@@ -2613,12 +2613,12 @@ def _read_recent_for_pre_compact(
 
     Resolution order:
       1. <payload.cwd>/.git/aelfrice/transcripts/turns.jsonl -- the
-         canonical aelfrice log written by the per-turn UserPromptSubmit/
-         Stop hooks once transcript_ingest ships. Preferred when
-         present.
+         canonical aelfrice log written by the transcript-logger's
+         UserPromptSubmit/Stop hooks (shipped v1.2.0, #111; installed
+         by default via `aelf setup`). Preferred when present.
       2. <payload.transcript_path> -- Claude Code's internal per-session
-         transcript JSONL. Fallback for the alpha while transcript_ingest
-         is unshipped.
+         transcript JSONL. Fallback for hosts where the transcript-logger
+         hooks are not installed.
       3. Empty list -- both sources missing or unreadable.
     """
     cwd_obj = payload.get(_CWD_KEY)
