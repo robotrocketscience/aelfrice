@@ -52,7 +52,7 @@ into a benchmark contract.
 - Replacing the deferred-feedback sweeper. Sweeper stays; this memo
   measures it.
 - Embeddings-based relevance scoring. Aelfrice is no-embeddings by
-  design (per `docs/no_embeddings_first.md`); the benchmark uses
+  design (per `docs/concepts/PHILOSOPHY.md` § "Determinism is the property"); the benchmark uses
   lexical and structural signals only.
 - Cross-domain contamination diagnosis (already covered by the
   hook-injection audit, `docs/design/hook-injection-audit.md`).
