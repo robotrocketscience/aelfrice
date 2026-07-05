@@ -213,7 +213,9 @@ def test_upgrade_slash_keeps_step_2_imperative() -> None:
     )
 
 
-# Subparsers intentionally hidden from --help at v1.3. Aliases live one
+# Subparsers intentionally shipped without a slash-command file (most,
+# but not all, are also hidden from --help; `mcp` is a visible-in---help
+# exception kept here because it has no slash file). Aliases live one
 # minor and are deleted at v1.4 (`health`, `stats`); the rest stay
 # callable indefinitely as scripting / hook entry points.
 HIDDEN_SUBCOMMANDS = frozenset({
