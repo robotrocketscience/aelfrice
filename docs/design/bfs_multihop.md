@@ -87,7 +87,7 @@ structure for BFS to find non-trivial chains.
 ### Pseudocode
 
 ```python
-def bfs_expand(
+def expand_bfs(
     store: MemoryStore,
     seeds: list[Belief],          # tier-0 + tier-1 + tier-2.5 hits
     max_depth: int = 2,
@@ -203,7 +203,7 @@ reads labeled fixtures from `tests/corpus/v2_0/derived_from_edge/`. The
 edge remains at weight 0.70 while the gate is pending; below-floor closes
 #388 as `wontfix` and the weight entry drops to 0.0.
 
-Constants live in `src/aelfrice/retrieval.py` next to the BFS
+Constants live in `src/aelfrice/bfs_multihop.py` next to the BFS
 implementation, not in `models.py` — the BFS weights are a
 retrieval-tier hyperparameter, distinct from `EDGE_VALENCE` (which
 governs feedback propagation through `propagate_valence`). Keeping
@@ -269,7 +269,7 @@ Two options were considered:
 duration of one BFS call; before adding a dst to the next frontier,
 check membership. O(1) amortized lookup; trivial cycle prevention;
 matches the existing pattern in `MemoryStore.propagate_valence`
-(`store.py:617`), which already uses this approach in the codebase.
+(`store.py`), which already uses this approach in the codebase.
 
 **(b) LIMIT-based truncation.** Rely on `total_budget_nodes` to
 implicitly terminate any cycle: a cycle would be discovered as a
@@ -306,7 +306,7 @@ BFS is **L3**, sitting after the prior tiers in the unified pipeline:
   query ──> retrieve() ──>│ L0: list_locked_beliefs()            │
                           │ L1: store.search_beliefs(query, ...) │
                           │ L2.5: entity_index.lookup(query, ...)│  (#143)
-                          │ L3: bfs_expand(seeds=L0+L1+L2.5, ...) │  (this spec)
+                          │ L3: expand_bfs(seeds=L0+L1+L2.5, ...) │  (this spec)
                           └──────────────────────────────────────┘
                                           │
                                   token-budget pack
@@ -395,7 +395,7 @@ mutation. BFS expands the cached value (the result list) but does
   current belief contents).
 - The current edge graph is mutated through `insert_edge`,
   `update_edge`, `delete_edge` — all three already fire
-  `_fire_invalidation()` (verified in `store.py:559,576,584`).
+  `_fire_invalidation()` (verified in `store.py`).
 - The current belief contents are mutated through `insert_belief`,
   `update_belief`, `delete_belief` — all three already fire
   invalidation.
@@ -545,12 +545,12 @@ output exactly — same beliefs, same order. BFS is gated.
 
 ## Acceptance criteria for the implementation PR
 
-1. `BFS_EDGE_WEIGHTS` constant lands in `src/aelfrice/retrieval.py`
+1. `BFS_EDGE_WEIGHTS` constant lands in `src/aelfrice/bfs_multihop.py`
    with the values in this spec.
-2. `bfs_expand()` function implemented per the pseudocode above,
+2. `expand_bfs()` function implemented per the pseudocode above,
    stdlib-only.
 3. `retrieve_v2` accepts `use_bfs` and the four BFS kwargs; routes
-   through `bfs_expand` when `use_bfs=True`; populates
+   through `expand_bfs` when `use_bfs=True`; populates
    `RetrievalResult.bfs_chains` with the expansion edge-type paths.
 4. `tests/test_bfs_multihop.py` covers the three fixture chains
    (decisional, pruned informational, contradiction), determinism,
