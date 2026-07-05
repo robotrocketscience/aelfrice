@@ -1,6 +1,6 @@
 """Domain dataclasses for aelfrice.
 
-Load-bearing fields only. 4 belief types, 5 edge types, 2 lock levels. No
+Load-bearing fields only. 5 belief types, 10 edge types, 2 lock levels. No
 multi-source tagging, no rigor tier, no bitemporal event_time — those are
 deferred to a later release.
 """
@@ -369,7 +369,7 @@ class Belief:
     review workflow. The review candidate sorter treats NULL as the
     oldest possible timestamp so unreviewed beliefs surface first.
 
-    `lock_tier` (v3.7 #1016-B) is the layered-lock tier — 'frozen'
+    `lock_tier` (v3.8 #1016-B) is the layered-lock tier — 'frozen'
     (always injected verbatim) or 'reference' (bounded, manifest-only).
     Only meaningful when `lock_level == LOCK_USER`. Defaults to 'frozen'
     so every existing lock keeps its pre-#1016 always-verbatim behaviour
