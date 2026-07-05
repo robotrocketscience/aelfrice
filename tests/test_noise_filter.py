@@ -12,6 +12,7 @@ from aelfrice.noise_filter import (
     is_heading_block,
     is_license_boilerplate,
     is_noise,
+    is_stranded_capture_noise,
     is_three_word_fragment,
     is_transcript_noise,
     similarity_to_reference,
@@ -550,6 +551,107 @@ def test_transcript_noise_real_sentence_is_not_noise() -> None:
     assert is_transcript_noise(
         "The default DB path is keyed by SHA256 of the working directory."
     ) is False
+
+
+# --- is_stranded_capture_noise: orphan section header (#1081) --------------
+
+
+def test_stranded_orphan_header_single_word() -> None:
+    assert is_stranded_capture_noise("Recommendation:") is True
+
+
+def test_stranded_orphan_header_multi_word() -> None:
+    assert is_stranded_capture_noise("Two paths forward:") is True
+
+
+def test_stranded_orphan_header_four_words() -> None:
+    assert is_stranded_capture_noise("Session summary so far:") is True
+
+
+def test_stranded_orphan_header_with_trailing_space() -> None:
+    assert is_stranded_capture_noise("Verification results:  ") is True
+
+
+def test_stranded_orphan_header_slash_separator() -> None:
+    assert is_stranded_capture_noise("Keep/drop:") is True
+
+
+def test_stranded_header_with_content_after_colon_is_not_noise() -> None:
+    """The high-precision guard: a real assertion keeps going after the
+    colon, so it must survive."""
+    assert is_stranded_capture_noise("Recommendation: use the cache") is False
+
+
+def test_stranded_midsentence_colon_is_not_noise() -> None:
+    assert is_stranded_capture_noise("The build passed: all suites green.") is False
+
+
+def test_stranded_single_letter_label_is_not_noise() -> None:
+    """A lone-letter label ("K:") must not match — the header pattern
+    requires >=2 leading characters so kappa-style formulas are safe."""
+    assert is_stranded_capture_noise("K:") is False
+
+
+def test_stranded_formula_is_not_orphan_header() -> None:
+    assert is_stranded_capture_noise("K = 2 * N clamped to 1.0.") is False
+
+
+def test_stranded_lowercase_label_is_not_header() -> None:
+    """The header must be capitalised; a lowercase colon phrase is left
+    alone (conservative — avoids catching real lowercase key/value text)."""
+    assert is_stranded_capture_noise("notes:") is False
+
+
+def test_stranded_too_many_words_is_not_header() -> None:
+    """Beyond four words the phrase is prose, not a label."""
+    assert is_stranded_capture_noise(
+        "One two three four five words then a colon:"
+    ) is False
+
+
+# --- is_stranded_capture_noise: shell-output echo (#1081) ------------------
+
+
+def test_stranded_dollar_prompt_echo() -> None:
+    assert is_stranded_capture_noise("$ python run_all.py") is True
+
+
+def test_stranded_dollar_prompt_with_leading_space() -> None:
+    assert is_stranded_capture_noise("  $ ls -la") is True
+
+
+def test_stranded_price_is_not_shell_echo() -> None:
+    """A bare "$" must be followed by a space to count as a prompt, so a
+    price string is not caught."""
+    assert is_stranded_capture_noise("$5 per seat is the pricing floor.") is False
+
+
+def test_stranded_empty_and_whitespace_return_false() -> None:
+    assert is_stranded_capture_noise("") is False
+    assert is_stranded_capture_noise("   ") is False
+
+
+# --- separation: is_transcript_noise must NOT catch stranded shapes --------
+# (they are handled on the ingest path by the sub-floor detector, which can
+#  demote an inline header to edge anchor_text; pre-empting it in
+#  is_transcript_noise would drop anchors — see #785/#809.)
+
+
+def test_transcript_noise_leaves_orphan_header_to_subfloor() -> None:
+    assert is_transcript_noise("Recommendation:") is False
+
+
+def test_transcript_noise_leaves_dollar_echo_alone() -> None:
+    assert is_transcript_noise("$ python run_all.py") is False
+
+
+def test_stranded_conversational_lead_is_not_noise() -> None:
+    """#1081 R&D: the "ok …"/"yeah …" discourse-lead class is FP-prone in
+    a casual-writing store and is deliberately NOT filtered (a real belief
+    can open with such a marker — "OK Computer is a great album")."""
+    assert is_stranded_capture_noise("ok keep going") is False
+    assert is_stranded_capture_noise("yeah lets do that") is False
+    assert is_stranded_capture_noise("OK Computer is a great album.") is False
 
 
 def test_transcript_noise_empty_returns_false() -> None:

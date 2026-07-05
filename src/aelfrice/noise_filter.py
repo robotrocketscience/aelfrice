@@ -212,6 +212,24 @@ _TRANSCRIPT_ACK_RE: Final[re.Pattern[str]] = re.compile(
     r"^(Yes|No|Standing by|Ready|Nothing|Polling)( .{0,40})?\.?$"
 )
 
+# #1081: an orphan section header — a short capitalised phrase terminated
+# by a colon with nothing after it ("Recommendation:", "Two paths:",
+# "Session summary:"). A stored belief carrying this shape is a stranded
+# label: a captured assistant turn was split on sentence boundaries, the
+# body landed as separate beliefs, and the header was left content-free.
+# High-precision: a real assertion never *ends* at a bare colon (a fact
+# with a colon keeps going — "Recommendation: use the cache" has text
+# after the colon and is NOT matched). Requires >=2 leading chars so a
+# lone-letter label with a formula ("K:") cannot match, and caps the
+# phrase at four whitespace/slash-separated words.
+_STRANDED_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[A-Z][A-Za-z0-9]+(?:[ /][A-Za-z0-9]+){0,3}:\s*$"
+)
+
+# #1081: a shell-output echo captured verbatim — a line beginning with a
+# bare prompt ("$ python run_all.py"). No prose belief opens with "$ ".
+_STRANDED_DOLLAR_PROMPT_PREFIX: Final[str] = "$ "
+
 CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 
 
@@ -536,6 +554,13 @@ def is_transcript_noise(sentence: str) -> bool:
 
     All patterns are case-sensitive as written. Empty or whitespace-only
     strings return False (they are handled upstream by `is_noise`).
+
+    Note: orphan section headers ("Recommendation:") and shell-output
+    echoes ("$ …") are handled on the ingest path by
+    `aelfrice.ingest._looks_like_subfloor_noise` (which correctly demotes
+    an *inline* header to edge anchor_text and drops only unanchored
+    ones). For the store-cleanup path — where every candidate is already
+    a standalone row — see `is_stranded_capture_noise` (#1081).
     """
     if not sentence or not sentence.strip():
         return False
@@ -569,6 +594,38 @@ def is_transcript_noise(sentence: str) -> bool:
     if _TRANSCRIPT_ACK_RE.match(sentence) is not None:
         return True
 
+    return False
+
+
+def is_stranded_capture_noise(sentence: str) -> bool:
+    """Return True if a *stored, standalone* belief is capture scaffolding.
+
+    Distinct from `is_transcript_noise` (which runs at the ingest sentence
+    boundary, where surrounding sentences give the sub-floor detector the
+    context to demote an inline header to edge anchor_text rather than
+    drop it). This predicate is for the **store-cleanup / GC path**
+    (`aelf doctor prune-noise`): every candidate is already an isolated
+    belief row, so there is no neighbour to anchor to and a scaffolding
+    shape is unambiguously stranded junk.
+
+    Two high-precision classes (see the module constants for the FP
+    reasoning):
+
+    1. **Orphan section header** — a short capitalised phrase ending at a
+       bare colon ("Recommendation:", "Two paths:"). Content after the
+       colon ("Recommendation: use X") is a real assertion and survives.
+    2. **Shell-output echo** — a line beginning with a bare prompt
+       ("$ python run_all.py").
+
+    Empty / whitespace-only strings return False (handled upstream).
+    """
+    if not sentence or not sentence.strip():
+        return False
+    stripped = sentence.lstrip()
+    if _STRANDED_HEADER_RE.match(stripped) is not None:
+        return True
+    if stripped.startswith(_STRANDED_DOLLAR_PROMPT_PREFIX):
+        return True
     return False
 
 
