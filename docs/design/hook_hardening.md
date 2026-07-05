@@ -54,7 +54,7 @@ framing around them was.
 
 ## What the hook actually emits today
 
-`src/aelfrice/hook.py:_format_hits` (line 419) builds the block:
+`src/aelfrice/hook.py:_format_hits` (line 1787) builds the block:
 
 ```
 <aelfrice-memory>
