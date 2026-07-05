@@ -11,8 +11,8 @@ closes 14+ module-import cycles flagged by CodeQL (#499 Cluster C).
 `cli.py` re-exports the symbols here for backward compatibility with
 tests and external callers that already use `aelfrice.cli.db_path`.
 
-Imports here must stay leaf-side: `aelfrice.store` (which itself only
-imports `models` + `ulid`) is the only intra-package dep.
+Imports here must stay leaf-side: `aelfrice.store` (which imports
+`models`, `meta_beliefs`, and `ulid`) is the only intra-package dep.
 """
 from __future__ import annotations
 
