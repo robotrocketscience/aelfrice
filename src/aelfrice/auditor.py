@@ -1,10 +1,12 @@
 """Structural auditor for `aelf health`.
 
-Three mechanical checks in v1.1.0. Each fires `severity='fail'` when the
-invariant is violated; `aelf health` exits 1 if any failure is present
-so CI can gate on it. Informational metrics (credal gap, thread counts,
-feedback coverage, average confidence) are reported alongside but do
-not affect exit status.
+Six mechanical checks. Three (from v1.1.0) fire `severity='fail'` when
+the invariant is violated; `aelf health` exits 1 if any failure is
+present so CI can gate on it. Three more added since — `corpus_volume`
+(#116), `lock_budget` (#1016-D), `ingest_gap` (#1011) — fire
+`severity='warn'` instead and do not affect exit status. Informational
+metrics (credal gap, thread counts, feedback coverage, average
+confidence) are reported alongside but do not affect exit status.
 
 Checks:
   - orphan_threads     threads (graph relationships) whose src or dst
@@ -24,8 +26,9 @@ make available.
 
 The internal schema and code keep "edges"; user-facing labels surface as
 "threads" per the v1.1.0 cosmetic rename. `CHECK_ORPHAN_EDGES` is kept
-as a deprecated alias for the constant (same value as the new
-`CHECK_ORPHAN_THREADS`) for v1.0 importer compatibility; remove in v1.2.0.
+as a deprecated alias for the constant (same value as
+`CHECK_ORPHAN_THREADS`) for v1.0 importer compatibility; still present
+as of v3.8.0, not yet removed.
 """
 from __future__ import annotations
 
