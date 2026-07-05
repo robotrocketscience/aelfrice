@@ -27,7 +27,7 @@ named entities (``topic_NN_entity_K``) embedded in belief bodies so
 the L2.5 entity-index path has something to hit. Edges follow a
 deterministic intra-topic chain (each belief points SUPPORTS-style
 to the next two in its topic) plus one cross-topic CITES per topic,
-yielding ~25k edges.
+yielding ~20.2k edges (10,000 x 2 SUPPORTS + 200 CITES).
 
 The corpus is *not* a real-world distribution. The point is to
 exercise the v3.0 default retrieval stack against a store whose
@@ -52,7 +52,7 @@ Refs
 ----
 
 - Issue #739: BFS default-flip gated on this bench.
-- ``src/aelfrice/retrieval.py::is_bfs_enabled`` line 1144 — the
+- ``src/aelfrice/retrieval.py::is_bfs_enabled`` (currently line 2385) — the
   resolver whose default this bench is gating.
 - ``src/aelfrice/benchmark.py`` — convention used for the smaller
   v0.9 latency floor and multi-hop accuracy harnesses.
