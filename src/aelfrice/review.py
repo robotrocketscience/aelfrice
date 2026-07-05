@@ -14,7 +14,11 @@ apply_decisions(store, decisions, *, now: str) -> ApplyReport
 Exceptions
 ----------
 AmbiguousRowError   — raised by parse_review_file when a row has >1 checked box
-MalformedRowError   — raised by parse_review_file when a row's ID is missing
+MalformedRowError   — defense-in-depth in parse_review_file's belief-ID
+                      check; unreachable via the current row regex, which
+                      requires at least one non-whitespace ID character to
+                      match at all (rows with no ID token are silently
+                      ignored, not raised on)
 """
 from __future__ import annotations
 
@@ -238,8 +242,8 @@ def apply_decisions(
 
     Verdict semantics:
     - keep   → update_last_confirmed_at(belief_id, now)
-    - remove → soft_delete_belief (existing primitive; writes audit via
-               feedback_history)
+    - remove → soft_delete_belief (existing primitive), followed by an
+               explicit insert_feedback_event(source="review:remove") audit row
     - lock   → set lock_level=user, locked_at=now, origin=user_stated,
                write a 'review:lock' audit row
     - skip   → no-op (belief stays in the next review cycle)
