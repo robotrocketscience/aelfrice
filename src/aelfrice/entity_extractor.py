@@ -175,7 +175,7 @@ class Entity:
 
     `raw` is the literal matched substring; `lower` is `raw.lower()`
     used as the index key. `kind` is one of the KIND_* constants.
-    `span_start` / `span_end` are byte offsets into the source text
+    `span_start` / `span_end` are character offsets into the source text
     used by the future highlighting / span-aware ranker (currently
     written for free since the regex `Match` exposes them).
     """
