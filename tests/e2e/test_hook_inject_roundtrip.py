@@ -1,6 +1,7 @@
 """E2E scenario #2 (#334): hook -> ingest -> rebuild -> inject roundtrip.
 
-Exercises the seam the UserPromptSubmit / PreCompact hooks travel:
+Exercises the seam the UserPromptSubmit / SessionStart(compact) hooks
+travel (the PreCompact hook is neutered per #1031 and emits nothing):
 
     pre-seeded store + recent-turn transcript
         -> rebuild_v14 (the same code path the hook calls)
