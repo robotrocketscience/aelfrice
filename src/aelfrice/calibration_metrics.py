@@ -1,12 +1,14 @@
 """Relevance-calibration metrics for the close-the-loop harness (#365 R1).
 
-Pure-stdlib leaf module. Three functions:
+Pure-stdlib leaf module. Five functions:
 
 - ``precision_at_k`` — precision at rank K (the gate metric per #365 Q3).
 - ``roc_auc`` — ROC-AUC via Mann-Whitney U with average-rank tie handling.
 - ``spearman_rho`` — Spearman rank correlation with average-rank ties.
+- ``ordered_top_k_overlap`` — fraction of top-k positions where two ranked lists agree (#796 R4).
+- ``rank_biased_overlap`` — rank-biased overlap (RBO), top-weighted ranking similarity (#796 R4).
 
-All three are deterministic: same input list → bytes-identical float
+All five are deterministic: same input list → bytes-identical float
 return value across reruns. Used by:
 
 - ``scripts/audit_rebuild_log.py --calibrate-corpus`` (R1, this PR).
