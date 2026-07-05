@@ -1,6 +1,7 @@
 """Integration tests for #436 intentional clustering wired into retrieve_v2.
 
-Covers flag-precedence resolution, byte-identical default-OFF behavior,
+Covers flag-precedence resolution, byte-identical default-ON behavior
+(matching explicit ``use_intentional_clustering=True``, #436),
 the diversity-aware pack on graph-connected candidates, locked-belief
 pre-include, and the compose-reconciliation with type-aware compression
 (#878 — was a mutual-exclusion guard at v2.0.0, now composes via the
