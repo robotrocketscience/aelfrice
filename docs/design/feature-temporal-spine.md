@@ -2,9 +2,10 @@
 
 Status: **landed default-off** (writer + backfill + lane). The default-ON
 flip is gated on the pre-registered criteria in § Flip gate below.
-Evidence gates **G1, G2 (both halves), G3, and G5 are DONE**; the flip is
-now blocked only on **G4** — the auto-vs-prompted backfill decision, a
-landing-PR review call. The flip itself is an operator decision.
+**Every evidence gate is now complete** — G1, G2 (both halves), G3, and G5
+are DONE, and **G4 is resolved** (auto-once backfill, below). The only
+remaining step is the default-ON flip itself, which is an operator
+decision.
 
 ## Mechanism
 
@@ -170,7 +171,22 @@ one release, with the backfill path included for existing stores:
     in the CI matrix; the timed bench is run-on-demand (no wall-clock
     assertion in pytest — latency gates flake on shared runners).
 - **G4 — migration:** backfill shipped + doctor row (DONE in the
-  landing PRs); the flip release decides auto vs prompted backfill.
+  landing PRs).
+  - **RESOLVED (operator, 2026-07-05): auto-once backfill, not prompted.**
+    `maybe_backfill_temporal_spine` (in `temporal_spine.py`) runs the
+    backfill exactly once per host, sentinel-gated on
+    `~/.aelfrice/spine-backfilled` and wired into `aelf setup` (beside the
+    #733 uv-migration). It is **gated on the writer flag**, so it stays
+    inert while the spine is default-off (pre-flip) and **re-arms**: the
+    first `aelf setup` after the flip turns the writer on fires it once,
+    then the sentinel makes it a no-op. So existing stores get a historical
+    spine on day one of the flip without a manual step, and a fresh
+    install is untouched until then. Reversible via **`aelf spine clear`**
+    (deletes every `TEMPORAL_NEXT` edge; beliefs untouched) — and because
+    the backfill is deterministic (G5), a later re-backfill rebuilds the
+    identical spine. The flip itself (writer + lane defaults ON) remains a
+    separate operator release call; this mechanism only readies the
+    migration.
 - **G5 — determinism/repro:** two-build byte-identity of the spine
   table on a fixed corpus; ablation bench green in CI.
   - **DONE.** `tests/test_temporal_spine_repro.py` pins both halves in the
