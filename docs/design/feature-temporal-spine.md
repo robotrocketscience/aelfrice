@@ -1,11 +1,12 @@
 # Temporal spine — ingest-time chronological edges + dedicated retrieval lane (#1064)
 
-Status: **landed default-off** (writer + backfill + lane). The default-ON
-flip is gated on the pre-registered criteria in § Flip gate below.
-**Every evidence gate is now complete** — G1, G2 (both halves), G3, and G5
-are DONE, and **G4 is resolved** (auto-once backfill, below). The only
-remaining step is the default-ON flip itself, which is an operator
-decision.
+Status: **default-ON (flipped)**. All pre-registered evidence gates
+(G1–G5) passed and G4 migration is resolved, so this release flips both
+flags (writer + lane) default-ON; existing stores get their historical
+spine via the auto-once backfill (#1090). Opt out per-flag with
+`AELFRICE_TEMPORAL_SPINE_WRITE=0` / `AELFRICE_TEMPORAL_SPINE=0` (or the
+`.aelfrice.toml` equivalents). The § Flip gate below is retained as the
+pre-registration record.
 
 ## Mechanism
 
