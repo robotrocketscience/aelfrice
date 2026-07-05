@@ -81,6 +81,63 @@ _QUESTION_PREFIXES: Final[tuple[str, ...]] = (
     "could ",
 )
 
+# Statement-form speculative floats (#1081). Unlike `_is_question` these do
+# NOT end in `?` — they are declarative in *form* but tentative in *force*:
+# a floated idea or musing ("Maybe we need X", "What if we tried Y") rather
+# than an assertion. Passive transcript capture was storing these as
+# `factual` beliefs; they read as conversation, not durable knowledge.
+#
+# Two high-precision arms keep false positives low:
+#  - LEADING hedge: the sentence *opens* with a hedge marker. A sentence
+#    that starts with "Maybe " / "What if " / "Should we " (no `?`) is almost
+#    always a float; a genuine assertion that merely *contains* "maybe"
+#    mid-sentence is not matched.
+#  - a small set of unambiguous proposal-hedge PHRASES ("we probably need",
+#    "maybe we") that signal a floated proposal wherever they appear.
+#
+# Applied only to the default-factual bucket (see `classify_sentence` step
+# 6), so a typed requirement / correction / preference is never dropped for
+# being hedged. Bald hedge-free musings ("All averages are not useful.")
+# have no deterministic signal and are intentionally out of scope for this
+# ingest gate — they are handled by the retrieval / curation lanes
+# (#1081 directions C/D), not here. Pure/deterministic: replay-stable.
+_FLOAT_LEADING_HEDGES: Final[tuple[str, ...]] = (
+    "maybe ",
+    "maybe,",
+    "perhaps ",
+    "perhaps,",
+    "what if ",
+    "how about ",
+    "what about ",
+    "i wonder ",
+    "i wonder if",
+    "wondering if ",
+    "not sure ",
+    "i guess ",
+    "i suppose ",
+    "or maybe ",
+    "or perhaps ",
+    "or should ",
+    "or we could ",
+    "or we should ",
+    "should we ",
+    "could we ",
+    "shouldn't we ",
+    "shouldnt we ",
+)
+
+_FLOAT_INTERNAL_HEDGES: Final[tuple[str, ...]] = (
+    "maybe we ",
+    "maybe there ",
+    "maybe it would ",
+    "we probably need ",
+    "we could probably ",
+    "we might want ",
+    "we should probably ",
+    "not sure if ",
+    "not sure whether ",
+)
+
 # An internal sentence boundary: ./!/? — optionally followed by a closing
 # quote/paren/bracket — then whitespace. The closers matter: a prior
 # sentence ending in `."` / `.)` / `?"` must still register as a boundary so
@@ -165,6 +222,26 @@ def _is_question(text_lower: str) -> bool:
     return _SENTENCE_BOUNDARY_RE.search(s[:-1]) is None
 
 
+def _is_speculative_float(text_lower: str) -> bool:
+    """True when the sentence is a hedged/hypothetical float (#1081).
+
+    Declarative in form (no trailing `?`, so `_is_question` misses it) but
+    tentative in force — a floated idea or musing rather than an assertion.
+    Matches only high-precision markers: a LEADING hedge (the sentence opens
+    with "maybe …" / "what if …" / "should we …" and friends) or one of a
+    small set of unambiguous proposal-hedge phrases ("we probably need …",
+    "maybe we …"). Callers apply this only to the default-factual bucket, so
+    a typed requirement / correction / preference is never dropped for being
+    hedged. Pure and deterministic — re-runs identically on `aelf rebuild`.
+    """
+    s = text_lower.strip()
+    if not s:
+        return False
+    if s.startswith(_FLOAT_LEADING_HEDGES):
+        return True
+    return any(phrase in s for phrase in _FLOAT_INTERNAL_HEDGES)
+
+
 def _has_any(text_lower: str, keywords: tuple[str, ...]) -> bool:
     return any(kw in text_lower for kw in keywords)
 
@@ -181,7 +258,8 @@ def classify_sentence(text: str, source: str) -> ClassificationResult:
     3. User source + requirement keywords -> requirement.
     4. User source + correction-detector positive -> correction.
     5. Preference keywords -> preference.
-    6. Default -> factual.
+    6. Speculative float (hedged musing, #1081) -> factual, persist=False.
+    7. Default -> factual.
 
     Always sets pending_classification=True in v1.0; the host-handshake
     path that flips it to False ships at v0.6.0.
@@ -259,7 +337,23 @@ def classify_sentence(text: str, source: str) -> ClassificationResult:
             pending_classification=True,
         )
 
-    # 6. Default: factual.
+    # 6. Speculative float (#1081): a hedged musing that reached the
+    #    default-factual bucket (not a typed requirement/correction/
+    #    preference). Declarative in form but tentative in force — passive
+    #    capture was storing these conversational fragments as beliefs.
+    #    persist=False, like questions. Placed last so a hedged sentence
+    #    that IS a requirement/correction/preference is kept.
+    if _is_speculative_float(text_lower):
+        alpha, beta = get_source_adjusted_prior(BELIEF_FACTUAL, source)
+        return ClassificationResult(
+            belief_type=BELIEF_FACTUAL,
+            alpha=alpha,
+            beta=beta,
+            persist=False,
+            pending_classification=True,
+        )
+
+    # 7. Default: factual.
     alpha, beta = get_source_adjusted_prior(BELIEF_FACTUAL, source)
     return ClassificationResult(
         belief_type=BELIEF_FACTUAL,

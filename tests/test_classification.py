@@ -252,6 +252,101 @@ def test_factual_default_uses_factual_prior() -> None:
     assert (r.alpha, r.beta) == (a, b)
 
 
+# --- Speculative-float filter (#1081) ------------------------------------
+
+
+def test_float_leading_maybe_no_persist() -> None:
+    """A statement-form hedge that opens with 'maybe' is a float, not a
+    belief — even though it has no trailing '?' so `_is_question` misses it.
+    """
+    r = classify_sentence("maybe we need one more layer before targets.", "user")
+    assert r.belief_type == BELIEF_FACTUAL
+    assert r.persist is False
+
+
+def test_float_leading_hedges_no_persist() -> None:
+    """Each high-precision leading hedge marks the sentence as a float."""
+    for t in (
+        "Perhaps the retry count is off.",
+        "What if we tried a calendar concept instead.",
+        "Should we flip the default.",
+        "Could we batch these writes.",
+        "Not sure this handles unicode.",
+        "I wonder about a dedicated lane here.",
+        "I guess we could split the module.",
+        "Or maybe there should be a separate schedule.",
+        "How about a second index.",
+    ):
+        assert classify_sentence(t, "user").persist is False, t
+
+
+def test_float_internal_proposal_hedge_no_persist() -> None:
+    """Unambiguous proposal-hedge phrases float the sentence wherever they
+    appear, not only at the start."""
+    for t in (
+        "We probably need a new concept of a calendar.",
+        "Honestly we might want to revisit the budget.",
+        "For onboarding we should probably add a banner.",
+        "Not sure if the lane survives the trim.",
+    ):
+        assert classify_sentence(t, "user").persist is False, t
+
+
+def test_float_dropped_result_stays_factual_and_pending() -> None:
+    """A dropped float keeps the factual type/prior and the pending flag —
+    only `persist` flips, mirroring the question path."""
+    r = classify_sentence("maybe we should cache the tree.", "user")
+    assert r.belief_type == BELIEF_FACTUAL
+    assert (r.alpha, r.beta) == TYPE_PRIORS[BELIEF_FACTUAL]
+    assert r.pending_classification is True
+
+
+def test_midsentence_hedge_word_persists() -> None:
+    """A genuine assertion that merely CONTAINS a hedge word mid-sentence
+    (not a leading hedge, not a proposal-hedge phrase) is kept."""
+    for t in (
+        "The test probably fails on slow hardware.",
+        "This maybe-flag controls the lane.",
+        "Users perhaps expect the older default.",
+    ):
+        assert classify_sentence(t, "user").persist is True, t
+
+
+def test_leading_should_be_is_not_a_float() -> None:
+    """'should we' hedges a proposal; 'should be' asserts one. Only the
+    former is filtered."""
+    r = classify_sentence("There should be a lock on this belief.", "user")
+    assert r.persist is True
+
+
+def test_bald_musing_without_hedge_persists_out_of_scope() -> None:
+    """Hedge-free declarative musings have no deterministic signal and are
+    intentionally out of scope for this ingest gate (handled downstream)."""
+    r = classify_sentence("All averages are not useful.", "user")
+    assert r.persist is True
+
+
+def test_typed_belief_kept_even_when_hedged() -> None:
+    """The float check runs last, so a requirement / correction / preference
+    is never dropped for being hedged — the type signal wins."""
+    req = classify_sentence("maybe the commits must be signed.", "user")
+    assert req.belief_type == BELIEF_REQUIREMENT
+    assert req.persist is True
+    pref = classify_sentence("maybe I prefer tabs over spaces.", "user")
+    assert pref.belief_type == BELIEF_PREFERENCE
+    assert pref.persist is True
+
+
+def test_float_filter_case_insensitive() -> None:
+    assert classify_sentence("MAYBE WE NEED A CALENDAR.", "user").persist is False
+
+
+def test_float_filter_deterministic() -> None:
+    r1 = classify_sentence("what if we added a spine lane.", "user")
+    r2 = classify_sentence("what if we added a spine lane.", "user")
+    assert r1.persist == r2.persist is False
+
+
 # --- Result object surface -----------------------------------------------
 
 
