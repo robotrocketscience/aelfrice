@@ -99,7 +99,7 @@ for cb in compressed_candidates:
 
 ### Configuration
 
-A new `use_type_aware_compression` flag follows the established convention at `retrieval.py:1703-1731` (`resolve_use_type_aware_compression`):
+A new `use_type_aware_compression` flag follows the established convention at `retrieval.py:2013-2040` (`resolve_use_type_aware_compression`):
 
 1. `AELFRICE_TYPE_AWARE_COMPRESSION=1` env var (highest precedence; truthy/falsy normalised).
 2. `retrieve(..., use_type_aware_compression=True)` kwarg.
