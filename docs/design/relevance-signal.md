@@ -118,8 +118,8 @@ Two design questions ratified in
   ancient injection_events rows contribute negligible signal. Add
   GC as a sub-issue when the storage-vs-evidence trade-off is
   measured.
-- **`source='pre_compact'`.** The PreCompact rebuilder injects via
-  the `<aelfrice-rebuild>` block but the "next user turn" reference-
+- **`source='pre_compact'`.** The SessionStart(compact) rebuilder injects via
+  the `<aelfrice-rebuild>` block (the injection moved off PreCompact per #1031) but the "next user turn" reference-
   detection semantics get fuzzy when injection happens *after* a
   user prompt. v1 ships UPS only; the schema's TEXT-not-CHECK
   `source` column accommodates the second source without migration.
