@@ -32,7 +32,7 @@ Design properties:
   empty derived_belief_ids whose deterministic belief id already exists
   in `beliefs`) and stamps it.
 
-- **Concurrency.** Belief id is sha256(source + text)[:16]; two parallel
+- **Concurrency.** Belief id is sha256(source + NUL + text)[:16]; two parallel
   workers producing the same id converge on one row via the content_hash
   UNIQUE constraint inside `insert_or_corroborate`. Each worker stamps its
   own log row independently — log rows are 1:1 with raw inputs, not
