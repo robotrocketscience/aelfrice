@@ -275,9 +275,10 @@ def is_mirror_enabled(
       2. Explicit ``explicit`` kwarg from the caller.
       3. ``[memory] mirror_claude_memory`` in ``.aelfrice.toml``.
       4. Default: **False** — the mirror is opt-in, consistent with the
-         narrow-surface PHILOSOPHY (#605) and the opt-in default posture
-         ratified for new behaviours (ADR 0003 decision 4, #606). With the
-         mirror off, ``/aelf:audit-claude-memory`` remains the bridge.
+         narrow-surface PHILOSOPHY (#605) and the opt-in-by-default precedent
+         set by ADR 0003 decision 4 (#973); ratified for this mirror under
+         #985. With the mirror off, ``/aelf:audit-claude-memory`` remains the
+         bridge.
     """
     env = _env_mirror_override()
     if env is not None:
