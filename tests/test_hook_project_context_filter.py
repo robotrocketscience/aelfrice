@@ -108,9 +108,11 @@ def test_mismatching_context_dropped(
 
 
 def test_user_scope_bypasses_filter(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A user-promoted belief (scope='user') is cross-context regardless
-    of its stored project_context. Cross-context promotion is what scope
-    'user' MEANS in v3.0 #688's federation visibility taxonomy."""
+    """A belief with an arbitrary non-'project' scope value bypasses the
+    filter (only scope=='project' rows are checked against project_context).
+    User-promotion itself is tracked via lock_level==LOCK_USER, not via
+    scope (there is no 'user' scope in the #688 taxonomy) — see
+    _filter_by_project_context's docstring."""
     monkeypatch.setenv("AELFRICE_PROJECT_CONTEXT", "retrieval-v3")
     hits = [
         _b("u", project_context="other", scope="user",
