@@ -33,7 +33,7 @@ Three components, all deterministic and embeddings-free (#605):
    both directions, depth 1, node budget 32
    (`temporal_spine_budget` / `AELFRICE_TEMPORAL_SPINE_BUDGET`).
    Appended after L1 candidates — never displaces them pre-packing.
-   No-op guard via `count_edges_by_type()`: zero spine edges → empty
+   No-op guard via `has_edge_type(EDGE_TEMPORAL_NEXT)`: zero spine edges → empty
    lane at ~zero cost, byte-identical output for spineless stores.
    Telemetry: `LaneTelemetry.temporal_spine` (packed survivors) +
    `temporal_spine_candidates` (pre-pack discoveries); the delta is the
