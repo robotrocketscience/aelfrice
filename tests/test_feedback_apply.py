@@ -214,3 +214,35 @@ def test_unknown_belief_id_does_not_write_history() -> None:
     with pytest.raises(ValueError):
         apply_feedback(s, "nonexistent", valence=1.0, source="user")
     assert s.count_feedback_events() == 0
+
+
+# --- Audit-only exposure (update_posterior=False, #1086) -----------------
+
+
+def test_update_posterior_false_leaves_alpha_beta_unchanged() -> None:
+    """A retrieval is exposure, not endorsement: audit-only feedback must
+    not move the Bayesian posterior."""
+    s = _store_with(_mk(alpha=2.0, beta=3.0))
+    apply_feedback(s, "b1", valence=0.1, source="hook", update_posterior=False)
+    got = s.get_belief("b1")
+    assert got is not None
+    assert (got.alpha, got.beta) == (2.0, 3.0)
+
+
+def test_update_posterior_false_still_writes_audit_row() -> None:
+    """Exposure is recorded to feedback_history so surfacing frequency
+    stays recoverable for the recurrence axis."""
+    s = _store_with(_mk())
+    apply_feedback(s, "b1", valence=0.1, source="hook", update_posterior=False)
+    assert s.count_feedback_events() == 1
+
+
+def test_update_posterior_false_result_reports_no_change() -> None:
+    res = apply_feedback(
+        s := _store_with(_mk(alpha=2.0, beta=3.0)),
+        "b1", valence=0.1, source="hook", update_posterior=False,
+    )
+    assert res.new_alpha == res.prior_alpha == 2.0
+    assert res.new_beta == res.prior_beta == 3.0
+    assert res.propagated == []  # propagation is a posterior effect — skipped
+    s.close()

@@ -12,11 +12,14 @@ This module exists because:
    to the agent". The README's Bayesian-memory claim depends on this
    loop closing.
 
-2. Hook-driven valence is implicit and weaker than explicit user
-   feedback. A retrieval is exposure, not endorsement. Use a small
-   positive valence (`HOOK_RETRIEVAL_VALENCE = 0.1`) so a thousand
-   retrievals over a few months don't dominate the posterior the way a
-   handful of explicit user thumbs-up should.
+2. A retrieval is exposure, not endorsement. Since #1086 the hook
+   records the exposure event to `feedback_history` (so surfacing
+   frequency stays recoverable) but does NOT move the Bayesian posterior
+   by default: counting every surfacing as positive evidence let whatever
+   recurs float above genuine knowledge. The legacy behaviour — a small
+   positive `HOOK_RETRIEVAL_VALENCE = 0.1` per retrieval — is restored by
+   setting `AELFRICE_EXPOSURE_UPDATES_POSTERIOR=1` (benchmark A/B and
+   rollback).
 
 The module exposes two functions: `search_for_prompt`, the hook's
 top-level call (retrieve + record), and `record_retrieval`, the audit
@@ -31,6 +34,7 @@ hook contract.
 """
 from __future__ import annotations
 
+import os
 import sys
 import traceback
 from typing import IO, Final, Iterable
@@ -44,6 +48,23 @@ HOOK_FEEDBACK_SOURCE: Final[str] = "hook"
 """`source` value written into feedback_history for every hook-driven
 retrieval row. ARCHITECTURE.md commits this string publicly; downstream
 analysis (e.g. `SELECT ... WHERE source = 'hook'`) depends on it."""
+
+ENV_EXPOSURE_UPDATES_POSTERIOR: Final[str] = "AELFRICE_EXPOSURE_UPDATES_POSTERIOR"
+"""Opt-in to the legacy behaviour where a hook retrieval moves the
+Bayesian posterior. Default is OFF (#1086): a retrieval is exposure, not
+endorsement, and counting every surfacing as positive evidence inflated
+whatever recurs — measured on a real store, junk (session scaffolding,
+fragments) accumulated MORE exposure than genuine knowledge and floated
+above it. With the flag unset, hook retrievals are recorded to
+feedback_history (so exposure frequency stays recoverable) but leave the
+posterior untouched. Set to "1" to restore the pre-#1086 posterior update
+(kept for benchmark A/B and rollback). Read per call so a flip is honoured
+without restart."""
+
+
+def _exposure_updates_posterior() -> bool:
+    return os.environ.get(ENV_EXPOSURE_UPDATES_POSTERIOR, "0") == "1"
+
 
 HOOK_RETRIEVAL_VALENCE: Final[float] = 0.1
 """Per-belief positive valence written for each hook-driven retrieval.
@@ -99,6 +120,7 @@ def record_retrieval(
     needing to inspect the audit log.
     """
     serr: IO[str] = stderr if stderr is not None else sys.stderr
+    update_posterior: bool = _exposure_updates_posterior()
     written: int = 0
     stamped_ids: list[str] = []
     for b in beliefs:
@@ -108,6 +130,7 @@ def record_retrieval(
                 b.id,
                 valence,
                 source,
+                update_posterior=update_posterior,
             )
             written += 1
             stamped_ids.append(b.id)

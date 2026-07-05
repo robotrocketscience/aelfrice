@@ -101,7 +101,27 @@ def test_record_retrieval_empty_iterable_writes_no_rows() -> None:
     assert s.count_feedback_events() == 0
 
 
-def test_record_retrieval_updates_alpha_not_beta() -> None:
+def test_record_retrieval_audit_only_does_not_move_posterior() -> None:
+    """#1086: a hook retrieval is exposure, not endorsement. By default it
+    records an audit row for the recurrence axis but leaves the Bayesian
+    posterior untouched — counting every surfacing as evidence let whatever
+    recurs float above genuine knowledge."""
+    s = _seed(_mk("b1"))
+    written = record_retrieval(s, [s.get_belief("b1")])  # type: ignore[list-item]
+    assert written == 1
+    b = s.get_belief("b1")
+    assert b is not None
+    assert b.alpha == 1.0  # unchanged
+    assert b.beta == 1.0
+    assert s.count_feedback_events() == 1  # audit row still written
+
+
+def test_record_retrieval_legacy_flag_updates_alpha(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AELFRICE_EXPOSURE_UPDATES_POSTERIOR=1 restores the pre-#1086
+    behaviour: a hook retrieval bumps alpha by HOOK_RETRIEVAL_VALENCE."""
+    monkeypatch.setenv("AELFRICE_EXPOSURE_UPDATES_POSTERIOR", "1")
     s = _seed(_mk("b1"))
     record_retrieval(s, [s.get_belief("b1")])  # type: ignore[list-item]
     b = s.get_belief("b1")

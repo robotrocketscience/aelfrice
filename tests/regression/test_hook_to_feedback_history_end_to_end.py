@@ -99,9 +99,41 @@ def test_hook_fire_writes_feedback_rows_tagged_hook(
     assert {e.belief_id for e in hook_events} >= {"F1", "F2"}
 
 
-def test_hook_fire_increments_alpha_not_beta(
+def test_hook_fire_records_exposure_without_moving_posterior(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """#1086: firing the hook records the retrieval to feedback_history
+    (recurrence axis) but leaves the posterior untouched by default —
+    exposure is not endorsement."""
+    db = tmp_path / "memory.db"
+    s = MemoryStore(str(db))
+    s.insert_belief(_mk("F1", "the kitchen is full of bananas"))
+    s.close()
+    _set_db(monkeypatch, db)
+
+    user_prompt_submit(
+        stdin=io.StringIO(_payload("are there bananas in the kitchen")),
+        stdout=io.StringIO(),
+    )
+
+    s2 = MemoryStore(str(db))
+    try:
+        b = s2.get_belief("F1")
+        events = s2.count_feedback_events()
+    finally:
+        s2.close()
+    assert b is not None
+    assert b.alpha == 1.0  # unchanged — audit-only
+    assert b.beta == 1.0
+    assert events >= 1  # exposure still recorded
+
+
+def test_hook_fire_legacy_flag_increments_alpha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AELFRICE_EXPOSURE_UPDATES_POSTERIOR=1 restores the pre-#1086
+    behaviour: a hook fire bumps alpha by HOOK_RETRIEVAL_VALENCE."""
+    monkeypatch.setenv("AELFRICE_EXPOSURE_UPDATES_POSTERIOR", "1")
     db = tmp_path / "memory.db"
     s = MemoryStore(str(db))
     s.insert_belief(_mk("F1", "the kitchen is full of bananas"))

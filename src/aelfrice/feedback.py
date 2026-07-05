@@ -85,6 +85,7 @@ def apply_feedback(
     source: str,
     now: str | None = None,
     propagate: bool = True,
+    update_posterior: bool = True,
 ) -> FeedbackResult:
     """Apply one feedback event to one belief.
 
@@ -92,8 +93,12 @@ def apply_feedback(
     2. Reject zero valence: a no-update event is not a successful update,
        and pre-commit #5 says feedback_history records every successful
        update — so a zero call has no row to write.
-    3. Bayesian-update alpha or beta by valence sign.
-    4. Persist the new posterior on the belief row.
+    3. Bayesian-update alpha or beta by valence sign — UNLESS
+       `update_posterior` is False, in which case the posterior is left
+       untouched (audit-only; #1086). Retrieval-exposure records an event
+       for the recurrence axis without being treated as truth-evidence.
+    4. Persist the new posterior on the belief row (skipped when
+       `update_posterior` is False — nothing changed).
     5. Append one row to feedback_history (created_at = `now` or UTC now).
     6. Propagate the signal through outbound edges (#1058): each
        attenuated delta from `store.propagate_valence` is applied via a
@@ -124,11 +129,18 @@ def apply_feedback(
 
     prior_alpha: float = b.alpha
     prior_beta: float = b.beta
-    new_alpha, new_beta = _bayesian_update(b, valence)
-
-    b.alpha = new_alpha
-    b.beta = new_beta
-    store.update_belief(b)
+    if update_posterior:
+        new_alpha, new_beta = _bayesian_update(b, valence)
+        b.alpha = new_alpha
+        b.beta = new_beta
+        store.update_belief(b)
+    else:
+        # Audit-only (#1086): record the event so exposure frequency stays
+        # recoverable (the recurrence axis), but do NOT move the posterior.
+        # A retrieval is exposure, not endorsement; counting every surfacing
+        # as positive evidence inflated whatever recurs. The posterior is
+        # left exactly as-is; the feedback_history row is still written.
+        new_alpha, new_beta = prior_alpha, prior_beta
 
     timestamp: str = now if now is not None else _utc_now_iso()
     event_id: int = store.insert_feedback_event(
@@ -149,7 +161,7 @@ def apply_feedback(
         source=source,
     )
 
-    if propagate and _propagation_enabled():
+    if update_posterior and propagate and _propagation_enabled():
         deltas = store.propagate_valence(belief_id, valence)
         # Sorted for a deterministic feedback_history row order
         # regardless of edge-iteration order inside the BFS.
