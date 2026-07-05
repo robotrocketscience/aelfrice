@@ -55,7 +55,7 @@ def test_classify_pass_inside_band():
 
 def test_classify_warn_at_60pct_drift():
     """Drift >50% of band half-width → warn."""
-    # band is [0.465, 0.535], half=0.035, 60% drift = 0.021 from canonical
+    # band is [0.465, 0.535], half=0.035, ~66% drift = 0.023 from canonical
     v, note = tolerance.classify(0.5, 0.523, 0.465, 0.535)
     assert v == Verdict.WARN
     assert "drift" in note
