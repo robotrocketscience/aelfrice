@@ -548,8 +548,9 @@ def test_health_points_at_aelf_regime_for_classifier(isolated_db: Path) -> None:
 def test_status_now_aliases_stats(isolated_db: Path) -> None:
     """v1.3 rename: `aelf status` runs the counts snapshot (was `aelf stats`).
 
-    The v1.1 alias of `aelf health` is gone — graph audit moved to
-    `aelf doctor graph`.
+    `aelf health` is retained as a deprecated back-compat alias of
+    `aelf doctor graph` (hidden from --help via argparse.SUPPRESS); it
+    is not removed.
     """
     code_st, out_st = _run("stats")
     code_status, out_status = _run("status")
