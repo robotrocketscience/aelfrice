@@ -1,8 +1,9 @@
 """Adaptive expansion-gate for retrieval (#741).
 
 Cheap deterministic prompt-shape gate that decides whether to run the
-expensive expansion layers (BFS multi-hop, HRR structural) for a given
-query. Broad natural-language prompts that lack structural markers are
+expensive BFS multi-hop expansion layer for a given query (the
+HRR-structural field is reserved for a future gate but stays on
+unconditionally in v1). Broad natural-language prompts that lack structural markers are
 unlikely to benefit from graph expansion and pay the highest latency
 cost on those lanes — the gate short-circuits expansion on them while
 keeping L0 / L1 / L2.5-entity always on.
@@ -23,7 +24,8 @@ Heuristics (all deterministic, stdlib-only):
   - Length: prompt token count > ``BROAD_PROMPT_TOKEN_THRESHOLD``
     (default 80) → broad signal.
   - Structural-marker absence: no ``#NNN`` issue refs, no file paths
-    (``src/...``, ``tests/...``, ``docs/...``, ``benchmarks/...``),
+    (``src/...``, ``tests/...``, ``docs/...``, ``benchmarks/...``,
+    ``scripts/...``),
     no snake_case / camelCase identifiers, no edge-type names
     (``SUPPORTS``, ``CONTRADICTS``, ...) → broad signal.
   - Question-form prefix: starts with ``what``, ``why``, ``how``,
