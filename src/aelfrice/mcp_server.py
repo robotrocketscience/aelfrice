@@ -12,26 +12,26 @@ Tests import the pure handlers directly; they never need the optional
 `[project.optional-dependencies].mcp` and is only required when a host
 actually starts the server via `serve()`.
 
-Tool surface (all under the `aelf:` namespace at the host):
+Tool surface (function names registered at the host; MCP tool ids use underscores, a different namespace than the /aelf:* slash commands):
 
-  aelf:onboard         polymorphic — three input shapes:
+  aelf_onboard         polymorphic — three input shapes:
                          {path}                          -> start session
                          {session_id, classifications}   -> finish session
                          {}                              -> list pending
-  aelf:search          {query, budget?}                  -> hits
-  aelf:lock            {statement}                       -> id + action
-  aelf:locked          {limit?, offset?}                 -> locked beliefs
-  aelf:demote          {belief_id}                       -> demoted bool
-  aelf:validate        {belief_id, source?}              -> origin promotion
-  aelf:unlock          {belief_id}                       -> lock cleared
-  aelf:promote         {belief_id, source?}              -> alias of validate
-  aelf:feedback        {belief_id, signal, source?}      -> updated priors
-  aelf:confirm         {belief_id, source?, note?}       -> affirmed priors
-  aelf:stats           {}                                -> counts
-  aelf:health          {}                                -> regime report
-  aelf:wonder          {query, budget?, depth?, agent_count?} -> research axes
-  aelf:wonder_persist  {query, budget?, depth?, top?, seed?} -> insert summary
-  aelf:wonder_gc       {ttl_days?, dry_run?}            -> gc summary
+  aelf_search          {query, budget?}                  -> hits
+  aelf_lock            {statement}                       -> id + action
+  aelf_locked          {limit?, offset?}                 -> locked beliefs
+  aelf_demote          {belief_id}                       -> demoted bool
+  aelf_validate        {belief_id, source?}              -> origin promotion
+  aelf_unlock          {belief_id}                       -> lock cleared
+  aelf_promote         {belief_id, source?}              -> alias of validate
+  aelf_feedback        {belief_id, signal, source?}      -> updated priors
+  aelf_confirm         {belief_id, source?, note?}       -> affirmed priors
+  aelf_stats           {}                                -> counts
+  aelf_health          {}                                -> regime report
+  aelf_wonder          {query, budget?, depth?, agent_count?} -> research axes
+  aelf_wonder_persist  {query, budget?, depth?, top?, seed?} -> insert summary
+  aelf_wonder_gc       {ttl_days?, dry_run?}            -> gc summary
 
 The polymorphic onboard is a single MCP tool, not three (per pre-commit
 on tool-surface invisibility — the host LLM should not see plumbing
@@ -1628,12 +1628,15 @@ def serve() -> None:
         Read-only.
 
         Returns: {"kind": "stats.snapshot",
+                  "version": str,
                   "beliefs": int,
                   "edges": int,    # v1.0 key (retained indefinitely; prefer threads)
                   "threads": int,  # v1.1 key (forward-compatible alias)
                   "locked": int,
                   "feedback_events": int,
-                  "onboard_sessions_total": int}
+                  "onboard_sessions_total": int,
+                  "phantoms": {"active": int, "promoted": int,
+                              "retired": int, "latest": str | None}}
         """
         store = _open_default_store()
         try:
