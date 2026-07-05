@@ -75,7 +75,7 @@ Some introductory text that is not a bullet.
 
 def test_parse_memory_bullets_count() -> None:
     bullets = parse_memory_bullets(_SYNTHETIC_MEMORY_MD, source_path="MEMORY.md")
-    # Three correctly-formed bullets: Fake topic, Another topic, No description, Final item
+    # Four correctly-formed bullets: Fake topic, Another topic, No description, Final item
     assert len(bullets) == 4
 
 
