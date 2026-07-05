@@ -20,7 +20,8 @@ runs), not from any force-directed layout. Honors locked
 Encoding policy (subject to operator feedback per #763)
 -------------------------------------------------------
 
-- Nodes: ``type="text"``, ``text = belief.content[:NODE_TEXT_MAX]``.
+- Nodes: ``type="text"``, ``text = _truncate(belief.content, NODE_TEXT_MAX)`` (truncated
+  content with a trailing ``…`` when it exceeds the cap).
   Locked beliefs get preset color ``"5"`` (cyan); otherwise posterior
   mean buckets to ``"4"`` green (mu>=0.75), no color (0.25<=mu<0.75),
   or ``"6"`` red (mu<0.25). Width/height fixed.
