@@ -72,7 +72,7 @@ def random_walk(
     """RW: start from high-uncertainty atoms; walk ``depth`` hops.
 
     Seed selection: any belief whose ``uncertainty_score(α, β)``
-    exceeds ``uncertainty_floor`` is eligible. RNG samples
+    meets or exceeds ``uncertainty_floor`` is eligible. RNG samples
     ``n_walks`` seeds *with replacement* — empirically observed
     sample variance is what the spec wants to falsify, so resampling
     is allowed.
