@@ -288,6 +288,75 @@ def is_mirror_enabled(
     toml_value = _read_mirror_toml(start)
     if toml_value is not None:
         return toml_value
+    # #1089: the one-shot reconcile at first `aelf setup` writes a
+    # per-project consent sentinel; its presence flips the mirror on so
+    # curated claude-memory keeps syncing without an explicit flag. An
+    # explicit env/toml value above still wins (opt-out is always honoured).
+    if _consent_sentinel_present():
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# #1089 default-on-post-consent: the reconcile sweep's per-project sentinel
+# ---------------------------------------------------------------------------
+
+# Sentinel filename marking the one-shot #1089 reconcile has run for a
+# project. Kept *beside the belief store* (``db_path().parent``) rather than
+# under ``~/.aelfrice`` so it is per-project by construction (the store is
+# per-project), is sandboxed automatically by ``AELFRICE_DB`` in tests, and
+# is removed with the store on uninstall/rebuild — a fresh store then
+# re-consents, which is the right behaviour. Kept here (stdlib-only) so the
+# hot-path ``is_mirror_enabled`` can consult it without importing the heavy
+# reconcile/derivation modules.
+_RECONCILE_SENTINEL_NAME: Final[str] = "claude-memory-reconciled"
+
+
+def reconcile_sentinel_path(db_path: str | Path) -> Path:
+    """Per-project reconcile sentinel path for a store at ``db_path``.
+
+    Lives beside the store, so worktrees of one repo (which share a
+    git-common-dir DB) share the sentinel, and any test pointing
+    ``AELFRICE_DB`` at a tmp file gets an isolated sentinel for free. An
+    in-memory store has no on-disk home; it falls back to the ``~/.aelfrice``
+    stamp dir (callers that use ``:memory:`` in tests pass an explicit
+    ``sentinel_path`` and never hit this branch in anger).
+    """
+    p = Path(db_path)
+    if str(p) == ":memory:":
+        return Path.home() / ".aelfrice" / _RECONCILE_SENTINEL_NAME
+    return p.parent / _RECONCILE_SENTINEL_NAME
+
+
+def _consent_sentinel_present() -> bool:
+    """True when the #1089 reconcile sentinel exists for the active store.
+
+    Fail-soft: any resolution error (no DB path, unusual layout) is treated
+    as "no consent yet" so the mirror stays at its opt-in default rather
+    than surprising the user. Never raises into the hot path."""
+    try:
+        from aelfrice.db_paths import db_path  # noqa: PLC0415
+
+        return reconcile_sentinel_path(db_path()).exists()
+    except Exception:  # noqa: BLE001 — never break the mirror check
+        return False
+
+
+def mirror_opted_out(start: Path | None = None) -> bool:
+    """True iff the user has *explicitly* disabled the mirror via env or
+    TOML (as opposed to leaving it at the default).
+
+    Used by the #1089 reconcile gate: the one-shot reconcile + consent flip
+    proceeds unless the user opted out. Distinct from ``not
+    is_mirror_enabled()`` — a store that has simply never consented is not
+    "opted out", so the reconcile is still allowed to run and flip it on.
+    """
+    env = _env_mirror_override()
+    if env is not None:
+        return env is False
+    toml_value = _read_mirror_toml(start)
+    if toml_value is not None:
+        return toml_value is False
     return False
 
 

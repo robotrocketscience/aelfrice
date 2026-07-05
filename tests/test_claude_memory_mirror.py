@@ -120,6 +120,11 @@ def test_mirror_flag_default_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv(ENV_MIRROR_CLAUDE_MEMORY, raising=False)
+    # Since #1089 the default is "off until the reconcile consent event
+    # writes a per-project (db-adjacent) sentinel". Point AELFRICE_DB at a
+    # fresh tmp store so no sentinel exists — the true no-env, no-toml,
+    # no-consent default is off.
+    monkeypatch.setenv("AELFRICE_DB", str(tmp_path / "memory.db"))
     assert is_mirror_enabled(start=tmp_path) is False
 
 
