@@ -2057,6 +2057,57 @@ def _cmd_locked(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_context(args: argparse.Namespace, out: object) -> int:
+    """#1081: best-effort recover a belief's source-turn context.
+
+    Read-only. Unions two substrates (turns.jsonl content-join +
+    DERIVED_FROM anchor_text) and reports honestly when neither matched.
+    Exit 1 only when the belief id does not resolve.
+    """
+    from aelfrice.belief_context import recover_context
+
+    belief_id: str = args.belief_id
+    store = _open_store()
+    try:
+        result = recover_context(store, belief_id)
+    finally:
+        store.close()
+
+    if result is None:
+        print(f"belief not found: {belief_id}", file=out)  # type: ignore[arg-type]
+        return 1
+
+    print(f"belief {result.belief_id}: {result.content}", file=out)  # type: ignore[arg-type]
+    print("", file=out)  # type: ignore[arg-type]
+
+    if result.turn_matches:
+        extra = result.turn_match_total - len(result.turn_matches)
+        suffix = f" (+{extra} more)" if extra > 0 else ""
+        print(f"source turn(s){suffix}:", file=out)  # type: ignore[arg-type]
+        for text in result.turn_matches:
+            print(f"    {text.strip()}", file=out)  # type: ignore[arg-type]
+        print("", file=out)  # type: ignore[arg-type]
+
+    if result.anchor_contexts:
+        print("adjacent context (DERIVED_FROM anchors):", file=out)  # type: ignore[arg-type]
+        for anchor, _linked in result.anchor_contexts:
+            print(f"    {anchor.strip()}", file=out)  # type: ignore[arg-type]
+        print("", file=out)  # type: ignore[arg-type]
+
+    if not result.recovered:
+        reason = (
+            "belief has no session id — likely onboard/scanner origin"
+            if not result.has_session
+            else "session turns rotated away, or content is not a verbatim "
+            "turn substring"
+        )
+        print(
+            f"no source context recoverable ({reason}).",
+            file=out,  # type: ignore[arg-type]
+        )
+    return 0
+
+
 def _cmd_stale(args: argparse.Namespace, out: object) -> int:
     """List beliefs that look stale by age + retrieval recency (#933).
 
@@ -6990,6 +7041,18 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_validate.set_defaults(func=_cmd_validate)
+
+    # #1081 context-loss guard: best-effort recover a belief's source-turn
+    # context. Hidden — a diagnostic/recovery lens, not a workflow verb.
+    p_context = sub.add_parser(
+        "context",
+        help=argparse.SUPPRESS,
+    )
+    p_context.add_argument(
+        "belief_id",
+        help="id of the belief whose source-turn context to recover",
+    )
+    p_context.set_defaults(func=_cmd_context)
 
     # Explicit unlock — clears user-lock, writes lock:unlock audit row.
     p_unlock = sub.add_parser(
