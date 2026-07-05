@@ -34,9 +34,9 @@ Both are mutually honoured; the first that evaluates truthy wins.
 
 Body-file safety
 ----------------
-``--body-file <F>`` paths that resolve under ``~/.claude/`` are refused; the
-body read is silently skipped (treated as empty string) so the guard still
-runs on title tokens alone.
+``--body-file <F>`` is read (paths that resolve under ``~/.claude/`` are
+refused and treated as empty), but the body content is not currently used
+in scoring in any case -- the guard always evaluates title tokens alone.
 """
 from __future__ import annotations
 
@@ -60,7 +60,8 @@ TOP_N_CANDIDATES: int = 5
 """Maximum number of candidates printed in the BLOCK message."""
 
 TOP_K_QUERY_TOKENS: int = 3
-"""Number of highest-value query tokens forwarded to gh/git searches."""
+"""Number of query tokens forwarded to gh/git searches (selected in
+alphabetical order for determinism, not ranked by importance)."""
 
 GH_RESULT_LIMIT: int = 20
 """Maximum candidates requested from `gh issue list`."""
