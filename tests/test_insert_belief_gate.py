@@ -5,7 +5,7 @@ When `AELFRICE_WRITE_LOG_AUTHORITATIVE` is on, `insert_belief()`
 walks the call stack to find the first frame outside `aelfrice.store`
 and raises `WriteLogAuthorityViolation` unless that module appears in
 `INSERT_BELIEF_ALLOWLIST` = {derivation_worker, wonder.simulator,
-benchmark, migrate}. With the flag off (production default at this
+wonder.lifecycle, benchmark, migrate}. With the flag off (production default at this
 commit), the check is a no-op.
 
 Each test states a falsifiable hypothesis about the gate contract.
