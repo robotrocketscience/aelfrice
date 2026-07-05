@@ -3656,7 +3656,8 @@ class RetrievalCache:
     at different stores never share state.
 
     Cache key includes the entity-index flag (v1.3.0 default-on),
-    the BFS flag (v1.3.0 default-off), and `posterior_weight`
+    the BFS flag (v1.3.0 default-off), `use_bm25f_anchors`
+    (v1.7.0 default-on per #154), and `posterior_weight`
     (v1.3.0 default 0.5, rounded to `POSTERIOR_WEIGHT_KEY_PRECISION`
     decimals so floating-point jitter does not fragment the cache).
     Two queries that differ in any of these are distinct entries.
