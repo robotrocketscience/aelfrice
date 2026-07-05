@@ -32,7 +32,7 @@ to fan out `Task` subagents that produce research documents; the
 aelfrice CLI only runs deterministic gap-analysis (`wonder/dispatch.py` — "no
 LLM calls, no randomness, no filesystem writes") and then persists the returned
 documents via `wonder_ingest` (`wonder/lifecycle.py:95`). Every per-turn hook
-(`hook_manifest.json`, 8 entries) is likewise strictly deterministic.
+(`hook_manifest.json`, 10 entries) is likewise strictly deterministic.
 
 This boundary is non-negotiable and is what makes the design tractable:
 **aelfrice can decide *when* a phantom-generation opportunity exists, but it
@@ -80,7 +80,7 @@ act — which is the conservative posture for a feature that spends tokens.
 
 ### 3.2 Precedent: the cadence-checkpoint block
 
-This is not a new injection shape. `hook.py:807–826` already writes a
+This is not a new injection shape. `hook.py:853–877` already writes a
 **default-off, per-turn, fail-soft** `<cadence-checkpoint>` sub-block into the
 UserPromptSubmit stdout ahead of the `<aelfrice-memory>` block (#870). The
 phantom-opportunity note is the same shape: a small tagged block, gated on a
@@ -154,7 +154,7 @@ opt-in posture (#606, ADR-0003 dec-4):
 - **Default-off opt-in flag.** `should_trigger_phantom_generation(explicit, *, start)`
   resolving `AELFRICE_PHANTOM_GENERATION` env > kwarg > `[phantom_generation] enabled`
   TOML > `False`. Byte-for-byte the `is_bfs_enabled` resolver shape
-  (`retrieval.py:2258`). A fresh install is unaffected.
+  (`retrieval.py:2385`). A fresh install is unaffected.
 - **Per-session fire budget.** At most `max_fires_per_session` opportunity notes
   per session (default **3**, §7 decision 4). Stored in `session_ring` state,
   which already carries per-session counters (`update_p3_velocity_state`,
@@ -224,7 +224,7 @@ others as needed.
 - ADR-0003 decision 4 — keep-opt-in default posture (locked).
 - `slash_commands/wonder.md`, `wonder/lifecycle.py`, `wonder/dispatch.py` — the
   existing explicit phantom path and the LLM-dispatch boundary.
-- `hook.py:807–826` — the `<cadence-checkpoint>` default-off per-turn injection
+- `hook.py:853–877` — the `<cadence-checkpoint>` default-off per-turn injection
   precedent.
 - `session_ring.py` — per-session counter + dedup state.
-- `retrieval.py:2258` (`is_bfs_enabled`) — default-off flag-resolver house style.
+- `retrieval.py:2385` (`is_bfs_enabled`) — default-off flag-resolver house style.
