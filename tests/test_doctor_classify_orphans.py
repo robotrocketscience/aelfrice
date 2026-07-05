@@ -146,7 +146,7 @@ def stub_anthropic(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_orphan_finder_picks_unknown_low_prior(memdb: MemoryStore) -> None:
-    """find_orphan_beliefs selects type='unknown' AND alpha+beta < 2."""
+    """find_orphan_beliefs selects type='unknown' AND alpha+beta <= 2."""
     _make_belief(memdb, belief_id="o1", content="orphan one", belief_type="unknown",
                  alpha=1.0, beta=1.0)
     # Already typed — not an orphan
