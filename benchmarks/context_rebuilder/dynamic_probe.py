@@ -11,8 +11,8 @@ fidelity at same-or-lower token cost). Otherwise: park to v1.5."
 The two candidates:
 
   1. **rate-of-growth.** Fire at the first turn whose 4-turn
-     rolling token-count delta exceeds the median per-turn token
-     count of the fixture. Rationale: catches moments of rapid
+     rolling average token count exceeds 1.5x the median per-turn
+     token count of the fixture. Rationale: catches moments of rapid
      working-state expansion -- the failure mode the spec calls
      out as "agent stops being able to compress its own state".
 
@@ -143,8 +143,8 @@ def _rate_of_growth_clear_at(turns: list[ReplayTurn]) -> int:
     for i in range(window, len(turns)):
         delta = sum(per_turn[i - window:i])
         # Average per-turn delta over the window vs. the per-turn
-        # median; fire when the window's average exceeds the median
-        # by at least the median (i.e. the window is double-fast).
+        # median; fire when the window's average exceeds 1.5x the
+        # per-turn median (i.e. the window is running 50% hotter).
         if delta / float(window) > median * 1.5:
             return i
     return max(1, len(turns) - 1)
