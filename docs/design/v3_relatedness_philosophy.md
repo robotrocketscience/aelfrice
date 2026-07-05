@@ -30,7 +30,7 @@ Three independent corpora, three closures on the same boundary. That's evidence 
 
 Pushed out of aelfrice's retrieval / ingest path and into the consuming agent's responsibility:
 
-- **Dedup-by-paraphrase.** The agent that ingests two beliefs that are paraphrases of each other is the right layer to decide they say the same thing. The agent has the LLM call available; aelfrice does not. `aelf doctor dedup` (R1 surface, hash-collision dups) stays shipped — it catches what determinism *can* catch, and explicitly does not claim near-duplicate detection ([`v2_dedup.md`](v2_dedup.md)).
+- **Dedup-by-paraphrase.** The agent that ingests two beliefs that are paraphrases of each other is the right layer to decide they say the same thing. The agent has the LLM call available; aelfrice does not. `aelf doctor --dedup` (R1 surface, hash-collision dups) stays shipped — it catches what determinism *can* catch, and explicitly does not claim near-duplicate detection ([`v2_dedup.md`](v2_dedup.md)).
 - **Contradiction detection.** Same pattern. The typed-slot value-comparison gate from [#422](https://github.com/robotrocketscience/aelfrice/issues/422) (`feat(value_compare): typed-slot extractor + mutual-exclusion comparator`) stays shipped because it operates on structured, deterministic comparisons (numeric / enum mutual exclusion). Free-form contradiction is the agent's call.
 - **Relatedness for retrieval ranking.** BM25F + posterior + heat-kernel + HRR-structural already cover the deterministic surface. Synonym-bridging recall is the model's job at consumption time, not aelfrice's at retrieval time.
 
