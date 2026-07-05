@@ -7,8 +7,8 @@ directly, then checks ``cluster_coverage@k`` against a baseline.
 
 Public CI skips when ``AELFRICE_CORPUS_ROOT`` is unset (corpus content
 lives lab-side per the directory-of-origin rule). The retrieval-side
-wiring (``use_intentional_clustering`` flag in ``retrieve_v2``) is the
-follow-up gate; this scaffold tests the module independently so the
+wiring (``use_intentional_clustering`` in ``retrieve_v2``) already
+shipped and defaults on (#436 R6); this scaffold tests the module directly so the
 substrate can land before the wiring.
 """
 from __future__ import annotations
