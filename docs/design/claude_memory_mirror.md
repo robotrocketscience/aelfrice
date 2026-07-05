@@ -1,9 +1,13 @@
 # claude-memory write-through mirror
 
-**Status:** shipped (#985). Hook installed by `aelf setup`
-(`--no-claude-memory-mirror` to skip); **inert until opted in** via
-`AELFRICE_MIRROR_CLAUDE_MEMORY` or `[memory] mirror_claude_memory`.
-**Dependencies:** stdlib only (`tomllib`, `re`). Reuses
+**Status:** shipped (#985); **default-on post-consent** since #1089. Hook
+installed by `aelf setup` (`--no-claude-memory-mirror` to skip). The first
+`aelf setup` for a project that has a claude-memory dir runs a one-shot
+reconcile (the consent event) and turns the mirror on; opt out with
+`AELFRICE_MIRROR_CLAUDE_MEMORY=0` or `[memory] mirror_claude_memory=false`.
+**Dependencies:** stdlib only (`tomllib`, `re`) for the parser; the reconcile
+sweep (`claude_memory_reconcile.py`) additionally uses the derivation/store
+path. Reuses
 [`claude_memory.py`](../../src/aelfrice/claude_memory.py) (already the
 parser for `/aelf:audit-claude-memory`) and the `insert_or_corroborate`
 idempotency path.
@@ -34,21 +38,55 @@ Write/Edit a file under …/.claude/projects/<x>/memory/<name>.md
 It is a **one-way mirror** (claude-memory → aelfrice graph). aelfrice
 never writes back to the memory files.
 
-## Opt-in (default OFF)
+## Enablement (default-on **post-consent**, #1089)
 
 Resolved by `claude_memory.is_mirror_enabled()`, precedence first-wins:
 
 1. `AELFRICE_MIRROR_CLAUDE_MEMORY` env var (truthy/falsy normalised).
 2. Explicit kwarg from the caller.
 3. `[memory] mirror_claude_memory` in `.aelfrice.toml`.
-4. Default **False**.
+4. **Consent sentinel present → True** (#1089).
+5. Default **False**.
 
-Default-off is consistent with the narrow-surface PHILOSOPHY (#605) and the
-opt-in posture ratified for new behaviours (ADR 0003 decision 4, #606). The
-hook *entry* installs by default (so the flag is all a user needs to flip),
-but does nothing until the flag is set — for any non-memory `Write`/`Edit`
-it returns after a single path-shape check, and never consults the flag or
-imports the store.
+Originally the mirror was purely opt-in (#985). #1089 makes it **default-on
+after a one-time consent event**, keeping the explicit env/TOML opt-out as the
+override. The consent event is the first-project reconcile (below): once it
+writes the per-project sentinel, `is_mirror_enabled()` returns `True` for that
+project without a flag flip. An explicit env/TOML value still wins first, so a
+user who sets `AELFRICE_MIRROR_CLAUDE_MEMORY=0` stays off regardless.
+
+The hook *entry* installs by default (unchanged); for any non-memory
+`Write`/`Edit` it returns after a single path-shape check and never consults
+the flag or imports the store.
+
+## Full-set reconcile + the consent event (#1089)
+
+The write-event mirror only sees in-session writes, so pre-existing fact files
+and any write the hook missed never reached the graph.
+`claude_memory_reconcile.reconcile_claude_memory(store, memory_dir)` closes
+that hole: it sweeps `<memory_dir>/*.md` (skipping `MEMORY.md`) through the
+same `ingest_memory_text` the hook uses, so the sweep and the hook share one
+frontmatter → origin/prior mapping. Idempotent — a re-run corroborates, not
+duplicates.
+
+`maybe_reconcile_claude_memory` wraps it in the G4 temporal-spine one-shot
+pattern (#1064): sentinel-gated per project, safe to call from every
+`aelf setup`, deferring (without writing the sentinel) when the mirror is
+explicitly opted out. `aelf setup` calls it **only when the project already
+has a claude-memory dir** — consent is deferred until there is memory to sync,
+so a fresh host that hasn't adopted the auto-memory tool is untouched. The
+sentinel lives *beside the belief store* (`db_path().parent`) so it is
+per-project by construction and is removed with the store on
+uninstall/rebuild (a fresh store then re-consents).
+
+Surfaces: `aelf setup` announces the consent event on stderr; `aelf doctor`
+shows a `claude-memory mirror: ON/off (reconciled?)` row; and
+`aelf reconcile-claude-memory [--project] [--force]` re-runs the sweep
+manually (e.g. after bulk out-of-session memory edits — `--force` runs past
+the sentinel).
+
+Ranking curated claude-memory above conversational capture (#1089 axis 2) is a
+separate follow-up; this layer is ingestion + enablement only.
 
 ## Frontmatter → belief mapping (ratified 2026-06-23, #985)
 
