@@ -208,9 +208,11 @@ def classify(
 
     Determinism: impasse list order is fixed by construction order in
     this function (``NO_CHANGE`` first, then ``CONSTRAINT_FAILURE``,
-    then ``TIE``, then ``GAP``); within each kind impasses are emitted
-    in hop-list order (which itself is deterministic per
-    :func:`aelfrice.bfs_multihop.expand_bfs`'s ordering contract).
+    then posterior-mean ``TIE``, then ``GAP``, then — only when
+    ``paths`` is supplied — fork-based ``TIE`` impasses last); within
+    each kind impasses are emitted in hop-list order (which itself is
+    deterministic per :func:`aelfrice.bfs_multihop.expand_bfs`'s
+    ordering contract).
 
     ``paths`` (R2, #658): when supplied, the classifier additionally
     emits a ``TIE`` impasse when two CONTRADICTS-forked paths share a
