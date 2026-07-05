@@ -8,7 +8,7 @@ https://github.com/robotrocketscience/aelfrice/issues/382#issuecomment-437268301
 `DERIVED_FROM` ships only when it demonstrates **≥+5pp BFS multi-hop hit@k
 uplift** on the labeled fixture vs. the same fixture run with
 `BFS_EDGE_WEIGHTS[DERIVED_FROM]` zeroed (which causes the BFS expander to
-skip DERIVED_FROM edges per `bfs_multihop.py:155-160`).
+skip DERIVED_FROM edges per `bfs_multihop.py:212-213`).
 
 Skips cleanly when `AELFRICE_CORPUS_ROOT` is unset (public CI), when the
 `derived_from_edge/` module dir is missing, or when the corpus has fewer than
