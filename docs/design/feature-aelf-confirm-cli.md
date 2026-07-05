@@ -38,7 +38,7 @@ Exit codes:
 ## Output (stdout on success)
 
 ```
-confirmed <belief-id>: alpha 1.000->2.000, mean 0.500->0.667
+confirmed <belief-id>: alpha 1.000->2.000, mean 0.667
 ```
 
 Fields:
