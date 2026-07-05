@@ -5,11 +5,13 @@ splice contract ratified on PR #478:
 
   - `route_overrides` flows through `raw_meta -> DerivationInput`.
   - When set, `derive()` skips the regex classifier and uses the router's
-    `(type, origin, alpha, beta)`. Byte-identical to today's scanner.py
-    direct-write LLM-classify path on the same input.
+    `(type, origin, alpha, beta)`. Byte-identical to scanner.py's
+    pre-migration direct-write LLM-classify path (now routed through
+    `record_ingest` + `run_worker`) on the same input.
   - The worker emits a `feedback_history` audit row when
     `audit_source` is set AND the belief was newly inserted (matches
-    today's scanner.py:301-310 `if was_inserted` guard).
+    the `if was_inserted` guard now in `derivation_worker.py`,
+    relocated there from scanner.py by #265 PR-B).
   - Absent `route_overrides`, today's regex-path behavior is unchanged.
 
 Scanner-side migration to `record_ingest + run_worker` lives in commit 2.
