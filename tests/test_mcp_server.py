@@ -374,7 +374,7 @@ def test_feedback_unknown_belief_returns_error(store: MemoryStore) -> None:
 def test_stats_returns_count_keys(store: MemoryStore) -> None:
     out = tool_stats(store)
     # v1.1.0 emits both `edges` (deprecated) and `threads` (canonical).
-    # `edges` removed in v1.2.0.
+    # The planned v1.2.0 removal of `edges` never happened; both keys are emitted indefinitely.
     assert {
         "beliefs", "edges", "threads", "locked", "feedback_events",
         "onboard_sessions_total",
