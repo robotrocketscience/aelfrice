@@ -2,6 +2,10 @@
 
 Status: **landed default-off** (writer + backfill + lane). The default-ON
 flip is gated on the pre-registered criteria in § Flip gate below.
+Evidence gates **G1, G2 (both halves), and G3 are DONE**; the flip is now
+blocked only on **G4** (the auto-vs-prompted backfill decision, a landing-PR
+review call) and **G5** (two-build byte-identity + ablation-bench-green in
+CI). The flip itself is an operator decision.
 
 ## Mechanism
 
@@ -111,9 +115,46 @@ one release, with the backfill path included for existing stores:
     `last_lane_telemetry()` to locate the core boundary exactly, so the
     invariant is checked against the real lane structure, not an
     inferred one.
-  - **Shadow-eval half: OPEN.** Still needs the aggregate-only run on a
-    real hook-ingested backfilled store (see open question 1 —
-    chain-length distribution under production `session_id` semantics).
+  - **Shadow-eval half: DONE.** `temporal_spine_shadow.py --budget 1500
+    --l1-limit 50 --backfill` on a scratch copy of the maintainer's real
+    hook-ingested store (25,971 beliefs, 24 L0 locks), driven by the real
+    turn log (41 deduped user queries), aggregate-only. Coverage-vs-gold is
+    undefined on an unlabelled real store, so this half is top-rank
+    invariance + operational aggregates; the `≥ +3pp` coverage criterion is
+    carried by the bench-pool half above.
+    - **Chain-length distribution (open question 1 — resolved).** Backfill
+      built the spine over **528 sessions / 22,007 chained beliefs**
+      (21,479 `TEMPORAL_NEXT` edges; 3,964 null-`session_id` beliefs are
+      uncharted by design). The distribution is heavy-tailed and
+      heterogeneous exactly as predicted: median **9**, mean **41.7**,
+      p90/p95/p99 = **75/121/277**, and a single host-session mega-chain of
+      **6,437 beliefs holds 29.2% of all chained mass**; 73 sessions (13.8%)
+      are singletons that carry no edge. This is a materially different
+      shape from LoCoMo's short, clean per-session chains — the reason the
+      shadow half is a distinct gate.
+    - **Top-rank invariance: PASS. 41/41 queries core-prefix invariant, 0
+      top-rank displacements, 0 core-length mismatches** — the lane never
+      displaces or reorders a `[locked, l25, l1, hrr]` belief on real
+      production-shaped data. Robust to the locked-handling choice
+      (`include_locked` True *and* False both 42/42 invariant on a paired
+      re-run) and reproducible (two runs identical). **Methodology note the
+      flip reviewer should keep:** on a real store the core boundary read
+      from `last_lane_telemetry()` must **drop the locked count when
+      `include_locked=False`** (locks are filtered out of the returned list
+      in that mode). LoCoMo has zero locks so the bench-pool runner never
+      exercised this; getting it wrong slides the comparison window into the
+      by-design tail and manufactures a *false* top-rank regression — caught
+      and corrected during this eval (`run_shadow` handles it; a
+      determinism control ruled out ambient non-determinism first).
+    - **Lane fires + survives the trim.** 40/41 queries fired (98%); 279
+      candidates → 67 packed survivors, i.e. **76% trimmed at the 1500
+      budget** yet still **1.63 hits/query survive** — the "does it survive
+      the trim" answer is yes, and the lane is not a vacuous null
+      (`temporal_spine_shadow.py` refuses to report a zero-fire run). Pure
+      logic (chain aggregation, lane arithmetic, query loader) is unit-
+      tested in CI; the eval itself is run-on-demand — it needs a real
+      backfilled store and turn log and emits aggregate-only figures, same
+      posture as `temporal_spine_latency.py`.
 - **G3 — latency delta (#739-style):** with spine present at ≥10k
   beliefs: p50 Δ ≤ 5 ms, p95 Δ ≤ 50 ms vs lane-off. (Generic BFS
   measured +1.0 ms p50 / +35.6 ms p95; this lane is narrower.)
@@ -136,9 +177,13 @@ one release, with the backfill path included for existing stores:
 
 ## Open questions (tracked for the flip review)
 
-1. Production `session_id` semantics: hook-ingested beliefs chain
-   within a host session — chains will be long and heterogeneous. The
-   first G2 shadow eval should watch chain-length distribution.
+1. ~~Production `session_id` semantics / chain-length distribution~~ —
+   measured by the G2 shadow eval (`temporal_spine_shadow.py`). Real
+   chains are heavy-tailed and heterogeneous: median 9, mean 41.7, and a
+   single host-session mega-chain holding ~29% of chained beliefs. Top-rank
+   invariance holds regardless (41/41), so the skew does not perturb the
+   core; the depth-1 / node-budget-32 lane caps the mega-chain's per-query
+   fan-out. See § G2 shadow-eval half.
 2. ~~Soft-deleted/superseded beliefs~~ — resolved skip-but-continue at
    traversal time (implemented; predecessor selection at write time
    also keeps GC'd beliefs eligible so chains never sever).
