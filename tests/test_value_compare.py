@@ -141,7 +141,7 @@ def test_numeric_zero_zero_no_conflict() -> None:
 def test_numeric_custom_tolerance_overrides_default() -> None:
     a = extract_values("alpha is 0.5")
     b = extract_values("alpha is 0.6")
-    # 20% diff. With default 1% tol this conflicts; with 50% tol it doesn't.
+    # ~16.7% diff. With default 1% tol this conflicts; with 50% tol it doesn't.
     assert find_conflicts(a, b, numeric_rel_tol=0.5) == ()
     assert find_conflicts(a, b, numeric_rel_tol=0.01) != ()
 
