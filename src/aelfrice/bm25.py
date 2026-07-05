@@ -426,6 +426,7 @@ class BM25Index:
             dl                 float32 x n_docs
             idf                float32 x n_terms
             tf.indptr          int64 x (n_docs + 1)
+            nnz                uint64   len(tf.data)
             tf.indices         int64 x nnz
             tf.data            float32 x nnz
 
