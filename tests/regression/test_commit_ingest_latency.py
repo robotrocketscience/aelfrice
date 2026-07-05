@@ -8,7 +8,7 @@ spec target is for the in-process hook body. We measure exactly that:
 build a payload pointing at a real commit in a tmp git repo, then
 time the hook's `_do_ingest` end-to-end across N=20 iterations.
 
-Asserts a generous 200ms p95 envelope so the test catches a 10x
+Asserts a generous 1500ms p95 envelope so the test catches a 10x
 regression without flaking on shared CI runners. Median is reported
 but not asserted on — assertion would be too noisy.
 """
