@@ -71,7 +71,7 @@
       "installer": "claude_memory_mirror",
       "default_on": true,
       "since": "3.7.0",
-      "description": "PostToolUse:Write|Edit|MultiEdit mirror of claude-memory writes into the belief graph; inert until AELFRICE_MIRROR_CLAUDE_MEMORY / [memory] mirror_claude_memory is set (#985)."
+      "description": "PostToolUse:Write|Edit|MultiEdit mirror of claude-memory writes into the belief graph (#985). Since #1089 the one-shot reconcile at `aelf setup` flips it on per project (the consent event); set AELFRICE_MIRROR_CLAUDE_MEMORY=0 / [memory] mirror_claude_memory=false to opt out."
     },
     {
       "name": "agent_context",

@@ -2671,6 +2671,48 @@ def _apply_scope_change(
     return 0
 
 
+def _cmd_reconcile_claude_memory(args: argparse.Namespace, out: object) -> int:
+    """Manually run the #1089 claude-memory reconcile sweep for a project.
+
+    Without ``--force`` this is the same sentinel-gated, opt-out-respecting
+    call ``aelf setup`` makes, so re-running is a no-op once the project has
+    reconciled. With ``--force`` it runs the sweep directly (ignoring the
+    sentinel and opt-out) and refreshes the sentinel — the manual escape
+    hatch for re-ingesting after bulk out-of-session memory edits.
+    """
+    from aelfrice.claude_memory import derive_memory_dir, reconcile_sentinel_path
+    from aelfrice.claude_memory_reconcile import (
+        maybe_reconcile_claude_memory,
+        reconcile_claude_memory,
+    )
+
+    project_path: str = getattr(args, "project", None) or os.getcwd()
+    sentinel = reconcile_sentinel_path(db_path())
+    store = _open_store()
+    try:
+        if getattr(args, "force", False):
+            result = reconcile_claude_memory(
+                store, derive_memory_dir(project_path)
+            )
+            try:
+                sentinel.parent.mkdir(parents=True, exist_ok=True)
+                sentinel.write_text(f"reconciled (forced): {result.reason}\n")
+            except OSError:
+                pass  # idempotent; a missing sentinel only costs a re-run
+        else:
+            result = maybe_reconcile_claude_memory(
+                store, project_path=project_path, sentinel_path=sentinel,
+            )
+    finally:
+        store.close()
+
+    print(
+        f"reconcile-claude-memory: {result.reason}",
+        file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
 def _cmd_demote(args: argparse.Namespace, out: object) -> int:
     store = _open_store()
     try:
@@ -3409,6 +3451,58 @@ def _cmd_project_warm(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _maybe_reconcile_claude_memory_at_setup() -> None:
+    """#1089 one-shot claude-memory reconcile, run from ``aelf setup``.
+
+    Sentinel-gated per project inside ``maybe_reconcile_claude_memory`` —
+    the first run is the "consent event": it is announced on stderr and
+    flips the #985 write-through mirror on for this project (unless
+    explicitly opted out via env/TOML). Best-effort so a store-less/fresh
+    host never breaks setup. Module-level (not inlined in ``_cmd_setup``)
+    so ordering-focused setup tests can neutralise it with one mock.
+
+    Gated on the project actually having a claude-memory directory: consent
+    is deferred until there is memory to sync, so a fresh host that has not
+    adopted the auto-memory tool is untouched (and no sentinel is written).
+    A later `aelf setup` or `aelf reconcile-claude-memory` grants consent
+    once the directory exists; the doctor row nudges toward it.
+    """
+    try:
+        from aelfrice.claude_memory import (
+            derive_memory_dir,
+            reconcile_sentinel_path,
+        )
+        from aelfrice.claude_memory_reconcile import (
+            maybe_reconcile_claude_memory,
+        )
+
+        if not derive_memory_dir(os.getcwd()).is_dir():
+            return  # no memory to reconcile yet — defer consent
+
+        store = _open_store()
+        try:
+            cm_rec = maybe_reconcile_claude_memory(
+                store,
+                project_path=os.getcwd(),
+                sentinel_path=reconcile_sentinel_path(db_path()),
+            )
+        finally:
+            store.close()
+        if cm_rec.ran:
+            print(
+                f"aelfrice: claude-memory — {cm_rec.reason}; the "
+                "write-through mirror is now ON for this project (disable "
+                "with AELFRICE_MIRROR_CLAUDE_MEMORY=0 or [memory] "
+                "mirror_claude_memory=false).",
+                file=sys.stderr,
+            )
+    except Exception as exc:  # noqa: BLE001 — reconcile must never break setup
+        print(
+            f"aelfrice: claude-memory reconcile skipped — {exc}",
+            file=sys.stderr,
+        )
+
+
 def _cmd_setup(args: argparse.Namespace, out: object) -> int:
     if getattr(args, "host", "claude") == "codex":
         return _cmd_setup_codex(args, out)
@@ -3456,6 +3550,12 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
             print(f"aelfrice: temporal spine — {spine_bf.reason}", file=sys.stderr)
     except Exception as exc:  # noqa: BLE001 — auto-backfill must never break setup
         print(f"aelfrice: temporal spine backfill skipped — {exc}", file=sys.stderr)
+    # #1089: one-shot full-set reconcile of the claude-memory fact files
+    # into the belief graph. Extracted to a module-level helper so it is
+    # mockable in _cmd_setup unit tests (the spine step above self-
+    # neutralises by being inert pre-flip; this one is default-on, so tests
+    # that drive _cmd_setup without sandboxing HOME neutralise it here).
+    _maybe_reconcile_claude_memory_at_setup()
     scope = _effective_scope(args)
     path = _resolve_settings_path(args)
     command = args.command if args.command is not None else resolve_hook_command(scope)
@@ -4619,6 +4719,27 @@ def _cmd_health(args: argparse.Namespace, out: object) -> int:
             "temporal spine: absent (run `aelf spine backfill` to build)",
             file=out,  # type: ignore[arg-type]
         )
+    print("", file=out)  # type: ignore[arg-type]
+    # #1089 claude-memory mirror row: whether the write-through mirror is
+    # on for this store (post-consent / flag) and whether the one-shot
+    # reconcile has run, so operators can see the sync posture without
+    # decoding the sentinel.
+    from aelfrice.claude_memory import (  # noqa: PLC0415
+        is_mirror_enabled,
+        reconcile_sentinel_path,
+    )
+
+    _cm_reconciled = reconcile_sentinel_path(db_path()).exists()
+    print(
+        "claude-memory mirror: "
+        + ("ON" if is_mirror_enabled() else "off")
+        + (
+            " (reconciled)"
+            if _cm_reconciled
+            else " (not yet reconciled — run `aelf reconcile-claude-memory`)"
+        ),
+        file=out,  # type: ignore[arg-type]
+    )
     print("", file=out)  # type: ignore[arg-type]
     sentiment_state, sentiment_count = _sentiment_from_prose_state()
     if sentiment_state == "enabled":
@@ -6963,6 +7084,38 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="emit a single JSON object instead of human-readable text",
     )
     p_audit_cm.set_defaults(func=_cmd_audit_claude_memory)
+
+    # #1089: manual re-run of the one-shot claude-memory reconcile sweep.
+    p_reconcile_cm = sub.add_parser(
+        "reconcile-claude-memory",
+        help=(
+            "ingest the project's claude-memory fact files into the belief "
+            "graph (the #1089 full-set sweep; normally runs once per project "
+            "at `aelf setup`). Idempotent — a re-run corroborates, not "
+            "duplicates"
+        ),
+    )
+    p_reconcile_cm.add_argument(
+        "--project",
+        default=None,
+        metavar="PATH",
+        help=(
+            "absolute path to the project directory whose claude-memory "
+            "store to reconcile (default: current working directory). The "
+            "memory dir is derived from this using the same encoding the "
+            "upstream tool applies."
+        ),
+    )
+    p_reconcile_cm.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "re-run past the per-project sentinel (which normally makes the "
+            "sweep fire only once). Also honours an explicit opt-out only "
+            "when --force is absent"
+        ),
+    )
+    p_reconcile_cm.set_defaults(func=_cmd_reconcile_claude_memory)
 
     # Read-only lens: load-bearing beliefs (locked ∪ corroborated ∪ high-posterior).
     p_core = sub.add_parser(

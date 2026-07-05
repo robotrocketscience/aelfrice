@@ -90,6 +90,12 @@ def test_migration_runs_before_hook_install(
     monkeypatch.setattr(
         cli_mod, "install_statusline", lambda *a, **k: _Result(),
     )
+    # #1089: neutralise the claude-memory reconcile side effect — this test
+    # is about migrate/hook-install ordering, not reconcile, and the real
+    # step would open the store and touch ~/.aelfrice.
+    monkeypatch.setattr(
+        cli_mod, "_maybe_reconcile_claude_memory_at_setup", lambda: None,
+    )
 
     args = argparse.Namespace(
         scope="user",

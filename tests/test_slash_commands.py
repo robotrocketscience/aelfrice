@@ -275,6 +275,11 @@ HIDDEN_SUBCOMMANDS = frozenset({
     # campaign, not a daily workflow verb. May graduate to a slash
     # command if the surface stabilises.
     "cadence-score",
+    # `reconcile-claude-memory` (#1089) manually runs the one-shot
+    # claude-memory full-set reconcile sweep (normally fired once per
+    # project at `aelf setup`). Hidden — a migration/maintenance surface
+    # (sibling of `spine`), not a daily workflow verb.
+    "reconcile-claude-memory",
 })
 
 
