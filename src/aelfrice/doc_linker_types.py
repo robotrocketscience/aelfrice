@@ -4,7 +4,7 @@ Extracted from `aelfrice.doc_linker` so `aelfrice.store` can read the
 `DocAnchor` shape without closing a `doc_linker ↔ store` import cycle
 (`doc_linker.link_belief_to_document` calls `store.link_belief_to_document`,
 and `store` returns `DocAnchor` rows back). Mirrors the leaf-module
-pattern used in #500 for `np_pattern` / `classification_core` / `db_paths`.
+pattern used in #499 for `np_pattern` / `classification_core` / `db_paths`.
 
 This module imports nothing from the rest of `aelfrice` — keep it that way.
 """
