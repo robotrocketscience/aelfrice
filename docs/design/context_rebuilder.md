@@ -329,7 +329,7 @@ seed the rebuild query. Source: the project's
 tail of this file directly — fast, no network, no DB roundtrip
 required for the seed.
 
-`N` is a config key. Initial value: 10 (5 user, 5 assistant).
+`N` is a config key. Default: 50 (`DEFAULT_TURN_WINDOW_N`; `[rebuilder] turn_window_n` in `.aelfrice.toml`).
 Eval-tunable.
 
 ### Rebuild algorithm (as shipped at v1.4.0)
@@ -364,6 +364,8 @@ def rebuild_v14(
         is the formatted XML block.
     """
 ```
+
+> **Delivery channel (updated by #1031):** the rebuild block now ships on the **SessionStart** hook with `source=="compact"` — the harness rejects `additionalContext` emitted from a PreCompact hook, so `pre_compact()` no longer injects. The mechanism described below is the original PreCompact design, retained for context; the block content and the `rebuild_v14` code path are unchanged.
 
 The `pre_compact()` hook in `aelfrice.hook` reads the JSON payload
 from stdin, locates a transcript (canonical `turns.jsonl` first,
