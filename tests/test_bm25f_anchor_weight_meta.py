@@ -84,7 +84,7 @@ def test_decode_anchor_weight_monotonic_non_decreasing() -> None:
 def test_decode_anchor_weight_returns_int() -> None:
     """``BM25Index.build`` accepts only ``int`` anchor_weight (it
     replicates the anchor token stream that many times — see bm25.py
-    line 243). Decode must therefore return ``int`` not ``float``.
+    line 244). Decode must therefore return ``int`` not ``float``.
     """
     for v in (0.0, 0.123, 0.5, 0.876, 1.0):
         result = decode_meta_bm25f_anchor_weight(v)
