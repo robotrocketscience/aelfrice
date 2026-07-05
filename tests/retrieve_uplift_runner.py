@@ -14,7 +14,7 @@ Five flags exercised:
 - `use_signed_laplacian` (#149) — placeholder; warns if true
 - `use_heat_kernel` (#150) — wired via `heat_kernel_enabled`
 - `use_posterior_ranking` (#151) — wired via non-zero `posterior_weight`
-- `use_hrr_structural` (#152) — placeholder; warns if true
+- `use_hrr_structural` (#152) — default-ON in `retrieve_v2()` (marker-routed HRR lane); not exposed on `retrieve()`, so this entry is a no-op here
 
 The placeholders that haven't yet plumbed into `retrieve()` will
 trivially produce uplift=0 — the harness reports that as evidence
@@ -69,8 +69,9 @@ _TS = "2026-05-05T00:00:00+00:00"
 # Five v1.7 flags. Each entry maps the flag name to a `kwargs` lambda
 # that produces the kwargs to pass to `retrieve()` when the flag is
 # toggled ON. Flags not in this dict are kept at their default-off
-# state. `use_signed_laplacian` and `use_hrr_structural` are
-# placeholder-only in main today — listed here so the harness records
+# state. `use_signed_laplacian` is placeholder-only in main today;
+# `use_hrr_structural` has shipped (default-ON in `retrieve_v2`) but is
+# not exposed through `retrieve()`'s kwargs — listed here so the harness records
 # their no-op status; once the lanes land in `retrieve()`, only this
 # table needs the new wire.
 FLAG_KWARGS: dict[str, Callable[[], dict]] = {  # type: ignore[type-arg]
@@ -800,8 +801,9 @@ def run_compression_a2_uplift(
 
     Both arms disable L2.5 entity index and L3 BFS so the compression
     effect is isolated to the L1 pack-loop budget. ``intentional
-    clustering`` is held off both arms (mutually exclusive with
-    compression per ``retrieval.py``).
+    clustering`` is held off both arms to isolate the compression
+    effect for this metric (composable with compression since #878 —
+    not mutually exclusive).
 
     Degenerate cases the gate-side commentary should expect:
     - All-``fact`` or all-locked rows produce identical OFF/ON arms
