@@ -1083,8 +1083,9 @@ class MemoryStore:
 
         Called from every belief insert / update path. Local-write
         rule per the #204 spec: `vv[local_scope] += 1` on every
-        write. Idempotent INSERT OR REPLACE on the composite PK keeps
-        the row count bounded by `n_beliefs * n_scopes`.
+        write. Idempotent `INSERT ... ON CONFLICT DO UPDATE` (increment)
+        on the composite PK keeps the row count bounded by
+        `n_beliefs * n_scopes`.
         """
         self._conn.execute(
             "INSERT INTO belief_versions (belief_id, scope_id, counter) "
@@ -2361,9 +2362,10 @@ class MemoryStore:
         not raise under normal input.
 
         Lazy import of `aelfrice.entity_extractor` to keep the import
-        graph acyclic (entity_extractor only imports triple_extractor,
-        not store) and so the extra cost of regex compilation is paid
-        once on first insert rather than at module load.
+        graph acyclic (entity_extractor imports only
+        `aelfrice.np_pattern`, not store) and so the extra cost of
+        regex compilation is paid once on first insert rather than at
+        module load.
         """
         from aelfrice.entity_extractor import extract_entities
 
@@ -3018,8 +3020,9 @@ class MemoryStore:
         `session_id` and `source_path_hash` are nullable: pass None
         when unavailable; no exception is raised.
 
-        #1020: idempotent per `(belief_id, session_id, source_path_hash)`
-        via `INSERT OR IGNORE` against the `uq_belief_corroborations_source`
+        #1020: idempotent per `(belief_id, session_id, source_path_hash,
+        source_type)` via `INSERT OR IGNORE` against the
+        `uq_belief_corroborations_source`
         UNIQUE index. Re-ingesting the same source in the same session (the
         #1012 Stop-flush re-reading `turns.jsonl`) no longer inflates the
         count — corroboration measures *distinct* re-assertions, not raw
@@ -3590,8 +3593,8 @@ class MemoryStore:
         increments ``touch_count`` by 1, and OR-s ``event_kind`` into
         the bitmask.
 
-        Raises ``ValueError`` on empty ``belief_id`` / ``session_id``
-        or non-positive ``fire_idx`` / ``event_kind``. The FK to
+        Raises ``ValueError`` on empty ``belief_id`` / ``session_id``,
+        a negative ``fire_idx``, or a non-positive ``event_kind``. The FK to
         ``beliefs(id)`` is enforced at write time when foreign keys
         are on (test fixtures must populate ``beliefs`` first or
         disable FK enforcement for isolated unit tests).
