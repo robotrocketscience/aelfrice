@@ -223,12 +223,18 @@ def derive(inp: DerivationInput) -> DerivationOutput:
        factual with alpha=1.0 / beta=1.0; the id is assigned here,
        invoked from `triple_extractor.ingest_triples` via the
        derivation worker.
-    3. All other paths (filesystem, python_ast, feedback_loop_synthesis,
-       legacy_unknown): run `classify_sentence`; skip when
-       `persist=False`. Transcript-ingest rows that carry
-       `raw_meta["role"]=="user"` (#888) get the undeflated USER_SOURCE
-       prior and `origin=user_transcript`; all other classifier-path
-       rows get the deflated prior and `origin=agent_inferred`.
+    3. Override paths: when `override_belief_type` is set, skip
+       `classify_sentence` and look up the source-adjusted prior
+       directly (origin=agent_inferred). When `route_overrides` is
+       set, skip `classify_sentence` and use the router-supplied
+       (type, origin, alpha, beta) verbatim.
+    4. All other paths (filesystem, python_ast, feedback_loop_synthesis,
+       legacy_unknown), when neither override is set: run
+       `classify_sentence`; skip when `persist=False`. Transcript-ingest
+       rows that carry `raw_meta["role"]=="user"` (#888) get the
+       undeflated USER_SOURCE prior and `origin=user_transcript`; all
+       other classifier-path rows get the deflated prior and
+       `origin=agent_inferred`.
 
     The belief `id` is derived deterministically from the input so that
     re-deriving the same input yields the same id — replay equality is
