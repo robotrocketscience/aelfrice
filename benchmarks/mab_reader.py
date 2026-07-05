@@ -1,8 +1,9 @@
 """MAB LLM reader: generates answers from retrieval context.
 
 Takes a retrieval JSON file (question + context pairs) and sends each
-to an LLM reader to generate answers. Writes predictions file compatible
-with exp5_score.py.
+to an LLM reader to generate answers. Writes a predictions file
+(``{id, llm_prediction}`` per row); score it against MAB ground truth
+with ``mab_adapter.score_multi_answer`` or an equivalent external scorer.
 
 Usage:
     uv run python benchmarks/mab_reader.py /tmp/exp6_temporal.json --model opus
