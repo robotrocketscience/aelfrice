@@ -122,12 +122,14 @@ def is_temporal_spine_write_enabled(
          normalised).
       2. Explicit ``explicit`` kwarg from the caller.
       3. ``[ingest] write_temporal_spine`` in `.aelfrice.toml`.
-      4. Default: False (default-OFF).
+      4. Default: True (default-ON since the #1064 flip).
 
-    Default-off is the landing posture: a fresh install must not start
-    writing spine edges at ingest until the #1064 flip-gate criteria
-    (G2–G5) pass. Flipping the default is that issue's deliverable 5,
-    not a config change.
+    Default-ON since the #1064 flip: every evidence gate (G1–G5) passed,
+    so the ingest writer chains new beliefs by default. Opt out with
+    ``AELFRICE_TEMPORAL_SPINE_WRITE=0`` or ``[ingest] write_temporal_spine
+    = false``. (Landed default-off; the flip is that issue's deliverable
+    5, shipped as a release default change plus the auto-once backfill for
+    existing stores.)
     """
     env = _env_spine_write_override()
     if env is not None:
@@ -137,7 +139,7 @@ def is_temporal_spine_write_enabled(
     toml_value = _read_spine_write_toml(start)
     if toml_value is not None:
         return toml_value
-    return False
+    return True
 
 
 # --- Spine writer --------------------------------------------------------

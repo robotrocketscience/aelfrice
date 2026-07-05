@@ -78,10 +78,10 @@ def store() -> MemoryStore:
 # ---------------------------------------------------------------------------
 
 
-def test_flag_defaults_off(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_flag_defaults_on(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    # Default-ON since the #1064 flip: env unset + no repo .aelfrice.toml.
     monkeypatch.delenv(ENV_TEMPORAL_SPINE_WRITE, raising=False)
-    # start at an empty dir so no repo .aelfrice.toml is found
-    assert is_temporal_spine_write_enabled(start=tmp_path) is False
+    assert is_temporal_spine_write_enabled(start=tmp_path) is True
 
 
 def test_flag_env_wins_over_kwarg(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -95,7 +95,13 @@ def test_flag_unrecognised_env_not_decisive(
     monkeypatch: pytest.MonkeyPatch, tmp_path,
 ) -> None:
     monkeypatch.setenv(ENV_TEMPORAL_SPINE_WRITE, "maybe")
+    # An unrecognised env value is not decisive: an explicit kwarg still wins,
     assert is_temporal_spine_write_enabled(explicit=True, start=tmp_path) is True
+    # and with no kwarg it falls through to a lower rung (here a toml=false)
+    # rather than being parsed as a value — independent of the default.
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[ingest]\nwrite_temporal_spine = false\n"
+    )
     assert is_temporal_spine_write_enabled(start=tmp_path) is False
 
 
@@ -128,7 +134,9 @@ def test_flag_malformed_toml_not_decisive(
     (tmp_path / ".aelfrice.toml").write_text(
         "[ingest]\nwrite_temporal_spine = 'yes'\n"
     )
-    assert is_temporal_spine_write_enabled(start=tmp_path) is False
+    # A malformed toml value is not decisive — it falls through to the
+    # default (default-ON since the #1064 flip), never parsed as False.
+    assert is_temporal_spine_write_enabled(start=tmp_path) is True
 
 
 # ---------------------------------------------------------------------------
@@ -273,13 +281,28 @@ _TURN_ONE = "The staging database runs on port 5433."
 _TURN_TWO = "The staging cache was flushed after the last deploy."
 
 
-def test_ingest_off_path_writes_no_spine_edges(
+def test_ingest_explicit_off_writes_no_spine_edges(
     store: MemoryStore, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delenv(ENV_TEMPORAL_SPINE_WRITE, raising=False)
+    # Post-flip the writer is default-ON, so the off-path is now an
+    # explicit opt-out (env=0) rather than the unset default.
+    monkeypatch.setenv(ENV_TEMPORAL_SPINE_WRITE, "0")
     ingest_turn(store, _TURN_ONE, "test-source", session_id="s1")
     ingest_turn(store, _TURN_TWO, "test-source", session_id="s1")
     assert _spine_edges(store) == []
+
+
+def test_ingest_default_on_chains_consecutive_turns(
+    store: MemoryStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The #1064 flip: with the writer flag unset, ingest now chains by
+    # default (the behaviour that used to require env=1).
+    monkeypatch.delenv(ENV_TEMPORAL_SPINE_WRITE, raising=False)
+    ingest_turn(store, _TURN_ONE, "test-source", session_id="s1",
+                created_at="2026-01-01T00:00:01Z")
+    ingest_turn(store, _TURN_TWO, "test-source", session_id="s1",
+                created_at="2026-01-01T00:00:02Z")
+    assert len(_spine_edges(store)) == 1
 
 
 def test_ingest_on_path_chains_consecutive_turns(
@@ -463,9 +486,9 @@ def _seed_lane_store(store: MemoryStore) -> None:
     backfill_temporal_spine(store)
 
 
-def test_lane_default_off_flag() -> None:
-    assert is_temporal_spine_enabled() is False
-    assert is_temporal_spine_enabled(explicit=True) is True
+def test_lane_default_on_flag() -> None:
+    assert is_temporal_spine_enabled() is True          # default-ON (#1064 flip)
+    assert is_temporal_spine_enabled(explicit=False) is False
     assert resolve_temporal_spine_budget() == 32
     assert resolve_temporal_spine_budget(explicit=7) == 7
 
