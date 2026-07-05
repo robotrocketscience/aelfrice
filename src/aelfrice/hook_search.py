@@ -42,7 +42,7 @@ from aelfrice.store import MemoryStore
 
 HOOK_FEEDBACK_SOURCE: Final[str] = "hook"
 """`source` value written into feedback_history for every hook-driven
-retrieval row. LIMITATIONS.md commits this string publicly; downstream
+retrieval row. ARCHITECTURE.md commits this string publicly; downstream
 analysis (e.g. `SELECT ... WHERE source = 'hook'`) depends on it."""
 
 HOOK_RETRIEVAL_VALENCE: Final[float] = 0.1
