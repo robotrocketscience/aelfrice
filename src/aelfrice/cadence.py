@@ -7,7 +7,9 @@ maintainer-typical workloads `/clear` faster than the harness compacts,
 so PreCompact-only ("P0" in #749 body terminology) misses most of the
 state-recovery opportunities.
 
-This module implements two of the policies pre-registered by #749:
+This module implements four of the policies pre-registered by #749
+and #876: P1 every-K-turns, P2 ctx-threshold + phase-boundary,
+P3-velocity, and P3-substantive.
 
 * **P1 every-K-turns** (#749 §"Pre-registered policies to evaluate"):
   a deterministic, monotonic-counter-keyed cadence policy that fires
@@ -17,6 +19,11 @@ This module implements two of the policies pre-registered by #749:
   fraction of a configured byte-window AND the most-recent user
   prompt looks like a task-boundary signal. Composite predicate;
   both conditions must hold.
+* **P3-velocity** (#876 axis 1): fires when transcript bytes-per-turn
+  density since the last fire exceeds a configurable threshold.
+* **P3-substantive** (#876 axis 1): fires when the ratio of
+  substantive turns in a rolling window exceeds a configurable
+  threshold.
 
 The rebuilder's side effects (rebuild_log entry, touch-state refresh)
 accumulate at the chosen cadence instead of at whatever rate the
