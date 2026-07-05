@@ -2,9 +2,10 @@
 
 One test per acceptance criterion:
 
-  AC1. Hook fires on PreCompact and emits `additionalContext` with
+  AC1. SessionStart (source=='compact') emits a rebuild block carrying
        locked + session-scoped + retrieve() hits, ordered as:
-       L0 locked -> session-scoped -> L2.5 + L1.
+       L0 locked -> session-scoped -> L2.5 + L1. (PreCompact itself no
+       longer emits additionalContext; the harness rejects it — #1031.)
   AC2. Empty transcript / missing store: hook exits 0 with no
        `additionalContext` written. Tool path unaffected.
   AC3. Reproducibility: two fires with identical inputs (same
