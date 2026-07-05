@@ -82,8 +82,8 @@ def test_three_paths_record_distinct_source_types(
     tmp_path: Path,
 ) -> None:
     """All three first-class ingest paths must record their declared
-    `source_type` in `belief_corroborations`. Asserts the union of
-    observed source_types contains the three declared constants.
+    `source_kind` in `ingest_log`. Asserts the union of
+    observed source_kind values contains the three declared constants.
     """
     # Path 1: cli_remember via `aelf lock`.
     aelf_run("lock", "Quokkas calibrate the knob carefully on Tuesdays.")
