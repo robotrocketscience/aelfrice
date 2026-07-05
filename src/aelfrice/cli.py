@@ -5607,6 +5607,13 @@ def _cmd_doctor_prune_noise(
     pass re-applies those filters to existing beliefs and soft-deletes the
     matches.
 
+    #1081 adds `is_stranded_capture_noise`: orphan section headers
+    ("Recommendation:") and shell-output echoes ("$ …"). These are handled
+    on the ingest path by the sub-floor detector (which can demote an
+    inline header to edge anchor_text), so they never entered
+    `is_transcript_noise`; but a *stored* belief with that shape is a
+    stranded standalone row, so the GC treats it as noise here.
+
     Safety scoping: only `agent_inferred`, non-locked, currently-active
     beliefs are eligible — user-sourced and locked beliefs are never
     touched even if they superficially match. Soft-delete sets `valid_to`
@@ -5618,14 +5625,17 @@ def _cmd_doctor_prune_noise(
     hooks/graph checks.
     """
     from aelfrice.classification_core import classify_sentence
-    from aelfrice.noise_filter import is_transcript_noise
+    from aelfrice.noise_filter import (
+        is_stranded_capture_noise,
+        is_transcript_noise,
+    )
 
     apply = bool(getattr(args, "apply", False))
     max_n_raw = getattr(args, "max", None)
     max_n: int | None = int(max_n_raw) if max_n_raw is not None else None
 
     def _is_noise_now(content: str) -> bool:
-        if is_transcript_noise(content):
+        if is_transcript_noise(content) or is_stranded_capture_noise(content):
             return True
         return not classify_sentence(content, ORIGIN_AGENT_INFERRED).persist
 

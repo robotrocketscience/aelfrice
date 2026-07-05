@@ -113,6 +113,29 @@ def test_prune_noise_apply_soft_deletes_only_noise(
     assert _active_ids(db) == {"keep_fact", "user_q", "locked_q"}
 
 
+def test_prune_noise_removes_stranded_capture_noise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1081: a stored orphan section header ("Recommendation:") and a
+    shell-output echo ("$ …") are stranded standalone rows the ingest-time
+    sub-floor detector never got to anchor. The GC prunes them while a
+    real assertion that merely contains a colon survives."""
+    db = tmp_path / "memory.db"
+    s = MemoryStore(str(db))
+    try:
+        _mk(s, "hdr", "Recommendation:")
+        _mk(s, "hdr2", "Two paths forward:")
+        _mk(s, "echo", "$ python run_all.py")
+        _mk(s, "keep_colon", "Recommendation: use the read-through cache.")
+        _mk(s, "keep_fact", "The pipeline orders feedback ahead of corroboration.")
+    finally:
+        s.close()
+    code, out = _run(monkeypatch, db, "doctor", "--prune-noise", "--apply")
+    assert code == 0
+    assert "soft-deleted 3 belief(s)" in out
+    assert _active_ids(db) == {"keep_colon", "keep_fact"}
+
+
 def test_prune_noise_max_caps(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
