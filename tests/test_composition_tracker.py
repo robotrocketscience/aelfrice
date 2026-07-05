@@ -3,8 +3,7 @@
 Covers:
 
 - Placeholder flag warner emits one stderr line per recognised
-  flag (`use_signed_laplacian`, `use_heat_kernel`,
-  `use_posterior_ranking`, `use_hrr_structural`) and is silent
+  flag (`use_signed_laplacian`, `use_posterior_ranking`) and is silent
   when none are set.
 - Warner is idempotent within a process — second call produces
   no new warnings unless the seen-set is reset.
