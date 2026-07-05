@@ -296,10 +296,12 @@ def rebuild(
 ) -> str:
     """Build the rebuild context block. Pure function.
 
-    Legacy v1.2.0a0 entry point. Preserved for backwards compatibility
-    with the `aelf rebuild` CLI and the eval harness. Uses the legacy
-    per-token union retrieval. New callers (the v1.4 hook) should use
-    `rebuild_v14()` for the L0+L1+L2.5 path.
+    Legacy v1.2.0a0 entry point. Retained for the direct-caller
+    unit-test suite (`tests/test_context_rebuilder.py`); the `aelf
+    rebuild` CLI and the eval harness have both moved to
+    `rebuild_v14()`. Uses the legacy per-token union retrieval. New
+    callers (the v1.4 hook) should use `rebuild_v14()` for the
+    L0+L1+L2.5 path.
 
     Given a list of recent turns and an open MemoryStore, retrieve the
     most relevant beliefs and emit the formatted XML block.
@@ -612,11 +614,15 @@ def rebuild_v14(
 
 
 def emit_pre_compact_envelope(block: str) -> str:
-    """Wrap a rebuild block in the Claude Code PreCompact JSON envelope.
+    """Wrap a rebuild block in the JSON envelope the pre-#1031
+    PreCompact contract used.
 
-    The harness expects `additionalContext` under
-    `hookSpecificOutput`. Identical wire shape to the v1.2.x search-
-    tool hook (`hook_search_tool.py`).
+    Retained for the legacy `main()` entry point and tests only: the
+    harness rejects `additionalContext` emitted from a PreCompact
+    hook, so this envelope is not part of the live
+    SessionStart(source == "compact") injection path, which writes
+    the raw block to stdout instead. Identical wire shape to the
+    v1.2.x search-tool hook (`hook_search_tool.py`).
     """
     payload: dict[str, object] = {
         "hookSpecificOutput": {
@@ -865,9 +871,9 @@ def _retrieve_for_rebuild(
 ) -> list[Belief]:
     """Per-token union retrieval over recent-turn text.
 
-    Legacy v1.2.0a0 path; preserved so the existing `aelf rebuild`
-    CLI behaves byte-identical to the alpha. v1.4 callers use the
-    `retrieve()`-based path in `rebuild_v14`.
+    Legacy v1.2.0a0 path, reachable only via `rebuild()` (now
+    unit-test-only); the `aelf rebuild` CLI moved to the
+    `retrieve()`-based `rebuild_v14()` path.
 
     L0 locked beliefs always come first and are never trimmed.
     """
