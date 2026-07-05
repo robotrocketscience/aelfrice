@@ -1,6 +1,6 @@
 """End-to-end regression: scan a fixture repo and find what was scanned.
 
-Cumulative integration scenario added at v0.5.0. Exercises scanner
+Cumulative integration scenario added at v0.6.0. Exercises scanner
 (filesystem + git + AST extractors + scan_repo orchestrator) +
 classification (regex fallback) + store (CRUD + FTS5) + retrieval
 (L0 locked + L1 BM25) in one realistic flow:
