@@ -31,7 +31,7 @@ def test_unbind_inverts_bind_high_similarity() -> None:
     """Plate 1995 with random unit keys: ``unbind(k, bind(k, v))``
     is ``v`` filtered per-frequency by ``|fft(k)|²``. With random
     Gaussian keys (non-unitary) the empirical cosine similarity sits
-    at ~0.71 (range ~0.69–0.72 across seeds 0–9 at dim=2048), not
+    well above the noise floor at dim=512 (DEFAULT_DIM), not
     the ~1.0 you'd get with unitary keys. Cleanup memory recovers
     the true filler from the degraded vector — that is the standard
     HRR recovery pipeline."""
@@ -87,7 +87,7 @@ def test_unbind_single_pair_recovery_above_threshold() -> None:
 def test_superposed_recovery_above_capacity_threshold() -> None:
     """Two bound pairs in superposition: unbinding either key
     should recover the corresponding filler at cosine similarity
-    well above the noise floor (1/sqrt(dim) ~ 0.022 at dim=2048)."""
+    well above the noise floor (1/sqrt(dim) ~ 0.044 at dim=512, DEFAULT_DIM)."""
     rng = _rng()
     k1, v1 = random_vector(DEFAULT_DIM, rng), random_vector(DEFAULT_DIM, rng)
     k2, v2 = random_vector(DEFAULT_DIM, rng), random_vector(DEFAULT_DIM, rng)
