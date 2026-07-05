@@ -15,7 +15,7 @@ def test_wonder_consolidation_against_corpus(aelfrice_corpus_root: Path) -> None
         from aelfrice import wonder_consolidation  # type: ignore[attr-defined]
     except ModuleNotFoundError as exc:
         if exc.name in {"aelfrice", "aelfrice.wonder_consolidation"}:
-            pytest.skip("wonder_consolidation strategy not yet implemented (#228)")
+            pytest.skip("wonder_consolidation strategy module missing from this checkout")
         raise
 
     # Expected human ratings 1-5; strategy outputs a generated phantom
