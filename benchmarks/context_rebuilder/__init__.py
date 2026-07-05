@@ -7,9 +7,11 @@ fixture corpus at `benchmarks/context-rebuilder/fixtures/synthetic/`).
 
 This package is *scaffolding only*: it loads a transcript fixture,
 optionally forces a midpoint context-clear, and measures token-cost
-delta + PreCompact hook latency. It does NOT score continuation
-fidelity -- that is a separate v1.4.x deliverable tracked at
-issue #138 (continuation-fidelity scorer).
+delta + PreCompact hook latency. This package originally shipped as
+fidelity-scoring scaffolding only (#136); the continuation-fidelity
+scorer landed at #138 and now lives alongside it in ``score.py``
+(``score_continuation_fidelity``), wired into ``replay.run()`` via
+``score_method`` / ``post_clear_answers``.
 
 Public surface:
 
