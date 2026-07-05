@@ -1,9 +1,11 @@
 """Mechanical (subject, relation, object) triple extraction from prose.
 
 Pure regex over a fixed pattern bank. No POS tagger, no embedding,
-no LLM. Reusable by every v1.x ingest caller that has prose at
-hand: the v1.2.0 commit-ingest hook, transcript-ingest, manual
-`aelf remember` calls, and the v1.3.0 entity-index path.
+no LLM. Reusable by any v1.x ingest caller that has prose at
+hand. Current call sites: the v1.2.0 commit-ingest hook
+(`hook_commit_ingest.py`) and the context-rebuilder's query-enrichment
+pass (`context_rebuilder.py`, `extract_triples` only). Not currently
+wired into transcript-ingest or `aelf remember`.
 
 Two-piece API per docs/design/triple_extractor.md:
 
