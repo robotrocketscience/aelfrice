@@ -100,6 +100,8 @@ from aelfrice.models import (
     LOCK_NONE,
     LOCK_TIER_REFERENCE,
     LOCK_USER,
+    ORIGIN_RETRIEVAL_PRIORITY,
+    ORIGIN_RETRIEVAL_PRIORITY_DEFAULT,
     Belief,
 )
 from aelfrice.scoring import (
@@ -198,6 +200,13 @@ ENTITY_PERSIST_DEMOTE_FLAG: Final[str] = "use_entity_persist_demote"
 # term that never dominates BM25 relevance (a relevant low-grounding
 # belief is still rescued by its relevance score).
 ENTITY_PERSIST_DEMOTE_WEIGHT: Final[float] = 1.0
+# #1089 axis-2 origin-priority tie-break flag. Default-OFF (resolver
+# default False) — breaks a bm25 tie in favour of the higher-priority
+# origin (curated user_validated over conversational user_transcript),
+# never a primary rerank term (that lane was refuted in #1013). The
+# default flip is gated on the LoCoMo bench and is a separate operator
+# call.
+ORIGIN_TIEBREAK_FLAG: Final[str] = "use_origin_tiebreak"
 # Floor so a durable-free belief (S1 = 0) gets a bounded, not infinite,
 # log penalty.
 ENTITY_PERSIST_DEMOTE_EPS: Final[float] = 1e-3
@@ -269,6 +278,8 @@ ENV_HRR_STRUCTURAL: Final[str] = "AELFRICE_HRR_STRUCTURAL"
 ENV_HRR_EXPAND: Final[str] = "AELFRICE_HRR_EXPAND"
 # #1096 entity-persistence demotion env override. Tri-state; default-OFF.
 ENV_ENTITY_PERSIST_DEMOTE: Final[str] = "AELFRICE_ENTITY_PERSIST_DEMOTE"
+# #1089 axis-2 origin-priority tie-break env override. Tri-state; default-OFF.
+ENV_ORIGIN_TIEBREAK: Final[str] = "AELFRICE_ORIGIN_TIEBREAK"
 # #1064 temporal-spine lane flag + node-budget knob.
 ENV_TEMPORAL_SPINE: Final[str] = "AELFRICE_TEMPORAL_SPINE"
 ENV_TEMPORAL_SPINE_BUDGET: Final[str] = "AELFRICE_TEMPORAL_SPINE_BUDGET"
@@ -736,6 +747,35 @@ def is_entity_persist_demote_enabled(kwarg: bool | None = None) -> bool:
     default False. Mirrors the HRR-expand resolution; default-OFF until
     the bench-gated flip (#1096 G2)."""
     env = _env_entity_persist_demote_override()
+    if env is not None:
+        return env
+    if kwarg is not None:
+        return kwarg
+    return False
+
+
+def _env_origin_tiebreak_override() -> bool | None:
+    """Return True/False if AELFRICE_ORIGIN_TIEBREAK is set to a
+    recognised truthy/falsy value, else None (#1089). Symmetric to
+    `_env_entity_persist_demote_override`."""
+    raw = os.environ.get(ENV_ORIGIN_TIEBREAK)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def is_origin_tiebreak_enabled(kwarg: bool | None = None) -> bool:
+    """Resolve the #1089 axis-2 origin-priority tie-break flag.
+
+    Precedence: AELFRICE_ORIGIN_TIEBREAK env var → explicit kwarg →
+    default False. Mirrors the entity-persist resolution; default-OFF
+    until the bench-gated flip."""
+    env = _env_origin_tiebreak_override()
     if env is not None:
         return env
     if kwarg is not None:
@@ -2571,6 +2611,19 @@ def _entity_persist_penalty(
     )
 
 
+def _origin_priority(origin: str) -> int:
+    """Retrieval tie-break priority for an `origin` (higher sorts first).
+
+    #1089 axis 2. Reads the canonical `ORIGIN_RETRIEVAL_PRIORITY` map
+    (mirrors `contradiction.precedence_class`); origins absent from it
+    fall to the default bucket. Used only as a tie-break on the composite
+    rerank score, never as a primary term (the origin *rerank lane* was
+    refuted in #1013)."""
+    return ORIGIN_RETRIEVAL_PRIORITY.get(
+        origin, ORIGIN_RETRIEVAL_PRIORITY_DEFAULT,
+    )
+
+
 def _l1_hits(
     store: MemoryStore,
     query: str,
@@ -2584,6 +2637,7 @@ def _l1_hits(
     gamma_temperature: float | None = None,
     zeta_params: tuple[float, float, float] | None = None,
     use_entity_persist_demote: bool = False,
+    use_origin_tiebreak: bool = False,
 ) -> list[Belief]:
     """Run L1: FTS5 BM25 search (default) or BM25F sparse-matvec
     (v1.5.0 opt-in), optionally reranked by partial-Bayesian score.
@@ -2761,7 +2815,12 @@ def _l1_hits(
             s = _hash_n_boosted(s, b.content, hash_n_literals)
             s += _entity_persist_penalty(ep, b.id)
             keyed.append((s, b.id, b))
-        keyed.sort(key=lambda x: (-x[0], x[1]))
+        if use_origin_tiebreak:
+            keyed.sort(
+                key=lambda x: (-x[0], -_origin_priority(x[2].origin), x[1])
+            )
+        else:
+            keyed.sort(key=lambda x: (-x[0], x[1]))
         return [b for _, _, b in keyed]
 
     if (
@@ -2772,8 +2831,12 @@ def _l1_hits(
         and zeta_params is None
         and not use_entity_persist_demote
     ):
-        return store.search_beliefs(query, limit=l1_limit)
-    scored = store.search_beliefs_scored(query, limit=l1_limit)
+        return store.search_beliefs(
+            query, limit=l1_limit, origin_tiebreak=use_origin_tiebreak,
+        )
+    scored = store.search_beliefs_scored(
+        query, limit=l1_limit, origin_tiebreak=use_origin_tiebreak,
+    )
     if not scored:
         return []
     # FTS5 path: bm25_raw is non-positive (SQLite convention). Negate
@@ -2820,7 +2883,15 @@ def _l1_hits(
         keyed.append((s, b.id, b))
     # Higher score = more relevant. Tie-break on id ASC for
     # determinism (matches the convention in bfs_multihop and L2.5).
-    keyed.sort(key=lambda x: (-x[0], x[1]))
+    # #1089 axis 2: when enabled, break a composite-score tie by origin
+    # priority first (curated user_validated over conversational
+    # user_transcript), then id — a pure tie-break, never a primary term.
+    if use_origin_tiebreak:
+        keyed.sort(
+            key=lambda x: (-x[0], -_origin_priority(x[2].origin), x[1])
+        )
+    else:
+        keyed.sort(key=lambda x: (-x[0], x[1]))
     return [b for _, _, b in keyed]
 
 
@@ -3138,6 +3209,7 @@ def retrieve_with_tiers(
     temporal_spine_depth: int | None = None,
     temporal_spine_node_budget: int | None = None,
     use_entity_persist_demote: bool = False,
+    use_origin_tiebreak: bool = False,
 ) -> tuple[
     list[Belief], list[str], list[str], list[str], list[list[str]],
 ]:
@@ -3269,6 +3341,7 @@ def retrieve_with_tiers(
             gamma_temperature=gamma_t,
             zeta_params=zeta_params,
             use_entity_persist_demote=use_entity_persist_demote,
+            use_origin_tiebreak=use_origin_tiebreak,
         )
         l1 = [
             b for b in raw_l1
@@ -3468,6 +3541,7 @@ def retrieve_v2(
     use_hrr_structural: bool | None = None,
     use_hrr_expand: bool | None = None,
     use_entity_persist_demote: bool | None = None,
+    use_origin_tiebreak: bool | None = None,
     use_temporal_spine: bool | None = None,
     temporal_spine_depth: int | None = None,
     temporal_spine_node_budget: int | None = None,
@@ -3632,6 +3706,7 @@ def retrieve_v2(
         use_entity_persist_demote=is_entity_persist_demote_enabled(
             use_entity_persist_demote
         ),
+        use_origin_tiebreak=is_origin_tiebreak_enabled(use_origin_tiebreak),
         hrr_struct_index_cache=expand_cache,
         temporal_spine_enabled=use_temporal_spine,
         temporal_spine_depth=temporal_spine_depth,
