@@ -2431,6 +2431,7 @@ class MemoryStore:
         entity_lowers: Iterable[str],
         *,
         limit: int,
+        origin_tiebreak: bool = False,
     ) -> list[tuple[str, int]]:
         """Return [(belief_id, overlap_count)] sorted overlap DESC, id ASC.
 
@@ -2439,6 +2440,13 @@ class MemoryStore:
         entity occurring twice in one belief still counts as one
         overlap (the spec ranks by entity overlap COUNT, not by
         match count).
+
+        `origin_tiebreak` (#1089 axis 2, default off): when set, an
+        equal-overlap tie is broken by origin priority (curated
+        `user_validated` over conversational `user_transcript`) before
+        the id tie-break, so the L2.5 entity tier ranks curated content
+        above conversational capture on a tie — matching the L1
+        behaviour. Off is byte-identical to the prior overlap/id order.
 
         Empty input returns [] without hitting SQLite. The L2.5
         retrieval tier consumes this via `lookup_entities` directly —
@@ -2455,6 +2463,18 @@ class MemoryStore:
         # 16 entities per call so this is generous).
         keys = list(dict.fromkeys(keys))[:512]
         placeholders = ",".join("?" * len(keys))
+        # Origin tie-break (#1089): break an equal-overlap tie by origin
+        # priority DESC before the id tie-break. The CASE bounds the
+        # origin strings as params (no injection); ranks are literals.
+        if origin_tiebreak:
+            order_by = (
+                "ORDER BY overlap DESC, "
+                + _ORIGIN_PRIORITY_CASE + " DESC, be.belief_id ASC"
+            )
+            order_params: tuple[str, ...] = _ORIGIN_PRIORITY_PARAMS
+        else:
+            order_by = "ORDER BY overlap DESC, be.belief_id ASC"
+            order_params = ()
         # JOIN beliefs to exclude soft-deleted rows (valid_to NOT NULL):
         # a GC'd phantom or review-removed belief must not surface via the
         # entity-index lane. The belief_entities rows themselves are left
@@ -2467,10 +2487,10 @@ class MemoryStore:
             f"WHERE be.entity_lower IN ({placeholders}) "
             "AND b.valid_to IS NULL "
             "GROUP BY be.belief_id "
-            "ORDER BY overlap DESC, be.belief_id ASC "
+            + order_by + " "
             "LIMIT ?"
         )
-        cur = self._conn.execute(sql, (*keys, limit))
+        cur = self._conn.execute(sql, (*keys, *order_params, limit))
         return [(str(r["belief_id"]), int(r["overlap"])) for r in cur.fetchall()]
 
     def count_belief_entities(self) -> int:

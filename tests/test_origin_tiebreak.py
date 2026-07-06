@@ -214,3 +214,85 @@ def test_l1_hits_short_circuit_tiebreak_when_posterior_zero() -> None:
     finally:
         s.close()
     assert [b.id for b in on] == ["zzz_curated", "aaa_transcript"]
+
+
+# --- L2.5 entity-index tier ----------------------------------------------
+
+
+def _add_entity(store: MemoryStore, bid: str, lower: str) -> None:
+    store._conn.execute(
+        "INSERT INTO belief_entities(belief_id, entity_lower, entity_raw, "
+        "kind, span_start, span_end) VALUES (?,?,?,?,0,0)",
+        (bid, lower, lower, "identifier"),
+    )
+    store._conn.commit()
+
+
+def _seed_entity_tie(store: MemoryStore) -> None:
+    # Both beliefs share the same entity so lookup_entities ties on
+    # overlap; curated gets the LATER id so only the origin tie-break can
+    # lift it above the conversational belief.
+    store.insert_belief(
+        _mk("aaa_transcript", "text one", ORIGIN_USER_TRANSCRIPT)
+    )
+    store.insert_belief(
+        _mk("zzz_curated", "text two", ORIGIN_USER_VALIDATED)
+    )
+    for bid in ("aaa_transcript", "zzz_curated"):
+        store._conn.execute(
+            "DELETE FROM belief_entities WHERE belief_id=?", (bid,)
+        )
+    _add_entity(store, "aaa_transcript", "src/widget.py")
+    _add_entity(store, "zzz_curated", "src/widget.py")
+
+
+def test_lookup_entities_tiebreak_lifts_curated() -> None:
+    s = MemoryStore(":memory:")
+    try:
+        _seed_entity_tie(s)
+        on = [
+            bid
+            for bid, _ in s.lookup_entities(
+                ["src/widget.py"], limit=10, origin_tiebreak=True
+            )
+        ]
+    finally:
+        s.close()
+    assert on == ["zzz_curated", "aaa_transcript"]
+
+
+def test_lookup_entities_off_byte_identical() -> None:
+    s = MemoryStore(":memory:")
+    try:
+        _seed_entity_tie(s)
+        default = [bid for bid, _ in s.lookup_entities(["src/widget.py"], limit=10)]
+        off = [
+            bid
+            for bid, _ in s.lookup_entities(
+                ["src/widget.py"], limit=10, origin_tiebreak=False
+            )
+        ]
+    finally:
+        s.close()
+    # Default overlap/id order: aaa_transcript (lower id) first.
+    assert default == off == ["aaa_transcript", "zzz_curated"]
+
+
+def test_retrieve_v2_l25_exact_match_tiebreak() -> None:
+    """An exact entity match is surfaced via the L2.5 tier (above L1);
+    the tie-break must lift curated there too, not only in L1."""
+    s = MemoryStore(":memory:")
+    try:
+        _seed_entity_tie(s)
+        off = [
+            b.id
+            for b in retrieve_v2(s, "src/widget.py", use_origin_tiebreak=False).beliefs
+        ]
+        on = [
+            b.id
+            for b in retrieve_v2(s, "src/widget.py", use_origin_tiebreak=True).beliefs
+        ]
+    finally:
+        s.close()
+    assert set(off) == set(on)
+    assert on.index("zzz_curated") < on.index("aaa_transcript")

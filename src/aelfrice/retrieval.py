@@ -2505,6 +2505,7 @@ def _l25_hits(
     l25_limit: int,
     l25_token_subbudget: int,
     query_entity_cap: int,
+    use_origin_tiebreak: bool = False,
 ) -> list[Belief]:
     """Run L2.5: query-side extraction, entity lookup, materialise
     beliefs, dedupe vs L0, trim to `l25_token_subbudget`.
@@ -2524,7 +2525,9 @@ def _l25_hits(
     if not q_entities:
         return []
     keys = [e.lower for e in q_entities]
-    hits = store.lookup_entities(keys, limit=l25_limit)
+    hits = store.lookup_entities(
+        keys, limit=l25_limit, origin_tiebreak=use_origin_tiebreak,
+    )
     out: list[Belief] = []
     used = 0
     for bid, _overlap in hits:
@@ -3325,6 +3328,7 @@ def retrieve_with_tiers(
             l25_limit=l25_limit,
             l25_token_subbudget=effective_l25_subbudget,
             query_entity_cap=query_entity_cap,
+            use_origin_tiebreak=use_origin_tiebreak,
         )
     else:
         l25 = []
