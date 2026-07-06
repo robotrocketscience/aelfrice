@@ -30,13 +30,21 @@ from aelfrice.models import (
 from aelfrice.retrieval import retrieve, retrieve_v2
 from aelfrice.store import MemoryStore
 
-# All post-#1064 lanes forced off — the configuration the production hook
-# path needs after the cutover (byte-identical to today's retrieve()).
+# The production lane config: the exact set `retrieve()` runs. `retrieve()`
+# has its own pack loop and does NOT invoke intentional clustering,
+# HRR-structural, HRR-expand, temporal spine, entity-persist demotion, or
+# the origin tie-break — even though several of those default ON in
+# `retrieve_v2`. So all six must be forced off for `retrieve_v2` to be
+# byte-identical to `retrieve()` (clustering in particular reorders the L1
+# pack on graph-connected corpora — see test_equivalence_clustered_corpus).
+# This is the config the #1107 shim pins.
 LANES_OFF = dict(
     use_temporal_spine=False,
     use_entity_persist_demote=False,
     use_origin_tiebreak=False,
     use_hrr_expand=False,
+    use_intentional_clustering=False,
+    use_hrr_structural=False,
 )
 
 
@@ -92,6 +100,19 @@ def test_equivalence_l1_vocab() -> None:
         for q in ("widget module", "parser error code", "auth token",
                   "cache eviction", "retrieval ranking", "the"):
             assert _v1(s, q, token_budget=2400) == _v2(s, q, budget=2400), q
+    finally:
+        s.close()
+
+
+def test_equivalence_empty_query() -> None:
+    """Empty query → L0 only. The hook.py SessionStart baseline calls
+    retrieve(store, "", ...), so this path must match exactly."""
+    s = MemoryStore(":memory:")
+    _mk(s, "lk1", "never force-push to main", lock=LOCK_USER)
+    _mk(s, "lk2", "deploy only from the release branch", lock=LOCK_USER)
+    _mk(s, "u1", "an unlocked note about caching")
+    try:
+        assert _v1(s, "", token_budget=2400) == _v2(s, "", budget=2400)
     finally:
         s.close()
 
@@ -152,6 +173,26 @@ def test_equivalence_bfs() -> None:
         s.close()
 
 
+def test_equivalence_clustered_corpus() -> None:
+    """Two dense DERIVED_FROM clusters — the case where intentional
+    clustering reorders the L1 pack. `retrieve()` does not cluster, so
+    `retrieve_v2` must have clustering forced off (part of LANES_OFF) to
+    match. This is the case a 4-lane-off config silently diverges on."""
+    s = MemoryStore(":memory:")
+    for i in range(6):
+        _mk(s, f"a{i}", f"cache latency tuning cluster note {i}")
+    for i in range(6):
+        _mk(s, f"b{i}", f"cache latency deployment cluster note {i}")
+    for i in range(5):
+        s.insert_edge(Edge(src=f"a{i+1}", dst=f"a{i}", type=EDGE_DERIVED_FROM, weight=1.0))
+        s.insert_edge(Edge(src=f"b{i+1}", dst=f"b{i}", type=EDGE_DERIVED_FROM, weight=1.0))
+    try:
+        for q in ("cache latency", "cache latency deployment tuning", "note"):
+            assert _v1(s, q, token_budget=2400) == _v2(s, q, budget=2400), q
+    finally:
+        s.close()
+
+
 @pytest.mark.parametrize("manifest", [False, True])
 @pytest.mark.parametrize("budget", [2000, 1200, 900, 700])
 def test_equivalence_manifest_reference_locks(manifest: bool, budget: int) -> None:
@@ -170,6 +211,44 @@ def test_equivalence_manifest_reference_locks(manifest: bool, budget: int) -> No
     try:
         assert _v1(s, q, token_budget=budget, manifest_reference_locks=manifest) == _v2(
             s, q, budget=budget, manifest_reference_locks=manifest
+        )
+    finally:
+        s.close()
+
+
+def test_retrieve_keeps_staged_lanes_off() -> None:
+    """Contract guard for the #1107 shim: `retrieve()` (the production
+    adapter) must run with the staged lanes OFF. Post-shim the plain
+    equivalence assertions are tautological (both sides are retrieve_v2),
+    so this checks the live contract non-tautologically: on a clustered
+    corpus where the clustering lane demonstrably reorders the pack,
+    `retrieve()` must match retrieve_v2(clustering off) and DIFFER from
+    retrieve_v2(clustering on). If someone flips a lane on in the shim,
+    this fails."""
+    s = MemoryStore(":memory:")
+    for i in range(6):
+        _mk(s, f"a{i}", f"cache latency tuning cluster note {i}")
+    for i in range(6):
+        _mk(s, f"b{i}", f"cache latency deployment cluster note {i}")
+    for i in range(5):
+        s.insert_edge(Edge(src=f"a{i+1}", dst=f"a{i}", type=EDGE_DERIVED_FROM, weight=1.0))
+        s.insert_edge(Edge(src=f"b{i+1}", dst=f"b{i}", type=EDGE_DERIVED_FROM, weight=1.0))
+    q = "cache latency"
+    try:
+        prod = [b.id for b in retrieve(s, q, token_budget=2400)]
+        clustering_on = [
+            b.id
+            for b in retrieve_v2(
+                s, q, budget=2400,
+                use_temporal_spine=False, use_entity_persist_demote=False,
+                use_origin_tiebreak=False, use_hrr_expand=False,
+                use_intentional_clustering=True, use_hrr_structural=False,
+            ).beliefs
+        ]
+        clustering_off = _v2(s, q, budget=2400)
+        assert prod == clustering_off, "retrieve() must have clustering OFF"
+        assert prod != clustering_on, (
+            "clustering must actually reorder here, else this guard is vacuous"
         )
     finally:
         s.close()
