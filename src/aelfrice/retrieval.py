@@ -3229,6 +3229,7 @@ def retrieve_with_tiers(
     temporal_spine_node_budget: int | None = None,
     use_entity_persist_demote: bool = False,
     use_origin_tiebreak: bool = False,
+    manifest_reference_locks: bool = False,
 ) -> tuple[
     list[Belief], list[str], list[str], list[str], list[list[str]],
 ]:
@@ -3325,7 +3326,17 @@ def retrieve_with_tiers(
         if (enabled or token_budget != DEFAULT_TOKEN_BUDGET)
         else LEGACY_TOKEN_BUDGET
     )
-    locked_used: int = sum(_belief_tokens(b) for b in locked)
+    # #1016-B parity with retrieve(): when manifest_reference_locks is on
+    # (the hook injection paths), reference-tier locks cost only their
+    # one-line manifest entry, freeing relevance budget. Frozen locks (the
+    # default) still cost full content, so this is byte-identical unless a
+    # lock is demoted to the reference tier.
+    locked_used: int = sum(
+        lock_injection_tokens(
+            b, manifest_reference_locks=manifest_reference_locks
+        )
+        for b in locked
+    )
     # #379 locks are uncapped + never trimmed; reserve a relevance floor so
     # they can't starve L2.5/L1 to zero. No-op (byte-identical) unless locks
     # leave less than the floor — see RELEVANCE_BUDGET_FLOOR_FRACTION.
@@ -3567,6 +3578,7 @@ def retrieve_v2(
     temporal_spine_node_budget: int | None = None,
     hrr_struct_index_cache: HRRStructIndexCache | None = None,
     with_doc_anchors: bool = False,
+    manifest_reference_locks: bool = False,
     now_ts: int | None = None,
     now: datetime | None = None,
 ) -> RetrievalResult:
@@ -3727,6 +3739,7 @@ def retrieve_v2(
             use_entity_persist_demote
         ),
         use_origin_tiebreak=is_origin_tiebreak_enabled(use_origin_tiebreak),
+        manifest_reference_locks=manifest_reference_locks,
         hrr_struct_index_cache=expand_cache,
         temporal_spine_enabled=use_temporal_spine,
         temporal_spine_depth=temporal_spine_depth,
