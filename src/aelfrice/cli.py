@@ -2952,6 +2952,112 @@ def _cmd_restore(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _introspect_snippet(content: str, width: int = 72) -> str:
+    """Flatten to one line and truncate for the text view."""
+    flat = " ".join(content.split())
+    return flat if len(flat) <= width else flat[: width - 1] + "…"
+
+
+def _emit_introspect_text(report: object, out: object) -> None:
+    from aelfrice.introspect import IntrospectReport
+
+    assert isinstance(report, IntrospectReport)
+    if report.total == 0:
+        print("introspect: no active beliefs match", file=out)  # type: ignore[arg-type]
+        return
+    scope = "session" if report.group_by == "session" else "project"
+    print(
+        f"introspect: {report.total} active belief(s) across "
+        f"{len(report.groups)} {scope}(s) — {report.noise_total} flagged noise",
+        file=out,  # type: ignore[arg-type]
+    )
+    for g in report.groups:
+        print(
+            f"\n{g.label}  [{g.count} belief(s), {g.noise_count} noise]",
+            file=out,  # type: ignore[arg-type]
+        )
+        for b in g.beliefs:
+            flags = ""
+            if b.lock_level != LOCK_NONE:
+                flags += " LOCK"
+            if b.noise:
+                flags += " NOISE"
+            print(
+                f"  {b.id}  μ={b.posterior_mean:.2f} n={b.evidence:g} "
+                f"recur={b.recurrence} {b.grounding:<9} {b.status:<8}"
+                f"{flags}  {_introspect_snippet(b.content)}",
+                file=out,  # type: ignore[arg-type]
+            )
+    print(
+        "\nlegend: μ=posterior mean, n=α+β evidence, recur=times re-asserted "
+        "(recurrence, NOT truth), grounding=durable/ephemeral/neutral, "
+        "status=floated vs decided (RESOLVES edges), NOISE=stranded capture.",
+        file=out,  # type: ignore[arg-type]
+    )
+    print(
+        "curate: aelf retire <id> (reversible) · aelf lock <id> · aelf resolve",
+        file=out,  # type: ignore[arg-type]
+    )
+
+
+def _introspect_report_to_json(report: object) -> dict:
+    return {
+        "group_by": report.group_by,  # type: ignore[attr-defined]
+        "total": report.total,  # type: ignore[attr-defined]
+        "noise_total": report.noise_total,  # type: ignore[attr-defined]
+        "groups": [
+            {
+                "key": g.key,
+                "label": g.label,
+                "count": g.count,
+                "noise_count": g.noise_count,
+                "beliefs": [
+                    {
+                        "id": b.id,
+                        "content": b.content,
+                        "posterior_mean": round(b.posterior_mean, 3),
+                        "evidence": b.evidence,
+                        "recurrence": b.recurrence,
+                        "grounding": b.grounding,
+                        "status": b.status,
+                        "noise": b.noise,
+                        "lock_level": b.lock_level,
+                        "lock_tier": b.lock_tier,
+                        "origin": b.origin,
+                    }
+                    for b in g.beliefs
+                ],
+            }
+            for g in report.groups  # type: ignore[attr-defined]
+        ],
+    }
+
+
+def _cmd_introspect(args: argparse.Namespace, out: object) -> int:
+    """Read-only honest-signal view over stored beliefs, grouped + de-noised (#1081)."""
+    from aelfrice.introspect import build_report
+
+    limit = None if args.limit == 0 else args.limit
+    store = _open_store()
+    try:
+        report = build_report(
+            store,
+            group_by=args.by,
+            session=args.session,
+            project=args.project,
+            only_noise=args.only_noise,
+            limit=limit,
+        )
+    finally:
+        store.close()
+
+    if args.json:
+        print(json.dumps(_introspect_report_to_json(report), indent=2), file=out)  # type: ignore[arg-type]
+    else:
+        _emit_introspect_text(report, out)
+    return 0
+
+
 def _cmd_confirm(args: argparse.Namespace, out: object) -> int:
     """Explicit user affirmation of a belief. Bumps Beta-Bernoulli alpha by 1.0."""
     from aelfrice.mcp_server import tool_confirm
@@ -7237,6 +7343,41 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="suppress locked beliefs (surface corroboration/posterior only)",
     )
     p_core.set_defaults(func=_cmd_core)
+
+    # Read-only lens: honest-signal introspection over stored beliefs (#1081).
+    # Groups active beliefs by session/project and surfaces posterior μ,
+    # recurrence, grounding, floated-vs-decided status, and stranded-capture
+    # noise together — the "analyse the beliefs it extracted" view. Curation
+    # stays in retire/lock/resolve (footer points at them).
+    p_introspect = sub.add_parser(
+        "introspect",
+        help="honest-signal view over stored beliefs, grouped by session/project and de-noised",
+    )
+    p_introspect.add_argument(
+        "--by", choices=("session", "project"), default="session",
+        help="grouping key (default: session)",
+    )
+    p_introspect.add_argument(
+        "--session", default=None, metavar="ID",
+        help="restrict to one ingest session id",
+    )
+    p_introspect.add_argument(
+        "--project", default=None, metavar="CTX",
+        help="restrict to one project_context",
+    )
+    p_introspect.add_argument(
+        "--only-noise", action="store_true", dest="only_noise",
+        help="show only stranded-capture-flagged beliefs (the retire shortlist)",
+    )
+    p_introspect.add_argument(
+        "--limit", type=int, default=100, metavar="N",
+        help="cap belief count after filtering, newest first (default 100; 0 = no cap)",
+    )
+    p_introspect.add_argument(
+        "--json", action="store_true", dest="json",
+        help="emit JSON instead of the grouped text view",
+    )
+    p_introspect.set_defaults(func=_cmd_introspect)
 
     # Hidden: belief lifecycle inverse of `lock` / `validate`. Power-user.
     p_demote = sub.add_parser(

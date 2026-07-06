@@ -58,6 +58,11 @@ EXPECTED_COMMANDS = (
     # introspection tool points users at.
     "retire",
     "restore",
+    # v4.0 (#1081) — read-only honest-signal introspection view. Groups
+    # active beliefs by session/project and surfaces posterior μ, recurrence,
+    # grounding, floated-vs-decided status, and stranded-capture noise
+    # together. Curation stays in retire/lock/resolve.
+    "introspect",
     # v2.0 (#439) — load-bearing belief lens (locked ∪ corroborated ∪ high-posterior).
     "core",
     # v2.0 (#365 R4) — operator-facing relevance-calibration harness
