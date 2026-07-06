@@ -740,18 +740,34 @@ def _env_entity_persist_demote_override() -> bool | None:
     return None
 
 
-def is_entity_persist_demote_enabled(kwarg: bool | None = None) -> bool:
+def is_entity_persist_demote_enabled(
+    kwarg: bool | None = None, *, start: Path | None = None
+) -> bool:
     """Resolve the entity-persistence demotion flag (#1096).
 
-    Precedence: AELFRICE_ENTITY_PERSIST_DEMOTE env var → explicit kwarg →
-    default False. Mirrors the HRR-expand resolution; default-OFF until
-    the bench-gated flip (#1096 G2)."""
+    Precedence (first decisive wins):
+      1. AELFRICE_ENTITY_PERSIST_DEMOTE env var (truthy / falsy normalised).
+      2. Explicit `kwarg` from the caller.
+      3. `[retrieval] use_entity_persist_demote` in `.aelfrice.toml`.
+      4. Default: **True** — the demotion lane flipped default-ON at v4.0
+         once the #1096 G2 mixed-corpus eval (#1103) cleared the
+         no-regression gate: durable recall held (20→20), ephemeral
+         coordination demoted (20→3 at the tight pack budget), MRR
+         0.883→1.000; recall-safe / inert on LoCoMo (all `noun_phrase`).
+         Opt out via the env var, kwarg, or TOML key for parity with the
+         pre-flip ranking.
+
+    Reachable only from `retrieve_v2()`; the legacy `retrieve()` path does
+    not expose the lane (production cutover tracked separately)."""
     env = _env_entity_persist_demote_override()
     if env is not None:
         return env
     if kwarg is not None:
         return kwarg
-    return False
+    toml_value = _read_toml_flag_for(ENTITY_PERSIST_DEMOTE_FLAG, start)
+    if toml_value is not None:
+        return toml_value
+    return True
 
 
 def _env_origin_tiebreak_override() -> bool | None:

@@ -10,6 +10,12 @@ measurable demotion). This is the mixed-corpus retrieval eval that lane
 needs, built as a self-contained deterministic fixture so G2 is a
 repeatable public gate rather than a one-off lab measurement.
 
+This eval cleared G2, and the lane subsequently flipped **default-ON in
+``retrieve_v2``** at v4.0 (the resolver default; the legacy ``retrieve()``
+path does not expose the lane — production cutover is tracked
+separately). The tests below pass the flag explicitly, so they pin
+behaviour on both sides of the default and are unaffected by the flip.
+
 The corpus (``_entity_persist_mixed_store``) pairs, per topic, durable
 technical beliefs (grounding to ``file_path`` / ``identifier`` /
 ``error_code``) with ephemeral coordination beliefs (grounding to
@@ -163,16 +169,28 @@ def test_g2_recall_safe_and_demotes(corpus) -> None:
     )
 
 
-def test_g1_byte_identical_when_off(corpus) -> None:
-    """G1 companion: with the lane off, results are identical to a run
-    that never passes the flag (byte-identical default-off posture)."""
+def test_default_on_after_flip(corpus) -> None:
+    """Post-#1096 flip: the lane is default-ON in ``retrieve_v2``. A run
+    that passes no flag matches an explicit ``demote=True`` run, and the
+    opt-out (``demote=False``) stays reachable and reorders at least one
+    topic — so the default flip is actually exercised, not a no-op. (G1's
+    byte-identical-when-off invariant itself is pinned by the explicit
+    ``demote=False`` arm in ``test_g2_recall_safe_and_demotes``.)"""
     store = corpus.store
+    saw_difference = False
     for topic in TOPICS:
+        explicit_on = _ids(store, topic.query, 1000, demote=True)
         explicit_off = _ids(store, topic.query, 1000, demote=False)
         default = [
             b.id
             for b in retrieve_v2(store, topic.query, budget=1000).beliefs
         ]
-        assert explicit_off == default, (
-            f"default != explicit-off for {topic.query!r}"
+        assert default == explicit_on, (
+            f"default should equal explicit-ON (flip landed) for {topic.query!r}"
         )
+        if explicit_off != default:
+            saw_difference = True
+    assert saw_difference, (
+        "the lane must reorder at least one topic vs the off-path — "
+        "otherwise the default flip is untested"
+    )

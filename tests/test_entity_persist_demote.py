@@ -204,11 +204,16 @@ def test_penalty_monotone_low_s1_more_negative() -> None:
 # --- resolver -------------------------------------------------------------
 
 
-def test_resolver_default_off() -> None:
-    assert is_entity_persist_demote_enabled(None) is False
+def test_resolver_default_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    # v4.0 flip (#1096/#1103): with no env/kwarg/TOML rung set, the lane
+    # now resolves ON.
+    monkeypatch.delenv("AELFRICE_ENTITY_PERSIST_DEMOTE", raising=False)
+    assert is_entity_persist_demote_enabled(None) is True
 
 
-def test_resolver_kwarg_true() -> None:
+def test_resolver_kwarg_false_opts_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AELFRICE_ENTITY_PERSIST_DEMOTE", raising=False)
+    assert is_entity_persist_demote_enabled(False) is False
     assert is_entity_persist_demote_enabled(True) is True
 
 
@@ -217,6 +222,20 @@ def test_resolver_env_overrides_kwarg(monkeypatch: pytest.MonkeyPatch) -> None:
     assert is_entity_persist_demote_enabled(True) is False
     monkeypatch.setenv("AELFRICE_ENTITY_PERSIST_DEMOTE", "1")
     assert is_entity_persist_demote_enabled(False) is True
+
+
+def test_resolver_toml_opts_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # TOML rung (env > kwarg > TOML > default): a project that pins the
+    # flag false opts out even after the v4.0 default-on flip.
+    monkeypatch.delenv("AELFRICE_ENTITY_PERSIST_DEMOTE", raising=False)
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[retrieval]\nuse_entity_persist_demote = false\n"
+    )
+    assert is_entity_persist_demote_enabled(None, start=tmp_path) is False
+    # An explicit env/kwarg still wins over the TOML rung.
+    assert is_entity_persist_demote_enabled(True, start=tmp_path) is True
 
 
 # --- integration: retrieve_v2 + _l1_hits ----------------------------------
@@ -236,18 +255,21 @@ def _seed_two(store: MemoryStore) -> None:
     store._conn.commit()
 
 
-def test_retrieve_v2_off_is_byte_identical_default() -> None:
+def test_retrieve_v2_default_is_on() -> None:
+    # v4.0 flip (#1096): the no-flag default now matches explicit
+    # demote=True (the opt-out demote=False path is exercised by
+    # test_retrieve_v2_on_reorders_not_drops below).
     s = MemoryStore(":memory:")
     try:
         _seed_two(s)
         base = [b.id for b in retrieve_v2(s, "widget").beliefs]
-        off = [
+        on = [
             b.id
-            for b in retrieve_v2(s, "widget", use_entity_persist_demote=False).beliefs
+            for b in retrieve_v2(s, "widget", use_entity_persist_demote=True).beliefs
         ]
     finally:
         s.close()
-    assert base == off  # default == explicit-off
+    assert base == on  # default == explicit-on (flip landed)
 
 
 def test_retrieve_v2_on_reorders_not_drops() -> None:
