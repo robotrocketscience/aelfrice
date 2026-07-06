@@ -14,6 +14,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import secrets
 import sqlite3
 from datetime import datetime, timezone
@@ -74,6 +75,11 @@ from aelfrice.ulid import ulid
 #
 # Anything outside the allowlist must go through
 # `record_ingest` + `run_worker` so the write trail starts on the log.
+
+# #1096: a bare issue/PR number ("#879", "879") is a transient grounding
+# token; an identifier with letters is a durable symbol. Used by
+# `entity_persistence_scores`.
+_BARE_NUMBER_RE: Final[re.Pattern[str]] = re.compile(r"^#?\d+$")
 
 _ENV_WRITE_LOG_AUTHORITATIVE: Final[str] = "AELFRICE_WRITE_LOG_AUTHORITATIVE"
 _WLAUTH_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
@@ -4523,6 +4529,65 @@ class MemoryStore:
             params,
         )
         return [_row_to_edge(r) for r in cur.fetchall()]
+
+    def entity_persistence_scores(
+        self, belief_ids: list[str]
+    ) -> dict[str, float]:
+        """Entity-persistence (referential grounding) score per belief (#1096).
+
+        For each belief that has at least one extracted entity, returns
+
+            S1 = durable / (durable + transient + 1)
+
+        where *durable* entities ground to things that persist (file
+        paths, error codes, symbol-like identifiers) and *transient*
+        entities ground to ephemeral coordination tokens (version /
+        branch tags, and bare issue/PR numbers). A low score marks
+        ephemeral coordination chatter; a high score marks durable
+        technical content. The `+1` smoothing sends a durable-free
+        belief toward 0 (the discriminating case measured on the live
+        store: ephemeral status has no durable grounding).
+
+        Beliefs with **no** entity rows are deliberately absent from the
+        result — the caller applies no demotion to them, so entity-free
+        durable content (docstrings, formulae) is never penalised.
+
+        Deterministic: pure counts over the `belief_entities` index.
+        Empty input → empty dict (no SQL).
+        """
+        if not belief_ids:
+            return {}
+        ph = ",".join("?" * len(belief_ids))
+        cur = self._conn.execute(
+            f"SELECT belief_id, entity_lower, kind FROM belief_entities "
+            f"WHERE belief_id IN ({ph})",
+            tuple(belief_ids),
+        )
+        durable: dict[str, int] = {}
+        transient: dict[str, int] = {}
+        for row in cur.fetchall():
+            bid = row["belief_id"]
+            kind = row["kind"]
+            el = (row["entity_lower"] or "")
+            is_bare_num = _BARE_NUMBER_RE.match(el) is not None
+            if kind in ("file_path", "error_code") or (
+                kind == "identifier" and not is_bare_num
+            ):
+                durable[bid] = durable.get(bid, 0) + 1
+            elif kind in ("version", "branch") or (
+                kind == "identifier" and is_bare_num
+            ):
+                transient[bid] = transient.get(bid, 0) + 1
+            else:
+                # noun_phrase / url — grounding-neutral; seen so the
+                # belief is entity-bearing (gets a score) but not counted.
+                durable.setdefault(bid, 0)
+        out: dict[str, float] = {}
+        for bid in set(durable) | set(transient):
+            d = durable.get(bid, 0)
+            t = transient.get(bid, 0)
+            out[bid] = d / (d + t + 1)
+        return out
 
     def edges_to(self, dst: str) -> list[Edge]:
         """Return every edge whose `dst` is `dst`. Symmetric companion
