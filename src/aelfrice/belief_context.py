@@ -47,6 +47,8 @@ class ContextResult:
       caller's cap; `turn_match_total` is the pre-cap count.
     - `anchor_contexts`: (anchor_text, linked_belief_content) pairs from
       the belief's outbound DERIVED_FROM edges (adjacent-context substrate).
+      Truncated to the caller's cap; `anchor_context_total` is the pre-cap
+      count.
     - `has_session`: whether the belief carried a session_id at all
       (onboard/scanner beliefs do not, so the join can never fire).
     """
@@ -57,6 +59,7 @@ class ContextResult:
     turn_matches: list[str] = field(default_factory=list)
     turn_match_total: int = 0
     anchor_contexts: list[tuple[str, str]] = field(default_factory=list)
+    anchor_context_total: int = 0
 
     @property
     def recovered(self) -> bool:
@@ -99,6 +102,7 @@ def recover_context(
     belief_id: str,
     *,
     max_turn_matches: int = DEFAULT_MAX_TURN_MATCHES,
+    max_anchor_contexts: int = DEFAULT_MAX_TURN_MATCHES,
 ) -> ContextResult | None:
     """Best-effort recover the source-turn context for one belief.
 
@@ -134,11 +138,15 @@ def recover_context(
                 turn_matches.append(text)
 
     anchor_contexts: list[tuple[str, str]] = []
+    anchor_total = 0
     for edge in store.edges_from(belief_id):
         if edge.type != EDGE_DERIVED_FROM:
             continue
         anchor = edge.anchor_text
         if not anchor:
+            continue
+        anchor_total += 1
+        if len(anchor_contexts) >= max_anchor_contexts:
             continue
         linked = store.get_belief(edge.dst)
         linked_content = linked.content if linked is not None else ""
@@ -151,4 +159,5 @@ def recover_context(
         turn_matches=turn_matches,
         turn_match_total=turn_total,
         anchor_contexts=anchor_contexts,
+        anchor_context_total=anchor_total,
     )

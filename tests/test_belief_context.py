@@ -237,6 +237,30 @@ def test_recover_skips_non_utf8_transcript_file(
     assert "coach API" in res.turn_matches[0]
 
 
+def test_recover_anchor_contexts_are_capped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Outbound DERIVED_FROM fan-out is capped for display like turn matches,
+    with the pre-cap total still reported."""
+    _point_transcripts_at(monkeypatch, tmp_path)
+    _write_turns(tmp_path / "turns.jsonl", [])
+    s = MemoryStore(":memory:")
+    try:
+        s.insert_belief(_mk("b1", "a claim", session_id="s1"))
+        for i in range(7):
+            s.insert_belief(_mk(f"d{i}", f"linked {i}"))
+            s.insert_edge(
+                Edge(src="b1", dst=f"d{i}", type=EDGE_DERIVED_FROM,
+                     weight=1.0, anchor_text=f"anchor {i}")
+            )
+        res = recover_context(s, "b1", max_anchor_contexts=3)
+    finally:
+        s.close()
+    assert res is not None
+    assert res.anchor_context_total == 7
+    assert len(res.anchor_contexts) == 3  # capped
+
+
 # --- CLI surface ----------------------------------------------------------
 
 

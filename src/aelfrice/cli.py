@@ -2089,7 +2089,9 @@ def _cmd_context(args: argparse.Namespace, out: object) -> int:
         print("", file=out)  # type: ignore[arg-type]
 
     if result.anchor_contexts:
-        print("adjacent context (DERIVED_FROM anchors):", file=out)  # type: ignore[arg-type]
+        extra = result.anchor_context_total - len(result.anchor_contexts)
+        suffix = f" (+{extra} more)" if extra > 0 else ""
+        print(f"adjacent context (DERIVED_FROM anchors){suffix}:", file=out)  # type: ignore[arg-type]
         for anchor, _linked in result.anchor_contexts:
             print(f"    {anchor.strip()}", file=out)  # type: ignore[arg-type]
         print("", file=out)  # type: ignore[arg-type]
