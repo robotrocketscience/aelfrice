@@ -148,6 +148,7 @@ _RETENTION_DEFAULT_BY_SOURCE: Final[dict[str, str]] = {
     "python_ast": RETENTION_FACT,
     "mcp_remember": RETENTION_FACT,
     "cli_remember": RETENTION_FACT,
+    "transcript": RETENTION_FACT,
     "claude_memory": RETENTION_FACT,
     "feedback_loop_synthesis": RETENTION_SNAPSHOT,
     "legacy_unknown": RETENTION_UNKNOWN,
@@ -268,6 +269,15 @@ INGEST_SOURCE_GIT: Final[str] = "git"
 INGEST_SOURCE_PYTHON_AST: Final[str] = "python_ast"
 INGEST_SOURCE_MCP_REMEMBER: Final[str] = "mcp_remember"
 INGEST_SOURCE_CLI_REMEMBER: Final[str] = "cli_remember"
+# #1089 axis-2 prerequisite: conversational / passive transcript capture.
+# Before this it masqueraded as `filesystem` (the project-file scanner
+# source); naming it gives passive capture a first-class source kind, so
+# provenance is honest in `ingest_log` and "rank curated claude-memory
+# above conversational capture" becomes expressible. The wire string
+# matches the existing source_path label (`_TRANSCRIPT_SOURCE_LABEL`);
+# retention default stays RETENTION_FACT (identical to the prior
+# filesystem tag — this rename does not change decay/GC behaviour).
+INGEST_SOURCE_TRANSCRIPT: Final[str] = "transcript"
 INGEST_SOURCE_FEEDBACK_LOOP_SYNTHESIS: Final[str] = "feedback_loop_synthesis"
 # v3 #985 claude-memory write-through. A per-memory `.md` fact file mirrored
 # from the upstream auto-memory store. Carries `raw_meta["memory_type"]`
@@ -283,6 +293,7 @@ INGEST_SOURCE_KINDS: Final[frozenset[str]] = frozenset({
     INGEST_SOURCE_PYTHON_AST,
     INGEST_SOURCE_MCP_REMEMBER,
     INGEST_SOURCE_CLI_REMEMBER,
+    INGEST_SOURCE_TRANSCRIPT,
     INGEST_SOURCE_FEEDBACK_LOOP_SYNTHESIS,
     INGEST_SOURCE_CLAUDE_MEMORY,
     INGEST_SOURCE_LEGACY_UNKNOWN,

@@ -47,10 +47,11 @@ tests/corpus/replay_soak/
     ├── mcp_remember_v0_1.jsonl                10 rows
     ├── cli_remember_v0_1.jsonl                10 rows
     ├── feedback_loop_synthesis_v0_1.jsonl     10 rows
+    ├── transcript_v0_1.jsonl                  10 rows
     └── claude_memory_v0_1.jsonl               6 rows
 ```
 
-v0.1 target: 66 rows total across 7 source kinds (10 per kind except claude_memory at 6). Ratification floor was
+v0.1 target: 76 rows total across 8 source kinds (10 per kind except claude_memory at 6). Ratification floor was
 60–120; v0.1 starts at the floor and v0.2 expansion can extend per
 kind without breaking the runner.
 
@@ -61,7 +62,7 @@ Every line is a JSON object. Fields:
 | Field | Type | Description |
 |---|---|---|
 | `id` | string | Stable unique row id within the file. Convention: `<source_kind>-<NNN>`. |
-| `source_kind` | string | One of the 7 non-`legacy_unknown` `INGEST_SOURCE_KINDS`. Must equal the file's kind. |
+| `source_kind` | string | One of the 8 non-`legacy_unknown` `INGEST_SOURCE_KINDS`. Must equal the file's kind. |
 | `source_path` | string \| null | Conventional shape per kind (e.g., `doc:README.md` for `filesystem`). May be null. |
 | `raw_text` | string | Non-empty, non-question text that `aelfrice.derivation.derive` will persist. The classifier's `persist=False` paths (empty, question form) are explicitly out of scope here. |
 | `raw_meta` | object \| null | Optional per-source-kind metadata that the runner will JSON-encode into the log row. May be null. |
