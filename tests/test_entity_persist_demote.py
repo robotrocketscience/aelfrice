@@ -11,7 +11,6 @@ import math
 
 import pytest
 
-from aelfrice import retrieval
 from aelfrice.retrieval import (
     ENTITY_PERSIST_DEMOTE_EPS,
     ENTITY_PERSIST_DEMOTE_WEIGHT,
