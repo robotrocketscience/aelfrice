@@ -410,7 +410,7 @@ Boolean, default `false` (v4.0+, [#1089](https://github.com/robotrocketscience/a
 
 This is a within-tier **tie-break**, never a primary rerank term — the origin key sits *between* the relevance score and the id tie-break, so relevance always dominates and byte-identical behaviour is preserved when the flag is off. It applies in both ranked tiers (the L1 FTS rerank and the L2.5 entity-index overlap). Deliberately *not* an origin *rerank lane* — that was refuted on LoCoMo in #1013 (the failure there was a BM25 recall limit, which reranking cannot fix). Deterministic per #605.
 
-Precedence (first decisive wins): env var `AELFRICE_ORIGIN_TIEBREAK=1` > explicit Python kwarg `use_origin_tiebreak=<bool>` on `retrieve()` / `retrieve_v2()` > TOML `[retrieval] use_origin_tiebreak` > default `false`. Note a single-provenance corpus (e.g. LoCoMo) shares one origin tier, so the tie-break is inert there; the default-ON flip is a separate operator call.
+Precedence (first decisive wins): env var `AELFRICE_ORIGIN_TIEBREAK=1` > explicit Python kwarg `use_origin_tiebreak=<bool>` on `retrieve_v2()` (the lane is not exposed on the legacy `retrieve()` path) > TOML `[retrieval] use_origin_tiebreak` > default `false`. Note a single-provenance corpus (e.g. LoCoMo) shares one origin tier, so the tie-break is inert there; the default-ON flip is a separate operator call.
 
 Negative values clamp to `0.0`. Non-numeric env values trace to stderr and fall through. The cache key is extended with the resolved weight (rounded to four decimals), so two callers passing different weights against the same store do not collide on a shared `RetrievalCache`.
 
