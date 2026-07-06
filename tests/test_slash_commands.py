@@ -52,6 +52,12 @@ EXPECTED_COMMANDS = (
     # test_slash_commands_match_visible_cli_subcommands both enforce the
     # slash file exists and matches the CLI surface.
     "delete",
+    # v4.0 (#1081) — reversible soft-delete curation pair. `retire` sets
+    # valid_to (belief drops out of retrieval/search, evidence trail
+    # preserved); `restore` clears it. The low-friction curation verbs the
+    # introspection tool points users at.
+    "retire",
+    "restore",
     # v2.0 (#439) — load-bearing belief lens (locked ∪ corroborated ∪ high-posterior).
     "core",
     # v2.0 (#365 R4) — operator-facing relevance-calibration harness

@@ -2872,6 +2872,86 @@ def _cmd_delete(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _cmd_retire(args: argparse.Namespace, out: object) -> int:
+    """Soft-delete (retire) a belief — reversible via `aelf restore` (#1081).
+
+    The gentle sibling of `aelf delete`: instead of the hard-delete cascade,
+    this sets `valid_to` so the belief drops out of retrieval/search while
+    its evidence trail (edges, entities, corroborations) is preserved.
+    `aelf restore` clears `valid_to` to bring it back.
+    """
+    from aelfrice.federation import ForeignBeliefError
+    from aelfrice.models import LOCK_USER
+
+    store = _open_store()
+    try:
+        try:
+            store.assert_local_ownership(args.belief_id)
+        except ForeignBeliefError as e:
+            print(f"retire error: {e}", file=sys.stderr)
+            return 1
+        belief = store.get_belief(args.belief_id)
+        if belief is None:
+            print(f"belief not found: {args.belief_id}", file=sys.stderr)
+            return 1
+        if belief.valid_to is not None:
+            print(f"already retired: {args.belief_id}", file=out)  # type: ignore[arg-type]
+            return 0
+        if belief.lock_level == LOCK_USER and not args.force:
+            print(
+                "belief is locked (lock_level=user); use --force to retire anyway",
+                file=sys.stderr,
+            )
+            return 1
+        source = "user_retired_force" if args.force else "user_retired"
+        store.insert_feedback_event(
+            belief_id=args.belief_id,
+            valence=-1.0,
+            source=source,
+            created_at=_utc_now_iso(),
+        )
+        store.soft_delete_belief(args.belief_id)
+        print(
+            f"retired: {args.belief_id} "
+            f"(reversible — `aelf restore {args.belief_id}` to undo)",
+            file=out,  # type: ignore[arg-type]
+        )
+    finally:
+        store.close()
+    return 0
+
+
+def _cmd_restore(args: argparse.Namespace, out: object) -> int:
+    """Restore a soft-deleted (retired) belief to active — inverse of `aelf retire`."""
+    from aelfrice.federation import ForeignBeliefError
+
+    store = _open_store()
+    try:
+        try:
+            store.assert_local_ownership(args.belief_id)
+        except ForeignBeliefError as e:
+            print(f"restore error: {e}", file=sys.stderr)
+            return 1
+        restored = store.restore_belief(args.belief_id)
+        if not restored:
+            print(
+                f"not restorable: {args.belief_id} "
+                "(already active, or unknown id)",
+                file=sys.stderr,
+            )
+            return 1
+        store.insert_feedback_event(
+            belief_id=args.belief_id,
+            valence=1.0,
+            source="user_restored",
+            created_at=_utc_now_iso(),
+        )
+        print(f"restored: {args.belief_id}", file=out)  # type: ignore[arg-type]
+    finally:
+        store.close()
+    return 0
+
+
 def _cmd_confirm(args: argparse.Namespace, out: object) -> int:
     """Explicit user affirmation of a belief. Bumps Beta-Bernoulli alpha by 1.0."""
     from aelfrice.mcp_server import tool_confirm
@@ -7235,6 +7315,29 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help="allow deletion of beliefs with lock_level=user",
     )
     p_delete.set_defaults(func=_cmd_delete)
+
+    # Soft-delete (retire) — the reversible sibling of `delete`. Sets
+    # valid_to so the belief drops out of retrieval/search but its
+    # evidence trail survives; `aelf restore` brings it back (#1081).
+    p_retire = sub.add_parser(
+        "retire",
+        help="soft-delete a belief (reversible via `aelf restore`; keeps its evidence trail)",
+    )
+    p_retire.add_argument("belief_id", help="id of the belief to retire")
+    p_retire.add_argument(
+        "--force",
+        action="store_true",
+        help="allow retiring beliefs with lock_level=user",
+    )
+    p_retire.set_defaults(func=_cmd_retire)
+
+    # Restore — clear valid_to on a retired/soft-deleted belief (#1081).
+    p_restore = sub.add_parser(
+        "restore",
+        help="restore a retired (soft-deleted) belief to active — inverse of `aelf retire`",
+    )
+    p_restore.add_argument("belief_id", help="id of the belief to restore")
+    p_restore.set_defaults(func=_cmd_restore)
 
     # Explicit user affirmation — bumps Beta-Bernoulli alpha without freezing.
     p_confirm = sub.add_parser(

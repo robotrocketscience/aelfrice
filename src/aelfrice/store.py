@@ -2264,6 +2264,46 @@ class MemoryStore:
         self._conn.commit()
         self._fire_invalidation()
 
+    def restore_belief(self, belief_id: str) -> bool:
+        """Clear ``valid_to`` on a soft-deleted belief, returning it to active.
+
+        Inverse of ``soft_delete_belief`` (#1081 reversible curation).
+        Moves a belief from soft-deleted (``valid_to`` non-NULL — a GC'd
+        phantom or a ``retire``/``review --apply`` removal) back to active
+        (``valid_to IS NULL``) and re-inserts its derived FTS index row,
+        which ``soft_delete_belief`` pruned, so the belief re-enters keyword
+        search. Edges, entity-index, and corroboration rows are never
+        removed by the soft-delete, so nothing else needs rehydrating.
+
+        Idempotent via the ``valid_to IS NOT NULL`` guard: restoring an
+        already-active belief (or an unknown id) is a no-op that returns
+        ``False``. Returns ``True`` only when a row actually transitioned
+        from soft-deleted to active.
+        """
+        row = self._conn.execute(
+            "SELECT content FROM beliefs WHERE id = ? AND valid_to IS NOT NULL",
+            (belief_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        self._conn.execute(
+            "UPDATE beliefs SET valid_to = NULL "
+            "WHERE id = ? AND valid_to IS NOT NULL",
+            (belief_id,),
+        )
+        # Re-insert the FTS row soft_delete pruned. DELETE-then-INSERT is
+        # defensive: soft_delete already removed it, but a stale row must
+        # never survive into the rebuilt index.
+        self._conn.execute("DELETE FROM beliefs_fts WHERE id = ?", (belief_id,))
+        self._conn.execute(
+            "INSERT INTO beliefs_fts (id, content) VALUES (?, ?)",
+            (belief_id, row["content"]),
+        )
+        self._bump_belief_version(belief_id)
+        self._conn.commit()
+        self._fire_invalidation()
+        return True
+
     def update_last_confirmed_at(self, belief_id: str, ts_iso: str) -> None:
         """Set ``last_confirmed_at`` on a belief (v3.5 #936 review workflow).
 
