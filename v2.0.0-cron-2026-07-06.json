@@ -1,0 +1,334 @@
+{
+  "aelfrice_version": "3.8.0",
+  "captured_at_utc": "2026-07-06T10:30:32Z",
+  "git_commit": "d4f20183a2701f86a1fec5f33bf0fe86e56e1d79",
+  "harness_version": "1",
+  "headline_cut": {
+    "amabench": [
+      {
+        "args": [],
+        "sub_key": null
+      }
+    ],
+    "locomo": [
+      {
+        "args": [],
+        "sub_key": null
+      }
+    ],
+    "longmemeval": [
+      {
+        "args": [],
+        "sub_key": null
+      }
+    ],
+    "mab": [
+      {
+        "args": [
+          "--split",
+          "Conflict_Resolution"
+        ],
+        "sub_key": "Conflict_Resolution"
+      },
+      {
+        "args": [
+          "--split",
+          "Test_Time_Learning"
+        ],
+        "sub_key": "Test_Time_Learning"
+      },
+      {
+        "args": [
+          "--split",
+          "Long_Range_Understanding"
+        ],
+        "sub_key": "Long_Range_Understanding"
+      },
+      {
+        "args": [
+          "--split",
+          "Accurate_Retrieval"
+        ],
+        "sub_key": "Accurate_Retrieval"
+      }
+    ],
+    "structmemeval": [
+      {
+        "args": [
+          "--task",
+          "location",
+          "--bench",
+          "big"
+        ],
+        "sub_key": "location"
+      },
+      {
+        "args": [
+          "--task",
+          "accounting",
+          "--bench",
+          "big"
+        ],
+        "sub_key": "accounting"
+      },
+      {
+        "args": [
+          "--task",
+          "recommendations",
+          "--bench",
+          "big"
+        ],
+        "sub_key": "recommendations"
+      },
+      {
+        "args": [
+          "--task",
+          "tree",
+          "--bench",
+          "big"
+        ],
+        "sub_key": "tree"
+      }
+    ]
+  },
+  "label": "v2.0.0 canonical",
+  "results": {
+    "amabench": {
+      "_": {
+        "_elapsed_sec": 1022.443,
+        "_status": "ok",
+        "output": {
+          "accuracy_by_domain": {
+            "EMBODIED_AI": {
+              "count": 360,
+              "exact_match": 0.0,
+              "f1": 0.0636,
+              "substring_exact_match": 0.0
+            },
+            "Game": {
+              "count": 360,
+              "exact_match": 0.0,
+              "f1": 0.0719,
+              "substring_exact_match": 0.0
+            },
+            "OPENWORLD_QA": {
+              "count": 360,
+              "exact_match": 0.0,
+              "f1": 0.0218,
+              "substring_exact_match": 0.0806
+            },
+            "SOFTWARE": {
+              "count": 432,
+              "exact_match": 0.0,
+              "f1": 0.0295,
+              "substring_exact_match": 0.0486
+            },
+            "TEXT2SQL": {
+              "count": 612,
+              "exact_match": 0.0,
+              "f1": 0.1348,
+              "substring_exact_match": 0.0
+            },
+            "WEB": {
+              "count": 372,
+              "exact_match": 0.0,
+              "f1": 0.0376,
+              "substring_exact_match": 0.0108
+            }
+          },
+          "accuracy_by_type": {
+            "A": {
+              "count": 839,
+              "exact_match": 0.0,
+              "f1": 0.0667,
+              "substring_exact_match": 0.0381
+            },
+            "B": {
+              "count": 596,
+              "exact_match": 0.0,
+              "f1": 0.0677,
+              "substring_exact_match": 0.0034
+            },
+            "C": {
+              "count": 647,
+              "exact_match": 0.0,
+              "f1": 0.0554,
+              "substring_exact_match": 0.0294
+            },
+            "D": {
+              "count": 414,
+              "exact_match": 0.0,
+              "f1": 0.0813,
+              "substring_exact_match": 0.0024
+            }
+          },
+          "domain_counts": {
+            "EMBODIED_AI": 30,
+            "Game": 30,
+            "OPENWORLD_QA": 30,
+            "SOFTWARE": 36,
+            "TEXT2SQL": 51,
+            "WEB": 31
+          },
+          "exact_match": 0.0,
+          "f1": 0.0664,
+          "substring_exact_match": 0.0216,
+          "total_episodes": 208,
+          "total_qa": 2496,
+          "type_counts": {
+            "A": 839,
+            "B": 596,
+            "C": 647,
+            "D": 414
+          }
+        }
+      }
+    },
+    "locomo": {
+      "_": {
+        "_elapsed_sec": 0.559,
+        "_error_message": "LoCoMo data not found at /tmp/LoCoMo/data/locomo10.json: [Errno 2] No such file or directory: '/tmp/LoCoMo/data/locomo10.json'",
+        "_status": "skipped_data_missing"
+      }
+    },
+    "longmemeval": {
+      "_": {
+        "_elapsed_sec": 283.109,
+        "_status": "ok",
+        "output": {
+          "avg_beliefs_per_query": 48.93,
+          "avg_latency_ms": 7.02,
+          "category_stats": {
+            "knowledge-update": {
+              "avg_beliefs": 50.35,
+              "avg_latency_ms": 6.99,
+              "count": 78,
+              "exact_match": 0.0,
+              "f1": 0.0065,
+              "substring_exact_match": 0.7436
+            },
+            "multi-session": {
+              "avg_beliefs": 50.55,
+              "avg_latency_ms": 8.87,
+              "count": 133,
+              "exact_match": 0.0,
+              "f1": 0.0055,
+              "substring_exact_match": 0.391
+            },
+            "single-session-assistant": {
+              "avg_beliefs": 37.16,
+              "avg_latency_ms": 3.49,
+              "count": 56,
+              "exact_match": 0.0,
+              "f1": 0.0206,
+              "substring_exact_match": 0.5357
+            },
+            "single-session-preference": {
+              "avg_beliefs": 50.17,
+              "avg_latency_ms": 5.05,
+              "count": 30,
+              "exact_match": 0.0,
+              "f1": 0.0656,
+              "substring_exact_match": 0.0
+            },
+            "single-session-user": {
+              "avg_beliefs": 49.77,
+              "avg_latency_ms": 4.82,
+              "count": 70,
+              "exact_match": 0.0,
+              "f1": 0.0065,
+              "substring_exact_match": 0.8286
+            },
+            "temporal-reasoning": {
+              "avg_beliefs": 50.7,
+              "avg_latency_ms": 8.29,
+              "count": 133,
+              "exact_match": 0.0,
+              "f1": 0.0102,
+              "substring_exact_match": 0.3158
+            }
+          },
+          "exact_match": 0.0,
+          "f1": 0.0123,
+          "substring_exact_match": 0.48,
+          "total_ingest_time_s": 251.39,
+          "total_ingest_turns": 10960,
+          "total_questions": 500
+        }
+      }
+    },
+    "mab": {
+      "Accurate_Retrieval": {
+        "_elapsed_sec": 907.228,
+        "_status": "ok",
+        "output": {
+          "exact_match": 0.0,
+          "f1": 0.0105,
+          "source_filter": null,
+          "split": "Accurate_Retrieval",
+          "substring_exact_match": 0.154,
+          "total_questions": 2000
+        }
+      },
+      "Conflict_Resolution": {
+        "_elapsed_sec": 256.327,
+        "_status": "ok",
+        "output": {
+          "exact_match": 0.0,
+          "f1": 0.0065,
+          "source_filter": null,
+          "split": "Conflict_Resolution",
+          "substring_exact_match": 0.7025,
+          "total_questions": 800
+        }
+      },
+      "Long_Range_Understanding": {
+        "_elapsed_sec": 2459.569,
+        "_status": "ok",
+        "output": {
+          "exact_match": 0.0,
+          "f1": 0.1807,
+          "source_filter": null,
+          "split": "Long_Range_Understanding",
+          "substring_exact_match": 0.0234,
+          "total_questions": 171
+        }
+      },
+      "Test_Time_Learning": {
+        "_elapsed_sec": 752.13,
+        "_status": "ok",
+        "output": {
+          "exact_match": 0.0,
+          "f1": 0.0001,
+          "source_filter": null,
+          "split": "Test_Time_Learning",
+          "substring_exact_match": 0.0743,
+          "total_questions": 700
+        }
+      }
+    },
+    "structmemeval": {
+      "accounting": {
+        "_elapsed_sec": 0.214,
+        "_error_message": "No cases found. Check --data path and --task/--bench options.",
+        "_status": "skipped_data_missing"
+      },
+      "location": {
+        "_elapsed_sec": 0.217,
+        "_error_message": "No cases found. Check --data path and --task/--bench options.",
+        "_status": "skipped_data_missing"
+      },
+      "recommendations": {
+        "_elapsed_sec": 0.213,
+        "_error_message": "No cases found. Check --data path and --task/--bench options.",
+        "_status": "skipped_data_missing"
+      },
+      "tree": {
+        "_elapsed_sec": 0.211,
+        "_error_message": "No cases found. Check --data path and --task/--bench options.",
+        "_status": "skipped_data_missing"
+      }
+    }
+  },
+  "schema_version": 2
+}
