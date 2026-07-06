@@ -35,6 +35,8 @@ from aelfrice.models import (
     INGEST_SOURCE_LEGACY_UNKNOWN,
     ONBOARD_STATE_COMPLETED,
     ONBOARD_STATE_PENDING,
+    ORIGIN_RETRIEVAL_PRIORITY,
+    ORIGIN_RETRIEVAL_PRIORITY_DEFAULT,
     RETENTION_CLASSES,
     RETENTION_UNKNOWN,
     Belief,
@@ -743,6 +745,41 @@ def _escape_fts5_query(query: str) -> str:
         inner = t.replace('"', '""')
         escaped.append(f'"{inner}"')
     return " ".join(escaped)
+
+
+def _build_origin_priority_case() -> tuple[str, tuple[str, ...]]:
+    """Build the #1089 axis-2 origin-priority ORDER BY fragment + its
+    bound params.
+
+    Returns a SQL ``CASE b.origin WHEN ? THEN <n> ... ELSE <default> END``
+    where the origin strings are bound parameters (never interpolated —
+    no injection surface) and the rank integers are literals drawn from
+    the canonical `ORIGIN_RETRIEVAL_PRIORITY` map. Sorted ``DESC`` a
+    higher-priority origin comes first, so curated `user_validated`
+    outranks conversational `user_transcript` on a bm25 tie. Built once
+    at import.
+    """
+    origins = tuple(ORIGIN_RETRIEVAL_PRIORITY)
+    whens = " ".join(
+        "WHEN ? THEN %d" % ORIGIN_RETRIEVAL_PRIORITY[o] for o in origins
+    )
+    clause = "CASE b.origin %s ELSE %d END" % (
+        whens, ORIGIN_RETRIEVAL_PRIORITY_DEFAULT,
+    )
+    return clause, origins
+
+
+_ORIGIN_PRIORITY_CASE, _ORIGIN_PRIORITY_PARAMS = _build_origin_priority_case()
+
+# Two ORDER BY tails for the FTS search: the default (bm25 only, ties
+# arbitrary — byte-identical to pre-#1089 behaviour) and the axis-2
+# tie-break (bm25, then origin priority DESC, then id ASC for a stable
+# deterministic order). Assembled from constants (no f-string of user
+# data) so the query text is fixed at import.
+_ORDER_BY_BM25: Final[str] = "ORDER BY bm25(beliefs_fts)"
+_ORDER_BY_BM25_ORIGIN: Final[str] = (
+    "ORDER BY bm25(beliefs_fts), " + _ORIGIN_PRIORITY_CASE + " DESC, b.id"
+)
 
 
 def _row_to_belief(row: sqlite3.Row) -> Belief:
@@ -2512,7 +2549,9 @@ class MemoryStore:
             for r in cur.fetchall()
         ]
 
-    def search_beliefs(self, query: str, limit: int = 20) -> list[Belief]:
+    def search_beliefs(
+        self, query: str, limit: int = 20, *, origin_tiebreak: bool = False,
+    ) -> list[Belief]:
         """FTS5 keyword search over belief content. Ranked by bm25.
 
         User input is escaped before being passed to FTS5: each
@@ -2524,28 +2563,33 @@ class MemoryStore:
 
         Empty / whitespace-only queries return [] without hitting FTS5
         (which would raise on an empty MATCH expression).
+
+        `origin_tiebreak` (#1089 axis 2, default off): when True, a bm25
+        tie is broken by origin priority (curated `user_validated` over
+        conversational `user_transcript`) then id — deterministic. When
+        False the ORDER BY is byte-identical to the pre-#1089 default
+        (bm25 only, ties arbitrary).
         """
         escaped = _escape_fts5_query(query)
         if not escaped:
             return []
+        order_by = (
+            _ORDER_BY_BM25_ORIGIN if origin_tiebreak else _ORDER_BY_BM25
+        )
+        extra = _ORIGIN_PRIORITY_PARAMS if origin_tiebreak else ()
         cur = self._conn.execute(
-            """
-            SELECT b.*,
-                   (SELECT COUNT(*) FROM belief_corroborations bc
-                    WHERE bc.belief_id = b.id) AS corroboration_count
-            FROM beliefs b
-            JOIN beliefs_fts f ON f.id = b.id
-            WHERE beliefs_fts MATCH ?
-              AND b.valid_to IS NULL
-            ORDER BY bm25(beliefs_fts)
-            LIMIT ?
-            """,
-            (escaped, limit),
+            "SELECT b.*, "
+            "(SELECT COUNT(*) FROM belief_corroborations bc "
+            "WHERE bc.belief_id = b.id) AS corroboration_count "
+            "FROM beliefs b JOIN beliefs_fts f ON f.id = b.id "
+            "WHERE beliefs_fts MATCH ? AND b.valid_to IS NULL "
+            + order_by + " LIMIT ?",
+            (escaped, *extra, limit),
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
 
     def search_beliefs_scored(
-        self, query: str, limit: int = 20,
+        self, query: str, limit: int = 20, *, origin_tiebreak: bool = False,
     ) -> list[tuple[Belief, float]]:
         """FTS5 keyword search returning `(belief, bm25_score)` pairs.
 
@@ -2557,26 +2601,30 @@ class MemoryStore:
         which combines `log(-bm25)` with `log(posterior_mean)` log-
         additively).
 
+        `origin_tiebreak` (#1089 axis 2, default off): same bm25→origin
+        priority→id ordering as `search_beliefs`. Only reorders the
+        candidate set within a bm25 tie; the returned bm25 score is
+        unchanged, so a caller that re-sorts by a composite score is
+        unaffected.
+
         Empty / whitespace-only queries return [] without hitting
         FTS5.
         """
         escaped = _escape_fts5_query(query)
         if not escaped:
             return []
+        order_by = (
+            _ORDER_BY_BM25_ORIGIN if origin_tiebreak else _ORDER_BY_BM25
+        )
+        extra = _ORIGIN_PRIORITY_PARAMS if origin_tiebreak else ()
         cur = self._conn.execute(
-            """
-            SELECT b.*,
-                   bm25(beliefs_fts) AS bm25_score,
-                   (SELECT COUNT(*) FROM belief_corroborations bc
-                    WHERE bc.belief_id = b.id) AS corroboration_count
-            FROM beliefs b
-            JOIN beliefs_fts f ON f.id = b.id
-            WHERE beliefs_fts MATCH ?
-              AND b.valid_to IS NULL
-            ORDER BY bm25(beliefs_fts)
-            LIMIT ?
-            """,
-            (escaped, limit),
+            "SELECT b.*, bm25(beliefs_fts) AS bm25_score, "
+            "(SELECT COUNT(*) FROM belief_corroborations bc "
+            "WHERE bc.belief_id = b.id) AS corroboration_count "
+            "FROM beliefs b JOIN beliefs_fts f ON f.id = b.id "
+            "WHERE beliefs_fts MATCH ? AND b.valid_to IS NULL "
+            + order_by + " LIMIT ?",
+            (escaped, *extra, limit),
         )
         rows = cur.fetchall()
         out: list[tuple[Belief, float]] = []
