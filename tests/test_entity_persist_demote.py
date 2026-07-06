@@ -111,6 +111,62 @@ def test_s1_entity_free_belief_absent() -> None:
     assert "plain" not in out
 
 
+def _clear_entities(store: MemoryStore, bid: str) -> None:
+    """Drop any auto-extracted entity rows so a test controls the set
+    exactly (mirrors the defensive delete in
+    ``test_s1_entity_free_belief_absent``)."""
+    store._conn.execute("DELETE FROM belief_entities WHERE belief_id=?", (bid,))
+    store._conn.commit()
+
+
+def test_s1_noun_phrase_only_belief_absent() -> None:
+    """A belief whose only entities are grounding-neutral noun phrases is
+    absent from the map — durable conversational prose (e.g. a locked
+    preference) must not be demoted like bare-number coordination junk
+    (#1098)."""
+    s = MemoryStore(":memory:")
+    try:
+        s.insert_belief(_mk("np", "plain text no entities here"))
+        _clear_entities(s, "np")
+        _add_entity(s, "np", "atomic commits", "noun_phrase")
+        _add_entity(s, "np", "batched", "noun_phrase")
+        out = s.entity_persistence_scores(["np"])
+    finally:
+        s.close()
+    assert "np" not in out
+
+
+def test_s1_url_only_belief_absent() -> None:
+    """A belief whose only entity is a url is grounding-neutral and absent
+    from the map — no demotion (#1098)."""
+    s = MemoryStore(":memory:")
+    try:
+        s.insert_belief(_mk("u", "plain text no entities here"))
+        _clear_entities(s, "u")
+        _add_entity(s, "u", "http://example.com", "url")
+        out = s.entity_persistence_scores(["u"])
+    finally:
+        s.close()
+    assert "u" not in out
+
+
+def test_s1_durable_plus_noun_phrase_unchanged() -> None:
+    """A neutral noun_phrase mixed *with* a durable entity leaves the score
+    unchanged — the belief scores on its durable/transient rows alone, so
+    dropping neutral-only beliefs from the map does not perturb mixed
+    content (#1098)."""
+    s = MemoryStore(":memory:")
+    try:
+        s.insert_belief(_mk("b1", "plain text no entities here"))
+        _clear_entities(s, "b1")
+        _add_entity(s, "b1", "src/a.py", "file_path")      # durable
+        _add_entity(s, "b1", "retry loop", "noun_phrase")  # neutral
+        out = s.entity_persistence_scores(["b1"])
+    finally:
+        s.close()
+    assert out["b1"] == pytest.approx(1 / (1 + 0 + 1))  # 0.5, neutral ignored
+
+
 def test_s1_empty_input_no_sql() -> None:
     s = MemoryStore(":memory:")
     try:

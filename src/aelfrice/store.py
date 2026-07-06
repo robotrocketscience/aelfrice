@@ -4548,9 +4548,12 @@ class MemoryStore:
         belief toward 0 (the discriminating case measured on the live
         store: ephemeral status has no durable grounding).
 
-        Beliefs with **no** entity rows are deliberately absent from the
-        result — the caller applies no demotion to them, so entity-free
-        durable content (docstrings, formulae) is never penalised.
+        Beliefs with **no** entity rows — and beliefs whose *only*
+        entities are grounding-neutral (`noun_phrase` / `url`) — are
+        deliberately absent from the result. The caller applies no
+        demotion to an absent belief, so entity-free durable content
+        (docstrings, formulae) and durable conversational prose that
+        extracts only noun phrases are never penalised (#1098).
 
         Deterministic: pure counts over the `belief_entities` index.
         Empty input → empty dict (no SQL).
@@ -4579,9 +4582,14 @@ class MemoryStore:
             ):
                 transient[bid] = transient.get(bid, 0) + 1
             else:
-                # noun_phrase / url — grounding-neutral; seen so the
-                # belief is entity-bearing (gets a score) but not counted.
-                durable.setdefault(bid, 0)
+                # noun_phrase / url — grounding-neutral. A belief whose
+                # *only* entities are neutral must not enter the map: with
+                # no durable/transient rows it would score 0.0 and be
+                # demoted as hard as bare-number coordination junk (#1098).
+                # Mixed beliefs already registered via their durable /
+                # transient rows above, so skipping here leaves those
+                # scores unchanged.
+                continue
         out: dict[str, float] = {}
         for bid in set(durable) | set(transient):
             d = durable.get(bid, 0)
