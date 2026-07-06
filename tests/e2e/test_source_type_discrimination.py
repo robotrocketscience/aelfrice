@@ -17,9 +17,9 @@ row in `ingest_log` is read back via stdlib `sqlite3` — no in-process
 imports of the aelfrice package, per the e2e boundary rule:
 
     cli_remember  ->  `aelf lock <statement>`
-    filesystem    ->  `aelf ingest-transcript <jsonl>` (source_path
-                       distinguishes transcript from other filesystem
-                       ingest paths within `ingest_log`)
+    transcript    ->  `aelf ingest-transcript <jsonl>` (#1089: a
+                       first-class source kind, no longer masquerading
+                       as filesystem)
     git           ->  `aelf-commit-ingest` (PostToolUse hook entry
                        point) fed a synthetic Bash-tool payload
 
@@ -58,10 +58,10 @@ def _read_ingest_source_kinds(db_path: Path) -> set[str]:
 
 
 def _read_transcript_source_paths(db_path: Path) -> set[str]:
-    """Distinct source_path values for filesystem-kind ingest_log rows.
+    """Distinct source_path values for transcript-kind ingest_log rows.
 
     Lets the test prove that `aelf ingest-transcript` lands the
-    transcript label, not just the generic filesystem source_kind.
+    transcript label under its own first-class source kind (#1089).
     """
     if not db_path.exists():
         return set()
@@ -69,7 +69,7 @@ def _read_transcript_source_paths(db_path: Path) -> set[str]:
     with sqlite3.connect(uri, uri=True) as conn:
         rows = conn.execute(
             "SELECT DISTINCT source_path FROM ingest_log "
-            "WHERE source_kind = 'filesystem'"
+            "WHERE source_kind = 'transcript'"
         ).fetchall()
     return {str(r[0]) for r in rows if r[0] is not None}
 
@@ -166,22 +166,27 @@ def test_three_paths_record_distinct_source_types(
     observed_kinds = _read_ingest_source_kinds(ephemeral_db)
 
     # The three constants are declared in src/aelfrice/models.py:
-    # INGEST_SOURCE_CLI_REMEMBER, INGEST_SOURCE_FILESYSTEM, INGEST_SOURCE_GIT.
+    # INGEST_SOURCE_CLI_REMEMBER, INGEST_SOURCE_TRANSCRIPT, INGEST_SOURCE_GIT.
     # Hard-code the literal values here so a rename-without-call-site-update
     # on either side fails this test loudly — that is the #190 R1 bug class.
-    expected_kinds = {"cli_remember", "filesystem", "git"}
+    # #1089: transcript capture is now its own kind, not filesystem.
+    expected_kinds = {"cli_remember", "transcript", "git"}
     missing = expected_kinds - observed_kinds
     assert not missing, (
         f"missing source_kind rows in ingest_log: {sorted(missing)}; "
         f"observed: {sorted(observed_kinds)}"
     )
+    # And the scanner masquerade is gone: transcript ingest must NOT
+    # land as filesystem (#1089 — the whole point of the rename).
+    assert "filesystem" not in observed_kinds, (
+        f"transcript ingest still recording filesystem; "
+        f"observed: {sorted(observed_kinds)}"
+    )
 
-    # Transcript ingest must additionally land its source_label so it is
-    # distinguishable from other filesystem-kind ingest paths (e.g. raw
-    # filesystem scanner). The default label from `aelf ingest-transcript`
-    # is "transcript".
+    # Transcript ingest lands its source_label under the transcript kind.
+    # The default label from `aelf ingest-transcript` is "transcript".
     transcript_paths = _read_transcript_source_paths(ephemeral_db)
     assert "transcript" in transcript_paths, (
-        f"expected source_path='transcript' for filesystem-kind ingest; "
+        f"expected source_path='transcript' for transcript-kind ingest; "
         f"got {sorted(transcript_paths)}"
     )

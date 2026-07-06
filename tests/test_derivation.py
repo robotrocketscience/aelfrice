@@ -30,6 +30,7 @@ from aelfrice.models import (
     INGEST_SOURCE_LEGACY_UNKNOWN,
     INGEST_SOURCE_MCP_REMEMBER,
     INGEST_SOURCE_PYTHON_AST,
+    INGEST_SOURCE_TRANSCRIPT,
     LOCK_NONE,
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
@@ -99,12 +100,12 @@ def test_filesystem_factual_belief() -> None:
 
 
 def test_transcript_user_role_origin_is_user_transcript() -> None:
-    """Hypothesis: filesystem ingest with source_path='transcript' and
+    """Hypothesis: transcript ingest with source_path='transcript' and
     raw_meta={'role': 'user'} yields ORIGIN_USER_TRANSCRIPT, not the
     default ORIGIN_AGENT_INFERRED used by the scanner path."""
     out = derive(DerivationInput(
         raw_text="The K2 interview is a Microsoft Teams call.",
-        source_kind=INGEST_SOURCE_FILESYSTEM,
+        source_kind=INGEST_SOURCE_TRANSCRIPT,
         source_path="transcript",
         raw_meta={"role": "user"},
         ts=_TS,
@@ -120,7 +121,7 @@ def test_transcript_user_role_gets_undeflated_factual_prior() -> None:
     matches the deflated (0.6, 1.0) value scanner output gets."""
     out = derive(DerivationInput(
         raw_text="K2 is on Tuesday at 3pm.",
-        source_kind=INGEST_SOURCE_FILESYSTEM,
+        source_kind=INGEST_SOURCE_TRANSCRIPT,
         source_path="transcript",
         raw_meta={"role": "user"},
         ts=_TS,
@@ -139,7 +140,7 @@ def test_transcript_non_user_role_falls_through_to_agent_inferred() -> None:
         meta = {"role": role} if role is not None else None
         out = derive(DerivationInput(
             raw_text="Some assistant-produced statement here.",
-            source_kind=INGEST_SOURCE_FILESYSTEM,
+            source_kind=INGEST_SOURCE_TRANSCRIPT,
             source_path="transcript",
             raw_meta=meta,
             ts=_TS,
@@ -150,6 +151,24 @@ def test_transcript_non_user_role_falls_through_to_agent_inferred() -> None:
         )
         # Deflated prior: 3.0 * 0.2 = 0.6
         assert out.belief.alpha == pytest.approx(0.6)
+
+
+def test_filesystem_source_path_transcript_cannot_spoof_user_transcript() -> None:
+    """Hypothesis (#1089): the user-transcript branch is gated on the
+    transcript source kind, not just source_path=='transcript'. A
+    scanner (filesystem) row that happens to carry source_path='transcript'
+    and role=='user' must NOT be promoted to ORIGIN_USER_TRANSCRIPT —
+    otherwise a project file literally named 'transcript' could spoof the
+    undeflated user prior. Falsifiable if the filesystem row is promoted."""
+    out = derive(DerivationInput(
+        raw_text="A project fact that merely lives in a file called transcript.",
+        source_kind=INGEST_SOURCE_FILESYSTEM,
+        source_path="transcript",
+        raw_meta={"role": "user"},
+        ts=_TS,
+    ))
+    assert out.belief is not None
+    assert out.belief.origin == ORIGIN_AGENT_INFERRED
 
 
 def test_transcript_user_role_question_still_skipped() -> None:
@@ -173,7 +192,7 @@ def test_transcript_user_role_preserves_belief_type_routing() -> None:
     is the source-adjusted prior and the origin label."""
     out = derive(DerivationInput(
         raw_text="I prefer atomic commits over batched ones.",
-        source_kind=INGEST_SOURCE_FILESYSTEM,
+        source_kind=INGEST_SOURCE_TRANSCRIPT,
         source_path="transcript",
         raw_meta={"role": "user"},
         ts=_TS,

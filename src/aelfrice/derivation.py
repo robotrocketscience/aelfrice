@@ -24,9 +24,9 @@ from aelfrice.classification_core import (
 from aelfrice.models import (
     BELIEF_FACTUAL,
     INGEST_SOURCE_CLI_REMEMBER,
-    INGEST_SOURCE_FILESYSTEM,
     INGEST_SOURCE_GIT,
     INGEST_SOURCE_MCP_REMEMBER,
+    INGEST_SOURCE_TRANSCRIPT,
     LOCK_NONE,
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
@@ -346,8 +346,8 @@ def derive(inp: DerivationInput) -> DerivationOutput:
         return DerivationOutput(belief=belief, edges=[])
 
     # 4. Transcript ingest, role=user (#888). User-typed chat content
-    #    enters via the same source_kind=filesystem path scanner output
-    #    does, distinguished only by source_path="transcript" +
+    #    enters via the source_kind=transcript path (#1089), and within
+    #    that path the user turn is distinguished from agent capture by
     #    raw_meta["role"]=="user". Without this branch, the user's own
     #    statements get the agent-inferred deflated prior (alpha *= 0.2)
     #    that is calibrated for scanner-extracted document text — which
@@ -357,7 +357,7 @@ def derive(inp: DerivationInput) -> DerivationOutput:
     #    so they remain distinct from explicit `aelf lock` intent.
     raw_meta = inp.raw_meta or {}
     is_user_transcript = (
-        inp.source_kind == INGEST_SOURCE_FILESYSTEM
+        inp.source_kind == INGEST_SOURCE_TRANSCRIPT
         and source == _TRANSCRIPT_SOURCE_LABEL
         and raw_meta.get("role") == "user"
     )

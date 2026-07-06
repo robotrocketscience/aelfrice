@@ -31,7 +31,7 @@ from aelfrice.models import (
     ANCHOR_TEXT_MAX_LEN,
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     EDGE_DERIVED_FROM,
-    INGEST_SOURCE_FILESYSTEM,
+    INGEST_SOURCE_TRANSCRIPT,
     Edge,
 )
 from aelfrice.store import MemoryStore
@@ -239,7 +239,7 @@ def _ingest_turn_ids(
     log_ids: list[str] = []
     for sentence in full_sentences:
         log_id = store.record_ingest(
-            source_kind=INGEST_SOURCE_FILESYSTEM,
+            source_kind=INGEST_SOURCE_TRANSCRIPT,
             source_path=source,
             raw_text=sentence,
             session_id=session_id,

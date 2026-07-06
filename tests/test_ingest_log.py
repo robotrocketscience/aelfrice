@@ -19,6 +19,7 @@ from aelfrice.models import (
     INGEST_SOURCE_GIT,
     INGEST_SOURCE_LEGACY_UNKNOWN,
     INGEST_SOURCE_MCP_REMEMBER,
+    INGEST_SOURCE_TRANSCRIPT,
 )
 from aelfrice.store import MemoryStore
 from aelfrice.ulid import _ULID_LEN, make_generator, ulid
@@ -374,8 +375,8 @@ def test_ingest_turn_writes_log_row_per_new_belief(
     for belief_id in store.list_belief_ids():
         rows = store.iter_ingest_log_for_belief(belief_id)
         assert rows, f"belief {belief_id} has no log row"
-        # Spec: source_kind + raw_text + session_id stamped.
-        assert all(r["source_kind"] == "filesystem" for r in rows)
+        # #1089: conversational capture stamps source_kind=transcript.
+        assert all(r["source_kind"] == INGEST_SOURCE_TRANSCRIPT for r in rows)
         assert all(r["session_id"] == "s-1" for r in rows)
 
 

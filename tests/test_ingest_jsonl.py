@@ -7,6 +7,7 @@ from pathlib import Path
 from aelfrice.ingest import ingest_jsonl
 from aelfrice.models import (
     EDGE_DERIVED_FROM,
+    INGEST_SOURCE_TRANSCRIPT,
     ORIGIN_USER_TRANSCRIPT,
 )
 from aelfrice.store import MemoryStore
@@ -80,6 +81,32 @@ def test_user_role_turns_become_user_transcript_origin(tmp_path: Path) -> None:
             assert row["origin"] == ORIGIN_USER_TRANSCRIPT
             assert row["alpha"] == 3.0
             assert row["beta"] == 1.0
+    finally:
+        store.close()
+
+
+def test_transcript_ingest_tags_ingest_log_source_kind(tmp_path: Path) -> None:
+    """#1089: conversational capture records source_kind=transcript in
+    ingest_log, not the filesystem masquerade it used before. Falsifiable
+    if any ingest_log row for a transcript belief carries 'filesystem'."""
+    p = tmp_path / "turns.jsonl"
+    _write_jsonl(p, [
+        {
+            "schema_version": 1, "ts": "2026-04-27T00:00:00Z",
+            "role": "user", "text": "The store lives under .git/aelfrice.",
+            "session_id": "S1", "turn_id": "t1",
+        },
+    ])
+    store = MemoryStore(":memory:")
+    try:
+        ingest_jsonl(store, p)
+        belief_ids = store.list_belief_ids()
+        assert belief_ids, "expected at least one transcript belief"
+        for bid in belief_ids:
+            log_rows = store.iter_ingest_log_for_belief(bid)
+            assert log_rows, f"no ingest_log row for {bid}"
+            for lr in log_rows:
+                assert lr["source_kind"] == INGEST_SOURCE_TRANSCRIPT
     finally:
         store.close()
 
