@@ -1938,15 +1938,18 @@ def is_temporal_spine_enabled(
       1. AELFRICE_TEMPORAL_SPINE env var (truthy / falsy normalised).
       2. Explicit `explicit` kwarg from the caller.
       3. `[retrieval] use_temporal_spine` in `.aelfrice.toml`.
-      4. Default: **False** — the lane lands default-OFF. The default-ON
-         flip is gated on the pre-registered #1064 criteria (G2-G5), a
-         release deliverable rather than a config change. Distinct from
+      4. Default: **True** — the lane is default-ON since the #1064 lane
+         flip (v4.0, #1107 Phase 2). Every pre-registered gate cleared
+         (G1 +14.6pp LoCoMo coverage, G2 trim survival + top-rank
+         invariance, G3 latency delta_p95 in-band, G5 determinism); the
+         production `retrieve()` hook path exposes it via the #1107 shim.
+         Opt out with `AELFRICE_TEMPORAL_SPINE=0` or `[retrieval]
+         use_temporal_spine = false`. Distinct from
          `AELFRICE_TEMPORAL_SPINE_WRITE` (the ingest-time writer flag in
-         `aelfrice.temporal_spine`) — the two flip together at release
-         time but resolve independently.
+         `aelfrice.temporal_spine`) — they resolve independently.
 
     Passing the flag (any rung) never raises — an unset / unrecognised
-    value falls through to the next rung and ultimately to False.
+    value falls through to the next rung and ultimately to the default (True).
     """
     env = _env_temporal_spine_override()
     if env is not None:
@@ -1956,7 +1959,7 @@ def is_temporal_spine_enabled(
     toml_value = _read_toml_flag_for(TEMPORAL_SPINE_FLAG, start)
     if toml_value is not None:
         return toml_value
-    return False
+    return True
 
 
 def resolve_temporal_spine_budget(

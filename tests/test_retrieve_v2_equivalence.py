@@ -1,14 +1,18 @@
-"""Equivalence guard: `retrieve_v2` with all post-#1064 lanes OFF must be
-byte-identical to the legacy `retrieve()` — the regression net the #1107
-production cutover depends on.
+"""Equivalence guard: `retrieve()` (the production adapter) must be
+byte-identical to `retrieve_v2` run with the exact lane config the #1107 shim
+pins — the regression net the production cutover depends on.
 
-The cutover migrates 8 production call sites from `retrieve()` (returns
-`list[Belief]`) to `retrieve_v2()` (returns `RetrievalResult`). That is only
-safe if `retrieve_v2`, with the lanes the hook does not want (temporal spine,
-entity-persist demotion, origin tie-break, HRR-expand) forced off, produces
-the same ranked ids as `retrieve()` for the same inputs. These tests pin that
-equivalence across every tier and budget regime so a later change to either
-implementation cannot silently diverge production retrieval.
+The cutover migrated the production call sites from the legacy bare
+`retrieve()` pack loop to a thin adapter over `retrieve_v2()`. Post-#1107
+Phase 2 the shim runs the **temporal-spine** lane ON (resolver-driven, the
+pilot lane graduated #1064) and the other five staged lanes (entity-persist
+demotion, origin tie-break, HRR-expand, intentional clustering,
+HRR-structural) OFF. `SHIM_LANES` below is that exact config, so these tests
+stay true identities rather than coincidences. The L0/L1/L2.5/BFS/manifest
+cases run on spineless corpora (no `TEMPORAL_NEXT` edges), where the spine
+lane is a no-op — so the shim output matches for the reasons those tiers
+exercise; `test_shim_runs_temporal_spine_lane_others_off` covers the spine
+lane being live and the other five staying off non-vacuously.
 
 `manifest_reference_locks` parity (#1016-B) was `retrieve()`-only until the
 #1107 Phase-0 port; the manifest cases below would have failed before it.
@@ -26,20 +30,21 @@ from aelfrice.models import (
     Belief,
     Edge,
     EDGE_DERIVED_FROM,
+    EDGE_TEMPORAL_NEXT,
 )
 from aelfrice.retrieval import retrieve, retrieve_v2
 from aelfrice.store import MemoryStore
 
-# The production lane config: the exact set `retrieve()` runs. `retrieve()`
-# has its own pack loop and does NOT invoke intentional clustering,
-# HRR-structural, HRR-expand, temporal spine, entity-persist demotion, or
-# the origin tie-break — even though several of those default ON in
-# `retrieve_v2`. So all six must be forced off for `retrieve_v2` to be
-# byte-identical to `retrieve()` (clustering in particular reorders the L1
-# pack on graph-connected corpora — see test_equivalence_clustered_corpus).
-# This is the config the #1107 shim pins.
-LANES_OFF = dict(
-    use_temporal_spine=False,
+# The production lane config the #1107 shim pins. Post-Phase-2 the
+# temporal-spine lane is resolver-driven (`None` -> `is_temporal_spine_enabled`,
+# default ON) exactly as the shim passes it; the other five staged lanes stay
+# forced OFF because `retrieve()`'s historical pack loop never ran them
+# (clustering in particular reorders the L1 pack on graph-connected corpora —
+# see test_equivalence_clustered_corpus). On the spineless corpora these
+# equivalence cases use, the spine lane is a no-op, so this config reproduces
+# the legacy bare-`retrieve()` output byte-for-byte.
+SHIM_LANES = dict(
+    use_temporal_spine=None,
     use_entity_persist_demote=False,
     use_origin_tiebreak=False,
     use_hrr_expand=False,
@@ -78,7 +83,7 @@ def _v1(store: MemoryStore, query: str, **kw) -> list[str]:
 
 
 def _v2(store: MemoryStore, query: str, **kw) -> list[str]:
-    return [b.id for b in retrieve_v2(store, query, **{**LANES_OFF, **kw}).beliefs]
+    return [b.id for b in retrieve_v2(store, query, **{**SHIM_LANES, **kw}).beliefs]
 
 
 def test_equivalence_l1_vocab() -> None:
@@ -176,7 +181,7 @@ def test_equivalence_bfs() -> None:
 def test_equivalence_clustered_corpus() -> None:
     """Two dense DERIVED_FROM clusters — the case where intentional
     clustering reorders the L1 pack. `retrieve()` does not cluster, so
-    `retrieve_v2` must have clustering forced off (part of LANES_OFF) to
+    `retrieve_v2` must have clustering forced off (part of SHIM_LANES) to
     match. This is the case a 4-lane-off config silently diverges on."""
     s = MemoryStore(":memory:")
     for i in range(6):
@@ -216,15 +221,52 @@ def test_equivalence_manifest_reference_locks(manifest: bool, budget: int) -> No
         s.close()
 
 
-def test_retrieve_keeps_staged_lanes_off() -> None:
-    """Contract guard for the #1107 shim: `retrieve()` (the production
-    adapter) must run with the staged lanes OFF. Post-shim the plain
-    equivalence assertions are tautological (both sides are retrieve_v2),
-    so this checks the live contract non-tautologically: on a clustered
-    corpus where the clustering lane demonstrably reorders the pack,
-    `retrieve()` must match retrieve_v2(clustering off) and DIFFER from
-    retrieve_v2(clustering on). If someone flips a lane on in the shim,
-    this fails."""
+def test_shim_runs_temporal_spine_lane_others_off() -> None:
+    """Contract guard for the #1107 Phase-2 shim: `retrieve()` (the
+    production adapter) runs the temporal-spine lane ON (resolver default,
+    the graduated pilot lane) and the other five staged lanes OFF. Both
+    halves are non-vacuous:
+
+      * spine ON — on a `TEMPORAL_NEXT`-connected corpus, `retrieve()`
+        surfaces the chronological neighbour that shares no query vocabulary,
+        matching retrieve_v2(spine on) and differing from
+        retrieve_v2(spine off).
+      * others OFF — on a clustered corpus where intentional clustering
+        demonstrably reorders the L1 pack, `retrieve()` matches
+        retrieve_v2(clustering off) and differs from
+        retrieve_v2(clustering on).
+
+    If the spine lane regresses off, or any of the other five is flipped on
+    in the shim, one of these fails."""
+    # --- temporal-spine lane is live in the shim ---
+    s = MemoryStore(":memory:")
+    _mk(s, "anchor", "cache latency tuning note")
+    _mk(s, "neighbor", "zebra quokka xylophone unrelated marmalade")
+    # A single spine edge; the lane traverses depth-1 in both directions.
+    s.insert_edge(
+        Edge(src="anchor", dst="neighbor",
+             type=EDGE_TEMPORAL_NEXT, weight=0.8)
+    )
+    q = "cache latency"
+    try:
+        prod = [b.id for b in retrieve(s, q, token_budget=2400)]
+        spine_on = [
+            b.id for b in retrieve_v2(
+                s, q, budget=2400,
+                **{**SHIM_LANES, "use_temporal_spine": True}).beliefs
+        ]
+        spine_off = [
+            b.id for b in retrieve_v2(
+                s, q, budget=2400,
+                **{**SHIM_LANES, "use_temporal_spine": False}).beliefs
+        ]
+        assert "neighbor" in prod, "shim must run the temporal-spine lane"
+        assert prod == spine_on
+        assert prod != spine_off, "spine lane must be load-bearing here"
+    finally:
+        s.close()
+
+    # --- the other five staged lanes stay off ---
     s = MemoryStore(":memory:")
     for i in range(6):
         _mk(s, f"a{i}", f"cache latency tuning cluster note {i}")
@@ -237,13 +279,9 @@ def test_retrieve_keeps_staged_lanes_off() -> None:
     try:
         prod = [b.id for b in retrieve(s, q, token_budget=2400)]
         clustering_on = [
-            b.id
-            for b in retrieve_v2(
+            b.id for b in retrieve_v2(
                 s, q, budget=2400,
-                use_temporal_spine=False, use_entity_persist_demote=False,
-                use_origin_tiebreak=False, use_hrr_expand=False,
-                use_intentional_clustering=True, use_hrr_structural=False,
-            ).beliefs
+                **{**SHIM_LANES, "use_intentional_clustering": True}).beliefs
         ]
         clustering_off = _v2(s, q, budget=2400)
         assert prod == clustering_off, "retrieve() must have clustering OFF"

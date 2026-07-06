@@ -495,11 +495,30 @@ def _seed_lane_store(store: MemoryStore) -> None:
     backfill_temporal_spine(store)
 
 
-def test_lane_default_off_flag() -> None:
-    assert is_temporal_spine_enabled() is False
-    assert is_temporal_spine_enabled(explicit=True) is True
+def test_lane_default_on_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    # Default-ON since the #1064 lane flip (#1107 Phase 2). Start at an
+    # empty dir so no repo .aelfrice.toml is found.
+    monkeypatch.delenv(ENV_TEMPORAL_SPINE, raising=False)
+    assert is_temporal_spine_enabled(start=tmp_path) is True
+    assert is_temporal_spine_enabled(explicit=False, start=tmp_path) is False
     assert resolve_temporal_spine_budget() == 32
     assert resolve_temporal_spine_budget(explicit=7) == 7
+
+
+def test_lane_explicit_opt_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path,
+) -> None:
+    # The lane is opt-out now that the default is ON; the env var and the
+    # TOML key must still force it back off.
+    monkeypatch.setenv(ENV_TEMPORAL_SPINE, "off")
+    assert is_temporal_spine_enabled(start=tmp_path) is False
+    monkeypatch.delenv(ENV_TEMPORAL_SPINE, raising=False)
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[retrieval]\nuse_temporal_spine = false\n"
+    )
+    assert is_temporal_spine_enabled(start=tmp_path) is False
 
 
 def test_lane_off_omits_neighbours(store: MemoryStore) -> None:
