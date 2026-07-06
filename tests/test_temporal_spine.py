@@ -680,13 +680,14 @@ def test_auto_backfill_default_gate_reads_writer_flag(
     store: MemoryStore, tmp_path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With write_enabled unset, the gate falls to the real resolver —
-    default-off means deferred without an explicit kwarg."""
+    default-ON since the #1064 flip means the auto-once backfill fires
+    without an explicit kwarg."""
     monkeypatch.delenv(ENV_TEMPORAL_SPINE_WRITE, raising=False)
     _seed_two_session_beliefs(store)
     sentinel = tmp_path / "spine-backfilled"
     result = maybe_backfill_temporal_spine(store, sentinel_path=sentinel)
-    assert result.ran is False
-    assert not sentinel.exists()
+    assert result.ran is True
+    assert sentinel.exists()
 
 
 # --- CLI dispatch (`aelf spine {backfill,clear}`) --------------------------
