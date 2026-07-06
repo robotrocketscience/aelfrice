@@ -2993,196 +2993,49 @@ def retrieve(
     bare `retrieve()` so `rebuild_v14`'s call site observes the
     toggle that A4 (#775) measures.
     """
-    global _LAST_TELEMETRY
-    enabled = is_entity_index_enabled(entity_index_enabled)
-    bfs_on = is_bfs_enabled(bfs_enabled)
-    bm25f_on = resolve_use_bm25f_anchors(use_bm25f_anchors)
-    weight = resolve_posterior_weight(posterior_weight)
-    # #1045 wide-retrieval knobs: env / TOML may raise the candidate cap
-    # and token budget; both resolve to the hot-path defaults (50 / 2400)
-    # when unset, so this is byte-identical unless a caller opts in.
-    l1_limit = resolve_l1_limit(l1_limit)
-    token_budget = resolve_token_budget(token_budget)
-    heat_on = is_heat_kernel_enabled(heat_kernel_enabled)
-    # #796 γ rerank — resolve once per call so the temperature read
-    # is consistent across BM25F / FTS5 branches and the audit-trail
-    # sees a single store hit. When the flag is off, gamma_t stays
-    # None and `_l1_hits` skips the γ branch entirely (byte-identical
-    # to the log-additive baseline).
-    gamma_on = resolve_use_gamma_posterior_temperature()
-    gamma_t = (
-        resolve_posterior_temperature_with_meta(
-            store, now_ts=int(time.time()),
-        )
-        if gamma_on else None
-    )
-    # #817 ζ rerank — same posture as γ. Pinned shape parameters from
-    # the #800 R&D verdict; tunability via TOML/env for α/β/scale is
-    # deferred. γ and ζ are mutually exclusive: when both flags resolve
-    # True, raise at flag-resolution time per issue #817 § "Out of scope"
-    # — the operator decision to defer composition.
-    zeta_on = resolve_use_zeta_posterior_rerank()
-    _assert_gamma_zeta_mutual_exclusion(gamma_on, zeta_on)
-    zeta_params = (
-        (ZETA_ALPHA_DEFAULT, ZETA_BETA_DEFAULT, ZETA_SCALE_DEFAULT)
-        if zeta_on else None
-    )
-    compress_on = resolve_use_type_aware_compression(
-        use_type_aware_compression,
-    )
-
-    def _cost(b: Belief) -> int:
-        """Per-belief pack cost. Compressed render when flag ON,
-        else raw token estimate. Locks render verbatim either way."""
-        if not compress_on:
-            return _belief_tokens(b)
-        cb = compress_for_retrieval(
-            b, locked=(b.lock_level == LOCK_USER),
-        )
-        return cb.rendered_tokens
-    # #741 adaptive expansion-gate: cheap deterministic prompt-shape
-    # check that short-circuits BFS expansion on broad natural-language
-    # prompts. L0 / L1 / L2.5-entity stay on regardless. The gate
-    # has its own env / TOML escape hatches; see
-    # :mod:`aelfrice.expansion_gate` for resolver precedence.
-    # #760: pass store + now_ts so the meta-belief resolver can adapt
-    # the token threshold; falls back to BROAD_PROMPT_TOKEN_THRESHOLD
-    # when the flag is off or the meta-belief is not installed.
-    from aelfrice.expansion_gate import should_run_expansion
-    gate_decision = should_run_expansion(
-        query, store=store, now_ts=int(time.time()),
-    )
-    gate_skipped_bfs = bfs_on and not gate_decision.run_bfs
-    bfs_on = bfs_on and gate_decision.run_bfs
-    # v1.5.0 #154: emit one stderr line per placeholder lane the
-    # user has set True in `.aelfrice.toml`. Fail-soft, once-per-
-    # process per flag.
-    warn_placeholder_flags()
-
-    # #379: locked beliefs are the always-injected pool. The locked
-    # set is never trimmed in retrieve(); top-K selection applies only
-    # to the non-locked retrieval surface (L1/L2.5/L3) below.
-    locked: list[Belief] = store.list_locked_beliefs()
-    locked_ids: set[str] = {b.id for b in locked}
-
-    # Backwards-compat: when the flag is off and the caller didn't
-    # pass an explicit budget, snap back to the v1.2 default of
-    # 2000. The byte-identical regression test relies on this.
-    effective_budget = (
-        token_budget
-        if (enabled or token_budget != DEFAULT_TOKEN_BUDGET)
-        else LEGACY_TOKEN_BUDGET
-    )
-
-    # L2.5 is bounded by both its own sub-budget AND the outer
-    # remaining-after-L0 budget. This preserves the v1.0 invariant
-    # that callers passing a tight `token_budget` never get more
-    # tokens back than they asked for, while still letting the
-    # default 2400-budget caller see the full 400-token L2.5 slice.
-    #
-    # #1016-B: when manifest_reference_locks is on (the hook injection
-    # paths), reference-tier locks cost only their one-line manifest entry,
-    # freeing relevance budget. Frozen locks (every lock by default) still
-    # cost full content, so this is byte-identical until a lock is demoted.
-    locked_used: int = sum(
-        lock_injection_tokens(
-            b, manifest_reference_locks=manifest_reference_locks
-        )
-        for b in locked
-    )
-    # #379 locks are uncapped + never trimmed; reserve a relevance floor so
-    # they can't starve L2.5/L1 to zero. No-op (byte-identical) unless locks
-    # leave less than the floor — see RELEVANCE_BUDGET_FLOOR_FRACTION.
-    relevance_budget: int = max(
-        int(effective_budget * RELEVANCE_BUDGET_FLOOR_FRACTION),
-        effective_budget - locked_used,
-    )
-    l25_room: int = max(0, relevance_budget)
-    effective_l25_subbudget: int = min(l25_token_subbudget, l25_room)
-
-    l25: list[Belief]
-    if enabled and query.strip():
-        l25 = _l25_hits(
-            store,
-            query,
-            locked_ids=locked_ids,
-            l25_limit=l25_limit,
-            l25_token_subbudget=effective_l25_subbudget,
-            query_entity_cap=query_entity_cap,
-        )
-    else:
-        l25 = []
-    l25_ids: set[str] = {b.id for b in l25}
-
-    l1: list[Belief] = []
-    if query.strip():
-        raw_l1: list[Belief] = _l1_hits(
-            store, query,
-            l1_limit=l1_limit, posterior_weight=weight,
-            use_bm25f_anchors=bm25f_on, bm25f_cache=bm25f_cache,
-            eigenbasis_cache=eigenbasis_cache, heat_kernel_on=heat_on,
-            gamma_temperature=gamma_t,
-            zeta_params=zeta_params,
-        )
-        l1 = [
-            b for b in raw_l1
-            if b.id not in locked_ids and b.id not in l25_ids
-        ]
-
-    # Token accounting. L0 always survives. L2.5 lands above L1 in
-    # the output. L1 trims from the tail.
-    used: int = locked_used + sum(_cost(b) for b in l25)
-    out: list[Belief] = list(locked) + list(l25)
-    l1_packed: list[Belief] = []
-    for b in l1:
-        cost: int = _cost(b)
-        if used + cost > locked_used + relevance_budget:
-            break
-        out.append(b)
-        l1_packed.append(b)
-        used += cost
-
-    # L3 BFS expansion. Default-off — `bfs_on` False short-circuits
-    # before any graph work, preserving byte-identical output.
-    if bfs_on and query.strip():
-        seeds: list[Belief] = list(locked) + list(l25) + list(l1_packed)
-        if seeds:
-            hops = expand_bfs(
-                seeds,
-                store,
-                max_depth=bfs_max_depth,
-                nodes_per_hop=bfs_nodes_per_hop,
-                total_budget=bfs_total_budget_nodes,
-                min_path_score=bfs_min_path_score,
-            )
-            seen_ids: set[str] = (
-                locked_ids | l25_ids | {b.id for b in l1_packed}
-            )
-            for hop in hops:
-                if hop.belief.id in seen_ids:
-                    continue
-                cost = _cost(hop.belief)
-                if used + cost > locked_used + relevance_budget:
-                    break
-                out.append(hop.belief)
-                seen_ids.add(hop.belief.id)
-                used += cost
-    _LAST_TELEMETRY = LaneTelemetry(
-        locked=len(locked),
-        l25=len(l25),
-        l1=len(l1_packed),
-        bfs=len(out) - len(locked) - len(l25) - len(l1_packed),
-        bm25f_used=bm25f_on,
-        posterior_weight=weight,
-        expansion_gate_reason=gate_decision.reason,
-        expansion_gate_skipped_bfs=gate_skipped_bfs,
-        l1_candidates=len(l1),
-    )
-
-    # v1.6.0 #191: enqueue one retrieval_exposure row per surfaced
-    # belief for the deferred-feedback sweeper. Default-on; opt-out
-    # via [implicit_feedback] enqueue_on_retrieve = false. Fail-soft:
-    # any DB error here is logged but never breaks retrieval.
+    # #1107 Phase 1: `retrieve()` is now a thin adapter over `retrieve_v2`,
+    # the single retrieval implementation the production hook path shares
+    # with the benchmark/eval surface. The lane config below reproduces the
+    # historical bare-`retrieve()` behaviour exactly: every post-v2.1 staged
+    # lane (temporal spine, entity-persist demotion, origin tie-break,
+    # HRR-expand, intentional clustering, HRR-structural) is forced OFF,
+    # because `retrieve()`'s own pack loop never ran them. Byte-identical
+    # equivalence is pinned by tests/test_retrieve_v2_equivalence.py. Lanes
+    # light up in production one at a time as each clears its latency gate.
+    out = retrieve_v2(
+        store,
+        query,
+        budget=token_budget,
+        l1_limit=l1_limit,
+        use_entity_index=entity_index_enabled,
+        l25_limit=l25_limit,
+        l25_token_subbudget=l25_token_subbudget,
+        query_entity_cap=query_entity_cap,
+        use_bfs=bfs_enabled,
+        bfs_max_depth=bfs_max_depth,
+        bfs_nodes_per_hop=bfs_nodes_per_hop,
+        bfs_total_budget_nodes=bfs_total_budget_nodes,
+        bfs_min_path_score=bfs_min_path_score,
+        posterior_weight=posterior_weight,
+        use_bm25f=use_bm25f_anchors,
+        bm25f_cache=bm25f_cache,
+        heat_kernel_enabled=heat_kernel_enabled,
+        eigenbasis_cache=eigenbasis_cache,
+        use_type_aware_compression=use_type_aware_compression,
+        manifest_reference_locks=manifest_reference_locks,
+        use_temporal_spine=False,
+        use_entity_persist_demote=False,
+        use_origin_tiebreak=False,
+        use_hrr_expand=False,
+        use_intentional_clustering=False,
+        use_hrr_structural=False,
+    ).beliefs
+    # v1.6.0 #191: enqueue one retrieval_exposure row per surfaced belief
+    # for the deferred-feedback sweeper. Default-on; opt-out via
+    # [implicit_feedback] enqueue_on_retrieve = false. Fail-soft: any DB
+    # error here is logged but never breaks retrieval. This is a `retrieve()`
+    # (production-hook) side effect, kept here rather than in `retrieve_v2`
+    # so the benchmark / eval surface stays side-effect-free.
     if out:
         try:
             from aelfrice.deferred_feedback import (
@@ -3196,7 +3049,6 @@ def retrieve(
                 f"aelfrice retrieval: deferred-feedback enqueue failed: {exc}",
                 file=sys.stderr,
             )
-
     return out
 
 
@@ -3579,6 +3431,15 @@ def retrieve_v2(
     hrr_struct_index_cache: HRRStructIndexCache | None = None,
     with_doc_anchors: bool = False,
     manifest_reference_locks: bool = False,
+    # #1107 shim pass-throughs: params `retrieve()` exposes that route
+    # straight to `retrieve_with_tiers`, added so `retrieve()` can delegate
+    # to `retrieve_v2` without dropping caller overrides. Default to the
+    # same values `retrieve_with_tiers` uses, so omitting them is a no-op.
+    l25_limit: int = DEFAULT_L25_LIMIT,
+    l25_token_subbudget: int = DEFAULT_L25_TOKEN_SUBBUDGET,
+    query_entity_cap: int = DEFAULT_QUERY_ENTITY_CAP,
+    heat_kernel_enabled: bool | None = None,
+    eigenbasis_cache: GraphEigenbasisCache | None = None,
     now_ts: int | None = None,
     now: datetime | None = None,
 ) -> RetrievalResult:
@@ -3723,6 +3584,11 @@ def retrieve_v2(
         store, query,
         token_budget=budget,
         entity_index_enabled=use_entity_index,
+        l25_limit=l25_limit,
+        l25_token_subbudget=l25_token_subbudget,
+        query_entity_cap=query_entity_cap,
+        heat_kernel_enabled=heat_kernel_enabled,
+        eigenbasis_cache=eigenbasis_cache,
         l1_limit=l1_limit,
         bfs_enabled=use_bfs,
         bfs_max_depth=bfs_max_depth,
