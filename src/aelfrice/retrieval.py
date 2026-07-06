@@ -3427,7 +3427,7 @@ def retrieve_with_tiers(
             seen_pre.add(b.id)
             used += cost
 
-    # #1064 temporal-spine lane (additive, default-OFF). Traverses
+    # #1064 temporal-spine lane (additive, default-ON since the flip). Traverses
     # TEMPORAL_NEXT chains from the top-5 packed L1 seeds, both
     # directions, depth 1 by default, and appends the neighbours after
     # the L1 candidates — never displacing them pre-packing. No-op
@@ -3626,10 +3626,10 @@ def retrieve_v2(
       directions, depth 1 by default, node budget 32 by default) and
       appends the chronological neighbours to the candidate set. The
       lane is a no-op (byte-identical output) when the store has zero
-      TEMPORAL_NEXT edges. Default-OFF — the default-ON flip is gated
-      on the pre-registered #1064 criteria. Opt in via
-      `AELFRICE_TEMPORAL_SPINE=1`, the kwarg, or
-      `[retrieval] use_temporal_spine = true`.
+      TEMPORAL_NEXT edges. Default-ON since the #1064 flip (the
+      pre-registered criteria all passed). Opt out via
+      `AELFRICE_TEMPORAL_SPINE=0`, the kwarg, or
+      `[retrieval] use_temporal_spine = false`.
       `temporal_spine_depth` / `temporal_spine_node_budget` tune the
       traversal (budget also via `AELFRICE_TEMPORAL_SPINE_BUDGET` env
       or `[retrieval] temporal_spine_budget` TOML).

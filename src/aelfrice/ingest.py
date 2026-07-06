@@ -318,9 +318,10 @@ def _ingest_turn_ids(
 
         # #1064: optionally chain this turn's new beliefs into the
         # per-session temporal spine (TEMPORAL_NEXT, src = successor,
-        # dst = predecessor). Default-OFF (is_temporal_spine_write_enabled):
-        # when off, this branch is never entered and ingest is
-        # byte-identical to today. Gated on `inserted` so
+        # dst = predecessor). Default-ON (is_temporal_spine_write_enabled)
+        # since the #1064 flip; opt out via the env/toml flag, in which
+        # case this branch is skipped and ingest is byte-identical to the
+        # pre-spine behaviour. Gated on `inserted` so
         # corroboration-only turns skip the predecessor lookups.
         from aelfrice.temporal_spine import (
             is_temporal_spine_write_enabled,

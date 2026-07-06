@@ -13,11 +13,12 @@ means, but become reachable through chronological adjacency to beliefs
 that *do* match. A shuffled control (identical edge count, permuted
 endpoints) isolates the cause as the chronology, not the connectivity.
 
-Default-OFF (``is_temporal_spine_write_enabled``): a fresh install writes
-no spine edges and ingest is byte-identical to today. The flag is the
-landing posture, not the end state — the default-ON flip is gated on the
-pre-registered criteria recorded in issue #1064 (G1–G5). Deterministic,
-stdlib-only: no LLM, no embedding, no sampling (#605).
+Default-ON (``is_temporal_spine_write_enabled``) since the #1064 flip:
+every evidence gate (G1–G5) passed, so a fresh install chains new beliefs
+by default. Opt out with ``AELFRICE_TEMPORAL_SPINE_WRITE=0`` or ``[ingest]
+write_temporal_spine = false``, in which case ingest is byte-identical to
+the pre-spine behaviour. Deterministic, stdlib-only: no LLM, no embedding,
+no sampling (#605).
 
 Soft-deleted beliefs (``valid_to`` set) are not excluded from predecessor
 selection: chain integrity must survive GC, so a successor links to the
@@ -384,10 +385,10 @@ def maybe_backfill_temporal_spine(
     first):
 
       1. sentinel exists -> no-op (already ran).
-      2. the spine writer is disabled (default-off, pre-flip) -> no-op,
-         and the sentinel is NOT written, so the check re-arms and fires
-         on the first setup after the flip turns the writer on (a host
-         that opts the writer on early via env/toml triggers it early).
+      2. the spine writer is disabled (a host that opted out via
+         env/toml) -> no-op, and the sentinel is NOT written, so the
+         check re-arms and fires on the first setup after the writer is
+         re-enabled.
       3. otherwise run ``backfill_temporal_spine`` (idempotent), write the
          sentinel, and report the edge count.
 
