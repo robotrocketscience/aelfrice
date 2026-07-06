@@ -11,6 +11,8 @@ The synthetic harness is a measurement instrument. It is **not** a proof of the 
 
 The academic suite is the reproducibility deliverable. All five adapters (MAB, LoCoMo, LongMemEval, StructMemEval, AMA-Bench) were inert scaffolds at v1.0 and have run end-to-end since v2.0; `aelf bench all` is the canonical entry point. Per-adapter status: [`benchmarks/README.md`](../../benchmarks/README.md).
 
+> **Measured on `retrieve_v2` ≠ shipped to the live host.** The academic-suite adapters and lane ablations call **`retrieve_v2()`**, which exposes retrieval lanes that the production `UserPromptSubmit` hook does **not**: the live hook path is the leaner `retrieve()`, and the recently-staged lanes — temporal spine ([#1064](https://github.com/robotrocketscience/aelfrice/issues/1064)), entity-persistence demotion ([#1096](https://github.com/robotrocketscience/aelfrice/issues/1096)), origin tie-break ([#1089](https://github.com/robotrocketscience/aelfrice/issues/1089)), HRR expand/structural — are wired into `retrieve_v2` only. So uplift attributable to those lanes (e.g. temporal spine's +14.6pp LoCoMo coverage) is **measured, not shipped**: it does not reach live retrieval until the production hook converges onto `retrieve_v2`, tracked as the v4.0-blocking cutover epic [#1107](https://github.com/robotrocketscience/aelfrice/issues/1107). Numbers for lanes already on `retrieve()` (BM25F, heat-kernel, entity-index L2.5, BFS, type-aware compression, γ/ζ posterior rerank) reflect production behaviour; numbers gated on the `retrieve_v2`-only lanes are upper bounds pending the cutover.
+
 ## Run the synthetic harness
 
 ```bash
