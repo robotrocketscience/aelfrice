@@ -1,13 +1,14 @@
 # Temporal spine — ingest-time chronological edges + dedicated retrieval lane (#1064)
 
-Status: **writer default-ON, lane default-off** (v4.0, #1064). Every
-evidence gate is complete — G1, G2 (both halves), G3, and G5 are DONE,
-and G4 is resolved (auto-once backfill, below). On the operator's go the
-ingest **writer** was flipped default-ON so stores accumulate the spine;
-the **retrieval lane** stays default-off because it is wired into
-`retrieve_v2` only and does not reach the production `retrieve()` hook
-path until the cutover (#1107). The lane's own default-ON flip lands with
-that cutover (its Phase 2), which is the remaining operator step.
+Status: **writer default-ON, lane default-ON** (v4.0, #1064) — the
+feature is live end-to-end. Every evidence gate is complete — G1, G2
+(both halves), G3, and G5 are DONE, and G4 is resolved (auto-once
+backfill, below). On the operator's go the ingest **writer** was flipped
+default-ON (#1111) so stores accumulate the spine, and the **retrieval
+lane** was flipped default-ON with the `retrieve_v2` production cutover
+(#1107 Phase 2): `retrieve()` is now a thin adapter over `retrieve_v2`
+that passes the lane through resolver-driven, so a fresh install both
+writes the spine and reads it on the live `retrieve()` hook path.
 
 ## Mechanism
 
@@ -93,10 +94,10 @@ density.
 ## Flip gate — pre-registered default-ON criteria
 
 Default-off was the **landing posture, not the end state**. All criteria
-passed; the ingest **writer** was flipped default-ON (with the backfill
-path for existing stores). The **lane** flag flips with the `retrieve_v2`
-production cutover (#1107, its Phase 2) rather than here, since it is
-inert on the production path until then:
+passed; the ingest **writer** was flipped default-ON (#1111, with the
+backfill path for existing stores) and the **lane** flag was flipped
+default-ON with the `retrieve_v2` production cutover (#1107 Phase 2),
+which is what exposes it on the live `retrieve()` hook path:
 
 - **G1 — confirmatory evidence:** DONE (above; recorded in #1064).
 - **G2 — production operating point:** coverage delta + top-rank
@@ -189,9 +190,9 @@ inert on the production path until then:
     install is untouched until then. Reversible via **`aelf spine clear`**
     (deletes every `TEMPORAL_NEXT` edge; beliefs untouched) — and because
     the backfill is deterministic (G5), a later re-backfill rebuilds the
-    identical spine. The writer default-ON flip has now landed; the lane
-    default-ON flip remains a separate operator release call (the #1107
-    cutover, Phase 2). This mechanism only readies the migration.
+    identical spine. Both flips have now landed: the writer default-ON
+    flip (#1111) and the lane default-ON flip with the #1107 Phase-2
+    cutover. This mechanism readied the migration for that flip.
 - **G5 — determinism/repro:** two-build byte-identity of the spine
   table on a fixed corpus; ablation bench green in CI.
   - **DONE.** `tests/test_temporal_spine_repro.py` pins both halves in the
