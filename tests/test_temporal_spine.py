@@ -78,9 +78,22 @@ def store() -> MemoryStore:
 # ---------------------------------------------------------------------------
 
 
-def test_flag_defaults_off(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_flag_defaults_on(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    # Default-ON since the v4.0 #1064 writer flip: no env, no .aelfrice.toml.
     monkeypatch.delenv(ENV_TEMPORAL_SPINE_WRITE, raising=False)
     # start at an empty dir so no repo .aelfrice.toml is found
+    assert is_temporal_spine_write_enabled(start=tmp_path) is True
+
+
+def test_flag_explicit_opt_out(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    # The writer is opt-out now that the default is ON; the env var and the
+    # TOML key must still be able to force it back off.
+    monkeypatch.setenv(ENV_TEMPORAL_SPINE_WRITE, "off")
+    assert is_temporal_spine_write_enabled(start=tmp_path) is False
+    monkeypatch.delenv(ENV_TEMPORAL_SPINE_WRITE, raising=False)
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[ingest]\nwrite_temporal_spine = false\n"
+    )
     assert is_temporal_spine_write_enabled(start=tmp_path) is False
 
 
@@ -96,7 +109,10 @@ def test_flag_unrecognised_env_not_decisive(
 ) -> None:
     monkeypatch.setenv(ENV_TEMPORAL_SPINE_WRITE, "maybe")
     assert is_temporal_spine_write_enabled(explicit=True, start=tmp_path) is True
-    assert is_temporal_spine_write_enabled(start=tmp_path) is False
+    # Non-decisive env falls through to the next rung; prove it against the
+    # explicit=False lower rung rather than the (now default-ON) default, so
+    # the assertion still isolates "unrecognised env did not decide."
+    assert is_temporal_spine_write_enabled(explicit=False, start=tmp_path) is False
 
 
 def test_flag_kwarg_wins_over_toml(
@@ -128,7 +144,9 @@ def test_flag_malformed_toml_not_decisive(
     (tmp_path / ".aelfrice.toml").write_text(
         "[ingest]\nwrite_temporal_spine = 'yes'\n"
     )
-    assert is_temporal_spine_write_enabled(start=tmp_path) is False
+    # Malformed TOML value is non-decisive; prove it against the explicit=False
+    # lower rung rather than the (now default-ON) default.
+    assert is_temporal_spine_write_enabled(explicit=False, start=tmp_path) is False
 
 
 # ---------------------------------------------------------------------------
@@ -273,10 +291,24 @@ _TURN_ONE = "The staging database runs on port 5433."
 _TURN_TWO = "The staging cache was flushed after the last deploy."
 
 
-def test_ingest_off_path_writes_no_spine_edges(
+def test_ingest_default_on_chains_turns(
     store: MemoryStore, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Default-ON since the #1064 writer flip: env unset → ingest chains.
     monkeypatch.delenv(ENV_TEMPORAL_SPINE_WRITE, raising=False)
+    ingest_turn(store, _TURN_ONE, "test-source", session_id="s1",
+                created_at="2026-01-01T00:00:01Z")
+    ingest_turn(store, _TURN_TWO, "test-source", session_id="s1",
+                created_at="2026-01-01T00:00:02Z")
+    assert len(_spine_edges(store)) == 1
+
+
+def test_ingest_explicit_off_writes_no_spine_edges(
+    store: MemoryStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Writer is opt-out now that the default is ON: forcing the env off must
+    # suppress spine edges at ingest.
+    monkeypatch.setenv(ENV_TEMPORAL_SPINE_WRITE, "0")
     ingest_turn(store, _TURN_ONE, "test-source", session_id="s1")
     ingest_turn(store, _TURN_TWO, "test-source", session_id="s1")
     assert _spine_edges(store) == []
@@ -657,8 +689,22 @@ def test_auto_backfill_default_gate_reads_writer_flag(
     store: MemoryStore, tmp_path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With write_enabled unset, the gate falls to the real resolver —
-    default-off means deferred without an explicit kwarg."""
+    default-ON since the #1064 writer flip means the backfill runs once
+    without an explicit kwarg."""
     monkeypatch.delenv(ENV_TEMPORAL_SPINE_WRITE, raising=False)
+    _seed_two_session_beliefs(store)
+    sentinel = tmp_path / "spine-backfilled"
+    result = maybe_backfill_temporal_spine(store, sentinel_path=sentinel)
+    assert result.ran is True
+    assert sentinel.exists()
+
+
+def test_auto_backfill_deferred_when_writer_opted_out(
+    store: MemoryStore, tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit opt-out (env=0) defers the auto-backfill and leaves no
+    sentinel, so re-enabling later still runs it once."""
+    monkeypatch.setenv(ENV_TEMPORAL_SPINE_WRITE, "0")
     _seed_two_session_beliefs(store)
     sentinel = tmp_path / "spine-backfilled"
     result = maybe_backfill_temporal_spine(store, sentinel_path=sentinel)

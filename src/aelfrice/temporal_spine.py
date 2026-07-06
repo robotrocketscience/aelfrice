@@ -122,12 +122,19 @@ def is_temporal_spine_write_enabled(
          normalised).
       2. Explicit ``explicit`` kwarg from the caller.
       3. ``[ingest] write_temporal_spine`` in `.aelfrice.toml`.
-      4. Default: False (default-OFF).
+      4. Default: True (default-ON since v4.0, #1064 writer flip).
 
-    Default-off is the landing posture: a fresh install must not start
-    writing spine edges at ingest until the #1064 flip-gate criteria
-    (G2–G5) pass. Flipping the default is that issue's deliverable 5,
-    not a config change.
+    Default-ON is the shipped posture: every pre-registered flip-gate
+    criterion passed (G1 +14.6pp LoCoMo coverage, G2 production-budget
+    trim survival + top-rank invariance, G3 latency in-band, G5
+    determinism) and the G4 auto-once backfill (#1090) is on `main`, so
+    fresh ingests chain `TEMPORAL_NEXT` edges by default and existing
+    stores backfill on first ``aelf setup`` after upgrade. Opt out with
+    ``AELFRICE_TEMPORAL_SPINE_WRITE=0`` or ``[ingest] write_temporal_spine
+    = false``. The *retrieval* lane (``is_temporal_spine_enabled``) stays
+    default-OFF until the production ``retrieve_v2`` cutover (#1107) —
+    flipping the writer now lets stores accumulate a dense, production-
+    proven spine ahead of that read-side flip.
     """
     env = _env_spine_write_override()
     if env is not None:
@@ -137,7 +144,7 @@ def is_temporal_spine_write_enabled(
     toml_value = _read_spine_write_toml(start)
     if toml_value is not None:
         return toml_value
-    return False
+    return True
 
 
 # --- Spine writer --------------------------------------------------------
