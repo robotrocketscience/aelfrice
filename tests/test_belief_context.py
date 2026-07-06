@@ -210,6 +210,33 @@ def test_recover_ignores_non_derived_from_edges(
     assert res.recovered is False
 
 
+def test_recover_skips_non_utf8_transcript_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A truncated/non-UTF-8 .jsonl (crash-interrupted write) must not break
+    recovery — the bad file is skipped and a sibling good file still matches."""
+    _point_transcripts_at(monkeypatch, tmp_path)
+    # An invalid UTF-8 byte sequence raises UnicodeDecodeError on iteration.
+    (tmp_path / "corrupt.jsonl").write_bytes(b'{"text": "\xff\xfe bad"}\n')
+    _write_turns(
+        tmp_path / "good.jsonl",
+        [{"session_id": "s1", "role": "user",
+          "text": "In the coach API, all averages are not useful there."}],
+    )
+    s = MemoryStore(":memory:")
+    try:
+        s.insert_belief(
+            _mk("b1", "all averages are not useful", session_id="s1")
+        )
+        res = recover_context(s, "b1")
+    finally:
+        s.close()
+    assert res is not None
+    assert res.recovered is True
+    assert res.turn_match_total == 1
+    assert "coach API" in res.turn_matches[0]
+
+
 # --- CLI surface ----------------------------------------------------------
 
 

@@ -86,8 +86,11 @@ def _iter_turn_records() -> Iterator[dict[str, object]]:
                         continue
                     if isinstance(obj, dict):
                         yield obj
-        except OSError:
-            # A rotated/removed file mid-walk is expected; skip it.
+        except (OSError, UnicodeDecodeError):
+            # A rotated/removed file mid-walk is expected; a truncated or
+            # non-UTF-8 file (crash-interrupted write) raises UnicodeDecodeError
+            # during line iteration. Skip either — one bad file must not break
+            # the whole best-effort recovery.
             continue
 
 
