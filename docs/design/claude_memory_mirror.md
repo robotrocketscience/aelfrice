@@ -146,3 +146,44 @@ local per-project `brain.db`. Nothing crosses a network boundary. No memory
 content is committed to the repository: the test fixtures and the
 replay-soak corpus are **synthetic** (fabricated facts), per the locked
 `~/.claude`-content-never-to-a-public-remote rule.
+
+## Ranking curated memory above conversational capture (#1089 axis 2)
+
+Ingesting a memory fact (axis 1, above) is only half of "prefer curated
+memory." A curated `user`/`feedback` fact should also **outrank** a belief
+auto-captured from a chat transcript when both match a query. The mapping
+already gives them distinguishable provenance: curated `user`/`feedback`
+memory lands at `origin=user_validated`, while conversational capture lands
+at `origin=user_transcript`.
+
+The lever is a deterministic **origin-priority tie-break** in retrieval
+(`AELFRICE_ORIGIN_TIEBREAK` / `use_origin_tiebreak`, default-off). When two
+candidates tie on relevance, the higher-priority origin sorts first — the
+ladder mirrors `contradiction.precedence_class`
+(`user_stated > user_corrected > user_validated > user_transcript >
+document_recent > agent_inferred`), so `user_validated` beats
+`user_transcript`. It is applied in both ranked tiers — the L1 FTS rerank
+and the L2.5 entity-index overlap — as a pure within-tier tie-break: it
+sits *below* the relevance score, so relevance always dominates and the
+flag-off ordering is byte-identical.
+
+This is deliberately **not** an origin *rerank lane*: that was built and
+refuted on LoCoMo in #1013, because the failure mode there was a BM25
+*recall* limit (the trusted belief never became a candidate), which no
+reranker can fix. A tie-break only reorders candidates that already
+surfaced, so it cannot help — nor hurt — recall. On a single-provenance
+corpus (all-conversational, like LoCoMo) every candidate shares an origin
+tier and the tie-break is inert; its effect requires mixed provenance. The
+default-ON flip is gated on a LoCoMo no-regression run and is a separate
+operator call.
+
+### Not covered here (follow-ups)
+
+- **Prior-boost.** Giving all claude-memory beliefs an undeflated ingest
+  prior (so `project`/`reference` memory is not deflated to the
+  `agent_inferred` prior) is an ingest-time lever, separate from this
+  retrieval-time tie-break.
+- **`project`/`reference` provenance.** Those tiers currently share
+  `origin=agent_inferred` with scanner/transcript agent capture, so the
+  tie-break cannot yet distinguish them; giving them a distinct origin is a
+  provenance-semantics change left to a follow-up.
