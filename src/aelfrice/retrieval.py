@@ -188,6 +188,19 @@ HRR_STRUCTURAL_FLAG: Final[str] = "use_hrr_structural"
 # (resolver default False) — landing the lane + ablation only; a default
 # flip reverses locked #605 and is routed to a re-opened #897.
 HRR_EXPAND_FLAG: Final[str] = "use_hrr_expand"
+# #1096 entity-persistence demotion lane flag. Default-OFF (resolver
+# default False) — a mild log-additive demotion of ephemeral coordination
+# hits (low referential grounding) in the L1 rerank, so junk percolates
+# down. The default flip is gated on the bench (G2) per #1096 and is a
+# separate operator call.
+ENTITY_PERSIST_DEMOTE_FLAG: Final[str] = "use_entity_persist_demote"
+# Mild weight: G3 ablation showed 1.0 == 2.0 in AUC, so a tie-breaking
+# term that never dominates BM25 relevance (a relevant low-grounding
+# belief is still rescued by its relevance score).
+ENTITY_PERSIST_DEMOTE_WEIGHT: Final[float] = 1.0
+# Floor so a durable-free belief (S1 = 0) gets a bounded, not infinite,
+# log penalty.
+ENTITY_PERSIST_DEMOTE_EPS: Final[float] = 1e-3
 TEMPORAL_SPINE_FLAG: Final[str] = "use_temporal_spine"
 TEMPORAL_SPINE_BUDGET_FLAG: Final[str] = "temporal_spine_budget"
 # v2.1 #434 type-aware compression flag. Default-OFF at v2.0.0 until the
@@ -254,6 +267,8 @@ ENV_HEAT_KERNEL: Final[str] = "AELFRICE_HEAT_KERNEL"
 ENV_HRR_STRUCTURAL: Final[str] = "AELFRICE_HRR_STRUCTURAL"
 # #981 HRR expansion-lane env override. Tri-state like ENV_BM25F; default-OFF.
 ENV_HRR_EXPAND: Final[str] = "AELFRICE_HRR_EXPAND"
+# #1096 entity-persistence demotion env override. Tri-state; default-OFF.
+ENV_ENTITY_PERSIST_DEMOTE: Final[str] = "AELFRICE_ENTITY_PERSIST_DEMOTE"
 # #1064 temporal-spine lane flag + node-budget knob.
 ENV_TEMPORAL_SPINE: Final[str] = "AELFRICE_TEMPORAL_SPINE"
 ENV_TEMPORAL_SPINE_BUDGET: Final[str] = "AELFRICE_TEMPORAL_SPINE_BUDGET"
@@ -697,6 +712,35 @@ def _env_hrr_expand_override() -> bool | None:
     if norm in _ENV_TRUTHY:
         return True
     return None
+
+
+def _env_entity_persist_demote_override() -> bool | None:
+    """Return True/False if AELFRICE_ENTITY_PERSIST_DEMOTE is set to a
+    recognised truthy/falsy value, else None (#1096). Symmetric to
+    `_env_hrr_expand_override`."""
+    raw = os.environ.get(ENV_ENTITY_PERSIST_DEMOTE)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def is_entity_persist_demote_enabled(kwarg: bool | None = None) -> bool:
+    """Resolve the entity-persistence demotion flag (#1096).
+
+    Precedence: AELFRICE_ENTITY_PERSIST_DEMOTE env var → explicit kwarg →
+    default False. Mirrors the HRR-expand resolution; default-OFF until
+    the bench-gated flip (#1096 G2)."""
+    env = _env_entity_persist_demote_override()
+    if env is not None:
+        return env
+    if kwarg is not None:
+        return kwarg
+    return False
 
 
 def _env_temporal_spine_override() -> bool | None:
@@ -2503,6 +2547,30 @@ def _heat_by_id(
     return {bid: float(heat[i]) for i, bid in enumerate(cache.belief_ids)}
 
 
+def _entity_persist_penalty(
+    ep: dict[str, float] | None, belief_id: str
+) -> float:
+    """Log-additive entity-persistence demotion for one belief (#1096).
+
+    Returns 0.0 (no demotion) when the lane is off (`ep is None`) or the
+    belief has no extracted entities (absent from `ep`) — so entity-free
+    durable content is never penalised. Otherwise returns
+    `WEIGHT * log(S1 + EPS)`, which is ~0 for well-grounded beliefs
+    (S1 → 1) and increasingly negative for ephemeral coordination
+    (S1 → 0). Deterministic."""
+    if ep is None:
+        return 0.0
+    s1 = ep.get(belief_id)
+    if s1 is None:
+        return 0.0
+    # Clamp at 0 so this is a pure demotion, never a promotion — a
+    # well-grounded belief (S1 → 1) is neutral, not boosted.
+    return min(
+        0.0,
+        ENTITY_PERSIST_DEMOTE_WEIGHT * math.log(s1 + ENTITY_PERSIST_DEMOTE_EPS),
+    )
+
+
 def _l1_hits(
     store: MemoryStore,
     query: str,
@@ -2515,6 +2583,7 @@ def _l1_hits(
     heat_kernel_on: bool = False,
     gamma_temperature: float | None = None,
     zeta_params: tuple[float, float, float] | None = None,
+    use_entity_persist_demote: bool = False,
 ) -> list[Belief]:
     """Run L1: FTS5 BM25 search (default) or BM25F sparse-matvec
     (v1.5.0 opt-in), optionally reranked by partial-Bayesian score.
@@ -2646,6 +2715,7 @@ def _l1_hits(
             and not hash_n_literals
             and gamma_temperature is None
             and zeta_params is None
+            and not use_entity_persist_demote
         ):
             return [b for b, _ in beliefs]
         # BM25F scores are non-negative; the rerank uses `raw` as the
@@ -2656,6 +2726,10 @@ def _l1_hits(
         heat_map = (
             _heat_by_id(eigenbasis_cache, bm25_pos_by_id)  # type: ignore[arg-type]
             if heat_active else None
+        )
+        ep = (
+            store.entity_persistence_scores([b.id for b, _ in beliefs])
+            if use_entity_persist_demote else None
         )
         keyed: list[tuple[float, str, Belief]] = []
         for b, raw in beliefs:
@@ -2685,6 +2759,7 @@ def _l1_hits(
                     -raw, b.alpha, b.beta, posterior_weight,
                 )
             s = _hash_n_boosted(s, b.content, hash_n_literals)
+            s += _entity_persist_penalty(ep, b.id)
             keyed.append((s, b.id, b))
         keyed.sort(key=lambda x: (-x[0], x[1]))
         return [b for _, _, b in keyed]
@@ -2695,6 +2770,7 @@ def _l1_hits(
         and not hash_n_literals
         and gamma_temperature is None
         and zeta_params is None
+        and not use_entity_persist_demote
     ):
         return store.search_beliefs(query, limit=l1_limit)
     scored = store.search_beliefs_scored(query, limit=l1_limit)
@@ -2707,6 +2783,10 @@ def _l1_hits(
     heat_map = (
         _heat_by_id(eigenbasis_cache, bm25_pos_by_id)  # type: ignore[arg-type]
         if heat_active else None
+    )
+    ep = (
+        store.entity_persistence_scores([b.id for b, _ in scored])
+        if use_entity_persist_demote else None
     )
     keyed: list[tuple[float, str, Belief]] = []
     for b, bm25_raw in scored:
@@ -2736,6 +2816,7 @@ def _l1_hits(
                 bm25_raw, b.alpha, b.beta, posterior_weight,
             )
         s = _hash_n_boosted(s, b.content, hash_n_literals)
+        s += _entity_persist_penalty(ep, b.id)
         keyed.append((s, b.id, b))
     # Higher score = more relevant. Tie-break on id ASC for
     # determinism (matches the convention in bfs_multihop and L2.5).
@@ -3056,6 +3137,7 @@ def retrieve_with_tiers(
     temporal_spine_enabled: bool | None = None,
     temporal_spine_depth: int | None = None,
     temporal_spine_node_budget: int | None = None,
+    use_entity_persist_demote: bool = False,
 ) -> tuple[
     list[Belief], list[str], list[str], list[str], list[list[str]],
 ]:
@@ -3186,6 +3268,7 @@ def retrieve_with_tiers(
             eigenbasis_cache=eigenbasis_cache, heat_kernel_on=heat_on,
             gamma_temperature=gamma_t,
             zeta_params=zeta_params,
+            use_entity_persist_demote=use_entity_persist_demote,
         )
         l1 = [
             b for b in raw_l1
@@ -3384,6 +3467,7 @@ def retrieve_v2(
     use_intentional_clustering: bool | None = None,
     use_hrr_structural: bool | None = None,
     use_hrr_expand: bool | None = None,
+    use_entity_persist_demote: bool | None = None,
     use_temporal_spine: bool | None = None,
     temporal_spine_depth: int | None = None,
     temporal_spine_node_budget: int | None = None,
@@ -3545,6 +3629,9 @@ def retrieve_v2(
         use_type_aware_compression=use_type_aware_compression,
         use_intentional_clustering=use_intentional_clustering,
         hrr_expand_enabled=use_hrr_expand,
+        use_entity_persist_demote=is_entity_persist_demote_enabled(
+            use_entity_persist_demote
+        ),
         hrr_struct_index_cache=expand_cache,
         temporal_spine_enabled=use_temporal_spine,
         temporal_spine_depth=temporal_spine_depth,
