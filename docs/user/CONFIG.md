@@ -174,14 +174,14 @@ temporal_spine_budget = 32
 # use_posterior_ranking = false
 
 [ingest]
-# v4.0.0+ (#1064). Default `false` (same flip gate as use_temporal_spine
-# above — the two flags flip together at release time but resolve
-# independently). When true, every belief insert chains to its session
-# predecessor with a TEMPORAL_NEXT edge (src = successor, weight 0.8),
-# building the per-session temporal spine the retrieval lane traverses.
-# One edge per belief, O(1) per insert. Off-path ingest is
-# byte-identical. AELFRICE_TEMPORAL_SPINE_WRITE env var overrides.
-write_temporal_spine = false
+# v4.0.0+ (#1064). Default `true` since the writer flip. Every belief
+# insert chains to its session predecessor with a TEMPORAL_NEXT edge
+# (src = successor, weight 0.8), building the per-session temporal spine.
+# The retrieval lane (use_temporal_spine above) stays default-off until
+# the retrieve_v2 production cutover (#1107), so the two resolve
+# independently. One edge per belief, O(1) per insert; explicit opt-out
+# is byte-identical. AELFRICE_TEMPORAL_SPINE_WRITE env var overrides.
+write_temporal_spine = true
 
 [rebuilder]
 # v3.0+ / #718 (PR #719). Selects the query-rewriting stack used by
@@ -539,11 +539,15 @@ posture; the default-ON flip is gated on the pre-registered criteria in
 
 ### `write_temporal_spine`
 
-Default `false`. When enabled, every belief insert links to the previous
-belief in the same session (`created_at` order, insertion-order
-tie-break) with a `TEMPORAL_NEXT` edge — the per-session temporal spine
-the `use_temporal_spine` retrieval lane traverses. One edge per belief,
-O(1) per insert, idempotent; the off-path is byte-identical to today.
+Default `true` since the v4.0 writer flip (#1064); opt out with
+`AELFRICE_TEMPORAL_SPINE_WRITE=0` or this key set to `false`. Every
+belief insert links to the previous belief in the same session
+(`created_at` order, insertion-order tie-break) with a `TEMPORAL_NEXT`
+edge — the per-session temporal spine the `use_temporal_spine` retrieval
+lane traverses. That lane stays default-off until the `retrieve_v2`
+production cutover (#1107), so writing the spine now lets stores
+accumulate it ahead of the read-side flip. One edge per belief,
+O(1) per insert, idempotent; the opt-out path is byte-identical to today.
 Existing stores predate the writer: `aelf spine backfill` builds their
 chains (idempotent, `--dry-run` supported), and `aelf doctor` reports
 spine presence + edge count. `AELFRICE_TEMPORAL_SPINE_WRITE` env var
