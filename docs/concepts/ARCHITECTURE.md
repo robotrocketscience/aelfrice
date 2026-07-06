@@ -43,7 +43,7 @@ Imports are one-directional — modules lower in the table import from higher.
 | `lifecycle.py` | Update notifier (PyPI background check), uninstall machinery, archive encryption. |
 | `transcript_logger.py` | Hook entry-point for v1.2+ transcript capture. Writes one JSONL line per turn under `<git-common-dir>/aelfrice/transcripts/`. |
 | `hook_commit_ingest.py` | `PostToolUse:Bash` hook — ingests commit messages after `git commit`. |
-| `hook_search.py` | UserPromptSubmit retrieval helper that records every hit as a `feedback_history` row tagged `source='hook'`. |
+| `hook_search.py` | UserPromptSubmit retrieval helper that records every hit as a `feedback_history` row tagged `source='hook'`. Audit-only since #1086 (v4.0): the row logs exposure/recurrence but `record_retrieval` passes `update_posterior=False` by default, so a surfacing does **not** move α/β unless `AELFRICE_EXPOSURE_UPDATES_POSTERIOR=1` restores the legacy promote-on-exposure behaviour. |
 | `triple_extractor.py` | Pure-regex `(subject, relation, object)` extraction over six relation families. Used by commit-ingest and transcript-ingest. |
 | `context_rebuilder.py` | PreCompact alpha that surfaces aelfrice retrieval before Claude Code summarises. |
 | `benchmark.py` | Deterministic 16-belief × 16-query synthetic harness. Frozen `BenchmarkReport`. |
@@ -121,6 +121,13 @@ Dedupe L1+L2.5+L3 against L0 ids
         ↓
 Trim from tail until sum(estimated_tokens) ≤ token_budget
 ```
+
+Two **default-off rerank modifiers** refine the ranked (L1 / L2.5) tiers without adding a lane:
+
+- **Entity-persistence demotion** (#1096, `[retrieval] use_entity_persist_demote` / `AELFRICE_ENTITY_PERSIST_DEMOTE`) — the organic sink for #1086's junk-percolation problem. A log-additive **demotion** term `min(0, log(S1 + ε))`, where `S1 = durable / (durable + transient + 1)` is read from the `belief_entities` index (one batched query), down-weights candidates that ground only to *transient* coordination tokens (bare PR/issue numbers, version/branch tags) relative to *durable* entities (file paths, error codes, symbols). Pure demotion (well-grounded candidates are neutral, never boosted); applied only to entity-bearing candidates, so entity-free prose is untouched. Note the sink is **content-referential, not temporal** — a time/cold-decay sink was measured empirically inert here (the junk is *hot*, not stale). Default-ON flip is gated on a retrieval-bench no-regression check and is a separate operator call.
+- **Origin-priority tie-break** (#1089, `[retrieval] use_origin_tiebreak` / `AELFRICE_ORIGIN_TIEBREAK`) — a within-tier tie-break (not a rerank term): when two candidates tie on relevance, the higher-trust *origin* wins, sitting between the relevance score and the id tie-break so relevance always dominates. Byte-identical when off.
+
+Both are deterministic (#605) and byte-identical to the prior pipeline when their flags are unset.
 
 Token estimate: `(len(content) + 3) // 4`. Empty query: L0 only. L0 always wins overflow.
 
