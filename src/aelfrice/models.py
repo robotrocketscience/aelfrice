@@ -201,6 +201,25 @@ ORIGINS: Final[frozenset[str]] = frozenset({
     ORIGIN_UNKNOWN,
 })
 
+# #1089 axis-2 retrieval tie-break priority (higher = more trusted).
+# When two candidates tie on bm25, the higher-priority origin sorts
+# first, so curated user/feedback claude-memory (`user_validated`)
+# outranks conversational transcript capture (`user_transcript`). The
+# values MIRROR `contradiction.PRECEDENCE_*` (the canonical trust
+# numbering the origin tier ordering already follows); a test in
+# tests/test_origin_tiebreak.py asserts they stay in sync so the two
+# copies cannot drift. Origins absent here (document_recent, unknown,
+# agent_remembered) fall to ORIGIN_RETRIEVAL_PRIORITY_DEFAULT, matching
+# `contradiction.precedence_class`'s document_recent bucket.
+ORIGIN_RETRIEVAL_PRIORITY: Final[dict[str, int]] = {
+    ORIGIN_USER_STATED: 6,
+    ORIGIN_USER_CORRECTED: 5,
+    ORIGIN_USER_VALIDATED: 4,
+    ORIGIN_USER_TRANSCRIPT: 3,
+    ORIGIN_AGENT_INFERRED: 1,
+}
+ORIGIN_RETRIEVAL_PRIORITY_DEFAULT: Final[int] = 2
+
 # --- Corroboration source types (v1.5+) ---
 # Wire-format strings. Do not rename without a migration. Distinguishes
 # which ingest path produced the corroboration row. Used by T2 (#191)
