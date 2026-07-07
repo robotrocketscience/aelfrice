@@ -3003,12 +3003,14 @@ def retrieve(
     # so the production path honours its resolver (env -> TOML -> default)
     # exactly like the eval surface. Graduated so far: **temporal spine**
     # (#1064, Phase 2), **entity-persist demotion** (#1096, Phase 3 — the
-    # #1086 junk-percolation sink) and **intentional clustering** (#436,
-    # Phase 4 — multi-fact cluster-coverage, resolver default-ON since v3.0's
-    # A2/A3/A4 gate). The remaining three staged lanes (origin tie-break,
-    # HRR-expand, HRR-structural) stay forced OFF, because `retrieve()`'s
-    # historical pack loop never ran them; equivalence for those is pinned by
-    # tests/test_retrieve_v2_equivalence.py.
+    # #1086 junk-percolation sink), **intentional clustering** (#436, Phase 4 —
+    # multi-fact cluster-coverage, resolver default-ON since v3.0's A2/A3/A4
+    # gate) and the **HRR structural-query lane** (#152, Phase 5 — marker-routed
+    # `<KIND>:<target_id>` routing, resolver default-ON since v2.1's #154/#437
+    # gate; a no-op fall-through on non-marker queries). The remaining two
+    # staged lanes (origin tie-break, HRR-expand) stay forced OFF, because
+    # `retrieve()`'s historical pack loop never ran them; equivalence for those
+    # is pinned by tests/test_retrieve_v2_equivalence.py.
     out = retrieve_v2(
         store,
         query,
@@ -3033,14 +3035,14 @@ def retrieve(
         # Graduated lanes (#1107): resolver-driven (env -> TOML -> default)
         # rather than hard-off, so a production host gets the lane the moment
         # its resolver says on. temporal spine #1064 (Phase 2), entity-persist
-        # demotion #1096 (Phase 3), intentional clustering #436 (Phase 4) —
-        # all resolver default-ON.
+        # demotion #1096 (Phase 3), intentional clustering #436 (Phase 4),
+        # HRR structural-query lane #152 (Phase 5) — all resolver default-ON.
         use_temporal_spine=None,
         use_entity_persist_demote=None,
         use_intentional_clustering=None,
+        use_hrr_structural=None,
         use_origin_tiebreak=False,
         use_hrr_expand=False,
-        use_hrr_structural=False,
     ).beliefs
     # v1.6.0 #191: enqueue one retrieval_exposure row per surfaced belief
     # for the deferred-feedback sweeper. Default-on; opt-out via

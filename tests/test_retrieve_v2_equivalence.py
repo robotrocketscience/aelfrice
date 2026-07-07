@@ -5,15 +5,16 @@ pins — the regression net the production cutover depends on.
 The cutover migrated the production call sites from the legacy bare
 `retrieve()` pack loop to a thin adapter over `retrieve_v2()`. Post-#1107
 cutover the shim runs the graduated lanes ON (resolver-driven) — **temporal
-spine** (#1064, Phase 2), **entity-persist demotion** (#1096, Phase 3), and
-**intentional clustering** (#436, Phase 4) — and the remaining three staged
-lanes (origin tie-break, HRR-expand, HRR-structural) OFF. `SHIM_LANES` below
-is that exact config, so `retrieve() == retrieve_v2(**SHIM_LANES)` is a true
-identity by construction (both route through `retrieve_v2` with the same
-lanes); the L0/L1/L2.5/BFS/manifest cases pin the per-tier behaviour under
-that shared config and guard against drift between the shim's inline lane
-config and `SHIM_LANES`. `test_shim_runs_graduated_lanes_others_off` covers
-each graduated lane being live and a held lane staying off, non-vacuously.
+spine** (#1064, Phase 2), **entity-persist demotion** (#1096, Phase 3),
+**intentional clustering** (#436, Phase 4), and the **HRR structural-query
+lane** (#152, Phase 5) — and the remaining two staged lanes (origin tie-break,
+HRR-expand) OFF. `SHIM_LANES` below is that exact config, so
+`retrieve() == retrieve_v2(**SHIM_LANES)` is a true identity by construction
+(both route through `retrieve_v2` with the same lanes); the L0/L1/L2.5/BFS/
+manifest cases pin the per-tier behaviour under that shared config and guard
+against drift between the shim's inline lane config and `SHIM_LANES`.
+`test_shim_runs_graduated_lanes_others_off` covers each graduated lane being
+live and a held lane staying off, non-vacuously.
 
 `manifest_reference_locks` parity (#1016-B) was `retrieve()`-only until the
 #1107 Phase-0 port; the manifest cases below would have failed before it.
@@ -30,6 +31,7 @@ from aelfrice.models import (
     LOCK_USER,
     Belief,
     Edge,
+    EDGE_CONTRADICTS,
     EDGE_DERIVED_FROM,
     EDGE_TEMPORAL_NEXT,
     ORIGIN_USER_TRANSCRIPT,
@@ -40,20 +42,20 @@ from aelfrice.store import MemoryStore
 
 # The production lane config the #1107 shim pins, verbatim. The graduated
 # lanes are resolver-driven (`None` -> resolver, default ON): temporal spine
-# (#1064), entity-persist demotion (#1096), intentional clustering (#436). The
-# other three staged lanes stay forced OFF because `retrieve()`'s historical
-# pack loop never ran them. Because this mirrors the shim exactly,
-# `retrieve() == retrieve_v2(**SHIM_LANES)` holds by construction whether or
-# not a given corpus makes a lane fire — the equivalence cases pin the per-tier
-# behaviour, not lane no-op-ness. Keep this in lock-step with the shim's inline
-# `retrieve_v2(...)` lane kwargs.
+# (#1064), entity-persist demotion (#1096), intentional clustering (#436),
+# HRR structural-query lane (#152). The other two staged lanes stay forced OFF
+# because `retrieve()`'s historical pack loop never ran them. Because this
+# mirrors the shim exactly, `retrieve() == retrieve_v2(**SHIM_LANES)` holds by
+# construction whether or not a given corpus makes a lane fire — the
+# equivalence cases pin the per-tier behaviour, not lane no-op-ness. Keep this
+# in lock-step with the shim's inline `retrieve_v2(...)` lane kwargs.
 SHIM_LANES = dict(
     use_temporal_spine=None,
     use_entity_persist_demote=None,
     use_intentional_clustering=None,
+    use_hrr_structural=None,
     use_origin_tiebreak=False,
     use_hrr_expand=False,
-    use_hrr_structural=False,
 )
 
 
@@ -255,6 +257,11 @@ def test_shim_runs_graduated_lanes_others_off() -> None:
       * clustering ON — on two dense DERIVED_FROM clusters where clustering
         reorders the L1 pack, `retrieve()` matches retrieve_v2(clustering on)
         and differs from clustering off.
+      * HRR-structural ON — on a `<KIND>:<target_id>` marker query over an
+        edge-connected corpus, `retrieve()` routes through the structural lane
+        (returning the edge-source belief) matching retrieve_v2(structural on)
+        and differing from structural off (which BM25-searches the literal
+        marker string and misses it).
       * a held lane OFF — origin tie-break: on two same-content beliefs with
         different origins, `retrieve()` matches retrieve_v2(tie-break off) and
         differs from tie-break on, proving the held lanes are not silently on.
@@ -342,6 +349,37 @@ def test_shim_runs_graduated_lanes_others_off() -> None:
         ]
         assert prod == clustering_on, "shim must run the intentional-clustering lane"
         assert prod != clustering_off, "clustering must be load-bearing here"
+    finally:
+        s.close()
+
+    # --- HRR structural-query lane is live in the shim ---
+    s = MemoryStore(":memory:")
+    # b_src -CONTRADICTS-> b_tgt. The marker query "CONTRADICTS:b_tgt" routes
+    # through the structural lane (returns b_src, the edge source); with the
+    # lane off it BM25-searches the literal marker string and misses it. The
+    # contents deliberately share no vocabulary with the marker so the two
+    # arms are unambiguously distinct.
+    _mk(s, "b_src", "alpha bravo charlie delta echo")
+    _mk(s, "b_tgt", "foxtrot golf hotel india juliet")
+    _mk(s, "b_noise", "kilo lima mike november oscar")
+    s.insert_edge(Edge(src="b_src", dst="b_tgt",
+                       type=EDGE_CONTRADICTS, weight=1.0))
+    q = "CONTRADICTS:b_tgt"
+    try:
+        prod = [b.id for b in retrieve(s, q, token_budget=2400)]
+        structural_on = [
+            b.id for b in retrieve_v2(
+                s, q, budget=2400,
+                **{**SHIM_LANES, "use_hrr_structural": True}).beliefs
+        ]
+        structural_off = [
+            b.id for b in retrieve_v2(
+                s, q, budget=2400,
+                **{**SHIM_LANES, "use_hrr_structural": False}).beliefs
+        ]
+        assert "b_src" in prod, "shim must run the HRR structural lane"
+        assert prod == structural_on
+        assert prod != structural_off, "structural lane must be load-bearing here"
     finally:
         s.close()
 
