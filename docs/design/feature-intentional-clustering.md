@@ -1,6 +1,6 @@
 # Feature spec: Intentional clustering (#436)
 
-**Status:** wired into `retrieve_v2` behind `use_intentional_clustering`; default-ON since v3.0 after the #436 R6 A4 latency gate cleared 60/60 PASS at p99 0.328ms on the multi-store production sweep
+**Status:** default-ON on the production `retrieve()` path since the #1107 Phase-4 cutover (previously `retrieve_v2`-only); wired behind `use_intentional_clustering`, default-ON since v3.0 after the #436 R6 A4 latency gate cleared 60/60 PASS at p99 0.328ms on the multi-store production sweep. The public on-HEAD coverage signal is `benchmarks/intentional_clustering_ablation.py` (cluster_coverage@k 0.500→1.000; the full lab A2/A3 gate corpus is not shipped)
 **Issue:** #436
 **Recovery-inventory line:** [`docs/concepts/ROADMAP.md`](../concepts/ROADMAP.md) — *"Intentional clustering | v2.0.0"*
 **Substrate prereqs:** edge graph (foundation), `dedup.DuplicateCluster` union-find pattern (`src/aelfrice/dedup.py:155-185`, shipped #197), heat kernel authority (#150, shipped v1.7.0), BFS multi-hop (#143, shipped v1.3.0)
