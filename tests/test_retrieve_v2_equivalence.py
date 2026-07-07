@@ -4,15 +4,16 @@ pins — the regression net the production cutover depends on.
 
 The cutover migrated the production call sites from the legacy bare
 `retrieve()` pack loop to a thin adapter over `retrieve_v2()`. Post-#1107
-Phase 2 the shim runs the **temporal-spine** lane ON (resolver-driven, the
-pilot lane graduated #1064) and the other five staged lanes (entity-persist
-demotion, origin tie-break, HRR-expand, intentional clustering,
-HRR-structural) OFF. `SHIM_LANES` below is that exact config, so these tests
-stay true identities rather than coincidences. The L0/L1/L2.5/BFS/manifest
-cases run on spineless corpora (no `TEMPORAL_NEXT` edges), where the spine
-lane is a no-op — so the shim output matches for the reasons those tiers
-exercise; `test_shim_runs_temporal_spine_lane_others_off` covers the spine
-lane being live and the other five staying off non-vacuously.
+cutover the shim runs the graduated lanes ON (resolver-driven) — **temporal
+spine** (#1064, Phase 2) and **entity-persist demotion** (#1096, Phase 3) —
+and the remaining four staged lanes (origin tie-break, HRR-expand,
+intentional clustering, HRR-structural) OFF. `SHIM_LANES` below is that exact
+config, so these tests stay true identities rather than coincidences. The
+L0/L1/L2.5/BFS/manifest cases run on corpora with no `TEMPORAL_NEXT` edges
+and no entity rows, where both graduated lanes are no-ops — so the shim
+output matches for the reasons those tiers exercise;
+`test_shim_runs_graduated_lanes_others_off` covers the graduated lanes being
+live and the other four staying off non-vacuously.
 
 `manifest_reference_locks` parity (#1016-B) was `retrieve()`-only until the
 #1107 Phase-0 port; the manifest cases below would have failed before it.
@@ -35,17 +36,18 @@ from aelfrice.models import (
 from aelfrice.retrieval import retrieve, retrieve_v2
 from aelfrice.store import MemoryStore
 
-# The production lane config the #1107 shim pins. Post-Phase-2 the
-# temporal-spine lane is resolver-driven (`None` -> `is_temporal_spine_enabled`,
-# default ON) exactly as the shim passes it; the other five staged lanes stay
-# forced OFF because `retrieve()`'s historical pack loop never ran them
-# (clustering in particular reorders the L1 pack on graph-connected corpora —
-# see test_equivalence_clustered_corpus). On the spineless corpora these
-# equivalence cases use, the spine lane is a no-op, so this config reproduces
-# the legacy bare-`retrieve()` output byte-for-byte.
+# The production lane config the #1107 shim pins. The graduated lanes are
+# resolver-driven (`None` -> resolver, default ON) exactly as the shim passes
+# them: temporal spine (#1064) and entity-persist demotion (#1096). The other
+# four staged lanes stay forced OFF because `retrieve()`'s historical pack loop
+# never ran them (clustering in particular reorders the L1 pack on
+# graph-connected corpora — see test_equivalence_clustered_corpus). On the
+# corpora these equivalence cases use (no TEMPORAL_NEXT edges, no entity rows)
+# both graduated lanes are no-ops, so this config reproduces the legacy
+# bare-`retrieve()` output byte-for-byte.
 SHIM_LANES = dict(
     use_temporal_spine=None,
-    use_entity_persist_demote=False,
+    use_entity_persist_demote=None,
     use_origin_tiebreak=False,
     use_hrr_expand=False,
     use_intentional_clustering=False,
@@ -76,6 +78,18 @@ def _mk(
             lock_tier=tier,
         )
     )
+
+
+def _add_entity(
+    store: MemoryStore, bid: str, lower: str, kind: str,
+) -> None:
+    """Insert a belief_entities row (entity-persist demotion reads these)."""
+    store._conn.execute(
+        "INSERT INTO belief_entities(belief_id, entity_lower, entity_raw, "
+        "kind, span_start, span_end) VALUES (?,?,?,?,0,0)",
+        (bid, lower, lower, kind),
+    )
+    store._conn.commit()
 
 
 def _v1(store: MemoryStore, query: str, **kw) -> list[str]:
@@ -221,22 +235,25 @@ def test_equivalence_manifest_reference_locks(manifest: bool, budget: int) -> No
         s.close()
 
 
-def test_shim_runs_temporal_spine_lane_others_off() -> None:
-    """Contract guard for the #1107 Phase-2 shim: `retrieve()` (the
-    production adapter) runs the temporal-spine lane ON (resolver default,
-    the graduated pilot lane) and the other five staged lanes OFF. Both
-    halves are non-vacuous:
+def test_shim_runs_graduated_lanes_others_off() -> None:
+    """Contract guard for the #1107 shim: `retrieve()` (the production
+    adapter) runs the graduated lanes ON (resolver default) and the remaining
+    four staged lanes OFF. Every half is non-vacuous:
 
       * spine ON — on a `TEMPORAL_NEXT`-connected corpus, `retrieve()`
         surfaces the chronological neighbour that shares no query vocabulary,
         matching retrieve_v2(spine on) and differing from
         retrieve_v2(spine off).
+      * entity-persist ON — on a corpus with a durable-grounded and a
+        coordination-grounded belief tied on relevance, `retrieve()` demotes
+        the coordination one, matching retrieve_v2(demote on) and differing
+        from retrieve_v2(demote off).
       * others OFF — on a clustered corpus where intentional clustering
         demonstrably reorders the L1 pack, `retrieve()` matches
         retrieve_v2(clustering off) and differs from
         retrieve_v2(clustering on).
 
-    If the spine lane regresses off, or any of the other five is flipped on
+    If a graduated lane regresses off, or any of the other four is flipped on
     in the shim, one of these fails."""
     # --- temporal-spine lane is live in the shim ---
     s = MemoryStore(":memory:")
@@ -266,7 +283,34 @@ def test_shim_runs_temporal_spine_lane_others_off() -> None:
     finally:
         s.close()
 
-    # --- the other five staged lanes stay off ---
+    # --- entity-persist demotion lane is live in the shim ---
+    s = MemoryStore(":memory:")
+    _mk(s, "durable", "widget the module lives here")
+    _mk(s, "ephemeral", "widget rebased and pushed")
+    _add_entity(s, "durable", "src/widget.py", "file_path")   # durable
+    _add_entity(s, "ephemeral", "#412", "identifier")         # bare-# transient
+    q = "widget"
+    try:
+        prod = [b.id for b in retrieve(s, q, token_budget=2400)]
+        demote_on = [
+            b.id for b in retrieve_v2(
+                s, q, budget=2400,
+                **{**SHIM_LANES, "use_entity_persist_demote": True}).beliefs
+        ]
+        demote_off = [
+            b.id for b in retrieve_v2(
+                s, q, budget=2400,
+                **{**SHIM_LANES, "use_entity_persist_demote": False}).beliefs
+        ]
+        assert prod == demote_on
+        assert prod.index("durable") <= prod.index("ephemeral"), (
+            "shim must run entity-persist demotion (coordination belief demoted)"
+        )
+        assert prod != demote_off, "demotion must be load-bearing here"
+    finally:
+        s.close()
+
+    # --- the other four staged lanes stay off ---
     s = MemoryStore(":memory:")
     for i in range(6):
         _mk(s, f"a{i}", f"cache latency tuning cluster note {i}")

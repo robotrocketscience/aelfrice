@@ -99,7 +99,9 @@ def test_ac1_retrieve_and_retrieve_v2_accept_posterior_weight() -> None:
 # --- AC2: posterior_weight=0.0 is byte-identical to v1.0.x ordering ------
 
 
-def test_ac2_weight_zero_byte_identical_to_v10x() -> None:
+def test_ac2_weight_zero_byte_identical_to_v10x(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """At weight 0 AND with the legacy plain-BM25 (non-BM25F) path,
     retrieve() result equals what `store.search_beliefs(...)` returns
     for the L1 portion. (L0 prefix is unaffected by weight.)
@@ -109,7 +111,13 @@ def test_ac2_weight_zero_byte_identical_to_v10x() -> None:
     `use_bm25f_anchors=False` here pins the contract to the legacy
     v1.0.x BM25 path so this regression test still asserts what it
     was meant to assert.
+
+    Per #1096 / #1107 Phase 3: entity-persist demotion is default-ON on the
+    production `retrieve()` path and reranks entity-bearing candidates, so it
+    perturbs the pure-BM25 tie order too. `AELFRICE_ENTITY_PERSIST_DEMOTE=0`
+    isolates the posterior_weight=0 contract from it, mirroring the BM25F pin.
     """
+    monkeypatch.setenv("AELFRICE_ENTITY_PERSIST_DEMOTE", "0")
     s = _equal_bm25_store()
     direct = s.search_beliefs("widget", limit=50)
     weighted = retrieve(

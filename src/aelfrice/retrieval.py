@@ -2996,17 +2996,18 @@ def retrieve(
     bare `retrieve()` so `rebuild_v14`'s call site observes the
     toggle that A4 (#775) measures.
     """
-    # #1107 Phase 2: `retrieve()` is a thin adapter over `retrieve_v2`, the
+    # #1107 cutover: `retrieve()` is a thin adapter over `retrieve_v2`, the
     # single retrieval implementation the production hook path shares with
     # the benchmark/eval surface. Lanes light up in production one at a time
-    # as each clears its latency gate. The **temporal-spine** lane is the
-    # first to graduate (#1064): its flag is passed through as `None` so the
-    # production `retrieve()` path honours the `is_temporal_spine_enabled`
-    # resolver (env -> TOML -> default) exactly like the eval surface. The
-    # remaining five staged lanes (entity-persist demotion, origin tie-break,
-    # HRR-expand, intentional clustering, HRR-structural) stay forced OFF,
-    # because `retrieve()`'s historical pack loop never ran them; equivalence
-    # for those is pinned by tests/test_retrieve_v2_equivalence.py.
+    # as each clears its gate; a graduated lane is passed through as `None`
+    # so the production path honours its resolver (env -> TOML -> default)
+    # exactly like the eval surface. Graduated so far: **temporal spine**
+    # (#1064, Phase 2) and **entity-persist demotion** (#1096, Phase 3 — the
+    # #1086 junk-percolation sink, resolver default-ON since the G2 eval).
+    # The remaining four staged lanes (origin tie-break, HRR-expand,
+    # intentional clustering, HRR-structural) stay forced OFF, because
+    # `retrieve()`'s historical pack loop never ran them; equivalence for
+    # those is pinned by tests/test_retrieve_v2_equivalence.py.
     out = retrieve_v2(
         store,
         query,
@@ -3028,11 +3029,12 @@ def retrieve(
         eigenbasis_cache=eigenbasis_cache,
         use_type_aware_compression=use_type_aware_compression,
         manifest_reference_locks=manifest_reference_locks,
-        # Temporal-spine pilot lane (#1064/#1107 Phase 2): resolver-driven
-        # (env -> TOML -> default) rather than hard-off, so a production host
-        # gets the lane the moment its resolver says on.
+        # Graduated lanes (#1107): resolver-driven (env -> TOML -> default)
+        # rather than hard-off, so a production host gets the lane the moment
+        # its resolver says on. temporal spine #1064 (Phase 2), entity-persist
+        # demotion #1096 (Phase 3, resolver default-ON).
         use_temporal_spine=None,
-        use_entity_persist_demote=False,
+        use_entity_persist_demote=None,
         use_origin_tiebreak=False,
         use_hrr_expand=False,
         use_intentional_clustering=False,
