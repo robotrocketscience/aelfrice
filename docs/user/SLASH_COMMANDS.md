@@ -1,4 +1,4 @@
-# Slash Commands
+# Slash commands
 
 Twenty-nine markdown files in `src/aelfrice/slash_commands/`, tracking the v1.2.0 CLI consolidation, the v1.4.0 `rebuild` promotion, the v2.0 reasoning surfaces, the v2.x `eval` calibration surface, the v3.3.0 `/aelf:graph` viz (#629), the v3.3.0 `/aelf:scope-out` session-scoped retrieval exclusion (#856), the v3.5 belief-hygiene additions (`/aelf:feed`, `/aelf:stale`, `/aelf:review`, `/aelf:speculative`, `/aelf:audit-claude-memory`), and the v4.0 belief-curation additions (`/aelf:introspect`, `/aelf:retire`, `/aelf:restore`, #1081). After `aelf setup`, they appear as `/aelf:*` in the host. Each is a thin wrapper over the CLI — `/aelf:foo` invokes `aelf foo` against the active project's DB.
 
