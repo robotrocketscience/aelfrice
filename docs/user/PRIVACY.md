@@ -81,7 +81,7 @@ Resolution order:
 
 ## Optional inbound prose inspection: `sentiment_from_prose` (v2.0 module, v3.0 hook wire-up)
 
-The regex sentiment detector module shipped at v2.0 but was not reached by any live hook until v3.0 #606. When `[feedback] sentiment_from_prose = true` is set in `.aelfrice.toml` (or `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE=1` is set in the environment), aelfrice runs each user prompt the host hook surfaces through a 24-pattern regex bank ([`src/aelfrice/sentiment_feedback.py`](../../src/aelfrice/sentiment_feedback.py)) and and, for the single first-matching pattern (at most one per prompt), writes one `feedback_history` row per belief retrieved in the previous turn.
+The regex sentiment detector module shipped at v2.0 but was not reached by any live hook until v3.0 #606. When `[feedback] sentiment_from_prose = true` is set in `.aelfrice.toml` (or `AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE=1` is set in the environment), aelfrice runs each user prompt the host hook surfaces through a 24-pattern regex bank ([`src/aelfrice/sentiment_feedback.py`](../../src/aelfrice/sentiment_feedback.py)) and, for the single first-matching pattern (at most one per prompt), writes one `feedback_history` row per belief retrieved in the previous turn.
 
 **Default off.** Existing users see no behavior change.
 
