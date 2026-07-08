@@ -29,8 +29,6 @@ aelf lock "never push directly to main; use scripts/publish.sh"
 
 That's it. The next prompt that mentions "push" already has the rule. From here on out aelfrice is invisible — no command to remember to run, no file to keep updated.
 
----
-
 ## What you'll see
 
 You type a message in your agent. aelfrice's hook fires before the model sees it and prepends matched beliefs as an `<aelfrice-memory>` block:
@@ -48,8 +46,6 @@ push the release
 
 The model reads the whole thing as one message. Your rules arrive every relevant time, not when the agent decides to check a file.
 
----
-
 ## What it does for you
 
 - **Stops the AI forgetting your rules.** Lock a rule once with `aelf lock "..."` — it comes back attached to every prompt after that, in every new session. You don't have to remind the AI; aelfrice does.
@@ -60,8 +56,6 @@ The model reads the whole thing as one message. Your rules arrive every relevant
 ## Why not just a rules file?
 
 A rules file is advice the agent *may* read; aelfrice is context the model *has already read*. And by [Leonard Lin's bar](https://github.com/lhl/agentic-memory/blob/main/ANALYSIS.md), "a vector store with a similarity query" is not a memory system either — a memory system has to answer *who wrote this, when, via what ingress, what supersedes it, and how do I take it back.* aelfrice meets the four pillars (provenance, write gates, conflict handling, reversibility) directly. The side-by-side against hand-maintained rules files and vector stores lives in [COMPARISON.md](docs/concepts/COMPARISON.md).
-
----
 
 ## Day-to-day
 
@@ -80,8 +74,6 @@ aelf review --generate               # weekly keep / remove / lock checkpoint (v
 ```
 
 `aelf --help` shows the everyday surface; `aelf --help --advanced` lists the rest. Full reference: [COMMANDS](docs/user/COMMANDS.md). The same operations are exposed as MCP tools and `/aelf:*` slash commands — same library underneath. See [MCP](docs/user/MCP.md) and [SLASH_COMMANDS](docs/user/SLASH_COMMANDS.md).
-
----
 
 ## How it works
 
@@ -105,8 +97,6 @@ L0 always ships. L1, L2.5, and (when enabled) L3 are budget-trimmed against the 
 
 Bench evidence on the labelled query-strategy corpus measured **+0.2851 absolute NDCG@k (+94.8%)** versus the v1.4 raw-BM25 baseline (v3.0 30-row corpus, 2026-05-12) at +0.96 ms p99 over legacy-bm25 (re-measured 2026-05-26; gate budget +5 ms delta; see [`tests/bench_gate/test_query_strategy.py`](tests/bench_gate/test_query_strategy.py)). Full lane wiring, composition, and federation peer DBs: [ARCHITECTURE § Retrieval](docs/concepts/ARCHITECTURE.md#retrieval).
 
----
-
 ## Memory model
 
 Every belief carries a `(α, β)` Beta-Bernoulli posterior: `α / (α+β)` is the confidence; `α + β` is how much evidence backs that confidence. New beliefs sit at low evidence (high variance, retrievable but discounted); locked beliefs short-circuit decay and pin as ground truth.
@@ -124,8 +114,6 @@ Every belief carries a `(α, β)` Beta-Bernoulli posterior: `α / (α+β)` is th
 
 Each belief has an `origin` column tying it to the action that wrote it — one of `user_stated`, `user_corrected`, `user_validated`, `user_transcript`, `agent_inferred`, `agent_remembered`, `document_recent`, `speculative`, `unknown`. The store is a single SQLite file; open it in any browser, nothing is hidden.
 
----
-
 ## Reasoning surfaces
 
 Two slash commands let the agent reach back into the belief graph mid-turn, beyond the auto-injected retrieval block. They pair: `/aelf:wonder` grows the graph by researching; `/aelf:reason` walks the enriched graph for structured verdicts.
@@ -136,8 +124,6 @@ Two slash commands let the agent reach back into the belief graph mid-turn, beyo
 
 The pair-rhythm is the point: `/aelf:wonder` adds fresh thinking to the graph, then `/aelf:reason` draws conclusions across it. Both surfaces are deterministic in the aelfrice layer (verdict classification, impasse derivation, axis generation, suggested-update mapping). The only LLM calls happen when the host agent dispatches one worker per impasse or research axis — and those calls run under the host's own credentials, not aelfrice's. Specs: [COMMANDS § `wonder`](docs/user/COMMANDS.md), [COMMANDS § `reason`](docs/user/COMMANDS.md).
 
----
-
 ## What you get for free
 
 Running in the background. No action required after `aelf setup`.
@@ -147,8 +133,6 @@ Running in the background. No action required after `aelf setup`.
 - **Local-only.** SQLite at `<git-common-dir>/aelfrice/memory.db`. By default, the only outbound call aelfrice itself makes is the update notifier — a TTL-gated, read-only GET to `https://pypi.org/pypi/aelfrice/json` (disable with `AELF_NO_UPDATE_CHECK=1`). No telemetry; no accounts. The memory/retrieval path never touches the network. (LLM dispatches in `/aelf:wonder` / `/aelf:reason` flows do reach the network — under the host agent's credentials, not aelfrice's; the retrieval path stays local.) Per-project isolation by construction. Read-only cross-project federation via `knowledge_deps.json` — peer DBs are opened read-only, foreign-id mutations are rejected at the API surface. See [PRIVACY.md](docs/user/PRIVACY.md).
 - **Removable.** `aelf uninstall --archive backup.aenc` encrypts the DB to a file, then deletes it. Or `--purge` for a full wipe.
 
----
-
 ## Obsidian export
 
 If you already live in Obsidian, `aelf export-obsidian <vault-path>` emits the belief graph as one Markdown note per belief under `<vault>/aelfrice/`. Typed edges land in YAML front-matter for [Dataview](https://blacksmithgu.github.io/obsidian-dataview/); the same edges appear in the note body as wikilinks so the graph view has something to draw. The export is **one-way (DB → vault)**: SQLite stays the source of truth, and the `<vault>/aelfrice/` subdirectory is wiped and rewritten on each run.
@@ -156,8 +140,6 @@ If you already live in Obsidian, `aelf export-obsidian <vault-path>` emits the b
 Scopes: `--scope all` (everything, capped by `--max-notes`), `--scope recent` (newest first), `--scope query "<text>"` (BM25 seeds + N-hop neighbourhood). Default cap is 500 notes; the hard ceiling is 5000 unless `--force` is passed.
 
 > Two structural limits, shipped with the feature: Obsidian's built-in graph view chokes around a few thousand nodes (bound the export with `--scope query` / `--max-notes`, or use `aelf graph` for query-anchored visualization at any store size), and the graph view is untyped — edge types are preserved in YAML front-matter and queryable via Dataview, but the graph view will not show them.
-
----
 
 ## Status
 
@@ -167,8 +149,6 @@ Latest stable: **v4.0.0** (2026-07-07). Per-entry detail in [CHANGELOG § 4.0.0]
 <!-- bench-canonical-badge:start -->
 [![Reproducibility](https://img.shields.io/badge/reproducibility-partial%20%286%2F11%20adapters%29-yellow)](docs/design/v2_reproducibility_harness.md)
 <!-- bench-canonical-badge:end -->
-
----
 
 ## Documentation
 

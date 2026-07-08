@@ -92,8 +92,6 @@ Locked beliefs short-circuit decay and are always returned at L0. They're the on
 
 Restart Claude Code. The next prompt that mentions "push" will already have your rules attached.
 
----
-
 ## Database
 
 SQLite. Path resolution order:
@@ -130,8 +128,6 @@ aelf ingest-transcript --batch ~/.claude/projects/ --since 2026-01-01
 Auto-detects the JSONL format on a per-line basis (handles both aelfrice's transcript-logger output and Claude Code's internal session shape). Idempotent on re-run.
 
 > **Privacy.** Session JSONLs may contain pasted secrets, customer data, or anything you typed in chat. Batch ingestion brings all of that into the local belief graph. There is no PII scrubber on the v1.2 ingest path. Review before backfilling.
-
----
 
 ## Hooks installed by `aelf setup`
 
@@ -244,8 +240,6 @@ dry-run only. re-run with `--apply` to be prompted [y/N] per DB.
 
 The dormant scan is schema-agnostic — both pre-v1.x and modern-schema DBs are flagged when idle. A DB you still want to migrate should go through `aelf migrate --from <path> --apply` (above) before pruning, not after.
 
----
-
 ## Update notifier
 
 ```bash
@@ -258,8 +252,6 @@ aelf upgrade-cmd --check  # same output, no behaviour difference
 `aelf upgrade-cmd` emits `run: uv tool upgrade aelfrice` on a uv-managed install. If aelfrice was installed via another tool (pipx, pip, system), the `run:` line is the migration chain (`pipx uninstall aelfrice && uv tool install aelfrice`, or the pip equivalent) — uv is the single supported install channel (#730). The CLI does not execute the upgrade itself: replacing the running interpreter mid-process is unreliable on Windows.
 
 The orange statusline banner appears automatically when an update is available. Disable with `export AELF_NO_UPDATE_CHECK=1`.
-
----
 
 ## Uninstall
 
@@ -281,8 +273,6 @@ open("out.db","wb").write(decrypt_archive(Path("backup.aenc"), "password"))
 ```
 
 Requires the `[archive]` extra.
-
----
 
 ## Troubleshooting
 
