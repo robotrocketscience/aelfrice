@@ -47,11 +47,22 @@ Behaviour matches the CLI exactly — see [COMMANDS](COMMANDS.md). The v1.1.0 `e
 | Caller | Use |
 |---|---|
 | You, in Claude Code | `/aelf:*` slash command |
+| You, in Codex CLI | `$aelf-*` agent skill — see [Codex host](#codex-host-aelf--skills) |
 | The agent, mid-turn | `aelf:*` MCP tool — see [MCP](MCP.md) |
 | Shell or script | `aelf` CLI — see [COMMANDS](COMMANDS.md) |
 | Tests / embedded | `tool_*` handlers from `aelfrice.mcp_server` |
 
 Remove with `aelf unsetup` — it strips the hooks from settings.json and deletes the bundled files under `~/.claude/commands/aelf/` in one pass.
+
+## Codex host: `$aelf-*` skills
+
+Codex CLI has no `/aelf:*` slash namespace; its analogue of a slash command is an **agent skill** — a directory holding a `SKILL.md` (a `name` + `description` frontmatter pair, then instructions), discovered from the user scope `~/.agents/skills/` and invoked explicitly as `$<name>` or triggered implicitly when a task matches the description. (Codex custom prompts under `~/.codex/prompts` are the closer 1:1 to a slash file but are deprecated upstream in favour of skills, so aelfrice targets skills.)
+
+`aelf setup --host codex` installs the hook set into `~/.codex/hooks.json` (#1052) **and** the `$aelf-*` skills into `~/.agents/skills/` (pass `--no-codex-skills` to install hooks only). The skills are not a second copy — each is generated on install from the same `src/aelfrice/slash_commands/*.md` bundle the Claude installer ships, so `/aelf:search` and `$aelf-search` never drift. The transform renames `aelf:foo` → `aelf-foo` (colons are invalid in skill/dir names), reduces the frontmatter to the required `name`/`description`, and prepends a short adapter preamble that defines `$ARGUMENTS` (Codex has no positional-substitution engine) and maps Claude's `Task`/`Read`/`Edit` tool names onto their Codex equivalents; the `<objective>`/`<process>` body is carried through verbatim.
+
+Install is idempotent and orphan-pruning, but pruning is gated on an `AELFRICE-CODEX-SKILL` marker written into every generated `SKILL.md`: only marker-carrying `aelf-*` directories are ever replaced or removed, so a hand-authored `aelf-*` skill — or any of the other skills that share `~/.agents/skills/` — is never touched. `aelf doctor --host codex` reports the installed skill count; `aelf unsetup --host codex` removes the marker-carrying skills (and the hooks) in one pass.
+
+Two caveats specific to the Codex host: (1) Codex runs hooks only after per-hook trust approval and with the `codex_hooks` feature flag on — see the `next:` guidance `aelf setup --host codex` prints; skills need no such approval. (2) Codex governs shell execution through its own sandbox/approval policy rather than a per-command `allowed-tools` allowlist, so the first `uv run aelf …` a skill issues may prompt for approval.
 
 ## `/aelf:upgrade` orchestrator flow
 
