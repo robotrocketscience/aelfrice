@@ -4150,6 +4150,29 @@ def _cmd_setup_codex(args: argparse.Namespace, out: object) -> int:
     )
     for line in result.guidance:
         print(f"  next: {line}", file=out)  # type: ignore[arg-type]
+
+    # Codex skills: the `$aelf-*` port of the `/aelf:*` slash commands.
+    if getattr(args, "codex_skills", True):
+        from aelfrice.host_codex import install_codex_skills
+
+        sk = install_codex_skills()
+        if sk.written:
+            print(
+                f"installed {len(sk.written)} Codex skill(s) in "
+                f"{sk.dest_dir}: invoke as ${', $'.join(sk.written)}",
+                file=out,  # type: ignore[arg-type]
+            )
+        if sk.pruned:
+            print(
+                f"removed {len(sk.pruned)} stale Codex skill(s) from "
+                f"{sk.dest_dir}: {', '.join(sk.pruned)}",
+                file=out,  # type: ignore[arg-type]
+            )
+        if not sk.written and not sk.pruned:
+            print(
+                f"Codex skills already up to date in {sk.dest_dir}",
+                file=out,  # type: ignore[arg-type]
+            )
     # #1053: Codex-only user (no aelfrice hooks on the Claude host) ->
     # persist the claude auto-install opt-out so `aelf` invocations from
     # Codex hooks stop rewriting ~/.claude/settings.json. Dual-host
@@ -4196,6 +4219,21 @@ def _cmd_unsetup_codex(args: argparse.Namespace, out: object) -> int:
             f"no aelfrice entries in {result.path}",
             file=out,  # type: ignore[arg-type]
         )
+
+    from aelfrice.host_codex import remove_codex_skills
+
+    sk = remove_codex_skills()
+    if sk.pruned:
+        print(
+            f"removed {len(sk.pruned)} Codex skill(s) from {sk.dest_dir}: "
+            f"{', '.join(sk.pruned)}",
+            file=out,  # type: ignore[arg-type]
+        )
+    else:
+        print(
+            f"no aelfrice Codex skills in {sk.dest_dir}",
+            file=out,  # type: ignore[arg-type]
+        )
     return 0
 
 
@@ -4224,6 +4262,17 @@ def _cmd_doctor_codex(args: argparse.Namespace, out: object) -> int:
     print(
         f"[i] codex_hooks feature flag: {flag}; approved [hooks.state] "
         f"entries: {report.approved_state_count}",
+        file=out,  # type: ignore[arg-type]
+    )
+    from aelfrice.host_codex import (
+        AGENTS_SKILLS_DIR,
+        count_installed_codex_skills,
+    )
+
+    n_skills = count_installed_codex_skills()
+    print(
+        f"[i] codex skills ($aelf-*): {n_skills} installed in "
+        f"{AGENTS_SKILLS_DIR}",
         file=out,  # type: ignore[arg-type]
     )
     for warning in report.warnings:
@@ -8150,6 +8199,16 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "with --host codex: replace an existing hooks.json that is "
             "unparseable instead of refusing. No effect on the claude "
             "host path."
+        ),
+    )
+    p_setup.add_argument(
+        "--codex-skills", dest="codex_skills",
+        action=argparse.BooleanOptionalAction, default=True,
+        help=(
+            "with --host codex: also install the `$aelf-*` agent skills "
+            "(the Codex port of the /aelf:* slash commands) into "
+            "~/.agents/skills/. Default: ON. Pass --no-codex-skills to "
+            "install hooks only. No effect on the claude host path."
         ),
     )
     p_setup.add_argument(
