@@ -523,6 +523,8 @@ def install_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
                     already.append(skill_name)
                     continue
             except OSError:
+                # Existing file unreadable (perms/encoding): fall through
+                # and rewrite it rather than treat it as up to date.
                 pass
         skill_dir.mkdir(parents=True, exist_ok=True)
         encoded = text.encode("utf-8")
@@ -552,6 +554,8 @@ def install_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
                 (child / _SKILL_FILENAME).unlink()
                 child.rmdir()
             except OSError:
+                # Best-effort prune: leave the dir in place on any FS
+                # error (the `else` skips recording it as pruned).
                 pass
             else:
                 pruned.append(child.name)
@@ -580,6 +584,8 @@ def remove_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
                     (child / _SKILL_FILENAME).unlink()
                     child.rmdir()
                 except OSError:
+                    # Best-effort removal: leave the dir in place on any
+                    # FS error (the `else` skips recording it as pruned).
                     pass
                 else:
                     pruned.append(child.name)
