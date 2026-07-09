@@ -334,7 +334,7 @@ def remove_codex_hooks(hooks_path: Path) -> CodexInstallResult:
 
 # --- Codex agent skills (the `$aelf-*` port of `/aelf:*`) ---------------
 #
-# Codex's analogue of a Claude Code slash command is an *agent skill*: a
+# Codex's analogue of an `/aelf:*` slash command is an *agent skill*: a
 # directory holding a ``SKILL.md`` (name + description frontmatter, then
 # natural-language instructions), discovered from the user scope
 # ``~/.agents/skills/`` and invoked explicitly as ``$<name>`` or triggered
@@ -419,7 +419,7 @@ def codex_skill_from_slash(filename: str, text: str) -> tuple[str, str]:
         f"src/aelfrice/slash_commands/{filename}. Edit the source file, "
         "not this copy. -->",
         "",
-        f"This is the Codex port of the `/{slash_name}` Claude Code "
+        f"This is the Codex port of the `/{slash_name}` slash "
         f"command; invoke it as `${skill_name}`.",
     ]
     hint = front.get("argument-hint")
@@ -433,7 +433,7 @@ def codex_skill_from_slash(filename: str, text: str) -> tuple[str, str]:
         )
     if "Task" in body and ("subagent" in body or "Task tool" in body or "Task subagent" in body):
         adapter.append(
-            "Where the steps mention Claude Code's `Task` tool / subagents, "
+            "Where the steps mention the host's `Task` tool / subagents, "
             "use Codex's own subagent mechanism to fan out the equivalent "
             "work; the dispatch logic and CLI calls are unchanged."
         )
