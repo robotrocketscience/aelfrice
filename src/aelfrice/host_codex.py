@@ -332,6 +332,271 @@ def remove_codex_hooks(hooks_path: Path) -> CodexInstallResult:
     )
 
 
+# --- Codex agent skills (the `$aelf-*` port of `/aelf:*`) ---------------
+#
+# Codex's analogue of a Claude Code slash command is an *agent skill*: a
+# directory holding a ``SKILL.md`` (name + description frontmatter, then
+# natural-language instructions), discovered from the user scope
+# ``~/.agents/skills/`` and invoked explicitly as ``$<name>`` or triggered
+# implicitly when a task matches the description. Custom prompts
+# (``~/.codex/prompts``) are the closer 1:1 to a slash file but are
+# deprecated upstream in favour of skills, so we target skills.
+#
+# The source of truth is the SAME bundle the Claude installer ships
+# (``src/aelfrice/slash_commands/*.md``). Each file is transformed on
+# install — no second copy is maintained, so editing the slash file
+# updates both hosts. The transform: rename ``aelf:foo`` -> ``aelf-foo``
+# (colons are invalid in skill/dir names), reduce the frontmatter to the
+# required ``name``/``description`` pair, and prepend a short adapter
+# preamble that (a) defines ``$ARGUMENTS`` for a host with no positional
+# substitution engine and (b) maps Claude-only tool names (Task/Read/
+# Edit/Write) onto their Codex equivalents. The ``<objective>``/
+# ``<process>`` body is carried over verbatim.
+
+# Codex USER-scope skill discovery root (the open agent-skills standard
+# path, shared with other agents' skills — hence the marker-gated prune).
+AGENTS_SKILLS_DIR: Final[Path] = Path.home() / ".agents" / "skills"
+
+# Every generated SKILL.md carries this marker on its first body line. It
+# is the prune safety key: uninstall / orphan-prune only ever removes an
+# ``aelf-*`` skill directory whose SKILL.md contains this exact marker, so
+# a user's hand-authored ``aelf-*`` skill is never destroyed.
+_SKILL_MARKER: Final[str] = "AELFRICE-CODEX-SKILL"
+_SKILL_PREFIX: Final[str] = "aelf-"
+_SKILL_FILENAME: Final[str] = "SKILL.md"
+
+
+def _parse_slash_frontmatter(text: str) -> tuple[dict[str, str], str]:
+    """Split a slash-command file into (frontmatter, body).
+
+    Frontmatter values in the bundle are single-line ``key: value`` pairs
+    (the only multi-line key, ``allowed-tools``, is a list we discard), so
+    a line-based parse is exact and dependency-free. Returns the scalar
+    keys we consume (``name``, ``description``, ``argument-hint``) and the
+    body text after the closing delimiter (verbatim, stripped of a single
+    leading newline).
+    """
+    if not text.startswith("---"):
+        return {}, text
+    lines = text.splitlines()
+    # lines[0] == "---"; find the closing delimiter.
+    close = None
+    for i in range(1, len(lines)):
+        if lines[i].strip() == "---":
+            close = i
+            break
+    if close is None:
+        return {}, text
+    front: dict[str, str] = {}
+    for raw in lines[1:close]:
+        if raw[:1] in (" ", "\t") or ":" not in raw:
+            # Indented list item (allowed-tools entries) or blank — skip.
+            continue
+        key, _, val = raw.partition(":")
+        key = key.strip()
+        if key in ("name", "description", "argument-hint"):
+            front[key] = val.strip()
+    body = "\n".join(lines[close + 1:])
+    return front, body.lstrip("\n")
+
+
+def codex_skill_from_slash(filename: str, text: str) -> tuple[str, str]:
+    """Transform one slash-command file into a (skill_name, SKILL.md) pair.
+
+    ``filename`` is the bundle basename (e.g. ``search.md``); ``text`` is
+    its full content. Returns the skill directory / ``name`` value (e.g.
+    ``aelf-search``) and the rendered SKILL.md text. Deterministic: same
+    input bytes -> same output bytes.
+    """
+    front, body = _parse_slash_frontmatter(text)
+    raw_name = front.get("name") or (_SKILL_PREFIX + filename.removesuffix(".md"))
+    skill_name = raw_name.replace(":", "-")
+    slash_name = raw_name  # original Claude form, e.g. "aelf:search"
+    description = front.get("description", "")
+
+    adapter: list[str] = [
+        f"<!-- {_SKILL_MARKER}: auto-generated from "
+        f"src/aelfrice/slash_commands/{filename}. Edit the source file, "
+        "not this copy. -->",
+        "",
+        f"This is the Codex port of the `/{slash_name}` Claude Code "
+        f"command; invoke it as `${skill_name}`.",
+    ]
+    hint = front.get("argument-hint")
+    if hint:
+        adapter.append(f"Arguments: {hint}")
+    if "$ARGUMENTS" in body:
+        adapter.append(
+            "Where the steps below reference `$ARGUMENTS`, substitute the "
+            f"text the user typed after `${skill_name}` (their query and/or "
+            "flags)."
+        )
+    if "Task" in body and ("subagent" in body or "Task tool" in body or "Task subagent" in body):
+        adapter.append(
+            "Where the steps mention Claude Code's `Task` tool / subagents, "
+            "use Codex's own subagent mechanism to fan out the equivalent "
+            "work; the dispatch logic and CLI calls are unchanged."
+        )
+    adapter.append(
+        "Run each `uv run aelf ...` command in your shell and show its "
+        "output to the user."
+    )
+
+    lines = [
+        "---",
+        f"name: {skill_name}",
+        f"description: {description}",
+        "---",
+        *adapter,
+        "",
+        body.rstrip("\n"),
+        "",
+    ]
+    return skill_name, "\n".join(lines)
+
+
+def _bundled_codex_skills() -> dict[str, str]:
+    """Map skill_name -> SKILL.md text for every bundled slash command."""
+    from aelfrice.setup import bundled_slash_files
+
+    result: dict[str, str] = {}
+    for filename, text in bundled_slash_files().items():
+        skill_name, skill_text = codex_skill_from_slash(filename, text)
+        result[skill_name] = skill_text
+    return result
+
+
+def _is_owned_skill_dir(skill_dir: Path) -> bool:
+    """True iff ``skill_dir`` is an aelfrice-generated skill we may prune.
+
+    Gated on both the ``aelf-`` name prefix AND the marker inside its
+    SKILL.md, so a user's own ``aelf-*`` skill (no marker) is left alone.
+    """
+    if not skill_dir.name.startswith(_SKILL_PREFIX) or not skill_dir.is_dir():
+        return False
+    skill_md = skill_dir / _SKILL_FILENAME
+    if not skill_md.is_file():
+        return False
+    try:
+        return _SKILL_MARKER in skill_md.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+
+@dataclass(frozen=True)
+class CodexSkillsResult:
+    """Outcome of install/uninstall of the Codex ``$aelf-*`` skills."""
+
+    dest_dir: Path
+    written: tuple[str, ...] = ()
+    already: tuple[str, ...] = ()
+    pruned: tuple[str, ...] = ()
+
+
+def install_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
+    """Write every bundled command as a Codex skill under ``dest_dir``.
+
+    Default ``dest_dir`` is ``~/.agents/skills/``. Each skill lands at
+    ``<dest>/aelf-<cmd>/SKILL.md``. Idempotent (byte-identical files are
+    skipped), atomic (temp + ``os.replace``), and orphan-pruning — but
+    pruning removes only marker-carrying ``aelf-*`` skill dirs, never the
+    other skills that share this directory.
+    """
+    import os
+    import tempfile
+
+    target = dest_dir if dest_dir is not None else AGENTS_SKILLS_DIR
+    bundle = _bundled_codex_skills()
+
+    written: list[str] = []
+    already: list[str] = []
+    pruned: list[str] = []
+
+    target.mkdir(parents=True, exist_ok=True)
+
+    for skill_name, text in sorted(bundle.items()):
+        skill_dir = target / skill_name
+        dest_file = skill_dir / _SKILL_FILENAME
+        if dest_file.is_file():
+            try:
+                if dest_file.read_text(encoding="utf-8") == text:
+                    already.append(skill_name)
+                    continue
+            except OSError:
+                pass
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        encoded = text.encode("utf-8")
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=_SKILL_FILENAME + ".", suffix=".tmp", dir=str(skill_dir)
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(encoded)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, dest_file)
+        except Exception:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            raise
+        written.append(skill_name)
+
+    # Prune orphans: marker-carrying aelf-* dirs no longer in the bundle
+    # (handles renames/removals). Non-aelfrice skills are never touched.
+    for child in sorted(target.glob(f"{_SKILL_PREFIX}*")):
+        if child.name in bundle:
+            continue
+        if _is_owned_skill_dir(child):
+            try:
+                (child / _SKILL_FILENAME).unlink()
+                child.rmdir()
+            except OSError:
+                pass
+            else:
+                pruned.append(child.name)
+
+    return CodexSkillsResult(
+        dest_dir=target,
+        written=tuple(written),
+        already=tuple(already),
+        pruned=tuple(pruned),
+    )
+
+
+def remove_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
+    """Remove all aelfrice-generated ``$aelf-*`` skills from ``dest_dir``.
+
+    Only marker-carrying ``aelf-*`` skill directories are removed; other
+    skills sharing the directory are preserved. Returns the removed skill
+    names under ``pruned``.
+    """
+    target = dest_dir if dest_dir is not None else AGENTS_SKILLS_DIR
+    pruned: list[str] = []
+    if target.is_dir():
+        for child in sorted(target.glob(f"{_SKILL_PREFIX}*")):
+            if _is_owned_skill_dir(child):
+                try:
+                    (child / _SKILL_FILENAME).unlink()
+                    child.rmdir()
+                except OSError:
+                    pass
+                else:
+                    pruned.append(child.name)
+    return CodexSkillsResult(dest_dir=target, pruned=tuple(pruned))
+
+
+def count_installed_codex_skills(dest_dir: Path | None = None) -> int:
+    """Count marker-carrying ``aelf-*`` skills present under ``dest_dir``."""
+    target = dest_dir if dest_dir is not None else AGENTS_SKILLS_DIR
+    if not target.is_dir():
+        return 0
+    return sum(
+        1 for child in target.glob(f"{_SKILL_PREFIX}*")
+        if _is_owned_skill_dir(child)
+    )
+
+
 @dataclass
 class CodexDoctorReport:
     """Structured result of the Codex host scan; render at the CLI."""

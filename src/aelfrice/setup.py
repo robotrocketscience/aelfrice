@@ -1444,6 +1444,16 @@ def _bundled_slash_files() -> dict[str, str]:
     return result
 
 
+def bundled_slash_files() -> dict[str, str]:
+    """Public view of the bundled slash commands (filename -> text).
+
+    The Codex-skills installer (`host_codex`) transforms this same bundle
+    so the two hosts share one source of truth; exposed as a stable public
+    accessor so cross-module use doesn't reach into the private helper.
+    """
+    return _bundled_slash_files()
+
+
 @dataclass(frozen=True)
 class SlashCommandsResult:
     """Outcome of `install_slash_commands` or `uninstall_slash_commands`.
