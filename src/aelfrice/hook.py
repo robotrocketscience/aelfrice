@@ -875,6 +875,16 @@ def user_prompt_submit(
             traceback.print_exc(file=serr)
         if cadence_checkpoint_block:
             sout.write(cadence_checkpoint_block + "\n\n")
+        # #1126: belief-category rules. Advisory block written ahead of the
+        # retrieval body (like <cadence-checkpoint>), independent of the
+        # gate-skip / BM25 path so a triggered rule fires even on prompts
+        # the shape-gate refuses to retrieve against. Default-off,
+        # fail-soft.
+        category_block = _maybe_category_injection_block(
+            prompt, payload_cwd, serr,
+        )
+        if category_block:
+            sout.write(category_block + "\n\n")
         budget = (
             token_budget
             if token_budget is not None
@@ -2016,6 +2026,101 @@ def apply_sentiment_feedback(
             file=serr,
         )
         return 0
+
+
+# #1126: belief-category injection lane. Advisory only — surfaces a fired
+# category's member rules as a distinct block ahead of the retrieval body,
+# mirroring the <cadence-checkpoint> precedent. Never blocks a tool call
+# (that is out of scope for v1; see the umbrella non-goals). Default-off,
+# fail-soft: any error returns "" so the hook is unaffected.
+
+# Per-category character budget for the injected block. Small on purpose
+# (~a few hundred tokens) so a fired category — or several — cannot crowd
+# out the retrieval surface. Overflow is truncated to a manifest line.
+CATEGORY_BLOCK_CHAR_BUDGET: Final[int] = 1600
+
+
+def _maybe_category_injection_block(
+    prompt: str,
+    payload_cwd: "Path | None",
+    stderr: IO[str],
+) -> str:
+    """Return the `<belief-category-rules>` block for `prompt`, or "".
+
+    Fires when the belief-categories lane is enabled (default-off) and at
+    least one category is `always_on` or has a keyword phrase in `prompt`.
+    Member rules are de-duplicated by belief id across all fired
+    categories and bounded by `CATEGORY_BLOCK_CHAR_BUDGET`. Deterministic:
+    categories in name ASC (via `match_prompt`), members in the store's
+    stable order. Fail-soft.
+    """
+    if not prompt:
+        return ""
+    try:
+        from aelfrice import category as catmod  # noqa: PLC0415
+
+        toml_cfg = _load_aelfrice_toml(start=payload_cwd, stderr=stderr)
+        if not catmod.is_enabled(toml_cfg):
+            return ""
+        store = _open_store()
+        try:
+            categories = store.list_categories()
+            fired = catmod.match_prompt(prompt, categories)
+            if not fired:
+                return ""
+            lines: list[str] = []
+            used = 0
+            seen: set[str] = set()
+            truncated = False
+            for cat in fired:
+                members = store.get_beliefs_for_category(cat.name)
+                fresh = [b for b in members if b.id not in seen]
+                if not fresh:
+                    continue
+                trigger_desc = (
+                    "always-on" if cat.always_on else "matched a trigger keyword"
+                )
+                header = f"[{cat.name}] ({trigger_desc})"
+                cat_lines: list[str] = []
+                for b in fresh:
+                    seen.add(b.id)
+                    rule = "- " + " ".join(b.content.split())
+                    if used + len(rule) > CATEGORY_BLOCK_CHAR_BUDGET:
+                        truncated = True
+                        break
+                    used += len(rule)
+                    cat_lines.append(rule)
+                if cat_lines:
+                    lines.append(header)
+                    lines.extend(cat_lines)
+                if truncated:
+                    break
+            if not lines:
+                return ""
+            body = "\n".join(lines)
+            note = (
+                "The following user-maintained rules apply to this prompt "
+                "(belief categories, #1126). Treat them as standing "
+                "guidance."
+            )
+            tail = (
+                "\n… more rules truncated (`aelf category show <name>`)"
+                if truncated
+                else ""
+            )
+            return (
+                "<belief-category-rules>\n"
+                f"{note}\n{body}{tail}\n"
+                "</belief-category-rules>"
+            )
+        finally:
+            store.close()
+    except Exception as exc:  # fail-soft: never break the hook
+        print(
+            f"aelfrice: belief-category hook failed (non-fatal): {exc}",
+            file=stderr,
+        )
+        return ""
 
 
 def _write_sentiment_feedback_audit(
