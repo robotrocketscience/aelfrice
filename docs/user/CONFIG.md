@@ -14,6 +14,7 @@ A single optional TOML file at the root of a project (or any ancestor). It expos
 - `[onboard.llm]` (v1.3.0+) — direct-API onboard classifier gate; documented under [Keys § `[onboard.llm]`](#onboardllm-v130) below.
 - `[cadence]`, `[implicit_feedback]`, and `[hook_audit]` — feedback-cadence scoring, deferred retrieval-exposure feedback, and the per-turn hook audit log. Recognised here but documented in their module docstrings (`src/aelfrice/cadence.py`, `src/aelfrice/deferred_feedback.py`, `src/aelfrice/hook.py`).
 - `[feedback]` (v3.0+) — feedback-lane opt-ins. `sentiment_from_prose` (default `false`) wires the sentiment-feedback detector into `UserPromptSubmit` (#606).
+- `[belief_categories]` (v4.x+) — keyword-triggered belief categories. `enabled` (default `false`) wires the category-injection lane into `UserPromptSubmit` (#1126). Manage categories with `aelf category`.
 - `[user_prompt_submit_hook]` (v3.0+) — UPS hook knobs. `prompt_shape_gate_enabled` (default `true`) gates trivial-prompt and system-envelope short-circuits before BM25 retrieval runs (#674). `conversation_aware_query_enabled` (default `true`, v3.x #909) folds a small window of recent dialog turns into the BM25 query so paraphrase / pronoun / numeric-reference follow-ups still surface the load-bearing thread; tuned by `conversation_aware_turn_window` (default `4`) and `conversation_aware_prompt_weight` (default `3`).
 
 Locks and the MCP tool surface are not affected. Hook behavior IS configurable here (`[user_prompt_submit_hook]`, `[feedback]`, `[cadence]`, `[hook_audit]`); the Bayesian update math itself is not.
@@ -219,6 +220,17 @@ l1 = 0.40
 # AELFRICE_FEEDBACK_SENTIMENT_FROM_PROSE=1 env var overrides. See
 # docs/design/v3_sentiment_feedback_hook.md.
 sentiment_from_prose = false
+
+[belief_categories]
+# v4.x+ (#1126). Default `false`, opt-in. When true, the
+# UserPromptSubmit hook surfaces a <belief-category-rules> block ahead
+# of the retrieval body for every category that is always-on or has a
+# keyword phrase in the prompt. Advisory only — it never blocks a tool
+# call. Deterministic (case-insensitive word-boundary literal-phrase
+# matching, no embeddings), fail-soft. AELFRICE_BELIEF_CATEGORIES=1 env
+# var overrides. Manage categories with `aelf category`. See
+# docs/design/belief_categories.md.
+enabled = false
 
 [user_prompt_submit_hook]
 # v3.0+ (#674). Default `true`. Short-circuits BM25 retrieval on two
@@ -605,6 +617,18 @@ Integer ≥ 1, default `3`. Per-session cap on opportunity notes, shared across 
 Boolean, default `false`. When `false` (default) the note is a passive surface — it states the opportunity and the agent or user decides. When `true` the note instructs the agent to run the `/aelf:wonder` dispatch on the listed topics. TOML-only.
 
 The trigger is skipped on prompt-shape-gated turns (#674) and is fully fail-soft: any error yields no note and never breaks the hook. Full spec: [phantom_trigger_generation.md](../design/phantom_trigger_generation.md).
+
+## `[belief_categories]` (v4.x+)
+
+Opt-in keyword-triggered belief categories (#1126). A *category* groups beliefs (repo-rules, git-workflow, prose-and-docs, …) and binds them to an activation trigger. When the lane is enabled and a category fires — it is always-on, or one of its keyword phrases appears in the prompt — the `UserPromptSubmit` hook surfaces that category's member rules as a distinct `<belief-category-rules>` block, ahead of the retrieval body. This is the conditional, right-rule-at-the-right-moment complement to a static `CLAUDE.md` / `AGENTS.md`.
+
+The lane is **advisory injection, not enforcement**: it never blocks a tool call. Per the enforcement history (#199) and the #605 determinism boundary, matching is pure-stdlib (case-insensitive, word-boundary, literal-phrase; no embeddings, no model call) and the hook is fail-soft (any error injects nothing extra and returns exit 0). Locked members (L0) are still injected unconditionally every turn by the retrieval tier; the category lane is an *additional* triggered surface, not a replacement.
+
+### `enabled`
+
+Boolean, default `false`. Master opt-in. Precedence (first decisive wins): env var `AELFRICE_BELIEF_CATEGORIES=1`/`0` (truthy/falsy normalised) > TOML `[belief_categories] enabled` > default `false`. A fresh install is unaffected until enabled.
+
+Manage categories and membership with the `aelf category` CLI (`init`/`add`/`list`/`show`/`set-trigger`/`assign`/`unassign`/`delete`) or `aelf lock "<rule>" --category <name>`. `aelf category init` seeds a 5-category starter set (repo-rules, git-workflow, secrets-and-safety, prose-and-docs, testing). Category assignment is user-driven — there is no auto-classification. Full spec: [belief_categories.md](../design/belief_categories.md).
 
 ## `[memory]` (v3.7.0+)
 
