@@ -18,7 +18,14 @@ import re
 import secrets
 import sqlite3
 from datetime import datetime, timezone
-from typing import Callable, Final, Iterable, Iterator
+from typing import TYPE_CHECKING, Callable, Final, Iterable, Iterator
+
+if TYPE_CHECKING:
+    # #1126 belief categories. Imported lazily at runtime inside the
+    # category store methods (the module is pure stdlib and does not
+    # import store, so there is no cycle); the TYPE_CHECKING import is
+    # only so the forward-ref return annotations resolve under pyright.
+    from aelfrice.category import Category
 
 from aelfrice.models import (
     BELIEF_SCOPE_PROJECT,
@@ -544,6 +551,41 @@ _SCHEMA: tuple[str, ...] = (
         PRIMARY KEY (belief_id, neighbor_id, edge_type, direction)
     )
     """,
+    # #1126 belief categories. Two additive tables — invisible to the
+    # destructive-only migration-policy gate, and (being in _SCHEMA
+    # rather than _MIGRATIONS) present on every fresh store. `categories`
+    # holds one row per user-defined category with its trigger config as
+    # a single read-once JSON blob (`trigger_json` — same pattern as
+    # `onboard_sessions.candidates_json`); `always_on=1` injects every
+    # turn, otherwise the trigger's keyword phrases gate injection.
+    # `default_lock` is an advisory UI hint, not a constraint. There is
+    # NO FK from `categories` into `beliefs` — a category is definitional,
+    # independent of membership.
+    """
+    CREATE TABLE IF NOT EXISTS categories (
+        name          TEXT PRIMARY KEY,
+        always_on     INTEGER NOT NULL DEFAULT 0,
+        trigger_json  TEXT    NOT NULL DEFAULT '{}',
+        default_lock  TEXT    NOT NULL DEFAULT 'none',
+        created_at    TEXT    NOT NULL
+    )
+    """,
+    # M2M membership join, modeled on `belief_documents` (#435). A belief
+    # may belong to several categories. ON DELETE CASCADE on both sides:
+    # hard-deleting a belief or a category drops its membership rows.
+    # PK gives idempotent assignment (INSERT OR IGNORE re-runs no-op).
+    """
+    CREATE TABLE IF NOT EXISTS belief_categories (
+        belief_id     TEXT NOT NULL,
+        category_name TEXT NOT NULL,
+        created_at    TEXT NOT NULL,
+        PRIMARY KEY (belief_id, category_name),
+        FOREIGN KEY (belief_id) REFERENCES beliefs(id) ON DELETE CASCADE,
+        FOREIGN KEY (category_name) REFERENCES categories(name) ON DELETE CASCADE
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_belief_categories_category "
+    "ON belief_categories(category_name)",
 )
 
 # Marker key for the entity-index one-shot backfill. Empty value =
@@ -780,6 +822,24 @@ _ORDER_BY_BM25: Final[str] = "ORDER BY bm25(beliefs_fts)"
 _ORDER_BY_BM25_ORIGIN: Final[str] = (
     "ORDER BY bm25(beliefs_fts), " + _ORIGIN_PRIORITY_CASE + " DESC, b.id"
 )
+
+
+def _row_to_category(row: sqlite3.Row) -> "Category":  # noqa: F821
+    """Build a `Category` (#1126) from a `categories` row.
+
+    `trigger_json` is parsed tolerantly by `CategoryTrigger.from_json`, so
+    a malformed/forward-version blob degrades to an empty trigger rather
+    than raising.
+    """
+    from aelfrice.category import Category, CategoryTrigger
+
+    return Category(
+        name=str(row["name"]),
+        always_on=bool(row["always_on"]),
+        trigger=CategoryTrigger.from_json(row["trigger_json"]),
+        default_lock=str(row["default_lock"]),
+        created_at=str(row["created_at"]),
+    )
 
 
 def _row_to_belief(row: sqlite3.Row) -> Belief:
@@ -3318,6 +3378,143 @@ class MemoryStore:
                 )
             )
         return out
+
+    # --- Belief categories (#1126) ---------------------------------------
+    #
+    # `categories` rows are definitional (name + trigger config + lock
+    # hint); `belief_categories` is the M2M membership join. Writes commit
+    # immediately, matching the doc-linker's per-call commit contract.
+
+    def upsert_category(
+        self,
+        *,
+        name: str,
+        always_on: bool,
+        trigger_json: str,
+        default_lock: str,
+    ) -> "Category":  # noqa: F821
+        """Insert or update one category by name; return the stored row.
+
+        Idempotent on `name`: a repeat call updates `always_on`,
+        `trigger_json`, and `default_lock` in place and preserves the
+        original `created_at`. The caller (CLI) is responsible for having
+        validated `name`/`default_lock`/`trigger_json` via the
+        `aelfrice.category` helpers before calling.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            """
+            INSERT INTO categories (name, always_on, trigger_json, default_lock, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                always_on = excluded.always_on,
+                trigger_json = excluded.trigger_json,
+                default_lock = excluded.default_lock
+            """,
+            (name, 1 if always_on else 0, trigger_json, default_lock, now),
+        )
+        self._conn.commit()
+        got = self.get_category(name)
+        assert got is not None  # just wrote it
+        return got
+
+    def get_category(self, name: str) -> "Category | None":  # noqa: F821
+        """Return one category by name, or None if absent."""
+        cur = self._conn.execute(
+            "SELECT name, always_on, trigger_json, default_lock, created_at "
+            "FROM categories WHERE name = ?",
+            (name,),
+        )
+        row = cur.fetchone()
+        return _row_to_category(row) if row is not None else None
+
+    def list_categories(self) -> "list[Category]":  # noqa: F821
+        """Return every category, ordered by name ASC (deterministic)."""
+        cur = self._conn.execute(
+            "SELECT name, always_on, trigger_json, default_lock, created_at "
+            "FROM categories ORDER BY name ASC"
+        )
+        return [_row_to_category(r) for r in cur.fetchall()]
+
+    def set_category_trigger(self, name: str, trigger_json: str) -> bool:
+        """Replace one category's trigger config. Returns False if the
+        category does not exist (no row updated)."""
+        cur = self._conn.execute(
+            "UPDATE categories SET trigger_json = ? WHERE name = ?",
+            (trigger_json, name),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def delete_category(self, name: str) -> bool:
+        """Delete a category (cascading its membership rows). Returns
+        False if the category did not exist."""
+        cur = self._conn.execute(
+            "DELETE FROM categories WHERE name = ?", (name,)
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def assign_belief_to_category(
+        self, belief_id: str, category_name: str
+    ) -> None:
+        """Add a belief to a category (idempotent on the pair).
+
+        Raises `ValueError` if either the belief or the category does not
+        exist, so the CLI can report a clear error rather than surfacing a
+        raw FK `IntegrityError`.
+        """
+        if self.get_belief(belief_id) is None:
+            raise ValueError(f"no such belief: {belief_id}")
+        if self.get_category(category_name) is None:
+            raise ValueError(f"no such category: {category_name}")
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            "INSERT OR IGNORE INTO belief_categories "
+            "(belief_id, category_name, created_at) VALUES (?, ?, ?)",
+            (belief_id, category_name, now),
+        )
+        self._conn.commit()
+
+    def unassign_belief_from_category(
+        self, belief_id: str, category_name: str
+    ) -> bool:
+        """Remove a belief from a category. Returns False if the pair was
+        not a member."""
+        cur = self._conn.execute(
+            "DELETE FROM belief_categories "
+            "WHERE belief_id = ? AND category_name = ?",
+            (belief_id, category_name),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def get_categories_for_belief(self, belief_id: str) -> list[str]:
+        """Return the category names a belief belongs to, name ASC."""
+        cur = self._conn.execute(
+            "SELECT category_name FROM belief_categories "
+            "WHERE belief_id = ? ORDER BY category_name ASC",
+            (belief_id,),
+        )
+        return [str(r["category_name"]) for r in cur.fetchall()]
+
+    def get_beliefs_for_category(self, category_name: str) -> list[Belief]:
+        """Return the active member beliefs of a category.
+
+        Ordered by membership `created_at` ASC then belief id ASC
+        (deterministic). Retired beliefs (`valid_to` set) are excluded so
+        the injection lane never surfaces soft-deleted rules.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT b.* FROM beliefs b
+            JOIN belief_categories bc ON bc.belief_id = b.id
+            WHERE bc.category_name = ? AND b.valid_to IS NULL
+            ORDER BY bc.created_at ASC, b.id ASC
+            """,
+            (category_name,),
+        )
+        return [_row_to_belief(r) for r in cur.fetchall()]
 
     # --- Ingest log (v2.0, #205) -----------------------------------------
 
