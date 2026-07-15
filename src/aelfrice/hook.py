@@ -1038,9 +1038,9 @@ def user_prompt_submit(
             # action.
             if category_focus:
                 focus = ", ".join(category_focus)
+                noun = "category" if len(category_focus) == 1 else "categories"
                 body = (
-                    f"<category-focus>Your prompt matched belief "
-                    f"categor{'y' if len(category_focus) == 1 else 'ies'}: "
+                    f"<category-focus>Your prompt matched belief {noun}: "
                     f"{focus}. Their rules lead the beliefs below — treat "
                     f"them as the active rules for this action."
                     f"</category-focus>\n"
