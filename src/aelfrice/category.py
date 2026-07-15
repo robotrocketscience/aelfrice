@@ -335,16 +335,29 @@ SEED_CATEGORIES: Final[tuple[Category, ...]] = (
         name="git-workflow",
         always_on=False,
         trigger=CategoryTrigger(
+            # Literal-phrase matching (deterministic) trades recall for no
+            # false positives; the #1126 R&D measured ~39% miss on natural
+            # phrasings, so this list covers the common surface forms
+            # (commit/committed, merge/merged, push, ship, land, PR,
+            # github, …). It will never be exhaustive — that is the
+            # deterministic-matching trade-off, not a bug.
             keywords=(
                 "commit",
+                "committed",
                 "commit and push",
                 "push",
                 "git push",
                 "pull request",
                 "open a pr",
+                "pr",
                 "rebase",
                 "merge",
+                "merged",
                 "release",
+                "ship",
+                "ship it",
+                "land",
+                "github",
                 "tag",
             ),
         ),

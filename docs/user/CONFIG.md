@@ -223,13 +223,15 @@ sentiment_from_prose = false
 
 [belief_categories]
 # v4.x+ (#1126). Default `false`, opt-in. When true, the
-# UserPromptSubmit hook surfaces a <belief-category-rules> block ahead
-# of the retrieval body for every category that is always-on or has a
-# keyword phrase in the prompt. Advisory only — it never blocks a tool
-# call. Deterministic (case-insensitive word-boundary literal-phrase
-# matching, no embeddings), fail-soft. AELFRICE_BELIEF_CATEGORIES=1 env
-# var overrides. Manage categories with `aelf category`. See
-# docs/design/belief_categories.md.
+# UserPromptSubmit hook reranks the retrieval output so a fired
+# category's rules lead the block (with a <category-focus> label), for
+# every category that is always-on or has a keyword phrase in the
+# prompt. Reranks rather than injecting a second block (a separate block
+# double-injects what retrieval already returns — see the #1126 R&D).
+# Advisory only — it never blocks a tool call. Deterministic (case-
+# insensitive word-boundary literal-phrase matching, no embeddings),
+# fail-soft. AELFRICE_BELIEF_CATEGORIES=1 env var overrides. Manage
+# categories with `aelf category`. See docs/design/belief_categories.md.
 enabled = false
 
 [user_prompt_submit_hook]
@@ -620,9 +622,9 @@ The trigger is skipped on prompt-shape-gated turns (#674) and is fully fail-soft
 
 ## `[belief_categories]` (v4.x+)
 
-Opt-in keyword-triggered belief categories (#1126). A *category* groups beliefs (repo-rules, git-workflow, prose-and-docs, …) and binds them to an activation trigger. When the lane is enabled and a category fires — it is always-on, or one of its keyword phrases appears in the prompt — the `UserPromptSubmit` hook surfaces that category's member rules as a distinct `<belief-category-rules>` block, ahead of the retrieval body. This is the conditional, right-rule-at-the-right-moment complement to a static `CLAUDE.md` / `AGENTS.md`.
+Opt-in keyword-triggered belief categories (#1126). A *category* groups beliefs (repo-rules, git-workflow, prose-and-docs, …) and binds them to an activation trigger. When the lane is enabled and a category fires — it is always-on, or one of its keyword phrases appears in the prompt — the `UserPromptSubmit` hook **reranks the retrieval output** so that category's member rules lead the `<aelfrice-memory>` block, prepends a one-line `<category-focus>` note naming the fired categories, and surfaces a bounded set of members retrieval missed. This is the conditional, right-rule-at-the-right-moment complement to a static `CLAUDE.md` / `AGENTS.md`.
 
-The lane is **advisory injection, not enforcement**: it never blocks a tool call. Per the enforcement history (#199) and the #605 determinism boundary, matching is pure-stdlib (case-insensitive, word-boundary, literal-phrase; no embeddings, no model call) and the hook is fail-soft (any error injects nothing extra and returns exit 0). Locked members (L0) are still injected unconditionally every turn by the retrieval tier; the category lane is an *additional* triggered surface, not a replacement.
+The lane **reranks rather than injecting a second block** — the #1126 R&D found a separate block double-injects what retrieval (L0 + BM25) already returns, and that category members are almost always already in the retrieval tail. So the value is prioritising + labelling the one block, not adding content. It is **advisory, not enforcement**: it never blocks a tool call. Per the enforcement history (#199) and the #605 determinism boundary, matching is pure-stdlib (case-insensitive, word-boundary, literal-phrase; no embeddings, no model call) and the hook is fail-soft (any error leaves the hits unchanged and returns exit 0). Because the lane reorders the existing hits, a locked member is still injected exactly once (with its L0 ground-truth framing) — just lifted to the top.
 
 ### `enabled`
 

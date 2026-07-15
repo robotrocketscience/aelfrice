@@ -875,16 +875,6 @@ def user_prompt_submit(
             traceback.print_exc(file=serr)
         if cadence_checkpoint_block:
             sout.write(cadence_checkpoint_block + "\n\n")
-        # #1126: belief-category rules. Advisory block written ahead of the
-        # retrieval body (like <cadence-checkpoint>), independent of the
-        # gate-skip / BM25 path so a triggered rule fires even on prompts
-        # the shape-gate refuses to retrieve against. Default-off,
-        # fail-soft.
-        category_block = _maybe_category_injection_block(
-            prompt, payload_cwd, serr,
-        )
-        if category_block:
-            sout.write(category_block + "\n\n")
         budget = (
             token_budget
             if token_budget is not None
@@ -912,6 +902,9 @@ def user_prompt_submit(
         # trivial acks, preserving any session-start block unchanged.
         gate_skip = False
         gate_reason: str | None = None
+        # #1126: names of belief-categories that fired for this prompt, set
+        # by the category rerank below. Drives the <category-focus> note.
+        category_focus: list[str] = []
         if config.prompt_shape_gate_enabled:
             gate_skip, gate_reason = _should_skip_bm25(prompt)
         retrieve_start = time.monotonic()
@@ -977,6 +970,17 @@ def user_prompt_submit(
             # BEFORE telemetry / dedup / format so downstream counts
             # reflect what was actually injected.
             hits = _filter_session_exclusions(hits, session_id)
+            # #1126: category rerank-on-trigger. When a category fires
+            # (always-on, or a keyword phrase in the prompt), lift its
+            # member beliefs to the TOP of the retrieval output and pull in
+            # a bounded set of members retrieval missed — one injection, no
+            # duplicate block (the R&D on #1126 showed a separate block
+            # double-injects what retrieval already returns). Default-off,
+            # fail-soft: on disable/no-fire/error, hits pass through
+            # unchanged and category_focus stays empty.
+            hits, category_focus = _apply_category_boost(
+                hits, prompt, payload_cwd, serr,
+            )
         if hits:
             # AC1 telemetry: record pre-collapse counts.
             n_returned = len(hits)
@@ -1028,6 +1032,19 @@ def user_prompt_submit(
                 body = _format_hits_with_session_start(hits, session_start_block)
             else:
                 body = _format_hits(hits)
+            # #1126: label the rerank. When categories fired, the boosted
+            # rules lead the block above; the note tells the model why they
+            # are first and to treat them as the active rules for this
+            # action.
+            if category_focus:
+                focus = ", ".join(category_focus)
+                body = (
+                    f"<category-focus>Your prompt matched belief "
+                    f"categor{'y' if len(category_focus) == 1 else 'ies'}: "
+                    f"{focus}. Their rules lead the beliefs below — treat "
+                    f"them as the active rules for this action."
+                    f"</category-focus>\n"
+                ) + body
             # #280 mitigation 3: per-turn audit of the rendered block.
             # #321 additive fields: beliefs[], latency_ms, tokens.
             # #741 additive fields: expansion_gate_reason +
@@ -2028,110 +2045,83 @@ def apply_sentiment_feedback(
         return 0
 
 
-# #1126: belief-category injection lane. Advisory only — surfaces a fired
-# category's member rules as a distinct block ahead of the retrieval body,
-# mirroring the <cadence-checkpoint> precedent. Never blocks a tool call
-# (that is out of scope for v1; see the umbrella non-goals). Default-off,
-# fail-soft: any error returns "" so the hook is unaffected.
+# #1126: belief-category rerank-on-trigger. When a category fires
+# (always-on, or a keyword phrase in the prompt), its member beliefs are
+# lifted to the TOP of the *existing* retrieval output and a bounded set
+# of members retrieval missed is pulled in — a single injection, no
+# duplicate block. The R&D on #1126 showed a separate injected block
+# double-injects whatever retrieval (L0 + BM25) already returns, and that
+# category members are almost always already in the retrieval tail; so the
+# value is prioritising + labelling the one block, not adding a second.
+# Advisory only — never blocks a tool call. Default-off, fail-soft.
 
-# Total character budget for the injected block's content — rule lines
-# AND category headers, summed across every fired category (a single
-# shared counter, not per-category). Small on purpose (~a few hundred
-# tokens) so a fired category — or several — cannot crowd out the
-# retrieval surface. The fixed wrapper (the <belief-category-rules> tags
-# and the one-line note) is small, bounded overhead on top. Overflow is
-# truncated to a manifest line.
-CATEGORY_BLOCK_CHAR_BUDGET: Final[int] = 1600
+# Cap on members a fired category may ADD that retrieval did not already
+# return (the rare surfacing case). Reordering members already in the hits
+# adds no tokens; only these extras do, so the cap bounds the token cost.
+CATEGORY_BOOST_MAX_EXTRA: Final[int] = 8
 
 
-def _maybe_category_injection_block(
+def _apply_category_boost(
+    hits: list["Belief"],
     prompt: str,
     payload_cwd: "Path | None",
     stderr: IO[str],
-) -> str:
-    """Return the `<belief-category-rules>` block for `prompt`, or "".
+) -> "tuple[list[Belief], list[str]]":
+    """Rerank `hits` so fired-category members lead, and surface a bounded
+    set of members retrieval missed.
 
-    Fires when the belief-categories lane is enabled (default-off) and at
-    least one category is `always_on` or has a keyword phrase in `prompt`.
-    Member rules are de-duplicated by belief id across all fired
-    categories and bounded by `CATEGORY_BLOCK_CHAR_BUDGET`. Deterministic:
-    categories in name ASC (via `match_prompt`), members in the store's
-    stable order. Fail-soft.
+    Returns `(reordered_hits, fired_category_names)`. When the lane is
+    disabled (default), no category fires, or anything errors, returns
+    `(hits, [])` unchanged — the hook is unaffected.
+
+    Determinism: categories in name-ASC order (via `match_prompt`),
+    members in each category's stable store order, de-duplicated by belief
+    id across categories; the un-promoted remainder keeps its retrieval
+    order. Same (prompt, store) → same ordering.
     """
     if not prompt:
-        return ""
+        return hits, []
     try:
         from aelfrice import category as catmod  # noqa: PLC0415
 
         toml_cfg = _load_aelfrice_toml(start=payload_cwd, stderr=stderr)
         if not catmod.is_enabled(toml_cfg):
-            return ""
+            return hits, []
         store = _open_store()
         try:
-            categories = store.list_categories()
-            fired = catmod.match_prompt(prompt, categories)
+            fired = catmod.match_prompt(prompt, store.list_categories())
             if not fired:
-                return ""
-            lines: list[str] = []
-            used = 0
+                return hits, []
+            hit_by_id = {h.id: h for h in hits}
+            promoted: list[Belief] = []
             seen: set[str] = set()
-            truncated = False
+            extra = 0
             for cat in fired:
-                members = store.get_beliefs_for_category(cat.name)
-                fresh = [b for b in members if b.id not in seen]
-                if not fresh:
-                    continue
-                trigger_desc = (
-                    "always-on" if cat.always_on else "matched a trigger keyword"
-                )
-                header = f"[{cat.name}] ({trigger_desc})"
-                cat_lines: list[str] = []
-                # Reserve the header against the shared budget up front so a
-                # category that only fits its header (no rules) is not
-                # emitted as a bare header.
-                if used + len(header) > CATEGORY_BLOCK_CHAR_BUDGET:
-                    truncated = True
-                    break
-                for b in fresh:
-                    seen.add(b.id)
-                    rule = "- " + " ".join(b.content.split())
-                    if used + len(header) + len(rule) > CATEGORY_BLOCK_CHAR_BUDGET:
-                        truncated = True
-                        break
-                    used += len(rule)
-                    cat_lines.append(rule)
-                if cat_lines:
-                    used += len(header)
-                    lines.append(header)
-                    lines.extend(cat_lines)
-                if truncated:
-                    break
-            if not lines:
-                return ""
-            body = "\n".join(lines)
-            note = (
-                "The following user-maintained rules apply to this prompt "
-                "(belief categories, #1126). Treat them as standing "
-                "guidance."
-            )
-            tail = (
-                "\n… more rules truncated (`aelf category show <name>`)"
-                if truncated
-                else ""
-            )
-            return (
-                "<belief-category-rules>\n"
-                f"{note}\n{body}{tail}\n"
-                "</belief-category-rules>"
-            )
+                for member in store.get_beliefs_for_category(cat.name):
+                    if member.id in seen:
+                        continue
+                    seen.add(member.id)
+                    existing = hit_by_id.get(member.id)
+                    if existing is not None:
+                        # Already retrieved — reorder (no new tokens),
+                        # preferring the retrieval object.
+                        promoted.append(existing)
+                    elif extra < CATEGORY_BOOST_MAX_EXTRA:
+                        # Retrieval missed it — surface it (bounded).
+                        promoted.append(member)
+                        extra += 1
+            if not promoted:
+                return hits, []
+            rest = [h for h in hits if h.id not in seen]
+            return promoted + rest, [c.name for c in fired]
         finally:
             store.close()
     except Exception as exc:  # fail-soft: never break the hook
         print(
-            f"aelfrice: belief-category hook failed (non-fatal): {exc}",
+            f"aelfrice: belief-category rerank failed (non-fatal): {exc}",
             file=stderr,
         )
-        return ""
+        return hits, []
 
 
 def _write_sentiment_feedback_audit(

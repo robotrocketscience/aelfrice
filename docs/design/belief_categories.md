@@ -38,11 +38,23 @@ belief_categories(belief_id → beliefs.id, category_name → categories.name,
 
 Pure, deterministic, stdlib-only (#605): keyword phrases compile to a case-insensitive, word-boundary alternation (internal whitespace relaxed to `\s+`); tool/file globs use `fnmatch`. `match_prompt(prompt, categories)` returns the categories that are `always_on` or keyword-matched, de-duplicated by name, in name-ASC order. No embeddings, no model call, no clock.
 
-### Injection lane (`hook._maybe_category_injection_block`)
+### Rerank-on-trigger lane (`hook._apply_category_boost`)
 
-On `UserPromptSubmit`, when `category.is_enabled(toml)` (default-off; env `AELFRICE_BELIEF_CATEGORIES` > `[belief_categories] enabled` > `false`), the hook emits a `<belief-category-rules>` block **ahead of** the retrieval body — mirroring the `<cadence-checkpoint>` precedent, and independent of the prompt-shape gate so a triggered rule fires even on gated prompts. Member rules are de-duplicated by belief id across fired categories and bounded by `CATEGORY_BLOCK_CHAR_BUDGET` (~1600 chars), truncating to a manifest line. Locked members stay in L0 (always injected); the category block is an *additional* triggered surface, not a replacement. Fail-soft: any error returns `""`.
+On `UserPromptSubmit`, when `category.is_enabled(toml)` (default-off; env `AELFRICE_BELIEF_CATEGORIES` > `[belief_categories] enabled` > `false`), a fired category does **not** emit a separate block. Instead it **reranks the single retrieval output**: its member beliefs are lifted to the top of the `<aelfrice-memory>` hits, a bounded set (`CATEGORY_BOOST_MAX_EXTRA`) of members retrieval missed is pulled in, and a one-line `<category-focus>` note is prepended naming the fired categories. Deterministic: categories name-ASC (`match_prompt`), members in stable store order, de-duplicated by belief id; the un-promoted remainder keeps retrieval order. Fail-soft: on disable / no-fire / error the hits pass through unchanged.
+
+This design is the direct result of the R&D below — a separate injected block double-injected whatever retrieval already returns, so reranking the one block is the correct mechanism.
 
 Only the **prompt keyword** lane (plus `always_on`) is wired in v1. `tool_globs` / `file_globs` are parsed, stored, and matched (`command_hit` / `paths_hit`, unit-tested) but the `PreToolUse` wiring that consumes them is a follow-up.
+
+### R&D that shaped the design
+
+The first cut emitted a separate `<belief-category-rules>` block ahead of the retrieval body. Empirical rounds against the real hook / a copy of a 45k-belief store refuted that approach:
+
+- **R1 — double-injection (confirmed).** A locked rule in a fired keyword category appeared **twice**: once in the category block, once in the L0 `<aelfrice-memory>` block. All seed categories default `locked`, so every fired seed category duplicated content L0 already injects.
+- **R2 — the block is redundant (confirmed).** Across every configuration tested — fresh/aged belief, tiny/45k store, token budget 200→2400 — a category member was **already present in the retrieval output**. No realistic case surfaced net-new content. (A methodological note: small synthetic stores over-retrieve, and a freshly-inserted belief ranks #0 for *any* query — both masked the effect until corrected for.) So the block's value is prioritising + labelling the one retrieval block, not adding a second.
+- **R3 — keyword recall (quantified).** Literal-phrase matching missed ~39% of natural phrasings ("ship it", "get this merged", "land this change"). Expanding the `git-workflow` seed keyword set cut this to ~17%; the residual is the inherent floor of deterministic literal matching (chosen over fuzzy matching for determinism, #605).
+
+The rerank-on-trigger design resolves R1 and R2 (one injection, no duplicate) and delivers the original "right rule at the right moment" intent by *ordering + labelling* rather than *adding*.
 
 ### CLI
 
