@@ -97,6 +97,12 @@ EXPECTED_COMMANDS = (
     # of `locked`; shows agent-inferred / ingested / wonder-generated
     # beliefs sorted by alpha descending.
     "speculative",
+    # v4 (#1126) — keyword-triggered belief categories. Group beliefs
+    # (repo-rules / git-workflow / prose-and-docs / …) and bind each to an
+    # activation trigger; the default-off UserPromptSubmit lane surfaces a
+    # fired category's members. Nested actions (init/add/list/show/
+    # set-trigger/assign/unassign/delete) live under the visible verb.
+    "category",
 )
 
 

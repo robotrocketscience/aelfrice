@@ -22,7 +22,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Final, Sequence
+from typing import Any, Final, Sequence, cast
 
 from aelfrice.doc_linker import ANCHOR_MANUAL, link_belief_to_document
 from aelfrice.auditor import (
@@ -2007,6 +2007,19 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
                 anchor_type=ANCHOR_MANUAL,
             )
 
+        # #1126: assign this locked belief to any --category NAME. The
+        # category must already exist (no implicit create — categories are
+        # definitional). A missing category is reported and skipped, not
+        # fatal: the lock itself already succeeded.
+        cat_names: list[str] = getattr(args, "category", None) or []
+        for cat_name in cat_names:
+            try:
+                store.assign_belief_to_category(actual_id, cat_name)
+                print(f"  category: {cat_name}", file=out)  # type: ignore[arg-type]
+            except ValueError as exc:
+                msg = f"  category: skipped {cat_name!r} ({exc})"
+                print(msg, file=out)  # type: ignore[arg-type]
+
         # #550 Surface B: promote any speculative phantom whose
         # content_hash or normalized text (Jaccard ≥ 0.9) matches the
         # lock statement. Runs in the same DB transaction as the lock
@@ -2055,6 +2068,170 @@ def _cmd_locked(args: argparse.Namespace, out: object) -> int:
         )
         print(f"{b.id}{marker}: {b.content}", file=out)  # type: ignore[arg-type]
     return 0
+
+
+def _category_lock_choices() -> frozenset[str]:
+    """The valid `--lock` values for `aelf category add`, sourced from the
+    category module so the CLI and the module never drift."""
+    from aelfrice.category import DEFAULT_LOCK_VALUES
+
+    return DEFAULT_LOCK_VALUES
+
+
+def _trigger_from_args(args: argparse.Namespace) -> "Any":
+    """Build a `CategoryTrigger` from the repeatable --keyword/--tool-glob/
+    --file-glob flags shared by `category add` and `category set-trigger`."""
+    from aelfrice.category import CategoryTrigger
+
+    return CategoryTrigger(
+        keywords=tuple(cast("list[str] | None", args.keyword) or ()),
+        tool_globs=tuple(cast("list[str] | None", args.tool_glob) or ()),
+        file_globs=tuple(cast("list[str] | None", args.file_glob) or ()),
+    )
+
+
+def _cmd_category(args: argparse.Namespace, out: object) -> int:
+    """`aelf category <action>` — manage keyword-triggered belief
+    categories (#1126). Dispatches on `args.action`.
+
+    All writes are user-driven; there is no auto-classification. The
+    injection lane that consumes these categories is default-off (see
+    `aelfrice.category.is_enabled`).
+    """
+    from aelfrice import category as catmod
+
+    # The handler contract passes `out: object`; cast once to a text sink
+    # so the per-print `# type: ignore` noise the legacy handlers carry is
+    # unnecessary in this newly-authored function.
+    w = cast("Any", out)
+    action: str = cast("str", args.action)
+    store = _open_store()
+    try:
+        if action == "init":
+            for seed in catmod.SEED_CATEGORIES:
+                store.upsert_category(
+                    name=seed.name,
+                    always_on=seed.always_on,
+                    trigger_json=seed.trigger.to_json(),
+                    default_lock=seed.default_lock,
+                )
+                flag = "always-on" if seed.always_on else "keyword"
+                print(f"category: {seed.name} ({flag})", file=w)
+            print(
+                "seeded 5 starter categories. Enable injection with "
+                "AELFRICE_BELIEF_CATEGORIES=1 or [belief_categories] "
+                "enabled=true in .aelfrice.toml.",
+                file=w,
+            )
+            return 0
+
+        if action == "add":
+            try:
+                name = catmod.normalize_name(cast("str", args.name))
+                lock = catmod.normalize_default_lock(
+                    cast("str | None", args.default_lock)
+                )
+            except ValueError as exc:
+                print(f"aelf category: {exc}", file=w)
+                return 1
+            trig = _trigger_from_args(args)
+            cat = store.upsert_category(
+                name=name,
+                always_on=bool(args.always_on),
+                trigger_json=trig.to_json(),
+                default_lock=lock,
+            )
+            print(f"category: {cat.name}", file=w)
+            return 0
+
+        if action == "list":
+            cats = store.list_categories()
+            if not cats:
+                print(
+                    "(no categories — run `aelf category init` to seed the "
+                    "starter set)",
+                    file=w,
+                )
+                return 0
+            for cat in cats:
+                if cat.always_on:
+                    trig_desc = "always-on"
+                else:
+                    kw = ", ".join(cat.trigger.keywords) or "(no keywords)"
+                    trig_desc = f"keywords: {kw}"
+                n = len(store.get_beliefs_for_category(cat.name))
+                print(
+                    f"{cat.name}\t[{trig_desc}]\tlock={cat.default_lock}\t"
+                    f"members={n}",
+                    file=w,
+                )
+            return 0
+
+        if action == "show":
+            cat = store.get_category(cast("str", args.name))
+            if cat is None:
+                print(f"aelf category: no such category: {args.name}", file=w)
+                return 1
+            print(f"name: {cat.name}", file=w)
+            print(f"always_on: {cat.always_on}", file=w)
+            print(f"default_lock: {cat.default_lock}", file=w)
+            print(f"keywords: {', '.join(cat.trigger.keywords) or '(none)'}", file=w)
+            print(
+                f"tool_globs: {', '.join(cat.trigger.tool_globs) or '(none)'}",
+                file=w,
+            )
+            print(
+                f"file_globs: {', '.join(cat.trigger.file_globs) or '(none)'}",
+                file=w,
+            )
+            members = store.get_beliefs_for_category(cat.name)
+            print(f"members: {len(members)}", file=w)
+            for belief in members:
+                snippet = belief.content[:70].replace("\n", " ")
+                print(f"  {belief.id}  {snippet}", file=w)
+            return 0
+
+        if action == "set-trigger":
+            name = cast("str", args.name)
+            if store.get_category(name) is None:
+                print(f"aelf category: no such category: {name}", file=w)
+                return 1
+            store.set_category_trigger(name, _trigger_from_args(args).to_json())
+            print(f"category: {name} trigger updated", file=w)
+            return 0
+
+        if action == "assign":
+            bid = cast("str", args.belief_id)
+            name = cast("str", args.name)
+            try:
+                store.assign_belief_to_category(bid, name)
+            except ValueError as exc:
+                print(f"aelf category: {exc}", file=w)
+                return 1
+            print(f"assigned {bid} -> {name}", file=w)
+            return 0
+
+        if action == "unassign":
+            bid = cast("str", args.belief_id)
+            name = cast("str", args.name)
+            if store.unassign_belief_from_category(bid, name):
+                print(f"unassigned {bid} -> {name}", file=w)
+                return 0
+            print(f"aelf category: not a member: {bid} -> {name}", file=w)
+            return 1
+
+        if action == "delete":
+            name = cast("str", args.name)
+            if store.delete_category(name):
+                print(f"deleted category: {name}", file=w)
+                return 0
+            print(f"aelf category: no such category: {name}", file=w)
+            return 1
+
+        print(f"aelf category: unknown action {action!r}", file=w)
+        return 2
+    finally:
+        store.close()
 
 
 def _cmd_context(args: argparse.Namespace, out: object) -> int:
@@ -7106,10 +7283,87 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "lock back to frozen."
         ),
     )
+    p_lock.add_argument(
+        "--category", dest="category", action="append", default=None,
+        metavar="NAME",
+        help=(
+            "assign this locked belief to belief-category NAME (#1126). "
+            "Repeatable. The category must already exist (`aelf category "
+            "add`/`init`); a missing category is reported and skipped."
+        ),
+    )
     p_lock.set_defaults(func=_cmd_lock)
 
     p_locked = sub.add_parser("locked", help="list locked beliefs")
     p_locked.set_defaults(func=_cmd_locked)
+
+    # #1126 belief categories: keyword-triggered rule grouping. Visible
+    # top-level verb with nested actions. The injection lane that consumes
+    # these is default-off (AELFRICE_BELIEF_CATEGORIES / TOML).
+    p_category = sub.add_parser(
+        "category",
+        help="manage keyword-triggered belief categories (#1126)",
+    )
+    cat_sub = p_category.add_subparsers(dest="action", required=True)
+    cat_sub.add_parser(
+        "init", help="create the 5 starter categories (idempotent)"
+    )
+    p_cat_add = cat_sub.add_parser("add", help="create/update a category")
+    p_cat_add.add_argument("name", help="category name (e.g. git-workflow)")
+    p_cat_add.add_argument(
+        "--always-on", dest="always_on", action="store_true",
+        help="inject this category's members on every turn (not keyword-gated)",
+    )
+    p_cat_add.add_argument(
+        "--keyword", action="append", default=None, metavar="PHRASE",
+        help="trigger phrase (repeatable); matched case-insensitively on word boundaries",
+    )
+    p_cat_add.add_argument(
+        "--tool-glob", dest="tool_glob", action="append", default=None,
+        metavar="GLOB", help="tool-command glob, e.g. 'git push*' (repeatable; stored)",
+    )
+    p_cat_add.add_argument(
+        "--file-glob", dest="file_glob", action="append", default=None,
+        metavar="GLOB", help="touched-path glob, e.g. 'tests/**' (repeatable; stored)",
+    )
+    p_cat_add.add_argument(
+        "--lock", dest="default_lock", default=None,
+        choices=sorted(_category_lock_choices()),
+        help="advisory lock hint for members (none|locked|advisory)",
+    )
+    cat_sub.add_parser("list", help="list categories with their triggers")
+    p_cat_show = cat_sub.add_parser("show", help="show one category + members")
+    p_cat_show.add_argument("name")
+    p_cat_settrig = cat_sub.add_parser(
+        "set-trigger", help="replace a category's trigger config"
+    )
+    p_cat_settrig.add_argument("name")
+    p_cat_settrig.add_argument(
+        "--keyword", action="append", default=None, metavar="PHRASE",
+    )
+    p_cat_settrig.add_argument(
+        "--tool-glob", dest="tool_glob", action="append", default=None,
+        metavar="GLOB",
+    )
+    p_cat_settrig.add_argument(
+        "--file-glob", dest="file_glob", action="append", default=None,
+        metavar="GLOB",
+    )
+    p_cat_assign = cat_sub.add_parser(
+        "assign", help="add a belief to a category"
+    )
+    p_cat_assign.add_argument("belief_id")
+    p_cat_assign.add_argument("name")
+    p_cat_unassign = cat_sub.add_parser(
+        "unassign", help="remove a belief from a category"
+    )
+    p_cat_unassign.add_argument("belief_id")
+    p_cat_unassign.add_argument("name")
+    p_cat_delete = cat_sub.add_parser(
+        "delete", help="delete a category (cascades membership)"
+    )
+    p_cat_delete.add_argument("name")
+    p_category.set_defaults(func=_cmd_category)
 
     # v3.5 (#933) — surface beliefs by age + retrieval recency.
     # Pure threshold-based listing over existing created_at +
