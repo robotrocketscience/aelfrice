@@ -2193,12 +2193,14 @@ def _cmd_category(args: argparse.Namespace, out: object) -> int:
 
         if action == "set-trigger":
             name = cast("str", args.name)
-            if store.get_category(name) is None:
-                print(f"aelf category: no such category: {name}", file=w)
-                return 1
-            store.set_category_trigger(name, _trigger_from_args(args).to_json())
-            print(f"category: {name} trigger updated", file=w)
-            return 0
+            # Base the outcome on the UPDATE's row count, not a separate
+            # pre-check — that avoids a TOCTOU where the category is
+            # deleted between the existence check and the write.
+            if store.set_category_trigger(name, _trigger_from_args(args).to_json()):
+                print(f"category: {name} trigger updated", file=w)
+                return 0
+            print(f"aelf category: no such category: {name}", file=w)
+            return 1
 
         if action == "assign":
             bid = cast("str", args.belief_id)

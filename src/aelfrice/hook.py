@@ -2034,9 +2034,13 @@ def apply_sentiment_feedback(
 # (that is out of scope for v1; see the umbrella non-goals). Default-off,
 # fail-soft: any error returns "" so the hook is unaffected.
 
-# Per-category character budget for the injected block. Small on purpose
-# (~a few hundred tokens) so a fired category — or several — cannot crowd
-# out the retrieval surface. Overflow is truncated to a manifest line.
+# Total character budget for the injected block's content — rule lines
+# AND category headers, summed across every fired category (a single
+# shared counter, not per-category). Small on purpose (~a few hundred
+# tokens) so a fired category — or several — cannot crowd out the
+# retrieval surface. The fixed wrapper (the <belief-category-rules> tags
+# and the one-line note) is small, bounded overhead on top. Overflow is
+# truncated to a manifest line.
 CATEGORY_BLOCK_CHAR_BUDGET: Final[int] = 1600
 
 
@@ -2082,15 +2086,22 @@ def _maybe_category_injection_block(
                 )
                 header = f"[{cat.name}] ({trigger_desc})"
                 cat_lines: list[str] = []
+                # Reserve the header against the shared budget up front so a
+                # category that only fits its header (no rules) is not
+                # emitted as a bare header.
+                if used + len(header) > CATEGORY_BLOCK_CHAR_BUDGET:
+                    truncated = True
+                    break
                 for b in fresh:
                     seen.add(b.id)
                     rule = "- " + " ".join(b.content.split())
-                    if used + len(rule) > CATEGORY_BLOCK_CHAR_BUDGET:
+                    if used + len(header) + len(rule) > CATEGORY_BLOCK_CHAR_BUDGET:
                         truncated = True
                         break
                     used += len(rule)
                     cat_lines.append(rule)
                 if cat_lines:
+                    used += len(header)
                     lines.append(header)
                     lines.extend(cat_lines)
                 if truncated:

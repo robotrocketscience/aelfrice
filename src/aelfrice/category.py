@@ -237,11 +237,19 @@ def keyword_hit(prompt: str, trigger: CategoryTrigger) -> bool:
 
 
 def _glob_hit(candidates: tuple[str, ...], values: list[str]) -> bool:
-    """True when any value matches any ``fnmatch`` glob (case-insensitive
-    via ``fnmatch.fnmatch``'s normcase on the pattern)."""
+    """True when any value matches any ``fnmatch`` glob, case-insensitively
+    on every platform.
+
+    ``fnmatch.fnmatch`` case-folds via ``os.path.normcase``, which is a
+    no-op on POSIX — so it is case-*sensitive* on Linux (where CI runs)
+    and case-insensitive on macOS/Windows. That platform split breaks the
+    determinism contract (#605), so we lower-case both sides explicitly
+    and use ``fnmatch.fnmatchcase`` (which never consults ``normcase``).
+    """
     for value in values:
+        v = value.lower()
         for pattern in candidates:
-            if pattern and fnmatch.fnmatch(value, pattern):
+            if pattern and fnmatch.fnmatchcase(v, pattern.lower()):
                 return True
     return False
 

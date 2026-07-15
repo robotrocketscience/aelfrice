@@ -109,6 +109,16 @@ def test_command_hit() -> None:
     assert not cat.command_hit("git push origin main", cat.CategoryTrigger())
 
 
+def test_glob_hit_case_insensitive_all_platforms() -> None:
+    # Must be case-insensitive deterministically (fnmatch.fnmatch is
+    # case-sensitive on POSIX, which would break cross-platform matching).
+    trig = cat.CategoryTrigger(tool_globs=("git push*",))
+    assert cat.command_hit("GIT PUSH origin main", trig)
+    assert cat.command_hit("Git Push --force", trig)
+    file_trig = cat.CategoryTrigger(file_globs=("TESTS/*.py",))
+    assert cat.paths_hit(["tests/foo.py"], file_trig)
+
+
 def test_paths_hit() -> None:
     trig = cat.CategoryTrigger(file_globs=("test_*.py",))
     assert cat.paths_hit(["test_foo.py", "src/x.py"], trig)
