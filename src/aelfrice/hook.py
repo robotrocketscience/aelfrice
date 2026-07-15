@@ -979,7 +979,7 @@ def user_prompt_submit(
             # fail-soft: on disable/no-fire/error, hits pass through
             # unchanged and category_focus stays empty.
             hits, category_focus = _apply_category_boost(
-                hits, prompt, payload_cwd, serr,
+                hits, prompt, payload_cwd, session_id, serr,
             )
         if hits:
             # AC1 telemetry: record pre-collapse counts.
@@ -2065,6 +2065,7 @@ def _apply_category_boost(
     hits: list["Belief"],
     prompt: str,
     payload_cwd: "Path | None",
+    session_id: str | None,
     stderr: IO[str],
 ) -> "tuple[list[Belief], list[str]]":
     """Rerank `hits` so fired-category members lead, and surface a bounded
@@ -2073,6 +2074,11 @@ def _apply_category_boost(
     Returns `(reordered_hits, fired_category_names)`. When the lane is
     disabled (default), no category fires, or anything errors, returns
     `(hits, [])` unchanged — the hook is unaffected.
+
+    Members already in `hits` are reordered (they have already passed the
+    project-context and session-exclusion filters). Members retrieval
+    missed are surfaced only after passing those SAME filters, so the lane
+    can never leak a foreign-project or scoped-out belief.
 
     Determinism: categories in name-ASC order (via `match_prompt`),
     members in each category's stable store order, de-duplicated by belief
@@ -2093,9 +2099,9 @@ def _apply_category_boost(
             if not fired:
                 return hits, []
             hit_by_id = {h.id: h for h in hits}
-            promoted: list[Belief] = []
+            promoted: list[Belief] = []   # already-retrieved: reorder only
+            extras: list[Belief] = []     # retrieval-missed: must be filtered
             seen: set[str] = set()
-            extra = 0
             for cat in fired:
                 for member in store.get_beliefs_for_category(cat.name):
                     if member.id in seen:
@@ -2103,17 +2109,19 @@ def _apply_category_boost(
                     seen.add(member.id)
                     existing = hit_by_id.get(member.id)
                     if existing is not None:
-                        # Already retrieved — reorder (no new tokens),
-                        # preferring the retrieval object.
                         promoted.append(existing)
-                    elif extra < CATEGORY_BOOST_MAX_EXTRA:
-                        # Retrieval missed it — surface it (bounded).
-                        promoted.append(member)
-                        extra += 1
-            if not promoted:
+                    else:
+                        extras.append(member)
+            # Surfaced-missed members bypass retrieval, so run them through
+            # the same lanes the hits already passed before injecting.
+            extras = _filter_by_project_context(extras)
+            extras = _filter_session_exclusions(extras, session_id)
+            extras = extras[:CATEGORY_BOOST_MAX_EXTRA]
+            if not promoted and not extras:
                 return hits, []
-            rest = [h for h in hits if h.id not in seen]
-            return promoted + rest, [c.name for c in fired]
+            kept = {b.id for b in promoted} | {b.id for b in extras}
+            rest = [h for h in hits if h.id not in kept]
+            return promoted + extras + rest, [c.name for c in fired]
         finally:
             store.close()
     except Exception as exc:  # fail-soft: never break the hook

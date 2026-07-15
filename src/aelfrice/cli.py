@@ -2108,7 +2108,13 @@ def _cmd_category(args: argparse.Namespace, out: object) -> int:
     store = _open_store()
     try:
         if action == "init":
+            # Skip categories that already exist so a re-run (e.g. after an
+            # upgrade adds a seed) never clobbers a user's customized
+            # trigger/lock. init is additive, not a reset.
             for seed in catmod.SEED_CATEGORIES:
+                if store.get_category(seed.name) is not None:
+                    print(f"category: {seed.name} (exists, skipped)", file=w)
+                    continue
                 store.upsert_category(
                     name=seed.name,
                     always_on=seed.always_on,
@@ -2118,9 +2124,9 @@ def _cmd_category(args: argparse.Namespace, out: object) -> int:
                 flag = "always-on" if seed.always_on else "keyword"
                 print(f"category: {seed.name} ({flag})", file=w)
             print(
-                "seeded 5 starter categories. Enable injection with "
-                "AELFRICE_BELIEF_CATEGORIES=1 or [belief_categories] "
-                "enabled=true in .aelfrice.toml.",
+                "seeded starter categories (existing ones left untouched). "
+                "Enable injection with AELFRICE_BELIEF_CATEGORIES=1 or "
+                "[belief_categories] enabled=true in .aelfrice.toml.",
                 file=w,
             )
             return 0

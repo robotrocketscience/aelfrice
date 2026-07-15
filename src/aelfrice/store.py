@@ -3475,6 +3475,20 @@ class MemoryStore:
             (belief_id, category_name, now),
         )
         self._conn.commit()
+        # `INSERT OR IGNORE` silently drops FK violations, so if the belief
+        # or category was deleted between the checks above and this write,
+        # the row never landed. Confirm membership and surface the race
+        # rather than reporting a phantom success.
+        row = self._conn.execute(
+            "SELECT 1 FROM belief_categories "
+            "WHERE belief_id = ? AND category_name = ?",
+            (belief_id, category_name),
+        ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"assignment failed: belief {belief_id} or category "
+                f"{category_name!r} was removed concurrently"
+            )
 
     def unassign_belief_from_category(
         self, belief_id: str, category_name: str

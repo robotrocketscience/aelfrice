@@ -44,6 +44,18 @@ def test_category_init_then_list() -> None:
     assert "keywords:" in out
 
 
+def test_category_init_preserves_customization() -> None:
+    # init, then customize a seed category, then re-run init: the
+    # customization must survive (init is additive, not a reset).
+    _run("category", "init")
+    _run("category", "set-trigger", "git-workflow", "--keyword", "deploybot")
+    rc, out = _run("category", "init")
+    assert rc == 0
+    assert "exists, skipped" in out
+    _, show = _run("category", "show", "git-workflow")
+    assert "deploybot" in show  # customization preserved
+
+
 def test_category_add_and_show() -> None:
     rc, _ = _run(
         "category", "add", "git-workflow",

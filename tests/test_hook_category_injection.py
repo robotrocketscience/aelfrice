@@ -73,7 +73,7 @@ def test_boost_disabled_by_default(db: Path) -> None:
     s.assign_belief_to_category("aaaa", "git")
     s.close()
     hits = [_belief("bbbb", "other"), m]
-    out, focus = hookmod._apply_category_boost(hits, "please push", None, io.StringIO())
+    out, focus = hookmod._apply_category_boost(hits, "please push", None, "s", io.StringIO())
     # default-off: unchanged order, no focus
     assert out == hits and focus == []
 
@@ -89,7 +89,7 @@ def test_boost_promotes_member_to_top(
     s.close()
     # member is LAST in retrieval order; boost must move it first
     hits = [_belief("x1", "distractor 1"), _belief("x2", "distractor 2"), m]
-    out, focus = hookmod._apply_category_boost(hits, "please push", None, io.StringIO())
+    out, focus = hookmod._apply_category_boost(hits, "please push", None, "s", io.StringIO())
     assert out[0].id == "aaaa"
     assert [h.id for h in out] == ["aaaa", "x1", "x2"]
     assert focus == ["git"]
@@ -103,7 +103,7 @@ def test_boost_no_duplication(db: Path, monkeypatch: pytest.MonkeyPatch) -> None
     s.assign_belief_to_category("aaaa", "git")
     s.close()
     hits = [_belief("x1", "d1"), m]
-    out, _ = hookmod._apply_category_boost(hits, "push", None, io.StringIO())
+    out, _ = hookmod._apply_category_boost(hits, "push", None, "s", io.StringIO())
     # member appears exactly once (reordered, not added)
     assert [h.id for h in out].count("aaaa") == 1
     assert len(out) == len(hits)
@@ -120,7 +120,7 @@ def test_boost_surfaces_missed_member_bounded(
     s.assign_belief_to_category("miss", "git")
     s.close()
     hits = [_belief("x1", "d1")]
-    out, focus = hookmod._apply_category_boost(hits, "push", None, io.StringIO())
+    out, focus = hookmod._apply_category_boost(hits, "push", None, "s", io.StringIO())
     assert out[0].id == "miss"  # surfaced at top
     assert len(out) == 2
     assert focus == ["git"]
@@ -134,9 +134,30 @@ def test_boost_extra_cap(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         s.insert_belief(_belief(bid, f"missed rule {i}"))
         s.assign_belief_to_category(bid, "git")
     s.close()
-    out, _ = hookmod._apply_category_boost([], "push", None, io.StringIO())
+    out, _ = hookmod._apply_category_boost([], "push", None, "s", io.StringIO())
     # only the cap's worth of retrieval-missed members are surfaced
     assert len(out) == hookmod.CATEGORY_BOOST_MAX_EXTRA
+
+
+def test_boost_surfaced_member_respects_project_context(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A retrieval-missed member belonging to a DIFFERENT project must NOT
+    # be surfaced by the boost — it bypasses retrieval, so the boost has to
+    # re-apply the project-context filter itself (CodeRabbit #1127).
+    monkeypatch.setenv("AELFRICE_BELIEF_CATEGORIES", "1")
+    monkeypatch.setenv("AELFRICE_PROJECT_CONTEXT", "thisproj")
+    s = _seed(db, "git", keywords=("push",))
+    m = _belief("miss", "a rule scoped to another project")
+    m.project_context = "otherproj"  # non-matching -> must be filtered
+    s.insert_belief(m)
+    s.assign_belief_to_category("miss", "git")
+    s.close()
+    out, focus = hookmod._apply_category_boost(
+        [], "push", None, "s", io.StringIO()
+    )
+    # foreign-project member is filtered out -> nothing surfaced -> no fire
+    assert out == [] and focus == []
 
 
 def test_boost_deterministic_and_no_fire(
@@ -149,11 +170,11 @@ def test_boost_deterministic_and_no_fire(
     s.assign_belief_to_category("aaaa", "git")
     s.close()
     hits = [_belief("x1", "d"), m]
-    a, fa = hookmod._apply_category_boost(hits, "push", None, io.StringIO())
-    b, fb = hookmod._apply_category_boost(hits, "push", None, io.StringIO())
+    a, fa = hookmod._apply_category_boost(hits, "push", None, "s", io.StringIO())
+    b, fb = hookmod._apply_category_boost(hits, "push", None, "s", io.StringIO())
     assert [h.id for h in a] == [h.id for h in b] and fa == fb
     # no keyword in prompt -> no fire, unchanged
-    c, fc = hookmod._apply_category_boost(hits, "unrelated text", None, io.StringIO())
+    c, fc = hookmod._apply_category_boost(hits, "unrelated text", None, "s", io.StringIO())
     assert c == hits and fc == []
 
 
