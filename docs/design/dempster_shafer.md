@@ -55,17 +55,17 @@ from a stale loser. It died on the substrate, not the mechanism:
 - **A2 (redundancy):** η²=0.724 — `b_mass` is 72% explained by origin tier, so K is largely
   redundant with the precedence resolver; its genuine value is confined to same-high-tier
   standoffs.
-- **A5 (governance):** the CONTRADICTS substrate is **default-off and ratified so** — the
+- **A5 (governance):** the CONTRADICTS substrate is **default-off, and ratified as such** — the
   detector docstring: *"flipping the default requires re-opening #897."* (Perf is fine —
   detection is incremental, #1000 — the gate is scope ratification.)
 - **A6 (detector is crude):** the CONTRADICTS rule is literally *"lexically similar + one side
-  has a negation token (no/not/never/n't) the other lacks."* No semantics, no
+  has a negation token (no/not/never/n't) that the other lacks."* No semantics, no
   assertion-worthiness gate.
 - **R3-0 + ceiling test:** over a real 45k-belief store, the deterministic detector surfaces
   114 CONTRADICTS pairs in a 5k sample. An LLM classification of all 114 found
   **0 genuine contradictions (0% precision)** — every flag a false positive (LoCoMo chat
   pleasantries, "No information available" prediction records, near-duplicate task strings).
-  The "9 high-K standoffs" were all false positives. Even with *perfect* (LLM) detection the
+  The "9 high-K standoffs" were all false positives. Even with *perfect* (LLM) detection, the
   true-contradiction surface was **empty** in the sample — and LLM detection breaks #605.
 
 ## Verdict
