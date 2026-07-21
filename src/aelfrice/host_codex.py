@@ -349,9 +349,13 @@ def remove_codex_hooks(hooks_path: Path) -> CodexInstallResult:
 # (colons are invalid in skill/dir names), reduce the frontmatter to the
 # required ``name``/``description`` pair, and prepend a short adapter
 # preamble that (a) defines ``$ARGUMENTS`` for a host with no positional
-# substitution engine and (b) maps Claude-only tool names (Task/Read/
-# Edit/Write) onto their Codex equivalents. The ``<objective>``/
-# ``<process>`` body is carried over verbatim.
+# substitution engine and (b) maps the host-specific ``Task`` fan-out
+# tool onto Codex's equivalent mechanism (``Task`` is the only tool name
+# the adapter maps). The ``<objective>``/``<process>`` body is carried
+# over verbatim — except that the host-management commands (setup /
+# doctor / uninstall / upgrade) additionally get a ``<host-adapter>``
+# note steering their ``aelf`` invocations to the ``--host codex`` form
+# (#1136), since the bare form targets another host's configuration.
 
 # Codex USER-scope skill discovery root (the open agent-skills standard
 # path, shared with other agents' skills — hence the marker-gated prune).
@@ -364,6 +368,43 @@ AGENTS_SKILLS_DIR: Final[Path] = Path.home() / ".agents" / "skills"
 _SKILL_MARKER: Final[str] = "AELFRICE-CODEX-SKILL"
 _SKILL_PREFIX: Final[str] = "aelf-"
 _SKILL_FILENAME: Final[str] = "SKILL.md"
+
+# Host-management commands (#1136). Their bundled bodies instruct bare
+# ``aelf setup`` / ``aelf doctor`` / ``aelf unsetup`` / ``aelf uninstall``
+# runs, which on this host would install, scan, or tear down ANOTHER
+# host's configuration (settings-file hooks, statusline, slash bundle)
+# instead of ``~/.codex/hooks.json`` + the ``$aelf-*`` skills. Their
+# generated skills carry an adapter note steering every such invocation
+# to the ``--host codex`` form.
+_HOST_MANAGEMENT_SKILLS: Final[frozenset[str]] = frozenset({
+    "aelf-setup",
+    "aelf-doctor",
+    "aelf-uninstall",
+    "aelf-upgrade",
+})
+
+# The bundled ``setup`` description names another host's artifacts
+# (settings file + statusline snippet). Describe the codex-host effect
+# instead, so implicit skill triggering matches what the command
+# actually does here (#1136).
+_SETUP_DESCRIPTION_OVERRIDE: Final[str] = (
+    "Install the aelfrice hooks in ~/.codex/hooks.json and the $aelf-* "
+    "agent skills under ~/.agents/skills/ on this host."
+)
+
+_HOST_MANAGEMENT_NOTE: Final[str] = (
+    "<host-adapter>\n"
+    "IMPORTANT — on this host, every `aelf setup`, `aelf doctor`,\n"
+    "`aelf unsetup`, or `aelf uninstall` invocation in the steps below\n"
+    "MUST use the `--host codex` form (e.g. `uv run aelf setup --host "
+    "codex`,\n"
+    "`uv run aelf doctor --host codex`, `uv run aelf unsetup --host "
+    "codex`,\n"
+    "`uv run aelf uninstall <flags> --host codex`). The bare form\n"
+    "targets another host's configuration — it would not touch this\n"
+    "host's install and must not be run here.\n"
+    "</host-adapter>"
+)
 
 
 def _parse_slash_frontmatter(text: str) -> tuple[dict[str, str], str]:
@@ -411,8 +452,11 @@ def codex_skill_from_slash(filename: str, text: str) -> tuple[str, str]:
     front, body = _parse_slash_frontmatter(text)
     raw_name = front.get("name") or (_SKILL_PREFIX + filename.removesuffix(".md"))
     skill_name = raw_name.replace(":", "-")
-    slash_name = raw_name  # original Claude form, e.g. "aelf:search"
+    slash_name = raw_name  # original slash form, e.g. "aelf:search"
     description = front.get("description", "")
+    if skill_name == "aelf-setup":
+        # #1136: the bundled description names another host's artifacts.
+        description = _SETUP_DESCRIPTION_OVERRIDE
 
     adapter: list[str] = [
         f"<!-- {_SKILL_MARKER}: auto-generated from "
@@ -437,6 +481,8 @@ def codex_skill_from_slash(filename: str, text: str) -> tuple[str, str]:
             "use Codex's own subagent mechanism to fan out the equivalent "
             "work; the dispatch logic and CLI calls are unchanged."
         )
+    if skill_name in _HOST_MANAGEMENT_SKILLS:
+        adapter.append(_HOST_MANAGEMENT_NOTE)
     adapter.append(
         "Run each `uv run aelf ...` command in your shell and show its "
         "output to the user."

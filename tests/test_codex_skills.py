@@ -177,3 +177,49 @@ def test_remove_on_empty_dir_is_noop(tmp_path: Path) -> None:
 def test_remove_on_missing_dir_is_noop(tmp_path: Path) -> None:
     result = remove_codex_skills(tmp_path / "does-not-exist")
     assert not result.pruned
+
+
+# --- host-management steering (#1136) ---------------------------------------
+
+_HOST_MGMT = ("aelf-setup", "aelf-doctor", "aelf-uninstall", "aelf-upgrade")
+
+
+def test_host_management_skills_carry_codex_steering() -> None:
+    skills = _bundled_codex_skills()
+    for name in _HOST_MGMT:
+        text = skills[name]
+        assert "<host-adapter>" in text, name
+        assert "--host codex" in text, name
+        # The note must precede the body so it governs the Run: lines.
+        assert text.index("<host-adapter>") < text.index("<objective>"), name
+
+
+def test_ordinary_skills_lack_codex_steering() -> None:
+    skills = _bundled_codex_skills()
+    for name, text in skills.items():
+        if name in _HOST_MGMT:
+            continue
+        assert "<host-adapter>" not in text, name
+        assert "--host codex" not in text, name
+
+
+def test_setup_description_rewritten_for_codex_host() -> None:
+    _, text = codex_skill_from_slash(
+        "setup.md", _bundled_slash_files()["setup.md"]
+    )
+    head = text.split("---", 2)[1]
+    # Describes the codex-host effect, not another host's artifacts.
+    assert "hooks.json" in head
+    assert ".agents/skills" in head
+    assert "settings.json" not in head
+    assert "statusline" not in head
+
+
+def test_non_setup_descriptions_pass_through() -> None:
+    src = _bundled_slash_files()["doctor.md"]
+    _, text = codex_skill_from_slash("doctor.md", src)
+    head = text.split("---", 2)[1]
+    src_desc = [
+        line for line in src.splitlines() if line.startswith("description:")
+    ][0]
+    assert src_desc in head
