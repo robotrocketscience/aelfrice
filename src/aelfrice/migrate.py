@@ -37,9 +37,12 @@ from typing import Final
 
 from aelfrice.db_paths import repo_identity_from_db_path
 from aelfrice.models import (
+    BELIEF_CORRECTION,
     BELIEF_SCOPE_PROJECT,
     LOCK_USER,
     ORIGIN_UNKNOWN,
+    ORIGIN_USER_CORRECTED,
+    ORIGIN_USER_STATED,
     Belief,
     Edge,
 )
@@ -117,6 +120,19 @@ def _read_legacy_beliefs(
             and lock_level != LOCK_USER
         ):
             pc = source_identity
+        # #1135: the v1.2 origin catch-up (promotion_path.md § 1) used
+        # to be re-applied by the target store on every open; it is a
+        # marker-gated one-shot now, and the target's marker is already
+        # stamped by the time legacy rows land. Apply the same mapping
+        # during conversion instead, so migrate output is unchanged:
+        # a still-'unknown' locked row was user-stated, a
+        # still-'unknown' correction row was user-corrected.
+        origin = row["origin"] if has_origin else ORIGIN_UNKNOWN
+        if origin == ORIGIN_UNKNOWN:
+            if lock_level == LOCK_USER:
+                origin = ORIGIN_USER_STATED
+            elif row["type"] == BELIEF_CORRECTION:
+                origin = ORIGIN_USER_CORRECTED
         out.append(Belief(
             id=row["id"],
             content=row["content"],
@@ -128,7 +144,7 @@ def _read_legacy_beliefs(
             locked_at=row["locked_at"],
             created_at=row["created_at"],
             last_retrieved_at=row["last_retrieved_at"],
-            origin=row["origin"] if has_origin else ORIGIN_UNKNOWN,
+            origin=origin,
             scope=scope,
             project_context=pc,
         ))
