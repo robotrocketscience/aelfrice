@@ -3842,13 +3842,28 @@ class RetrievalCache:
         use_bm25f_anchors: bool | None = None,
         bm25f_cache: BM25IndexCache | None = None,
     ) -> list[Belief]:
-        """Cached `retrieve()`. Identical contract to the free function.
+        """Cached `retrieve()`. Same returned beliefs as the free
+        function; **not** its side effects on a hit (#1144).
+
+        A cache hit returns the memoized beliefs without re-running the
+        pipeline, so it also does not repeat `retrieve()`'s
+        retrieval-exposure enqueue (#191): exposure is recorded once, on
+        the miss that populates the entry, not on every subsequent hit.
+        This is deliberate — the enqueue is a `deferred_feedback_queue`
+        write, and a DB write per hit would blow the AC2 cache-hit
+        latency budget (≤ 50 µs; see `test_ac2_cache_hit_under_fifty_microseconds`).
+        Exposure is audit-only recurrence data (#1086), never evidence,
+        so under-counting repeat hits of a cached query is a bounded,
+        documented approximation. The production hook path calls the free
+        `retrieve()` directly (no cache), so its exposure stream — the one
+        the #1086 recurrence consumer reads — is unaffected; this class
+        has no production call site.
 
         Cache key keeps `posterior_weight` in its caller-supplied
         form (None or a float) — `None` is its own bucket and
         deferred env / TOML resolution happens once on the miss
         path. Resolving on every hit would walk Path.cwd().resolve()
-        each time and blow the AC2 cache-hit latency budget.
+        each time and blow the same AC2 cache-hit latency budget.
         """
         if posterior_weight is None:
             key_weight: float | None = None

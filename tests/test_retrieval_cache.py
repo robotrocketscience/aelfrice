@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 from aelfrice.models import (
     BELIEF_FACTUAL,
     EDGE_RELATES_TO,
@@ -229,3 +231,49 @@ def test_capacity_must_be_positive() -> None:
         pass
     else:
         raise AssertionError("capacity=0 should have raised ValueError")
+
+
+# --- #1144: cache hits do not repeat retrieve()'s exposure enqueue --------
+
+def _enqueued_count(s: MemoryStore) -> int:
+    return s.count_deferred_feedback_by_status().get("enqueued", 0)
+
+
+def test_cache_hit_does_not_reenqueue_exposure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A populating miss records retrieval exposure once; subsequent hits
+    return the memoized beliefs without re-enqueuing. Pins the documented
+    exposure exemption (#1144) and keeps the AC2 hit path write-free.
+    """
+    # Force the exposure lane on so the assertion is not vacuous, whatever
+    # the ambient env / TOML config is.
+    monkeypatch.setenv("AELFRICE_IMPLICIT_FEEDBACK_ENQUEUE", "1")
+    s = _seeded_store()
+    cache = RetrievalCache(s)
+    assert _enqueued_count(s) == 0
+
+    first = cache.retrieve("bananas")  # miss → pipeline → exposure enqueue
+    after_miss = _enqueued_count(s)
+    assert after_miss > 0, "the populating miss must record exposure once"
+
+    second = cache.retrieve("bananas")  # hit → memoized, no re-enqueue
+    assert _enqueued_count(s) == after_miss, (
+        "a cache hit must not re-enqueue retrieval exposure"
+    )
+    assert [b.id for b in first] == [b.id for b in second]
+
+
+def test_free_retrieve_enqueues_exposure_each_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Contrast: the un-cached free function records exposure on every
+    call — the behavior the cache deliberately does not replicate on hits.
+    """
+    monkeypatch.setenv("AELFRICE_IMPLICIT_FEEDBACK_ENQUEUE", "1")
+    s = _seeded_store()
+    retrieve(s, "bananas")
+    once = _enqueued_count(s)
+    assert once > 0
+    retrieve(s, "bananas")
+    assert _enqueued_count(s) == 2 * once
