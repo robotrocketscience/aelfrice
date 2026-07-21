@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Final, Iterable, Iterator
 
@@ -1037,6 +1038,13 @@ class MemoryStore:
         # without a repo identity keep the pre-#970 cross-context behaviour.
         # db_paths._open_store() injects the value derived from the DB path.
         self._project_context_default: str = project_context_default
+        # #1135 write-group batching. Non-zero depth suppresses the
+        # per-call commits issued by mutation methods (via `_commit`);
+        # `transaction()` commits once at outermost exit. Must exist
+        # before the schema battery below — the one-shot migration
+        # helpers commit through `_commit` too.
+        self._txn_depth: int = 0
+        self._pending_invalidation: bool = False
         self._conn: sqlite3.Connection = sqlite3.connect(path)
         self._conn.row_factory = sqlite3.Row
         # WAL only meaningful on-disk; harmless on :memory:.
@@ -1096,7 +1104,7 @@ class MemoryStore:
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
-        self._conn.commit()
+        self._commit()
         self._invalidation_callbacks: list[Callable[[], None]] = []
         # v1.5.0 #204 federation forward-compat. Resolve (or
         # generate) the local scope id BEFORE any belief/edge
@@ -1181,8 +1189,51 @@ class MemoryStore:
         self._invalidation_callbacks.append(fn)
 
     def _fire_invalidation(self) -> None:
+        # Inside a transaction() the mutation is not yet visible to
+        # readers; defer to one post-commit fire so callbacks never
+        # observe uncommitted state (#1135).
+        if self._txn_depth > 0:
+            self._pending_invalidation = True
+            return
         for fn in self._invalidation_callbacks:
             fn()
+
+    # --- Write-group batching (#1135) ------------------------------------
+
+    def _commit(self) -> None:
+        """Commit unless inside `transaction()` (outermost commit wins)."""
+        if self._txn_depth == 0:
+            self._conn.commit()
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Group multiple mutating calls into one SQLite transaction.
+
+        Per-call commits inside the block are suppressed; one commit is
+        issued at outermost exit. Measured 33x cheaper than
+        commit-per-row for a 200-insert group (#1135). Invalidation
+        callbacks fire once, after that commit, so derived caches never
+        read uncommitted state. Reentrant: nested blocks join the
+        outermost transaction. On exception the outermost block rolls
+        the whole group back and re-raises; a caller that swallows an
+        inner block's exception keeps the outer group's prior writes
+        (the rollback happens only at depth zero).
+        """
+        self._txn_depth += 1
+        try:
+            yield
+        except BaseException:
+            self._txn_depth -= 1
+            if self._txn_depth == 0:
+                self._conn.rollback()
+                self._pending_invalidation = False
+            raise
+        self._txn_depth -= 1
+        if self._txn_depth == 0:
+            self._conn.commit()
+            if self._pending_invalidation:
+                self._pending_invalidation = False
+                self._fire_invalidation()
 
     # --- Schema meta (v1.3+ migration tracker) ---------------------------
 
@@ -1204,7 +1255,7 @@ class MemoryStore:
             "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
             (key, value),
         )
-        self._conn.commit()
+        self._commit()
 
     # --- v1.5.0 #204 version-vector helpers ------------------------------
 
@@ -1333,7 +1384,7 @@ class MemoryStore:
             (scope,),
         )
         edge_inserted = edge_cur.rowcount or 0
-        self._conn.commit()
+        self._commit()
         self.set_schema_meta(
             SCHEMA_META_VERSION_VECTOR_BACKFILL,
             datetime.now(timezone.utc).isoformat(),
@@ -1367,7 +1418,7 @@ class MemoryStore:
             (self._project_context_default, BELIEF_SCOPE_PROJECT, LOCK_USER),
         )
         stamped = cur.rowcount or 0
-        self._conn.commit()
+        self._commit()
         self.set_schema_meta(
             SCHEMA_META_PROJECT_CONTEXT_BACKFILL,
             datetime.now(timezone.utc).isoformat(),
@@ -1392,7 +1443,7 @@ class MemoryStore:
             (scope,),
         )
         inserted = cur.rowcount or 0
-        self._conn.commit()
+        self._commit()
         self.set_schema_meta(
             SCHEMA_META_LOG_VERSION_VECTOR_BACKFILL,
             datetime.now(timezone.utc).isoformat(),
@@ -1470,7 +1521,7 @@ class MemoryStore:
             )
             self._bump_log_version(log_id)
             inserted += 1
-        self._conn.commit()
+        self._commit()
         self.set_schema_meta(
             SCHEMA_META_LEGACY_LOG_SYNTH,
             datetime.now(timezone.utc).isoformat(),
@@ -2111,7 +2162,7 @@ class MemoryStore:
             )
             rewritten += 1
 
-        self._conn.commit()
+        self._commit()
         self.set_schema_meta(
             SCHEMA_META_SPECULATIVE_HASH_V2_COMPLETE,
             datetime.now(timezone.utc).isoformat(),
@@ -2229,7 +2280,7 @@ class MemoryStore:
         )
         self._write_belief_entities(b.id, b.content)
         self._bump_belief_version(b.id)
-        self._conn.commit()
+        self._commit()
         self._fire_invalidation()
 
     def get_belief_by_content_hash(self, content_hash: str) -> Belief | None:
@@ -2329,7 +2380,7 @@ class MemoryStore:
         )
         self._write_belief_entities(b.id, b.content)
         self._bump_belief_version(b.id)
-        self._conn.commit()
+        self._commit()
         self._fire_invalidation()
 
     def delete_belief(self, belief_id: str) -> None:
@@ -2342,7 +2393,7 @@ class MemoryStore:
         self._conn.execute(
             "DELETE FROM belief_entities WHERE belief_id = ?", (belief_id,)
         )
-        self._conn.commit()
+        self._commit()
         self._fire_invalidation()
 
     def soft_delete_belief(self, belief_id: str, ts: str | None = None) -> None:
@@ -2367,7 +2418,7 @@ class MemoryStore:
                 "DELETE FROM beliefs_fts WHERE id = ?", (belief_id,)
             )
         self._bump_belief_version(belief_id)
-        self._conn.commit()
+        self._commit()
         self._fire_invalidation()
 
     def restore_belief(self, belief_id: str) -> bool:
@@ -2406,7 +2457,7 @@ class MemoryStore:
             (belief_id, row["content"]),
         )
         self._bump_belief_version(belief_id)
-        self._conn.commit()
+        self._commit()
         self._fire_invalidation()
         return True
 
@@ -2423,7 +2474,7 @@ class MemoryStore:
             (ts_iso, belief_id),
         )
         self._bump_belief_version(belief_id)
-        self._conn.commit()
+        self._commit()
         self._fire_invalidation()
 
     def list_review_candidates(self, *, limit: int = 10) -> list[Belief]:
@@ -3057,7 +3108,7 @@ class MemoryStore:
             f"UPDATE beliefs SET last_retrieved_at = ? WHERE id IN ({placeholders})",
             (ts, *ids),
         )
-        self._conn.commit()
+        self._commit()
         return cur.rowcount or 0
 
     # --- Feedback history ------------------------------------------------
@@ -3080,7 +3131,7 @@ class MemoryStore:
             """,
             (belief_id, valence, source, created_at),
         )
-        self._conn.commit()
+        self._commit()
         rowid = cur.lastrowid
         if rowid is None:
             raise RuntimeError("feedback_history insert returned no rowid")
@@ -3165,7 +3216,7 @@ class MemoryStore:
             )
             """
         )
-        self._conn.commit()
+        self._commit()
         return cur.rowcount if cur.rowcount is not None else 0
 
     # --- Belief corroborations (v1.5+, #190) -----------------------------
@@ -3262,7 +3313,7 @@ class MemoryStore:
             """,
             (belief_id, ts, source_type, session_id, source_path_hash),
         )
-        self._conn.commit()
+        self._commit()
 
     def count_corroborations(self, belief_id: str) -> int:
         """Return the count of belief_corroborations rows for one belief.
@@ -3346,7 +3397,7 @@ class MemoryStore:
             """,
             (belief_id, doc_uri, anchor_type, position_hint, ts),
         )
-        self._conn.commit()
+        self._commit()
         cur = self._conn.execute(
             """
             SELECT belief_id, doc_uri, anchor_type, position_hint, created_at
@@ -3459,7 +3510,7 @@ class MemoryStore:
             """,
             (name, 1 if always_on else 0, trigger_json, default_lock, now),
         )
-        self._conn.commit()
+        self._commit()
         got = self.get_category(name)
         assert got is not None  # just wrote it
         return got
@@ -3489,7 +3540,7 @@ class MemoryStore:
             "UPDATE categories SET trigger_json = ? WHERE name = ?",
             (trigger_json, name),
         )
-        self._conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     def delete_category(self, name: str) -> bool:
@@ -3498,7 +3549,7 @@ class MemoryStore:
         cur = self._conn.execute(
             "DELETE FROM categories WHERE name = ?", (name,)
         )
-        self._conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     def assign_belief_to_category(
@@ -3520,7 +3571,7 @@ class MemoryStore:
             "(belief_id, category_name, created_at) VALUES (?, ?, ?)",
             (belief_id, category_name, now),
         )
-        self._conn.commit()
+        self._commit()
         # `INSERT OR IGNORE` silently drops FK violations, so if the belief
         # or category was deleted between the checks above and this write,
         # the row never landed. Confirm membership and surface the race
@@ -3546,7 +3597,7 @@ class MemoryStore:
             "WHERE belief_id = ? AND category_name = ?",
             (belief_id, category_name),
         )
-        self._conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     def get_categories_for_belief(self, belief_id: str) -> list[str]:
@@ -3632,7 +3683,7 @@ class MemoryStore:
             ),
         )
         self._bump_log_version(log_id)
-        self._conn.commit()
+        self._commit()
         return log_id
 
     def update_ingest_derived_ids(
@@ -3663,7 +3714,7 @@ class MemoryStore:
             f"UPDATE ingest_log SET {', '.join(sets)} WHERE id = ?",
             params,
         )
-        self._conn.commit()
+        self._commit()
 
     def get_ingest_log_entry(self, log_id: str) -> dict[str, object] | None:
         """Return a dict view of one ingest_log row, or None if missing.
@@ -3748,7 +3799,7 @@ class MemoryStore:
             """,
             (belief_id, enqueued_at, event_type),
         )
-        self._conn.commit()
+        self._commit()
         rowid = cur.lastrowid
         if rowid is None:
             raise RuntimeError(
@@ -3836,7 +3887,7 @@ class MemoryStore:
             (session_id, turn_id, belief_id, injected_at, source,
              encoded_consumers),
         )
-        self._conn.commit()
+        self._commit()
         rowid = cur.lastrowid
         if rowid is None:
             raise RuntimeError(
@@ -3926,7 +3977,7 @@ class MemoryStore:
             """,
             (referenced, referenced_at, event_id),
         )
-        self._conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     # ----- #816 belief_touches (hot-path v1) -------------------------
@@ -3997,7 +4048,7 @@ class MemoryStore:
             """,
             (belief_id, session_id, fire_idx, event_kind),
         )
-        self._conn.commit()
+        self._commit()
 
     def read_touch_set_in_window(
         self,
@@ -4404,7 +4455,7 @@ class MemoryStore:
             (retention_class, belief_id),
         )
         self._bump_belief_version(belief_id)
-        self._conn.commit()
+        self._commit()
         self._fire_invalidation()
 
     def count_beliefs_by_type(self) -> dict[str, int]:
@@ -4628,7 +4679,7 @@ class MemoryStore:
             (key, float(static_default), int(half_life_seconds),
              int(now_ts), encoded),
         )
-        self._conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     def update_meta_belief(
@@ -4702,7 +4753,7 @@ class MemoryStore:
             "UPDATE meta_beliefs SET last_updated_ts = ? WHERE key = ?",
             (int(now_ts), key),
         )
-        self._conn.commit()
+        self._commit()
         return True
 
     def read_meta_belief_state(self, key: str) -> MetaBeliefState | None:
@@ -4790,7 +4841,7 @@ class MemoryStore:
             (e.src, e.dst, e.type, e.weight, e.anchor_text),
         )
         self._bump_edge_version(e.src, e.dst, e.type)
-        self._conn.commit()
+        self._commit()
         self._fire_invalidation()
 
     def get_edge(self, src: str, dst: str, type_: str) -> Edge | None:
@@ -4808,7 +4859,7 @@ class MemoryStore:
             (e.weight, e.anchor_text, e.src, e.dst, e.type),
         )
         self._bump_edge_version(e.src, e.dst, e.type)
-        self._conn.commit()
+        self._commit()
         self._fire_invalidation()
 
     def delete_edge(self, src: str, dst: str, type_: str) -> None:
@@ -4816,7 +4867,7 @@ class MemoryStore:
             "DELETE FROM edges WHERE src = ? AND dst = ? AND type = ?",
             (src, dst, type_),
         )
-        self._conn.commit()
+        self._commit()
         self._fire_invalidation()
 
     def delete_edges_by_type(self, type_: str) -> int:
@@ -4831,7 +4882,7 @@ class MemoryStore:
             "DELETE FROM edges WHERE type = ?", (type_,)
         )
         removed = cur.rowcount
-        self._conn.commit()
+        self._commit()
         self._fire_invalidation()
         return removed
 
@@ -5197,7 +5248,7 @@ class MemoryStore:
                 s.created_at, s.completed_at,
             ),
         )
-        self._conn.commit()
+        self._commit()
 
     def get_onboard_session(self, session_id: str) -> OnboardSession | None:
         cur = self._conn.execute(
@@ -5226,7 +5277,7 @@ class MemoryStore:
             """,
             (ONBOARD_STATE_COMPLETED, completed_at, session_id),
         )
-        self._conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     def count_onboard_sessions(self, state: str | None = None) -> int:
@@ -5258,7 +5309,7 @@ class MemoryStore:
             """,
             (belief_id, text, source, rejected_at),
         )
-        self._conn.commit()
+        self._commit()
 
     def delete_onboard_rejection(self, belief_id: str) -> bool:
         """Drop a rejection ledger entry. Returns True if a row was
@@ -5270,7 +5321,7 @@ class MemoryStore:
             "DELETE FROM onboard_rejections WHERE belief_id = ?",
             (belief_id,),
         )
-        self._conn.commit()
+        self._commit()
         return cur.rowcount > 0
 
     def is_onboard_rejected(self, belief_id: str) -> bool:
@@ -5341,7 +5392,7 @@ class MemoryStore:
             """,
             (s.id, s.started_at, s.completed_at, s.model, s.project_context),
         )
-        self._conn.commit()
+        self._commit()
         return s
 
     def complete_session(self, session_id: str) -> None:
@@ -5356,7 +5407,7 @@ class MemoryStore:
             "UPDATE sessions SET completed_at = ? WHERE id = ?",
             (datetime.now(timezone.utc).isoformat(), session_id),
         )
-        self._conn.commit()
+        self._commit()
 
     def get_session(self, session_id: str) -> Session | None:
         cur = self._conn.execute(
