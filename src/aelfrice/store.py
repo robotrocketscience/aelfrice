@@ -1019,6 +1019,13 @@ class MemoryStore:
         # WAL only meaningful on-disk; harmless on :memory:.
         try:
             self._conn.execute("PRAGMA journal_mode=WAL")
+            # The documented WAL pairing: fsync on checkpoint, not on
+            # every commit. Durability window is the WAL — an app crash
+            # loses nothing; an OS crash can lose the tail of the WAL,
+            # which for a memory store is re-derivable (ingest_log is
+            # append-only and re-ingest is idempotent). Measured ~2x
+            # cheaper per commit than the FULL default (#1135).
+            self._conn.execute("PRAGMA synchronous=NORMAL")
         except sqlite3.DatabaseError:
             pass
         # Block up to 5s waiting for a write lock instead of failing

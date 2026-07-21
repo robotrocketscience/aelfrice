@@ -119,6 +119,18 @@ def test_wal_mode_is_on(tmp_path: Path) -> None:
     assert mode == "wal"
 
 
+def test_synchronous_normal_is_set(tmp_path: Path) -> None:
+    """A fresh on-disk store pairs WAL with synchronous=NORMAL (#1135)."""
+    db = tmp_path / "sync.db"
+    store = MemoryStore(str(db))
+    try:
+        cur = store._conn.execute("PRAGMA synchronous")  # type: ignore[attr-defined]
+        level = cur.fetchone()[0]
+    finally:
+        store.close()
+    assert level == 1, f"expected synchronous=NORMAL (1), got {level}"
+
+
 def test_busy_timeout_is_set(tmp_path: Path) -> None:
     """busy_timeout is non-zero (must wait for a write lock, not fail)."""
     db = tmp_path / "bt.db"
