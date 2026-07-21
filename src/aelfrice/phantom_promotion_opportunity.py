@@ -134,6 +134,27 @@ def _read_section(start: Path | None = None) -> dict[str, Any] | None:
     return None
 
 
+def _resolve_enabled(
+    section: dict[str, Any] | None, explicit: bool | None = None
+) -> bool:
+    """Resolve the master flag from an already-read TOML ``section``.
+
+    Precedence: env override > explicit kwarg > ``[phantom_promotion] enabled``
+    > default False. Factored out so a caller that has already read the section
+    (``load_phantom_promotion_config``) does not re-parse the file.
+    """
+    env = _env_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    if section is not None:
+        value = section.get(_ENABLED_KEY)
+        if isinstance(value, bool):
+            return value
+    return False
+
+
 def should_trigger_phantom_promotion(
     explicit: bool | None = None,
     *,
@@ -148,17 +169,7 @@ def should_trigger_phantom_promotion(
       4. Default: **False** — opt-in, per the narrow-surface PHILOSOPHY
          (#605) and the opt-in-default posture (#606 / ADR-0003 dec-4).
     """
-    env = _env_override()
-    if env is not None:
-        return env
-    if explicit is not None:
-        return explicit
-    section = _read_section(start)
-    if section is not None:
-        value = section.get(_ENABLED_KEY)
-        if isinstance(value, bool):
-            return value
-    return False
+    return _resolve_enabled(_read_section(start), explicit)
 
 
 def _positive_int(section: dict[str, Any], key: str, default: int) -> int:
@@ -191,7 +202,8 @@ def load_phantom_promotion_config(
             section, _MIN_SESSIONS_KEY, _DEFAULT_MIN_SESSIONS
         )
     return PhantomPromotionConfig(
-        enabled=should_trigger_phantom_promotion(start=start),
+        # Resolve enabled from the already-read section — no second file read.
+        enabled=_resolve_enabled(section),
         max_fires_per_session=max_fires,
         min_corroborations=min_corr,
         min_sessions=min_sess,
@@ -224,14 +236,16 @@ def _truncate(text: str) -> str:
 
 
 def _note_topic(text: str) -> str:
-    """Whitespace-collapse + XML-escape a phantom snippet for the note.
+    """XML-escape a phantom snippet for the note.
 
-    The note is a tag-delimited block the host agent reads as data. Phantom
-    content containing newlines or a literal
-    ``</aelfrice-phantom-promotion-opportunity>`` would otherwise break the
-    data boundary and could turn stored text into apparent instructions.
+    ``topic`` is already whitespace-collapsed and length-bounded by
+    ``_truncate`` when the ``PromotionOpportunity`` is built, so this only
+    escapes. The note is a tag-delimited block the host agent reads as data;
+    content containing a literal ``</aelfrice-phantom-promotion-opportunity>``
+    or other markup would otherwise break the data boundary and could turn
+    stored text into apparent instructions.
     """
-    return html.escape(_truncate(text), quote=True)
+    return html.escape(text, quote=True)
 
 
 def detect_promotable_phantoms(
