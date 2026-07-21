@@ -611,6 +611,7 @@ class BM25IndexCache:
     k1: float = DEFAULT_K1
     b: float = DEFAULT_B
     _index: BM25Index | None = field(default=None, init=False, repr=False)
+    _generation: int | None = field(default=None, init=False, repr=False)
     _subscribed: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -620,6 +621,15 @@ class BM25IndexCache:
 
     def get(self) -> BM25Index:
         """Return the current index; load the sidecar or build as needed."""
+        if self._index is not None and self._generation is not None:
+            # Revalidate against the durable counter: the in-process
+            # invalidation callback only covers own-process mutations,
+            # so without this a long-running process (MCP server) would
+            # never see a sibling process's writes (the default-on
+            # ingest hooks). One indexed point-read per get(); the
+            # pre-#1135 behavior was a full rebuild per query.
+            if self.store.store_generation() != self._generation:
+                self._index = None
         if self._index is None:
             self._index = self._load_sidecar()
         if self._index is None:
@@ -634,6 +644,7 @@ class BM25IndexCache:
                 b=self.b,
             )
             self._write_sidecar(self._index, generation)
+            self._generation = generation
         return self._index
 
     def invalidate(self) -> None:
@@ -644,6 +655,7 @@ class BM25IndexCache:
         as stale; the next `get()` rebuild overwrites it.
         """
         self._index = None
+        self._generation = None
 
     # --- Sidecar persistence (#1135) ----------------------------------
 
@@ -686,6 +698,7 @@ class BM25IndexCache:
                 return None
             if np.float32(index.b) != np.float32(self.b):
                 return None
+            self._generation = generation
             return index
         except Exception:  # noqa: BLE001 — any bad sidecar => rebuild
             return None

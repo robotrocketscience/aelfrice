@@ -180,3 +180,28 @@ def test_generation_bump_rides_mutation_transaction(
         assert store.store_generation() == g2
     finally:
         store.close()
+
+def test_resident_cache_sees_sibling_process_writes(tmp_path: Path) -> None:
+    """A long-lived cache revalidates the durable generation on get().
+
+    The in-process invalidation callback only covers the cache's own
+    store handle; a write arriving through a second handle (stand-in
+    for a sibling process, e.g. an ingest hook firing while an MCP
+    server is resident) must still invalidate the cached index.
+    """
+    db = tmp_path / "m.db"
+    resident = MemoryStore(str(db))
+    sibling = MemoryStore(str(db))
+    try:
+        _seed(resident)
+        cache = BM25IndexCache(resident)
+        cache.get()
+        sibling.insert_belief(_mk_belief("b4", "a sibling process write"))
+        refreshed = cache.get()
+        assert any(
+            bid == "b4"
+            for bid, _ in refreshed.score("sibling process write", top_k=5)
+        ), "resident cache served a stale index after a sibling write"
+    finally:
+        resident.close()
+        sibling.close()
