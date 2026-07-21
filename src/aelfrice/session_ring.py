@@ -34,9 +34,10 @@ import json
 import os
 import sys
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import IO, Any, Final
 
 from aelfrice.db_paths import db_path
@@ -146,6 +147,46 @@ def _atomic_write(ring_path: Path, payload: str) -> None:
 def _open_lock(lock_path: Path) -> int:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     return os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+
+
+@contextmanager
+def exclusive_file_lock(target_path: Path) -> Iterator[None]:
+    """Advisory ``LOCK_EX`` serialising a sibling-file read-modify-write
+    across processes, held for the duration of the ``with`` block.
+
+    The lock is taken on a sibling ``<target>.lock`` file (never on the
+    target itself, so the target can be atomically replaced underneath
+    it). Exposed for callers outside the session ring — the telemetry
+    JSONL appenders in ``hook`` and ``hook_search_tool`` perform the same
+    read-all → rewrite pattern and share the same lost-update race that
+    this lock closes for the ring (#1145).
+
+    Fail-soft: if the lock cannot be acquired (e.g. ``fcntl`` unsupported
+    on the backing filesystem), the block still runs unlocked rather than
+    drop the caller's write — matching the best-effort contract of the
+    surfaces that use it.
+    """
+    lock_path = target_path.with_name(target_path.name + ".lock")
+    lock_fd: int | None = None
+    try:
+        lock_fd = _open_lock(lock_path)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    except OSError:
+        # Unlocked fall-through: a best-effort writer must not lose its
+        # record just because the lock file could not be taken.
+        pass
+    try:
+        yield
+    finally:
+        if lock_fd is not None:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                os.close(lock_fd)
+            except OSError:
+                pass
 
 
 def _normalize_for_session(
