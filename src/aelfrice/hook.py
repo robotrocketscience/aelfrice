@@ -33,10 +33,11 @@ import tempfile
 import time
 import tomllib
 import traceback
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Any, Final, cast
+from typing import IO, Any, Final, Iterator, cast
 
 try:
     from aelfrice.db_paths import active_project_context, db_path
@@ -794,6 +795,12 @@ def user_prompt_submit(
             file=serr,
         )
         return 0
+    # #1135: one store handle for the whole prompt. The helpers below
+    # each used to open their own (4-6 opens per prompt, each replaying
+    # the schema battery). Opened lazily after the payload parses; None
+    # (open failure or in-memory DB) lets every helper fall back to its
+    # legacy self-open path, preserving per-helper fail-softness.
+    ups_store: MemoryStore | None = None
     try:
         # TTL-gated background update check, completely detached, never
         # blocks the hook. Statusline reads the cache it writes.
@@ -822,6 +829,13 @@ def user_prompt_submit(
                 payload_cwd = Path(cwd_field)
         except Exception:
             payload_cwd = None
+        try:
+            p = db_path()
+            if str(p) != ":memory:":
+                p.parent.mkdir(parents=True, exist_ok=True)
+                ups_store = MemoryStore(str(p))
+        except Exception:
+            ups_store = None
         # #578: detect first prompt of a new session and build the
         # <session-start> sub-block if needed. Fail-soft: any error in
         # detection or block-building leaves session_start_block="" so
@@ -835,7 +849,7 @@ def user_prompt_submit(
         try:
             if is_session_first_prompt(session_id):
                 session_start_block = _retrieve_session_start_block(
-                    serr, cwd=payload_cwd,
+                    serr, cwd=payload_cwd, store=ups_store,
                 )
                 cadence_resume_block = _maybe_read_cadence_resume(serr)
                 if cadence_resume_block:
@@ -897,7 +911,9 @@ def user_prompt_submit(
         # retrieval so the shifted posteriors are visible to the
         # half-life / anchor-weight / etc. consumers that fire below.
         # Fail-soft, like sentiment-feedback.
-        _sweep_relevance_signal(session_id=session_id, stderr=serr)
+        _sweep_relevance_signal(
+            session_id=session_id, stderr=serr, store=ups_store,
+        )
         # #674: prompt-shape gate — skip BM25 for system envelopes and
         # trivial acks, preserving any session-start block unchanged.
         gate_skip = False
@@ -956,7 +972,7 @@ def user_prompt_submit(
                     # Fail-soft: surface the trace, retrieve on prompt.
                     traceback.print_exc(file=serr)
                     retrieval_query = prompt
-            hits = _retrieve(retrieval_query, budget)
+            hits = _retrieve(retrieval_query, budget, store=ups_store)
             # #858 defect 3: drop hits whose stored project_context is
             # non-empty AND does not match the active in-process
             # context. '' on either side means "no filter": legacy
@@ -1024,6 +1040,7 @@ def user_prompt_submit(
                 source="ups",
                 active_consumers=get_active_meta_belief_consumers(),
                 stderr=serr,
+                store=ups_store,
             )
             # total_chars measured post-collapse (what is actually injected).
             total_chars = sum(len(h.content) for h in hits)
@@ -1113,6 +1130,7 @@ def user_prompt_submit(
                     belief_ids=injected_ids,
                     fire_idx=_next_fire - 1,
                     stderr=serr,
+                    store=ups_store,
                 )
         elif gate_skip:
             # Gate fired, no BM25 hits. Emit rebuild_log with empty hits
@@ -1175,6 +1193,12 @@ def user_prompt_submit(
                 sout.write(promotion_block)
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
+    finally:
+        if ups_store is not None:
+            try:
+                ups_store.close()
+            except Exception:
+                pass
     return 0
 
 
@@ -1339,6 +1363,7 @@ def _sweep_relevance_signal(
     *,
     session_id: str | None,
     stderr: IO[str] | None = None,
+    store: MemoryStore | None = None,
 ) -> None:
     """Score prior turns' pending ``injection_events`` against the
     assistant transcript and update each active consumer's
@@ -1375,11 +1400,9 @@ def _sweep_relevance_signal(
             score_references,
         )
 
-        p = db_path()
-        if str(p) == ":memory:":
-            return
-        store = MemoryStore(str(p))
-        try:
+        with _store_handle(store) as store:
+            if store is None:
+                return
             pending = store.list_pending_injection_events(session_id)
             if not pending:
                 return
@@ -1428,8 +1451,6 @@ def _sweep_relevance_signal(
                     referenced=int(referenced),
                     referenced_at=now_iso,
                 )
-        finally:
-            store.close()
     except Exception as exc:
         print(
             f"aelfrice: relevance sweeper failed (non-fatal): {exc}",
@@ -1460,6 +1481,7 @@ def _record_touches(
     belief_ids: list[str],
     fire_idx: int,
     stderr: IO[str] | None = None,
+    store: MemoryStore | None = None,
 ) -> None:
     """Append one ``belief_touches`` row per injected belief.
 
@@ -1498,11 +1520,9 @@ def _record_touches(
         from aelfrice.hot_path import (  # noqa: PLC0415
             TOUCH_EVENT_KIND_INJECTION,
         )
-        p = db_path()
-        if str(p) == ":memory:":
-            return
-        store = MemoryStore(str(p))
-        try:
+        with _store_handle(store) as store:
+            if store is None:
+                return
             # Current turn's injection set — forward-only, no ring replay.
             # #1135: one commit for the batch instead of one per touch.
             with store.transaction():
@@ -1521,8 +1541,6 @@ def _record_touches(
                         # extremely unlikely but possible (a belief
                         # deleted between retrieval and the touch write).
                         continue
-        finally:
-            store.close()
     except Exception as exc:
         print(
             f"aelfrice: UPS belief_touches emit failed "
@@ -1539,6 +1557,7 @@ def _record_injection_events(
     source: str,
     active_consumers: list[str],
     stderr: IO[str] | None = None,
+    store: MemoryStore | None = None,
 ) -> None:
     """Append one ``injection_events`` row per injected belief.
 
@@ -1557,12 +1576,10 @@ def _record_injection_events(
     if not session_id or not hits:
         return
     try:
-        p = db_path()
-        if str(p) == ":memory:":
-            return
         injected_at = datetime.now(timezone.utc).isoformat()
-        store = MemoryStore(str(p))
-        try:
+        with _store_handle(store) as store:
+            if store is None:
+                return
             # #1135: one commit for the batch instead of one per event.
             with store.transaction():
                 for h in hits:
@@ -1577,8 +1594,6 @@ def _record_injection_events(
                         source=source,
                         active_consumers=active_consumers,
                     )
-        finally:
-            store.close()
     except Exception as exc:
         print(
             f"aelfrice: UPS injection_events emit failed "
@@ -1737,19 +1752,28 @@ def _build_conversation_aware_query(
     return " ".join(parts)
 
 
-def _retrieve(prompt: str, token_budget: int) -> list[Belief]:
+def _retrieve(
+    prompt: str,
+    token_budget: int,
+    *,
+    store: MemoryStore | None = None,
+) -> list[Belief]:
     """Run retrieval for the given prompt and return the raw hit list.
 
     Separating retrieval from formatting lets callers inspect the hits
     (for telemetry, optional dedup, etc.) before the string is built.
     Returns an empty list when the store is absent or retrieval yields
-    nothing.
+    nothing. A caller-supplied `store` (#1135: the per-prompt shared
+    handle) is used as-is and left open; without one the legacy
+    open-per-call behaviour applies.
     """
-    store = _open_store()
-    try:
+    if store is not None:
         return search_for_prompt(store, prompt, token_budget=token_budget)
+    owned = _open_store()
+    try:
+        return search_for_prompt(owned, prompt, token_budget=token_budget)
     finally:
-        store.close()
+        owned.close()
 
 
 def _filter_by_project_context(hits: list[Belief]) -> list[Belief]:
@@ -1923,6 +1947,30 @@ def _open_store() -> MemoryStore:
     if str(p) != ":memory:":
         p.parent.mkdir(parents=True, exist_ok=True)
     return MemoryStore(str(p))
+
+
+@contextmanager
+def _store_handle(store: MemoryStore | None) -> Iterator[MemoryStore | None]:
+    """Yield `store` unchanged, or open a fresh one that closes on exit.
+
+    #1135: the UserPromptSubmit flow opens one store per prompt and
+    threads it through its helpers; each helper keeps its legacy
+    self-open for callers (and tests) that pass no handle. Yields None
+    when no handle was passed AND the DB is in-memory — matching the
+    per-helper ":memory:" skip guards this replaces.
+    """
+    if store is not None:
+        yield store
+        return
+    p = db_path()
+    if str(p) == ":memory:":
+        yield None
+        return
+    fresh = MemoryStore(str(p))
+    try:
+        yield fresh
+    finally:
+        fresh.close()
 
 
 # ---------------------------------------------------------------------------
@@ -2587,8 +2635,12 @@ def _retrieve_session_start_block(
     stderr: IO[str] | None = None,
     *,
     cwd: Path | None = None,
+    store: MemoryStore | None = None,
 ) -> str:
-    """Open the store, build the session-start sub-block, close the store.
+    """Build the session-start sub-block.
+
+    Uses the caller-supplied `store` when given (#1135: the per-prompt
+    shared handle, left open); otherwise opens and closes its own.
 
     `cwd` is forwarded to `_build_session_start_subblock` so the
     <recent-work> resolver (#887) uses the payload's cwd, not the
@@ -2599,11 +2651,13 @@ def _retrieve_session_start_block(
     """
     serr = stderr if stderr is not None else sys.stderr
     try:
-        store = _open_store()
-        try:
+        if store is not None:
             return _build_session_start_subblock(store, cwd=cwd)
+        owned = _open_store()
+        try:
+            return _build_session_start_subblock(owned, cwd=cwd)
         finally:
-            store.close()
+            owned.close()
     except Exception as exc:
         print(
             f"aelfrice: session-start sub-block build failed (non-fatal): {exc}",
