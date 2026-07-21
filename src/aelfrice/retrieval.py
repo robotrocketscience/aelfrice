@@ -893,6 +893,62 @@ def _env_hrr_persist_override() -> bool | None:
     return None
 
 
+# #1135: memoized `.aelfrice.toml` parse. ~24 resolver call sites fall
+# through to the TOML rung per retrieve(), and each used to re-read +
+# re-parse the file. The directory walk (a handful of stat calls)
+# still runs per call — so a config file created, deleted, or moved
+# mid-process is honoured — but the read + tomllib parse is cached per
+# file until its (mtime_ns, size) changes. Value None records a
+# malformed / unreadable / section-less parse, so the error path is
+# cached too (and its stderr trace prints once per file version
+# instead of once per resolver call).
+_TOML_SECTION_CACHE: dict[str, tuple[int, int, dict[str, Any] | None]] = {}
+
+
+def _parsed_retrieval_section(candidate: Path) -> dict[str, Any] | None:
+    """Return `candidate`'s `[retrieval]` table, or None when the file
+    is unreadable, malformed, or has no such table. Memoized on the
+    file's (mtime_ns, size); tolerant — never raises."""
+    serr: IO[str] = sys.stderr
+    try:
+        st = candidate.stat()
+    except OSError as exc:
+        print(
+            f"aelfrice retrieval: cannot read {candidate}: {exc}",
+            file=serr,
+        )
+        return None
+    cache_key = str(candidate)
+    hit = _TOML_SECTION_CACHE.get(cache_key)
+    if (
+        hit is not None
+        and hit[0] == st.st_mtime_ns
+        and hit[1] == st.st_size
+    ):
+        return hit[2]
+    section: dict[str, Any] | None = None
+    try:
+        raw = candidate.read_bytes()
+        parsed: dict[str, Any] = tomllib.loads(
+            raw.decode("utf-8", errors="replace"),
+        )
+        section_obj: Any = parsed.get(RETRIEVAL_SECTION, {})
+        if isinstance(section_obj, dict):
+            section = section_obj
+    except OSError as exc:
+        print(
+            f"aelfrice retrieval: cannot read {candidate}: {exc}",
+            file=serr,
+        )
+    except tomllib.TOMLDecodeError as exc:
+        print(
+            f"aelfrice retrieval: malformed TOML in {candidate}: {exc}",
+            file=serr,
+        )
+    _TOML_SECTION_CACHE[cache_key] = (st.st_mtime_ns, st.st_size, section)
+    return section
+
+
 def _read_toml_flag_for(
     key: str,
     start: Path | None = None,
@@ -912,30 +968,10 @@ def _read_toml_flag_for(
         seen.add(current)
         candidate = current / CONFIG_FILENAME
         if candidate.is_file():
-            try:
-                raw = candidate.read_bytes()
-            except OSError as exc:
-                print(
-                    f"aelfrice retrieval: cannot read {candidate}: {exc}",
-                    file=serr,
-                )
+            section = _parsed_retrieval_section(candidate)
+            if section is None or key not in section:
                 return None
-            try:
-                parsed: dict[str, Any] = tomllib.loads(
-                    raw.decode("utf-8", errors="replace"),
-                )
-            except tomllib.TOMLDecodeError as exc:
-                print(
-                    f"aelfrice retrieval: malformed TOML in {candidate}: {exc}",
-                    file=serr,
-                )
-                return None
-            section_obj: Any = parsed.get(RETRIEVAL_SECTION, {})
-            if not isinstance(section_obj, dict):
-                return None
-            if key not in section_obj:  # type: ignore[operator]
-                return None
-            value: Any = section_obj[key]  # type: ignore[index]
+            value: Any = section[key]
             if isinstance(value, bool):
                 return value
             print(
@@ -969,30 +1005,10 @@ def _read_toml_float_for(
         seen.add(current)
         candidate = current / CONFIG_FILENAME
         if candidate.is_file():
-            try:
-                raw = candidate.read_bytes()
-            except OSError as exc:
-                print(
-                    f"aelfrice retrieval: cannot read {candidate}: {exc}",
-                    file=serr,
-                )
+            section = _parsed_retrieval_section(candidate)
+            if section is None or key not in section:
                 return None
-            try:
-                parsed: dict[str, Any] = tomllib.loads(
-                    raw.decode("utf-8", errors="replace"),
-                )
-            except tomllib.TOMLDecodeError as exc:
-                print(
-                    f"aelfrice retrieval: malformed TOML in {candidate}: {exc}",
-                    file=serr,
-                )
-                return None
-            section_obj: Any = parsed.get(RETRIEVAL_SECTION, {})
-            if not isinstance(section_obj, dict):
-                return None
-            if key not in section_obj:  # type: ignore[operator]
-                return None
-            value: Any = section_obj[key]  # type: ignore[index]
+            value: Any = section[key]
             # bool is a subclass of int -- reject it explicitly so
             # `posterior_weight = true` reads as malformed rather
             # than silently coercing to 1.0.
