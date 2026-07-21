@@ -4,7 +4,7 @@ How to cut a new version. Maintainer reference.
 
 ## Versioning
 
-Semver in force. Current line: v3.x. The historical `0.x.y` milestones on the v1.0 path are no longer cut; pre-v1.0 surface guarantees do not apply (see `CHANGELOG/v0.md` for the historical record).
+Semver in force. Current line: v4.x. The historical `0.x.y` milestones on the v1.0 path are no longer cut; pre-v1.0 surface guarantees do not apply (see `CHANGELOG/v0.md` for the historical record).
 
 ## Cut a release
 

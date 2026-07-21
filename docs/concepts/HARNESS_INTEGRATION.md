@@ -26,7 +26,11 @@ mechanisms.
 | Apply feedback | No | Yes — explicit `used`/`harmful` signals move posteriors; retrieval *exposure* is audit-only by default (#1086), recorded as recurrence rather than evidence. Contradictions resolve via tie-breaker |
 
 The two stores capture different things by design and they do not
-merge automatically.
+merge — with one deliberate, one-way exception: the claude-memory
+mirror hook (v3.7+, #985) ingests harness memory-file writes into the
+belief graph, and since v4.0 (#1089) it runs by default once the
+first-setup reconcile records per-project consent. The aelfrice store
+tracks the harness store; nothing ever flows the other way.
 
 ## What the hook bundle does
 
@@ -208,8 +212,9 @@ older `aelf validate <id>` verb still works as an alias.
 
 **"I called `aelf:lock` but the belief isn't appearing in `MEMORY.md`."**
 Expected. `aelf:lock` writes to the aelfrice DB only. Use
-`aelf search` or `aelf:locked` to confirm the write landed. The two
-stores do not mirror each other.
+`aelf search` or `aelf:locked` to confirm the write landed. Mirroring
+is one-way — harness memory files into aelfrice (#985), never the
+reverse.
 
 **"I see the same fact in both stores."**
 Expected if you ran the migration in § "Migrating existing

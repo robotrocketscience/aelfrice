@@ -2,7 +2,7 @@
 
 aelfrice exposes fifteen memory tools through a [Model Context Protocol](https://modelcontextprotocol.io) server. The agent calls them mid-turn; you don't have to invoke them yourself.
 
-Lifecycle commands (`setup`, `unsetup`, `migrate`, `doctor`, `upgrade-cmd`, `uninstall`) are CLI-only.
+Lifecycle commands (`setup`, `unsetup`, `migrate`, `doctor`, `upgrade-cmd`, `uninstall`) are not exposed as MCP tools — most have `/aelf:*` slash forms instead (see [SLASH_COMMANDS](SLASH_COMMANDS.md)); only `migrate`, `unsetup`, and `mcp` itself are CLI-only.
 
 ## Install + run
 
