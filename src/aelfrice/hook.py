@@ -528,40 +528,53 @@ def _append_telemetry(
 ) -> None:
     """Append one telemetry record to the JSONL ring buffer. Fail-soft.
 
-    Uses read-all → trim → rewrite-atomically (tempfile + os.replace).
+    Read-all → trim → rewrite-atomically (tempfile + os.replace), under
+    an exclusive advisory lock (#1145). The lock serialises the
+    read-modify-write across concurrent hook processes — UserPromptSubmit
+    and PostToolUse fire together routinely — so no writer's rewrite is
+    based on a pre-sibling snapshot that silently drops the sibling's
+    record. `os.replace` keeps the file untorn for lock-less readers
+    (`read_user_prompt_submit_telemetry`, `aelf doctor`).
+
+    No per-append `fsync`: this is best-effort observability data, the
+    atomic rename already prevents torn reads, and the fsync was the
+    dominant per-append cost (it forced a journal flush per hook fire).
     If the write fails for any reason (read-only, disk-full, missing
     parent), traces one line to stderr and continues.
     """
+    from aelfrice.session_ring import exclusive_file_lock
+
     try:
         telemetry_path.parent.mkdir(parents=True, exist_ok=True)
-        if telemetry_path.exists():
-            lines = [
-                ln
-                for ln in telemetry_path.read_text(encoding="utf-8").splitlines()
-                if ln.strip()
-            ]
-        else:
-            lines = []
-        lines.append(json.dumps(record))
-        if len(lines) > TELEMETRY_RING_CAP:
-            lines = lines[-TELEMETRY_RING_CAP:]
-        payload = "\n".join(lines) + "\n"
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=telemetry_path.name + ".",
-            suffix=".tmp",
-            dir=str(telemetry_path.parent),
-        )
-        tmp_path = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(payload)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, telemetry_path)
-        except Exception:
-            if tmp_path.exists():
-                tmp_path.unlink(missing_ok=True)
-            raise
+        with exclusive_file_lock(telemetry_path):
+            if telemetry_path.exists():
+                lines = [
+                    ln
+                    for ln in telemetry_path.read_text(
+                        encoding="utf-8"
+                    ).splitlines()
+                    if ln.strip()
+                ]
+            else:
+                lines = []
+            lines.append(json.dumps(record))
+            if len(lines) > TELEMETRY_RING_CAP:
+                lines = lines[-TELEMETRY_RING_CAP:]
+            payload = "\n".join(lines) + "\n"
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=telemetry_path.name + ".",
+                suffix=".tmp",
+                dir=str(telemetry_path.parent),
+            )
+            tmp_path = Path(tmp_name)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(payload)
+                os.replace(tmp_path, telemetry_path)
+            except Exception:
+                if tmp_path.exists():
+                    tmp_path.unlink(missing_ok=True)
+                raise
     except Exception as exc:
         serr = stderr if stderr is not None else sys.stderr
         print(
