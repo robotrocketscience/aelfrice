@@ -78,7 +78,7 @@
       "basename": "aelf-agent-context-hook",
       "installer": "agent_context",
       "default_on": true,
-      "since": "3.9.0",
+      "since": "4.0.0",
       "description": "PreToolUse:Agent worker-context injection — carry L0 locks + prompt-relevant beliefs into dispatched subagent prompts via updatedInput; disable with AELFRICE_AGENT_CONTEXT=0 (#1068)."
     }
   ]
