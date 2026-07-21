@@ -182,10 +182,14 @@ def exclusive_file_lock(target_path: Path) -> Iterator[None]:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
             except OSError:
+                # Best-effort unlock: closing the fd below releases the
+                # lock regardless, so a failed explicit unlock is moot.
                 pass
             try:
                 os.close(lock_fd)
             except OSError:
+                # Best-effort close on teardown; nothing actionable if
+                # the fd is already gone.
                 pass
 
 
