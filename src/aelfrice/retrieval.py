@@ -190,11 +190,11 @@ HRR_STRUCTURAL_FLAG: Final[str] = "use_hrr_structural"
 # (resolver default False) — landing the lane + ablation only; a default
 # flip reverses locked #605 and is routed to a re-opened #897.
 HRR_EXPAND_FLAG: Final[str] = "use_hrr_expand"
-# #1096 entity-persistence demotion lane flag. Default-OFF (resolver
-# default False) — a mild log-additive demotion of ephemeral coordination
-# hits (low referential grounding) in the L1 rerank, so junk percolates
-# down. The default flip is gated on the bench (G2) per #1096 and is a
-# separate operator call.
+# #1096 entity-persistence demotion lane flag. Default-ON (resolver
+# default True since the v4.0 flip, after the #1103 G2 mixed-corpus eval
+# cleared the no-regression gate) — a mild log-additive demotion of
+# ephemeral coordination hits (low referential grounding) in the L1
+# rerank, so junk percolates down.
 ENTITY_PERSIST_DEMOTE_FLAG: Final[str] = "use_entity_persist_demote"
 # Mild weight: G3 ablation showed 1.0 == 2.0 in AUC, so a tie-breaking
 # term that never dominates BM25 relevance (a relevant low-grounding
@@ -212,9 +212,9 @@ ORIGIN_TIEBREAK_FLAG: Final[str] = "use_origin_tiebreak"
 ENTITY_PERSIST_DEMOTE_EPS: Final[float] = 1e-3
 TEMPORAL_SPINE_FLAG: Final[str] = "use_temporal_spine"
 TEMPORAL_SPINE_BUDGET_FLAG: Final[str] = "temporal_spine_budget"
-# v2.1 #434 type-aware compression flag. Default-OFF at v2.0.0 until the
-# lab-side bench gate (A2 + A4 in docs/design/feature-type-aware-compression.md)
-# clears. ON populates RetrievalResult.compressed_beliefs with per-belief
+# v2.1 #434 type-aware compression flag. Default-ON since the #769 flip
+# (the A2 + A4 bench gates in docs/design/feature-type-aware-compression.md
+# cleared). ON populates RetrievalResult.compressed_beliefs with per-belief
 # CompressedBelief renderings; OFF leaves the field empty for byte-identical
 # behavior with v1.x adapters.
 TYPE_AWARE_COMPRESSION_FLAG: Final[str] = "use_type_aware_compression"
@@ -757,8 +757,9 @@ def is_entity_persist_demote_enabled(
          Opt out via the env var, kwarg, or TOML key for parity with the
          pre-flip ranking.
 
-    Reachable only from `retrieve_v2()`; the legacy `retrieve()` path does
-    not expose the lane (production cutover tracked separately)."""
+    Live on the production path too: since the #1107 cutover `retrieve()`
+    is a thin adapter over `retrieve_v2()` and passes this lane
+    resolver-driven, so hook/rebuilder/MCP callers all observe it."""
     env = _env_entity_persist_demote_override()
     if env is not None:
         return env
@@ -2989,9 +2990,9 @@ def retrieve(
     BFS pack accounting uses each belief's compressed
     `rendered_tokens` (via `compress_for_retrieval`) instead of
     `_belief_tokens(b)`. Locks render verbatim per the strategy
-    table, so L0 accounting is unchanged. Default-OFF — resolver
-    returns False unless env / kwarg / TOML overrides it — so
-    existing callers see byte-identical output. Mirrors the wiring
+    table, so L0 accounting is unchanged. Default-ON since the #769
+    flip — the resolver returns True unless env / kwarg / TOML opts
+    out. Mirrors the wiring
     `retrieve_with_tiers` has carried since v2.0 (#434); added to
     bare `retrieve()` so `rebuild_v14`'s call site observes the
     toggle that A4 (#775) measures.
@@ -3115,7 +3116,8 @@ def retrieve_with_tiers(
     pack loops account for L2.5/L1/BFS beliefs at their compressed
     `rendered_tokens` rather than `_belief_tokens(b)`. Locks always
     render verbatim per the strategy table, so locked accounting is
-    unchanged. Default-OFF preserves byte-identical output.
+    unchanged. Default-ON since the #769 flip; resolving the flag
+    False restores byte-identical pre-compression output.
 
     When `use_intentional_clustering` resolves True (#436 v2.0), the L1
     score-ranked greedy fill is replaced with `pack_with_clusters` over

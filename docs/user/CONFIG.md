@@ -146,9 +146,7 @@ use_type_aware_compression = true
 # var overrides.
 use_intentional_clustering = true
 
-# v4.0.0+ (#1064). Default `false` — landing posture, not the end state:
-# the default-ON flip is gated on the pre-registered #1064 criteria
-# (see docs/design/feature-temporal-spine.md). When true, the
+# v4.0.0+ (#1064). When true, the
 # temporal-spine lane traverses TEMPORAL_NEXT chronological chains from
 # the top-5 packed L1 seeds (both directions, depth 1) and appends the
 # neighbours after the L1 candidates. Reaches gold that shares zero
