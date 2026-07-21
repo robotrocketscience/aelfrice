@@ -4280,6 +4280,61 @@ class MemoryStore:
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
 
+    def find_promotable_phantoms(
+        self, *, min_corroborations: int = 3, min_sessions: int = 2,
+        max_n: int | None = None,
+    ) -> list[Belief]:
+        """Return live phantoms that have accumulated enough corroboration to
+        be worth surfacing as a *promotion opportunity* (#1132 Q2).
+
+        The predicate mirrors ``find_promotable_snapshots`` but selects the
+        opposite population — speculative-origin beliefs — and adds a liveness
+        filter:
+
+          origin = 'speculative'
+          AND valid_to IS NULL            (not GC'd by wonder_gc)
+          AND COUNT(corroborations) >= min_corroborations
+          AND COUNT(DISTINCT corroborations.session_id) >= min_sessions
+          AND no inbound CONTRADICTS edge targets the belief
+
+        This is a **read-only detector**. It does NOT promote — under the
+        ratified #229 rule a phantom's origin advances only through explicit
+        user acknowledgment (``aelf validate`` / lock-match #550), and a
+        corroboration count is explicitly a non-trigger for that write. The
+        promotion-opportunity note built on this method surfaces the candidate
+        for the user to validate; it never flips origin itself.
+
+        ``session_id`` NULLs are excluded from the distinct-session count
+        (same rationale as ``find_promotable_snapshots``). Results are ordered
+        deterministically by ``created_at`` so the same store always surfaces
+        the same candidate ordering; ``max_n`` caps the set in SQL.
+        """
+        limit_clause = f"LIMIT {int(max_n)}" if max_n is not None else ""
+        cur = self._conn.execute(
+            f"""
+            SELECT b.* FROM beliefs b
+            JOIN (
+                SELECT belief_id,
+                       COUNT(*) AS n_corr,
+                       COUNT(DISTINCT session_id) AS n_sess
+                FROM belief_corroborations
+                GROUP BY belief_id
+            ) bc ON bc.belief_id = b.id
+            WHERE b.origin = ?
+              AND b.valid_to IS NULL
+              AND bc.n_corr >= ?
+              AND bc.n_sess >= ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM edges e
+                  WHERE e.dst = b.id AND e.type = 'CONTRADICTS'
+              )
+            ORDER BY b.created_at ASC
+            {limit_clause}
+            """,
+            (ORIGIN_SPECULATIVE, int(min_corroborations), int(min_sessions)),
+        )
+        return [_row_to_belief(r) for r in cur.fetchall()]
+
     def set_retention_class(self, belief_id: str, retention_class: str) -> None:
         """Targeted update of a belief's ``retention_class``.
 
