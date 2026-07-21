@@ -1504,21 +1504,23 @@ def _record_touches(
         store = MemoryStore(str(p))
         try:
             # Current turn's injection set — forward-only, no ring replay.
-            for bid in belief_ids:
-                if not bid:
-                    continue
-                try:
-                    store.record_touch(
-                        belief_id=bid,
-                        session_id=session_id,
-                        fire_idx=fire_idx,
-                        event_kind=TOUCH_EVENT_KIND_INJECTION,
-                    )
-                except Exception:
-                    # Same per-row tolerance for the current set:
-                    # extremely unlikely but possible (a belief
-                    # deleted between retrieval and the touch write).
-                    continue
+            # #1135: one commit for the batch instead of one per touch.
+            with store.transaction():
+                for bid in belief_ids:
+                    if not bid:
+                        continue
+                    try:
+                        store.record_touch(
+                            belief_id=bid,
+                            session_id=session_id,
+                            fire_idx=fire_idx,
+                            event_kind=TOUCH_EVENT_KIND_INJECTION,
+                        )
+                    except Exception:
+                        # Same per-row tolerance for the current set:
+                        # extremely unlikely but possible (a belief
+                        # deleted between retrieval and the touch write).
+                        continue
         finally:
             store.close()
     except Exception as exc:
@@ -1561,18 +1563,20 @@ def _record_injection_events(
         injected_at = datetime.now(timezone.utc).isoformat()
         store = MemoryStore(str(p))
         try:
-            for h in hits:
-                bid = getattr(h, "id", None)
-                if not bid:
-                    continue
-                store.record_injection_event(
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    belief_id=bid,
-                    injected_at=injected_at,
-                    source=source,
-                    active_consumers=active_consumers,
-                )
+            # #1135: one commit for the batch instead of one per event.
+            with store.transaction():
+                for h in hits:
+                    bid = getattr(h, "id", None)
+                    if not bid:
+                        continue
+                    store.record_injection_event(
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        belief_id=bid,
+                        injected_at=injected_at,
+                        source=source,
+                        active_consumers=active_consumers,
+                    )
         finally:
             store.close()
     except Exception as exc:

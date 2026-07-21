@@ -1225,8 +1225,14 @@ class MemoryStore:
         except BaseException:
             self._txn_depth -= 1
             if self._txn_depth == 0:
-                self._conn.rollback()
                 self._pending_invalidation = False
+                try:
+                    self._conn.rollback()
+                except sqlite3.Error:
+                    # A rollback that itself fails (e.g. the handle was
+                    # closed mid-group) must not mask the original
+                    # exception propagating below.
+                    pass
             raise
         self._txn_depth -= 1
         if self._txn_depth == 0:

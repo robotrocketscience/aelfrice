@@ -226,13 +226,16 @@ def enqueue_retrieval_exposures(
         return 0
     ts = now if now is not None else _utc_now_iso()
     n = 0
-    for bid in belief_ids:
-        store.enqueue_deferred_feedback(
-            bid,
-            event_type=EVENT_RETRIEVAL_EXPOSURE,
-            enqueued_at=ts,
-        )
-        n += 1
+    # #1135: one commit for the batch instead of one per row — this
+    # runs inside every retrieve() with N surfaced beliefs.
+    with store.transaction():
+        for bid in belief_ids:
+            store.enqueue_deferred_feedback(
+                bid,
+                event_type=EVENT_RETRIEVAL_EXPOSURE,
+                enqueued_at=ts,
+            )
+            n += 1
     return n
 
 

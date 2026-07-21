@@ -231,116 +231,122 @@ def _ingest_turn_ids(
     if role is not None:
         raw_meta["role"] = role
 
-    log_ids: list[str] = []
-    for sentence in full_sentences:
-        log_id = store.record_ingest(
-            source_kind=INGEST_SOURCE_TRANSCRIPT,
-            source_path=source,
-            raw_text=sentence,
-            session_id=session_id,
-            ts=ts,
-            raw_meta=raw_meta,
-        )
-        log_ids.append(log_id)
+    # #1135: one write group per turn. Pre-batching this was ~8
+    # commits per 2-sentence turn (record_ingest per sentence, the
+    # worker's insert/corroborate + stamp per row, edge inserts).
+    # One transaction also makes the turn atomic: a crash mid-turn
+    # leaves no unstamped orphan rows.
+    with store.transaction():
+        log_ids: list[str] = []
+        for sentence in full_sentences:
+            log_id = store.record_ingest(
+                source_kind=INGEST_SOURCE_TRANSCRIPT,
+                source_path=source,
+                raw_text=sentence,
+                session_id=session_id,
+                ts=ts,
+                raw_meta=raw_meta,
+            )
+            log_ids.append(log_id)
 
-    # Worker is idempotent and scans all unstamped rows; calling it once
-    # at end-of-turn is the per-batch invocation pattern from the spec.
-    worker_result = run_worker(store)
+        # Worker is idempotent and scans all unstamped rows; calling it once
+        # at end-of-turn is the per-batch invocation pattern from the spec.
+        worker_result = run_worker(store)
 
-    # Resolve each log_id to its per-row fate, in input order. #1135:
-    # the worker reports `(belief_id, was_inserted)` per stamped row,
-    # replacing the pre/post `set(list_belief_ids())` diff (a full-table
-    # scan per turn) and the per-log-id re-read. `was_inserted` is True
-    # only for brand-new canonical rows, which preserves the pre-#264
-    # public contract that `ingest_turn` returns the count of
-    # newly-inserted beliefs. Used twice: (a) for the public return
-    # value (newly inserted beliefs, deduped), (b) for the #809
-    # intra-turn edge wiring below (per-sentence belief id,
-    # position-preserving).
-    log_belief_ids: list[str | None] = []
-    inserted: list[str] = []
-    seen: set[str] = set()
-    for log_id in log_ids:
-        outcome = worker_result.outcomes.get(log_id)
-        bid: str | None
-        was_inserted: bool
-        if outcome is not None:
-            bid, was_inserted = outcome
-        else:
-            # A sibling process stamped this row in the window between
-            # record_ingest and our run_worker pass. Fall back to the
-            # log row; a row stamped elsewhere is by definition not a
-            # brand-new insert of ours.
-            was_inserted = False
-            bid = None
-            entry = store.get_ingest_log_entry(log_id)
-            if entry is not None:
-                ids = entry.get("derived_belief_ids") or []
-                if isinstance(ids, list) and ids:
-                    head = ids[0]
-                    if isinstance(head, str):
-                        bid = head
-        log_belief_ids.append(bid)
-        if bid is not None and was_inserted and bid not in seen:
-            seen.add(bid)
-            inserted.append(bid)
+        # Resolve each log_id to its per-row fate, in input order. #1135:
+        # the worker reports `(belief_id, was_inserted)` per stamped row,
+        # replacing the pre/post `set(list_belief_ids())` diff (a full-table
+        # scan per turn) and the per-log-id re-read. `was_inserted` is True
+        # only for brand-new canonical rows, which preserves the pre-#264
+        # public contract that `ingest_turn` returns the count of
+        # newly-inserted beliefs. Used twice: (a) for the public return
+        # value (newly inserted beliefs, deduped), (b) for the #809
+        # intra-turn edge wiring below (per-sentence belief id,
+        # position-preserving).
+        log_belief_ids: list[str | None] = []
+        inserted: list[str] = []
+        seen: set[str] = set()
+        for log_id in log_ids:
+            outcome = worker_result.outcomes.get(log_id)
+            bid: str | None
+            was_inserted: bool
+            if outcome is not None:
+                bid, was_inserted = outcome
+            else:
+                # A sibling process stamped this row in the window between
+                # record_ingest and our run_worker pass. Fall back to the
+                # log row; a row stamped elsewhere is by definition not a
+                # brand-new insert of ours.
+                was_inserted = False
+                bid = None
+                entry = store.get_ingest_log_entry(log_id)
+                if entry is not None:
+                    ids = entry.get("derived_belief_ids") or []
+                    if isinstance(ids, list) and ids:
+                        head = ids[0]
+                        if isinstance(head, str):
+                            bid = head
+            log_belief_ids.append(bid)
+            if bid is not None and was_inserted and bid not in seen:
+                seen.add(bid)
+                inserted.append(bid)
 
-    # #809: wire intra-turn DERIVED_FROM edges between consecutive
-    # full-length beliefs whose original-prose ordering was separated
-    # by one or more sub-floor clauses. Edge direction matches the
-    # inter-turn DERIVED_FROM convention in `ingest_jsonl` (src is the
-    # later belief, dst is the earlier one — "this is derived from
-    # that earlier one"). Anchor_text is the joined sub-floor clauses,
-    # truncated to ANCHOR_TEXT_MAX_LEN.
-    for i in range(1, len(log_belief_ids)):
-        between = subfloor_between[i]
-        if not between:
-            continue
-        prior_bid = log_belief_ids[i - 1]
-        curr_bid = log_belief_ids[i]
-        if prior_bid is None or curr_bid is None or prior_bid == curr_bid:
-            continue
-        anchor = " | ".join(between)[:ANCHOR_TEXT_MAX_LEN]
-        if store.get_edge(curr_bid, prior_bid, EDGE_DERIVED_FROM) is not None:
-            continue
-        store.insert_edge(Edge(
-            src=curr_bid, dst=prior_bid,
-            type=EDGE_DERIVED_FROM, weight=1.0,
-            anchor_text=anchor,
-        ))
+        # #809: wire intra-turn DERIVED_FROM edges between consecutive
+        # full-length beliefs whose original-prose ordering was separated
+        # by one or more sub-floor clauses. Edge direction matches the
+        # inter-turn DERIVED_FROM convention in `ingest_jsonl` (src is the
+        # later belief, dst is the earlier one — "this is derived from
+        # that earlier one"). Anchor_text is the joined sub-floor clauses,
+        # truncated to ANCHOR_TEXT_MAX_LEN.
+        for i in range(1, len(log_belief_ids)):
+            between = subfloor_between[i]
+            if not between:
+                continue
+            prior_bid = log_belief_ids[i - 1]
+            curr_bid = log_belief_ids[i]
+            if prior_bid is None or curr_bid is None or prior_bid == curr_bid:
+                continue
+            anchor = " | ".join(between)[:ANCHOR_TEXT_MAX_LEN]
+            if store.get_edge(curr_bid, prior_bid, EDGE_DERIVED_FROM) is not None:
+                continue
+            store.insert_edge(Edge(
+                src=curr_bid, dst=prior_bid,
+                type=EDGE_DERIVED_FROM, weight=1.0,
+                anchor_text=anchor,
+            ))
 
-    # #988/#1000: optionally build the semantic-edge substrate at ingest.
-    # Writes CONTRADICTS edges across the store for this turn's new beliefs
-    # so the graph lanes (HRR-expand #981, BFS) are no longer inert on
-    # benchmark corpora. Default-OFF (is_auto_relationship_detection_enabled):
-    # when off, this branch is never entered and ingest is byte-identical to
-    # today. Gated on `inserted` so corroboration-only turns skip the audit.
-    # The CONTRADICTS build is incremental (delta-scoped, #1000): only pairs
-    # touching at least one belief from `inserted` are evaluated, which is
-    # provably equivalent to a full-store audit for discovering new edges
-    # while avoiding the O(n²) re-scan of the whole store every turn.
-    if inserted:
-        from aelfrice.relationship_detector import (
-            is_auto_relationship_detection_enabled,
-            write_semantic_edges,
-        )
+        # #988/#1000: optionally build the semantic-edge substrate at ingest.
+        # Writes CONTRADICTS edges across the store for this turn's new beliefs
+        # so the graph lanes (HRR-expand #981, BFS) are no longer inert on
+        # benchmark corpora. Default-OFF (is_auto_relationship_detection_enabled):
+        # when off, this branch is never entered and ingest is byte-identical to
+        # today. Gated on `inserted` so corroboration-only turns skip the audit.
+        # The CONTRADICTS build is incremental (delta-scoped, #1000): only pairs
+        # touching at least one belief from `inserted` are evaluated, which is
+        # provably equivalent to a full-store audit for discovering new edges
+        # while avoiding the O(n²) re-scan of the whole store every turn.
+        if inserted:
+            from aelfrice.relationship_detector import (
+                is_auto_relationship_detection_enabled,
+                write_semantic_edges,
+            )
 
-        if is_auto_relationship_detection_enabled():
-            write_semantic_edges(store, new_belief_ids=inserted)
+            if is_auto_relationship_detection_enabled():
+                write_semantic_edges(store, new_belief_ids=inserted)
 
-        # #1064: optionally chain this turn's new beliefs into the
-        # per-session temporal spine (TEMPORAL_NEXT, src = successor,
-        # dst = predecessor). Default-OFF (is_temporal_spine_write_enabled):
-        # when off, this branch is never entered and ingest is
-        # byte-identical to today. Gated on `inserted` so
-        # corroboration-only turns skip the predecessor lookups.
-        from aelfrice.temporal_spine import (
-            is_temporal_spine_write_enabled,
-            write_temporal_spine,
-        )
+            # #1064: optionally chain this turn's new beliefs into the
+            # per-session temporal spine (TEMPORAL_NEXT, src = successor,
+            # dst = predecessor). Default-OFF (is_temporal_spine_write_enabled):
+            # when off, this branch is never entered and ingest is
+            # byte-identical to today. Gated on `inserted` so
+            # corroboration-only turns skip the predecessor lookups.
+            from aelfrice.temporal_spine import (
+                is_temporal_spine_write_enabled,
+                write_temporal_spine,
+            )
 
-        if is_temporal_spine_write_enabled():
-            write_temporal_spine(store, new_belief_ids=inserted)
+            if is_temporal_spine_write_enabled():
+                write_temporal_spine(store, new_belief_ids=inserted)
 
     return inserted
 

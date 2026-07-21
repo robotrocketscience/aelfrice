@@ -123,26 +123,38 @@ def record_retrieval(
     update_posterior: bool = _exposure_updates_posterior()
     written: int = 0
     stamped_ids: list[str] = []
-    for b in beliefs:
-        try:
-            apply_feedback(
-                store,
-                b.id,
-                valence,
-                source,
-                update_posterior=update_posterior,
-            )
-            written += 1
-            stamped_ids.append(b.id)
-        except Exception:  # non-blocking: log and continue
-            traceback.print_exc(file=serr)
-    # Mirror the audit row to beliefs.last_retrieved_at so downstream
-    # consumers (decay moderation, recency-aware ranking, telemetry) get
-    # an O(1) read instead of having to join feedback_history. Same
-    # best-effort posture as the loop above.
-    if stamped_ids:
-        try:
-            store.stamp_retrieved(stamped_ids)
-        except Exception:
-            traceback.print_exc(file=serr)
+    # #1135: one write group per retrieval instead of a commit per hit
+    # (~15 commits per hook prompt pre-batching). Per-row failures are
+    # still swallowed individually — the surviving rows commit together.
+    # The outer try preserves the non-blocking contract when the group
+    # itself cannot commit (e.g. the store handle was closed): nothing
+    # persisted, so report zero rows written.
+    try:
+        with store.transaction():
+            for b in beliefs:
+                try:
+                    apply_feedback(
+                        store,
+                        b.id,
+                        valence,
+                        source,
+                        update_posterior=update_posterior,
+                    )
+                    written += 1
+                    stamped_ids.append(b.id)
+                except Exception:  # non-blocking: log and continue
+                    traceback.print_exc(file=serr)
+            # Mirror the audit row to beliefs.last_retrieved_at so
+            # downstream consumers (decay moderation, recency-aware
+            # ranking, telemetry) get an O(1) read instead of having to
+            # join feedback_history. Same best-effort posture as the
+            # loop above.
+            if stamped_ids:
+                try:
+                    store.stamp_retrieved(stamped_ids)
+                except Exception:
+                    traceback.print_exc(file=serr)
+    except Exception:  # non-blocking: the whole group rolled back
+        traceback.print_exc(file=serr)
+        return 0
     return written
