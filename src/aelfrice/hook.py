@@ -1161,6 +1161,18 @@ def user_prompt_submit(
             )
             if phantom_block:
                 sout.write(phantom_block)
+            # #1132 Q2 trigger-driven phantom promotion: surface a
+            # promotion-opportunity note for phantoms that have crossed the
+            # cross-session corroboration threshold, so the user can validate
+            # them. Store-state-driven (not prompt-driven); default-off,
+            # fail-soft.
+            promotion_block = _maybe_phantom_promotion_block(
+                session_id=session_id,
+                cwd=payload_cwd,
+                stderr=serr,
+            )
+            if promotion_block:
+                sout.write(promotion_block)
     except Exception:  # non-blocking: surface but do not fail
         traceback.print_exc(file=serr)
     return 0
@@ -1217,6 +1229,56 @@ def _maybe_phantom_opportunity_block(
     except Exception as exc:  # fail-soft: never break the hook
         print(
             f"aelfrice: phantom trigger failed (non-fatal): {exc}",
+            file=serr,
+        )
+        return ""
+
+
+def _maybe_phantom_promotion_block(
+    *,
+    session_id: str | None,
+    cwd: Path | None = None,
+    stderr: IO[str] | None = None,
+) -> str:
+    """Evaluate the #1132 Q2 phantom promotion-opportunity trigger and return
+    the ``<aelfrice-phantom-promotion-opportunity>`` block, or ``""`` when the
+    feature is disabled (default) or nothing crosses the threshold.
+
+    Fail-soft: any error returns ``""`` and traces to stderr — the promotion
+    trigger is an additive note and must never break the retrieval contract.
+    The default-off path is cheap: it resolves the flag and returns before
+    opening the store.
+    """
+    serr = stderr if stderr is not None else sys.stderr
+    try:
+        from aelfrice.phantom_promotion_opportunity import (  # noqa: PLC0415
+            evaluate_promotion_opportunities,
+            format_promotion_note,
+            load_phantom_promotion_config,
+        )
+
+        config = load_phantom_promotion_config(start=cwd)
+        if not config.enabled:
+            return ""
+        p = db_path()
+        if str(p) == ":memory:":
+            return ""
+        from aelfrice.store import MemoryStore  # noqa: PLC0415
+
+        store = MemoryStore(str(p))
+        try:
+            opportunities = evaluate_promotion_opportunities(
+                store=store,
+                session_id=session_id,
+                config=config,
+                stderr=serr,
+            )
+        finally:
+            store.close()
+        return format_promotion_note(opportunities)
+    except Exception as exc:  # fail-soft: never break the hook
+        print(
+            f"aelfrice: phantom promotion trigger failed (non-fatal): {exc}",
             file=serr,
         )
         return ""
