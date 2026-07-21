@@ -531,12 +531,49 @@ def _is_owned_skill_dir(skill_dir: Path) -> bool:
 
 @dataclass(frozen=True)
 class CodexSkillsResult:
-    """Outcome of install/uninstall of the Codex ``$aelf-*`` skills."""
+    """Outcome of install/uninstall of the Codex ``$aelf-*`` skills.
+
+    ``skipped`` (#1136): bundled skill names whose on-disk collision is
+    an unmarked (non-aelfrice) skill — never overwritten. ``failed``
+    (#1136): human-readable ``"<name>: <reason>"`` rows for partial
+    removals and other FS errors that previously vanished silently.
+    """
 
     dest_dir: Path
     written: tuple[str, ...] = ()
     already: tuple[str, ...] = ()
     pruned: tuple[str, ...] = ()
+    skipped: tuple[str, ...] = ()
+    failed: tuple[str, ...] = ()
+
+
+def _remove_owned_skill_dir(
+    child: Path, pruned: list[str], failed: list[str],
+) -> None:
+    """Remove one owned skill dir: unlink its SKILL.md, then rmdir.
+
+    The two steps are split (#1136) so a half-removal is visible: a
+    failed unlink records the skill under ``failed`` and stops; a
+    successful unlink followed by a failed rmdir (routine case: a stray
+    extra file — e.g. OS metadata — keeps the directory non-empty)
+    counts the skill as pruned (its SKILL.md is gone) AND records the
+    leftover directory under ``failed``. Nothing is deleted recursively.
+    """
+    try:
+        (child / _SKILL_FILENAME).unlink()
+    except OSError as exc:
+        failed.append(f"{child.name}: could not remove SKILL.md ({exc})")
+        return
+    try:
+        child.rmdir()
+    except OSError as exc:
+        pruned.append(child.name)
+        failed.append(
+            f"{child.name}: SKILL.md removed but directory left in "
+            f"place ({exc})"
+        )
+    else:
+        pruned.append(child.name)
 
 
 def install_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
@@ -545,8 +582,9 @@ def install_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
     Default ``dest_dir`` is ``~/.agents/skills/``. Each skill lands at
     ``<dest>/aelf-<cmd>/SKILL.md``. Idempotent (byte-identical files are
     skipped), atomic (temp + ``os.replace``), and orphan-pruning — but
-    pruning removes only marker-carrying ``aelf-*`` skill dirs, never the
-    other skills that share this directory.
+    both the replace path and pruning are marker-gated: only
+    marker-carrying ``aelf-*`` skill dirs are ever overwritten or
+    removed, never the other skills that share this directory (#1136).
     """
     import os
     import tempfile
@@ -557,6 +595,8 @@ def install_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
     written: list[str] = []
     already: list[str] = []
     pruned: list[str] = []
+    skipped: list[str] = []
+    failed: list[str] = []
 
     target.mkdir(parents=True, exist_ok=True)
 
@@ -569,9 +609,15 @@ def install_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
                     already.append(skill_name)
                     continue
             except OSError:
-                # Existing file unreadable (perms/encoding): fall through
-                # and rewrite it rather than treat it as up to date.
+                # Unreadable existing file: ownership cannot be verified
+                # either, so the marker gate below fails closed (skip).
                 pass
+            # Bytes differ: the replace path is marker-gated exactly
+            # like prune/remove (#1136) — a colliding skill without our
+            # marker is someone else's file and is never overwritten.
+            if not _is_owned_skill_dir(skill_dir):
+                skipped.append(skill_name)
+                continue
         skill_dir.mkdir(parents=True, exist_ok=True)
         encoded = text.encode("utf-8")
         fd, tmp_name = tempfile.mkstemp(
@@ -596,21 +642,15 @@ def install_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
         if child.name in bundle:
             continue
         if _is_owned_skill_dir(child):
-            try:
-                (child / _SKILL_FILENAME).unlink()
-                child.rmdir()
-            except OSError:
-                # Best-effort prune: leave the dir in place on any FS
-                # error (the `else` skips recording it as pruned).
-                pass
-            else:
-                pruned.append(child.name)
+            _remove_owned_skill_dir(child, pruned, failed)
 
     return CodexSkillsResult(
         dest_dir=target,
         written=tuple(written),
         already=tuple(already),
         pruned=tuple(pruned),
+        skipped=tuple(skipped),
+        failed=tuple(failed),
     )
 
 
@@ -623,19 +663,14 @@ def remove_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
     """
     target = dest_dir if dest_dir is not None else AGENTS_SKILLS_DIR
     pruned: list[str] = []
+    failed: list[str] = []
     if target.is_dir():
         for child in sorted(target.glob(f"{_SKILL_PREFIX}*")):
             if _is_owned_skill_dir(child):
-                try:
-                    (child / _SKILL_FILENAME).unlink()
-                    child.rmdir()
-                except OSError:
-                    # Best-effort removal: leave the dir in place on any
-                    # FS error (the `else` skips recording it as pruned).
-                    pass
-                else:
-                    pruned.append(child.name)
-    return CodexSkillsResult(dest_dir=target, pruned=tuple(pruned))
+                _remove_owned_skill_dir(child, pruned, failed)
+    return CodexSkillsResult(
+        dest_dir=target, pruned=tuple(pruned), failed=tuple(failed),
+    )
 
 
 def count_installed_codex_skills(dest_dir: Path | None = None) -> int:

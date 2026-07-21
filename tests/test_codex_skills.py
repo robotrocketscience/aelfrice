@@ -223,3 +223,73 @@ def test_non_setup_descriptions_pass_through() -> None:
         line for line in src.splitlines() if line.startswith("description:")
     ][0]
     assert src_desc in head
+
+
+# --- replace path is marker-gated (#1136) -----------------------------------
+
+
+def test_replace_never_clobbers_foreign_same_name_skill(tmp_path: Path) -> None:
+    # A hand-authored (unmarked) skill whose name collides with a bundled one.
+    foreign = tmp_path / "aelf-search"
+    foreign.mkdir()
+    original = "---\nname: aelf-search\ndescription: mine\n---\nhand made\n"
+    (foreign / "SKILL.md").write_text(original, encoding="utf-8")
+
+    result = install_codex_skills(tmp_path)
+    assert "aelf-search" in result.skipped
+    assert "aelf-search" not in result.written
+    assert (foreign / "SKILL.md").read_text(encoding="utf-8") == original
+
+
+def test_replace_updates_stale_owned_skill(tmp_path: Path) -> None:
+    install_codex_skills(tmp_path)
+    target = tmp_path / "aelf-search" / "SKILL.md"
+    stale = target.read_text(encoding="utf-8") + "\nstale tail\n"
+    target.write_text(stale, encoding="utf-8")
+
+    result = install_codex_skills(tmp_path)
+    assert "aelf-search" in result.written
+    assert not result.skipped
+    assert "stale tail" not in target.read_text(encoding="utf-8")
+
+
+# --- prune/remove failures surface (#1136) ----------------------------------
+
+
+def test_remove_reports_leftover_dir_and_deletes_nothing_else(
+    tmp_path: Path,
+) -> None:
+    install_codex_skills(tmp_path)
+    stray = tmp_path / "aelf-search" / "notes.txt"
+    stray.write_text("keep me", encoding="utf-8")
+
+    result = remove_codex_skills(tmp_path)
+    # SKILL.md is gone -> the skill counts as removed ...
+    assert "aelf-search" in result.pruned
+    assert not (tmp_path / "aelf-search" / "SKILL.md").exists()
+    # ... but the half-removal is surfaced, and the stray file survives
+    # (nothing is deleted recursively).
+    assert any(msg.startswith("aelf-search:") for msg in result.failed)
+    assert stray.exists()
+
+
+def test_install_prune_reports_leftover_dir(tmp_path: Path) -> None:
+    install_codex_skills(tmp_path)
+    stale = tmp_path / "aelf-gone"
+    stale.mkdir()
+    (stale / "SKILL.md").write_text(
+        f"---\nname: aelf-gone\ndescription: x\n---\n<!-- {_SKILL_MARKER} -->\n",
+        encoding="utf-8",
+    )
+    (stale / "extra.txt").write_text("x", encoding="utf-8")
+
+    result = install_codex_skills(tmp_path)
+    assert "aelf-gone" in result.pruned
+    assert any(msg.startswith("aelf-gone:") for msg in result.failed)
+    assert (stale / "extra.txt").exists()
+
+
+def test_clean_remove_has_no_failures(tmp_path: Path) -> None:
+    install_codex_skills(tmp_path)
+    result = remove_codex_skills(tmp_path)
+    assert result.failed == ()
