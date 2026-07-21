@@ -274,11 +274,16 @@ def is_mirror_enabled(
       1. ``AELFRICE_MIRROR_CLAUDE_MEMORY`` env var (truthy/falsy normalised).
       2. Explicit ``explicit`` kwarg from the caller.
       3. ``[memory] mirror_claude_memory`` in ``.aelfrice.toml``.
-      4. Default: **False** — the mirror is opt-in, consistent with the
-         narrow-surface PHILOSOPHY (#605) and the opt-in-by-default precedent
-         set by ADR 0003 decision 4 (#973); ratified for this mirror under
-         #985. With the mirror off, ``/aelf:audit-claude-memory`` remains the
-         bridge.
+      4. The #1089 per-project consent sentinel: **True** when the one-shot
+         reconcile at first ``aelf setup`` has recorded consent for this
+         project's store. Because env/TOML rungs outrank it, an explicit
+         falsy value there is the opt-out even after consent.
+      5. Default: **False** — with no consent recorded the mirror stays
+         opt-in, consistent with the narrow-surface PHILOSOPHY (#605) and
+         the opt-in-by-default precedent set by ADR 0003 decision 4 (#973);
+         ratified for this mirror under #985 and amended to
+         default-on-post-consent under #1089. With the mirror off,
+         ``/aelf:audit-claude-memory`` remains the bridge.
     """
     env = _env_mirror_override()
     if env is not None:

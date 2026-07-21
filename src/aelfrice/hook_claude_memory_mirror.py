@@ -22,11 +22,15 @@ Mapping (ratified 2026-06-23, #985):
   deflated prior.
 - The mirror NEVER locks (L0 stays reserved for explicit ``aelf lock``).
 
-Opt-in: gated on :func:`claude_memory.is_mirror_enabled` (env
-``AELFRICE_MIRROR_CLAUDE_MEMORY`` > ``[memory] mirror_claude_memory`` in
-``.aelfrice.toml`` > default **False**). When the flag is off the hook
-returns after three cheap checks (tool name, path shape, flag) and never
-imports the store.
+Consent-gated: gated on :func:`claude_memory.is_mirror_enabled` (env
+``AELFRICE_MIRROR_CLAUDE_MEMORY`` > explicit kwarg > ``[memory]
+mirror_claude_memory`` in ``.aelfrice.toml`` > the #1089 per-project
+consent sentinel written by the one-shot reconcile at first ``aelf
+setup`` (present ⇒ on) > default **False**). On a set-up project the
+sentinel makes the mirror effectively on; an explicit env ``0`` / TOML
+``false`` outranks the sentinel and is the opt-out. When the resolved
+value is off the hook returns after three cheap checks (tool name, path
+shape, flag) and never imports the store.
 
 Hook contract (host PostToolUse):
 - payload includes ``tool_name``, ``tool_input``, ``tool_response``,

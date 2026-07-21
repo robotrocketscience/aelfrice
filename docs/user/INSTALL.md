@@ -143,7 +143,7 @@ Bare `aelf setup` wires the v1.2.0 auto-capture pipeline alongside the read-side
 | search-tool | `PreToolUse:Grep` / `Glob` | **on** (v3.0.1+) | belief-store check before the agent's own Grep/Glob fires |
 | search-tool-bash | `PreToolUse:Bash` | **on** (v3.0.1+) | belief-store check before shell grep/rg/find/fd/ack fires |
 | pre-issue-guard | `PreToolUse:Bash` | **on** (v3.4.0+) | blocks `gh issue create` when the title overlaps an existing issue or shipped commit at or above 0.5 Jaccard (#941) |
-| claude-memory-mirror | `PostToolUse:Write` / `Edit` / `MultiEdit` | **on** (v3.7.0+) | one-way mirror of host claude-memory fact-file writes into the belief graph; inert until `AELFRICE_MIRROR_CLAUDE_MEMORY` / `[memory] mirror_claude_memory` is set (#985) |
+| claude-memory-mirror | `PostToolUse:Write` / `Edit` / `MultiEdit` | **on** (v3.7.0+) | one-way mirror of host claude-memory fact-file writes into the belief graph (#985). Enabled by `AELFRICE_MIRROR_CLAUDE_MEMORY` / `[memory] mirror_claude_memory`, or — since v4.0 (#1089) — by the per-project consent sentinel the one-shot reconcile writes at first `aelf setup`, so on a set-up project it mirrors by default; an explicit env `0` / TOML `false` always wins over the sentinel (that is the opt-out) |
 | agent-context | `PreToolUse:Agent` / `Task` | **on** | dispatched subagents inherit L0 locked + task-relevant beliefs via prompt injection; fail-open passthrough, kill switch `AELFRICE_AGENT_CONTEXT=0`, opt out `--no-agent-context` (#1068) |
 | rebuilder | `PreCompact` | off | retrieval-curated context rebuilder (augment-mode, v1.4 alpha) |
 
