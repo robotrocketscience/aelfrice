@@ -210,13 +210,13 @@ def test_toml_wrong_types_fall_back_to_defaults(tmp_path: Path) -> None:
 def test_detect_builds_opportunity(tmp_path: Path) -> None:
     store = MemoryStore(str(tmp_path / "m.db"))
     _seed_promotable(store, "ph1", content="short queries prefer BM25F")
-    opps = detect_promotable_phantoms(
+    opportunities = detect_promotable_phantoms(
         store, min_corroborations=3, min_sessions=2
     )
-    assert len(opps) == 1
-    assert opps[0].belief_id == "ph1"
-    assert opps[0].dedup_key == "ph1"
-    assert "BM25F" in opps[0].topic
+    assert len(opportunities) == 1
+    assert opportunities[0].belief_id == "ph1"
+    assert opportunities[0].dedup_key == "ph1"
+    assert "BM25F" in opportunities[0].topic
 
 
 def test_note_empty_when_no_opportunities() -> None:
