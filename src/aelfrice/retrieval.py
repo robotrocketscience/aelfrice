@@ -2647,6 +2647,31 @@ def _origin_priority(origin: str) -> int:
     )
 
 
+def _store_scoped_bm25f_cache(
+    store: MemoryStore,
+    *,
+    anchor_weight: int,
+) -> BM25IndexCache:
+    """One process-lifetime `BM25IndexCache` per store (#1135).
+
+    Replaces the pre-#1135 per-retrieve construction, which leaked one
+    invalidation-callback subscription per query and threw away the
+    built index between calls on long-running processes (MCP server).
+    The cache lives on `store._bm25f_shared_cache` so its lifetime is
+    the store's. A changed `anchor_weight` (the meta-belief consumer
+    can move it between calls) drops the cached index; the sidecar
+    check in `BM25IndexCache.get()` compares weights independently.
+    """
+    cache = store._bm25f_shared_cache  # noqa: SLF001 — slot owned here
+    if not isinstance(cache, BM25IndexCache):
+        cache = BM25IndexCache(store, anchor_weight=anchor_weight)
+        store._bm25f_shared_cache = cache  # noqa: SLF001
+    elif cache.anchor_weight != anchor_weight:
+        cache.anchor_weight = anchor_weight
+        cache.invalidate()
+    return cache
+
+
 def _l1_hits(
     store: MemoryStore,
     query: str,
@@ -2735,8 +2760,13 @@ def _l1_hits(
         # anchor_weight through the meta-belief consumer; an explicit
         # caller-supplied cache is honoured as-is (the bench harness
         # and unit tests pin specific anchor_weights via the cache).
+        # #1135: the fallback cache is store-scoped and reused across
+        # calls — constructing one per retrieve leaked an invalidation
+        # callback per query and rebuilt the index every time on
+        # long-running processes; with the sidecar (bm25.py) a fresh
+        # hook process loads the persisted index instead of building.
         if bm25f_cache is None:
-            cache = BM25IndexCache(
+            cache = _store_scoped_bm25f_cache(
                 store,
                 anchor_weight=resolve_bm25f_anchor_weight_with_meta(
                     store, now_ts=int(time.time()),

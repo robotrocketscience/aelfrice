@@ -39,9 +39,13 @@ release promotes both to runtime deps; see CHANGELOG and
 from __future__ import annotations
 
 import io
+import os
 import re
+import sys
+import tempfile
 from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 from typing import Final
 
 import numpy as np
@@ -99,7 +103,10 @@ _TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\w+", re.UNICODE)
 # changes incompatibly. The format is documented in
 # `BM25Index.serialize` / `BM25Index.deserialize`.
 _SERIALIZE_MAGIC: Final[bytes] = b"AELFBM25"
-_SERIALIZE_VERSION: Final[int] = 1
+# v2 (#1135): k1/b/avgdl widened float32 -> float64 so a deserialised
+# index scores byte-identically to a fresh build. No v1 blobs exist in
+# the wild — nothing called serialize() before the sidecar cache.
+_SERIALIZE_VERSION: Final[int] = 2
 
 
 def tokenize(text: str) -> list[str]:
@@ -414,12 +421,12 @@ class BM25Index:
         """Return a deterministic byte representation of the index.
 
         Same inputs (store contents + same `anchor_weight`) round-trip
-        to identical bytes, satisfying AC7. Format::
+        to identical bytes, satisfying AC7. Format (v2)::
 
             magic              8 bytes  b"AELFBM25"
             version            uint32   _SERIALIZE_VERSION
             anchor_weight      int32
-            k1, b, avgdl       float32 x 3
+            k1, b, avgdl       float64 x 3
             n_docs, n_terms    uint64 x 2
             belief_ids         length-prefixed UTF-8 strings
             vocabulary terms   length-prefixed UTF-8 strings
@@ -432,14 +439,21 @@ class BM25Index:
 
         Vocabulary terms are written in column-index order, which
         matches the sorted-ASC order produced by `build()`.
+
+        v2 (#1135) widened k1/b/avgdl from float32 to float64: `build()`
+        keeps them as Python floats, and the sidecar cache requires a
+        deserialised index to score byte-identically to a fresh build —
+        a float32 round-trip perturbed the low-order bits of every
+        score. dl/idf/tf stay float32 (already float32 in the built
+        index, so their round-trip is exact).
         """
         buf = io.BytesIO()
         buf.write(_SERIALIZE_MAGIC)
         buf.write(np.uint32(_SERIALIZE_VERSION).tobytes())
         buf.write(np.int32(self.anchor_weight).tobytes())
-        buf.write(np.float32(self.k1).tobytes())
-        buf.write(np.float32(self.b).tobytes())
-        buf.write(np.float32(self.avgdl).tobytes())
+        buf.write(np.float64(self.k1).tobytes())
+        buf.write(np.float64(self.b).tobytes())
+        buf.write(np.float64(self.avgdl).tobytes())
 
         n_docs = len(self.belief_ids)
         n_terms = len(self.vocabulary)
@@ -501,9 +515,9 @@ class BM25Index:
                 f"expected {_SERIALIZE_VERSION}"
             )
         anchor_weight = int(_read(np.dtype(np.int32), 1)[0])
-        k1 = float(_read(np.dtype(np.float32), 1)[0])
-        b = float(_read(np.dtype(np.float32), 1)[0])
-        avgdl = float(_read(np.dtype(np.float32), 1)[0])
+        k1 = float(_read(np.dtype(np.float64), 1)[0])
+        b = float(_read(np.dtype(np.float64), 1)[0])
+        avgdl = float(_read(np.dtype(np.float64), 1)[0])
         n_docs = int(_read(np.dtype(np.uint64), 1)[0])
         n_terms = int(_read(np.dtype(np.uint64), 1)[0])
 
@@ -550,6 +564,22 @@ class BM25Index:
         )
 
 
+# Sidecar file framing (#1135). The payload after the header is the
+# `BM25Index.serialize()` blob, which carries its own magic + version.
+_SIDECAR_MAGIC: Final[bytes] = b"AELFB25S"
+_SIDECAR_VERSION: Final[int] = 1
+_SIDECAR_SUFFIX: Final[str] = ".bm25f"
+
+
+def sidecar_path_for(store: MemoryStore) -> Path | None:
+    """The persistent-index sidecar path for `store`, or None for
+    in-memory stores (nothing to persist against)."""
+    db_path = store.db_path
+    if db_path == ":memory:":
+        return None
+    return Path(db_path + _SIDECAR_SUFFIX)
+
+
 @dataclass
 class BM25IndexCache:
     """Lazy, invalidation-aware wrapper around a single `BM25Index`.
@@ -557,6 +587,19 @@ class BM25IndexCache:
     Subscribes to the store's invalidation callback registry on
     construction, so any belief / edge mutation drops the cached
     index. The next `get()` rebuilds.
+
+    #1135: for on-disk stores the built index is also persisted to a
+    sidecar file (`<db-path>.bm25f`) stamped with the store's durable
+    generation counter and scope id. A fresh process (the
+    UserPromptSubmit hook is one per prompt) deserialises the sidecar
+    instead of re-tokenising + re-stemming the whole corpus — measured
+    584 ms build vs low-ms load at 5k beliefs. Staleness is decided by
+    the stamp: any belief/edge content mutation bumps the generation
+    in the same transaction (see `MemoryStore._commit_mutation`), so a
+    matching stamp proves the blob reflects current content. Loads and
+    writes are fail-soft — a missing, corrupt, foreign (scope-id
+    mismatch), stale, or parameter-mismatched sidecar falls back to a
+    build; an unwritable sidecar is skipped silently.
 
     Per-instance: two caches pointing at different stores never share
     state. Thread safety is the caller's responsibility (matches the
@@ -576,19 +619,116 @@ class BM25IndexCache:
             self._subscribed = True
 
     def get(self) -> BM25Index:
-        """Return the current index, building or rebuilding as needed."""
+        """Return the current index; load the sidecar or build as needed."""
         if self._index is None:
+            self._index = self._load_sidecar()
+        if self._index is None:
+            # Read the stamp BEFORE building: a mutation that lands
+            # during the build makes the stamp stale, so the next
+            # reader rebuilds rather than trusting a torn snapshot.
+            generation = self.store.store_generation()
             self._index = BM25Index.build(
                 self.store,
                 anchor_weight=self.anchor_weight,
                 k1=self.k1,
                 b=self.b,
             )
+            self._write_sidecar(self._index, generation)
         return self._index
 
     def invalidate(self) -> None:
-        """Drop the cached index. Wired to the store mutation hook."""
+        """Drop the cached index. Wired to the store mutation hook.
+
+        The sidecar file is left in place — its generation stamp no
+        longer matches after the mutation, so every reader treats it
+        as stale; the next `get()` rebuild overwrites it.
+        """
         self._index = None
+
+    # --- Sidecar persistence (#1135) ----------------------------------
+
+    def _load_sidecar(self) -> BM25Index | None:
+        """Deserialise a valid sidecar, or None on any miss/mismatch."""
+        path = sidecar_path_for(self.store)
+        if path is None:
+            return None
+        try:
+            blob = path.read_bytes()
+            header_len = len(_SIDECAR_MAGIC) + 4 + 8 + 4
+            if len(blob) < header_len:
+                return None
+            if blob[: len(_SIDECAR_MAGIC)] != _SIDECAR_MAGIC:
+                return None
+            off = len(_SIDECAR_MAGIC)
+            version = int(np.frombuffer(blob, np.uint32, 1, off)[0])
+            if version != _SIDECAR_VERSION:
+                return None
+            off += 4
+            generation = int(np.frombuffer(blob, np.uint64, 1, off)[0])
+            off += 8
+            scope_len = int(np.frombuffer(blob, np.uint32, 1, off)[0])
+            off += 4
+            scope = blob[off:off + scope_len].decode("utf-8")
+            off += scope_len
+            # Scope id catches a swapped-in different DB at the same
+            # path; the generation stamp catches every content
+            # mutation on this DB.
+            if scope != self.store.local_scope_id:
+                return None
+            if generation != self.store.store_generation():
+                return None
+            index = BM25Index.deserialize(blob[off:])
+            if index.anchor_weight != self.anchor_weight:
+                return None
+            # k1/b round-trip through float32 in the blob; compare in
+            # float32 to avoid spurious rebuilds.
+            if np.float32(index.k1) != np.float32(self.k1):
+                return None
+            if np.float32(index.b) != np.float32(self.b):
+                return None
+            return index
+        except Exception:  # noqa: BLE001 — any bad sidecar => rebuild
+            return None
+
+    def _write_sidecar(self, index: BM25Index, generation: int) -> None:
+        """Atomically persist `index` stamped with `generation`.
+
+        Best-effort: any failure (read-only dir, disk full) is traced
+        to stderr and swallowed — persistence is an optimisation, not
+        a correctness requirement. `os.replace` of a same-directory
+        temp file keeps concurrent readers safe: they see either the
+        old blob or the new one, never a torn write.
+        """
+        path = sidecar_path_for(self.store)
+        if path is None:
+            return
+        try:
+            scope = self.store.local_scope_id.encode("utf-8")
+            buf = io.BytesIO()
+            buf.write(_SIDECAR_MAGIC)
+            buf.write(np.uint32(_SIDECAR_VERSION).tobytes())
+            buf.write(np.uint64(generation).tobytes())
+            buf.write(np.uint32(len(scope)).tobytes())
+            buf.write(scope)
+            buf.write(index.serialize())
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=path.name + ".", dir=str(path.parent),
+            )
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(buf.getvalue())
+                os.replace(tmp_name, str(path))
+            except BaseException:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+                raise
+        except Exception as exc:  # noqa: BLE001 — persistence is optional
+            print(
+                f"aelfrice bm25: sidecar write failed (non-fatal): {exc}",
+                file=sys.stderr,
+            )
 
 
 __all__ = [

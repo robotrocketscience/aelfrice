@@ -595,6 +595,15 @@ _SCHEMA: tuple[str, ...] = (
 # re-extract entities for every existing belief on first open.
 SCHEMA_META_ENTITY_BACKFILL: Final[str] = "entity_backfill_complete"
 
+# #1135: durable mutation counter for cross-process derived-state
+# caches (the persistent BM25F sidecar). Bumped in the same SQLite
+# transaction as every belief/edge content mutation — exactly the
+# mutations that fire the in-process invalidation registry — so a
+# cache blob stamped with generation G is valid iff the store still
+# reads G. Feedback/touch/corroboration writes do NOT bump it (they
+# change ranking inputs, not index content).
+SCHEMA_META_STORE_GENERATION: Final[str] = "store_generation"
+
 # #1135: marker for the v1.2 origin backfill (_BACKFILL_STATEMENTS).
 # The two UPDATEs ran unguarded on every open — two full-table write
 # statements per open, compounding with the hook's multi-open pattern.
@@ -1045,6 +1054,9 @@ class MemoryStore:
         # helpers commit through `_commit` too.
         self._txn_depth: int = 0
         self._pending_invalidation: bool = False
+        # #1135: retained for sidecar-file placement (persistent BM25F
+        # index). ":memory:" disables persistence.
+        self._db_path: str = path
         self._conn: sqlite3.Connection = sqlite3.connect(path)
         self._conn.row_factory = sqlite3.Row
         # WAL only meaningful on-disk; harmless on :memory:.
@@ -1089,6 +1101,22 @@ class MemoryStore:
         # #1135: one-shot. Ran unguarded on every open pre-v4.2; the
         # marker matches the other schema_meta-gated passes. Rides the
         # single open commit below.
+        # #1135: seed the durable mutation counter. Read-first: an
+        # unconditional INSERT OR IGNORE would take the write lock on
+        # every open even when the row exists, blocking behind any
+        # concurrent writer's open transaction. Rides the single open
+        # commit below. Two connections racing the first-ever seed both
+        # pass the SELECT; OR IGNORE makes the second insert a no-op.
+        seeded = self._conn.execute(
+            "SELECT 1 FROM schema_meta WHERE key = ?",
+            (SCHEMA_META_STORE_GENERATION,),
+        ).fetchone()
+        if seeded is None:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO schema_meta (key, value) "
+                "VALUES (?, '0')",
+                (SCHEMA_META_STORE_GENERATION,),
+            )
         marker = self._conn.execute(
             "SELECT value FROM schema_meta WHERE key = ?",
             (SCHEMA_META_ORIGIN_BACKFILL,),
@@ -1156,6 +1184,13 @@ class MemoryStore:
         # content-hash UNIQUE swap so any same-key collisions raise
         # cleanly. Idempotent via SCHEMA_META marker.
         self._maybe_rehash_speculative_v2()
+        # #1135: process-lifetime BM25F cache slot, managed by
+        # `aelfrice.retrieval._store_scoped_bm25f_cache`. Typed loosely
+        # to avoid a store->bm25 import cycle. One cache per store also
+        # means one invalidation-callback subscription per store — the
+        # pre-#1135 per-retrieve construction leaked one callback per
+        # query on long-running processes (MCP server).
+        self._bm25f_shared_cache: object | None = None
         # #655 read-only federation. Peer DBs are opened on demand via
         # `federation.open_peer_connection`; the deps list itself is
         # cached eagerly so `aelf health` can report missing peers
@@ -1204,6 +1239,47 @@ class MemoryStore:
         """Commit unless inside `transaction()` (outermost commit wins)."""
         if self._txn_depth == 0:
             self._conn.commit()
+
+    def _commit_mutation(self) -> None:
+        """Commit a belief/edge content mutation.
+
+        Bumps the durable store generation in the same transaction as
+        the mutation (so cross-process caches keyed on the generation
+        can never observe a stale-but-matching pair), then commits and
+        fires the in-process invalidation registry. Inside
+        `transaction()` the bump rides the outer commit and the fire is
+        deferred, like any other write.
+        """
+        self._conn.execute(
+            "UPDATE schema_meta SET value = CAST(value AS INTEGER) + 1 "
+            "WHERE key = ?",
+            (SCHEMA_META_STORE_GENERATION,),
+        )
+        self._commit()
+        self._fire_invalidation()
+
+    @property
+    def db_path(self) -> str:
+        """The path this store was opened with (":memory:" for tests)."""
+        return self._db_path
+
+    def store_generation(self) -> int:
+        """Durable belief/edge mutation counter (#1135).
+
+        Monotonically increasing across processes; bumped inside the
+        same transaction as every content mutation. Missing key (a DB
+        created before v4.2 that has not been reopened) reads as 0.
+        """
+        row = self._conn.execute(
+            "SELECT value FROM schema_meta WHERE key = ?",
+            (SCHEMA_META_STORE_GENERATION,),
+        ).fetchone()
+        if row is None:
+            return 0
+        try:
+            return int(row["value"])
+        except (TypeError, ValueError):
+            return 0
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
@@ -2286,8 +2362,7 @@ class MemoryStore:
         )
         self._write_belief_entities(b.id, b.content)
         self._bump_belief_version(b.id)
-        self._commit()
-        self._fire_invalidation()
+        self._commit_mutation()
 
     def get_belief_by_content_hash(self, content_hash: str) -> Belief | None:
         """Look up a belief by its content_hash. Returns None if not found.
@@ -2386,8 +2461,7 @@ class MemoryStore:
         )
         self._write_belief_entities(b.id, b.content)
         self._bump_belief_version(b.id)
-        self._commit()
-        self._fire_invalidation()
+        self._commit_mutation()
 
     def delete_belief(self, belief_id: str) -> None:
         self._conn.execute("DELETE FROM beliefs WHERE id = ?", (belief_id,))
@@ -2399,8 +2473,7 @@ class MemoryStore:
         self._conn.execute(
             "DELETE FROM belief_entities WHERE belief_id = ?", (belief_id,)
         )
-        self._commit()
-        self._fire_invalidation()
+        self._commit_mutation()
 
     def soft_delete_belief(self, belief_id: str, ts: str | None = None) -> None:
         """Set `valid_to` on a belief to soft-delete it (v2.1 #548 wonder GC).
@@ -2424,8 +2497,7 @@ class MemoryStore:
                 "DELETE FROM beliefs_fts WHERE id = ?", (belief_id,)
             )
         self._bump_belief_version(belief_id)
-        self._commit()
-        self._fire_invalidation()
+        self._commit_mutation()
 
     def restore_belief(self, belief_id: str) -> bool:
         """Clear ``valid_to`` on a soft-deleted belief, returning it to active.
@@ -2463,8 +2535,7 @@ class MemoryStore:
             (belief_id, row["content"]),
         )
         self._bump_belief_version(belief_id)
-        self._commit()
-        self._fire_invalidation()
+        self._commit_mutation()
         return True
 
     def update_last_confirmed_at(self, belief_id: str, ts_iso: str) -> None:
@@ -2480,8 +2551,7 @@ class MemoryStore:
             (ts_iso, belief_id),
         )
         self._bump_belief_version(belief_id)
-        self._commit()
-        self._fire_invalidation()
+        self._commit_mutation()
 
     def list_review_candidates(self, *, limit: int = 10) -> list[Belief]:
         """Return active beliefs to surface in the weekly review file (#936).
@@ -4461,8 +4531,7 @@ class MemoryStore:
             (retention_class, belief_id),
         )
         self._bump_belief_version(belief_id)
-        self._commit()
-        self._fire_invalidation()
+        self._commit_mutation()
 
     def count_beliefs_by_type(self) -> dict[str, int]:
         """Return a mapping of belief type → count across all beliefs."""
@@ -4847,8 +4916,7 @@ class MemoryStore:
             (e.src, e.dst, e.type, e.weight, e.anchor_text),
         )
         self._bump_edge_version(e.src, e.dst, e.type)
-        self._commit()
-        self._fire_invalidation()
+        self._commit_mutation()
 
     def get_edge(self, src: str, dst: str, type_: str) -> Edge | None:
         cur = self._conn.execute(
@@ -4865,16 +4933,14 @@ class MemoryStore:
             (e.weight, e.anchor_text, e.src, e.dst, e.type),
         )
         self._bump_edge_version(e.src, e.dst, e.type)
-        self._commit()
-        self._fire_invalidation()
+        self._commit_mutation()
 
     def delete_edge(self, src: str, dst: str, type_: str) -> None:
         self._conn.execute(
             "DELETE FROM edges WHERE src = ? AND dst = ? AND type = ?",
             (src, dst, type_),
         )
-        self._commit()
-        self._fire_invalidation()
+        self._commit_mutation()
 
     def delete_edges_by_type(self, type_: str) -> int:
         """Delete every edge of ``type_``; return how many were removed.
@@ -4888,8 +4954,7 @@ class MemoryStore:
             "DELETE FROM edges WHERE type = ?", (type_,)
         )
         removed = cur.rowcount
-        self._commit()
-        self._fire_invalidation()
+        self._commit_mutation()
         return removed
 
     def edges_from(self, src: str) -> list[Edge]:
