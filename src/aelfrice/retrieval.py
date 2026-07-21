@@ -2702,6 +2702,7 @@ def _l1_hits(
     zeta_params: tuple[float, float, float] | None = None,
     use_entity_persist_demote: bool = False,
     use_origin_tiebreak: bool = False,
+    now_ts: int | None = None,
 ) -> list[Belief]:
     """Run L1: FTS5 BM25 search (default) or BM25F sparse-matvec
     (v1.5.0 opt-in), optionally reranked by partial-Bayesian score.
@@ -2765,6 +2766,11 @@ def _l1_hits(
     # short-circuits as before and the byte-identical contract holds.
     hash_n_literals = _extract_hash_n_literals(query)
 
+    # #1143 clock seam: one wall-clock read per call, and none at all
+    # when the caller pins `now_ts` — the anchor-weight resolver and
+    # the bm25_l0_ratio signal write see the same timestamp.
+    effective_now_ts = now_ts if now_ts is not None else int(time.time())
+
     if use_bm25f_anchors:
         # The cache lazy-builds the index on first call and is
         # invalidated by store mutations. The rerank below uses the
@@ -2785,7 +2791,7 @@ def _l1_hits(
             cache = _store_scoped_bm25f_cache(
                 store,
                 anchor_weight=resolve_bm25f_anchor_weight_with_meta(
-                    store, now_ts=int(time.time()),
+                    store, now_ts=effective_now_ts,
                 ),
             )
         else:
@@ -2815,7 +2821,7 @@ def _l1_hits(
                         META_BM25F_ANCHOR_WEIGHT_KEY,
                         SIGNAL_BM25_L0_RATIO,
                         evidence=evidence,
-                        now_ts=int(time.time()),
+                        now_ts=effective_now_ts,
                     )
             except Exception as exc:  # noqa: BLE001
                 print(
@@ -3143,6 +3149,7 @@ def retrieve_with_tiers(
     use_entity_persist_demote: bool = False,
     use_origin_tiebreak: bool = False,
     manifest_reference_locks: bool = False,
+    now_ts: int | None = None,
 ) -> tuple[
     list[Belief], list[str], list[str], list[str], list[list[str]],
 ]:
@@ -3174,6 +3181,11 @@ def retrieve_with_tiers(
     currency (raw token estimate or compressed `rendered_tokens`).
     """
     global _LAST_TELEMETRY
+    # #1143 clock seam: read the wall clock at most once per call.
+    # `retrieve_v2` threads its own pinned `now_ts` through here, so a
+    # pinned outer call performs no wall-clock read anywhere in the
+    # tiered path (γ resolver, expansion gate, L1 meta-resolvers).
+    effective_now_ts = now_ts if now_ts is not None else int(time.time())
     enabled = is_entity_index_enabled(entity_index_enabled)
     bfs_on = is_bfs_enabled(bfs_enabled)
     bm25f_on = resolve_use_bm25f_anchors(use_bm25f_anchors)
@@ -3186,7 +3198,7 @@ def retrieve_with_tiers(
     gamma_on = resolve_use_gamma_posterior_temperature()
     gamma_t = (
         resolve_posterior_temperature_with_meta(
-            store, now_ts=int(time.time()),
+            store, now_ts=effective_now_ts,
         )
         if gamma_on else None
     )
@@ -3203,7 +3215,7 @@ def retrieve_with_tiers(
     # resolver; same fallback posture as retrieve().
     from aelfrice.expansion_gate import should_run_expansion
     gate_decision = should_run_expansion(
-        query, store=store, now_ts=int(time.time()),
+        query, store=store, now_ts=effective_now_ts,
     )
     gate_skipped_bfs = bfs_on and not gate_decision.run_bfs
     bfs_on = bfs_on and gate_decision.run_bfs
@@ -3287,6 +3299,7 @@ def retrieve_with_tiers(
             zeta_params=zeta_params,
             use_entity_persist_demote=use_entity_persist_demote,
             use_origin_tiebreak=use_origin_tiebreak,
+            now_ts=effective_now_ts,
         )
         l1 = [
             b for b in raw_l1
@@ -3544,7 +3557,10 @@ def retrieve_v2(
       to time-stamp posterior decay and the latency-signal update.
       Defaults to ``int(time.time())`` so production callers don't
       need to pass it. Tests and replay tooling pin it for
-      determinism (locked ``c06f8d575fad71fb`` PHILOSOPHY).
+      determinism (locked ``c06f8d575fad71fb`` PHILOSOPHY). Since
+      #1143 the pin threads through `retrieve_with_tiers` and
+      `_l1_hits`, so a pinned call reads no wall clock anywhere in
+      the tiered path.
     - `use_hrr_structural` (#152) — when True AND the query parses as
       a `<KIND>:<target_id>` structural marker, the HRR structural
       lane fires and returns instead of the textual lane. Parallel,
@@ -3660,6 +3676,7 @@ def retrieve_v2(
         posterior_weight=posterior_weight,
         use_bm25f_anchors=use_bm25f,
         bm25f_cache=bm25f_cache,
+        now_ts=effective_now_ts,
         use_type_aware_compression=use_type_aware_compression,
         use_intentional_clustering=use_intentional_clustering,
         hrr_expand_enabled=use_hrr_expand,
