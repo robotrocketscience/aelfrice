@@ -4315,12 +4315,22 @@ def _print_setup_jsonl_history_hint(out: object) -> None:
     )
 
 
-def _cmd_setup_codex(args: argparse.Namespace, out: object) -> int:
-    """`aelf setup --host codex`: write ~/.codex/hooks.json (#1052)."""
+def _cmd_setup_codex(
+    args: argparse.Namespace,
+    out: object,
+    *,
+    hooks_path: Path | None = None,
+    skills_dest: Path | None = None,
+) -> int:
+    """`aelf setup --host codex`: write ~/.codex/hooks.json (#1052).
+
+    ``hooks_path`` / ``skills_dest`` override the real-HOME defaults so
+    the CLI path is testable (#1136).
+    """
     from aelfrice.host_codex import codex_hooks_path, install_codex_hooks
 
     result = install_codex_hooks(
-        codex_hooks_path(),
+        hooks_path if hooks_path is not None else codex_hooks_path(),
         scope="user",
         force=bool(getattr(args, "force", False)),
     )
@@ -4340,7 +4350,17 @@ def _cmd_setup_codex(args: argparse.Namespace, out: object) -> int:
     if getattr(args, "codex_skills", True):
         from aelfrice.host_codex import install_codex_skills
 
-        sk = install_codex_skills()
+        try:
+            sk = install_codex_skills(skills_dest)
+        except OSError as exc:
+            # hooks.json is already written; fail the skills half with a
+            # clear message instead of a raw traceback (#1136).
+            print(
+                f"setup --host codex: hooks written, but the skills "
+                f"install failed: {exc}",
+                file=sys.stderr,
+            )
+            return 1
         if sk.written:
             print(
                 f"installed {len(sk.written)} Codex skill(s) in "
@@ -4353,7 +4373,16 @@ def _cmd_setup_codex(args: argparse.Namespace, out: object) -> int:
                 f"{sk.dest_dir}: {', '.join(sk.pruned)}",
                 file=out,  # type: ignore[arg-type]
             )
-        if not sk.written and not sk.pruned:
+        if sk.skipped:
+            print(
+                f"skipped {len(sk.skipped)} skill name(s) already taken "
+                f"by non-aelfrice skills in {sk.dest_dir} (not "
+                f"overwritten): {', '.join(sk.skipped)}",
+                file=out,  # type: ignore[arg-type]
+            )
+        for msg in sk.failed:
+            print(f"[warn] codex skill: {msg}", file=out)  # type: ignore[arg-type]
+        if not (sk.written or sk.pruned or sk.skipped or sk.failed):
             print(
                 f"Codex skills already up to date in {sk.dest_dir}",
                 file=out,  # type: ignore[arg-type]
@@ -4384,12 +4413,24 @@ def _cmd_setup_codex(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
-def _cmd_unsetup_codex(args: argparse.Namespace, out: object) -> int:
-    """`aelf unsetup --host codex`: remove aelfrice hooks.json entries."""
+def _cmd_unsetup_codex(
+    args: argparse.Namespace,
+    out: object,
+    *,
+    hooks_path: Path | None = None,
+    skills_dest: Path | None = None,
+) -> int:
+    """`aelf unsetup --host codex`: remove aelfrice hooks.json entries.
+
+    ``hooks_path`` / ``skills_dest`` override the real-HOME defaults so
+    the CLI path is testable (#1136).
+    """
     from aelfrice.host_codex import codex_hooks_path, remove_codex_hooks
 
     _ = args
-    result = remove_codex_hooks(codex_hooks_path())
+    result = remove_codex_hooks(
+        hooks_path if hooks_path is not None else codex_hooks_path()
+    )
     if result.error:
         print(f"unsetup --host codex: {result.error}", file=sys.stderr)
         return 1
@@ -4407,7 +4448,14 @@ def _cmd_unsetup_codex(args: argparse.Namespace, out: object) -> int:
 
     from aelfrice.host_codex import remove_codex_skills
 
-    sk = remove_codex_skills()
+    try:
+        sk = remove_codex_skills(skills_dest)
+    except OSError as exc:
+        print(
+            f"unsetup --host codex: skills removal failed: {exc}",
+            file=sys.stderr,
+        )
+        return 1
     if sk.pruned:
         print(
             f"removed {len(sk.pruned)} Codex skill(s) from {sk.dest_dir}: "
@@ -4419,20 +4467,29 @@ def _cmd_unsetup_codex(args: argparse.Namespace, out: object) -> int:
             f"no aelfrice Codex skills in {sk.dest_dir}",
             file=out,  # type: ignore[arg-type]
         )
+    for msg in sk.failed:
+        print(f"[warn] codex skill: {msg}", file=out)  # type: ignore[arg-type]
     return 0
 
 
-def _cmd_doctor_codex(args: argparse.Namespace, out: object) -> int:
+def _cmd_doctor_codex(
+    args: argparse.Namespace,
+    out: object,
+    *,
+    codex_dir: Path | None = None,
+    skills_dest: Path | None = None,
+) -> int:
     """`aelf doctor --host codex`: scan the Codex host (#1052).
 
     Exit 1 only on structural failure (hooks.json present but
     unreadable); missing wiring, missing flag, and missing trust are
-    warnings — the host may simply not be set up yet.
+    warnings — the host may simply not be set up yet. ``codex_dir`` /
+    ``skills_dest`` override the real-HOME defaults for tests (#1136).
     """
     from aelfrice.host_codex import doctor_codex
 
     _ = args
-    report = doctor_codex()
+    report = doctor_codex(codex_dir)
     ok = "ok" if report.hooks_file_valid else "-"
     print(
         f"[{ok}] codex hooks.json: present={report.hooks_file_present} "
@@ -4454,10 +4511,13 @@ def _cmd_doctor_codex(args: argparse.Namespace, out: object) -> int:
         count_installed_codex_skills,
     )
 
-    n_skills = count_installed_codex_skills()
+    skills_dir = (
+        skills_dest if skills_dest is not None else AGENTS_SKILLS_DIR
+    )
+    n_skills = count_installed_codex_skills(skills_dir)
     print(
         f"[i] codex skills ($aelf-*): {n_skills} installed in "
-        f"{AGENTS_SKILLS_DIR}",
+        f"{skills_dir}",
         file=out,  # type: ignore[arg-type]
     )
     for warning in report.warnings:
@@ -4814,6 +4874,9 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
             command=None,
             cmd="unsetup",
             func=_cmd_unsetup,
+            # #1136: `aelf uninstall --host codex` routes the unsetup
+            # half to the codex host (hooks.json + $aelf-* skills).
+            host=getattr(args, "host", "claude"),
         )
         _cmd_unsetup(unsetup_args, out)
 
@@ -8660,6 +8723,15 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_uninstall.add_argument(
         "--settings-path", default=None,
         help="explicit settings.json for the unsetup half (defaults to user-scope)",
+    )
+    p_uninstall.add_argument(
+        "--host", choices=("claude", "codex"), default="claude",
+        help=(
+            "host whose hook wiring the unsetup half removes. 'codex' "
+            "removes the aelfrice entries from ~/.codex/hooks.json and "
+            "the $aelf-* agent skills (#1136); data disposition "
+            "(--keep-db / --purge / --archive) is host-independent."
+        ),
     )
     p_uninstall.set_defaults(func=_cmd_uninstall)
 
