@@ -31,8 +31,11 @@ from aelfrice.doctor import (
 )
 from aelfrice.models import (
     BELIEF_FACTUAL,
+    BELIEF_SPECULATIVE,
     EDGE_CONTRADICTS,
     LOCK_NONE,
+    ORIGIN_SPECULATIVE,
+    ORIGIN_UNKNOWN,
     RETENTION_FACT,
     RETENTION_SNAPSHOT,
     Belief,
@@ -46,6 +49,8 @@ def _mk(
     bid: str,
     *,
     retention_class: str = RETENTION_SNAPSHOT,
+    origin: str = ORIGIN_UNKNOWN,
+    belief_type: str = BELIEF_FACTUAL,
 ) -> Belief:
     b = Belief(
         id=bid,
@@ -53,7 +58,8 @@ def _mk(
         content_hash=f"h_{bid}",
         alpha=1.0,
         beta=1.0,
-        type=BELIEF_FACTUAL,
+        type=belief_type,
+        origin=origin,
         lock_level=LOCK_NONE,
         locked_at=None,
         created_at="2026-04-26T00:00:00Z",
@@ -153,6 +159,61 @@ def test_promotable_returns_qualifying_belief(tmp_path: Path) -> None:
     _corr(store, "b1", session="s3")
     promotable = store.find_promotable_snapshots()
     assert [b.id for b in promotable] == ["b1"]
+
+
+def test_promotable_excludes_speculative_origin_phantoms(
+    tmp_path: Path,
+) -> None:
+    """#1132: a phantom (origin='speculative') ingests with
+    retention_class='snapshot', so without the origin guard a corroborated
+    phantom would be flipped to retention_class='fact' on a pure count
+    trigger — the trigger shape #229 rejects on the origin axis. Phantom
+    durability must route only through explicit acknowledgment, so the
+    corroboration-driven retention promotion excludes speculative origin.
+
+    Contrast with test_promotable_returns_qualifying_belief: identical
+    corroboration profile (N=3 across 3 sessions), differing only in origin,
+    yet the phantom is excluded and the ordinary snapshot is promotable.
+    """
+    store = MemoryStore(str(tmp_path / "m.db"))
+    _mk(
+        store,
+        "phantom",
+        origin=ORIGIN_SPECULATIVE,
+        belief_type=BELIEF_SPECULATIVE,
+    )
+    _corr(store, "phantom", session="s1")
+    _corr(store, "phantom", session="s2")
+    _corr(store, "phantom", session="s3")
+    # Meets N>=3 / M>=2 / no-CONTRADICTS, but is speculative-origin.
+    assert store.find_promotable_snapshots() == []
+
+
+def test_promote_retention_leaves_phantom_untouched(tmp_path: Path) -> None:
+    """#1132 end-to-end: promote_retention must not flip a corroborated
+    phantom's retention_class, nor write a retention_promotion feedback row."""
+    store = MemoryStore(str(tmp_path / "m.db"))
+    _mk(
+        store,
+        "phantom",
+        origin=ORIGIN_SPECULATIVE,
+        belief_type=BELIEF_SPECULATIVE,
+    )
+    _corr(store, "phantom", session="s1")
+    _corr(store, "phantom", session="s2")
+    _corr(store, "phantom", session="s3")
+
+    report = promote_retention(store, dry_run=False)
+    assert report.candidates_found == 0
+    assert report.promoted == 0
+
+    refreshed = store.get_belief("phantom")
+    assert refreshed is not None
+    assert refreshed.retention_class == RETENTION_SNAPSHOT
+    events = store.list_feedback_events(belief_id="phantom")
+    assert all(
+        e.source != FEEDBACK_SOURCE_RETENTION_PROMOTION for e in events
+    )
 
 
 # --- set_retention_class --------------------------------------------------

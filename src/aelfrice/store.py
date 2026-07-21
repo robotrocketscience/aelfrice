@@ -4230,9 +4230,20 @@ class MemoryStore:
         Per docs/design/historical/belief_retention_class.md §4 the promotion rule is:
 
           retention_class = 'snapshot'
+          AND origin != 'speculative'
           AND COUNT(corroborations) >= min_corroborations
           AND COUNT(DISTINCT corroborations.session_id) >= min_sessions
           AND no inbound CONTRADICTS edge targets the belief
+
+        ``origin != 'speculative'`` keeps phantoms out of the count-driven
+        retention promotion (#1132). Phantoms ingest with
+        ``retention_class='snapshot'`` (``wonder_ingest``), so without this
+        guard a corroborated phantom would be flipped to ``retention_class
+        ='fact'`` on a pure corroboration count — the exact trigger shape the
+        ratified #229 rule rejects on the origin axis. Phantom durability, like
+        phantom trust promotion, routes only through explicit acknowledgment
+        (``aelf validate`` / lock-match, #550). Retention and origin stay
+        orthogonal, but neither advances a speculative belief on a count alone.
 
         ``session_id`` may be NULL on legacy corroboration rows (#192 T3
         backfill not yet landed). NULLs are excluded from the distinct
@@ -4255,6 +4266,7 @@ class MemoryStore:
                 GROUP BY belief_id
             ) bc ON bc.belief_id = b.id
             WHERE b.retention_class = 'snapshot'
+              AND b.origin != ?
               AND bc.n_corr >= ?
               AND bc.n_sess >= ?
               AND NOT EXISTS (
@@ -4264,7 +4276,7 @@ class MemoryStore:
             ORDER BY b.created_at ASC
             {limit_clause}
             """,
-            (int(min_corroborations), int(min_sessions)),
+            (ORIGIN_SPECULATIVE, int(min_corroborations), int(min_sessions)),
         )
         return [_row_to_belief(r) for r in cur.fetchall()]
 
