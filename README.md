@@ -29,6 +29,8 @@ aelf lock "never push directly to main; use scripts/publish.sh"
 
 That's it. The next prompt that mentions "push" already has the rule. From here on out aelfrice is invisible — no command to remember to run, no file to keep updated.
 
+Using Codex CLI? `aelf setup --host codex` wires the same hook set into `~/.codex/hooks.json` and ships the `/aelf:*` command bundle as `$aelf-*` agent skills (v4.1.0+) — see [INSTALL § Codex host](docs/user/INSTALL.md).
+
 ## What you'll see
 
 You type a message in your agent. aelfrice's hook fires before the model sees it and prepends matched beliefs as an `<aelfrice-memory>` block:

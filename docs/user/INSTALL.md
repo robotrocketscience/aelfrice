@@ -54,6 +54,18 @@ Auto-detection picks the right scope and command path:
 
 Override with `--scope user|project` and `--command /abs/path/aelf-hook` when you need to.
 
+### Codex host
+
+Running Codex CLI instead? The same lifecycle verbs take `--host codex`:
+
+```bash
+aelf setup --host codex      # hooks into ~/.codex/hooks.json + $aelf-* agent skills
+aelf doctor --host codex     # verify wiring; reports the installed skill count
+aelf unsetup --host codex    # remove the aelfrice hooks and skills together
+```
+
+`aelf setup --host codex` writes the hook set to `~/.codex/hooks.json` (#1052) and installs the `/aelf:*` slash-command bundle as `$aelf-*` agent skills under `~/.agents/skills/` (v4.1.0+), generated from the same source bundle so the two surfaces never drift. Pass `--no-codex-skills` to install hooks only (`--codex-skills` is the default). Skill install is idempotent and prunes orphans, but only ever touches aelfrice-generated skills (an `AELFRICE-CODEX-SKILL` marker gates replacement/removal). Full detail — invocation, the generation transform, and the Codex-specific approval caveats — in [SLASH_COMMANDS § Codex host](SLASH_COMMANDS.md#codex-host-aelf--skills).
+
 ## 3. Verify wiring
 
 ```bash
