@@ -6,7 +6,7 @@ Design principles. Receipts in the code.
 
 A fresh Claude session is low-context. Every conversation starts from zero: your stack, your conventions, the rule you set last week, the decision you reversed last month. The agent is a new hire on day one, every day. You spend the first ten minutes of every session restating things you've already said.
 
-aelfrice changes that. You correct the agent once. You lock the constraint that matters. The next session starts with that context already attached. After a few weeks of small corrections, the agent operates with months of accumulated rules, and you stop noticing the friction is gone.
+aelfrice changes that. You correct the agent once. You lock the constraint that matters. The next session starts with that context already attached. After a few weeks of small corrections the agent is operating on months of accumulated rules, and at some point you notice you've stopped repeating yourself.
 
 In linguistics this is [high-context communication](https://en.wikipedia.org/wiki/High-context_and_low-context_cultures): three words convey a full procedure because the listener already carries the background. The more sessions you work together, the less you need to explain.
 
@@ -38,12 +38,7 @@ These hold compositionally. A single non-deterministic step in the retrieval pat
 
 The trade-off is real. Embedding systems beat aelfrice on fuzzy semantic recall and multi-session aggregation. We treat that as a clarification of what aelfrice is for, not a gap to close at the cost of the property. Two bench-gate runs ([#197](https://github.com/robotrocketscience/aelfrice/issues/197), [#201](https://github.com/robotrocketscience/aelfrice/issues/201)) hit the natural-language-relatedness wall and closed wontfix; the successor [#422](https://github.com/robotrocketscience/aelfrice/issues/422) closed by shipping a deterministic value-comparison shape instead of the embedding shape — the same boundary, resolved the same way; the v3.0 ratification of *paraphrase / synonymy gates live in the consuming agent, not in aelfrice* is in [v3_relatedness_philosophy.md](../design/v3_relatedness_philosophy.md).
 
-What it buys, beyond the obvious:
-
-- **Debugging is bounded.** A wrong retrieval is one specific rule. Compare with embedding systems where "wrong result" gets answered with similarity scores.
-- **Provenance composes.** Every belief carries provenance; every retrieval inherits it.
-- **Counterfactual evaluation is tractable.** Replay history with and without specific corrections. Determinism is what makes the differential meaningful.
-- **High-stakes deployment is structurally admitted.** Medical, legal, financial — domains that need explainability that survives an audit. Most agent-memory systems are structurally locked out; aelfrice is structurally admitted.
+What it buys, beyond the obvious: debugging is bounded — a wrong retrieval traces to one specific rule, where an embedding system answers "wrong result" with similarity scores. Provenance composes — every belief carries it, so every retrieval inherits it. Counterfactual evaluation becomes tractable: replay history with and without a given correction, and determinism is what makes that differential meaningful. And domains that need explainability to survive an audit — medical, legal, financial — can actually use this; most agent-memory systems are locked out of them by construction.
 
 ## Bayesian, not vector
 
@@ -137,7 +132,7 @@ aelfrice is a memory substrate, not an LLM. The honest decomposition for any "th
 
 Tiers 1–3 hold mechanically. Tiers 4–5 (post-execution detection, pre-execution blocking) are research-line capabilities with no current roadmap entry. Tier 6 is the LLM's own training and decoding, which aelfrice cannot constrain. If the model ignores an injected lock, the failure mode is in the model, not in aelfrice — but that distinction does not console a user whose agent just ran `git push` despite a clear directive.
 
-Two recovery angles fall out of the same substrate:
+A few more properties fall out of the same substrate:
 
 - **Session recovery, not just write durability.** SQLite WAL guarantees that every acknowledged write survives a crash. That is the storage-engine claim. The product-level claim is that the *working context* of an interrupted session is reconstructable on restart — not from a snapshot file, but from the same belief store the next session retrieves against, augmented by a `<recent-work>` SessionStart sub-block carrying the current branch, the last N commits, and any issue numbers referenced in the recent work (#887). Re-open the terminal next week, ask "where were we?", and the locks plus the per-project working state are still there.
 - **Confidence does not auto-flag.** A belief whose posterior drifts below 0.5 is not surfaced as a warning. No automatic state change is driven by negative evidence — locked beliefs hold by design (the v2.x auto-demote mechanism was removed at v3.2.0 [#814](https://github.com/robotrocketscience/aelfrice/issues/814)). If you want to know which beliefs are losing the feedback loop, you ask `aelf speculative` (non-locked beliefs ranked by posterior evidence) or `aelf review --generate` (the oldest-unconfirmed review queue); `aelf status` shows only aggregate counts, and the system does not interrupt to tell you.

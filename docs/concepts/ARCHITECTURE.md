@@ -113,8 +113,8 @@ L1: FTS5 BM25 / BM25F                limit l1_limit, query escaped;
         ↓                             v1.3+: score = log(bm25) + 0.5*log(posterior_mean)
                                       v1.7+: BM25F anchor-augmented sparse matvec, default-on (#148/#154)
 Temporal spine (#1064)               TEMPORAL_NEXT chain traversal from the top-5 L1 seeds,
-        ↓                             appended after L1; default-OFF, enable via
-                                      [retrieval] use_temporal_spine = true
+        ↓                             appended after L1; default-ON since the #1107 Phase-2
+                                      cutover, opt out via [retrieval] use_temporal_spine = false
 L3: BFS multi-hop expansion (v1.3+)  edge-weighted graph walk from L0+L2.5+L1 seed set;
         ↓                             default-OFF; enable via [retrieval] bfs_enabled = true
 Dedupe L1+L2.5+L3 against L0 ids
@@ -175,8 +175,8 @@ Non-blocking contract: every failure path exits 0 with no stdout. A hook problem
 | `aelf-search-tool-hook` | `PreToolUse:Grep|Glob` | Surface relevant beliefs adjacent to tool-driven search (#674). | v3.0.1 (#738) |
 | `aelf-search-tool-hook` | `PreToolUse:Bash` | Same entry point, separate settings.json matcher, for bash search invocations. | v3.0.1 (#738) |
 | `aelf-pre-issue-hook` | `PreToolUse:Bash` | Duplicate-detection guard before `gh issue create` — blocks (exit 2) on Jaccard title overlap ≥ 0.5 against open issues and shipped commits (#941). | v3.5.0 |
-| `aelf-claude-memory-mirror` | `PostToolUse:Write\|Edit\|MultiEdit` | One-way mirror of host claude-memory fact-file writes into the belief graph; installed default-on but inert until `AELFRICE_MIRROR_CLAUDE_MEMORY` / `[memory] mirror_claude_memory` is set (#985). | v3.7.0 |
-| `aelf-agent-context-hook` | `PreToolUse:Agent\|Task` | Worker-context injection — dispatched subagents inherit L0 locked + task-relevant beliefs via the harness `updatedInput` channel; fail-open passthrough, kill switch `AELFRICE_AGENT_CONTEXT=0` (#1068). | (unreleased) |
+| `aelf-claude-memory-mirror` | `PostToolUse:Write\|Edit\|MultiEdit` | One-way mirror of host claude-memory fact-file writes into the belief graph (#985). Consent-gated since v4.0 (#1089): runs once the first-setup reconcile records per-project consent, or when `AELFRICE_MIRROR_CLAUDE_MEMORY` / `[memory] mirror_claude_memory` enables it explicitly; an explicit falsy value is the opt-out. | v3.7.0 |
+| `aelf-agent-context-hook` | `PreToolUse:Agent\|Task` | Worker-context injection — dispatched workers inherit L0 locked + task-relevant beliefs via the harness `updatedInput` channel; fail-open passthrough, kill switch `AELFRICE_AGENT_CONTEXT=0` (#1068). | v4.0.0 |
 | `aelf-pre-compact-hook` | `PreCompact` | Context rebuilder — opt-in via `--rebuilder`; default trigger flipped from `manual` to `threshold` at v3.1 (#746). | opt-in |
 
 Each lane is opt-out via `aelf setup --no-<lane>`. All non-blocking: every failure path exits 0 with no stdout.
@@ -216,7 +216,7 @@ and the harness's own summary land in the new context (augment mode)
 | Property | default | Pre-registered invariants: Bayesian inertia, decay-required, lock-floor sharpness, token-budget invariant, broker-attenuation. |
 | Regression | `@pytest.mark.regression` | Cross-module scenarios: retrieval round-trip, feedback loop, onboarding, setup→hook→unsetup, `aelf bench` end-to-end. |
 
-`uv run pytest` (5,300+ tests at v3.5.0).
+`uv run pytest` (5,900+ tests at v4.1.0).
 
 ## Out of scope through v1.x
 
