@@ -594,6 +594,14 @@ _SCHEMA: tuple[str, ...] = (
 # re-extract entities for every existing belief on first open.
 SCHEMA_META_ENTITY_BACKFILL: Final[str] = "entity_backfill_complete"
 
+# #1135: marker for the v1.2 origin backfill (_BACKFILL_STATEMENTS).
+# The two UPDATEs ran unguarded on every open — two full-table write
+# statements per open, compounding with the hook's multi-open pattern.
+# Contemporary writers set origin explicitly (derive() routes,
+# cli lock upgrade), so the flip only ever matters once per legacy DB.
+# ISO timestamp on completion; absence triggers the pass on next open.
+SCHEMA_META_ORIGIN_BACKFILL: Final[str] = "origin_backfill_complete"
+
 # v1.5.0 #204 federation forward-compat. Stable per-DB scope id,
 # generated on first v1.5+ open and persisted in `schema_meta`.
 # Today aelfrice is single-scope per DB; the local scope id is
@@ -1055,8 +1063,24 @@ class MemoryStore:
                     raise
         for stmt in _POST_MIGRATION_INDEXES:
             self._conn.execute(stmt)
-        for stmt in _BACKFILL_STATEMENTS:
-            self._conn.execute(stmt)
+        # #1135: one-shot. Ran unguarded on every open pre-v4.2; the
+        # marker matches the other schema_meta-gated passes. Rides the
+        # single open commit below.
+        marker = self._conn.execute(
+            "SELECT value FROM schema_meta WHERE key = ?",
+            (SCHEMA_META_ORIGIN_BACKFILL,),
+        ).fetchone()
+        if marker is None:
+            for stmt in _BACKFILL_STATEMENTS:
+                self._conn.execute(stmt)
+            self._conn.execute(
+                "INSERT OR REPLACE INTO schema_meta (key, value) "
+                "VALUES (?, ?)",
+                (
+                    SCHEMA_META_ORIGIN_BACKFILL,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
         self._conn.commit()
         self._invalidation_callbacks: list[Callable[[], None]] = []
         # v1.5.0 #204 federation forward-compat. Resolve (or

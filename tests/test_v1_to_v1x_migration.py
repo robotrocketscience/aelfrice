@@ -118,6 +118,54 @@ def test_v1_0_store_accepts_new_writes_after_migration(tmp_path: Path) -> None:
         store.close()
 
 
+def test_origin_backfill_runs_once_behind_marker(tmp_path: Path) -> None:
+    """#1135: the v1.2 origin backfill is schema_meta-gated one-shot.
+
+    First open flips legacy (origin=unknown, lock_level=user) rows to
+    user_stated and stamps the marker. Rows crafted after that open are
+    NOT flipped by later opens — the two UPDATE statements no longer run
+    on every open.
+    """
+    db = tmp_path / "v1_0.db"
+    _seed_v1_0_store(db)
+    # Give legacy1 a user lock so the backfill has an eligible row.
+    raw = sqlite3.connect(str(db))
+    raw.execute(
+        "UPDATE beliefs SET lock_level = 'user', "
+        "locked_at = '2025-01-03T00:00:00+00:00' WHERE id = 'legacy1'"
+    )
+    raw.commit()
+    raw.close()
+
+    s1 = MemoryStore(str(db))
+    try:
+        b = s1.get_belief("legacy1")
+        assert b is not None
+        assert b.origin == "user_stated"
+        from aelfrice.store import SCHEMA_META_ORIGIN_BACKFILL
+        assert s1.get_schema_meta(SCHEMA_META_ORIGIN_BACKFILL) is not None
+    finally:
+        s1.close()
+
+    # Craft a post-marker eligible row directly; the gated pass must
+    # leave it alone on the next open.
+    raw = sqlite3.connect(str(db))
+    raw.execute(
+        "UPDATE beliefs SET origin = 'unknown' WHERE id = 'legacy1'"
+    )
+    raw.commit()
+    raw.close()
+    s2 = MemoryStore(str(db))
+    try:
+        b = s2.get_belief("legacy1")
+        assert b is not None
+        assert b.origin == "unknown", (
+            "origin backfill re-ran despite completion marker"
+        )
+    finally:
+        s2.close()
+
+
 def test_migration_idempotent_on_re_open(tmp_path: Path) -> None:
     db = tmp_path / "v1_0.db"
     _seed_v1_0_store(db)
