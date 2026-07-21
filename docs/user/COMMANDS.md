@@ -1,6 +1,6 @@
 # Commands
 
-Multi-subcommand CLI; full set listed via `aelf --help --advanced`. The retrieval/feedback ones are also exposed as MCP tools (see [MCP](MCP.md)) and slash commands (see [SLASH_COMMANDS](SLASH_COMMANDS.md)). Most lifecycle commands also ship as slash commands (`setup`, `doctor`, `upgrade`, `uninstall` all have `/aelf:*` forms); only `migrate` and `mcp` are CLI-only.
+Multi-subcommand CLI; full set listed via `aelf --help --advanced`. The retrieval/feedback ones are also exposed as MCP tools (see [MCP](MCP.md)) and slash commands (see [SLASH_COMMANDS](SLASH_COMMANDS.md)). Most lifecycle commands also ship as slash commands (`setup`, `doctor`, `upgrade`, `uninstall` all have `/aelf:*` forms); only `migrate`, `unsetup`, and `mcp` are CLI-only (`aelf unsetup` has no slash form; the `/aelf:uninstall` flow covers teardown).
 
 ```
 aelf <subcommand> [args] [options]
