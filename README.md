@@ -14,9 +14,9 @@
 
 You correct your agent. *"Got it,"* it says. Next session, same mistake.
 
-aelfrice runs in the background and stops the amnesia. Write a rule once and every relevant prompt thereafter ships with that rule already attached — *before* the model sees your message. No rules-file chain to maintain, no cross-references for the agent to skip; the matched beliefs are in the prompt, not in a file the agent is supposed to consult.
+aelfrice runs in the background and stops the amnesia. Write a rule once and every relevant prompt thereafter ships with that rule already attached, *before* the model sees your message. There is no rules file to maintain and nothing for the agent to skip: the matched beliefs are in the prompt itself.
 
-**For developers** using AI coding agents — first-class via the `UserPromptSubmit` hook for hosts that expose it; any MCP host via the included stdio server. Local-only by design — embeddings, vector RAG, and cloud sync are explicitly out of scope. See [Philosophy](docs/concepts/PHILOSOPHY.md) for the trade-off.
+Built for developers using AI coding agents. Hosts that expose a `UserPromptSubmit` hook get first-class support; any MCP host can use the included stdio server. Local-only by design — embeddings, vector RAG, and cloud sync are out of scope, and [Philosophy](docs/concepts/PHILOSOPHY.md) explains why that trade-off is worth it.
 
 ## Install
 
@@ -50,10 +50,11 @@ The model reads the whole thing as one message. Your rules arrive every relevant
 
 ## What it does for you
 
-- **Stops the AI forgetting your rules.** Lock a rule once with `aelf lock "..."` — it comes back attached to every prompt after that, in every new session. You don't have to remind the AI; aelfrice does.
-- **The AI can't skip it.** What aelfrice remembers is in the prompt *before* the model sees it — not stored in a file the AI is supposed to check on its own. The reminding happens for the AI, not by you.
-- **Nothing to maintain.** Passive capture runs in the background: every turn is logged and ingested, successful `git commit` messages too. Your memory grows while you work, without you typing `aelf` at all.
-- **Stays on your computer, leaves on command.** One SQLite file on your machine. No cloud account. No telemetry. If you stop trusting aelfrice, `aelf uninstall` removes it cleanly in one command (`--archive` encrypts the DB to a file first).
+Lock a rule once with `aelf lock "..."` and it comes back attached to every relevant prompt, in every future session. The reminding happens for you — and the model can't skip it, because the rule is already in the prompt when it starts reading rather than sitting in a file it may or may not consult.
+
+There's also nothing to maintain. Passive capture logs and ingests every turn, and successful `git commit` messages too, so the memory grows while you work without you typing `aelf` at all.
+
+And it all stays on your computer: one SQLite file, no cloud account, no telemetry. If you stop trusting aelfrice, `aelf uninstall` removes it in one command (`--archive` encrypts the DB to a file first).
 
 ## Why not just a rules file?
 
@@ -95,7 +96,7 @@ L3: graph walk       -> typed-edge BFS from the L0+L2.5+L1 seed set (DERIVED_FRO
 
 L0 always ships. L1, L2.5, and (when enabled) L3 are budget-trimmed against the merged candidate set in score-descending order; locked beliefs win every overflow. Default budget: 1,500 tokens per hook-injected prompt (the `aelf search` / library `retrieve()` default is 2,400). A separate structural-HRR lane (Plate-FFT bind/probe) routes queries that parse as structural markers in the `retrieve_v2` API; ordinary prompts never touch it.
 
-**Lock count is the operator's baseline-context budget knob.** If you lock 200 things, every session opens with all 200, by design. Everything non-locked is BM25-ranked and budget-trimmed. The first prompt of a new session carries one extra block — a `<session-start>` sub-block listing all locks plus load-bearing unlocked beliefs (corroboration ≥ 2, or posterior mean ≥ ⅔ with α+β ≥ 4); subsequent prompts in the same session skip it.
+Your lock count doubles as a baseline-context budget: lock 200 things and every session opens with all 200, by design. Everything non-locked is BM25-ranked and budget-trimmed. The first prompt of a new session carries one extra block — a `<session-start>` sub-block listing all locks plus load-bearing unlocked beliefs (corroboration ≥ 2, or posterior mean ≥ ⅔ with α+β ≥ 4); subsequent prompts in the same session skip it.
 
 Bench evidence on the labelled query-strategy corpus measured **+0.2851 absolute NDCG@k (+94.8%)** versus the v1.4 raw-BM25 baseline (v3.0 30-row corpus, 2026-05-12) at +0.96 ms p99 over legacy-bm25 (re-measured 2026-05-26; gate budget +5 ms delta; see [`tests/bench_gate/test_query_strategy.py`](tests/bench_gate/test_query_strategy.py)). Full lane wiring, composition, and federation peer DBs: [ARCHITECTURE § Retrieval](docs/concepts/ARCHITECTURE.md#retrieval).
 
@@ -124,7 +125,7 @@ Two slash commands let the agent reach back into the belief graph mid-turn, beyo
 
 **`/aelf:reason <query>`** — the structured-walk surface. Walks the belief graph from BM25-seeded starting points and emits a typed reasoning trace: hops with edge-type breadcrumbs, a `VERDICT` (`SUFFICIENT` / `PARTIAL` / `UNCERTAIN` / `INSUFFICIENT` / `CONTRADICTORY`), `IMPASSES` (typed gaps, ties, or constraint failures), and `SUGGESTED UPDATES` — `(belief_id, direction, note)` rows that map straight to `aelf feedback` so the conclusion closes the loop on the beliefs that fed it. Each impasse is dispatched by the host agent to a role-tagged worker (Verifier / Gap-filler / Fork-resolver). Peer hops in foreign federation scopes are annotated `[scope:<name>]`.
 
-The pair-rhythm is the point: `/aelf:wonder` adds fresh thinking to the graph, then `/aelf:reason` draws conclusions across it. Both surfaces are deterministic in the aelfrice layer (verdict classification, impasse derivation, axis generation, suggested-update mapping). The only LLM calls happen when the host agent dispatches one worker per impasse or research axis — and those calls run under the host's own credentials, not aelfrice's. Specs: [COMMANDS § `wonder`](docs/user/COMMANDS.md), [COMMANDS § `reason`](docs/user/COMMANDS.md).
+They're meant to be used in that rhythm — `/aelf:wonder` adds fresh thinking to the graph, then `/aelf:reason` draws conclusions across it. Both surfaces are deterministic in the aelfrice layer (verdict classification, impasse derivation, axis generation, suggested-update mapping). The only LLM calls happen when the host agent dispatches one worker per impasse or research axis — and those calls run under the host's own credentials, not aelfrice's. Specs: [COMMANDS § `wonder`](docs/user/COMMANDS.md), [COMMANDS § `reason`](docs/user/COMMANDS.md).
 
 ## What you get for free
 
