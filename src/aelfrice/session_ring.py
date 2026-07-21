@@ -178,6 +178,8 @@ def _normalize_for_session(
             "phantom_dedup": [],
             "phantom_contradicts": [],
             "phantom_init": False,
+            "promotion_fires": 0,
+            "promotion_dedup": [],
         }
     ring = data.get("ring")
     if not isinstance(ring, list):
@@ -238,6 +240,23 @@ def _normalize_for_session(
     phantom_init = bool(data.get("phantom_init")) if isinstance(
         data.get("phantom_init"), bool
     ) else False
+    # Phantom promotion-opportunity state (#1132 Q2) — a fire counter + a
+    # dedup-key list, independent of the #980 generation budget so the two
+    # opportunity lanes bound their notes separately. Default for pre-#1132
+    # rings, no migration.
+    promotion_fires = data.get("promotion_fires")
+    if (
+        not isinstance(promotion_fires, int)
+        or isinstance(promotion_fires, bool)
+        or promotion_fires < 0
+    ):
+        promotion_fires = 0
+    promotion_dedup_raw = data.get("promotion_dedup")
+    promotion_dedup = (
+        [s for s in promotion_dedup_raw if isinstance(s, str)]
+        if isinstance(promotion_dedup_raw, list)
+        else []
+    )
     return {
         "session_id": session_id,
         "ring": [e for e in ring if isinstance(e, dict) and isinstance(e.get("id"), str)],
@@ -251,6 +270,8 @@ def _normalize_for_session(
         "phantom_dedup": phantom_dedup,
         "phantom_contradicts": phantom_contradicts,
         "phantom_init": phantom_init,
+        "promotion_fires": promotion_fires,
+        "promotion_dedup": promotion_dedup,
     }
 
 
@@ -769,6 +790,58 @@ def read_phantom_state(session_id: str | None) -> dict[str, Any]:
         # "false") must default to False, not enable contradiction diffing.
         "phantom_init": init_raw if isinstance(init_raw, bool) else False,
     }
+
+
+def record_promotion_fire(
+    session_id: str | None,
+    dedup_key: str,
+    *,
+    stderr: IO[str] | None = None,
+) -> bool:
+    """Record one phantom promotion-opportunity fire (#1132 Q2): bump the
+    per-session promotion counter and remember ``dedup_key`` (the phantom's
+    belief id) so the same candidate is not re-surfaced this session.
+
+    Independent of the #980 ``record_phantom_fire`` counter — the generation
+    and promotion opportunity lanes carry separate budgets. Idempotent on
+    ``dedup_key`` within the dedup list, but the counter increments on every
+    call, so callers must check budget + dedup *before* firing. Fail-soft:
+    returns False on any error.
+    """
+    if not isinstance(dedup_key, str) or not dedup_key:
+        return False
+
+    def _apply(data: dict[str, Any]) -> None:
+        data["promotion_fires"] = int(data.get("promotion_fires", 0)) + 1
+        dedup = data.get("promotion_dedup")
+        if not isinstance(dedup, list):
+            dedup = []
+        if dedup_key not in dedup:
+            dedup.append(dedup_key)
+        data["promotion_dedup"] = dedup
+
+    return _locked_phantom_mutate(session_id, _apply, stderr=stderr)
+
+
+def read_promotion_state(session_id: str | None) -> dict[str, Any]:
+    """Return the phantom promotion-opportunity state for ``session_id``
+    (#1132 Q2).
+
+    Shape: ``{"promotion_fires": int, "promotion_dedup": list[str]}`` with
+    safe defaults when the ring is absent, cross-session, or predates the
+    promotion fields. Read-only.
+    """
+    state = read_ring_state(session_id)
+    fires = state.get("promotion_fires", 0)
+    if not isinstance(fires, int) or isinstance(fires, bool) or fires < 0:
+        fires = 0
+    dedup_raw = state.get("promotion_dedup")
+    dedup = (
+        [s for s in dedup_raw if isinstance(s, str)]
+        if isinstance(dedup_raw, list)
+        else []
+    )
+    return {"promotion_fires": fires, "promotion_dedup": dedup}
 
 
 def read_ring_state(session_id: str | None) -> dict[str, Any]:
