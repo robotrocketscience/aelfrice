@@ -692,11 +692,12 @@ class BM25IndexCache:
             index = BM25Index.deserialize(blob[off:])
             if index.anchor_weight != self.anchor_weight:
                 return None
-            # k1/b round-trip through float32 in the blob; compare in
-            # float32 to avoid spurious rebuilds.
-            if np.float32(index.k1) != np.float32(self.k1):
+            # v2 stores k1/b as float64, so the round-trip is exact;
+            # compare at full precision so a nearly-equal config never
+            # reuses another config's sidecar.
+            if index.k1 != self.k1:
                 return None
-            if np.float32(index.b) != np.float32(self.b):
+            if index.b != self.b:
                 return None
             self._generation = generation
             return index

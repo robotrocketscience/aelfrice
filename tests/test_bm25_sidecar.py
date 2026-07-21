@@ -9,6 +9,7 @@ one (the retrieval byte-identity AC depends on this).
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from aelfrice.bm25 import BM25Index, BM25IndexCache, sidecar_path_for
@@ -127,6 +128,21 @@ def test_anchor_weight_mismatch_rejects_sidecar(tmp_path: Path) -> None:
         _seed(store)
         BM25IndexCache(store, anchor_weight=3).get()
         assert BM25IndexCache(store, anchor_weight=5)._load_sidecar() is None
+    finally:
+        store.close()
+
+
+def test_k1_b_mismatch_rejects_sidecar(tmp_path: Path) -> None:
+    db = tmp_path / "m.db"
+    store = MemoryStore(str(db))
+    try:
+        _seed(store)
+        base = BM25IndexCache(store)
+        base.get()
+        bumped_k1 = math.nextafter(base.k1, math.inf)
+        assert BM25IndexCache(store, k1=bumped_k1)._load_sidecar() is None
+        bumped_b = math.nextafter(base.b, math.inf)
+        assert BM25IndexCache(store, b=bumped_b)._load_sidecar() is None
     finally:
         store.close()
 
