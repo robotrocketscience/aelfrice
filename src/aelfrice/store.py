@@ -757,6 +757,21 @@ _POST_MIGRATION_INDEXES: tuple[str, ...] = (
     # branch of the hook filter.
     "CREATE INDEX IF NOT EXISTS idx_beliefs_project_context "
     "ON beliefs(project_context)",
+    # #1135: partial index for the derivation worker's unstamped scan.
+    # ingest_log grows monotonically (one row per sentence, never
+    # deleted) while the unstamped set stays tiny, so without this the
+    # per-turn `WHERE derived_belief_ids IS NULL` scan is O(total log).
+    "CREATE INDEX IF NOT EXISTS idx_ingest_log_unstamped "
+    "ON ingest_log(id) WHERE derived_belief_ids IS NULL",
+    # #1135: partial index for list_locked_beliefs — the L0 tier runs
+    # up to three times per retrieve and was a full-table scan. Column
+    # order matches the query's ORDER BY (locked_at DESC, id ASC).
+    "CREATE INDEX IF NOT EXISTS idx_beliefs_locked "
+    "ON beliefs(locked_at DESC, id) WHERE lock_level != 'none'",
+    # #1135: has_edge_type() probes fire per non-empty query since the
+    # #1064 temporal-spine lane flip; without an index on type the
+    # miss case scans the whole edges table.
+    "CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(type)",
 )
 
 # One-shot backfill for v1.0/v1.1 stores opening on v1.2+. Each row
@@ -3682,7 +3697,10 @@ class MemoryStore:
         same shape as `get_ingest_log_entry`.
         """
         cur = self._conn.execute(
-            "SELECT * FROM ingest_log "
+            "SELECT id, ts, source_kind, source_path, raw_text, raw_meta, "
+            "       derived_belief_ids, derived_edge_ids, "
+            "       classifier_version, rule_set_hash, session_id "
+            "FROM ingest_log "
             "WHERE derived_belief_ids IS NULL "
             "ORDER BY id"
         )
