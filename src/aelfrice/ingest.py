@@ -218,11 +218,6 @@ def _ingest_turn_ids(
         return []
 
     ts = created_at or _now_utc_iso()
-    # Snapshot the canonical belief set so we can identify which derived
-    # ids in this turn correspond to brand-new inserts (vs corroborations
-    # of already-known beliefs). Preserves the pre-#264 public contract
-    # that `ingest_turn` returns the count of newly-inserted beliefs.
-    ids_before: set[str] = set(store.list_belief_ids())
 
     # #888: when the caller supplies a `role` (typically 'user' from
     # ingest_jsonl after the #785 assistant-row gate), stamp it on the
@@ -250,26 +245,43 @@ def _ingest_turn_ids(
 
     # Worker is idempotent and scans all unstamped rows; calling it once
     # at end-of-turn is the per-batch invocation pattern from the spec.
-    run_worker(store)
+    worker_result = run_worker(store)
 
-    # Resolve each log_id to its canonical belief id once, in input
-    # order. Used twice: (a) for the public return value (newly
-    # inserted beliefs, deduped), (b) for the #809 intra-turn edge
-    # wiring below (per-sentence belief id, position-preserving).
+    # Resolve each log_id to its per-row fate, in input order. #1135:
+    # the worker reports `(belief_id, was_inserted)` per stamped row,
+    # replacing the pre/post `set(list_belief_ids())` diff (a full-table
+    # scan per turn) and the per-log-id re-read. `was_inserted` is True
+    # only for brand-new canonical rows, which preserves the pre-#264
+    # public contract that `ingest_turn` returns the count of
+    # newly-inserted beliefs. Used twice: (a) for the public return
+    # value (newly inserted beliefs, deduped), (b) for the #809
+    # intra-turn edge wiring below (per-sentence belief id,
+    # position-preserving).
     log_belief_ids: list[str | None] = []
     inserted: list[str] = []
     seen: set[str] = set()
     for log_id in log_ids:
-        entry = store.get_ingest_log_entry(log_id)
-        bid: str | None = None
-        if entry is not None:
-            ids = entry.get("derived_belief_ids") or []
-            if isinstance(ids, list) and ids:
-                head = ids[0]
-                if isinstance(head, str):
-                    bid = head
+        outcome = worker_result.outcomes.get(log_id)
+        bid: str | None
+        was_inserted: bool
+        if outcome is not None:
+            bid, was_inserted = outcome
+        else:
+            # A sibling process stamped this row in the window between
+            # record_ingest and our run_worker pass. Fall back to the
+            # log row; a row stamped elsewhere is by definition not a
+            # brand-new insert of ours.
+            was_inserted = False
+            bid = None
+            entry = store.get_ingest_log_entry(log_id)
+            if entry is not None:
+                ids = entry.get("derived_belief_ids") or []
+                if isinstance(ids, list) and ids:
+                    head = ids[0]
+                    if isinstance(head, str):
+                        bid = head
         log_belief_ids.append(bid)
-        if bid is not None and bid not in ids_before and bid not in seen:
+        if bid is not None and was_inserted and bid not in seen:
             seen.add(bid)
             inserted.append(bid)
 

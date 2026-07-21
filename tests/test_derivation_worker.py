@@ -182,3 +182,27 @@ def test_worker_processes_multiple_rows_in_one_pass(
         row = store.get_ingest_log_entry(lid)
         assert row is not None
         assert isinstance(row["derived_belief_ids"], list)
+
+
+def test_worker_outcomes_report_per_row_fate(store: MemoryStore) -> None:
+    """Hypothesis (#1135): `WorkerResult.outcomes` maps every stamped
+    log id to (belief_id, was_inserted) — True for a brand-new insert,
+    False for a corroboration of the same content, (None, False) for a
+    no-belief stamp. Falsifiable by a missing log id, a wrong belief
+    id, or was_inserted=True on the corroboration row."""
+    new_id = _record_unstamped(store, "The scheduler retries three times.")
+    dup_id = _record_unstamped(store, "The scheduler retries three times.")
+
+    result = run_worker(store)
+
+    assert set(result.outcomes) == {new_id, dup_id}
+    new_bid, new_was_inserted = result.outcomes[new_id]
+    dup_bid, dup_was_inserted = result.outcomes[dup_id]
+    assert new_was_inserted is True
+    assert dup_was_inserted is False
+    assert new_bid == dup_bid  # same content -> same canonical belief
+    assert isinstance(new_bid, str)
+    assert store.get_belief(new_bid) is not None
+
+    # A second pass sees no unstamped rows -> empty outcomes.
+    assert run_worker(store).outcomes == {}

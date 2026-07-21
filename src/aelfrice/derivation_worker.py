@@ -41,7 +41,7 @@ Design properties:
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final
 
 from aelfrice.derivation import DerivationInput, RouteOverrides, derive
@@ -130,6 +130,14 @@ class WorkerResult:
         (orphan recovery + new derivations both contribute).
     `rows_skipped_no_belief` counts rows where `derive()` returned no
         belief (classifier marked persist=False).
+    `outcomes` (#1135) maps every log row id stamped by THIS invocation
+        to `(belief_id, was_inserted)` — `belief_id` is None when
+        `derive()` produced no belief, `was_inserted` is True only for
+        brand-new canonical rows (False for corroborations and no-belief
+        stamps). Lets callers that just wrote log rows learn their
+        per-row fate without re-reading the log or snapshotting the
+        belief-id set — the pre-#1135 `set(list_belief_ids())` diff in
+        `_ingest_turn_ids` was a full-table scan per turn.
     """
 
     rows_scanned: int = 0
@@ -137,6 +145,9 @@ class WorkerResult:
     beliefs_corroborated: int = 0
     rows_stamped: int = 0
     rows_skipped_no_belief: int = 0
+    outcomes: dict[str, tuple[str | None, bool]] = field(
+        default_factory=dict,
+    )
 
 
 _TRANSCRIPT_CALL_SITE: str = CORROBORATION_SOURCE_TRANSCRIPT_INGEST
@@ -258,12 +269,14 @@ def _process_row(
         # Stamp the row with an explicit empty list so a subsequent
         # worker pass treats it as covered (vs ambiguous NULL = unstamped).
         store.update_ingest_derived_ids(log_id, derived_belief_ids=[])
+        acc.outcomes[log_id] = (None, False)
         return WorkerResult(
             rows_scanned=rows_scanned,
             beliefs_inserted=acc.beliefs_inserted,
             beliefs_corroborated=acc.beliefs_corroborated,
             rows_stamped=acc.rows_stamped + 1,
             rows_skipped_no_belief=acc.rows_skipped_no_belief + 1,
+            outcomes=acc.outcomes,
         )
 
     corroboration_source = _resolve_corroboration_source(row)
@@ -322,6 +335,7 @@ def _process_row(
         derived_edge_ids=derived_edge_ids if derived_edge_ids else None,
     )
 
+    acc.outcomes[log_id] = (actual_id, was_inserted)
     return WorkerResult(
         rows_scanned=rows_scanned,
         beliefs_inserted=acc.beliefs_inserted + (1 if was_inserted else 0),
@@ -330,4 +344,5 @@ def _process_row(
         ),
         rows_stamped=acc.rows_stamped + 1,
         rows_skipped_no_belief=acc.rows_skipped_no_belief,
+        outcomes=acc.outcomes,
     )
