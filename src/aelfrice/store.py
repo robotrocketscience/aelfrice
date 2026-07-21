@@ -605,8 +605,9 @@ SCHEMA_META_ENTITY_BACKFILL: Final[str] = "entity_backfill_complete"
 SCHEMA_META_STORE_GENERATION: Final[str] = "store_generation"
 
 # #1135: marker for the v1.2 origin backfill (_BACKFILL_STATEMENTS).
-# The two UPDATEs ran unguarded on every open — two full-table write
-# statements per open, compounding with the hook's multi-open pattern.
+# The two UPDATE statements ran unguarded on every open — two
+# full-table writes per open, compounding with the hook's multi-open
+# pattern.
 # Contemporary writers set origin explicitly (derive() routes,
 # cli lock upgrade), so the flip only ever matters once per legacy DB.
 # ISO timestamp on completion; absence triggers the pass on next open.
