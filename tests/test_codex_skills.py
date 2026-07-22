@@ -85,10 +85,10 @@ def test_task_mapping_only_on_subagent_commands() -> None:
 
 
 def test_low_tier_classifier_note_for_codex_onboard() -> None:
-    # #1153: onboard's classification fan-out pins the Claude host's
-    # low-cost model tier by name — a model that does not exist on Codex.
-    # The transform must steer the fan-out to Codex's own cheap tier
-    # rather than let it fall through to the session's default model.
+    # #1153: onboard's classification fan-out defaults to a low-cost
+    # model tier (tier-abstract since #1155) — on Codex the cheap tier is
+    # a `-mini`-class model. The transform must steer the fan-out to that
+    # tier rather than let it fall through to the session's default model.
     skills = _bundled_codex_skills()
     onboard = skills["aelf-onboard"]
     assert "`-mini`-class model" in onboard

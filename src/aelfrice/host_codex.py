@@ -482,17 +482,20 @@ def codex_skill_from_slash(filename: str, text: str) -> tuple[str, str]:
             "work; the dispatch logic and CLI calls are unchanged."
         )
         if filename == "onboard.md":
-            # onboard's classification fan-out pins the Claude host's
-            # low-cost model tier by name. That model does not exist on
-            # Codex, so without a note the directive is inert and the work
-            # falls through to the session's default model — the expensive,
-            # slow path for short-label classification. Steer to Codex's own
-            # cheap tier without pinning a model id (names drift).
+            # onboard's classification fan-out defaults to a low-cost
+            # model tier and lets the user pick the tier at run time; it
+            # is tier-abstract, not pinned to a host-specific model (the
+            # slash body stopped naming one in #1155). On Codex the
+            # cheapest fast tier is a `-mini`-class model; resolve the
+            # low-cost default there rather than let it fall through to
+            # the session's default model — the expensive, slow path for
+            # short-label classification. No model id pinned (names drift).
             adapter.append(
-                "This skill's classification step names the Claude host's "
-                "low-cost model tier as the classifier; that model does not "
-                "exist on Codex. Substitute Codex's cheapest fast model tier "
-                "(a `-mini`-class model) for that fan-out — not the session's "
+                "This skill's classification step defaults to a low-cost "
+                "model tier for the fan-out and lets the user pick the tier "
+                "at run time; it no longer names a host-specific model. On "
+                "Codex, resolve that low-cost default to Codex's cheapest "
+                "fast model tier (a `-mini`-class model) — not the session's "
                 "default model, which is more expensive and slower for bulk "
                 "short-label classification. Use that same model name where a "
                 "step renders or prices the classifier model."
