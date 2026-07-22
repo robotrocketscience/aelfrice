@@ -8,9 +8,10 @@ allowed-tools:
 ---
 <objective>
 Onboard a project into aelfrice using LLM-quality classification driven
-by Haiku Task subagents — no `ANTHROPIC_API_KEY` required, no MCP
-roundtrip, no extra billing. Falls back to the regex classifier on
-`--no-subagents` or when Task is unavailable.
+by host subagent tasks — no separate API key, no MCP roundtrip, no extra
+billing. Classification runs on a low-cost model by default and is
+user-selectable at run time (step 3a). Falls back to the regex
+classifier on `--no-subagents` or when the subagent tool is unavailable.
 </objective>
 
 <process>
@@ -44,11 +45,10 @@ roundtrip, no extra billing. Falls back to the regex classifier on
    though classification is cheap and finishes in a few minutes.
 
    Compute everything from the actual batched payload (not fixed
-   numbers). When you fill in the block, name the actual classifier
-   model from the `model:` field of step 4's dispatch — render the
-   string verbatim (alias or full model id, whichever step 4
-   specifies) so the printed `<model>` matches the dispatch and the
-   pricing reference below.
+   numbers). When you fill in the block, name the classifier model the
+   user selected in the model-choice step below — render the string
+   verbatim (alias or full model id) so the printed `<model>` matches
+   the step 4 dispatch and the per-tier pricing you showed.
 
    **Token estimate.** For each batch:
    - `input_tokens ≈ ceil((1200 + sum(len(s["text"]) + len(s["source"]) + 30 for s in batch)) / 4)`
@@ -60,11 +60,36 @@ roundtrip, no extra billing. Falls back to the regex classifier on
 
    Sum across all batches.
 
-   **Cost estimate.** Price at the classifier model's currently
-   published per-token rates from the provider's public pricing page.
-   As of 2026-05 the model named in step 4 priced at
-   `$1.00/MTok input, $5.00/MTok output`; refresh from the pricing
-   page if pricing has moved.
+   **Cost estimate (per tier).** The token counts above are fixed; only
+   the per-token rate changes with the model. Compute the run's cost for
+   each of your host's model tiers — a low-cost tier, a mid tier, and a
+   top tier — at each model's currently published per-token rates from
+   the provider's public pricing page. (As a low-cost-tier anchor: a
+   rate around `$1/MTok input, $5/MTok output` puts a few-thousand-
+   sentence run in the low-cents range; refresh from the pricing page,
+   and price the mid/top tiers from their own current rates.)
+
+3a. **Choose the classifier model.** Before dispatching, let the user
+   pick which model tier classifies the batch. Present the three tiers —
+   naming the concrete model your host offers for each — with the
+   per-tier run cost from the estimate above:
+
+   - **low-cost tier — default, recommended.** The current behaviour.
+   - **mid tier.**
+   - **top tier.**
+
+   State the trade-off plainly: this task is short-label classification
+   (typing each sentence as `factual` / `preference` / `requirement` /
+   `correction` plus a keep/drop bit), and higher-tier models show
+   **strongly diminishing returns** on quality for it — the extra spend
+   rarely changes the labels. Recommend the low-cost tier.
+
+   Ask via the host's question mechanism which tier to use. **If the
+   user does not answer, or the run is non-interactive / scripted,
+   proceed with the low-cost tier** — the prompt is an optional
+   override, never a hard block, so unattended onboarding still works.
+   Carry the chosen model id into step 4's dispatch and the estimate
+   block's `<model>` / cost line.
 
    **Time estimate.** Subagents dispatch in parallel waves of ~12.
    Each wave takes ~30-90 seconds wall-clock — the classifier itself
@@ -102,10 +127,11 @@ roundtrip, no extra billing. Falls back to the regex classifier on
    replace "how much is this going to cost? how long will it take?"
    with numbers up front.
 
-4. **Classify each batch via Haiku Task subagents.** For each batch,
-   invoke the Task tool with:
+4. **Classify each batch via Task subagents on the chosen model.** For
+   each batch, invoke the Task tool with:
    - `subagent_type`: `general-purpose`
-   - `model`: `haiku`
+   - `model`: the model id chosen in step 3a (the low-cost tier by
+     default)
    - `description`: e.g. `Classify onboard batch 1/N`
    - `prompt`: the classification template below, with `<BATCH_JSON>`
      replaced by the JSON-encoded batch.
@@ -160,9 +186,10 @@ falling back to regex classifier.`
 </process>
 
 <notes>
-- Zero direct calls to `https://api.anthropic.com/`. Classification is
-  performed by Haiku Task subagents drawing from the user's existing
-  Claude Code session — no API key, no separate billing.
+- Zero direct calls to the model provider's HTTP API. Classification is
+  performed by host subagent tasks drawing from the user's existing
+  session (on the model chosen in step 3a) — no API key, no separate
+  billing.
 - All beliefs land typed (`factual` / `preference` / `requirement` /
   `correction`); none are `pending_classification=True`. The store-
   layer dedup keys by `(text, source)` so re-running is idempotent.
