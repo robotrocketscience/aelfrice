@@ -135,7 +135,11 @@ def test_install_emits_trust_guidance(tmp_path: Path) -> None:
     result = install_codex_hooks(tmp_path / "hooks.json")
     joined = " ".join(result.guidance)
     assert "/hooks" in joined
-    assert "codex_hooks" in joined
+    # Names the current feature (`hooks`), not the retired `codex_hooks`,
+    # and states the correct default (stable / on).
+    assert "hooks" in joined
+    assert "codex_hooks" not in joined
+    assert "on by default" in joined or "enabled by default" in joined
 
 
 # --- removal ---------------------------------------------------------------
@@ -193,7 +197,7 @@ def test_doctor_flags_broken_hooks_json(tmp_path: Path) -> None:
 def test_doctor_healthy_install_reports_coverage(tmp_path: Path) -> None:
     install_codex_hooks(tmp_path / "hooks.json")
     (tmp_path / "config.toml").write_text(
-        "[features]\ncodex_hooks = true\n", encoding="utf-8",
+        "[features]\nhooks = true\n", encoding="utf-8",
     )
     report = doctor_codex(tmp_path)
     assert report.hooks_file_valid
@@ -204,18 +208,43 @@ def test_doctor_healthy_install_reports_coverage(tmp_path: Path) -> None:
     assert any("unapproved" in w for w in report.warnings)
 
 
-def test_doctor_warns_on_feature_flag_off(tmp_path: Path) -> None:
+def test_doctor_feature_on_by_default_when_unmentioned(tmp_path: Path) -> None:
+    # Codex 0.145+: `hooks` is stable and on by default, so it is absent
+    # from config.toml at its default. Absence must read as ON, and no
+    # "feature disabled" warning must fire (regression guard for #1151:
+    # the retired `codex_hooks` probe reported this case as off).
     install_codex_hooks(tmp_path / "hooks.json")
     (tmp_path / "config.toml").write_text("model = \"x\"\n", encoding="utf-8")
     report = doctor_codex(tmp_path)
+    assert report.feature_flag_on is True
+    assert not any("feature is disabled" in w for w in report.warnings)
+
+
+def test_doctor_warns_only_on_explicit_disable(tmp_path: Path) -> None:
+    install_codex_hooks(tmp_path / "hooks.json")
+    (tmp_path / "config.toml").write_text(
+        "[features]\nhooks = false\n", encoding="utf-8",
+    )
+    report = doctor_codex(tmp_path)
     assert report.feature_flag_on is False
-    assert any("codex_hooks feature flag is off" in w for w in report.warnings)
+    assert any("hooks` feature is disabled" in w for w in report.warnings)
+
+
+def test_doctor_honours_legacy_codex_hooks_key(tmp_path: Path) -> None:
+    # An explicit legacy `codex_hooks = true` (Codex 0.11x–0.12x) is still
+    # read as enabled, so an upgrader who set it does not get a false off.
+    install_codex_hooks(tmp_path / "hooks.json")
+    (tmp_path / "config.toml").write_text(
+        "[features]\ncodex_hooks = true\n", encoding="utf-8",
+    )
+    report = doctor_codex(tmp_path)
+    assert report.feature_flag_on is True
 
 
 def test_doctor_counts_approved_state_entries(tmp_path: Path) -> None:
     install_codex_hooks(tmp_path / "hooks.json")
     (tmp_path / "config.toml").write_text(
-        '[features]\ncodex_hooks = true\n'
+        '[features]\nhooks = true\n'
         '[hooks.state."k1"]\ntrusted_hash = "abc"\n'
         '[hooks.state."k2"]\ntrusted_hash = "def"\n',
         encoding="utf-8",

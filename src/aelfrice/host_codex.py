@@ -10,9 +10,10 @@ triage:
   a ``trusted_hash`` over a canonical TOML serialization) is explicitly
   marked for replacement in the Codex source — we never write it.
   Setup instead prints approval guidance: the user runs ``/hooks``
-  inside a Codex session to trust the new entries. Until approved (and
-  until the ``codex_hooks`` feature flag is on), Codex silently skips
-  the hooks — doctor surfaces both conditions.
+  inside a Codex session to trust the new entries. Until approved,
+  Codex silently skips the hooks. The ``hooks`` feature itself is
+  stable and on by default (it was the under-development ``codex_hooks``
+  flag on Codex 0.11x–0.12x); doctor surfaces an explicit disable.
 - **Merge-aware and idempotent.** Entries whose command basename is one
   of ours are replaced wholesale on every setup run; everything else in
   the file is preserved byte-for-byte at the JSON level. An unparseable
@@ -271,13 +272,15 @@ def install_codex_hooks(
         installed_events=sorted(desired.keys()),
         guidance=[
             (
-                "Codex runs hooks only after per-hook trust approval: open a "
-                + "Codex session and run /hooks to approve the new entries."
+                "Codex runs a hook only after per-hook trust approval: open "
+                + "a Codex session and run /hooks to approve the new entries "
+                + "(automation that vets its own hook sources may pass "
+                + "--dangerously-bypass-hook-trust instead)."
             ),
             (
-                "The codex_hooks feature flag must be enabled "
-                + "(codex features enable codex_hooks) — it is off by default "
-                + "while the hooks surface is under development upstream."
+                "The Codex `hooks` feature is stable and enabled by default; "
+                + "no action is needed unless you disabled it "
+                + "([features].hooks = false in config.toml)."
             ),
         ],
     )
@@ -789,12 +792,21 @@ def doctor_codex(codex_dir: Path | None = None) -> CodexDoctorReport:
         except (tomllib.TOMLDecodeError, OSError) as exc:
             report.warnings.append(f"could not parse {config_path}: {exc}")
             cfg = {}
+        # Codex 0.145+ names the feature `hooks` (stage: stable, enabled
+        # by default). Legacy 0.11x–0.12x named it `codex_hooks` (under
+        # development, off by default). A default-on feature is absent from
+        # config.toml when left at its default, so absence must read as ON,
+        # not off. Honour an explicit setting under either key; treat a
+        # parsed-but-unmentioned feature as the current default (on).
+        hooks_flag: bool | None = None
         features = cfg.get("features")
         if isinstance(features, dict):
-            flag = cast(dict[str, object], features).get("codex_hooks")
-            report.feature_flag_on = flag is True
-        else:
-            report.feature_flag_on = False
+            fdict = cast(dict[str, object], features)
+            if "hooks" in fdict:
+                hooks_flag = fdict.get("hooks") is True
+            elif "codex_hooks" in fdict:
+                hooks_flag = fdict.get("codex_hooks") is True
+        report.feature_flag_on = True if hooks_flag is None else hooks_flag
         hooks_cfg = cfg.get("hooks")
         if isinstance(hooks_cfg, dict):
             state = cast(dict[str, object], hooks_cfg).get("state")
@@ -806,8 +818,10 @@ def doctor_codex(codex_dir: Path | None = None) -> CodexDoctorReport:
                         report.approved_state_count += 1
     if report.feature_flag_on is False:
         report.warnings.append(
-            "codex_hooks feature flag is off — Codex will not run any "
-            "hooks (enable: codex features enable codex_hooks)",
+            "the Codex `hooks` feature is disabled in config.toml "
+            "([features].hooks = false) — Codex will not run any hooks; "
+            "remove that line or set it true (`hooks` is stable and on "
+            "by default)",
         )
     # Approval-state keying is positional today and slated to change
     # upstream (per-handler keys vs per-group digests), so exact

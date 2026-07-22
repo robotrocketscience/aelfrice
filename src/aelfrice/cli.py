@@ -4502,7 +4502,7 @@ def _cmd_doctor_codex(
         else ("on" if report.feature_flag_on else "off")
     )
     print(
-        f"[i] codex_hooks feature flag: {flag}; approved [hooks.state] "
+        f"[i] codex `hooks` feature: {flag}; approved [hooks.state] "
         f"entries: {report.approved_state_count}",
         file=out,  # type: ignore[arg-type]
     )
@@ -8046,7 +8046,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--host", choices=("claude", "codex"), default="claude",
         help=(
             "host to diagnose. 'codex' scans ~/.codex/hooks.json shape, "
-            "aelfrice hook coverage, the codex_hooks feature flag, and "
+            "aelfrice hook coverage, the `hooks` feature state, and "
             "[hooks.state] trust coverage (#1052); brain-graph checks "
             "are host-independent and are skipped in this mode."
         ),
