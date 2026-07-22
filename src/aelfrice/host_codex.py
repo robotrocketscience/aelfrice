@@ -481,6 +481,22 @@ def codex_skill_from_slash(filename: str, text: str) -> tuple[str, str]:
             "use Codex's own subagent mechanism to fan out the equivalent "
             "work; the dispatch logic and CLI calls are unchanged."
         )
+        if filename == "onboard.md":
+            # onboard's classification fan-out pins the Claude host's
+            # low-cost model tier by name. That model does not exist on
+            # Codex, so without a note the directive is inert and the work
+            # falls through to the session's default model — the expensive,
+            # slow path for short-label classification. Steer to Codex's own
+            # cheap tier without pinning a model id (names drift).
+            adapter.append(
+                "This skill's classification step names the Claude host's "
+                "low-cost model tier as the classifier; that model does not "
+                "exist on Codex. Substitute Codex's cheapest fast model tier "
+                "(a `-mini`-class model) for that fan-out — not the session's "
+                "default model, which is more expensive and slower for bulk "
+                "short-label classification. Use that same model name where a "
+                "step renders or prices the classifier model."
+            )
     if skill_name in _HOST_MANAGEMENT_SKILLS:
         adapter.append(_HOST_MANAGEMENT_NOTE)
     adapter.append(

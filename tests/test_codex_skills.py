@@ -84,6 +84,21 @@ def test_task_mapping_only_on_subagent_commands() -> None:
     assert tagged == {"aelf-onboard", "aelf-reason", "aelf-wonder"}
 
 
+def test_low_tier_classifier_note_for_codex_onboard() -> None:
+    # #1153: onboard's classification fan-out pins the Claude host's
+    # low-cost model tier by name — a model that does not exist on Codex.
+    # The transform must steer the fan-out to Codex's own cheap tier
+    # rather than let it fall through to the session's default model.
+    skills = _bundled_codex_skills()
+    onboard = skills["aelf-onboard"]
+    assert "`-mini`-class model" in onboard
+    assert "not the session's default model" in onboard
+    # The note is onboard-specific: other subagent skills (reason/wonder)
+    # have no model directive and must not carry it.
+    for name in ("aelf-reason", "aelf-wonder"):
+        assert "`-mini`-class model" not in skills[name]
+
+
 def test_transform_is_deterministic() -> None:
     src = _bundled_slash_files()["reason.md"]
     a = codex_skill_from_slash("reason.md", src)
