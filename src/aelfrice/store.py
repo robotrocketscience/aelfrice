@@ -2629,9 +2629,12 @@ class MemoryStore:
         """
         # Values come from a module-level constant, never from a caller, but
         # they are bound rather than interpolated so the shape stays correct
-        # if the set ever grows. An empty set degrades to the pre-#1171
-        # "no feedback rows at all" clause rather than emitting `NOT IN ()`,
-        # which SQLite rejects.
+        # if the set ever grows. The empty-set branch emits no clause at all,
+        # which is the pre-#1171 "any feedback row protects it" behaviour.
+        # SQLite would in fact accept `NOT IN ()` and read it as always-true,
+        # giving the identical result — but an empty IN list is a SQLite
+        # extension, not standard SQL, so the degraded case is spelled out
+        # rather than left resting on that.
         exposure_only = sorted(EXPOSURE_ONLY_FEEDBACK_SOURCES)
         if exposure_only:
             placeholders = ",".join("?" for _ in exposure_only)

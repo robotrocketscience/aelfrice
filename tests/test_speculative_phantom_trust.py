@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from aelfrice import hook, hook_search, promotion
+from aelfrice import store as store_module
 from aelfrice.feedback import _bayesian_update, apply_feedback
 from aelfrice.hook_agent_context import _build_block
 from aelfrice.models import (
@@ -162,6 +163,33 @@ def test_bayesian_update_is_monotone_so_the_prior_band_is_exact() -> None:
         assert alpha >= b.alpha
         assert beta >= b.beta
         assert (alpha, beta) != (b.alpha, b.beta)
+
+
+def test_an_empty_exposure_set_degrades_to_the_pre_fix_clause(
+    store: MemoryStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty exemption set restores the pre-#1171 "any row protects" rule.
+
+    This pins behaviour, not SQL syntax: SQLite accepts an empty IN list and
+    reads `NOT IN ()` as always-true, so removing the empty-set branch in
+    `query_wonder_gc_candidates` leaves this test green. The branch exists
+    because an empty IN list is a SQLite extension rather than standard SQL.
+
+    Patched on `aelfrice.store`, not `aelfrice.models`: store.py binds the
+    constant at import time, so patching the defining module would leave the
+    predicate reading the original set and this test would pass while
+    exercising nothing.
+    """
+    monkeypatch.setattr(store_module, "EXPOSURE_ONLY_FEEDBACK_SOURCES", frozenset())
+    store.insert_belief(_belief("phantom1", "conjecture about deployment"))
+
+    # Untouched phantom: still a candidate, and the query still parses.
+    assert store.query_wonder_gc_candidates(cutoff_ts=_old_ts(1)) == ["phantom1"]
+
+    # With no source exempt, an exposure row protects it again -- the
+    # pre-#1171 behaviour, which is the documented fallback.
+    hook_search.record_retrieval(store, [store.get_belief("phantom1")])
+    assert store.query_wonder_gc_candidates(cutoff_ts=_old_ts(1)) == []
 
 
 def test_exposure_only_sources_match_their_owning_module() -> None:
@@ -406,15 +434,14 @@ def test_a_promoted_phantom_loses_the_marker() -> None:
 @pytest.mark.parametrize(
     "render",
     [
-        pytest.param(lambda hits: hook._format_hits(hits), id="user_prompt_submit"),
+        pytest.param(hook._format_hits, id="user_prompt_submit"),
+        # The only genuine closure here: this envelope takes a second argument.
         pytest.param(
             lambda hits: hook._format_hits_with_session_start(hits, "<sub/>"),
             id="with_session_start",
         ),
-        pytest.param(
-            lambda hits: hook._format_baseline_hits(hits), id="session_start",
-        ),
-        pytest.param(lambda hits: _build_block(hits), id="worker_context"),
+        pytest.param(hook._format_baseline_hits, id="session_start"),
+        pytest.param(_build_block, id="worker_context"),
     ],
 )
 def test_every_injection_envelope_marks_phantoms(render) -> None:  # type: ignore[no-untyped-def]
