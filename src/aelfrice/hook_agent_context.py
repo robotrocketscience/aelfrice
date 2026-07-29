@@ -121,12 +121,15 @@ def _build_block(hits: list[object]) -> str:
     manifest bounding and #1037 envelope escaping — as a parent session.
     """
     from aelfrice.hook import (  # noqa: PLC0415
-        _FRAMING_HEADER,
+        _framing_header_for,
         _manifest_block_lines,
         _split_belief_lines,
     )
     belief_lines, manifest_lines = _split_belief_lines(hits)  # type: ignore[arg-type]
-    lines: list[str] = [WORKER_CONTEXT_OPEN_TAG, _FRAMING_HEADER]
+    lines: list[str] = [
+        WORKER_CONTEXT_OPEN_TAG,
+        _framing_header_for(hits),  # type: ignore[arg-type]
+    ]
     lines.extend(belief_lines)
     lines.extend(_manifest_block_lines(manifest_lines))
     lines.append(WORKER_CONTEXT_CLOSE_TAG)
