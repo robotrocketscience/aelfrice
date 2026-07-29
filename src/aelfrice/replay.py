@@ -256,14 +256,20 @@ def replay_full_equality(
                 ov = meta_obj.get(_META_OVERRIDE_BELIEF_TYPE)
                 if isinstance(ov, str) and ov:
                     override_belief_type = ov
-        route_overrides = _route_overrides_from_raw_meta(
-            meta_obj if isinstance(meta_obj, dict) else None,
-        )
+        meta_dict = meta_obj if isinstance(meta_obj, dict) else None
+        route_overrides = _route_overrides_from_raw_meta(meta_dict)
         inp = DerivationInput(
             raw_text=raw_text,
             source_kind=source_kind,
             source_path=source_path if source_path is not None else None,
-            raw_meta=None,   # raw_meta itself is unused by derive()
+            # #1167: raw_meta must round-trip verbatim. `derive()` reads
+            # `raw_meta["role"]` to route source_kind=transcript user
+            # turns to the undeflated USER_SOURCE prior and
+            # ORIGIN_USER_TRANSCRIPT (derivation.py, #888/#1089).
+            # Nulling it here re-derived every user-typed belief as
+            # agent_inferred at 1/5 the alpha, so `aelf doctor --replay`
+            # reported drift on every healthy store.
+            raw_meta=meta_dict,
             session_id=session_id if session_id is not None else None,
             ts=ts,
             classifier_version=classifier_version if classifier_version is not None else None,

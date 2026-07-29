@@ -17,6 +17,7 @@ from aelfrice.derivation import (
     _content_hash,
     derive,
 )
+from aelfrice.ingest import _ingest_turn_ids
 from aelfrice.models import (
     BELIEF_FACTUAL,
     BELIEF_PREFERENCE,
@@ -27,6 +28,7 @@ from aelfrice.models import (
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
     ORIGIN_UNKNOWN,
+    ORIGIN_USER_TRANSCRIPT,
     Belief,
 )
 from aelfrice.replay import FullEqualityReport, replay_full_equality
@@ -81,6 +83,26 @@ def _ingest(store: MemoryStore, raw_text: str, source_path: str = "test:source")
     )
     store.insert_belief(b)
     return b.id
+
+
+# `derive()` only takes the #888 user-transcript branch when the derived
+# source label is exactly "transcript" (derivation.py `_TRANSCRIPT_SOURCE_LABEL`),
+# which is what `ingest_jsonl` passes as `source_label`.
+_TRANSCRIPT_SOURCE = "transcript"
+
+
+def _ingest_transcript_turn(
+    store: MemoryStore, text: str, *, role: str | None,
+) -> list[str]:
+    """Drive one turn through the production transcript path.
+
+    Uses the same private entry point `ingest_jsonl` calls, so the log
+    row carries the real `raw_meta` (including `role`) rather than a
+    hand-built approximation.
+    """
+    return _ingest_turn_ids(
+        store, text, _TRANSCRIPT_SOURCE, created_at=_TS, role=role,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -411,6 +433,52 @@ def test_scope_since_v2_equivalent_to_all(store: MemoryStore) -> None:
     assert report_all.mismatched == report_v2.mismatched
     assert report_all.derived_orphan == report_v2.derived_orphan
     assert report_all.canonical_orphan == report_v2.canonical_orphan
+
+
+# ---------------------------------------------------------------------------
+# raw_meta round-trip (#1167)
+# ---------------------------------------------------------------------------
+
+
+def test_user_transcript_role_replays_without_drift(store: MemoryStore) -> None:
+    """Hypothesis: a transcript row carrying raw_meta['role']=='user' replays
+    to the same origin and prior as the canonical belief.
+
+    `derive()` reads raw_meta['role'] to route user turns to USER_SOURCE /
+    ORIGIN_USER_TRANSCRIPT (#888/#1089). Before #1167 replay passed
+    raw_meta=None, so every transcript belief re-derived as agent_inferred
+    at 1/5 the alpha and `aelf doctor --replay` reported drift on healthy
+    stores. Falsifiable by mismatched > 0 or an origin/alpha divergence."""
+    ids = _ingest_transcript_turn(store, _FACTUAL_SENTENCE, role="user")
+    assert len(ids) == 1
+    canonical = store.get_belief(ids[0])
+    assert canonical is not None
+    # Precondition: the production writer really did take the user branch.
+    assert canonical.origin == ORIGIN_USER_TRANSCRIPT
+    assert canonical.alpha == pytest.approx(3.0)
+
+    report = replay_full_equality(store)
+    assert report.matched == 1
+    assert report.mismatched == 0
+    assert report.has_drift is False
+
+
+def test_transcript_role_assistant_still_agent_inferred(
+    store: MemoryStore,
+) -> None:
+    """Hypothesis: passing raw_meta through does not promote non-user rows.
+    A transcript row with no user role stays agent_inferred on both sides,
+    so replay still matches. Falsifiable by mismatched > 0 or by the
+    canonical origin coming back as user_transcript."""
+    ids = _ingest_transcript_turn(store, _FACTUAL_SENTENCE_2, role=None)
+    assert len(ids) == 1
+    canonical = store.get_belief(ids[0])
+    assert canonical is not None
+    assert canonical.origin == ORIGIN_AGENT_INFERRED
+
+    report = replay_full_equality(store)
+    assert report.matched == 1
+    assert report.has_drift is False
 
 
 # ---------------------------------------------------------------------------
