@@ -604,11 +604,180 @@ class UninstallResult:
       'kept'    - DB preserved at db_path.
       'purged'  - DB deleted.
       'archived'- DB encrypted to archive_path then deleted from db_path.
+
+    `removed` lists every artifact path actually deleted (#1173), and
+    `orphaned` lists artifact paths we declined to touch because the
+    store does not live in a directory this package owns. Both are
+    empty in 'kept' mode. Callers print them so a disposition is
+    auditable rather than taken on faith.
     """
 
     mode: str  # 'kept' | 'purged' | 'archived'
     db_path: Path | None
     archive_path: Path | None = None
+    removed: tuple[Path, ...] = ()
+    orphaned: tuple[Path, ...] = ()
+
+
+# --- Artifact enumeration (#1173) ---------------------------------------
+#
+# `uninstall` used to delete exactly one file: memory.db. Everything else
+# the package writes next to it survived a --purge, including several
+# artifacts holding verbatim belief content. The enumeration below is the
+# single source of truth for "what this package put on disk".
+#
+# Two classes of path, because they carry different collision risk:
+#
+#   1. DB-anchored. Named after the store file itself (`memory.db-wal`,
+#      `memory.db.bm25f`, `memory.db.bak-20260629`). The db filename is a
+#      prefix, so these cannot collide with unrelated user files and are
+#      safe to remove wherever the store lives.
+#
+#   2. Fixed-name siblings. `hook_audit.jsonl`, `transcripts/`, and
+#      friends carry generic names, so they are only ours by virtue of
+#      sitting in an aelfrice-owned directory. `AELFRICE_DB` is honoured
+#      verbatim (db_paths.db_path), so a user may legitimately point the
+#      store at `~/memory.db` — and then `db_path.parent` is $HOME and
+#      `$HOME/transcripts/` is emphatically not ours to delete. These are
+#      removed only when the parent directory is recognisably a store
+#      directory, and reported as `orphaned` otherwise.
+
+_OWNED_STORE_DIRNAMES: Final[frozenset[str]] = frozenset(
+    # `<git-common-dir>/aelfrice/` (db_paths.db_path) and the
+    # `~/.aelfrice/` non-git fallback (db_paths.DEFAULT_DB_DIR).
+    {"aelfrice", ".aelfrice"}
+)
+
+# SQLite's own sidecars. WAL mode is unconditional (store.py sets
+# `PRAGMA journal_mode=WAL`), so `-wal`/`-shm` are present whenever a
+# connection is open; `-journal` covers a store rolled back to the
+# rollback journal by an external tool.
+_DB_SIDECAR_SUFFIXES: Final[tuple[str, ...]] = ("-wal", "-shm", "-journal")
+
+# Fixed-name files the package writes beside the store.
+_SIBLING_FILENAMES: Final[tuple[str, ...]] = (
+    "hook_audit.jsonl",      # hook_audit.AUDIT_FILENAME
+    "hook_audit.jsonl.1",    # + hook_audit.AUDIT_ROTATED_SUFFIX
+    "feed.jsonl",            # feed_log.FEED_FILENAME
+)
+
+# Fixed-name directories the package writes beside the store.
+_SIBLING_DIRNAMES: Final[tuple[str, ...]] = (
+    "transcripts",     # transcript_logger.TRANSCRIPTS_SUBDIR
+    "rebuild_logs",    # context_rebuilder.REBUILD_LOG_DIRNAME
+    "telemetry",       # hook.py / hook_search_tool.py
+)
+
+
+def store_dir_is_owned(db_path: Path) -> bool:
+    """True when `db_path`'s parent is a directory this package created.
+
+    Gates removal of the generically-named siblings. See the class-2
+    note above for why this guard exists.
+    """
+    return db_path.parent.name in _OWNED_STORE_DIRNAMES
+
+
+def artifact_paths(
+    db_path: Path, *, exclude: Path | None = None,
+) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+    """Every on-disk artifact belonging to the store at `db_path`.
+
+    Returns `(owned, orphaned)`. `owned` is safe to delete; `orphaned`
+    is the fixed-name siblings that exist but sit outside a recognised
+    store directory, for the caller to report rather than remove.
+
+    `exclude` drops one path from both lists — the CLI passes the
+    archive destination so writing the archive next to the store cannot
+    result in deleting it. Deterministic ordering: DB first (so a
+    partially-failed removal never leaves the store as the sole
+    survivor), then sorted sidecars, then sorted siblings.
+    """
+    owned: list[Path] = []
+    orphaned: list[Path] = []
+    parent = db_path.parent
+    name = db_path.name
+
+    if db_path.exists():
+        owned.append(db_path)
+    for suffix in _DB_SIDECAR_SUFFIXES:
+        sidecar = parent / f"{name}{suffix}"
+        if sidecar.exists():
+            owned.append(sidecar)
+    # `memory.db.*` catches the BM25F sidecar (`.bm25f`) and every backup
+    # naming scheme in the wild (`.bak-<date>`, `.pre-clamp-<date>.bak`).
+    # Anchored on the db filename, so it cannot reach unrelated files.
+    for extra in sorted(parent.glob(f"{name}.*")):
+        if extra not in owned:
+            owned.append(extra)
+
+    sink = owned if store_dir_is_owned(db_path) else orphaned
+    for filename in _SIBLING_FILENAMES:
+        candidate = parent / filename
+        if candidate.exists() and candidate not in owned:
+            sink.append(candidate)
+    for dirname in _SIBLING_DIRNAMES:
+        candidate = parent / dirname
+        if candidate.is_dir():
+            sink.append(candidate)
+
+    if exclude is not None:
+        owned = [p for p in owned if p != exclude]
+        orphaned = [p for p in orphaned if p != exclude]
+    return tuple(owned), tuple(orphaned)
+
+
+def checkpoint_wal(db_path: Path) -> bool:
+    """Fold the write-ahead log back into `db_path`. True if it ran.
+
+    Load-bearing for `--archive`, which encrypts `db_path.read_bytes()`.
+    A store whose WAL has not been checkpointed keeps its most recent
+    (and possibly *all* of its) committed content in `memory.db-wal`, so
+    reading the main file alone yields a valid-but-stale database. On a
+    store written by a still-open process that meant archiving zero
+    beliefs while reporting success — see #1173.
+
+    Best-effort by design: a corrupt or locked store must not block the
+    user from removing the package, and the caller deletes the WAL
+    either way. Returns False when the checkpoint could not run, which
+    for the archive path means the archive may be incomplete.
+    """
+    if not db_path.exists():
+        return False
+    try:
+        import sqlite3
+
+        conn = sqlite3.connect(str(db_path), timeout=5.0)
+    except sqlite3.Error:
+        return False
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.commit()
+        return True
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+
+
+def _remove_artifact(path: Path) -> bool:
+    """Delete one file or directory tree. True when it is gone after.
+
+    Swallows OSError for the same reason the pre-#1173 purge did: a
+    permission problem on one artifact must not abort the disposition
+    of the rest. The return value feeds the caller's manifest, so a
+    failure is reported rather than silently counted as removed.
+    """
+    try:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return not path.exists()
 
 
 def _encrypt_db_to_archive(
