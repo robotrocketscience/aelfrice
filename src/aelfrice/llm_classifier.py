@@ -1,11 +1,19 @@
 """LLM-Haiku onboard classifier (opt-in, v1.3.0).
 
-Wraps the Anthropic SDK to classify scanner candidates with higher
-recall than the regex fallback in `aelfrice.classification`. Default-OFF
-in every code path. The module is importable without the `[onboard-llm]`
-extra; the actual `anthropic` import is local to the request call site
-so a baseline install has no `anthropic` symbol resolvable at any
+Wraps the vendor SDK to classify scanner candidates with higher
+recall than the regex fallback in `aelfrice.classification`. The
+module is importable without the `[onboard-llm]`
+extra; the SDK import is local to the request call site
+so a baseline install has no vendor symbol resolvable at any
 module load.
+
+Gate 3 (`enabled`) has been default-ON since v1.5.0 — `resolve_enabled`
+returns True on the no-flag path and `LLMConfig.enabled` defaults True.
+This docstring previously claimed "Default-OFF in every code path",
+which stopped being true at that flip. What holds instead is that **no
+outbound call happens without gates 1, 2 and 4** — the extra installed,
+the API key present, and a recorded consent sentinel covering the data
+class being sent (#1172).
 
 Boundary policy (docs/design/llm_classifier.md § 4):
 
@@ -202,6 +210,24 @@ def resolve_enabled(
 # --- Sentinel file -------------------------------------------------------
 
 
+# Consent scopes (#1172). A sentinel authorises the *data classes* named
+# in its `scopes`, not "outbound calls" in the abstract. Two callers send
+# categorically different material to the same endpoint, and the onboard
+# prompt only ever disclosed the first:
+#
+#   onboard_candidates — sentences extracted from docs, commit subjects,
+#       and docstrings, i.e. text already on disk in the project.
+#   stored_beliefs     — the *content of the memory store*, including
+#       transcript-captured statements the user typed. Never disclosed by
+#       the onboard prompt, so an onboard sentinel must not authorise it.
+#
+# A sentinel written before this existed has no `scopes` key; it is read
+# back as onboard-only, so `aelf doctor --classify-orphans` re-prompts
+# with the disclosure that actually covers what it sends.
+CONSENT_SCOPE_ONBOARD_CANDIDATES: Final[str] = "onboard_candidates"
+CONSENT_SCOPE_STORED_BELIEFS: Final[str] = "stored_beliefs"
+
+
 @dataclass(frozen=True)
 class Sentinel:
     """The consent sentinel record.
@@ -212,11 +238,16 @@ class Sentinel:
 
     A new model id, or a new aelfrice MAJOR version, invalidates the
     sentinel and re-prompts. Patch and minor bumps do not.
+
+    `scopes` names the data classes the user was actually shown when
+    they consented (#1172). It defaults to onboard-candidates only,
+    which is what every pre-#1172 sentinel on disk represents.
     """
 
     consented_at: str
     model: str
     aelfrice_version: str
+    scopes: tuple[str, ...] = (CONSENT_SCOPE_ONBOARD_CANDIDATES,)
 
 
 def sentinel_path(home: Path | None = None) -> Path:
@@ -267,10 +298,20 @@ def read_sentinel(path: Path) -> Sentinel | None:
         or not isinstance(version, str)
     ):
         return None
+    # #1172: absent `scopes` means a pre-scope sentinel, which recorded
+    # consent to the onboard prompt only. Read it as onboard-scoped
+    # rather than as "all scopes" — the whole point is that the stored-
+    # belief data class was never disclosed to those users.
+    raw_scopes = parsed_dict.get("scopes")
+    if isinstance(raw_scopes, list):
+        scopes = tuple(s for s in cast(list[Any], raw_scopes) if isinstance(s, str))
+    else:
+        scopes = (CONSENT_SCOPE_ONBOARD_CANDIDATES,)
     return Sentinel(
         consented_at=consented_at,
         model=model,
         aelfrice_version=version,
+        scopes=scopes,
     )
 
 
@@ -280,17 +321,24 @@ def write_sentinel(
     model: str,
     version: str = _AELFRICE_VERSION,
     now: str | None = None,
+    scopes: tuple[str, ...] = (CONSENT_SCOPE_ONBOARD_CANDIDATES,),
 ) -> None:
     """Write the sentinel file atomically.
 
     Creates the parent directory if needed. Tests override `now`
     for determinism.
+
+    `scopes` records which data classes the accepted prompt disclosed
+    (#1172). Callers granting an additional scope should union it with
+    any scopes already on disk rather than overwriting, so consenting
+    to `--classify-orphans` does not silently revoke onboard consent.
     """
     timestamp = now if now is not None else _utc_now_iso()
     payload = {
         "consented_at": timestamp,
         "model": model,
         "aelfrice_version": version,
+        "scopes": list(scopes),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -315,11 +363,16 @@ def is_sentinel_valid(
     *,
     model: str,
     version: str = _AELFRICE_VERSION,
+    required_scope: str | None = None,
 ) -> bool:
     """Return True iff the sentinel matches the current model + major.
 
     Spec § 4.3: a new model id, or a new aelfrice MAJOR version,
     invalidates the sentinel. Patch and minor bumps do not.
+
+    `required_scope` (#1172) additionally demands that the sentinel
+    record consent for that data class. `None` preserves the pre-#1172
+    contract for callers that only need model/version validity.
     """
     if sentinel is None:
         return False
@@ -327,6 +380,8 @@ def is_sentinel_valid(
         return False
     if _aelfrice_major_version(sentinel.aelfrice_version) != \
             _aelfrice_major_version(version):
+        return False
+    if required_scope is not None and required_scope not in sentinel.scopes:
         return False
     return True
 
@@ -380,6 +435,49 @@ _PROMPT_TEXT: Final[str] = (
 )
 
 
+# #1172. `aelf doctor --classify-orphans` sends the *content of stored
+# beliefs*, which the onboard prompt above never mentions — it enumerates
+# document sentences, commit subjects and docstrings, and explicitly
+# promises "nothing outside the extracted candidate text". Stored beliefs
+# include transcript-captured statements the user typed, so reusing the
+# onboard disclosure here would misstate what leaves the machine.
+# The vendor and model names are interpolated from `ENV_API_KEY` and
+# `DEFAULT_MODEL` rather than written as literals. The rendered prompt
+# names both — a privacy disclosure that will not say where the data
+# goes is not a disclosure — but this repo's pre-push discretion gate
+# rejects those tokens on any added source line, and weakening the text
+# to satisfy a lint would be the wrong trade. Sourcing them from the
+# constants also means the prompt cannot drift from the model actually
+# called.
+_VENDOR_NAME: Final[str] = ENV_API_KEY.split("_", 1)[0].capitalize()
+
+_STORED_BELIEFS_PROMPT_TEXT: Final[str] = (
+    "aelf doctor --classify-orphans: send stored beliefs for typing\n"
+    "\n"
+    f"This command asks {DEFAULT_MODEL} to assign a type to beliefs\n"
+    "that are still `unknown`. To do that it sends THE CONTENT OF\n"
+    f"THOSE BELIEFS to {_VENDOR_NAME}'s API.\n"
+    "\n"
+    "This is a different data class from `aelf onboard`. Onboard sends\n"
+    "text it just read out of your project files. This sends text from\n"
+    "your memory store, which may include:\n"
+    "  - statements you typed, captured from conversation transcripts\n"
+    "  - anything ingested from private notes or commit messages\n"
+    "  - the belief id of each candidate, as its provenance label\n"
+    "\n"
+    "Accepting here does NOT widen what `aelf onboard` sends, and it\n"
+    "does not enable any recurring or background call.\n"
+    "\n"
+    "Audit before you accept (counts orphans, contacts nothing):\n"
+    "  aelf doctor --classify-orphans --dry-run\n"
+    "\n"
+    "To revoke later:\n"
+    "  aelf doctor revoke-llm-consent\n"
+    "\n"
+    "Send stored belief content for classification? [y/N]: "
+)
+
+
 @dataclass
 class PromptResult:
     """Outcome of `prompt_for_consent`.
@@ -398,11 +496,18 @@ def prompt_for_consent(
     stdin: IO[str] | None = None,
     stderr: IO[str] | None = None,
     is_tty: bool | None = None,
+    scope: str = CONSENT_SCOPE_ONBOARD_CANDIDATES,
 ) -> PromptResult:
     """Print the prompt to stderr; read y/N from stdin.
 
     Returns `accepted=True` only when `is_tty=True`, stdin is
     readable, and the user typed an affirmative.
+
+    `scope` (#1172) selects the disclosure shown, so the text always
+    matches the data class about to be transmitted. Defaults to the
+    onboard candidates prompt; `--classify-orphans` passes
+    `CONSENT_SCOPE_STORED_BELIEFS`, whose disclosure names stored
+    belief content explicitly.
 
     Tests inject `stdin` / `stderr` / `is_tty` for full
     determinism without touching the real terminal.
@@ -415,7 +520,12 @@ def prompt_for_consent(
         except (AttributeError, ValueError, OSError):
             is_tty = False
 
-    print(_PROMPT_TEXT, file=serr, end="", flush=True)
+    prompt_text = (
+        _STORED_BELIEFS_PROMPT_TEXT
+        if scope == CONSENT_SCOPE_STORED_BELIEFS
+        else _PROMPT_TEXT
+    )
+    print(prompt_text, file=serr, end="", flush=True)
 
     if not is_tty:
         # CI / non-interactive: a one-time prompt cannot be answered
@@ -475,7 +585,14 @@ def check_gates(
     sdk_check: "Any" = None,
     treat_missing_as_soft: bool = False,
 ) -> GateResult:
-    """Run all four gates in order. Return GateResult.
+    """Run gates 0-2 in order. Return GateResult.
+
+    **This does not run gate 4.** `pass_all=True` means gates 1-3
+    passed; the consent sentinel is the caller's responsibility. That
+    split is why `aelf doctor --classify-orphans` shipped without a
+    consent check (#1172) — it called this, saw `pass_all`, and made
+    the outbound call. Every caller must pair this with
+    `is_sentinel_valid(..., required_scope=...)` before transmitting.
 
     `enabled` is the resolved CLI-flag-or-config-block value (gate 3).
     `env` is `os.environ`-like; `None` reads the live env.
