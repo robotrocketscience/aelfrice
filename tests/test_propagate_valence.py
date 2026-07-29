@@ -1,7 +1,14 @@
-"""Setr broker-confidence attenuation test.
+"""`MemoryStore.propagate_valence` — attenuation, crediting, determinism.
 
-A->B->C chain. B is the broker. Low-confidence B should dampen propagation
-into C by ~9x compared to high-confidence B.
+Broker attenuation (#1058): an A->B->C chain where B is the broker. A
+low-confidence B should dampen propagation into C by ~9x relative to a
+high-confidence B.
+
+Correctness of the walk (#1169): the multiplier is the confidence of the
+belief the signal travels *through*, not of the belief being written to;
+each belief is credited exactly once per walk regardless of fan-in,
+reconvergence, or cycles; total injected mass is capped; and the output is
+a function of the graph rather than of edge insertion order.
 """
 from __future__ import annotations
 
