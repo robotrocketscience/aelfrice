@@ -41,19 +41,40 @@ similar pointer.
 tests/corpus/replay_soak/
 ├── README.md                                  (this file)
 └── v0.1/
-    ├── filesystem_v0_1.jsonl                  10 rows
+    ├── filesystem_v0_1.jsonl                  11 rows
     ├── git_v0_1.jsonl                         10 rows
     ├── python_ast_v0_1.jsonl                  10 rows
     ├── mcp_remember_v0_1.jsonl                10 rows
     ├── cli_remember_v0_1.jsonl                10 rows
     ├── feedback_loop_synthesis_v0_1.jsonl     10 rows
-    ├── transcript_v0_1.jsonl                  10 rows
+    ├── transcript_v0_1.jsonl                  13 rows
     └── claude_memory_v0_1.jsonl               6 rows
 ```
 
-v0.1 target: 76 rows total across 8 source kinds (10 per kind except claude_memory at 6). Ratification floor was
-60–120; v0.1 starts at the floor and v0.2 expansion can extend per
-kind without breaking the runner.
+v0.1 target: 80 rows total across 8 source kinds (10 per kind except
+`claude_memory` at 6, plus the four `raw_meta` rows added for #1167).
+Ratification floor was 60–120; v0.1 starts at the floor and v0.2
+expansion can extend per kind without breaking the runner.
+
+## `raw_meta` coverage (#1167)
+
+Every v0.1 row originally shipped `raw_meta: null`, which meant the
+fixture could not observe any `derive()` branch that reads metadata —
+including the transcript `role == "user"` path that is the dominant
+production write path. Four rows now cover it:
+
+| Row | `raw_meta` | Expected path |
+|---|---|---|
+| `transcript-011`, `transcript-012` | `{call_site, role: "user"}` | `USER_SOURCE` prior, `origin=user_transcript` |
+| `transcript-013` | `{call_site}` only | agent-inferred (no `role` key) |
+| `filesystem-011` | `{role: "user"}` | agent-inferred (branch is gated on `source_kind` too) |
+
+Rows carrying a `route_overrides` block are deliberately **not** in the
+corpus: `tests/replay_soak_runner.py` builds its `DerivationInput`
+without reconstructing them, so such a row would drift in the harness
+rather than in the code under test. Adding one is gated on the runner
+being rewritten onto the real `record_ingest` + `run_worker` path
+(tracked in the determinism umbrella, #1157).
 
 ## Per-row shape
 

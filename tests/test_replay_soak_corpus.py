@@ -109,6 +109,38 @@ def test_corpus_file_rows_valid(path: Path) -> None:
         seen_ids.add(row["id"])
 
 
+def test_corpus_covers_raw_meta_and_the_user_transcript_path() -> None:
+    """The corpus must exercise `raw_meta`, including `role == "user"`.
+
+    Every v0.1 row shipped with `raw_meta: null`, so the input shape that
+    drives the dominant production write path had zero coverage and the
+    #1167 divergence could not be observed by the soak gate. This test
+    pins the coverage so it cannot silently regress to none.
+    """
+    with_meta = 0
+    user_role = 0
+    for path in _iter_corpus_files():
+        with path.open() as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                rm = json.loads(line)["raw_meta"]
+                if not isinstance(rm, dict):
+                    continue
+                with_meta += 1
+                if rm.get("role") == "user":
+                    user_role += 1
+
+    assert with_meta >= 3, (
+        f"corpus has only {with_meta} rows with a non-null raw_meta; "
+        "derive() branches on raw_meta and replay must round-trip it"
+    )
+    assert user_role >= 2, (
+        f"corpus has only {user_role} rows with raw_meta.role == 'user'; "
+        "that is the transcript path that produced the #1167 drift"
+    )
+
+
 def test_corpus_replays_with_zero_drift(tmp_path: Path) -> None:
     """The v0.1 soak invariant: full corpus replay reports no drift.
 
