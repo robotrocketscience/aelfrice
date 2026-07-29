@@ -465,3 +465,67 @@ def test_sweep_still_bumps_an_unlocked_belief() -> None:
     after = s.get_belief("b1")
     assert after is not None
     assert after.alpha > 1.0
+
+
+def test_sweep_does_not_bump_a_foreign_belief(monkeypatch) -> None:
+    """Hypothesis: a federated peer's belief is never bumped locally.
+
+    #655 makes foreign beliefs read-only through the local DB, but the
+    sweeper wrote alpha directly and never checked. Patching the ownership
+    probe is enough to exercise the branch without standing up a peer DB.
+    Falsifiable by any alpha change, a row left enqueued, or a
+    feedback_history row."""
+    from aelfrice.federation import ForeignBeliefError
+
+    s = _store(_mk("b1", "apple banana"))
+    enqueue_retrieval_exposures(s, ["b1"], now=T0)
+
+    def _foreign(belief_id: str) -> None:
+        raise ForeignBeliefError(belief_id=belief_id, owning_scope="peer-a")
+
+    monkeypatch.setattr(s, "assert_local_ownership", _foreign)
+
+    result = sweep_deferred_feedback(s, now=T_AFTER_GRACE)
+
+    assert result.applied == 0
+    assert result.skipped_foreign == 1
+    assert result.cancelled == 1
+    after = s.get_belief("b1")
+    assert after is not None
+    assert after.alpha == 1.0
+    assert s.count_deferred_feedback_by_status().get("enqueued", 0) == 0
+    assert s.list_feedback_events(belief_id="b1") == []
+
+
+def test_sweep_eligibility_checks_share_the_row_transaction() -> None:
+    """Hypothesis: the lock/ownership checks read inside the row's write
+    transaction, not before it.
+
+    Otherwise a lock committed between the check and the alpha write lands
+    on a belief the checks just rejected. Asserting on the statement order
+    pins the structure: `BEGIN IMMEDIATE` must precede the belief read.
+    Falsifiable by a belief SELECT appearing before the BEGIN."""
+    s = _store(_mk("b1", "apple banana"))
+    enqueue_retrieval_exposures(s, ["b1"], now=T0)
+
+    statements: list[str] = []
+    s._conn.set_trace_callback(statements.append)
+    try:
+        sweep_deferred_feedback(s, now=T_AFTER_GRACE)
+    finally:
+        s._conn.set_trace_callback(None)
+
+    begins = [
+        i for i, stmt in enumerate(statements)
+        if "begin immediate" in stmt.lower()
+    ]
+    belief_reads = [
+        i for i, stmt in enumerate(statements)
+        if "from beliefs" in stmt.lower() and "select" in stmt.lower()
+    ]
+    assert begins, f"no BEGIN IMMEDIATE issued: {statements}"
+    assert belief_reads, f"no belief read issued: {statements}"
+    assert begins[0] < belief_reads[0], (
+        "eligibility read happens before the write lock is taken: "
+        f"{statements}"
+    )

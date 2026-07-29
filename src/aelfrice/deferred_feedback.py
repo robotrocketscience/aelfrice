@@ -313,75 +313,63 @@ def sweep_deferred_feedback(
     conn = store._conn  # noqa: SLF001 - intentional, atomic per row
 
     for row_id, belief_id, enqueued_at, _event_type in pending:
-        belief = store.get_belief(belief_id)
-        if belief is None:
-            # Drain; nothing to update.
-            conn.execute(
-                "UPDATE deferred_feedback_queue "
-                "SET status='cancelled', applied_at=? WHERE id=?",
-                (now_iso, row_id),
-            )
-            conn.commit()
-            result.skipped_no_belief += 1
-            result.cancelled += 1
-            result.cancelled_belief_ids.append(belief_id)
-            continue
-
-        # #1168 AC4. This sweeper writes alpha directly rather than going
-        # through `apply_feedback` — deliberately, because it owns its own
-        # per-row transaction and queue-status bookkeeping. What it must
-        # not do is skip the invariants that endpoint enforces:
-        #
-        #   * the lock floor. A retrieval-driven +epsilon was landing on
-        #     user locks, which docs/user/LIMITATIONS.md and PRIVACY.md
-        #     both promise cannot happen. Cancel the row instead of
-        #     applying it; nothing is owed to a belief already held at
-        #     ground truth.
-        #   * federation ownership (#655). A foreign belief id is
-        #     read-only through the local DB, so it must not be bumped
-        #     here either.
-        #
-        # Both drain the queue row rather than leaving it enqueued, so a
-        # locked or foreign belief cannot accumulate a backlog that would
-        # all land the moment it is unlocked.
-        if belief.lock_level == LOCK_USER:
-            conn.execute(
-                "UPDATE deferred_feedback_queue "
-                "SET status='cancelled', applied_at=? WHERE id=?",
-                (now_iso, row_id),
-            )
-            conn.commit()
-            result.skipped_locked += 1
-            result.cancelled += 1
-            result.cancelled_belief_ids.append(belief_id)
-            continue
-
-        try:
-            store.assert_local_ownership(belief_id)
-        except ValueError:
-            conn.execute(
-                "UPDATE deferred_feedback_queue "
-                "SET status='cancelled', applied_at=? WHERE id=?",
-                (now_iso, row_id),
-            )
-            conn.commit()
-            result.skipped_foreign += 1
-            result.cancelled += 1
-            result.cancelled_belief_ids.append(belief_id)
-            continue
-
-        cancelled = store.has_explicit_feedback_in_window(
-            belief_id,
-            window_start_iso=enqueued_at,
-            window_end_iso=now_iso,
-            retrieval_source=RETRIEVAL_DRIVEN_FEEDBACK_SOURCE,
-        )
-
-        # Single explicit transaction wrapping the row's writes.
-        # `BEGIN IMMEDIATE` acquires the write lock up-front so a
-        # concurrent writer cannot interleave.
+        # Single explicit transaction per row, taken BEFORE the eligibility
+        # reads. `BEGIN IMMEDIATE` acquires the write lock up-front, so the
+        # belief cannot be locked, deleted, or reassigned to a peer between
+        # the check and the write — a check-then-act window that would let
+        # +epsilon land on a belief the checks just rejected (#1168).
         conn.execute("BEGIN IMMEDIATE")
         try:
+            belief = store.get_belief(belief_id)
+
+            # #1168 AC4. This sweeper writes alpha directly rather than
+            # going through `apply_feedback` — deliberately, because it
+            # owns this transaction and the queue-status bookkeeping. What
+            # it must not do is skip the invariants that endpoint enforces:
+            #
+            #   * the lock floor. A retrieval-driven +epsilon was landing
+            #     on user locks, which docs/user/LIMITATIONS.md and
+            #     PRIVACY.md both promise cannot happen. Nothing is owed to
+            #     a belief already held at ground truth.
+            #   * federation ownership (#655). A foreign belief id is
+            #     read-only through the local DB.
+            #
+            # Each drains the queue row rather than leaving it enqueued, so
+            # an ineligible belief cannot accumulate a backlog that would
+            # all land at once if it later becomes eligible.
+            skip_counter: str | None = None
+            if belief is None:
+                skip_counter = "skipped_no_belief"
+            elif belief.lock_level == LOCK_USER:
+                skip_counter = "skipped_locked"
+            else:
+                try:
+                    store.assert_local_ownership(belief_id)
+                except ValueError:
+                    skip_counter = "skipped_foreign"
+
+            if skip_counter is not None:
+                conn.execute(
+                    "UPDATE deferred_feedback_queue "
+                    "SET status='cancelled', applied_at=? WHERE id=?",
+                    (now_iso, row_id),
+                )
+                conn.execute("COMMIT")
+                setattr(
+                    result, skip_counter,
+                    getattr(result, skip_counter) + 1,
+                )
+                result.cancelled += 1
+                result.cancelled_belief_ids.append(belief_id)
+                continue
+
+            cancelled = store.has_explicit_feedback_in_window(
+                belief_id,
+                window_start_iso=enqueued_at,
+                window_end_iso=now_iso,
+                retrieval_source=RETRIEVAL_DRIVEN_FEEDBACK_SOURCE,
+            )
+
             if cancelled:
                 conn.execute(
                     "UPDATE deferred_feedback_queue "

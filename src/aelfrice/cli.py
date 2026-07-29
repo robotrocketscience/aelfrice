@@ -3543,7 +3543,10 @@ def _cmd_feedback(args: argparse.Namespace, out: object) -> int:
             file=out,  # type: ignore[arg-type]
         )
     _feed_log_event(
-        "feedback.applied",
+        # #1168: a suppressed event must not log as applied — `aelf feed`
+        # would otherwise report a posterior move that never happened.
+        "feedback.locked_not_applied" if result.skipped_locked
+        else "feedback.applied",
         args.belief_id,
         None,
         kind="feedback",
@@ -3551,6 +3554,7 @@ def _cmd_feedback(args: argparse.Namespace, out: object) -> int:
         source=args.source,
         prior_alpha=result.prior_alpha,
         new_alpha=result.new_alpha,
+        posterior_applied=result.posterior_applied,
     )
     return 0
 

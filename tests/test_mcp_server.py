@@ -493,6 +493,10 @@ def test_end_to_end_lock_search_feedback_demote(store: MemoryStore) -> None:
     fb = tool_feedback(store, belief_id=bid, signal="used")
     assert fb["kind"] == "feedback.locked_not_applied"
     assert fb["new_alpha"] == fb["prior_alpha"]
+    assert fb["new_beta"] == fb["prior_beta"]
+    # Clients may branch on `error` as well as `kind`, so it must be present
+    # and say why.
+    assert "lock" in fb["error"].lower()
     assert len(store.list_feedback_events(belief_id=bid)) == 1
 
     dem = tool_demote(store, belief_id=bid)

@@ -1550,6 +1550,11 @@ def serve() -> None:
         Updates the Beta-Bernoulli posterior (alpha for 'used', beta for
         'harmful') and writes a feedback_history audit row.
 
+        A user-locked belief is a floor (#1168): the audit row is still
+        written but the posterior is left alone, and the response comes
+        back as `feedback.locked_not_applied` with an `error` explaining
+        it. Branch on `kind` rather than comparing new_* to prior_*.
+
         Args:
             belief_id: Target belief ID.
             signal: Either "used" (positive valence, +1) or "harmful"
@@ -1558,7 +1563,9 @@ def serve() -> None:
             source: Free-text label for the feedback origin. Defaults to
                 "user". Used for audit and provenance.
 
-        Returns: {"kind": one of [feedback.applied, feedback.bad_signal,
+        Returns: {"kind": one of [feedback.applied,
+                                  feedback.locked_not_applied,
+                                  feedback.bad_signal,
                                   feedback.unknown_belief],
                   "id": str, "signal": str,
                   "prior_alpha": float, "new_alpha": float,

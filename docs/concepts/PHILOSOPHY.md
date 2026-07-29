@@ -111,7 +111,7 @@ The 2,400-token retrieval-API default is a calibrated choice, not an arbitrary o
 
 ## Small surface, on purpose
 
-The v1 surface is small. Runtime belief mutation goes through `apply_feedback`, and every lock through one path. When the system misbehaves, there is one place to look.
+The v1 surface is small. Feedback-driven belief mutation goes through `apply_feedback`, and every lock through one path. When the system misbehaves, there is one place to look.
 
 Being precise about `(α, β)`, since the aspiration and the code have drifted apart before ([#1168](https://github.com/robotrocketscience/aelfrice/issues/1168)): `apply_feedback` is the *primary* writer, not the only one. Three other paths write it, each deliberately and each leaving an audit trail — `deferred_feedback.sweep_deferred_feedback` (the implicit retrieval lane, with its own smaller epsilon and grace window), `clamp_ghosts.clamp_ghost_alpha` (a one-shot migration clamp), and the consolidation dedup pass (which sums existing evidence when collapsing a duplicate group rather than adding new evidence). The invariants that matter hold across all of them: a user lock is a floor no passive signal moves, a federated peer's belief is read-only locally, and every posterior move that is not a merge writes a `feedback_history` row. The posterior write itself is a single atomic SQL increment inside one `BEGIN IMMEDIATE` transaction with its audit row, so concurrent writers cannot lose each other's evidence and the log cannot disagree with the projection.
 

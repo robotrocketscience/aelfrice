@@ -23,7 +23,6 @@ from pathlib import Path
 import pytest
 
 from aelfrice.feedback import apply_feedback
-from aelfrice.models import LOCK_USER
 from aelfrice.store import MemoryStore
 
 _WORKERS = 8
@@ -53,10 +52,10 @@ def _seed(db: Path) -> tuple[str, float, float]:
         store.close()
 
 
-def _race(db: Path, belief_id: str, valence: float) -> list[BaseException]:
+def _race(db: Path, belief_id: str, valence: float) -> list[Exception]:
     """Run _WORKERS threads x _PER_WORKER feedback events. Returns errors."""
     barrier = threading.Barrier(_WORKERS)
-    errors: list[BaseException] = []
+    errors: list[Exception] = []
     lock = threading.Lock()
 
     def worker(wid: int) -> None:
@@ -74,7 +73,7 @@ def _race(db: Path, belief_id: str, valence: float) -> list[BaseException]:
                     source=f"race-{wid}-{i}",
                     propagate=False,
                 )
-        except BaseException as exc:  # noqa: BLE001 - surfaced by the caller
+        except Exception as exc:  # noqa: BLE001 - surfaced by the caller
             with lock:
                 errors.append(exc)
         finally:
@@ -328,11 +327,15 @@ def test_immediate_is_safe_when_a_transaction_is_already_open(
         conn = store._conn  # pyright: ignore[reportPrivateUsage]
         conn.execute("BEGIN")
         assert conn.in_transaction
+        raised: sqlite3.OperationalError | None = None
         try:
             with store.transaction(immediate=True):
                 store.bump_posterior(bid, 1.0, 0.0)
-        except sqlite3.OperationalError as exc:  # pragma: no cover
-            pytest.fail(f"immediate=True raised inside an open txn: {exc}")
+        except sqlite3.OperationalError as exc:
+            raised = exc
+        assert raised is None, (
+            f"immediate=True raised inside an open txn: {raised}"
+        )
         b = store.get_belief(bid)
         assert b is not None
         assert b.alpha == pytest.approx(alpha0 + 1.0)
