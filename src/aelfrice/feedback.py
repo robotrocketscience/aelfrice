@@ -162,7 +162,18 @@ def apply_feedback(
     )
 
     if update_posterior and propagate and _propagation_enabled():
-        deltas = store.propagate_valence(belief_id, valence)
+        # #1169: the first hop is attenuated by the source's confidence as
+        # it was *before* this event. Letting propagate_valence read the
+        # row back would fold this event's own increment into the strength
+        # of its own propagation.
+        prior_denom = prior_alpha + prior_beta
+        deltas = store.propagate_valence(
+            belief_id,
+            valence,
+            src_confidence=(
+                (prior_alpha / prior_denom) if prior_denom > 0 else 0.0
+            ),
+        )
         # Sorted for a deterministic feedback_history row order
         # regardless of edge-iteration order inside the BFS.
         for dst_id, delta in sorted(deltas.items()):

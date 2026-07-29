@@ -5,9 +5,15 @@ into C by ~9x compared to high-confidence B.
 """
 from __future__ import annotations
 
+import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
+
 from aelfrice.models import (
     BELIEF_FACTUAL,
+    EDGE_CITES,
     EDGE_CONTRADICTS,
+    EDGE_RELATES_TO,
     EDGE_SUPPORTS,
     LOCK_NONE,
     Belief,
@@ -33,12 +39,12 @@ def _mk(bid: str, alpha: float, beta: float) -> Belief:
 
 def _build_chain(broker_alpha: float, broker_beta: float) -> MemoryStore:
     s = MemoryStore(":memory:")
-    # A is source; broker confidence at A doesn't matter for downstream
-    # because propagation multiplier uses dst broker, but give it neutral.
+    # A is the source. Its own confidence scales the first hop (the
+    # multiplier is the confidence of the belief the signal travels
+    # *through*, #1169), so keep it neutral and identical across runs.
     s.insert_belief(_mk("A", alpha=5.0, beta=5.0))
+    # B is the broker for the B->C hop; this is the factor under test.
     s.insert_belief(_mk("B", alpha=broker_alpha, beta=broker_beta))
-    # C is the terminus; give it neutral confidence so its broker factor
-    # is the same constant in both runs.
     s.insert_belief(_mk("C", alpha=5.0, beta=5.0))
     s.insert_edge(Edge(src="A", dst="B", type=EDGE_SUPPORTS, weight=1.0))
     s.insert_edge(Edge(src="B", dst="C", type=EDGE_SUPPORTS, weight=1.0))
@@ -119,15 +125,12 @@ def test_contradicts_chain_flips_then_restores_sign() -> None:
     assert out["Y"] > 0.0
 
 
-def test_reconvergent_paths_accumulate_delivery_once_onward() -> None:
-    """Characterization: diamond A->{B1,B2}->C->D.
+def test_reconvergent_paths_credit_each_belief_once() -> None:
+    """Diamond A->{B1,B2}->C->D credits C once, not twice (#1169).
 
-    Delivery into C accumulates across both paths, but C's onward
-    propagation carries only the first-arriving delta (first-visit
-    frontier semantics). D therefore sees half of what naive
-    both-paths propagation would give. Documented as-is in #1058;
-    changing it would change delta magnitudes downstream.
-    """
+    Before #1169 delivery accumulated per in-edge, outside the visited
+    guard, so C received 2x the mass of a single path. Falsifiable by
+    out["C"] coming back at 0.5."""
     s = MemoryStore(":memory:")
     for bid in ("A", "B1", "B2", "C", "D"):
         s.insert_belief(_mk(bid, alpha=5.0, beta=5.0))
@@ -136,10 +139,174 @@ def test_reconvergent_paths_accumulate_delivery_once_onward() -> None:
         s.insert_edge(Edge(src=src, dst=dst, type=EDGE_SUPPORTS, weight=1.0))
     out = s.propagate_valence("A", valence=1.0, max_hops=4,
                               min_threshold=0.0001)
-    # Both paths deliver 0.25 into C (1.0 * 1.0 * 0.5 broker, twice over
-    # two hops); onward flow into D uses the first 0.25 only.
-    assert abs(out["C"] - 0.5) < 1e-9
+    # Every belief here is (5, 5) so every broker factor is 0.5 and every
+    # SUPPORTS multiplier is 1.0: each hop halves the carried magnitude.
+    assert abs(out["B1"] - 0.5) < 1e-9
+    assert abs(out["B2"] - 0.5) < 1e-9
+    assert abs(out["C"] - 0.25) < 1e-9
     assert abs(out["D"] - 0.125) < 1e-9
+
+
+def test_fan_in_does_not_multiply_the_source_signal() -> None:
+    """A 5-way fan-in credits the hub once, not 5x (#1169).
+
+    The issue's worked example: one `aelf confirm` on the root of a
+    convergent subgraph added alpha += 5.0 to the convergence point.
+    Falsifiable by out["T"] exceeding a single path's magnitude."""
+    s = MemoryStore(":memory:")
+    for bid in ("A", "T", *[f"B{i}" for i in range(5)]):
+        s.insert_belief(_mk(bid, alpha=5.0, beta=5.0))
+    for i in range(5):
+        s.insert_edge(
+            Edge(src="A", dst=f"B{i}", type=EDGE_SUPPORTS, weight=1.0)
+        )
+        s.insert_edge(
+            Edge(src=f"B{i}", dst="T", type=EDGE_SUPPORTS, weight=1.0)
+        )
+    out = s.propagate_valence("A", valence=1.0, max_hops=3,
+                              min_threshold=0.0001)
+    assert abs(out["T"] - 0.25) < 1e-9, f"hub over-credited: {out}"
+
+
+def test_cycle_between_non_source_beliefs_delivers_once() -> None:
+    """A->B, B->C, C->B credits B once (#1169).
+
+    The pre-#1169 source guard covered only the source, so a back-edge
+    into an already-visited non-source belief re-delivered to it — B came
+    back at 2.0x. Any bidirectional RELATES_TO or CONTRADICTS pair inside
+    the hop radius hit this. Falsifiable by B exceeding one path."""
+    s = MemoryStore(":memory:")
+    for bid in ("A", "B", "C"):
+        s.insert_belief(_mk(bid, alpha=5.0, beta=5.0))
+    for src, dst in (("A", "B"), ("B", "C"), ("C", "B")):
+        s.insert_edge(Edge(src=src, dst=dst, type=EDGE_SUPPORTS, weight=1.0))
+    out = s.propagate_valence("A", valence=1.0, max_hops=5,
+                              min_threshold=0.0001)
+    assert abs(out["B"] - 0.5) < 1e-9, f"B re-credited by the cycle: {out}"
+    assert abs(out["C"] - 0.25) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Attenuation direction (#1169)
+# ---------------------------------------------------------------------------
+
+
+def test_recipient_confidence_does_not_scale_its_own_delta() -> None:
+    """The delta a belief receives is independent of its own posterior.
+
+    This is the rich-get-richer defect: attenuating by the *recipient's*
+    confidence meant a belief at mu=0.95 absorbed 0.95x the signal while
+    one at mu=0.10 absorbed 0.10x, widening the gap with no evidence
+    about either. Falsifiable by the two deltas differing."""
+    def one_hop(dst_alpha: float, dst_beta: float) -> float:
+        s = MemoryStore(":memory:")
+        s.insert_belief(_mk("A", alpha=5.0, beta=5.0))
+        s.insert_belief(_mk("B", alpha=dst_alpha, beta=dst_beta))
+        s.insert_edge(Edge(src="A", dst="B", type=EDGE_SUPPORTS, weight=1.0))
+        out = s.propagate_valence("A", valence=1.0, max_hops=1,
+                                  min_threshold=0.0001)
+        return out["B"]
+
+    confident = one_hop(9.0, 1.0)    # mu = 0.9
+    doubtful = one_hop(1.0, 9.0)     # mu = 0.1
+    assert abs(confident - doubtful) < 1e-9, (
+        f"recipient posterior still scales its own delta: "
+        f"{confident} vs {doubtful}"
+    )
+
+
+def test_low_confidence_belief_still_receives_negative_feedback() -> None:
+    """A junk belief is not shielded from a negative signal (#1169).
+
+    With recipient-side attenuation, valence -1.0 into a belief at
+    mu=0.08 became -0.08 and fell under the default min_threshold of
+    0.05 once any edge multiplier was below 0.625 — low-confidence junk
+    was structurally immune to the signal meant to remove it.
+    Falsifiable by "J" being absent from the result."""
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk("A", alpha=9.0, beta=1.0))
+    s.insert_belief(_mk("J", alpha=0.5, beta=6.0))   # mu ~= 0.077
+    s.insert_edge(Edge(src="A", dst="J", type=EDGE_CITES, weight=1.0))
+    out = s.propagate_valence("A", valence=-1.0, max_hops=1)
+    assert "J" in out, f"junk shielded from negative feedback: {out}"
+    assert out["J"] < 0.0
+
+
+# ---------------------------------------------------------------------------
+# Determinism and the mass cap (#1169)
+# ---------------------------------------------------------------------------
+
+
+def _diamond_in_edge_order(
+    edge_order: list[tuple[str, str, str]],
+) -> dict[str, float]:
+    s = MemoryStore(":memory:")
+    for bid in ("A", "B", "C", "D", "E"):
+        s.insert_belief(_mk(bid, alpha=5.0, beta=5.0))
+    for src, dst, etype in edge_order:
+        s.insert_edge(Edge(src=src, dst=dst, type=etype, weight=1.0))
+    return s.propagate_valence("A", valence=1.0, max_hops=4,
+                              min_threshold=0.0001)
+
+
+def test_output_is_invariant_to_edge_insertion_order() -> None:
+    """Same logical graph, different physical row order, same deltas.
+
+    `edges_from` had no ORDER BY, so row order was (src, rowid) —
+    insertion order. The issue measured a 3.3x difference in the delta
+    delivered to E purely from inserting A-SUPPORTS->B before or after
+    A-RELATES_TO->C. Falsifiable by the two dicts differing."""
+    from aelfrice.models import EDGE_RELATES_TO
+
+    forward = [
+        ("A", "B", EDGE_SUPPORTS),
+        ("A", "C", EDGE_RELATES_TO),
+        ("B", "D", EDGE_SUPPORTS),
+        ("C", "D", EDGE_SUPPORTS),
+        ("D", "E", EDGE_SUPPORTS),
+    ]
+    reversed_order = list(reversed(forward))
+
+    assert _diamond_in_edge_order(forward) == _diamond_in_edge_order(
+        reversed_order
+    )
+
+
+def test_total_injected_mass_is_capped(  # AC4
+) -> None:
+    """One event cannot inject unbounded evidence into a wide graph.
+
+    Falsifiable by the summed absolute delta exceeding the cap."""
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk("A", alpha=9.0, beta=1.0))
+    for i in range(40):
+        s.insert_belief(_mk(f"B{i:02d}", alpha=5.0, beta=5.0))
+        s.insert_edge(
+            Edge(src="A", dst=f"B{i:02d}", type=EDGE_SUPPORTS, weight=1.0)
+        )
+    out = s.propagate_valence("A", valence=1.0, max_hops=3,
+                              min_threshold=0.0001)
+    total = sum(abs(v) for v in out.values())
+    assert total <= 1.0 * 3 + 1e-9, f"mass {total} exceeds the cap"
+    # The cap binds here, so not every neighbour is reached — but the ones
+    # that are still get a full-strength delta rather than a diluted one.
+    assert out, "cap swallowed every delivery"
+    assert all(abs(v) > 0.0 for v in out.values())
+
+
+def test_explicit_max_total_mass_is_honoured() -> None:
+    """An explicit budget overrides the default. Falsifiable by the sum
+    exceeding the passed value."""
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk("A", alpha=9.0, beta=1.0))
+    for i in range(10):
+        s.insert_belief(_mk(f"B{i}", alpha=5.0, beta=5.0))
+        s.insert_edge(
+            Edge(src="A", dst=f"B{i}", type=EDGE_SUPPORTS, weight=1.0)
+        )
+    out = s.propagate_valence("A", valence=1.0, max_hops=3,
+                              min_threshold=0.0001, max_total_mass=1.0)
+    assert sum(abs(v) for v in out.values()) <= 1.0 + 1e-9
 
 
 def test_min_threshold_prunes_weak_deltas() -> None:
@@ -152,3 +319,77 @@ def test_min_threshold_prunes_weak_deltas() -> None:
                               min_threshold=0.3)
     assert "B" in out
     assert "C" not in out
+
+
+# ---------------------------------------------------------------------------
+# Property test (#1169 AC5): mass is bounded and order-invariant for any
+# graph shape hypothesis can build.
+# ---------------------------------------------------------------------------
+
+_N_NODES = 6
+_NODE_IDS = [f"n{i}" for i in range(_N_NODES)]
+
+
+def _store_from_edges(
+    edges: list[tuple[int, int]], shuffle_seed: int,
+) -> MemoryStore:
+    s = MemoryStore(":memory:")
+    for bid in _NODE_IDS:
+        s.insert_belief(_mk(bid, alpha=5.0, beta=5.0))
+    # Rotate the insertion order so physical row order differs between
+    # the two stores built from the same logical edge set.
+    ordered = edges[shuffle_seed:] + edges[:shuffle_seed]
+    for src, dst in ordered:
+        s.insert_edge(
+            Edge(src=_NODE_IDS[src], dst=_NODE_IDS[dst],
+                 type=EDGE_SUPPORTS, weight=1.0)
+        )
+    return s
+
+
+@given(
+    edges=st.lists(
+        st.tuples(
+            st.integers(min_value=0, max_value=_N_NODES - 1),
+            st.integers(min_value=0, max_value=_N_NODES - 1),
+        ).filter(lambda p: p[0] != p[1]),
+        min_size=0,
+        max_size=14,
+        unique=True,
+    ),
+    valence=st.sampled_from([1.0, -1.0, 0.5]),
+    max_hops=st.integers(min_value=1, max_value=4),
+)
+@settings(max_examples=150, deadline=None)
+def test_mass_bounded_and_order_invariant_for_any_shape(
+    edges: list[tuple[int, int]], valence: float, max_hops: int,
+) -> None:
+    """For any graph shape: total injected mass stays within the budget,
+    the source is never a recipient, and the result does not depend on
+    edge insertion order.
+
+    Falsifiable by a mass overrun (the fan-in/diamond/cycle amplification
+    classes), by the source appearing, or by the two orderings
+    disagreeing."""
+    base = _store_from_edges(edges, shuffle_seed=0)
+    rotated = _store_from_edges(edges, shuffle_seed=len(edges) // 2)
+    try:
+        out = base.propagate_valence(
+            _NODE_IDS[0], valence=valence, max_hops=max_hops,
+            min_threshold=0.0001,
+        )
+        out_rotated = rotated.propagate_valence(
+            _NODE_IDS[0], valence=valence, max_hops=max_hops,
+            min_threshold=0.0001,
+        )
+    finally:
+        base.close()
+        rotated.close()
+
+    cap = abs(valence) * max_hops
+    assert sum(abs(v) for v in out.values()) <= cap + 1e-9
+    assert _NODE_IDS[0] not in out
+    # Each belief credited at most once, so no delta can exceed the
+    # strongest single hop out of the source.
+    assert all(abs(v) <= abs(valence) + 1e-9 for v in out.values())
+    assert out == pytest.approx(out_rotated)

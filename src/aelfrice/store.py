@@ -5228,8 +5228,17 @@ class MemoryStore:
         return removed
 
     def edges_from(self, src: str) -> list[Edge]:
+        """Outbound edges of `src`, in a total order.
+
+        `ORDER BY dst, type` (#1169). Without it the row order is
+        `(src, rowid)` — physical insertion order, which SQLite does not
+        contract and which `VACUUM`, a migration, or a different query
+        plan will change. `propagate_valence` walks this list, so an
+        unordered read made the posterior deltas it produces a function
+        of storage layout rather than of the write log.
+        """
         cur = self._conn.execute(
-            "SELECT * FROM edges WHERE src = ?", (src,)
+            "SELECT * FROM edges WHERE src = ? ORDER BY dst, type", (src,)
         )
         return [_row_to_edge(r) for r in cur.fetchall()]
 
@@ -5305,7 +5314,7 @@ class MemoryStore:
             return []
         try:
             cur = conn.execute(
-                "SELECT * FROM edges WHERE src = ?", (src,)
+                "SELECT * FROM edges WHERE src = ? ORDER BY dst, type", (src,)
             )
             return [_row_to_edge(r) for r in cur.fetchall()]
         except sqlite3.OperationalError:
@@ -5524,52 +5533,123 @@ class MemoryStore:
         valence: float,
         max_hops: int = 3,
         min_threshold: float = 0.05,
+        max_total_mass: float | None = None,
+        src_confidence: float | None = None,
     ) -> dict[str, float]:
         """Propagate a valence signal outward through edges, attenuated by
-        broker confidence (alpha / (alpha + beta) of intermediate beliefs).
+        broker confidence.
 
-        BFS over outbound edges. At each hop the carried magnitude is
-        multiplied by:
-            EDGE_VALENCE[edge.type] * broker_confidence(dst)
-        Stops when |carried| < min_threshold or hop count exceeds max_hops.
+        BFS over outbound edges. For a hop out of belief `b`, the carried
+        magnitude is multiplied by::
 
-        Returns: dict mapping touched belief_id -> sum of applied deltas.
-        The src_id itself is NOT included in the returned map (it's the
-        source, not a recipient) — a cycle back into the source is
-        dropped rather than delivered, so the signal can never feed
-        back into the belief that emitted it (#1058).
+            EDGE_VALENCE[edge.type] * confidence(b)
+
+        where ``confidence(b) = b.alpha / (b.alpha + b.beta)`` — the
+        *broker*, the belief the signal is travelling through. Before
+        #1169 this multiplied by the confidence of the belief being
+        *written to*, which meant the amount of evidence a belief
+        received was proportional to how confident it already was:
+        high-posterior beliefs absorbed the most positive signal, and
+        low-confidence beliefs were structurally shielded from negative
+        feedback because their small factor pushed the delta under
+        `min_threshold`. That is a rich-get-richer loop with no
+        evidential justification, and a candidate mechanism for the
+        recorded junk-percolation ranking inversion.
+
+        Each reachable belief is credited **exactly once** per walk, with
+        the largest-magnitude path that reaches it. Accumulating per
+        in-edge (the pre-#1169 behaviour) meant a diamond delivered 2x
+        and a 5-way fan-in 5x the source signal — one `aelf confirm` on
+        the root of a convergent subgraph could add α += ~20 to the
+        node at the convergence point. It also let a cycle between two
+        non-source beliefs re-deliver to them on every event.
+
+        Determinism: `edges_from` is totally ordered, and within a hop
+        candidates are ranked by `(-abs(delta), dst)` so the strongest
+        path wins and ties break on id. The result is a function of the
+        graph, not of edge insertion order or physical layout.
+
+        Stops when |carried| < `min_threshold`, when the hop count
+        exceeds `max_hops`, or when the mass budget is exhausted.
+
+        `max_total_mass` bounds the total absolute evidence one event can
+        inject, defaulting to ``abs(valence) * max_hops``. Candidates are
+        considered strongest-first, so when the budget binds it is the
+        weakest paths that are dropped. Without a cap, total injected
+        mass grows with graph size — a property of the substrate rather
+        than of the user's single click.
+
+        `src_confidence` overrides the broker factor for the first hop.
+        `apply_feedback` passes the source's confidence as it was *before*
+        the event, because that is the trust the inference was judged
+        against; reading it back off the row would fold the event's own
+        increment into the strength of its own propagation, which is the
+        self-reinforcement #1058 set out to remove.
+
+        Returns: dict mapping touched belief_id -> applied delta. The
+        `src_id` itself is NOT included (it's the source, not a
+        recipient) — a cycle back into the source is dropped rather than
+        delivered, so the signal can never feed back into the belief
+        that emitted it (#1058).
         """
+        cap = (
+            abs(valence) * max_hops if max_total_mass is None
+            else abs(max_total_mass)
+        )
         applied: dict[str, float] = {}
+        mass_used = 0.0
         # Frontier entries: (belief_id, magnitude_carried_into_it, hops_taken)
         # The source contributes its outbound edges at hop 1.
         frontier: list[tuple[str, float, int]] = [(src_id, valence, 0)]
         visited: set[str] = {src_id}
 
         while frontier:
-            next_frontier: list[tuple[str, float, int]] = []
+            # Collect this hop's candidate deliveries, then resolve them
+            # together: a belief reachable by several paths in the same
+            # hop must be credited once, by its strongest path.
+            candidates: list[tuple[str, float, int]] = []
             for current_id, carried, hops in frontier:
                 if hops >= max_hops:
                     continue
                 if abs(carried) < min_threshold:
                     continue
+                if current_id == src_id and src_confidence is not None:
+                    broker = src_confidence
+                else:
+                    broker_belief = self.get_belief(current_id)
+                    if broker_belief is None:
+                        continue
+                    broker_denom = broker_belief.alpha + broker_belief.beta
+                    broker = (
+                        (broker_belief.alpha / broker_denom)
+                        if broker_denom > 0 else 0.0
+                    )
                 for edge in self.edges_from(current_id):
-                    if edge.dst == src_id:
+                    if edge.dst == src_id or edge.dst in visited:
                         continue
                     multiplier = EDGE_VALENCE.get(edge.type, 0.0)
                     if multiplier == 0.0:
                         continue
-                    dst = self.get_belief(edge.dst)
-                    if dst is None:
+                    if self.get_belief(edge.dst) is None:
                         continue
-                    denom = dst.alpha + dst.beta
-                    broker = (dst.alpha / denom) if denom > 0 else 0.0
                     delta = carried * multiplier * broker
                     if abs(delta) < min_threshold:
                         continue
-                    applied[edge.dst] = applied.get(edge.dst, 0.0) + delta
-                    if edge.dst not in visited:
-                        visited.add(edge.dst)
-                        next_frontier.append((edge.dst, delta, hops + 1))
+                    candidates.append((edge.dst, delta, hops + 1))
+
+            # Strongest path first; `dst` breaks ties into a total order.
+            candidates.sort(key=lambda c: (-abs(c[1]), c[0]))
+
+            next_frontier: list[tuple[str, float, int]] = []
+            for dst_id, delta, next_hops in candidates:
+                if dst_id in visited:
+                    continue
+                if mass_used + abs(delta) > cap:
+                    continue
+                visited.add(dst_id)
+                mass_used += abs(delta)
+                applied[dst_id] = delta
+                next_frontier.append((dst_id, delta, next_hops))
             frontier = next_frontier
 
         return applied
