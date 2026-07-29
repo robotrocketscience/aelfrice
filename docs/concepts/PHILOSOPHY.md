@@ -80,10 +80,14 @@ inside or *adjacent to* the emitted block reads as elevated, system-trusted
 context to the model.
 
 The hook layer's job is to make that trust boundary structurally legible,
-not to police what the model does on the other side of it. Three structural
+not to police what the model does on the other side of it. Four structural
 defenses ship today: a fixed framing tag (`<belief id="…" lock="…">` inside
 `<aelfrice-memory>`) tells the model the contents are *retrieved memory,
-not instructions*; a render-time escape pass neutralises any tag-substring
+not instructions*; a `speculative="1"` attribute separates beliefs the
+memory system *synthesised* from beliefs somebody *asserted*, so machine
+conjecture cannot pass itself off as observation
+([#1171](https://github.com/robotrocketscience/aelfrice/issues/1171)); a
+render-time escape pass neutralises any tag-substring
 that lands in stored belief content; a per-turn audit log
 (`hook_audit.jsonl`) records the exact rendered block so post-hoc forensics
 can answer "what was injected on turn N." See
