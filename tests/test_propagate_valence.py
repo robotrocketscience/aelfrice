@@ -294,6 +294,26 @@ def test_total_injected_mass_is_capped(  # AC4
     assert all(abs(v) > 0.0 for v in out.values())
 
 
+def test_explicit_max_total_mass_is_honoured_for_negative_valence() -> None:
+    """The override binds on negative events as well as positive ones.
+
+    A budget below abs(valence) * max_hops must clip the walk; the deltas
+    that survive stay negative. Falsifiable by the summed magnitude
+    exceeding the budget or by a positive delta appearing."""
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk("A", alpha=9.0, beta=1.0))
+    for i in range(10):
+        s.insert_belief(_mk(f"B{i}", alpha=5.0, beta=5.0))
+        s.insert_edge(
+            Edge(src="A", dst=f"B{i}", type=EDGE_SUPPORTS, weight=1.0)
+        )
+    out = s.propagate_valence("A", valence=-1.0, max_hops=3,
+                              min_threshold=0.0001, max_total_mass=0.5)
+    assert out, "budget swallowed every delivery"
+    assert sum(abs(v) for v in out.values()) <= 0.5 + 1e-9
+    assert all(v < 0.0 for v in out.values())
+
+
 def test_explicit_max_total_mass_is_honoured() -> None:
     """An explicit budget overrides the default. Falsifiable by the sum
     exceeding the passed value."""
@@ -349,10 +369,14 @@ def _store_from_edges(
 
 @given(
     edges=st.lists(
+        # Self-loops are NOT filtered: `insert_edge` accepts src == dst
+        # (no guard, and the PK permits it), so a real store can hold one
+        # and the walk must handle it — a self-loop on the source is
+        # dropped by the source guard, one elsewhere by the visited set.
         st.tuples(
             st.integers(min_value=0, max_value=_N_NODES - 1),
             st.integers(min_value=0, max_value=_N_NODES - 1),
-        ).filter(lambda p: p[0] != p[1]),
+        ),
         min_size=0,
         max_size=14,
         unique=True,

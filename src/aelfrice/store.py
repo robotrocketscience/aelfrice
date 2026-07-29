@@ -5236,6 +5236,12 @@ class MemoryStore:
         plan will change. `propagate_valence` walks this list, so an
         unordered read made the posterior deltas it produces a function
         of storage layout rather than of the write log.
+
+        The order is free: `edges` is `PRIMARY KEY (src, dst, type)`, so
+        its autoindex already yields that sequence under `WHERE src = ?`.
+        `EXPLAIN QUERY PLAN` shows a plain index search with no temp
+        b-tree even at ~600 outbound edges from one belief — no extra
+        index is needed to keep this O(k) in the outgoing degree.
         """
         cur = self._conn.execute(
             "SELECT * FROM edges WHERE src = ? ORDER BY dst, type", (src,)
@@ -5575,9 +5581,12 @@ class MemoryStore:
         `max_total_mass` bounds the total absolute evidence one event can
         inject, defaulting to ``abs(valence) * max_hops``. Candidates are
         considered strongest-first, so when the budget binds it is the
-        weakest paths that are dropped. Without a cap, total injected
-        mass grows with graph size — a property of the substrate rather
-        than of the user's single click.
+        weakest paths that are dropped; the delivery that straddles the
+        boundary is clipped to what remains rather than skipped, so an
+        explicitly small budget scales the walk down instead of
+        cancelling it. Without a cap, total injected mass grows with
+        graph size — a property of the substrate rather than of the
+        user's single click.
 
         `src_confidence` overrides the broker factor for the first hop.
         `apply_feedback` passes the source's confidence as it was *before*
@@ -5644,8 +5653,18 @@ class MemoryStore:
             for dst_id, delta, next_hops in candidates:
                 if dst_id in visited:
                     continue
-                if mass_used + abs(delta) > cap:
-                    continue
+                remaining = cap - mass_used
+                if remaining <= 0.0:
+                    break
+                if abs(delta) > remaining:
+                    # Clip to the budget rather than dropping the delivery.
+                    # Skipping instead would make a cap below the first
+                    # delta swallow the entire event — with the default cap
+                    # the two are identical, because a single delta can
+                    # never exceed abs(valence) <= abs(valence) * max_hops.
+                    delta = remaining if delta > 0.0 else -remaining
+                    if abs(delta) < min_threshold:
+                        break
                 visited.add(dst_id)
                 mass_used += abs(delta)
                 applied[dst_id] = delta
