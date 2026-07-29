@@ -288,3 +288,130 @@ def test_conflicting_disposition_flags_are_an_error(
 )
 def test_format_size(n: int, expected: str) -> None:
     assert cli._format_size(n) == expected
+
+
+# --- Size accounting ------------------------------------------------------
+
+
+def test_artifact_size_sums_a_directory_tree(tmp_path: Path) -> None:
+    artifact_dir = tmp_path / "transcripts"
+    artifact_dir.mkdir()
+    (artifact_dir / "a.jsonl").write_bytes(b"x" * 100)
+    (artifact_dir / "nested").mkdir()
+    (artifact_dir / "nested" / "b.jsonl").write_bytes(b"x" * 200)
+    loose = tmp_path / "feed.jsonl"
+    loose.write_bytes(b"x" * 50)
+
+    assert cli._artifact_size(artifact_dir) == 300
+    assert cli._artifact_total_bytes([artifact_dir, loose]) == 350
+
+
+def test_artifact_size_does_not_follow_a_symlinked_dir(
+    tmp_path: Path,
+) -> None:
+    """The manifest must not bill bytes the purge will not free.
+
+    `_remove_artifact` unlinks the link, leaving the target intact, so
+    walking the target here would report a size the deletion never
+    recovers.
+    """
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (target / "big.bin").write_bytes(b"x" * 10_000)
+    link = tmp_path / "transcripts"
+    link.symlink_to(target, target_is_directory=True)
+
+    assert cli._artifact_size(link) == link.lstat().st_size
+    assert cli._artifact_size(link) < 10_000
+
+
+def test_artifact_size_skips_symlinks_inside_a_directory(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "big.bin").write_bytes(b"x" * 10_000)
+    artifact_dir = tmp_path / "rebuild_logs"
+    artifact_dir.mkdir()
+    (artifact_dir / "real.json").write_bytes(b"x" * 10)
+    (artifact_dir / "link.bin").symlink_to(outside / "big.bin")
+
+    assert cli._artifact_size(artifact_dir) == 10
+
+
+def test_artifact_size_is_zero_when_stat_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stat failure must degrade to 0, never abort the gate."""
+    target = tmp_path / "memory.db"
+    target.write_bytes(b"x" * 10)
+    real_stat = Path.stat
+
+    def boom(self: Path, *a: object, **k: object) -> object:
+        if self == target:
+            raise OSError("permission denied")
+        return real_stat(self, *a, **k)
+
+    monkeypatch.setattr(Path, "stat", boom)
+    assert cli._artifact_size(target) == 0
+
+
+def test_artifact_size_of_a_missing_path_is_zero(tmp_path: Path) -> None:
+    assert cli._artifact_size(tmp_path / "gone") == 0
+
+
+# --- The orphaned-artifact warning ---------------------------------------
+
+
+def test_purge_warns_about_artifacts_it_will_not_touch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`AELFRICE_DB=~/memory.db` must produce a visible warning, not silence.
+
+    The generically-named artifacts cannot be attributed to aelfrice
+    outside a store directory, so they are left alone -- but saying
+    nothing about them would be the #1173 defect one level down.
+    """
+    store_dir = tmp_path / "Downloads"      # deliberately not aelfrice
+    store_dir.mkdir()
+    db = store_dir / "memory.db"
+    store = MemoryStore(str(db))
+    store.insert_belief(
+        Belief(
+            id="B" + "0" * 15, content=_SECRET, content_hash="h" + "0" * 15,
+            alpha=1.0, beta=1.0, type=BELIEF_FACTUAL, lock_level=LOCK_NONE,
+            locked_at=None, created_at="2026-07-29T00:00:00Z",
+            last_retrieved_at=None,
+        )
+    )
+    store.close()
+    (store_dir / "hook_audit.jsonl").write_text("{}\n", encoding="utf-8")
+    (store_dir / "feed.jsonl").write_text("{}\n", encoding="utf-8")
+    (store_dir / "transcripts").mkdir()
+    (store_dir / "transcripts" / "mine.jsonl").write_text(
+        "not aelfrice's\n", encoding="utf-8",
+    )
+
+    fake_dotdir = tmp_path / "home" / ".aelfrice"
+    fake_dotdir.mkdir(parents=True)
+    monkeypatch.setattr(
+        auto_install, "STAMP_PATH", fake_dotdir / "installed-manifest-version",
+    )
+    monkeypatch.setattr(
+        cli, "_MIGRATED_TO_UV_SENTINEL", fake_dotdir / "migrated-to-uv",
+    )
+    monkeypatch.setattr(cli, "db_path", lambda: db)
+    monkeypatch.setattr(cli, "_clear_update_cache", lambda: None)
+
+    code, text = _run(_args(purge=True, yes=True))
+
+    assert code == 0
+    assert "is not an aelfrice store directory" in text
+    assert "will NOT be touched" in text
+    for name in ("hook_audit.jsonl", "feed.jsonl", "transcripts"):
+        assert name in text, f"{name} missing from the orphan warning"
+    # Warned about, and genuinely left alone.
+    assert (store_dir / "transcripts" / "mine.jsonl").exists()
+    assert (store_dir / "hook_audit.jsonl").exists()
+    # The db-anchored artifacts are still removed.
+    assert not db.exists()

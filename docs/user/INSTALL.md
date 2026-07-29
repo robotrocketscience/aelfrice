@@ -343,7 +343,7 @@ single store:
   reads that sentinel and treats the grant as still current. Tracked as a
   follow-up to #1173.
 
-To remove everything aelfrice has ever written on this machine, and you are
+To remove everything aelfrice has ever written on this machine, if you are
 sure no other project's store lives there: `rm -rf ~/.aelfrice/` after
 running `uninstall`. Check `ls ~/.aelfrice/projects/` first.
 

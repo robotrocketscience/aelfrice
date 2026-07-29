@@ -4825,11 +4825,21 @@ def _format_size(n: int) -> str:
 
 
 def _artifact_size(path: Path) -> int:
-    """Total bytes at `path`, recursing into directories. 0 if unreadable."""
+    """Total bytes at `path`, recursing into directories. 0 if unreadable.
+
+    Symlinks report the link's own size, via `lstat`, and are never
+    walked -- `_remove_artifact` unlinks the link rather than the target,
+    so following it here would bill the manifest for bytes the purge does
+    not free. Unreadable paths count as 0 rather than raising: a size is
+    for display, and a stat failure must not abort the disposition.
+    """
     try:
-        if path.is_dir() and not path.is_symlink():
+        if path.is_symlink():
+            return path.lstat().st_size
+        if path.is_dir():
             return sum(
-                p.stat().st_size for p in path.rglob("*") if p.is_file()
+                p.lstat().st_size for p in path.rglob("*")
+                if p.is_file() and not p.is_symlink()
             )
         return path.stat().st_size
     except OSError:
