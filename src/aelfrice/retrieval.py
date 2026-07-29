@@ -313,8 +313,11 @@ ENV_USE_ZETA_POSTERIOR_RERANK: Final[str] = (
 # stderr. Same shape as `_read_toml_flag_for` tolerance.
 ENV_POSTERIOR_WEIGHT: Final[str] = "AELFRICE_POSTERIOR_WEIGHT"
 # #1166 BM25F query-term-frequency saturation. Float >= 0; 0.0 keeps
-# qf discarded (the shipped default). Empty / non-numeric / negative
-# values fall through to the next precedence layer and trace to stderr.
+# qf discarded (the shipped default). Empty / non-numeric values fall
+# through to the next precedence layer and trace to stderr. A *negative*
+# value does not fall through — it is decisive at this layer and clamps
+# to 0.0, matching `resolve_posterior_weight`, so `AELFRICE_BM25_K3=-1`
+# means "qf off" rather than "consult the TOML".
 ENV_BM25_K3: Final[str] = "AELFRICE_BM25_K3"
 # v2.1 #473 temporal-decay half-life env override. Float seconds.
 # Empty / non-numeric values fall through (kwarg → TOML → default).
