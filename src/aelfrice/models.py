@@ -16,8 +16,19 @@ BELIEF_CORRECTION: Final[str] = "correction"
 BELIEF_PREFERENCE: Final[str] = "preference"
 BELIEF_REQUIREMENT: Final[str] = "requirement"
 # v2.1 #548 wonder lifecycle. Speculative beliefs are wonder-generated
-# candidates pending promotion. Not user-facing until `aelf confirm`
-# promotes them to a real type. C4 retags this → real type on threshold.
+# candidates. `type` is a PERMANENT provenance marker: nothing retags it,
+# and promotion deliberately does not. `promotion.promote` flips `origin`
+# speculative → user_validated and leaves alpha/beta/type/lock_level alone,
+# so a phantom the user has validated stays typed 'speculative' for the
+# life of the row. Read `origin` for the trust tier and `type` for where
+# the row came from — the hook's speculative marker keys on origin for
+# exactly that reason (#1171).
+#
+# This comment previously claimed "C4 retags this → real type on threshold".
+# No such retag was ever implemented, on any path; the claim is struck
+# rather than built, because synthesising a replacement type would mean
+# classifying content at promotion time — a call the operator has not made
+# and not one to smuggle in behind a docstring.
 BELIEF_SPECULATIVE: Final[str] = "speculative"
 
 BELIEF_TYPES: Final[frozenset[str]] = frozenset({

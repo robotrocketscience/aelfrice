@@ -153,7 +153,8 @@ def find_phantom_lock_matches(
     Pass 2 — normalized-text Jaccard ≥ threshold:
       Tokenize both the lock text and each phantom's content (lowercase,
       space-split, stopword-strip). Beliefs not already matched in pass 1
-      are included if Jaccard ≥ jaccard_threshold.
+      are included if Jaccard ≥ jaccard_threshold. A lock text that
+      normalizes to no tokens skips this pass entirely (#1171).
 
     Returns a deduplicated list of belief IDs in scan order (created_at
     ASC). Already-promoted beliefs (origin != ORIGIN_SPECULATIVE) are
@@ -174,8 +175,18 @@ def find_phantom_lock_matches(
             matched_ids.append(belief.id)
             seen.add(belief.id)
 
-    # Pass 2: Jaccard on normalized text
+    # Pass 2: Jaccard on normalized text.
+    # A lock text that normalizes to nothing (all stopwords, punctuation
+    # only, or whitespace) carries no signal to match on, and `_jaccard`
+    # returns 1.0 for the empty/empty pair by convention — so without this
+    # guard `aelf lock "the a of"` silently promoted every phantom whose
+    # content also stripped to nothing (#1171). Skipping pass 2 is the
+    # correct reading: zero shared tokens is not evidence of agreement.
+    # The reverse case needs no guard — a non-empty lock against an empty
+    # phantom scores 0.0.
     lock_tokens = _normalize_tokens(lock_text)
+    if not lock_tokens:
+        return matched_ids
     for belief in candidates:
         if belief.id in seen:
             continue
