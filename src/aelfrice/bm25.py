@@ -87,6 +87,26 @@ DEFAULT_ANCHOR_WEIGHT: Final[int] = 3
 DEFAULT_K1: Final[float] = 1.5
 DEFAULT_B: Final[float] = 0.75
 
+# Query-term-frequency saturation (Robertson & Walker 1994's `k3`,
+# the query-side analogue of `k1`). `score()` weights each query
+# term by ``idf * (k3 + 1) * qf / (k3 + qf)``.
+#
+# `k3 = 0` collapses that factor to exactly 1.0 for every qf >= 1, so
+# the default reproduces the pre-#1166 scoring **byte-for-byte** — the
+# old code assigned `q_vec[j] = idf[j]` and thereby discarded qf
+# entirely. Keeping 0.0 as the default makes the qf mechanism inert
+# until an operator flips it, which is deliberate: three shipped
+# components encode their boost as term repetition
+# (`query_understanding.entity_expand`, `query_understanding.idf_clip`,
+# and `hook._build_conversation_aware_query`) and have therefore been
+# no-ops on this lane since it became the default. Turning them on is a
+# retrieval-quality change whose constants were tuned against the FTS5
+# lane, so the flip is bench-gated separately rather than ridden in on
+# this bug fix. Set `AELFRICE_BM25_K3` / `[retrieval] bm25_k3` to opt in;
+# k3 ~ 8 gives qf=2 -> 1.8x and qf=3 -> 2.45x, close to the linear
+# weighting those components assume.
+DEFAULT_K3: Final[float] = 0.0
+
 # Default top-K for the score() return when the caller omits it.
 # Mirrors `aelfrice.retrieval.DEFAULT_L1_LIMIT` so a drop-in swap of
 # the FTS5 path for the BM25Index path returns the same result count
@@ -106,7 +126,12 @@ _SERIALIZE_MAGIC: Final[bytes] = b"AELFBM25"
 # v2 (#1135): k1/b/avgdl widened float32 -> float64 so a deserialised
 # index scores byte-identically to a fresh build. No v1 blobs exist in
 # the wild — nothing called serialize() before the sidecar cache.
-_SERIALIZE_VERSION: Final[int] = 2
+# v3 (#1166): appends `k3` (float64). Like k1/b it is a scoring-time
+# parameter carried on the index, so a sidecar written under one k3
+# must not be reused under another. v2 blobs DO exist in the wild;
+# `_load_sidecar` rejects a version mismatch and rebuilds, so the
+# upgrade costs one rebuild per store and never mis-scores.
+_SERIALIZE_VERSION: Final[int] = 3
 
 
 def tokenize(text: str) -> list[str]:
@@ -183,6 +208,10 @@ class BM25Index:
         but `serialize()` round-trips it for diagnostics.
     k1, b
         BM25 hyperparameters used at score time.
+    k3
+        Query-term-frequency saturation constant (#1166). ``0.0``
+        weights every query term by its idf alone, discarding qf —
+        the pre-#1166 behaviour, kept as the default.
     """
 
     belief_ids: list[str]
@@ -194,6 +223,7 @@ class BM25Index:
     anchor_weight: int = DEFAULT_ANCHOR_WEIGHT
     k1: float = DEFAULT_K1
     b: float = DEFAULT_B
+    k3: float = DEFAULT_K3
 
     # --- Construction -----------------------------------------------------
 
@@ -205,6 +235,7 @@ class BM25Index:
         anchor_weight: int = DEFAULT_ANCHOR_WEIGHT,
         k1: float = DEFAULT_K1,
         b: float = DEFAULT_B,
+        k3: float = DEFAULT_K3,
     ) -> BM25Index:
         """Construct a fresh index from `store`.
 
@@ -224,6 +255,8 @@ class BM25Index:
         """
         if anchor_weight < 0:
             raise ValueError("anchor_weight must be >= 0")
+        if k3 < 0.0:
+            raise ValueError("k3 must be >= 0")
 
         rows = store.list_beliefs_for_indexing()
         belief_ids: list[str] = [bid for bid, _ in rows]
@@ -315,6 +348,7 @@ class BM25Index:
             anchor_weight=anchor_weight,
             k1=k1,
             b=b,
+            k3=k3,
         )
 
     # --- Scoring ----------------------------------------------------------
@@ -330,6 +364,12 @@ class BM25Index:
         no in-vocabulary terms also return ``[]`` (no document will
         score above 0). Ties on score break by `belief_id` ASC for
         deterministic ordering.
+
+        A repeated query term contributes ``(k3 + 1) * qf / (k3 + qf)``
+        times its idf (#1166). At the default ``k3 = 0`` that factor is
+        exactly 1.0, so repetition is ignored and the output matches
+        the pre-#1166 lane bit-for-bit; raise `k3` to let callers
+        express weight as duplicated tokens.
         """
         if not query or not query.strip():
             return []
@@ -338,19 +378,31 @@ class BM25Index:
         q_tokens = tokenize_stemmed(query)
         if not q_tokens:
             return []
-        # Build the query indicator * idf vector in dense form
-        # (n_terms is small enough that this is faster than the
-        # alternative sparse construction).
-        q_vec = np.zeros(self.tf.shape[1], dtype=np.float32)
-        seen_any = False
+        # Build the query weight vector in dense form (n_terms is small
+        # enough that this is faster than the alternative sparse
+        # construction).
+        #
+        # #1166: accumulate query-term frequency instead of assigning.
+        # The previous `q_vec[j] = self.idf[j]` overwrote on every
+        # repeat, so `score("t") == score("t t t")` and any caller that
+        # expressed a boost as a duplicated token was silently ignored.
+        qf: dict[int, int] = {}
         for t in q_tokens:
             j = self.vocabulary.get(t)
             if j is None:
                 continue
-            q_vec[j] = self.idf[j]
-            seen_any = True
-        if not seen_any:
+            qf[j] = qf.get(j, 0) + 1
+        if not qf:
             return []
+        q_vec = np.zeros(self.tf.shape[1], dtype=np.float32)
+        for j, count in qf.items():
+            # Robertson & Walker (1994) query saturation. At k3 = 0
+            # this is idf * 1.0 for every count >= 1, i.e. bit-identical
+            # to the pre-#1166 assignment; as k3 -> inf it approaches
+            # raw idf * qf.
+            q_vec[j] = self.idf[j] * (
+                (self.k3 + 1.0) * count / (self.k3 + count)
+            )
 
         # BM25 numerator: tf * (k1 + 1)
         # BM25 denominator: tf + k1 * (1 - b + b * dl/avgdl)
@@ -421,12 +473,13 @@ class BM25Index:
         """Return a deterministic byte representation of the index.
 
         Same inputs (store contents + same `anchor_weight`) round-trip
-        to identical bytes, satisfying AC7. Format (v2)::
+        to identical bytes, satisfying AC7. Format (v3)::
 
             magic              8 bytes  b"AELFBM25"
             version            uint32   _SERIALIZE_VERSION
             anchor_weight      int32
             k1, b, avgdl       float64 x 3
+            k3                 float64
             n_docs, n_terms    uint64 x 2
             belief_ids         length-prefixed UTF-8 strings
             vocabulary terms   length-prefixed UTF-8 strings
@@ -446,6 +499,11 @@ class BM25Index:
         a float32 round-trip perturbed the low-order bits of every
         score. dl/idf/tf stay float32 (already float32 in the built
         index, so their round-trip is exact).
+
+        v3 (#1166) appends `k3` after avgdl, for the same reason v2
+        widened k1/b: it is a scoring-time parameter carried on the
+        index, so a blob written under one k3 must not be reused under
+        another. Written float64 so the round-trip is exact.
         """
         buf = io.BytesIO()
         buf.write(_SERIALIZE_MAGIC)
@@ -454,6 +512,7 @@ class BM25Index:
         buf.write(np.float64(self.k1).tobytes())
         buf.write(np.float64(self.b).tobytes())
         buf.write(np.float64(self.avgdl).tobytes())
+        buf.write(np.float64(self.k3).tobytes())
 
         n_docs = len(self.belief_ids)
         n_terms = len(self.vocabulary)
@@ -518,6 +577,7 @@ class BM25Index:
         k1 = float(_read(np.dtype(np.float64), 1)[0])
         b = float(_read(np.dtype(np.float64), 1)[0])
         avgdl = float(_read(np.dtype(np.float64), 1)[0])
+        k3 = float(_read(np.dtype(np.float64), 1)[0])
         n_docs = int(_read(np.dtype(np.uint64), 1)[0])
         n_terms = int(_read(np.dtype(np.uint64), 1)[0])
 
@@ -561,6 +621,7 @@ class BM25Index:
             anchor_weight=anchor_weight,
             k1=k1,
             b=b,
+            k3=k3,
         )
 
 
@@ -610,6 +671,7 @@ class BM25IndexCache:
     anchor_weight: int = DEFAULT_ANCHOR_WEIGHT
     k1: float = DEFAULT_K1
     b: float = DEFAULT_B
+    k3: float = DEFAULT_K3
     _index: BM25Index | None = field(default=None, init=False, repr=False)
     _generation: int | None = field(default=None, init=False, repr=False)
     _subscribed: bool = field(default=False, init=False, repr=False)
@@ -642,6 +704,7 @@ class BM25IndexCache:
                 anchor_weight=self.anchor_weight,
                 k1=self.k1,
                 b=self.b,
+                k3=self.k3,
             )
             self._write_sidecar(self._index, generation)
             self._generation = generation
@@ -699,6 +762,11 @@ class BM25IndexCache:
                 return None
             if index.b != self.b:
                 return None
+            # v3 (#1166) stores k3 as float64 for the same exactness
+            # reason; a blob written with qf saturation off must not be
+            # served to a cache configured with it on.
+            if index.k3 != self.k3:
+                return None
             self._generation = generation
             return index
         except Exception:  # noqa: BLE001 — any bad sidecar => rebuild
@@ -749,6 +817,7 @@ __all__ = [
     "DEFAULT_ANCHOR_WEIGHT",
     "DEFAULT_K1",
     "DEFAULT_B",
+    "DEFAULT_K3",
     "DEFAULT_TOP_K",
     "BM25Index",
     "BM25IndexCache",

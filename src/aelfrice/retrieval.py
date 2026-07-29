@@ -171,6 +171,12 @@ POSTERIOR_WEIGHT_FLAG: Final[str] = "posterior_weight"
 # `[retrieval] use_bm25f_anchors = false`.
 BM25F_FLAG: Final[str] = "use_bm25f_anchors"
 
+# #1166 query-term-frequency saturation on the BM25F lane. Default
+# `bm25.DEFAULT_K3` = 0.0, which discards qf and so reproduces the
+# pre-#1166 ranking byte-for-byte. Raising it is a retrieval-quality
+# change, gated on its own bench; see `resolve_bm25_k3`.
+BM25_K3_FLAG: Final[str] = "bm25_k3"
+
 # v1.5.0 #154 composition-tracker placeholder flags. The components
 # ship across v1.6 / v1.7. Each was a no-op placeholder at v1.5.0;
 # `HEAT_KERNEL_FLAG` is the first to leave the placeholder set as the
@@ -306,6 +312,10 @@ ENV_USE_ZETA_POSTERIOR_RERANK: Final[str] = (
 # layer (kwarg → TOML → DEFAULT_POSTERIOR_WEIGHT) and trace to
 # stderr. Same shape as `_read_toml_flag_for` tolerance.
 ENV_POSTERIOR_WEIGHT: Final[str] = "AELFRICE_POSTERIOR_WEIGHT"
+# #1166 BM25F query-term-frequency saturation. Float >= 0; 0.0 keeps
+# qf discarded (the shipped default). Empty / non-numeric / negative
+# values fall through to the next precedence layer and trace to stderr.
+ENV_BM25_K3: Final[str] = "AELFRICE_BM25_K3"
 # v2.1 #473 temporal-decay half-life env override. Float seconds.
 # Empty / non-numeric values fall through (kwarg → TOML → default).
 ENV_TEMPORAL_HALF_LIFE: Final[str] = "AELFRICE_TEMPORAL_HALF_LIFE_SECONDS"
@@ -1086,6 +1096,69 @@ def resolve_posterior_weight(
     if weight < 0.0:
         return 0.0
     return weight
+
+
+def _env_bm25_k3() -> float | None:
+    """Return `AELFRICE_BM25_K3` as a float, or None when unset /
+    non-numeric. Same fail-soft contract as `_env_posterior_weight`.
+    """
+    raw = os.environ.get(ENV_BM25_K3)
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    try:
+        return float(stripped)
+    except ValueError:
+        print(
+            f"aelfrice retrieval: ignoring {ENV_BM25_K3}={raw!r} "
+            f"(expected float)",
+            file=sys.stderr,
+        )
+        return None
+
+
+def resolve_bm25_k3(
+    explicit: float | None = None,
+    *,
+    start: Path | None = None,
+) -> float:
+    """Resolve the BM25F query-term-frequency saturation constant (#1166).
+
+    Precedence (first decisive wins):
+      1. ``AELFRICE_BM25_K3`` env var (float, including 0.0).
+      2. Explicit `explicit` kwarg from the caller.
+      3. ``[retrieval] bm25_k3`` in `.aelfrice.toml`.
+      4. Default: ``bm25.DEFAULT_K3`` (0.0).
+
+    ``k3 = 0`` weights every query term by its idf alone regardless of
+    how many times it appears, which is exactly what the pre-#1166 code
+    did by assigning rather than accumulating. It stays the default so
+    this bug fix does not move anyone's ranking: three shipped
+    components express their boost as a duplicated token
+    (`query_understanding.entity_expand`, `query_understanding.idf_clip`,
+    `hook._build_conversation_aware_query`) and have been inert on this
+    lane, but their multipliers were tuned against the FTS5 lane and do
+    not transfer unexamined. Raising `k3` is therefore a separate,
+    bench-gated flip.
+
+    Negative values clamp to 0.0 — the saturation form is defined for
+    ``k3 >= 0`` only, and `BM25Index.build` rejects negatives outright.
+    """
+    from aelfrice.bm25 import DEFAULT_K3
+
+    env = _env_bm25_k3()
+    if env is not None:
+        k3 = env
+    elif explicit is not None:
+        k3 = float(explicit)
+    else:
+        toml_value = _read_toml_float_for(BM25_K3_FLAG, start)
+        k3 = float(toml_value) if toml_value is not None else DEFAULT_K3
+    if k3 < 0.0:
+        return 0.0
+    return k3
 
 
 # --- #1045 wide-retrieval knobs (l1_limit + retrieval token budget) ------
@@ -2667,6 +2740,7 @@ def _store_scoped_bm25f_cache(
     store: MemoryStore,
     *,
     anchor_weight: int,
+    k3: float,
 ) -> BM25IndexCache:
     """One process-lifetime `BM25IndexCache` per store (#1135).
 
@@ -2680,10 +2754,14 @@ def _store_scoped_bm25f_cache(
     """
     cache = store._bm25f_shared_cache  # noqa: SLF001 — slot owned here
     if not isinstance(cache, BM25IndexCache):
-        cache = BM25IndexCache(store, anchor_weight=anchor_weight)
+        cache = BM25IndexCache(store, anchor_weight=anchor_weight, k3=k3)
         store._bm25f_shared_cache = cache  # noqa: SLF001
-    elif cache.anchor_weight != anchor_weight:
+    elif cache.anchor_weight != anchor_weight or cache.k3 != k3:
+        # #1166: k3 rides the same invalidation path as anchor_weight.
+        # It is carried on the built index, so a cached index built
+        # under a different k3 would keep scoring with the stale value.
         cache.anchor_weight = anchor_weight
+        cache.k3 = k3
         cache.invalidate()
     return cache
 
@@ -2793,6 +2871,7 @@ def _l1_hits(
                 anchor_weight=resolve_bm25f_anchor_weight_with_meta(
                     store, now_ts=effective_now_ts,
                 ),
+                k3=resolve_bm25_k3(),
             )
         else:
             cache = bm25f_cache
