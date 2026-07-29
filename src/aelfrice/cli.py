@@ -5976,11 +5976,18 @@ def _print_replay_report(
         canonical_orphan:          <n>
         legacy_origin_backfill:    <n>
         feedback_derived_edges:    <n>   (informational)
+        mutable_divergence:        <n>   (informational)
+
+    When `mutable_divergence` is non-zero a per-field breakdown follows,
+    one indented `<field>: <n>` line per diverging field. These are the
+    fields outside the strict shape-equality contract (#1167) — mutated
+    legitimately after ingest, so a non-zero count is expected on a live
+    store and never means drift.
 
     If drift > 0, a "drift examples" section follows with one sub-block
     per non-empty bucket.
     """
-    from aelfrice.replay import FullEqualityReport
+    from aelfrice.replay import MUTABLE_FIELDS, FullEqualityReport
     assert isinstance(report, FullEqualityReport)
     lines = [
         "replay full-equality report",
@@ -5994,7 +6001,13 @@ def _print_replay_report(
         f"legacy_origin_backfill:    {report.legacy_origin_backfill}",
         f"feedback_derived_edges:    {report.feedback_derived_edges}"
         "   (informational)",
+        f"mutable_divergence:        {report.mutable_divergence}"
+        "   (informational)",
     ]
+    for name in MUTABLE_FIELDS:
+        count = report.mutable_field_counts.get(name, 0)
+        if count:
+            lines.append(f"  {name}: {count}")
     for line in lines:
         print(line, file=out)  # type: ignore[arg-type]
 

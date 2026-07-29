@@ -123,11 +123,14 @@ def test_empty_store_all_zero(store: MemoryStore) -> None:
     assert report.canonical_orphan == 0
     assert report.legacy_origin_backfill == 0
     assert report.feedback_derived_edges == 0
+    assert report.mutable_divergence == 0
+    assert report.mutable_field_counts == {}
     assert report.has_drift is False
     assert report.drift_examples == {
         "mismatched": [],
         "derived_orphan": [],
         "canonical_orphan": [],
+        "mutable_divergence": [],
     }
 
 
@@ -171,6 +174,124 @@ def test_posterior_mutation_not_drift(store: MemoryStore) -> None:
     assert report.mismatched == 0
     assert report.matched == 1
     assert report.has_drift is False
+
+
+# ---------------------------------------------------------------------------
+# Mutable divergence bucket (#1167) — reported, never drift
+# ---------------------------------------------------------------------------
+
+
+def test_posterior_mutation_reported_as_mutable_divergence(
+    store: MemoryStore,
+) -> None:
+    """Hypothesis: an alpha/beta mutation is *visible* in the report even
+    though it is not drift.
+
+    Before #1167 the posterior was dropped silently, which is why the 5x
+    alpha deflation on transcript beliefs went unseen while its origin half
+    was flagged. Falsifiable by mutable_divergence == 0 or by the counters
+    omitting alpha/beta."""
+    bid = _ingest(store, _FACTUAL_SENTENCE)
+    store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+        "UPDATE beliefs SET alpha = 5.0, beta = 1.5 WHERE id = ?",
+        (bid,),
+    )
+    store._conn.commit()  # pyright: ignore[reportPrivateUsage]
+
+    report = replay_full_equality(store)
+    assert report.mutable_divergence == 1
+    assert report.mutable_field_counts["alpha"] == 1
+    assert report.mutable_field_counts["beta"] == 1
+    # Still not drift — the fields are legitimately rewritten post-ingest.
+    assert report.has_drift is False
+
+    example = report.drift_examples["mutable_divergence"][0]
+    assert example["belief_id"] == bid
+    assert example["fields_diff"]["alpha"]["canonical"] == pytest.approx(5.0)
+
+
+def test_lock_and_retention_mutation_reported_not_drift(
+    store: MemoryStore,
+) -> None:
+    """Hypothesis: lock_level and retention_class divergence lands in the
+    mutable bucket, not in mismatched.
+
+    Falsifiable by has_drift True or by either field missing from the
+    per-field counts."""
+    bid = _ingest(store, _FACTUAL_SENTENCE)
+    store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+        "UPDATE beliefs SET lock_level = ?, retention_class = 'snapshot' "
+        "WHERE id = ?",
+        (LOCK_USER, bid),
+    )
+    store._conn.commit()  # pyright: ignore[reportPrivateUsage]
+
+    report = replay_full_equality(store)
+    assert report.has_drift is False
+    assert report.mismatched == 0
+    assert report.mutable_divergence == 1
+    assert report.mutable_field_counts["lock_level"] == 1
+    assert report.mutable_field_counts["retention_class"] == 1
+
+
+def test_clean_store_has_no_mutable_divergence(store: MemoryStore) -> None:
+    """Hypothesis: a freshly ingested, untouched belief agrees on every
+    mutable field too — so the bucket is silent on a clean store and a
+    non-zero count is a real signal rather than constant noise.
+    Falsifiable by mutable_divergence > 0."""
+    _ingest(store, _FACTUAL_SENTENCE)
+    _ingest_transcript_turn(store, _FACTUAL_SENTENCE_2, role="user")
+
+    report = replay_full_equality(store)
+    assert report.matched == 2
+    assert report.mutable_divergence == 0
+    assert report.mutable_field_counts == {}
+
+
+def test_edge_set_divergence_reported(store: MemoryStore) -> None:
+    """Hypothesis: a log row claiming a derived edge that `derive()` does not
+    re-emit is reported under `edge_set`.
+
+    `derive()` hardcodes `edges=[]` on every path today, so this shape can
+    only be produced by hand — the assertion pins the wiring so the probe is
+    live the moment #1157 lands edge derivation. Falsifiable by
+    mutable_field_counts lacking 'edge_set'."""
+    bid = _ingest(store, _FACTUAL_SENTENCE)
+    store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+        "UPDATE ingest_log SET derived_edge_ids = ? "
+        "WHERE derived_belief_ids LIKE ?",
+        ('[["a", "b", "SUPPORTS"]]', f"%{bid}%"),
+    )
+    store._conn.commit()  # pyright: ignore[reportPrivateUsage]
+
+    report = replay_full_equality(store)
+    assert report.has_drift is False
+    assert report.mutable_field_counts["edge_set"] == 1
+    example = report.drift_examples["mutable_divergence"][0]
+    assert example["fields_diff"]["edge_set"]["canonical"] == [
+        ("a", "b", "SUPPORTS"),
+    ]
+    assert example["fields_diff"]["edge_set"]["derived"] == []
+
+
+def test_malformed_derived_edge_ids_does_not_abort_walk(
+    store: MemoryStore,
+) -> None:
+    """Hypothesis: an unparseable `derived_edge_ids` blob decodes to the
+    empty set rather than raising, so one corrupt row cannot take down the
+    whole probe. Falsifiable by an exception or by total_log_rows < 1."""
+    bid = _ingest(store, _FACTUAL_SENTENCE)
+    store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+        "UPDATE ingest_log SET derived_edge_ids = ? "
+        "WHERE derived_belief_ids LIKE ?",
+        ("{not json", f"%{bid}%"),
+    )
+    store._conn.commit()  # pyright: ignore[reportPrivateUsage]
+
+    report = replay_full_equality(store)
+    assert report.total_log_rows == 1
+    assert report.matched == 1
+    assert report.mutable_field_counts.get("edge_set", 0) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +785,39 @@ def test_cli_doctor_replay_output_format(
     assert "canonical_orphan:" in text
     # Drift section present.
     assert "drift" in text.lower()
+
+
+def test_cli_doctor_replay_prints_mutable_breakdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hypothesis: `aelf doctor --replay` prints the mutable_divergence
+    counter plus a per-field breakdown, and still exits 0 because those
+    fields are not drift.
+
+    Falsifiable by a missing line or a non-zero exit code."""
+    import io
+    from aelfrice.cli import main
+
+    db = str(tmp_path / "brain.db")
+    monkeypatch.setenv("AELFRICE_DB", db)
+
+    s = MemoryStore(db)
+    bid = _ingest(s, _FACTUAL_SENTENCE)
+    s._conn.execute(
+        "UPDATE beliefs SET alpha = 9.0, lock_level = ? WHERE id = ?",
+        (LOCK_USER, bid),
+    )
+    s._conn.commit()
+    s.close()
+
+    buf = io.StringIO()
+    rc = main(["doctor", "--replay"], out=buf)
+    text = buf.getvalue()
+
+    assert rc == 0
+    assert "mutable_divergence:        1" in text
+    assert "  alpha: 1" in text
+    assert "  lock_level: 1" in text
 
 
 def test_cli_doctor_replay_negative_max_drift_clamped(

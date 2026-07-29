@@ -82,16 +82,37 @@ class FullEqualityReport:
     Counts how many ingest_log rows, when re-derived, produce a belief
     that is shape-equal to the canonical belief in the store.
 
-    Shape-equality contract (ratified 2026-04-29; edge-set check not yet
-    implemented):
+    Shape-equality contract (ratified 2026-04-29):
     - content_hash matches, AND
     - type matches, AND
     - origin matches OR canonical origin IS NULL (legacy backfill cohort).
 
-    Edge-set equality is NOT currently checked: `derived_edge_ids` is
-    selected by the ingest_log query but never read off the row or
-    compared. alpha/beta/last_retrieved_at/edges are therefore excluded
-    from shape-equality and never trigger drift.
+    These three are the fields `derive()` alone determines and that no
+    post-ingest operation rewrites, so a divergence is unambiguously a
+    derivation regression. Only they trigger `has_drift`.
+
+    Mutable divergence (#1167). The remaining belief columns are compared
+    too, but reported in a separate, non-drift-triggering bucket:
+
+        alpha, beta, lock_level, retention_class, scope,
+        last_retrieved_at, edge set
+
+    Each of these is legitimately rewritten after ingest — corroboration
+    and feedback move (alpha, beta); `aelf lock` moves lock_level; the
+    snapshot lifecycle moves retention_class; federation moves scope;
+    retrieval stamps last_retrieved_at. None is reconstructible from the
+    write log as it exists today, so counting them as drift would report
+    a false positive on every live store. They were previously dropped
+    silently, which is how the #1167 5x alpha deflation stayed invisible
+    while its origin half was flagged. Making them visible-but-not-drift
+    is the honest reading of "full equality" until the log is total
+    (#1157), at which point they can be promoted into the strict contract.
+
+    The edge set compares `derive()`'s emitted edges against the log row's
+    `derived_edge_ids`. Both are structurally empty today — every
+    `derive()` return hardcodes `edges=[]` — so this counter stays 0 until
+    #1157 lands edge derivation. It is wired now so the probe reports the
+    divergence the moment one side moves without the other.
 
     Counters:
 
@@ -111,12 +132,19 @@ class FullEqualityReport:
         column in the current schema; this counter is always 0 until the
         schema adds provenance tracking. Informational only; never triggers
         drift.
+    `mutable_divergence`: log rows where the canonical belief matched on the
+        strict contract but differed on ≥1 mutable field. Informational;
+        never triggers drift.
+    `mutable_field_counts`: per-field row counts behind `mutable_divergence`.
+        Keys are drawn from `MUTABLE_FIELDS`; absent keys mean zero.
     `drift_examples`: per-bucket sample, capped at `drift_examples` per bucket.
-        Keys: "mismatched", "derived_orphan", "canonical_orphan".
+        Keys: "mismatched", "derived_orphan", "canonical_orphan",
+        "mutable_divergence".
         Each mismatched entry: {"belief_id", "log_row_id", "raw_text" (≤200 chars),
             "fields_diff"}.
         Each derived_orphan entry: {"log_row_id", "raw_text", "synthesized_belief_id"}.
         Each canonical_orphan entry: {"belief_id", "content_hash"}.
+        Each mutable_divergence entry: {"belief_id", "log_row_id", "fields_diff"}.
     """
     implemented: bool                       # always True
     total_log_rows: int                     # non-legacy_unknown rows considered
@@ -128,6 +156,8 @@ class FullEqualityReport:
     legacy_origin_backfill: int             # canonical origin NULL, derived origin set (match)
     feedback_derived_edges: int             # non-deterministic edges (informational)
     drift_examples: dict[str, list[dict]]   # type: ignore[type-arg]
+    mutable_divergence: int = 0             # ≥1 mutable field differs (informational)
+    mutable_field_counts: dict[str, int] = field(default_factory=dict)
 
     @property
     def has_drift(self) -> bool:
@@ -143,14 +173,89 @@ class FullEqualityReport:
         These are expected during the v2.x migration window and reporting
         them as drift would produce false positives.
 
-        `legacy_origin_backfill` and `feedback_derived_edges` are also
-        informational and never trigger drift.
+        `legacy_origin_backfill`, `feedback_derived_edges` and
+        `mutable_divergence` are also informational and never trigger
+        drift. See the class docstring for why the mutable fields are
+        reported rather than enforced.
         """
         return self.mismatched > 0 or self.derived_orphan > 0
 
 
 # Scope values accepted by replay_full_equality.
 ReplayScope = Literal["all", "since-v2"]
+
+# Belief fields compared outside the strict shape-equality contract (#1167).
+# Order is the reporting order; see FullEqualityReport for why each one is
+# informational rather than drift-triggering.
+MUTABLE_FIELDS: tuple[str, ...] = (
+    "alpha",
+    "beta",
+    "lock_level",
+    "retention_class",
+    "scope",
+    "last_retrieved_at",
+    "edge_set",
+)
+
+# Absolute tolerance for the alpha/beta comparison. derive() recomputes the
+# prior from the same table the writer used, so an exact match is expected;
+# the epsilon only absorbs SQLite REAL round-trip noise.
+_POSTERIOR_EPSILON: float = 1e-9
+
+
+def _mutable_fields_diff(
+    canonical: object,
+    synthesized: object,
+    canonical_edges: set[tuple[str, str, str]],
+    derived_edges: set[tuple[str, str, str]],
+) -> dict[str, object]:
+    """Return the per-field diff for the mutable (non-log-derivable) set.
+
+    Empty dict means the canonical belief agrees with the re-derived one on
+    every field outside the strict contract.
+    """
+    diff: dict[str, object] = {}
+    for name in ("alpha", "beta"):
+        c = float(getattr(canonical, name))
+        d = float(getattr(synthesized, name))
+        if abs(c - d) > _POSTERIOR_EPSILON:
+            diff[name] = {"canonical": c, "derived": d}
+    for name in ("lock_level", "retention_class", "scope", "last_retrieved_at"):
+        c_val = getattr(canonical, name)
+        d_val = getattr(synthesized, name)
+        if c_val != d_val:
+            diff[name] = {"canonical": c_val, "derived": d_val}
+    if canonical_edges != derived_edges:
+        diff["edge_set"] = {
+            "canonical": sorted(canonical_edges),
+            "derived": sorted(derived_edges),
+        }
+    return diff
+
+
+def _logged_edge_set(blob: object) -> set[tuple[str, str, str]]:
+    """Decode an ingest_log `derived_edge_ids` blob into (src, dst, type).
+
+    The column is JSON TEXT holding a list of 3-element lists. NULL, invalid
+    JSON, and rows of the wrong shape all decode to the empty set — this is a
+    reporting probe, not a validator, and a malformed row must not abort the
+    walk.
+    """
+    import json as _json  # noqa: PLC0415 - keep replay's stdlib footprint local
+
+    if not blob:
+        return set()
+    try:
+        decoded = _json.loads(blob)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return set()
+    if not isinstance(decoded, list):
+        return set()
+    out: set[tuple[str, str, str]] = set()
+    for item in decoded:
+        if isinstance(item, (list, tuple)) and len(item) == 3:
+            out.add((str(item[0]), str(item[1]), str(item[2])))
+    return out
 
 
 def replay_full_equality(
@@ -221,9 +326,12 @@ def replay_full_equality(
     mismatched = 0
     derived_orphan = 0
     legacy_origin_backfill = 0
+    mutable_divergence = 0
+    mutable_field_counts: dict[str, int] = {}
 
     examples_mismatched: list[dict] = []     # type: ignore[type-arg]
     examples_derived_orphan: list[dict] = [] # type: ignore[type-arg]
+    examples_mutable: list[dict] = []        # type: ignore[type-arg]
 
     for row in rows:
         raw_text = str(row["raw_text"])
@@ -313,6 +421,25 @@ def replay_full_equality(
         type_match = canonical.type == synthesized.type
         origin_match = (origin_canonical == origin_derived) or origin_null
 
+        # #1167: compare the fields outside the strict contract too. Counted
+        # and exampled separately; never promoted into `has_drift`.
+        mutable_diff = _mutable_fields_diff(
+            canonical,
+            synthesized,
+            _logged_edge_set(row["derived_edge_ids"]),
+            {(e.src, e.dst, e.type) for e in out.edges},
+        )
+        if mutable_diff:
+            mutable_divergence += 1
+            for name in mutable_diff:
+                mutable_field_counts[name] = mutable_field_counts.get(name, 0) + 1
+            if len(examples_mutable) < drift_examples:
+                examples_mutable.append({
+                    "belief_id": canonical.id,
+                    "log_row_id": log_row_id,
+                    "fields_diff": mutable_diff,
+                })
+
         if content_hash_match and type_match and origin_match:
             matched += 1
             if origin_null:
@@ -369,9 +496,12 @@ def replay_full_equality(
         canonical_orphan=canonical_orphan,
         legacy_origin_backfill=legacy_origin_backfill,
         feedback_derived_edges=feedback_derived_edges,
+        mutable_divergence=mutable_divergence,
+        mutable_field_counts=mutable_field_counts,
         drift_examples={
             "mismatched": examples_mismatched,
             "derived_orphan": examples_derived_orphan,
             "canonical_orphan": examples_canonical_orphan,
+            "mutable_divergence": examples_mutable,
         },
     )
