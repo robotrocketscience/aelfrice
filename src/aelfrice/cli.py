@@ -96,6 +96,8 @@ from aelfrice.doctor import (
     prune_broken_aelf_hooks,
 )
 from aelfrice.llm_classifier import (
+    CONSENT_SCOPE_ONBOARD_CANDIDATES as _LLM_SCOPE_ONBOARD,
+    CONSENT_SCOPE_STORED_BELIEFS as _LLM_SCOPE_STORED_BELIEFS,
     ENV_API_KEY as _LLM_ENV_API_KEY,
     LLMAuthError as _LLMAuthError,
     LLMConfig as _LLMConfig,
@@ -645,7 +647,9 @@ def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
     # Gate 4: consent. --dry-run skips the prompt AND the network.
     sentinel = _llm_sentinel_path()
     sentinel_record = _llm_read_sentinel(sentinel)
-    if not _llm_is_sentinel_valid(sentinel_record, model=cfg.model):
+    if not _llm_is_sentinel_valid(
+        sentinel_record, model=cfg.model, required_scope=_LLM_SCOPE_ONBOARD,
+    ):
         if dry_run:
             # Dry-run must NOT prompt and MUST NOT write the sentinel.
             print(
@@ -673,7 +677,17 @@ def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
                         file=sys.stderr,
                     )
                 return _run_regex_onboard(args, out, soft_fallback=True)
-            _llm_write_sentinel(sentinel, model=cfg.model)
+            # #1172: union, so re-consenting at onboard time does not
+            # drop a `stored_beliefs` grant the user made elsewhere.
+            _existing = (
+                tuple(sentinel_record.scopes)
+                if sentinel_record is not None else ()
+            )
+            _llm_write_sentinel(
+                sentinel,
+                model=cfg.model,
+                scopes=tuple(dict.fromkeys((*_existing, _LLM_SCOPE_ONBOARD))),
+            )
 
     # Dry-run: print candidates without contacting the network.
     if dry_run:
@@ -6177,8 +6191,12 @@ def _cmd_doctor_classify_orphans(
     max_n_raw = getattr(args, "max", None)
     max_n: int | None = int(max_n_raw) if max_n_raw is not None else None
 
-    # Gates: SDK importable, API key set.
-    gate = _llm_check_gates(enabled=True, model=_LLMConfig.default().model)
+    cfg = _LLMConfig.default()
+
+    # Gates 1-2: SDK importable, API key set. `check_gates` does NOT
+    # cover gate 4 — see its docstring — so the consent check below is
+    # not optional.
+    gate = _llm_check_gates(enabled=True, model=cfg.model)
     if not gate.pass_all and not dry_run:
         if gate.exit_code is not None:
             if gate.message:
@@ -6194,7 +6212,35 @@ def _cmd_doctor_classify_orphans(
         )
         return 1
 
-    cfg = _LLMConfig.default()
+    # Gate 4: consent (#1172). This command transmits the *content of
+    # stored beliefs* — including transcript-captured statements the
+    # user typed — which the onboard prompt never disclosed. So it
+    # requires a sentinel scoped to `stored_beliefs`; an onboard-only
+    # sentinel (every sentinel written before #1172) does not authorise
+    # it. --dry-run makes no outbound call, so it skips this entirely.
+    if not dry_run:
+        sentinel = _llm_sentinel_path()
+        record = _llm_read_sentinel(sentinel)
+        if not _llm_is_sentinel_valid(
+            record, model=cfg.model, required_scope=_LLM_SCOPE_STORED_BELIEFS,
+        ):
+            prompt = _llm_prompt_for_consent(scope=_LLM_SCOPE_STORED_BELIEFS)
+            if not prompt.accepted:
+                print(
+                    f"aelf: --classify-orphans aborted ({prompt.reason}); "
+                    "no belief content was sent. Preview the candidate set "
+                    "with: aelf doctor --classify-orphans --dry-run",
+                    file=sys.stderr,
+                )
+                return 1
+            # Union with any scope already on disk so granting this does
+            # not silently revoke onboard consent.
+            existing = tuple(record.scopes) if record is not None else ()
+            scopes = tuple(
+                dict.fromkeys((*existing, _LLM_SCOPE_STORED_BELIEFS)),
+            )
+            _llm_write_sentinel(sentinel, model=cfg.model, scopes=scopes)
+
     store = _open_store()
     try:
         orphan_report = _classify_orphans(

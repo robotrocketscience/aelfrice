@@ -39,9 +39,23 @@ The v1.5.0 default-on flip in `[onboard.llm].enabled` is non-destructive: users 
 
 **What is never sent:** file contents beyond the extracted candidate, the `ANTHROPIC_API_KEY` itself (used only as bearer token), working directory paths, hostnames, usernames, machine ids, git remotes, git config, git author email, or anything in a file matching the `INEDIBLE` marker or in a `_SKIP_DIRS` directory. The opt-out surface is the same one that already governs local ingest.
 
+### `aelf doctor --classify-orphans` — the one path that sends *stored* content
+
+Every other outbound path sends text aelfrice just read out of your project files. This one is different, and it is called out separately because of that: it asks the vendor model to assign a type to beliefs still marked `unknown`, and to do so it sends **the content of those stored beliefs** — which can include statements you typed that were captured from conversation transcripts.
+
+It is guarded by the same four gates as `aelf onboard --llm-classify`, plus a scope restriction:
+
+- The consent sentinel records **which data classes** you were shown when you accepted (`scopes`). An `aelf onboard` sentinel grants `onboard_candidates` only.
+- `--classify-orphans` requires the `stored_beliefs` scope and prompts separately for it, with a disclosure that names stored belief content explicitly. Accepting it does **not** widen what `aelf onboard` sends, and it enables no recurring or background call.
+- A sentinel written before this scoping existed has no `scopes` key and is read as onboard-only, so it does not authorise this path — you will be prompted once.
+- `aelf doctor --classify-orphans --dry-run` counts and prints the candidate set with **no gate check and no network call**, so you can audit exactly what would be sent before consenting.
+- `aelf doctor revoke-llm-consent` removes the sentinel and therefore both scopes.
+
+Before v4.2.0 this command hardcoded its gate to open and never read the sentinel, so with the extra installed and `ANTHROPIC_API_KEY` exported it transmitted belief content with no prompt (#1172). If you ran it on an affected version, belief content went to the vendor API; `revoke-llm-consent` could not have prevented it, because no sentinel was ever consulted.
+
 **Telemetry remains zero.** aelfrice does not phone-home about its own LLM usage. Tokens consumed are reported on stdout to the user only, never written to any network endpoint or logging service. On the direct-API path, `aelf onboard --llm-classify` makes one or more requests to `https://api.anthropic.com/`; nothing else. On the host-driven path, the aelfrice CLI makes zero direct outbound calls — the host LLM handles its own network IO under its own credentials.
 
-**Update notifier remains the only outbound call from aelfrice itself by default.** The TTL-gated GET to `https://pypi.org/pypi/aelfrice/json` (covered above) is read-only and on by default (disable with `AELF_NO_UPDATE_CHECK=1`); the direct-API LLM-classify path is opt-in and conditional. Those are the only two outbound calls the shipped aelfrice package can make, and one of them transmits no data.
+**Update notifier remains the only outbound call from aelfrice itself by default.** The TTL-gated GET to `https://pypi.org/pypi/aelfrice/json` (covered above) is read-only and on by default (disable with `AELF_NO_UPDATE_CHECK=1`). The two LLM-classify paths — `aelf onboard --llm-classify` and `aelf doctor --classify-orphans` — are opt-in and conditional, each gated on a consent scope. Those are the only three outbound calls the shipped aelfrice package can make, and only the update check is on by default; it transmits no data.
 
 **Confirm at the source:**
 

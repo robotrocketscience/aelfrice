@@ -31,6 +31,27 @@ from aelfrice.models import (
 from aelfrice.store import MemoryStore
 
 
+@pytest.fixture
+def consented(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Grant `stored_beliefs` consent at a throwaway sentinel path (#1172).
+
+    `--classify-orphans` now refuses to transmit belief content without a
+    sentinel scoped to `stored_beliefs`. Tests that exercise the live path
+    must grant it explicitly — and must never touch the real
+    `~/.aelfrice/` sentinel, so the path is redirected to `tmp_path`.
+    """
+    path = tmp_path / "llm-classify-consented"
+    monkeypatch.setattr(cli_module, "_llm_sentinel_path", lambda: path)
+    llm.write_sentinel(
+        path,
+        model=llm.LLMConfig.default().model,
+        scopes=(llm.CONSENT_SCOPE_STORED_BELIEFS,),
+    )
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -436,6 +457,7 @@ def test_cli_classify_orphans_live(
     memdb_cli: MemoryStore,
     monkeypatch: pytest.MonkeyPatch,
     stub_anthropic: None,
+    consented: Path,
 ) -> None:
     """aelf doctor --classify-orphans classifies and updates the store."""
     for i in range(3):
@@ -480,6 +502,7 @@ def test_cli_classify_orphans_max_n(
     memdb_cli: MemoryStore,
     monkeypatch: pytest.MonkeyPatch,
     stub_anthropic: None,
+    consented: Path,
 ) -> None:
     """--max N limits how many beliefs are sent to the LLM."""
     for i in range(10):
