@@ -6223,7 +6223,6 @@ def _cmd_doctor_classify_orphans(
     # All of this is skipped under --dry-run, which contacts nothing and
     # so has no boundary to enforce; probing the SDK import for a preview
     # was pointless work. Review catch (CodeRabbit, PR #1182).
-    api_key = ""
     if not dry_run:
         gate = _llm_check_gates(enabled=True, model=cfg.model)
         if not gate.pass_all and gate.exit_code is not None:
@@ -6231,15 +6230,14 @@ def _cmd_doctor_classify_orphans(
                 print(gate.message, file=sys.stderr)
             return gate.exit_code
 
-        api_key = os.environ.get(_LLM_ENV_API_KEY, "")
-        if not api_key:
-            print(
-                f"aelf: {_LLM_ENV_API_KEY} not set; --classify-orphans "
-                "requires it. Pass --dry-run to count orphans without "
-                "making LLM calls.",
-                file=sys.stderr,
-            )
-            return 1
+    api_key = os.environ.get(_LLM_ENV_API_KEY, "")
+    if not api_key and not dry_run:
+        print(
+            f"aelf: {_LLM_ENV_API_KEY} not set; --classify-orphans requires it. "
+            "Pass --dry-run to count orphans without making LLM calls.",
+            file=sys.stderr,
+        )
+        return 1
 
     # Gate 4: consent (#1172). This command transmits the *content of
     # stored beliefs* — including transcript-captured statements the
