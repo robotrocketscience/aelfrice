@@ -115,7 +115,9 @@ from aelfrice.llm_classifier import (
     write_sentinel as _llm_write_sentinel,
 )
 from aelfrice.lifecycle import (
+    MIGRATED_TO_UV_SENTINEL as _MIGRATED_TO_UV_SENTINEL,
     PACKAGE_NAME as _PKG,
+    artifact_paths as _lifecycle_artifact_paths,
     check_for_update,
     clear_cache as _clear_update_cache,
     format_update_banner as _format_update_banner,
@@ -4800,6 +4802,124 @@ def _read_password(args: argparse.Namespace) -> str | None:
     return pw1
 
 
+# --- Uninstall artifact reporting (#1173) -------------------------------
+#
+# The pre-#1173 purge gate printed one path and one size, because it only
+# deleted one file. It now deletes the whole artifact set, so the gate has
+# to enumerate that set: the confirmation is only meaningful if the user
+# can see what they are confirming.
+
+_SIZE_UNITS: Final[tuple[str, ...]] = ("bytes", "KiB", "MiB", "GiB", "TiB")
+
+
+def _format_size(n: int) -> str:
+    """Human-readable byte count. Integral bytes, one decimal above."""
+    if n < 1024:
+        return f"{n:,} bytes"
+    size = float(n)
+    for unit in _SIZE_UNITS[1:]:
+        size /= 1024.0
+        if size < 1024.0 or unit == _SIZE_UNITS[-1]:
+            return f"{size:,.1f} {unit}"
+    return f"{n:,} bytes"  # pragma: no cover - loop always returns
+
+
+def _artifact_size(path: Path) -> int:
+    """Total bytes at `path`, recursing into directories. 0 if unreadable."""
+    try:
+        if path.is_dir() and not path.is_symlink():
+            return sum(
+                p.stat().st_size for p in path.rglob("*") if p.is_file()
+            )
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _artifact_total_bytes(paths: Sequence[Path]) -> int:
+    return sum(_artifact_size(p) for p in paths)
+
+
+def _print_artifact_manifest(paths: Sequence[Path], out: object) -> None:
+    """List each artifact with its size, one per line, indented."""
+    for path in paths:
+        suffix = "/" if path.is_dir() else ""
+        print(
+            f"  {path}{suffix} ({_format_size(_artifact_size(path))})",
+            file=out,  # type: ignore[arg-type]
+        )
+
+
+def _warn_orphaned_artifacts(
+    orphaned: Sequence[Path], target_db: Path, out: object,
+) -> None:
+    """Name artifacts left behind because the store dir is not ours.
+
+    Reached when `$AELFRICE_DB` points somewhere other than a directory
+    the package created, so generically-named siblings cannot be
+    attributed to aelfrice with enough confidence to delete them. Silence
+    here would be the #1173 bug again, one level down.
+    """
+    if not orphaned:
+        return
+    print(
+        f"\nnote: {target_db.parent} is not an aelfrice store directory, "
+        f"so {len(orphaned)} artifact"
+        f"{'' if len(orphaned) == 1 else 's'} with generic name"
+        f"{'' if len(orphaned) == 1 else 's'} will NOT be touched. "
+        "Remove by hand if they are aelfrice's:",
+        file=out,  # type: ignore[arg-type]
+    )
+    _print_artifact_manifest(orphaned, out)
+
+
+def _report_unremoved_artifacts(result: object, out: object) -> None:
+    """Warn when an artifact resisted deletion (permissions, held handle).
+
+    `uninstall` swallows OSError per-artifact so one failure cannot abort
+    the rest of the disposition; this is what makes that non-silent.
+    """
+    orphaned = getattr(result, "orphaned", ())
+    if orphaned:
+        print(
+            f"note: {len(orphaned)} artifact"
+            f"{'' if len(orphaned) == 1 else 's'} outside the store "
+            "directory left in place (listed above).",
+            file=out,  # type: ignore[arg-type]
+        )
+
+
+def _clear_auto_install_stamps(out: object) -> None:
+    """Reset install-state sentinels so a reinstall behaves like a fresh one.
+
+    Clears the manifest-version stamp (`maybe_install_manifest`
+    short-circuits when it equals the running version, which would make a
+    same-version reinstall a no-op) and the uv-migration sentinel (which
+    short-circuits the migration offer).
+
+    Deliberately preserves `opt-out-hooks.json`: those record a user's
+    decision that a given hook should not be installed, and honouring it
+    across a reinstall is the point of the file.
+    """
+    from aelfrice.auto_install import STAMP_PATH
+
+    for sentinel in (STAMP_PATH, _MIGRATED_TO_UV_SENTINEL):
+        try:
+            sentinel.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            print(
+                f"warning: could not remove {sentinel}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        print(
+            f"cleared install stamp {sentinel}",
+            file=out,  # type: ignore[arg-type]
+        )
+
+
 def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
     """Tear down aelfrice's local footprint with redundant data gates.
 
@@ -4834,21 +4954,21 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
 
     # --- Gate 1+2+3: redundant prompts before destroying data ---------
     if args.purge:
-        if target_db.exists():
-            try:
-                size = target_db.stat().st_size
-                size_str = f"{size:,} bytes"
-            except OSError:
-                size_str = "unknown size"
+        planned, orphaned = _lifecycle_artifact_paths(target_db)
+        if planned:
             print(
-                f"--purge will permanently delete {target_db} ({size_str}).",
+                f"--purge will permanently delete {len(planned)} "
+                f"artifact{'' if len(planned) == 1 else 's'} "
+                f"({_format_size(_artifact_total_bytes(planned))}):",
                 file=out,  # type: ignore[arg-type]
             )
+            _print_artifact_manifest(planned, out)
         else:
             print(
                 f"--purge target {target_db} does not exist; nothing to delete.",
                 file=out,  # type: ignore[arg-type]
             )
+        _warn_orphaned_artifacts(orphaned, target_db, out)
         if not args.yes:
             try:
                 ack = input("type 'PURGE' to confirm: ")
@@ -4870,6 +4990,34 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
     archive_path: Path | None = None
     if args.archive is not None:
         archive_path = Path(args.archive)
+        # #1173: --archive encrypts the belief DB and deletes the rest of
+        # the artifact set. Say so before taking a password, so nobody
+        # learns after the fact that their audit log and transcripts are
+        # gone rather than encrypted.
+        planned, orphaned = _lifecycle_artifact_paths(
+            target_db, exclude=archive_path.resolve(),
+        )
+        extras = [p for p in planned if p != target_db]
+        if extras:
+            print(
+                f"{target_db.name} will be encrypted to {archive_path}.\n"
+                f"{len(extras)} further artifact"
+                f"{'' if len(extras) == 1 else 's'} "
+                f"({_format_size(_artifact_total_bytes(extras))}) hold "
+                "content derived from it and will be DELETED, not "
+                "encrypted:",
+                file=out,  # type: ignore[arg-type]
+            )
+            _print_artifact_manifest(extras, out)
+            if not args.yes:
+                try:
+                    ack = input("continue? [y/N]: ")
+                except EOFError:
+                    ack = ""
+                if ack.strip().lower() not in {"y", "yes"}:
+                    print("aborted.", file=out)  # type: ignore[arg-type]
+                    return 1
+        _warn_orphaned_artifacts(orphaned, target_db, out)
         password = _read_password(args)
         if not password:
             print(
@@ -4899,7 +5047,9 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
         )
     elif result.mode == "purged":
         print(
-            f"DB deleted: {target_db}.",
+            f"deleted {len(result.removed)} artifact"
+            f"{'' if len(result.removed) == 1 else 's'} under "
+            f"{target_db.parent}.",
             file=out,  # type: ignore[arg-type]
         )
     elif result.mode == "archived":
@@ -4907,13 +5057,26 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
             f"DB encrypted to {result.archive_path}, original deleted.",
             file=out,  # type: ignore[arg-type]
         )
+        extras = len(result.removed) - 1 if result.removed else 0
+        if extras > 0:
+            print(
+                f"deleted {extras} further artifact"
+                f"{'' if extras == 1 else 's'} (not included in the archive).",
+                file=out,  # type: ignore[arg-type]
+            )
         print(
             "(decrypt later via aelfrice.lifecycle.decrypt_archive(path, pw))",
             file=out,  # type: ignore[arg-type]
         )
+    _report_unremoved_artifacts(result, out)
 
     # --- Clear update-check cache (no point keeping it post-uninstall)
     _clear_update_cache()
+    # #1173: the auto-install stamp short-circuits maybe_install_manifest
+    # on an unchanged version, so leaving it means a same-version reinstall
+    # silently restores none of the hooks removed below -- the product
+    # looks installed but is inert. Clearing it makes a reinstall re-merge.
+    _clear_auto_install_stamps(out)
 
     # --- Hook + statusline removal (default on, --keep-hook opts out)-
     if not args.keep_hook:
@@ -4931,6 +5094,12 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
             # #1136: `aelf uninstall --host codex` routes the unsetup
             # half to the codex host (hooks.json + $aelf-* skills).
             host=getattr(args, "host", "claude"),
+            # #1173: `aelf unsetup --rebuilder` is opt-in because unsetup
+            # is a surgical command, but uninstall means "remove all of
+            # it". Omitting this left the PreCompact entry wired to a
+            # binary the user is about to `pip uninstall`, so every
+            # subsequent compaction spawned a missing command forever.
+            rebuilder=True,
         )
         _cmd_unsetup(unsetup_args, out)
 
