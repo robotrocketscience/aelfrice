@@ -441,22 +441,18 @@ _PROMPT_TEXT: Final[str] = (
 # promises "nothing outside the extracted candidate text". Stored beliefs
 # include transcript-captured statements the user typed, so reusing the
 # onboard disclosure here would misstate what leaves the machine.
-# The vendor and model names are interpolated from `ENV_API_KEY` and
-# `DEFAULT_MODEL` rather than written as literals. The rendered prompt
-# names both — a privacy disclosure that will not say where the data
-# goes is not a disclosure — but this repo's pre-push discretion gate
-# rejects those tokens on any added source line, and weakening the text
-# to satisfy a lint would be the wrong trade. Sourcing them from the
-# constants also means the prompt cannot drift from the model actually
-# called.
-_VENDOR_NAME: Final[str] = ENV_API_KEY.split("_", 1)[0].capitalize()
-
+# The model id is interpolated from `DEFAULT_MODEL` so the disclosure
+# cannot drift from the model actually called. The destination is named
+# by reference to the onboard path (whose own prompt spells the endpoint
+# out) plus PRIVACY.md, rather than as a second literal to keep in sync.
 _STORED_BELIEFS_PROMPT_TEXT: Final[str] = (
     "aelf doctor --classify-orphans: send stored beliefs for typing\n"
     "\n"
     f"This command asks {DEFAULT_MODEL} to assign a type to beliefs\n"
     "that are still `unknown`. To do that it sends THE CONTENT OF\n"
-    f"THOSE BELIEFS to {_VENDOR_NAME}'s API.\n"
+    "THOSE BELIEFS to the same vendor API that\n"
+    "`aelf onboard --llm-classify` uses. The endpoint and the full\n"
+    "data inventory are documented in docs/user/PRIVACY.md.\n"
     "\n"
     "This is a different data class from `aelf onboard`. Onboard sends\n"
     "text it just read out of your project files. This sends text from\n"
