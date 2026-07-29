@@ -38,6 +38,7 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_WONDER_INGEST,
     EDGE_RELATES_TO,
     EDGE_VALENCE,
+    EXPOSURE_ONLY_FEEDBACK_SOURCES,
     ORIGIN_SPECULATIVE,
     INGEST_SOURCE_KINDS,
     INGEST_SOURCE_LEGACY_UNKNOWN,
@@ -2607,14 +2608,38 @@ class MemoryStore:
         - created_at < cutoff_ts (older than ttl_days)
         - alpha <= alpha_default + epsilon AND beta <= beta_default + epsilon
           (priors unchanged from wonder_ingest defaults)
-        - no feedback_history rows (apply_feedback never called)
+        - no *endorsement* feedback_history rows — rows whose source is in
+          `EXPOSURE_ONLY_FEEDBACK_SOURCES` do not count (#1171)
         - no RESOLVES edges (incoming or outgoing)
+
+        #1171: the feedback-row clause originally read "no feedback_history
+        rows at all", as a proxy for "the posterior was never touched". #1086
+        broke the proxy by writing an audit-only row per retrieval exposure
+        *without* moving the posterior, so one hook surfacing made a phantom
+        permanently uncollectable — the 14-day TTL never fired again. Excluding
+        exposure-only sources is safe because the alpha/beta clause above is
+        the exact guard: `_bayesian_update` only ever *increases* alpha or
+        beta (zero valence is rejected at the `apply_feedback` boundary), so
+        any posterior-moving event pushes the belief out of the epsilon band
+        regardless of its source. Pinned by
+        test_bayesian_update_is_monotone_so_the_prior_band_is_exact.
 
         The caller is responsible for computing `cutoff_ts` from `ttl_days`.
         Returns a list of belief IDs; order is not guaranteed.
         """
+        # Values come from a module-level constant, never from a caller, but
+        # they are bound rather than interpolated so the shape stays correct
+        # if the set ever grows. An empty set degrades to the pre-#1171
+        # "no feedback rows at all" clause rather than emitting `NOT IN ()`,
+        # which SQLite rejects.
+        exposure_only = sorted(EXPOSURE_ONLY_FEEDBACK_SOURCES)
+        if exposure_only:
+            placeholders = ",".join("?" for _ in exposure_only)
+            endorsement_only = f"AND fh.source NOT IN ({placeholders})"
+        else:
+            endorsement_only = ""
         cur = self._conn.execute(
-            """
+            f"""
             SELECT b.id
             FROM beliefs b
             WHERE b.type = 'speculative'
@@ -2626,6 +2651,7 @@ class MemoryStore:
               AND NOT EXISTS (
                   SELECT 1 FROM feedback_history fh
                   WHERE fh.belief_id = b.id
+                    {endorsement_only}
               )
               AND NOT EXISTS (
                   SELECT 1 FROM edges e
@@ -2637,6 +2663,7 @@ class MemoryStore:
                 cutoff_ts,
                 alpha_default + alpha_epsilon,
                 beta_default + beta_epsilon,
+                *exposure_only,
             ),
         )
         return [row["id"] for row in cur.fetchall()]

@@ -251,6 +251,18 @@ CORROBORATION_SOURCE_WONDER_INGEST: Final[str] = "wonder_ingest"
 # the mirror hook calls insert_or_corroborate with this source_type.
 CORROBORATION_SOURCE_CLAUDE_MEMORY: Final[str] = "claude_memory_mirror"
 
+# #1171: feedback_history `source` values written for *exposure* rather than
+# endorsement. `apply_feedback(..., update_posterior=False)` records the event
+# for the recurrence axis (#1086) without moving the posterior — a retrieval is
+# exposure, not evidence. Consumers that read feedback_history as "someone
+# vouched for this belief" must exclude these, or a single surfacing reads as
+# endorsement. `wonder_gc` is the one that did: one hook retrieval made a
+# phantom permanently uncollectable while its posterior sat at the ingest
+# prior. Pinned to `hook_search.HOOK_FEEDBACK_SOURCE` by
+# test_exposure_only_sources_match_their_owning_module (literal here to keep
+# models.py free of intra-package imports).
+EXPOSURE_ONLY_FEEDBACK_SOURCES: Final[frozenset[str]] = frozenset({"hook"})
+
 CORROBORATION_SOURCE_TYPES: Final[frozenset[str]] = frozenset({
     CORROBORATION_SOURCE_COMMIT_INGEST,
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
