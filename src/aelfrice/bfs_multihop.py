@@ -75,6 +75,25 @@ BFS_EDGE_WEIGHTS: dict[str, float] = {
     EDGE_POTENTIALLY_STALE: 0.0,
 }
 
+# Edge types the walk follows AGAINST their stored direction (#1170).
+#
+# Producers write SUPERSEDES as src=winner(new) -> dst=loser(old):
+# `contradiction.resolve_contradiction` (src=winner.id, dst=loser.id) and
+# `triple_extractor` parsing "X supersedes Y" as src=X. That direction is
+# the one the edge type's name means, and it is kept.
+#
+# But the spec's justification for the 0.90 weight is "'B replaces A' — the
+# most actionable adjacency. If the query hit A, the user almost certainly
+# wants B", which needs an old -> new hop. Walking outbound delivered the
+# exact opposite: a hit on the *current* belief surfaced its stale
+# predecessor at the highest available path score, and a hit on the stale
+# one surfaced nothing — so the case the weight was chosen for never fired.
+#
+# Following SUPERSEDES in reverse fixes the direction without a migration
+# that would leave the edge type reading backwards. Types listed here are
+# NOT also followed outbound; that is what produced the inversion.
+REVERSE_TRAVERSED_EDGE_TYPES: frozenset[str] = frozenset({EDGE_SUPERSEDES})
+
 
 @dataclass(frozen=True)
 class ScoredHop:
@@ -193,23 +212,38 @@ def expand_bfs(
                 continue
             if nodes_used >= total_budget:
                 break
-            edges: list[Edge] = store.edges_from_in_scope(current_id, scope)
+            # Neighbours reachable from `current_id`, normalised to
+            # (neighbour_id, edge_type, edge.weight). Outbound edges give
+            # their `dst`; the reverse-traversed types (#1170) are read
+            # from the inbound side and give their `src`, so a hit on a
+            # superseded belief steps forward to its replacement rather
+            # than the other way round.
+            neighbours: list[tuple[str, str, float]] = [
+                (e.dst, e.type, e.weight)
+                for e in store.edges_from_in_scope(current_id, scope)
+                if e.type not in REVERSE_TRAVERSED_EDGE_TYPES
+            ]
+            neighbours += [
+                (e.src, e.type, e.weight)
+                for e in store.edges_to_in_scope(current_id, scope)
+                if e.type in REVERSE_TRAVERSED_EDGE_TYPES
+            ]
             # Determinism: rank by (-edge-type-weight, -edge.weight,
-            # dst id). Filter already-visited dsts BEFORE ranking so
+            # neighbour id). Filter already-visited ids BEFORE ranking so
             # the top-k slice is over genuinely-novel candidates.
-            candidates = [e for e in edges if e.dst not in visited]
+            candidates = [n for n in neighbours if n[0] not in visited]
             ranked = sorted(
                 candidates,
-                key=lambda e: (
-                    -BFS_EDGE_WEIGHTS.get(e.type, 0.0),
-                    -e.weight,
-                    e.dst,
+                key=lambda n: (
+                    -BFS_EDGE_WEIGHTS.get(n[1], 0.0),
+                    -n[2],
+                    n[0],
                 ),
             )[:nodes_per_hop]
-            for edge in ranked:
+            for neighbour_id, edge_type, _edge_weight in ranked:
                 if nodes_used >= total_budget:
                     break
-                edge_w = BFS_EDGE_WEIGHTS.get(edge.type, 0.0)
+                edge_w = BFS_EDGE_WEIGHTS.get(edge_type, 0.0)
                 if edge_w == 0.0:
                     # Unknown / zero-weighted edge type — skip,
                     # don't mark visited (a future hop might still
@@ -221,16 +255,16 @@ def expand_bfs(
                 # Mark visited BEFORE the materialisation guard so a
                 # missing-belief race doesn't re-queue the same id
                 # later in this same call.
-                visited.add(edge.dst)
-                belief = store.get_belief_in_scope(edge.dst, scope)
+                visited.add(neighbour_id)
+                belief = store.get_belief_in_scope(neighbour_id, scope)
                 if belief is None:
-                    # Race: belief was deleted between edges_from
+                    # Race: belief was deleted between the edge read
                     # and get_belief. Skip; the next mutation cycle
                     # will fire the cache invalidation that re-runs
                     # this query.
                     continue
-                new_path = path + [edge.type]
-                new_trail = trail + (edge.dst,)
+                new_path = path + [edge_type]
+                new_trail = trail + (neighbour_id,)
                 expanded.append(
                     ScoredHop(
                         belief=belief,
@@ -242,7 +276,10 @@ def expand_bfs(
                     )
                 )
                 next_frontier.append(
-                    (edge.dst, new_score, depth + 1, new_path, new_trail, scope)
+                    (
+                        neighbour_id, new_score, depth + 1,
+                        new_path, new_trail, scope,
+                    )
                 )
                 nodes_used += 1
         frontier = next_frontier

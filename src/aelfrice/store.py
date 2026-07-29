@@ -5440,15 +5440,46 @@ class MemoryStore:
         return out
 
     def edges_to(self, dst: str) -> list[Edge]:
-        """Return every edge whose `dst` is `dst`. Symmetric companion
-        to `edges_from`. Used by the edge-type-keyed rerank pass
-        (#421) to detect marker edges (e.g., POTENTIALLY_STALE)
-        targeting a surfaced belief.
+        """Return every edge whose `dst` is `dst`, in a total order.
+
+        Symmetric companion to `edges_from`. Used by the
+        edge-type-keyed rerank pass (#421) to detect marker edges
+        (e.g., POTENTIALLY_STALE) targeting a surfaced belief, and by
+        the BFS walk to traverse SUPERSEDES in reverse (#1170).
+
+        `ORDER BY src, type` for the same reason `edges_from` orders
+        (#1169): the BFS frontier is determinism-load-bearing, and the
+        raw row order here is physical layout. Unlike `edges_from` this
+        one does cost a sort — the PK is `(src, dst, type)`, so a
+        `dst`-keyed lookup cannot be index-ordered — but the row count
+        per `dst` is the belief's in-degree, which is small.
         """
         cur = self._conn.execute(
-            "SELECT * FROM edges WHERE dst = ?", (dst,)
+            "SELECT * FROM edges WHERE dst = ? ORDER BY src, type", (dst,)
         )
         return [_row_to_edge(r) for r in cur.fetchall()]
+
+    def edges_to_in_scope(
+        self, dst: str, owning_scope: str | None
+    ) -> list[Edge]:
+        """Read-only ``edges_to`` against a named peer (or local).
+
+        Mirrors :meth:`edges_from_in_scope`. ``owning_scope=None`` is the
+        local DB. Unreachable peers and schema-drift peer DBs return
+        ``[]`` rather than raising — federation is opportunistic per #661.
+        """
+        if owning_scope is None:
+            return self.edges_to(dst)
+        conn = self._peer_conn(owning_scope)
+        if conn is None:
+            return []
+        try:
+            cur = conn.execute(
+                "SELECT * FROM edges WHERE dst = ? ORDER BY src, type", (dst,)
+            )
+            return [_row_to_edge(r) for r in cur.fetchall()]
+        except sqlite3.OperationalError:
+            return []
 
     def iter_all_edges(self) -> Iterator[Edge]:
         """Stream every edge in the store. Ordering is insertion order

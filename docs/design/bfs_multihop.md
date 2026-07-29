@@ -183,7 +183,7 @@ is the noisiest signal in the v1.2 ingest output).
 
 | Edge type      | Weight | Class          | Rationale |
 |----------------|--------|----------------|-----------|
-| `SUPERSEDES`   | 0.90   | decisional     | "B replaces A" — the most actionable adjacency. If the query hit A, the user almost certainly wants B. Highest weight. |
+| `SUPERSEDES`   | 0.90   | decisional     | "B replaces A" — the most actionable adjacency. If the query hit A, the user almost certainly wants B. Highest weight. **Traversed in reverse (#1170):** producers store this edge as `src=B` (the replacement) → `dst=A` (the replaced), which is what the type name means and what `contradiction.resolve_contradiction` and the triple extractor both write. Walking it outbound therefore did the opposite of the rationale in this row — a hit on the current belief surfaced its *stale* predecessor at 0.90, and a hit on the stale one surfaced nothing, so the case this weight was chosen for never fired. `expand_bfs` now reads this type from the inbound side (`REVERSE_TRAVERSED_EDGE_TYPES`) and does not follow it outbound. |
 | `CONTRADICTS`  | 0.85   | decisional     | "B disagrees with A" — surfacing it lets the agent flag the conflict instead of acting on a contradicted belief. Slightly below SUPERSEDES because contradictions are not always resolved (the v1.0.1 contradiction tie-breaker may not have fired yet). |
 | `DERIVED_FROM` | 0.70   | provenance     | "B's content depends on A" — strong contextual coupling, per the v1.2 ingest enrichment spec ("sibling becomes stale if A is superseded"). Following it surfaces parent decisions. Triple extractor produces `DERIVED_FROM` from "X is derived from Y" / "X is based on Y" / "X extends Y". **Retroactive ship-gate (#388):** shipped pre-bench-gate at v1.2; now must clear the same ≥+5pp BFS multi-hop hit@k uplift bar as the other Track A edges per #382 ratification; gate harness at `tests/bench_gate/test_bfs_multihop_derived_from.py`. Below-floor closes #388 as `wontfix`. |
 | `IMPLEMENTS`   | 0.65   | provenance     | "B implements A" — source is an implementation, target is the spec/claim being implemented. Slightly below DERIVED_FROM (0.70) because IMPLEMENTS is a more specific kind of derivation, but the dependency is almost as strong: an implementation becomes stale when its spec is superseded. Triple extractor produces `IMPLEMENTS` from "X implements Y" / "X is an implementation of Y" / "X realizes Y" / "X fulfills Y". **v2.0 ship-gate (#385):** the edge stays at weight 0.65 only while it clears a ≥+5pp BFS multi-hop hit@k uplift on the labeled `implements_edge/` corpus vs. the same fixture run with this entry zeroed; gate harness lives at `tests/bench_gate/test_bfs_multihop_implements.py`. Below-floor closes #385 as `wontfix`. |
@@ -239,6 +239,19 @@ For BFS retrieval the calculus is different: `CONTRADICTS` is a
 valence carrier. `SUPERSEDES` is the **highest-relevance** adjacency,
 not a structural-zero. Reusing `EDGE_VALENCE` would therefore actively
 mis-score retrieval. Two tables, two purposes.
+
+The `SUPERSEDES` gap between the tables (0.0 vs 0.90) is the starkest
+and is **intentional, not drift** — re-confirmed under #1170. The two
+values answer different questions about the same edge, and neither
+should move:
+
+- `EDGE_VALENCE = 0.0` — "does a feedback signal cross this edge?" No.
+  Reinforcing a replacement says nothing about the confidence of what it
+  replaced. Because valence never traverses `SUPERSEDES` at all, the
+  edge-direction question that #1170 fixed does not arise there.
+- `BFS_EDGE_WEIGHTS = 0.90` — "how relevant is the belief on the other
+  end?" Maximally. This is the one that had to be traversed in reverse
+  to match its own rationale.
 
 ## Depth cap and budget
 
@@ -433,8 +446,8 @@ fix targeted at v2.0.**
 ### What "temporal coherence" means here
 
 When a belief A is superseded by A', and A' is superseded by A'',
-the BFS frontier walking outbound from a tier-0 hit on A naively
-surfaces A'' as the latest. That is correct *for that one hop*. But
+the BFS frontier walking *inbound along SUPERSEDES* (#1170) from a
+tier-0 hit on A naively surfaces A'' as the latest. That is correct *for that one hop*. But
 when the seed is itself a session-scoped belief from session S₁ and
 the chain has crossed `SUPERSEDES` boundaries that postdate S₁, the
 "latest serial" the agent receives may not be the one that was

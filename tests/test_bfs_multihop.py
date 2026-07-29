@@ -42,6 +42,7 @@ from pathlib import Path
 import pytest
 
 from aelfrice.bfs_multihop import (
+    REVERSE_TRAVERSED_EDGE_TYPES,
     BFS_EDGE_WEIGHTS,
     DEFAULT_MAX_DEPTH,
     DEFAULT_MIN_PATH_SCORE,
@@ -140,7 +141,7 @@ def _seed_decisional_chain(store: MemoryStore) -> None:
     store.insert_belief(_mk("S1", "decisional intermediate beta v1"))
     store.insert_belief(_mk("S2", "decisional latest beta v2"))
     store.insert_edge(_edge("S0", "S1", EDGE_RELATES_TO))
-    store.insert_edge(_edge("S1", "S2", EDGE_SUPERSEDES))
+    store.insert_edge(_edge("S2", "S1", EDGE_SUPERSEDES))
 
 
 def _seed_pruned_chain(store: MemoryStore) -> None:
@@ -224,7 +225,7 @@ def test_ac2_supersedes_path_beats_relates_to_path_same_length() -> None:
     s.insert_belief(_mk("X0", "fork point"))
     s.insert_belief(_mk("XS", "supersession target"))
     s.insert_belief(_mk("XR", "relates target"))
-    s.insert_edge(_edge("X0", "XS", EDGE_SUPERSEDES))
+    s.insert_edge(_edge("XS", "X0", EDGE_SUPERSEDES))
     s.insert_edge(_edge("X0", "XR", EDGE_RELATES_TO))
     seed = s.get_belief("X0")
     assert seed is not None
@@ -306,7 +307,7 @@ def test_ac4_total_budget_caps_expansion_count() -> None:
     s.insert_belief(_mk("R", "root with high-fanout"))
     for i in range(50):
         s.insert_belief(_mk(f"N{i:02d}", f"neighbour {i}"))
-        s.insert_edge(_edge("R", f"N{i:02d}", EDGE_SUPERSEDES))
+        s.insert_edge(_edge(f"N{i:02d}", "R", EDGE_SUPERSEDES))
     seed = s.get_belief("R")
     assert seed is not None
     hops = expand_bfs([seed], s, total_budget=8)
@@ -364,9 +365,9 @@ def test_ac6_max_depth_2_does_not_surface_depth_3() -> None:
     s.insert_belief(_mk("D1", "depth 1"))
     s.insert_belief(_mk("D2", "depth 2"))
     s.insert_belief(_mk("D3", "depth 3 should not surface"))
-    s.insert_edge(_edge("D0", "D1", EDGE_SUPERSEDES))
-    s.insert_edge(_edge("D1", "D2", EDGE_SUPERSEDES))
-    s.insert_edge(_edge("D2", "D3", EDGE_SUPERSEDES))
+    s.insert_edge(_edge("D1", "D0", EDGE_SUPERSEDES))
+    s.insert_edge(_edge("D2", "D1", EDGE_SUPERSEDES))
+    s.insert_edge(_edge("D3", "D2", EDGE_SUPERSEDES))
     seed = s.get_belief("D0")
     assert seed is not None
     hops = expand_bfs([seed], s, max_depth=2)
@@ -446,7 +447,7 @@ def test_ac8_explicit_on_can_add_expansions() -> None:
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("Q1", "the kitchen has bananas"))
     s.insert_belief(_mk("S2", "the new yellow fruit policy"))
-    s.insert_edge(_edge("Q1", "S2", EDGE_SUPERSEDES))
+    s.insert_edge(_edge("S2", "Q1", EDGE_SUPERSEDES))
     off = retrieve(s, "bananas", bfs_enabled=False)
     on = retrieve(s, "bananas", bfs_enabled=True)
     assert {b.id for b in on} >= {b.id for b in off}
@@ -461,7 +462,7 @@ def test_ac8_env_var_disables_bfs() -> None:
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("Q1", "the kitchen has bananas"))
     s.insert_belief(_mk("S2", "the new yellow fruit policy"))
-    s.insert_edge(_edge("Q1", "S2", EDGE_SUPERSEDES))
+    s.insert_edge(_edge("S2", "Q1", EDGE_SUPERSEDES))
     os.environ[ENV_BFS] = "0"
     try:
         out = retrieve(s, "bananas", bfs_enabled=True)
@@ -477,7 +478,7 @@ def test_ac8_env_var_enables_bfs() -> None:
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("Q1", "the kitchen has bananas"))
     s.insert_belief(_mk("S2", "the new yellow fruit policy"))
-    s.insert_edge(_edge("Q1", "S2", EDGE_SUPERSEDES))
+    s.insert_edge(_edge("S2", "Q1", EDGE_SUPERSEDES))
     os.environ[ENV_BFS] = "1"
     try:
         out = retrieve(s, "bananas")
@@ -511,7 +512,7 @@ def test_ac9_new_supersedes_edge_invalidates_cached_bfs_result() -> None:
     out1 = cache.retrieve("bananas", bfs_enabled=True)
     assert "S2" not in {b.id for b in out1}
     # Add a SUPERSEDES edge and re-query.
-    s.insert_edge(_edge("Q1", "S2", EDGE_SUPERSEDES))
+    s.insert_edge(_edge("S2", "Q1", EDGE_SUPERSEDES))
     out2 = cache.retrieve("bananas", bfs_enabled=True)
     assert "S2" in {b.id for b in out2}
 
@@ -522,7 +523,7 @@ def test_ac9_cache_key_distinguishes_bfs_flag() -> None:
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("Q1", "the kitchen has bananas"))
     s.insert_belief(_mk("S2", "the new yellow fruit policy"))
-    s.insert_edge(_edge("Q1", "S2", EDGE_SUPERSEDES))
+    s.insert_edge(_edge("S2", "Q1", EDGE_SUPERSEDES))
     cache = RetrievalCache(s)
     off = cache.retrieve("bananas", bfs_enabled=False)
     on = cache.retrieve("bananas", bfs_enabled=True)
@@ -612,8 +613,8 @@ def test_ac11_latest_serial_per_hop_documented_v13_contract() -> None:
     s.insert_belief(_mk(
         "S2", "decisional tail", created_at="2026-03-01T00:00:00Z",
     ))
-    s.insert_edge(_edge("S0", "S1", EDGE_SUPERSEDES))
-    s.insert_edge(_edge("S1", "S2", EDGE_SUPERSEDES))
+    s.insert_edge(_edge("S1", "S0", EDGE_SUPERSEDES))
+    s.insert_edge(_edge("S2", "S1", EDGE_SUPERSEDES))
     seed = s.get_belief("S0")
     assert seed is not None
     hops = expand_bfs([seed], s)
@@ -752,7 +753,7 @@ def test_retrieve_v2_use_bfs_populates_bfs_chains() -> None:
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("Q1", "the kitchen has bananas"))
     s.insert_belief(_mk("S2", "the new yellow fruit policy"))
-    s.insert_edge(_edge("Q1", "S2", EDGE_SUPERSEDES))
+    s.insert_edge(_edge("S2", "Q1", EDGE_SUPERSEDES))
     result = retrieve_v2(s, "bananas", use_bfs=True)
     ids = [b.id for b in result.beliefs]
     assert "S2" in ids
@@ -764,6 +765,94 @@ def test_retrieve_v2_use_bfs_default_off_yields_empty_chains() -> None:
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("Q1", "the kitchen has bananas"))
     s.insert_belief(_mk("S2", "the new yellow fruit policy"))
-    s.insert_edge(_edge("Q1", "S2", EDGE_SUPERSEDES))
+    s.insert_edge(_edge("S2", "Q1", EDGE_SUPERSEDES))
     result = retrieve_v2(s, "bananas")
     assert result.bfs_chains == []
+
+
+# --- #1170: SUPERSEDES direction ----------------------------------------
+
+
+def _seed_supersession(store: MemoryStore) -> None:
+    """OLD <-SUPERSEDES- NEW, stored the way producers write it.
+
+    `contradiction.resolve_contradiction` writes `src=winner.id,
+    dst=loser.id`, and the triple extractor parses "X supersedes Y" as
+    `src=X`. So the replacement is the src and the replaced is the dst.
+    """
+    store.insert_belief(_mk("OLD", "deploy target zeta is heroku"))
+    store.insert_belief(_mk("NEW", "deploy target zeta is fly io"))
+    store.insert_edge(_edge("NEW", "OLD", EDGE_SUPERSEDES))
+
+
+def test_hit_on_superseded_belief_surfaces_its_replacement() -> None:
+    """Hypothesis: a hit on the stale belief expands to its replacement.
+
+    This is the case the 0.90 weight was chosen for — the memo's "if the
+    query hit A, the user almost certainly wants B". Walking outbound it
+    never fired: BFS from the old belief returned []. Falsifiable by an
+    empty expansion or by the wrong id."""
+    s = MemoryStore(":memory:")
+    _seed_supersession(s)
+    seed = s.get_belief("OLD")
+    assert seed is not None
+    hops = expand_bfs([seed], s)
+    assert [h.belief.id for h in hops] == ["NEW"]
+    assert hops[0].path == [EDGE_SUPERSEDES]
+    assert hops[0].score == pytest.approx(0.90)
+
+
+def test_hit_on_current_belief_does_not_surface_the_stale_one() -> None:
+    """Hypothesis: a hit on the replacement does NOT drag its superseded
+    predecessor into the prompt.
+
+    Before #1170 this was the *only* direction that fired, and it fired
+    at the highest available path score — spending prompt budget on the
+    exact claim the supersession was recorded to retire. Falsifiable by
+    OLD appearing in the expansion."""
+    s = MemoryStore(":memory:")
+    _seed_supersession(s)
+    seed = s.get_belief("NEW")
+    assert seed is not None
+    hops = expand_bfs([seed], s)
+    assert [h.belief.id for h in hops] == [], (
+        f"stale predecessor surfaced: {[h.belief.id for h in hops]}"
+    )
+
+
+def test_supersession_chain_walks_forward_to_the_latest() -> None:
+    """Hypothesis: A <- A' <- A'' walks A -> A' -> A'', so a hit on the
+    oldest reaches the newest.
+
+    This is the memo's temporal-coherence example. Falsifiable by the
+    walk stopping early or by the ids coming back in the other order."""
+    s = MemoryStore(":memory:")
+    for bid, text in (
+        ("A0", "config alpha lives in etc"),
+        ("A1", "config alpha lives in var"),
+        ("A2", "config alpha lives in opt"),
+    ):
+        s.insert_belief(_mk(bid, text))
+    s.insert_edge(_edge("A1", "A0", EDGE_SUPERSEDES))
+    s.insert_edge(_edge("A2", "A1", EDGE_SUPERSEDES))
+    seed = s.get_belief("A0")
+    assert seed is not None
+    hops = expand_bfs([seed], s, max_depth=3)
+    assert [h.belief.id for h in hops] == ["A1", "A2"]
+    assert hops[1].path == [EDGE_SUPERSEDES, EDGE_SUPERSEDES]
+
+
+def test_supersedes_is_not_followed_outbound_as_well() -> None:
+    """Hypothesis: SUPERSEDES is reverse-only, not bidirectional.
+
+    Following it both ways would restore the stale-surfacing bug while
+    the new tests still passed. Falsifiable by the reverse-traversed set
+    not containing SUPERSEDES, or by a two-node graph expanding in both
+    directions."""
+    assert EDGE_SUPERSEDES in REVERSE_TRAVERSED_EDGE_TYPES
+    s = MemoryStore(":memory:")
+    _seed_supersession(s)
+    from_old = expand_bfs([s.get_belief("OLD")], s)  # type: ignore[list-item]
+    from_new = expand_bfs([s.get_belief("NEW")], s)  # type: ignore[list-item]
+    assert len(from_old) == 1
+    assert len(from_new) == 0

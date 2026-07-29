@@ -64,14 +64,44 @@ def _mk_belief(bid: str, content: str) -> Belief:
 
 
 def _seed_chain(db: Path) -> tuple[str, str, str]:
-    """Insert a small 3-belief chain a -> b -> c with SUPERSEDES edges."""
+    """Insert a small 3-belief chain a -> b -> c of outbound edges.
+
+    Outbound degree is 1/1/0, which is what the `wonder` seed picker and
+    its random-walk phantom generator reason about. Deliberately no
+    SUPERSEDES edge: that type is stored newer -> older in production and
+    traversed in reverse (#1170), so using it here would invert the
+    outbound topology these tests describe. See
+    `_seed_supersedes_chain` for the SUPERSEDES hop.
+    """
     s = MemoryStore(str(db))
     a, b, c = "aaa1", "bbb2", "ccc3"
     try:
         s.insert_belief(_mk_belief(a, "python uses indentation"))
         s.insert_belief(_mk_belief(b, "indentation defines blocks in python"))
         s.insert_belief(_mk_belief(c, "PEP 8 standardizes indentation width"))
-        s.insert_edge(Edge(src=a, dst=b, type=EDGE_SUPERSEDES, weight=1.0))
+        s.insert_edge(Edge(src=a, dst=b, type=EDGE_RELATES_TO, weight=1.0))
+        s.insert_edge(Edge(src=b, dst=c, type=EDGE_RELATES_TO, weight=1.0))
+    finally:
+        s.close()
+    return a, b, c
+
+
+def _seed_supersedes_chain(db: Path) -> tuple[str, str, str]:
+    """Like `_seed_chain` but the a/b link is a SUPERSEDES edge.
+
+    Stored in the production direction src=newer -> dst=older (`b -> a`),
+    the way `contradiction.resolve_contradiction` and the triple extractor
+    write it. The BFS walk follows SUPERSEDES in reverse (#1170), so a hit
+    on `a` still expands to `b` — over the weight table's highest-weight
+    edge, which is the point.
+    """
+    s = MemoryStore(str(db))
+    a, b, c = "aaa1", "bbb2", "ccc3"
+    try:
+        s.insert_belief(_mk_belief(a, "python uses indentation"))
+        s.insert_belief(_mk_belief(b, "indentation defines blocks in python"))
+        s.insert_belief(_mk_belief(c, "PEP 8 standardizes indentation width"))
+        s.insert_edge(Edge(src=b, dst=a, type=EDGE_SUPERSEDES, weight=1.0))
         s.insert_edge(Edge(src=b, dst=c, type=EDGE_RELATES_TO, weight=1.0))
     finally:
         s.close()
@@ -82,7 +112,7 @@ def _seed_chain(db: Path) -> tuple[str, str, str]:
 
 
 def test_reason_with_seed_id_walks_graph(_isolated_db: Path) -> None:
-    a, b, c = _seed_chain(_isolated_db)
+    a, b, c = _seed_supersedes_chain(_isolated_db)
     code, out = _run("reason", "indentation", "--seed-id", a)
     assert code == 0, out
     assert a in out  # seed listed
@@ -201,7 +231,7 @@ def test_wonder_picks_deterministic_seed(_isolated_db: Path) -> None:
     # a has 1 outbound edge, b has 1, c has 0 — tie between a and b
     # broken by id-asc → a wins.
     assert f"seed: {a}:" in out
-    # Candidate listing should include b (1-hop SUPERSEDES).
+    # Candidate listing should include b (1-hop RELATES_TO).
     assert b in out
 
 
