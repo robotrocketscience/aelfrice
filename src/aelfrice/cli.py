@@ -52,6 +52,7 @@ from aelfrice.models import (
     LOCK_NONE,
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
+    ORIGIN_SPECULATIVE,
     ORIGIN_USER_STATED,
     ORIGIN_USER_VALIDATED,
     Phantom,
@@ -1940,14 +1941,30 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
             print("aelf lock: derivation produced no belief", file=out)  # type: ignore[arg-type]
             return 1
         actual_id = str(derived_ids[0])
+        # Apply the lock to the RESOLVED belief id, not the minted lock id.
+        # `_lock_id(text)` keys on "lock\0<text>" but `content_hash` is a plain
+        # sha256 of the text for every source, so text already ingested from a
+        # file / transcript / commit resolves `actual_id` to that pre-existing
+        # row — whose id is not `lock_bid`. Gating the upgrade on
+        # `actual_id == lock_bid` therefore skipped the write entirely and the
+        # CLI still printed success. Unconditional here; a no-op for a freshly
+        # derived lock, which `derive()` already stamps LOCK_USER.
+        # Speculative phantoms are excluded: #550 Surface B below owns them
+        # and promotes to ORIGIN_USER_VALIDATED via `promote_phantom`, and
+        # `find_phantom_lock_matches` only sees rows still carrying
+        # ORIGIN_SPECULATIVE. Rewriting origin here would silently disqualify
+        # the phantom from its own promotion path.
+        resolved = store.get_belief(actual_id)
+        if (
+            resolved is not None
+            and resolved.lock_level != LOCK_USER
+            and resolved.origin != ORIGIN_SPECULATIVE
+        ):
+            resolved.lock_level = LOCK_USER
+            resolved.locked_at = now
+            resolved.origin = ORIGIN_USER_STATED
+            store.update_belief(resolved)
         if pre_existing_at_lock_id and actual_id == lock_bid:
-            # Re-lock of an existing lock-id belief: apply lock-upgrade.
-            existing = store.get_belief(actual_id)
-            if existing is not None:
-                existing.lock_level = LOCK_USER
-                existing.locked_at = now
-                existing.origin = ORIGIN_USER_STATED
-                store.update_belief(existing)
             print(f"upgraded existing belief to lock: {actual_id}", file=out)  # type: ignore[arg-type]
             _feed_log_event("belief.locked", actual_id, args, kind="upgrade")
         elif actual_id in ids_before:
