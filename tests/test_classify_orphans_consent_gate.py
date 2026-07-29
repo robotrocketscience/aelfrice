@@ -260,6 +260,102 @@ def test_granting_belief_scope_preserves_onboard_scope(
     assert llm.CONSENT_SCOPE_STORED_BELIEFS in rec.scopes
 
 
+def test_stale_scope_is_not_resurrected_on_model_change(
+    store: MemoryStore,
+    sentinel: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A model change invalidates consent; it must not be laundered forward.
+
+    Sentinel carries `stored_beliefs` for an OLD model. The user is
+    re-prompted (correctly) and accepts — but they were shown only the
+    *stored beliefs* disclosure. Copying the whole prior scope set across
+    would grant scopes for a model they were never asked about.
+    """
+    llm.write_sentinel(
+        sentinel, model="some-old-model-id",
+        scopes=(
+            llm.CONSENT_SCOPE_ONBOARD_CANDIDATES,
+            llm.CONSENT_SCOPE_STORED_BELIEFS,
+        ),
+    )
+    monkeypatch.setattr(llm, "_anthropic_importable", lambda _c: True)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(
+        llm, "_call_anthropic",
+        lambda **_k: llm.ClientResponse(text="[]", input_tokens=1, output_tokens=1),
+    )
+    monkeypatch.setattr(
+        cli_module, "_llm_prompt_for_consent",
+        lambda **_k: llm.PromptResult(accepted=True, reason="y"),
+    )
+
+    _run(["doctor", "--classify-orphans"])
+
+    rec = llm.read_sentinel(sentinel)
+    assert rec is not None
+    assert rec.model == llm.LLMConfig.default().model
+    assert rec.scopes == (llm.CONSENT_SCOPE_STORED_BELIEFS,)
+    assert llm.CONSENT_SCOPE_ONBOARD_CANDIDATES not in rec.scopes
+
+
+def test_scopes_helper_drops_prior_on_invalid_sentinel() -> None:
+    """Unit-level statement of the same rule, both directions."""
+    both = (
+        llm.CONSENT_SCOPE_ONBOARD_CANDIDATES,
+        llm.CONSENT_SCOPE_STORED_BELIEFS,
+    )
+    current = llm.LLMConfig.default().model
+
+    valid = llm.Sentinel(
+        consented_at="t", model=current,
+        aelfrice_version=llm._AELFRICE_VERSION,
+        scopes=(llm.CONSENT_SCOPE_ONBOARD_CANDIDATES,),
+    )
+    assert set(cli_module._llm_scopes_after_consent(
+        valid, model=current, granted=llm.CONSENT_SCOPE_STORED_BELIEFS,
+    )) == set(both)
+
+    stale = llm.Sentinel(
+        consented_at="t", model="other-model",
+        aelfrice_version=llm._AELFRICE_VERSION, scopes=both,
+    )
+    assert cli_module._llm_scopes_after_consent(
+        stale, model=current, granted=llm.CONSENT_SCOPE_STORED_BELIEFS,
+    ) == (llm.CONSENT_SCOPE_STORED_BELIEFS,)
+
+    assert cli_module._llm_scopes_after_consent(
+        None, model=current, granted=llm.CONSENT_SCOPE_ONBOARD_CANDIDATES,
+    ) == (llm.CONSENT_SCOPE_ONBOARD_CANDIDATES,)
+
+
+def test_unknown_scope_refuses_to_prompt() -> None:
+    """Fail closed: never show a disclosure that doesn't match the scope."""
+    with pytest.raises(ValueError, match="no consent disclosure registered"):
+        llm.prompt_for_consent(
+            stdin=io.StringIO("y\n"), stderr=io.StringIO(), is_tty=True,
+            scope="some_future_scope",
+        )
+
+
+def test_dry_run_does_not_probe_the_sdk(
+    store: MemoryStore, sentinel: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--dry-run contacts nothing, so it evaluates no LLM gate."""
+    probed = {"n": 0}
+
+    def _probe(_check: Any) -> bool:
+        probed["n"] += 1
+        return True
+
+    monkeypatch.setattr(llm, "_anthropic_importable", _probe)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    rc, _ = _run(["doctor", "--classify-orphans", "--dry-run"])
+    assert rc == 0
+    assert probed["n"] == 0
+
+
 # --- Disclosure accuracy ---------------------------------------------------
 
 

@@ -474,6 +474,14 @@ _STORED_BELIEFS_PROMPT_TEXT: Final[str] = (
 )
 
 
+# The disclosure shown for each consent scope. Every scope must appear
+# here; `prompt_for_consent` raises rather than guessing.
+_PROMPT_TEXT_BY_SCOPE: Final[dict[str, str]] = {
+    CONSENT_SCOPE_ONBOARD_CANDIDATES: _PROMPT_TEXT,
+    CONSENT_SCOPE_STORED_BELIEFS: _STORED_BELIEFS_PROMPT_TEXT,
+}
+
+
 @dataclass
 class PromptResult:
     """Outcome of `prompt_for_consent`.
@@ -516,11 +524,18 @@ def prompt_for_consent(
         except (AttributeError, ValueError, OSError):
             is_tty = False
 
-    prompt_text = (
-        _STORED_BELIEFS_PROMPT_TEXT
-        if scope == CONSENT_SCOPE_STORED_BELIEFS
-        else _PROMPT_TEXT
-    )
+    # Explicit mapping, and fail closed on an unknown scope. Falling back
+    # to the onboard text for anything unrecognised would reintroduce the
+    # exact defect this scoping exists to prevent: showing one disclosure
+    # while sending a different data class. A new scope must add its own
+    # entry here. Review catch (Sourcery, PR #1182).
+    try:
+        prompt_text = _PROMPT_TEXT_BY_SCOPE[scope]
+    except KeyError:
+        raise ValueError(
+            f"no consent disclosure registered for scope {scope!r}; "
+            "refusing to prompt",
+        ) from None
     print(prompt_text, file=serr, end="", flush=True)
 
     if not is_tty:

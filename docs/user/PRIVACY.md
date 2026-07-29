@@ -43,7 +43,14 @@ The v1.5.0 default-on flip in `[onboard.llm].enabled` is non-destructive: users 
 
 Every other outbound path sends text aelfrice just read out of your project files. This one is different, and it is called out separately because of that: it asks the vendor model to assign a type to beliefs still marked `unknown`, and to do so it sends **the content of those stored beliefs** — which can include statements you typed that were captured from conversation transcripts.
 
-It is guarded by the same four gates as `aelf onboard --llm-classify`, plus a scope restriction:
+Its boundary is *not* identical to onboard's. This command passes `enabled=True` internally, so `[onboard.llm].enabled = false` does **not** close a gate here — running the command is itself the explicit opt-in. What guards it:
+
+- the `[onboard-llm]` extra is installed,
+- `ANTHROPIC_API_KEY` is set,
+- you invoked `aelf doctor --classify-orphans` explicitly (there is no default or background path to it),
+- and a consent sentinel records the `stored_beliefs` scope.
+
+On that last point:
 
 - The consent sentinel records **which data classes** you were shown when you accepted (`scopes`). An `aelf onboard` sentinel grants `onboard_candidates` only.
 - `--classify-orphans` requires the `stored_beliefs` scope and prompts separately for it, with a disclosure that names stored belief content explicitly. Accepting it does **not** widen what `aelf onboard` sends, and it enables no recurring or background call.
@@ -55,7 +62,7 @@ Before v4.2.0 this command hardcoded its gate to open and never read the sentine
 
 **Telemetry remains zero.** aelfrice does not phone-home about its own LLM usage. Tokens consumed are reported on stdout to the user only, never written to any network endpoint or logging service. On the direct-API path, `aelf onboard --llm-classify` makes one or more requests to `https://api.anthropic.com/`; nothing else. On the host-driven path, the aelfrice CLI makes zero direct outbound calls — the host LLM handles its own network IO under its own credentials.
 
-**Update notifier remains the only outbound call from aelfrice itself by default.** The TTL-gated GET to `https://pypi.org/pypi/aelfrice/json` (covered above) is read-only and on by default (disable with `AELF_NO_UPDATE_CHECK=1`). The two LLM-classify paths — `aelf onboard --llm-classify` and `aelf doctor --classify-orphans` — are opt-in and conditional, each gated on a consent scope. Those are the only three outbound calls the shipped aelfrice package can make, and only the update check is on by default; it transmits no data.
+**Update notifier remains the only outbound call from aelfrice itself by default.** The TTL-gated GET to `https://pypi.org/pypi/aelfrice/json` (covered above) is read-only and on by default (disable with `AELF_NO_UPDATE_CHECK=1`). The two LLM-classify paths — `aelf onboard --llm-classify` and `aelf doctor --classify-orphans` — are opt-in and conditional, each gated on a consent scope. Those are the only three outbound-capable paths in the shipped aelfrice package — "paths", not "calls", because either LLM path may issue several batched requests in one run. Only the update check is on by default, and it transmits no data.
 
 **Confirm at the source:**
 

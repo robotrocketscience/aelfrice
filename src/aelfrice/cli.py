@@ -103,6 +103,7 @@ from aelfrice.llm_classifier import (
     LLMConfig as _LLMConfig,
     LLMTokenCapExceeded as _LLMTokenCapExceeded,
     ScannerRouter as _LLMScannerRouter,
+    Sentinel as _LLMSentinel,
     check_gates as _llm_check_gates,
     format_telemetry_line as _llm_format_telemetry_line,
     is_sentinel_valid as _llm_is_sentinel_valid,
@@ -566,6 +567,30 @@ def _cmd_onboard_check(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
+def _llm_scopes_after_consent(
+    record: _LLMSentinel | None,
+    *,
+    model: str,
+    granted: str,
+) -> tuple[str, ...]:
+    """Scopes to persist after the user just consented to `granted` (#1172).
+
+    Prior scopes carry forward **only** when the sentinel on disk is still
+    valid for this model and major version. Otherwise the re-prompt was
+    triggered by a model / version change, which invalidates consent
+    wholesale — and the user was shown exactly one disclosure, so copying
+    the other scope across would manufacture consent they never gave for
+    the model now being called. Carrying scopes forward unconditionally
+    would let accepting the onboard prompt silently restore a stale
+    `stored_beliefs` grant, which is the same class of bug this issue is
+    about. Review catch (CodeRabbit, PR #1182).
+    """
+    prior: tuple[str, ...] = ()
+    if record is not None and _llm_is_sentinel_valid(record, model=model):
+        prior = tuple(record.scopes)
+    return tuple(dict.fromkeys((*prior, granted)))
+
+
 def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
     # --check: read-only pre-scan, bypasses every other onboard path.
     # Runs before --emit-candidates / --accept-classifications because
@@ -677,16 +702,14 @@ def _cmd_onboard(args: argparse.Namespace, out: object) -> int:
                         file=sys.stderr,
                     )
                 return _run_regex_onboard(args, out, soft_fallback=True)
-            # #1172: union, so re-consenting at onboard time does not
-            # drop a `stored_beliefs` grant the user made elsewhere.
-            _existing = (
-                tuple(sentinel_record.scopes)
-                if sentinel_record is not None else ()
-            )
             _llm_write_sentinel(
                 sentinel,
                 model=cfg.model,
-                scopes=tuple(dict.fromkeys((*_existing, _LLM_SCOPE_ONBOARD))),
+                scopes=_llm_scopes_after_consent(
+                    sentinel_record,
+                    model=cfg.model,
+                    granted=_LLM_SCOPE_ONBOARD,
+                ),
             )
 
     # Dry-run: print candidates without contacting the network.
@@ -6196,21 +6219,27 @@ def _cmd_doctor_classify_orphans(
     # Gates 1-2: SDK importable, API key set. `check_gates` does NOT
     # cover gate 4 — see its docstring — so the consent check below is
     # not optional.
-    gate = _llm_check_gates(enabled=True, model=cfg.model)
-    if not gate.pass_all and not dry_run:
-        if gate.exit_code is not None:
+    #
+    # All of this is skipped under --dry-run, which contacts nothing and
+    # so has no boundary to enforce; probing the SDK import for a preview
+    # was pointless work. Review catch (CodeRabbit, PR #1182).
+    api_key = ""
+    if not dry_run:
+        gate = _llm_check_gates(enabled=True, model=cfg.model)
+        if not gate.pass_all and gate.exit_code is not None:
             if gate.message:
                 print(gate.message, file=sys.stderr)
             return gate.exit_code
 
-    api_key = os.environ.get(_LLM_ENV_API_KEY, "")
-    if not api_key and not dry_run:
-        print(
-            f"aelf: {_LLM_ENV_API_KEY} not set; --classify-orphans requires it. "
-            "Pass --dry-run to count orphans without making LLM calls.",
-            file=sys.stderr,
-        )
-        return 1
+        api_key = os.environ.get(_LLM_ENV_API_KEY, "")
+        if not api_key:
+            print(
+                f"aelf: {_LLM_ENV_API_KEY} not set; --classify-orphans "
+                "requires it. Pass --dry-run to count orphans without "
+                "making LLM calls.",
+                file=sys.stderr,
+            )
+            return 1
 
     # Gate 4: consent (#1172). This command transmits the *content of
     # stored beliefs* — including transcript-captured statements the
@@ -6233,13 +6262,15 @@ def _cmd_doctor_classify_orphans(
                     file=sys.stderr,
                 )
                 return 1
-            # Union with any scope already on disk so granting this does
-            # not silently revoke onboard consent.
-            existing = tuple(record.scopes) if record is not None else ()
-            scopes = tuple(
-                dict.fromkeys((*existing, _LLM_SCOPE_STORED_BELIEFS)),
+            _llm_write_sentinel(
+                sentinel,
+                model=cfg.model,
+                scopes=_llm_scopes_after_consent(
+                    record,
+                    model=cfg.model,
+                    granted=_LLM_SCOPE_STORED_BELIEFS,
+                ),
             )
-            _llm_write_sentinel(sentinel, model=cfg.model, scopes=scopes)
 
     store = _open_store()
     try:
