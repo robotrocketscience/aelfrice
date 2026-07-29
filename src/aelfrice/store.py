@@ -1332,7 +1332,7 @@ class MemoryStore:
             return 0
 
     @contextmanager
-    def transaction(self) -> Iterator[None]:
+    def transaction(self, *, immediate: bool = False) -> Iterator[None]:
         """Group multiple mutating calls into one SQLite transaction.
 
         Per-call commits inside the block are suppressed; one commit is
@@ -1344,7 +1344,19 @@ class MemoryStore:
         the whole group back and re-raises; a caller that swallows an
         inner block's exception keeps the outer group's prior writes
         (the rollback happens only at depth zero).
+
+        `immediate=True` issues `BEGIN IMMEDIATE` so the write lock is
+        taken before the block's first statement instead of on its first
+        write, and `busy_timeout` covers the wait. Use it when the block
+        reads a row and then writes something derived from that read: a
+        deferred transaction can be upgraded only if no other writer got
+        there first, and losing that race surfaces as `SQLITE_BUSY`
+        rather than as a wait. Ignored on a nested block (the outermost
+        transaction already holds the lock) and when a transaction is
+        somehow already open, so it is safe to pass unconditionally.
         """
+        if immediate and self._txn_depth == 0 and not self._conn.in_transaction:
+            self._conn.execute("BEGIN IMMEDIATE")
         self._txn_depth += 1
         try:
             yield
@@ -2702,6 +2714,47 @@ class MemoryStore:
         self._write_belief_entities(b.id, b.content)
         self._bump_belief_version(b.id)
         self._commit_mutation()
+
+    def bump_posterior(
+        self, belief_id: str, d_alpha: float, d_beta: float,
+    ) -> tuple[float, float] | None:
+        """Add `(d_alpha, d_beta)` to a belief's posterior in one statement.
+
+        Returns the post-update `(alpha, beta)`, or None when no row
+        matched `belief_id`.
+
+        This exists because `update_belief` is a whole-row write of an
+        in-memory snapshot, which makes every posterior move an
+        unsynchronised read-modify-write (#1168): concurrent hook
+        processes each read the same alpha, each add their delta to that
+        stale value, and the last writer wins — 180 of 240 events were
+        lost in the reproduction on the issue. It also clobbers columns
+        the caller never intended to touch, so a feedback write landing
+        on a stale snapshot could revert a lock a concurrent `aelf lock`
+        had just committed.
+
+        `SET alpha = alpha + ?` is evaluated by SQLite against the
+        committed row, so the increment is atomic without any read on
+        the Python side. Callers pass non-negative deltas (the
+        Beta-Bernoulli update only ever adds evidence); no floor is
+        applied, so a negative delta can drive the posterior below zero
+        exactly as the raw SQL paths already can.
+        """
+        cur = self._conn.execute(
+            "UPDATE beliefs SET alpha = alpha + ?, beta = beta + ? "
+            "WHERE id = ?",
+            (d_alpha, d_beta, belief_id),
+        )
+        if cur.rowcount == 0:
+            return None
+        row = self._conn.execute(
+            "SELECT alpha, beta FROM beliefs WHERE id = ?", (belief_id,)
+        ).fetchone()
+        if row is None:  # pragma: no cover - deleted between the two statements
+            return None
+        self._bump_belief_version(belief_id)
+        self._commit_mutation()
+        return (float(row["alpha"]), float(row["beta"]))
 
     def delete_belief(self, belief_id: str) -> None:
         self._conn.execute("DELETE FROM beliefs WHERE id = ?", (belief_id,))
