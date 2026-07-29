@@ -29,8 +29,6 @@ from aelfrice.models import (
     Edge,
     Phantom,
 )
-from aelfrice.ulid import ulid
-
 if TYPE_CHECKING:
     from aelfrice.store import MemoryStore
 
@@ -74,6 +72,35 @@ def _constituent_key(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+# Belief-id width shared with `derivation._belief_id` and friends: every
+# other belief in the store is `sha256(...)[:16]`. Phantoms were the lone
+# exception until #1171.
+_PHANTOM_ID_HEX_LEN: int = 16
+
+
+def _phantom_belief_id(constituent_key: str) -> str:
+    """Content-addressed phantom id: the constituent key truncated to 16 hex.
+
+    #1171: phantoms were the only beliefs in the store with an
+    entropy-derived primary key — ``ulid()`` is ``time.time()`` plus
+    ``os.urandom(10)``, so two wonder runs over an identical store minted
+    different ids for the same derivation and therefore a differently
+    shaped ``RELATES_TO`` subgraph (different BFS order, different
+    ``edges_for_beliefs`` batches). An operator could not answer "how did
+    this store get from belief A to phantom P" from identity alone.
+
+    Keyed on the same ``_constituent_key`` that drives dedup, so the id and
+    the ``content_hash`` are two views of one fact: the same (constituent
+    set, generator) pair always resolves to the same phantom id, on any
+    machine, in any store. The id is a prefix of the ``content_hash`` by
+    construction — that is intentional, not a coincidence to rely on.
+
+    Pre-#1171 phantoms keep their ULID ids; dedup is on ``content_hash``,
+    so a mixed-id store neither duplicates nor collides.
+    """
+    return constituent_key[:_PHANTOM_ID_HEX_LEN]
+
+
 @dataclass(frozen=True)
 class WonderIngestResult:
     """Summary returned by ``wonder_ingest``."""
@@ -108,7 +135,10 @@ def wonder_ingest(
        the same dispatch is a no-op; running a *different* generator
        over the same constituents produces a distinct phantom.
     2. Insert a ``Belief`` with ``type='speculative'``,
-       ``origin=ORIGIN_SPECULATIVE``, α=0.3, β=1.0.
+       ``origin=ORIGIN_SPECULATIVE``, α=0.3, β=1.0, and a
+       content-addressed id derived from that same key (#1171) — so the
+       same (constituent set, generator) pair yields the same phantom id
+       in every store, not a fresh random one per run.
     3. Insert ``RELATES_TO`` edges from the new belief to every
        constituent.
     4. Record a ``wonder_ingest`` corroboration row; ``source_path_hash``
@@ -130,7 +160,7 @@ def wonder_ingest(
             skipped += 1
             continue
 
-        belief_id = ulid()
+        belief_id = _phantom_belief_id(key)
         belief = Belief(
             id=belief_id,
             content=phantom.content,
