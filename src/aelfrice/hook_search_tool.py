@@ -551,14 +551,22 @@ def _format_results(
     trailing "(N more already in context)" line so the agent knows the
     block has been deduped.
     """
+    # Every interpolated value below is attacker-reachable: `query` and
+    # `raw_cmd` come from the agent's own tool call, and belief `content`
+    # comes from ingested transcript / commit text. Unescaped, any of them
+    # can close the attribute or the element and forge a framing tag inside
+    # a block the model reads as elevated context. Escape at the boundary.
+    from aelfrice.hook import _escape_attr, _escape_for_hook_block  # noqa: PLC0415
+
     if bash_source is not None:
         cmd_name, raw_cmd = bash_source
         attrs = (
-            f'query="{query}" source="bash:{cmd_name}" '
-            f'cmd="{raw_cmd}"'
+            f'query="{_escape_attr(query)}" '
+            f'source="bash:{_escape_attr(cmd_name)}" '
+            f'cmd="{_escape_attr(raw_cmd)}"'
         )
     else:
-        attrs = f'query="{query}"'
+        attrs = f'query="{_escape_attr(query)}"'
     from aelfrice.models import (  # noqa: PLC0415
         LOCK_TIER_REFERENCE,
         LOCK_USER,
@@ -584,7 +592,9 @@ def _format_results(
         else:
             tier = "L0" if bid in locked_ids else "L1"
         prefix = bid[:16]
-        line = f"[{tier}] {prefix}: {content}".replace("\n", " ")
+        line = f"[{tier}] {prefix}: {_escape_for_hook_block(content)}".replace(
+            "\n", " ",
+        )
         if len(line) > PER_LINE_CHAR_CAP:
             line = line[: PER_LINE_CHAR_CAP - 3] + "..."
         lines.append(line)
