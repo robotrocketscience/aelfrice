@@ -36,7 +36,14 @@ from aelfrice.deferred_feedback import (
     resolve_grace_seconds,
     sweep_deferred_feedback,
 )
-from aelfrice.models import BELIEF_FACTUAL, EDGE_CONTRADICTS, LOCK_NONE, Belief, Edge
+from aelfrice.models import (
+    BELIEF_FACTUAL,
+    EDGE_CONTRADICTS,
+    LOCK_NONE,
+    LOCK_USER,
+    Belief,
+    Edge,
+)
 from aelfrice.retrieval import retrieve
 from aelfrice.store import MemoryStore
 
@@ -411,3 +418,50 @@ def test_propagate_off_locked_neighbours_unchanged() -> None:
     y = s.get_belief("Y")
     assert y is not None
     assert y.lock_level == "user"
+
+
+# --- #1168 AC4: the sweeper honours the lock floor ----------------------
+
+
+def test_sweep_does_not_bump_a_locked_belief() -> None:
+    """Hypothesis: a user lock is never bumped by the implicit lane.
+
+    The sweeper writes alpha directly, bypassing apply_feedback, so before
+    #1168 the retrieval-driven +epsilon landed on locks — which
+    docs/user/LIMITATIONS.md and PRIVACY.md both promise cannot happen.
+    Falsifiable by any alpha change, or by the row staying enqueued."""
+    locked = _mk("b1", "apple banana")
+    locked.lock_level = LOCK_USER
+    locked.alpha = 9.0
+    locked.beta = 0.5
+    s = _store(locked)
+    enqueue_retrieval_exposures(s, ["b1"], now=T0)
+
+    result = sweep_deferred_feedback(s, now=T_AFTER_GRACE)
+
+    assert result.applied == 0
+    assert result.skipped_locked == 1
+    assert result.cancelled == 1
+    after = s.get_belief("b1")
+    assert after is not None
+    assert after.alpha == 9.0
+    assert after.beta == 0.5
+    # Row drained, not left to accumulate against a future unlock.
+    assert s.count_deferred_feedback_by_status().get("enqueued", 0) == 0
+    # And no audit row claims an application that never happened.
+    assert s.list_feedback_events(belief_id="b1") == []
+
+
+def test_sweep_still_bumps_an_unlocked_belief() -> None:
+    """Control for the test above: the lock check must not suppress the
+    ordinary path. Falsifiable by alpha not moving."""
+    s = _store(_mk("b1", "apple banana"))
+    enqueue_retrieval_exposures(s, ["b1"], now=T0)
+
+    result = sweep_deferred_feedback(s, now=T_AFTER_GRACE)
+
+    assert result.applied == 1
+    assert result.skipped_locked == 0
+    after = s.get_belief("b1")
+    assert after is not None
+    assert after.alpha > 1.0
