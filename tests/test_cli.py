@@ -298,6 +298,13 @@ def test_feedback_used_increments_alpha(isolated_db: Path) -> None:
     s = MemoryStore(str(isolated_db))
     try:
         bid = s.list_locked_beliefs()[0].id
+    finally:
+        s.close()
+    # The lock floor (#1168) applies to `aelf feedback`, so unlock first —
+    # the posterior move is what this test is about.
+    assert _run("unlock", bid)[0] == 0
+    s = MemoryStore(str(isolated_db))
+    try:
         pre = s.get_belief(bid)
         assert pre is not None
         pre_alpha = pre.alpha
@@ -310,6 +317,39 @@ def test_feedback_used_increments_alpha(isolated_db: Path) -> None:
         post = s.get_belief(bid)
         assert post is not None
         assert post.alpha > pre_alpha
+    finally:
+        s.close()
+
+
+def test_feedback_does_not_move_a_locked_posterior(isolated_db: Path) -> None:
+    """#1168 lock floor: `aelf feedback` on a lock audits but does not move.
+
+    docs/user/LIMITATIONS.md and docs/user/PRIVACY.md both promise that
+    passive feedback cannot move a lock; before #1168 it did. Falsifiable
+    by an alpha/beta change, a non-zero exit, or a missing audit row."""
+    _run("lock", "the deploy target is always staging first")
+    s = MemoryStore(str(isolated_db))
+    try:
+        bid = s.list_locked_beliefs()[0].id
+        pre = s.get_belief(bid)
+        assert pre is not None
+        pre_alpha, pre_beta = pre.alpha, pre.beta
+        events_before = len(s.list_feedback_events(belief_id=bid))
+    finally:
+        s.close()
+
+    code, out = _run("feedback", bid, "harmful")
+    assert code == 0
+    assert "lock" in out.lower()
+
+    s = MemoryStore(str(isolated_db))
+    try:
+        post = s.get_belief(bid)
+        assert post is not None
+        assert post.alpha == pre_alpha
+        assert post.beta == pre_beta
+        # The event is still audited — suppressed, not discarded.
+        assert len(s.list_feedback_events(belief_id=bid)) == events_before + 1
     finally:
         s.close()
 

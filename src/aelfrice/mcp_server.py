@@ -737,7 +737,7 @@ def tool_feedback(
             "id": belief_id,
             "error": str(exc),
         }
-    return {
+    payload: dict[str, Any] = {
         "kind": "feedback.applied",
         "id": belief_id,
         "signal": signal,
@@ -746,6 +746,16 @@ def tool_feedback(
         "prior_beta": result.prior_beta,
         "new_beta": result.new_beta,
     }
+    if result.skipped_locked:
+        # #1168 lock floor: the event was audited but the posterior held.
+        # Distinct `kind` so a caller comparing new_alpha to prior_alpha
+        # does not read the no-op as a silent success.
+        payload["kind"] = "feedback.locked_not_applied"
+        payload["error"] = (
+            "belief carries a user lock; passive feedback does not move a "
+            "lock. Unlock, delete, or demote it first."
+        )
+    return payload
 
 
 _CONFIRM_VALENCE: Final[float] = 1.0
@@ -767,6 +777,11 @@ def tool_confirm(
     payload for the caller's context; it is not persisted to the store.
 
     The positive signal increments alpha, raising posterior_mean.
+
+    Confirm is the one surface exempt from the #1168 lock floor: docs/user/
+    COMMANDS.md defines it as explicit user affirmation, "distinct from
+    ... implicit retrieval feedback", so it still moves a locked belief's
+    posterior where passive feedback does not.
     """
     try:
         result = apply_feedback(
@@ -774,6 +789,7 @@ def tool_confirm(
             belief_id=belief_id,
             valence=_CONFIRM_VALENCE,
             source=source,
+            respect_lock=False,
         )
     except ValueError as exc:
         return {

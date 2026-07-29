@@ -3517,12 +3517,25 @@ def _cmd_feedback(args: argparse.Namespace, out: object) -> int:
             store.close()
         except Exception:
             pass
-    print(
-        f"applied {args.signal} to {args.belief_id}: "
-        f"alpha {result.prior_alpha:.3f}->{result.new_alpha:.3f}, "
-        f"beta {result.prior_beta:.3f}->{result.new_beta:.3f}",
-        file=out,  # type: ignore[arg-type]
-    )
+    if result.skipped_locked:
+        # #1168 lock floor. Recorded, not applied — say so plainly rather
+        # than printing an "alpha 9.000->9.000" no-op the user has to
+        # decode. Exit 0: the event was accepted and audited.
+        print(
+            f"recorded {args.signal} for {args.belief_id} but did not move "
+            "it: the belief carries a user lock, and a lock is ground "
+            "truth that passive feedback does not change. To change it, "
+            f"run `aelf unlock {args.belief_id}` first (or `aelf delete` / "
+            "`aelf demote`), then re-lock the corrected statement.",
+            file=out,  # type: ignore[arg-type]
+        )
+    else:
+        print(
+            f"applied {args.signal} to {args.belief_id}: "
+            f"alpha {result.prior_alpha:.3f}->{result.new_alpha:.3f}, "
+            f"beta {result.prior_beta:.3f}->{result.new_beta:.3f}",
+            file=out,  # type: ignore[arg-type]
+        )
     if result.propagated:
         print(
             f"propagated to {len(result.propagated)} connected belief(s) "

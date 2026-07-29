@@ -1,9 +1,34 @@
-"""Feedback endpoint: the single Bayesian-update path at runtime.
+"""Feedback endpoint: the primary Bayesian-update path at runtime.
 
-`apply_feedback(store, belief_id, valence, source)` is the only function
-that mutates a belief's alpha/beta after onboarding. It also writes an
-audit row to `feedback_history` for every successful update so the
-project's feedback regime is recoverable after the fact.
+`apply_feedback(store, belief_id, valence, source)` is the runtime
+endpoint for moving a belief's alpha/beta. It writes an audit row to
+`feedback_history` for every event — including events whose posterior
+move was deliberately suppressed — so the project's feedback regime is
+recoverable after the fact. The posterior write and that audit row share
+one `BEGIN IMMEDIATE` transaction, and the write itself is an atomic
+`SET alpha = alpha + ?` (`store.bump_posterior`), so concurrent hook
+processes cannot lose each other's evidence (#1168).
+
+A user lock (`lock_level == LOCK_USER`) is a floor: passive feedback
+records the event and leaves the posterior alone. Correcting a lock is an
+explicit act — `aelf unlock` first.
+
+Three other paths write alpha directly and do NOT come through here
+(#1168 AC4). This module is the *primary* writer, not the only one:
+
+  * `deferred_feedback.sweep_deferred_feedback` — the #191/#256 implicit
+    lane. Deliberately separate: it applies a much smaller epsilon after
+    a grace window that any explicit correction cancels, and it owns its
+    own per-row `BEGIN IMMEDIATE` plus queue-status bookkeeping. It now
+    honours the same lock floor and federation-ownership check as this
+    module, and writes its own `feedback_history` row.
+  * `clamp_ghosts.clamp_ghost_alpha` — a one-shot migration clamp over
+    pre-migration rows with no feedback and no corroboration history.
+    Asserts `lock_level='none'` in its own WHERE clause and writes a
+    reversing `feedback_history` row; see that module's docstring.
+  * the consolidation dedup pass in `store` — sums alpha/beta across a
+    duplicate group when collapsing it, which is a merge of existing
+    evidence rather than new evidence, so there is nothing to audit.
 
 Valence propagation (#1058): after a direct update, the signal walks
 outbound edges via `MemoryStore.propagate_valence` (broker-confidence
@@ -20,7 +45,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Final
 
-from aelfrice.models import Belief
+from aelfrice.models import LOCK_USER, Belief
 from aelfrice.store import MemoryStore
 
 POSITIVE: Final[str] = "positive"
@@ -59,6 +84,13 @@ class FeedbackResult:
     propagated: list["FeedbackResult"] = field(
         default_factory=list["FeedbackResult"],
     )
+    # False when the event was audited but the posterior deliberately not
+    # moved — either `update_posterior=False` (#1086 exposure lane) or the
+    # #1168 lock floor. `new_alpha`/`new_beta` equal the priors in that case.
+    posterior_applied: bool = True
+    # True only for the lock-floor case, so callers can warn the user that
+    # their feedback was recorded but did not move a lock they own.
+    skipped_locked: bool = False
 
 
 def _utc_now_iso() -> str:
@@ -66,16 +98,31 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _bayesian_update(b: Belief, valence: float) -> tuple[float, float]:
-    """Beta-Bernoulli update: positive valence -> alpha; negative -> beta.
+def _bayesian_delta(valence: float) -> tuple[float, float]:
+    """Beta-Bernoulli increment: positive valence -> alpha; negative -> beta.
+
+    Returns the `(d_alpha, d_beta)` to add, not the resulting values —
+    the addition itself happens inside SQLite (`store.bump_posterior`)
+    so concurrent writers cannot lose each other's evidence (#1168).
 
     Magnitude is the increment amount; ±1.0 is conventional but fractional
     valences are honored for weighted feedback sources (e.g., propagated
     signals attenuated by broker confidence).
     """
     if valence > 0.0:
-        return (b.alpha + valence, b.beta)
-    return (b.alpha, b.beta + (-valence))
+        return (valence, 0.0)
+    return (0.0, -valence)
+
+
+def _bayesian_update(b: Belief, valence: float) -> tuple[float, float]:
+    """Absolute-value form of `_bayesian_delta`, applied to a snapshot.
+
+    Retained for callers that need the projected posterior without
+    writing it (previews, tests). Not used on the write path — see
+    `_bayesian_delta`.
+    """
+    d_alpha, d_beta = _bayesian_delta(valence)
+    return (b.alpha + d_alpha, b.beta + d_beta)
 
 
 def apply_feedback(
@@ -86,6 +133,7 @@ def apply_feedback(
     now: str | None = None,
     propagate: bool = True,
     update_posterior: bool = True,
+    respect_lock: bool = True,
 ) -> FeedbackResult:
     """Apply one feedback event to one belief.
 
@@ -94,12 +142,19 @@ def apply_feedback(
        and pre-commit #5 says feedback_history records every successful
        update — so a zero call has no row to write.
     3. Bayesian-update alpha or beta by valence sign — UNLESS
-       `update_posterior` is False, in which case the posterior is left
-       untouched (audit-only; #1086). Retrieval-exposure records an event
-       for the recurrence axis without being treated as truth-evidence.
-    4. Persist the new posterior on the belief row (skipped when
-       `update_posterior` is False — nothing changed).
-    5. Append one row to feedback_history (created_at = `now` or UTC now).
+       `update_posterior` is False (audit-only; #1086: retrieval exposure
+       records an event for the recurrence axis without being treated as
+       truth-evidence) or the belief carries a user lock and
+       `respect_lock` is True (#1168: a lock is a floor, and the docs
+       promise passive feedback cannot move it — pass
+       `respect_lock=False` from an explicit-affirmation surface such as
+       `aelf confirm`). Either way `posterior_applied` is False on the
+       result and the priors are echoed back as the new values.
+    4. Persist the increment with an atomic `SET alpha = alpha + ?`, and
+    5. append one row to feedback_history (created_at = `now` or UTC now)
+       — both inside one `BEGIN IMMEDIATE` transaction, so the log and
+       the projection cannot disagree and concurrent writers serialise
+       instead of overwriting each other (#1168).
     6. Propagate the signal through outbound edges (#1058): each
        attenuated delta from `store.propagate_valence` is applied via a
        recursive call with `propagate=False`, so downstream beliefs get
@@ -127,28 +182,60 @@ def apply_feedback(
     if b is None:
         raise ValueError(f"belief not found: {belief_id}")
 
+    # Lock floor (#1168). A user lock is ground truth the user asserted
+    # explicitly; docs/user/LIMITATIONS.md and docs/user/PRIVACY.md both
+    # state that passive feedback does not move one. The floor lived only
+    # in `scoring.decay()`, so `aelf feedback <locked-id> harmful` — and,
+    # far worse, every sentiment-derived turn valence, since L0 locks are
+    # injected on every prompt and so sit in every turn's pending set —
+    # moved locked posteriors anyway. Correcting a lock stays an explicit
+    # act (`aelf unlock`, then feedback); the event is still audited.
+    #
+    # `respect_lock=False` is the opt-out for the one surface the docs
+    # define as explicit user affirmation rather than passive feedback:
+    # `aelf confirm` / `aelf_confirm`, which docs/user/COMMANDS.md calls
+    # out as "distinct from ... implicit retrieval feedback". Every other
+    # caller — CLI `aelf feedback`, MCP `aelf_feedback`, sentiment,
+    # retrieval exposure, valence propagation — takes the floor.
+    locked: bool = respect_lock and b.lock_level == LOCK_USER
+    posterior_applied: bool = update_posterior and not locked
+
     prior_alpha: float = b.alpha
     prior_beta: float = b.beta
-    if update_posterior:
-        new_alpha, new_beta = _bayesian_update(b, valence)
-        b.alpha = new_alpha
-        b.beta = new_beta
-        store.update_belief(b)
-    else:
-        # Audit-only (#1086): record the event so exposure frequency stays
-        # recoverable (the recurrence axis), but do NOT move the posterior.
-        # A retrieval is exposure, not endorsement; counting every surfacing
-        # as positive evidence inflated whatever recurs. The posterior is
-        # left exactly as-is; the feedback_history row is still written.
-        new_alpha, new_beta = prior_alpha, prior_beta
-
     timestamp: str = now if now is not None else _utc_now_iso()
-    event_id: int = store.insert_feedback_event(
-        belief_id=belief_id,
-        valence=valence,
-        source=source,
-        created_at=timestamp,
-    )
+
+    # One transaction for the posterior write and its audit row (#1168):
+    # they commit together or not at all, so the append-only log can never
+    # claim evidence the projection never took (or vice versa). BEGIN
+    # IMMEDIATE takes the write lock up front rather than on first write.
+    with store.transaction(immediate=True):
+        if posterior_applied:
+            d_alpha, d_beta = _bayesian_delta(valence)
+            # Atomic `SET alpha = alpha + ?` rather than a whole-row write
+            # of the snapshot read above: the read-modify-write in Python
+            # lost 180 of 240 concurrent events and could revert a lock
+            # committed by another process between the read and the write.
+            bumped = store.bump_posterior(belief_id, d_alpha, d_beta)
+            if bumped is None:
+                raise ValueError(f"belief not found: {belief_id}")
+            new_alpha, new_beta = bumped
+            # The snapshot's alpha may already be stale under concurrency;
+            # the authoritative prior is what the atomic write landed on.
+            prior_alpha = new_alpha - d_alpha
+            prior_beta = new_beta - d_beta
+        else:
+            # Audit-only: record the event so exposure frequency stays
+            # recoverable (the recurrence axis, #1086) and so a suppressed
+            # move on a locked belief is visible, but do NOT move the
+            # posterior. A retrieval is exposure, not endorsement.
+            new_alpha, new_beta = prior_alpha, prior_beta
+
+        event_id: int = store.insert_feedback_event(
+            belief_id=belief_id,
+            valence=valence,
+            source=source,
+            created_at=timestamp,
+        )
 
     result = FeedbackResult(
         belief_id=belief_id,
@@ -159,13 +246,22 @@ def apply_feedback(
         new_beta=new_beta,
         valence=valence,
         source=source,
+        posterior_applied=posterior_applied,
+        skipped_locked=locked and update_posterior,
     )
 
-    if update_posterior and propagate and _propagation_enabled():
+    if posterior_applied and propagate and _propagation_enabled():
+        # #1168: gated on `posterior_applied`, not `update_posterior` — a
+        # locked belief holds its posterior, and propagating from a move
+        # that did not happen would leak the held signal into its
+        # neighbours by another route.
+        #
         # #1169: the first hop is attenuated by the source's confidence as
         # it was *before* this event. Letting propagate_valence read the
         # row back would fold this event's own increment into the strength
-        # of its own propagation.
+        # of its own propagation. In this branch `prior_alpha`/`prior_beta`
+        # are the authoritative pre-event pair, recomputed from what the
+        # atomic write actually landed on.
         prior_denom = prior_alpha + prior_beta
         deltas = store.propagate_valence(
             belief_id,

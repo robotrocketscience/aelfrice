@@ -489,8 +489,11 @@ def test_end_to_end_lock_search_feedback_demote(store: MemoryStore) -> None:
     hits = tool_search(store, query="uv exclusively")
     assert any(h["id"] == bid for h in hits["hits"])
 
+    # #1168 lock floor: passive feedback on a lock is audited, not applied.
     fb = tool_feedback(store, belief_id=bid, signal="used")
-    assert fb["new_alpha"] > fb["prior_alpha"]
+    assert fb["kind"] == "feedback.locked_not_applied"
+    assert fb["new_alpha"] == fb["prior_alpha"]
+    assert len(store.list_feedback_events(belief_id=bid)) == 1
 
     dem = tool_demote(store, belief_id=bid)
     assert dem["demoted"] is True
