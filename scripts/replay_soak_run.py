@@ -86,6 +86,10 @@ def main() -> int:
         "total_log_rows": report.total_log_rows,
         "mismatched": report.mismatched,
         "derived_orphan": report.derived_orphan,
+        # Informational, never a pass/fail input (#1167). Recorded so a
+        # posterior or lock divergence appearing on the fixture is visible
+        # in the soak history rather than dropped.
+        "mutable_divergence": report.mutable_divergence,
     }
 
     args.status_file.parent.mkdir(parents=True, exist_ok=True)
