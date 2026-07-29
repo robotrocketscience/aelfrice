@@ -869,6 +869,21 @@ def uninstall(
     The CLI is responsible for prompting the user; this function is
     pure mechanism. The hook removal and pip uninstallation happen
     elsewhere -- this is the data half only.
+
+    Both destructive modes operate on the full artifact set
+    (`artifact_paths`), not on `memory.db` alone. Before #1173 a
+    `--purge` left the WAL, the backup DBs, the BM25F index, the
+    transcripts directory and a verbatim injection audit log in place;
+    an `--archive` additionally encrypted a *stale* main DB file while
+    leaving the live content beside it in plaintext.
+
+    `--archive` still encrypts the belief database only. The remaining
+    artifacts are derived from it (BM25F index, audit log, feed log,
+    telemetry) or are rolling capture buffers (transcripts), so they are
+    securely removed rather than added to the archive -- keeping the
+    shipped `decrypt_archive` contract (archive bytes ARE the SQLite
+    file) intact. `UninstallResult.removed` names every one of them so
+    the caller can say so out loud.
     """
     chosen = sum(
         [bool(keep_db), bool(purge), archive_path is not None]
@@ -890,21 +905,29 @@ def uninstall(
             return UninstallResult(
                 mode="kept", db_path=None, archive_path=None,
             )
+        # Order matters: checkpoint first so the bytes we encrypt include
+        # everything committed to the WAL, then enumerate (the checkpoint
+        # truncates the WAL but does not remove it), then encrypt, and
+        # only delete once the archive is on disk.
+        checkpoint_wal(db_path)
+        owned, orphaned = artifact_paths(
+            db_path, exclude=archive_path.resolve(),
+        )
         _encrypt_db_to_archive(db_path, archive_path, archive_password)
-        try:
-            db_path.unlink()
-        except FileNotFoundError:
-            pass
+        removed = tuple(p for p in owned if _remove_artifact(p))
         return UninstallResult(
             mode="archived", db_path=None, archive_path=archive_path,
+            removed=removed, orphaned=orphaned,
         )
-    # purge
-    try:
-        if db_path.exists():
-            db_path.unlink()
-    except OSError:
-        pass
-    return UninstallResult(mode="purged", db_path=None)
+    # purge. Checkpointing first is not needed to destroy the data (the
+    # WAL is in the removal set), but it keeps the manifest honest: a
+    # truncated WAL reports its real post-checkpoint size.
+    checkpoint_wal(db_path)
+    owned, orphaned = artifact_paths(db_path)
+    removed = tuple(p for p in owned if _remove_artifact(p))
+    return UninstallResult(
+        mode="purged", db_path=None, removed=removed, orphaned=orphaned,
+    )
 
 
 def clear_cache(cache_path: Path = CACHE_FILE) -> None:
