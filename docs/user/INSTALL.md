@@ -286,6 +286,67 @@ open("out.db","wb").write(decrypt_archive(Path("backup.aenc"), "password"))
 
 Requires the `[archive]` extra.
 
+### What gets removed
+
+The store is not a single file. Alongside `memory.db` the package writes
+SQLite sidecars (`-wal`, `-shm`), the BM25F index, any backup DBs made by
+past migrations, the per-turn hook injection log, the belief-write feed log,
+and the `transcripts/`, `rebuild_logs/`, and `telemetry/` directories.
+Several of those hold belief content verbatim.
+
+`--purge` and `--archive` both operate on that whole set. Each one prints
+the manifest — every path and its size — before it destroys anything, so
+you can check the total against what you expect.
+
+`--archive` encrypts **the belief database only**. Everything else in the
+set is either derived from the database (BM25F index, injection log, feed
+log, telemetry) or a rolling capture buffer (`transcripts/`), so it is
+deleted rather than added to the archive. The command says so and asks for
+confirmation before taking your password — an encrypted archive sitting
+next to plaintext copies of the same content is not a guarantee.
+
+Before v4.2.0 both flags deleted only `memory.db`, and `--archive` did not
+checkpoint the write-ahead log first. On a store held open by a running
+hook that meant the archive captured a stale database — in the worst case
+an empty one — while the real content stayed on disk in plaintext in
+`memory.db-wal` (#1173). If you archived a store under an earlier version,
+that archive may be incomplete; check it with `decrypt_archive` before
+relying on it.
+
+If `$AELFRICE_DB` points somewhere other than a directory aelfrice created
+(a `.git/aelfrice/` or `~/.aelfrice/`), the generically-named artifacts
+cannot be safely attributed to aelfrice — `$HOME/transcripts/` may well be
+yours. Those are listed for you to remove by hand instead of being deleted.
+
+Uninstall also clears the manifest-version and uv-migration stamps under
+`~/.aelfrice/`, so reinstalling the same version re-merges the hooks rather
+than short-circuiting into an installed-but-inert state. `opt-out-hooks.json`
+is deliberately kept: it records your decision that a hook should not be
+installed, and that should survive a reinstall.
+
+### What is deliberately left in `~/.aelfrice/`
+
+Disposition covers the store you named and the install stamps. It does not
+sweep the rest of `~/.aelfrice/`, because that directory is not owned by a
+single store:
+
+- `projects/` holds **other projects' stores**, one `memory.db` per
+  project-id slug. `aelf uninstall` disposes of one store — the one
+  `db_path()` resolves to — so removing this would destroy belief corpora
+  you did not ask it to touch. Dispose of those separately.
+- `config.json` is your configuration, kept for the same reason as
+  `opt-out-hooks.json`.
+- `telemetry.jsonl`, `logs/`, and a legacy `transcripts/` directory from
+  pre-repo-store versions may also remain, along with the LLM consent
+  sentinel. **If you granted LLM classification consent, remove
+  `~/.aelfrice/` by hand after uninstalling** — otherwise a later reinstall
+  reads that sentinel and treats the grant as still current. Tracked as a
+  follow-up to #1173.
+
+To remove everything aelfrice has ever written on this machine, and you are
+sure no other project's store lives there: `rm -rf ~/.aelfrice/` after
+running `uninstall`. Check `ls ~/.aelfrice/projects/` first.
+
 ## Troubleshooting
 
 | Symptom | Fix |

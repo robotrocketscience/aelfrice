@@ -654,11 +654,22 @@ _OWNED_STORE_DIRNAMES: Final[frozenset[str]] = frozenset(
 # rollback journal by an external tool.
 _DB_SIDECAR_SUFFIXES: Final[tuple[str, ...]] = ("-wal", "-shm", "-journal")
 
-# Fixed-name files the package writes beside the store.
+# Fixed-name files the package writes beside the store. Each literal is
+# owned by the module named in the comment; `test_uninstall_artifacts`
+# asserts the two agree, so a rename over there fails a test here rather
+# than silently orphaning a file. Literals rather than imports because
+# `hook` and `session_ring` sit above this module in the import graph.
 _SIBLING_FILENAMES: Final[tuple[str, ...]] = (
-    "hook_audit.jsonl",      # hook_audit.AUDIT_FILENAME
-    "hook_audit.jsonl.1",    # + hook_audit.AUDIT_ROTATED_SUFFIX
-    "feed.jsonl",            # feed_log.FEED_FILENAME
+    "hook_audit.jsonl",             # hook_audit.AUDIT_FILENAME
+    "hook_audit.jsonl.1",           # + hook_audit.AUDIT_ROTATED_SUFFIX
+    "feed.jsonl",                   # feed_log.FEED_FILENAME
+    "session_injected_ids.json",    # session_ring.SESSION_RING_FILENAME
+    ".session-ring.lock",           # session_ring.SESSION_RING_LOCK_FILENAME
+    "session_first_prompt.json",    # hook.SESSION_STATE_FILENAME
+    "sessionstart_last.txt",        # hook._RECAP_LAST_TS_FILENAME
+    # docs/user/CONFIG.md already promises this one "is removed with it on
+    # uninstall/rebuild" -- untrue until #1173, since only memory.db went.
+    "claude-memory-reconciled",     # claude_memory._RECONCILE_SENTINEL_NAME
 )
 
 # Fixed-name directories the package writes beside the store.

@@ -325,6 +325,84 @@ def test_artifact_paths_excludes_the_named_path(
     assert sidecar not in owned
 
 
+def test_sibling_filenames_match_their_owning_modules() -> None:
+    """The removal set is single-sourced with the write set.
+
+    `lifecycle` spells these as literals rather than imports, because
+    `hook` and `session_ring` sit above it in the import graph. This test
+    is what keeps the two in step: renaming a filename at its source
+    without updating the removal set fails here, instead of silently
+    orphaning that file on every future uninstall.
+    """
+    from aelfrice import claude_memory, feed_log, hook, hook_audit, session_ring
+
+    expected = {
+        hook_audit.AUDIT_FILENAME,
+        hook_audit.AUDIT_FILENAME + hook_audit.AUDIT_ROTATED_SUFFIX,
+        feed_log.FEED_FILENAME,
+        session_ring.SESSION_RING_FILENAME,
+        session_ring.SESSION_RING_LOCK_FILENAME,
+        hook.SESSION_STATE_FILENAME,
+        hook._RECAP_LAST_TS_FILENAME,
+        claude_memory._RECONCILE_SENTINEL_NAME,
+    }
+    assert expected <= set(lifecycle._SIBLING_FILENAMES), (
+        "an artifact filename changed at its source but not in the "
+        "uninstall removal set: "
+        f"{sorted(expected - set(lifecycle._SIBLING_FILENAMES))}"
+    )
+
+
+def test_sibling_dirnames_match_their_owning_modules() -> None:
+    """Same contract for the directories."""
+    from aelfrice import context_rebuilder, transcript_logger
+
+    expected = {
+        transcript_logger.TRANSCRIPTS_SUBDIR,
+        context_rebuilder.REBUILD_LOG_DIRNAME,
+    }
+    assert expected <= set(lifecycle._SIBLING_DIRNAMES), (
+        "an artifact directory changed at its source but not in the "
+        "uninstall removal set: "
+        f"{sorted(expected - set(lifecycle._SIBLING_DIRNAMES))}"
+    )
+
+
+def test_bm25f_sidecar_suffix_is_covered_by_the_db_glob() -> None:
+    """The BM25F index is matched by the `<dbname>.*` glob, not a literal."""
+    from aelfrice import bm25
+
+    assert bm25._SIDECAR_SUFFIX.startswith(".")
+
+
+def test_session_state_files_are_removed(
+    live_store: tuple[Path, Path, MemoryStore],
+) -> None:
+    """Per-session hook state must not outlive the store it indexes.
+
+    `session_injected_ids.json` holds belief ids; leaving it behind after
+    a purge means a reinstall starts with a ring pointing at rows that no
+    longer exist.
+    """
+    store_dir, db, _store = live_store
+    from aelfrice import claude_memory, hook, session_ring
+
+    names = (
+        session_ring.SESSION_RING_FILENAME,
+        session_ring.SESSION_RING_LOCK_FILENAME,
+        hook.SESSION_STATE_FILENAME,
+        hook._RECAP_LAST_TS_FILENAME,
+        claude_memory._RECONCILE_SENTINEL_NAME,
+    )
+    for name in names:
+        (store_dir / name).write_text("{}", encoding="utf-8")
+
+    lifecycle.uninstall(db, purge=True)
+
+    for name in names:
+        assert not (store_dir / name).exists(), f"{name} survived --purge"
+
+
 def test_purge_is_idempotent(
     live_store: tuple[Path, Path, MemoryStore],
 ) -> None:
