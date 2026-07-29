@@ -96,7 +96,7 @@ Resolution order:
 ## You control all writes
 
 - New beliefs from `onboard` and ingest hooks are inserted unlocked. Only an explicit `aelf lock` (or MCP `aelf:lock`) marks something permanent — unless you opt into `AELF_AUTOLOCK_CORRECTIONS=1`, which lets the Stop hook auto-lock session corrections at turn end.
-- Lock prior is `(α, β) = (9.0, 0.5)` — durable. Passive feedback does not move a lock at v3.x ([#814](https://github.com/robotrocketscience/aelfrice/issues/814) removed the v2.x auto-demote); change a lock via `aelf unlock` / `aelf delete` / `aelf demote`.
+- Lock prior is `(α, β) = (9.0, 0.5)` — durable. Passive feedback does not move a lock; the event is audited and the posterior held ([#1168](https://github.com/robotrocketscience/aelfrice/issues/1168)). `aelf confirm` is an explicit affirmation and is exempt. Also true at v3.x ([#814](https://github.com/robotrocketscience/aelfrice/issues/814) removed the v2.x auto-demote); change a lock via `aelf unlock` / `aelf delete` / `aelf demote`.
 - `aelf demote` removes a lock immediately. The belief itself remains; you can also delete it via the store API.
 - Every Bayesian update writes one `feedback_history` audit row — explicit signals via `apply_feedback`, and the manual deferred retrieval-exposure sweep via its own atomic update+insert. (Automatic retrieval *exposure* is audit-only by default since #1086: it writes a `feedback_history` row for the recurrence record but does not move the posterior — see [LIMITATIONS](LIMITATIONS.md).) Provenance is queryable either way.
 
