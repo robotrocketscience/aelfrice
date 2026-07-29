@@ -243,6 +243,18 @@ def expand_bfs(
             for neighbour_id, edge_type, _edge_weight in ranked:
                 if nodes_used >= total_budget:
                     break
+                if neighbour_id in visited:
+                    # Two edges in this same hop can name the same
+                    # neighbour: different types between one pair are
+                    # permitted by the `(src, dst, type)` PK, and since
+                    # #1170 an outbound edge and a reverse-traversed
+                    # inbound one can also collide. `candidates` was
+                    # filtered against `visited` before ranking, so only
+                    # a within-hop duplicate reaches here — emitting it
+                    # would return the same belief twice and charge the
+                    # node budget twice. Ranking is strongest-first, so
+                    # the copy already taken is the higher-scoring one.
+                    continue
                 edge_w = BFS_EDGE_WEIGHTS.get(edge_type, 0.0)
                 if edge_w == 0.0:
                     # Unknown / zero-weighted edge type — skip,

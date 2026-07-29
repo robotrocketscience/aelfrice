@@ -856,3 +856,44 @@ def test_supersedes_is_not_followed_outbound_as_well() -> None:
     from_new = expand_bfs([s.get_belief("NEW")], s)  # type: ignore[list-item]
     assert len(from_old) == 1
     assert len(from_new) == 0
+
+
+def test_parallel_edges_to_one_neighbour_expand_it_once() -> None:
+    """Hypothesis: a belief reachable by two edges in the same hop is
+    returned once, at its strongest edge, and charged to the budget once.
+
+    The `(src, dst, type)` PK permits two different edge types between
+    one pair, so this predates #1170 — but #1170 adds a second way in,
+    since an outbound edge and a reverse-traversed inbound one can now
+    name the same neighbour. Falsifiable by a duplicate id in the
+    expansion or by the weaker edge winning the path."""
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk("A", "alpha shared topic"))
+    s.insert_belief(_mk("B", "beta shared topic"))
+    s.insert_edge(_edge("A", "B", EDGE_SUPPORTS))   # 0.60
+    s.insert_edge(_edge("A", "B", EDGE_CITES))      # 0.40
+    seed = s.get_belief("A")
+    assert seed is not None
+    hops = expand_bfs([seed], s)
+    ids = [h.belief.id for h in hops]
+    assert ids == ["B"], f"duplicate expansion: {ids}"
+    # Strongest edge wins the path, not whichever was read first.
+    assert hops[0].path == [EDGE_SUPPORTS]
+    assert hops[0].score == pytest.approx(0.60)
+
+
+def test_outbound_and_reverse_edge_to_one_neighbour_expand_it_once() -> None:
+    """The #1170-specific instance of the case above: B supersedes A and
+    also relates to A, so A's hop reaches B twice — once outbound, once
+    reverse. Falsifiable by a duplicate id."""
+    s = MemoryStore(":memory:")
+    s.insert_belief(_mk("A", "gamma shared topic"))
+    s.insert_belief(_mk("B", "delta shared topic"))
+    s.insert_edge(_edge("B", "A", EDGE_SUPERSEDES))  # reverse-traversed
+    s.insert_edge(_edge("A", "B", EDGE_RELATES_TO))  # outbound
+    seed = s.get_belief("A")
+    assert seed is not None
+    hops = expand_bfs([seed], s)
+    assert [h.belief.id for h in hops] == ["B"]
+    # SUPERSEDES (0.90) outranks RELATES_TO (0.30).
+    assert hops[0].path == [EDGE_SUPERSEDES]
