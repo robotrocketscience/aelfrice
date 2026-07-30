@@ -19,7 +19,43 @@ from pathlib import Path
 
 import pytest
 
+from aelfrice import auto_install
 from aelfrice.cli import main
+
+
+@pytest.fixture(autouse=True)
+def isolated_dotdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Point `~/.aelfrice/` at a disposable directory (#1202).
+
+    This module's docstring has always claimed a hermetic HOME, but
+    pinning `AELFRICE_DB` does not pin the dotdir: `auto_install.
+    AELFRICE_DOTDIR` is a module-level constant built from the real
+    `Path.home()`, and the uninstall paths read it off the module at
+    call time — `cli._disclose_dotdir_removals` to list, and
+    `cli._dispose_dotdir` to *delete*. So `uninstall --purge --yes`
+    below reached the developer's own `~/.aelfrice/` and removed the
+    install-state sentinels and capture logs there.
+
+    It stayed invisible because CI runners have an empty `~/.aelfrice/`,
+    so there was nothing to find and nothing to lose. Autouse, because
+    every test in this file runs a disposition — `--keep-db` still
+    takes the install state.
+    """
+    isolated = tmp_path / "dotdir" / ".aelfrice"
+    isolated.mkdir(parents=True)
+    monkeypatch.setattr(auto_install, "AELFRICE_DOTDIR", isolated)
+    return isolated
+
+
+def test_dotdir_is_isolated_from_the_real_home() -> None:
+    """Guard the guard: the fixture must actually be in effect.
+
+    Asserted from inside a test so that deleting the fixture fails
+    loudly here rather than silently re-arming a destructive run.
+    """
+    assert auto_install.AELFRICE_DOTDIR != Path.home() / ".aelfrice"
 
 
 def _run(argv: list[str]) -> tuple[int, str]:
@@ -39,7 +75,7 @@ def _make_fixture(root: Path) -> None:
 
 
 def test_full_lifecycle_setup_onboard_search_uninstall(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_dotdir: Path
 ) -> None:
     db = tmp_path / "memory.db"
     settings = tmp_path / "settings.json"
@@ -47,6 +83,12 @@ def test_full_lifecycle_setup_onboard_search_uninstall(
     monkeypatch.setenv("AELFRICE_DB", str(db))
     monkeypatch.setenv("AELF_NO_UPDATE_CHECK", "1")  # silence notifier
     _make_fixture(fixture)
+
+    # Install state in the isolated dotdir. `--purge` must take this,
+    # which is what proves the disposition ran against the isolated
+    # directory rather than being a no-op on an empty one.
+    stamp = isolated_dotdir / "installed-manifest-version"
+    stamp.write_text("4.2.0", encoding="utf-8")
 
     # Setup wires hook + statusline:
     code, _out = _run(["setup", "--settings-path", str(settings)])
@@ -80,6 +122,7 @@ def test_full_lifecycle_setup_onboard_search_uninstall(
     ])
     assert code == 0
     assert not db.exists()
+    assert not stamp.exists(), "the dotdir disposition did not run"
 
 
 def test_uninstall_default_also_removes_hook_and_statusline(
