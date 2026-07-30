@@ -7,6 +7,13 @@ surfaced belief; a periodic sweeper (CLI: `aelf sweep-feedback`)
 applies `+epsilon` to each belief whose grace window has elapsed
 without an explicit correction or contradiction landing on it.
 
+**Enqueuing is opt-in since #1162** (`[implicit_feedback]
+enqueue_on_retrieve`, default False). It defaulted on, writing a row
+per surfaced belief inside every `retrieve()`, on the reasoning that
+nothing consumes a row until the sweeper runs — which was true only
+because nothing schedules the sweeper. See
+`is_enqueue_on_retrieve_enabled` for the rest of that argument.
+
 Contracts (see issue #191 for full spec):
 
   * `T_grace`: enqueue_at + T_grace must be <= now before a row is
@@ -202,9 +209,24 @@ def resolve_epsilon(
 def is_enqueue_on_retrieve_enabled(
     explicit: bool | None = None, *, start: Path | None = None
 ) -> bool:
-    """Env > kwarg > TOML > default True. Default-on because the queue is
-    additive (no consumer reads it until the sweeper runs); operators can
-    flip it off without losing any other functionality."""
+    """Env > kwarg > TOML > default **False** (#1162).
+
+    This defaulted True on the argument that the queue is additive —
+    nothing reads a row until the sweeper runs. That held only because
+    the sweeper is a manual command nothing schedules, which is an
+    accident of deployment rather than a design property. Meanwhile the
+    call sits inside every `retrieve()` and writes a row per surfaced
+    belief, so a store banks rows without bound.
+
+    It also ran against a decision already taken: #1086 set
+    `_exposure_updates_posterior()` default False — retrieval exposure
+    is deliberately not posterior evidence. This queue was a second,
+    unflagged, default-on route to the same posterior bump.
+
+    Enqueuing is still a one-line opt-in for anyone measuring exposure.
+    What it can no longer do is feed `alpha`: the sweeper is audit-only
+    since #1162, so the rows are a record, not a pending mutation.
+    """
     raw_env = os.environ.get(ENV_ENQUEUE)
     if raw_env is not None:
         norm = raw_env.strip().lower()
@@ -217,7 +239,7 @@ def is_enqueue_on_retrieve_enabled(
     toml_v = _read_toml_value(ENQUEUE_KEY, start=start)
     if isinstance(toml_v, bool):
         return toml_v
-    return True
+    return False
 
 
 # --- Enqueue path -------------------------------------------------------

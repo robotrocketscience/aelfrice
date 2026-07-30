@@ -104,7 +104,16 @@ def test_schema_creates_dfq_indexes() -> None:
 # --- AC2: retrieve() enqueues -------------------------------------------
 
 
-def test_retrieve_enqueues_one_row_per_surfaced_belief() -> None:
+def test_retrieve_does_not_enqueue_by_default() -> None:
+    """#1162. The counterpart to the row below: with no opt-in, a
+    retrieval writes nothing to the queue."""
+    s = _store(_mk("b1", "apple banana"), _mk("b2", "cherry"))
+    retrieve(s, "apple")
+    assert s.count_deferred_feedback_by_status() == {}
+
+
+def test_retrieve_enqueues_one_row_per_surfaced_belief(monkeypatch) -> None:
+    monkeypatch.setenv("AELFRICE_IMPLICIT_FEEDBACK_ENQUEUE", "1")
     s = _store(_mk("b1", "apple banana"), _mk("b2", "cherry"))
     out = retrieve(s, "apple")
     assert {b.id for b in out} == {"b1"}
@@ -130,6 +139,7 @@ def test_empty_query_does_not_enqueue() -> None:
 
 
 def test_enqueue_failure_does_not_break_retrieve(monkeypatch, capsys) -> None:
+    monkeypatch.setenv("AELFRICE_IMPLICIT_FEEDBACK_ENQUEUE", "1")
     s = _store(_mk("b1", "apple"))
     import aelfrice.deferred_feedback as df
     def boom(*a, **k):
@@ -362,7 +372,18 @@ def test_resolve_epsilon_toml_override(tmp_path: Path) -> None:
     assert resolve_epsilon(start=tmp_path) == 0.10
 
 
-def test_is_enqueue_on_retrieve_default_true() -> None:
+def test_is_enqueue_on_retrieve_default_off() -> None:
+    """#1162. Default-on wrote a queue row per surfaced belief on every
+    `retrieve()`, on the argument that the queue is additive — true only
+    while nothing schedules the sweeper. It is also a second route to
+    the posterior bump #1086 turned off. Opt-in now."""
+    assert is_enqueue_on_retrieve_enabled() is False
+
+
+def test_is_enqueue_on_retrieve_env_on(monkeypatch) -> None:
+    """The opt-in is still reachable, so the default is a default and
+    not a removal."""
+    monkeypatch.setenv("AELFRICE_IMPLICIT_FEEDBACK_ENQUEUE", "1")
     assert is_enqueue_on_retrieve_enabled() is True
 
 
