@@ -2117,7 +2117,7 @@ class MemoryStore:
                 [(canon, dupe) for dupe, canon in dupe_to_canon.items()],
             )
             # #1161: `edges` is keyed PRIMARY KEY (src, dst, type), and
-            # both rewrites below used to be bare UPDATEs. Whenever a
+            # both rewrites below used to be a bare UPDATE. Whenever a
             # duplicate and its canonical row shared an edge of the same
             # type to the same neighbour — the *expected* shape, since
             # duplicates are the same content ingested twice and the
