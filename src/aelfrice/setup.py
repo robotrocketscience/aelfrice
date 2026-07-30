@@ -43,15 +43,29 @@ write to a sibling tempfile and `os.replace` it into place.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.resources
 import json
 import os
 import shutil
 import sys
 import tempfile
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal, cast, overload
+
+from aelfrice.session_ring import FileLockTimeout, exclusive_file_lock
+
+# #1161. How long a settings mutation waits for another aelfrice writer
+# to finish. Interactive commands can afford to wait — a `setup` that
+# silently did nothing because a sibling held the lock is worse than one
+# that pauses — but not indefinitely, since a stale lock would otherwise
+# hang the CLI. Hook-driven callers pass a much shorter bound.
+_SETTINGS_LOCK_TIMEOUT: Final[float] = 10.0
+_SETTINGS_LOCK_TIMEOUT_BACKGROUND: Final[float] = 2.0
 
 SettingsScope = Literal["user", "project"]
 
@@ -1575,7 +1589,8 @@ def uninstall_slash_commands(
 # --- internal helpers ---------------------------------------------------
 
 
-def _load_settings(path: Path) -> dict[str, object]:
+def _read_settings_file(path: Path) -> dict[str, object]:
+    """Parse `path` as a settings document, or `{}` when absent/empty."""
     if not path.exists():
         return {}
     raw = path.read_text(encoding="utf-8")
@@ -1587,6 +1602,168 @@ def _load_settings(path: Path) -> dict[str, object]:
             f"settings file must contain a JSON object at top level: {path}"
         )
     return cast(dict[str, object], parsed)
+
+
+def _settings_fingerprint(path: Path) -> str:
+    """Content hash of `path`, or `""` when it does not exist.
+
+    #1161. Compared at commit against the value captured at load, so a
+    write by a process that does not take our lock — notably the host
+    harness, which owns this file too and cannot be made to cooperate —
+    is detected instead of silently overwritten. Hashing the bytes
+    rather than trusting mtime/size avoids both coarse filesystem
+    timestamp granularity and the same-size-different-content case.
+    """
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return ""
+
+
+@dataclass
+class _SettingsTransaction:
+    """In-flight buffered mutation of one settings file. See
+    `settings_transaction`."""
+
+    path: Path
+    fingerprint: str
+    data: dict[str, object] | None = None
+    dirty: bool = False
+
+
+# #1161. The active transaction, or None. Ambient rather than threaded
+# through every installer's signature: `_load_settings`/`_atomic_write`
+# have 22 and 24 call sites respectively across thirteen public
+# `install_*` functions, and adding a parameter to each would make the
+# diff for a concurrency fix mostly mechanical churn. The slot is set and
+# cleared in a `finally` and refuses to nest, so the reachable states
+# stay enumerable. Outside a transaction both helpers behave exactly as
+# they did pre-#1161, which is what keeps direct API callers and the
+# existing tests unaffected.
+#
+# Thread-local, not a plain module global: a process can run two of these
+# concurrently (a threaded host, the MCP server), and with a shared slot
+# one thread would see another's transaction — buffering its writes into
+# the wrong document, or tripping the nesting guard for no reason. Each
+# thread opens its own lock fd, and `flock` is per open file description,
+# so two threads in one process still serialise against each other.
+_TXN_STATE = threading.local()
+
+
+def _active_transaction() -> _SettingsTransaction | None:
+    return cast(
+        "_SettingsTransaction | None", getattr(_TXN_STATE, "txn", None)
+    )
+
+
+class SettingsChangedDuringTransaction(RuntimeError):
+    """Raised at commit when the settings file changed under an open
+    transaction.
+
+    #1161. Means another writer — the host harness, or any process that
+    does not take aelfrice's settings lock — replaced the file after we
+    loaded it. Committing would discard that writer's change, so the
+    transaction aborts instead. Every mutation aelfrice performs on this
+    file is convergent, so re-running the command is safe and is the
+    documented remedy.
+    """
+
+
+@contextmanager
+def settings_transaction(
+    path: Path, *, timeout: float | None = _SETTINGS_LOCK_TIMEOUT
+) -> Iterator[None]:
+    """Serialise and batch every settings mutation inside the block.
+
+    #1161. `aelf setup` performed roughly ten independent
+    read-modify-write cycles on `settings.json` while holding no lock of
+    any kind, racing `aelf doctor --fix`, the auto-install merge, and any
+    concurrent session. `_atomic_write` is atomic per write but is not a
+    compare-and-swap, so a concurrent writer's whole-file state was
+    silently discarded — reproducible with two threads that load the
+    same document and write in sequence.
+
+    Inside the block:
+
+    * an exclusive advisory lock is held on a sibling `<name>.lock`, so
+      aelfrice's own writers serialise against each other. The lock is
+      never taken on the settings file itself, because `_atomic_write`
+      replaces that inode.
+    * the document is read once and cached; `_load_settings` returns the
+      same object to every caller, so mutations accumulate in memory.
+    * `_atomic_write` buffers instead of touching the disk. One write
+      happens at commit, and only if something actually changed — so the
+      "already present, skip the write" path still writes nothing.
+
+    Deliberately *not* done: the filed fix asked to collapse the ten
+    cycles into one write for its own sake. Collapsing alone would make
+    this worse, not better. Each cycle currently re-reads the file, so a
+    host write landing *between* two installers survives today (measured:
+    a permission grant injected mid-install is still present afterwards);
+    a single load-once/write-once pass would widen that window from ten
+    microsecond-scale gaps to the whole duration of `aelf setup`. The
+    fingerprint check is what makes batching safe: a change under us
+    raises `SettingsChangedDuringTransaction` rather than overwriting.
+
+    `timeout` bounds the wait for the lock; `None` waits indefinitely.
+    `FileLockTimeout` propagates, so a caller with a latency contract can
+    skip its merge rather than stall.
+    """
+    open_txn = _active_transaction()
+    if open_txn is not None:
+        raise RuntimeError(
+            "settings_transaction does not nest: already open for "
+            f"{open_txn.path}"
+        )
+    with exclusive_file_lock(path, timeout=timeout):
+        txn = _SettingsTransaction(
+            path=path, fingerprint=_settings_fingerprint(path)
+        )
+        _TXN_STATE.txn = txn
+        try:
+            yield
+        finally:
+            _TXN_STATE.txn = None
+        # Commit outside the `finally` so an exception in the block
+        # discards the buffered mutations instead of persisting a
+        # half-applied document.
+        if txn.dirty and txn.data is not None:
+            if _settings_fingerprint(path) != txn.fingerprint:
+                raise SettingsChangedDuringTransaction(
+                    f"{path} was modified by another process while aelfrice "
+                    "was writing it; no changes were made. Re-run the command."
+                )
+            _write_settings_file(path, txn.data)
+
+
+def read_settings(path: Path) -> dict[str, object]:
+    """Transaction-aware settings read, for callers outside this module.
+
+    #1161. `doctor`'s hook prune performs the same read-modify-write on
+    the same file and must join an open `settings_transaction` rather
+    than write around it — a write that bypasses the transaction changes
+    the file under it and trips the fingerprint check at commit.
+    """
+    return _load_settings(path)
+
+
+def write_settings(path: Path, data: dict[str, object]) -> None:
+    """Transaction-aware settings write. See `read_settings`."""
+    _atomic_write(path, data)
+
+
+def _load_settings(path: Path) -> dict[str, object]:
+    """Read the settings document at `path`.
+
+    Inside a `settings_transaction` for the same path, returns the shared
+    cached document so mutations from successive installers accumulate.
+    """
+    txn = _active_transaction()
+    if txn is None or txn.path != path:
+        return _read_settings_file(path)
+    if txn.data is None:
+        txn.data = _read_settings_file(path)
+    return txn.data
 
 
 @overload
@@ -1794,6 +1971,21 @@ def _install_or_replace_entry(
 
 
 def _atomic_write(path: Path, data: dict[str, object]) -> None:
+    """Persist `data` to `path`, or buffer it into the open transaction.
+
+    Inside a `settings_transaction` for the same path this records the
+    document and marks the transaction dirty; the single write happens at
+    commit. Outside one it writes immediately, as it always has.
+    """
+    txn = _active_transaction()
+    if txn is not None and txn.path == path:
+        txn.data = data
+        txn.dirty = True
+        return
+    _write_settings_file(path, data)
+
+
+def _write_settings_file(path: Path, data: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     serialized = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
     fd, tmp_name = tempfile.mkstemp(
