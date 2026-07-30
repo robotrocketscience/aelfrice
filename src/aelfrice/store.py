@@ -1427,6 +1427,11 @@ class MemoryStore:
                 if self._conn.in_transaction:
                     self._conn.rollback()
             except sqlite3.DatabaseError:
+                # Nothing useful to do if the rollback itself fails: the
+                # migration has already failed, and raising here would
+                # reintroduce the unopenable store this guard exists to
+                # prevent. The log line below still reports the original
+                # error, which is the actionable one.
                 pass
             import logging
             logging.getLogger("aelfrice").error(
