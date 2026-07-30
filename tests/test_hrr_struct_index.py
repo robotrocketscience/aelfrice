@@ -681,6 +681,15 @@ def test_make_hrr_struct_cache_env_one_overrides_persist_false(
 # --- AC6 / AC7 (perf-gated) ----------------------------------------------
 
 
+# The global `timeout = 5` in pyproject.toml is sized for unit tests and
+# is smaller than these tests' own wall-clock budgets, so it — not the
+# assertion — decided the outcome (#1160). Overridden per the convention
+# pyproject.toml:125-127 documents, generously: each test asserts its own
+# budget, and this bound exists only to catch a hang.
+_PERF_TIMEOUT_S = 120
+
+
+@pytest.mark.timeout(_PERF_TIMEOUT_S)
 def test_build_latency_at_n_10k(request: pytest.FixtureRequest) -> None:
     if not _has_run_perf(request):
         pytest.skip("perf-gated: pass --run-perf to run")
@@ -702,6 +711,7 @@ def test_build_latency_at_n_10k(request: pytest.FixtureRequest) -> None:
     assert elapsed <= 5.0, f"build took {elapsed:.2f}s, exceeds 5s budget"
 
 
+@pytest.mark.timeout(_PERF_TIMEOUT_S)
 def test_probe_latency_at_n_50k(request: pytest.FixtureRequest) -> None:
     if not _has_run_perf(request):
         pytest.skip("perf-gated: pass --run-perf to run")

@@ -14,10 +14,12 @@ Plus L1-lane integration tests for the `use_bm25f_anchors` opt-in plumb
 into `retrieve()`, and a rebuild-on-mutation test for the
 `BM25IndexCache` invalidation hookup.
 
-All tests are deterministic. The perf test is gated by `_has_run_perf`,
-but no `--run-perf` CLI option is registered in this suite (see the
-no-op `pytest_addoption` stub below), so it is always skipped unless
-the guard is edited — it cannot be opted into via `pytest --run-perf`.
+All tests are deterministic. The perf test is gated by `_has_run_perf`
+and opted into with `pytest --run-perf`, registered in
+`tests/conftest.py`. It also carries a `@pytest.mark.timeout` override,
+because the global 5s cap is smaller than the wall clock a 50k-belief
+store needs to build and would otherwise decide the outcome ahead of
+the latency assertion (#1160).
 """
 from __future__ import annotations
 
@@ -34,19 +36,6 @@ from aelfrice.bm25 import (
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief, Edge
 from aelfrice.retrieval import retrieve
 from aelfrice.store import MemoryStore
-
-
-def pytest_addoption(parser: pytest.Parser) -> None:  # pragma: no cover
-    """Historical no-op stub: pytest does not invoke `pytest_addoption`
-    for a plain test module, and this body never calls
-    `parser.addoption`, so `--run-perf` is not registered here or
-    anywhere; `_has_run_perf` always falls back to False. Kept as a
-    marker; wire into `tests/conftest.py` to actually enable the flag.
-    (Former intent below, retained for context.) pytest collects this
-    if the suite imports this file with `pytest -p tests.test_bm25_index`,
-    but since we register it inline, we just guard the perf test with
-    a skip when the flag is missing."""
-    pass
 
 
 def _has_run_perf(request: pytest.FixtureRequest) -> bool:
@@ -180,13 +169,22 @@ def test_vocab_shift_recovery_with_w3() -> None:
 # --- AC5: latency micro-benchmark (opt-in) --------------------------------
 
 
+# The global `timeout = 5` in pyproject.toml is sized for unit tests and
+# is smaller than these tests' own wall-clock budgets, so it — not the
+# assertion — decided the outcome (#1160). Overridden per the convention
+# pyproject.toml:125-127 documents, generously: each test asserts its own
+# budget, and this bound exists only to catch a hang.
+_PERF_TIMEOUT_S = 120
+
+
+@pytest.mark.timeout(_PERF_TIMEOUT_S)
 def test_score_latency_under_5ms_n50k(request: pytest.FixtureRequest) -> None:
     """AC5: median sparse-matvec score latency <= 5ms at N=50k.
 
-    Skipped by default to keep CI under the per-test 5s wall-clock
-    cap. NOTE: `--run-perf` is not a registered pytest option (the
-    stub above is a no-op), so it always skips; to run locally,
-    temporarily bypass the `_has_run_perf` guard.
+    Skipped by default to keep CI under the per-test 5s wall-clock cap.
+    Run it with `pytest --run-perf`, registered in `tests/conftest.py`
+    since #1160 — before that the option existed nowhere, so this test
+    was reachable only by editing the guard.
     """
     if not _has_run_perf(request):
         pytest.skip("perf test gated on --run-perf")

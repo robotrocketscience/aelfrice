@@ -286,6 +286,15 @@ def test_build_deterministic(tmp_path: Path) -> None:
 # --- Perf gate ----------------------------------------------------------------
 
 
+# The global `timeout = 5` in pyproject.toml is sized for unit tests and
+# is smaller than these tests' own wall-clock budgets, so it — not the
+# assertion — decided the outcome (#1160). Overridden per the convention
+# pyproject.toml:125-127 documents, generously: each test asserts its own
+# budget, and this bound exists only to catch a hang.
+_PERF_TIMEOUT_S = 120
+
+
+@pytest.mark.timeout(_PERF_TIMEOUT_S)
 def test_eigsolve_under_budget_n10k(request: pytest.FixtureRequest) -> None:
     """Spec table: top-200 eigsolve at N=10k completes in ~4s. Gated
     behind --run-perf."""
