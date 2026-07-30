@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from benchmarks import tolerance
+from benchmarks.metric_status import NOT_APPLICABLE
 from benchmarks.tolerance import Verdict
 
 
@@ -349,3 +350,70 @@ def test_corpus_size_drift_still_fails_in_both_directions():
                 "total_questions": observed}}}}},
         )
         assert [c.verdict for c in checks] == [Verdict.FAIL], observed
+
+
+# ---------------------------------------------------------------------------
+# Not-applicable leaves (#1160)
+# ---------------------------------------------------------------------------
+
+
+def test_na_leaf_is_not_applicable_not_fail():
+    """The distinguishing assert: without the sentinel branch this is FAIL.
+
+    `"n/a"` is a non-numeric leaf, so it would otherwise land on the
+    "observed leaf is not numeric" branch and read as a regression — the
+    exact misreport the sentinel exists to prevent.
+    """
+    cano = _canonical({"mab": {"split_a": {"exact_match": 0.0, "f1": 0.5}}})
+    obs = _canonical({"mab": {"split_a": {"exact_match": NOT_APPLICABLE, "f1": 0.5}}})
+    checks = tolerance.check_report(cano, obs)
+    by_metric = {c.path[-1]: c for c in checks}
+    assert by_metric["exact_match"].verdict == Verdict.NOT_APPLICABLE
+    assert by_metric["exact_match"].band_kind == "not_applicable"
+    assert by_metric["f1"].verdict == Verdict.PASS
+
+
+def test_na_does_not_raise_the_rollup():
+    """#479's rule for SKIP, applied to n/a: a real PASS still wins."""
+    cano = _canonical({"mab": {"split_a": {"exact_match": 0.0, "f1": 0.5}}})
+    obs = _canonical({"mab": {"split_a": {"exact_match": NOT_APPLICABLE, "f1": 0.5}}})
+    overall, counts = tolerance.summarize(tolerance.check_report(cano, obs))
+    assert overall == Verdict.PASS
+    assert counts[Verdict.NOT_APPLICABLE.value] == 1
+    assert counts[Verdict.PASS.value] == 1
+
+
+def test_an_all_na_run_is_no_data_not_pass():
+    """Declaring every metric uncomputable is not a green nightly."""
+    cano = _canonical({"mab": {"split_a": {"exact_match": 0.0, "f1": 0.5}}})
+    obs = _canonical({
+        "mab": {"split_a": {"exact_match": NOT_APPLICABLE, "f1": NOT_APPLICABLE}},
+    })
+    overall, counts = tolerance.summarize(tolerance.check_report(cano, obs))
+    assert overall == Verdict.NO_DATA
+    assert counts[Verdict.NOT_APPLICABLE.value] == 2
+
+
+def test_na_is_tallied_even_when_something_else_fails():
+    cano = _canonical({"mab": {"split_a": {"exact_match": 0.0, "f1": 0.5}}})
+    obs = _canonical({"mab": {"split_a": {"exact_match": NOT_APPLICABLE, "f1": 0.1}}})
+    overall, counts = tolerance.summarize(tolerance.check_report(cano, obs))
+    assert overall == Verdict.FAIL
+    assert counts[Verdict.NOT_APPLICABLE.value] == 1
+
+
+def test_a_genuinely_non_numeric_leaf_still_fails():
+    """The sentinel is a narrow exemption, not a hole in the numeric check."""
+    cano = _canonical({"mab": {"split_a": {"f1": 0.5}}})
+    obs = _canonical({"mab": {"split_a": {"f1": "0.5"}}})
+    checks = tolerance.check_report(cano, obs)
+    assert checks[0].verdict == Verdict.FAIL
+    assert "not numeric" in checks[0].note
+
+
+def test_rank_metrics_are_one_sided():
+    """A ranking win must not fail the nightly it was meant to show up in."""
+    for metric in ("mrr", "recall_at_1", "recall_at_5", "recall_at_10", "recall_at_20"):
+        assert tolerance.direction_for(("locomo", "retrieval_quality", metric)) == (
+            tolerance.Direction.HIGHER_IS_BETTER
+        ), metric

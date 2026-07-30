@@ -13,6 +13,13 @@ Per the 2026-05-06 ratification on #437, bands are relative-with-floor:
 - Direction (#1160): bands are enforced on the regression side only,
   per `METRIC_DIRECTIONS`. Leaving the band on the improving side
   WARNs instead of failing. Unclassified metrics stay two-sided.
+- Not applicable (#1160): an observed leaf carrying
+  `metric_status.NOT_APPLICABLE` is recorded as `Verdict.NOT_APPLICABLE`
+  rather than band-checked. Some canonical metrics are structurally
+  uncomputable — exact match against a retrieval blob, LoCoMo's
+  adversarial category with no reader to refuse with — and the adapters
+  now say so instead of writing 0.0. Without this the sentinel would
+  land on the non-numeric branch and read as a regression.
 
 Spec: docs/design/v2_reproducibility_harness.md.
 Issue: #437, #1160.
@@ -24,6 +31,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any
+
+from benchmarks.metric_status import NOT_APPLICABLE, is_not_applicable
 
 # Default per-metric relative-band percentages. Keys are matched as
 # substrings of the leaf metric path so "f1_avg" matches "f1" and
@@ -76,6 +85,17 @@ METRIC_DIRECTIONS: dict[str, Direction] = {
     "f1": Direction.HIGHER_IS_BETTER,
     "f1_pct": Direction.HIGHER_IS_BETTER,
     "items_with_any_nonzero_metric": Direction.HIGHER_IS_BETTER,
+    # Rank-based retrieval quality (#1160, benchmarks/retrieval_metrics.py).
+    # Classified here rather than left TWO_SIDED because these are the
+    # metrics a ranking change is *supposed* to move; a two-sided band
+    # would fail the nightly on the wins they exist to detect. Listed
+    # explicitly per the no-substring-matching rule above — `recall_at_k`
+    # itself is never a leaf, only the resolved cut-offs are.
+    "mrr": Direction.HIGHER_IS_BETTER,
+    "recall_at_1": Direction.HIGHER_IS_BETTER,
+    "recall_at_5": Direction.HIGHER_IS_BETTER,
+    "recall_at_10": Direction.HIGHER_IS_BETTER,
+    "recall_at_20": Direction.HIGHER_IS_BETTER,
     "overall_f1": Direction.HIGHER_IS_BETTER,
     "perfect_cases": Direction.HIGHER_IS_BETTER,
     "score_pct": Direction.HIGHER_IS_BETTER,
@@ -150,6 +170,14 @@ class Verdict(str, Enum):
     # computed; this is not a regression. summarize() treats SKIP as
     # neither PASS nor FAIL — it ignores the leaf for the rollup.
     SKIP = "skip"
+    # #1160. The observed leaf carries `metric_status.NOT_APPLICABLE`:
+    # the adapter ran fine, and the metric is structurally uncomputable
+    # by this harness rather than absent for the run. Distinct from SKIP
+    # because the two point at different work — SKIP means fix the
+    # runner, NOT_APPLICABLE means the metric needs a reader (or needs
+    # deleting). Rolls up like SKIP: never raises the verdict, and never
+    # counts as evidence that something was measured.
+    NOT_APPLICABLE = "not_applicable"
     # #1160. Rollup-only: never the verdict of an individual leaf.
     # Ignoring each SKIP is right per #479, but ignoring *every* SKIP
     # meant a run where nothing could be computed rolled up to PASS and
@@ -357,6 +385,19 @@ def check_report(
                 note=f"observed report has no leaf at {'/'.join(path)}",
             ))
             continue
+        if is_not_applicable(leaf):
+            checks.append(BandCheck(
+                path=path, canonical=cano_val, observed=float("nan"),
+                lower=cano_val, upper=cano_val, band_kind="not_applicable",
+                verdict=Verdict.NOT_APPLICABLE,
+                note=(
+                    f"observed leaf at {'/'.join(path)} reports "
+                    f"{NOT_APPLICABLE!r}: the adapter declares this metric "
+                    f"uncomputable, so the canonical {cano_val} is not a "
+                    f"measurement to compare against"
+                ),
+            ))
+            continue
         if not isinstance(leaf, (int, float)) or isinstance(leaf, bool):
             checks.append(BandCheck(
                 path=path, canonical=cano_val, observed=float("nan"),
@@ -388,6 +429,9 @@ def summarize(checks: list[BandCheck]) -> tuple[Verdict, dict[str, int]]:
 
     SKIP leaves (per #479) are tallied but do not raise the rollup
     above PASS — they represent uncomputable metrics, not regressions.
+    NOT_APPLICABLE leaves (#1160) behave identically for the rollup;
+    they are a separate tally only so the report can say which of the
+    two happened.
 
     But PASS is a claim that something was measured and stayed in band,
     so it requires at least one leaf that actually passed. Without that
@@ -396,11 +440,13 @@ def summarize(checks: list[BandCheck]) -> tuple[Verdict, dict[str, int]]:
     dataset download on the runner — returned PASS, and an empty check
     list did too, so the nightly reported success having measured
     nothing. #479 is preserved exactly: a SKIP alongside any real PASS
-    still rolls up to PASS.
+    still rolls up to PASS. An all-n/a run is NO_DATA for the same
+    reason: declaring every metric uncomputable is not a green run.
     """
     counts = {
         Verdict.PASS.value: 0, Verdict.WARN.value: 0,
         Verdict.FAIL.value: 0, Verdict.SKIP.value: 0,
+        Verdict.NOT_APPLICABLE.value: 0,
     }
     for c in checks:
         # `.get` rather than direct indexing so a leaf carrying an
