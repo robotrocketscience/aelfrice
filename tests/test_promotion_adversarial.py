@@ -6,11 +6,18 @@ Loads tests/fixtures/promotion_adversarial.json and runs each case against
 - ``regression_cases``: rule currently behaves as expected — strict assertion.
   A regression here means Surface B's behavior on a case the rule HANDLES
   correctly today started returning the wrong verdict.
-- ``edge_cases``: rule does NOT currently behave as expected — marked xfail.
-  Each documents a known failure mode (synonym substitution, antonym
-  substitution, etc.). When a future Surface B improvement starts handling
-  the case correctly, the xfail flips to "unexpectedly passing" and the
-  marker should be removed.
+- ``edge_cases``: rule does NOT currently behave as expected — marked
+  ``xfail(strict=True)``. Each documents a known failure mode (synonym
+  substitution, antonym substitution, etc.). When a future Surface B
+  improvement starts handling the case correctly, the case **fails** —
+  deliberately. Move it to ``regression_cases`` with ``status: passes``,
+  update ``_meta`` counts, and record what closed it in the rationale.
+
+  Strict is the point. Under ``strict=False`` an improved rule produces
+  XPASS, which is a non-failing outcome nothing gates on, so the marker
+  outlives the defect it documents and quietly suppresses a guard that
+  has started working. C6-01..04 sat that way after 39745247 fixed the
+  all-stopword promotion path.
 
 Skips entirely if Surface B is not yet shipped (gated on #616 merge).
 """
@@ -84,7 +91,17 @@ def _build_param_list(category: str) -> list:
         if case.get("status") == "known_failure":
             marks.append(pytest.mark.xfail(
                 reason=f"{case['class_id']}: {case.get('rationale', '')[:80]}",
-                strict=False,
+                # strict=True so a case the rule starts handling FAILS
+                # rather than reporting XPASS. Under strict=False the
+                # marker cannot tell anyone it has gone stale: XPASS is a
+                # non-failing outcome that no gate reads, so a
+                # known_failure entry silently outlives the failure it
+                # documents. That happened — C6-01..04 were fixed by
+                # 39745247 and sat here as decorative markers, describing
+                # a defect the rule no longer has and suppressing a guard
+                # that was working. A red build naming the case is the
+                # only signal that reliably gets the fixture updated.
+                strict=True,
             ))
         params.append(pytest.param(case, marks=marks, id=case["id"]))
     return params

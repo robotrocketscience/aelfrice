@@ -126,6 +126,14 @@ pythonpath = ["."]
 # integration tests (v0.6.0+) override per-test via @pytest.mark.timeout(N).
 timeout = 5
 strict_markers = true
+# An xfail that starts passing must FAIL, not report XPASS. XPASS is a
+# non-failing outcome nothing gates on, so a marker outlives the defect
+# it documents and quietly suppresses a guard that has started working
+# (#1162 — decorative mechanisms). The suite's only xfail marker sat that
+# way after 39745247 fixed the all-stopword promotion path. Setting the
+# default here means a future marker added without an explicit `strict=`
+# inherits the loud behaviour rather than the silent one.
+xfail_strict = true
 markers = [
     "regression: cumulative integration scenarios run alongside the unit suite",
     "uat: v1.0 acceptance-criteria tests, run as the final pre-tag gate",
