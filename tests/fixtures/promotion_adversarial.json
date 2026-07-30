@@ -4,8 +4,8 @@
     "rule_under_test": "Surface_B_Jaccard_0.9_normalized_tokens (and Pass 1 sha256)",
     "generated_pipeline": "Structured-prompt LLM pipeline: taxonomy brainstorm (1 deep call, 6-section prompt covering 3 failure-axis sections + 3 persona sections) -> in-session curation -> per-class case generation (one parallel call per class) -> mechanical filter (run each candidate through Surface B verbatim, drop math-mismatches) -> in-session rank with per-class diversity cap.",
     "per_class_cap": 4,
-    "edge_count": 75,
-    "regression_count": 26,
+    "edge_count": 71,
+    "regression_count": 30,
     "total": 101,
     "axes_covered": [
       "FN",
@@ -513,54 +513,6 @@
       "expected_should_promote": true,
       "actual_jaccard_at_generation": 0.6,
       "rationale": "twelve/12, zero/0.",
-      "status": "known_failure"
-    },
-    {
-      "id": "C6-01",
-      "class_id": "C6",
-      "axis": "boundary",
-      "persona": "none",
-      "phantom_text": "a an the",
-      "lock_text": "is are was",
-      "expected_should_promote": false,
-      "actual_jaccard_at_generation": 1.0,
-      "rationale": "Both stopword-only; both normalize to empty; empty/empty guard returns 1.0; promotes vacuous match.",
-      "status": "known_failure"
-    },
-    {
-      "id": "C6-02",
-      "class_id": "C6",
-      "axis": "boundary",
-      "persona": "none",
-      "phantom_text": "the of and or but",
-      "lock_text": "this that these those",
-      "expected_should_promote": false,
-      "actual_jaccard_at_generation": 1.0,
-      "rationale": "All stopwords. Empty/empty fires guard.",
-      "status": "known_failure"
-    },
-    {
-      "id": "C6-03",
-      "class_id": "C6",
-      "axis": "boundary",
-      "persona": "none",
-      "phantom_text": "is are was were been being",
-      "lock_text": "do does did have has had",
-      "expected_should_promote": false,
-      "actual_jaccard_at_generation": 1.0,
-      "rationale": "All copula/auxiliary stopwords. Empty/empty.",
-      "status": "known_failure"
-    },
-    {
-      "id": "C6-04",
-      "class_id": "C6",
-      "axis": "boundary",
-      "persona": "none",
-      "phantom_text": "i you we they he she it",
-      "lock_text": "me him her us them my your our",
-      "expected_should_promote": false,
-      "actual_jaccard_at_generation": 1.0,
-      "rationale": "All pronouns. Empty/empty.",
       "status": "known_failure"
     },
     {
@@ -1272,6 +1224,54 @@
       "actual_jaccard_at_generation": 1.0,
       "rationale": "Single token, both identical. Jaccard 1/1=1.0. Correct promote.",
       "status": "passes_boundary"
+    },
+    {
+      "id": "C6-01",
+      "class_id": "C6",
+      "axis": "boundary",
+      "persona": "none",
+      "phantom_text": "a an the",
+      "lock_text": "is are was",
+      "expected_should_promote": false,
+      "actual_jaccard_at_generation": 1.0,
+      "rationale": "Both stopword-only; both normalize to empty; empty/empty guard returns 1.0; promotes vacuous match. Closed by 39745247: pass 2 is skipped when the lock text normalizes to no tokens, so the empty/empty 1.0 convention no longer reaches the promotion decision.",
+      "status": "passes"
+    },
+    {
+      "id": "C6-02",
+      "class_id": "C6",
+      "axis": "boundary",
+      "persona": "none",
+      "phantom_text": "the of and or but",
+      "lock_text": "this that these those",
+      "expected_should_promote": false,
+      "actual_jaccard_at_generation": 1.0,
+      "rationale": "All stopwords. Empty/empty fires guard. Closed by 39745247: pass 2 is skipped when the lock text normalizes to no tokens, so the empty/empty 1.0 convention no longer reaches the promotion decision.",
+      "status": "passes"
+    },
+    {
+      "id": "C6-03",
+      "class_id": "C6",
+      "axis": "boundary",
+      "persona": "none",
+      "phantom_text": "is are was were been being",
+      "lock_text": "do does did have has had",
+      "expected_should_promote": false,
+      "actual_jaccard_at_generation": 1.0,
+      "rationale": "All copula/auxiliary stopwords. Empty/empty. Closed by 39745247: pass 2 is skipped when the lock text normalizes to no tokens, so the empty/empty 1.0 convention no longer reaches the promotion decision.",
+      "status": "passes"
+    },
+    {
+      "id": "C6-04",
+      "class_id": "C6",
+      "axis": "boundary",
+      "persona": "none",
+      "phantom_text": "i you we they he she it",
+      "lock_text": "me him her us them my your our",
+      "expected_should_promote": false,
+      "actual_jaccard_at_generation": 1.0,
+      "rationale": "All pronouns. Empty/empty. Closed by 39745247: pass 2 is skipped when the lock text normalizes to no tokens, so the empty/empty 1.0 convention no longer reaches the promotion decision.",
+      "status": "passes"
     }
   ]
 }
