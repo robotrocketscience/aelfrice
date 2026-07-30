@@ -266,6 +266,29 @@ aelf migrate --from /alt/path/memory.db          # dry-run
 aelf migrate --from /alt/path/memory.db --apply  # write
 ```
 
+### Concurrent installs (v4.2.0+)
+
+`settings.json` has more than one writer: `aelf setup`, `aelf unsetup`, `aelf doctor --fix`, the automatic hook merge that runs on CLI invocations — and the host itself, whenever you approve a permission or change a setting.
+
+Since [#1161](https://github.com/robotrocketscience/aelfrice/issues/1161) every aelfrice mutation of that file takes an exclusive lock on a sibling `settings.json.lock` and writes once, so aelfrice's own writers can no longer overwrite each other. Two consequences you may see:
+
+```
+setup aborted: another aelfrice process is writing settings.json
+(could not acquire ~/.claude/settings.json.lock within 10.0s). Nothing
+was changed; re-run `aelf setup`.
+```
+
+Another aelfrice process held the lock longer than the wait. Nothing was written; re-run the command.
+
+```
+setup aborted: ~/.claude/settings.json was modified by another process
+while aelfrice was writing it; no changes were made. Re-run the command.
+```
+
+Something that does not take aelfrice's lock — in practice the host — replaced the file mid-install. aelfrice will not commit over it, because doing so would discard whatever the host just wrote. Re-run the command; every change aelfrice makes to this file is convergent, so a second run is safe.
+
+The host cannot be made to take aelfrice's lock, so this check is a detector, not a cure. It converts what used to be silent loss of a setting into a message telling you to try again.
+
 ### Incomplete store migrations (v4.2.0+)
 
 Opening the store runs a set of one-shot schema migrations, each stamped as complete only after its work lands. Before [#1161](https://github.com/robotrocketscience/aelfrice/issues/1161) a migration that raised took the whole store with it: because the completion marker was never written, the next open re-ran the same pass and failed the same way, and every entry point — CLI, hooks, MCP — opens the store. There was no way back short of editing SQLite by hand.
