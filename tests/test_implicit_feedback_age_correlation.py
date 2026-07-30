@@ -4,6 +4,12 @@ Verifies that the deferred-feedback sweeper does not silently become a clock
 (i.e., older beliefs do not accumulate disproportionate alpha bumps purely
 because they are older, independent of retrieval frequency).
 
+**Since #1162 the sweeper is audit-only and produces no drift at all**, so
+the primary assertion is now exact zero rather than a calibrated bound. The
+correlation machinery below is retained rather than deleted: it re-arms
+automatically if drift ever becomes non-constant again, which is precisely
+the change that would need this guard.
+
 Two correlation measures are checked because Pearson r only catches *linear*
 relationships — a non-linear "becomes a clock" failure mode (U-shape, plateau,
 threshold) would slip past it.  This test uses:
@@ -355,7 +361,7 @@ def test_age_alpha_correlation_below_threshold() -> None:
     rng = random.Random(RNG_SEED)
     store, belief_ids, sweep_at = _build_workload(rng)
 
-    sweep_deferred_feedback(
+    result = sweep_deferred_feedback(
         store,
         now=_fmt(sweep_at),
         grace_seconds=T_GRACE,
@@ -370,6 +376,27 @@ def test_age_alpha_correlation_below_threshold() -> None:
         assert belief is not None, f"belief {bid} missing after sweep"
         ages.append(_age_days(belief.created_at, sweep_at))
         drifts.append(belief.alpha - ALPHA_INITIAL)
+
+    # #1162. The sweeper is audit-only, so the drift it can produce is
+    # exactly zero — a stronger statement than any correlation bound,
+    # and the one worth asserting first. The negative control matters:
+    # a workload that enqueued nothing would also show zero drift.
+    assert result.would_apply > 0, (
+        "workload produced no eligible rows; the guard below is vacuous"
+    )
+    assert drifts == [0.0] * len(drifts), (
+        "the audit-only sweeper moved alpha on "
+        f"{sum(1 for d in drifts if d)} of {len(drifts)} beliefs"
+    )
+
+    if not any(drifts):
+        # Constant drift makes both coefficients degenerate rather than
+        # informative (xi on a constant y reads 1.0). The guard below is
+        # kept, not deleted: whoever re-wires implicit feedback into the
+        # posterior gets the original #555 clock check back automatically
+        # the moment drift stops being constant, instead of finding a
+        # deleted test and a calibration table nobody re-derives.
+        return
 
     xi = _chatterjee_xi(ages, drifts)
     dcor = _distance_correlation(ages, drifts)

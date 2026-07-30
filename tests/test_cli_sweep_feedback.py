@@ -64,10 +64,18 @@ def test_sweep_feedback_empty_queue_exits_zero(store_path: Path) -> None:
     s.close()
     code, output = _run()
     assert code == 0
-    assert "applied=0 cancelled=0" in output
+    assert "would_apply=0 would_cancel=0" in output
 
 
-def test_sweep_feedback_applies_with_grace_zero(store_path: Path) -> None:
+def test_sweep_feedback_reports_but_changes_nothing(store_path: Path) -> None:
+    """The #1162 acceptance criterion, both halves.
+
+    Running the sweeper on a store with eligible rows must change no
+    belief's alpha — and must still *report* a non-zero eligible count.
+    The second half is the negative control: an audit-only sweeper that
+    quietly reported zero would satisfy the first assertion while
+    hiding that the queue had stopped being read at all.
+    """
     s = MemoryStore(str(store_path))
     s.insert_belief(_mk("b1"))
     enqueue_retrieval_exposures(s, ["b1"], now="2026-04-28T00:00:00Z")
@@ -75,17 +83,22 @@ def test_sweep_feedback_applies_with_grace_zero(store_path: Path) -> None:
     # grace=0 means everything is immediately eligible.
     code, output = _run("--grace-seconds", "0", "--epsilon", "0.10")
     assert code == 0
-    assert "applied=1" in output
+    assert "would_apply=1" in output
+    assert "alpha_withheld=0.1000" in output
+    assert "no alpha changed" in output
     s2 = MemoryStore(str(store_path))
     try:
         b = s2.get_belief("b1")
-        assert b is not None and b.alpha == 1.10
-        events = s2.list_feedback_events(belief_id="b1")
-        assert any(
-            e.source == RETRIEVAL_DRIVEN_FEEDBACK_SOURCE for e in events
-        )
+        assert b is not None and b.alpha == 1.0, "the sweeper moved alpha"
+        assert s2.list_feedback_events(belief_id="b1") == []
+        # The row is still enqueued: nothing was consumed, so a second
+        # run reports the same number rather than draining to zero.
+        assert s2.count_deferred_feedback_by_status() == {"enqueued": 1}
     finally:
         s2.close()
+    code2, output2 = _run("--grace-seconds", "0", "--epsilon", "0.10")
+    assert code2 == 0
+    assert "would_apply=1" in output2
 
 
 def test_sweep_feedback_strict_flag_propagates_failure(

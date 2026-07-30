@@ -82,31 +82,48 @@ _ENV_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
 
 @dataclass
 class SweepResult:
-    """Outcome of one `sweep_deferred_feedback` invocation.
+    """Outcome of one `sweep_deferred_feedback` audit (#1162).
 
-    `applied` and `cancelled` count rows whose status transitioned
-    during this call. `skipped_no_belief` counts rows whose belief_id
-    no longer resolves (the belief was deleted between enqueue and
-    sweep) — those rows are marked cancelled so the queue drains.
+    **Every field is a projection, not a record of work done.** The
+    sweep writes nothing: no `alpha`, no `feedback_history` row, no
+    queue-status transition. `would_apply` is the count of rows that
+    *would* have received `+epsilon` under the pre-#1162 sweeper, and
+    `alpha_withheld` is what that would have totalled.
 
-    `skipped_locked` and `skipped_foreign` (#1168) count rows dropped
-    because the belief carries a user lock, or is owned by a federated
-    peer and therefore read-only locally. Both are also counted in
-    `cancelled`: the row is drained rather than left enqueued, so an
-    ineligible belief cannot build a backlog that all lands at once if
-    it later becomes eligible.
+    Naming them `would_*` is the point. The previous shape called them
+    `applied` / `cancelled`, and an audit-only sweeper reporting an
+    `applied` count is exactly the ambiguity that lets "the sweep ran
+    and reported 12k applied" be read as a mutation that happened.
+
+    `would_cancel` counts rows an explicit signal landed on inside the
+    grace window — under the old sweeper those drained without a
+    posterior change. `would_skip_no_belief`, `would_skip_locked` and
+    `would_skip_foreign` (#1168) are rows whose belief no longer
+    resolves, carries a user lock, or belongs to a federated peer; all
+    three are also counted in `would_cancel`, matching how the mutating
+    sweeper drained them.
+
+    Because nothing is written, the audit is repeatable: running it
+    twice reports the same numbers rather than draining to zero. That
+    is what makes the count usable as a standing measurement of how
+    much implicit signal the store is sitting on.
     """
 
-    applied: int = 0
-    cancelled: int = 0
-    skipped_no_belief: int = 0
-    skipped_locked: int = 0
-    skipped_foreign: int = 0
+    would_apply: int = 0
+    would_cancel: int = 0
+    would_skip_no_belief: int = 0
+    would_skip_locked: int = 0
+    would_skip_foreign: int = 0
     pending_unmet_grace: int = 0
+    alpha_withheld: float = 0.0
     epsilon_used: float = 0.0
     grace_seconds_used: int = 0
-    applied_belief_ids: list[str] = field(default_factory=list)
-    cancelled_belief_ids: list[str] = field(default_factory=list)
+    would_apply_belief_ids: list[str] = field(default_factory=list)
+    would_cancel_belief_ids: list[str] = field(default_factory=list)
+    # Permanently False, asserted rather than documented. A future
+    # change that reintroduces writes has to flip this and face the
+    # test that pins it.
+    mutated: bool = False
 
 
 # --- Time helpers -------------------------------------------------------
@@ -283,26 +300,38 @@ def sweep_deferred_feedback(
     limit: int = 10_000,
     config_start: Path | None = None,
 ) -> SweepResult:
-    """Process pending queue rows whose grace window has elapsed.
+    """Audit the deferred-feedback queue. **Writes nothing** (#1162).
 
-    For each pending row with `enqueued_at <= now - grace_seconds`:
+    Classifies every pending row exactly as the mutating sweeper did —
+    grace elapsed, explicit signal in window, belief missing, locked,
+    or foreign — and reports what it *would* have applied. No `alpha`
+    moves, no `feedback_history` row is written, no queue status
+    changes.
 
-      * If `feedback_history` has an entry for this belief whose source
-        is not `RETRIEVAL_DRIVEN_FEEDBACK_SOURCE` and whose created_at
-        is in `[enqueued_at, now]`, mark `cancelled` (no posterior
-        change). This covers explicit user feedback AND contradiction
-        tiebreaker events in one query.
-      * Else apply `+epsilon` to belief.alpha, write a feedback_history
-        row with source=RETRIEVAL_DRIVEN_FEEDBACK_SOURCE, and mark
-        `applied`. The three writes share one transaction so a crash
-        mid-row leaves the queue row `enqueued` and the alpha
-        unchanged — re-run applies once.
-      * If the belief no longer exists, mark `cancelled` and count
-        toward `skipped_no_belief` so the queue drains.
+    The sweeper used to apply `+epsilon` per eligible row. Two things
+    made that unsafe rather than merely unused:
 
-    Idempotent: only `enqueued` rows are touched; re-running the
-    sweeper over the resulting state is a no-op for the rows it
-    already processed."""
+      * **No counterweight.** `scoring.decay` / `type_half_life` have
+        no production caller, so a frequently-retrieved belief's alpha
+        grows without bound and its posterior mean walks to 1.0,
+        permanently outranking equal-BM25 peers.
+      * **A banked backlog.** Enqueuing was default-on inside every
+        `retrieve()`, so real stores carry six figures of pending rows.
+        One invocation would have fired the entire backlog at once —
+        which is why leaving a mutating sweeper in place while merely
+        flipping the enqueue default would not have been enough.
+
+    Making the audit read-only rather than "mutate but drain" is
+    deliberate: a sweeper that consumed the rows would report a
+    non-zero count once and zero forever after, which reads as "there
+    is nothing here" rather than "this was already spent". Nothing is
+    consumed, so the number stays honest and the audit is repeatable.
+
+    Turning implicit exposure into real feedback again is a separate
+    proposal — it reverses #1086, changes ranking for every user, and
+    needs a bench in front of it. It is not a matter of re-enabling
+    this function.
+    """
     grace_eff = (
         grace_seconds
         if grace_seconds is not None
@@ -332,101 +361,45 @@ def sweep_deferred_feedback(
     enqueued_total = by_status.get("enqueued", 0)
     result.pending_unmet_grace = max(0, enqueued_total - len(pending))
 
-    conn = store._conn  # noqa: SLF001 - intentional, atomic per row
+    for _row_id, belief_id, enqueued_at, _event_type in pending:
+        # No transaction, and no BEGIN IMMEDIATE. The mutating sweeper
+        # took the write lock before its eligibility reads to close the
+        # check-then-act window #1168 found; with nothing written there
+        # is no window to close, and holding a write lock across an
+        # audit of a six-figure queue would block ingest for no reason.
+        belief = store.get_belief(belief_id)
 
-    for row_id, belief_id, enqueued_at, _event_type in pending:
-        # Single explicit transaction per row, taken BEFORE the eligibility
-        # reads. `BEGIN IMMEDIATE` acquires the write lock up-front, so the
-        # belief cannot be locked, deleted, or reassigned to a peer between
-        # the check and the write — a check-then-act window that would let
-        # +epsilon land on a belief the checks just rejected (#1168).
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            belief = store.get_belief(belief_id)
+        # Same ineligibility ladder the mutating sweeper applied, in the
+        # same order, so the projection describes that sweeper rather
+        # than a simplified model of it.
+        skip_counter: str | None = None
+        if belief is None:
+            skip_counter = "would_skip_no_belief"
+        elif belief.lock_level == LOCK_USER:
+            skip_counter = "would_skip_locked"
+        else:
+            try:
+                store.assert_local_ownership(belief_id)
+            except ValueError:
+                skip_counter = "would_skip_foreign"
 
-            # #1168 AC4. This sweeper writes alpha directly rather than
-            # going through `apply_feedback` — deliberately, because it
-            # owns this transaction and the queue-status bookkeeping. What
-            # it must not do is skip the invariants that endpoint enforces:
-            #
-            #   * the lock floor. A retrieval-driven +epsilon was landing
-            #     on user locks, which docs/user/LIMITATIONS.md and
-            #     PRIVACY.md both promise cannot happen. Nothing is owed to
-            #     a belief already held at ground truth.
-            #   * federation ownership (#655). A foreign belief id is
-            #     read-only through the local DB.
-            #
-            # Each drains the queue row rather than leaving it enqueued, so
-            # an ineligible belief cannot accumulate a backlog that would
-            # all land at once if it later becomes eligible.
-            skip_counter: str | None = None
-            if belief is None:
-                skip_counter = "skipped_no_belief"
-            elif belief.lock_level == LOCK_USER:
-                skip_counter = "skipped_locked"
-            else:
-                try:
-                    store.assert_local_ownership(belief_id)
-                except ValueError:
-                    skip_counter = "skipped_foreign"
+        if skip_counter is not None:
+            setattr(result, skip_counter, getattr(result, skip_counter) + 1)
+            result.would_cancel += 1
+            result.would_cancel_belief_ids.append(belief_id)
+            continue
 
-            if skip_counter is not None:
-                conn.execute(
-                    "UPDATE deferred_feedback_queue "
-                    "SET status='cancelled', applied_at=? WHERE id=?",
-                    (now_iso, row_id),
-                )
-                conn.execute("COMMIT")
-                setattr(
-                    result, skip_counter,
-                    getattr(result, skip_counter) + 1,
-                )
-                result.cancelled += 1
-                result.cancelled_belief_ids.append(belief_id)
-                continue
+        if store.has_explicit_feedback_in_window(
+            belief_id,
+            window_start_iso=enqueued_at,
+            window_end_iso=now_iso,
+            retrieval_source=RETRIEVAL_DRIVEN_FEEDBACK_SOURCE,
+        ):
+            result.would_cancel += 1
+            result.would_cancel_belief_ids.append(belief_id)
+        else:
+            result.would_apply += 1
+            result.would_apply_belief_ids.append(belief_id)
 
-            cancelled = store.has_explicit_feedback_in_window(
-                belief_id,
-                window_start_iso=enqueued_at,
-                window_end_iso=now_iso,
-                retrieval_source=RETRIEVAL_DRIVEN_FEEDBACK_SOURCE,
-            )
-
-            if cancelled:
-                conn.execute(
-                    "UPDATE deferred_feedback_queue "
-                    "SET status='cancelled', applied_at=? WHERE id=?",
-                    (now_iso, row_id),
-                )
-                conn.execute("COMMIT")
-                result.cancelled += 1
-                result.cancelled_belief_ids.append(belief_id)
-            else:
-                conn.execute(
-                    "UPDATE beliefs SET alpha = alpha + ? WHERE id = ?",
-                    (eps_eff, belief_id),
-                )
-                conn.execute(
-                    "INSERT INTO feedback_history "
-                    "(belief_id, valence, source, created_at) "
-                    "VALUES (?, ?, ?, ?)",
-                    (
-                        belief_id,
-                        eps_eff,
-                        RETRIEVAL_DRIVEN_FEEDBACK_SOURCE,
-                        now_iso,
-                    ),
-                )
-                conn.execute(
-                    "UPDATE deferred_feedback_queue "
-                    "SET status='applied', applied_at=? WHERE id=?",
-                    (now_iso, row_id),
-                )
-                conn.execute("COMMIT")
-                result.applied += 1
-                result.applied_belief_ids.append(belief_id)
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
-
+    result.alpha_withheld = result.would_apply * eps_eff
     return result

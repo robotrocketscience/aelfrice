@@ -7051,12 +7051,13 @@ def _print_doctor_session_ring(out: object) -> None:
 
 
 def _cmd_sweep_feedback(args: argparse.Namespace, out: object) -> int:
-    """Process the deferred-feedback queue (#191).
+    """Audit the deferred-feedback queue (#191, audit-only since #1162).
 
-    Applies +epsilon to the alpha of each belief whose retrieval-
-    exposure row has cleared its grace window without a contradicting
-    explicit-feedback event. Cancels rows where an explicit signal
-    landed within the grace window. Idempotent.
+    Reports how many rows would have received `+epsilon` under the
+    pre-#1162 sweeper and what that would have totalled, and mutates
+    nothing — no alpha, no feedback_history, no queue status. Because
+    it consumes nothing the numbers are repeatable rather than
+    draining to zero on the first run.
 
     Exits 0 unless `--strict` is passed and an exception escapes.
     Without `--strict`, errors are logged to stderr and the command
@@ -7100,10 +7101,14 @@ def _cmd_sweep_feedback(args: argparse.Namespace, out: object) -> int:
             pass
 
     print(
-        f"sweep-feedback: applied={result.applied} "
-        f"cancelled={result.cancelled} "
-        f"skipped_no_belief={result.skipped_no_belief} "
+        f"sweep-feedback (audit-only, no alpha changed): "
+        f"would_apply={result.would_apply} "
+        f"would_cancel={result.would_cancel} "
+        f"would_skip_no_belief={result.would_skip_no_belief} "
+        f"would_skip_locked={result.would_skip_locked} "
+        f"would_skip_foreign={result.would_skip_foreign} "
         f"pending_in_grace={result.pending_unmet_grace} "
+        f"alpha_withheld={result.alpha_withheld:.4f} "
         f"epsilon={result.epsilon_used} "
         f"grace_seconds={result.grace_seconds_used}",
         file=out,  # type: ignore[arg-type]
@@ -8950,9 +8955,9 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_sweep_feedback = sub.add_parser(
         "sweep-feedback",
         help=(
-            "process deferred retrieval-exposure feedback queue (#191): "
-            "apply +epsilon to beliefs whose grace window elapsed without "
-            "a contradicting explicit signal"
+            "audit the deferred retrieval-exposure feedback queue (#191): "
+            "report what the pre-#1162 sweeper would have applied. Changes "
+            "no belief"
         ),
     )
     p_sweep_feedback.add_argument(

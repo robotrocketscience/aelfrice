@@ -23,6 +23,8 @@ sleep. In-memory store. Each test < 100 ms.
 from __future__ import annotations
 
 import os
+
+import pytest
 from pathlib import Path
 
 from aelfrice.deferred_feedback import (
@@ -150,20 +152,32 @@ def test_enqueue_failure_does_not_break_retrieve(monkeypatch, capsys) -> None:
     assert "deferred-feedback enqueue failed" in capsys.readouterr().err
 
 
-# --- AC4: applied path (+epsilon) ---------------------------------------
+# --- AC4: eligible path, audit-only since #1162 -------------------------
 
 
-def test_sweep_applies_epsilon_after_grace() -> None:
+def test_sweep_reports_the_eligible_row_and_moves_no_alpha() -> None:
+    """The #1162 acceptance criterion in one test, both halves.
+
+    A sweep over a store with pending rows must change no belief's
+    alpha, and must still report a non-zero eligible count. Dropping
+    either half leaves a passing test: an audit that reports zero
+    satisfies the alpha assertion while hiding that the queue stopped
+    being read, and a mutating sweeper satisfies the count.
+    """
     s = _store(_mk("b1"))
     enqueue_retrieval_exposures(s, ["b1"], now=T0)
     r = sweep_deferred_feedback(
         s, now=T_AFTER_GRACE, grace_seconds=1800, epsilon=0.05
     )
-    assert r.applied == 1
-    assert r.cancelled == 0
+    assert r.would_apply == 1
+    assert r.would_cancel == 0
+    assert r.alpha_withheld == pytest.approx(0.05)
+    assert r.mutated is False
     b = s.get_belief("b1")
-    assert b is not None and b.alpha == 1.05
-    assert s.count_deferred_feedback_by_status() == {"applied": 1}
+    assert b is not None and b.alpha == 1.0
+    # Nothing consumed: the row is still enqueued, not marked applied.
+    assert s.count_deferred_feedback_by_status() == {"enqueued": 1}
+    assert s.list_feedback_events(belief_id="b1") == []
 
 
 def test_sweep_skips_rows_inside_grace_window() -> None:
@@ -172,8 +186,9 @@ def test_sweep_skips_rows_inside_grace_window() -> None:
     r = sweep_deferred_feedback(
         s, now=T_INSIDE_GRACE, grace_seconds=1800, epsilon=0.05
     )
-    assert r.applied == 0
+    assert r.would_apply == 0
     assert r.pending_unmet_grace == 1
+    assert r.alpha_withheld == 0.0
     b = s.get_belief("b1")
     assert b is not None and b.alpha == 1.0
     assert s.count_deferred_feedback_by_status() == {"enqueued": 1}
@@ -191,8 +206,8 @@ def test_explicit_feedback_in_grace_window_cancels_implicit() -> None:
     r = sweep_deferred_feedback(
         s, now=T_AFTER_GRACE, grace_seconds=1800, epsilon=0.05
     )
-    assert r.applied == 0
-    assert r.cancelled == 1
+    assert r.would_apply == 0
+    assert r.would_cancel == 1
     b = s.get_belief("b1")
     assert b is not None and b.alpha == 1.0
 
@@ -210,8 +225,8 @@ def test_contradiction_tiebreaker_event_in_grace_cancels() -> None:
     r = sweep_deferred_feedback(
         s, now=T_AFTER_GRACE, grace_seconds=1800, epsilon=0.05
     )
-    assert r.applied == 0
-    assert r.cancelled == 1
+    assert r.would_apply == 0
+    assert r.would_cancel == 1
 
 
 def test_explicit_feedback_outside_grace_does_not_cancel() -> None:
@@ -225,8 +240,8 @@ def test_explicit_feedback_outside_grace_does_not_cancel() -> None:
     r = sweep_deferred_feedback(
         s, now=T_AFTER_GRACE, grace_seconds=1800, epsilon=0.05
     )
-    assert r.applied == 1
-    assert r.cancelled == 0
+    assert r.would_apply == 1
+    assert r.would_cancel == 0
 
 
 def test_belief_deleted_between_enqueue_and_sweep_cascades_queue_row() -> None:
@@ -240,37 +255,49 @@ def test_belief_deleted_between_enqueue_and_sweep_cascades_queue_row() -> None:
     r = sweep_deferred_feedback(
         s, now=T_AFTER_GRACE, grace_seconds=1800, epsilon=0.05
     )
-    assert r.applied == 0
-    assert r.cancelled == 0
+    assert r.would_apply == 0
+    assert r.would_cancel == 0
     assert s.count_deferred_feedback_by_status() == {}
 
 
-# --- AC6: audit-log event type distinct ---------------------------------
+# --- AC6: the sweep leaves no audit row at all --------------------------
 
 
-def test_applied_row_writes_distinctive_audit_source() -> None:
+def test_sweep_writes_no_feedback_history_row() -> None:
+    """The inverse of the pre-#1162 assertion, and the more useful one.
+
+    An audit-only sweep must not leave a `RETRIEVAL_DRIVEN_FEEDBACK_SOURCE`
+    row behind, because such a row is what every downstream consumer
+    reads as "implicit feedback was applied here". The source constant
+    survives — it is still the exclusion key that decides which
+    feedback events count as explicit for cancellation.
+    """
     s = _store(_mk("b1"))
     enqueue_retrieval_exposures(s, ["b1"], now=T0)
     sweep_deferred_feedback(
         s, now=T_AFTER_GRACE, grace_seconds=1800, epsilon=0.05
     )
     events = s.list_feedback_events(belief_id="b1")
-    sources = [e.source for e in events]
-    assert RETRIEVAL_DRIVEN_FEEDBACK_SOURCE in sources
-    # And NOT the same as any explicit-feedback source.
-    assert "user" not in sources
+    assert events == []
+    assert RETRIEVAL_DRIVEN_FEEDBACK_SOURCE not in [e.source for e in events]
 
 
 # --- AC7: idempotency + crash-safe ---------------------------------------
 
 
-def test_sweep_twice_equals_sweep_once() -> None:
+def test_sweep_twice_reports_the_same_numbers() -> None:
+    """Repeatability, which is a stronger property than the idempotency
+    it replaces. The mutating sweeper was idempotent by consuming its
+    input: run twice, the second run reported zero. That reads as
+    "there is nothing here" rather than "this was already spent". The
+    audit consumes nothing, so the count is a standing measurement.
+    """
     s = _store(_mk("b1"), _mk("b2"))
     enqueue_retrieval_exposures(s, ["b1", "b2"], now=T0)
     s.insert_feedback_event(
         "b2", valence=-1.0, source="user", created_at=T_BEFORE_GRACE
     )
-    sweep_deferred_feedback(
+    r1 = sweep_deferred_feedback(
         s, now=T_AFTER_GRACE, grace_seconds=1800, epsilon=0.05
     )
     state_after_first = (
@@ -281,7 +308,8 @@ def test_sweep_twice_equals_sweep_once() -> None:
     r2 = sweep_deferred_feedback(
         s, now="2026-04-28T02:00:00Z", grace_seconds=1800, epsilon=0.05
     )
-    assert r2.applied == 0 and r2.cancelled == 0
+    assert (r2.would_apply, r2.would_cancel) == (r1.would_apply, r1.would_cancel)
+    assert r1.would_apply == 1 and r1.would_cancel == 1
     state_after_second = (
         s.get_belief("b1").alpha,  # type: ignore[union-attr]
         s.get_belief("b2").alpha,  # type: ignore[union-attr]
@@ -290,36 +318,35 @@ def test_sweep_twice_equals_sweep_once() -> None:
     assert state_after_first == state_after_second
 
 
-def test_already_applied_row_is_not_reapplied() -> None:
+def test_sweep_leaves_every_row_enqueued() -> None:
+    """The queue is not drained by being read. Pre-#1162 this row would
+    have flipped to `applied` and dropped out of the pending scan."""
     s = _store(_mk("b1"))
     enqueue_retrieval_exposures(s, ["b1"], now=T0)
     sweep_deferred_feedback(
         s, now=T_AFTER_GRACE, grace_seconds=1800, epsilon=0.05
     )
-    # Manually re-enqueue the SAME row would be a new row; but an
-    # already-applied row should be skipped on re-scan because
-    # list_pending_deferred_feedback filters by status='enqueued'.
     pending = s.list_pending_deferred_feedback(
         cutoff_iso="2099-01-01T00:00:00Z"
     )
-    assert pending == []
+    assert [row[1] for row in pending] == ["b1"]
 
 
-def test_partial_progress_resumes_correctly() -> None:
-    """Three rows; sweep one, then sweep again — the remaining two land."""
+def test_limit_bounds_the_audit_without_consuming_the_rest() -> None:
+    """`--limit` still bounds one pass, but since nothing is consumed a
+    subsequent unbounded pass sees all three rather than the remainder."""
     s = _store(_mk("b1"), _mk("b2"), _mk("b3"))
     enqueue_retrieval_exposures(s, ["b1", "b2", "b3"], now=T0)
     r1 = sweep_deferred_feedback(
         s, now=T_AFTER_GRACE, grace_seconds=1800, epsilon=0.05, limit=1
     )
-    assert r1.applied == 1
+    assert r1.would_apply == 1
     r2 = sweep_deferred_feedback(
         s, now=T_AFTER_GRACE, grace_seconds=1800, epsilon=0.05
     )
-    assert r2.applied == 2
-    # All three got exactly one increment.
+    assert r2.would_apply == 3
     assert all(
-        s.get_belief(b).alpha == 1.05  # type: ignore[union-attr]
+        s.get_belief(b).alpha == 1.0  # type: ignore[union-attr]
         for b in ("b1", "b2", "b3")
     )
 
@@ -395,20 +422,19 @@ def test_is_enqueue_on_retrieve_env_off(monkeypatch) -> None:
 # --- Integration: epsilon respected end-to-end --------------------------
 
 
-def test_custom_epsilon_landed_in_alpha_and_audit() -> None:
+def test_custom_epsilon_is_reported_as_withheld_not_applied() -> None:
+    """epsilon still resolves and still sizes the projection — it just
+    reaches `alpha_withheld` instead of `alpha`."""
     s = _store(_mk("b1"))
     enqueue_retrieval_exposures(s, ["b1"], now=T0)
-    sweep_deferred_feedback(
+    r = sweep_deferred_feedback(
         s, now=T_AFTER_GRACE, grace_seconds=1800, epsilon=0.25
     )
+    assert r.epsilon_used == 0.25
+    assert r.alpha_withheld == pytest.approx(0.25)
     b = s.get_belief("b1")
-    assert b is not None and b.alpha == 1.25
-    events = s.list_feedback_events(belief_id="b1")
-    retrieval_events = [
-        e for e in events if e.source == RETRIEVAL_DRIVEN_FEEDBACK_SOURCE
-    ]
-    assert len(retrieval_events) == 1
-    assert retrieval_events[0].valence == 0.25
+    assert b is not None and b.alpha == 1.0
+    assert s.list_feedback_events(belief_id="b1") == []
 
 
 def test_propagate_off_locked_neighbours_unchanged() -> None:
@@ -460,16 +486,13 @@ def test_sweep_does_not_bump_a_locked_belief() -> None:
 
     result = sweep_deferred_feedback(s, now=T_AFTER_GRACE)
 
-    assert result.applied == 0
-    assert result.skipped_locked == 1
-    assert result.cancelled == 1
+    assert result.would_apply == 0
+    assert result.would_skip_locked == 1
+    assert result.would_cancel == 1
     after = s.get_belief("b1")
     assert after is not None
     assert after.alpha == 9.0
     assert after.beta == 0.5
-    # Row drained, not left to accumulate against a future unlock.
-    assert s.count_deferred_feedback_by_status().get("enqueued", 0) == 0
-    # And no audit row claims an application that never happened.
     assert s.list_feedback_events(belief_id="b1") == []
 
 
@@ -481,11 +504,11 @@ def test_sweep_still_bumps_an_unlocked_belief() -> None:
 
     result = sweep_deferred_feedback(s, now=T_AFTER_GRACE)
 
-    assert result.applied == 1
-    assert result.skipped_locked == 0
+    assert result.would_apply == 1
+    assert result.would_skip_locked == 0
     after = s.get_belief("b1")
     assert after is not None
-    assert after.alpha > 1.0
+    assert after.alpha == 1.0
 
 
 def test_sweep_does_not_bump_a_foreign_belief(monkeypatch) -> None:
@@ -508,45 +531,50 @@ def test_sweep_does_not_bump_a_foreign_belief(monkeypatch) -> None:
 
     result = sweep_deferred_feedback(s, now=T_AFTER_GRACE)
 
-    assert result.applied == 0
-    assert result.skipped_foreign == 1
-    assert result.cancelled == 1
+    assert result.would_apply == 0
+    assert result.would_skip_foreign == 1
+    assert result.would_cancel == 1
     after = s.get_belief("b1")
     assert after is not None
     assert after.alpha == 1.0
-    assert s.count_deferred_feedback_by_status().get("enqueued", 0) == 0
     assert s.list_feedback_events(belief_id="b1") == []
 
 
-def test_sweep_eligibility_checks_share_the_row_transaction() -> None:
-    """Hypothesis: the lock/ownership checks read inside the row's write
-    transaction, not before it.
+def test_sweep_issues_no_write_statement_at_all() -> None:
+    """Successor to #1168's check-then-act ordering test.
 
-    Otherwise a lock committed between the check and the alpha write lands
-    on a belief the checks just rejected. Asserting on the statement order
-    pins the structure: `BEGIN IMMEDIATE` must precede the belief read.
-    Falsifiable by a belief SELECT appearing before the BEGIN."""
+    That test pinned `BEGIN IMMEDIATE` before the eligibility read, so
+    a lock committed mid-row could not land +epsilon on a belief the
+    checks had just rejected. #1162 closes that window by removing the
+    write rather than ordering it, so the structural assertion becomes
+    the stronger one: the sweep must issue no INSERT, UPDATE, DELETE or
+    write transaction whatsoever.
+
+    Statement-level rather than state-level on purpose — asserting that
+    alpha did not move would still pass for a sweep that wrote and then
+    happened to write the same value, or that mutated some other table.
+    """
     s = _store(_mk("b1", "apple banana"))
-    enqueue_retrieval_exposures(s, ["b1"], now=T0)
+    locked = _mk("b2", "apple cherry")
+    locked.lock_level = LOCK_USER
+    s.insert_belief(locked)
+    enqueue_retrieval_exposures(s, ["b1", "b2"], now=T0)
 
     statements: list[str] = []
     s._conn.set_trace_callback(statements.append)
     try:
-        sweep_deferred_feedback(s, now=T_AFTER_GRACE)
+        result = sweep_deferred_feedback(s, now=T_AFTER_GRACE)
     finally:
         s._conn.set_trace_callback(None)
 
-    begins = [
-        i for i, stmt in enumerate(statements)
-        if "begin immediate" in stmt.lower()
+    writes = [
+        stmt for stmt in statements
+        if stmt.strip().lower().startswith(
+            ("insert", "update", "delete", "begin immediate", "begin ")
+        )
     ]
-    belief_reads = [
-        i for i, stmt in enumerate(statements)
-        if "from beliefs" in stmt.lower() and "select" in stmt.lower()
-    ]
-    assert begins, f"no BEGIN IMMEDIATE issued: {statements}"
-    assert belief_reads, f"no belief read issued: {statements}"
-    assert begins[0] < belief_reads[0], (
-        "eligibility read happens before the write lock is taken: "
-        f"{statements}"
-    )
+    assert writes == [], f"audit-only sweep issued writes: {writes}"
+    # The sweep really did traverse the rows it declined to write to —
+    # a no-op that read nothing would also issue no writes.
+    assert result.would_apply == 1
+    assert result.would_skip_locked == 1
