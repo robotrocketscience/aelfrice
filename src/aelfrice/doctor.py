@@ -46,7 +46,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
 
-from aelfrice.setup import PROJECT_SETTINGS_RELPATH, USER_SETTINGS_PATH
+from aelfrice.setup import (
+    PROJECT_SETTINGS_RELPATH,
+    USER_SETTINGS_PATH,
+    read_settings,
+    write_settings,
+)
 
 if TYPE_CHECKING:
     from aelfrice.store import MemoryStore
@@ -1052,7 +1057,10 @@ def prune_broken_aelf_hooks(
             settings_path=settings_path, removed_per_event={}, total_removed=0,
         )
     try:
-        data = _load_settings_json(settings_path)
+        # #1161: transaction-aware, so a prune running inside
+        # `aelf setup`'s settings transaction mutates the same buffered
+        # document instead of writing around it.
+        data = read_settings(settings_path)
     except (ValueError, OSError):
         return HookPruneResult(
             settings_path=settings_path, removed_per_event={}, total_removed=0,
@@ -1101,7 +1109,7 @@ def prune_broken_aelf_hooks(
     total = sum(removed_per_event.values())
     total_duplicates = sum(duplicates_per_event.values())
     if (total or total_duplicates) and not dry_run:
-        _atomic_rewrite_settings(settings_path, data)
+        write_settings(settings_path, data)
     return HookPruneResult(
         settings_path=settings_path,
         removed_per_event=removed_per_event,
@@ -1159,10 +1167,16 @@ _HOOK_TYPE_COMMAND: Final[str] = "command"
 def _atomic_rewrite_settings(path: Path, data: dict[str, object]) -> None:
     """Atomically replace `path` with the new JSON. Mirrors setup._atomic_write.
 
-    Pulled into doctor so the prune helper can rewrite without taking
-    an import dependency on a private setup symbol. The format matches
-    setup's writer byte-for-byte (indent=2, ensure_ascii=False, trailing
-    newline) so a setup→prune→setup round trip stays diff-stable.
+    The format matches setup's writer byte-for-byte (indent=2,
+    ensure_ascii=False, trailing newline) so a setup→prune→setup round
+    trip stays diff-stable.
+
+    #1161: no longer used by the hook prune, which now goes through
+    `setup.write_settings` so it can join an open settings transaction
+    instead of writing around it. Retained as the unlocked writer for
+    any future doctor repair that is genuinely independent of setup's
+    transaction; a caller that mutates hooks should prefer
+    `setup.write_settings`.
     """
     import os
     import tempfile

@@ -51,6 +51,7 @@ from typing import Callable, Final, cast
 from aelfrice.setup import (
     SettingsScope,
     USER_SETTINGS_PATH,
+    _SETTINGS_LOCK_TIMEOUT_BACKGROUND,
     install_agent_context_hook,
     install_claude_memory_mirror_hook,
     install_commit_ingest_hook,
@@ -71,6 +72,7 @@ from aelfrice.setup import (
     resolve_session_start_hook_command,
     resolve_stop_hook_command,
     resolve_transcript_logger_command,
+    settings_transaction,
 )
 
 NO_AUTO_INSTALL_ENV: Final[str] = "AELFRICE_NO_AUTO_INSTALL"
@@ -621,6 +623,63 @@ def _do_merge(
     installed: list[str] = []
     already: list[str] = []
     opted_out: list[str] = []
+    # #1161: one lock and one write for the whole merge. The
+    # `.auto-install.lock` this function already runs under serialises
+    # auto-install against *itself*; it says nothing about `aelf setup`
+    # or `aelf doctor --fix`, which take no lock at all, so the merge
+    # below used to interleave with them entry by entry. The bound is
+    # short and a timeout aborts the merge: this runs on a hook path, so
+    # waiting on a sibling's lock would spend the user's latency budget,
+    # and skipping costs nothing because the stamp stays unwritten and
+    # the next invocation retries.
+    with settings_transaction(
+        settings_path, timeout=_SETTINGS_LOCK_TIMEOUT_BACKGROUND
+    ):
+        installed, already, opted_out = _merge_hooks_into_settings(
+            manifest=manifest,
+            opt_outs=opt_outs,
+            scope=scope,
+            settings_path=settings_path,
+            timeout=timeout,
+        )
+    # Stamp only after settings.json mutations succeed and the
+    # transaction has committed. If the merge raised, or the commit
+    # detected a foreign write, we never reach this line and the next
+    # invocation retries.
+    write_stamp(stamp_path, installed_version)
+    return AutoInstallResult(
+        ran=True,
+        prev_version=prev_version,
+        new_version=installed_version,
+        installed=tuple(installed),
+        already=tuple(already),
+        opted_out=tuple(opted_out),
+        message=_format_message(
+            prev_version=prev_version,
+            installed_version=installed_version,
+            installed=installed,
+            opted_out=opted_out,
+        ),
+    )
+
+
+def _merge_hooks_into_settings(
+    *,
+    manifest: HookManifest,
+    opt_outs: set[str],
+    scope: SettingsScope,
+    settings_path: Path,
+    timeout: int | None,
+) -> tuple[list[str], list[str], list[str]]:
+    """Install every default-on manifest hook. Returns
+    `(installed, already, opted_out)` hook names.
+
+    #1161: split out of `_do_merge` so the per-hook loop runs inside a
+    settings transaction the caller owns.
+    """
+    installed: list[str] = []
+    already: list[str] = []
+    opted_out: list[str] = []
     for hook in manifest.hooks:
         if not hook.default_on:
             continue
@@ -646,23 +705,7 @@ def _do_merge(
             installed.append(hook.name)
         else:
             already.append(hook.name)
-    # Stamp only after settings.json mutations succeed. If install_fn
-    # raised, we never reach this line and the next invocation retries.
-    write_stamp(stamp_path, installed_version)
-    return AutoInstallResult(
-        ran=True,
-        prev_version=prev_version,
-        new_version=installed_version,
-        installed=tuple(installed),
-        already=tuple(already),
-        opted_out=tuple(opted_out),
-        message=_format_message(
-            prev_version=prev_version,
-            installed_version=installed_version,
-            installed=installed,
-            opted_out=opted_out,
-        ),
-    )
+    return installed, already, opted_out
 
 
 def _format_message(
