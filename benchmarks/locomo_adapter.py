@@ -1,8 +1,17 @@
 """LoCoMo benchmark adapter for aelfrice.
 
-Ingests LoCoMo multi-session conversations into aelfrice,
-runs QA evaluation, and reports F1 scores comparable to the
-published leaderboard.
+Ingests LoCoMo multi-session conversations into aelfrice, runs QA
+evaluation, and reports F1 alongside reader-independent retrieval
+quality.
+
+The two are reported separately on purpose (#1160). `overall_f1` and
+`category_f1` are **reader-dependent**: no reader runs in
+`aelf bench all`, so the retrieved context is handed to a scorer written
+for a model's answer, and the resulting token-F1 moves with the token
+budget as much as with the ranking. `retrieval_quality` is
+**reader-independent**: MRR and recall@k over the ordered retrieved list,
+which a smaller budget can only lower. Category 5 is reported as `n/a`
+rather than 0.0 — see `UNSCORABLE_CATEGORIES`.
 
 Usage:
     uv run python benchmarks/locomo_adapter.py [--data PATH] [--conversations N] [--subset N]
@@ -27,6 +36,11 @@ from nltk.stem import PorterStemmer  # type: ignore[import-untyped]
 from aelfrice.ingest import ingest_turn
 from aelfrice.retrieval import retrieve_v2 as retrieve  # v1.0.x lab-compat shim
 from aelfrice.store import MemoryStore
+from benchmarks.metric_status import (
+    NOT_APPLICABLE,
+    NOT_APPLICABLE_REASONS_KEY,
+)
+from benchmarks.retrieval_metrics import mean_metrics, retrieval_metrics
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -40,6 +54,28 @@ CATEGORY_NAMES: Final[dict[int, str]] = {
     4: "single-hop",
     5: "adversarial",
 }
+
+#: Categories this adapter cannot score without a reader (#1160).
+#:
+#: LoCoMo category 5 is adversarial: the correct response is a refusal,
+#: and `score_qa` awards the point only when the prediction contains
+#: "no information available" or "not mentioned". Nothing in
+#: `aelf bench all` can refuse — the prediction is the retrieved context,
+#: which never contains those strings. The category therefore scored a
+#: hard 0.0 on every run ever recorded, and that zero sat inside
+#: `overall_f1` dragging it down and inside a tolerance band where any
+#: genuine fix would have registered as a band excursion.
+#:
+#: Scoring it as 0.0 asserted a measurement that was never taken. It is
+#: now reported as `n/a` and excluded from `overall_f1`, which becomes
+#: the mean over the categories that were actually scored.
+UNSCORABLE_CATEGORIES: Final[frozenset[int]] = frozenset({5})
+
+UNSCORABLE_CATEGORY_REASON: Final[str] = (
+    "adversarial: scoring requires a reader that can abstain; "
+    "aelf bench all runs no reader, so the retrieved context can never "
+    "produce the refusal this category scores for"
+)
 
 _PS: Final[PorterStemmer] = PorterStemmer()
 
@@ -96,7 +132,15 @@ def f1_multi_hop(prediction: str, ground_truth: str) -> float:
 
 
 def score_qa(prediction: str, answer: str, category: int) -> float:
-    """Score a single QA pair using the appropriate metric for its category."""
+    """Score a single QA pair using the appropriate metric for its category.
+
+    Mirrors LoCoMo's own `evaluation.py`, including the category-5 branch
+    — which is why that branch is kept here rather than deleted. It is
+    correct for a reader's answer and unreachable from `run_conversation`,
+    which routes `UNSCORABLE_CATEGORIES` around scoring entirely because
+    `aelf bench all` has no reader to produce a refusal. Wire a reader in
+    and this becomes live again unchanged (#1160).
+    """
     if category in (2, 4):
         return f1_score_single(prediction, answer)
     if category == 3:
@@ -305,8 +349,15 @@ def ingest_conversation(store: MemoryStore, conv: LoCoMoConversation) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _retrieve_context(store: MemoryStore, question: str, budget: int = 2000) -> str:
-    """Retrieve relevant beliefs from aelfrice for a question."""
+def _retrieve_beliefs(
+    store: MemoryStore, question: str, budget: int = 2000,
+) -> list[str]:
+    """Retrieve relevant beliefs, in rank order, without joining them.
+
+    The ordering is what `benchmarks.retrieval_metrics` reads; joining
+    first destroys it, which is why the blob scorers cannot tell a
+    ranking change from a budget change (#1160).
+    """
     result = retrieve(
         store=store,
         query=question,
@@ -314,8 +365,12 @@ def _retrieve_context(store: MemoryStore, question: str, budget: int = 2000) -> 
         include_locked=False,  # No locked beliefs in benchmark DB
         use_bfs=True,
     )
-    parts: list[str] = [b.content for b in result.beliefs]
-    return " ".join(parts)
+    return [b.content for b in result.beliefs]
+
+
+def _retrieve_context(store: MemoryStore, question: str, budget: int = 2000) -> str:
+    """Retrieve relevant beliefs from aelfrice for a question."""
+    return " ".join(_retrieve_beliefs(store, question, budget))
 
 
 def query_aelfrice(store: MemoryStore, question: str, budget: int = 2000) -> str:
@@ -341,18 +396,49 @@ class BenchmarkResult:
     ingest_time_s: float = 0.0
     query_time_s: float = 0.0
     per_question: list[dict[str, object]] = field(default_factory=lambda: list[dict[str, object]]())
+    # Per-query rank metrics over the retrieved list, one dict per
+    # question — including the unscorable categories, whose *retrieval*
+    # is measurable even where their answer is not (#1160).
+    per_question_retrieval: list[dict[str, float]] = field(
+        default_factory=lambda: list[dict[str, float]](),
+    )
+
+    @property
+    def scored_qa(self) -> int:
+        """Questions that contributed to `total_f1`.
+
+        `total_qa` stays the full corpus size — it is a corpus invariant
+        the band-check watches for drift — so the two are reported
+        separately rather than one being redefined.
+        """
+        return sum(
+            count
+            for cat, count in self.category_counts.items()
+            if cat not in UNSCORABLE_CATEGORIES
+        )
 
     @property
     def overall_f1(self) -> float:
-        if self.total_qa == 0:
+        """Mean F1 over the scorable categories only.
+
+        Category 5 previously contributed a structural 0.0 to every run
+        (see `UNSCORABLE_CATEGORIES`), so this number was a blend of a
+        measurement and a placeholder.
+        """
+        scored: int = self.scored_qa
+        if scored == 0:
             return 0.0
-        return self.total_f1 / self.total_qa
+        return self.total_f1 / scored
 
     def category_f1(self, cat: int) -> float:
         scores: list[float] = self.category_scores.get(cat, [])
         if not scores:
             return 0.0
         return sum(scores) / len(scores)
+
+    def retrieval_quality(self) -> dict[str, float]:
+        """Reader-independent MRR / recall@k over every question."""
+        return mean_metrics(self.per_question_retrieval)
 
 
 def merge_results(results: list[BenchmarkResult]) -> BenchmarkResult:
@@ -365,6 +451,7 @@ def merge_results(results: list[BenchmarkResult]) -> BenchmarkResult:
         merged.ingest_time_s += r.ingest_time_s
         merged.query_time_s += r.query_time_s
         merged.per_question.extend(r.per_question)
+        merged.per_question_retrieval.extend(r.per_question_retrieval)
         for cat, scores in r.category_scores.items():
             if cat not in merged.category_scores:
                 merged.category_scores[cat] = []
@@ -406,25 +493,33 @@ def run_conversation(
 
     t1: float = time.monotonic()
     for qa in qa_pairs:
-        prediction: str = query_aelfrice(store, qa.question, budget=budget)
+        beliefs: list[str] = _retrieve_beliefs(store, qa.question, budget=budget)
+        prediction: str = " ".join(beliefs)
 
-        # For category 5, check if retrieval found nothing relevant
-        # If retrieved content is thin, default to refusal
-        if qa.category == 5:
-            if len(prediction.split()) < 10:
-                prediction = "No information available"
-
-        answer: str = qa.answer if qa.category != 5 else ""
-        f1: float = score_qa(prediction, answer, qa.category)
+        # Rank metrics are computed for every category, including the
+        # unscorable ones: whether the gold answer was retrieved at all,
+        # and how highly, is measurable without a reader (#1160).
+        rank_scores: dict[str, float] = retrieval_metrics(beliefs, [qa.answer])
+        result.per_question_retrieval.append(rank_scores)
 
         result.total_qa += 1
-        result.total_f1 += f1
-
         if qa.category not in result.category_scores:
             result.category_scores[qa.category] = []
             result.category_counts[qa.category] = 0
-        result.category_scores[qa.category].append(f1)
         result.category_counts[qa.category] += 1
+
+        # Unscorable categories are counted and retrieval-measured, but
+        # contribute no answer score. Previously category 5 ran through
+        # `score_qa` behind a heuristic that promoted thin retrieval to
+        # a refusal — unreachable at any realistic budget, so it only
+        # ever produced 0.0. Recording that as a score was the defect.
+        if qa.category in UNSCORABLE_CATEGORIES:
+            f1_display: object = NOT_APPLICABLE
+        else:
+            f1: float = score_qa(prediction, qa.answer, qa.category)
+            result.total_f1 += f1
+            result.category_scores[qa.category].append(f1)
+            f1_display = round(f1, 4)
 
         result.per_question.append({
             "question": qa.question,
@@ -433,7 +528,14 @@ def run_conversation(
             "category_name": CATEGORY_NAMES.get(qa.category, "unknown"),
             "context": prediction,  # full retrieved context for subagent
             "prediction": prediction[:500],  # truncated for display
-            "f1": round(f1, 4),
+            "f1": f1_display,
+            # Deliberately no rank metrics here. `per_question` doubles
+            # as the `--retrieve-only` payload handed to a reader, and
+            # every rank metric is computed against the gold answer —
+            # putting them in the reader's input would widen the same
+            # gold-leak surface `benchmarks/verify_clean.py` exists to
+            # police. They live in `per_question_retrieval` instead and
+            # surface aggregated under `retrieval_quality`.
         })
 
     result.query_time_s = time.monotonic() - t1
@@ -447,7 +549,9 @@ def print_results(result: BenchmarkResult) -> None:
     print(f"LoCoMo Benchmark Results: {result.conversation_id}")
     print(f"{'='*60}")
     print(f"Total QA pairs:    {result.total_qa}")
-    print(f"Overall F1:        {result.overall_f1:.4f} ({result.overall_f1*100:.1f}%)")
+    print(f"Scored QA pairs:   {result.scored_qa}")
+    print(f"Overall F1:        {result.overall_f1:.4f} ({result.overall_f1*100:.1f}%)"
+          "  [reader-dependent; scorable categories only]")
     print(f"Ingest turns:      {result.ingest_turns}")
     print(f"Ingest time:       {result.ingest_time_s:.2f}s")
     print(f"Query time:        {result.query_time_s:.2f}s")
@@ -455,11 +559,19 @@ def print_results(result: BenchmarkResult) -> None:
         print(f"Avg query latency: {result.query_time_s / result.total_qa * 1000:.1f}ms")
     print()
     print("Per-category F1:")
-    for cat in sorted(result.category_scores.keys()):
+    for cat in sorted(result.category_counts.keys()):
         name: str = CATEGORY_NAMES.get(cat, "unknown")
         count: int = result.category_counts.get(cat, 0)
+        if cat in UNSCORABLE_CATEGORIES:
+            print(f"  {cat}. {name:12s}  {NOT_APPLICABLE:>15s}  n={count}"
+                  f"  ({UNSCORABLE_CATEGORY_REASON})")
+            continue
         f1: float = result.category_f1(cat)
         print(f"  {cat}. {name:12s}  {f1:.4f} ({f1*100:.1f}%)  n={count}")
+    print()
+    rq: dict[str, float] = result.retrieval_quality()
+    print("Retrieval quality (reader-independent, all categories):")
+    print("  " + "  ".join(f"{k}={v:.4f}" for k, v in rq.items()))
     print()
 
     # Reference baselines
@@ -561,11 +673,29 @@ def main() -> None:
     if args.output:
         merged_for_output: BenchmarkResult = merge_results(results) if len(results) > 1 else results[0]
         output_data: dict[str, object] = {
+            # Reader-dependent: scored by handing the retrieved context
+            # to a scorer written for a model's answer, so the value
+            # tracks the token budget as much as the ranking (#1160).
+            # `overall_f1` is the mean over the scorable categories.
             "overall_f1": round(merged_for_output.overall_f1, 4),
             "total_qa": merged_for_output.total_qa,
+            "scored_qa": merged_for_output.scored_qa,
             "category_f1": {
-                str(cat): round(merged_for_output.category_f1(cat), 4)
-                for cat in sorted(merged_for_output.category_scores.keys())
+                str(cat): (
+                    NOT_APPLICABLE if cat in UNSCORABLE_CATEGORIES
+                    else round(merged_for_output.category_f1(cat), 4)
+                )
+                for cat in sorted(merged_for_output.category_counts.keys())
+            },
+            # Reader-independent: rank metrics over the retrieved list,
+            # covering every question including the unscorable ones.
+            "retrieval_quality": merged_for_output.retrieval_quality(),
+            NOT_APPLICABLE_REASONS_KEY: {
+                f"category_f1.{cat}": (
+                    f"{CATEGORY_NAMES.get(cat, 'unknown')} — "
+                    f"{UNSCORABLE_CATEGORY_REASON}"
+                )
+                for cat in sorted(UNSCORABLE_CATEGORIES)
             },
             "per_question": merged_for_output.per_question,
         }
