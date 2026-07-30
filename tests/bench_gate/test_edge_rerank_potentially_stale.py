@@ -62,20 +62,24 @@ def _build_store(tmp_path: Path, row: dict, arm: str):
 
 def _row_top_k_ids(row: dict, store, *, rerank: bool) -> list[str]:
     """Run BFS expansion (POTENTIALLY_STALE is skip-during-BFS per
-    `BFS_EDGE_WEIGHTS[POTENTIALLY_STALE] = 0.0`) and either return
-    BFS top-k directly (`rerank=False`) or apply the rerank pass
-    first and then take top-k (`rerank=True`)."""
+    `BFS_EDGE_WEIGHTS[POTENTIALLY_STALE] = 0.0`) and return top-k with
+    the rerank pass either applied or suppressed.
+
+    Both arms go through `expand_bfs`. Since #1207 wired the pass into
+    `expand_bfs` itself, applying it a second time here would give the
+    treatment arm a squared penalty *and* leave the control arm already
+    reranked — the rate difference this gate measures would collapse
+    toward zero while grading a penalty no production path produces.
+    `rerank=False` is the control seam.
+    """
     from aelfrice.bfs_multihop import expand_bfs
-    from aelfrice.edge_rerank import apply_edge_type_rerank
 
     seeds = []
     for sid in row["seed_ids"]:
         b = store.get_belief(sid)
         assert b is not None, f"row {row['id']}: seed {sid} not in row beliefs"
         seeds.append(b)
-    expansions = expand_bfs(seeds, store)
-    if rerank:
-        expansions = apply_edge_type_rerank(expansions, store)
+    expansions = expand_bfs(seeds, store, rerank=rerank)
     k = int(row["k"])
     return [hop.belief.id for hop in expansions[:k]]
 

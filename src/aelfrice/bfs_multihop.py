@@ -149,6 +149,7 @@ def expand_bfs(
     total_budget: int = DEFAULT_TOTAL_BUDGET_NODES,
     min_path_score: float = DEFAULT_MIN_PATH_SCORE,
     seed_scopes: dict[str, str | None] | None = None,
+    rerank: bool = True,
 ) -> list[ScoredHop]:
     """Walk the edge graph from `seeds`, returning ranked expansions.
 
@@ -205,6 +206,13 @@ def expand_bfs(
     inside that peer's edge graph. Seeds not in the dict (and the
     default ``seed_scopes=None`` case) walk local edges only, so
     pre-federation callers see identical behaviour byte-for-byte.
+
+    Marker-edge rerank (#1207): the returned hops pass through
+    ``edge_rerank.apply_edge_type_rerank``, which demotes beliefs
+    carrying an incoming ``POTENTIALLY_STALE`` edge. ``rerank=False``
+    returns the raw expansion instead. That switch exists for the bench
+    gate that *grades* the pass and needs an un-reranked control arm —
+    it is not a production lane flag, and no caller in ``src/`` sets it.
     """
     if not seeds or max_depth < 1 or total_budget < 1:
         return []
@@ -347,6 +355,8 @@ def expand_bfs(
     #
     # Deferred import: `edge_rerank` imports `ScoredHop` from this
     # module, so a top-level import here would be circular.
+    if not rerank:
+        return expanded
     from aelfrice.edge_rerank import apply_edge_type_rerank
 
     return apply_edge_type_rerank(expanded, store)

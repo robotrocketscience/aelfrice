@@ -93,6 +93,26 @@ def apply_edge_type_rerank(
     )
     if not cfg:
         return sorted(hops, key=lambda h: (-h.score, h.belief.id))
+    # Existence probe before the per-hop loop (#1207). `expand_bfs`
+    # calls this on every walk, but the producer (`aelf doctor
+    # --detect-stale`) is opt-in, so on nearly every store the penalty
+    # table's edge types have zero rows and the loop below issues one
+    # `edges_to_in_scope` per hop to learn that N times over. One
+    # LIMIT-1 probe per keyed type answers it once — measured ~28x
+    # cheaper than the per-hop queries on a 600-belief / 9-hop walk.
+    # This also makes the "identity when no marker edges exist" property
+    # structural rather than incidental.
+    #
+    # Gated on every hop being local, because `has_edge_type` probes the
+    # local DB only. A federated hop's marker edges live in its peer, so
+    # short-circuiting on a local miss would reintroduce exactly the
+    # scope bug the read below fixes. There is no `has_edge_type_in_scope`,
+    # and a mixed walk is rare enough that paying the full loop for it is
+    # the right trade.
+    if all(hop.owning_scope is None for hop in hops) and not any(
+        store.has_edge_type(t) for t in cfg
+    ):
+        return sorted(hops, key=lambda h: (-h.score, h.belief.id))
     rescored: list[ScoredHop] = []
     for hop in hops:
         # Scope-aware read (#1207). This module predates federation

@@ -62,6 +62,11 @@ def store(tmp_path: Path) -> MemoryStore:
     s.close()
 
 
+def _require(belief: Belief | None) -> Belief:
+    assert belief is not None
+    return belief
+
+
 def _walk(s: MemoryStore, **kwargs: object) -> dict[str, float]:
     seed = s.get_belief(_SEED)
     assert seed is not None
@@ -181,6 +186,140 @@ def test_the_hop_survives_the_pass_intact(store: MemoryStore) -> None:
     assert stale.path == [EDGE_SUPPORTS]
 
 
+# --- the control seam the bench gate needs -------------------------------
+
+
+def test_rerank_false_returns_the_raw_expansion(store: MemoryStore) -> None:
+    """`tests/bench_gate/test_edge_rerank_potentially_stale.py` measures
+    stale-rate pre vs post. Once the pass runs inside `expand_bfs`, a
+    gate that calls `apply_edge_type_rerank` itself grades a squared
+    penalty against a control arm that is already treated — the rate
+    difference collapses and the gate reports the pass as ineffective.
+
+    `rerank=False` is that control arm. It is not a production lane
+    flag; `test_no_src_caller_disables_the_rerank` pins that.
+    """
+    store.insert_edge(
+        Edge(src=_SEED, dst=_STALE, type=EDGE_POTENTIALLY_STALE, weight=1.0)
+    )
+    seed = store.get_belief(_SEED)
+    assert seed is not None
+    raw = {h.belief.id: h.score for h in expand_bfs([seed], store, rerank=False)}
+    done = {h.belief.id: h.score for h in expand_bfs([seed], store)}
+    assert raw[_STALE] == pytest.approx(0.60)
+    assert done[_STALE] == pytest.approx(0.60 * DEFAULT_STALE_PENALTY)
+    assert raw[_PLAIN] == pytest.approx(done[_PLAIN])
+
+
+def test_no_src_caller_disables_the_rerank() -> None:
+    """The switch exists for the gate, not for production.
+
+    An `expand_bfs(..., rerank=False)` under `src/` would be a lane flag
+    reintroduced by the back door — the thing the operator decision on
+    #1207 explicitly declined.
+
+    Parsed rather than grepped: the substring `rerank=False` occurs in
+    `expand_bfs`'s own docstring describing the switch, so a text search
+    reports the documentation as a violation.
+    """
+    import ast
+
+    src = Path(__file__).resolve().parent.parent / "src" / "aelfrice"
+    offenders: list[str] = []
+    for path in sorted(src.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(
+                func, "id", None
+            )
+            if name != "expand_bfs":
+                continue
+            for kw in node.keywords:
+                if kw.arg == "rerank" and not (
+                    isinstance(kw.value, ast.Constant) and kw.value.value is True
+                ):
+                    offenders.append(f"{path.name}:{node.lineno}")
+    assert offenders == []
+
+
+# --- the empty-table fast path -------------------------------------------
+
+
+def test_no_marker_edges_anywhere_skips_the_per_hop_queries(
+    store: MemoryStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--detect-stale` is opt-in, so the penalty table is empty on
+    nearly every store — and the per-hop `edges_to_in_scope` loop pays
+    to rediscover that once per hop. One LIMIT-1 probe answers it once.
+
+    Counted against `apply_edge_type_rerank` directly rather than
+    through `expand_bfs`: the walk issues its own `edges_to_in_scope`
+    calls for the #1170 reverse traversal, which would be counted as
+    the rerank's.
+    """
+    from aelfrice.edge_rerank import apply_edge_type_rerank
+
+    hops = [
+        h for h in expand_bfs(
+            [_require(store.get_belief(_SEED))], store, rerank=False,
+        )
+    ]
+    assert hops, "fixture must produce hops, or zero calls is trivially true"
+
+    calls: list[str] = []
+    original = MemoryStore.edges_to_in_scope
+    monkeypatch.setattr(
+        MemoryStore, "edges_to_in_scope",
+        lambda self, dst, scope: (
+            calls.append(dst), original(self, dst, scope)
+        )[1],
+    )
+    apply_edge_type_rerank(hops, store)
+    assert calls == []
+
+
+def test_the_per_hop_queries_do_run_when_a_marker_exists(
+    store: MemoryStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Negative control for the call count above.
+
+    Without it, a pass that never queried at all — or never ran — would
+    satisfy `calls == []` just as well as the fast path does.
+    """
+    from aelfrice.edge_rerank import apply_edge_type_rerank
+
+    store.insert_edge(
+        Edge(src=_SEED, dst=_STALE, type=EDGE_POTENTIALLY_STALE, weight=1.0)
+    )
+    hops = expand_bfs(
+        [_require(store.get_belief(_SEED))], store, rerank=False,
+    )
+    calls: list[str] = []
+    original = MemoryStore.edges_to_in_scope
+    monkeypatch.setattr(
+        MemoryStore, "edges_to_in_scope",
+        lambda self, dst, scope: (
+            calls.append(dst), original(self, dst, scope)
+        )[1],
+    )
+    apply_edge_type_rerank(hops, store)
+    assert sorted(calls) == sorted(h.belief.id for h in hops)
+
+
+def test_the_fast_path_does_not_fire_once_a_marker_exists(
+    store: MemoryStore,
+) -> None:
+    """Negative control: the skip above must be the empty-table case,
+    not the pass being switched off."""
+    store.insert_edge(
+        Edge(src=_SEED, dst=_STALE, type=EDGE_POTENTIALLY_STALE, weight=1.0)
+    )
+    assert _walk(store)[_STALE] == pytest.approx(0.60 * DEFAULT_STALE_PENALTY)
+
+
 # --- federation ----------------------------------------------------------
 
 
@@ -226,6 +365,40 @@ def test_a_marker_edge_in_a_peer_store_demotes(
         assert s.edges_to(_STALE) == [], "the local store holds no marker edge"
         peer_edges = s.edges_to_in_scope(_STALE, "peerA")
         assert [e.type for e in peer_edges] == [EDGE_POTENTIALLY_STALE]
+    finally:
+        s.close()
+
+
+def test_the_fast_path_does_not_swallow_a_federated_hop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The empty-table probe reads the *local* DB.
+
+    A federated hop's marker edges live in its peer, so short-circuiting
+    on a local miss would reintroduce the scope bug the read fixes —
+    and it would do so on exactly the store where the probe looks most
+    justified: no local marker edges at all. The fast path is therefore
+    gated on every hop being local, and this pins it.
+    """
+    from aelfrice.edge_rerank import apply_edge_type_rerank
+    from aelfrice.bfs_multihop import ScoredHop
+
+    _peer_store(tmp_path, monkeypatch)
+    s = MemoryStore(str(tmp_path / "local3.db"))
+    try:
+        s.insert_belief(_mk(_STALE))
+        assert not s.has_edge_type(EDGE_POTENTIALLY_STALE), (
+            "the local store must hold no marker edge, or the fast path "
+            "is not the thing under test"
+        )
+        belief = s.get_belief(_STALE)
+        assert belief is not None
+        hop = ScoredHop(
+            belief=belief, score=1.0, depth=1, path=[EDGE_SUPPORTS],
+            belief_id_trail=(_SEED, _STALE), owning_scope="peerA",
+        )
+        [out] = apply_edge_type_rerank([hop], s)
+        assert out.score == pytest.approx(DEFAULT_STALE_PENALTY)
     finally:
         s.close()
 
