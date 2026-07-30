@@ -37,6 +37,15 @@ jobs:
             code:
               - 'src/**'
               - 'tests/**'
+              # `pythonpath = ["."]` in pyproject.toml makes these two
+              # top-level packages importable from the suite, and 27 test
+              # modules import `benchmarks` while 6 exercise `scripts/`
+              # via importlib. Omitting them meant a PR touching only
+              # those directories took the `echo` branch below and
+              # reported a passing `pytest (3.12)`/`(3.13)` — both
+              # required checks — having run no tests at all (#1160).
+              - 'benchmarks/**'
+              - 'scripts/**'
               - 'pyproject.toml'
               - 'uv.lock'
               - '.github/workflows/ci.yml'
