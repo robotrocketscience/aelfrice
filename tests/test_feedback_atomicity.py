@@ -272,6 +272,18 @@ def test_immediate_transaction_commits_as_one_unit(tmp_path: Path) -> None:
         store.close()
 
 
+def _abort() -> None:
+    """Raise from inside the transaction block.
+
+    A bare `raise` there is statically the end of the function to
+    CodeQL's control-flow analysis — it does not model
+    `pytest.raises` as catching — so every assertion after the block
+    was reported as unreachable. Raising through a call keeps the
+    test identical and the analysis honest.
+    """
+    raise RuntimeError("boom")
+
+
 def test_immediate_transaction_rolls_back_on_error(tmp_path: Path) -> None:
     """Hypothesis: the audit row and the posterior move roll back together,
     so the log can never claim evidence the projection never took.
@@ -287,7 +299,7 @@ def test_immediate_transaction_rolls_back_on_error(tmp_path: Path) -> None:
                     belief_id=bid, valence=5.0, source="t",
                     created_at="2026-01-01",
                 )
-                raise RuntimeError("boom")
+                _abort()
         b = store.get_belief(bid)
         assert b is not None
         assert b.alpha == pytest.approx(alpha0)
