@@ -81,10 +81,10 @@ def test_update_last_confirmed_at_noop_on_soft_deleted() -> None:
     s.insert_belief(b)
     s.soft_delete_belief("b1")
     s.update_last_confirmed_at("b1", "2026-06-04T10:00:00Z")
-    # The belief is soft-deleted so get_belief still returns it
-    # (get_belief does not filter on valid_to). Confirm the field
-    # was NOT updated on the soft-deleted row.
-    got = s.get_belief("b1")
+    # The belief is soft-deleted, so reading it back needs
+    # include_retired=True (#1210 gave get_belief a valid_to filter).
+    # Confirm the field was NOT updated on the soft-deleted row.
+    got = s.get_belief("b1", include_retired=True)
     assert got is not None
     assert got.valid_to is not None  # still soft-deleted
     assert got.last_confirmed_at is None  # field not updated

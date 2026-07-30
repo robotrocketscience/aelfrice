@@ -258,7 +258,7 @@ def test_full_lifecycle_reaps_a_surfaced_phantom(store: MemoryStore) -> None:
     hook_search.record_retrieval(store, [store.get_belief(pid)])
 
     assert wonder_gc(store, ttl_days=14, dry_run=False).deleted == 1
-    assert store.get_belief(pid).valid_to is not None
+    assert store.get_belief(pid, include_retired=True).valid_to is not None
 
 
 # ---------------------------------------------------------------------------

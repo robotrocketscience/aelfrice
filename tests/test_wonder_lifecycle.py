@@ -330,7 +330,7 @@ def test_gc_non_dry_run_sets_valid_to(store: MemoryStore) -> None:
     assert result.deleted == 1
     assert result.surviving == 0
 
-    b = store.get_belief("spec1")
+    b = store.get_belief("spec1", include_retired=True)
     assert b is not None
     assert b.valid_to is not None
 

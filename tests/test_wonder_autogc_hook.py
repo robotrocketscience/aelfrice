@@ -161,7 +161,7 @@ def test_autogc_sweeps_stale_phantom_when_enabled(
 
     store = MemoryStore(str(db))
     try:
-        b = store.get_belief("spec1")
+        b = store.get_belief("spec1", include_retired=True)
     finally:
         store.close()
     assert b is not None
@@ -226,7 +226,7 @@ def test_session_start_runs_autogc_when_enabled(
 
     store = MemoryStore(str(db))
     try:
-        b = store.get_belief("spec1")
+        b = store.get_belief("spec1", include_retired=True)
     finally:
         store.close()
     assert b is not None
@@ -255,7 +255,7 @@ def test_session_start_skips_autogc_by_default(
 
     store = MemoryStore(str(db))
     try:
-        b = store.get_belief("spec1")
+        b = store.get_belief("spec1", include_retired=True)
     finally:
         store.close()
     assert b is not None

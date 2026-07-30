@@ -72,9 +72,17 @@ def _seed_belief(
 
 
 def _valid_to(db: Path, bid: str) -> str | None:
+    """Read a belief's ``valid_to``, tombstone included.
+
+    ``include_retired=True`` is load-bearing (#1210): this probe exists to
+    inspect retired rows, and ``get_belief`` now excludes them by default.
+    Without it the helper returns ``None`` for a belief that *was* retired,
+    which reads as "retire did nothing" — the exact inversion of what it is
+    asserting.
+    """
     s = MemoryStore(str(db))
     try:
-        b = s.get_belief(bid)
+        b = s.get_belief(bid, include_retired=True)
         return None if b is None else b.valid_to
     finally:
         s.close()

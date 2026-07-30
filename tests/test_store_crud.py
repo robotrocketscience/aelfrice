@@ -83,7 +83,7 @@ def test_belief_update_persists_full_row_columns() -> None:
     b.valid_to = "2026-12-31T23:59:59Z"
     b.scope = BELIEF_SCOPE_GLOBAL
     s.update_belief(b)
-    got = s.get_belief("b1")
+    got = s.get_belief("b1", include_retired=True)
     assert got is not None
     assert got.hibernation_score == 0.42
     assert got.activation_condition == '{"on": "next_retrieval"}'

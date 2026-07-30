@@ -381,7 +381,11 @@ def tool_lock(
             ),
         }
     lock_bid = derived.belief.id
-    pre_existing_at_lock_id = store.get_belief(lock_bid) is not None
+    # include_retired (#1210): a re-lock must still address a retired
+    # belief. Under the default a tombstone reads as absent, so the
+    # lock-upgrade branch below is skipped and `aelf lock` on a retired
+    # statement reports success without ever setting lock_level.
+    pre_existing_at_lock_id = store.get_belief(lock_bid, include_retired=True) is not None
     ids_before: set[str] = set(store.list_belief_ids())
     log_id = store.record_ingest(
         source_kind=INGEST_SOURCE_MCP_REMEMBER,
@@ -401,7 +405,9 @@ def tool_lock(
     if pre_existing_at_lock_id and actual_id == lock_bid:
         # Re-lock of an existing lock-id belief: apply lock-upgrade
         # (worker's insert_or_corroborate just records corroboration).
-        existing = store.get_belief(actual_id)
+        # include_retired (#1210): `actual_id` may be a retired row that
+        # insert_belief's collision guard corroborated rather than inserted.
+        existing = store.get_belief(actual_id, include_retired=True)
         if existing is not None:
             existing.lock_level = LOCK_USER
             existing.locked_at = now

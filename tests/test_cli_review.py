@@ -154,7 +154,7 @@ def test_review_apply_remove_soft_deletes(
     assert code == 0
     assert "1 removed" in output
     s = MemoryStore(str(isolated_db))
-    b = s.get_belief("b1")
+    b = s.get_belief("b1", include_retired=True)
     s.close()
     assert b is not None
     assert b.valid_to is not None

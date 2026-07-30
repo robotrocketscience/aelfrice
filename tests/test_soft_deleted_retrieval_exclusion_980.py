@@ -81,9 +81,12 @@ def test_soft_delete_prunes_fts_row() -> None:
 
 def test_soft_deleted_belief_row_survives_for_audit() -> None:
     s = _store_with_pair()
-    # The belief itself is retained (valid_to set) so the audit trail and
-    # fetch-by-id still work -- only retrieval excludes it.
-    got = s.get_belief("b2")
+    # The belief itself is retained (valid_to set) so the audit trail
+    # survives -- only retrieval excludes it. Since #1210 fetch-by-id
+    # excludes it too unless the caller asks for tombstones, which is
+    # what an audit probe is: the row still being there is the
+    # invariant, include_retired=True is how you observe it.
+    got = s.get_belief("b2", include_retired=True)
     assert got is not None
     assert got.valid_to is not None
 

@@ -1964,7 +1964,11 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
         # cli_remember always produces a belief.
         assert derived.belief is not None
         lock_bid = derived.belief.id
-        pre_existing_at_lock_id = store.get_belief(lock_bid) is not None
+        # include_retired (#1210): a re-lock must still address a retired
+        # belief. Under the default a tombstone reads as absent, so the
+        # lock-upgrade branch below is skipped and `aelf lock` on a retired
+        # statement reports success without ever setting lock_level.
+        pre_existing_at_lock_id = store.get_belief(lock_bid, include_retired=True) is not None
         ids_before: set[str] = set(store.list_belief_ids())
         log_id = store.record_ingest(
             source_kind=INGEST_SOURCE_CLI_REMEMBER,
@@ -1997,7 +2001,9 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
         # `find_phantom_lock_matches` only sees rows still carrying
         # ORIGIN_SPECULATIVE. Rewriting origin here would silently disqualify
         # the phantom from its own promotion path.
-        resolved = store.get_belief(actual_id)
+        # include_retired (#1210): `actual_id` may be a retired row that
+        # insert_belief's collision guard corroborated rather than inserted.
+        resolved = store.get_belief(actual_id, include_retired=True)
         if (
             resolved is not None
             and resolved.lock_level != LOCK_USER
@@ -2024,7 +2030,9 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
         # insert default 'frozen'; re-locks preserve their existing tier).
         desired_tier = getattr(args, "lock_tier", None)
         if desired_tier is not None:
-            tier_belief = store.get_belief(actual_id)
+            # include_retired (#1210): `actual_id` may be a retired row that
+            # insert_belief's collision guard corroborated rather than inserted.
+            tier_belief = store.get_belief(actual_id, include_retired=True)
             if tier_belief is not None and tier_belief.lock_tier != desired_tier:
                 tier_belief.lock_tier = desired_tier
                 store.update_belief(tier_belief)
@@ -3075,7 +3083,11 @@ def _cmd_delete(args: argparse.Namespace, out: object) -> int:
         except ForeignBeliefError as e:
             print(f"delete error: {e}", file=sys.stderr)
             return 1
-        belief = store.get_belief(args.belief_id)
+        # include_retired (#1210): `delete` is the hard-delete sibling of
+        # `retire`, so a tombstone is exactly the thing it must be able to
+        # address. Taking the default would make an already-retired belief
+        # undeletable — a leak, not a safety property.
+        belief = store.get_belief(args.belief_id, include_retired=True)
         if belief is None:
             print(f"belief not found: {args.belief_id}", file=sys.stderr)
             return 1
@@ -3135,7 +3147,11 @@ def _cmd_retire(args: argparse.Namespace, out: object) -> int:
         except ForeignBeliefError as e:
             print(f"retire error: {e}", file=sys.stderr)
             return 1
-        belief = store.get_belief(args.belief_id)
+        # include_retired (#1210): the `already retired` branch below reads
+        # `belief.valid_to`, so it is only reachable if retired rows are
+        # visible here. Taking the default would report `belief not found`
+        # for a belief that plainly exists.
+        belief = store.get_belief(args.belief_id, include_retired=True)
         if belief is None:
             print(f"belief not found: {args.belief_id}", file=sys.stderr)
             return 1

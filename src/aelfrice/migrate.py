@@ -230,7 +230,10 @@ def migrate(
         target = MemoryStore(str(target_path))
         try:
             for b in matched:
-                if target.get_belief(b.id) is not None:
+                # include_retired (#1210): an id-existence check against the target.
+                # A tombstone still owns its primary key, so treating it as absent
+                # would re-insert and trip a UNIQUE constraint.
+                if target.get_belief(b.id, include_retired=True) is not None:
                     skipped_existing += 1
                     continue
                 target.insert_belief(b)
@@ -240,7 +243,7 @@ def migrate(
             # Edges that reference an unmatched legacy belief are
             # skipped — they'd create orphan edges in the target.
             target_existing_ids = {
-                b.id for b in matched if target.get_belief(b.id) is not None
+                b.id for b in matched if target.get_belief(b.id, include_retired=True) is not None
             }
             valid_endpoints = target_existing_ids | matched_ids
             for e in legacy_edges:
@@ -260,7 +263,7 @@ def migrate(
             target = MemoryStore(str(target_path))
             try:
                 for b in matched:
-                    if target.get_belief(b.id) is not None:
+                    if target.get_belief(b.id, include_retired=True) is not None:
                         skipped_existing += 1
                     else:
                         inserted_beliefs += 1

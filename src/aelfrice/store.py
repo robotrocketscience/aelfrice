@@ -2640,14 +2640,37 @@ class MemoryStore:
         row = cur.fetchone()
         return _row_to_belief(row) if row else None
 
-    def get_belief(self, belief_id: str) -> Belief | None:
+    def get_belief(
+        self, belief_id: str, *, include_retired: bool = False
+    ) -> Belief | None:
+        """Read one belief by id. Retired rows are excluded by default.
+
+        A soft-deleted belief (``valid_to IS NOT NULL``) is a tombstone,
+        not content. Before #1210 this method had no lifecycle filter, so
+        everything downstream of it — BFS, `propagate_valence`, feedback,
+        context assembly — still saw retired beliefs even though search
+        did not. The measured consequence was that a retired belief
+        accrued evidence: one `aelf feedback` on a *neighbour* propagated
+        into it (alpha 9.0 -> 9.9 plus an audit row), invisibly, because
+        the FTS prune kept it out of search but nothing kept it out of the
+        graph. `aelf restore` then returned it at a posterior the user
+        never endorsed.
+
+        ``include_retired=True`` is the explicit opt-out, for the callers
+        that must address a tombstone: the id-collision guard in
+        :meth:`insert_belief` (a tombstone still owns its primary key),
+        the `retire`/`delete` lifecycle commands, `lock` re-lock, and the
+        migration existence checks. Everything that reads a belief in
+        order to *use* it takes the default.
+        """
+        lifecycle = "" if include_retired else "AND b.valid_to IS NULL"
         cur = self._conn.execute(
-            """
+            f"""
             SELECT b.*,
                    (SELECT COUNT(*) FROM belief_corroborations bc
                     WHERE bc.belief_id = b.id) AS corroboration_count
             FROM beliefs b
-            WHERE b.id = ?
+            WHERE b.id = ? {lifecycle}
             """,
             (belief_id,),
         )
@@ -2780,6 +2803,13 @@ class MemoryStore:
         ``delete_belief``) so the soft-deleted belief stops matching
         keyword search; read-side queries also filter ``valid_to IS NULL``,
         so this is index hygiene plus defense-in-depth (#980).
+
+        That last clause was aspirational until #1210: :meth:`get_belief`
+        had no lifecycle filter, so the FTS prune was doing the whole job
+        alone and everything reached by id rather than by search — BFS,
+        ``propagate_valence``, feedback, context assembly — still saw the
+        tombstone. It is true now, and :meth:`get_belief` is where it is
+        enforced.
         """
         now = ts if ts is not None else datetime.now(timezone.utc).isoformat()
         cur = self._conn.execute(
@@ -3662,7 +3692,11 @@ class MemoryStore:
         # between the get_belief_by_content_hash check above and our
         # INSERT. Treat as corroboration of the id-collision row so the
         # derivation worker never trips a UNIQUE constraint on id.
-        existing_by_id = self.get_belief(b.id)
+        # include_retired (#1210): a tombstone still owns its primary key,
+        # so the collision this guard exists to prevent is not conditional
+        # on the row being active. Taking the default here would let the
+        # INSERT below trip a UNIQUE constraint on a retired id.
+        existing_by_id = self.get_belief(b.id, include_retired=True)
         if existing_by_id is not None:
             self.record_corroboration(
                 existing_by_id.id,
@@ -5381,7 +5415,11 @@ class MemoryStore:
             return []
 
     def get_belief_in_scope(
-        self, belief_id: str, owning_scope: str | None
+        self,
+        belief_id: str,
+        owning_scope: str | None,
+        *,
+        include_retired: bool = False,
     ) -> Belief | None:
         """Read-only ``get_belief`` against a named peer (or local).
 
@@ -5391,15 +5429,22 @@ class MemoryStore:
         peer DBs return ``None`` rather than raising. Used by the
         peer-aware BFS walk (#690) to materialise foreign beliefs
         the walk steps into.
+
+        ``include_retired`` carries through to *both* branches (#1210).
+        The peer branch needs the filter in its own right: a retired
+        belief in a peer store was as reachable through the walk as a
+        local one, so filtering only the local branch would have left
+        federated stores as a way back in.
         """
         if owning_scope is None:
-            return self.get_belief(belief_id)
+            return self.get_belief(belief_id, include_retired=include_retired)
         conn = self._peer_conn(owning_scope)
         if conn is None:
             return None
+        lifecycle = "" if include_retired else "AND valid_to IS NULL"
         try:
             row = conn.execute(
-                "SELECT * FROM beliefs WHERE id = ?", (belief_id,)
+                f"SELECT * FROM beliefs WHERE id = ? {lifecycle}", (belief_id,)
             ).fetchone()
         except sqlite3.OperationalError:
             return None

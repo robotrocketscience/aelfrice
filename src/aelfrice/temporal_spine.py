@@ -504,7 +504,15 @@ def spine_neighbors(
                 if nid in visited:
                     continue
                 visited.add(nid)
-                belief = store.get_belief(nid)
+                # include_retired (#1210): this walk implements its own
+                # lifecycle policy two lines down — emit only active
+                # beliefs, but keep traversing through retired ones so a
+                # GC'd segment does not sever the chain. Taking the
+                # default would collapse that distinction into the
+                # `is None` branch and drop the rest of the chain with
+                # it. `None` here now means a genuinely dangling edge,
+                # which correctly stops the walk.
+                belief = store.get_belief(nid, include_retired=True)
                 if belief is None:
                     continue
                 if belief.valid_to is not None:

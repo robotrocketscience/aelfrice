@@ -393,7 +393,11 @@ def replay_full_equality(
             continue
 
         synthesized = out.belief
-        canonical = store.get_belief(synthesized.id)
+        # include_retired (#1210): this reconciles ingest_log against the
+        # rows that exist, and a tombstone is still a row. Under the default
+        # every retired belief would reclassify as a derived_orphan and
+        # inflate the drift counts the replay-soak gate reads.
+        canonical = store.get_belief(synthesized.id, include_retired=True)
 
         if canonical is None:
             # Belief id not in canonical store → derived_orphan

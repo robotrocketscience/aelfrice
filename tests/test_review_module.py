@@ -303,7 +303,7 @@ def test_apply_decisions_remove_soft_deletes() -> None:
     report = apply_decisions(s, [_decision("b1", "remove")], now=_NOW_ISO)
     assert report.removed == ["b1"]
     assert report.errors == []
-    got = s.get_belief("b1")
+    got = s.get_belief("b1", include_retired=True)
     assert got is not None
     assert got.valid_to is not None  # soft-deleted
 
