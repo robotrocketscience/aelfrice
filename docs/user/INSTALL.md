@@ -81,6 +81,44 @@ aelf doctor hooks      # hook resolution only
 aelf doctor graph      # structural auditor only
 ```
 
+### Duplicate hook entries (v4.2.0+)
+
+`settings.json` is a shared global config with several independent
+writers — the harness itself, `aelf setup`, auto-install, and your own
+edits. A host settings migration, a dotfiles merge, or a hand edit can
+leave two entries for the same aelfrice hook. Both fire on every event,
+so the only symptom is that prompts get slower for no visible reason:
+nothing is broken, both paths resolve, and every check passes.
+
+`aelf doctor` now reports these, and `--prune` collapses them:
+
+```bash
+aelf doctor hooks              # reports duplicates (read-only)
+aelf doctor hooks --fix        # collapses them, keeping the first of each
+```
+
+The collapse only ever touches `aelf-*` entries; hooks you wrote
+yourself are left exactly as they are, even if you have deliberately
+listed one twice. Duplicates are counted separately from the stale-path
+prune, because the two repairs answer different questions — a pruned
+entry pointed at a venv that no longer exists, a collapsed one resolved
+perfectly well and was simply installed twice.
+
+### Hook timeouts
+
+Every hook aelfrice installs carries an explicit `timeout` (v4.2.0+),
+declared per hook in the bundled manifest: 15s for hooks that gate a
+user-visible action, 30s for the bulk-ingest hooks. This is what bounds
+the "a hook must never block your prompt" contract at the host level —
+without it a hook waiting on another session's SQLite write lock would
+stall for the host's default rather than aelfrice's budget.
+
+The budgets have headroom over the real worst case rather than hugging
+it: a cold-start retrieval on a ~46k-belief store measured under 3s when
+it had to rebuild its BM25 sidecar from scratch. Override with
+`aelf setup --timeout <seconds>` if your store is very large or your
+disk is slow.
+
 `aelf health` and `aelf stats` remain callable as back-compat aliases — hidden from default `--help` output but listed under `aelf --help --advanced`. The canonical replacements are `aelf doctor graph` (structural auditor, replaces `health`) and `aelf status` (counts, aliases `stats`).
 
 ## 4. Onboard a project
