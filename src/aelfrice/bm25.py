@@ -38,11 +38,13 @@ release promotes both to runtime deps; see CHANGELOG and
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import re
 import sys
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -155,7 +157,11 @@ _SERIALIZE_MAGIC: Final[bytes] = b"AELFBM25"
 # The anchor arrays are empty in legacy (`per_field=False`) blobs, so the
 # size cost of the bump is 17 bytes there. Same rebuild-on-mismatch
 # posture as v3.
-_SERIALIZE_VERSION: Final[int] = 4
+# v5 (#1199): appends the per-document source fingerprints that let
+# `update_from` re-tokenise only the documents whose indexed text
+# actually changed. 16 bytes per belief; a rebuild without them is
+# still correct, just not incremental.
+_SERIALIZE_VERSION: Final[int] = 5
 
 
 def tokenize(text: str) -> list[str]:
@@ -197,6 +203,46 @@ def tokenize_stemmed(text: str) -> list[str]:
         _stem(m.group(0).lower())
         for m in _TOKEN_PATTERN.finditer(text)
     ]
+
+
+def _source_fingerprint(text: str) -> int:
+    """64-bit digest of one document's source text (#1199).
+
+    Fingerprints what was actually tokenised rather than reusing
+    `beliefs.content_hash`: that column is written by callers
+    (`classification._content_hash`, `derivation._content_hash`) and is
+    not enforced by the store, so keying index validity on it would let
+    one writer's wrong hash silently serve stale retrieval results.
+    This digest owes nothing to a convention the store does not
+    guarantee.
+
+    blake2b truncated to 64 bits. A collision would reuse a stale row;
+    at a corpus of 1e5 documents the birthday probability is ~3e-10,
+    which is well under the rate at which the sidecar is discarded for
+    ordinary reasons.
+    """
+    return int.from_bytes(
+        hashlib.blake2b(text.encode("utf-8"), digest_size=8).digest(),
+        "little",
+    )
+
+
+def _anchor_fingerprint(anchors: Sequence[str]) -> int:
+    """64-bit digest of one belief's incoming anchor texts (#1199).
+
+    Order-independent by construction — the anchors are sorted before
+    hashing. Anchor order cannot change the index (it feeds per-term
+    counts and a total length, both commutative), so hashing in
+    iteration order would invalidate documents whose index is provably
+    identical. Each anchor is length-prefixed so `["ab", "c"]` and
+    `["a", "bc"]` cannot collide.
+    """
+    h = hashlib.blake2b(digest_size=8)
+    for a in sorted(anchors):
+        raw = a.encode("utf-8")
+        h.update(len(raw).to_bytes(8, "little"))
+        h.update(raw)
+    return int.from_bytes(h.digest(), "little")
 
 
 def _build_stream(
@@ -283,6 +329,13 @@ class BM25Index:
     b_anchor
         Length-normalisation strength for the anchor stream. Unused
         when `per_field` is False.
+    content_fp, anchor_fp
+        Per-document `uint64` fingerprints of the source text each row
+        was built from, aligned with `belief_ids` (#1199). Not used in
+        scoring — they exist so `update_from` can tell which documents
+        actually changed and re-tokenise only those. None on an index
+        built by a caller that did not supply them, which disables the
+        incremental path but leaves scoring untouched.
     idf
         Per-term inverse-document-frequency vector of shape
         ``(n_terms,)``. Computed as
@@ -315,6 +368,8 @@ class BM25Index:
     dl_anchor: np.ndarray | None = None
     avgdl_anchor: float = 0.0
     b_anchor: float = DEFAULT_B_ANCHOR
+    content_fp: np.ndarray | None = None
+    anchor_fp: np.ndarray | None = None
 
     # --- Construction -----------------------------------------------------
 
@@ -384,11 +439,19 @@ class BM25Index:
         vocab: dict[str, int] = {}
         tokens_per_doc: list[list[str]] = []
         anchor_tokens_per_doc: list[list[str]] = []
+        # #1199: fingerprint each document's source as it is tokenised,
+        # so a later `update_from` can identify the unchanged rows
+        # without re-tokenising them.
+        content_fp_list: list[int] = []
+        anchor_fp_list: list[int] = []
         for bid in belief_ids:
             content = contents.get(bid, "")
             doc_tokens = tokenize_stemmed(content)
+            doc_anchors = incoming.get(bid, ())
+            content_fp_list.append(_source_fingerprint(content))
+            anchor_fp_list.append(_anchor_fingerprint(doc_anchors))
             anchor_token_lists = [
-                tokenize_stemmed(anchor) for anchor in incoming.get(bid, ())
+                tokenize_stemmed(anchor) for anchor in doc_anchors
             ]
             if per_field:
                 # Two streams. Anchor counts stay unreplicated —
@@ -471,6 +534,8 @@ class BM25Index:
             dl_anchor=dl_anchor,
             avgdl_anchor=avgdl_anchor,
             b_anchor=b_anchor,
+            content_fp=np.asarray(content_fp_list, dtype=np.uint64),
+            anchor_fp=np.asarray(anchor_fp_list, dtype=np.uint64),
         )
 
     # --- Scoring ----------------------------------------------------------
@@ -783,6 +848,17 @@ class BM25Index:
             buf.write(a_indices.tobytes())
             buf.write(a_data.tobytes())
 
+        # v5 (#1199): per-document source fingerprints. Flagged rather
+        # than mandatory because an index constructed directly (tests,
+        # and any future caller that assembles one by hand) has none;
+        # such a blob still round-trips and still scores identically,
+        # it just cannot seed an incremental update.
+        have_fp = self.content_fp is not None and self.anchor_fp is not None
+        buf.write(np.uint8(1 if have_fp else 0).tobytes())
+        if have_fp:
+            buf.write(np.asarray(self.content_fp, dtype=np.uint64).tobytes())
+            buf.write(np.asarray(self.anchor_fp, dtype=np.uint64).tobytes())
+
         return buf.getvalue()
 
     @classmethod
@@ -872,6 +948,18 @@ class BM25Index:
                     (a_data, a_indices, a_indptr), shape=(n_docs, n_terms),
                 )
 
+        # v5 (#1199): per-document source fingerprints, if the writer
+        # had them.
+        content_fp: np.ndarray | None = None
+        anchor_fp: np.ndarray | None = None
+        if bool(_read(np.dtype(np.uint8), 1)[0]):
+            content_fp = np.array(
+                _read(np.dtype(np.uint64), n_docs), copy=True,
+            )
+            anchor_fp = np.array(
+                _read(np.dtype(np.uint64), n_docs), copy=True,
+            )
+
         return cls(
             belief_ids=belief_ids,
             vocabulary=vocab,
@@ -888,6 +976,8 @@ class BM25Index:
             dl_anchor=dl_anchor,
             avgdl_anchor=avgdl_anchor,
             b_anchor=b_anchor,
+            content_fp=content_fp,
+            anchor_fp=anchor_fp,
         )
 
 
