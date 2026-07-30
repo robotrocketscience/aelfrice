@@ -4998,10 +4998,16 @@ def _disclose_dotdir_removals(
     )
     if not planned:
         return
+    # `include_data` is False under `--keep-db`, where `dotdir_plan` moves
+    # the capture logs to `preserved`. Naming them here anyway would have
+    # the gate promise a deletion that is not going to happen — the
+    # inverse of the #1173 defect, and just as bad for a disclosure whose
+    # whole job is to be exact.
+    kinds = "install state and capture logs" if include_data else "install state"
     print(
         f"\n{len(planned)} path{'' if len(planned) == 1 else 's'} in "
         f"{_auto_install.AELFRICE_DOTDIR} will also be deleted "
-        "(install state and capture logs):",
+        f"({kinds}):",
         file=out,  # type: ignore[arg-type]
     )
     _print_artifact_manifest(planned, out)
@@ -5030,8 +5036,12 @@ def _dispose_dotdir(
         _auto_install.AELFRICE_DOTDIR, include_data=include_data, skip=skip,
     )
     for path in result.removed:
+        # Neutral verb: `removed` covers both categories. `result.removed`
+        # carries the capture logs too under `--purge`/`--archive`, and
+        # this module's own vocabulary keeps data distinct from install
+        # state — labelling every path "install state" contradicts it.
         print(
-            f"cleared install state {path}",
+            f"removed {path}",
             file=out,  # type: ignore[arg-type]
         )
     for path in result.failed:

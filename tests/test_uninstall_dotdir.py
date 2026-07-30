@@ -443,3 +443,118 @@ def test_cli_keep_db_leaves_the_capture_logs(cli_sandbox: Path) -> None:
     assert (cli_sandbox / "telemetry.jsonl").exists()
     assert (cli_sandbox / "transcripts").exists()
     assert not (cli_sandbox / "llm-classify-consented").exists()
+
+
+def test_a_stray_file_under_a_named_directory_is_reported(dotdir: Path) -> None:
+    """`logs/` is aelfrice's, but a file inside it need not be.
+
+    The subset check already refuses to prune a `logs/` holding anything
+    the package did not write, so nothing was ever at risk. But `logs`
+    is an accounted top-level name, so the report walked straight past
+    it and the stray was neither deleted nor mentioned — "reported,
+    never deleted" kept only its second half, in the one case where the
+    user most needs the first.
+    """
+    stray = dotdir / "logs" / "operator-notes.log"
+    stray.write_text("mine", encoding="utf-8")
+
+    planned, _preserved, unrecognised = lifecycle.dotdir_plan(
+        dotdir, include_data=True,
+    )
+
+    assert stray in unrecognised, (
+        f"a file the package never wrote went unreported: {unrecognised}"
+    )
+    assert stray not in planned
+    # The directory itself is neither pruned nor reported in its stead —
+    # naming `logs/` would read as though aelfrice were disowning a
+    # directory it does use.
+    assert (dotdir / "logs") not in planned
+    assert (dotdir / "logs") not in unrecognised
+    # And the package's own log inside it is still removed.
+    assert (dotdir / "logs" / "hook-failures.log") in planned
+
+
+def test_a_named_directory_holding_only_our_own_files_is_still_pruned(
+    dotdir: Path,
+) -> None:
+    """The stray-reporting path must not disarm the prune it sits beside."""
+    planned, _preserved, unrecognised = lifecycle.dotdir_plan(
+        dotdir, include_data=True,
+    )
+
+    assert (dotdir / "logs") in planned
+    assert not any(u.parent.name == "logs" for u in unrecognised)
+
+
+def test_the_disclosure_names_only_the_categories_it_will_delete(
+    cli_sandbox: Path,
+) -> None:
+    """A gate that overstates is as wrong as one that understates.
+
+    With `include_data=False` the capture logs move to `preserved`, so
+    naming them would announce a deletion that is not going to happen.
+    Exercised directly rather than through the CLI: both gates that call
+    this pass `include_data=True` today, so the False branch is currently
+    unreachable from the command line. The function takes the flag, so it
+    should honour it — and a `--keep-db` disclosure is the obvious next
+    caller.
+    """
+    out = io.StringIO()
+    cli._disclose_dotdir_removals(include_data=False, skip=(), out=out)
+    text = out.getvalue()
+
+    assert "install state" in text
+    assert "capture logs" not in text, (
+        "the disclosure named capture logs it is not going to delete"
+    )
+    assert "telemetry.jsonl" not in text
+    assert "llm-classify-consented" in text
+
+
+def test_purge_disclosure_does_name_the_capture_logs(cli_sandbox: Path) -> None:
+    """The converse: when they do go, the gate has to say so."""
+    out = io.StringIO()
+    code = cli._cmd_uninstall(_args(purge=True), out)
+    text = out.getvalue()
+
+    assert code == 0
+    assert "install state and capture logs" in text
+
+
+def test_the_removal_report_does_not_call_captured_data_install_state(
+    cli_sandbox: Path,
+) -> None:
+    """This module keeps data and install state distinct; the report must too."""
+    out = io.StringIO()
+    code = cli._cmd_uninstall(_args(purge=True), out)
+    text = out.getvalue()
+
+    assert code == 0
+    assert "removed" in text
+    assert "cleared install state" not in text, (
+        "capture-log paths were reported as install state"
+    )
+
+
+def test_cli_archive_gate_discloses_the_dotdir_paths(
+    cli_sandbox: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--archive` deletes the dotdir paths rather than encrypting them.
+
+    Companion to the `--purge` disclosure test: the archive gate reaches
+    the same disposition by a different branch, and it is the branch that
+    had to learn to prompt when the store itself has no extras.
+    """
+    monkeypatch.setattr(cli, "_read_password", lambda _args: "pw")
+
+    out = io.StringIO()
+    code = cli._cmd_uninstall(
+        _args(archive=str(tmp_path / "out.age")), out,
+    )
+    text = out.getvalue()
+
+    assert code == 0, text
+    assert str(cli_sandbox) in text
+    for name in ("llm-classify-consented", "telemetry.jsonl", "transcripts"):
+        assert name in text, f"{name} missing from the archive-gate disclosure"

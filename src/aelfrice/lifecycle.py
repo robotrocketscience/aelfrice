@@ -891,9 +891,32 @@ def dotdir_plan(
             planned.append(parent)
 
     # Everything else at the top level: recognised-and-kept, or unknown.
+    #
+    # A named parent that was NOT pruned above (its contents are not a
+    # subset of `planned`, so it holds something the package did not
+    # write) must not stay accounted-for: its stray children are neither
+    # deleted nor reported otherwise, and "reported, never deleted" is
+    # only half kept if the report stops at the top level. Report those
+    # children individually rather than the directory, so the user sees
+    # the file rather than the folder aelfrice also uses.
     accounted = {
         _dotdir_top_level(r) for r in _DOTDIR_INSTALL_STATE + _DOTDIR_DATA
     }
+    planned_set = set(planned)
+    for relpath in _DOTDIR_INSTALL_STATE + _DOTDIR_DATA:
+        if "/" not in relpath:
+            continue
+        parent = home / _dotdir_top_level(relpath)
+        if parent in planned_set or parent in skip_set or not parent.is_dir():
+            continue
+        try:
+            strays = sorted(
+                c for c in parent.iterdir()
+                if c not in planned_set and c not in skip_set
+            )
+        except OSError:
+            continue
+        unrecognised.extend(s for s in strays if s not in unrecognised)
     try:
         entries = sorted(home.iterdir())
     except OSError:
