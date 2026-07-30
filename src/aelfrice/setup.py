@@ -1735,10 +1735,11 @@ def _install_or_replace_entry(
     basename of `command`'s first whitespace token is the same logical
     hook — even if the absolute path differs.
 
-    Returns True iff `entries` already contained a byte-identical entry
-    and was NOT mutated; caller can skip the atomic write. Returns
-    False iff `entries` was mutated (new entry appended or path-stale
-    entry replaced); caller must atomic-write.
+    Returns True iff `entries` already contained exactly one matching,
+    byte-identical entry and was NOT mutated; caller can skip the
+    atomic write. Returns False iff `entries` was mutated (new entry
+    appended, path-stale entry replaced, or a duplicate collapsed);
+    caller must atomic-write.
 
     Replacement (rather than append) collapses the duplicate-hook
     accumulation #781 documents: a venv recreation (uv tool upgrade,
@@ -1746,6 +1747,20 @@ def _install_or_replace_entry(
     path but keeps the basename, so the existing entry is found by
     basename and overwritten instead of an additional stale-path entry
     being appended.
+
+    #1161: the scan covers *every* match, not just the first. The
+    previous version returned on the first `(matcher, basename)` hit,
+    so a settings.json that already held two entries for one logical
+    hook stayed that way permanently — and because the first match was
+    byte-identical, the early `return True` reported "already
+    installed" and skipped the write, so `aelf setup` could never
+    converge. That state is reachable without any concurrent writer
+    (a host settings migration, a dotfiles merge, hand-editing) and
+    was live on the maintainer's own machine for all ten default-on
+    hooks, doubling every hook's per-event cost. Keeping the *first*
+    match and dropping the rest preserves the user's relative hook
+    ordering within the event, which decides injection order when
+    several hooks write context for the same event.
     """
     new_entry = _build_entry(
         command=command,
@@ -1754,17 +1769,27 @@ def _install_or_replace_entry(
         matcher=matcher,
     )
     target_base = _command_basename(command)
-    if target_base:
-        for i, entry in enumerate(entries):
-            if entry.get("matcher") != matcher:
-                continue
-            if not _entry_matches_basename(entry, target_base):
-                continue
-            if entry == new_entry:
-                return True
-            entries[i] = new_entry
-            return False
-    entries.append(new_entry)
+    if not target_base:
+        entries.append(new_entry)
+        return False
+    matched = [
+        i
+        for i, entry in enumerate(entries)
+        if entry.get("matcher") == matcher
+        and _entry_matches_basename(entry, target_base)
+    ]
+    if not matched:
+        entries.append(new_entry)
+        return False
+    # Drop the extras before touching the keeper. Deleting from the
+    # tail backwards keeps the lower indices (including `matched[0]`)
+    # valid throughout.
+    for i in reversed(matched[1:]):
+        del entries[i]
+    keeper = matched[0]
+    if not matched[1:] and entries[keeper] == new_entry:
+        return True
+    entries[keeper] = new_entry
     return False
 
 
