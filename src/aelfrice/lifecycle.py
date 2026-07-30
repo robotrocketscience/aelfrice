@@ -24,6 +24,7 @@ import os
 import shutil
 import subprocess
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -736,6 +737,209 @@ def artifact_paths(
         owned = [p for p in owned if p != exclude]
         orphaned = [p for p in orphaned if p != exclude]
     return tuple(owned), tuple(orphaned)
+
+
+# --- The ~/.aelfrice/ home directory (#1186) ----------------------------
+#
+# A second location, with different ownership from the store directory
+# above. `~/.aelfrice/` belongs to no single store: it holds install-state
+# sentinels, two capture logs, user configuration, and -- decisively --
+# `projects/`, under which every *other* project's belief corpus lives.
+# #1173 therefore left the whole directory alone, which meant the LLM
+# consent sentinel outlived the uninstall that was supposed to end the
+# relationship: a reinstall reads the surviving grant as current and never
+# re-prompts (#1186, the same defect class as #1172 one layer out).
+#
+# So the contents are enumerated by name and never swept. Three
+# dispositions:
+#
+#   install state -- removed in EVERY mode, `--keep-db` included. Each
+#     records that a step already happened, so a survivor makes a
+#     reinstall read a stale decision as current. The consent sentinel is
+#     the load-bearing one.
+#   data          -- removed only when the user asked for data to be
+#     destroyed (`--purge` / `--archive`), matching the store-dir
+#     contract. Kept, and reported as kept, under `--keep-db`.
+#   preserved     -- recognised and deliberately kept in every mode.
+#
+# Anything not named below is reported and never deleted: this directory
+# can hold files the package did not write. A blanket `rm -rf` here would
+# destroy corpora the command was not asked to touch -- strictly worse
+# than the bug being fixed.
+#
+# Literals rather than imports for the same reason as `_SIBLING_FILENAMES`
+# (import-graph position), kept honest by the agreement tests in
+# `test_uninstall_artifacts`.
+
+_DOTDIR_INSTALL_STATE: Final[tuple[str, ...]] = (
+    "llm-classify-consented",      # llm_classifier.SENTINEL_FILENAME
+    "spine-backfilled",            # temporal_spine.SPINE_BACKFILLED_SENTINEL
+    "installed-manifest-version",  # auto_install.STAMP_PATH
+    "migrated-to-uv",              # MIGRATED_TO_UV_SENTINEL (this module)
+    ".auto-install.lock",          # auto_install.AUTO_INSTALL_LOCK_FILENAME
+    # claude_memory._RECONCILE_SENTINEL_NAME lives beside the store, and
+    # lands here only for an in-memory store (`reconcile_sentinel_path`).
+    "claude-memory-reconciled",
+    # doctor.HOOK_FAILURES_LOG. The only path with a parent of its own;
+    # `logs/` is pruned when removing this leaves it empty.
+    "logs/hook-failures.log",
+)
+
+_DOTDIR_DATA: Final[tuple[str, ...]] = (
+    "telemetry.jsonl",  # telemetry.DEFAULT_TELEMETRY_PATH
+    "transcripts",      # transcript_logger.LEGACY_TRANSCRIPTS_DIR
+)
+
+_DOTDIR_PRESERVED: Final[tuple[str, ...]] = (
+    # project_warm._CONFIG_FILENAME -- user configuration, same reasoning
+    # as opt-out-hooks.json.
+    "config.json",
+    # auto_install.OPT_OUT_PATH -- records a user's decision that a hook
+    # should not be installed; honouring it across a reinstall is the
+    # whole point of the file.
+    "opt-out-hooks.json",
+    # doctor._AELFRICE_PROJECTS_DIR -- one subdirectory per project id,
+    # each with its own memory.db. `uninstall` disposes of the single
+    # store `db_path()` resolves to; the rest are not its to take.
+    "projects",
+    # Peer stores for read-only federation (#655). `knowledge_deps.json`
+    # documents `~/.aelfrice/shared/<name>/memory.db` as the conventional
+    # location, so this is another store's corpus by another name.
+    "shared",
+)
+
+
+@dataclass(frozen=True)
+class DotdirDisposition:
+    """Outcome of `dispose_dotdir(...)` — what happened in `~/.aelfrice/`.
+
+    `removed` and `failed` split the planned set by whether the path is
+    actually gone (`_remove_artifact` swallows OSError, so a held handle
+    or permission problem must be reported, not counted as success).
+    `preserved` names recognised paths kept on purpose, and
+    `unrecognised` names everything else found there — reported so the
+    user can finish by hand, never deleted.
+    """
+
+    removed: tuple[Path, ...] = ()
+    failed: tuple[Path, ...] = ()
+    preserved: tuple[Path, ...] = ()
+    unrecognised: tuple[Path, ...] = ()
+
+
+def _dotdir_top_level(relpath: str) -> str:
+    """First path segment of a removal-set entry (`logs/x.log` -> `logs`)."""
+    return relpath.split("/", 1)[0]
+
+
+def dotdir_plan(
+    home: Path,
+    *,
+    include_data: bool,
+    skip: Iterable[Path] = (),
+) -> tuple[tuple[Path, ...], tuple[Path, ...], tuple[Path, ...]]:
+    """Classify the contents of `home` without touching anything.
+
+    Returns `(planned, preserved, unrecognised)`. `include_data` is False
+    for `--keep-db`, which moves the capture logs from `planned` to
+    `preserved` rather than dropping them from the report.
+
+    `skip` excludes paths another disposition already owns — the CLI
+    passes the store artifact set, because `~/.aelfrice/` *is* the store
+    directory on the non-git fallback (`db_paths.DEFAULT_DB_DIR`) and
+    `artifact_paths` has already claimed `memory.db`, its sidecars and
+    `transcripts/` there. Without this the two sets would double-report.
+
+    `home` is required rather than defaulted to the real `~/.aelfrice/`
+    so that no caller can sweep a developer's own directory by omission.
+    """
+    if not home.is_dir():
+        return (), (), ()
+    skip_set = {Path(p) for p in skip}
+
+    planned: list[Path] = []
+    preserved: list[Path] = []
+    unrecognised: list[Path] = []
+
+    for relpath in _DOTDIR_INSTALL_STATE:
+        candidate = home / relpath
+        if candidate not in skip_set and _path_present(candidate):
+            planned.append(candidate)
+    for relpath in _DOTDIR_DATA:
+        candidate = home / relpath
+        if candidate in skip_set or not _path_present(candidate):
+            continue
+        (planned if include_data else preserved).append(candidate)
+
+    # A directory that exists only to hold artifacts now scheduled for
+    # removal goes too, so uninstall leaves no empty shell behind. Named
+    # in the plan (appended after its contents, which is also the correct
+    # removal order) so the gate discloses it rather than the disposition
+    # deleting something the manifest never mentioned. A directory holding
+    # anything *not* in `planned` fails the subset test and is left alone.
+    for relpath in _DOTDIR_INSTALL_STATE + _DOTDIR_DATA:
+        if "/" not in relpath:
+            continue
+        parent = home / _dotdir_top_level(relpath)
+        if not parent.is_dir() or parent in planned or parent in skip_set:
+            continue
+        try:
+            contents = set(parent.iterdir())
+        except OSError:
+            continue
+        if contents and contents <= set(planned):
+            planned.append(parent)
+
+    # Everything else at the top level: recognised-and-kept, or unknown.
+    accounted = {
+        _dotdir_top_level(r) for r in _DOTDIR_INSTALL_STATE + _DOTDIR_DATA
+    }
+    try:
+        entries = sorted(home.iterdir())
+    except OSError:
+        entries = []
+    for entry in entries:
+        if entry in skip_set or entry.name in accounted:
+            continue
+        if entry.name in _DOTDIR_PRESERVED:
+            preserved.append(entry)
+        else:
+            unrecognised.append(entry)
+
+    return tuple(planned), tuple(preserved), tuple(unrecognised)
+
+
+def _path_present(path: Path) -> bool:
+    """True when `path` exists, counting a broken symlink as present."""
+    return path.exists() or path.is_symlink()
+
+
+def dispose_dotdir(
+    home: Path,
+    *,
+    include_data: bool,
+    skip: Iterable[Path] = (),
+) -> DotdirDisposition:
+    """Remove the package's own artifacts from `home`, and nothing else.
+
+    The destructive half of `dotdir_plan`, whose classification it uses
+    verbatim — the CLI prints that plan before prompting, so what gets
+    deleted is exactly what was disclosed, `logs/` included.
+    """
+    planned, preserved, unrecognised = dotdir_plan(
+        home, include_data=include_data, skip=skip,
+    )
+    removed: list[Path] = []
+    failed: list[Path] = []
+    for path in planned:
+        (removed if _remove_artifact(path) else failed).append(path)
+
+    return DotdirDisposition(
+        removed=tuple(removed),
+        failed=tuple(failed),
+        preserved=preserved,
+        unrecognised=unrecognised,
+    )
 
 
 def checkpoint_wal(db_path: Path) -> bool:
