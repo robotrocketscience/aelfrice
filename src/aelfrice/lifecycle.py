@@ -903,6 +903,7 @@ def dotdir_plan(
         _dotdir_top_level(r) for r in _DOTDIR_INSTALL_STATE + _DOTDIR_DATA
     }
     planned_set = set(planned)
+    seen_unrecognised: set[Path] = set()
     for relpath in _DOTDIR_INSTALL_STATE + _DOTDIR_DATA:
         if "/" not in relpath:
             continue
@@ -916,7 +917,16 @@ def dotdir_plan(
             )
         except OSError:
             continue
-        unrecognised.extend(s for s in strays if s not in unrecognised)
+        # Dedup against a set, not the list. `s not in unrecognised`
+        # rescans a list that grows as the loop runs, so classifying a
+        # directory cost O(n^2) path comparisons — 0.5s at 4k strays,
+        # and `logs/` on a long-lived store reaches five figures, which
+        # made `aelf uninstall` look hung before printing anything
+        # (#1202). The list still carries the order.
+        for stray in strays:
+            if stray not in seen_unrecognised:
+                seen_unrecognised.add(stray)
+                unrecognised.append(stray)
     try:
         entries = sorted(home.iterdir())
     except OSError:

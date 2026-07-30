@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import time
 from pathlib import Path
 from typing import Any
 
@@ -558,3 +559,59 @@ def test_cli_archive_gate_discloses_the_dotdir_paths(
     assert str(cli_sandbox) in text
     for name in ("llm-classify-consented", "telemetry.jsonl", "transcripts"):
         assert name in text, f"{name} missing from the archive-gate disclosure"
+
+
+# --- #1202: classifying a large directory must stay linear ---------------
+
+
+def _fill_logs(home: Path, n: int) -> None:
+    """`n` strays under `logs/`, which a long-lived store really reaches."""
+    logs = home / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    for i in range(n):
+        (logs / f"ingest-{i:06d}.log").write_text("x", encoding="utf-8")
+
+
+def test_many_strays_are_each_reported_once(tmp_path: Path) -> None:
+    """Correctness half of #1202: the set-based dedup keeps the contract."""
+    home = tmp_path / ".aelfrice"
+    home.mkdir()
+    _fill_logs(home, 500)
+    (home / "logs" / "hook-failures.log").write_text("boom\n", encoding="utf-8")
+
+    _planned, _preserved, unrecognised = lifecycle.dotdir_plan(
+        home, include_data=True,
+    )
+
+    strays = [p for p in unrecognised if p.name.startswith("ingest-")]
+    assert len(strays) == 500
+    assert len(set(strays)) == 500, "a path was reported twice"
+    assert strays == sorted(strays), "ordering must survive the dedup"
+
+
+def test_dotdir_plan_scales_linearly(tmp_path: Path) -> None:
+    """`unrecognised` deduped against itself as a *list* — O(n^2) (#1202).
+
+    Asserts the shape of the curve rather than a wall-clock budget, so
+    the result does not depend on how fast this machine is: doubling the
+    input roughly doubles a linear walk and roughly quadruples a
+    quadratic one. Measured 3.9x before the fix and ~2.0x after, so 3.0x
+    separates them with margin on both sides. `min` of repeated runs
+    because a load spike can only ever make a sample slower.
+    """
+    def best(n: int) -> float:
+        home = tmp_path / f"dot{n}" / ".aelfrice"
+        _fill_logs(home, n)
+        samples = []
+        for _ in range(3):
+            start = time.perf_counter()
+            lifecycle.dotdir_plan(home, include_data=True)
+            samples.append(time.perf_counter() - start)
+        return min(samples)
+
+    small, large = best(1000), best(2000)
+    ratio = large / small
+    assert ratio < 3.0, (
+        f"dotdir_plan scaled {ratio:.1f}x for 2x the input "
+        f"({small:.4f}s -> {large:.4f}s); expected ~2x for a linear walk"
+    )
