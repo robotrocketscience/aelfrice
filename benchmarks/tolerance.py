@@ -47,6 +47,13 @@ class Verdict(str, Enum):
     # computed; this is not a regression. summarize() treats SKIP as
     # neither PASS nor FAIL — it ignores the leaf for the rollup.
     SKIP = "skip"
+    # #1160. Rollup-only: never the verdict of an individual leaf.
+    # Ignoring each SKIP is right per #479, but ignoring *every* SKIP
+    # meant a run where nothing could be computed rolled up to PASS and
+    # the cron reported success having measured nothing. Distinct from
+    # FAIL because the two demand different responses — a regression
+    # means read the diff, no data means fix the runner.
+    NO_DATA = "no_data"
 
 
 @dataclass(frozen=True)
@@ -245,17 +252,31 @@ def summarize(checks: list[BandCheck]) -> tuple[Verdict, dict[str, int]]:
 
     SKIP leaves (per #479) are tallied but do not raise the rollup
     above PASS — they represent uncomputable metrics, not regressions.
+
+    But PASS is a claim that something was measured and stayed in band,
+    so it requires at least one leaf that actually passed. Without that
+    the rollup is NO_DATA (#1160): previously an all-SKIP run — every
+    adapter exiting because its data dir was absent, e.g. a failed
+    dataset download on the runner — returned PASS, and an empty check
+    list did too, so the nightly reported success having measured
+    nothing. #479 is preserved exactly: a SKIP alongside any real PASS
+    still rolls up to PASS.
     """
     counts = {
         Verdict.PASS.value: 0, Verdict.WARN.value: 0,
         Verdict.FAIL.value: 0, Verdict.SKIP.value: 0,
     }
     for c in checks:
-        counts[c.verdict.value] += 1
+        # `.get` rather than direct indexing so a leaf carrying an
+        # unexpected verdict is counted instead of raising KeyError
+        # inside the gate that is supposed to report it.
+        counts[c.verdict.value] = counts.get(c.verdict.value, 0) + 1
     if counts[Verdict.FAIL.value] > 0:
         return Verdict.FAIL, counts
     if counts[Verdict.WARN.value] > 0:
         return Verdict.WARN, counts
+    if counts[Verdict.PASS.value] == 0:
+        return Verdict.NO_DATA, counts
     return Verdict.PASS, counts
 
 
