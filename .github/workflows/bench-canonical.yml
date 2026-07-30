@@ -111,7 +111,11 @@ jobs:
           for c in checks:
               if c.verdict.value != 'pass':
                   print(f'  {\"/\".join(c.path)}: {c.verdict.value} — {c.note}')
-          sys.exit(0 if overall.value == 'pass' else (1 if overall.value == 'fail' else 0))
+          # 'no_data' fails the job alongside 'fail' (#1160): an
+          # all-SKIP run measured nothing, and reporting that as
+          # success is what let a broken dataset download look like a
+          # green calibration. 'warn' stays non-blocking.
+          sys.exit(1 if overall.value in ('fail', 'no_data') else 0)
           "
 
       - name: Compute badge text
