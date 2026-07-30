@@ -77,6 +77,26 @@ def _glob_matches(glob: str, path: str) -> bool:
     return re.fullmatch(pattern, path) is not None
 
 
+def _path_is_included(globs: list[str], path: str) -> bool:
+    """Whether GitHub would trigger on `path` given `globs`, in order.
+
+    A `paths:` list may negate with `!`, and GitHub evaluates the entries
+    top to bottom: a later negative excludes a path an earlier positive
+    matched, and a later positive re-includes it. Matching with `any()`
+    ignores negation entirely, so `src/aelfrice/**` followed by
+    `!src/aelfrice/foo.py` would read as covering `foo.py` when the job
+    would in fact skip it — the guard failing *open* in exactly the case
+    it exists to catch. There are no negated entries in the filter today;
+    this keeps the guard correct if one is ever added.
+    """
+    included = False
+    for glob in globs:
+        negated = glob.startswith("!")
+        if _glob_matches(glob[1:] if negated else glob, path):
+            included = not negated
+    return included
+
+
 def _reachable_modules() -> set[str]:
     """`aelfrice.*` module names transitively imported from the harness.
 
@@ -124,9 +144,7 @@ def test_pr_filter_covers_every_module_the_metric_depends_on() -> None:
     uncovered = sorted(
         module
         for module in _reachable_modules()
-        if not any(
-            _glob_matches(g, f"src/aelfrice/{module}.py") for g in globs
-        )
+        if not _path_is_included(globs, f"src/aelfrice/{module}.py")
     )
     assert not uncovered, (
         f"{uncovered} are reachable from `aelf eval` but do not match the "
@@ -152,3 +170,22 @@ def test_the_push_trigger_stays_unconditional() -> None:
         "the push-to-main trigger grew a paths filter; re-check whether a "
         "PR-side subset filter can still leave main red with no owning PR"
     )
+
+
+def test_a_negated_glob_excludes_a_path_an_earlier_glob_matched() -> None:
+    """Order matters, and `any()` would get this wrong.
+
+    Pinned as a unit on the helper rather than by editing the workflow,
+    since the filter carries no negation and should not grow one just to
+    be tested.
+    """
+    globs = ["src/aelfrice/**", "!src/aelfrice/scoring.py"]
+    assert _path_is_included(globs, "src/aelfrice/retrieval.py")
+    assert not _path_is_included(globs, "src/aelfrice/scoring.py")
+    # A later positive wins over an earlier negative.
+    assert _path_is_included(
+        ["src/aelfrice/**", "!src/aelfrice/scoring.py", "src/aelfrice/scoring.py"],
+        "src/aelfrice/scoring.py",
+    )
+    # No entry matches at all -> not included.
+    assert not _path_is_included(globs, "docs/README.md")
