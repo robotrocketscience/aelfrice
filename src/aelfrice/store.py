@@ -5004,6 +5004,24 @@ class MemoryStore:
         )
         return {str(r["status"]): int(r["n"]) for r in cur.fetchall()}
 
+    def purge_enqueued_deferred_feedback(self) -> int:
+        """Delete every `status='enqueued'` queue row; return the count.
+
+        The #1162 backlog collector. Enqueuing was default-on inside
+        every `retrieve()`, so stores carry six figures of pending rows
+        that the audit-only sweeper can no longer act on. They are a
+        record of exposure, not a pending mutation, and this drops them.
+
+        Deliberately narrow: `applied` and `cancelled` rows are the
+        audit trail of sweeps that really did run and are left alone.
+        Idempotent — a second call finds nothing and returns 0.
+        """
+        with self.transaction():
+            cur = self._conn.execute(
+                "DELETE FROM deferred_feedback_queue WHERE status = 'enqueued'"
+            )
+            return int(cur.rowcount or 0)
+
     # --- Aggregations (used by aelf:health) ------------------------------
 
     def count_beliefs(self) -> int:

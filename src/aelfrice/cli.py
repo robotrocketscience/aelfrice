@@ -7059,6 +7059,10 @@ def _cmd_sweep_feedback(args: argparse.Namespace, out: object) -> int:
     it consumes nothing the numbers are repeatable rather than
     draining to zero on the first run.
 
+    `--gc` is the one destructive action here and it is never implicit:
+    it deletes the banked `status='enqueued'` rows, which the audit-
+    only sweeper can no longer act on, and reports the count.
+
     Exits 0 unless `--strict` is passed and an exception escapes.
     Without `--strict`, errors are logged to stderr and the command
     exits 0 so the subcommand is safe to wire into cron.
@@ -7082,6 +7086,7 @@ def _cmd_sweep_feedback(args: argparse.Namespace, out: object) -> int:
     limit = int(args.limit) if args.limit is not None else 10_000
 
     store = _open_store()
+    purged: int | None = None
     try:
         result = sweep_deferred_feedback(
             store,
@@ -7089,6 +7094,10 @@ def _cmd_sweep_feedback(args: argparse.Namespace, out: object) -> int:
             epsilon=eps,
             limit=limit,
         )
+        # After the audit, so the reported counts describe the queue the
+        # user is about to drop rather than what is left behind.
+        if getattr(args, "gc", False):
+            purged = store.purge_enqueued_deferred_feedback()
     except Exception as exc:  # noqa: BLE001 - cron-safe by default
         print(f"aelf sweep-feedback: {exc}", file=sys.stderr)
         if getattr(args, "strict", False):
@@ -7113,6 +7122,11 @@ def _cmd_sweep_feedback(args: argparse.Namespace, out: object) -> int:
         f"grace_seconds={result.grace_seconds_used}",
         file=out,  # type: ignore[arg-type]
     )
+    if purged is not None:
+        print(
+            f"sweep-feedback: --gc deleted {purged} banked enqueued row(s)",
+            file=out,  # type: ignore[arg-type]
+        )
     return 0
 
 
@@ -8957,7 +8971,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help=(
             "audit the deferred retrieval-exposure feedback queue (#191): "
             "report what the pre-#1162 sweeper would have applied. Changes "
-            "no belief"
+            "no belief; pass --gc to drop the banked rows"
         ),
     )
     p_sweep_feedback.add_argument(
@@ -8984,6 +8998,16 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_sweep_feedback.add_argument(
         "--strict", action="store_true",
         help="exit non-zero on any exception (default: log + exit 0 for cron)",
+    )
+    p_sweep_feedback.add_argument(
+        "--gc", action="store_true",
+        help=(
+            "delete the banked status='enqueued' rows after reporting on "
+            "them (#1162). The audit-only sweeper cannot act on these, so "
+            "they are a record rather than pending work. Leaves 'applied' "
+            "and 'cancelled' rows — the trail of sweeps that did run — "
+            "alone. Idempotent"
+        ),
     )
     p_sweep_feedback.set_defaults(func=_cmd_sweep_feedback)
 

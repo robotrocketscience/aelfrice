@@ -101,6 +101,47 @@ def test_sweep_feedback_reports_but_changes_nothing(store_path: Path) -> None:
     assert "would_apply=1" in output2
 
 
+def test_sweep_feedback_gc_drops_only_the_banked_rows(
+    store_path: Path,
+) -> None:
+    """--gc is the one destructive action, and it is never implicit."""
+    s = MemoryStore(str(store_path))
+    s.insert_belief(_mk("b1"))
+    s.insert_belief(_mk("b2"))
+    enqueue_retrieval_exposures(s, ["b1", "b2"], now="2026-04-28T00:00:00Z")
+    # An 'applied' row from a sweep that really did run, back when the
+    # sweeper mutated. That trail must survive the collector.
+    s._conn.execute(  # noqa: SLF001 - fixture reaches for the trail directly
+        "UPDATE deferred_feedback_queue SET status='applied' "
+        "WHERE belief_id = 'b2'"
+    )
+    s._conn.commit()  # noqa: SLF001
+    s.close()
+
+    code, output = _run("--grace-seconds", "0")
+    assert code == 0
+    assert "--gc" not in output, "gc ran without being asked"
+    s_mid = MemoryStore(str(store_path))
+    assert s_mid.count_deferred_feedback_by_status() == {
+        "enqueued": 1, "applied": 1,
+    }
+    s_mid.close()
+
+    code, output = _run("--grace-seconds", "0", "--gc")
+    assert code == 0
+    assert "deleted 1 banked enqueued row(s)" in output
+    s2 = MemoryStore(str(store_path))
+    try:
+        assert s2.count_deferred_feedback_by_status() == {"applied": 1}
+    finally:
+        s2.close()
+
+    # Idempotent.
+    code, output = _run("--grace-seconds", "0", "--gc")
+    assert code == 0
+    assert "deleted 0 banked enqueued row(s)" in output
+
+
 def test_sweep_feedback_strict_flag_propagates_failure(
     store_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
