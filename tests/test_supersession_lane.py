@@ -386,3 +386,97 @@ def test_retrieve_v2_threads_the_lane(
 
     assert _order(off.beliefs) == ["superseded", "current"]
     assert _order(on.beliefs) == ["current"]
+
+
+# --- The exclusion arm must backfill, not shrink (#1187) ------------------
+
+
+def _packed_store(tmp_path: Path, matching: int, superseded: int) -> MemoryStore:
+    """`matching` beliefs that all hit the query, the strongest `superseded`
+    of them retired by one newer belief that does not match."""
+    s = MemoryStore(str(tmp_path / "packed.db"))
+    ids: list[str] = []
+    for i in range(matching):
+        bid = "B" + str(i).rjust(15, "0")
+        # Repeat the term so rank order is deterministic and the retired
+        # ones sit at the top, which is the case that starves the pack.
+        s.insert_belief(
+            _belief(bid, f"deploy target{' deploy' * (matching - i)} opt{i}",
+                    "2026-01-01T00:00:00Z")
+        )
+        ids.append(bid)
+    newer = "B" + "9" * 15
+    s.insert_belief(_belief(newer, "unrelated replacement", "2026-07-01T00:00:00Z"))
+    for bid in ids[:superseded]:
+        s.insert_edge(Edge(src=newer, dst=bid, type=EDGE_SUPERSEDES, weight=1.0))
+    return s
+
+
+def test_exclusion_backfills_the_pack_instead_of_shrinking_it(
+    tmp_path: Path,
+) -> None:
+    """The candidate limit is applied by the search, so filtering after it
+    would drop the pack size by however many were retired — leaving current,
+    relevant beliefs stranded just below the cutoff while the caller gets a
+    short pack. Same shape as the lock-budget starvation of #1014/#1015.
+
+    It also has to be right for the demote-vs-exclude bench to mean
+    anything: if the arms differ in pack size as well as in treatment,
+    a loss for exclusion cannot be attributed to either.
+    """
+    s = _packed_store(tmp_path, matching=20, superseded=8)
+    try:
+        for limit in (4, 10):
+            hits = _l1_hits(
+                s, "deploy", l1_limit=limit, posterior_weight=1.0,
+                use_supersession_demote=True,
+                supersession_treatment=SUPERSESSION_TREATMENT_EXCLUDE,
+            )
+            assert len(hits) == limit, (
+                f"exclusion returned {len(hits)} of {limit} — the pack "
+                f"shrank instead of backfilling from below the cutoff"
+            )
+            sup = s.superseded_belief_ids([h.id for h in hits])
+            assert not sup, f"a retired belief survived exclusion: {sup}"
+    finally:
+        s.close()
+
+
+def test_exclusion_returns_what_exists_when_survivors_run_out(
+    tmp_path: Path,
+) -> None:
+    """Backfilling must not invent rows. With fewer survivors than the
+    limit, the arm returns every survivor and stops — the widening loop
+    has to terminate on an exhausted search, not keep doubling."""
+    s = _packed_store(tmp_path, matching=6, superseded=4)
+    try:
+        hits = _l1_hits(
+            s, "deploy", l1_limit=10, posterior_weight=1.0,
+            use_supersession_demote=True,
+            supersession_treatment=SUPERSESSION_TREATMENT_EXCLUDE,
+        )
+    finally:
+        s.close()
+    assert len(hits) == 2, f"expected the 2 survivors, got {len(hits)}"
+
+
+def test_the_demote_arm_keeps_the_full_pack(tmp_path: Path) -> None:
+    """Control: demote reorders a fixed candidate set, so it never needed
+    the refetch and must not have gained one. Retired beliefs stay in the
+    pack — demoted, not removed, which is the whole distinction between
+    the two arms."""
+    s = _packed_store(tmp_path, matching=20, superseded=8)
+    try:
+        hits = _l1_hits(
+            s, "deploy", l1_limit=10, posterior_weight=1.0,
+            use_supersession_demote=True,
+            supersession_treatment=SUPERSESSION_TREATMENT_DEMOTE,
+        )
+        assert len(hits) == 10
+        still_there = s.superseded_belief_ids([h.id for h in hits])
+        assert still_there, (
+            "demote dropped every retired belief from the pack; that is "
+            "exclude's behaviour, not demote's"
+        )
+    finally:
+        s.close()

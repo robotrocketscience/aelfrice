@@ -2963,6 +2963,54 @@ def _store_scoped_bm25f_cache(
     return cache
 
 
+# #1187 exclusion-arm refetch. The candidate limit is applied by the
+# search (SQL `LIMIT` on the FTS5 path, `top_k` on BM25F), so filtering
+# superseded beliefs afterwards SHRINKS the pack instead of backfilling
+# from below the cutoff: at `l1_limit=4` with three of the top four
+# retired, the arm returned one belief while three current ones sat at
+# ranks 5-7. That is the same shape as the lock-budget starvation fixed
+# in #1014/#1015 — a filter applied after the budget starves the pack —
+# and it would also confound the demote-vs-exclude bench, since the two
+# arms would differ in pack size as well as in treatment.
+#
+# So the exclusion arm widens the fetch and retries, stopping as soon as
+# it has `l1_limit` survivors or the search runs out of matches. Bounded
+# at three rounds (limit, 2x, 4x) so a store where nearly everything is
+# superseded costs a fixed number of queries rather than scanning; when
+# the rounds are exhausted the arm returns what it has, which is still
+# strictly more than the pre-#1187 behaviour.
+SUPERSESSION_REFETCH_ROUNDS: Final[int] = 3
+
+
+def _fetch_excluding_superseded(
+    store: MemoryStore,
+    fetch: Any,
+    l1_limit: int,
+) -> tuple[list[Any], frozenset[str]]:
+    """Fetch `l1_limit` candidates that survive supersession exclusion.
+
+    `fetch(limit)` returns a list of `(belief, raw)` pairs. Returns the
+    kept pairs (at most `l1_limit`) and the superseded id set observed on
+    the widest fetch, so the caller can reuse it without re-querying.
+    """
+    limit = l1_limit
+    kept: list[Any] = []
+    sup: frozenset[str] = frozenset()
+    for _ in range(SUPERSESSION_REFETCH_ROUNDS):
+        rows = fetch(limit)
+        if not rows:
+            return [], frozenset()
+        sup = frozenset(store.superseded_belief_ids([b.id for b, _ in rows]))
+        kept = [(b, raw) for b, raw in rows if b.id not in sup]
+        if len(kept) >= l1_limit or len(rows) < limit:
+            # Either the pack is full, or the search has no more matches
+            # to widen into — a further round would return the same rows.
+            break
+        limit *= 2
+    return kept[:l1_limit], sup
+
+
+
 def _l1_hits(
     store: MemoryStore,
     query: str,
@@ -3108,12 +3156,27 @@ def _l1_hits(
                     f"update failed: {exc}",
                     file=sys.stderr,
                 )
-        beliefs: list[tuple[Belief, float]] = []
-        for bid, raw in scored_pairs:
-            b = store.get_belief(bid)
-            if b is None:
-                continue
-            beliefs.append((b, raw))
+        def _bm25f_candidates(top_k: int) -> list[tuple[Belief, float]]:
+            """Materialise the top-`top_k` BM25F hits as (belief, raw).
+
+            Factored out so the #1187 exclusion arm can widen `top_k`
+            and refetch instead of filtering a fixed-size slice. At
+            `top_k == l1_limit` it reuses the scores already computed
+            above rather than re-scoring the index.
+            """
+            pairs = (
+                scored_pairs if top_k == l1_limit
+                else index.score(query, top_k=top_k)
+            )
+            out: list[tuple[Belief, float]] = []
+            for bid, raw in pairs:
+                b = store.get_belief(bid)
+                if b is None:
+                    continue
+                out.append((b, raw))
+            return out
+
+        beliefs: list[tuple[Belief, float]] = _bm25f_candidates(l1_limit)
         # γ / ζ are opt-in; when either is set it forces the rerank
         # loop so the byte-identical short-circuit can't bypass the
         # posterior reweighting.
@@ -3134,14 +3197,21 @@ def _l1_hits(
         # #1187: resolve supersession before anything downstream reads the
         # candidate set, so the exclusion arm also keeps superseded beliefs
         # out of the heat-kernel seeds rather than only out of the ranking.
-        sup = (
-            frozenset(store.superseded_belief_ids([b.id for b, _ in beliefs]))
-            if use_supersession_demote else None
-        )
-        if sup and supersession_treatment == SUPERSESSION_TREATMENT_EXCLUDE:
-            beliefs = [(b, raw) for b, raw in beliefs if b.id not in sup]
-            if not beliefs:
-                return []
+        sup: frozenset[str] | None = None
+        if use_supersession_demote:
+            if supersession_treatment == SUPERSESSION_TREATMENT_EXCLUDE:
+                # Widen and retry rather than filtering in place, so the
+                # pack backfills from below the cutoff instead of
+                # shrinking. See `_fetch_excluding_superseded`.
+                beliefs, sup = _fetch_excluding_superseded(
+                    store, _bm25f_candidates, l1_limit,
+                )
+                if not beliefs:
+                    return []
+            else:
+                sup = frozenset(
+                    store.superseded_belief_ids([b.id for b, _ in beliefs])
+                )
         bm25_pos_by_id: dict[str, float] = {b.id: float(raw) for b, raw in beliefs}
         heat_map = (
             _heat_by_id(eigenbasis_cache, bm25_pos_by_id)  # type: ignore[arg-type]
@@ -3209,14 +3279,25 @@ def _l1_hits(
         return []
     # #1187: as on the BM25F path, resolve and apply exclusion before the
     # candidate set is read downstream.
-    sup = (
-        frozenset(store.superseded_belief_ids([b.id for b, _ in scored]))
-        if use_supersession_demote else None
-    )
-    if sup and supersession_treatment == SUPERSESSION_TREATMENT_EXCLUDE:
-        scored = [(b, raw) for b, raw in scored if b.id not in sup]
-        if not scored:
-            return []
+    sup: frozenset[str] | None = None
+    if use_supersession_demote:
+        if supersession_treatment == SUPERSESSION_TREATMENT_EXCLUDE:
+            # Widen and retry rather than filtering in place, so the pack
+            # backfills from below the cutoff instead of shrinking. See
+            # `_fetch_excluding_superseded`.
+            scored, sup = _fetch_excluding_superseded(
+                store,
+                lambda lim: store.search_beliefs_scored(
+                    query, limit=lim, origin_tiebreak=use_origin_tiebreak,
+                ),
+                l1_limit,
+            )
+            if not scored:
+                return []
+        else:
+            sup = frozenset(
+                store.superseded_belief_ids([b.id for b, _ in scored])
+            )
     # FTS5 path: bm25_raw is non-positive (SQLite convention). Negate
     # to get a positive relevance magnitude, same convention used by
     # `partial_bayesian_score` internally.
