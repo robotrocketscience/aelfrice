@@ -266,6 +266,23 @@ aelf migrate --from /alt/path/memory.db          # dry-run
 aelf migrate --from /alt/path/memory.db --apply  # write
 ```
 
+### Incomplete store migrations (v4.2.0+)
+
+Opening the store runs a set of one-shot schema migrations, each stamped as complete only after its work lands. Before [#1161](https://github.com/robotrocketscience/aelfrice/issues/1161) a migration that raised took the whole store with it: because the completion marker was never written, the next open re-ran the same pass and failed the same way, and every entry point — CLI, hooks, MCP — opens the store. There was no way back short of editing SQLite by hand.
+
+A migration that cannot finish no longer stops the store from opening. The failure is recorded, the pass is skipped, and the store keeps its pre-migration shape: reads and writes work, and because the completion marker stays unset the migration is retried on every subsequent open, so upgrading to a build that fixes it repairs the store automatically.
+
+`aelf doctor` is where that state surfaces:
+
+```
+store migration(s) INCOMPLETE — the store opens and is usable, but one or more one-shot migrations could not finish:
+  _maybe_consolidate_content_hash_duplicates: IntegrityError('UNIQUE constraint failed: edges.src, edges.dst, edges.type')
+fix: these retry automatically on every open, so upgrading (`aelf upgrade`) is the first thing to try. If the same
+migration keeps failing, report the error above — the store will keep working in the meantime.
+```
+
+Try `aelf upgrade` first. If the same migration keeps failing, the error text above is the useful thing to include in a report; nothing needs to be done urgently, since the store stays usable in the meantime.
+
 ### Pruning dormant per-project DBs (`aelf doctor --prune-dormant`, v3.0+)
 
 Some per-project DBs hold beliefs from projects you worked on briefly with an older aelfrice version, then abandoned. They never get migrated, never get touched, and just sit there. `aelf doctor --prune-dormant` lists DBs whose `memory.db` mtime is older than `--idle-days` (default 30) and lets you delete them one at a time.
