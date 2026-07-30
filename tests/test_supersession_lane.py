@@ -561,3 +561,96 @@ def test_the_demote_arm_keeps_the_full_pack(tmp_path: Path) -> None:
         )
     finally:
         s.close()
+
+
+# --- The widening must not stop while survivors remain (#1205) ------------
+
+
+@pytest.mark.parametrize("superseded", [150, 200, 250])
+def test_exclusion_fills_the_pack_even_when_retired_beliefs_dominate(
+    tmp_path: Path, superseded: int,
+) -> None:
+    """Three widening rounds was the *normal* termination, not a backstop.
+
+    At `l1_limit=50` the rounds reach 200, so a query whose 200
+    strongest matches are all retired returned an EMPTY pack while a
+    hundred current ones sat below it — the starvation this arm exists
+    to remove, moved out 4x rather than removed. Measured before the
+    fix: 200/300 -> 0 returned, 250/300 -> 0 returned.
+
+    Falsifiable by a short pack at any ratio where survivors exist."""
+    total = 300
+    s = _packed_store(tmp_path, matching=total, superseded=superseded)
+    try:
+        hits = _l1_hits(
+            s, "deploy", l1_limit=50, posterior_weight=1.0,
+            use_supersession_demote=True,
+            supersession_treatment=SUPERSESSION_TREATMENT_EXCLUDE,
+        )
+        available = total - superseded
+        assert len(hits) == min(50, available), (
+            f"{superseded}/{total} retired: returned {len(hits)} with "
+            f"{available} survivors available"
+        )
+        assert not s.superseded_belief_ids([h.id for h in hits])
+    finally:
+        s.close()
+
+
+def test_a_bound_widening_says_so_rather_than_truncating_silently(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A short pack must be distinguishable from an empty store.
+
+    Driven against the helper with a stub fetch, because reaching the
+    cap through a real store needs a pathological corpus and the thing
+    under test is the *signal*, not the corpus. The stub always returns
+    a full page in which everything is retired, so the loop can never
+    satisfy either exit condition and the cap has to bind.
+
+    Falsifiable by silence — which is what #1160 is open about, and what
+    makes a floor readable as a measurement."""
+
+    class _AllRetired:
+        def superseded_belief_ids(self, ids: list[str]) -> set[str]:
+            return set(ids)
+
+    def fetch(limit: int) -> list[tuple[object, float]]:
+        # Always a full page, so `len(rows) < limit` never fires.
+        return [(_belief(f"B{i:015d}", "x", "2026-01-01T00:00:00Z"), 1.0)
+                for i in range(limit)]
+
+    kept, _sup = retrieval._fetch_excluding_superseded(
+        _AllRetired(), fetch, 4,  # type: ignore[arg-type]
+    )
+
+    assert kept == []
+    err = capsys.readouterr().err
+    assert "supersession exclusion stopped at" in err, (
+        f"the cap bound with no trace; stderr was {err!r}"
+    )
+    assert "0 of 4 survivors" in err
+
+
+def test_a_naturally_exhausted_search_stays_quiet(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Control: the trace is for the cap binding, not for a small store.
+
+    Without this, the assertion above passes for a helper that warns on
+    every call, which would make the signal worthless."""
+
+    class _NoneRetired:
+        def superseded_belief_ids(self, ids: list[str]) -> set[str]:
+            return set()
+
+    def fetch(limit: int) -> list[tuple[object, float]]:
+        # Fewer rows than asked for: the search is out of matches.
+        return [(_belief("B" + "0" * 15, "x", "2026-01-01T00:00:00Z"), 1.0)]
+
+    kept, _sup = retrieval._fetch_excluding_superseded(
+        _NoneRetired(), fetch, 50,  # type: ignore[arg-type]
+    )
+
+    assert len(kept) == 1
+    assert "supersession exclusion stopped" not in capsys.readouterr().err

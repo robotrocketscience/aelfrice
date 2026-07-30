@@ -2974,12 +2974,21 @@ def _store_scoped_bm25f_cache(
 # arms would differ in pack size as well as in treatment.
 #
 # So the exclusion arm widens the fetch and retries, stopping as soon as
-# it has `l1_limit` survivors or the search runs out of matches. Bounded
-# at three rounds (limit, 2x, 4x) so a store where nearly everything is
-# superseded costs a fixed number of queries rather than scanning; when
-# the rounds are exhausted the arm returns what it has, which is still
-# strictly more than the pre-#1187 behaviour.
-SUPERSESSION_REFETCH_ROUNDS: Final[int] = 3
+# it has `l1_limit` survivors or the search runs out of matches
+# (`len(rows) < limit` — a further round would return the same rows).
+#
+# The round cap is a backstop, not the normal termination (#1205). At
+# three rounds it was the normal termination on any store where retired
+# beliefs dominate a query's matches: 200 of 300 matching beliefs
+# retired at `l1_limit=50` returned an EMPTY pack while a hundred
+# current ones sat below the widest fetch attempted — the starvation
+# this helper exists to remove, moved out by 4x rather than removed. It
+# is now high enough that binding means something pathological, and
+# binding TRACES rather than truncating silently: a short pack must be
+# distinguishable from an empty store, or the demote-vs-exclude bench
+# reads a floor as a measurement on exactly the corpus slice where
+# supersession is most active.
+SUPERSESSION_REFETCH_ROUNDS: Final[int] = 8
 
 
 def _fetch_excluding_superseded(
@@ -2996,6 +3005,7 @@ def _fetch_excluding_superseded(
     limit = l1_limit
     kept: list[Any] = []
     sup: frozenset[str] = frozenset()
+    exhausted = False
     for _ in range(SUPERSESSION_REFETCH_ROUNDS):
         rows = fetch(limit)
         if not rows:
@@ -3005,8 +3015,22 @@ def _fetch_excluding_superseded(
         if len(kept) >= l1_limit or len(rows) < limit:
             # Either the pack is full, or the search has no more matches
             # to widen into — a further round would return the same rows.
+            exhausted = True
             break
         limit *= 2
+    if not exhausted:
+        # The cap bound with the search still yielding a full page, so
+        # there may be survivors below `limit` that were never read.
+        # Say so: a caller cannot otherwise tell this pack from one the
+        # store genuinely could not fill, and a silent floor biases the
+        # exclusion arm precisely where supersession is most active.
+        print(
+            f"aelfrice retrieval: supersession exclusion stopped at "
+            f"{SUPERSESSION_REFETCH_ROUNDS} widening rounds (limit "
+            f"{limit}) with {len(kept)} of {l1_limit} survivors; there "
+            f"may be more below the cutoff",
+            file=sys.stderr,
+        )
     return kept[:l1_limit], sup
 
 
