@@ -141,12 +141,19 @@ def test_tfc2_term_frequency_has_diminishing_returns(mode: dict) -> None:
 @pytest.mark.parametrize("mode", MODES)
 def test_lnc1_padding_with_non_query_terms_cannot_help(mode: dict) -> None:
     """LNC1. Appending terms the query never mentions must not raise the
-    score. Without it, verbosity is a ranking strategy."""
+    score. Without it, verbosity is a ranking strategy.
+
+    Asserted **strictly** (``<``), which is stronger than Fang et al. state
+    the axiom. The non-strict form is satisfied by "nothing changed at
+    all", which is exactly what ``b = 0`` produces — so ``<=`` here would
+    leave the suite with no sensitivity to length normalisation at all.
+    A scorer that lets a document pad for free is not one we want to ship
+    either, so the stronger form is the right gate."""
     short = _index([("d", f"alpha {PAD}"), ("o", f"beta {PAD}")], **mode)
     padded = _index(
         [("d", f"alpha {PAD} qqq www eee rrr"), ("o", f"beta {PAD}")], **mode,
     )
-    assert _score(padded, "alpha", "d") <= _score(short, "alpha", "d")
+    assert _score(padded, "alpha", "d") < _score(short, "alpha", "d")
 
 
 @pytest.mark.parametrize("mode", MODES)
@@ -180,16 +187,20 @@ def test_tdc_mass_on_the_rarer_term_wins(mode: dict) -> None:
 
 @pytest.mark.parametrize("mode", MODES)
 def test_on_topic_anchor_text_cannot_demote(mode: dict) -> None:
-    """Stream monotonicity, on-topic half. Against an identical uncited
-    twin *in the same index*, a belief whose citers used the query term
-    must not score lower. This is the property the anchor stream exists
-    to provide."""
+    """Stream monotonicity, on-topic half. Against a byte-identical
+    uncited twin *in the same index*, a belief whose citers used the query
+    term must score strictly higher. This is the property the anchor
+    stream exists to provide.
+
+    The twin must be byte-identical and the inequality strict, or the
+    length penalty alone satisfies the assertion and the test passes with
+    the anchor stream entirely dead."""
     index = _index(
-        [("cited", f"alpha {PAD}"), ("uncited", f"alpha {PAD} x")],
+        [("cited", f"alpha {PAD}"), ("uncited", f"alpha {PAD}")],
         anchors=[("alpha topic", "cited")],
         **mode,
     )
-    assert _score(index, "alpha", "cited") >= _score(index, "alpha", "uncited")
+    assert _score(index, "alpha", "cited") > _score(index, "alpha", "uncited")
 
 
 # --- posterior blend ------------------------------------------------------
