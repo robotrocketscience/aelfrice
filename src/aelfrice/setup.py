@@ -57,7 +57,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal, cast, overload
 
-from aelfrice.session_ring import FileLockTimeout, exclusive_file_lock
+from aelfrice.session_ring import exclusive_file_lock
 
 # #1161. How long a settings mutation waits for another aelfrice writer
 # to finish. Interactive commands can afford to wait — a `setup` that
@@ -65,7 +65,7 @@ from aelfrice.session_ring import FileLockTimeout, exclusive_file_lock
 # that pauses — but not indefinitely, since a stale lock would otherwise
 # hang the CLI. Hook-driven callers pass a much shorter bound.
 _SETTINGS_LOCK_TIMEOUT: Final[float] = 10.0
-_SETTINGS_LOCK_TIMEOUT_BACKGROUND: Final[float] = 2.0
+SETTINGS_LOCK_TIMEOUT_BACKGROUND: Final[float] = 2.0
 
 SettingsScope = Literal["user", "project"]
 

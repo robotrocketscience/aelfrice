@@ -51,7 +51,7 @@ from typing import Callable, Final, cast
 from aelfrice.setup import (
     SettingsScope,
     USER_SETTINGS_PATH,
-    _SETTINGS_LOCK_TIMEOUT_BACKGROUND,
+    SETTINGS_LOCK_TIMEOUT_BACKGROUND,
     install_agent_context_hook,
     install_claude_memory_mirror_hook,
     install_commit_ingest_hook,
@@ -633,7 +633,7 @@ def _do_merge(
     # and skipping costs nothing because the stamp stays unwritten and
     # the next invocation retries.
     with settings_transaction(
-        settings_path, timeout=_SETTINGS_LOCK_TIMEOUT_BACKGROUND
+        settings_path, timeout=SETTINGS_LOCK_TIMEOUT_BACKGROUND
     ):
         installed, already, opted_out = _merge_hooks_into_settings(
             manifest=manifest,

@@ -264,12 +264,16 @@ def test_an_exception_in_the_block_discards_the_buffer(
     settings: Path, count_writes: list[Path]
 ) -> None:
     """A half-applied hook set must never reach the disk."""
-    with pytest.raises(ValueError, match="boom"):
+
+    def mutate_then_fail() -> None:
         with settings_transaction(settings):
             data = S._load_settings(settings)
             data["half"] = True
             S._atomic_write(settings, data)
             raise ValueError("boom")
+
+    with pytest.raises(ValueError, match="boom"):
+        mutate_then_fail()
     assert count_writes == []
     assert "half" not in json.loads(settings.read_text())
 
@@ -279,9 +283,12 @@ def test_the_transaction_slot_is_cleared_after_an_exception(
 ) -> None:
     """Otherwise every later mutation in the process buffers into a dead
     transaction and is silently dropped."""
-    with pytest.raises(ValueError):
+    def fail_inside() -> None:
         with settings_transaction(settings):
             raise ValueError("boom")
+
+    with pytest.raises(ValueError):
+        fail_inside()
     assert S._active_transaction() is None
     # And a plain write still reaches the disk.
     S._atomic_write(settings, {"after": True})
