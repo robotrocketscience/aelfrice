@@ -215,11 +215,22 @@ def open_peer_connection(path: Path) -> sqlite3.Connection:
     read the peer at all. The fallback is reached only once an honest
     read has already failed, so it cannot mask the live-WAL case.
 
-    ``sqlite3.connect`` on a URI is lazy — it returns a handle without
-    touching the file, and a read-only medium only errors at the first
-    statement. The ``schema_version`` pragma is that first statement,
-    forcing the pager (and the ``-shm`` attempt) to resolve here, where
-    the fallback can act on it, rather than at an arbitrary later query.
+    ``sqlite3.connect`` on a URI defers the ``-shm`` attempt: for a file
+    that exists but sits on read-only media it returns a handle and only
+    errors at the first statement. (It is not lazy in general — a
+    *missing* file raises ``unable to open database file`` from
+    ``connect`` itself.) The ``schema_version`` pragma is that first
+    statement, forcing the pager to resolve here, where the fallback can
+    act on it, rather than at an arbitrary later query.
+
+    The fallback is reached only on ``SQLITE_READONLY``, not on any
+    ``OperationalError``. That distinction is what makes the safety
+    argument above true rather than nearly-true: a lock or a transient
+    filesystem error routing to ``immutable=1`` would hand back a
+    WAL-blind handle for the connection's whole lifetime — the very
+    defect this function was changed to remove — and because
+    ``MemoryStore._peer_conn`` caches the handle and swallows failures,
+    it would do so silently until the process restarts.
 
     Caller owns ``close()``.
     """
@@ -227,7 +238,14 @@ def open_peer_connection(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{resolved}?mode=ro", uri=True)
     try:
         conn.execute("PRAGMA schema_version").fetchone()
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as exc:
+        if "readonly" not in str(exc).lower():
+            # Not read-only media — a lock, a transient FS error, a
+            # corrupt header. Falling back here would return a WAL-blind
+            # handle and silently reintroduce #1198, so fail honestly and
+            # let the caller demote the peer.
+            conn.close()
+            raise
         # Read-only medium: no -shm can be created. See above.
         conn.close()
         conn = sqlite3.connect(f"file:{resolved}?mode=ro&immutable=1", uri=True)

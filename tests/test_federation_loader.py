@@ -251,6 +251,10 @@ def test_peer_connection_falls_back_on_read_only_media(tmp_path: Path):
             probe.execute("PRAGMA schema_version").fetchone()
             pytest.skip("read-only directory not enforced (running as root?)")
         except sqlite3.OperationalError:
+            # Expected, and the precondition this test needs: the plain
+            # `mode=ro` form really is blocked here, so reaching the
+            # fallback below is the behaviour under test rather than an
+            # accident of the environment.
             pass
         finally:
             probe.close()
@@ -264,3 +268,54 @@ def test_peer_connection_falls_back_on_read_only_media(tmp_path: Path):
             conn.close()
     finally:
         peer_dir.chmod(0o755)
+
+
+def test_a_non_readonly_error_does_not_fall_back_to_immutable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lock or FS error must not hand back a WAL-blind handle (#1198).
+
+    The immutable fallback is safe only because it is reached after an
+    honest read has already failed *for the one reason that justifies
+    it*. Routing every `OperationalError` there would silently restore
+    the defect this function exists to remove — and `_peer_conn` caches
+    the handle and swallows failures, so it would stay restored for the
+    life of the process.
+    """
+    peer_path = tmp_path / "peer.db"
+    writer = _wal_peer(peer_path)
+
+    class _Locked:
+        """Stands in for a handle whose first statement hits a lock."""
+
+        def __init__(self, inner: sqlite3.Connection) -> None:
+            self._inner = inner
+            self.row_factory = None
+
+        def execute(self, *_a: object, **_kw: object) -> object:
+            raise sqlite3.OperationalError("database is locked")
+
+        def close(self) -> None:
+            self._inner.close()
+
+    try:
+        real_connect = sqlite3.connect
+        opened: list[str] = []
+
+        def fake_connect(dsn: str, *a: object, **kw: object) -> object:
+            # First parameter is deliberately not named `uri` — the real
+            # call passes `uri=True` as a keyword, which would collide.
+            opened.append(str(dsn))
+            conn = real_connect(dsn, *a, **kw)  # type: ignore[arg-type]
+            return conn if "immutable=1" in str(dsn) else _Locked(conn)
+
+        monkeypatch.setattr(sqlite3, "connect", fake_connect)
+
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            open_peer_connection(peer_path)
+
+        assert not any("immutable=1" in u for u in opened), (
+            f"fell back to a WAL-blind handle on a non-readonly error: {opened}"
+        )
+    finally:
+        writer.close()
