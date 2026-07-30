@@ -37,6 +37,7 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_TYPES,
     CORROBORATION_SOURCE_WONDER_INGEST,
     EDGE_RELATES_TO,
+    EDGE_SUPERSEDES,
     EDGE_VALENCE,
     EXPOSURE_ONLY_FEEDBACK_SOURCES,
     ORIGIN_SPECULATIVE,
@@ -5424,6 +5425,39 @@ class MemoryStore:
             params,
         )
         return [_row_to_edge(r) for r in cur.fetchall()]
+
+    def superseded_belief_ids(self, belief_ids: list[str]) -> set[str]:
+        """Which of `belief_ids` a SUPERSEDES edge points *at* (#1187).
+
+        The canonical direction is the producers': `src` is the newer
+        belief, `dst` the one it retires (#1170). So a belief is
+        superseded when it appears as a `dst`, and this returns the
+        subset of the candidate set that has been retired by something.
+
+        One query over the candidate set rather than one per belief —
+        this runs inside the L1 rerank, on the default retrieval path
+        once the lane is enabled.
+
+        The candidate set is bound as a single JSON array read through
+        `json_each` rather than an interpolated `IN (?, ?, …)` list, so
+        the SQL text stays static (the ca97776 convention). The empty
+        case needs no branch beyond the early return: `json_each('[]')`
+        yields no rows, so the join produces nothing.
+
+        Empty input → empty set (no SQL).
+        """
+        if not belief_ids:
+            return set()
+        cur = self._conn.execute(
+            """
+            SELECT DISTINCT e.dst
+            FROM edges e
+            JOIN json_each(?) AS cand ON cand.value = e.dst
+            WHERE e.type = ?
+            """,
+            (json.dumps(sorted(set(belief_ids))), EDGE_SUPERSEDES),
+        )
+        return {row["dst"] for row in cur.fetchall()}
 
     def entity_persistence_scores(
         self, belief_ids: list[str]
