@@ -388,6 +388,87 @@ def test_retrieve_v2_threads_the_lane(
     assert _order(on.beliefs) == ["current"]
 
 
+def test_retrieve_reaches_the_lane_via_the_resolver(
+    store: MemoryStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`retrieve()` is what production calls; `retrieve_v2` is not.
+
+    The hook path goes through `retrieve()`, which passes `None` for the
+    lane and lets the resolver decide — so wiring that stops at
+    `retrieve_v2` is reachable from tests and from the bench harness and
+    from nothing a user runs. Driven by the env override rather than a
+    kwarg precisely because `retrieve()` exposes no kwarg for it: if the
+    env var is the only handle, the env var is what has to work.
+
+    What this does and does not catch, stated precisely: it fails if
+    `retrieve_v2` stops consulting the resolver, or if the lane is
+    dropped from `_l1_hits`. It does *not* fail if `retrieve()` starts
+    passing a hardcoded `False` instead of `None` — the resolver reads
+    the env var before the kwarg, so that edit is unobservable from here
+    by construction. The guarantee is end-to-end reachability through the
+    public API, not the shape of one argument.
+    """
+    monkeypatch.setenv(retrieval.ENV_SUPERSESSION_TREATMENT, "exclude")
+
+    monkeypatch.delenv(retrieval.ENV_SUPERSESSION_DEMOTE, raising=False)
+    off = retrieval.retrieve(store, "deploy target")
+
+    monkeypatch.setenv(retrieval.ENV_SUPERSESSION_DEMOTE, "1")
+    on = retrieval.retrieve(store, "deploy target")
+
+    assert _order(off) == ["superseded", "current"], (
+        "default-off changed retrieve()'s output"
+    )
+    assert _order(on) == ["current"], (
+        "the lane is unreachable from retrieve(); only retrieve_v2 sees it"
+    )
+
+
+def test_treatment_precedence_is_env_then_kwarg_then_toml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """env > kwarg > TOML > default, matching every other knob.
+
+    Each layer is asserted while the layer *below* it disagrees, so a
+    resolver that read only one source would fail rather than coincide.
+    """
+    (tmp_path / ".aelfrice.toml").write_text(
+        '[retrieval]\nsupersession_treatment = "exclude"\n', encoding="utf-8",
+    )
+
+    # TOML alone.
+    monkeypatch.delenv(retrieval.ENV_SUPERSESSION_TREATMENT, raising=False)
+    assert resolve_supersession_treatment(start=tmp_path) == (
+        SUPERSESSION_TREATMENT_EXCLUDE
+    )
+    # kwarg beats TOML.
+    assert resolve_supersession_treatment(
+        SUPERSESSION_TREATMENT_DEMOTE, start=tmp_path,
+    ) == SUPERSESSION_TREATMENT_DEMOTE
+    # env beats both.
+    monkeypatch.setenv(retrieval.ENV_SUPERSESSION_TREATMENT, "demote")
+    assert resolve_supersession_treatment(
+        SUPERSESSION_TREATMENT_EXCLUDE, start=tmp_path,
+    ) == SUPERSESSION_TREATMENT_DEMOTE
+
+
+def test_factor_precedence_is_env_then_kwarg_then_toml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same ladder for the factor. Values chosen distinct and in range so
+    a clamp cannot make two layers agree by accident."""
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[retrieval]\nsupersession_demote_factor = 0.25\n", encoding="utf-8",
+    )
+
+    monkeypatch.delenv(retrieval.ENV_SUPERSESSION_FACTOR, raising=False)
+    assert resolve_supersession_factor(start=tmp_path) == pytest.approx(0.25)
+    assert resolve_supersession_factor(0.75, start=tmp_path) == pytest.approx(0.75)
+
+    monkeypatch.setenv(retrieval.ENV_SUPERSESSION_FACTOR, "0.5")
+    assert resolve_supersession_factor(0.75, start=tmp_path) == pytest.approx(0.5)
+
+
 # --- The exclusion arm must backfill, not shrink (#1187) ------------------
 
 
