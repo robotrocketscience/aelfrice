@@ -192,15 +192,44 @@ def load_peer_deps(deps_path: Path | None = None) -> list[PeerDep]:
 def open_peer_connection(path: Path) -> sqlite3.Connection:
     """Open a peer DB file read-only as a fresh ``sqlite3.Connection``.
 
-    Uses the ``file:...?mode=ro&immutable=1`` URI form: read-only at the
-    OS level (mode=ro) plus a promise that the file will not change
-    during the connection's lifetime (immutable=1) so SQLite skips
-    locking. Any attempt to mutate the peer through this handle raises
+    Uses the ``file:...?mode=ro`` URI form: read-only at the OS level, so
+    any attempt to mutate the peer through this handle raises
     ``sqlite3.OperationalError: attempt to write a readonly database``.
+
+    ``immutable=1`` is deliberately *not* the primary form (#1198). It
+    promises SQLite the file cannot change, and SQLite acts on that by
+    skipping locking and ignoring the write-ahead log. Every aelfrice
+    store runs in WAL mode, and a store held open by a running hook keeps
+    recent commits in ``memory.db-wal`` until something checkpoints — so
+    an immutable handle reads a peer that is missing every uncheckpointed
+    row, or, when the WAL still holds the schema, raises ``no such
+    table``. Plain ``mode=ro`` honours the WAL and sees the committed
+    state.
+
+    A WAL-mode database needs to create a ``-shm`` file even when fully
+    checkpointed, so on read-only media plain ``mode=ro`` fails outright
+    with ``attempt to write a readonly database``. Dropping the immutable
+    form unconditionally would turn those peers from working into
+    silently unreachable, so it is kept as a fallback: on a genuinely
+    read-only medium it is both a truthful promise and the only way to
+    read the peer at all. The fallback is reached only once an honest
+    read has already failed, so it cannot mask the live-WAL case.
+
+    ``sqlite3.connect`` on a URI is lazy — it returns a handle without
+    touching the file, and a read-only medium only errors at the first
+    statement. The ``schema_version`` pragma is that first statement,
+    forcing the pager (and the ``-shm`` attempt) to resolve here, where
+    the fallback can act on it, rather than at an arbitrary later query.
 
     Caller owns ``close()``.
     """
-    uri = f"file:{path.resolve()}?mode=ro&immutable=1"
-    conn = sqlite3.connect(uri, uri=True)
+    resolved = path.resolve()
+    conn = sqlite3.connect(f"file:{resolved}?mode=ro", uri=True)
+    try:
+        conn.execute("PRAGMA schema_version").fetchone()
+    except sqlite3.OperationalError:
+        # Read-only medium: no -shm can be created. See above.
+        conn.close()
+        conn = sqlite3.connect(f"file:{resolved}?mode=ro&immutable=1", uri=True)
     conn.row_factory = sqlite3.Row
     return conn

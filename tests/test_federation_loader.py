@@ -168,3 +168,99 @@ def test_peer_dep_is_frozen():
     dep = PeerDep(name="x", path=Path("/x"), reachable=False)
     with pytest.raises(Exception):  # FrozenInstanceError or AttributeError
         dep.name = "y"  # type: ignore[misc]
+
+
+def _wal_peer(path: Path, rows: int = 30) -> sqlite3.Connection:
+    """Build a WAL-mode peer and return the writer, still open.
+
+    Leaving the writer open is the point: the commits stay in
+    `memory.db-wal` with nothing checkpointing them, which is the shape
+    of a store held open by a running hook. Caller closes.
+    """
+    w = sqlite3.connect(str(path))
+    w.execute("PRAGMA journal_mode=WAL")
+    w.execute("CREATE TABLE beliefs (id TEXT PRIMARY KEY)")
+    w.executemany(
+        "INSERT INTO beliefs VALUES (?)", [(f"b{i}",) for i in range(rows)]
+    )
+    w.commit()
+    return w
+
+
+def test_peer_connection_reads_an_uncheckpointed_wal(tmp_path: Path):
+    """Committed-but-uncheckpointed rows must be visible (#1198).
+
+    `immutable=1` promises SQLite the file cannot change, and SQLite
+    honours that by ignoring the WAL entirely — so a peer whose schema
+    is still in the WAL raised `no such table`, and one whose rows were
+    still in the WAL under-read with no error at all.
+    """
+    peer_path = tmp_path / "peer.db"
+    writer = _wal_peer(peer_path)
+    try:
+        wal = peer_path.with_name(peer_path.name + "-wal")
+        assert wal.exists() and wal.stat().st_size > 0, "WAL not live"
+
+        conn = open_peer_connection(peer_path)
+        try:
+            assert conn.execute(
+                "SELECT count(*) FROM beliefs"
+            ).fetchone()[0] == 30
+        finally:
+            conn.close()
+    finally:
+        writer.close()
+
+
+def test_peer_connection_is_read_only_against_a_live_wal(tmp_path: Path):
+    """Dropping `immutable=1` must not weaken the read-only guarantee."""
+    peer_path = tmp_path / "peer.db"
+    writer = _wal_peer(peer_path)
+    try:
+        conn = open_peer_connection(peer_path)
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="readonly"):
+                conn.execute("INSERT INTO beliefs VALUES ('x')")
+                conn.commit()
+        finally:
+            conn.close()
+    finally:
+        writer.close()
+
+
+def test_peer_connection_falls_back_on_read_only_media(tmp_path: Path):
+    """A read-only directory must still be readable.
+
+    A WAL-mode DB needs to create `-shm` even when fully checkpointed,
+    so plain `mode=ro` fails there with `attempt to write a readonly
+    database`. The `immutable=1` fallback is truthful on a read-only
+    medium and is the only way to read the peer at all.
+    """
+    peer_dir = tmp_path / "ro"
+    peer_dir.mkdir()
+    peer_path = peer_dir / "peer.db"
+    _wal_peer(peer_path).close()  # clean close checkpoints and drops the WAL
+
+    peer_dir.chmod(0o555)
+    try:
+        # A root user ignores the directory mode, which would make this
+        # test pass without ever reaching the fallback. Confirm the
+        # plain form really is blocked here before asserting on it.
+        probe = sqlite3.connect(f"file:{peer_path}?mode=ro", uri=True)
+        try:
+            probe.execute("PRAGMA schema_version").fetchone()
+            pytest.skip("read-only directory not enforced (running as root?)")
+        except sqlite3.OperationalError:
+            pass
+        finally:
+            probe.close()
+
+        conn = open_peer_connection(peer_path)
+        try:
+            assert conn.execute(
+                "SELECT count(*) FROM beliefs"
+            ).fetchone()[0] == 30
+        finally:
+            conn.close()
+    finally:
+        peer_dir.chmod(0o755)
