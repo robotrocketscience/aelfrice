@@ -9,7 +9,7 @@ This is the reference for power users whose project has a documentation idiom or
 A single optional TOML file at the root of a project (or any ancestor). It exposes the following power-user surfaces:
 
 - `[noise]` — onboard-time belief filter. Changes how `aelf onboard` ingests beliefs; nothing else.
-- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `l1_limit` + `token_budget` (the #1045 wide-retrieval knobs — BM25 candidate cap + token budget, default 50/2400; raise both together for multi-hop recall), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `use_heat_kernel` (authority scoring lane, default-on since v2.1), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1 — live on the production `retrieve()` path via the #1107 Phase-5 cutover; marker-routed, a no-op fall-through on non-marker queries), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, default-on since #769), `use_intentional_clustering` (co-locating related beliefs, default-on since v3.0 — live on the production `retrieve()` path via the #1107 Phase-4 cutover), `expansion_gate_enabled`, `use_gamma_posterior_temperature` (default off), and `use_zeta_posterior_rerank` (default off; mutually exclusive with the γ flag — `retrieve()` raises `ValueError` when both are on), `use_temporal_spine` + `temporal_spine_budget` (the #1064 chronological-adjacency lane, default **on**/32 since v4.0 — live on the production `retrieve()` path via the #1107 cutover; pairs with `[ingest] write_temporal_spine`), `use_entity_persist_demote` (the #1096 entity-persistence demotion / organic-sink rerank modifier, default **on** since v4.0 — live on the production `retrieve()` path via the #1107 cutover), `use_origin_tiebreak` (the #1089 origin-priority within-tier tie-break, default off), `use_supersession_demote` + `supersession_treatment` + `supersession_demote_factor` (the #1187 supersession lane — demote or exclude beliefs a `SUPERSEDES` edge retires, default off/`demote`/0.5, pending the three-arm bench). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
+- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `l1_limit` + `token_budget` (the #1045 wide-retrieval knobs — BM25 candidate cap + token budget, default 50/2400; raise both together for multi-hop recall), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `bm25f_per_field` + `bm25_b_anchor` (the #1180 two-field BM25F scorer — content and anchor normalised separately instead of concatenated, default off pending its bench), `use_heat_kernel` (authority scoring lane, default-on since v2.1), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1 — live on the production `retrieve()` path via the #1107 Phase-5 cutover; marker-routed, a no-op fall-through on non-marker queries), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, default-on since #769), `use_intentional_clustering` (co-locating related beliefs, default-on since v3.0 — live on the production `retrieve()` path via the #1107 Phase-4 cutover), `expansion_gate_enabled`, `use_gamma_posterior_temperature` (default off), and `use_zeta_posterior_rerank` (default off; mutually exclusive with the γ flag — `retrieve()` raises `ValueError` when both are on), `use_temporal_spine` + `temporal_spine_budget` (the #1064 chronological-adjacency lane, default **on**/32 since v4.0 — live on the production `retrieve()` path via the #1107 cutover; pairs with `[ingest] write_temporal_spine`), `use_entity_persist_demote` (the #1096 entity-persistence demotion / organic-sink rerank modifier, default **on** since v4.0 — live on the production `retrieve()` path via the #1107 cutover), `use_origin_tiebreak` (the #1089 origin-priority within-tier tie-break, default off), `use_supersession_demote` + `supersession_treatment` + `supersession_demote_factor` (the #1187 supersession lane — demote or exclude beliefs a `SUPERSEDES` edge retires, default off/`demote`/0.5, pending the three-arm bench). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
 - `[rebuilder]` (v1.4+) — context-rebuilder knobs: `turn_window_n` (default 50), `token_budget` (default 4000), `trigger_mode` (`manual`|`threshold`|`dynamic`, default `threshold`), `threshold_fraction` (default 0.6), and `query_strategy` (v1.7+, default `stack-r1-r3` since v3.0). `[rebuild_floor]` (v1.7+) sets the token-budget floors for the session-scoped and L1 belief lanes (`[rebuild_floor] session` and `[rebuild_floor] l1`).
 - `[onboard.llm]` (v1.3.0+) — direct-API onboard classifier gate; documented under [Keys § `[onboard.llm]`](#onboardllm-v130) below.
 - `[cadence]`, `[implicit_feedback]`, and `[hook_audit]` — feedback-cadence scoring, deferred retrieval-exposure feedback, and the per-turn hook audit log. Recognised here but documented in their module docstrings (`src/aelfrice/cadence.py`, `src/aelfrice/deferred_feedback.py`, `src/aelfrice/hook.py`).
@@ -101,6 +101,31 @@ token_budget = 2400
 # false to fall back to the v1.5/v1.6 FTS5-BM25 path.
 # AELFRICE_BM25F=0 env var overrides.
 use_bm25f_anchors = true
+
+# #1180. Default `false`. Scores content and anchor text as two BM25F
+# fields, each normalised by its own length and `avgdl`, instead of
+# concatenating the anchor text into the belief's document. With it
+# off, a belief's own content terms are length-penalised in proportion
+# to how much text its citers wrote: on a synthetic corpus where the
+# anchor text never mentions the query term, the cited belief scores
+# 0.27x an otherwise identical uncited one. With it on, that case is
+# exactly 1.00x, and anchor text only ever helps.
+#
+# Off by default because it replaces the scoring functional form
+# rather than re-parameterising it — no constants make on and off
+# agree once an anchor stream exists, so the flip is bench-gated.
+# `anchor_weight` becomes a field weight rather than a replication
+# count; its shipped value of 3 was tuned as the latter.
+# AELFRICE_BM25F_PER_FIELD=1 env var overrides.
+bm25f_per_field = false
+
+# #1180. Default `0.75` (the content stream's `b`). Length-
+# normalisation strength for the anchor field; consulted only when
+# `bm25f_per_field` is on. `0.0` disables anchor length normalisation
+# so the contribution tracks raw citation volume rather than term
+# density — exposed for ablation, not recommended.
+# AELFRICE_BM25_B_ANCHOR env var overrides.
+bm25_b_anchor = 0.75
 
 # Default `true` since the #154 composition tracker flipped the
 # default after the #437 reproducibility-harness gate cleared at
