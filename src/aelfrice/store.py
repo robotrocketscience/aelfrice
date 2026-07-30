@@ -5562,8 +5562,19 @@ class MemoryStore:
         evidential justification, and a candidate mechanism for the
         recorded junk-percolation ranking inversion.
 
-        Each reachable belief is credited **exactly once** per walk, with
-        the largest-magnitude path that reaches it. Accumulating per
+        Each reachable belief is credited **exactly once** per walk, at
+        the shallowest hop that reaches it, by the strongest path within
+        that hop. Shortest-path-wins, not largest-magnitude-wins: a
+        longer chain of strong edges can carry more than a short weak
+        one (`A -RELATES_TO(0.3)-> X` delivers 0.27 while
+        `A -SUPPORTS-> B -SUPPORTS-> X` would deliver 0.81), and the
+        shallower path is the one taken. Magnitude is non-increasing
+        *along* a path, since every `EDGE_VALENCE` magnitude and every
+        confidence is <= 1 — but that says nothing about two different
+        paths of different lengths, so hop count is the tie-break in
+        practice. Deliberate: crediting by the maximum over all paths
+        would mean deferring every delivery until the walk completes,
+        and hop distance is itself evidence of relatedness. Accumulating per
         in-edge (the pre-#1169 behaviour) meant a diamond delivered 2x
         and a 5-way fan-in 5x the source signal — one `aelf confirm` on
         the root of a convergent subgraph could add α += ~20 to the
@@ -5615,7 +5626,9 @@ class MemoryStore:
         while frontier:
             # Collect this hop's candidate deliveries, then resolve them
             # together: a belief reachable by several paths in the same
-            # hop must be credited once, by its strongest path.
+            # hop must be credited once, by its strongest path. Across
+            # hops the earlier (shallower) delivery wins — see the
+            # shortest-path-wins note in the method docstring.
             candidates: list[tuple[str, float, int]] = []
             for current_id, carried, hops in frontier:
                 if hops >= max_hops:

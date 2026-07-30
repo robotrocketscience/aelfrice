@@ -424,3 +424,45 @@ def test_mass_bounded_and_order_invariant_for_any_shape(
     # strongest single hop out of the source.
     assert all(abs(v) <= abs(valence) + 1e-9 for v in out.values())
     assert out == pytest.approx(out_rotated)
+
+
+def test_the_shallower_path_wins_even_when_a_longer_one_is_stronger() -> None:
+    """Hypothesis: credit lands at the shallowest hop, not the largest path.
+
+    Pinned because the two are easy to conflate. Magnitude is
+    non-increasing *along* a path (every EDGE_VALENCE magnitude and every
+    confidence is <= 1), which invites the reading that the first path to
+    arrive is also the strongest. It is not: a longer chain of strong
+    edges can carry more than a short weak one, and the shallower path is
+    still the one taken.
+
+    Falsifiable by X receiving the two-hop magnitude instead of the
+    one-hop one."""
+    s = MemoryStore(":memory:")
+    try:
+        s.insert_belief(_mk("A", alpha=9.0, beta=1.0))   # confidence 0.9
+        s.insert_belief(_mk("B", alpha=9.0, beta=1.0))   # confidence 0.9
+        s.insert_belief(_mk("X", alpha=5.0, beta=5.0))
+        # Short and weak: RELATES_TO carries 0.3.
+        s.insert_edge(Edge(src="A", dst="X", type=EDGE_RELATES_TO, weight=1.0))
+        # Long and strong: two SUPPORTS hops, each carrying 1.0.
+        s.insert_edge(Edge(src="A", dst="B", type=EDGE_SUPPORTS, weight=1.0))
+        s.insert_edge(Edge(src="B", dst="X", type=EDGE_SUPPORTS, weight=1.0))
+
+        out = s.propagate_valence(
+            "A", valence=1.0, max_hops=3, min_threshold=0.0001,
+            src_confidence=0.9,
+        )
+    finally:
+        s.close()
+
+    one_hop = 1.0 * 0.3 * 0.9          # EDGE_VALENCE[RELATES_TO] * conf(A)
+    two_hop = (1.0 * 1.0 * 0.9) * 1.0 * 0.9   # via B, strictly larger
+    assert two_hop > one_hop, "fixture no longer demonstrates the case"
+
+    assert out["X"] == pytest.approx(one_hop), (
+        f"X took the {'two-hop' if out['X'] == pytest.approx(two_hop) else 'wrong'} "
+        f"path; credit is documented as landing at the shallowest hop"
+    )
+    # And B, reached only the one way, is unaffected by the tie-break.
+    assert out["B"] == pytest.approx(1.0 * 1.0 * 0.9)
