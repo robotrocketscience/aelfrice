@@ -144,14 +144,31 @@ def expand_bfs(
     min_path_score: float = DEFAULT_MIN_PATH_SCORE,
     seed_scopes: dict[str, str | None] | None = None,
 ) -> list[ScoredHop]:
-    """Walk outbound edges from `seeds`, returning ranked expansions.
+    """Walk the edge graph from `seeds`, returning ranked expansions.
 
     Pseudocode + properties: see `docs/design/bfs_multihop.md § Algorithm`.
 
+    Traversal direction (#1170). Most edge types are followed
+    **outbound** — a hop from `current_id` reaches each edge's `dst`,
+    read via ``edges_from_in_scope``. The types in
+    ``REVERSE_TRAVERSED_EDGE_TYPES`` are followed **inbound** instead:
+    they are read via ``edges_to_in_scope`` and the hop reaches each
+    edge's `src`. Those types are never also followed outbound. Today
+    that set is ``{SUPERSEDES}``, whose producers write `src` = the new
+    belief and `dst` = the one it retires, so an inbound read is what
+    steps a hit on a retired belief forward to its replacement. The two
+    reads are merged into one candidate list before ranking, so
+    "neighbour" below means either kind.
+
     Determinism contract:
-      - Edges at each frontier expansion are ranked by
-        (-edge_type_weight, -edge.weight, dst_id_ascending). Any
+      - Candidates at each frontier expansion are ranked by
+        (-edge_type_weight, -edge.weight, neighbour_id_ascending). Any
         ranking tie thus breaks on belief id ascending.
+      - Candidates are then deduplicated by neighbour id, keeping the
+        strongest edge to each, BEFORE the `nodes_per_hop` slice — two
+        edges in one hop can name the same neighbour, and letting a
+        duplicate consume a slot would underfill the hop and drop an
+        otherwise-eligible belief.
       - Final results are sorted by (-score, belief.id) so two
         identical inputs always produce byte-identical output.
 
@@ -161,7 +178,8 @@ def expand_bfs(
 
     Budget bookkeeping:
       - `nodes_per_hop` caps fanout per frontier entry (top-k after
-        edge-type ranking).
+        edge-type ranking and neighbour dedup, so the cap counts
+        distinct beliefs rather than distinct edges).
       - `total_budget` caps the cumulative number of expanded
         beliefs across all hops.
       - `min_path_score` prunes paths whose multiplicative score has
@@ -175,8 +193,8 @@ def expand_bfs(
     Federation (#690): ``seed_scopes`` is an optional ``{belief_id:
     owning_scope}`` mapping. When a seed id appears in the dict with
     a non-None scope, the walk follows that peer's edges (via
-    ``store.edges_from_in_scope`` / ``get_belief_in_scope``) instead
-    of local. The scope propagates from each frontier entry to its
+    ``store.edges_from_in_scope`` / ``edges_to_in_scope`` /
+    ``get_belief_in_scope``) instead of local. The scope propagates from each frontier entry to its
     children — once the walk enters a peer, subsequent hops stay
     inside that peer's edge graph. Seeds not in the dict (and the
     default ``seed_scopes=None`` case) walk local edges only, so
@@ -232,28 +250,43 @@ def expand_bfs(
             # neighbour id). Filter already-visited ids BEFORE ranking so
             # the top-k slice is over genuinely-novel candidates.
             candidates = [n for n in neighbours if n[0] not in visited]
-            ranked = sorted(
+            ordered = sorted(
                 candidates,
                 key=lambda n: (
                     -BFS_EDGE_WEIGHTS.get(n[1], 0.0),
                     -n[2],
                     n[0],
                 ),
-            )[:nodes_per_hop]
+            )
+            # Deduplicate by neighbour id BEFORE the top-k slice, keeping
+            # the strongest edge to each. Two edges in one hop can name
+            # the same neighbour — different types between one pair are
+            # permitted by the `(src, dst, type)` PK, and since #1170 an
+            # outbound edge and a reverse-traversed inbound one can also
+            # collide. Slicing first would let the duplicate consume a
+            # slot and drop an otherwise-eligible neighbour, underfilling
+            # the hop. That is not exotic: `resolve_contradiction` writes
+            # SUPERSEDES between a pair that already carries CONTRADICTS,
+            # and those are the two highest weights in the table, so the
+            # duplicate reliably lands at the top of the ranking.
+            ranked: list[tuple[str, str, float]] = []
+            seen_this_hop: set[str] = set()
+            for cand in ordered:
+                if cand[0] in seen_this_hop:
+                    continue
+                seen_this_hop.add(cand[0])
+                ranked.append(cand)
+                if len(ranked) >= nodes_per_hop:
+                    break
             for neighbour_id, edge_type, _edge_weight in ranked:
                 if nodes_used >= total_budget:
                     break
                 if neighbour_id in visited:
-                    # Two edges in this same hop can name the same
-                    # neighbour: different types between one pair are
-                    # permitted by the `(src, dst, type)` PK, and since
-                    # #1170 an outbound edge and a reverse-traversed
-                    # inbound one can also collide. `candidates` was
-                    # filtered against `visited` before ranking, so only
-                    # a within-hop duplicate reaches here — emitting it
-                    # would return the same belief twice and charge the
-                    # node budget twice. Ranking is strongest-first, so
-                    # the copy already taken is the higher-scoring one.
+                    # Defence in depth. `candidates` is filtered against
+                    # `visited` before ranking and `ranked` is deduped
+                    # within the hop, so nothing should reach here —
+                    # emitting a duplicate would return the same belief
+                    # twice and charge the node budget twice.
                     continue
                 edge_w = BFS_EDGE_WEIGHTS.get(edge_type, 0.0)
                 if edge_w == 0.0:

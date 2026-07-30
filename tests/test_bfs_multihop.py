@@ -882,6 +882,43 @@ def test_parallel_edges_to_one_neighbour_expand_it_once() -> None:
     assert hops[0].score == pytest.approx(0.60)
 
 
+def test_a_duplicate_neighbour_does_not_consume_a_nodes_per_hop_slot() -> None:
+    """A hop must fill with `nodes_per_hop` distinct beliefs, not edges.
+
+    Two edges in one hop can name the same neighbour. Deduplicating only
+    at delivery — after the top-k slice — lets the duplicate occupy a
+    slot and drops an otherwise-eligible belief, underfilling the hop.
+
+    The fixture is the steady state `resolve_contradiction` produces, not
+    a contrived graph: it acts on an existing CONTRADICTS edge and
+    inserts SUPERSEDES between the same pair, and those are the two
+    highest weights in BFS_EDGE_WEIGHTS, so the duplicate reliably lands
+    at the top of the ranking rather than harmlessly at the tail.
+
+    Falsifiable by OTHER going missing at nodes_per_hop=2."""
+    s = MemoryStore(":memory:")
+    for bid in ("LOSER", "WINNER", "OTHER"):
+        s.insert_belief(_mk(bid, f"{bid.lower()} shared topic"))
+    # One neighbour reached twice: outbound CONTRADICTS (0.85) and
+    # inbound SUPERSEDES (0.90), the pair contradiction resolution writes.
+    s.insert_edge(_edge("LOSER", "WINNER", EDGE_CONTRADICTS))
+    s.insert_edge(_edge("WINNER", "LOSER", EDGE_SUPERSEDES))
+    # A third belief, strictly weaker than both but perfectly eligible.
+    s.insert_edge(_edge("LOSER", "OTHER", EDGE_SUPPORTS))
+
+    seed = s.get_belief("LOSER")
+    assert seed is not None
+    hops = expand_bfs([seed], s, max_depth=1, nodes_per_hop=2)
+
+    ids = [h.belief.id for h in hops]
+    assert ids == ["WINNER", "OTHER"], (
+        f"the duplicate consumed a slot and dropped an eligible "
+        f"neighbour: {ids}"
+    )
+    # And the surviving copy is the stronger of the two edges.
+    assert hops[0].path == [EDGE_SUPERSEDES]
+
+
 def test_outbound_and_reverse_edge_to_one_neighbour_expand_it_once() -> None:
     """The #1170-specific instance of the case above: B supersedes A and
     also relates to A, so A's hop reaches B twice — once outbound, once
