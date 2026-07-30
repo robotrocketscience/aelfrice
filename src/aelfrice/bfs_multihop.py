@@ -69,9 +69,15 @@ BFS_EDGE_WEIGHTS: dict[str, float] = {
     EDGE_RELATES_TO: 0.30,
     EDGE_TEMPORAL_NEXT: 0.25,
     # Marker edge — skipped during BFS expansion. Demotion happens in
-    # the rerank pass (`aelfrice.edge_rerank`), not here. Pinned at 0.0
-    # explicitly so the contract is reviewable rather than implicit
-    # via the `BFS_EDGE_WEIGHTS.get(..., 0.0)` default. See #421.
+    # the rerank pass (`aelfrice.edge_rerank`), which `expand_bfs` now
+    # actually calls (#1207); until then this comment described a pass
+    # with no importer. Pinned at 0.0 explicitly so the contract is
+    # reviewable rather than implicit via the
+    # `BFS_EDGE_WEIGHTS.get(..., 0.0)` default. See #421.
+    #
+    # The pin does not neuter the rerank: this weight governs traversal
+    # *through* a marker edge, while the rerank keys off marker edges
+    # *incoming to* a surfaced belief. The two sets are disjoint.
     EDGE_POTENTIALLY_STALE: 0.0,
 }
 
@@ -330,4 +336,17 @@ def expand_bfs(
         frontier = next_frontier
 
     expanded.sort(key=lambda s: (-s.score, s.belief.id))
-    return expanded
+    # Marker-edge demotion (#1207). `BFS_EDGE_WEIGHTS` pins
+    # POTENTIALLY_STALE at 0.0 on the grounds that demotion happens in
+    # this pass — which had no importer, so nothing demoted a stale
+    # belief anywhere. Wired unconditionally rather than behind a lane
+    # flag because the *producer* is already the opt-in: `aelf doctor
+    # --detect-stale` defaults off, and a store with no marker edges
+    # makes this an identity (no penalty fires, and the re-sort uses
+    # the same `(-score, belief.id)` key already applied above).
+    #
+    # Deferred import: `edge_rerank` imports `ScoredHop` from this
+    # module, so a top-level import here would be circular.
+    from aelfrice.edge_rerank import apply_edge_type_rerank
+
+    return apply_edge_type_rerank(expanded, store)

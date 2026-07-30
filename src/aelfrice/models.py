@@ -59,8 +59,11 @@ EDGE_RESOLVES: Final[str] = "RESOLVES"
 # above. POTENTIALLY_STALE tags a target belief as suspected stale; it
 # carries no propagation valence and is skipped during BFS expansion
 # (`BFS_EDGE_WEIGHTS[POTENTIALLY_STALE] = 0.0`). The consumer is the
-# edge-type-keyed rerank pass in `aelfrice.edge_rerank` (#421); the
-# producer is `aelf doctor` (#387). Deliberately NOT in `EDGE_TYPES`
+# edge-type-keyed rerank pass in `aelfrice.edge_rerank` (#421), which
+# `expand_bfs` calls on its way out (#1207); the producer is `aelf
+# doctor --detect-stale` (#387), which is opt-in — a store that never
+# ran it holds no edges of this type and the pass is an identity.
+# Deliberately NOT in `EDGE_TYPES`
 # or `EDGE_VALENCE` — those enumerate structural relational edges,
 # this is a tag.
 EDGE_POTENTIALLY_STALE: Final[str] = "POTENTIALLY_STALE"
