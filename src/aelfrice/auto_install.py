@@ -80,6 +80,12 @@ AELFRICE_DOTDIR: Final[Path] = Path.home() / ".aelfrice"
 STAMP_PATH: Final[Path] = AELFRICE_DOTDIR / "installed-manifest-version"
 OPT_OUT_PATH: Final[Path] = AELFRICE_DOTDIR / "opt-out-hooks.json"
 
+# Advisory lock serialising concurrent manifest merges. A filename rather
+# than a full path because it is created beside whichever `stamp_path` the
+# caller passes, not unconditionally in `AELFRICE_DOTDIR`. Named here so
+# the uninstall removal set can be single-sourced against it (#1186).
+AUTO_INSTALL_LOCK_FILENAME: Final[str] = ".auto-install.lock"
+
 _MANIFEST_PACKAGE: Final[str] = "aelfrice"
 _MANIFEST_SUBDIR: Final[str] = "data"
 _MANIFEST_FILENAME: Final[str] = "hook_manifest.json"
@@ -570,7 +576,7 @@ def maybe_install_manifest(
     # may not exist yet). Holding the lock for the duration of the
     # merge serializes concurrent `aelf` invocations on the same host.
     stamp_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = stamp_path.parent / ".auto-install.lock"
+    lock_path = stamp_path.parent / AUTO_INSTALL_LOCK_FILENAME
     lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:
