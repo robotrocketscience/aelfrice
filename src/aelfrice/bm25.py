@@ -87,6 +87,25 @@ DEFAULT_ANCHOR_WEIGHT: Final[int] = 3
 DEFAULT_K1: Final[float] = 1.5
 DEFAULT_B: Final[float] = 0.75
 
+# Per-field length-normalisation strength for the anchor stream (#1180),
+# used only when `per_field=True`.
+#
+# Held equal to `DEFAULT_B` deliberately. The per-field split already
+# changes the functional form, so the bench that gates the flip has to
+# attribute its result to exactly one change; giving the anchor stream a
+# different `b` at the same time would confound "fields were separated"
+# with "the anchor stream is normalised more/less strongly". 0.75 is also
+# the value implied by the worked example in #1180 — it reproduces that
+# issue's stated target figures (uncited 0.5714 / cited 0.7835) exactly.
+#
+# The constraint that matters is `b_anchor > 0`. At `b_anchor = 0` the
+# anchor stream pays no length penalty and its contribution grows
+# linearly with citation volume; any positive value bounds it, because
+# `dl_anchor` grows in step with `tf_anchor` for a constant-density
+# stream. Tuning it away from 0.75 is a separate, separately-benched
+# decision.
+DEFAULT_B_ANCHOR: Final[float] = DEFAULT_B
+
 # Query-term-frequency saturation (Robertson & Walker 1994's `k3`,
 # the query-side analogue of `k1`). `score()` weights each query
 # term by ``idf * (k3 + 1) * qf / (k3 + qf)``.
@@ -131,7 +150,12 @@ _SERIALIZE_MAGIC: Final[bytes] = b"AELFBM25"
 # must not be reused under another. v2 blobs DO exist in the wild;
 # `_load_sidecar` rejects a version mismatch and rebuilds, so the
 # upgrade costs one rebuild per store and never mis-scores.
-_SERIALIZE_VERSION: Final[int] = 3
+# v4 (#1180): appends `per_field` (uint8), `b_anchor` + `avgdl_anchor`
+# (float64), and the anchor stream's `dl_anchor` / `tf_anchor` arrays.
+# The anchor arrays are empty in legacy (`per_field=False`) blobs, so the
+# size cost of the bump is 17 bytes there. Same rebuild-on-mismatch
+# posture as v3.
+_SERIALIZE_VERSION: Final[int] = 4
 
 
 def tokenize(text: str) -> list[str]:
@@ -175,6 +199,52 @@ def tokenize_stemmed(text: str) -> list[str]:
     ]
 
 
+def _build_stream(
+    token_lists: list[list[str]],
+    vocab: dict[str, int],
+    n_docs: int,
+    n_terms: int,
+) -> tuple[sp.csr_matrix, np.ndarray, list[set[int]]]:
+    """Materialise one field's CSR `tf`, its `dl` vector, and the
+    per-document set of column indices it contributes.
+
+    The returned term sets let the caller compute `df` over the
+    **union** of streams — a term occurring in both a belief's content
+    and its anchor text must count once, not twice, or `idf` would be
+    depressed for exactly the terms BM25F is meant to reward
+    (Robertson, Zaragoza & Taylor 2004 §3).
+    """
+    rows_idx: list[int] = []
+    cols_idx: list[int] = []
+    data: list[int] = []
+    dl_list: list[int] = []
+    per_doc_terms: list[set[int]] = []
+    for i, doc_tokens in enumerate(token_lists):
+        counts: dict[int, int] = {}
+        for t in doc_tokens:
+            j = vocab[t]
+            counts[j] = counts.get(j, 0) + 1
+        dl_list.append(len(doc_tokens))
+        for j, c in counts.items():
+            rows_idx.append(i)
+            cols_idx.append(j)
+            data.append(c)
+        per_doc_terms.append(set(counts))
+
+    if n_docs == 0 or n_terms == 0:
+        tf = sp.csr_matrix((max(n_docs, 0), max(n_terms, 0)), dtype=np.float32)
+    else:
+        tf = sp.csr_matrix(
+            (
+                np.asarray(data, dtype=np.float32),
+                (np.asarray(rows_idx, dtype=np.int64),
+                 np.asarray(cols_idx, dtype=np.int64)),
+            ),
+            shape=(n_docs, n_terms),
+        )
+    return tf, np.asarray(dl_list, dtype=np.float32), per_doc_terms
+
+
 @dataclass
 class BM25Index:
     """Precomputed BM25F sparse term-frequency index.
@@ -190,13 +260,29 @@ class BM25Index:
         builds with the same input (sorted insertion order).
     tf
         Sparse CSR matrix of shape ``(n_docs, n_terms)``. Cell
-        ``[i, j]`` is the count of vocabulary term ``j`` in the
-        augmented document for belief ``i``.
+        ``[i, j]`` is the count of vocabulary term ``j`` in belief
+        ``i``'s document. Under `per_field` this is the **content
+        stream alone**; otherwise it is the augmented document
+        (content plus `anchor_weight` replicas of the anchor text).
     dl
         Per-document length vector of shape ``(n_docs,)``. Sum of
-        cell values across columns for each row.
+        cell values across columns for each row, so it tracks `tf`:
+        content-only under `per_field`, combined otherwise.
     avgdl
         Mean of `dl`. Used in BM25 length normalisation.
+    per_field
+        True when the index carries content and anchor as two
+        separately-normalised BM25F fields (#1180) rather than one
+        concatenated document. Selects the `score()` branch.
+    tf_anchor, dl_anchor, avgdl_anchor
+        The anchor stream's counterparts to `tf` / `dl` / `avgdl`.
+        `tf_anchor` holds **unreplicated** raw anchor counts —
+        `anchor_weight` acts as a field weight at score time rather
+        than as a replication factor. All three are None / 0.0 when
+        `per_field` is False.
+    b_anchor
+        Length-normalisation strength for the anchor stream. Unused
+        when `per_field` is False.
     idf
         Per-term inverse-document-frequency vector of shape
         ``(n_terms,)``. Computed as
@@ -224,6 +310,11 @@ class BM25Index:
     k1: float = DEFAULT_K1
     b: float = DEFAULT_B
     k3: float = DEFAULT_K3
+    per_field: bool = False
+    tf_anchor: sp.csr_matrix | None = None
+    dl_anchor: np.ndarray | None = None
+    avgdl_anchor: float = 0.0
+    b_anchor: float = DEFAULT_B_ANCHOR
 
     # --- Construction -----------------------------------------------------
 
@@ -236,27 +327,43 @@ class BM25Index:
         k1: float = DEFAULT_K1,
         b: float = DEFAULT_B,
         k3: float = DEFAULT_K3,
+        per_field: bool = False,
+        b_anchor: float = DEFAULT_B_ANCHOR,
     ) -> BM25Index:
         """Construct a fresh index from `store`.
 
         Walks every belief in `belief_id` ASC order and every edge
-        with non-NULL `anchor_text`. The augmented document for
-        belief ``b`` is::
+        with non-NULL `anchor_text`.
+
+        **Legacy (`per_field=False`, the default).** The augmented
+        document for belief ``b`` is::
 
             tokens(b.content) + anchor_weight * concat_tokens(incoming_anchors(b))
 
-        Length-normalisation in BM25 absorbs the replicated tokens
-        correctly (Robertson 2004 § Stream replication). Setting
-        ``anchor_weight = 0`` reproduces standard BM25 over the
+        This is the single-field stream-replication approximation.
+        Setting ``anchor_weight = 0`` reproduces standard BM25 over the
         belief's own content — used by the AC3 W=0 equivalence test.
 
-        Deterministic: same store + same `anchor_weight` produces
-        the same `belief_ids`, `vocabulary`, `tf`, `dl`, `idf`.
+        **Per-field (`per_field=True`, #1180).** Content and anchor are
+        kept as two streams with their own lengths and their own
+        `avgdl`, and `anchor_weight` becomes a *field weight* rather
+        than a replication count. Replication is not BM25F: because the
+        replicas land in the same `dl`, a belief's own content terms are
+        length-penalised in proportion to how much text its citers
+        wrote about it. Measured on a synthetic two-belief corpus, a
+        belief carrying 90 anchor tokens scores its own twice-occurring
+        term 1.79x lower than an otherwise identical uncited belief.
+
+        Deterministic in both modes: same store + same parameters
+        produces the same `belief_ids`, `vocabulary`, `tf`, `dl`, `idf`
+        (and, under `per_field`, the same `tf_anchor` / `dl_anchor`).
         """
         if anchor_weight < 0:
             raise ValueError("anchor_weight must be >= 0")
         if k3 < 0.0:
             raise ValueError("k3 must be >= 0")
+        if b_anchor < 0.0:
+            raise ValueError("b_anchor must be >= 0")
 
         rows = store.list_beliefs_for_indexing()
         belief_ids: list[str] = [bid for bid, _ in rows]
@@ -276,17 +383,35 @@ class BM25Index:
         # COO-style triple list; we materialise the CSR at the end.
         vocab: dict[str, int] = {}
         tokens_per_doc: list[list[str]] = []
+        anchor_tokens_per_doc: list[list[str]] = []
         for bid in belief_ids:
             content = contents.get(bid, "")
             doc_tokens = tokenize_stemmed(content)
-            for anchor in incoming.get(bid, ()):
-                anchor_tokens = tokenize_stemmed(anchor)
-                for _ in range(anchor_weight):
-                    doc_tokens.extend(anchor_tokens)
-            tokens_per_doc.append(doc_tokens)
-            for t in doc_tokens:
-                if t not in vocab:
-                    vocab[t] = len(vocab)
+            anchor_token_lists = [
+                tokenize_stemmed(anchor) for anchor in incoming.get(bid, ())
+            ]
+            if per_field:
+                # Two streams. Anchor counts stay unreplicated —
+                # `anchor_weight` is applied as a field weight at score
+                # time, after each stream has paid its own length
+                # normalisation.
+                flat_anchor = [t for lst in anchor_token_lists for t in lst]
+                anchor_tokens_per_doc.append(flat_anchor)
+                tokens_per_doc.append(doc_tokens)
+                for t in doc_tokens:
+                    if t not in vocab:
+                        vocab[t] = len(vocab)
+                for t in flat_anchor:
+                    if t not in vocab:
+                        vocab[t] = len(vocab)
+            else:
+                for anchor_tokens in anchor_token_lists:
+                    for _ in range(anchor_weight):
+                        doc_tokens.extend(anchor_tokens)
+                tokens_per_doc.append(doc_tokens)
+                for t in doc_tokens:
+                    if t not in vocab:
+                        vocab[t] = len(vocab)
 
         # Stable column ordering: sort the vocabulary alphabetically
         # so two builds against the same corpus produce identical
@@ -299,35 +424,27 @@ class BM25Index:
         # Second pass: construct CSR via aggregated COO triples. We
         # accumulate per-document term counts in a dict to fold
         # repeats before handing them to scipy.
-        rows_idx: list[int] = []
-        cols_idx: list[int] = []
-        data: list[int] = []
-        dl_list: list[int] = []
+        tf, dl, content_terms = _build_stream(
+            tokens_per_doc, vocab, n_docs, n_terms,
+        )
+        tf_anchor: sp.csr_matrix | None = None
+        dl_anchor: np.ndarray | None = None
+        avgdl_anchor: float = 0.0
         df_counts = np.zeros(n_terms, dtype=np.int64)
-        for i, doc_tokens in enumerate(tokens_per_doc):
-            counts: dict[int, int] = {}
-            for t in doc_tokens:
-                j = vocab[t]
-                counts[j] = counts.get(j, 0) + 1
-            dl_list.append(len(doc_tokens))
-            for j, c in counts.items():
-                rows_idx.append(i)
-                cols_idx.append(j)
-                data.append(c)
-                df_counts[j] += 1
-
-        if n_docs == 0 or n_terms == 0:
-            tf = sp.csr_matrix((max(n_docs, 0), max(n_terms, 0)), dtype=np.float32)
-        else:
-            tf = sp.csr_matrix(
-                (
-                    np.asarray(data, dtype=np.float32),
-                    (np.asarray(rows_idx, dtype=np.int64),
-                     np.asarray(cols_idx, dtype=np.int64)),
-                ),
-                shape=(n_docs, n_terms),
+        if per_field:
+            tf_anchor, dl_anchor, anchor_terms = _build_stream(
+                anchor_tokens_per_doc, vocab, n_docs, n_terms,
             )
-        dl = np.asarray(dl_list, dtype=np.float32)
+            avgdl_anchor = float(dl_anchor.mean()) if n_docs > 0 else 0.0
+            # df over the union of the two streams (see `_build_stream`).
+            for c_terms, a_terms in zip(content_terms, anchor_terms):
+                for j in c_terms | a_terms:
+                    df_counts[j] += 1
+        else:
+            for c_terms in content_terms:
+                for j in c_terms:
+                    df_counts[j] += 1
+
         avgdl: float = float(dl.mean()) if n_docs > 0 else 0.0
         # Robertson 2004 smoothed idf. Always non-negative on
         # df <= n_docs, so no clamping needed.
@@ -349,9 +466,95 @@ class BM25Index:
             k1=k1,
             b=b,
             k3=k3,
+            per_field=per_field,
+            tf_anchor=tf_anchor,
+            dl_anchor=dl_anchor,
+            avgdl_anchor=avgdl_anchor,
+            b_anchor=b_anchor,
         )
 
     # --- Scoring ----------------------------------------------------------
+
+    def _row_index(self, mat: sp.csr_matrix) -> np.ndarray:
+        """Per-nonzero row index for `mat`, expanded from its indptr."""
+        return np.repeat(
+            np.arange(mat.shape[0], dtype=np.int64), np.diff(mat.indptr),
+        )
+
+    @staticmethod
+    def _length_norm(dl: np.ndarray, avgdl: float, b: float) -> np.ndarray:
+        """Robertson's ``B_f(d) = (1 - b) + b * dl_f(d) / avgdl_f``.
+
+        Falls back to all-ones on an empty stream (`avgdl == 0`), which
+        makes the stream's contribution its raw `tf` — correct, since an
+        empty stream has no nonzero cells to scale.
+        """
+        if avgdl > 0.0:
+            return (1.0 - b) + b * (dl / avgdl)
+        return np.ones_like(dl)
+
+    def _saturated_per_field(self) -> sp.csr_matrix:
+        """Per-field BM25F saturated weights (#1180).
+
+        Robertson, Zaragoza & Taylor (2004), *Simple BM25 Extension to
+        Multiple Weighted Fields*::
+
+            B_f(d)   = (1 - b_f) + b_f * dl_f(d) / avgdl_f
+            tf~(t,d) = SUM_f  w_f * tf_f(t,d) / B_f(d)
+            weight   = (k1 + 1) * tf~ / (k1 + tf~)
+
+        Length normalisation is applied to each stream's raw `tf`
+        *before* the streams are summed, and the saturation denominator
+        is the plain constant `k1` — not `tf + k1 * B` as in the
+        single-field form, where a mixed `B` would let one stream's
+        length decide the other's penalty.
+
+        The `(k1 + 1)` numerator is not in the paper's rank-equivalent
+        presentation, which drops it as a constant factor. It is kept
+        here because it is the term that makes `anchor_weight = 0`
+        collapse onto the legacy single-field scorer exactly rather than
+        uniformly 1/(k1+1) of it: with one stream of weight 1,
+        ``(k1+1)*(tf/B) / (k1 + tf/B)`` is algebraically
+        ``tf*(k1+1) / (tf + k1*B)``. Dropping it would leave every score
+        2.5x smaller at the shipped `k1 = 1.5` — rank-neutral, but it
+        would break the W=0 equivalence guarantee and shift the
+        magnitudes that `scoring.partial_bayesian_score` feeds to
+        `log()`.
+        """
+        content_norm = self._length_norm(self.dl, self.avgdl, self.b)
+        weighted = self.tf.copy()
+        if weighted.nnz:
+            weighted.data = (
+                weighted.data / content_norm[self._row_index(weighted)]
+            ).astype(np.float32)
+
+        if (
+            self.tf_anchor is not None
+            and self.dl_anchor is not None
+            and self.anchor_weight > 0
+            and self.tf_anchor.nnz
+        ):
+            anchor_norm = self._length_norm(
+                self.dl_anchor, self.avgdl_anchor, self.b_anchor,
+            )
+            a = self.tf_anchor.copy()
+            a.data = (
+                float(self.anchor_weight) * a.data
+                / anchor_norm[self._row_index(a)]
+            ).astype(np.float32)
+            # CSR addition takes the union of the sparsity patterns and
+            # returns canonical (sorted-index) output, so the result is
+            # a deterministic function of the two inputs.
+            weighted = (weighted + a).tocsr()
+
+        if not weighted.nnz:
+            return weighted
+        wt = weighted.data
+        sat = ((self.k1 + 1.0) * wt / (self.k1 + wt)).astype(np.float32)
+        return sp.csr_matrix(
+            (sat, weighted.indices.copy(), weighted.indptr.copy()),
+            shape=weighted.shape,
+        )
 
     def score(
         self,
@@ -409,25 +612,22 @@ class BM25Index:
         # We compute the sparse scoring in two passes: a TF saturation
         # transform on the nonzero cells, then a sparse matvec with
         # the (idf-weighted) query vector.
-        tf_csr = self.tf
-        if self.avgdl > 0.0:
-            len_norm = (1.0 - self.b) + self.b * (self.dl / self.avgdl)
+        if self.per_field:
+            sat = self._saturated_per_field()
         else:
-            len_norm = np.ones_like(self.dl)
-        # tf_sat[i, j] = tf[i, j] * (k1 + 1) / (tf[i, j] + k1 * len_norm[i])
-        # Operate on the CSR data array to keep this O(nnz).
-        tf_data = tf_csr.data.astype(np.float32, copy=False)
-        # Per-cell row index from indptr. expand to nnz length.
-        row_idx = np.repeat(
-            np.arange(tf_csr.shape[0], dtype=np.int64),
-            np.diff(tf_csr.indptr),
-        )
-        per_cell_norm = (self.k1 * len_norm[row_idx]).astype(np.float32)
-        sat_data = tf_data * (self.k1 + 1.0) / (tf_data + per_cell_norm)
-        sat = sp.csr_matrix(
-            (sat_data, tf_csr.indices.copy(), tf_csr.indptr.copy()),
-            shape=tf_csr.shape,
-        )
+            tf_csr = self.tf
+            len_norm = self._length_norm(self.dl, self.avgdl, self.b)
+            # tf_sat[i, j] = tf[i, j] * (k1 + 1) / (tf[i, j] + k1 * len_norm[i])
+            # Operate on the CSR data array to keep this O(nnz).
+            tf_data = tf_csr.data.astype(np.float32, copy=False)
+            # Per-cell row index from indptr. expand to nnz length.
+            row_idx = self._row_index(tf_csr)
+            per_cell_norm = (self.k1 * len_norm[row_idx]).astype(np.float32)
+            sat_data = tf_data * (self.k1 + 1.0) / (tf_data + per_cell_norm)
+            sat = sp.csr_matrix(
+                (sat_data, tf_csr.indices.copy(), tf_csr.indptr.copy()),
+                shape=tf_csr.shape,
+            )
         scores = sat @ q_vec  # shape (n_docs,)
 
         # Top-K with deterministic tie-break on belief_id ASC.
@@ -504,6 +704,23 @@ class BM25Index:
         widened k1/b: it is a scoring-time parameter carried on the
         index, so a blob written under one k3 must not be reused under
         another. Written float64 so the round-trip is exact.
+
+        v4 (#1180) appends the per-field mode flag, `b_anchor` and
+        `avgdl_anchor` (float64, same exactness reason), and — only
+        when `per_field` is set — the anchor stream's `dl_anchor`,
+        `indptr`, `indices` and `data`, laid out exactly as the content
+        stream's are. A legacy blob carries `per_field = 0` and stops
+        after `avgdl_anchor`, so the bump costs 17 bytes there::
+
+            per_field          uint8
+            b_anchor           float64
+            avgdl_anchor       float64
+            [if per_field]
+              dl_anchor        float32 x n_docs
+              tf_anchor.indptr int64 x (n_docs + 1)
+              nnz_anchor       uint64
+              tf_anchor.indices int64 x nnz_anchor
+              tf_anchor.data   float32 x nnz_anchor
         """
         buf = io.BytesIO()
         buf.write(_SERIALIZE_MAGIC)
@@ -545,6 +762,26 @@ class BM25Index:
         buf.write(np.uint64(data_arr.size).tobytes())
         buf.write(indices.tobytes())
         buf.write(data_arr.tobytes())
+
+        # v4 (#1180): per-field mode + the anchor stream.
+        buf.write(np.uint8(1 if self.per_field else 0).tobytes())
+        buf.write(np.float64(self.b_anchor).tobytes())
+        buf.write(np.float64(self.avgdl_anchor).tobytes())
+        if self.per_field:
+            if self.tf_anchor is None or self.dl_anchor is None:
+                raise ValueError(
+                    "per_field index missing tf_anchor / dl_anchor"
+                )
+            buf.write(
+                np.asarray(self.dl_anchor, dtype=np.float32).tobytes()
+            )
+            a_indptr = np.asarray(self.tf_anchor.indptr, dtype=np.int64)
+            a_indices = np.asarray(self.tf_anchor.indices, dtype=np.int64)
+            a_data = np.asarray(self.tf_anchor.data, dtype=np.float32)
+            buf.write(a_indptr.tobytes())
+            buf.write(np.uint64(a_data.size).tobytes())
+            buf.write(a_indices.tobytes())
+            buf.write(a_data.tobytes())
 
         return buf.getvalue()
 
@@ -602,7 +839,8 @@ class BM25Index:
         indices = np.array(_read(np.dtype(np.int64), nnz), copy=True)
         data_arr = np.array(_read(np.dtype(np.float32), nnz), copy=True)
 
-        if n_docs == 0 or n_terms == 0:
+        empty = n_docs == 0 or n_terms == 0
+        if empty:
             tf = sp.csr_matrix(
                 (max(n_docs, 0), max(n_terms, 0)), dtype=np.float32,
             )
@@ -611,6 +849,29 @@ class BM25Index:
                 (data_arr, indices, indptr),
                 shape=(n_docs, n_terms),
             )
+
+        per_field = bool(_read(np.dtype(np.uint8), 1)[0])
+        b_anchor = float(_read(np.dtype(np.float64), 1)[0])
+        avgdl_anchor = float(_read(np.dtype(np.float64), 1)[0])
+        tf_anchor: sp.csr_matrix | None = None
+        dl_anchor: np.ndarray | None = None
+        if per_field:
+            dl_anchor = np.array(_read(np.dtype(np.float32), n_docs), copy=True)
+            a_indptr = np.array(
+                _read(np.dtype(np.int64), n_docs + 1), copy=True,
+            )
+            a_nnz = int(_read(np.dtype(np.uint64), 1)[0])
+            a_indices = np.array(_read(np.dtype(np.int64), a_nnz), copy=True)
+            a_data = np.array(_read(np.dtype(np.float32), a_nnz), copy=True)
+            if empty:
+                tf_anchor = sp.csr_matrix(
+                    (max(n_docs, 0), max(n_terms, 0)), dtype=np.float32,
+                )
+            else:
+                tf_anchor = sp.csr_matrix(
+                    (a_data, a_indices, a_indptr), shape=(n_docs, n_terms),
+                )
+
         return cls(
             belief_ids=belief_ids,
             vocabulary=vocab,
@@ -622,6 +883,11 @@ class BM25Index:
             k1=k1,
             b=b,
             k3=k3,
+            per_field=per_field,
+            tf_anchor=tf_anchor,
+            dl_anchor=dl_anchor,
+            avgdl_anchor=avgdl_anchor,
+            b_anchor=b_anchor,
         )
 
 
@@ -672,6 +938,8 @@ class BM25IndexCache:
     k1: float = DEFAULT_K1
     b: float = DEFAULT_B
     k3: float = DEFAULT_K3
+    per_field: bool = False
+    b_anchor: float = DEFAULT_B_ANCHOR
     _index: BM25Index | None = field(default=None, init=False, repr=False)
     _generation: int | None = field(default=None, init=False, repr=False)
     _subscribed: bool = field(default=False, init=False, repr=False)
@@ -705,6 +973,8 @@ class BM25IndexCache:
                 k1=self.k1,
                 b=self.b,
                 k3=self.k3,
+                per_field=self.per_field,
+                b_anchor=self.b_anchor,
             )
             self._write_sidecar(self._index, generation)
             self._generation = generation
@@ -767,6 +1037,16 @@ class BM25IndexCache:
             # served to a cache configured with it on.
             if index.k3 != self.k3:
                 return None
+            # v4 (#1180): the field split changes the scoring functional
+            # form, not just a constant, so a legacy blob must never be
+            # served to a per-field cache or vice versa. `b_anchor` only
+            # participates in scoring under per_field, so it is compared
+            # only there — otherwise flipping an inert knob would force a
+            # pointless rebuild.
+            if index.per_field != self.per_field:
+                return None
+            if self.per_field and index.b_anchor != self.b_anchor:
+                return None
             self._generation = generation
             return index
         except Exception:  # noqa: BLE001 — any bad sidecar => rebuild
@@ -817,6 +1097,7 @@ __all__ = [
     "DEFAULT_ANCHOR_WEIGHT",
     "DEFAULT_K1",
     "DEFAULT_B",
+    "DEFAULT_B_ANCHOR",
     "DEFAULT_K3",
     "DEFAULT_TOP_K",
     "BM25Index",
