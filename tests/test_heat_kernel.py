@@ -261,27 +261,44 @@ def test_heat_kernel_latency_at_n_50k_under_10ms(
 # --- AC7 -----------------------------------------------------------------
 
 
-def test_use_heat_kernel_default_on() -> None:
-    """Per #154 the default flipped to ON after the #437 11/11 gate
-    cleared. No env, no kwarg, no toml → True."""
+def test_use_heat_kernel_default_off() -> None:
+    """Per #1162 the default is False again. #154 flipped it on after
+    the #437 11/11 gate cleared, but the lane cannot fire on any
+    production path — nothing in `src/` builds the eigenbasis it needs
+    — so a True default asserted an active lane that does not exist.
+
+    Reachability is the other half of this claim and a resolver check
+    cannot make it; see `test_heat_used_false_on_a_default_retrieve` in
+    `tests/test_posterior_ranking_heat.py`.
+    """
     from aelfrice.retrieval import is_heat_kernel_enabled
 
-    assert is_heat_kernel_enabled() is True
+    assert is_heat_kernel_enabled() is False
 
 
-def test_use_heat_kernel_opt_out_paths_intact(tmp_path) -> None:
-    """The opt-out surface (kwarg, TOML key) remains reachable for
-    users who want the pre-flip ranking. Replaces the v1.7-era
-    default-off check."""
+def test_use_heat_kernel_override_paths_intact(tmp_path) -> None:
+    """Both overrides stay reachable in both directions, so the #1162
+    default-off is a default and not a removal."""
     from aelfrice.retrieval import is_heat_kernel_enabled
 
     # Explicit kwarg
     assert is_heat_kernel_enabled(False) is False
+    assert is_heat_kernel_enabled(True) is True
 
     # TOML key
-    cfg = tmp_path / ".aelfrice.toml"
-    cfg.write_text("[retrieval]\nuse_heat_kernel = false\n")
-    assert is_heat_kernel_enabled(start=tmp_path) is False
+    off = tmp_path / "off"
+    off.mkdir()
+    (off / ".aelfrice.toml").write_text(
+        "[retrieval]\nuse_heat_kernel = false\n",
+    )
+    assert is_heat_kernel_enabled(start=off) is False
+
+    on = tmp_path / "on"
+    on.mkdir()
+    (on / ".aelfrice.toml").write_text(
+        "[retrieval]\nuse_heat_kernel = true\n",
+    )
+    assert is_heat_kernel_enabled(start=on) is True
 
 
 # --- Bandwidth sanity ----------------------------------------------------

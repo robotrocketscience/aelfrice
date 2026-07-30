@@ -9,7 +9,7 @@ This is the reference for power users whose project has a documentation idiom or
 A single optional TOML file at the root of a project (or any ancestor). It exposes the following power-user surfaces:
 
 - `[noise]` — onboard-time belief filter. Changes how `aelf onboard` ingests beliefs; nothing else.
-- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `l1_limit` + `token_budget` (the #1045 wide-retrieval knobs — BM25 candidate cap + token budget, default 50/2400; raise both together for multi-hop recall), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `bm25f_per_field` + `bm25_b_anchor` (the #1180 two-field BM25F scorer — content and anchor normalised separately instead of concatenated, default off pending its bench), `use_heat_kernel` (authority scoring lane, default-on since v2.1), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1 — live on the production `retrieve()` path via the #1107 Phase-5 cutover; marker-routed, a no-op fall-through on non-marker queries), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, default-on since #769), `use_intentional_clustering` (co-locating related beliefs, default-on since v3.0 — live on the production `retrieve()` path via the #1107 Phase-4 cutover), `expansion_gate_enabled`, `use_gamma_posterior_temperature` (default off), and `use_zeta_posterior_rerank` (default off; mutually exclusive with the γ flag — `retrieve()` raises `ValueError` when both are on), `use_temporal_spine` + `temporal_spine_budget` (the #1064 chronological-adjacency lane, default **on**/32 since v4.0 — live on the production `retrieve()` path via the #1107 cutover; pairs with `[ingest] write_temporal_spine`), `use_entity_persist_demote` (the #1096 entity-persistence demotion / organic-sink rerank modifier, default **on** since v4.0 — live on the production `retrieve()` path via the #1107 cutover), `use_origin_tiebreak` (the #1089 origin-priority within-tier tie-break, default off), `use_supersession_demote` + `supersession_treatment` + `supersession_demote_factor` (the #1187 supersession lane — demote or exclude beliefs a `SUPERSEDES` edge retires, default off/`demote`/0.5, pending the three-arm bench). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
+- `[retrieval]` (v1.3+) — retrieval-time tier toggles + ranking. Knobs: `entity_index_enabled` (L2.5), `bfs_enabled` (L3), `posterior_weight` (partial Bayesian-weighted L1 ranking), `l1_limit` + `token_budget` (the #1045 wide-retrieval knobs — BM25 candidate cap + token budget, default 50/2400; raise both together for multi-hop recall), `use_bm25f_anchors` (BM25F-with-anchor-text since v1.7), `bm25f_per_field` + `bm25_b_anchor` (the #1180 two-field BM25F scorer — content and anchor normalised separately instead of concatenated, default off pending its bench), `use_heat_kernel` (authority scoring lane, default **off** again since #1162 — the lane needs an eigenbasis no production caller builds, so a default-on flag was reporting a lane that cannot fire; `LaneTelemetry.heat_used` now says at runtime whether it did), `use_hrr_structural` (HRR structural-query lane, default-on since v2.1 — live on the production `retrieve()` path via the #1107 Phase-5 cutover; marker-routed, a no-op fall-through on non-marker queries), `hrr_persist` (HRR structural-index on-disk persistence, default-on since v3.0), `use_type_aware_compression` (per-belief retention-class compression, default-on since #769), `use_intentional_clustering` (co-locating related beliefs, default-on since v3.0 — live on the production `retrieve()` path via the #1107 Phase-4 cutover), `expansion_gate_enabled`, `use_gamma_posterior_temperature` (default off), and `use_zeta_posterior_rerank` (default off; mutually exclusive with the γ flag — `retrieve()` raises `ValueError` when both are on), `use_temporal_spine` + `temporal_spine_budget` (the #1064 chronological-adjacency lane, default **on**/32 since v4.0 — live on the production `retrieve()` path via the #1107 cutover; pairs with `[ingest] write_temporal_spine`), `use_entity_persist_demote` (the #1096 entity-persistence demotion / organic-sink rerank modifier, default **on** since v4.0 — live on the production `retrieve()` path via the #1107 cutover), `use_origin_tiebreak` (the #1089 origin-priority within-tier tie-break, default off), `use_supersession_demote` + `supersession_treatment` + `supersession_demote_factor` (the #1187 supersession lane — demote or exclude beliefs a `SUPERSEDES` edge retires, default off/`demote`/0.5, pending the three-arm bench). Two placeholder flags (`use_signed_laplacian`, `use_posterior_ranking`) are recognised but emit a deprecation warning if set — their lanes have not yet shipped.
 - `[rebuilder]` (v1.4+) — context-rebuilder knobs: `turn_window_n` (default 50), `token_budget` (default 4000), `trigger_mode` (`manual`|`threshold`|`dynamic`, default `threshold`), `threshold_fraction` (default 0.6), and `query_strategy` (v1.7+, default `stack-r1-r3` since v3.0). `[rebuild_floor]` (v1.7+) sets the token-budget floors for the session-scoped and L1 belief lanes (`[rebuild_floor] session` and `[rebuild_floor] l1`).
 - `[onboard.llm]` (v1.3.0+) — direct-API onboard classifier gate; documented under [Keys § `[onboard.llm]`](#onboardllm-v130) below.
 - `[cadence]`, `[implicit_feedback]`, and `[hook_audit]` — feedback-cadence scoring, deferred retrieval-exposure feedback, and the per-turn hook audit log. Recognised here but documented in their module docstrings (`src/aelfrice/cadence.py`, `src/aelfrice/deferred_feedback.py`, `src/aelfrice/hook.py`).
@@ -127,12 +127,14 @@ bm25f_per_field = false
 # AELFRICE_BM25_B_ANCHOR env var overrides.
 bm25_b_anchor = 0.75
 
-# Default `true` since the #154 composition tracker flipped the
-# default after the #437 reproducibility-harness gate cleared at
-# 11/11. Enables the heat-kernel authority scoring lane (#150). Set
-# to `false` for parity with the pre-flip ranking.
-# AELFRICE_HEAT_KERNEL=0 env var overrides.
-use_heat_kernel = true
+# Default `false` again since #1162. #154 flipped it on after the
+# #437 gate cleared at 11/11, but the heat-kernel lane (#150) also
+# needs a built eigenbasis and nothing in the shipped pipeline
+# constructs one — so the flag advertised a lane that could not
+# fire. Setting it `true` is still the opt-in, and still requires
+# passing an `eigenbasis_cache` for anything to happen.
+# AELFRICE_HEAT_KERNEL=1 env var overrides.
+use_heat_kernel = false
 
 # Default `true` since the #154 composition tracker flipped the
 # default after the #437 reproducibility-harness gate cleared at
@@ -476,7 +478,7 @@ Precedence (first decisive wins): env var `AELFRICE_ORIGIN_TIEBREAK=1` > explici
 
 Negative values clamp to `0.0`. Non-numeric env values trace to stderr and fall through. The cache key is extended with the resolved weight (rounded to four decimals), so two callers passing different weights against the same store do not collide on a shared `RetrievalCache`.
 
-BM25F-only L1 shipped default-on at v1.7.0 (see `use_bm25f_anchors`); the heat-kernel and HRR-structural lanes shipped default-on at v2.1.0 once the #154 composition-tracker bench gate cleared 11/11 against the #437 reproducibility-harness corpus (see `use_heat_kernel` and `use_hrr_structural` below). See [`docs/design/bayesian_ranking.md`](../design/bayesian_ranking.md) for the v1.3 contract and the rejected-alternatives analysis.
+BM25F-only L1 shipped default-on at v1.7.0 (see `use_bm25f_anchors`); the heat-kernel and HRR-structural lanes shipped default-on at v2.1.0 once the #154 composition-tracker bench gate cleared 11/11 against the #437 reproducibility-harness corpus (see `use_heat_kernel` and `use_hrr_structural` below). `use_heat_kernel` was returned to default-off by #1162 — HRR-structural is unaffected. See [`docs/design/bayesian_ranking.md`](../design/bayesian_ranking.md) for the v1.3 contract and the rejected-alternatives analysis.
 
 ### `bfs_enabled`
 
@@ -513,9 +515,13 @@ Precedence (first decisive wins): env var `AELFRICE_BM25F=0`/`1` > explicit Pyth
 
 ### `use_heat_kernel`
 
-Boolean, default `true` since the #154 composition tracker flipped the default after the #437 reproducibility-harness gate cleared at 11/11. Enables the heat-kernel authority-scoring lane (#150). Set to `false` for parity with the v2.0.x ranking.
+Boolean, default `false` since #1162. Enables the heat-kernel authority-scoring lane (#150).
 
-Precedence (first decisive wins): env var `AELFRICE_HEAT_KERNEL=0`/`1` > explicit Python kwarg > TOML `[retrieval] use_heat_kernel` > default `true`.
+#154 flipped this default to `true` at v2.1.0 once the #437 reproducibility-harness gate cleared 11/11, and it stayed there for two minor versions — but the lane is guarded on a non-stale `GraphEigenbasisCache` as well as on this flag, and nothing in the shipped pipeline ever constructs one. `retrieve()` accepts a cache and defaults it to `None`; only tests pass one. So the flag has been advertising an active lane that could not fire, and the flip back is inert rather than a ranking change: every call was already taking the heat-off path.
+
+Setting it `true` is still the opt-in and the lane is still wired, but on its own it does nothing — you also have to pass an `eigenbasis_cache`. `LaneTelemetry.heat_used` reports whether the branch actually rewrote an ordering, which is the question the flag cannot answer.
+
+Precedence (first decisive wins): env var `AELFRICE_HEAT_KERNEL=0`/`1` > explicit Python kwarg > TOML `[retrieval] use_heat_kernel` > default `false`.
 
 ### `use_hrr_structural`
 

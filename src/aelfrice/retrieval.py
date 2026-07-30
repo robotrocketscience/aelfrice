@@ -2919,10 +2919,26 @@ def is_heat_kernel_enabled(
       1. AELFRICE_HEAT_KERNEL env var (truthy / falsy normalised).
       2. Explicit `explicit` kwarg from the caller.
       3. `[retrieval] use_heat_kernel` in `.aelfrice.toml`.
-      4. Default: True — the composition tracker (#154) flipped the
-         default after the #437 reproducibility-harness gate cleared
-         at 11/11. Opt out via the env var, kwarg, or TOML key for
-         parity with the pre-flip ranking.
+      4. Default: False (#1162). The composition tracker (#154) flipped
+         this to True once the #437 reproducibility-harness gate cleared
+         at 11/11, and it has reported an active lane ever since — but
+         the lane cannot fire on any production path, because nothing in
+         `src/` constructs a `GraphEigenbasisCache`. `retrieve()` takes
+         one as a parameter defaulting to None in four signatures and
+         never builds it; only tests do. A True default therefore
+         asserted something untrue about the shipped pipeline.
+
+    **The flip is inert, not a behaviour change.** The heat branch is
+    guarded on a non-stale eigenbasis being available as well as on this
+    flag, so with no eigenbasis it was already falling through to the
+    heat-off path on every call. γ and ζ already run their
+    "no eigenbasis" branch today for the same reason. `heat_used` on
+    `LaneTelemetry` is what makes that checkable at runtime rather than
+    by grep.
+
+    Turning it back on is still a one-line opt-in, and the lane is left
+    wired for the day someone benches it (#1113 closed graph-theory-as-
+    a-lever negative, so that would be a bench proposal, not a fix).
 
     Reuses the `HEAT_KERNEL_FLAG` constant that #232 introduced as a
     placeholder. Now that the lane has shipped, the flag is no
@@ -2937,7 +2953,7 @@ def is_heat_kernel_enabled(
     toml_value = _read_toml_flag_for(HEAT_KERNEL_FLAG, start)
     if toml_value is not None:
         return toml_value
-    return True
+    return False
 
 
 def is_bfs_enabled(
