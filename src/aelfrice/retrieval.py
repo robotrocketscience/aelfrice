@@ -216,6 +216,31 @@ ORIGIN_TIEBREAK_FLAG: Final[str] = "use_origin_tiebreak"
 # Floor so a durable-free belief (S1 = 0) gets a bounded, not infinite,
 # log penalty.
 ENTITY_PERSIST_DEMOTE_EPS: Final[float] = 1e-3
+# #1187 supersession lane. Default-OFF (resolver default False) and it
+# stays that way: unlike the #1170 BFS fix this changes `retrieve()` output
+# on the **default** path, so the flip waits on the three-arm bench
+# (demote vs exclusion vs control) the operator ratified on 2026-07-29.
+# Both arms ship; the bench picks the default, nothing here presumes it.
+SUPERSESSION_DEMOTE_FLAG: Final[str] = "use_supersession_demote"
+# Treatment selector. `demote` reduces the superseded belief's rerank
+# score; `exclude` drops it from the candidate set outright. The
+# trade-off the bench has to settle: exclusion is the stronger reading of
+# "the user retired this claim", but a SUPERSEDES edge can be written by
+# the triple extractor from prose that merely looks like a supersession,
+# and a wrong exclusion hides a belief with no ranking signal to notice.
+SUPERSESSION_TREATMENT_FLAG: Final[str] = "supersession_treatment"
+SUPERSESSION_TREATMENT_DEMOTE: Final[str] = "demote"
+SUPERSESSION_TREATMENT_EXCLUDE: Final[str] = "exclude"
+SUPERSESSION_TREATMENTS: Final[tuple[str, ...]] = (
+    SUPERSESSION_TREATMENT_DEMOTE,
+    SUPERSESSION_TREATMENT_EXCLUDE,
+)
+SUPERSESSION_FACTOR_FLAG: Final[str] = "supersession_demote_factor"
+# 0.5 per the issue spec, the same default the uri_baki primitive carries.
+SUPERSESSION_DEMOTE_FACTOR: Final[float] = 0.5
+# Floor so `factor = 0` is a bounded penalty rather than `log(0) = -inf`,
+# which would make the score non-comparable (and NaN once summed).
+SUPERSESSION_FACTOR_EPS: Final[float] = 1e-6
 TEMPORAL_SPINE_FLAG: Final[str] = "use_temporal_spine"
 TEMPORAL_SPINE_BUDGET_FLAG: Final[str] = "temporal_spine_budget"
 # v2.1 #434 type-aware compression flag. Default-ON since the #769 flip
@@ -286,6 +311,10 @@ ENV_HRR_EXPAND: Final[str] = "AELFRICE_HRR_EXPAND"
 ENV_ENTITY_PERSIST_DEMOTE: Final[str] = "AELFRICE_ENTITY_PERSIST_DEMOTE"
 # #1089 axis-2 origin-priority tie-break env override. Tri-state; default-OFF.
 ENV_ORIGIN_TIEBREAK: Final[str] = "AELFRICE_ORIGIN_TIEBREAK"
+# #1187 supersession lane env overrides. Tri-state; default-OFF.
+ENV_SUPERSESSION_DEMOTE: Final[str] = "AELFRICE_SUPERSESSION_DEMOTE"
+ENV_SUPERSESSION_TREATMENT: Final[str] = "AELFRICE_SUPERSESSION_TREATMENT"
+ENV_SUPERSESSION_FACTOR: Final[str] = "AELFRICE_SUPERSESSION_FACTOR"
 # #1064 temporal-spine lane flag + node-budget knob.
 ENV_TEMPORAL_SPINE: Final[str] = "AELFRICE_TEMPORAL_SPINE"
 ENV_TEMPORAL_SPINE_BUDGET: Final[str] = "AELFRICE_TEMPORAL_SPINE_BUDGET"
@@ -784,6 +813,135 @@ def is_entity_persist_demote_enabled(
     return True
 
 
+def _env_supersession_demote_override() -> bool | None:
+    """Return True/False if AELFRICE_SUPERSESSION_DEMOTE is set to a
+    recognised truthy/falsy value, else None (#1187). Symmetric to
+    `_env_entity_persist_demote_override`."""
+    raw = os.environ.get(ENV_SUPERSESSION_DEMOTE)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def is_supersession_demote_enabled(
+    kwarg: bool | None = None, *, start: Path | None = None
+) -> bool:
+    """Resolve the supersession lane flag (#1187).
+
+    Precedence (first decisive wins):
+      1. AELFRICE_SUPERSESSION_DEMOTE env var (truthy / falsy normalised).
+      2. Explicit `kwarg` from the caller.
+      3. `[retrieval] use_supersession_demote` in `.aelfrice.toml`.
+      4. Default: **False**.
+
+    The default stays False until the ratified three-arm bench (demote vs
+    exclusion vs control) exists and the operator reads it. Unlike the
+    #1170 BFS direction fix, this lane changes `retrieve()` output on the
+    default path, which is precisely why the arms ship behind a flag
+    instead of one of them shipping as the new behaviour.
+    """
+    env = _env_supersession_demote_override()
+    if env is not None:
+        return env
+    if kwarg is not None:
+        return kwarg
+    toml_value = _read_toml_flag_for(SUPERSESSION_DEMOTE_FLAG, start)
+    if toml_value is not None:
+        return toml_value
+    return False
+
+
+def resolve_supersession_treatment(
+    kwarg: str | None = None, *, start: Path | None = None
+) -> str:
+    """Resolve which arm of the supersession lane runs (#1187).
+
+    Same precedence as `is_supersession_demote_enabled`; default
+    `"demote"`, the safer arm — a wrong demote leaves a ranking signal
+    to notice, a wrong exclusion does not. Unrecognised values fall back
+    to the default rather than raising, matching the tolerance the TOML
+    readers already apply, and trace to stderr so a typo is visible.
+    """
+    candidates = (
+        os.environ.get(ENV_SUPERSESSION_TREATMENT),
+        kwarg,
+        _read_toml_str_for(SUPERSESSION_TREATMENT_FLAG, start),
+    )
+    for raw in candidates:
+        if raw is None:
+            continue
+        norm = raw.strip().lower()
+        if norm in SUPERSESSION_TREATMENTS:
+            return norm
+        print(
+            f"aelfrice retrieval: ignoring supersession treatment {raw!r} "
+            f"(expected one of {', '.join(SUPERSESSION_TREATMENTS)})",
+            file=sys.stderr,
+        )
+    return SUPERSESSION_TREATMENT_DEMOTE
+
+
+def resolve_supersession_factor(
+    kwarg: float | None = None, *, start: Path | None = None
+) -> float:
+    """Resolve the demote arm's multiplicative factor (#1187).
+
+    Same precedence; default `SUPERSESSION_DEMOTE_FACTOR` (0.5). Clamped
+    to `(0, 1]`: above 1 would *promote* a retired belief, which is never
+    the intent, and 0 is floored by `SUPERSESSION_FACTOR_EPS` so the log
+    penalty stays finite. Out-of-range values clamp rather than raise.
+    """
+    raw: float | None = None
+    env_raw = os.environ.get(ENV_SUPERSESSION_FACTOR)
+    if env_raw is not None:
+        try:
+            raw = float(env_raw)
+        except ValueError:
+            print(
+                f"aelfrice retrieval: ignoring {ENV_SUPERSESSION_FACTOR}"
+                f"={env_raw!r} (expected a number)",
+                file=sys.stderr,
+            )
+    if raw is None:
+        raw = kwarg
+    if raw is None:
+        raw = _read_toml_float_for(SUPERSESSION_FACTOR_FLAG, start)
+    if raw is None:
+        raw = SUPERSESSION_DEMOTE_FACTOR
+    return min(1.0, max(SUPERSESSION_FACTOR_EPS, float(raw)))
+
+
+def _supersession_penalty(
+    superseded: frozenset[str] | None, belief_id: str, factor: float
+) -> float:
+    """Log-additive demote for a superseded belief (#1187).
+
+    Returns 0.0 when the lane is off (`superseded is None`) or this
+    belief has not been retired by anything.
+
+    **Additive `log(factor)`, not multiplicative `score * factor`.** The
+    composite rerank score here is a log-domain quantity from
+    `combine_log_scores` / `partial_bayesian_score` and is routinely
+    negative — measured at ~-13 on a two-belief store. Multiplying a
+    negative score by 0.5 *raises* it, so the multiplicative primitive in
+    `uri_baki.apply_supersession_demote` (written against a non-negative
+    score scale) would promote the superseded belief to the top of the
+    pack: the exact inversion this lane exists to fix. Adding
+    `log(factor)` is the log-domain equivalent of scaling a probability
+    by `factor`, so the issue's "factor 0.5" semantics are preserved and
+    the demote is unconditional. Same shape as
+    `_entity_persist_penalty`, which is log-additive for the same reason.
+    """
+    if superseded is None or belief_id not in superseded:
+        return 0.0
+    return min(0.0, math.log(max(factor, SUPERSESSION_FACTOR_EPS)))
+
+
 def _env_origin_tiebreak_override() -> bool | None:
     """Return True/False if AELFRICE_ORIGIN_TIEBREAK is set to a
     recognised truthy/falsy value, else None (#1089). Symmetric to
@@ -990,6 +1148,42 @@ def _read_toml_flag_for(
             print(
                 f"aelfrice retrieval: ignoring [{RETRIEVAL_SECTION}] "
                 f"{key} in {candidate} (expected bool)",
+                file=serr,
+            )
+            return None
+        if current.parent == current:
+            break
+        current = current.parent
+    return None
+
+
+def _read_toml_str_for(
+    key: str,
+    start: Path | None = None,
+) -> str | None:
+    """Walk up from `start` looking for a `.aelfrice.toml` with
+    `[retrieval] <key>` typed as a string (#1187). Returns the value when
+    found, or None when no file / no key.
+
+    Same tolerance as `_read_toml_flag_for`: a wrong-typed value traces to
+    stderr and returns None so the caller's default wins.
+    """
+    serr: IO[str] = sys.stderr
+    current = (start if start is not None else Path.cwd()).resolve()
+    seen: set[Path] = set()
+    while current not in seen:
+        seen.add(current)
+        candidate = current / CONFIG_FILENAME
+        if candidate.is_file():
+            section = _parsed_retrieval_section(candidate)
+            if section is None or key not in section:
+                return None
+            value: Any = section[key]
+            if isinstance(value, str):
+                return value
+            print(
+                f"aelfrice retrieval: ignoring [{RETRIEVAL_SECTION}] "
+                f"{key} in {candidate} (expected str)",
                 file=serr,
             )
             return None
@@ -2783,6 +2977,9 @@ def _l1_hits(
     zeta_params: tuple[float, float, float] | None = None,
     use_entity_persist_demote: bool = False,
     use_origin_tiebreak: bool = False,
+    use_supersession_demote: bool = False,
+    supersession_treatment: str = SUPERSESSION_TREATMENT_DEMOTE,
+    supersession_factor: float = SUPERSESSION_DEMOTE_FACTOR,
     now_ts: int | None = None,
 ) -> list[Belief]:
     """Run L1: FTS5 BM25 search (default) or BM25F sparse-matvec
@@ -2927,12 +3124,24 @@ def _l1_hits(
             and gamma_temperature is None
             and zeta_params is None
             and not use_entity_persist_demote
+            and not use_supersession_demote
         ):
             return [b for b, _ in beliefs]
         # BM25F scores are non-negative; the rerank uses `raw` as the
         # positive-magnitude relevance signal directly (the FTS5 path
         # has to negate first because SQLite returns smaller-negative
         # for stronger matches; BM25F doesn't).
+        # #1187: resolve supersession before anything downstream reads the
+        # candidate set, so the exclusion arm also keeps superseded beliefs
+        # out of the heat-kernel seeds rather than only out of the ranking.
+        sup = (
+            frozenset(store.superseded_belief_ids([b.id for b, _ in beliefs]))
+            if use_supersession_demote else None
+        )
+        if sup and supersession_treatment == SUPERSESSION_TREATMENT_EXCLUDE:
+            beliefs = [(b, raw) for b, raw in beliefs if b.id not in sup]
+            if not beliefs:
+                return []
         bm25_pos_by_id: dict[str, float] = {b.id: float(raw) for b, raw in beliefs}
         heat_map = (
             _heat_by_id(eigenbasis_cache, bm25_pos_by_id)  # type: ignore[arg-type]
@@ -2971,6 +3180,7 @@ def _l1_hits(
                 )
             s = _hash_n_boosted(s, b.content, hash_n_literals)
             s += _entity_persist_penalty(ep, b.id)
+            s += _supersession_penalty(sup, b.id, supersession_factor)
             keyed.append((s, b.id, b))
         if use_origin_tiebreak:
             keyed.sort(
@@ -2987,6 +3197,7 @@ def _l1_hits(
         and gamma_temperature is None
         and zeta_params is None
         and not use_entity_persist_demote
+        and not use_supersession_demote
     ):
         return store.search_beliefs(
             query, limit=l1_limit, origin_tiebreak=use_origin_tiebreak,
@@ -2996,6 +3207,16 @@ def _l1_hits(
     )
     if not scored:
         return []
+    # #1187: as on the BM25F path, resolve and apply exclusion before the
+    # candidate set is read downstream.
+    sup = (
+        frozenset(store.superseded_belief_ids([b.id for b, _ in scored]))
+        if use_supersession_demote else None
+    )
+    if sup and supersession_treatment == SUPERSESSION_TREATMENT_EXCLUDE:
+        scored = [(b, raw) for b, raw in scored if b.id not in sup]
+        if not scored:
+            return []
     # FTS5 path: bm25_raw is non-positive (SQLite convention). Negate
     # to get a positive relevance magnitude, same convention used by
     # `partial_bayesian_score` internally.
@@ -3037,6 +3258,7 @@ def _l1_hits(
             )
         s = _hash_n_boosted(s, b.content, hash_n_literals)
         s += _entity_persist_penalty(ep, b.id)
+        s += _supersession_penalty(sup, b.id, supersession_factor)
         keyed.append((s, b.id, b))
     # Higher score = more relevant. Tie-break on id ASC for
     # determinism (matches the convention in bfs_multihop and L2.5).
@@ -3174,6 +3396,11 @@ def retrieve(
         # HRR structural-query lane #152 (Phase 5) — all resolver default-ON.
         use_temporal_spine=None,
         use_entity_persist_demote=None,
+        # #1187: resolver-driven so the lane is reachable from the
+        # production path, but the resolver default is OFF pending the bench.
+        use_supersession_demote=None,
+        supersession_treatment=None,
+        supersession_factor=None,
         use_intentional_clustering=None,
         use_hrr_structural=None,
         use_origin_tiebreak=False,
@@ -3230,6 +3457,9 @@ def retrieve_with_tiers(
     temporal_spine_node_budget: int | None = None,
     use_entity_persist_demote: bool = False,
     use_origin_tiebreak: bool = False,
+    use_supersession_demote: bool = False,
+    supersession_treatment: str = SUPERSESSION_TREATMENT_DEMOTE,
+    supersession_factor: float = SUPERSESSION_DEMOTE_FACTOR,
     manifest_reference_locks: bool = False,
     now_ts: int | None = None,
 ) -> tuple[
@@ -3381,6 +3611,9 @@ def retrieve_with_tiers(
             zeta_params=zeta_params,
             use_entity_persist_demote=use_entity_persist_demote,
             use_origin_tiebreak=use_origin_tiebreak,
+            use_supersession_demote=use_supersession_demote,
+            supersession_treatment=supersession_treatment,
+            supersession_factor=supersession_factor,
             now_ts=effective_now_ts,
         )
         l1 = [
@@ -3582,6 +3815,9 @@ def retrieve_v2(
     use_hrr_expand: bool | None = None,
     use_entity_persist_demote: bool | None = None,
     use_origin_tiebreak: bool | None = None,
+    use_supersession_demote: bool | None = None,
+    supersession_treatment: str | None = None,
+    supersession_factor: float | None = None,
     use_temporal_spine: bool | None = None,
     temporal_spine_depth: int | None = None,
     temporal_spine_node_budget: int | None = None,
@@ -3766,6 +4002,13 @@ def retrieve_v2(
             use_entity_persist_demote
         ),
         use_origin_tiebreak=is_origin_tiebreak_enabled(use_origin_tiebreak),
+        use_supersession_demote=is_supersession_demote_enabled(
+            use_supersession_demote
+        ),
+        supersession_treatment=resolve_supersession_treatment(
+            supersession_treatment
+        ),
+        supersession_factor=resolve_supersession_factor(supersession_factor),
         manifest_reference_locks=manifest_reference_locks,
         hrr_struct_index_cache=expand_cache,
         temporal_spine_enabled=use_temporal_spine,
