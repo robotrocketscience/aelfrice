@@ -35,6 +35,22 @@ aelfrice's task is **known-item search over behavioural directives** — the age
 
 We also report the metrics each external benchmark *defines* (token-F1 on LoCoMo, substring exact match on MAB, GPT-4o judge on LongMemEval, LLM-judge accuracy on StructMemEval and AMA-Bench) for comparability with prior published systems. Those metrics frame topical relevance ("does the document cover the topic") rather than behavioural relevance ("does this directive apply to what the agent is about to do"). Both numbers are reported; the headline positioning is on MRR.
 
+### Read the canonical numbers with the reader in mind
+
+**`aelf bench all` runs no reader.** It ingests, retrieves, and scores — there is no generation pass in `benchmarks/run.py`. The judge-based figures above come from the two-pass protocol below, run by hand; they are not what the canonical JSON contains. Everything in `benchmarks/results/*.json` falls into one of two families, and the distinction decides how much a movement is worth (#1160):
+
+- **Reader-dependent** — `f1`, `substring_exact_match`, LoCoMo's `overall_f1` and `category_f1`. These hand the joined retrieval context to a scorer written for a model's *answer*. Token-F1 between ~2000 tokens of context and a three-token gold answer has precision around 3/2000, so the number moves with the **token budget** as much as with the ranking: halving the budget roughly doubles reported F1 while retrieving strictly less. Treat a gain here as a lead to investigate, not as a result.
+- **Reader-independent** — `retrieval_quality.mrr` and `retrieval_quality.recall_at_k`, reported by every adapter that scores a blob. These read the *ordering* of the retrieved list. Retrieval fills the budget in rank order, so a smaller budget truncates the tail and can only lower them. Moving these requires ranking a relevant belief higher, which is the thing the benchmark exists to measure.
+
+Some metrics are neither, because the harness cannot compute them at all. Those report the string **`n/a`** rather than `0.0`, with the reason recorded under the `_not_applicable` key of the same object:
+
+| Metric | Why `n/a` |
+| --- | --- |
+| `exact_match` (MAB, LongMemEval, AMA-Bench) | Compares the prediction to the gold answer as whole normalised strings. The prediction is the retrieved context, which is never one short answer. |
+| `locomo.category_f1.5` | The adversarial category scores a refusal. Nothing in this path can refuse. It is also excluded from `overall_f1`, which is now the mean over the categories that were scored — `scored_qa` reports how many that was, beside the unchanged `total_qa`. |
+
+`benchmarks/tolerance.py` records an `n/a` leaf as `NOT_APPLICABLE`: tallied and printed, excluded from the rollup, and — unlike a `pass` — not counted as evidence that anything was measured, so a run where every metric is `n/a` fails as `NO_DATA`. Reporting these as `0.0` was worse than useless: `0.0` is the *worst possible score*, so the canonical file read as a total retrieval failure, and a tolerance band around `0.0` turned any genuine fix into a band excursion.
+
 This is also why the LongMemEval multi-session aggregation gap (see [LIMITATIONS](../user/LIMITATIONS.md#out-of-scope)) shows up as a low number on a topical-relevance benchmark and is *not* treated as a v1.x defect.
 
 ## Contamination protocol

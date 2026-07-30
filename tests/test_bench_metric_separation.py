@@ -291,3 +291,60 @@ def test_amabench_per_group_breakdown_does_not_rebuild_the_zero(
     assert out["A"]["exact_match"] == NOT_APPLICABLE
     assert out["A"]["substring_exact_match"] == pytest.approx(0.5)
     assert out["A"]["count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# The shipped canonical file still band-checks
+# ---------------------------------------------------------------------------
+
+_CANONICAL = Path(__file__).resolve().parents[1] / "benchmarks/results/v2.0.0.json"
+
+
+def _observed_in_the_new_shape(scale_overall_f1: float) -> dict[str, Any]:
+    """The canonical report as the changed adapters would now emit it.
+
+    `benchmarks/results/v2.0.0.json` was cut before this change and still
+    records 0.0 for every metric now reported n/a. It cannot be recut
+    from a unit test — the canonical cut needs the real datasets — so the
+    coupling is exercised against the shipped file directly.
+    """
+    import copy
+
+    from benchmarks import tolerance
+
+    cano = tolerance.load_report(_CANONICAL)
+    obs = copy.deepcopy(cano)
+    results = obs["results"]
+    for split in results["mab"]:
+        results["mab"][split]["output"]["exact_match"] = NOT_APPLICABLE
+    locomo_out = results["locomo"]["_"]["output"]
+    locomo_out["category_f1"]["5"] = NOT_APPLICABLE
+    # Dropping category 5 from the divisor raises overall_f1 by the share
+    # the category held. The true share is not recorded in the canonical
+    # file, so the caller sweeps it.
+    locomo_out["overall_f1"] = round(locomo_out["overall_f1"] * scale_overall_f1, 4)
+    return obs
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.1, 1.3, 2.0, 3.4])
+def test_new_adapter_shape_never_fails_the_shipped_canonical(scale: float):
+    """The change must not turn the nightly red before the recut lands.
+
+    `overall_f1` can only rise, and it is higher-is-better, so leaving
+    the band is a WARN on the improving side (#1209) rather than a FAIL.
+    Every metric now reported n/a resolves to NOT_APPLICABLE rather than
+    to the "not numeric" FAIL branch.
+    """
+    from benchmarks import tolerance
+
+    cano = tolerance.load_report(_CANONICAL)
+    checks = tolerance.check_report(cano, _observed_in_the_new_shape(scale))
+    overall, counts = tolerance.summarize(checks)
+    fails = [c for c in checks if c.verdict == tolerance.Verdict.FAIL]
+    assert fails == [], [(c.path, c.note) for c in fails]
+    assert overall in (tolerance.Verdict.PASS, tolerance.Verdict.WARN)
+    # 4 MAB splits + LoCoMo category 5. LongMemEval and AMA-Bench also
+    # report exact_match as n/a, but their canonical cut predates the
+    # metric, so those leaves are not in the tree being walked.
+    assert counts[tolerance.Verdict.NOT_APPLICABLE.value] == 5
+    assert counts[tolerance.Verdict.PASS.value] > 0
