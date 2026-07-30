@@ -2627,22 +2627,21 @@ class MemoryStore:
         The caller is responsible for computing `cutoff_ts` from `ttl_days`.
         Returns a list of belief IDs; order is not guaranteed.
         """
-        # Values come from a module-level constant, never from a caller, but
-        # they are bound rather than interpolated so the shape stays correct
-        # if the set ever grows. The empty-set branch emits no clause at all,
-        # which is the pre-#1171 "any feedback row protects it" behaviour.
-        # SQLite would in fact accept `NOT IN ()` and read it as always-true,
-        # giving the identical result — but an empty IN list is a SQLite
-        # extension, not standard SQL, so the degraded case is spelled out
-        # rather than left resting on that.
-        exposure_only = sorted(EXPOSURE_ONLY_FEEDBACK_SOURCES)
-        if exposure_only:
-            placeholders = ",".join("?" for _ in exposure_only)
-            endorsement_only = f"AND fh.source NOT IN ({placeholders})"
-        else:
-            endorsement_only = ""
+        # The exemption set arrives as a single bound JSON array rather than
+        # an interpolated `IN (?, ?, …)` list, so the SQL text is fully static
+        # — no f-string, nothing to keep in sync between placeholder count and
+        # parameter count, and no injection-shaped construction for a reader
+        # (or a scanner) to have to reason about. `json_each` is the same
+        # mechanism the log-reachability queries above already use; available
+        # in SQLite ≥ 3.38, standard in Python 3.12+.
+        #
+        # The empty case needs no special branch: `json_each('[]')` yields no
+        # rows, so `NOT IN (<empty>)` is true for every row and the clause
+        # becomes a no-op — which is exactly the pre-#1171 "any feedback row
+        # protects it" behaviour.
+        exposure_only_json = json.dumps(sorted(EXPOSURE_ONLY_FEEDBACK_SOURCES))
         cur = self._conn.execute(
-            f"""
+            """
             SELECT b.id
             FROM beliefs b
             WHERE b.type = 'speculative'
@@ -2654,7 +2653,9 @@ class MemoryStore:
               AND NOT EXISTS (
                   SELECT 1 FROM feedback_history fh
                   WHERE fh.belief_id = b.id
-                    {endorsement_only}
+                    AND fh.source NOT IN (
+                        SELECT je.value FROM json_each(?) je
+                    )
               )
               AND NOT EXISTS (
                   SELECT 1 FROM edges e
@@ -2666,7 +2667,7 @@ class MemoryStore:
                 cutoff_ts,
                 alpha_default + alpha_epsilon,
                 beta_default + beta_epsilon,
-                *exposure_only,
+                exposure_only_json,
             ),
         )
         return [row["id"] for row in cur.fetchall()]

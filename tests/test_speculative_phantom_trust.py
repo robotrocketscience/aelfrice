@@ -170,10 +170,10 @@ def test_an_empty_exposure_set_degrades_to_the_pre_fix_clause(
 ) -> None:
     """An empty exemption set restores the pre-#1171 "any row protects" rule.
 
-    This pins behaviour, not SQL syntax: SQLite accepts an empty IN list and
-    reads `NOT IN ()` as always-true, so removing the empty-set branch in
-    `query_wonder_gc_candidates` leaves this test green. The branch exists
-    because an empty IN list is a SQLite extension rather than standard SQL.
+    The predicate feeds the set to `json_each` as one bound JSON array, so the
+    empty case needs no special-casing: `json_each('[]')` yields no rows and
+    the `NOT IN` becomes a no-op. This pins that degradation rather than any
+    SQL-shape detail.
 
     Patched on `aelfrice.store`, not `aelfrice.models`: store.py binds the
     constant at import time, so patching the defining module would leave the
