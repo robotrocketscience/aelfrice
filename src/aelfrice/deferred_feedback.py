@@ -114,12 +114,26 @@ class SweepResult:
     would_skip_no_belief: int = 0
     would_skip_locked: int = 0
     would_skip_foreign: int = 0
+    # Rows whose grace window has NOT elapsed. Counted directly, not
+    # inferred by subtracting this page from the queue total — that
+    # subtraction labels everything past `limit` as "still in grace",
+    # which is false for any queue bigger than one page and, now that
+    # nothing drains, permanently so.
     pending_unmet_grace: int = 0
+    # Rows that ARE eligible but fell outside this pass's `limit`.
+    # Reported separately because they are the gap between what the
+    # audit describes and what the queue holds: `alpha_withheld` and
+    # every `would_*` count below is a figure for the audited page, not
+    # for the store, whenever this is non-zero.
+    pending_beyond_limit: int = 0
     alpha_withheld: float = 0.0
     epsilon_used: float = 0.0
     grace_seconds_used: int = 0
     would_apply_belief_ids: list[str] = field(default_factory=list)
     would_cancel_belief_ids: list[str] = field(default_factory=list)
+    # Queue row ids this pass actually classified. `--gc` deletes
+    # exactly these, so the report and the deletion cannot diverge.
+    audited_row_ids: list[int] = field(default_factory=list)
     # Permanently False, asserted rather than documented. A future
     # change that reintroduces writes has to flip this and face the
     # test that pins it.
@@ -327,6 +341,13 @@ def sweep_deferred_feedback(
     is nothing here" rather than "this was already spent". Nothing is
     consumed, so the number stays honest and the audit is repeatable.
 
+    `limit` bounds the per-row classification, not the queue counts.
+    When it bites, `pending_beyond_limit` is non-zero and every
+    `would_*` figure describes the audited page rather than the store —
+    raise `limit` to widen both together. `audited_row_ids` records
+    exactly what this pass looked at, so a caller collecting the
+    backlog can delete precisely what was reported on.
+
     Turning implicit exposure into real feedback again is a separate
     proposal — it reverses #1086, changes ranking for every user, and
     needs a bench in front of it. It is not a matter of re-enabling
@@ -356,12 +377,26 @@ def sweep_deferred_feedback(
         cutoff_iso=cutoff_iso, limit=limit
     )
 
-    # Count rows still in their grace window separately.
+    # Rows still inside their grace window, counted against the cutoff
+    # rather than derived by subtraction. The subtraction form was
+    # `enqueued_total - len(pending)`, which folds two disjoint
+    # populations — genuinely-in-grace rows and eligible rows past the
+    # `limit` — into one number and prints it under the former's name.
+    # Under the mutating sweeper that error was transient: a run drained
+    # its page, the total fell, and the next run saw the remainder.
+    # Audit-only makes it permanent, because nothing drains and the same
+    # page is re-reported forever.
     by_status = store.count_deferred_feedback_by_status()
     enqueued_total = by_status.get("enqueued", 0)
-    result.pending_unmet_grace = max(0, enqueued_total - len(pending))
+    result.pending_unmet_grace = (
+        store.count_enqueued_deferred_feedback_in_grace(cutoff_iso=cutoff_iso)
+    )
+    result.pending_beyond_limit = max(
+        0, enqueued_total - result.pending_unmet_grace - len(pending)
+    )
 
-    for _row_id, belief_id, enqueued_at, _event_type in pending:
+    for row_id, belief_id, enqueued_at, _event_type in pending:
+        result.audited_row_ids.append(row_id)
         # No transaction, and no BEGIN IMMEDIATE. The mutating sweeper
         # took the write lock before its eligibility reads to close the
         # check-then-act window #1168 found; with nothing written there
@@ -401,5 +436,7 @@ def sweep_deferred_feedback(
             result.would_apply += 1
             result.would_apply_belief_ids.append(belief_id)
 
-    result.alpha_withheld = result.would_apply * eps_eff
+    # Rounded at the assignment: this is a report figure, and
+    # `12 * 0.05` otherwise prints as 0.6000000000000001.
+    result.alpha_withheld = round(result.would_apply * eps_eff, 6)
     return result

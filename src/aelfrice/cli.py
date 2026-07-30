@@ -7060,8 +7060,10 @@ def _cmd_sweep_feedback(args: argparse.Namespace, out: object) -> int:
     draining to zero on the first run.
 
     `--gc` is the one destructive action here and it is never implicit:
-    it deletes the banked `status='enqueued'` rows, which the audit-
-    only sweeper can no longer act on, and reports the count.
+    it deletes the banked `status='enqueued'` rows the audit just
+    reported on — exactly those, so the report cannot describe less
+    than the deletion — and prints the count. Rows past `--limit` are
+    left alone and called out separately.
 
     Exits 0 unless `--strict` is passed and an exception escapes.
     Without `--strict`, errors are logged to stderr and the command
@@ -7094,10 +7096,15 @@ def _cmd_sweep_feedback(args: argparse.Namespace, out: object) -> int:
             epsilon=eps,
             limit=limit,
         )
-        # After the audit, so the reported counts describe the queue the
-        # user is about to drop rather than what is left behind.
+        # After the audit, and scoped to exactly the rows it classified.
+        # Deleting every enqueued row instead would give the destructive
+        # verb wider scope than the report justifying it: on a six-figure
+        # queue the audit describes the first `limit` rows and the purge
+        # would remove all of them.
         if getattr(args, "gc", False):
-            purged = store.purge_enqueued_deferred_feedback()
+            purged = store.purge_enqueued_deferred_feedback(
+                result.audited_row_ids
+            )
     except Exception as exc:  # noqa: BLE001 - cron-safe by default
         print(f"aelf sweep-feedback: {exc}", file=sys.stderr)
         if getattr(args, "strict", False):
@@ -7117,6 +7124,7 @@ def _cmd_sweep_feedback(args: argparse.Namespace, out: object) -> int:
         f"would_skip_locked={result.would_skip_locked} "
         f"would_skip_foreign={result.would_skip_foreign} "
         f"pending_in_grace={result.pending_unmet_grace} "
+        f"pending_beyond_limit={result.pending_beyond_limit} "
         f"alpha_withheld={result.alpha_withheld:.4f} "
         f"epsilon={result.epsilon_used} "
         f"grace_seconds={result.grace_seconds_used}",
@@ -7125,6 +7133,13 @@ def _cmd_sweep_feedback(args: argparse.Namespace, out: object) -> int:
     if purged is not None:
         print(
             f"sweep-feedback: --gc deleted {purged} banked enqueued row(s)",
+            file=out,  # type: ignore[arg-type]
+        )
+    if result.pending_beyond_limit:
+        print(
+            f"sweep-feedback: {result.pending_beyond_limit} eligible row(s) "
+            f"past --limit ({limit}) were neither reported on above nor "
+            "collected; re-run, or raise --limit to widen both together",
             file=out,  # type: ignore[arg-type]
         )
     return 0
@@ -9002,11 +9017,12 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_sweep_feedback.add_argument(
         "--gc", action="store_true",
         help=(
-            "delete the banked status='enqueued' rows after reporting on "
-            "them (#1162). The audit-only sweeper cannot act on these, so "
-            "they are a record rather than pending work. Leaves 'applied' "
-            "and 'cancelled' rows — the trail of sweeps that did run — "
-            "alone. Idempotent"
+            "delete the banked status='enqueued' rows this run reported "
+            "on (#1162). The audit-only sweeper cannot act on these, so "
+            "they are a record rather than pending work. Scoped to the "
+            "audited rows, so --limit bounds the deletion and the report "
+            "together; leaves 'applied' and 'cancelled' rows — the trail "
+            "of sweeps that did run — alone. Idempotent"
         ),
     )
     p_sweep_feedback.set_defaults(func=_cmd_sweep_feedback)

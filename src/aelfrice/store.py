@@ -5004,21 +5004,60 @@ class MemoryStore:
         )
         return {str(r["status"]): int(r["n"]) for r in cur.fetchall()}
 
-    def purge_enqueued_deferred_feedback(self) -> int:
-        """Delete every `status='enqueued'` queue row; return the count.
+    def count_enqueued_deferred_feedback_in_grace(
+        self, *, cutoff_iso: str
+    ) -> int:
+        """Count `status='enqueued'` rows whose grace window has NOT
+        elapsed, i.e. `enqueued_at > cutoff_iso`.
+
+        Counted directly rather than inferred by subtracting the swept
+        page from the total. That subtraction attributes every row past
+        the caller's `LIMIT` to the grace window, which is false for any
+        queue larger than one page — and permanently so now that the
+        sweeper is audit-only and never drains.
+        """
+        cur = self._conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM deferred_feedback_queue
+            WHERE status = 'enqueued' AND enqueued_at > ?
+            """,
+            (cutoff_iso,),
+        )
+        row = cur.fetchone()
+        return int(row["n"]) if row else 0
+
+    def purge_enqueued_deferred_feedback(self, row_ids: Sequence[int]) -> int:
+        """Delete the given `status='enqueued'` queue rows; return the
+        count actually removed.
 
         The #1162 backlog collector. Enqueuing was default-on inside
         every `retrieve()`, so stores carry six figures of pending rows
         that the audit-only sweeper can no longer act on. They are a
         record of exposure, not a pending mutation, and this drops them.
 
-        Deliberately narrow: `applied` and `cancelled` rows are the
-        audit trail of sweeps that really did run and are left alone.
-        Idempotent — a second call finds nothing and returns 0.
+        **Takes explicit row ids rather than deleting every enqueued
+        row.** The caller reports on a bounded page of the queue, and a
+        destructive verb must not have wider scope than the report that
+        justifies it — an unbounded delete under a report of the first
+        `limit` rows would, on a six-figure queue, describe a few per
+        cent of what it removed.
+
+        The `status = 'enqueued'` predicate is kept as a guard even
+        though the ids come from a query that already filtered on it:
+        `applied` and `cancelled` rows are the audit trail of sweeps
+        that really did run, and no id list should be able to take one.
+        Idempotent — re-deleting a removed id returns 0.
         """
+        ids = list(row_ids)
+        if not ids:
+            return 0
+        placeholders = ",".join("?" * len(ids))
         with self.transaction():
             cur = self._conn.execute(
-                "DELETE FROM deferred_feedback_queue WHERE status = 'enqueued'"
+                "DELETE FROM deferred_feedback_queue "
+                f"WHERE status = 'enqueued' AND id IN ({placeholders})",
+                tuple(ids),
             )
             return int(cur.rowcount or 0)
 

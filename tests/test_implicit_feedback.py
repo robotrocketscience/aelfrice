@@ -332,6 +332,78 @@ def test_sweep_leaves_every_row_enqueued() -> None:
     assert [row[1] for row in pending] == ["b1"]
 
 
+def test_limit_does_not_mislabel_eligible_rows_as_still_in_grace() -> None:
+    """`pending_unmet_grace` used to be `enqueued_total - len(pending)`,
+    which folds two disjoint populations together: rows genuinely inside
+    their grace window, and eligible rows that fell past `limit`. It
+    then prints the sum under the former's name.
+
+    Under the mutating sweeper that was transient — a run drained its
+    page, the total fell, the next run saw the remainder. Audit-only
+    makes it permanent: nothing drains, the same page is re-reported
+    forever, and no number of re-runs reaches the rest.
+
+    12 rows eligible, 3 genuinely in grace, `limit=5`. The honest
+    answer is 3 in grace and 7 eligible-but-unaudited; the subtraction
+    form said 10 were in grace.
+    """
+    beliefs = [_mk(f"b{i}") for i in range(15)]
+    s = _store(*beliefs)
+    enqueue_retrieval_exposures(s, [f"b{i}" for i in range(12)], now=T0)
+    # Enqueued "now", so their grace window has not elapsed at T_AFTER_GRACE.
+    enqueue_retrieval_exposures(
+        s, [f"b{i}" for i in range(12, 15)], now=T_AFTER_GRACE
+    )
+
+    r = sweep_deferred_feedback(
+        s, now=T_AFTER_GRACE, grace_seconds=1800, epsilon=0.05, limit=5
+    )
+
+    assert r.would_apply == 5
+    assert r.pending_unmet_grace == 3, "eligible rows counted as in-grace"
+    assert r.pending_beyond_limit == 7
+    # And the three figures account for the whole queue exactly once.
+    assert (
+        r.would_apply + r.would_cancel
+        + r.pending_unmet_grace + r.pending_beyond_limit
+    ) == 15
+
+
+def test_alpha_withheld_is_a_clean_report_figure() -> None:
+    """`would_apply * eps` is a float product: 12 * 0.05 lands on
+    0.6000000000000001. Rounded at the assignment because this is a
+    number printed to an operator."""
+    beliefs = [_mk(f"b{i}") for i in range(12)]
+    s = _store(*beliefs)
+    enqueue_retrieval_exposures(s, [b.id for b in beliefs], now=T0)
+
+    r = sweep_deferred_feedback(
+        s, now=T_AFTER_GRACE, grace_seconds=1800, epsilon=0.05
+    )
+
+    assert r.would_apply == 12
+    assert r.alpha_withheld == 0.6
+
+
+def test_audited_row_ids_are_exactly_the_classified_rows() -> None:
+    """What `--gc` is allowed to delete. Bounded by `limit` in the same
+    way the report is, so the two cannot describe different sets."""
+    beliefs = [_mk(f"b{i}") for i in range(8)]
+    s = _store(*beliefs)
+    enqueue_retrieval_exposures(s, [b.id for b in beliefs], now=T0)
+
+    r = sweep_deferred_feedback(
+        s, now=T_AFTER_GRACE, grace_seconds=1800, epsilon=0.05, limit=3
+    )
+
+    assert len(r.audited_row_ids) == 3
+    assert len(r.would_apply_belief_ids) == 3
+    pending = s.list_pending_deferred_feedback(
+        cutoff_iso="2099-01-01T00:00:00Z", limit=3
+    )
+    assert r.audited_row_ids == [row[0] for row in pending]
+
+
 def test_limit_bounds_the_audit_without_consuming_the_rest() -> None:
     """`--limit` still bounds one pass, but since nothing is consumed a
     subsequent unbounded pass sees all three rather than the remainder."""

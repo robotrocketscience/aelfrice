@@ -142,6 +142,45 @@ def test_sweep_feedback_gc_drops_only_the_banked_rows(
     assert "deleted 0 banked enqueued row(s)" in output
 
 
+def test_gc_deletes_only_what_the_run_reported_on(store_path: Path) -> None:
+    """The destructive verb must not outscope the report that justifies
+    it. With `--limit 3` over 8 eligible rows, the audit describes 3 and
+    `--gc` removes those 3 — not all 8 — and the remainder is called out
+    rather than silently dropped or silently kept.
+    """
+    s = MemoryStore(str(store_path))
+    for i in range(8):
+        s.insert_belief(_mk(f"b{i}"))
+    enqueue_retrieval_exposures(
+        s, [f"b{i}" for i in range(8)], now="2026-04-28T00:00:00Z"
+    )
+    s.close()
+
+    code, output = _run("--grace-seconds", "0", "--limit", "3", "--gc")
+    assert code == 0
+    assert "would_apply=3" in output
+    assert "deleted 3 banked enqueued row(s)" in output
+    assert "pending_beyond_limit=5" in output
+    assert "5 eligible row(s) past --limit (3)" in output
+
+    s2 = MemoryStore(str(store_path))
+    try:
+        assert s2.count_deferred_feedback_by_status() == {"enqueued": 5}
+    finally:
+        s2.close()
+
+    # Re-running reaches the next page rather than re-reporting the same
+    # one — the property the audit-only design is supposed to buy.
+    code, output = _run("--grace-seconds", "0", "--limit", "3", "--gc")
+    assert code == 0
+    assert "deleted 3 banked enqueued row(s)" in output
+    s3 = MemoryStore(str(store_path))
+    try:
+        assert s3.count_deferred_feedback_by_status() == {"enqueued": 2}
+    finally:
+        s3.close()
+
+
 def test_sweep_feedback_strict_flag_propagates_failure(
     store_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
