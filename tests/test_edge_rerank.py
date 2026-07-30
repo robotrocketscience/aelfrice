@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import pytest
 
+from dataclasses import MISSING as MISSING_SENTINEL
+
 from aelfrice.bfs_multihop import ScoredHop
 from aelfrice.edge_rerank import (
     DEFAULT_STALE_PENALTY,
@@ -202,3 +204,61 @@ def test_determinism_byte_identical_repeat(store: MemoryStore) -> None:
     assert [(h.belief.id, h.score) for h in a] == [
         (h.belief.id, h.score) for h in b
     ]
+
+
+# --- The pass must carry every ScoredHop field it does not change (#1207) ---
+
+
+def test_rerank_preserves_every_field_except_score(store: MemoryStore) -> None:
+    """Hypothesis: the rerank changes `score` and nothing else.
+
+    `ScoredHop` gained `belief_id_trail` (#658) and `owning_scope`
+    (#690) after this module was written. Both carry defaults, so the
+    enumerated constructor call here kept type-checking while silently
+    erasing them: a federated hop came out relabelled as local, and the
+    compound-confidence derivation lost the trail it consumes. Nothing
+    noticed, because nothing imports this module.
+
+    The expectation is derived from `dataclasses.fields(ScoredHop)`
+    rather than a hand-written list, so the *next* field added upstream
+    is covered without editing this test. A hand-written list would
+    reproduce exactly the failure it is meant to catch — verified by
+    adding a third field and confirming this test fails on it unchanged.
+
+    Falsifiable by any non-score field differing."""
+    from dataclasses import fields
+
+    store.insert_edge(
+        Edge(src="SRC", dst="STALE", type=EDGE_POTENTIALLY_STALE, weight=1.0)
+    )
+    belief = store.get_belief("STALE")
+    assert belief is not None
+    hop = ScoredHop(
+        belief=belief,
+        score=0.9,
+        depth=2,
+        path=["SUPPORTS", "RELATES_TO"],
+        belief_id_trail=("SEED", "MID", "STALE"),
+        owning_scope="peerA",
+    )
+
+    # Every defaulted field must be set to something distinguishable
+    # from its default, or "preserved" is indistinguishable from "reset".
+    for f in fields(ScoredHop):
+        if f.name == "score" or f.default is MISSING_SENTINEL:
+            continue
+        assert getattr(hop, f.name) != f.default, (
+            f"the fixture leaves {f.name} at its default, so this test "
+            f"cannot tell preservation from a reset — set it explicitly"
+        )
+
+    out = apply_edge_type_rerank([hop], store)[0]
+
+    assert out.score == pytest.approx(0.45), "the penalty stopped applying"
+    for f in fields(ScoredHop):
+        if f.name == "score":
+            continue
+        assert getattr(out, f.name) == getattr(hop, f.name), (
+            f"{f.name} was dropped by the rerank; ScoredHop fields carry "
+            f"defaults, so a rebuilt hop loses them silently"
+        )

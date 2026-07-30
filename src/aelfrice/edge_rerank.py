@@ -28,6 +28,7 @@ Stdlib only.
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Final, Mapping
 
 from aelfrice.bfs_multihop import ScoredHop
@@ -99,13 +100,15 @@ def apply_edge_type_rerank(
         new_score = hop.score
         for edge_type in firing:
             new_score *= cfg[edge_type]
-        rescored.append(
-            ScoredHop(
-                belief=hop.belief,
-                score=new_score,
-                depth=hop.depth,
-                path=hop.path,
-            )
-        )
+        # `replace` rather than a field-by-field rebuild (#1207).
+        # `ScoredHop` gained `belief_id_trail` (#658) and
+        # `owning_scope` (#690) after this module was written, and both
+        # carry defaults — so an enumerated constructor call kept
+        # type-checking while silently erasing them. A federated hop
+        # came out relabelled as local, and the compound-confidence
+        # derivation lost the trail it consumes. Copying the hop and
+        # overriding only what this pass changes means the next field
+        # added upstream arrives here for free.
+        rescored.append(replace(hop, score=new_score))
     rescored.sort(key=lambda h: (-h.score, h.belief.id))
     return rescored
