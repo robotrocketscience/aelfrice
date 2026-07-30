@@ -36,10 +36,12 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION,
     CORROBORATION_SOURCE_TYPES,
     CORROBORATION_SOURCE_WONDER_INGEST,
+    CORROBORATION_SOURCES_USER_EXPLICIT,
     EDGE_RELATES_TO,
     EDGE_SUPERSEDES,
     EDGE_VALENCE,
     EXPOSURE_ONLY_FEEDBACK_SOURCES,
+    FEEDBACK_SOURCE_REASSERT_REVIVE,
     ORIGIN_SPECULATIVE,
     INGEST_SOURCE_KINDS,
     INGEST_SOURCE_LEGACY_UNKNOWN,
@@ -2617,7 +2619,9 @@ class MemoryStore:
         self._bump_belief_version(b.id)
         self._commit_mutation()
 
-    def get_belief_by_content_hash(self, content_hash: str) -> Belief | None:
+    def get_belief_by_content_hash(
+        self, content_hash: str, *, include_retired: bool = False
+    ) -> Belief | None:
         """Look up a belief by its content_hash. Returns None if not found.
 
         Used by ingest paths to detect re-ingest of identical content
@@ -2625,14 +2629,23 @@ class MemoryStore:
         ingested once via transcript-ingest and once via commit-ingest.
         When found, the caller records a belief_corroborations row
         instead of silently dropping the duplicate.
+
+        Retired rows are excluded by default, matching :meth:`get_belief`
+        (#1210). ``include_retired=True`` is for the two callers that use
+        this as a *UNIQUE-constraint guard* rather than to read content:
+        `content_hash` is `NOT NULL UNIQUE` (#219), so a tombstone still
+        owns its hash and an insert that cannot see it trips the
+        constraint. Those callers must then decide what a re-assertion of
+        retired content means — see :meth:`insert_or_corroborate` (#1215).
         """
+        lifecycle = "" if include_retired else "AND b.valid_to IS NULL"
         cur = self._conn.execute(
-            """
+            f"""
             SELECT b.*,
                    (SELECT COUNT(*) FROM belief_corroborations bc
                     WHERE bc.belief_id = b.id) AS corroboration_count
             FROM beliefs b
-            WHERE b.content_hash = ?
+            WHERE b.content_hash = ? {lifecycle}
             LIMIT 1
             """,
             (content_hash,),
@@ -3669,6 +3682,33 @@ class MemoryStore:
         `source_type` must be in CORROBORATION_SOURCE_TYPES; ValueError
         is raised immediately on an unknown value so the caller's test
         suite catches misconfigured mappings early.
+
+        **Re-assertion of retired content (#1215).** The content-hash
+        lookup opts into retired rows because `content_hash` is UNIQUE
+        (#219) — a tombstone still owns its hash, so an insert that could
+        not see it would trip the constraint. That makes what happens
+        next a policy question, and before #1215 the answer was the worst
+        one available: the re-assertion was swallowed, a corroboration
+        row was written against the tombstone, and nothing became
+        visible. `aelf lock` on a retired statement printed success while
+        `aelf locked` stayed empty.
+
+        The ratified policy is tiered by who is asserting:
+
+        - **A person** (`CORROBORATION_SOURCES_USER_EXPLICIT` — `aelf
+          lock`, `aelf remember`, and their MCP twins) **revives** the
+          belief. Re-typing a sentence is a deliberate act, and it comes
+          back at the posterior it was retired at, with an audit row
+          naming the revival.
+        - **Background capture** (transcript, commit, filesystem, wonder,
+          claude-memory mirror, migration) leaves the tombstone retired
+          and records nothing. An agent re-observing text it already saw
+          must not undo the user's curation.
+
+        The skip path still returns ``(existing.id, False)``: the content
+        genuinely did resolve to that row, and the ingest-log stamp
+        should say so. The caller learns nothing was inserted, which is
+        true either way.
         """
         # Validate source_type up-front so the error surfaces at the
         # call site, not inside record_corroboration after the lookup.
@@ -3677,7 +3717,22 @@ class MemoryStore:
                 f"Unknown source_type {source_type!r}. "
                 f"Must be one of {sorted(CORROBORATION_SOURCE_TYPES)}"
             )
-        existing = self.get_belief_by_content_hash(b.content_hash)
+        existing = self.get_belief_by_content_hash(
+            b.content_hash, include_retired=True
+        )
+        if existing is not None and existing.valid_to is not None:
+            # #1215: re-assertion of retired content. Only a person
+            # revives it; background capture leaves it retired and
+            # writes nothing, so no tombstone accrues evidence.
+            if source_type not in CORROBORATION_SOURCES_USER_EXPLICIT:
+                return (existing.id, False)
+            self.restore_belief(existing.id)
+            self.insert_feedback_event(
+                belief_id=existing.id,
+                valence=0.0,
+                source=FEEDBACK_SOURCE_REASSERT_REVIVE,
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
         if existing is not None:
             self.record_corroboration(
                 existing.id,

@@ -285,6 +285,25 @@ CORROBORATION_SOURCE_TYPES: Final[frozenset[str]] = frozenset({
     CORROBORATION_SOURCE_CLAUDE_MEMORY,
 })
 
+# #1215: the corroboration sources that are a *person* asserting a statement,
+# as opposed to background capture re-observing text. Only these revive a
+# retired belief when the same content is asserted again — re-typing a
+# sentence is a deliberate act, whereas a transcript or commit scan finding
+# it again must not silently undo the user's curation. Consulted by
+# `MemoryStore.insert_or_corroborate`; every other source in
+# CORROBORATION_SOURCE_TYPES leaves the tombstone retired.
+CORROBORATION_SOURCES_USER_EXPLICIT: Final[frozenset[str]] = frozenset({
+    CORROBORATION_SOURCE_CLI_REMEMBER,
+    CORROBORATION_SOURCE_MCP_REMEMBER,
+})
+
+# #1215: feedback_history `source` for the revival above. Audit only — it
+# records *why* a retired belief came back so the transition is not silent,
+# and carries valence 0.0 because the posterior is deliberately preserved at
+# the value the belief was retired at. The re-assertion itself is recorded as
+# a belief_corroborations row, which is where that signal belongs.
+FEEDBACK_SOURCE_REASSERT_REVIVE: Final[str] = "reassert:revive"
+
 # v2.0 #205 ingest_log source_kind enum. Wire-format strings; do not
 # rename without a migration. Spec: docs/design/write-log-as-truth.md.
 INGEST_SOURCE_FILESYSTEM: Final[str] = "filesystem"
