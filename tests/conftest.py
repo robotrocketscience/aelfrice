@@ -20,6 +20,35 @@ import pytest
 CORPUS_ENV_VAR = "AELFRICE_CORPUS_ROOT"
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register `--run-perf`, the opt-in for the latency benchmarks.
+
+    Four modules gate a latency assertion on a `_has_run_perf` helper
+    that reads this option (`test_bm25_index.py`, `test_heat_kernel.py`,
+    `test_graph_spectral.py`, `test_hrr_struct_index.py`). Until #1160
+    nothing registered it: `test_bm25_index.py` carried a
+    `pytest_addoption` stub, but pytest only calls that hook from
+    `conftest.py` or an installed plugin, never from a plain test
+    module. So `getoption` always raised, every helper fell back to
+    False, and `pytest --run-perf` failed outright with
+    `unrecognized arguments` (exit 4) — the tests could not be opted
+    into at all, only reached by editing the guard.
+
+    Registering here rather than re-stubbing per module keeps one
+    authority for the flag. Default False, so the suite's behaviour is
+    unchanged unless the flag is passed.
+    """
+    parser.addoption(
+        "--run-perf",
+        action="store_true",
+        default=False,
+        help=(
+            "run the latency benchmarks (large synthetic stores; wall-clock "
+            "assertions, so results are load-sensitive)"
+        ),
+    )
+
+
 def _corpus_root() -> Path | None:
     raw = os.environ.get(CORPUS_ENV_VAR)
     if not raw:
