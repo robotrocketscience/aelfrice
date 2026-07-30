@@ -412,7 +412,7 @@ def test_doctor_fix_clean_settings_reports_nothing(
         "--fix",
     ])
     out = capsys.readouterr().out
-    assert "no stale aelf-* hook entries to prune" in out
+    assert "no stale or duplicate aelf-* hook entries to prune" in out
     # Live hook untouched.
     assert len(_event_list(_read(settings), "UserPromptSubmit")) == 1
     # rc may be 0 or 1 depending on other settings.json complaints;

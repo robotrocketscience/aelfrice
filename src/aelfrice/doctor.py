@@ -351,13 +351,20 @@ class DoctorReport:
     missing_runtime_deps: list[str] = field(
         default_factory=lambda: cast(list[str], [])
     )
-    # Default-on auto-capture hook basenames (v2.1/#529 for the first
-    # three; v3.0/#582 for the stop-hook) that are absent from every
-    # scanned settings.json. Installs that predate the relevant
-    # default flip end up here (#557): they have retrieval-only
-    # wiring and need a re-run.
+    # Basenames of default-on manifest hooks absent from every scanned
+    # settings.json. Installs that predate a default flip end up here
+    # (#557): they have partial wiring and need a re-run. Since #1161 the
+    # covered set is read from the bundled manifest rather than a
+    # hand-maintained tuple, so it tracks the installer automatically.
     missing_auto_capture_hooks: list[str] = field(
         default_factory=lambda: cast(list[str], [])
+    )
+    # `aelf-*` hook entries installed more than once for the same
+    # (event, matcher, basenames) — every one of them fires per event,
+    # so a duplicate is pure doubled latency (#1161). Repaired by
+    # `aelf doctor --prune`.
+    duplicate_hook_entries: list[DuplicateHookEntry] = field(
+        default_factory=lambda: cast(list["DuplicateHookEntry"], [])
     )
     # Per-project DBs under ~/.aelfrice/projects/*/memory.db that use
     # the pre-v1.x schema (no `origin` column on the `beliefs` table)
@@ -452,9 +459,15 @@ def diagnose(
     if user_path.exists():
         report.scopes_scanned.append(("user", user_path))
         report.findings.extend(_scan_settings(user_path))
+        report.duplicate_hook_entries.extend(
+            find_duplicate_hook_entries(user_path)
+        )
     if project_path.exists():
         report.scopes_scanned.append(("project", project_path))
         report.findings.extend(_scan_settings(project_path))
+        report.duplicate_hook_entries.extend(
+            find_duplicate_hook_entries(project_path)
+        )
     log_path = (
         hook_failures_log if hook_failures_log is not None else HOOK_FAILURES_LOG
     )
@@ -860,11 +873,133 @@ class HookPruneResult:
 
     `total_removed` is the sum across events — zero when the file is
     already clean.
+
+    `duplicates_per_event` / `total_duplicates_removed` count entries
+    dropped by the #1161 duplicate collapse rather than the broken-path
+    pass. They are reported separately because the two repairs answer
+    different questions: a pruned entry pointed at a vanished venv, a
+    collapsed one was a redundant copy that resolved perfectly well and
+    was silently doubling the hook's per-event cost.
     """
 
     settings_path: Path
     removed_per_event: dict[str, int]
     total_removed: int
+    duplicates_per_event: dict[str, int] = field(
+        default_factory=lambda: cast(dict[str, int], {})
+    )
+    total_duplicates_removed: int = 0
+
+
+def _entry_duplicate_key(entry: object) -> tuple[str | None, str] | None:
+    """Dedupe key for an `aelf-*` hook entry, or None if not ours.
+
+    The key is `(matcher, "\\x00"-joined sorted aelf-* basenames)`. Two
+    entries under the same event with the same key are the same logical
+    hook installed twice, even if their absolute paths differ (a venv
+    move changes the path, not the basename).
+
+    Returns None when the entry contains no `aelf-*` inner command, which
+    is what keeps this from ever touching a user's own hooks — the
+    duplicate collapse must be blind to `conversation-logger.sh` and
+    friends even if the user has genuinely listed one twice. Non-aelf
+    inner commands are excluded from the key rather than making the whole
+    entry ineligible, so a combined entry is keyed on its aelf content
+    alone but still cannot collide with a differently-composed one.
+    """
+    if not isinstance(entry, dict):
+        return None
+    entry_dict = cast(dict[str, object], entry)
+    inner = entry_dict.get(_INNER_HOOKS_KEY)
+    if not isinstance(inner, list):
+        return None
+    basenames: list[str] = []
+    for hook in cast(list[object], inner):
+        if not isinstance(hook, dict):
+            continue
+        hook_dict = cast(dict[str, object], hook)
+        if hook_dict.get(_TYPE_KEY) != _HOOK_TYPE_COMMAND:
+            continue
+        cmd = hook_dict.get(_COMMAND_KEY)
+        if not isinstance(cmd, str):
+            continue
+        stripped = cmd.strip()
+        if not stripped:
+            continue
+        base = Path(stripped.split(maxsplit=1)[0]).name
+        if base.startswith(_AELF_HOOK_BASENAME_PREFIX):
+            basenames.append(base)
+    if not basenames:
+        return None
+    matcher = entry_dict.get("matcher")
+    matcher_key = matcher if isinstance(matcher, str) else None
+    return (matcher_key, "\x00".join(sorted(basenames)))
+
+
+@dataclass(frozen=True)
+class DuplicateHookEntry:
+    """One `(event, matcher, basename)` installed more than once."""
+
+    settings_path: Path
+    event: str
+    matcher: str | None
+    basenames: str
+    count: int
+
+    def describe(self) -> str:
+        shown = self.basenames.replace("\x00", "+")
+        where = f"{self.event}" if self.matcher is None else (
+            f"{self.event}[matcher={self.matcher}]"
+        )
+        return f"{where} {shown} ×{self.count}"
+
+
+def find_duplicate_hook_entries(
+    settings_path: Path,
+) -> list[DuplicateHookEntry]:
+    """Report `aelf-*` hook entries installed more than once per event.
+
+    #1161: nothing detected this. `_install_or_replace_entry` returned on
+    the first `(matcher, basename)` match — so once a settings.json held
+    two entries for one logical hook, `aelf setup` reported "already
+    installed" forever and `--prune` (which only removes entries whose
+    program path is *broken*) had no reason to look. The duplicated
+    entries were byte-identical and resolved fine, so every check passed
+    while every aelfrice hook ran twice per event. Confirmed in the field
+    on the maintainer's machine across all ten default-on hooks.
+
+    Read-only. `prune_broken_aelf_hooks` performs the repair.
+    """
+    if not settings_path.exists():
+        return []
+    try:
+        data = _load_settings_json(settings_path)
+    except (ValueError, OSError):
+        return []
+    hooks_obj = data.get(_HOOKS_KEY)
+    if not isinstance(hooks_obj, dict):
+        return []
+    hooks_dict = cast(dict[str, object], hooks_obj)
+    dupes: list[DuplicateHookEntry] = []
+    for event_name, event_list in hooks_dict.items():
+        if not isinstance(event_list, list):
+            continue
+        counts: dict[tuple[str | None, str], int] = {}
+        for entry in cast(list[object], event_list):
+            key = _entry_duplicate_key(entry)
+            if key is None:
+                continue
+            counts[key] = counts.get(key, 0) + 1
+        for (matcher, basenames), count in counts.items():
+            if count > 1:
+                dupes.append(DuplicateHookEntry(
+                    settings_path=settings_path,
+                    event=event_name,
+                    matcher=matcher,
+                    basenames=basenames,
+                    count=count,
+                ))
+    return dupes
 
 
 def prune_broken_aelf_hooks(
@@ -907,6 +1042,7 @@ def prune_broken_aelf_hooks(
         )
     hooks_dict = cast(dict[str, object], hooks_obj)
     removed_per_event: dict[str, int] = {}
+    duplicates_per_event: dict[str, int] = {}
     for event_name, event_list in list(hooks_dict.items()):
         if not isinstance(event_list, list):
             continue
@@ -918,16 +1054,38 @@ def prune_broken_aelf_hooks(
                 n_removed += 1
                 continue
             kept.append(entry)
+        # #1161: collapse `aelf-*` entries installed more than once for
+        # the same (matcher, basenames). Runs after the broken-path pass
+        # so a broken duplicate is removed as broken and the surviving
+        # copy is the one kept. First occurrence wins, preserving the
+        # user's relative hook ordering within the event.
+        seen: set[tuple[str | None, str]] = set()
+        deduped: list[object] = []
+        n_duplicates = 0
+        for entry in kept:
+            key = _entry_duplicate_key(entry)
+            if key is not None:
+                if key in seen:
+                    n_duplicates += 1
+                    continue
+                seen.add(key)
+            deduped.append(entry)
         if n_removed:
             removed_per_event[event_name] = n_removed
-            event_list[:] = kept
+        if n_duplicates:
+            duplicates_per_event[event_name] = n_duplicates
+        if n_removed or n_duplicates:
+            event_list[:] = deduped
     total = sum(removed_per_event.values())
-    if total and not dry_run:
+    total_duplicates = sum(duplicates_per_event.values())
+    if (total or total_duplicates) and not dry_run:
         _atomic_rewrite_settings(settings_path, data)
     return HookPruneResult(
         settings_path=settings_path,
         removed_per_event=removed_per_event,
         total_removed=total,
+        duplicates_per_event=duplicates_per_event,
+        total_duplicates_removed=total_duplicates,
     )
 
 
@@ -1082,39 +1240,81 @@ def format_report(report: DoctorReport) -> str:
     _format_user_prompt_submit_telemetry_section(report, lines)
     _format_missing_runtime_deps_section(report, lines)
     _format_missing_auto_capture_section(report, lines)
+    _format_duplicate_hook_entries_section(report, lines)
     _format_legacy_schema_section(report, lines)
     _format_hrr_section(report, lines)
     return "\n".join(lines)
 
 
-# Default-on auto-capture hook basenames the v2.1 `aelf setup` wires
-# (#529 commit 3c27f45). Mirrors `setup.TRANSCRIPT_LOGGER_SCRIPT_NAME`,
-# `setup.COMMIT_INGEST_SCRIPT_NAME`, `setup.SESSION_START_HOOK_SCRIPT_NAME`.
-# Duplicated here to keep the doctor module dependency-free of setup's
-# install primitives; if the names drift, the test in
-# tests/test_doctor.py::test_auto_capture_basenames_match_setup catches it.
-_AUTO_CAPTURE_HOOK_BASENAMES: Final[tuple[str, ...]] = (
+# Last-resort basenames if the bundled manifest cannot be read. Kept
+# deliberately short — this is a floor, not a mirror. The live set comes
+# from `_default_on_hook_basenames()` below.
+_AUTO_CAPTURE_HOOK_BASENAMES_FALLBACK: Final[tuple[str, ...]] = (
+    "aelf-hook",
     "aelf-transcript-logger",
     "aelf-commit-ingest",
     "aelf-session-start-hook",
-    # #582: session-end correction-lock prompt. Default-on since the
-    # Stop hook landed.
     "aelf-stop-hook",
 )
+
+
+def _default_on_hook_basenames() -> tuple[str, ...]:
+    """Basenames of every default-on manifest hook the user has not opted out of.
+
+    #1161: this used to be a hand-maintained 4-tuple covering the v2.1
+    auto-capture hooks, while the manifest had grown to ten default-on
+    entries. The six it omitted included `aelf-hook` itself — the
+    UserPromptSubmit retrieval hook, which is the entire product — so a
+    settings.json that had lost it reported clean. The drift test was a
+    tautology: it compared the tuple against the same `setup.*_SCRIPT_NAME`
+    constants the tuple was copied from, never against the manifest.
+
+    Reading `load_manifest()` makes the installer the single authority:
+    a hook added to the manifest is covered by doctor the same release it
+    ships, with no second list to remember. Opted-out hooks are excluded
+    so a deliberate `--no-*` choice does not read as breakage.
+
+    Returns basenames in manifest order, deduplicated: `search_tool` and
+    `search_tool_bash` are distinct manifest rows that install the same
+    program under different matchers, so basename presence cannot
+    distinguish them. That granularity limit is why this reports
+    "installed at all" rather than "installed for every matcher";
+    `_find_duplicate_hook_entries` is the matcher-aware half.
+
+    Fail-soft to `_AUTO_CAPTURE_HOOK_BASENAMES_FALLBACK` if the manifest
+    is unreadable — `aelf doctor` must still run on a broken install.
+    """
+    try:
+        from aelfrice.auto_install import (  # noqa: PLC0415
+            load_manifest,
+            read_opt_outs,
+        )
+
+        manifest = load_manifest()
+        opted_out = read_opt_outs()
+    except Exception:  # noqa: BLE001 — doctor must never fail to report
+        return _AUTO_CAPTURE_HOOK_BASENAMES_FALLBACK
+    basenames: list[str] = []
+    for hook in manifest.hooks:
+        if not hook.default_on or hook.name in opted_out:
+            continue
+        if hook.basename not in basenames:
+            basenames.append(hook.basename)
+    return tuple(basenames)
 
 
 def _check_auto_capture_hooks(
     findings: list[CommandFinding],
 ) -> list[str]:
-    """Return basenames of v2.1 default-on hooks absent from all scanned scopes.
+    """Return basenames of default-on manifest hooks absent from all scopes.
 
     A hook is "present" if any finding's command string contains the
     basename. Substring match is intentional: the command may be a bare
-    basename (PATH-resolved pipx install) or an absolute path
-    (project venv); both should count as installed (#557).
+    basename (PATH-resolved install) or an absolute path (project venv);
+    both should count as installed (#557).
     """
     missing: list[str] = []
-    for basename in _AUTO_CAPTURE_HOOK_BASENAMES:
+    for basename in _default_on_hook_basenames():
         if not any(basename in f.command for f in findings):
             missing.append(basename)
     return missing
@@ -1135,16 +1335,41 @@ def _format_missing_auto_capture_section(
         return
     lines.append("")
     lines.append(
-        "auto-capture hooks not installed (v2.1+, #529). missing: "
+        "default-on hooks not installed (#529, #1161). missing: "
         + ", ".join(report.missing_auto_capture_hooks)
     )
     lines.append(
-        "fix: re-run 'aelf setup' to wire transcript-ingest, "
-        "commit-ingest, and session-start (default-on since v2.1 / "
-        "#529), and stop-hook (default-on since v3.0 / #582). to opt "
-        "out per-hook: `aelf setup --no-transcript-ingest "
-        "--no-commit-ingest --no-session-start --no-stop-hook`."
+        "fix: re-run 'aelf setup' to wire every default-on hook. to opt "
+        "out per-hook, use the matching `aelf setup --no-*` flag (an "
+        "opted-out hook is not reported here)."
     )
+
+
+def _format_duplicate_hook_entries_section(
+    report: DoctorReport, lines: list[str],
+) -> None:
+    """Append the #1161 duplicate-hook block to `lines`.
+
+    Quiet when nothing is duplicated. Worth a loud line when it is: a
+    duplicate resolves fine and breaks nothing, so the only symptom is
+    that every aelfrice hook runs N times per event and the user's
+    prompts get slower with no explanation.
+    """
+    if not report.duplicate_hook_entries:
+        return
+    lines.append("")
+    total_extra = sum(d.count - 1 for d in report.duplicate_hook_entries)
+    lines.append(
+        f"duplicate aelf-* hook entries: {total_extra} redundant "
+        f"entr{'y' if total_extra == 1 else 'ies'} (#1161). each copy "
+        f"fires per event, so this is pure added latency:"
+    )
+    for dupe in sorted(
+        report.duplicate_hook_entries,
+        key=lambda d: (str(d.settings_path), d.event, d.basenames),
+    ):
+        lines.append(f"  {dupe.describe()}  [{dupe.settings_path}]")
+    lines.append("fix: run 'aelf doctor --prune' to collapse them.")
 
 
 def _check_legacy_schema_dbs(

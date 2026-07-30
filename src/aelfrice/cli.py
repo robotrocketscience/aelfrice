@@ -4021,10 +4021,25 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
             f"({events}) from {prune.settings_path}",
             file=out,  # type: ignore[arg-type]
         )
+    if prune.total_duplicates_removed:
+        # #1161: `aelf setup` repairs duplicates here, before reconciling
+        # installs, so the install pass sees a single entry per hook and
+        # its "already installed" report is truthful.
+        dupe_events = ", ".join(
+            f"{event}={count}"
+            for event, count in sorted(prune.duplicates_per_event.items())
+        )
+        print(
+            f"collapsed {prune.total_duplicates_removed} duplicate "
+            f"aelf-* hook entr"
+            f"{'y' if prune.total_duplicates_removed == 1 else 'ies'} "
+            f"({dupe_events}) from {prune.settings_path}",
+            file=out,  # type: ignore[arg-type]
+        )
     result = install_user_prompt_submit_hook(
         path,
         command=command,
-        timeout=args.timeout,
+        timeout=_timeout_for("user_prompt_submit"),
         status_message=args.status_message,
     )
     if result.already_present:
@@ -5984,23 +5999,40 @@ def _cmd_doctor_fix_hooks(
     any_removed = False
     for _scope, path in scopes_scanned:
         prune = prune_broken_aelf_hooks(path, dry_run=dry_run)
-        if not prune.total_removed:
-            continue
-        any_removed = True
-        events = ", ".join(
-            f"{event}={count}"
-            for event, count in sorted(prune.removed_per_event.items())
-        )
         verb = "would prune" if dry_run else "pruned"
-        noun = "entry" if prune.total_removed == 1 else "entries"
-        print(
-            f"--fix: {verb} {prune.total_removed} stale aelf-* hook "
-            f"{noun} ({events}) from {path}",
-            file=out,  # type: ignore[arg-type]
-        )
+        if prune.total_removed:
+            any_removed = True
+            events = ", ".join(
+                f"{event}={count}"
+                for event, count in sorted(prune.removed_per_event.items())
+            )
+            noun = "entry" if prune.total_removed == 1 else "entries"
+            print(
+                f"--fix: {verb} {prune.total_removed} stale aelf-* hook "
+                f"{noun} ({events}) from {path}",
+                file=out,  # type: ignore[arg-type]
+            )
+        # #1161: reported separately from the stale-path prune — a
+        # collapsed entry resolved fine, it was just installed twice.
+        if prune.total_duplicates_removed:
+            any_removed = True
+            dupe_events = ", ".join(
+                f"{event}={count}"
+                for event, count in sorted(prune.duplicates_per_event.items())
+            )
+            dupe_noun = (
+                "entry" if prune.total_duplicates_removed == 1 else "entries"
+            )
+            dupe_verb = "would collapse" if dry_run else "collapsed"
+            print(
+                f"--fix: {dupe_verb} {prune.total_duplicates_removed} "
+                f"duplicate aelf-* hook {dupe_noun} ({dupe_events}) "
+                f"from {path}",
+                file=out,  # type: ignore[arg-type]
+            )
     if not any_removed:
         print(
-            "--fix: no stale aelf-* hook entries to prune",
+            "--fix: no stale or duplicate aelf-* hook entries to prune",
             file=out,  # type: ignore[arg-type]
         )
 

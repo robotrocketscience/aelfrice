@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import sqlite3
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -332,16 +333,43 @@ def test_doctor_cli_exit_0_when_clean(
     assert "1 ok" in buf.getvalue()
 
 
-# --- v2.1 default-on auto-capture nag (#557) -----------------------------
+# --- default-on hook nag (#557, manifest-driven since #1161) -------------
 
 
+def _default_on_basenames() -> list[str]:
+    """Unique default-on manifest basenames, in manifest order.
+
+    The auto-capture tests below assert against this rather than a
+    hardcoded list: #1161 was caused by exactly such a list falling six
+    hooks behind the manifest, and a test that hardcodes the same names
+    cannot catch a recurrence.
+    """
+    from aelfrice.auto_install import load_manifest
+
+    out: list[str] = []
+    for hook in load_manifest().hooks:
+        if hook.default_on and hook.basename not in out:
+            out.append(hook.basename)
+    return out
+
+
+@pytest.fixture
+def _no_opt_outs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the opt-out set empty so ambient `~/.aelfrice` state cannot leak."""
+    monkeypatch.setattr(
+        "aelfrice.auto_install.read_opt_outs", lambda *a, **k: set()
+    )
+
+
+@pytest.mark.usefixtures("_no_opt_outs")
 def test_diagnose_flags_missing_auto_capture_hooks_when_pre_v21(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Pre-v2.1 install: settings has only the retrieval hook, none of
-    the three default-on auto-capture hooks. Report should list all
-    three as missing and the rendered output should print the re-run
-    nag."""
+    """Legacy install: settings has only the retrieval hook.
+
+    Every other default-on hook should be listed as missing and the
+    rendered output should print the re-run nag.
+    """
     bin_dir = tmp_path / "bin"
     retrieval_hook = _exec(bin_dir / "aelf-hook")
     user_path = tmp_path / "settings.json"
@@ -356,68 +384,48 @@ def test_diagnose_flags_missing_auto_capture_hooks_when_pre_v21(
     report = diagnose(
         user_settings=user_path, project_root=tmp_path / "noproj"
     )
-    assert report.missing_auto_capture_hooks == [
-        "aelf-transcript-logger",
-        "aelf-commit-ingest",
-        "aelf-session-start-hook",
-        "aelf-stop-hook",
-    ]
+    expected = [b for b in _default_on_basenames() if b != "aelf-hook"]
+    assert report.missing_auto_capture_hooks == expected
     rendered = format_report(report)
-    assert "auto-capture hooks not installed" in rendered
+    assert "default-on hooks not installed" in rendered
     assert "re-run 'aelf setup'" in rendered
 
 
+@pytest.mark.usefixtures("_no_opt_outs")
 def test_diagnose_quiet_when_all_auto_capture_hooks_present(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fresh v2.1+ install: all default-on hooks present (including the
-    #582 stop hook). No nag line in the rendered report."""
+    """Fresh full install: every default-on hook present, no nag line.
+
+    The fixture is built *from the manifest* rather than hand-listed, so
+    adding a default-on hook cannot leave this test asserting quiet over
+    a partial install — which is how the #1161 gap survived: the old
+    version of this test hand-listed five hooks and passed while four
+    others went unchecked.
+    """
     bin_dir = tmp_path / "bin"
-    retrieval = _exec(bin_dir / "aelf-hook")
-    transcript = _exec(bin_dir / "aelf-transcript-logger")
-    commit_ingest = _exec(bin_dir / "aelf-commit-ingest")
-    session_start = _exec(bin_dir / "aelf-session-start-hook")
-    stop_hook = _exec(bin_dir / "aelf-stop-hook")
+    # One event per basename is enough — the presence check is a
+    # substring match over every scanned command, not an event map.
+    entries = [
+        {"hooks": [{"type": "command", "command": str(_exec(bin_dir / name))}]}
+        for name in _default_on_basenames()
+    ]
     user_path = tmp_path / "settings.json"
-    _write_settings(user_path, {
-        "hooks": {
-            "UserPromptSubmit": [
-                {"hooks": [{"type": "command", "command": str(retrieval)}]},
-                {"hooks": [{"type": "command", "command": str(transcript)}]},
-            ],
-            "Stop": [
-                {"hooks": [{"type": "command", "command": str(transcript)}]},
-                {"hooks": [{"type": "command", "command": str(stop_hook)}]},
-            ],
-            "PreCompact": [
-                {"hooks": [{"type": "command", "command": str(transcript)}]},
-            ],
-            "PostCompact": [
-                {"hooks": [{"type": "command", "command": str(transcript)}]},
-            ],
-            "PostToolUse": [{
-                "matcher": "Bash",
-                "hooks": [{"type": "command", "command": str(commit_ingest)}],
-            }],
-            "SessionStart": [
-                {"hooks": [{"type": "command", "command": str(session_start)}]},
-            ],
-        },
-    })
+    _write_settings(user_path, {"hooks": {"UserPromptSubmit": entries}})
     monkeypatch.setenv("PATH", str(bin_dir))
     report = diagnose(
         user_settings=user_path, project_root=tmp_path / "noproj"
     )
     assert report.missing_auto_capture_hooks == []
     rendered = format_report(report)
-    assert "auto-capture hooks not installed" not in rendered
+    assert "default-on hooks not installed" not in rendered
 
 
+@pytest.mark.usefixtures("_no_opt_outs")
 def test_diagnose_partial_auto_capture_lists_only_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Mixed install: transcript-logger present, the other two absent.
-    Only the absent two should appear in the missing list."""
+    """Mixed install: transcript-logger present, everything else absent."""
     bin_dir = tmp_path / "bin"
     transcript = _exec(bin_dir / "aelf-transcript-logger")
     user_path = tmp_path / "settings.json"
@@ -432,11 +440,10 @@ def test_diagnose_partial_auto_capture_lists_only_missing(
     report = diagnose(
         user_settings=user_path, project_root=tmp_path / "noproj"
     )
-    assert report.missing_auto_capture_hooks == [
-        "aelf-commit-ingest",
-        "aelf-session-start-hook",
-        "aelf-stop-hook",
+    expected = [
+        b for b in _default_on_basenames() if b != "aelf-transcript-logger"
     ]
+    assert report.missing_auto_capture_hooks == expected
 
 
 def test_diagnose_quiet_when_no_settings_scanned(tmp_path: Path) -> None:
@@ -447,21 +454,73 @@ def test_diagnose_quiet_when_no_settings_scanned(tmp_path: Path) -> None:
         project_root=tmp_path / "missing-project",
     )
     rendered = format_report(report)
-    assert "auto-capture hooks not installed" not in rendered
+    assert "default-on hooks not installed" not in rendered
 
 
-def test_auto_capture_basenames_match_setup() -> None:
-    """Guardrail: doctor's hardcoded auto-capture basename list must
-    stay in sync with `aelfrice.setup`. If setup renames a script,
-    this test fires before the doctor check silently misses it."""
-    from aelfrice import setup
-    from aelfrice.doctor import _AUTO_CAPTURE_HOOK_BASENAMES
-    assert set(_AUTO_CAPTURE_HOOK_BASENAMES) == {
-        setup.TRANSCRIPT_LOGGER_SCRIPT_NAME,
-        setup.COMMIT_INGEST_SCRIPT_NAME,
-        setup.SESSION_START_HOOK_SCRIPT_NAME,
-        setup.STOP_HOOK_SCRIPT_NAME,
-    }
+def test_doctor_covers_every_default_on_manifest_hook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Doctor's presence check must cover the whole default-on surface.
+
+    #1161: the predecessor of this test compared doctor's hand-written
+    4-tuple against the same four `setup.*_SCRIPT_NAME` constants the
+    tuple had been copied from. That is a tautology — it could only fail
+    on a rename, never on the drift that actually happened, which was the
+    manifest growing to ten default-on hooks while the tuple stayed at
+    four. Six went uncovered, including `aelf-hook` itself.
+
+    Asserting against `load_manifest()` makes the installer the authority,
+    so adding a default-on hook without extending doctor now fails here.
+    """
+    from aelfrice.auto_install import load_manifest
+    from aelfrice.doctor import _default_on_hook_basenames
+
+    # `_default_on_hook_basenames` reads the real
+    # ~/.aelfrice/opt-out-hooks.json, so a developer who has ever run
+    # `aelf setup --no-commit-ingest` would otherwise see this fail on
+    # their own machine and green on CI. Pin the opt-out set instead.
+    monkeypatch.setattr(
+        "aelfrice.auto_install.read_opt_outs", lambda *a, **k: set()
+    )
+    expected = {h.basename for h in load_manifest().hooks if h.default_on}
+    assert set(_default_on_hook_basenames()) == expected
+    # The regression that motivated this: the primary retrieval hook.
+    assert "aelf-hook" in _default_on_hook_basenames()
+
+
+def test_opted_out_hooks_are_not_reported_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deliberate `--no-*` opt-out must not read as breakage."""
+    from aelfrice import doctor as doctor_module
+    from aelfrice.auto_install import load_manifest
+
+    default_on = [h for h in load_manifest().hooks if h.default_on]
+    # Pick a victim whose basename no *other* default-on row also
+    # installs: `search_tool` and `search_tool_bash` share a program, so
+    # opting out one leaves the basename contributed by the other.
+    counts = Counter(h.basename for h in default_on)
+    victim = next(h for h in default_on if counts[h.basename] == 1)
+    monkeypatch.setattr(
+        "aelfrice.auto_install.read_opt_outs", lambda *a, **k: {victim.name}
+    )
+    assert victim.basename not in doctor_module._default_on_hook_basenames()
+
+
+def test_default_on_basenames_fall_back_when_manifest_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`aelf doctor` must still report on a broken install."""
+    from aelfrice import doctor as doctor_module
+
+    def _boom() -> object:
+        raise ValueError("malformed manifest")
+
+    monkeypatch.setattr("aelfrice.auto_install.load_manifest", _boom)
+    assert (
+        doctor_module._default_on_hook_basenames()
+        == doctor_module._AUTO_CAPTURE_HOOK_BASENAMES_FALLBACK
+    )
 
 
 # ---------------------------------------------------------------------------
