@@ -396,34 +396,50 @@ If `$AELFRICE_DB` points somewhere other than a directory aelfrice created
 cannot be safely attributed to aelfrice — `$HOME/transcripts/` may well be
 yours. Those are listed for you to remove by hand instead of being deleted.
 
-Uninstall also clears the manifest-version and uv-migration stamps under
-`~/.aelfrice/`, so reinstalling the same version re-merges the hooks rather
-than short-circuiting into an installed-but-inert state. `opt-out-hooks.json`
-is deliberately kept: it records your decision that a hook should not be
-installed, and that should survive a reinstall.
+### `~/.aelfrice/`
 
-### What is deliberately left in `~/.aelfrice/`
+That directory is a second location with different ownership: it belongs to
+no single store. Uninstall therefore removes what aelfrice put there **by
+name**, and never sweeps it.
 
-Disposition covers the store you named and the install stamps. It does not
-sweep the rest of `~/.aelfrice/`, because that directory is not owned by a
-single store:
+Install state goes in **every** mode, `--keep-db` included, because each
+file records that a step already happened and a survivor would make a
+reinstall read a stale decision as current:
+
+- the **LLM classification consent sentinel** — the load-bearing one. It
+  used to outlive the uninstall, so a later reinstall read the grant as
+  still valid and never re-prompted (#1186). It now goes, and a reinstall
+  asks again.
+- the manifest-version and uv-migration stamps, so reinstalling the same
+  version re-merges the hooks instead of short-circuiting into an
+  installed-but-inert state.
+- the temporal-spine backfill sentinel, the auto-install lock, and the
+  `claude-memory` reconcile sentinel.
+- `logs/hook-failures.log` (and `logs/` itself, once empty).
+
+Captured data goes only when you asked for data to go, i.e. under `--purge`
+and `--archive` but not `--keep-db`: `telemetry.jsonl` and a legacy
+`transcripts/` directory left by pre-repo-store versions.
+
+Kept in every mode:
 
 - `projects/` holds **other projects' stores**, one `memory.db` per
   project-id slug. `aelf uninstall` disposes of one store — the one
   `db_path()` resolves to — so removing this would destroy belief corpora
   you did not ask it to touch. Dispose of those separately.
+- `shared/` is the conventional home for read-only **federation peers**
+  (`knowledge_deps.json`), which is another store's corpus by another name.
 - `config.json` is your configuration, kept for the same reason as
-  `opt-out-hooks.json`.
-- `telemetry.jsonl`, `logs/`, and a legacy `transcripts/` directory from
-  pre-repo-store versions may also remain, along with the LLM consent
-  sentinel. **If you granted LLM classification consent, remove
-  `~/.aelfrice/` by hand after uninstalling** — otherwise a later reinstall
-  reads that sentinel and treats the grant as still current. Tracked as a
-  follow-up to #1173.
+  `opt-out-hooks.json`: it records your decision that a hook should not be
+  installed, and that should survive a reinstall.
 
-To remove everything aelfrice has ever written on this machine, if you are
-sure no other project's store lives there: `rm -rf ~/.aelfrice/` after
-running `uninstall`. Check `ls ~/.aelfrice/projects/` first.
+Anything else found in `~/.aelfrice/` is **listed and left alone** — the
+directory can hold files aelfrice never wrote, and the destructive modes
+name every path they are about to remove before they remove it.
+
+If you want the directory gone entirely, and you have checked
+`ls ~/.aelfrice/projects/` and `ls ~/.aelfrice/shared/` first:
+`rm -rf ~/.aelfrice/` after running `uninstall`.
 
 ## Troubleshooting
 
