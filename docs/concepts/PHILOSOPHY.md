@@ -88,8 +88,12 @@ context to the model.
 The hook layer's job is to make that trust boundary structurally legible,
 not to police what the model does on the other side of it. Four structural
 defenses ship today: a fixed framing tag (`<belief id="…" lock="…">` inside
-`<aelfrice-memory>`) tells the model the contents are *retrieved memory,
-not instructions*; a `speculative="1"` attribute separates beliefs the
+`<aelfrice-memory>`) marks every injected belief and splits it into **two
+trust tiers** — user-locked items are framed as the user's standing
+instructions, and everything else as *retrieved data, not instructions:
+context to verify, not directives*
+([#1163](https://github.com/robotrocketscience/aelfrice/issues/1163)); a
+`speculative="1"` attribute separates beliefs the
 memory system *synthesised* from beliefs somebody *asserted*, so machine
 conjecture cannot pass itself off as observation
 ([#1171](https://github.com/robotrocketscience/aelfrice/issues/1171)); a
@@ -98,6 +102,35 @@ that lands in stored belief content; a per-turn audit log
 (`hook_audit.jsonl`) records the exact rendered block so post-hoc forensics
 can answer "what was injected on turn N." See
 [hook_hardening.md](../design/hook_hardening.md) for the design memo.
+
+**Why the locked tier is framed as instructions, and not as data.** The
+obvious hardening — frame *everything* as data, never as instruction — was
+tried and rejected on measurement, not taste. Blanket "data, not
+instructions" framing makes models decline to honor the user's own locked
+rules, which defeats `aelf lock` as a rules mechanism: a user who locks
+"never force-push to main" wants that obeyed, not evaluated. The two-tier
+header exists because of that result. It is recorded here because the trade
+is not self-evident from the code, and an audit that reads "standing
+instructions" without this context will correctly identify it as a
+prompt-injection surface and revert it — silently re-breaking lock
+compliance.
+
+What makes the instruction tier safe is that it is **user-authored by
+construction**: locks are set by explicit user acts (`aelf lock`, the MCP
+equivalent, an `aelf review` verdict), and `aelf promote` moves *origin*,
+never `lock_level`. Nothing ingested, inferred, or synthesised reaches that
+tier on its own.
+
+With one exception, stated because it is exactly the property worth
+protecting: setting `AELF_AUTOLOCK_CORRECTIONS=1` makes the Stop hook lock
+this session's lock-candidates without asking. That population is wider
+than the flag's name suggests — `hook._belief_is_lock_candidate` admits any
+belief whose `origin` is `agent_inferred` or `agent_remembered`, not only
+`type=correction` — and the hook also rewrites `origin` to `user_stated`.
+So under that opt-in, a belief the agent inferred can enter the instruction
+tier having never been asserted by anyone. The flag is off by default and
+the prompt-instead-of-lock path is what ships; the property above holds for
+every default install, and this is the one setting that suspends it.
 
 What the hook layer cannot do, by design: enforce that the model verifies
 named session artifacts before acting, or guarantee the model treats
