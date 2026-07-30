@@ -38,6 +38,7 @@ Out of scope:
 """
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import Final
@@ -212,6 +213,17 @@ def _extract_numerics(text: str) -> tuple[NumericSlot, ...]:
             value = float(m.group("value"))
         except ValueError:
             continue
+        # `float()` does not raise on overflow — it saturates to
+        # +/-inf. The exponent branch of `_NUMERIC_RE` matches
+        # abbreviated git SHAs like `592e701`, which are hex strings
+        # that happen to hold one `e` between digits; parsed as
+        # scientific notation they become `inf`. That is not a
+        # measurement, so admitting it as a slot manufactures a
+        # comparison against a value no belief actually asserts.
+        # Dropping it here also keeps every downstream consumer off
+        # the non-finite path (#1227).
+        if not math.isfinite(value):
+            continue
         pair = (key, value)
         if pair in seen:
             continue
@@ -337,6 +349,13 @@ def _numeric_close(a: float, b: float, rel_tol: float) -> bool:
 
 
 def _format_number(x: float) -> str:
+    # `int()` raises on non-finite input — OverflowError for +/-inf,
+    # ValueError for nan — so the narrowing below cannot be reached
+    # unguarded. `_extract_numerics` already refuses to admit such a
+    # value as a slot (#1227); this is the second line of defence, for
+    # any caller that reaches the comparator by another route.
+    if not math.isfinite(x):
+        return f"{x:g}"
     if x == int(x):
         return str(int(x))
     return f"{x:g}"
