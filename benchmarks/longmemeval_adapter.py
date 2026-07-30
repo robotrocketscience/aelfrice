@@ -1,8 +1,15 @@
 """LongMemEval benchmark adapter for aelfrice.
 
-Ingests LongMemEval oracle sessions into aelfrice,
-runs retrieval for each question, and outputs results
-for LLM-judge scoring.
+Ingests LongMemEval oracle sessions into aelfrice, runs retrieval for
+each question, and outputs results for LLM-judge scoring.
+
+Metrics are reported in two families (#1160). `substring_exact_match`
+and `f1` are **reader-dependent**: no reader runs in `aelf bench all`, so
+the retrieved context stands in for a model's answer and token-F1 tracks
+the token budget as much as the ranking. `retrieval_quality` is
+**reader-independent**: MRR and recall@k over the ordered retrieved list,
+which a smaller budget can only lower. `exact_match` is reported as `n/a`
+— see `UNCOMPUTABLE_METRICS`.
 
 Paper: LongMemEval (ICLR 2025)
 Data:  xiaowu0162/longmemeval-cleaned  (longmemeval_oracle.json)
@@ -26,7 +33,12 @@ from typing import Final
 from aelfrice.ingest import ingest_turn
 from aelfrice.retrieval import retrieve_v2 as retrieve  # v1.0.x lab-compat shim
 from aelfrice.store import MemoryStore
+from benchmarks.metric_status import (
+    NOT_APPLICABLE,
+    NOT_APPLICABLE_REASONS_KEY,
+)
 from benchmarks.qa_scoring import score_multi_answer
+from benchmarks.retrieval_metrics import mean_metrics, retrieval_metrics
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -52,6 +64,21 @@ EXPECTED_COUNTS: Final[dict[str, int]] = {
 
 HF_DATASET: Final[str] = "xiaowu0162/longmemeval-cleaned"
 HF_DATA_FILE: Final[str] = "longmemeval_oracle.json"
+
+#: Metrics this adapter cannot compute, and why (#1160).
+#:
+#: Exact match asks whether the prediction *equals* the gold string after
+#: normalisation. The prediction here is the joined retrieval context, so
+#: it never equals a short gold answer at any retrieval quality. Reported
+#: as the not-applicable sentinel rather than as 0.0, which reads as a
+#: total failure of something that was never measured.
+UNCOMPUTABLE_METRICS: Final[dict[str, str]] = {
+    "exact_match": (
+        "requires a reader: exact match compares the prediction to the "
+        "gold answer as whole normalised strings, and the prediction is "
+        "the retrieved context, which is never one short answer"
+    ),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +132,10 @@ class RetrievalResult:
     exact_match: float = 0.0
     substring_exact_match: float = 0.0
     f1: float = 0.0
+    # Reader-independent rank metrics over the retrieved list (#1160).
+    rank_scores: dict[str, float] = field(
+        default_factory=lambda: dict[str, float](),
+    )
 
 
 @dataclass
@@ -198,6 +229,10 @@ class BenchmarkResult:
         if self.total_questions == 0:
             return 0.0
         return self.total_f1 / self.total_questions
+
+    def retrieval_quality(self) -> dict[str, float]:
+        """Reader-independent MRR / recall@k over every question."""
+        return mean_metrics([qr.rank_scores for qr in self.per_question])
 
 
 # ---------------------------------------------------------------------------
@@ -346,15 +381,17 @@ def _is_valid_iso(date_str: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def query_aelfrice(
+def _retrieve_beliefs(
     store: MemoryStore,
     question: str,
     question_date: str,
     budget: int = 2000,
-) -> tuple[str, int]:
-    """Query aelfrice for a question. Returns (context, num_beliefs).
+) -> list[str]:
+    """Retrieve relevant beliefs, in rank order, without joining them.
 
-    Includes question_date in the query for temporal grounding.
+    The ordering is what `benchmarks.retrieval_metrics` reads; joining
+    first destroys it (#1160). Includes question_date in the query for
+    temporal grounding.
     """
     query_text: str = question
     if question_date:
@@ -367,8 +404,21 @@ def query_aelfrice(
         include_locked=False,
         use_bfs=True,
     )
-    parts: list[str] = [b.content for b in result.beliefs]
-    return " ".join(parts), len(result.beliefs)
+    return [b.content for b in result.beliefs]
+
+
+def query_aelfrice(
+    store: MemoryStore,
+    question: str,
+    question_date: str,
+    budget: int = 2000,
+) -> tuple[str, int]:
+    """Query aelfrice for a question. Returns (context, num_beliefs).
+
+    Includes question_date in the query for temporal grounding.
+    """
+    beliefs: list[str] = _retrieve_beliefs(store, question, question_date, budget)
+    return " ".join(beliefs), len(beliefs)
 
 
 # ---------------------------------------------------------------------------
@@ -396,10 +446,12 @@ def run_question(
 
     # Query
     t1: float = time.monotonic()
-    context, num_beliefs = query_aelfrice(
+    beliefs: list[str] = _retrieve_beliefs(
         store, question.question, question.question_date, budget=budget,
     )
     latency_ms: float = (time.monotonic() - t1) * 1000.0
+    context: str = " ".join(beliefs)
+    num_beliefs: int = len(beliefs)
 
     # Score retrieved context against gold answer(s). LongMemEval lists
     # multiple acceptable answer surfaces for some categories — fold
@@ -410,6 +462,9 @@ def run_question(
         else [str(question.answer)]
     )
     scores: dict[str, float] = score_multi_answer(context, gts)
+    # Rank metrics read the ordering the join above discards; they are
+    # the half of the measurement the token budget cannot inflate.
+    rank_scores: dict[str, float] = retrieval_metrics(beliefs, gts)
 
     result: RetrievalResult = RetrievalResult(
         question_id=question.question_id,
@@ -423,6 +478,7 @@ def run_question(
         exact_match=scores["exact_match"],
         substring_exact_match=scores["substring_exact_match"],
         f1=scores["f1"],
+        rank_scores=rank_scores,
     )
     return result, ingest_turns, ingest_time
 
@@ -487,11 +543,15 @@ def print_results(result: BenchmarkResult) -> None:
     print()
 
     print(
-        f"Overall correctness (deterministic): "
-        f"EM={result.exact_match:.4f}  "
+        f"Overall correctness (reader-dependent): "
+        f"EM={NOT_APPLICABLE}  "
         f"sub_EM={result.substring_exact_match:.4f}  "
         f"F1={result.f1:.4f}"
     )
+    print(f"  EM is {NOT_APPLICABLE}: {UNCOMPUTABLE_METRICS['exact_match']}")
+    rq: dict[str, float] = result.retrieval_quality()
+    print("Retrieval quality (reader-independent):")
+    print("  " + "  ".join(f"{k}={v:.4f}" for k, v in rq.items()))
     print()
     print("Per-category retrieval stats:")
     for qtype in QUESTION_TYPES:
@@ -652,15 +712,20 @@ def main() -> None:
             "avg_latency_ms": round(result.avg_latency_ms, 2),
             "total_ingest_turns": result.total_ingest_turns,
             "total_ingest_time_s": round(result.total_ingest_time_s, 2),
-            "exact_match": round(result.exact_match, 4),
+            # Reader-dependent, and `exact_match` is not merely low but
+            # uncomputable without one — see UNCOMPUTABLE_METRICS.
+            "exact_match": NOT_APPLICABLE,
             "substring_exact_match": round(result.substring_exact_match, 4),
             "f1": round(result.f1, 4),
+            # Reader-independent: rank metrics over the retrieved list.
+            "retrieval_quality": result.retrieval_quality(),
+            NOT_APPLICABLE_REASONS_KEY: dict(UNCOMPUTABLE_METRICS),
             "category_stats": {
                 qtype: {
                     "count": cat.count,
                     "avg_beliefs": round(cat.avg_beliefs, 2),
                     "avg_latency_ms": round(cat.avg_latency_ms, 2),
-                    "exact_match": round(cat.exact_match, 4),
+                    "exact_match": NOT_APPLICABLE,
                     "substring_exact_match": round(cat.substring_exact_match, 4),
                     "f1": round(cat.f1, 4),
                 }
@@ -674,7 +739,7 @@ def main() -> None:
                     "answer": qr.answer,
                     "num_beliefs": qr.num_beliefs,
                     "retrieval_latency_ms": round(qr.retrieval_latency_ms, 2),
-                    "exact_match": qr.exact_match,
+                    "exact_match": NOT_APPLICABLE,
                     "substring_exact_match": qr.substring_exact_match,
                     "f1": round(qr.f1, 4),
                 }

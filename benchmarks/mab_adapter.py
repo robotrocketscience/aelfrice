@@ -2,8 +2,15 @@
 
 Loads the HuggingFace ai-hyz/MemoryAgentBench dataset, chunks context
 text using NLTK sentence tokenization, ingests chunks into aelfrice
-as sequential turns, queries for each question, and scores using
-exact_match, substring_exact_match, and F1 metrics per the paper.
+as sequential turns, queries for each question, and scores the result.
+
+Two metric families are reported separately (#1160).
+`substring_exact_match` and `f1` are **reader-dependent**: no reader runs
+in `aelf bench all`, so the retrieved context stands in for a model's
+answer and token-F1 tracks the token budget as much as the ranking.
+`retrieval_quality` is **reader-independent**: MRR and recall@k over the
+ordered retrieved list, which a smaller budget can only lower.
+`exact_match` is reported as `n/a` — see `UNCOMPUTABLE_METRICS`.
 
 Reference: arXiv:2507.05257, ICLR 2026
 
@@ -34,6 +41,31 @@ from datasets import load_dataset  # type: ignore[import-untyped]
 from aelfrice.ingest import ingest_turn
 from aelfrice.retrieval import retrieve_v2 as retrieve  # v1.0.x lab-compat shim
 from aelfrice.store import MemoryStore
+from benchmarks.metric_status import (
+    NOT_APPLICABLE,
+    NOT_APPLICABLE_REASONS_KEY,
+)
+from benchmarks.retrieval_metrics import (
+    DEFAULT_KS,
+    mean_metrics,
+    retrieval_metrics,
+)
+
+#: Metrics this adapter cannot compute, and why (#1160).
+#:
+#: Exact match asks whether the prediction *equals* the gold string after
+#: normalisation. The prediction here is the joined retrieval context —
+#: hundreds of tokens — so it never equals a short gold answer, at any
+#: retrieval quality, for any corpus. The canonical file recorded 0.0 for
+#: all four splits, which reads as a total retrieval failure rather than
+#: as a metric that was never applicable.
+UNCOMPUTABLE_METRICS: Final[dict[str, str]] = {
+    "exact_match": (
+        "requires a reader: exact match compares the prediction to the "
+        "gold answer as whole normalised strings, and the prediction is "
+        "the retrieved context, which is never one short answer"
+    ),
+}
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -177,11 +209,16 @@ class MABResult:
 
     label: str = ""
     total_questions: int = 0
+    # Answer-correctness metrics and rank metrics share one dict so
+    # `merge_results` carries both without a second loop. `mean_score`
+    # reads either.
     scores: dict[str, list[float]] = field(
         default_factory=lambda: {
             "exact_match": [],
             "substring_exact_match": [],
             "f1": [],
+            "reciprocal_rank": [],
+            **{f"recall_at_{k}": [] for k in DEFAULT_KS},
         }
     )
     ingest_chunks: int = 0
@@ -199,6 +236,15 @@ class MABResult:
         if not vals:
             return 0.0
         return sum(vals) / len(vals)
+
+    def retrieval_quality(self) -> dict[str, float]:
+        """Reader-independent MRR / recall@k over every question."""
+        keys: list[str] = ["reciprocal_rank", *(f"recall_at_{k}" for k in DEFAULT_KS)]
+        rows: list[dict[str, float]] = [
+            {key: self.scores[key][i] for key in keys}
+            for i in range(len(self.scores["reciprocal_rank"]))
+        ]
+        return mean_metrics(rows)
 
 
 def merge_results(results: list[MABResult], label: str = "ALL") -> MABResult:
@@ -362,8 +408,14 @@ def ingest_context(store: MemoryStore, row: MABRow, chunk_size: int) -> int:
 # ---------------------------------------------------------------------------
 
 
-def query_aelfrice(store: MemoryStore, question: str, budget: int = 2000) -> str:
-    """Query aelfrice and return retrieved belief content."""
+def _retrieve_beliefs(
+    store: MemoryStore, question: str, budget: int = 2000,
+) -> list[str]:
+    """Retrieve relevant beliefs, in rank order, without joining them.
+
+    The ordering is what `benchmarks.retrieval_metrics` reads; joining
+    first destroys it (#1160).
+    """
     result = retrieve(
         store=store,
         query=question,
@@ -371,8 +423,12 @@ def query_aelfrice(store: MemoryStore, question: str, budget: int = 2000) -> str
         include_locked=False,
         use_bfs=True,
     )
-    parts: list[str] = [b.content for b in result.beliefs]
-    return " ".join(parts)
+    return [b.content for b in result.beliefs]
+
+
+def query_aelfrice(store: MemoryStore, question: str, budget: int = 2000) -> str:
+    """Query aelfrice and return retrieved belief content."""
+    return " ".join(_retrieve_beliefs(store, question, budget))
 
 
 # ---------------------------------------------------------------------------
@@ -411,8 +467,10 @@ def run_row(
 
     t1: float = time.monotonic()
     for q_idx, (question, answer_list) in enumerate(zip(questions, answers)):
-        prediction: str = query_aelfrice(store, question, budget=budget)
+        beliefs: list[str] = _retrieve_beliefs(store, question, budget=budget)
+        prediction: str = " ".join(beliefs)
         scores: dict[str, float] = score_multi_answer(prediction, answer_list)
+        scores.update(retrieval_metrics(beliefs, answer_list))
 
         result.total_questions += 1
         for metric, val in scores.items():
@@ -441,8 +499,11 @@ def print_results(result: MABResult) -> None:
     print(f"MAB Results: {result.label}")
     print(f"{'=' * 60}")
     print(f"Total questions:         {result.total_questions}")
-    print(f"Exact match:             {result.mean_score('exact_match'):.4f} ({result.mean_score('exact_match') * 100:.1f}%)")
+    print(f"Exact match:             {NOT_APPLICABLE}  ({UNCOMPUTABLE_METRICS['exact_match']})")
     print(f"Substring exact match:   {result.mean_score('substring_exact_match'):.4f} ({result.mean_score('substring_exact_match') * 100:.1f}%)")
+    rq: dict[str, float] = result.retrieval_quality()
+    print("Retrieval quality (reader-independent):")
+    print("  " + "  ".join(f"{k}={v:.4f}" for k, v in rq.items()))
     print(f"F1:                      {result.mean_score('f1'):.4f} ({result.mean_score('f1') * 100:.1f}%)")
     print(f"Chunks ingested:         {result.ingest_chunks}")
     print(f"Ingest time:             {result.ingest_time_s:.2f}s")
@@ -613,9 +674,14 @@ def main() -> None:
             "split": args.split,
             "source_filter": args.source,
             "total_questions": out_result.total_questions,
-            "exact_match": round(out_result.mean_score("exact_match"), 4),
+            # Reader-dependent, and `exact_match` is not merely low but
+            # uncomputable without one — see UNCOMPUTABLE_METRICS.
+            "exact_match": NOT_APPLICABLE,
             "substring_exact_match": round(out_result.mean_score("substring_exact_match"), 4),
             "f1": round(out_result.mean_score("f1"), 4),
+            # Reader-independent: rank metrics over the retrieved list.
+            "retrieval_quality": out_result.retrieval_quality(),
+            NOT_APPLICABLE_REASONS_KEY: dict(UNCOMPUTABLE_METRICS),
             "per_question": out_result.per_question,
         }
         output_path: Path = Path(args.output)

@@ -4,6 +4,14 @@ Ingests AMA-Bench (Zhao et al., ICLR 2026 Workshop) agentic trajectories
 into aelfrice, runs retrieval for QA evaluation, and reports per-domain
 and per-QA-type statistics.
 
+Correctness metrics come in two families (#1160).
+`substring_exact_match` and `f1` are **reader-dependent**: no reader runs
+in `aelf bench all`, so the retrieved context stands in for a model's
+answer and token-F1 tracks the token budget as much as the ranking.
+`retrieval_quality` is **reader-independent**: MRR and recall@k over the
+ordered retrieved list, which a smaller budget can only lower.
+`exact_match` is reported as `n/a` — see `UNCOMPUTABLE_METRICS`.
+
 Data source: HuggingFace AMA-bench/AMA-bench, split 'test' (208 episodes)
 
 Usage:
@@ -27,7 +35,12 @@ from datasets import load_dataset  # type: ignore[import-untyped]
 from aelfrice.ingest import ingest_turn
 from aelfrice.retrieval import retrieve_v2 as retrieve  # v1.0.x lab-compat shim
 from aelfrice.store import MemoryStore
+from benchmarks.metric_status import (
+    NOT_APPLICABLE,
+    NOT_APPLICABLE_REASONS_KEY,
+)
 from benchmarks.qa_scoring import score_multi_answer
+from benchmarks.retrieval_metrics import mean_metrics, retrieval_metrics
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -208,8 +221,14 @@ def ingest_episode(store: MemoryStore, episode: Episode) -> int:
 # ---------------------------------------------------------------------------
 
 
-def query_aelfrice(store: MemoryStore, question: str, budget: int = 2000) -> str:
-    """Retrieve relevant beliefs from aelfrice for a question."""
+def _retrieve_beliefs(
+    store: MemoryStore, question: str, budget: int = 2000,
+) -> list[str]:
+    """Retrieve relevant beliefs, in rank order, without joining them.
+
+    The ordering is what `benchmarks.retrieval_metrics` reads; joining
+    first destroys it (#1160).
+    """
     result = retrieve(
         store=store,
         query=question,
@@ -217,8 +236,12 @@ def query_aelfrice(store: MemoryStore, question: str, budget: int = 2000) -> str
         include_locked=False,
         use_bfs=True,
     )
-    parts: list[str] = [b.content for b in result.beliefs]
-    return " ".join(parts)
+    return [b.content for b in result.beliefs]
+
+
+def query_aelfrice(store: MemoryStore, question: str, budget: int = 2000) -> str:
+    """Retrieve relevant beliefs from aelfrice for a question."""
+    return " ".join(_retrieve_beliefs(store, question, budget))
 
 
 # ---------------------------------------------------------------------------
@@ -239,9 +262,28 @@ class EpisodeResult:
     per_question: list[dict[str, object]] = field(
         default_factory=lambda: list[dict[str, object]](),
     )
+    # Kept out of `per_question` on purpose: rank metrics are computed
+    # against the gold answer, and `per_question` is the gold-free half
+    # of the payload (`ground_truth` holds the answers separately).
+    rank_scores: list[dict[str, float]] = field(
+        default_factory=lambda: list[dict[str, float]](),
+    )
     ground_truth: list[dict[str, object]] = field(
         default_factory=lambda: list[dict[str, object]](),
     )
+
+
+#: Metrics this adapter cannot compute, and why (#1160). Exact match
+#: compares the prediction to the gold answer as whole normalised
+#: strings; the prediction is the joined retrieval context, so it never
+#: matches at any retrieval quality.
+UNCOMPUTABLE_METRICS: Final[dict[str, str]] = {
+    "exact_match": (
+        "requires a reader: exact match compares the prediction to the "
+        "gold answer as whole normalised strings, and the prediction is "
+        "the retrieved context, which is never one short answer"
+    ),
+}
 
 
 _SCORE_KEYS: Final[tuple[str, ...]] = (
@@ -278,9 +320,16 @@ class AggregateResult:
     per_question: list[dict[str, object]] = field(
         default_factory=lambda: list[dict[str, object]](),
     )
+    rank_scores: list[dict[str, float]] = field(
+        default_factory=lambda: list[dict[str, float]](),
+    )
     ground_truth: list[dict[str, object]] = field(
         default_factory=lambda: list[dict[str, object]](),
     )
+
+    def retrieval_quality(self) -> dict[str, float]:
+        """Reader-independent MRR / recall@k over every question."""
+        return mean_metrics(self.rank_scores)
 
 
 def aggregate_results(results: list[EpisodeResult]) -> AggregateResult:
@@ -293,6 +342,7 @@ def aggregate_results(results: list[EpisodeResult]) -> AggregateResult:
         agg.total_ingest_time_s += r.ingest_time_s
         agg.total_query_time_s += r.query_time_s
         agg.per_question.extend(r.per_question)
+        agg.rank_scores.extend(r.rank_scores)
         agg.ground_truth.extend(r.ground_truth)
 
         agg.domain_counts[r.domain] = agg.domain_counts.get(r.domain, 0) + 1
@@ -334,6 +384,12 @@ def _accuracy_by_key(
             for k in _SCORE_KEYS:
                 bucket[k] = round(bucket[k] / n, 4)
         bucket["count"] = int(n)  # type: ignore[assignment]
+        # An uncomputable metric contributes nothing to the sum, so the
+        # mean above would silently reconstruct the 0.0 the sentinel
+        # replaced. Say n/a here too rather than per-group zeros (#1160).
+        for k in UNCOMPUTABLE_METRICS:
+            if k in bucket:
+                bucket[k] = NOT_APPLICABLE  # type: ignore[assignment]
     return by_group
 
 
@@ -367,11 +423,15 @@ def run_episode(
     # Stage 2: Retrieve for each question
     t1: float = time.monotonic()
     for qa in episode.qa_pairs:
-        context: str = query_aelfrice(store, qa.question, budget=budget)
+        beliefs: list[str] = _retrieve_beliefs(store, qa.question, budget=budget)
+        context: str = " ".join(beliefs)
         # Deterministic correctness scorer per #507: substring-EM is
         # the canonical metric (does retrieval surface the gold
-        # answer?), EM and F1 ride alongside as diagnostics.
+        # answer?), EM and F1 ride alongside as diagnostics. All three
+        # are reader-dependent — they score the context as an answer.
         scores: dict[str, float] = score_multi_answer(context, [qa.answer])
+        # Reader-independent half: where the gold landed in the ranking.
+        result.rank_scores.append(retrieval_metrics(beliefs, [qa.answer]))
 
         result.total_qa += 1
         result.per_question.append({
@@ -383,7 +443,7 @@ def run_episode(
             "qa_type_name": QA_TYPE_NAMES.get(qa.qa_type, "unknown"),
             "question_uuid": qa.question_uuid,
             "context": context,
-            "exact_match": scores["exact_match"],
+            "exact_match": NOT_APPLICABLE,
             "substring_exact_match": scores["substring_exact_match"],
             "f1": round(scores["f1"], 4),
         })
@@ -426,14 +486,17 @@ def print_results(agg: AggregateResult) -> None:
 
     # Overall correctness (deterministic, no LLM judge)
     if agg.total_qa > 0:
-        em: float = agg.score_sums["exact_match"] / agg.total_qa
         sem: float = agg.score_sums["substring_exact_match"] / agg.total_qa
         f1: float = agg.score_sums["f1"] / agg.total_qa
         print(f"\n{'- ' * 30}")
-        print("Overall correctness (deterministic):")
-        print(f"  Exact match:           {em:.4f} ({em * 100:.1f}%)")
+        print("Overall correctness (reader-dependent):")
+        print(f"  Exact match:           {NOT_APPLICABLE}"
+              f"  ({UNCOMPUTABLE_METRICS['exact_match']})")
         print(f"  Substring exact match: {sem:.4f} ({sem * 100:.1f}%)")
         print(f"  F1:                    {f1:.4f} ({f1 * 100:.1f}%)")
+        rq: dict[str, float] = agg.retrieval_quality()
+        print("Retrieval quality (reader-independent):")
+        print("  " + "  ".join(f"{k}={v:.4f}" for k, v in rq.items()))
 
     # Per-QA-type breakdown
     print(f"\n{'- ' * 30}")
@@ -584,9 +647,11 @@ def main() -> None:
             "total_qa": agg.total_qa,
             "domain_counts": agg.domain_counts,
             "type_counts": agg.type_counts,
-            "exact_match": overall["exact_match"],
+            "exact_match": NOT_APPLICABLE,
             "substring_exact_match": overall["substring_exact_match"],
             "f1": overall["f1"],
+            "retrieval_quality": agg.retrieval_quality(),
+            NOT_APPLICABLE_REASONS_KEY: dict(UNCOMPUTABLE_METRICS),
             "accuracy_by_type": _accuracy_by_key(agg.per_question, "qa_type"),
             "accuracy_by_domain": _accuracy_by_key(agg.per_question, "domain"),
             "per_question": agg.per_question,

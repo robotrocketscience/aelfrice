@@ -210,3 +210,84 @@ def test_per_question_carries_no_gold_derived_rank_metrics(report: dict[str, Any
     for row in report["per_question"]:
         assert "reciprocal_rank" not in row
         assert not any(k.startswith("recall_at_") for k in row)
+
+
+# ---------------------------------------------------------------------------
+# exact_match across the blob-scoring adapters
+# ---------------------------------------------------------------------------
+
+# Every adapter in the canonical dispatcher that hands the joined
+# retrieval context to an answer scorer. Exact match asks for whole-string
+# equality against a short gold answer, which a multi-hundred-token
+# context can never satisfy — so all four reported a structural 0.0.
+_BLOB_SCORING_ADAPTERS = (
+    "benchmarks.mab_adapter",
+    "benchmarks.longmemeval_adapter",
+    "benchmarks.amabench_adapter",
+)
+
+
+def _import_adapter(monkeypatch: pytest.MonkeyPatch, name: str) -> Any:
+    import importlib
+    _stub_optional_deps(monkeypatch)
+    for dep in ("tiktoken", "datasets"):
+        if dep in sys.modules:
+            continue
+        stub = types.ModuleType(dep)
+        if dep == "tiktoken":
+            class _Enc:
+                def encode(self, s: str) -> list[int]:
+                    return [0] * len(s)
+            stub.encoding_for_model = lambda *a, **kw: _Enc()  # type: ignore[attr-defined]
+            stub.get_encoding = lambda *a, **kw: _Enc()  # type: ignore[attr-defined]
+        else:
+            stub.load_dataset = lambda *a, **kw: []  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, dep, stub)
+    return importlib.import_module(name)
+
+
+@pytest.mark.parametrize("module_name", _BLOB_SCORING_ADAPTERS)
+def test_adapter_declares_exact_match_uncomputable(
+    monkeypatch: pytest.MonkeyPatch, module_name: str,
+):
+    mod = _import_adapter(monkeypatch, module_name)
+    assert "exact_match" in mod.UNCOMPUTABLE_METRICS
+    assert "reader" in mod.UNCOMPUTABLE_METRICS["exact_match"]
+
+
+@pytest.mark.parametrize("module_name", _BLOB_SCORING_ADAPTERS)
+def test_adapter_exposes_reader_independent_retrieval_quality(
+    monkeypatch: pytest.MonkeyPatch, module_name: str,
+):
+    """Every blob-scoring adapter reports rank metrics beside the F1."""
+    mod = _import_adapter(monkeypatch, module_name)
+    holder = {
+        "benchmarks.mab_adapter": "MABResult",
+        "benchmarks.longmemeval_adapter": "BenchmarkResult",
+        "benchmarks.amabench_adapter": "AggregateResult",
+    }[module_name]
+    rq = getattr(mod, holder)().retrieval_quality()
+    assert set(rq) >= {"mrr", "recall_at_1", "recall_at_5"}
+
+
+def test_amabench_per_group_breakdown_does_not_rebuild_the_zero(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The distinguishing assert for `_accuracy_by_key`.
+
+    An n/a metric contributes nothing to the group sum, so dividing by
+    the row count reconstructs exactly the 0.0 the sentinel replaced —
+    silently, and per group. Without the sentinel pass at the end of
+    `_accuracy_by_key` this reads 0.0.
+    """
+    mod = _import_adapter(monkeypatch, "benchmarks.amabench_adapter")
+    rows: list[dict[str, Any]] = [
+        {"qa_type": "A", "exact_match": NOT_APPLICABLE,
+         "substring_exact_match": 1.0, "f1": 0.5},
+        {"qa_type": "A", "exact_match": NOT_APPLICABLE,
+         "substring_exact_match": 0.0, "f1": 0.1},
+    ]
+    out = mod._accuracy_by_key(rows, "qa_type")
+    assert out["A"]["exact_match"] == NOT_APPLICABLE
+    assert out["A"]["substring_exact_match"] == pytest.approx(0.5)
+    assert out["A"]["count"] == 2
