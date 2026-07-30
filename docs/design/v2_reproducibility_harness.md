@@ -108,6 +108,7 @@ Each metric carries `lower` and `upper` bounds. Default policy:
 - **Relative band:** ±X% of the canonical value, where X is per-metric (defaults: F1 ±7%, exact-match ±10%, latency ±25%).
 - **Absolute floor:** the band never falls below ±2 percentage points (prevents tiny-value flapping; e.g. 0.5% → 0.55% is below numeric noise but +10% relative).
 - **Per-metric override:** the canonical JSON can declare wider bands for known-noisy metrics (LLM-judge runs, anything with a non-deterministic ranker tie-break).
+- **Direction (amended by [#1160](https://github.com/robotrocketscience/aelfrice/issues/1160)):** both bounds are still computed and reported, but only the *regression* side fails. Leaving the band on the improving side is a WARN. Symmetric bands made real wins into failures — canonical `mab.Accurate_Retrieval.exact_match = 0.0` with the ±2-point floor put every possible improvement outside its band, and LoCoMo category 5 was pinned at 0.0 the same way, so fixing it would have registered as a band-busting regression. WARN rather than silent PASS because a large unexplained gain in this harness is as likely to be an artifact as a win: token-F1 over a retrieval blob rises when the token budget falls. Direction is a per-metric table (`benchmarks/tolerance.py: METRIC_DIRECTIONS`), keyed on the leaf metric name and falling back to its parent for bucketed metrics; **anything unclassified stays two-sided**, because a metric given the wrong direction goes blind to regressions in its real direction — worse than the false failure this fixes.
 
 The bands are calibrated on the first canonical run by running it ≥3 times and taking the observed range × 1.5. This is the **calibration-pass** the issue body alludes to and is documented as a one-time operation in the harness README. Re-calibration is a deliberate operator action, not automatic on drift.
 
@@ -115,7 +116,7 @@ The bands are calibrated on the first canonical run by running it ≥3 times and
 
 **Nightly cron (`replay-soak-gate.yml`-style new workflow):**
 - Runs `aelf bench all`, writes `benchmarks/results/v2.0.0-cron-<date>.json`.
-- Compares against `v2.0.0.json` per-metric; any value outside its `tolerance_band` is a CI **fail** (issue auto-opened).
+- Compares against `v2.0.0.json` per-metric; any value outside its `tolerance_band` **on the regression side** is a CI **fail** (issue auto-opened). Outside on the improving side is a WARN — see the direction bullet above.
 - Soft warnings (drift inside the band but >50% of the band width) emit a workflow notice but pass.
 - Commits the cron JSON to a `benchmark-results` branch on PR for diffability; never pushes to main.
 

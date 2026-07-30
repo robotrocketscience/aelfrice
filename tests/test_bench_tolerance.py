@@ -183,8 +183,12 @@ def test_check_report_passes_inside_band_for_single_invocation_adapter():
 
 
 def test_summarize_fail_dominates():
+    # exact_match regresses 0.3 -> 0.01 while f1 holds. It used to
+    # *improve* to 0.99 here, which failed only because bands were
+    # two-sided (#1160); the rollup precedence being tested is
+    # unchanged, so the leaf now regresses for real.
     cano = _canonical({"mab": {"split_a": {"f1": 0.5, "exact_match": 0.3}}})
-    obs = _canonical({"mab": {"split_a": {"f1": 0.51, "exact_match": 0.99}}})
+    obs = _canonical({"mab": {"split_a": {"f1": 0.51, "exact_match": 0.01}}})
     checks = tolerance.check_report(cano, obs)
     overall, counts = tolerance.summarize(checks)
     assert overall == Verdict.FAIL
@@ -237,3 +241,111 @@ def test_explicit_overrides_take_precedence_over_canonical():
     # Caller passes a tighter override (5%) — should override the canonical 20%.
     checks = tolerance.check_report(cano, obs, metric_overrides={"f1_avg": 0.05})
     assert checks[0].verdict == Verdict.FAIL
+
+
+# --- one-sided bands (#1160) -------------------------------------------
+
+
+def test_direction_defaults_to_two_sided_for_unknown_metric():
+    """Unclassified metrics must stay two-sided.
+
+    A metric given the wrong direction goes blind to regressions in
+    its real direction, so the default has to be conservative — a new
+    metric fails loudly until someone classifies it.
+    """
+    assert tolerance.direction_for(("x", "never_seen_before")) is (
+        tolerance.Direction.TWO_SIDED
+    )
+    assert tolerance.direction_for(()) is tolerance.Direction.TWO_SIDED
+
+
+def test_direction_falls_back_to_parent_for_bucketed_metrics():
+    """LoCoMo per-category F1 keys its leaves by bucket id, not name."""
+    assert tolerance.direction_for(
+        ("locomo", "_", "output", "category_f1", "5")
+    ) is tolerance.Direction.HIGHER_IS_BETTER
+    assert tolerance.direction_for(
+        ("amabench", "_", "output", "type_counts", "A")
+    ) is tolerance.Direction.TWO_SIDED
+
+
+def test_direction_leaf_wins_over_parent():
+    """`count.correct` is a score; `temporal-reasoning.count` is a size."""
+    assert tolerance.direction_for(
+        ("structmemeval", "x", "output", "count", "correct")
+    ) is tolerance.Direction.HIGHER_IS_BETTER
+    assert tolerance.direction_for(
+        ("longmemeval", "_", "output", "temporal-reasoning", "count")
+    ) is tolerance.Direction.TWO_SIDED
+
+
+def test_improvement_beyond_band_warns_not_fails():
+    """The defect #1160 names: a real win registered as FAIL.
+
+    Canonical `exact_match = 0.0` with the ±0.02 absolute floor puts
+    every improvement outside the band.
+    """
+    lower, upper, _ = tolerance.compute_band("exact_match", 0.0)
+    v, note = tolerance.classify(
+        0.0, 0.25, lower, upper,
+        direction=tolerance.Direction.HIGHER_IS_BETTER,
+    )
+    assert v is Verdict.WARN
+    assert "improving side" in note
+    # Two-sided is the pre-#1160 behaviour and must be unchanged.
+    v_two, _ = tolerance.classify(0.0, 0.25, lower, upper)
+    assert v_two is Verdict.FAIL
+
+
+def test_regression_still_fails_on_a_one_sided_metric():
+    """One-sided must not mean unguarded."""
+    lower, upper, _ = tolerance.compute_band("f1", 0.5)
+    v, _ = tolerance.classify(
+        0.5, 0.1, lower, upper,
+        direction=tolerance.Direction.HIGHER_IS_BETTER,
+    )
+    assert v is Verdict.FAIL
+
+
+def test_latency_direction_is_inverted():
+    """For cost metrics the regression is the rise, not the drop."""
+    lower, upper, _ = tolerance.compute_band("avg_latency_ms", 100.0)
+    slower, _ = tolerance.classify(
+        100.0, 400.0, lower, upper,
+        direction=tolerance.Direction.LOWER_IS_BETTER,
+    )
+    faster, _ = tolerance.classify(
+        100.0, 10.0, lower, upper,
+        direction=tolerance.Direction.LOWER_IS_BETTER,
+    )
+    assert slower is Verdict.FAIL
+    assert faster is Verdict.WARN
+
+
+def test_check_report_applies_direction_end_to_end():
+    """The wiring, not just the helper: a LoCoMo cat-5 fix must not FAIL."""
+    cano = {"results": {"locomo": {"_": {"output": {
+        "category_f1": {"5": 0.0}, "avg_latency_ms": 100.0,
+    }}}}}
+    obs = {"results": {"locomo": {"_": {"output": {
+        "category_f1": {"5": 0.31}, "avg_latency_ms": 100.0,
+    }}}}}
+    checks = tolerance.check_report(cano, obs)
+    by_path = {c.path[-2:]: c for c in checks}
+    cat5 = by_path[("category_f1", "5")]
+    assert cat5.verdict is Verdict.WARN
+    assert cat5.direction is tolerance.Direction.HIGHER_IS_BETTER
+    overall, _ = tolerance.summarize(checks)
+    assert overall is Verdict.WARN, "a genuine cat-5 fix must not fail the gate"
+
+
+def test_corpus_size_drift_still_fails_in_both_directions():
+    """Invariants stay two-sided: a shrinking corpus is not an 'improvement'."""
+    cano = {"results": {"a": {"_": {"output": {"total_questions": 500}}}}}
+    for observed in (250, 900):
+        checks = tolerance.check_report(
+            cano,
+            {"results": {"a": {"_": {"output": {
+                "total_questions": observed}}}}},
+        )
+        assert [c.verdict for c in checks] == [Verdict.FAIL], observed

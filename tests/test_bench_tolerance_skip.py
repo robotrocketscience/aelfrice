@@ -78,7 +78,10 @@ def test_summarize_fail_still_dominates_skip() -> None:
         "structmemeval": {"location": {"em": 0.5}},
     })
     obs = _canonical({
-        "mab": {"split_a": {"f1": 0.99}},  # huge regression → FAIL
+        # Was 0.99 and labelled a regression, but a rising f1 is an
+        # improvement — it only failed because bands were two-sided
+        # (#1160). FAIL-dominates-SKIP is unchanged; the leaf now drops.
+        "mab": {"split_a": {"f1": 0.05}},  # huge regression → FAIL
         "structmemeval": {"location": {"_status": "skipped_data_missing"}},
     })
     checks = tolerance.check_report(cano, obs)
