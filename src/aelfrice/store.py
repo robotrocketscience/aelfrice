@@ -5043,6 +5043,11 @@ class MemoryStore:
         `limit` rows would, on a six-figure queue, describe a few per
         cent of what it removed.
 
+        Deletes in `_param_chunks`-sized batches inside one transaction:
+        `limit` is user-settable, so an id list can exceed SQLite's bind
+        cap and a single `IN (...)` would fail exactly when an operator
+        widens the run to collect a large backlog.
+
         The `status = 'enqueued'` predicate is kept as a guard even
         though the ids come from a query that already filtered on it:
         `applied` and `cancelled` rows are the audit trail of sweeps
@@ -5052,14 +5057,24 @@ class MemoryStore:
         ids = list(row_ids)
         if not ids:
             return 0
-        placeholders = ",".join("?" * len(ids))
+        # Chunked because `limit` is user-settable and the sweeper's own
+        # guidance is to raise it: one bind parameter per id would hit
+        # SQLITE_LIMIT_VARIABLE_NUMBER (32,766 on this connection) and
+        # turn "widen the audit to see the whole queue" into an opaque
+        # `too many SQL variables`. Chunking inside the single
+        # transaction, so atomicity and the audit-trail guarantee below
+        # are unchanged — either every id goes or none does.
+        removed = 0
         with self.transaction():
-            cur = self._conn.execute(
-                "DELETE FROM deferred_feedback_queue "
-                f"WHERE status = 'enqueued' AND id IN ({placeholders})",
-                tuple(ids),
-            )
-            return int(cur.rowcount or 0)
+            for part in _param_chunks(ids):
+                placeholders = ",".join("?" * len(part))
+                cur = self._conn.execute(
+                    "DELETE FROM deferred_feedback_queue "
+                    f"WHERE status = 'enqueued' AND id IN ({placeholders})",
+                    tuple(part),
+                )
+                removed += int(cur.rowcount or 0)
+        return removed
 
     # --- Aggregations (used by aelf:health) ------------------------------
 

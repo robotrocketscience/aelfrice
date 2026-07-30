@@ -404,6 +404,58 @@ def test_audited_row_ids_are_exactly_the_classified_rows() -> None:
     assert r.audited_row_ids == [row[0] for row in pending]
 
 
+def test_purge_survives_an_id_list_past_the_sqlite_bind_cap() -> None:
+    """`--limit` is user-settable and the sweeper's own guidance is to
+    raise it, so the purge has to survive an id list longer than
+    SQLite's `SQLITE_LIMIT_VARIABLE_NUMBER` (32,766 on this connection).
+    A single `IN (...)` with one bind per id raises `too many SQL
+    variables` at 32,767 — turning "widen the run to collect the
+    backlog" into an opaque failure, and `_cmd_sweep_feedback` returns
+    from inside its `try`, so the audit block never prints either.
+
+    Sized by the *bind count*, not the row count: the statement binds
+    every id whether or not a row matches, so 40k mostly-absent ids
+    reproduce it exactly while the store stays small enough to build in
+    milliseconds. Getting this wrong is easy — an earlier version of
+    this test used ~800 ids on the theory that crossing a chunk
+    boundary was enough, and passed against the unchunked code.
+    """
+    s = _store(_mk("b1"), _mk("b2"))
+    enqueue_retrieval_exposures(s, ["b1", "b2"], now=T0)
+    real = [
+        row[0] for row in s.list_pending_deferred_feedback(
+            cutoff_iso="2099-01-01T00:00:00Z"
+        )
+    ]
+    assert len(real) == 2
+    # Well past the 32,766 cap; the absent ids still occupy bind slots.
+    padded = real + list(range(10_000_000, 10_040_000))
+
+    removed = s.purge_enqueued_deferred_feedback(padded)
+
+    assert removed == 2
+    assert s.count_deferred_feedback_by_status() == {}
+
+
+def test_purge_leaves_the_swept_audit_trail_alone() -> None:
+    """The `status = 'enqueued'` guard, checked rather than trusted: an
+    id list must not be able to take an `applied` or `cancelled` row
+    even when it names one."""
+    s = _store(_mk("b1"), _mk("b2"))
+    enqueue_retrieval_exposures(s, ["b1", "b2"], now=T0)
+    rows = s.list_pending_deferred_feedback(cutoff_iso="2099-01-01T00:00:00Z")
+    s._conn.execute(  # noqa: SLF001 - fixture writes the trail directly
+        "UPDATE deferred_feedback_queue SET status='cancelled' WHERE id=?",
+        (rows[1][0],),
+    )
+    s._conn.commit()  # noqa: SLF001
+
+    removed = s.purge_enqueued_deferred_feedback([r[0] for r in rows])
+
+    assert removed == 1
+    assert s.count_deferred_feedback_by_status() == {"cancelled": 1}
+
+
 def test_limit_bounds_the_audit_without_consuming_the_rest() -> None:
     """`--limit` still bounds one pass, but since nothing is consumed a
     subsequent unbounded pass sees all three rather than the remainder."""
