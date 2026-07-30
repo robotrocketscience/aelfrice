@@ -16,11 +16,15 @@ Cover the contract end-to-end without a corpus dependency:
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from dataclasses import MISSING as MISSING_SENTINEL
 
 from aelfrice.bfs_multihop import ScoredHop
+from aelfrice.federation import ENV_KNOWLEDGE_DEPS
 from aelfrice.edge_rerank import (
     DEFAULT_STALE_PENALTY,
     EDGE_TYPE_PENALTIES_DEFAULT,
@@ -64,6 +68,34 @@ def store() -> MemoryStore:
     for bid in ("STALE", "FRESH", "DOUBLE", "ISOLATED"):
         s.insert_belief(_mk(bid))
     return s
+
+
+def _register_peer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, dst: str,
+) -> None:
+    """Configure a peer `peerA` whose DB holds a marker edge into `dst`.
+
+    The rerank reads incoming edges in the hop's own scope (#1207), so
+    a federated hop's marker edge has to be in the peer's store rather
+    than the local one.
+    """
+    peer_path = tmp_path / "peer.db"
+    peer = MemoryStore(str(peer_path))
+    try:
+        peer.insert_belief(_mk(dst))
+        peer.insert_edge(
+            Edge(src="SRC", dst=dst, type=EDGE_POTENTIALLY_STALE, weight=1.0)
+        )
+    finally:
+        peer.close()
+    deps = tmp_path / "knowledge_deps.json"
+    deps.write_text(
+        json.dumps(
+            {"version": 1, "deps": [{"name": "peerA", "path": str(peer_path)}]}
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv(ENV_KNOWLEDGE_DEPS, str(deps))
 
 
 def test_empty_hops_returns_empty_list(store: MemoryStore) -> None:
@@ -209,7 +241,9 @@ def test_determinism_byte_identical_repeat(store: MemoryStore) -> None:
 # --- The pass must carry every ScoredHop field it does not change (#1207) ---
 
 
-def test_rerank_preserves_every_field_except_score(store: MemoryStore) -> None:
+def test_rerank_preserves_every_field_except_score(
+    store: MemoryStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
     """Hypothesis: the rerank changes `score` and nothing else.
 
     `ScoredHop` gained `belief_id_trail` (#658) and `owning_scope`
@@ -225,12 +259,17 @@ def test_rerank_preserves_every_field_except_score(store: MemoryStore) -> None:
     reproduce exactly the failure it is meant to catch — verified by
     adding a third field and confirming this test fails on it unchanged.
 
+    The hop is federated because `owning_scope` must differ from its
+    default for the preservation assertion to mean anything. Since
+    #1207 made the edge read scope-aware, the marker edge has to live
+    in that peer's DB for the penalty to fire — a local one would not
+    be consulted, and the score assertion below would read as "the
+    penalty stopped applying" when the pass is in fact correct.
+
     Falsifiable by any non-score field differing."""
     from dataclasses import fields
 
-    store.insert_edge(
-        Edge(src="SRC", dst="STALE", type=EDGE_POTENTIALLY_STALE, weight=1.0)
-    )
+    _register_peer(tmp_path, monkeypatch, dst="STALE")
     belief = store.get_belief("STALE")
     assert belief is not None
     hop = ScoredHop(

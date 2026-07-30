@@ -95,7 +95,15 @@ def apply_edge_type_rerank(
         return sorted(hops, key=lambda h: (-h.score, h.belief.id))
     rescored: list[ScoredHop] = []
     for hop in hops:
-        incoming = store.edges_to(hop.belief.id)
+        # Scope-aware read (#1207). This module predates federation
+        # (#690) and read `edges_to` unconditionally, which is local.
+        # A hop the walk stepped into a peer for carries that peer in
+        # `owning_scope`, and its marker edges live in the peer's DB —
+        # so the local read finds nothing and a stale belief in a peer
+        # store is silently never demoted. `edges_to_in_scope`
+        # delegates to `edges_to` when the scope is None, so the
+        # non-federated path is byte-identical.
+        incoming = store.edges_to_in_scope(hop.belief.id, hop.owning_scope)
         firing = {e.type for e in incoming if e.type in cfg}
         new_score = hop.score
         for edge_type in firing:
