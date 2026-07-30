@@ -102,12 +102,56 @@ def load_calibration_fixtures(path: Path) -> list[dict]:
     return out
 
 
+#: Posterior for a fixture row that declares none. Jeffreys prior, the
+#: value every calibration belief used before #1160.
+DEFAULT_FIXTURE_POSTERIOR: tuple[float, float] = (0.5, 0.5)
+
+
+def _as_alpha_beta(raw: object) -> tuple[float, float]:
+    """Coerce a fixture's ``[alpha, beta]`` pair, fail-soft to the prior.
+
+    Fail-soft matches `load_calibration_fixtures`, which skips malformed
+    rows rather than raising: a corpus is data, and a typo in one pair
+    should not take down the harness. It does mean a malformed pair is
+    silently the prior, which is why the shipped corpus is covered by a
+    test asserting its posteriors are actually varied.
+    """
+    if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+        return DEFAULT_FIXTURE_POSTERIOR
+    try:
+        alpha, beta = float(raw[0]), float(raw[1])
+    except (TypeError, ValueError):
+        return DEFAULT_FIXTURE_POSTERIOR
+    if alpha <= 0 or beta <= 0:
+        return DEFAULT_FIXTURE_POSTERIOR
+    return alpha, beta
+
+
 def build_calibration_store(fixture: dict, seed: int) -> "MemoryStore":
     """Build a fresh in-memory store seeded with one fixture's beliefs.
 
     Inserts one belief per content row (one relevant + N noise). Noise
     order is shuffled with ``seed`` so AUC / ρ aggregates are
     deterministic across reruns at fixed seed.
+
+    Per-belief posteriors come from the optional ``known_posterior`` and
+    ``noise_posteriors`` fixture fields, each an ``[alpha, beta]`` pair;
+    absent ones fall back to the Jeffreys prior. Before #1160 every
+    belief was built at ``alpha=0.5, beta=0.5``, which made
+    ``posterior_mean`` a constant 0.5 across every candidate. The
+    scoring term is ``posterior_weight * log(posterior_mean)``, so a
+    constant posterior is a constant *offset* — it cannot reorder
+    anything, and `AELFRICE_POSTERIOR_WEIGHT` at 0.0, 1.0 and 5.0 all
+    emitted byte-identical metrics. The one byte-exact ranking baseline
+    in CI could not see the ranker it is named for.
+
+    The posteriors are deliberately **not** rank-ordered with relevance
+    — the known belief is the highest-posterior candidate in only two of
+    the seven shipped fixtures and the lowest in one. A corpus where the
+    relevant belief always carries the best posterior would make raising
+    the weight monotonically improve every metric, so the gate would
+    reward cranking the weight rather than detecting that the blend went
+    inert.
     """
     from aelfrice.models import (  # noqa: PLC0415
         BELIEF_FACTUAL,
@@ -120,14 +164,19 @@ def build_calibration_store(fixture: dict, seed: int) -> "MemoryStore":
     fid = str(fixture["id"])
     known_content = str(fixture["known_belief_content"])
     noise_contents = list(fixture["noise_belief_contents"])
+    raw_noise_posteriors = fixture.get("noise_posteriors")
+    if not isinstance(raw_noise_posteriors, list):
+        raw_noise_posteriors = []
 
-    def make_belief(bid: str, content: str) -> Belief:
+    def make_belief(
+        bid: str, content: str, alpha: float, beta: float,
+    ) -> Belief:
         return Belief(
             id=bid,
             content=content,
             content_hash=f"h_{bid}",
-            alpha=0.5,
-            beta=0.5,
+            alpha=alpha,
+            beta=beta,
             type=BELIEF_FACTUAL,
             lock_level=LOCK_NONE,
             locked_at=None,
@@ -135,12 +184,33 @@ def build_calibration_store(fixture: dict, seed: int) -> "MemoryStore":
             last_retrieved_at=None,
         )
 
-    rng = random.Random(seed)
-    rng.shuffle(noise_contents)
+    # Pair each noise content with its posterior *before* shuffling, so
+    # the association survives. Shuffling a list of pairs draws the same
+    # permutation as shuffling the contents did, so a corpus that
+    # declares no posteriors keeps its previous insertion order.
+    noise: list[tuple[str, tuple[float, float]]] = [
+        (
+            content,
+            _as_alpha_beta(
+                raw_noise_posteriors[i]
+                if i < len(raw_noise_posteriors)
+                else None
+            ),
+        )
+        for i, content in enumerate(noise_contents)
+    ]
 
-    store.insert_belief(make_belief(f"{fid}_known", known_content))
-    for i, nc in enumerate(noise_contents):
-        store.insert_belief(make_belief(f"{fid}_noise_{i}", nc))
+    rng = random.Random(seed)
+    rng.shuffle(noise)
+
+    known_alpha, known_beta = _as_alpha_beta(fixture.get("known_posterior"))
+    store.insert_belief(
+        make_belief(f"{fid}_known", known_content, known_alpha, known_beta)
+    )
+    for i, (content, (alpha, beta)) in enumerate(noise):
+        store.insert_belief(
+            make_belief(f"{fid}_noise_{i}", content, alpha, beta)
+        )
 
     return store
 
