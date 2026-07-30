@@ -162,3 +162,61 @@ def test_fixture_self_consistent() -> None:
         for field in ["id", "class_id", "axis", "phantom_text", "lock_text",
                       "expected_should_promote", "rationale", "status"]:
             assert field in case, f"case {case.get('id')} missing field {field}"
+
+
+def test_known_failures_are_strict() -> None:
+    """A stale `known_failure` must fail the build, not report XPASS.
+
+    This is the guard on the guard. XPASS is a non-failing outcome that
+    nothing gates on, so under `strict=False` a case the rule has started
+    handling correctly stays marked as a known defect indefinitely — the
+    marker describes a failure that no longer exists and suppresses a
+    working assertion. C6-01..04 sat that way after 39745247 closed the
+    all-stopword promotion path.
+
+    Falsifiable by flipping either the per-marker `strict` or the
+    `xfail_strict` default back."""
+    import tomllib
+
+    params = _build_param_list("edge_cases")
+    assert params, "no edge cases found — this assertion would pass for free"
+    for param in params:
+        xfails = [m for m in param.marks if m.name == "xfail"]
+        assert xfails, f"{param.id} lost its xfail marker"
+        assert xfails[0].kwargs.get("strict") is True, (
+            f"{param.id} is xfail(strict=False): if the rule starts "
+            f"handling it, the case reports XPASS and nothing notices"
+        )
+
+    with (Path(__file__).resolve().parents[1] / "pyproject.toml").open("rb") as fh:
+        config = tomllib.load(fh)
+    assert config["tool"]["pytest"]["ini_options"].get("xfail_strict") is True, (
+        "xfail_strict is not the default, so a future marker added without "
+        "an explicit strict= inherits the silent behaviour"
+    )
+
+
+def test_no_case_is_both_a_known_failure_and_a_regression() -> None:
+    """The two buckets must stay disjoint by id.
+
+    Moving a closed case is a two-step edit — append to
+    `regression_cases`, remove from `edge_cases` — and doing only the
+    first leaves the case asserted strictly *and* marked as a known
+    failure, which under strict=True is a guaranteed red build with a
+    confusing cause."""
+    fixture = _load_fixture()
+    edge_ids = {c["id"] for c in fixture.get("edge_cases", [])}
+    regression_ids = {c["id"] for c in fixture.get("regression_cases", [])}
+    overlap = sorted(edge_ids & regression_ids)
+    assert not overlap, f"cases in both buckets: {overlap}"
+    # And statuses match the bucket they sit in.
+    for case in fixture.get("edge_cases", []):
+        assert case["status"] == "known_failure", (
+            f"{case['id']} sits in edge_cases with status "
+            f"{case['status']!r} — move it to regression_cases"
+        )
+    for case in fixture.get("regression_cases", []):
+        assert case["status"] != "known_failure", (
+            f"{case['id']} sits in regression_cases still marked "
+            f"known_failure"
+        )
