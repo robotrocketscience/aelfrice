@@ -115,10 +115,11 @@ from aelfrice.llm_classifier import (
     write_sentinel as _llm_write_sentinel,
 )
 from aelfrice.lifecycle import (
-    MIGRATED_TO_UV_SENTINEL as _MIGRATED_TO_UV_SENTINEL,
     PACKAGE_NAME as _PKG,
     artifact_paths as _lifecycle_artifact_paths,
     check_for_update,
+    dispose_dotdir as _dotdir_dispose,
+    dotdir_plan as _dotdir_plan,
     clear_cache as _clear_update_cache,
     format_update_banner as _format_update_banner,
     is_disabled as _update_check_disabled,
@@ -4983,35 +4984,67 @@ def _report_unremoved_artifacts(result: object, out: object) -> None:
         )
 
 
-def _clear_auto_install_stamps(out: object) -> None:
-    """Reset install-state sentinels so a reinstall behaves like a fresh one.
+def _disclose_dotdir_removals(
+    *, include_data: bool, skip: tuple[Path, ...], out: object,
+) -> None:
+    """List the `~/.aelfrice/` paths a destructive mode is about to remove.
 
-    Clears the manifest-version stamp (`maybe_install_manifest`
-    short-circuits when it equals the running version, which would make a
-    same-version reinstall a no-op) and the uv-migration sentinel (which
-    short-circuits the migration offer).
-
-    Deliberately preserves `opt-out-hooks.json`: those record a user's
-    decision that a given hook should not be installed, and honouring it
-    across a reinstall is the point of the file.
+    The gates must name everything before the prompt, not only the store
+    artifacts — deleting a path the manifest never mentioned is the #1173
+    defect one directory over.
     """
-    from aelfrice.auto_install import STAMP_PATH
+    planned, _preserved, _unknown = _dotdir_plan(
+        _auto_install.AELFRICE_DOTDIR, include_data=include_data, skip=skip,
+    )
+    if not planned:
+        return
+    print(
+        f"\n{len(planned)} path{'' if len(planned) == 1 else 's'} in "
+        f"{_auto_install.AELFRICE_DOTDIR} will also be deleted "
+        "(install state and capture logs):",
+        file=out,  # type: ignore[arg-type]
+    )
+    _print_artifact_manifest(planned, out)
 
-    for sentinel in (STAMP_PATH, _MIGRATED_TO_UV_SENTINEL):
-        try:
-            sentinel.unlink()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            print(
-                f"warning: could not remove {sentinel}: {exc}",
-                file=sys.stderr,
-            )
-            continue
+
+def _dispose_dotdir(
+    *, include_data: bool, skip: tuple[Path, ...], out: object,
+) -> None:
+    """Remove aelfrice's own artifacts from `~/.aelfrice/` (#1186).
+
+    Covers the install-state sentinels in every mode — the manifest-version
+    stamp (`maybe_install_manifest` short-circuits on an equal version, so
+    leaving it makes a same-version reinstall a no-op), the uv-migration
+    sentinel, and, load-bearing, the LLM consent sentinel: it outlived the
+    uninstall, so a reinstall read the surviving grant as current and never
+    re-prompted. `include_data` additionally takes the capture logs, and is
+    False under `--keep-db`.
+
+    What is *not* touched matters as much: `projects/` holds every other
+    project's belief corpus, `shared/` holds federation peers, and
+    `config.json` / `opt-out-hooks.json` are user decisions. Anything
+    unrecognised is reported rather than deleted — this directory can hold
+    files the package never wrote.
+    """
+    result = _dotdir_dispose(
+        _auto_install.AELFRICE_DOTDIR, include_data=include_data, skip=skip,
+    )
+    for path in result.removed:
         print(
-            f"cleared install stamp {sentinel}",
+            f"cleared install state {path}",
             file=out,  # type: ignore[arg-type]
         )
+    for path in result.failed:
+        print(f"warning: could not remove {path}", file=sys.stderr)
+    if result.unrecognised:
+        print(
+            f"\nnote: {len(result.unrecognised)} path"
+            f"{'' if len(result.unrecognised) == 1 else 's'} in "
+            f"{_auto_install.AELFRICE_DOTDIR} "
+            "were not written by aelfrice and are left in place:",
+            file=out,  # type: ignore[arg-type]
+        )
+        _print_artifact_manifest(result.unrecognised, out)
 
 
 def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
@@ -5045,6 +5078,13 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
         return 2
 
     target_db = db_path()
+    # Paths the store disposition owns. Passed as `skip` to the
+    # `~/.aelfrice/` pass so the two cannot double-report or double-delete
+    # when the store lives in `~/.aelfrice/` itself (the non-git fallback),
+    # where `transcripts/` and the reconcile sentinel are in both sets.
+    # Computed before anything is destroyed, so it stays complete.
+    _store_owned, _store_orphaned = _lifecycle_artifact_paths(target_db)
+    store_artifacts = _store_owned + _store_orphaned
 
     # --- Gate 1+2+3: redundant prompts before destroying data ---------
     if args.purge:
@@ -5063,6 +5103,9 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
                 file=out,  # type: ignore[arg-type]
             )
         _warn_orphaned_artifacts(orphaned, target_db, out)
+        _disclose_dotdir_removals(
+            include_data=True, skip=store_artifacts, out=out,
+        )
         if not args.yes:
             try:
                 ack = input("type 'PURGE' to confirm: ")
@@ -5103,14 +5146,25 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
                 file=out,  # type: ignore[arg-type]
             )
             _print_artifact_manifest(extras, out)
-            if not args.yes:
-                try:
-                    ack = input("continue? [y/N]: ")
-                except EOFError:
-                    ack = ""
-                if ack.strip().lower() not in {"y", "yes"}:
-                    print("aborted.", file=out)  # type: ignore[arg-type]
-                    return 1
+        # #1186: the `~/.aelfrice/` paths are deleted rather than
+        # encrypted too, so they belong in the same disclosure. Disclosed
+        # (and consented to) even when the store itself has no extras.
+        dotdir_planned, _dp, _du = _dotdir_plan(
+            _auto_install.AELFRICE_DOTDIR,
+            include_data=True,
+            skip=store_artifacts,
+        )
+        _disclose_dotdir_removals(
+            include_data=True, skip=store_artifacts, out=out,
+        )
+        if (extras or dotdir_planned) and not args.yes:
+            try:
+                ack = input("continue? [y/N]: ")
+            except EOFError:
+                ack = ""
+            if ack.strip().lower() not in {"y", "yes"}:
+                print("aborted.", file=out)  # type: ignore[arg-type]
+                return 1
         _warn_orphaned_artifacts(orphaned, target_db, out)
         password = _read_password(args)
         if not password:
@@ -5166,11 +5220,16 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
 
     # --- Clear update-check cache (no point keeping it post-uninstall)
     _clear_update_cache()
-    # #1173: the auto-install stamp short-circuits maybe_install_manifest
-    # on an unchanged version, so leaving it means a same-version reinstall
+    # #1173/#1186: install state in `~/.aelfrice/` outlives the store. The
+    # auto-install stamp short-circuits maybe_install_manifest on an
+    # unchanged version, so leaving it means a same-version reinstall
     # silently restores none of the hooks removed below -- the product
-    # looks installed but is inert. Clearing it makes a reinstall re-merge.
-    _clear_auto_install_stamps(out)
+    # looks installed but is inert. The LLM consent sentinel is worse: it
+    # makes a reinstall read a stale grant as current. Data (telemetry, the
+    # legacy transcripts) goes only when the user asked for data to go.
+    _dispose_dotdir(
+        include_data=not args.keep_db, skip=store_artifacts, out=out,
+    )
 
     # --- Hook + statusline removal (default on, --keep-hook opts out)-
     if not args.keep_hook:

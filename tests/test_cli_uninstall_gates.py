@@ -64,7 +64,9 @@ def sandbox(
     opt_outs.write_text('{"hooks": ["Stop"]}', encoding="utf-8")
 
     monkeypatch.setattr(auto_install, "STAMP_PATH", stamp)
-    monkeypatch.setattr(cli, "_MIGRATED_TO_UV_SENTINEL", uv_sentinel)
+    # #1186: install state is removed by name under the dotdir, so this is
+    # the one redirection that keeps the sweep off the real ~/.aelfrice/.
+    monkeypatch.setattr(auto_install, "AELFRICE_DOTDIR", fake_home)
     monkeypatch.setattr(cli, "db_path", lambda: db)
     # Real one would unlink the developer's ~/.cache/aelfrice cache.
     monkeypatch.setattr(cli, "_clear_update_cache", lambda: None)
@@ -397,9 +399,7 @@ def test_purge_warns_about_artifacts_it_will_not_touch(
     monkeypatch.setattr(
         auto_install, "STAMP_PATH", fake_dotdir / "installed-manifest-version",
     )
-    monkeypatch.setattr(
-        cli, "_MIGRATED_TO_UV_SENTINEL", fake_dotdir / "migrated-to-uv",
-    )
+    monkeypatch.setattr(auto_install, "AELFRICE_DOTDIR", fake_dotdir)
     monkeypatch.setattr(cli, "db_path", lambda: db)
     monkeypatch.setattr(cli, "_clear_update_cache", lambda: None)
 
