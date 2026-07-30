@@ -657,6 +657,14 @@ SCHEMA_META_CONTENT_HASH_DEDUP_COMPLETE: Final[str] = "content_hash_dedup_comple
 # UNIQUE(content_hash) to the beliefs table. Fresh stores skip the
 # swap because their _SCHEMA already includes the constraint.
 SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED: Final[str] = "content_hash_unique_applied"
+# #1161. Prefix for one row per one-shot migration that raised. The key
+# is `migration_failed:<method-name>` and the value is the exception
+# repr. Written by `_run_guarded_migration` so a failing migration
+# degrades the store instead of bricking it: the completion marker stays
+# unset (a fixed build retries the pass), the store still opens, and
+# `aelf doctor` has something to report. Cleared when the pass later
+# succeeds.
+SCHEMA_META_MIGRATION_FAILED_PREFIX: Final[str] = "migration_failed:"
 # v3.0 #644. Set after the one-shot rehash that switches speculative
 # beliefs from the v1 `_constituent_key(constituent_ids)` hash to the
 # v2 `_constituent_key(constituent_ids, generator)` hash. Recovers the
@@ -1170,51 +1178,62 @@ class MemoryStore:
         # write path runs — write hooks consume `_local_scope_id`
         # to bump the version-vector counter.
         self._local_scope_id: str = self._resolve_local_scope_id()
+        # #1161: every one-shot below runs through `_run_guarded_migration`
+        # so a raising pass cannot make the store unopenable. Ordering is
+        # unchanged and the guard does not alter the success path — see
+        # that method for why a failure degrades rather than aborts.
+        #
         # v1.3 entity-index one-shot backfill. Skipped on a v1.3-fresh
         # store (no rows in beliefs yet) — the marker just stamps to
         # the current time so the next open is a no-op. Idempotent.
-        self._maybe_backfill_entity_index()
+        self._run_guarded_migration(self._maybe_backfill_entity_index)
         # v1.5.0 #204 version-vector backfill. Stamps
         # `{local_scope: 1}` on every pre-existing belief and edge
         # the first time a v1.5+ binary opens this DB. Idempotent.
-        self._maybe_backfill_version_vectors()
+        self._run_guarded_migration(self._maybe_backfill_version_vectors)
         # v3.x #970 project_context backfill. Stamps the repo identity
         # onto pre-existing eligible rows the first time a binary opens
         # this DB with a non-empty default. Idempotent; no-op when the
         # default is '' (direct opens). Locked/global rows stay ''.
-        self._maybe_backfill_project_context()
+        self._run_guarded_migration(self._maybe_backfill_project_context)
         # v2.x #263 legacy log synthesis. Must run BEFORE the log
         # version-vector backfill so synthesized rows are included in
         # the backfill's INSERT OR IGNORE pass on the same open.
-        self._maybe_synthesize_legacy_log_rows()
+        self._run_guarded_migration(self._maybe_synthesize_legacy_log_rows)
         # v2.0 #205 ingest_log version-vector backfill. Same shape
         # as #204 but for the parallel-write log table. Idempotent.
-        self._maybe_backfill_log_version_vectors()
+        self._run_guarded_migration(self._maybe_backfill_log_version_vectors)
         # #762 retype `belief_corroborations.belief_id` INTEGER -> TEXT
         # on legacy DBs. Must run BEFORE _maybe_consolidate_content_hash_
         # duplicates because that pass writes synthetic corroboration
         # rows whose TEXT belief ids fail the FK against the legacy
         # INTEGER column. Idempotent; no-op on canonical stores.
-        self._maybe_retype_belief_corroborations_belief_id()
+        self._run_guarded_migration(
+            self._maybe_retype_belief_corroborations_belief_id
+        )
         # #219 content_hash dedup. Must run BEFORE the table-swap that
         # adds UNIQUE(content_hash) so we eliminate all duplicates first.
-        self._maybe_consolidate_content_hash_duplicates()
+        self._run_guarded_migration(
+            self._maybe_consolidate_content_hash_duplicates
+        )
         # #219 UNIQUE(content_hash). Table-swap migration; runs once
-        # after the dedup pass guarantees no duplicates remain.
-        self._maybe_apply_content_hash_unique()
+        # after the dedup pass guarantees no duplicates remain — the
+        # method re-checks that precondition itself rather than trusting
+        # it, because the dedup pass above is now allowed to fail.
+        self._run_guarded_migration(self._maybe_apply_content_hash_unique)
         # #1020 corroboration source dedup + UNIQUE(belief_id, session,
         # source). Runs AFTER the content_hash consolidation above, which
         # rewrites belief_corroborations FK ids and inserts synthetic
         # rows — doing our dedup/UNIQUE first could collide with those
         # rewrites on a store upgrading past both migrations at once.
         # Idempotent; no-op on fresh / already-deduped stores.
-        self._maybe_dedup_corroboration_sources()
+        self._run_guarded_migration(self._maybe_dedup_corroboration_sources)
         # v3.0 #644 speculative_hash_v2 rehash. Re-derives
         # `content_hash` for every existing speculative belief using the
         # new (constituent_set, generator) key. Must run AFTER the
         # content-hash UNIQUE swap so any same-key collisions raise
         # cleanly. Idempotent via SCHEMA_META marker.
-        self._maybe_rehash_speculative_v2()
+        self._run_guarded_migration(self._maybe_rehash_speculative_v2)
         # #1135: process-lifetime BM25F cache slot, managed by
         # `aelfrice.retrieval._store_scoped_bm25f_cache`. Typed loosely
         # to avoid a store->bm25 import cycle. One cache per store also
@@ -1361,6 +1380,91 @@ class MemoryStore:
         )
         row = cur.fetchone()
         return row["value"] if row else None
+
+    def _run_guarded_migration(self, pass_: Callable[[], object]) -> bool:
+        """Run a one-shot migration; record, don't propagate, a failure.
+
+        #1161. `__init__` runs ten one-shot migrations. Before this
+        guard, any exception from any of them escaped the constructor,
+        and because every completion marker is stamped *after* the work,
+        the next open re-ran the same pass and raised again. The store
+        became unopenable by every entry point — CLI, hook, and MCP
+        alike — with no way back short of hand-editing SQLite. That is
+        the only failure mode in the store that destroys access to a
+        user's whole memory corpus, so the trade here is deliberate:
+
+        - An unopenable store is total loss of the corpus from the
+          user's point of view.
+        - A store that opens with one migration incomplete is degraded
+          in a bounded, nameable way: it keeps whatever pre-migration
+          shape it had, every read and write path still works, and a
+          later build that fixes the pass retries it, because the
+          completion marker was never stamped.
+
+        The second is strictly better, so a raising pass is recorded and
+        skipped rather than aborting the open. The failure lands in
+        `schema_meta` under `migration_failed:<name>` (see
+        `SCHEMA_META_MIGRATION_FAILED_PREFIX`) and on the `aelfrice`
+        logger at ERROR, so it is visible rather than silent — the
+        marker is what `aelf doctor` reports.
+
+        This guard wraps only the `__init__` call sites. The migration
+        methods themselves still raise, so a test or repair tool that
+        calls one directly sees the exception unchanged.
+
+        Returns True if the pass completed, False if it raised.
+        """
+        name = getattr(pass_, "__name__", repr(pass_))
+        key = f"{SCHEMA_META_MIGRATION_FAILED_PREFIX}{name}"
+        try:
+            pass_()
+        except Exception as err:  # noqa: BLE001 — see docstring
+            # A pass that raised mid-transaction may have left the
+            # connection inside an open transaction (an explicit
+            # BEGIN whose ROLLBACK also failed). Roll back so the
+            # remaining migrations and the caller start clean.
+            try:
+                if self._conn.in_transaction:
+                    self._conn.rollback()
+            except sqlite3.DatabaseError:
+                pass
+            import logging
+            logging.getLogger("aelfrice").error(
+                "store migration %s failed; the store will open with this "
+                "migration incomplete and will retry it on the next open. "
+                "Run `aelf doctor` for details. Error: %r",
+                name,
+                err,
+            )
+            try:
+                self.set_schema_meta(key, repr(err))
+            except sqlite3.DatabaseError:
+                # Recording the failure is best-effort: if even
+                # schema_meta is unwritable the log line above is the
+                # only signal, and opening still beats raising.
+                pass
+            return False
+        # Clear a stale failure row once the pass succeeds, so doctor
+        # stops reporting a problem the user no longer has.
+        if self.get_schema_meta(key) is not None:
+            self._conn.execute("DELETE FROM schema_meta WHERE key = ?", (key,))
+            self._commit()
+        return True
+
+    def failed_migrations(self) -> dict[str, str]:
+        """Map each one-shot migration that raised to its error repr.
+
+        #1161. Empty on a healthy store. Populated by
+        `_run_guarded_migration`; consumed by `aelf doctor` to surface a
+        migration that could not complete but no longer bricks the open.
+        """
+        prefix = SCHEMA_META_MIGRATION_FAILED_PREFIX
+        rows = self._conn.execute(
+            "SELECT key, value FROM schema_meta WHERE key LIKE ? "
+            "ORDER BY key ASC",
+            (f"{prefix}%",),
+        ).fetchall()
+        return {str(r["key"])[len(prefix):]: str(r["value"]) for r in rows}
 
     def set_schema_meta(self, key: str, value: str) -> None:
         """Insert or replace one schema_meta row. Idempotent."""
@@ -2165,10 +2269,14 @@ class MemoryStore:
           5. Recreate all indexes that were on beliefs.
 
         Precondition: _maybe_consolidate_content_hash_duplicates must
-        have already run (no duplicate content_hash rows exist). If a
-        UNIQUE violation occurs the transaction rolls back and the
-        error propagates — it means the consolidation pass was skipped
-        or did not complete, which is a programming error.
+        have already run (no duplicate content_hash rows exist). #1161:
+        that is now checked rather than assumed. The dedup pass is
+        allowed to fail without bricking the store, and attempting this
+        swap over surviving duplicates would raise a UNIQUE violation
+        from inside `__init__` — turning one incomplete migration into a
+        second failure on the same open. When duplicates remain the swap
+        is skipped with a warning and no marker, so it retries once a
+        build that can complete the dedup arrives.
 
         Fresh stores skip this migration because _SCHEMA already
         includes UNIQUE(content_hash). Idempotent via
@@ -2191,6 +2299,23 @@ class MemoryStore:
             self.set_schema_meta(
                 SCHEMA_META_CONTENT_HASH_UNIQUE_APPLIED,
                 datetime.now(timezone.utc).isoformat(),
+            )
+            return False
+
+        # #1161: verify the dedup precondition instead of assuming it.
+        dupes_remaining = self._conn.execute(
+            "SELECT COUNT(*) FROM ("
+            "  SELECT 1 FROM beliefs GROUP BY content_hash HAVING COUNT(*) > 1"
+            ")"
+        ).fetchone()[0]
+        if dupes_remaining:
+            import logging
+            logging.getLogger("aelfrice").warning(
+                "content_hash UNIQUE swap skipped: %d duplicate content_hash "
+                "group(s) remain, so the swap would raise. The dedup "
+                "migration did not complete; both passes retry on the next "
+                "open. Run `aelf doctor` for details.",
+                dupes_remaining,
             )
             return False
 
