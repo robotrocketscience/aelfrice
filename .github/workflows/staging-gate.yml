@@ -132,6 +132,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # #1211 — runs on every PR, deliberately ahead of the release-only
+      # early exit below. Resolving a CHANGELOG conflict insert-only is
+      # right for added entries and wrong for amended ones: it leaves the
+      # superseded revision beside the one that replaced it. Catching that
+      # at release time would be catching it after every intervening PR
+      # has rebased on top of it.
+      - name: CHANGELOG entries are distinct
+        run: python3 scripts/check_changelog_dupes.py CHANGELOG/*.md CHANGELOG.md
       - name: Detect release PR and verify docs
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
