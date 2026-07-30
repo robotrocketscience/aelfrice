@@ -138,13 +138,27 @@ def test_per_field_at_w0_is_identical_to_legacy_at_w0() -> None:
     This holds only because `_saturated_per_field` keeps the `(k1 + 1)`
     numerator. Robertson's rank-equivalent presentation drops it as a
     constant factor; dropping it here would leave every score a factor
-    of `1 / (k1 + 1)` below the legacy lane.
+    of `1 / (k1 + 1)` below the legacy lane, which `rel=1e-6` catches
+    with six orders of magnitude to spare.
+
+    Asserted to float32 rounding rather than exactly. The identity is
+    exact in real arithmetic but the two paths evaluate it in a
+    different order — legacy divides by `(tf + k1 * B)`, per-field
+    divides by `B` first and then saturates. On a 400-belief corpus all
+    200 probe queries disagree in the last bits, at a relative delta of
+    2.2e-07; an exact `==` here would pass only because this fixture is
+    small enough to round identically, and would redden later for a
+    reason that has nothing to do with the numerator.
     """
     store = _corpus(zeta_in_anchor=5)
     legacy = BM25Index.build(store, anchor_weight=0)
     per_field = BM25Index.build(store, anchor_weight=0, per_field=True)
     for q in QUERIES:
-        assert legacy.score(q, top_k=50) == per_field.score(q, top_k=50)
+        lo = dict(legacy.score(q, top_k=50))
+        pf = dict(per_field.score(q, top_k=50))
+        assert lo.keys() == pf.keys()
+        for bid, score in lo.items():
+            assert pf[bid] == pytest.approx(score, rel=1e-6)
 
 
 def test_per_field_at_w0_does_not_read_anchor_text_at_all() -> None:
