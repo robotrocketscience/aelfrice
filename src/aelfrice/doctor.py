@@ -377,6 +377,16 @@ class DoctorReport:
     legacy_schema_dbs: list[LegacySchemaDB] = field(
         default_factory=lambda: cast(list[LegacySchemaDB], [])
     )
+    # #1161: one-shot store migrations that raised on a recent open,
+    # mapping method name -> exception repr. Since #1161 such a failure
+    # no longer prevents the store from opening — the pass is recorded
+    # and skipped — so this report is the operator's only signal that
+    # the store is running with an incomplete migration. Empty on a
+    # healthy store. Populated only when `diagnose` is given a
+    # `store_path` it can open.
+    failed_store_migrations: dict[str, str] = field(
+        default_factory=lambda: cast(dict[str, str], {})
+    )
     # Per-project DBs that the auto-migrate pass brought forward to
     # the modern schema this run (#593). Each entry preserves the
     # backup path so the operator can recover the pre-migration file
@@ -430,6 +440,7 @@ def diagnose(
     aelfrice_projects_dir: Path | None = None,
     hrr_store_path: str | None = None,
     hrr_dim: int = 512,
+    store_path: str | None = None,
 ) -> DoctorReport:
     """Walk user and project settings.json, return a DoctorReport.
 
@@ -450,6 +461,9 @@ def diagnose(
     `hrr_store_path` enables the HRR persist-state block (#696) — pass
     the resolved DB path so doctor can probe `_resolve_persist_dir`.
     `hrr_dim` is the HRR dimension (default 512, matches DEFAULT_DIM).
+    `store_path` enables the incomplete-migration block (#1161) — pass
+    the resolved DB path so doctor can read the store's failed one-shot
+    migrations. Omitted (or unopenable) leaves that block quiet.
     """
     user_path = user_settings if user_settings is not None else USER_SETTINGS_PATH
     project_path = (
@@ -482,6 +496,14 @@ def diagnose(
         else _AELFRICE_PROJECTS_DIR
     )
     report.legacy_schema_dbs = _check_legacy_schema_dbs(projects_dir=_proj_dir)
+    # #1161: read incomplete one-shot migrations off the active store.
+    # Fail-soft on every error: doctor's job here is to report, and a
+    # store that cannot be opened at all is already covered by the
+    # legacy-schema and graph-health blocks.
+    if store_path is not None:
+        report.failed_store_migrations = _read_failed_store_migrations(
+            store_path
+        )
     # #593: auto-migrate any detected legacy DBs in place. Operator
     # decision was "no prompt, no banner" — silent migration with a
     # `.pre-v1x.bak` backup hop. Failures degrade to the residual
@@ -1178,6 +1200,9 @@ def format_report(report: DoctorReport) -> str:
         _format_missing_runtime_deps_section(report, lines)
         # #696: HRR block is independent of settings.json scan.
         _format_hrr_section(report, lines)
+        # #1161: so is the store's migration state, and an install with
+        # no settings.json is exactly when the store may be the problem.
+        _format_failed_migrations_section(report, lines)
         return "\n".join(lines)
     for scope, path in report.scopes_scanned:
         lines.append(f"scanned {scope}: {path}")
@@ -1242,6 +1267,7 @@ def format_report(report: DoctorReport) -> str:
     _format_missing_auto_capture_section(report, lines)
     _format_duplicate_hook_entries_section(report, lines)
     _format_legacy_schema_section(report, lines)
+    _format_failed_migrations_section(report, lines)
     _format_hrr_section(report, lines)
     return "\n".join(lines)
 
@@ -1370,6 +1396,41 @@ def _format_duplicate_hook_entries_section(
     ):
         lines.append(f"  {dupe.describe()}  [{dupe.settings_path}]")
     lines.append("fix: run 'aelf doctor --prune' to collapse them.")
+
+
+def _read_failed_store_migrations(store_path: str) -> dict[str, str]:
+    """Return `{migration_name: error_repr}` for `store_path`, or `{}`.
+
+    #1161. Reads the `migration_failed:*` rows written by
+    `MemoryStore._run_guarded_migration` with a plain read-only sqlite
+    connection rather than by constructing a `MemoryStore`. Opening a
+    store *runs* its pending one-shot migrations, which would make a
+    read-only diagnostic mutate the DB and pay the migration cost, and
+    would race any concurrent writer for the write lock.
+
+    Fail-soft: a missing file, a missing `schema_meta` table (pre-v1.3
+    store), or any sqlite error yields `{}`. Reporting nothing is the
+    correct degradation for a diagnostic.
+    """
+    if store_path == ":memory:" or not Path(store_path).exists():
+        return {}
+    from aelfrice.store import SCHEMA_META_MIGRATION_FAILED_PREFIX
+
+    prefix = SCHEMA_META_MIGRATION_FAILED_PREFIX
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(f"file:{store_path}?mode=ro", uri=True)
+        rows = conn.execute(
+            "SELECT key, value FROM schema_meta WHERE key LIKE ? "
+            "ORDER BY key ASC",
+            (f"{prefix}%",),
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        if conn is not None:
+            conn.close()
+    return {str(k)[len(prefix):]: str(v) for k, v in rows}
 
 
 def _check_legacy_schema_dbs(
@@ -1548,6 +1609,33 @@ def _auto_migrate_legacy_dbs(
             )
         )
     return migrated, failed
+
+
+def _format_failed_migrations_section(
+    report: DoctorReport, lines: list[str],
+) -> None:
+    """Append the incomplete-store-migration block to `lines` (#1161).
+
+    Quiet on a healthy store. When a one-shot migration raised, the
+    store still opened (that is the point of the #1161 guard), so this
+    block is the only place the operator learns the store is running in
+    a degraded shape and what the underlying error was.
+    """
+    if not report.failed_store_migrations:
+        return
+    lines.append("")
+    lines.append(
+        "store migration(s) INCOMPLETE — the store opens and is usable, "
+        "but one or more one-shot migrations could not finish:"
+    )
+    for name, err in sorted(report.failed_store_migrations.items()):
+        lines.append(f"  {name}: {err}")
+    lines.append(
+        "fix: these retry automatically on every open, so upgrading "
+        "(`aelf upgrade`) is the first thing to try. If the same "
+        "migration keeps failing, report the error above — the store "
+        "will keep working in the meantime."
+    )
 
 
 def _format_legacy_schema_section(

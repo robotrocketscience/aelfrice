@@ -5957,6 +5957,7 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
             hook_failures_log=hook_failures_log,
             known_cli_subcommands=known_subs,
             hrr_store_path=str(db_path()),
+            store_path=str(db_path()),
         )
         print(format_report(report), file=out)  # type: ignore[arg-type]
         _print_doctor_store_check(out)
