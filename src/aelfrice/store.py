@@ -19,7 +19,7 @@ import secrets
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Final, Iterable, Iterator
+from typing import TYPE_CHECKING, Callable, Final, Iterable, Iterator, Sequence
 
 if TYPE_CHECKING:
     # #1126 belief categories. Imported lazily at runtime inside the
@@ -961,6 +961,35 @@ def _row_to_feedback(row: sqlite3.Row) -> FeedbackEvent:
         source=row["source"],
         created_at=row["created_at"],
     )
+
+
+# #1161. Batch size for migration `... IN (?, ?, ...)` predicates.
+# SQLite's SQLITE_LIMIT_VARIABLE_NUMBER is 32766 on current builds and
+# 999 on builds older than 3.32, and the effective value depends on the
+# interpreter's bundled library rather than on anything this package
+# controls. A migration that binds one parameter per affected row hits
+# that ceiling as `sqlite3.OperationalError: too many SQL variables` —
+# which, raised from a one-shot pass inside `__init__`, is the same
+# unopenable-store failure mode as the edge collision. A fixed, small
+# batch is well under both limits and keeps the behaviour identical
+# across interpreters instead of varying with the host's SQLite.
+#
+# The bound is 999/2, not 999: the edge cleanup binds each chunk twice
+# (`src IN (...) OR dst IN (...)`), so a chunk of 500 would bind 1000
+# parameters and reintroduce the very error this constant prevents.
+_MIGRATION_PARAM_CHUNK: Final[int] = 400
+
+
+def _param_chunks(
+    ids: Sequence[str], size: int = _MIGRATION_PARAM_CHUNK
+) -> Iterator[list[str]]:
+    """Yield `ids` in fixed-size lists for SQL `IN (...)` predicates.
+
+    Empty input yields nothing, so a caller's loop body is skipped
+    rather than executing a syntactically invalid `IN ()`.
+    """
+    for start in range(0, len(ids), size):
+        yield list(ids[start:start + size])
 
 
 def _drop_stale_ingest_log(conn: sqlite3.Connection) -> None:
@@ -1962,23 +1991,84 @@ class MemoryStore:
 
             # Rewrite FK references: feedback_history,
             # belief_corroborations, edges (src and dst).
+            #
+            # `feedback_history` has no uniqueness constraint on
+            # belief_id, so a plain UPDATE cannot collide.
             self._conn.executemany(
                 "UPDATE feedback_history SET belief_id = ? "
                 "WHERE belief_id = ?",
                 [(canon, dupe) for dupe, canon in dupe_to_canon.items()],
             )
+            # `belief_corroborations` carries a partial UNIQUE index on
+            # (belief_id, session, source) once #1020 has applied, so
+            # rewriting a duplicate's row onto the canonical id can
+            # collide with a row the canonical already has. OR IGNORE
+            # leaves the loser attached to the duplicate; the
+            # ON DELETE CASCADE from the `beliefs` delete below reaps
+            # it. The surviving row is the canonical one, which is what
+            # the count signal should reflect.
             self._conn.executemany(
-                "UPDATE belief_corroborations SET belief_id = ? "
+                "UPDATE OR IGNORE belief_corroborations SET belief_id = ? "
                 "WHERE belief_id = ?",
                 [(canon, dupe) for dupe, canon in dupe_to_canon.items()],
             )
+            # #1161: `edges` is keyed PRIMARY KEY (src, dst, type), and
+            # both rewrites below used to be bare UPDATEs. Whenever a
+            # duplicate and its canonical row shared an edge of the same
+            # type to the same neighbour — the *expected* shape, since
+            # duplicates are the same content ingested twice and the
+            # edge builders derive edges from content — the rewrite hit
+            # `UNIQUE constraint failed: edges.src, edges.dst,
+            # edges.type`. The exception escaped `__init__` before the
+            # completion marker was stamped, so every subsequent open
+            # re-ran the pass and raised again: the store became
+            # permanently unopenable by every entry point, CLI and hook
+            # alike. See `_run_guarded_migration` for the second half of
+            # the fix.
+            #
+            # Two changes make the rewrite total:
+            #   - OR IGNORE, so a colliding row is skipped rather than
+            #     raising. The canonical row's edge wins; the
+            #     duplicate's redundant copy is reaped by the cleanup
+            #     delete below. Weight is not merged — the canonical
+            #     edge already expresses the relationship, and inventing
+            #     an arithmetic here would be a silent semantic change.
+            #   - The `NOT IN (canon, dupe)` guard, so an intra-group
+            #     edge (duplicate -> canonical, or duplicate ->
+            #     duplicate) is never rewritten into a (canon, canon)
+            #     self-loop. Such an edge asserts a relationship between
+            #     two rows that turned out to be one belief; it carries
+            #     no information and the cleanup delete drops it.
+            #     Pre-existing self-loops on the canonical row are left
+            #     untouched.
+            edge_rewrites = [
+                (canon, dupe, canon, dupe)
+                for dupe, canon in dupe_to_canon.items()
+            ]
             self._conn.executemany(
-                "UPDATE edges SET src = ? WHERE src = ?",
-                [(canon, dupe) for dupe, canon in dupe_to_canon.items()],
+                "UPDATE OR IGNORE edges SET src = ? "
+                "WHERE src = ? AND dst NOT IN (?, ?)",
+                edge_rewrites,
             )
             self._conn.executemany(
-                "UPDATE edges SET dst = ? WHERE dst = ?",
-                [(canon, dupe) for dupe, canon in dupe_to_canon.items()],
+                "UPDATE OR IGNORE edges SET dst = ? "
+                "WHERE dst = ? AND src NOT IN (?, ?)",
+                edge_rewrites,
+            )
+            # The version-vector sidecar mirrors `edges`' composite key
+            # (see `_bump_edge_version`), so it needs the same rewrite —
+            # otherwise the migration leaves counters keyed on edges it
+            # just moved or deleted, and federation reads a version
+            # vector for a nonexistent edge.
+            self._conn.executemany(
+                "UPDATE OR IGNORE edge_versions SET src = ? "
+                "WHERE src = ? AND dst NOT IN (?, ?)",
+                edge_rewrites,
+            )
+            self._conn.executemany(
+                "UPDATE OR IGNORE edge_versions SET dst = ? "
+                "WHERE dst = ? AND src NOT IN (?, ?)",
+                edge_rewrites,
             )
 
             # belief_entities: same content → same entities extracted;
@@ -1986,15 +2076,33 @@ class MemoryStore:
             # avoid PK conflict.
             # belief_versions: drop duplicate rows; canonical
             # accumulates version bumps going forward.
-            ph = ",".join("?" * len(all_dupe_ids))
-            self._conn.execute(
-                f"DELETE FROM belief_entities WHERE belief_id IN ({ph})",
-                all_dupe_ids,
-            )
-            self._conn.execute(
-                f"DELETE FROM belief_versions WHERE belief_id IN ({ph})",
-                all_dupe_ids,
-            )
+            for chunk in _param_chunks(all_dupe_ids):
+                ph = ",".join("?" * len(chunk))
+                self._conn.execute(
+                    f"DELETE FROM belief_entities WHERE belief_id IN ({ph})",
+                    chunk,
+                )
+                self._conn.execute(
+                    f"DELETE FROM belief_versions WHERE belief_id IN ({ph})",
+                    chunk,
+                )
+                # Anything still pointing at a duplicate after the
+                # OR IGNORE rewrites above is a redundant copy of an
+                # edge the canonical row already holds, or an
+                # intra-group edge. `edges` has no FK to `beliefs`, so
+                # the delete below would otherwise leave it dangling.
+                # Chunking on either endpoint is complete: every
+                # surviving row has at least one endpoint in some chunk.
+                self._conn.execute(
+                    f"DELETE FROM edges "
+                    f"WHERE src IN ({ph}) OR dst IN ({ph})",
+                    chunk + chunk,
+                )
+                self._conn.execute(
+                    f"DELETE FROM edge_versions "
+                    f"WHERE src IN ({ph}) OR dst IN ({ph})",
+                    chunk + chunk,
+                )
 
             # Synthetic corroboration rows: one per duplicate consumed.
             # Best-effort: log and skip on IntegrityError rather than
@@ -2029,14 +2137,14 @@ class MemoryStore:
                 )
 
             # Delete duplicate rows from beliefs and FTS.
-            self._conn.execute(
-                f"DELETE FROM beliefs WHERE id IN ({ph})",
-                all_dupe_ids,
-            )
-            self._conn.execute(
-                f"DELETE FROM beliefs_fts WHERE id IN ({ph})",
-                all_dupe_ids,
-            )
+            for chunk in _param_chunks(all_dupe_ids):
+                ph = ",".join("?" * len(chunk))
+                self._conn.execute(
+                    f"DELETE FROM beliefs WHERE id IN ({ph})", chunk
+                )
+                self._conn.execute(
+                    f"DELETE FROM beliefs_fts WHERE id IN ({ph})", chunk
+                )
 
         self.set_schema_meta(
             SCHEMA_META_CONTENT_HASH_DEDUP_COMPLETE,
