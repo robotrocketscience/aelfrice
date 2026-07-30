@@ -29,11 +29,13 @@ allowed to break the hook.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,10 +151,65 @@ def _open_lock(lock_path: Path) -> int:
     return os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
 
 
+# #1161. Poll interval for the bounded-wait lock. Small enough that a
+# handoff between two cooperating processes is not perceptible, large
+# enough not to spin. `flock` has no portable timed variant, and the
+# SIGALRM alternative is not usable off the main thread.
+_LOCK_POLL_SECONDS: Final[float] = 0.02
+
+
+def _flock_until(lock_fd: int, *, timeout: float, lock_path: Path) -> None:
+    """Take ``LOCK_EX`` on `lock_fd`, or raise after `timeout` seconds.
+
+    Polls with ``LOCK_NB``. Always attempts at least one acquisition, so
+    a non-positive `timeout` degrades to a single try rather than to an
+    unconditional failure.
+    """
+    deadline = time.monotonic() + max(timeout, 0.0)
+    while True:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except OSError as err:
+            if err.errno not in (errno.EACCES, errno.EAGAIN):
+                # Not contention — locking is unsupported here. Let the
+                # caller's OSError handler take the unlocked path.
+                raise
+            if time.monotonic() >= deadline:
+                raise FileLockTimeout(
+                    f"could not acquire {lock_path} within {timeout}s"
+                ) from err
+            time.sleep(_LOCK_POLL_SECONDS)
+
+
+class FileLockTimeout(TimeoutError):
+    """Raised when ``exclusive_file_lock`` cannot acquire within `timeout`.
+
+    #1161. Distinct from the unlocked fall-through that an ``OSError``
+    triggers: an ``OSError`` means advisory locking is unavailable on
+    this filesystem and there is nothing to wait for, whereas a timeout
+    means another process holds the lock right now and proceeding would
+    perform exactly the unserialised read-modify-write the lock exists
+    to prevent. Callers that can defer (a hook, a best-effort merge)
+    should skip; callers that cannot should report and let the user
+    retry.
+    """
+
+
 @contextmanager
-def exclusive_file_lock(target_path: Path) -> Iterator[None]:
+def exclusive_file_lock(
+    target_path: Path, *, timeout: float | None = None
+) -> Iterator[None]:
     """Advisory ``LOCK_EX`` serialising a sibling-file read-modify-write
     across processes, held for the duration of the ``with`` block.
+
+    `timeout` (#1161) bounds the wait, in seconds. The default ``None``
+    blocks indefinitely, which is the pre-#1161 behaviour and remains
+    correct for the short ring/telemetry appends this helper was written
+    for. A positive value polls with ``LOCK_NB`` until the deadline and
+    then raises `FileLockTimeout` — required on any path with a latency
+    contract, since an interactive command or a hook must not stall
+    behind another process's lock for an unbounded time.
 
     The lock is taken on a sibling ``<target>.lock`` file (never on the
     target itself, so the target can be atomically replaced underneath
@@ -170,7 +227,20 @@ def exclusive_file_lock(target_path: Path) -> Iterator[None]:
     lock_fd: int | None = None
     try:
         lock_fd = _open_lock(lock_path)
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        if timeout is None:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        else:
+            _flock_until(lock_fd, timeout=timeout, lock_path=lock_path)
+    except FileLockTimeout:
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+            except OSError:
+                # Best-effort close on the timeout path; the fd is
+                # unlocked either way and the process is about to
+                # surface the timeout to its caller.
+                pass
+        raise
     except OSError:
         # Unlocked fall-through: a best-effort writer must not lose its
         # record just because the lock file could not be taken.
