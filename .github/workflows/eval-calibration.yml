@@ -25,9 +25,18 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'src/aelfrice/eval_harness.py'
-      - 'src/aelfrice/calibration_metrics.py'
-      - 'src/aelfrice/cli.py'
+      # The whole package, not an enumeration of it. `aelf eval` measures
+      # `retrieve()` (eval_harness.py:167,182), so the metric depends on
+      # the retrieval + scoring stack, none of which the previous list
+      # named — a PR editing only `scoring.py` never triggered this job,
+      # merged, and then the unconditional push-to-main run below turned
+      # main red with no owning PR (#1160). Enumerating the reachable
+      # modules is what drifted in the first place, and the coupling is
+      # not stable: the harness pins `l1_limit` and disables the entity
+      # and BFS lanes, so which modules are live moves with the call.
+      # A superset costs a sub-second measurement; a subset costs a red
+      # main. Mirrors `ci.yml`, which filters on the package too.
+      - 'src/aelfrice/**'
       - 'benchmarks/posterior_ranking/**'
       - '.github/workflows/eval-calibration.yml'
       - 'pyproject.toml'
