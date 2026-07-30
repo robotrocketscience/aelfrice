@@ -95,6 +95,21 @@ class HookEntry:
     default_on: bool
     since: str
     description: str
+    timeout: int | None = None
+    """Host-enforced wall-clock bound, in seconds, for this hook entry.
+
+    #1161: every installed entry used to omit `timeout`, so the "never
+    block the user's prompt" contract had no host-level enforcement at
+    all — a hook wedged on a sibling's SQLite write lock stalled the
+    prompt for the *host's* default, not aelfrice's intended budget.
+    The bound lives here rather than in the installer so there is one
+    authority per hook, `aelf doctor` can compare what is installed
+    against what is declared, and changing a budget is a data edit.
+
+    Optional in the loader so a newer manifest stays readable by an
+    older aelfrice (and vice versa): `None` means "install no timeout
+    key", which is the pre-#1161 behaviour.
+    """
 
 
 @dataclass(frozen=True)
@@ -132,6 +147,45 @@ class AutoInstallResult:
 # --- manifest loading ----------------------------------------------------
 
 
+def manifest_timeouts_by_installer() -> dict[str, int | None]:
+    """Map each manifest installer key to its declared timeout.
+
+    The `aelf setup` path (`cli._cmd_setup`) calls the installer
+    functions directly rather than dispatching through the manifest, so
+    it needs the budgets keyed the way it addresses them. Keeping this
+    beside `load_manifest` means `setup` and `auto_install` cannot drift
+    to different budgets for the same hook (#1161).
+
+    Fail-soft: returns `{}` if the manifest is unreadable or malformed,
+    which degrades to the pre-#1161 "no timeout key" behaviour rather
+    than breaking `aelf setup` on a packaging error.
+    """
+    try:
+        manifest = load_manifest()
+    except (OSError, ValueError):
+        return {}
+    return {h.installer: h.timeout for h in manifest.hooks}
+
+
+def _parse_timeout(raw: object) -> int | None:
+    """Coerce a manifest `timeout` cell to a positive int, else None.
+
+    Fail-soft by design: a malformed or non-positive timeout degrades to
+    "no timeout key installed" (the pre-#1161 behaviour) rather than
+    raising, because `load_manifest` runs on the auto-install path that
+    every `aelf` invocation touches. A manifest typo must not brick the
+    CLI. `_manifest_declares_timeouts_for_default_on_hooks` in the test
+    suite is what actually holds the bundled manifest to declaring one
+    for every default-on hook.
+
+    Rejects `bool` explicitly: `True` is an `int` in Python and would
+    otherwise install `"timeout": true`, which the host would reject.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return None
+    return raw if raw > 0 else None
+
+
 def load_manifest() -> Manifest:
     """Read the bundled hook_manifest.json from the wheel.
 
@@ -167,6 +221,7 @@ def load_manifest() -> Manifest:
                 default_on=bool(row["default_on"]),
                 since=str(row["since"]),
                 description=str(row.get("description", "")),
+                timeout=_parse_timeout(row.get("timeout")),
             ))
         except KeyError as exc:
             raise ValueError(
@@ -579,7 +634,14 @@ def _do_merge(
             continue
         resolve_fn, install_fn = dispatch
         command = resolve_fn(scope)
-        result = install_fn(settings_path, command=command, timeout=timeout)
+        # An explicit caller timeout overrides the manifest for every
+        # hook; otherwise each hook gets its own declared budget
+        # (#1161). Before this, `timeout` defaulted to None and was
+        # passed through verbatim, so no installed entry carried one.
+        effective_timeout = timeout if timeout is not None else hook.timeout
+        result = install_fn(
+            settings_path, command=command, timeout=effective_timeout
+        )
         if _result_added_anything(result):
             installed.append(hook.name)
         else:

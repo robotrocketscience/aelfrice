@@ -3986,6 +3986,18 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
     scope = _effective_scope(args)
     path = _resolve_settings_path(args)
     command = args.command if args.command is not None else resolve_hook_command(scope)
+    # #1161: every entry gets the wall-clock bound its manifest row
+    # declares, so `aelf setup` and the auto-install merge agree on the
+    # budget. An explicit `--timeout` still overrides all of them.
+    from aelfrice.auto_install import manifest_timeouts_by_installer
+
+    _manifest_timeouts = manifest_timeouts_by_installer()
+
+    def _timeout_for(installer: str) -> int | None:
+        if args.timeout is not None:
+            return cast(int, args.timeout)
+        return _manifest_timeouts.get(installer)
+
     cleanup = clean_dangling_shims()
     for removed_path in cleanup.removed:
         print(
@@ -4030,7 +4042,7 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
     if getattr(args, "transcript_ingest", True):
         ti_command = resolve_transcript_logger_command(scope)
         ti_result = install_transcript_ingest_hooks(
-            path, command=ti_command, timeout=args.timeout,
+            path, command=ti_command, timeout=_timeout_for("transcript_ingest"),
         )
         if ti_result.installed:
             print(
@@ -4048,7 +4060,7 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
     if getattr(args, "session_start", True):
         ss_command = resolve_session_start_hook_command(scope)
         ss_result = install_session_start_hook(
-            path, command=ss_command, timeout=args.timeout,
+            path, command=ss_command, timeout=_timeout_for("session_start"),
             status_message=args.status_message,
         )
         if ss_result.already_present:
@@ -4066,7 +4078,7 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
     if getattr(args, "stop_hook", True):
         st_command = resolve_stop_hook_command(scope)
         st_result = install_stop_hook(
-            path, command=st_command, timeout=args.timeout,
+            path, command=st_command, timeout=_timeout_for("stop"),
             status_message=args.status_message,
         )
         if st_result.already_present:
@@ -4107,6 +4119,12 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
             )
     if getattr(args, "rebuilder", False):
         pc_command = resolve_pre_compact_hook_command(scope)
+        # No manifest budget for this one: `--rebuilder` is opt-in and the
+        # bundled manifest ships only default-on hooks (pinned by
+        # test_load_manifest_hooks_are_all_default_on). It therefore keeps
+        # the pre-#1161 behaviour — a bare `--timeout` or no timeout key at
+        # all. Adding a row here would silently widen the auto-install
+        # surface to a hook the operator opted into explicitly.
         pc_result = install_pre_compact_hook(
             path,
             command=pc_command,
@@ -4128,7 +4146,7 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
     if getattr(args, "commit_ingest", True):
         ci_command = resolve_commit_ingest_command(scope)
         ci_result = install_commit_ingest_hook(
-            path, command=ci_command, timeout=args.timeout,
+            path, command=ci_command, timeout=_timeout_for("commit_ingest"),
         )
         if ci_result.already_present:
             print(
@@ -4145,7 +4163,7 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
     if getattr(args, "search_tool", True):
         st_command = resolve_search_tool_command(scope)
         st_result = install_search_tool_hook(
-            path, command=st_command, timeout=args.timeout,
+            path, command=st_command, timeout=_timeout_for("search_tool"),
         )
         if st_result.already_present:
             print(
@@ -4162,7 +4180,7 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
     if getattr(args, "search_tool_bash", True):
         stb_command = resolve_search_tool_bash_command(scope)
         stb_result = install_search_tool_bash_hook(
-            path, command=stb_command, timeout=args.timeout,
+            path, command=stb_command, timeout=_timeout_for("search_tool_bash"),
         )
         if stb_result.already_present:
             print(
@@ -4179,7 +4197,7 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
     if getattr(args, "pre_issue_guard", True):
         pig_command = resolve_pre_issue_guard_command(scope)
         pig_result = install_pre_issue_guard_hook(
-            path, command=pig_command, timeout=args.timeout,
+            path, command=pig_command, timeout=_timeout_for("pre_issue_guard"),
         )
         if pig_result.already_present:
             print(
@@ -4196,7 +4214,7 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
     if getattr(args, "claude_memory_mirror", True):
         cmm_command = resolve_claude_memory_mirror_command(scope)
         cmm_result = install_claude_memory_mirror_hook(
-            path, command=cmm_command, timeout=args.timeout,
+            path, command=cmm_command, timeout=_timeout_for("claude_memory_mirror"),
         )
         if cmm_result.already_present:
             print(
@@ -4215,7 +4233,7 @@ def _cmd_setup(args: argparse.Namespace, out: object) -> int:
     if getattr(args, "agent_context", True):
         ac_command = resolve_agent_context_command(scope)
         ac_result = install_agent_context_hook(
-            path, command=ac_command, timeout=args.timeout,
+            path, command=ac_command, timeout=_timeout_for("agent_context"),
         )
         if ac_result.already_present:
             print(
@@ -8817,7 +8835,11 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     p_setup.add_argument(
         "--timeout", type=int, default=None,
-        help="hook execution timeout in seconds (default: not set)",
+        help=(
+            "override the per-hook execution timeout, in seconds, for "
+            "every installed entry (default: each hook's manifest-declared "
+            "budget)"
+        ),
     )
     p_setup.add_argument(
         "--status-message", default=None,
