@@ -177,6 +177,19 @@ BM25F_FLAG: Final[str] = "use_bm25f_anchors"
 # change, gated on its own bench; see `resolve_bm25_k3`.
 BM25_K3_FLAG: Final[str] = "bm25_k3"
 
+# #1180 per-field BM25F. When on, the anchor stream is normalised by its
+# own length and `avgdl` instead of being concatenated into the content
+# document, and `anchor_weight` acts as a field weight rather than a
+# replication count. Default **False**: this changes the scoring
+# functional form, so it cannot be made parity-exact by any choice of
+# constants and the flip is gated on a bench, not on a parity test.
+BM25F_PER_FIELD_FLAG: Final[str] = "bm25f_per_field"
+
+# #1180 anchor-stream length-normalisation strength. Only consulted when
+# `bm25f_per_field` is on. See `bm25.DEFAULT_B_ANCHOR` for why it
+# defaults to the content stream's `b`.
+BM25_B_ANCHOR_FLAG: Final[str] = "bm25_b_anchor"
+
 # v1.5.0 #154 composition-tracker placeholder flags. The components
 # ship across v1.6 / v1.7. Each was a no-op placeholder at v1.5.0;
 # `HEAT_KERNEL_FLAG` is the first to leave the placeholder set as the
@@ -348,6 +361,12 @@ ENV_POSTERIOR_WEIGHT: Final[str] = "AELFRICE_POSTERIOR_WEIGHT"
 # to 0.0, matching `resolve_posterior_weight`, so `AELFRICE_BM25_K3=-1`
 # means "qf off" rather than "consult the TOML".
 ENV_BM25_K3: Final[str] = "AELFRICE_BM25_K3"
+# #1180 per-field BM25F env override. Truthy/falsy normalised; an
+# unrecognised value falls through to the kwarg → TOML → default chain.
+ENV_BM25F_PER_FIELD: Final[str] = "AELFRICE_BM25F_PER_FIELD"
+# #1180 anchor-stream `b` env override. Float; empty / non-numeric falls
+# through. Negative clamps to 0.0, matching `ENV_BM25_K3`'s posture.
+ENV_BM25_B_ANCHOR: Final[str] = "AELFRICE_BM25_B_ANCHOR"
 # v2.1 #473 temporal-decay half-life env override. Float seconds.
 # Empty / non-numeric values fall through (kwarg → TOML → default).
 ENV_TEMPORAL_HALF_LIFE: Final[str] = "AELFRICE_TEMPORAL_HALF_LIFE_SECONDS"
@@ -757,6 +776,21 @@ def _env_hrr_expand_override() -> bool | None:
     truthy/falsy value, else None. Symmetric to
     `_env_hrr_structural_override`."""
     raw = os.environ.get(ENV_HRR_EXPAND)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def _env_bm25f_per_field_override() -> bool | None:
+    """Return True/False if AELFRICE_BM25F_PER_FIELD is set to a
+    recognised truthy/falsy value, else None (#1180). Symmetric to
+    `_env_hrr_expand_override`."""
+    raw = os.environ.get(ENV_BM25F_PER_FIELD)
     if raw is None:
         return None
     norm = raw.strip().lower()
@@ -1356,6 +1390,117 @@ def resolve_bm25_k3(
     if k3 < 0.0:
         return 0.0
     return k3
+
+
+def resolve_bm25f_per_field(
+    explicit: bool | None = None,
+    *,
+    start: Path | None = None,
+) -> bool:
+    """Resolve the per-field BM25F flag (#1180).
+
+    Precedence (first decisive wins):
+      1. ``AELFRICE_BM25F_PER_FIELD`` env var (truthy / falsy normalised).
+      2. Explicit `explicit` kwarg from the caller.
+      3. ``[retrieval] bm25f_per_field`` in `.aelfrice.toml`.
+      4. Default: **False**.
+
+    Off by default because the field split replaces the scoring
+    functional form rather than re-parameterising it: the saturation
+    denominator becomes the constant `k1` instead of `tf + k1*B`, so no
+    choice of constants makes flag-on and flag-off agree once an anchor
+    stream exists. There is therefore no parity test that could gate the
+    flip — only a bench.
+
+    What the flip changes, measured on a synthetic two-belief corpus
+    (identical content, one belief carrying 200 tokens of incoming
+    anchor text, queried by a term the two share):
+
+    - anchor text that never mentions the query term: the cited belief
+      scores **0.45x** the uncited one today, and **1.00x** under
+      per-field. Today's demotion is the defect — a belief is punished
+      for what its citers wrote about, not for anything about itself.
+    - anchor text that does mention it: today's boost tops out near
+      1.23x; per-field reaches ~1.96x.
+
+    That second figure is the reason for the bench gate rather than a
+    straight flip: per-field roughly doubles the weight real anchor
+    evidence carries, and `anchor_weight`'s shipped value of 3 was tuned
+    as a replication count against the old form, not as a field weight
+    against this one.
+
+    Passing the flag (any rung) never raises — an unset / unrecognised
+    value falls through to the next rung and ultimately to False.
+    """
+    env = _env_bm25f_per_field_override()
+    if env is not None:
+        return env
+    if explicit is not None:
+        return explicit
+    toml_value = _read_toml_flag_for(BM25F_PER_FIELD_FLAG, start)
+    if toml_value is not None:
+        return toml_value
+    return False
+
+
+def _env_bm25_b_anchor() -> float | None:
+    """Return `AELFRICE_BM25_B_ANCHOR` as a float, or None when unset /
+    non-numeric. Same fail-soft contract as `_env_bm25_k3`."""
+    raw = os.environ.get(ENV_BM25_B_ANCHOR)
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    try:
+        return float(stripped)
+    except ValueError:
+        print(
+            f"aelfrice retrieval: ignoring {ENV_BM25_B_ANCHOR}={raw!r} "
+            f"(expected float)",
+            file=sys.stderr,
+        )
+        return None
+
+
+def resolve_bm25_b_anchor(
+    explicit: float | None = None,
+    *,
+    start: Path | None = None,
+) -> float:
+    """Resolve the anchor stream's length-normalisation strength (#1180).
+
+    Precedence (first decisive wins):
+      1. ``AELFRICE_BM25_B_ANCHOR`` env var (float, including 0.0).
+      2. Explicit `explicit` kwarg from the caller.
+      3. ``[retrieval] bm25_b_anchor`` in `.aelfrice.toml`.
+      4. Default: ``bm25.DEFAULT_B_ANCHOR`` (equal to the content `b`).
+
+    Only consulted when `resolve_bm25f_per_field` is on; the legacy
+    single-field path has no second `b` to set.
+
+    Negative values clamp to 0.0 — `B_f(d) = (1-b) + b*dl/avgdl` is
+    defined for ``b >= 0`` only, and `BM25Index.build` rejects negatives
+    outright. Note that 0.0 is a *permitted* setting that disables
+    length normalisation on the anchor stream, which lets the anchor
+    contribution grow linearly with citation volume; it is exposed for
+    ablation, not recommended.
+    """
+    from aelfrice.bm25 import DEFAULT_B_ANCHOR
+
+    env = _env_bm25_b_anchor()
+    if env is not None:
+        b_anchor = env
+    elif explicit is not None:
+        b_anchor = float(explicit)
+    else:
+        toml_value = _read_toml_float_for(BM25_B_ANCHOR_FLAG, start)
+        b_anchor = (
+            float(toml_value) if toml_value is not None else DEFAULT_B_ANCHOR
+        )
+    if b_anchor < 0.0:
+        return 0.0
+    return b_anchor
 
 
 # --- #1045 wide-retrieval knobs (l1_limit + retrieval token budget) ------
@@ -2938,6 +3083,8 @@ def _store_scoped_bm25f_cache(
     *,
     anchor_weight: int,
     k3: float,
+    per_field: bool = False,
+    b_anchor: float | None = None,
 ) -> BM25IndexCache:
     """One process-lifetime `BM25IndexCache` per store (#1135).
 
@@ -2949,16 +3096,34 @@ def _store_scoped_bm25f_cache(
     can move it between calls) drops the cached index; the sidecar
     check in `BM25IndexCache.get()` compares weights independently.
     """
+    from aelfrice.bm25 import DEFAULT_B_ANCHOR
+
+    effective_b_anchor = (
+        DEFAULT_B_ANCHOR if b_anchor is None else b_anchor
+    )
     cache = store._bm25f_shared_cache  # noqa: SLF001 — slot owned here
     if not isinstance(cache, BM25IndexCache):
-        cache = BM25IndexCache(store, anchor_weight=anchor_weight, k3=k3)
+        cache = BM25IndexCache(
+            store, anchor_weight=anchor_weight, k3=k3,
+            per_field=per_field, b_anchor=effective_b_anchor,
+        )
         store._bm25f_shared_cache = cache  # noqa: SLF001
-    elif cache.anchor_weight != anchor_weight or cache.k3 != k3:
+    elif (
+        cache.anchor_weight != anchor_weight
+        or cache.k3 != k3
+        or cache.per_field != per_field
+        # #1180: b_anchor only participates in scoring under per_field,
+        # so changing it while off must not force a rebuild.
+        or (per_field and cache.b_anchor != effective_b_anchor)
+    ):
         # #1166: k3 rides the same invalidation path as anchor_weight.
         # It is carried on the built index, so a cached index built
         # under a different k3 would keep scoring with the stale value.
+        # #1180: per_field / b_anchor ride it for the same reason.
         cache.anchor_weight = anchor_weight
         cache.k3 = k3
+        cache.per_field = per_field
+        cache.b_anchor = effective_b_anchor
         cache.invalidate()
     return cache
 
@@ -3144,6 +3309,8 @@ def _l1_hits(
                     store, now_ts=effective_now_ts,
                 ),
                 k3=resolve_bm25_k3(),
+                per_field=resolve_bm25f_per_field(),
+                b_anchor=resolve_bm25_b_anchor(),
             )
         else:
             cache = bm25f_cache
