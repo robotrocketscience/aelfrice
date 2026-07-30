@@ -2816,6 +2816,15 @@ class LaneTelemetry:
     # the G2 flip-gate question ("does it survive the production trim").
     temporal_spine: int = 0
     temporal_spine_candidates: int = 0
+    # #1162 heat-kernel reachability. True only when the heat branch
+    # actually rewrote the L1 ordering on this call — i.e. the flag was
+    # on AND a non-stale eigenbasis was supplied AND its rows overlapped
+    # the L1 hits. Deliberately *not* the resolved flag (unlike
+    # `bm25f_used`): the lane's defect was that the flag reported an
+    # active lane nothing in `src/` can reach, because no production
+    # caller constructs a `GraphEigenbasisCache`. This field is what
+    # turns that from a grep into a runtime fact.
+    heat_used: bool = False
 
 
 # Per-process snapshot of the most recent retrieval call. Test-
@@ -2842,6 +2851,20 @@ def _reset_last_telemetry(tel: LaneTelemetry) -> None:
     """
     global _LAST_TELEMETRY
     _LAST_TELEMETRY = tel
+
+
+# #1162. Whether the heat branch rewrote the ordering on the most recent
+# `_l1_hits` call. Written only where the heat map is computed, so there
+# is exactly one place the answer comes from — recomputing the predicate
+# at the telemetry site would let a re-wired lane keep reporting the old
+# answer, which is the failure this field exists to catch.
+_LAST_HEAT_USED: bool = False
+
+
+def _record_heat_used(used: bool) -> None:
+    """Record whether the heat-kernel branch fired on this L1 pass."""
+    global _LAST_HEAT_USED
+    _LAST_HEAT_USED = used
 
 
 def warn_placeholder_flags(start: Path | None = None) -> list[str]:
@@ -3274,6 +3297,13 @@ def _l1_hits(
         and not eigenbasis_cache.is_stale()
         and eigenbasis_cache.eigvals is not None
     )
+    # #1162. Default the reachability signal to False for this call;
+    # the two heat-map sites below overwrite it once they know whether
+    # propagation produced anything. `heat_active` alone is not the
+    # answer — `_heat_by_id` still returns None when the eigenbasis
+    # rows do not intersect the L1 hits, and then the ordering is the
+    # heat-off ordering.
+    _record_heat_used(False)
     # #677 retrieval-time `#N` literal boost. When the prompt names
     # one or more `#NNN` tokens, bypass the byte-identical FTS5 and
     # BM25F short-circuits and go through the rerank loop so the
@@ -3408,6 +3438,7 @@ def _l1_hits(
             _heat_by_id(eigenbasis_cache, bm25_pos_by_id)  # type: ignore[arg-type]
             if heat_active else None
         )
+        _record_heat_used(heat_map is not None)
         ep = (
             store.entity_persistence_scores([b.id for b, _ in beliefs])
             if use_entity_persist_demote else None
@@ -3497,6 +3528,7 @@ def _l1_hits(
         _heat_by_id(eigenbasis_cache, bm25_pos_by_id)  # type: ignore[arg-type]
         if heat_active else None
     )
+    _record_heat_used(heat_map is not None)
     ep = (
         store.entity_persistence_scores([b.id for b, _ in scored])
         if use_entity_persist_demote else None
@@ -3873,6 +3905,9 @@ def retrieve_with_tiers(
     l25_ids: set[str] = set(l25_ids_list)
 
     l1: list[Belief] = []
+    # #1162. False when the L1 lane did not run at all, which is also
+    # the honest answer: no L1 pass, no heat propagation.
+    heat_used = False
     if query.strip():
         raw_l1: list[Belief] = _l1_hits(
             store, query,
@@ -3892,6 +3927,7 @@ def retrieve_with_tiers(
             b for b in raw_l1
             if b.id not in locked_ids and b.id not in l25_ids
         ]
+        heat_used = _LAST_HEAT_USED
 
     used: int = locked_used + sum(_cost(b) for b in l25)
     out: list[Belief] = list(locked) + list(l25)
@@ -4060,6 +4096,7 @@ def retrieve_with_tiers(
         hrr_expand=len(hrr_expand_ids_list),
         temporal_spine=len(temporal_spine_ids_list),
         temporal_spine_candidates=n_spine_candidates,
+        heat_used=heat_used,
     )
     return out, locked_ids_list, l25_ids_list, l1_ids_list, bfs_chains
 

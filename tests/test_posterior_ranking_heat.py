@@ -27,7 +27,7 @@ from aelfrice.models import (
     Belief,
     Edge,
 )
-from aelfrice.retrieval import retrieve
+from aelfrice.retrieval import last_lane_telemetry, retrieve
 from aelfrice.store import MemoryStore
 
 
@@ -249,6 +249,72 @@ def test_heat_kernel_cache_invalidation_on_store_mutation(tmp_path: Path) -> Non
     # Defensive: the freshly-inserted belief participates in both rankings.
     assert any(b.id == "new" for b in heat_on_stale)
     # Silence unused-binding warnings on hub_id / iso_id.
+    assert hub_id and iso_id
+    s.close()
+
+
+# ---------------------------------------------------------------------------
+# #1162 — heat_used telemetry: is the lane reachable, at runtime?
+# ---------------------------------------------------------------------------
+
+
+def test_heat_used_false_on_a_default_retrieve() -> None:
+    """The reachability assertion this field exists for.
+
+    `is_heat_kernel_enabled()` being False is satisfied by the flip and
+    says nothing about whether the lane can fire. This says it cannot:
+    on a normal `retrieve()` — no eigenbasis passed, because nothing in
+    `src/` constructs one — the heat branch does not run.
+    """
+    s = MemoryStore(":memory:")
+    for bid in ("a", "b"):
+        s.insert_belief(_mk(bid, "rust ownership borrow checker"))
+
+    retrieve(s, "rust ownership", l1_limit=10)
+
+    assert last_lane_telemetry().heat_used is False
+    s.close()
+
+
+def test_heat_used_true_when_the_lane_actually_fires(tmp_path: Path) -> None:
+    """The distinguishing half: a hardwired `False` would pass the test
+    above and fail here. Flag on, eigenbasis built and fresh, its rows
+    overlapping the L1 hits — the branch runs and says so."""
+    s, hub_id, iso_id = _build_authority_store()
+    cache = GraphEigenbasisCache(store=s, path=tmp_path / "eb.npz")
+    cache.build()
+
+    retrieve(
+        s, "alpha beta gamma", l1_limit=10,
+        entity_index_enabled=False, bfs_enabled=False,
+        heat_kernel_enabled=True, eigenbasis_cache=cache,
+    )
+
+    assert last_lane_telemetry().heat_used is True
+    assert hub_id and iso_id
+    s.close()
+
+
+def test_heat_used_false_when_the_flag_is_on_but_the_basis_is_stale(
+    tmp_path: Path,
+) -> None:
+    """Flag-on is not lane-on. A stale eigenbasis degrades to the
+    heat-off ordering, and the telemetry must report that rather than
+    echoing the flag — the exact confusion that let an unreachable lane
+    read as active for two minor versions."""
+    s, hub_id, iso_id = _build_authority_store()
+    cache = GraphEigenbasisCache(store=s, path=tmp_path / "eb.npz")
+    cache.build()
+    s.insert_belief(_mk("late", "alpha beta gamma delta epsilon"))
+    assert cache.is_stale() is True
+
+    retrieve(
+        s, "alpha beta gamma", l1_limit=10,
+        entity_index_enabled=False, bfs_enabled=False,
+        heat_kernel_enabled=True, eigenbasis_cache=cache,
+    )
+
+    assert last_lane_telemetry().heat_used is False
     assert hub_id and iso_id
     s.close()
 
