@@ -27,7 +27,7 @@ Imports are one-directional — modules lower in the table import from higher.
 | Module | Responsibility |
 |---|---|
 | `models.py` | `Belief`, `Edge`, `FeedbackEvent`, `OnboardSession` dataclasses; type / lock / origin constants. No I/O. |
-| `scoring.py` | `posterior_mean`, `decay`, `partial_bayesian_score`. Type half-lives. Lock-floor short-circuit. Decay target: Jeffreys `(0.5, 0.5)`. |
+| `scoring.py` | `posterior_mean`, `partial_bayesian_score`, and the gamma / zeta posterior rerank scorers — the functions retrieval actually imports. Also defines `decay` / `type_half_life` / `TYPE_HALF_LIFE_SECONDS` (lock-floor short-circuit, Jeffreys `(0.5, 0.5)` target), which **no module under `src/` calls**: posterior decay is designed but not wired ([#1218](https://github.com/robotrocketscience/aelfrice/issues/1218)); disposition tracked under [#1162](https://github.com/robotrocketscience/aelfrice/issues/1162). |
 | `store.py` | SQLite WAL + FTS5 + CRUD. `propagate_valence` BFS with broker-confidence attenuation — fired by `apply_feedback` on every direct feedback event (disable with `AELFRICE_VALENCE_PROPAGATION=0`). |
 | `retrieval.py` | `retrieve(store, query, token_budget=2400)` — L0 locked + L2.5 entity-index (v1.3+) + L1 FTS5 BM25/BM25F (BM25F default-on since v1.7.0) with Bayesian log-additive reranking (v1.3+) + L3 BFS multi-hop (v1.3+, default-off) over the L0+L2.5+L1 seed set. L0 never trimmed. |
 | `feedback.py` | `apply_feedback(store, belief_id, valence, source)` — only Bayesian-update path. Writes `feedback_history`. |
