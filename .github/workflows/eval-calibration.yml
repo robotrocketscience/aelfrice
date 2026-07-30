@@ -122,6 +122,53 @@ jobs:
             exit 1
           fi
 
+      # #1160 — the byte-exact check above pins the ranker's *output*, but
+      # it cannot tell a working ranker from an inert one. Until this
+      # corpus carried varied posteriors, every calibration belief was
+      # built at alpha=beta=0.5, so `posterior_mean` was a constant, the
+      # blend term a constant offset, and weights 0.0 / 1.0 / 5.0 emitted
+      # byte-identical metrics. A PR setting DEFAULT_POSTERIOR_WEIGHT to
+      # 0.0, or inverting the term's sign, passed the gate named for it.
+      - name: Assert the posterior blend is load-bearing
+        run: |
+          set -euo pipefail
+          off=$(uv run env AELFRICE_POSTERIOR_WEIGHT=0.0 aelf eval --json \
+            | tail -n 1 | python3 -c "
+          import json, sys
+          d = json.load(sys.stdin); d.pop('corpus', None)
+          print(json.dumps(d, sort_keys=True, separators=(',', ':')))
+          ")
+          expected_off=$(python3 -c "
+          import json
+          d = json.load(open('benchmarks/posterior_ranking/baseline_posterior_off.json'))
+          print(json.dumps(d, sort_keys=True, separators=(',', ':')))
+          ")
+          if [ "${off}" != "${expected_off}" ]; then
+            echo "::error::posterior-off calibration drifted from its pinned baseline"
+            echo "expected: ${expected_off}"
+            echo "observed: ${off}"
+            echo "Regenerate baseline_posterior_off.json with"
+            echo "\`AELFRICE_POSTERIOR_WEIGHT=0.0 aelf eval --json\`."
+            exit 1
+          fi
+          # The load-bearing assertion: disabling the blend must CHANGE
+          # the metrics. Equal baselines mean the rerank is inert and the
+          # byte-exact check above is measuring nothing.
+          on=$(python3 -c "
+          import json
+          d = json.load(open('benchmarks/posterior_ranking/baseline.json'))
+          print(json.dumps(d, sort_keys=True, separators=(',', ':')))
+          ")
+          if [ "${on}" = "${off}" ]; then
+            echo "::error::posterior weight 0.0 produces the SAME metrics as the default weight."
+            echo "The Bayesian rerank is inert on this corpus, so the calibration"
+            echo "gate cannot see it. Either the blend was disabled, or the corpus"
+            echo "lost its varied per-belief posteriors (known_posterior /"
+            echo "noise_posteriors in fixtures/default.jsonl)."
+            exit 1
+          fi
+          echo "::notice::posterior blend is load-bearing (weight 0.0 shifts the metrics)"
+
       - name: Publish metrics to step summary
         if: always()
         env:
