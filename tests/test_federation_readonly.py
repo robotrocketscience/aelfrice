@@ -33,6 +33,7 @@ from aelfrice.models import (
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
     Belief,
+    Edge,
 )
 from aelfrice.promotion import promote, unlock
 from aelfrice.store import MemoryStore
@@ -411,5 +412,87 @@ def test_local_id_wins_over_peer_id_in_owner_lookup(
             store=local, belief_id="collision", valence=1.0, source="test",
         )
         assert result.new_alpha > result.prior_alpha
+    finally:
+        local.close()
+
+
+# ---------------------------------------------------------------------------
+# insert_edge ownership gate (#1254). Every other mutation entry point already
+# calls assert_local_ownership; insert_edge was a bare INSERT. These pin both
+# endpoints, and the last one pins that the gate did not simply close the door
+# on everything -- a gate that rejected unconditionally would satisfy the two
+# rejection tests while making the edge table unwritable.
+# ---------------------------------------------------------------------------
+
+
+def test_insert_edge_rejects_foreign_src(tmp_path: Path, monkeypatch):
+    """An edge whose `src` is peer-owned is not the local store's to write."""
+    peer_path = tmp_path / "peerA.db"
+    _seed_peer(peer_path, [_belief("foreign-1", "owned by A")])
+    _wire_peer(tmp_path, peer_path, monkeypatch)
+
+    local = MemoryStore(str(tmp_path / "local.db"))
+    try:
+        local.insert_belief(_belief("local-1", "owned here"))
+        with pytest.raises(ForeignBeliefError) as exc_info:
+            local.insert_edge(
+                Edge(src="foreign-1", dst="local-1", type="RELATES", weight=1.0)
+            )
+        assert exc_info.value.belief_id == "foreign-1"
+        assert exc_info.value.owning_scope == "peerA"
+        assert local.get_edge("foreign-1", "local-1", "RELATES") is None
+    finally:
+        local.close()
+
+
+def test_insert_edge_rejects_foreign_dst(tmp_path: Path, monkeypatch):
+    """`dst` is gated too -- either end being foreign is disqualifying."""
+    peer_path = tmp_path / "peerA.db"
+    _seed_peer(peer_path, [_belief("foreign-1", "owned by A")])
+    _wire_peer(tmp_path, peer_path, monkeypatch)
+
+    local = MemoryStore(str(tmp_path / "local.db"))
+    try:
+        local.insert_belief(_belief("local-1", "owned here"))
+        with pytest.raises(ForeignBeliefError) as exc_info:
+            local.insert_edge(
+                Edge(src="local-1", dst="foreign-1", type="RELATES", weight=1.0)
+            )
+        assert exc_info.value.belief_id == "foreign-1"
+        assert local.get_edge("local-1", "foreign-1", "RELATES") is None
+    finally:
+        local.close()
+
+
+def test_insert_edge_still_writes_local_and_absent_endpoints(
+    tmp_path: Path, monkeypatch
+):
+    """The gate must not close the door on everything.
+
+    `assert_local_ownership` no-ops for an id that is local *or absent*, so
+    both a fully-local edge and one naming ids this store has never seen must
+    still be written. Without this, a gate that raised unconditionally would
+    pass both rejection tests above.
+    """
+    peer_path = tmp_path / "peerA.db"
+    _seed_peer(peer_path, [_belief("foreign-1", "owned by A")])
+    _wire_peer(tmp_path, peer_path, monkeypatch)
+
+    local = MemoryStore(str(tmp_path / "local.db"))
+    try:
+        local.insert_belief(_belief("local-1", "owned here"))
+        local.insert_belief(_belief("local-2", "also owned here"))
+
+        local.insert_edge(
+            Edge(src="local-1", dst="local-2", type="RELATES", weight=1.0)
+        )
+        assert local.get_edge("local-1", "local-2", "RELATES") is not None
+
+        # Neither endpoint exists anywhere -- federation invents no new
+        # error semantics for absence.
+        local.insert_edge(
+            Edge(src="ghost-a", dst="ghost-b", type="RELATES", weight=1.0)
+        )
+        assert local.get_edge("ghost-a", "ghost-b", "RELATES") is not None
     finally:
         local.close()

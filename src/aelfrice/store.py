@@ -5742,6 +5742,29 @@ class MemoryStore:
     # --- Edge CRUD --------------------------------------------------------
 
     def insert_edge(self, e: Edge) -> None:
+        """Write one edge, after gating both endpoints on ownership.
+
+        Every other mutation entry point already calls
+        `assert_local_ownership` — `apply_feedback`, `lock`, `unlock`,
+        `promote`, `confirm`, `delete`, the deferred-feedback sweep and
+        the CLI scope change. `insert_edge` was the one bare `INSERT`
+        among them (#1254), so an edge could be written against a
+        peer-owned endpoint that the #661 read-only federation contract
+        says is display-only.
+
+        Both `src` and `dst` are checked: an edge is a claim about a
+        relationship, and either end being foreign makes it a claim the
+        local store is not entitled to write.
+
+        This gate cannot reject a legitimate write. Peers are opened
+        `file:…?mode=ro`, so aelfrice never writes to a peer store at
+        all, and the only shipped `POTENTIALLY_STALE` writer resolves
+        both endpoints in one store before emitting. `assert_local_ownership`
+        is additionally a no-op for an id that is local *or absent*, so
+        edges naming ids this store has never seen are unaffected.
+        """
+        self.assert_local_ownership(e.src)
+        self.assert_local_ownership(e.dst)
         self._conn.execute(
             "INSERT INTO edges (src, dst, type, weight, anchor_text) "
             "VALUES (?, ?, ?, ?, ?)",
