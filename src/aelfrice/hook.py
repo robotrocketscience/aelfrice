@@ -1080,6 +1080,19 @@ def user_prompt_submit(
             # AC6: optional dedup before formatting.
             if config.collapse_duplicate_hashes:
                 hits = _dedup_by_content_hash(hits)
+            # #1279: the exploration slot substitutes a never-injected
+            # belief into the non-locked tail. Placed here, upstream of
+            # both the rebuild log and `_record_injection_events`, so the
+            # explored belief is logged and recorded as injected like any
+            # other hit — recording it is the entire point, since evidence
+            # accrues on exposure. Default-OFF and fail-soft.
+            hits = _substitute_exploration_slots(
+                hits,
+                session_id=session_id,
+                query=prompt,
+                store=ups_store,
+                serr=serr,
+            )
             # #288 phase-1a extension: emit one rebuild_log row per
             # UPS retrieval. Without this the high-frequency rebuild
             # call site produces no log; phase-1b operator-week data
@@ -1617,6 +1630,123 @@ def _record_touches(
             f"(non-fatal): {exc}",
             file=serr,
         )
+
+
+def _substitute_exploration_slots(
+    hits: list[Belief],
+    *,
+    session_id: str,
+    query: str,
+    store: object | None,
+    serr: IO[str],
+) -> list[Belief]:
+    """Give a never-injected belief a slot in the pack (#1279, #1176 p5).
+
+    84.1% of the store has never been injected, and evidence only accrues on
+    exposure, so those beliefs can never earn their way into a pack: they do
+    not rank because they have no evidence, and they have no evidence because
+    they never ranked. This is the intervention that breaks that loop.
+
+    Three properties the implementation is built around, each of which was a
+    way for this to be worse than useless:
+
+    - **Substitution, never append.** A drawn belief displaces enough of the
+      lowest-ranked *non-locked* tail to pay for its own tokens. A slot that
+      grew the block would be a budget increase wearing an exploration
+      costume, and it would confound the coverage measurement the slot exists
+      to produce.
+    - **Locks are untouchable.** L0 is injected unconditionally; the pool
+      already excludes locks, and the displacement scan skips them, so an
+      all-locked pack is a no-op rather than an eviction.
+    - **Upstream of the ledger.** This runs *before* `_record_injection_events`
+      so an explored belief is recorded as injected. Substituting without
+      recording the exposure would leave the loop exactly as closed as it was.
+
+    Returns `hits` unchanged on every non-firing turn and on any error — the
+    exploration slot is a research lane and must never be the reason a hook
+    fails.
+    """
+    try:
+        from aelfrice.retrieval import (  # noqa: PLC0415
+            _belief_tokens,
+            is_exploration_enabled,
+            resolve_exploration_cadence,
+            resolve_exploration_slots,
+        )
+
+        if not hits or not session_id or store is None:
+            return hits
+        if not is_exploration_enabled():
+            return hits
+
+        from aelfrice.exploration import (  # noqa: PLC0415
+            derive_seed,
+            draw_uniform,
+            should_explore,
+        )
+        from aelfrice.session_ring import read_ring_state  # noqa: PLC0415
+
+        # The ring's counter, read before this turn's `_ring_append_ids`, so
+        # the slot fires on the same boundary the cadence dispatch sees.
+        state = read_ring_state(session_id)
+        fire_idx = state.get("next_fire_idx")
+        if not isinstance(fire_idx, int) or fire_idx < 0:
+            return hits
+        if not should_explore(fire_idx, cadence=resolve_exploration_cadence()):
+            return hits
+
+        present = {h.id for h in hits}
+        pool = [b for b in store.exploration_pool(query) if b not in present]
+        if not pool:
+            return hits
+
+        slots = resolve_exploration_slots()
+        seed = derive_seed(session_id, fire_idx, query)
+        drawn_ids = draw_uniform(pool, seed=seed, count=slots)
+        drawn = [b for b in (store.get_belief(i) for i in drawn_ids) if b is not None]
+        if not drawn:
+            return hits
+
+        # Free at least as many tokens as we are about to add, taking from the
+        # non-locked tail. `>=` rather than a 1-for-1 swap because an explored
+        # belief can be longer than the hit it replaces, and "the block did not
+        # grow" has to hold on tokens, not on cardinality.
+        need = sum(_belief_tokens(b) for b in drawn)
+        displaced: list[Belief] = []
+        freed = 0
+        for cand in reversed(hits):
+            if freed >= need:
+                break
+            if cand.lock_level == LOCK_USER:
+                continue
+            displaced.append(cand)
+            freed += _belief_tokens(cand)
+        if freed < need:
+            # Nothing but locks, or the tail is too small to pay for the draw.
+            # Skipping is correct: the alternative is growing the block.
+            return hits
+
+        displaced_ids = {b.id for b in displaced}
+        out = [b for b in hits if b.id not in displaced_ids] + drawn
+
+        try:
+            store.record_exploration(
+                fire_idx=fire_idx,
+                seed=seed,
+                query=query,
+                candidate_ids=pool,
+                drawn_ids=[b.id for b in drawn],
+                displaced_ids=[b.id for b in displaced],
+            )
+        except Exception as exc:  # noqa: BLE001 - ledger is diagnostic
+            print(
+                f"aelfrice exploration: ledger write failed: {exc}",
+                file=serr,
+            )
+        return out
+    except Exception as exc:  # noqa: BLE001 - never break the hook
+        print(f"aelfrice exploration: slot skipped: {exc}", file=serr)
+        return hits
 
 
 def _record_injection_events(
