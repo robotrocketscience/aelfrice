@@ -1637,13 +1637,38 @@ def resolve_token_budget(
     the budget is large enough to keep the extra candidates past the pack
     trim (#1045).
     """
+    return resolve_token_budget_with_provenance(explicit, start=start)[0]
+
+
+def resolve_token_budget_with_provenance(
+    explicit: int | None = None,
+    *,
+    start: Path | None = None,
+) -> tuple[int, bool]:
+    """Resolve the budget and report whether any tier actually set it.
+
+    Returns ``(budget, defaulted)``. ``defaulted`` is True only when env,
+    the explicit kwarg and TOML were all silent, so the value is the
+    built-in default rather than anyone's choice.
+
+    The provenance exists here and used to be discarded one frame down
+    (#1271). `retrieve_with_tiers` needs "the caller expressed no
+    preference" to decide the legacy-budget downgrade, and was
+    reconstructing it as ``budget == DEFAULT_TOKEN_BUDGET`` — a different
+    predicate that agrees most of the time and is wrong for exactly the
+    caller who asks for the default value on purpose. Returning the fact
+    is cheaper than inferring it, and cannot drift from the precedence
+    above because it is computed by the same branches.
+    """
     env = _env_positive_int(ENV_RETRIEVAL_TOKEN_BUDGET)
     if env is not None:
-        return env
+        return env, False
     if explicit is not None:
-        return int(explicit)
+        return int(explicit), False
     toml_value = _read_toml_float_for(TOKEN_BUDGET_FLAG, start)
-    return int(toml_value) if toml_value is not None else DEFAULT_TOKEN_BUDGET
+    if toml_value is not None:
+        return int(toml_value), False
+    return DEFAULT_TOKEN_BUDGET, True
 
 
 def _env_temporal_half_life() -> float | None:
@@ -3947,6 +3972,7 @@ def retrieve_with_tiers(
     token_budget: int | None = None,
     l1_limit: int | None = None,
     *,
+    budget_defaulted: bool | None = None,
     entity_index_enabled: bool | None = None,
     l25_limit: int = DEFAULT_L25_LIMIT,
     l25_token_subbudget: int = DEFAULT_L25_TOKEN_SUBBUDGET,
@@ -4019,7 +4045,15 @@ def retrieve_with_tiers(
     weight = resolve_posterior_weight(posterior_weight)
     # #1045 wide-retrieval knobs — same resolution as `retrieve()`.
     l1_limit = resolve_l1_limit(l1_limit)
-    token_budget = resolve_token_budget(token_budget)
+    token_budget, _self_defaulted = resolve_token_budget_with_provenance(
+        token_budget,
+    )
+    # `retrieve()` resolves the budget before delegating, so by the time
+    # the sentinel arrives here it is always a concrete int and the
+    # provenance computed above is always False. It passes the fact down
+    # explicitly instead; None means "nobody told me, work it out".
+    if budget_defaulted is None:
+        budget_defaulted = _self_defaulted
     heat_on = is_heat_kernel_enabled(heat_kernel_enabled)
     # #796 γ rerank — same resolution as `retrieve()`.
     gamma_on = resolve_use_gamma_posterior_temperature()
@@ -4077,9 +4111,14 @@ def retrieve_with_tiers(
     locked_ids_list: list[str] = [b.id for b in locked]
     locked_ids: set[str] = set(locked_ids_list)
 
+    # #1271: the legacy downgrade is for "nobody asked", not "the number
+    # happens to be 2400". Keying on the value silently turned an
+    # explicit `token_budget=2400` into 2000 while 2399 and 2401 both
+    # survived — discontinuous at precisely the default, and it
+    # invalidated a measurement on #1269 before it was found.
     effective_budget = (
         token_budget
-        if (enabled or token_budget != DEFAULT_TOKEN_BUDGET)
+        if (enabled or not budget_defaulted)
         else LEGACY_TOKEN_BUDGET
     )
     # #1016-B parity with retrieve(): when manifest_reference_locks is on
@@ -4476,7 +4515,7 @@ def retrieve_v2(
     # lane below and the retrieve_with_tiers delegation see the same
     # env/TOML-resolved values (default 50 / 2400 keep the hot path narrow).
     l1_limit = resolve_l1_limit(l1_limit)
-    budget = resolve_token_budget(budget)
+    budget, budget_defaulted = resolve_token_budget_with_provenance(budget)
     # v2.1 #152 HRR structural-query routing. Returns early on marker
     # hit; falls through on miss (non-marker query, marker-with-
     # unknown-target, or flag OFF) so the textual lane handles the
@@ -4525,6 +4564,7 @@ def retrieve_v2(
     ) = retrieve_with_tiers(
         store, query,
         token_budget=budget,
+        budget_defaulted=budget_defaulted,
         entity_index_enabled=use_entity_index,
         l25_limit=l25_limit,
         l25_token_subbudget=l25_token_subbudget,

@@ -44,6 +44,8 @@ from aelfrice.retrieval import (
     DEFAULT_L25_LIMIT,
     DEFAULT_TOKEN_BUDGET,
     LEGACY_TOKEN_BUDGET,
+    ENV_RETRIEVAL_TOKEN_BUDGET,
+    resolve_token_budget_with_provenance,
     ENV_ENTITY_INDEX,
     RetrievalCache,
     is_entity_index_enabled,
@@ -477,6 +479,99 @@ def test_ac7_disabled_flag_uses_legacy_budget() -> None:
     assert DEFAULT_TOKEN_BUDGET == 2400
     # Can't observe the budget directly without instrumentation; the
     # shape test above (env_off vs flag_off identical) stands in.
+
+
+def _budget_probe_store() -> MemoryStore:
+    """A store with enough matching content that 2000 and 2400 tokens
+    admit a different number of beliefs."""
+    s = MemoryStore(":memory:")
+    for i in range(120):
+        s.insert_belief(
+            _mk(f"B{i:03d}", "aelfrice retrieval budget probe " + ("filler " * 40))
+        )
+    return s
+
+
+def test_explicit_default_budget_is_not_downgraded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1271: an explicit `token_budget=2400` must mean 2400.
+
+    The legacy downgrade keyed on the resolved *value* rather than on
+    whether anyone asked, so a caller who deliberately passed the
+    default got 2000 while 2399 and 2401 both got what they asked for —
+    discontinuous at exactly the default.
+
+    Asserted through pack size, because the budget is not otherwise
+    observable. Against the pre-fix source the explicit-2400 call
+    returns the same pack as the no-argument call, so `>` fails.
+    """
+    monkeypatch.delenv(ENV_RETRIEVAL_TOKEN_BUDGET, raising=False)
+    s = _budget_probe_store()
+
+    defaulted = retrieve(s, "aelfrice retrieval budget probe",
+                         entity_index_enabled=False)
+    explicit = retrieve(s, "aelfrice retrieval budget probe",
+                        token_budget=DEFAULT_TOKEN_BUDGET,
+                        entity_index_enabled=False)
+
+    assert len(explicit) > len(defaulted), (
+        "explicit 2400 was downgraded to the 2000 legacy budget"
+    )
+
+
+def test_no_argument_still_gets_the_legacy_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The v1.2 parity path is not what #1271 changes.
+
+    Negative control: a caller who expresses no preference must still be
+    downgraded, or the fix would have removed the legacy branch rather
+    than corrected its predicate.
+    """
+    monkeypatch.delenv(ENV_RETRIEVAL_TOKEN_BUDGET, raising=False)
+    s = _budget_probe_store()
+
+    defaulted = retrieve(s, "aelfrice retrieval budget probe",
+                         entity_index_enabled=False)
+    legacy = retrieve(s, "aelfrice retrieval budget probe",
+                      token_budget=LEGACY_TOKEN_BUDGET,
+                      entity_index_enabled=False)
+
+    assert len(defaulted) == len(legacy)
+
+
+def test_budget_is_continuous_around_the_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """2399, 2400 and 2401 must not disagree about what they mean.
+
+    The defect was visible as a discontinuity: the neighbours of the
+    default were honoured and the default itself was not.
+    """
+    monkeypatch.delenv(ENV_RETRIEVAL_TOKEN_BUDGET, raising=False)
+    s = _budget_probe_store()
+    sizes = {
+        b: len(retrieve(s, "aelfrice retrieval budget probe",
+                        token_budget=b, entity_index_enabled=False))
+        for b in (DEFAULT_TOKEN_BUDGET - 1, DEFAULT_TOKEN_BUDGET,
+                  DEFAULT_TOKEN_BUDGET + 1)
+    }
+    assert sizes[DEFAULT_TOKEN_BUDGET - 1] <= sizes[DEFAULT_TOKEN_BUDGET]
+    assert sizes[DEFAULT_TOKEN_BUDGET] <= sizes[DEFAULT_TOKEN_BUDGET + 1]
+
+
+def test_resolver_reports_who_set_the_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The provenance the fix relies on, pinned directly."""
+    monkeypatch.delenv(ENV_RETRIEVAL_TOKEN_BUDGET, raising=False)
+    assert resolve_token_budget_with_provenance() == (DEFAULT_TOKEN_BUDGET, True)
+    assert resolve_token_budget_with_provenance(DEFAULT_TOKEN_BUDGET) == (
+        DEFAULT_TOKEN_BUDGET, False
+    )
+    monkeypatch.setenv(ENV_RETRIEVAL_TOKEN_BUDGET, str(DEFAULT_TOKEN_BUDGET))
+    assert resolve_token_budget_with_provenance() == (DEFAULT_TOKEN_BUDGET, False)
 
 
 def test_ac7_is_entity_index_enabled_precedence(
