@@ -184,3 +184,19 @@ def test_a_repeat_does_not_break_the_streak(tmp_path: Path) -> None:
     p = tmp_path / "status.json"
     _write(rows, p)
     assert replay_soak_streak.streak(replay_soak_streak.load_rows(p)) == 2
+
+
+def test_empty_sha_counts_like_a_missing_one(tmp_path: Path) -> None:
+    """`sha: ""` is a non-answer, not a commit identity, so rows do not collapse.
+
+    Same principle as `test_rows_without_a_sha_each_count`, on the other spelling
+    of absent. Falsifiable against an `is None` guard, which treats two empty
+    strings as the same commit and reports 1 — the docstring's stated reason
+    ("absent provenance is not evidence of sameness") would then not match the
+    code, and a hand-edited row could shorten a real streak.
+    """
+    rows = [_pass(f"2026-05-{n:02d}", sha="") for n in range(1, 4)]
+    p = tmp_path / "status.json"
+    _write(rows, p)
+    assert all(r["sha"] == "" for r in rows)
+    assert replay_soak_streak.streak(replay_soak_streak.load_rows(p)) == 3

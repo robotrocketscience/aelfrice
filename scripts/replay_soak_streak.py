@@ -9,7 +9,7 @@ an unchanged `main` do not accumulate a streak (#1239).
 
 Used by `.github/workflows/replay-soak-gate.yml` to gate
 `#264`-touching merges. The check name produced is
-`replay-soak / consecutive-green ≥ 7 commits`. Per the 2026-05-04
+`consecutive-green ≥ 7 commits`. Per the 2026-05-04
 ratification on #403, ≥7 is the threshold; a streak ≥ 7 → exit 0;
 otherwise exit 1.
 
@@ -37,10 +37,11 @@ def streak(rows: list[dict]) -> int:  # type: ignore[type-arg]
     2026-07-22 and 2026-07-29, and the cron recorded `018eb88a` on seven
     consecutive days, which satisfied "7 consecutive green" on its own (#1239).
 
-    A row with no `sha` counts as its own measurement rather than collapsing
-    into its neighbour, because absent provenance is not evidence of sameness.
-    The cron has always written `sha`, so this only affects hand-edited or
-    pre-schema rows.
+    A row whose `sha` is absent — missing, `null`, or empty — counts as its
+    own measurement rather than collapsing into its neighbour, because absent
+    provenance is not evidence of sameness. An empty string is as much a
+    non-answer as a missing key, so both take that branch. The cron has always
+    written a real `sha`, so this only affects hand-edited or pre-schema rows.
     """
     n = 0
     prev_sha: str | None = None
@@ -50,7 +51,7 @@ def streak(rows: list[dict]) -> int:  # type: ignore[type-arg]
         if int(row.get("mismatched", 0)) + int(row.get("derived_orphan", 0)) != 0:
             break
         sha = row.get("sha")
-        if sha is None or sha != prev_sha:
+        if not sha or sha != prev_sha:
             n += 1
         prev_sha = sha
     return n
