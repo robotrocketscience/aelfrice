@@ -171,3 +171,54 @@ def test_underpowered_pass_is_not_a_pass() -> None:
     """100% on 19 boundaries must not read as CLEARS."""
     assert mod.verdict(1.0, 19).startswith("NO VERDICT")
     assert mod.verdict(1.0, 20) == "CLEARS"
+
+
+# --- the divergence guard ---------------------------------------------
+
+
+def test_divergence_over_the_limit_withdraws_the_pooled_verdict() -> None:
+    """The rule that actually decided the real run.
+
+    Its siblings (power floor, thresholds) are pinned above; this one
+    was the only decision rule with no test, and it is the one that
+    turned a 98.6% pooled rate into no verdict. Without the guard
+    inside `verdict()` this returns CLEARS.
+    """
+    v = mod.verdict(0.986, 73, {"manual": 1.0, "auto": 0.0})
+    assert v.startswith("NO VERDICT")
+    assert "diverge" in v
+
+
+def test_divergence_within_the_limit_still_clears() -> None:
+    """Negative control: the guard must not swallow every verdict."""
+    assert mod.verdict(0.99, 73, {"manual": 1.0, "auto": 0.95}) == "CLEARS"
+
+
+def test_a_single_trigger_cannot_diverge() -> None:
+    """One trigger is not agreement between two.
+
+    Returning 0.0 here would let a single-trigger corpus clear on a rule
+    that never ran; the spread is undefined, so the guard abstains and
+    the other rungs decide.
+    """
+    assert mod.trigger_divergence({"manual": 1.0}) is None
+    assert mod.trigger_divergence(None) is None
+    assert mod.verdict(0.99, 73, {"manual": 1.0}) == "CLEARS"
+
+
+def test_divergence_is_checked_before_the_clears_rung() -> None:
+    """Order matters: a diverging run must never print CLEARS first.
+
+    A rate comfortably over the bar plus a divergence must resolve to
+    NO VERDICT, not to CLEARS with a footnote.
+    """
+    assert mod.verdict(1.0, 100, {"manual": 1.0, "auto": 0.0}).startswith(
+        "NO VERDICT"
+    )
+
+
+def test_underpowered_still_wins_over_divergence() -> None:
+    """Too little data is the more fundamental objection of the two."""
+    assert mod.verdict(1.0, 5, {"manual": 1.0, "auto": 0.0}) == (
+        "NO VERDICT (underpowered)"
+    )

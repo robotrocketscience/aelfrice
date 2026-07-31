@@ -86,10 +86,16 @@ boundaries, over a population of at least 20 scoreable boundaries.
   pass.
 
 `manual` and `auto` triggers are reported separately as well as
-pooled. If they disagree by more than 10 percentage points the pooled
-rate is not reported as the verdict — a design that holds for
-`/compact` but not for auto-compaction has not cleared, since auto is
-the case the user cannot see coming.
+pooled. If they disagree by more than 10 percentage points the result
+is `NO VERDICT` — a design that holds for an explicit compaction but
+not for an automatic one has not cleared, since auto is the case the
+user cannot see coming.
+
+This guard is a rung inside `verdict()`, ahead of the `CLEARS` rung,
+rather than an advisory line printed beneath the headline. A headline
+reading `CLEARS` under a footnote saying the pooled rate is not the
+verdict would be re-runnable, pasteable and greppable evidence for the
+opposite of the rule.
 
 ## The never-compacted session
 
@@ -248,9 +254,41 @@ def _fmt_rate(rate: float | None) -> str:
     return "n/a" if rate is None else f"{rate * 100:.1f}%"
 
 
-def verdict(rate: float | None, scoreable: int) -> str:
+def trigger_divergence(trigger_rates: dict[str, float] | None) -> float | None:
+    """Spread between the best- and worst-firing trigger, or None.
+
+    None when fewer than two triggers were observed — one trigger
+    cannot diverge from anything, and treating that as 0.0 would let a
+    corpus with a single trigger clear on a rule that never ran.
+    """
+    if not trigger_rates or len(trigger_rates) < 2:
+        return None
+    return max(trigger_rates.values()) - min(trigger_rates.values())
+
+
+def verdict(
+    rate: float | None,
+    scoreable: int,
+    trigger_rates: dict[str, float] | None = None,
+) -> str:
+    """Apply the pre-registered rule and return the whole verdict.
+
+    The divergence guard is a rung *inside* this function, not an
+    advisory line printed under it. A headline that says CLEARS with a
+    footnote saying the pooled rate is not the verdict is the one thing
+    a pre-registered rule cannot afford: the point of fixing the rule
+    before the run is that the outcome cannot be re-scored afterwards,
+    and the first line is what gets re-run, pasted and grepped.
+    """
     if scoreable < MIN_SCOREABLE or rate is None:
         return "NO VERDICT (underpowered)"
+    spread = trigger_divergence(trigger_rates)
+    if spread is not None and spread > TRIGGER_DIVERGENCE_LIMIT:
+        return (
+            f"NO VERDICT (triggers diverge by {spread * 100:.1f}pp > "
+            f"{TRIGGER_DIVERGENCE_LIMIT * 100:.0f}pp; the pooled rate is "
+            "not the verdict)"
+        )
     if rate >= CLEARS_AT:
         return "CLEARS"
     if rate < KILLS_BELOW:
@@ -323,20 +361,12 @@ def main(argv: list[str] | None = None) -> int:
             f"rate={_fmt_rate(group_rate)}"
         )
 
-    divergence_note = ""
-    if len(trigger_rates) > 1:
-        spread = max(trigger_rates.values()) - min(trigger_rates.values())
-        if spread > TRIGGER_DIVERGENCE_LIMIT:
-            divergence_note = (
-                f"  triggers diverge by {spread * 100:.1f}pp (> "
-                f"{TRIGGER_DIVERGENCE_LIMIT * 100:.0f}pp): the pooled rate "
-                "is NOT the verdict"
-            )
-
+    spread = trigger_divergence(trigger_rates)
     print("")
-    print(f"VERDICT: {verdict(rate, len(scoreable))}")
-    if divergence_note:
-        print(divergence_note)
+    if spread is not None:
+        print(f"trigger divergence   : {spread * 100:.1f}pp "
+              f"(limit {TRIGGER_DIVERGENCE_LIMIT * 100:.0f}pp)")
+    print(f"VERDICT: {verdict(rate, len(scoreable), trigger_rates)}")
     return 0
 
 

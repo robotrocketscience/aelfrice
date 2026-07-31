@@ -119,8 +119,9 @@ fire_rate            : 98.6%
 auto     n=   1  fired=   0  rate=0.0%
 manual   n=  72  fired=  72  rate=100.0%
 
-VERDICT: CLEARS
-  triggers diverge by 100.0pp (> 10pp): the pooled rate is NOT the verdict
+trigger divergence   : 100.0pp (limit 10pp)
+VERDICT: NO VERDICT (triggers diverge by 100.0pp > 10pp; the pooled rate is
+not the verdict)
 ```
 
 **The pooled 98.6% clears the bar and is not the verdict.** The
