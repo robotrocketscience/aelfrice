@@ -271,8 +271,21 @@ def test_run_multihop_benchmark_returns_well_formed_report(tmp_path: Path) -> No
 
 def test_multihop_l1_only_hit_at_1_below_sanity_threshold(tmp_path: Path) -> None:
     """L1-only arm must hit@1 < 0.50 — queries are multi-hop, not
-    surface-keyword-solvable by BM25 alone. Failure means the corpus
-    design is broken (bridge identifier leaked into the target belief)."""
+    surface-keyword-solvable by BM25 alone.
+
+    Deliberately not budget-pinned. All three arms call `retrieve` with
+    an explicit `DEFAULT_TOKEN_BUDGET`, so since #1271 they are
+    budget-matched and the ablation varies only the lane under test —
+    which is the property an ablation needs. Pinning a budget here would
+    decouple the guard from the benchmark it exists to guard.
+
+    Before #1271 that was not true: `entity_index_enabled=False` made
+    this arm alone resolve to `LEGACY_TOKEN_BUDGET` (2000) while the two
+    treatment arms ran at 2400, so every `l1_l25 - l1_only` delta the
+    harness produced charged a 16.7% budget gap to the entity lane. The
+    arm gained 400 tokens when that was fixed, which is why the failure
+    message below names the budget as a candidate cause rather than
+    blaming the corpus outright."""
     s = _fresh_multihop_store(tmp_path)
     try:
         seed_multihop_corpus(s)
@@ -281,7 +294,12 @@ def test_multihop_l1_only_hit_at_1_below_sanity_threshold(tmp_path: Path) -> Non
         s.close()
     assert report.multihop_l1_only.hit_at_1 < 0.50, (
         f"L1-only hit@1={report.multihop_l1_only.hit_at_1:.3f} >= 0.50 — "
-        "queries appear to be surface-keyword-solvable; corpus design needs review"
+        "queries appear to be surface-keyword-solvable. Two candidate "
+        "causes, in order of likelihood: a bridge identifier leaked into "
+        "the target belief (corpus design), or this arm's retrieval "
+        "budget changed relative to the treatment arms (see #1271, where "
+        "it silently ran 400 tokens short). Check the arms are still "
+        "budget-matched before rewriting the corpus."
     )
 
 
