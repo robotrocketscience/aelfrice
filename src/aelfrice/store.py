@@ -520,6 +520,15 @@ _SCHEMA: tuple[str, ...] = (
     # snapshot of what the pool and the pack looked like at that fire;
     # a later retire or delete must not rewrite or cascade away the
     # record of a decision that was made while the belief was live.
+    #
+    # Orphan rows here are CORRECT and must stay. This repo has a
+    # precedent pointing the other way — `doctor.gc_orphan_feedback`
+    # (#223) deletes `feedback_history` rows whose `belief_id` no
+    # longer resolves, and `aelf doctor` exposes it. Do NOT extend that
+    # GC to `exploration_events` by analogy: it would delete exactly
+    # the audit trail this table exists to provide, and it would leave
+    # the suite green, because the surviving-row test deletes a belief
+    # and re-reads the row rather than running a separate GC pass.
     """
     CREATE TABLE IF NOT EXISTS exploration_events (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3736,6 +3745,13 @@ class MemoryStore:
         Id lists are stored as JSON arrays in the order given. Draw order is
         the point for `drawn_ids` (it says which slot each belief filled),
         so this deliberately does not sort them.
+
+        The ids carry no foreign key and rows are deliberately
+        **orphan-tolerant**: a belief retired or deleted after the fire
+        leaves its id in this row, because the row records a decision
+        that was made while the belief was live. Do not add an orphan GC
+        for this table — `doctor.gc_orphan_feedback` (#223) is the
+        precedent for `feedback_history` and must not be extended here.
         """
         ts = now if now is not None else datetime.now(timezone.utc).isoformat()
         cur = self._conn.execute(
