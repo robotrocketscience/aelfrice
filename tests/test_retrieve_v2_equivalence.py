@@ -5,8 +5,16 @@
 it gets over-trusted (#1160).** Post-#1107 `retrieve()` is a thin adapter that
 calls `retrieve_v2` with a fixed lane config, so `_v1` and `_v2` below both
 route through `retrieve_v2` and the top-level equality is a tautology — it
-cannot fail while `SHIM_LANES` mirrors the shim, and it would not catch a
-`retrieve_v2` regression, because both sides would regress together.
+cannot fail while `SHIM_LANES` mirrors the shim, and *those assertions
+specifically* would not catch a `retrieve_v2` regression, because both sides
+would regress together.
+
+The scope of that weakness is the equality assertions, not the file. The
+per-tier and lane-config cases below are not tautological and do catch such
+regressions: wrapping `retrieve_v2` to truncate every result turns
+`test_shim_runs_graduated_lanes_others_off` and
+`test_manifest_flag_actually_changes_output` red while the 18 equality cases
+stay green.
 
 What it does pin, and what is worth keeping:
 
