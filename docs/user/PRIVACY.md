@@ -73,7 +73,7 @@ Before v4.2.0 this command hardcoded its gate to open and never read the sentine
 
 **Telemetry remains zero.** aelfrice does not phone-home about its own LLM usage. Tokens consumed are reported on stdout to the user only, never written to any network endpoint or logging service. On the direct-API path, `aelf onboard --llm-classify` makes one or more requests to `https://api.anthropic.com/`; nothing else. On the host-driven path, the aelfrice CLI makes zero direct outbound calls — the host LLM handles its own network IO under its own credentials.
 
-**There are four outbound-capable paths in the shipped aelfrice package, and two of them are on by default.** "Paths", not "calls", because either LLM path may issue several batched requests in one run.
+**There are six outbound-capable paths in the shipped aelfrice package, and two of them are on by default.** "Paths", not "calls", because either LLM path may issue several batched requests in one run.
 
 | path | default | transmits |
 |---|---|---|
@@ -81,8 +81,12 @@ Before v4.2.0 this command hardcoded its gate to open and never read the sentine
 | Pre-issue duplicate guard — `gh issue list --search <tokens>` before `gh issue create` (disable with `AELFRICE_NO_PRE_ISSUE_GUARD=1`, bypass once with `ALLOW_DUP_ISSUE=1`, or `aelf setup --no-pre-issue-guard`) | **on** since v3.4.0 | **yes** — tokens derived from the issue title you typed |
 | `aelf onboard --llm-classify` | opt-in, consent-gated | extracted candidate sentences |
 | `aelf doctor --classify-orphans` | opt-in, consent-gated | content of stored beliefs |
+| `aelf gate list` — `gh issue list` / `gh issue view` against the repo detected from your git remote (`gate_list.py`) | off; explicit command, and hidden from `--help` | repo identity and label filters; no belief content |
+| `aelf upgrade` and the one-shot uv-tool migration — `uv tool install aelfrice` (`lifecycle.py`) | off; explicit command | nothing beyond the package request itself |
 
 Of the two default-on paths, only the notifier transmits nothing. The pre-issue guard does transmit, and it is the one an audit is most likely to miss, because it reaches the network by running another program rather than by opening a socket — see the note on the verification grep above.
+
+The last three rows are all of that shell-out kind, and they are why the count in this section has been wrong before. Only the first three rows appear under the in-process grep; the other three appear only under the `subprocess` grep. If you add an outbound path, add its row here, and check which of the two greps would have found it.
 
 **Confirm at the source:**
 
