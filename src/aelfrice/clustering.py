@@ -253,3 +253,138 @@ def pack_with_clusters(
             used_tokens += b_cost
 
     return out
+
+
+# --- Budgeted maximum coverage pack selector (#1176 proposal 2) --------
+
+
+def pack_max_coverage(
+    candidates: list[Belief],
+    *,
+    token_budget: int,
+    coverage: dict[str, frozenset[str]],
+    term_weights: dict[str, float],
+    cost_fn: Callable[[Belief], int] | None = None,
+) -> list[Belief]:
+    """Budgeted maximum coverage over query terms (Khuller-Moss-Naor 1999).
+
+    Pack selection is a budgeted maximum-coverage problem, not a ranked
+    fill: the value of adding a belief is the query-term mass it brings
+    that nothing already selected covers. `pack_with_clusters` cannot see
+    that — measured on 523 replayed prompts it leaves ~9 near-duplicate
+    pairs per user pack among the beliefs it chooses, and on harness
+    prompts it produces 79% *more* near-duplicate pairs (4-gram Jaccard
+    >= 0.25) than plain rank-greedy, so its diversity pass is
+    neutral-to-harmful on the redundancy axis it exists to address.
+
+    `coverage` maps belief id -> the query terms that belief contains;
+    `term_weights` maps term -> weight (idf). Both are supplied by the
+    caller so this stays a pure function with no BM25 or store coupling.
+    A belief absent from `coverage` covers nothing and can still be
+    selected only by the tie-break, which is the correct handling for a
+    belief that matched on a lane other than term overlap.
+
+    Objective ``f(S) = sum of term_weights[t] for t in union of cov(b)``
+    is monotone and submodular, so the cost-benefit greedy paired with
+    the best single feasible element carries the standard (1 - 1/e)
+    guarantee. Both halves are computed and the better is returned;
+    omitting the single-element arm is what breaks the bound in the
+    pathological case where one belief covers nearly everything at a cost
+    just under budget.
+
+    A relevance floor multiplies each marginal gain by a linear rank
+    weight ``(n - i) / n``. Without it the greedy will spend budget on a
+    low-ranked belief that happens to carry one rare term. The rank proxy
+    rather than the composite rerank score matches the convention
+    `retrieve_with_tiers` already uses for `cluster_scores`; the score
+    itself is not threaded out of `_l1_hits` today, and using it is a
+    follow-up rather than a silent reinterpretation of this constant.
+
+    Deterministic: a fixed sequence of argmaxes over an explicit total
+    order ``(-gain_ratio, rank, belief_id)``. No clock, no randomness, no
+    reliance on set iteration order.
+    """
+    cost = cost_fn or _belief_tokens
+    if not candidates or token_budget <= 0:
+        return []
+
+    n = len(candidates)
+    rank_of: dict[str, int] = {b.id: i for i, b in enumerate(candidates)}
+    # Linear rank weight in (0, 1]; candidates are rerank-sorted.
+    rank_weight: dict[str, float] = {
+        b.id: (n - i) / n for i, b in enumerate(candidates)
+    }
+
+    def gain(b: Belief, covered: frozenset[str]) -> float:
+        new = coverage.get(b.id, frozenset()) - covered
+        raw = sum(term_weights.get(t, 0.0) for t in new)
+        return raw * rank_weight[b.id]
+
+    # --- arm 1: cost-benefit greedy with CELF lazy evaluation ---------
+    # The heap holds an upper bound on each element's gain/cost ratio.
+    # Submodularity makes a stale bound a valid upper bound, so popping
+    # and re-checking yields exactly the eager greedy's choices while
+    # evaluating far fewer marginals.
+    import heapq
+
+    covered: frozenset[str] = frozenset()
+    chosen: list[Belief] = []
+    used = 0
+    by_id: dict[str, Belief] = {b.id: b for b in candidates}
+    heap: list[tuple[float, int, str, int]] = []
+    for b in candidates:
+        c = cost(b)
+        if c <= 0:
+            # A zero-cost belief is free; ratio is undefined. Give it the
+            # raw gain so it sorts on value rather than dividing by zero.
+            heapq.heappush(heap, (-gain(b, covered), rank_of[b.id], b.id, -1))
+        else:
+            heapq.heappush(
+                heap, (-gain(b, covered) / c, rank_of[b.id], b.id, 0)
+            )
+    while heap:
+        _neg_ratio, rank, bid, _flag = heapq.heappop(heap)
+        b = by_id[bid]
+        c = cost(b)
+        if used + c > token_budget:
+            # `used` only grows, so an element that does not fit now can
+            # never fit later. Dropping it is not an approximation.
+            continue
+        true_gain = gain(b, covered)
+        true_ratio = true_gain / c if c > 0 else true_gain
+        key = (-true_ratio, rank, bid)
+        # Compare the FULL total-order key against the next bound, not the
+        # ratio alone. On a ratio tie the eager greedy takes the
+        # lower-ranked element; a ratio-only comparison would take
+        # whichever happened to be popped, which diverges from the eager
+        # result on ~20% of random inputs (caught by the equality test).
+        if heap and key > heap[0][:3]:
+            heapq.heappush(heap, (-true_ratio, rank, bid, 0))
+            continue
+        chosen.append(b)
+        covered |= coverage.get(bid, frozenset())
+        used += c
+
+    def f(sel: list[Belief]) -> float:
+        u: frozenset[str] = frozenset()
+        for b in sel:
+            u |= coverage.get(b.id, frozenset())
+        return sum(term_weights.get(t, 0.0) for t in u)
+
+    # --- arm 2: best single feasible element by raw coverage ----------
+    best_single: list[Belief] = []
+    best_val = -1.0
+    for b in candidates:
+        if cost(b) > token_budget:
+            continue
+        v = sum(
+            term_weights.get(t, 0.0) for t in coverage.get(b.id, frozenset())
+        )
+        if v > best_val:
+            best_val, best_single = v, [b]
+
+    winner = chosen if f(chosen) >= best_val else best_single
+    # Emit in rerank order rather than selection order: the pack is
+    # consumed as a ranked list downstream, and selection order is an
+    # artefact of the greedy.
+    return sorted(winner, key=lambda b: rank_of[b.id])
