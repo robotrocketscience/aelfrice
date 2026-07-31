@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
-from aelfrice.store import MemoryStore
+from aelfrice.store import MemoryStore, hash_query
 
 
 @pytest.fixture()
@@ -176,7 +176,7 @@ def test_record_exploration_round_trips(store: MemoryStore) -> None:
     rid = store.record_exploration(
         fire_idx=40,
         seed=0x1234ABCD,
-        query_hash="qh",
+        query="what did we decide about locks",
         candidate_ids=["c1", "c2", "c3"],
         drawn_ids=["c2"],
         displaced_ids=["d9"],
@@ -204,7 +204,7 @@ def test_a_seed_above_2_63_round_trips(store: MemoryStore) -> None:
     rid = store.record_exploration(
         fire_idx=1,
         seed=seed,
-        query_hash="qh",
+        query="what did we decide about locks",
         candidate_ids=[],
         drawn_ids=[],
         displaced_ids=[],
@@ -221,7 +221,7 @@ def test_drawn_id_order_is_preserved_not_sorted(store: MemoryStore) -> None:
     rid = store.record_exploration(
         fire_idx=1,
         seed=1,
-        query_hash="qh",
+        query="what did we decide about locks",
         candidate_ids=["a", "b", "c"],
         drawn_ids=["c", "a"],
         displaced_ids=[],
@@ -243,7 +243,7 @@ def test_the_ledger_survives_the_belief_it_names(store: MemoryStore) -> None:
     store.record_exploration(
         fire_idx=20,
         seed=7,
-        query_hash="qh",
+        query="what did we decide about locks",
         candidate_ids=ids,
         drawn_ids=[ids[0]],
         displaced_ids=[],
@@ -259,7 +259,7 @@ def test_rows_accumulate_rather_than_replace(store: MemoryStore) -> None:
         store.record_exploration(
             fire_idx=20 * i,
             seed=i,
-            query_hash="qh",
+            query="what did we decide about locks",
             candidate_ids=[],
             drawn_ids=[],
             displaced_ids=[],
@@ -268,3 +268,40 @@ def test_rows_accumulate_rather_than_replace(store: MemoryStore) -> None:
         "SELECT COUNT(*) AS n FROM exploration_events"
     ).fetchone()["n"]
     assert n == 3
+
+
+def test_the_raw_query_never_reaches_the_table(tmp_path: Path) -> None:
+    """The column's reason is privacy, so pin it as behaviour.
+
+    `record_exploration` takes the query and hashes it internally, so
+    there is no parameter a caller can hand the raw prompt to. This
+    asserts the prompt is absent from the stored row *and* that the
+    stored value is the digest — the first alone would pass against a
+    column that stored nothing useful.
+    """
+    prompt = "the user's private prompt about acme corp revenue"
+    store = MemoryStore(str(tmp_path / "m.db"))
+    try:
+        store.record_exploration(
+            fire_idx=1,
+            seed=7,
+            query=prompt,
+            candidate_ids=["a"],
+            drawn_ids=["a"],
+            displaced_ids=[],
+        )
+        row = store._conn.execute(
+            "SELECT query_hash FROM exploration_events"
+        ).fetchone()
+        assert prompt not in row["query_hash"]
+        assert "acme" not in row["query_hash"]
+        assert row["query_hash"] == hash_query(prompt)
+        assert len(row["query_hash"]) == 16
+    finally:
+        store.close()
+
+
+def test_hash_query_is_stable_and_distinguishing(tmp_path: Path) -> None:
+    """A constant would satisfy the test above; this rules it out."""
+    assert hash_query("a") == hash_query("a")
+    assert hash_query("a") != hash_query("b")

@@ -514,7 +514,9 @@ _SCHEMA: tuple[str, ...] = (
     # `seed` is hex TEXT, not INTEGER, on purpose: SQLite's INTEGER is
     # signed 64-bit, so a seed at or above 2**63 does not round-trip.
     # `query_hash` rather than the query, so the prompt text does not
-    # gain a second home in the store.
+    # gain a second home in the store. `record_exploration` takes the
+    # query and hashes it here (`hash_query`) so the raw prompt cannot
+    # reach this column through the API at all.
     #
     # The id columns are JSON arrays with no foreign key. They are a
     # snapshot of what the pool and the pack looked like at that fire;
@@ -1146,6 +1148,17 @@ def _row_to_onboard_session(row: sqlite3.Row) -> OnboardSession:
         created_at=row["created_at"],
         completed_at=row["completed_at"],
     )
+
+
+def hash_query(query: str) -> str:
+    """Digest a prompt for the `exploration_events.query_hash` column.
+
+    `sha256(...)[:16]`, the same shape the rest of the store uses for
+    content-addressed ids. Exposed so a reader can recompute the digest
+    for a known query and match it against a stored row without the
+    table ever holding the prompt itself.
+    """
+    return hashlib.sha256(query.encode("utf-8")).hexdigest()[:16]
 
 
 class MemoryStore:
@@ -3724,7 +3737,7 @@ class MemoryStore:
         *,
         fire_idx: int,
         seed: int,
-        query_hash: str,
+        query: str,
         candidate_ids: Sequence[str],
         drawn_ids: Sequence[str],
         displaced_ids: Sequence[str],
@@ -3752,6 +3765,14 @@ class MemoryStore:
         that was made while the belief was live. Do not add an orphan GC
         for this table — `doctor.gc_orphan_feedback` (#223) is the
         precedent for `feedback_history` and must not be extended here.
+
+        Takes the **query**, not a digest of it, and hashes here. The
+        column exists so the prompt text does not gain a second home in
+        the store, and that is a privacy property, so it is enforced by
+        the signature rather than by the caller remembering. A
+        `query_hash: str` parameter would accept the raw prompt and
+        every test would still pass. Use `hash_query` to recompute the
+        digest when reading a row back.
         """
         ts = now if now is not None else datetime.now(timezone.utc).isoformat()
         cur = self._conn.execute(
@@ -3761,7 +3782,7 @@ class MemoryStore:
             (
                 fire_idx,
                 f"{seed:016x}",
-                query_hash,
+                hash_query(query),
                 json.dumps(list(candidate_ids)),
                 json.dumps(list(drawn_ids)),
                 json.dumps(list(displaced_ids)),
