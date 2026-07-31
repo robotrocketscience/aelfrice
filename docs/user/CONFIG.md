@@ -671,13 +671,20 @@ diagnostic at all, and `AELFRICE_IMPLICIT_FEEDBACK_ENQUEUE=enabled` resolves
 `false`. Check the resolved state rather than reading the absence of a warning
 as acceptance.
 
-The **explicit kwarg** tier is the exception: it is not fail-soft and never
-falls through. `resolve_epsilon` and `resolve_grace_seconds` coerce the kwarg
-outside any guard, so a non-numeric value raises `ValueError` at the call site
-rather than deferring to TOML. `is_enqueue_on_retrieve_enabled` does not coerce
-at all — it returns the kwarg as given, so passing the string `"false"` yields
-a truthy `'false'` rather than `False`. Pass an already-typed `float`, `int`,
-or `bool`.
+The **explicit kwarg** tier is the exception: it is strict, not fail-soft, and
+never falls through. A value that does not match the declared type raises
+`TypeError` at the call site rather than deferring to TOML —
+`grace_window_seconds` takes an `int`, `epsilon` a `float` or `int`, and
+`enqueue_on_retrieve` a `bool`. `bool` is rejected for the two numeric keys,
+as it already is in their TOML tiers: `resolve_epsilon(True)` would otherwise
+be a 100% exploration rate and `resolve_grace_seconds(True)` a one-second
+window. Pass an already-typed value; a string that happens to parse, such as
+`resolve_grace_seconds("900")`, is rejected too.
+
+The split is deliberate. Env and TOML carry configuration you write, where a
+typo should not take a session down, so they discard and move on. The kwarg
+comes from calling code, where discarding it would hide the caller's bug behind
+whatever the next tier happened to return.
 
 ### `enqueue_on_retrieve`
 
