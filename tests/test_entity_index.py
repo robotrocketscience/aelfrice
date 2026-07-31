@@ -574,6 +574,29 @@ def test_resolver_reports_who_set_the_budget(
     assert resolve_token_budget_with_provenance() == (DEFAULT_TOKEN_BUDGET, False)
 
 
+def test_toml_budget_also_counts_as_a_preference(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """AC4: a TOML-set budget is a choice, not a default.
+
+    The TOML tier is the one branch of the four the provenance resolver
+    has where nobody asserted the flag, and it is the branch AC4 names
+    explicitly. Writing the default value is the case that matters: it is
+    the only one the old value-keyed predicate could not tell apart from
+    silence. `isolated_env` has already chdir'd into `tmp_path`, so the
+    walk finds this file and nothing from the real repo.
+    """
+    monkeypatch.delenv(ENV_RETRIEVAL_TOKEN_BUDGET, raising=False)
+    (tmp_path / ".aelfrice.toml").write_text(
+        f"[retrieval]\ntoken_budget = {DEFAULT_TOKEN_BUDGET}\n"
+    )
+    assert resolve_token_budget_with_provenance() == (
+        DEFAULT_TOKEN_BUDGET,
+        False,
+    )
+
+
 def test_ac7_is_entity_index_enabled_precedence(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
