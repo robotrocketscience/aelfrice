@@ -145,11 +145,17 @@ def store(tmp_path: Path) -> Iterator[MemoryStore]:
 
 @pytest.fixture(autouse=True)
 def _pin_ambient(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Keep the live store and the real notifier cache out of these tests.
+    """Keep the live store out of these tests.
 
-    Without this the ambient `AELFRICE_DB` leaks in and the update-check
-    TTL is read from the developer's own cache, which makes the notifier
-    tests pass or fail depending on when that machine last checked.
+    Without this the ambient `AELFRICE_DB` leaks in and retrieval ranks the
+    developer's real beliefs instead of the seeded ones.
+
+    This does **not** reach the update-check cache, and no env pin can.
+    `lifecycle.CACHE_FILE` derives from `Path.home()`, not `AELFRICE_DOTDIR`,
+    and is bound as an import-time default argument on
+    `maybe_check_for_update_async` / `read_cache` — so a `setenv` after
+    import cannot move it. Tests that need a controlled cache pass
+    `cache_path` explicitly instead.
     """
     monkeypatch.setenv("AELFRICE_DB", str(tmp_path / "memory.db"))
     monkeypatch.setenv("AELFRICE_DOTDIR", str(tmp_path / "dotdir"))
@@ -269,14 +275,27 @@ def test_user_prompt_submit_hook_makes_no_in_process_network_call(
         )
 
 
-def test_notifier_does_not_spawn_when_opted_out(
-    monkeypatch: pytest.MonkeyPatch,
+def test_the_opt_out_is_what_removes_the_notifier_spawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`AELF_NO_UPDATE_CHECK=1` removes the one documented call entirely."""
+    """`AELF_NO_UPDATE_CHECK=1` removes the one documented call entirely.
+
+    Both halves are asserted, because the opt-out half alone does not
+    discriminate. `maybe_check_for_update_async` consults the cache before
+    it would ever spawn, so on any machine with a fresh
+    `~/.cache/aelfrice/update_check.json` nothing was going to spawn either
+    way and the assertion never observes the opt-out doing anything.
+
+    `cache_path` is therefore passed explicitly: `CACHE_FILE` is
+    home-derived and bound as an import-time default, so no fixture can
+    redirect it. Pointing it at an empty `tmp_path` makes the cache stale,
+    which is what leaves the opt-out as the only reason nothing spawns.
+    """
     import subprocess
 
     from aelfrice.lifecycle import maybe_check_for_update_async
 
+    cache_path = tmp_path / "update_check.json"  # absent, therefore stale
     spawns: list[list[str]] = []
 
     def recording_popen(argv, *args, **kwargs):  # type: ignore[no-untyped-def]
@@ -284,10 +303,25 @@ def test_notifier_does_not_spawn_when_opted_out(
         raise OSError("spawn suppressed under test")
 
     monkeypatch.setattr(subprocess, "Popen", recording_popen)
-    monkeypatch.setenv("AELF_NO_UPDATE_CHECK", "1")
 
+    monkeypatch.setenv("AELF_NO_UPDATE_CHECK", "1")
     with _network_guard(monkeypatch) as attempts:
-        assert maybe_check_for_update_async() is False
+        assert maybe_check_for_update_async(cache_path=cache_path) is False
 
     assert spawns == []
+    assert attempts == []
+
+    # The distinguishing half: same call, same stale cache, opt-out cleared.
+    # The return value is deliberately not asserted here — it is True only
+    # when `Popen` succeeds, and this recorder raises `OSError`, which the
+    # function catches and reports as False. The spawn record is the evidence.
+    monkeypatch.delenv("AELF_NO_UPDATE_CHECK", raising=False)
+    with _network_guard(monkeypatch) as attempts:
+        maybe_check_for_update_async(cache_path=cache_path)
+
+    assert len(spawns) == 1, spawns
+    joined = " ".join(spawns[0])
+    assert "aelfrice.lifecycle" in joined and "check_for_update" in joined
+    # Still nothing in-process: the notifier reaches the network from the
+    # child, which is exactly why the hook test allowlists it by argv.
     assert attempts == []
