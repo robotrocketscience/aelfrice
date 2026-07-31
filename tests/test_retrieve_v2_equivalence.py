@@ -1,20 +1,32 @@
-"""Equivalence guard: `retrieve()` (the production adapter) must be
-byte-identical to `retrieve_v2` run with the exact lane config the #1107 shim
-pins — the regression net the production cutover depends on.
+"""Lane-drift guard: `SHIM_LANES` must stay equal to the lane config
+`retrieve()` actually passes, and each tier must behave as expected under it.
+
+**This file is not a cutover regression net, and describing it as one is how
+it gets over-trusted (#1160).** Post-#1107 `retrieve()` is a thin adapter that
+calls `retrieve_v2` with a fixed lane config, so `_v1` and `_v2` below both
+route through `retrieve_v2` and the top-level equality is a tautology — it
+cannot fail while `SHIM_LANES` mirrors the shim, and it would not catch a
+`retrieve_v2` regression, because both sides would regress together.
+
+What it does pin, and what is worth keeping:
+
+  * `SHIM_LANES` has not drifted from the shim's inline lane config. That is a
+    real coupling between two literals in different files, and
+    `test_shim_runs_graduated_lanes_others_off` checks it non-vacuously by
+    asserting each graduated lane is live and each held lane is off.
+  * Per-tier behaviour (L0 / L1 / L2.5 / BFS / manifest) under that shared
+    config.
+
+A genuine cutover regression net would have to pin the *output* against a
+recorded baseline, not against another call to the same function.
 
 The cutover migrated the production call sites from the legacy bare
-`retrieve()` pack loop to a thin adapter over `retrieve_v2()`. Post-#1107
-cutover the shim runs the graduated lanes ON (resolver-driven) — **temporal
-spine** (#1064, Phase 2), **entity-persist demotion** (#1096, Phase 3),
-**intentional clustering** (#436, Phase 4), and the **HRR structural-query
-lane** (#152, Phase 5) — and the remaining two staged lanes (origin tie-break,
-HRR-expand) OFF. `SHIM_LANES` below is that exact config, so
-`retrieve() == retrieve_v2(**SHIM_LANES)` is a true identity by construction
-(both route through `retrieve_v2` with the same lanes); the L0/L1/L2.5/BFS/
-manifest cases pin the per-tier behaviour under that shared config and guard
-against drift between the shim's inline lane config and `SHIM_LANES`.
-`test_shim_runs_graduated_lanes_others_off` covers each graduated lane being
-live and a held lane staying off, non-vacuously.
+`retrieve()` pack loop to a thin adapter over `retrieve_v2()`. Post-#1107 the
+shim runs the graduated lanes ON (resolver-driven) — **temporal spine**
+(#1064, Phase 2), **entity-persist demotion** (#1096, Phase 3), **intentional
+clustering** (#436, Phase 4), and the **HRR structural-query lane** (#152,
+Phase 5) — and the remaining two staged lanes (origin tie-break, HRR-expand)
+OFF. `SHIM_LANES` below is that exact config.
 
 `manifest_reference_locks` parity (#1016-B) was `retrieve()`-only until the
 #1107 Phase-0 port; the manifest cases below would have failed before it.
