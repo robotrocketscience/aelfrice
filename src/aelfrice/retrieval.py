@@ -115,6 +115,12 @@ from aelfrice.scoring import (
     zeta_posterior_score,
 )
 from aelfrice.store import MemoryStore
+from aelfrice.utterance_prior import (
+    UtterancePrior,
+    resolve_utterance_prior_weight,
+    utterance_logodds,
+    utterance_prior_penalty,
+)
 
 # v1.0 / v1.2 baseline. Used by the disabled-flag fallback so the
 # byte-identical regression test sees the same budget the v1.2 caller
@@ -3104,6 +3110,27 @@ def _entity_persist_penalty(
     )
 
 
+def _store_scoped_utterance_prior(store: MemoryStore) -> UtterancePrior:
+    """One process-lifetime utterance prior per store (#1174 item 3).
+
+    Building costs a full pass over `ingest_log`, so it must not happen
+    per query. Cached on the store, like `_store_scoped_bm25f_cache`, so
+    its lifetime is the store's.
+
+    Deliberately *not* invalidated on store mutation. The table is a
+    corpus-level vocabulary statistic over tens of thousands of ingest
+    rows; a handful of new rows cannot move a mean log-odds enough to
+    reorder anything, and subscribing to the invalidation hook would
+    rebuild the whole table on every write. A long-running process picks
+    up new vocabulary on restart.
+    """
+    cached = getattr(store, "_utterance_prior_cache", None)
+    if not isinstance(cached, UtterancePrior):
+        cached = utterance_logodds(store)
+        store._utterance_prior_cache = cached
+    return cached
+
+
 def _origin_priority(origin: str) -> int:
     """Retrieval tie-break priority for an `origin` (higher sorts first).
 
@@ -3256,6 +3283,7 @@ def _l1_hits(
     use_supersession_demote: bool = False,
     supersession_treatment: str = SUPERSESSION_TREATMENT_DEMOTE,
     supersession_factor: float = SUPERSESSION_DEMOTE_FACTOR,
+    utterance_prior_weight: float = 0.0,
     now_ts: int | None = None,
 ) -> list[Belief]:
     """Run L1: FTS5 BM25 search (default) or BM25F sparse-matvec
@@ -3425,6 +3453,7 @@ def _l1_hits(
             and zeta_params is None
             and not use_entity_persist_demote
             and not use_supersession_demote
+            and utterance_prior_weight == 0.0
         ):
             return [b for b, _ in beliefs]
         # BM25F scores are non-negative; the rerank uses `raw` as the
@@ -3459,6 +3488,10 @@ def _l1_hits(
             store.entity_persistence_scores([b.id for b, _ in beliefs])
             if use_entity_persist_demote else None
         )
+        up = (
+            _store_scoped_utterance_prior(store)
+            if utterance_prior_weight != 0.0 else None
+        )
         keyed: list[tuple[float, str, Belief]] = []
         for b, raw in beliefs:
             if heat_map is not None:
@@ -3489,6 +3522,9 @@ def _l1_hits(
             s = _hash_n_boosted(s, b.content, hash_n_literals)
             s += _entity_persist_penalty(ep, b.id)
             s += _supersession_penalty(sup, b.id, supersession_factor)
+            s += utterance_prior_penalty(
+                up, b.content, utterance_prior_weight,
+            )
             keyed.append((s, b.id, b))
         if use_origin_tiebreak:
             keyed.sort(
@@ -3506,6 +3542,7 @@ def _l1_hits(
         and zeta_params is None
         and not use_entity_persist_demote
         and not use_supersession_demote
+        and utterance_prior_weight == 0.0
     ):
         return store.search_beliefs(
             query, limit=l1_limit, origin_tiebreak=use_origin_tiebreak,
@@ -3549,6 +3586,10 @@ def _l1_hits(
         store.entity_persistence_scores([b.id for b, _ in scored])
         if use_entity_persist_demote else None
     )
+    up = (
+        _store_scoped_utterance_prior(store)
+        if utterance_prior_weight != 0.0 else None
+    )
     keyed: list[tuple[float, str, Belief]] = []
     for b, bm25_raw in scored:
         if heat_map is not None:
@@ -3579,6 +3620,9 @@ def _l1_hits(
         s = _hash_n_boosted(s, b.content, hash_n_literals)
         s += _entity_persist_penalty(ep, b.id)
         s += _supersession_penalty(sup, b.id, supersession_factor)
+        s += utterance_prior_penalty(
+            up, b.content, utterance_prior_weight,
+        )
         keyed.append((s, b.id, b))
     # Higher score = more relevant. Tie-break on id ASC for
     # determinism (matches the convention in bfs_multihop and L2.5).
@@ -3780,6 +3824,7 @@ def retrieve_with_tiers(
     use_supersession_demote: bool = False,
     supersession_treatment: str = SUPERSESSION_TREATMENT_DEMOTE,
     supersession_factor: float = SUPERSESSION_DEMOTE_FACTOR,
+    utterance_prior_weight: float | None = None,
     manifest_reference_locks: bool = False,
     now_ts: int | None = None,
 ) -> tuple[
@@ -3937,6 +3982,9 @@ def retrieve_with_tiers(
             use_supersession_demote=use_supersession_demote,
             supersession_treatment=supersession_treatment,
             supersession_factor=supersession_factor,
+            utterance_prior_weight=resolve_utterance_prior_weight(
+                utterance_prior_weight,
+            ),
             now_ts=effective_now_ts,
         )
         l1 = [
@@ -4143,6 +4191,7 @@ def retrieve_v2(
     use_supersession_demote: bool | None = None,
     supersession_treatment: str | None = None,
     supersession_factor: float | None = None,
+    utterance_prior_weight: float | None = None,
     use_temporal_spine: bool | None = None,
     temporal_spine_depth: int | None = None,
     temporal_spine_node_budget: int | None = None,
@@ -4334,6 +4383,7 @@ def retrieve_v2(
             supersession_treatment
         ),
         supersession_factor=resolve_supersession_factor(supersession_factor),
+        utterance_prior_weight=utterance_prior_weight,
         manifest_reference_locks=manifest_reference_locks,
         hrr_struct_index_cache=expand_cache,
         temporal_spine_enabled=use_temporal_spine,
