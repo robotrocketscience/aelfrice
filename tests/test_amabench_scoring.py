@@ -20,6 +20,7 @@ import pytest
 pytest.importorskip("datasets")
 
 from benchmarks import amabench_adapter as ama
+from benchmarks.metric_status import NOT_APPLICABLE
 
 
 def _row(qa_type: str, domain: str, em: float, sem: float, f1: float) -> dict:
@@ -87,7 +88,13 @@ def test_accuracy_by_qa_type_means():
     ]
     by_type = ama._accuracy_by_key(rows, "qa_type")
     assert by_type["A"]["count"] == 2
-    assert by_type["A"]["exact_match"] == pytest.approx(1.0)
+    # #1160: `exact_match` is uncomputable for this adapter, so the bucket
+    # carries the sentinel rather than a number. Asserting the sentinel is
+    # not enough on its own — a regression that dropped the overwrite would
+    # reconstruct the arithmetic mean of the rows, which is 1.0 here, so
+    # that value is excluded explicitly.
+    assert by_type["A"]["exact_match"] == NOT_APPLICABLE
+    assert by_type["A"]["exact_match"] != pytest.approx(1.0)
     assert by_type["A"]["f1"] == pytest.approx(0.5)
     assert by_type["B"]["count"] == 1
     assert by_type["B"]["substring_exact_match"] == pytest.approx(1.0)
@@ -101,7 +108,10 @@ def test_accuracy_by_domain_groups_independently_of_type():
     ]
     by_domain = ama._accuracy_by_key(rows, "domain")
     assert by_domain["Game"]["count"] == 2
-    assert by_domain["Game"]["exact_match"] == pytest.approx(0.5)
+    # As above: 0.5 is the mean the pre-#1160 code would have produced for
+    # this group, so it is the value that must NOT come back.
+    assert by_domain["Game"]["exact_match"] == NOT_APPLICABLE
+    assert by_domain["Game"]["exact_match"] != pytest.approx(0.5)
     assert by_domain["Web"]["count"] == 1
     assert by_domain["Web"]["f1"] == pytest.approx(0.8)
 
