@@ -25,17 +25,19 @@ def _write(rows: list[dict], path: Path) -> None:  # type: ignore[type-arg]
             f.write(json.dumps(row) + "\n")
 
 
-def _pass(date: str, sha: str = "abc") -> dict:  # type: ignore[type-arg]
+def _pass(date: str, sha: str | None = None) -> dict:  # type: ignore[type-arg]
+    """A green row. `sha` defaults to one derived from `date`, i.e. a
+    moving `main` — pass an explicit `sha` to model an idle one."""
     return {
-        "date": date, "sha": sha,
+        "date": date, "sha": sha if sha is not None else f"sha-{date}",
         "replay_full_equality_result": "pass",
         "total_log_rows": 60, "mismatched": 0, "derived_orphan": 0,
     }
 
 
-def _fail(date: str, sha: str = "abc") -> dict:  # type: ignore[type-arg]
+def _fail(date: str, sha: str | None = None) -> dict:  # type: ignore[type-arg]
     return {
-        "date": date, "sha": sha,
+        "date": date, "sha": sha if sha is not None else f"sha-{date}",
         "replay_full_equality_result": "fail",
         "total_log_rows": 60, "mismatched": 1, "derived_orphan": 0,
     }
@@ -104,3 +106,81 @@ def test_malformed_jsonl_raises(tmp_path: Path) -> None:
     p.write_text("not-json\n")
     with pytest.raises(SystemExit):
         replay_soak_streak.load_rows(p)
+
+
+# --- distinct-commit counting (#1239) --------------------------------------
+
+
+def test_repeated_sha_counts_once(tmp_path: Path) -> None:
+    """Hypothesis: consecutive rows for the same commit are one measurement.
+
+    The soak is deterministic, so replaying an unchanged tree reproduces the
+    previous result and adds no evidence. Falsifiable if the streak counts
+    rows: seven identical-sha rows would then return 7.
+    """
+    rows = [_pass(f"2026-07-{n:02d}", sha="018eb88a") for n in range(23, 30)]
+    p = tmp_path / "status.json"
+    _write(rows, p)
+    assert replay_soak_streak.streak(replay_soak_streak.load_rows(p)) == 1
+
+
+def test_the_idle_week_no_longer_satisfies_the_threshold(tmp_path: Path) -> None:
+    """Regression for the real history that motivated #1239.
+
+    `main` did not advance 2026-07-22 -> 2026-07-29 and the cron recorded
+    `018eb88a` on seven consecutive days. Those seven rows cleared the
+    threshold of 7 on their own. They must not.
+    """
+    rows = [
+        _pass("2026-07-22", sha="1a4f41b6"),
+        *[_pass(f"2026-07-{n:02d}", sha="018eb88a") for n in range(23, 30)],
+    ]
+    p = tmp_path / "status.json"
+    _write(rows, p)
+    n = replay_soak_streak.streak(replay_soak_streak.load_rows(p))
+    assert n == 2, f"idle week should contribute one commit, not seven (got {n})"
+    assert n < 7, "the idle week must not satisfy the gate on its own"
+
+
+def test_alternating_shas_are_not_collapsed(tmp_path: Path) -> None:
+    """Only *consecutive* repeats collapse.
+
+    A -> B -> A is three measurements of two trees; the middle entry proves
+    the tree changed and changed back, so the third is not a repeat of the
+    first. Falsifiable if the implementation de-duplicates set-wise.
+    """
+    rows = [_pass("2026-05-01", sha="a"),
+            _pass("2026-05-02", sha="b"),
+            _pass("2026-05-03", sha="a")]
+    p = tmp_path / "status.json"
+    _write(rows, p)
+    assert replay_soak_streak.streak(replay_soak_streak.load_rows(p)) == 3
+
+
+def test_rows_without_a_sha_each_count(tmp_path: Path) -> None:
+    """Absent provenance is not evidence of sameness, so no collapse.
+
+    Pre-schema or hand-edited rows carry no `sha`. Counting them separately
+    preserves the old behaviour for exactly those rows rather than silently
+    merging entries that cannot be shown to be the same commit.
+    """
+    rows = [{k: v for k, v in _pass(f"2026-05-{n:02d}").items() if k != "sha"}
+            for n in range(1, 4)]
+    p = tmp_path / "status.json"
+    _write(rows, p)
+    assert all("sha" not in r for r in rows)
+    assert replay_soak_streak.streak(replay_soak_streak.load_rows(p)) == 3
+
+
+def test_a_repeat_does_not_break_the_streak(tmp_path: Path) -> None:
+    """A repeated commit is not counted, but it is also not a break.
+
+    Falsifiable if the dedupe were implemented as a `break`: the streak would
+    stop at the repeat and report 1 instead of counting the earlier commits.
+    """
+    rows = [_pass("2026-05-01", sha="a"),
+            _pass("2026-05-02", sha="b"),
+            _pass("2026-05-03", sha="b")]
+    p = tmp_path / "status.json"
+    _write(rows, p)
+    assert replay_soak_streak.streak(replay_soak_streak.load_rows(p)) == 2

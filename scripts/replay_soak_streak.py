@@ -2,14 +2,16 @@
 """Compute the current replay-soak green-streak (#403 C).
 
 Reads the append-only JSONL status file `.replay-soak-status.json` and
-prints the count of consecutive rows from the tail where
-`mismatched + derived_orphan == 0` (i.e. `replay_full_equality_result
-== "pass"`).
+prints the count of consecutive green rows from the tail — green meaning
+`replay_full_equality_result == "pass"` and `mismatched + derived_orphan
+== 0` — counting **one per distinct commit**, so that repeated entries for
+an unchanged `main` do not accumulate a streak (#1239).
 
 Used by `.github/workflows/replay-soak-gate.yml` to gate
-`#264`-touching merges. The required-check name produced is
-`replay-soak / consecutive-green ≥ 7d`. Per the 2026-05-04 ratification
-on #403, ≥7 is the threshold; a streak ≥ 7 → exit 0; otherwise exit 1.
+`#264`-touching merges. The check name produced is
+`replay-soak / consecutive-green ≥ 7 commits`. Per the 2026-05-04
+ratification on #403, ≥7 is the threshold; a streak ≥ 7 → exit 0;
+otherwise exit 1.
 
 Exit codes:
   0  streak ≥ threshold (default 7) — PR may merge w.r.t. the soak gate
@@ -25,13 +27,32 @@ from pathlib import Path
 
 
 def streak(rows: list[dict]) -> int:  # type: ignore[type-arg]
+    """Count consecutive green rows from the tail, one per distinct commit.
+
+    Consecutive rows recording the same `sha` collapse to one. The soak is
+    deterministic — the same tree replayed against the same corpus yields the
+    same result — so a second entry for an unchanged `main` repeats a
+    measurement rather than adding one. Counting rows instead of commits let
+    an idle week manufacture the threshold: `main` did not advance between
+    2026-07-22 and 2026-07-29, and the cron recorded `018eb88a` on seven
+    consecutive days, which satisfied "7 consecutive green" on its own (#1239).
+
+    A row with no `sha` counts as its own measurement rather than collapsing
+    into its neighbour, because absent provenance is not evidence of sameness.
+    The cron has always written `sha`, so this only affects hand-edited or
+    pre-schema rows.
+    """
     n = 0
+    prev_sha: str | None = None
     for row in reversed(rows):
         if row.get("replay_full_equality_result") != "pass":
             break
         if int(row.get("mismatched", 0)) + int(row.get("derived_orphan", 0)) != 0:
             break
-        n += 1
+        sha = row.get("sha")
+        if sha is None or sha != prev_sha:
+            n += 1
+        prev_sha = sha
     return n
 
 
@@ -68,7 +89,7 @@ def main() -> int:
         "--threshold",
         type=int,
         default=7,
-        help="Minimum consecutive green rows required (default 7).",
+        help="Minimum consecutive green commits required (default 7).",
     )
     parser.add_argument(
         "--quiet",
@@ -87,7 +108,10 @@ def main() -> int:
     if args.quiet:
         print(n)
     else:
-        print(f"replay-soak streak: {n} consecutive green (threshold ≥ {args.threshold})")
+        print(
+            f"replay-soak streak: {n} consecutive green commits "
+            f"(threshold ≥ {args.threshold})"
+        )
 
     return 0 if n >= args.threshold else 1
 

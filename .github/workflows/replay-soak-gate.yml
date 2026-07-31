@@ -1,10 +1,14 @@
 name: Replay Soak Gate
 
 # PR check that gates #264-touching merges on ≥7 consecutive green
-# soak runs (#403 deliverable C). The check name produced is
-# `replay-soak / consecutive-green ≥ 7d`. Per the 2026-05-04
+# soak runs against ≥7 *distinct* commits (#403 deliverable C, counting
+# corrected in #1239). The check name produced is
+# `replay-soak / consecutive-green ≥ 7 commits`. Per the 2026-05-04
 # ratification, that name is added to the branch ruleset's
-# required_status_checks list (admin step, separate from this PR).
+# required_status_checks list (admin step, separate from this PR) —
+# as of #1239 that step has not been taken, so this check is advisory
+# to branch protection. `merge-train.yml` blocks on any failing
+# check-run regardless, so a red gate still bounces `ready-to-merge`.
 #
 # Path scope: only fires on PRs that touch the derivation contract
 # surface (the actual #264 risk surface), the soak fixture, the soak
@@ -47,7 +51,7 @@ concurrency:
 
 jobs:
   consecutive-green:
-    name: 'consecutive-green ≥ 7d'
+    name: 'consecutive-green ≥ 7 commits'
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -94,14 +98,14 @@ jobs:
             n=$(python3 scripts/replay_soak_streak.py --quiet)
           fi
           echo "streak=$n" >> "$GITHUB_OUTPUT"
-          echo "::notice::replay-soak consecutive-green streak: $n"
+          echo "::notice::replay-soak consecutive-green streak: $n distinct commits"
 
       - name: Enforce threshold
         run: |
           set -euo pipefail
           n="${{ steps.streak.outputs.streak }}"
           if [ "$n" -lt 7 ]; then
-            echo "::error::replay-soak streak is $n; threshold is 7. The soak gate blocks #264-touching merges. Wait for the daily cron to extend the green streak on replay-soak-status, or investigate the most recent fail entry."
+            echo "::error::replay-soak streak is $n distinct green commits; threshold is 7. The soak gate blocks #264-touching merges. Investigate the most recent fail entry on replay-soak-status. Note that the streak only advances when the soak runs against a commit it has not already recorded, so waiting on an idle main will not extend it — land the fix, then re-run the soak via workflow_dispatch."
             exit 1
           fi
-          echo "replay-soak streak $n ≥ 7 — gate satisfied"
+          echo "replay-soak streak $n ≥ 7 distinct green commits — gate satisfied"
