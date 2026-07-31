@@ -480,6 +480,30 @@ Negative values clamp to `0.0`. Non-numeric env values trace to stderr and fall 
 
 BM25F-only L1 shipped default-on at v1.7.0 (see `use_bm25f_anchors`); the heat-kernel and HRR-structural lanes shipped default-on at v2.1.0 once the #154 composition-tracker bench gate cleared 11/11 against the #437 reproducibility-harness corpus (see `use_heat_kernel` and `use_hrr_structural` below). `use_heat_kernel` was returned to default-off by #1162 — HRR-structural is unaffected. See [`docs/design/bayesian_ranking.md`](../design/bayesian_ranking.md) for the v1.3 contract and the rejected-alternatives analysis.
 
+### `use_fan_effect`
+
+Boolean, default `false` (v4.2+, [#1176](https://github.com/robotrocketscience/aelfrice/issues/1176)). Ranks the **L2.5 entity tier** by ACT-R fan-weighted activation instead of a raw entity-overlap count.
+
+The shipped lane orders by `COUNT(DISTINCT entity_lower)`, which prices every matched entity the same. A real corpus does not: on a 44,584-belief store `tmp` appears in 1,480 beliefs and `and` in 1,026, while 86% of entities appear in exactly one — so a match on a corpus-ubiquitous token buys the same rank as a match on a unique symbol, on the one tier that holds unconditional budget precedence.
+
+With the flag on, a belief scores `A_i = Σ_j ln((N + 1) / (fan_j + 1))` over the query entities it carries, where `fan_j` counts *active* beliefs carrying entity `j` and `N` is the active belief count. Written as a log ratio this is algebraically IDF, so it reuses a calibration the system already has. Every term is non-negative, so an extra match can never demote a belief, and **with all fans equal the ordering degenerates exactly to the overlap count it replaces**. The returned tuples keep their shape — the second element is still the overlap count, so only the ordering changes.
+
+No new table and no migration: fan is counted inline over the query's own keys, and the logarithm is taken in Python because SQL `LN()` requires `SQLITE_ENABLE_MATH_FUNCTIONS`, which is not guaranteed across the support matrix. Cost is at parity with the lane it replaces (0.039 ms p50 against 0.045 ms) because the active-belief count is memoised on `store_generation()`; recomputing it per query costs 1.315 ms and dominates everything else. Deterministic per #605 — the activation sum iterates entities in sorted key order, so two beliefs carrying the same entity set land on bit-identical activations.
+
+Precedence (first decisive wins): env var `AELFRICE_FAN_EFFECT=1`/`0` > explicit Python kwarg `use_fan_effect=<bool>` > default `false`. There is no TOML tier yet; one should arrive with any default flip. Honoured on both `retrieve()` and `retrieve_v2()`. **Default-off pending the A/B** — the kill gate cleared and the cost is lower than the lane it replaces, but that the reorder ranks *better* is a separate measurement, and flipping the default is an operator call.
+
+### `utterance_prior_weight`
+
+Float, default `0.0` (v4.2+, [#1174](https://github.com/robotrocketscience/aelfrice/issues/1174)). Weight of the **utterance-vs-knowledge document prior** in the L1 rerank — a query-independent term that demotes beliefs which look like *things someone said* rather than *things that are true*.
+
+The prior is a naive-Bayes log-odds over two classes read directly out of `ingest_log` — transcript rows versus filesystem/git rows — so there are no hand labels and no embeddings. It targets a measured failure: because the store ingests its own query log, the nearest lexical neighbour of a query is frequently a prior query.
+
+The penalty is **log-additive and clamped at 0**, so knowledge-shaped content is left neutral rather than promoted — the rerank score is a log-domain quantity and is routinely negative, so an unclamped term would reorder documents the lane has no opinion about. `score()` returns a *mean* over the document's known stems rather than a sum, so the term does not scale with document length (length is already handled by BM25F's per-field normalisation). Deterministic per #605 — the mean sums stems in sorted order.
+
+At `0.0` the lane short-circuits and **nothing reads the ingest log at all**; behaviour is byte-identical to the flag being absent. Malformed or negative values fall through to `0.0` rather than inverting the lane. The prior is built once per store and cached.
+
+Precedence (first decisive wins): env var `AELFRICE_UTTERANCE_PRIOR_WEIGHT=<float>` > explicit Python kwarg > default `0.0`. There is no TOML tier yet. **Default-off pending the W-sweep** — that a non-zero weight ranks *better* needs a relevance gold set, which the store's own observed-utility signal cannot supply (5 positives across 16,355 resolved `injection_events`). Note the sweep must be scored below the locked block: L0 locks are injected ahead of the ranked candidates and never trimmed, so a top-k metric measures the lock tier and is constant in this weight.
+
 ### `bfs_enabled`
 
 Boolean, default `false` at v1.3.0. Toggles the L3 BFS multi-hop graph traversal retrieval tier.
