@@ -659,16 +659,25 @@ the sweep is audit-only — it writes nothing.** No `alpha` moves, no
 one can alter a posterior. Turning implicit exposure back into real feedback
 is a separate proposal, not a matter of setting these keys.
 
-All three resolve **env var > explicit kwarg > TOML > default**, and every tier
-is fail-soft: a value the tier cannot use is discarded and the next tier
-decides. Exactly one case announces itself — a malformed **env var** for
-`epsilon` or `grace_window_seconds` prints an
+All three resolve **env var > explicit kwarg > TOML > default**. The **env**
+and **TOML** tiers are fail-soft: a value the tier cannot use is discarded and
+the next tier decides. Exactly one case announces itself — a malformed **env
+var** for `epsilon` or `grace_window_seconds` prints an
 `aelfrice implicit_feedback: ignoring …` trace to stderr before falling
-through. Every other rejection is silent, including a TOML value of the wrong
-type for any of the three keys. So `[implicit_feedback] epsilon = "0.1"`
-(quoted, therefore a string) resolves to `0.05` with no diagnostic at all, and
-`AELFRICE_IMPLICIT_FEEDBACK_ENQUEUE=enabled` resolves `false`. Check the
-resolved state rather than reading the absence of a warning as acceptance.
+through. Every other rejection at those two tiers is silent, including a TOML
+value of the wrong type for any of the three keys. So `[implicit_feedback]
+epsilon = "0.1"` (quoted, therefore a string) resolves to `0.05` with no
+diagnostic at all, and `AELFRICE_IMPLICIT_FEEDBACK_ENQUEUE=enabled` resolves
+`false`. Check the resolved state rather than reading the absence of a warning
+as acceptance.
+
+The **explicit kwarg** tier is the exception: it is not fail-soft and never
+falls through. `resolve_epsilon` and `resolve_grace_seconds` coerce the kwarg
+outside any guard, so a non-numeric value raises `ValueError` at the call site
+rather than deferring to TOML. `is_enqueue_on_retrieve_enabled` does not coerce
+at all — it returns the kwarg as given, so passing the string `"false"` yields
+a truthy `'false'` rather than `False`. Pass an already-typed `float`, `int`,
+or `bool`.
 
 ### `enqueue_on_retrieve`
 
