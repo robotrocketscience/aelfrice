@@ -120,6 +120,101 @@ def diagnose_search_tool_telemetry(
 
 
 # ---------------------------------------------------------------------------
+# Close-the-loop reference signal (#1232)
+# ---------------------------------------------------------------------------
+
+# Below this positive rate the close-the-loop signal is reported as dead
+# rather than merely low. Not a tuning knob: the signal exists to say
+# "this belief was used", and a detector that fires on under 1% of
+# resolved injections cannot distinguish a useful belief from a useless
+# one no matter what consumes it.
+REFERENCE_SIGNAL_DEAD_RATE: Final[float] = 0.01
+
+# Minimum resolved events before the rate is judged at all. At 1% the
+# expected positive count over 200 events is 2, so below that a reading
+# of zero is indistinguishable from an unlucky sample and saying
+# anything would be noise. A fresh store stays silent instead.
+REFERENCE_SIGNAL_MIN_RESOLVED: Final[int] = 200
+
+
+@dataclass(frozen=True)
+class ReferenceSignalStats:
+    """Close-the-loop reference-detection counters read off the store (#1232).
+
+    `resolved` is the number of `injection_events` rows the sweeper has
+    scored; `pending` is those still awaiting a response to score
+    against. `positives` is how many scored as referenced.
+
+    `distinct_positive_beliefs` is the load-bearing one. A positive rate
+    can look non-zero while every hit is the same handful of unusually
+    short beliefs — which is what #1232 found on a live store, where all
+    five positives were two beliefs of ~26 characters. Reporting the rate
+    alone would have hidden that.
+    """
+
+    resolved: int
+    pending: int
+    positives: int
+    distinct_positive_beliefs: int
+
+    @property
+    def positive_rate(self) -> float:
+        """Positives as a fraction of resolved events. 0.0 when none resolved."""
+        return self.positives / self.resolved if self.resolved else 0.0
+
+    @property
+    def is_dead(self) -> bool:
+        """True when enough events resolved to judge, and the rate is dead."""
+        return (
+            self.resolved >= REFERENCE_SIGNAL_MIN_RESOLVED
+            and self.positive_rate < REFERENCE_SIGNAL_DEAD_RATE
+        )
+
+
+def diagnose_reference_signal(store_path: str) -> ReferenceSignalStats | None:
+    """Return close-the-loop reference counters for `store_path`, or None.
+
+    #1232. The signal drove nothing visible for months while reading
+    ~0.03% positive, because nothing ever reported the rate. This is the
+    report.
+
+    Read-only, via a plain sqlite connection rather than a `MemoryStore`
+    — constructing a store *runs* its pending one-shot migrations, which
+    a diagnostic must not do (same reasoning as
+    :func:`_read_failed_store_migrations`).
+
+    Fail-soft: a missing file, a store predating `injection_events`, or
+    any sqlite error yields None and the section is not rendered.
+    """
+    if store_path == ":memory:" or not Path(store_path).exists():
+        return None
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(f"file:{store_path}?mode=ro", uri=True)
+        row = conn.execute(
+            "SELECT "
+            "  SUM(referenced IS NOT NULL), "
+            "  SUM(referenced IS NULL), "
+            "  SUM(referenced = 1), "
+            "  COUNT(DISTINCT CASE WHEN referenced = 1 THEN belief_id END) "
+            "FROM injection_events"
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+    if row is None:
+        return None
+    return ReferenceSignalStats(
+        resolved=int(row[0] or 0),
+        pending=int(row[1] or 0),
+        positives=int(row[2] or 0),
+        distinct_positive_beliefs=int(row[3] or 0),
+    )
+
+
+# ---------------------------------------------------------------------------
 # UserPromptSubmit telemetry section (#218 AC4)
 # ---------------------------------------------------------------------------
 
@@ -351,6 +446,9 @@ class DoctorReport:
     user_prompt_submit_telemetry: UserPromptSubmitTelemetryStats | None = None
     user_prompt_submit_telemetry_path: Path | None = None
     user_prompt_submit_telemetry_corrupt: bool = False
+    # #1232: close-the-loop reference-detection counters. None when no
+    # store path was supplied or the store has no injection_events.
+    reference_signal: ReferenceSignalStats | None = None
     # Runtime deps declared in pyproject.toml that are not importable
     # in the current environment (issue #236: stale uv tool env).
     missing_runtime_deps: list[str] = field(
@@ -509,6 +607,8 @@ def diagnose(
         report.failed_store_migrations = _read_failed_store_migrations(
             store_path
         )
+        # #1232: same read-only handle policy, same fail-soft contract.
+        report.reference_signal = diagnose_reference_signal(store_path)
     # #593: auto-migrate any detected legacy DBs in place. Operator
     # decision was "no prompt, no banner" — silent migration with a
     # `.pre-v1x.bak` backup hop. Failures degrade to the residual
@@ -1217,6 +1317,8 @@ def format_report(report: DoctorReport) -> str:
         # #1161: so is the store's migration state, and an install with
         # no settings.json is exactly when the store may be the problem.
         _format_failed_migrations_section(report, lines)
+        # #1232: store-derived, independent of settings.json.
+        _format_reference_signal_section(report, lines)
         return "\n".join(lines)
     for scope, path in report.scopes_scanned:
         lines.append(f"scanned {scope}: {path}")
@@ -1282,6 +1384,7 @@ def format_report(report: DoctorReport) -> str:
     _format_duplicate_hook_entries_section(report, lines)
     _format_legacy_schema_section(report, lines)
     _format_failed_migrations_section(report, lines)
+    _format_reference_signal_section(report, lines)
     _format_hrr_section(report, lines)
     return "\n".join(lines)
 
@@ -1783,6 +1886,38 @@ def _format_user_prompt_submit_telemetry_section(
         lines.append(
             f"  dedup collapse rate (median): {st.median_collapse_rate:.2f}x "
             f"(n_returned / n_unique_hashes; 1.0 = no duplicates)"
+        )
+
+
+def _format_reference_signal_section(
+    report: DoctorReport, lines: list[str],
+) -> None:
+    """Append the close-the-loop reference-signal block to `lines` (#1232)."""
+    st = report.reference_signal
+    if st is None:
+        return
+    lines.append("")
+    lines.append("close-the-loop reference signal:")
+    lines.append(
+        f"  {st.positives} of {st.resolved} resolved injections referenced "
+        f"({st.positive_rate * 100:.2f}%), {st.pending} pending"
+    )
+    lines.append(
+        f"  distinct beliefs ever referenced: {st.distinct_positive_beliefs}"
+    )
+    if st.is_dead:
+        lines.append(
+            f"  status: DEAD — under "
+            f"{REFERENCE_SIGNAL_DEAD_RATE * 100:.0f}% positive over "
+            f"{st.resolved} resolved events. Reference detection requires "
+            f"the whole belief to appear verbatim in the response, which "
+            f"does not happen for beliefs of normal length. Anything "
+            f"consuming this signal is reading noise (#1232)."
+        )
+    elif st.resolved < REFERENCE_SIGNAL_MIN_RESOLVED:
+        lines.append(
+            f"  status: too few resolved events to judge "
+            f"(need {REFERENCE_SIGNAL_MIN_RESOLVED})"
         )
 
 
