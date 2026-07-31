@@ -154,9 +154,11 @@ class RetrievalResult:
     substring_exact_match: float = 0.0
     f1: float = 0.0
     # Reader-independent rank metrics over the retrieved list (#1160).
-    rank_scores: dict[str, float] = field(
-        default_factory=lambda: dict[str, float](),
-    )
+    # `default_factory=dict` rather than the module's usual
+    # `lambda: dict[str, float]()`: the subscripted form is an
+    # unnecessary lambda around a callable (CodeQL), and the field
+    # annotation above already carries the type for the checker.
+    rank_scores: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
