@@ -528,6 +528,26 @@ No new table and no migration: fan is counted inline over the query's own keys, 
 
 Precedence (first decisive wins): env var `AELFRICE_FAN_EFFECT=1`/`0` > explicit Python kwarg `use_fan_effect=<bool>` > default `false`. There is no TOML tier yet; one should arrive with any default flip. **The kwarg tier exists on `retrieve_v2()` / `retrieve_with_tiers()` only — `retrieve()` takes no `use_fan_effect` argument**, so on the production entry point the env var is the sole control. **Default-off pending the A/B** — the kill gate cleared and the cost is lower than the lane it replaces, but that the reorder ranks *better* is a separate measurement, and flipping the default is an operator call.
 
+### `exploration_enabled` / `exploration_cadence` / `exploration_slots`
+
+Boolean + two ints, defaults `false` / `20` / `1` (v4.x+, [#1279](https://github.com/robotrocketscience/aelfrice/issues/1279), [#1176](https://github.com/robotrocketscience/aelfrice/issues/1176) proposal 5). Gives a **never-injected** belief a slot in the injected block on every *n*-th turn.
+
+It targets a loop the ranker cannot escape on its own: a belief that starts underranked is never retrieved, therefore never earns evidence, therefore stays underranked. That loop is most of the store — on a live 44,586-belief store **37,489 active unlocked beliefs (84.1%) carry neither a `feedback_history` row nor an `injection_events` row**, and only **1,352 (3.0%) have ever been injected at all**.
+
+On a firing turn the slot reads the session ring's monotonic `fire_idx` (the same counter the cadence dispatch reads, before this turn's ring append), draws from `MemoryStore.exploration_pool` with a seed derived from `(session, fire_idx, query)`, and appends one `exploration_events` row recording the seed, the candidate list, the drawn ids **and the displaced ids** — so "why was this belief in my context?" is answerable from a single row, and the counterfactual pack is reconstructable.
+
+Three properties are contractual rather than incidental:
+
+- **Substitution, never append — accounted in tokens, not in slots.** A drawn belief can be longer than the hit it replaces, so a one-for-one swap would still grow the block. The slot frees at least as many tokens from the lowest-ranked non-locked tail as it spends, and when the tail cannot fund the draw it **skips rather than grows**. A slot that grew the block would be a budget increase wearing an exploration costume, and it would confound the very coverage measurement the slot exists to produce.
+- **User locks are never displaced.** L0 is injected unconditionally; the pool already excludes locks and the displacement scan skips them, so an all-locked pack is a no-op rather than an eviction.
+- **The exposure is recorded.** The substitution runs upstream of the injection ledger, so an explored belief is recorded as injected like any other hit. Substituting without recording would leave the loop exactly as closed as it was.
+
+Fail-soft end to end: any error in the exploration path — including a raising pool query — leaves the pack exactly as retrieval produced it. Deterministic per #605: the same `(session, fire_idx, query, pool)` draws the same belief, which is what makes the ledger replayable.
+
+Precedence (first decisive wins): env var `AELFRICE_EXPLORATION` / `AELFRICE_EXPLORATION_CADENCE` / `AELFRICE_EXPLORATION_SLOTS` > explicit Python kwarg > `[retrieval] exploration_enabled` / `exploration_cadence` / `exploration_slots` in `.aelfrice.toml` > the defaults above. A cadence of `0` or less disables exploration rather than raising.
+
+**Default-off, and the flip is gated on the right measurement.** This is *not* a ranking change and must not be A/B'd as one — its outcome is **coverage of the never-injected pool over time**, countable from `exploration_events` and `injection_events` without a judge or a gold set. The draw is deliberately **uniform**: the originally specified A-Res weighting keyed on `scoring.uncertainty_score` is invalid (that function is Beta *differential* entropy, `<= 0` on `[0, 1]`, so the reservoir key divides by zero) and, after either natural sign repair, is indistinguishable from uniform at total-variation distance 0.0586.
+
 ### `utterance_prior_weight`
 
 Float, default `0.0` (v4.x+, [#1174](https://github.com/robotrocketscience/aelfrice/issues/1174)). Weight of the **utterance-vs-knowledge document prior** in the L1 rerank — a query-independent term that demotes beliefs which look like *things someone said* rather than *things that are true*.
