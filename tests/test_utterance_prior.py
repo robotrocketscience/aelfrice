@@ -74,6 +74,7 @@ def _seed(store: MemoryStore) -> None:
 def store(tmp_path):
     s = MemoryStore(str(tmp_path / "m.db"))
     yield s
+    s.close()
 
 
 def test_class_sources_are_pinned() -> None:
@@ -164,6 +165,35 @@ def test_penalty_is_a_pure_demotion(store: MemoryStore) -> None:
         assert utterance_prior_penalty(prior, text, 4.0) < 0.0
 
 
+def test_score_is_a_mean_not_a_sum(store: MemoryStore) -> None:
+    """`score` must not scale with the number of distinct known stems.
+
+    Length is already handled by BM25F's per-field normalisation, so
+    summing here would double-count it — a long utterance would be
+    demoted harder than a short one purely for carrying more vocabulary.
+    Without this test, changing `sum(vals) / len(vals)` to `sum(vals)`
+    leaves the whole file green.
+
+    Asserted via the defining property of a mean: it is bounded by its
+    parts. Concatenating two documents must land the score between their
+    two individual scores; a sum lands outside that interval. Note the
+    tokenizer takes a `set`, so repeating the *same* tokens proves
+    nothing — the parts have to bring distinct vocabulary.
+    """
+    _seed(store)
+    prior = utterance_logodds(store)
+    a, b = UTTERANCES[0], UTTERANCES[1]
+    sa, sb = prior.score(a), prior.score(b)
+    both = prior.score(a + " " + b)
+    assert min(sa, sb) <= both <= max(sa, sb), (
+        f"score({a + ' ' + b}!r) = {both:.4f} fell outside "
+        f"[{min(sa, sb):.4f}, {max(sa, sb):.4f}] — it is summing, not averaging"
+    )
+    # Guard the premise: if the two parts scored identically the interval
+    # would be a point and the assertion above would be vacuous.
+    assert sa != sb, "fixture parts score identically — test would be vacuous"
+
+
 def test_penalty_scales_with_weight(store: MemoryStore) -> None:
     _seed(store)
     prior = utterance_logodds(store)
@@ -224,17 +254,24 @@ def _mk(bid: str, content: str) -> Belief:
 class TestRetrievalWiring:
     """The lane must be reachable from `retrieve_v2` and inert until asked."""
 
-    @staticmethod
-    def _populated(tmp_path) -> MemoryStore:
+    @pytest.fixture()
+    def populated(self, tmp_path):
+        """A store with both ingest classes and one belief per document.
+
+        A fixture rather than a helper so the SQLite connection is closed
+        once per test instead of leaking across the file.
+        """
         s = MemoryStore(str(tmp_path / "r.db"))
         _seed(s)
         for i, text in enumerate(UTTERANCES + KNOWLEDGE):
             s.insert_belief(_mk(f"b{i:02d}", text))
-        return s
+        yield s
+        s.close()
 
-    def test_off_is_byte_identical(self, tmp_path, monkeypatch) -> None:
+    def test_off_is_byte_identical(self, populated, monkeypatch) -> None:
         monkeypatch.delenv(ENV_UTTERANCE_PRIOR_WEIGHT, raising=False)
-        s = self._populated(tmp_path)
+        s = populated
+        s = populated
         base = [b.id for b in retrieve_v2(s, "release bench", budget=4000).beliefs]
         zero = [
             b.id
@@ -246,13 +283,13 @@ class TestRetrievalWiring:
         assert base, "fixture retrieved nothing — the test would be vacuous"
 
     def test_a_weight_reorders_utterances_downward(
-        self, tmp_path, monkeypatch,
+        self, populated, monkeypatch,
     ) -> None:
         """The distinguishing assert: at a non-zero weight the ranking must
         actually change, and change in the demoting direction. A test that
         only checked 'does not raise' would pass against a no-op lane."""
         monkeypatch.delenv(ENV_UTTERANCE_PRIOR_WEIGHT, raising=False)
-        s = self._populated(tmp_path)
+        s = populated
         query = "should we run the release bench"
         base = [b for b in retrieve_v2(s, query, budget=4000).beliefs]
         weighted = [
@@ -274,7 +311,7 @@ class TestRetrievalWiring:
 
     @pytest.mark.parametrize("bm25f", [True, False])
     def test_weight_survives_the_byte_identical_short_circuit(
-        self, tmp_path, monkeypatch, bm25f: bool,
+        self, populated, monkeypatch, bm25f: bool,
     ) -> None:
         """Both lanes early-return, skipping the rerank loop, when every
         rerank input is off. Without the prior's own clause in those guards a
@@ -287,7 +324,7 @@ class TestRetrievalWiring:
         production whenever that lane is disabled, so it needs its own test.
         """
         monkeypatch.delenv(ENV_UTTERANCE_PRIOR_WEIGHT, raising=False)
-        s = self._populated(tmp_path)
+        s = populated
         query = "the"
         common = {
             "l1_limit": 20,
@@ -308,14 +345,14 @@ class TestRetrievalWiring:
         )
 
     def test_the_fts5_lane_applies_the_prior_too(
-        self, tmp_path, monkeypatch,
+        self, populated, monkeypatch,
     ) -> None:
         """The rerank exists twice — once for BM25F, once for FTS5. Only the
         BM25F copy is on the default path, so the FTS5 copy needs its own
         test or it can be deleted without any test noticing.
         """
         monkeypatch.delenv(ENV_UTTERANCE_PRIOR_WEIGHT, raising=False)
-        s = self._populated(tmp_path)
+        s = populated
         # FTS5 is implicit-AND, so a multi-word query matches only documents
         # containing every term and this fixture returns nothing for one. A
         # single common term is what keeps the lane non-empty here.
@@ -336,10 +373,11 @@ class TestRetrievalWiring:
         )
         assert weighted != plain, "the FTS5 rerank ignored the prior"
 
-    def test_prior_is_cached_on_the_store(self, tmp_path, monkeypatch) -> None:
+    def test_prior_is_cached_on_the_store(self, populated, monkeypatch) -> None:
         """Building costs a full ingest-log pass; it must not run per query."""
         monkeypatch.delenv(ENV_UTTERANCE_PRIOR_WEIGHT, raising=False)
-        s = self._populated(tmp_path)
+        s = populated
+        s = populated
         assert getattr(s, "_utterance_prior_cache", None) is None
         retrieve_v2(s, "release", budget=4000, utterance_prior_weight=4.0)
         first = getattr(s, "_utterance_prior_cache", None)
@@ -347,9 +385,10 @@ class TestRetrievalWiring:
         retrieve_v2(s, "bench", budget=4000, utterance_prior_weight=4.0)
         assert getattr(s, "_utterance_prior_cache", None) is first
 
-    def test_off_does_not_build_the_table(self, tmp_path, monkeypatch) -> None:
+    def test_off_does_not_build_the_table(self, populated, monkeypatch) -> None:
         """At W=0 nothing may touch the ingest log."""
         monkeypatch.delenv(ENV_UTTERANCE_PRIOR_WEIGHT, raising=False)
-        s = self._populated(tmp_path)
+        s = populated
+        s = populated
         retrieve_v2(s, "release bench", budget=4000)
         assert getattr(s, "_utterance_prior_cache", None) is None
