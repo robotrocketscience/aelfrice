@@ -2674,6 +2674,21 @@ def _coverage_inputs(
     Without an index every term weighs 1.0, which degrades the objective
     to plain term-count coverage rather than to nothing -- the FTS5 lane
     still gets redundancy suppression, just unweighted by rarity.
+
+    **Assumes the pack renders `b.content` verbatim.** Coverage is
+    computed from `content`, but the pack emits
+    `compress_for_retrieval(b).rendered`, and `use_type_aware_compression`
+    defaults on. For a retention class that does not render verbatim --
+    `snapshot` (headline) or `transient` (stub) -- the objective can
+    credit a term the agent never receives, and worse, mark it covered
+    and suppress a later belief that would have delivered it. This is the
+    seam #878 closed for the *cost* currency; `cost_fn=_cost` inherits
+    that fix, coverage has no counterpart. Latent, not live: over 5,150
+    replayed L1 candidates none rendered non-verbatim, because the corpus
+    is 86.0% `fact` and 13.9% `unknown` against 0.09% `snapshot` and zero
+    `transient`. Whoever raises that share, or turns on a more aggressive
+    compression strategy, has to reconcile coverage with the rendered
+    text here.
     """
     from aelfrice.bm25 import tokenize_stemmed
 
