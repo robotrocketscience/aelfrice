@@ -4,7 +4,8 @@ A belief that starts underranked is never retrieved, therefore never
 referenced, therefore never acquires evidence, therefore stays underranked.
 Nothing in the retrieval path breaks that loop, and the loop is most of the
 store: of 44,586 active beliefs measured on the live store, **37,489 (84.1%)
-have never received a `feedback_history` row or an `injection_events` row**,
+are active, unlocked, and have never received a `feedback_history` row or an
+`injection_events` row**,
 and only **1,352 (3.0%) have ever been injected into a context at all**. The
 92,685 feedback rows land on 7,450 beliefs — the feedback is concentrated on
 the beliefs that were already winning.
@@ -98,8 +99,12 @@ def derive_seed(scope_id: str, fire_idx: int, query: str) -> int:
     what makes an exploration slot replayable rather than a coin flip.
 
     The three fields are joined with a `\\x1f` separator so that no pair of
-    distinct triples can collide by concatenation (`("ab", 1)` and `("a", "b1")`
-    would otherwise hash alike).
+    distinct triples can collide by concatenation. The reachable collision is
+    `("a", 11, q)` against `("a1", 1, q)` — both render `a11q` — which is the
+    pair the test uses, chosen because an arbitrary one like `("ab", 1)` still
+    differs unseparated and would let the mutation through. `fire_idx` is an
+    `int`, so a `("a", "b1", q)`-shaped collision is not a call anyone can
+    make.
     """
     payload = "\x1f".join((scope_id, str(fire_idx), query)).encode("utf-8")
     return int.from_bytes(hashlib.blake2b(payload, digest_size=8).digest(), "big")

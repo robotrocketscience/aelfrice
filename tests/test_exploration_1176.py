@@ -157,10 +157,20 @@ def test_empty_pool_draws_nothing() -> None:
 def test_widening_the_slot_count_keeps_the_earlier_slots() -> None:
     """Prefix stability, claimed by `draw_uniform`'s docstring.
 
-    Partial Fisher-Yates gives it; a "shuffle the whole pool then take
-    `count`" implementation does not, because the number of random words
-    consumed would depend on the pool size rather than on `take`. Raising M
-    from 1 to 2 must add a slot, not resample slot 1.
+    Raising M from 1 to 2 must add a slot, not resample slot 1.
+
+    What this rules out is any implementation whose *early* choices depend on
+    `take`. The concrete one is a size-`take` reservoir sampler — Algorithm R,
+    or the A-Res reservoir this proposal originally specified — where the
+    whole selection is a function of the reservoir size. Mutating to that
+    fails here and in
+    `test_every_pool_member_is_reachable_in_a_later_slot_too`.
+
+    It does **not** rule out shuffle-then-slice, in either direction. A full
+    forward Fisher-Yates and a reverse Durstenfeld shuffle both leave this
+    green, because a permutation computed independently of `take` is
+    prefix-stable for free. Both were mutation-checked; earlier versions of
+    this docstring named each of them as the class caught here.
     """
     pool = _pool(50)
     one = draw_uniform(pool, seed=11, count=1)
@@ -171,10 +181,18 @@ def test_the_draw_is_actually_uniform() -> None:
     """The property the A-Res weighting was dropped in favour of.
 
     Every belief in a 40-id pool should be drawn about equally often across
-    4,000 seeds. A biased `_bounded` (naive `% bound`) or an off-by-one in the
-    Fisher-Yates bound shows up here as a lopsided histogram. Bounds are wide
-    enough not to flake: this is deterministic, so they only need to hold for
-    these exact seeds.
+    4,000 seeds. An off-by-one in the Fisher-Yates bound shows up here as a
+    lopsided histogram — `len(pool) - i` to `max(1, len(pool) - i - 1)` fails
+    this test and `test_every_pool_member_is_reachable_in_a_later_slot_too`.
+
+    A biased `_bounded` does **not**: naive `word % bound` leaves this test
+    green and reddens only
+    `test_bounded_rejects_the_biased_tail_of_the_word_range`, which is what
+    that test's own docstring says and why it exists. Verified by mutation
+    both ways; an earlier version of this docstring claimed otherwise.
+
+    Bounds are wide enough not to flake: this is deterministic, so they only
+    need to hold for these exact seeds.
     """
     pool = _pool(40)
     counts = collections.Counter()
