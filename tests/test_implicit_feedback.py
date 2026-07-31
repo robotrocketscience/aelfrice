@@ -629,6 +629,54 @@ def test_resolve_grace_seconds_kwarg_rejects_bool(monkeypatch) -> None:
         resolve_grace_seconds(True)  # type: ignore[arg-type]
 
 
+def test_kwarg_is_validated_even_when_env_decides(monkeypatch) -> None:
+    """The strictness must not depend on the environment.
+
+    Validation runs before the env tier, so a bad kwarg raises whether
+    or not an env var would have won. Without the hoist all three of
+    these return the env value and the bad kwarg is never examined —
+    which would mean the same buggy call site raises on a machine
+    without the var set and passes silently on one with it, decided by
+    something the caller does not control.
+
+    The `enqueue` pair is the mechanism in miniature: an *unrecognised*
+    env value falls through to the kwarg and would be validated even
+    without the hoist, so only the *recognised* value distinguishes the
+    fix.
+    """
+    monkeypatch.setenv("AELFRICE_IMPLICIT_FEEDBACK_EPSILON", "0.25")
+    monkeypatch.setenv("AELFRICE_IMPLICIT_FEEDBACK_GRACE_SECONDS", "300")
+    monkeypatch.setenv("AELFRICE_IMPLICIT_FEEDBACK_ENQUEUE", "true")
+
+    # Control: the env tier really would have answered here, so the
+    # three rejections below are not vacuous.
+    assert resolve_epsilon() == 0.25
+    assert resolve_grace_seconds() == 300
+    assert is_enqueue_on_retrieve_enabled() is True
+
+    with pytest.raises(TypeError):
+        resolve_epsilon("0.5")  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        resolve_grace_seconds("900")  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        is_enqueue_on_retrieve_enabled("false")  # type: ignore[arg-type]
+
+
+def test_env_still_wins_over_a_well_typed_kwarg(monkeypatch) -> None:
+    """Negative control for the hoist: precedence is unchanged.
+
+    Only the type check moved ahead of the env tier. A correctly typed
+    kwarg must still lose to env, or the fix would have silently
+    reordered the documented chain.
+    """
+    monkeypatch.setenv("AELFRICE_IMPLICIT_FEEDBACK_EPSILON", "0.25")
+    monkeypatch.setenv("AELFRICE_IMPLICIT_FEEDBACK_GRACE_SECONDS", "300")
+    monkeypatch.setenv("AELFRICE_IMPLICIT_FEEDBACK_ENQUEUE", "true")
+    assert resolve_epsilon(0.5) == 0.25
+    assert resolve_grace_seconds(900) == 300
+    assert is_enqueue_on_retrieve_enabled(False) is True
+
+
 def test_bad_kwarg_raises_rather_than_falling_through(
     monkeypatch, tmp_path: Path
 ) -> None:

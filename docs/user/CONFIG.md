@@ -681,6 +681,12 @@ be a 100% exploration rate and `resolve_grace_seconds(True)` a one-second
 window. Pass an already-typed value; a string that happens to parse, such as
 `resolve_grace_seconds("900")`, is rejected too.
 
+The type check runs **before** the env tier, so this holds even when an env var
+would have decided the value. Only the check is hoisted — env still wins on
+precedence, and a correctly typed kwarg still loses to it. Checking inside the
+kwarg branch instead would have made the same bad call raise on a machine with
+the variable unset and pass silently on one with it set.
+
 The split is deliberate. Env and TOML carry configuration you write, where a
 typo should not take a session down, so they discard and move on. The kwarg
 comes from calling code, where discarding it would hide the caller's bug behind
