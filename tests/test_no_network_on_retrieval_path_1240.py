@@ -19,11 +19,21 @@ raise is only there to stop real egress.
 
 **The guard is armed at the socket layer, not at `urlopen`.** Patching
 `urllib.request.urlopen` would gate exactly one library and miss
-`http.client`, `requests`, `httpx`, or a raw socket. `socket.getaddrinfo`
-plus `socket.socket.connect` sits underneath all of them. `getaddrinfo` is
-included because DNS resolution is the *first* network touch — without it
-these tests would pass vacuously on a sandboxed runner where the resolver
-fails before any connect is reached.
+`http.client`, `requests`, `httpx`, or a raw socket. The four `socket`
+entry points below sit underneath all of them:
+
+  * `getaddrinfo` and `gethostbyname` — resolution. `getaddrinfo` is
+    included because DNS is the *first* network touch, without which these
+    tests would pass vacuously on a sandboxed runner whose resolver fails
+    before any connect is reached. `gethostbyname` is the legacy door to
+    the same place and is not reached through `getaddrinfo`.
+  * `socket.connect` and `socket.connect_ex` — connection. These are
+    sibling methods, not one wrapping the other, so patching only
+    `connect` left a `connect_ex` to a literal IP unrecorded *and
+    unblocked* until #1247.
+
+Each of the four has a test that reddens when its arm is removed; an arm
+with nothing to prove it can fire is not covered.
 
 `test_the_guard_detects_a_real_outbound_call` is the distinguishing assert:
 it drives the one function in the package that genuinely does reach the
@@ -33,6 +43,7 @@ wired up".
 """
 from __future__ import annotations
 
+import errno
 import io
 import json
 import socket
@@ -80,16 +91,35 @@ def _network_guard(
     """Record every non-loopback DNS lookup and TCP connect.
 
     Yields the recording. `(kind, host)` pairs, in call order.
+
+    Four entry points are patched, and the pairs matter (#1247). Resolution
+    has two doors — `getaddrinfo` and the legacy `gethostbyname` — and
+    connection has two — `connect` and `connect_ex`. `connect_ex` is a
+    separate method rather than a wrapper around `connect`, so patching one
+    leaves the other live; before #1247 a `connect_ex` to a literal IP was
+    neither recorded nor blocked while this guard was armed.
+
+    Nothing in `src/` reaches for either of the legacy spellings today. They
+    are covered so the docstring's "or a raw socket" claim below is true of
+    what is enforced rather than of what was intended.
     """
     attempts: list[tuple[str, str]] = []
     real_getaddrinfo = socket.getaddrinfo
+    real_gethostbyname = socket.gethostbyname
     real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
 
     def guarded_getaddrinfo(host, *args, **kwargs):  # type: ignore[no-untyped-def]
         if str(host) not in _LOOPBACK:
             attempts.append(("getaddrinfo", str(host)))
             raise _NetworkAttempted(f"getaddrinfo({host!r})")
         return real_getaddrinfo(host, *args, **kwargs)
+
+    def guarded_gethostbyname(host, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if str(host) not in _LOOPBACK:
+            attempts.append(("gethostbyname", str(host)))
+            raise _NetworkAttempted(f"gethostbyname({host!r})")
+        return real_gethostbyname(host, *args, **kwargs)
 
     def guarded_connect(self, address):  # type: ignore[no-untyped-def]
         host = _host_of(address)
@@ -99,8 +129,28 @@ def _network_guard(
                 raise _NetworkAttempted(f"connect({address!r})")
         return real_connect(self, address)
 
+    def guarded_connect_ex(self, address):  # type: ignore[no-untyped-def]
+        """Record, then report the host as unreachable.
+
+        `connect_ex` reports failure by *returning* an errno rather than
+        raising, so returning `ENETUNREACH` is what a machine with no route
+        actually does — the same reasoning that makes `_NetworkAttempted` an
+        `OSError` elsewhere in this file. Raising here would be a behaviour
+        no real `connect_ex` exhibits, which is exactly the kind of novel
+        failure a fail-soft caller would not handle. The recording is the
+        evidence either way.
+        """
+        host = _host_of(address)
+        if self.family in (socket.AF_INET, socket.AF_INET6):
+            if host not in _LOOPBACK:
+                attempts.append(("connect_ex", host))
+                return errno.ENETUNREACH
+        return real_connect_ex(self, address)
+
     monkeypatch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
+    monkeypatch.setattr(socket, "gethostbyname", guarded_gethostbyname)
     monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
     yield attempts
 
 
@@ -189,6 +239,103 @@ def test_the_guard_detects_a_real_outbound_call(
     # `"pypi.org" in url` also accepts `https://evil.example/?x=pypi.org`,
     # which is the whole point of pinning the destination here.
     assert urlsplit(lifecycle.PYPI_JSON_URL).hostname == "pypi.org"
+
+
+# ---------------------------------------------------------------------------
+# One test per guard arm (#1247). `_fetch_pypi_json` above exercises the
+# `getaddrinfo` arm against real code; the three below are the only way the
+# other arms can be shown to fire, because nothing in `src/` reaches for
+# them. An arm with no test that reddens it is not covered.
+#
+# Addresses here are reserved by RFC and are never real hosts:
+# `192.0.2.0/24` and `198.51.100.0/24` are TEST-NET-1 and TEST-NET-2
+# (RFC 5737), `.invalid` is reserved by RFC 6761. With the arms in place the
+# guard intercepts before the syscall, so no packet leaves the machine; the
+# reserved ranges are what keeps that true under a mutation run too.
+# ---------------------------------------------------------------------------
+
+def test_the_guard_records_and_blocks_connect_ex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`connect_ex` is a sibling of `connect`, not a wrapper around it.
+
+    Patching only `connect` left this path both unrecorded and *unblocked*.
+    Blocking is half the guard's job, so this asserts the return value too:
+    `ENETUNREACH` is what a machine with no route reports, and `connect_ex`
+    reports by returning rather than raising.
+    """
+    sock = socket.socket()
+    # Only reached if the arm is removed; bounds the mutation run rather
+    # than letting it block on a TEST-NET address that never answers.
+    sock.settimeout(0.05)
+    try:
+        with _network_guard(monkeypatch) as attempts:
+            rc = sock.connect_ex(("192.0.2.1", 80))
+    finally:
+        sock.close()
+
+    assert attempts == [("connect_ex", "192.0.2.1")], attempts
+    assert rc == errno.ENETUNREACH
+
+
+def test_the_guard_records_connect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The `connect` arm had no test of its own until #1247.
+
+    Every other test in this file reaches the network through a hostname, so
+    they all trip `getaddrinfo` first and none of them exercises `connect`.
+    Removing the `connect` arm therefore left the whole file green — the same
+    uncovered-guard-arm shape #1247 was filed about, one method over.
+    """
+    sock = socket.socket()
+    sock.settimeout(0.05)
+    try:
+        with _network_guard(monkeypatch) as attempts:
+            with pytest.raises(_NetworkAttempted):
+                sock.connect(("198.51.100.7", 80))
+    finally:
+        sock.close()
+
+    assert attempts == [("connect", "198.51.100.7")], attempts
+
+
+def test_the_guard_records_gethostbyname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The legacy resolver is a second door to the same place.
+
+    `gethostbyname` does not route through `getaddrinfo`, so the "DNS is the
+    first network touch" argument needs both patched to hold.
+    """
+    with _network_guard(monkeypatch) as attempts:
+        with pytest.raises(_NetworkAttempted):
+            socket.gethostbyname("nonexistent.invalid")
+
+    assert attempts == [("gethostbyname", "nonexistent.invalid")], attempts
+
+
+def test_the_guard_lets_loopback_through_on_every_arm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A runner-local helper is not egress, and must not be recorded.
+
+    Without this an arm that recorded unconditionally would pass every
+    assertion above while making the whole guard useless — it would report a
+    privacy violation for a test that binds `127.0.0.1`.
+    """
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    client = socket.socket()
+    try:
+        with _network_guard(monkeypatch) as attempts:
+            assert client.connect_ex(("127.0.0.1", port)) == 0
+            assert socket.gethostbyname("127.0.0.1") == "127.0.0.1"
+    finally:
+        client.close()
+        server.close()
+
+    assert attempts == []
 
 
 # ---------------------------------------------------------------------------
