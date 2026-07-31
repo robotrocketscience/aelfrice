@@ -39,6 +39,7 @@ import socket
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -178,7 +179,10 @@ def test_the_guard_detects_a_real_outbound_call(
 
     assert attempts, "guard recorded nothing for a call that does reach out"
     assert all(host == "pypi.org" for _kind, host in attempts), attempts
-    assert "pypi.org" in PYPI_JSON_URL
+    # Compare the parsed hostname, not a substring of the URL:
+    # `"pypi.org" in url` also accepts `https://evil.example/?x=pypi.org`,
+    # which is the whole point of pinning the destination here.
+    assert urlsplit(PYPI_JSON_URL).hostname == "pypi.org"
 
 
 # ---------------------------------------------------------------------------
