@@ -506,6 +506,34 @@ _SCHEMA: tuple[str, ...] = (
         rejected_at TEXT NOT NULL
     )
     """,
+    # #1176 proposal 5: the exploration-slot ledger. One row per firing
+    # turn, recording the whole draw so an exploration slot is a
+    # *recorded* edge rather than a coin flip — "why was belief B in my
+    # context?" answers from this table alone.
+    #
+    # `seed` is hex TEXT, not INTEGER, on purpose: SQLite's INTEGER is
+    # signed 64-bit, so a seed at or above 2**63 does not round-trip.
+    # `query_hash` rather than the query, so the prompt text does not
+    # gain a second home in the store.
+    #
+    # The id columns are JSON arrays with no foreign key. They are a
+    # snapshot of what the pool and the pack looked like at that fire;
+    # a later retire or delete must not rewrite or cascade away the
+    # record of a decision that was made while the belief was live.
+    """
+    CREATE TABLE IF NOT EXISTS exploration_events (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        fire_idx      INTEGER NOT NULL,
+        seed          TEXT    NOT NULL,
+        query_hash    TEXT    NOT NULL,
+        candidate_ids TEXT    NOT NULL,
+        drawn_ids     TEXT    NOT NULL,
+        displaced_ids TEXT    NOT NULL,
+        created_at    TEXT    NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_exploration_events_fire "
+    "ON exploration_events(fire_idx)",
     # v3.x #748 / #816 hot-path touch state. Sidecar table — sibling
     # to `injection_events` (#779), but smaller and write-deduplicated
     # via PK upsert. Records per-(belief, session) "last touched"
@@ -3633,6 +3661,99 @@ class MemoryStore:
             score = float(score_obj) if score_obj is not None else 0.0
             out.append((_row_to_belief(r), score))
         return out
+
+    # --- #1176 exploration slots -----------------------------------------
+
+    def exploration_pool(self, query: str, *, limit: int = 200) -> list[str]:
+        """Belief ids the ranker has never surfaced, restricted to `query`.
+
+        The pool the exploration slot draws from: active, unlocked beliefs
+        with **no `feedback_history` row and no `injection_events` row** —
+        beliefs that have never been shown and therefore can never have
+        earned or lost evidence. On the live store that is 37,489 of 44,586
+        active beliefs (84.1%), and only 1,352 (3.0%) have ever been
+        injected at all, so the loop this breaks is most of the corpus.
+
+        Locks are excluded because L0 is injected unconditionally and never
+        displaced; a lock is by definition not an unexplored belief.
+
+        The pool is **restricted to FTS5 matches** rather than being the
+        whole unexplored set. An exploration slot costs a ranked belief its
+        place, so the belief that replaces it has to be plausibly on topic —
+        otherwise the mechanism trades a relevant result for noise and the
+        consuming agent learns to ignore the slot.
+
+        Ordering is `bm25` then `id` and the truncation is deliberate: with
+        `LIMIT` and no `ORDER BY`, *which* subset survives would be a
+        function of SQLite's query plan, so the pool — and therefore the
+        draw — could change under a version upgrade with no code change.
+        Ranking the truncation by relevance also means a smaller `limit`
+        narrows toward the most on-topic unexplored beliefs rather than an
+        arbitrary slice.
+
+        Empty / whitespace-only queries return `[]` without touching FTS5.
+        """
+        escaped = self._fts5_match_expression(query)
+        if not escaped:
+            return []
+        cur = self._conn.execute(
+            "SELECT b.id FROM beliefs b JOIN beliefs_fts f ON f.id = b.id "
+            "WHERE beliefs_fts MATCH ? "
+            "  AND b.valid_to IS NULL "
+            "  AND b.lock_level != 'user' "
+            "  AND NOT EXISTS ("
+            "    SELECT 1 FROM feedback_history fh WHERE fh.belief_id = b.id) "
+            "  AND NOT EXISTS ("
+            "    SELECT 1 FROM injection_events ie WHERE ie.belief_id = b.id) "
+            "ORDER BY bm25(beliefs_fts), b.id LIMIT ?",
+            (escaped, limit),
+        )
+        return [str(r["id"]) for r in cur.fetchall()]
+
+    def record_exploration(
+        self,
+        *,
+        fire_idx: int,
+        seed: int,
+        query_hash: str,
+        candidate_ids: Sequence[str],
+        drawn_ids: Sequence[str],
+        displaced_ids: Sequence[str],
+        now: str | None = None,
+    ) -> int:
+        """Append one exploration-slot record. Returns the new row id.
+
+        This is what converts a seeded draw into an auditable one: the seed
+        and the full candidate list are both stored, so replay reproduces
+        the draw from the row instead of re-deriving `fire_idx` from the
+        environment.
+
+        `seed` is written as zero-padded hex because SQLite's INTEGER is
+        signed 64-bit and a seed at or above 2**63 would be stored as a
+        negative number — reading it back and re-running the draw would then
+        silently produce a different result.
+
+        Id lists are stored as JSON arrays in the order given. Draw order is
+        the point for `drawn_ids` (it says which slot each belief filled),
+        so this deliberately does not sort them.
+        """
+        ts = now if now is not None else datetime.now(timezone.utc).isoformat()
+        cur = self._conn.execute(
+            "INSERT INTO exploration_events "
+            "(fire_idx, seed, query_hash, candidate_ids, drawn_ids, "
+            " displaced_ids, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                fire_idx,
+                f"{seed:016x}",
+                query_hash,
+                json.dumps(list(candidate_ids)),
+                json.dumps(list(drawn_ids)),
+                json.dumps(list(displaced_ids)),
+                ts,
+            ),
+        )
+        self._conn.commit()
+        return int(cur.lastrowid or 0)
 
     # --- #655 read-only federation ---------------------------------------
     #
