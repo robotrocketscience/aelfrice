@@ -502,7 +502,7 @@ The penalty is **log-additive and clamped at 0**, so knowledge-shaped content is
 
 At `0.0` the lane short-circuits and **nothing reads the ingest log at all**; behaviour is byte-identical to the flag being absent. Malformed or negative values fall through to `0.0` rather than inverting the lane. The prior is built once per store and cached.
 
-Precedence (first decisive wins): env var `AELFRICE_UTTERANCE_PRIOR_WEIGHT=<float>` > explicit Python kwarg > default `0.0`. There is no TOML tier yet. **Default-off pending the W-sweep** — that a non-zero weight ranks *better* needs a relevance gold set, which the store's own observed-utility signal cannot supply (5 positives across 16,355 resolved `injection_events`). Note the sweep must be scored below the locked block: L0 locks are injected ahead of the ranked candidates and never trimmed, so a top-k metric measures the lock tier and is constant in this weight.
+Precedence (first decisive wins): env var `AELFRICE_UTTERANCE_PRIOR_WEIGHT=<float>` > explicit Python kwarg > default `0.0`. There is no TOML tier yet. As with `use_fan_effect`, the kwarg tier exists on `retrieve_v2()` / `retrieve_with_tiers()` only — `retrieve()` exposes no `utterance_prior_weight` parameter and honours the env var alone, so passing it there raises `TypeError`. **Default-off pending the W-sweep** — that a non-zero weight ranks *better* needs a relevance gold set, which the store's own observed-utility signal cannot supply (5 positives across 16,355 resolved `injection_events`). Note the sweep must be scored below the locked block: L0 locks are injected ahead of the ranked candidates and never trimmed, so a top-k metric measures the lock tier and is constant in this weight.
 
 ### `bfs_enabled`
 
@@ -659,15 +659,20 @@ the sweep is audit-only — it writes nothing.** No `alpha` moves, no
 one can alter a posterior. Turning implicit exposure back into real feedback
 is a separate proposal, not a matter of setting these keys.
 
-All three resolve **env var > explicit kwarg > TOML > default**, and every
-tier is fail-soft: a malformed value is ignored with an
-`aelfrice implicit_feedback: ignoring …` trace to stderr and the next tier
-applies.
+All three resolve **env var > explicit kwarg > TOML > default**, and all three
+are fail-soft — but only two of them say so. `epsilon` and
+`grace_window_seconds` ignore a malformed value with an
+`aelfrice implicit_feedback: ignoring …` trace to stderr before falling through
+to the next tier. `enqueue_on_retrieve` falls through **silently**: a value
+outside the accepted set is ignored with no diagnostic at all. Check the
+resolved state rather than reading the absence of a warning as acceptance.
 
 ### `enqueue_on_retrieve`
 
-Boolean, default `false` (v4.x+, #1162). When true, every `retrieve()` writes
-one queue row per surfaced belief.
+Boolean, default `false` since
+[#1162](https://github.com/robotrocketscience/aelfrice/issues/1162) (key
+`v1.6.0+`, #191/#256; was `true` through v4.2). When true, every `retrieve()`
+writes one queue row per surfaced belief.
 
 It defaulted `true` on the reasoning that the queue is additive — nothing
 reads a row until the sweeper runs. That held only because the sweeper is a
@@ -680,7 +685,9 @@ evidence.
 
 Leave it off unless you are specifically measuring exposure. Env var
 `AELFRICE_IMPLICIT_FEEDBACK_ENQUEUE` accepts `1`/`true`/`yes`/`on` and
-`0`/`false`/`no`/`off`.
+`0`/`false`/`no`/`off` — and **only** those. Anything else, including
+near-misses like `enabled` or `y`, is discarded without a warning and the
+next tier decides, so `…ENQUEUE=enabled` resolves `false`, not `true`.
 
 ### `epsilon`
 
