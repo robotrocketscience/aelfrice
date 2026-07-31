@@ -482,7 +482,7 @@ BM25F-only L1 shipped default-on at v1.7.0 (see `use_bm25f_anchors`); the heat-k
 
 ### `use_fan_effect`
 
-Boolean, default `false` (v4.2+, [#1176](https://github.com/robotrocketscience/aelfrice/issues/1176)). Ranks the **L2.5 entity tier** by ACT-R fan-weighted activation instead of a raw entity-overlap count.
+Boolean, default `false` (v4.x+, [#1176](https://github.com/robotrocketscience/aelfrice/issues/1176)). Ranks the **L2.5 entity tier** by ACT-R fan-weighted activation instead of a raw entity-overlap count.
 
 The shipped lane orders by `COUNT(DISTINCT entity_lower)`, which prices every matched entity the same. A real corpus does not: on a 44,584-belief store `tmp` appears in 1,480 beliefs and `and` in 1,026, while 86% of entities appear in exactly one — so a match on a corpus-ubiquitous token buys the same rank as a match on a unique symbol, on the one tier that holds unconditional budget precedence.
 
@@ -494,7 +494,7 @@ Precedence (first decisive wins): env var `AELFRICE_FAN_EFFECT=1`/`0` > explicit
 
 ### `utterance_prior_weight`
 
-Float, default `0.0` (v4.2+, [#1174](https://github.com/robotrocketscience/aelfrice/issues/1174)). Weight of the **utterance-vs-knowledge document prior** in the L1 rerank — a query-independent term that demotes beliefs which look like *things someone said* rather than *things that are true*.
+Float, default `0.0` (v4.x+, [#1174](https://github.com/robotrocketscience/aelfrice/issues/1174)). Weight of the **utterance-vs-knowledge document prior** in the L1 rerank — a query-independent term that demotes beliefs which look like *things someone said* rather than *things that are true*.
 
 The prior is a naive-Bayes log-odds over two classes read directly out of `ingest_log` — transcript rows versus filesystem/git rows — so there are no hand labels and no embeddings. It targets a measured failure: because the store ingests its own query log, the nearest lexical neighbour of a query is frequently a prior query.
 
