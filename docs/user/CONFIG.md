@@ -648,6 +648,68 @@ chains (idempotent, `--dry-run` supported), and `aelf doctor` reports
 spine presence + edge count. `AELFRICE_TEMPORAL_SPINE_WRITE` env var
 overrides.
 
+## `[implicit_feedback]` (v1.x+)
+
+Retrieval-exposure feedback: the queue that records which beliefs a
+`retrieve()` surfaced, and the `aelf sweep-feedback` command that reports on
+it. **Since [#1162](https://github.com/robotrocketscience/aelfrice/issues/1162)
+the sweep is audit-only — it writes nothing.** No `alpha` moves, no
+`feedback_history` row is written, no queue status changes. `epsilon` and
+`grace_window_seconds` therefore shape only what the audit *reports*; neither
+one can alter a posterior. Turning implicit exposure back into real feedback
+is a separate proposal, not a matter of setting these keys.
+
+All three resolve **env var > explicit kwarg > TOML > default**, and every
+tier is fail-soft: a malformed value is ignored with an
+`aelfrice implicit_feedback: ignoring …` trace to stderr and the next tier
+applies.
+
+### `enqueue_on_retrieve`
+
+Boolean, default `false` (v4.x+, #1162). When true, every `retrieve()` writes
+one queue row per surfaced belief.
+
+It defaulted `true` on the reasoning that the queue is additive — nothing
+reads a row until the sweeper runs. That held only because the sweeper is a
+manual command nothing schedules, which is a fact about deployment rather
+than a design property, so real stores banked six-figure row counts. It was
+also a second, unflagged, default-on route to the posterior bump
+[#1086](https://github.com/robotrocketscience/aelfrice/issues/1086) had
+already turned off by deciding that retrieval exposure is deliberately not
+evidence.
+
+Leave it off unless you are specifically measuring exposure. Env var
+`AELFRICE_IMPLICIT_FEEDBACK_ENQUEUE` accepts `1`/`true`/`yes`/`on` and
+`0`/`false`/`no`/`off`.
+
+### `epsilon`
+
+Float, default `0.05`. The per-row increment the **pre-#1162** sweeper would
+have added to `alpha`. The audit reports `alpha_withheld = would_apply *
+epsilon`, so this scales a reported total and nothing else. Negative values
+clamp to `0.0`. Env var `AELFRICE_IMPLICIT_FEEDBACK_EPSILON`; CLI
+`aelf sweep-feedback --epsilon`.
+
+### `grace_window_seconds`
+
+Integer, default `1800` (30 min). A queue row is eligible only once
+`enqueued_at + grace_window_seconds <= now`; widening it moves rows out of
+the eligible count and into `pending_in_grace`. Note this key sets
+*eligibility* only — the cancellation check that follows spans
+`[enqueued_at, now]`, the row's whole life, not just the grace window, so
+an explicit correction arriving well after the window still counts as a
+signal that would have cancelled the row. Env var `AELFRICE_IMPLICIT_FEEDBACK_GRACE_SECONDS`; CLI
+`aelf sweep-feedback --grace-seconds`.
+
+### Draining a banked queue
+
+Stores that ran with the old default carry rows the audit-only sweeper cannot
+act on. `aelf sweep-feedback --gc` deletes the `status='enqueued'` rows **that
+same run reported on** — so `--limit` bounds the report and the deletion
+together, and rows past it are left alone and called out separately. Rows
+already `applied` or `cancelled` are never touched: they are the trail of
+sweeps that really did run.
+
 ## `[rebuilder]` and `[rebuild_floor]` (v1.7+)
 
 Malformed values (wrong type, out-of-range, unrecognised strategy string) in either section fall back to the field default with a `aelfrice rebuilder: ignoring …` trace to stderr. The rebuild never raises on a bad config value.
