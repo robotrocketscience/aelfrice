@@ -480,11 +480,13 @@ Position in the block is otherwise a side effect of lane concatenation (`locked 
 |---|---|
 | `lane` (default) | Identity permutation — the block is byte-identical to pre-#1274 output. |
 | `locks_last` | Non-locked hits first, the user-locked tier last. |
-| `score_desc` | User-locked tier first, then non-locked hits by descending rerank score. |
+| `score_desc` | User-locked tier first, then non-locked hits by descending rerank score. **Not reachable from this knob today** — see below. |
 
 Every policy is a **stable, total** permutation: ties break on the hit's original index, so the rendered order is a pure function of (hits, policy, scores) and replay reproduces it exactly. No policy adds or drops a hit.
 
 `score_desc` needs the L1 rerank scores, which are not carried on `Belief`. When they are not supplied it falls back to `lane` **and traces to stderr** rather than silently substituting a proxy such as the posterior — a silent downgrade of an explicit setting is the failure [#1271](https://github.com/robotrocketscience/aelfrice/issues/1271) documents. Because rerank scores are log-domain and negative, an unscored hit sorts *last*, not first.
+
+**No shipped call site supplies those scores**, so "not supplied" is currently "always": setting `AELFRICE_ORDER_POLICY=score_desc` renders the `lane` permutation and emits the stderr trace on every hook fire. The hook-audit row records the policy that *applied*, so it reads `lane` — the knob is honest about this rather than reporting an arm that did not run. `score_desc` is reachable only by calling `retrieval.order_for_injection(hits, "score_desc", scores=...)` directly. Until scores are plumbed to the render boundary, an ordering A/B has **two** arms — `lane` and `locks_last` — not three.
 
 The policy that produced a block is recorded as `order_policy` on the hook-audit row, so an ordering A/B can attribute a block to its arm from the audit alone.
 
