@@ -192,7 +192,7 @@ and the consumer-side dedupe-by-fingerprint warning.
 
 > **Delivery channel (corrected by [#1031](https://github.com/robotrocketscience/aelfrice/issues/1031)):** the rebuild block ships on **SessionStart** with `source == "compact"`, *after* compaction — not on `PreCompact`. The harness rejects `additionalContext` emitted from a `PreCompact` hook (`PreCompact` is absent from the events that support it), so a block written there is discarded with a validation error. `pre_compact()` therefore emits nothing on stdout; it is retained for trigger-mode parity only. `rebuild_v14` and the block content are unchanged.
 
-When the harness approaches its context limit it fires `PreCompact`, compacts, then fires `SessionStart`. The rebuilder does its bookkeeping on the first event and its injection on the last:
+Compaction is reached two ways — the harness hitting its context limit, or the user compacting explicitly — and both take the same path: `PreCompact` fires, the harness compacts, then `SessionStart` fires with `source == "compact"`. The rebuilder does its bookkeeping on the first event and its injection on the last. Do not read the flow below as an auto-compaction-only path: on a measured local corpus 72 of 73 scoreable compactions were explicit rather than automatic ([#1252](https://github.com/robotrocketscience/aelfrice/issues/1252)), so the explicit route is the one an operator debugging the rebuilder is most likely on:
 
 ```
 PreCompact fires
