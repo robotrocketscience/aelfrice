@@ -351,18 +351,28 @@ def test_the_guard_lets_loopback_through_on_every_arm(
     Without this an arm that recorded unconditionally would pass every
     assertion above while making the whole guard useless — it would report a
     privacy violation for a test that binds `127.0.0.1`.
+
+    All four arms are driven, which is what makes "every arm" literal. The
+    arm-removal tests above pin each arm's *recording*; only a loopback call
+    through the same arm pins its *exemption*. Driving two of the four left
+    dropping the `_LOOPBACK` check from `getaddrinfo` or `connect` green
+    across the whole file.
     """
     server = socket.socket()
     server.bind(("127.0.0.1", 0))
-    server.listen(1)
+    server.listen(2)
     port = server.getsockname()[1]
+    client_ex = socket.socket()
     client = socket.socket()
     try:
         with _network_guard(monkeypatch) as attempts:
-            assert client.connect_ex(("127.0.0.1", port)) == 0
+            assert client_ex.connect_ex(("127.0.0.1", port)) == 0
+            client.connect(("127.0.0.1", port))
             assert socket.gethostbyname("127.0.0.1") == "127.0.0.1"
+            assert socket.getaddrinfo("127.0.0.1", port)
     finally:
         client.close()
+        client_ex.close()
         server.close()
 
     assert attempts == []
