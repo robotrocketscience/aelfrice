@@ -330,6 +330,9 @@ ENV_HRR_EXPAND: Final[str] = "AELFRICE_HRR_EXPAND"
 ENV_ENTITY_PERSIST_DEMOTE: Final[str] = "AELFRICE_ENTITY_PERSIST_DEMOTE"
 # #1089 axis-2 origin-priority tie-break env override. Tri-state; default-OFF.
 ENV_ORIGIN_TIEBREAK: Final[str] = "AELFRICE_ORIGIN_TIEBREAK"
+# #1176 proposal 3 — ACT-R fan-effect ranker on the L2.5 entity lane.
+# Tri-state like ENV_ORIGIN_TIEBREAK; default-OFF pending the A/B.
+ENV_FAN_EFFECT: Final[str] = "AELFRICE_FAN_EFFECT"
 # #1187 supersession lane env overrides. Tri-state; default-OFF.
 ENV_SUPERSESSION_DEMOTE: Final[str] = "AELFRICE_SUPERSESSION_DEMOTE"
 ENV_SUPERSESSION_TREATMENT: Final[str] = "AELFRICE_SUPERSESSION_TREATMENT"
@@ -1004,6 +1007,37 @@ def is_origin_tiebreak_enabled(kwarg: bool | None = None) -> bool:
     default False. Mirrors the entity-persist resolution; default-OFF
     until the bench-gated flip."""
     env = _env_origin_tiebreak_override()
+    if env is not None:
+        return env
+    if kwarg is not None:
+        return kwarg
+    return False
+
+
+def _env_fan_effect_override() -> bool | None:
+    """Return True/False if AELFRICE_FAN_EFFECT is set to a recognised
+    truthy/falsy value, else None (#1176). Symmetric to
+    `_env_origin_tiebreak_override`."""
+    raw = os.environ.get(ENV_FAN_EFFECT)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def is_fan_effect_enabled(kwarg: bool | None = None) -> bool:
+    """Resolve the #1176 proposal-3 ACT-R fan-effect lane flag.
+
+    Precedence: AELFRICE_FAN_EFFECT env var -> explicit kwarg -> default
+    False. Default-OFF: the kill gate cleared and the cost is lower than
+    the lane it replaces, but *that the reorder ranks better* is what the
+    A/B decides, and flipping the default is a separate operator call.
+    """
+    env = _env_fan_effect_override()
     if env is not None:
         return env
     if kwarg is not None:
@@ -3002,6 +3036,7 @@ def _l25_hits(
     l25_token_subbudget: int,
     query_entity_cap: int,
     use_origin_tiebreak: bool = False,
+    use_fan_effect: bool = False,
 ) -> list[Belief]:
     """Run L2.5: query-side extraction, entity lookup, materialise
     beliefs, dedupe vs L0, trim to `l25_token_subbudget`.
@@ -3009,6 +3044,10 @@ def _l25_hits(
     Returns at most `l25_limit` beliefs whose summed token estimate
     is at or below `l25_token_subbudget`. The trim is from the
     tail (lowest-overlap matches drop first).
+
+    `use_fan_effect` (#1176) swaps the lane's raw overlap ordering for
+    ACT-R fan-weighted activation. It reorders *which* beliefs the trim
+    keeps, not how many, so the budget arithmetic below is unchanged.
 
     A `l25_token_subbudget <= 0` short-circuits to []. The outer
     `retrieve()` enforces that the L2.5 sub-budget never exceeds
@@ -3023,6 +3062,7 @@ def _l25_hits(
     keys = [e.lower for e in q_entities]
     hits = store.lookup_entities(
         keys, limit=l25_limit, origin_tiebreak=use_origin_tiebreak,
+        fan_effect=use_fan_effect,
     )
     out: list[Belief] = []
     used = 0
@@ -3767,6 +3807,16 @@ def retrieve(
         supersession_factor=None,
         use_intentional_clustering=None,
         use_hrr_structural=None,
+        # #1176 fan effect: spelled `None` to match the resolver-driven
+        # lanes above, not because `False` would break it — the resolver
+        # is env-first, so `AELFRICE_FAN_EFFECT=1` overrides either
+        # spelling and the A/B runs against this path regardless (that
+        # is measured, not assumed: hard-coding `False` here leaves
+        # tests/test_fan_effect_1176.py wholly green). `None` is the
+        # right spelling anyway — it is what a `.aelfrice.toml` tier
+        # would have to read through, and that tier is the natural
+        # companion to a default flip. Resolver default stays OFF.
+        use_fan_effect=None,
         use_origin_tiebreak=False,
         use_hrr_expand=False,
     ).beliefs
@@ -3821,6 +3871,7 @@ def retrieve_with_tiers(
     temporal_spine_node_budget: int | None = None,
     use_entity_persist_demote: bool = False,
     use_origin_tiebreak: bool = False,
+    use_fan_effect: bool = False,
     use_supersession_demote: bool = False,
     supersession_treatment: str = SUPERSESSION_TREATMENT_DEMOTE,
     supersession_factor: float = SUPERSESSION_DEMOTE_FACTOR,
@@ -3959,6 +4010,7 @@ def retrieve_with_tiers(
             l25_token_subbudget=effective_l25_subbudget,
             query_entity_cap=query_entity_cap,
             use_origin_tiebreak=use_origin_tiebreak,
+            use_fan_effect=use_fan_effect,
         )
     else:
         l25 = []
@@ -4188,6 +4240,7 @@ def retrieve_v2(
     use_hrr_expand: bool | None = None,
     use_entity_persist_demote: bool | None = None,
     use_origin_tiebreak: bool | None = None,
+    use_fan_effect: bool | None = None,
     use_supersession_demote: bool | None = None,
     supersession_treatment: str | None = None,
     supersession_factor: float | None = None,
@@ -4376,6 +4429,7 @@ def retrieve_v2(
             use_entity_persist_demote
         ),
         use_origin_tiebreak=is_origin_tiebreak_enabled(use_origin_tiebreak),
+        use_fan_effect=is_fan_effect_enabled(use_fan_effect),
         use_supersession_demote=is_supersession_demote_enabled(
             use_supersession_demote
         ),
