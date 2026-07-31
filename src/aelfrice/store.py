@@ -1136,6 +1136,9 @@ class MemoryStore:
         # available on this SQLite. Built lazily so a store that never
         # searches never pays for them.
         self._fts5_probe_state: bool | None = None
+        # #1176: (store_generation, active_belief_count) memo for the
+        # fan-effect lane. `None` = not yet computed.
+        self._active_count_memo: tuple[int, int] | None = None
         self._conn: sqlite3.Connection = sqlite3.connect(path)
         self._conn.row_factory = sqlite3.Row
         # WAL only meaningful on-disk; harmless on :memory:.
@@ -3181,6 +3184,42 @@ class MemoryStore:
         cur = self._conn.execute(sql, (*keys, *order_params, limit))
         return [(str(r["belief_id"]), int(r["overlap"])) for r in cur.fetchall()]
 
+    def _active_belief_count_for_fan(self) -> int:
+        """`count_active_beliefs()`, memoised on `store_generation()` (#1176).
+
+        The bare count is `SELECT COUNT(*) FROM beliefs WHERE valid_to IS
+        NULL`, and no index covers that predicate for a bare count — the
+        one partial index on it carries `(origin, created_at)`. So it
+        scans every row, and measured on a 44,584-belief store it costs
+        **1.125 ms p50**, against 0.055 ms for the entire shipped overlap
+        lane. Called per query it would make the fan lane ~25x slower
+        than the lane it replaces, with 80% of the cost in this one call.
+
+        `store_generation()` is a single keyed lookup in `schema_meta`,
+        bumped inside the same transaction as every content mutation, so
+        keying the memo on it is exact rather than merely fresh: any
+        write that could change the count also changes the key.
+
+        **Generation 0 declines the memo.** `store_generation()` reads 0
+        both for a store that has never been mutated and for a pre-v4.2
+        DB that has not been reopened, and those are indistinguishable
+        from here. Caching under an unmoving key on the second kind would
+        pin a stale `N` for the life of the process. `N` enters only as
+        `ln(N + 1)`, but it is multiplied by each belief's own overlap
+        count, so a stale value does move the ranking between beliefs of
+        differing overlap — it is not a free approximation. Paying the
+        scan on those stores is the correct trade.
+        """
+        gen: int = self.store_generation()
+        if gen == 0:
+            return self.count_active_beliefs()
+        memo = self._active_count_memo
+        if memo is not None and memo[0] == gen:
+            return memo[1]
+        n: int = self.count_active_beliefs()
+        self._active_count_memo = (gen, n)
+        return n
+
     def _lookup_entities_fan(
         self,
         keys: list[str],
@@ -3214,11 +3253,10 @@ class MemoryStore:
         at most 512, in practice at most `query_entity_cap` — and the
         logarithm is taken in Python, because SQL ``LN()`` requires
         ``SQLITE_ENABLE_MATH_FUNCTIONS``, which is not guaranteed across
-        the support matrix. Two indexed reads replace one, and the
-        measured cost is *below* the lane it replaces: 0.04 ms p50
-        against 0.09 ms, with the tail cut from 102 ms to 8 ms, because
-        the shipped path sorts every matching row while this one sorts
-        only the grouped beliefs.
+        the support matrix. Cost is at parity with the lane it replaces
+        — 0.063 ms p50 against 0.054 ms — but only because `N` is
+        memoised; see `_active_belief_count_for_fan`, where recomputing
+        it per query costs 1.125 ms and dominates everything else.
 
         Determinism: the activation sum iterates entities in sorted key
         order, so float addition is associativity-stable, and beliefs
@@ -3233,7 +3271,7 @@ class MemoryStore:
         """
         keys = list(dict.fromkeys(keys))[:512]
         placeholders = ",".join("?" * len(keys))
-        n_active = self.count_active_beliefs()
+        n_active = self._active_belief_count_for_fan()
         # `fan_j` counts *active* beliefs only, matching the lane's own
         # `valid_to IS NULL` filter — otherwise a retired belief would
         # keep inflating the fan of every entity it once carried and

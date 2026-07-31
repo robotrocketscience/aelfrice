@@ -285,3 +285,68 @@ def test_env_var_reaches_the_production_retrieve_path(store, monkeypatch) -> Non
     assert "zzz_rare" in on and "aaa_common" in on
     assert on.index("zzz_rare") < on.index("aaa_common")
     assert off.index("aaa_common") < off.index("zzz_rare")
+
+
+# --- the active-belief count is the lane's whole cost ---------------------
+
+
+def test_active_count_is_not_recomputed_per_query(store, monkeypatch) -> None:
+    """`count_active_beliefs()` scans every row — no index covers a bare
+    count on `valid_to IS NULL` — and at 1.125 ms it dominated the lane,
+    making it ~25x slower than the overlap lane it replaces. It is
+    memoised on `store_generation()`. Reverting the memo turns this red.
+    """
+    calls: list[int] = []
+    real = store.count_active_beliefs
+
+    def counting() -> int:
+        calls.append(1)
+        return real()
+
+    monkeypatch.setattr(store, "count_active_beliefs", counting)
+    for _ in range(5):
+        _order(store, fan=True)
+    assert len(calls) == 1, f"recomputed {len(calls)} times across 5 queries"
+
+
+def test_a_write_invalidates_the_memo(store, monkeypatch) -> None:
+    """Exact, not merely fresh: `store_generation()` is bumped in the same
+    transaction as every content mutation, so a write that changes the
+    count also changes the memo key. A time-based or never-invalidated
+    cache would pin a stale N here."""
+    before = store._active_belief_count_for_fan()
+    store.insert_belief(_mk("new_belief", "a brand new belief"))
+    after = store._active_belief_count_for_fan()
+    assert after == before + 1
+
+
+def test_memoising_n_does_not_change_the_ordering(store) -> None:
+    """Control. The memo is a performance change only — the cached and
+    uncached paths must rank identically, or the fix traded correctness
+    for latency."""
+    cached = _order(store, fan=True)
+    store._active_count_memo = None
+    uncached = _order(store, fan=True)
+    assert cached == uncached
+
+
+def test_generation_zero_declines_the_memo(store, monkeypatch) -> None:
+    """A pre-v4.2 store reads generation 0 forever, and that is
+    indistinguishable from an unmutated one. Caching under an unmoving key
+    would pin a stale N for the life of the process, and N is multiplied
+    by each belief's overlap count, so a stale value does move the
+    ranking. Those stores pay the scan instead.
+    """
+    monkeypatch.setattr(store, "store_generation", lambda: 0)
+    calls: list[int] = []
+    real = store.count_active_beliefs
+
+    def counting() -> int:
+        calls.append(1)
+        return real()
+
+    monkeypatch.setattr(store, "count_active_beliefs", counting)
+    for _ in range(3):
+        store._active_belief_count_for_fan()
+    assert len(calls) == 3, "generation 0 must not be memoised"
+    assert store._active_count_memo is None
