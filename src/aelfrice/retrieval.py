@@ -73,6 +73,7 @@ from aelfrice.clustering import (
     DEFAULT_CLUSTER_DIVERSITY_TARGET,
     DEFAULT_CLUSTER_EDGE_FLOOR,
     cluster_candidates,
+    pack_max_coverage,
     pack_with_clusters,
 )
 from aelfrice.compression import CompressedBelief, compress_for_retrieval
@@ -280,6 +281,14 @@ TYPE_AWARE_COMPRESSION_FLAG: Final[str] = "use_type_aware_compression"
 # AELFRICE_INTENTIONAL_CLUSTERING=0, or
 # `[retrieval] use_intentional_clustering = false`.
 INTENTIONAL_CLUSTERING_FLAG: Final[str] = "use_intentional_clustering"
+
+# #1176 proposal 2. Budgeted maximum coverage as the L1 pack selector,
+# replacing the cluster pack. Default OFF: the stage-1 measurement showed
+# the objective has headroom (every replayed pack carries near-duplicate
+# pairs, and the shipped cluster pass does not reduce them), but "has
+# headroom" is not "is better end to end" -- that needs the A/B.
+MAX_COVERAGE_PACK_FLAG: Final[str] = "use_max_coverage_pack"
+ENV_MAX_COVERAGE_PACK: Final[str] = "AELFRICE_MAX_COVERAGE_PACK"
 # v3.x #796 γ rerank flag. Default-OFF until a labeled relevance corpus
 # exists and the bench panel (PR@5 + ρ + ordered_top_k_overlap +
 # rank_biased_overlap) demonstrates uplift over log-additive. When ON,
@@ -2615,6 +2624,81 @@ def resolve_use_type_aware_compression(
     return True
 
 
+def is_max_coverage_pack_enabled(
+    kwarg: bool | None = None, *, start: Path | None = None
+) -> bool:
+    """Resolve the max-coverage pack-selector flag (#1176 proposal 2).
+
+    Precedence (first decisive wins):
+      1. ``AELFRICE_MAX_COVERAGE_PACK`` env var (truthy / falsy normalised).
+      2. Explicit `kwarg` from the caller.
+      3. ``[retrieval] use_max_coverage_pack`` in `.aelfrice.toml`.
+      4. Default: **False**.
+
+    Off until the three-arm A/B (cluster pack vs rank-greedy vs coverage)
+    is read by the operator. This changes which beliefs reach the agent on
+    the default path, which is exactly why it ships behind a flag rather
+    than as the new behaviour.
+
+    Takes precedence over `use_intentional_clustering` when both are on --
+    they are two answers to the same question and running both would mean
+    packing twice.
+    """
+    raw = os.environ.get(ENV_MAX_COVERAGE_PACK)
+    if raw is not None and raw.strip():
+        norm = raw.strip().lower()
+        if norm in ("1", "true", "yes", "on"):
+            return True
+        if norm in ("0", "false", "no", "off"):
+            return False
+    if kwarg is not None:
+        return kwarg
+    toml_value = _read_toml_flag_for(MAX_COVERAGE_PACK_FLAG, start)
+    if toml_value is not None:
+        return toml_value
+    return False
+
+
+def _coverage_inputs(
+    query: str,
+    candidates: list[Belief],
+    bm25f_cache: "BM25IndexCache | None",
+) -> tuple[dict[str, frozenset[str]], dict[str, float]]:
+    """Build `(coverage, term_weights)` for `pack_max_coverage` (#1176).
+
+    Coverage is the query's stems intersected with each belief's stems,
+    computed with the same `tokenize_stemmed` the BM25 lane indexes with
+    so a term matches here exactly when it matched there.
+
+    Weights are `idf` from the built BM25F index when one is available.
+    Without an index every term weighs 1.0, which degrades the objective
+    to plain term-count coverage rather than to nothing -- the FTS5 lane
+    still gets redundancy suppression, just unweighted by rarity.
+    """
+    from aelfrice.bm25 import tokenize_stemmed
+
+    q_stems = set(tokenize_stemmed(query))
+    if not q_stems:
+        return {}, {}
+    coverage = {
+        b.id: frozenset(q_stems & set(tokenize_stemmed(b.content)))
+        for b in candidates
+    }
+    weights: dict[str, float] = {t: 1.0 for t in q_stems}
+    if bm25f_cache is not None:
+        try:
+            index = bm25f_cache.get()
+            for t in q_stems:
+                j = index.vocabulary.get(t)
+                if j is not None:
+                    weights[t] = float(index.idf[j])
+        except Exception:  # noqa: BLE001 - diagnostic weighting only
+            # An unavailable index is not a reason to fail retrieval; the
+            # uniform weights above remain a valid coverage objective.
+            pass
+    return coverage, weights
+
+
 def resolve_use_intentional_clustering(
     explicit: bool | None = None,
     *,
@@ -3953,6 +4037,9 @@ def retrieve_with_tiers(
     cluster_on = resolve_use_intentional_clustering(
         use_intentional_clustering,
     )
+    # #1176 proposal 2. Resolved next to `cluster_on` because it is the
+    # alternative answer to the same question, and takes precedence.
+    max_coverage_on = is_max_coverage_pack_enabled()
     # #878: compose-reconciliation. The cluster pack reads the same
     # _cost closure the non-cluster L1 path uses; both arms account
     # in the same currency (raw token estimate or compressed
@@ -4049,7 +4136,24 @@ def retrieve_with_tiers(
     out: list[Belief] = list(locked) + list(l25)
     l1_ids_list: list[str] = []
     l1_packed: list[Belief] = []
-    if cluster_on and l1:
+    if max_coverage_on and l1:
+        # #1176 proposal 2. Budgeted maximum coverage over query terms,
+        # ahead of the cluster branch because the two are alternative
+        # answers to the same question and running both would pack twice.
+        l1_remaining_budget = max(0, locked_used + relevance_budget - used)
+        cov_map, cov_weights = _coverage_inputs(query, l1, bm25f_cache)
+        l1_packed = pack_max_coverage(
+            l1,
+            token_budget=l1_remaining_budget,
+            coverage=cov_map,
+            term_weights=cov_weights,
+            cost_fn=_cost,
+        )
+        for b in l1_packed:
+            out.append(b)
+            used += _cost(b)
+            l1_ids_list.append(b.id)
+    elif cluster_on and l1:
         # Diversity-aware fill over the candidate-induced edge subgraph
         # (#436). Rank-position-as-score: l1 is already sorted descending
         # by the rerank, so position is a monotone proxy for score and

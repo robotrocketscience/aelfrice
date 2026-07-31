@@ -269,3 +269,115 @@ def test_zero_cost_belief_does_not_divide_by_zero() -> None:
         cost_fn=lambda b: costs[b.id],
     )
     assert [b.id for b in out] == ["free", "paid"]
+
+
+# --- retrieval wiring ------------------------------------------------------
+
+
+from aelfrice.retrieval import retrieve_v2  # noqa: E402
+
+
+class TestRetrievalWiring:
+    """The selector must be reachable from `retrieve_v2` and inert until asked."""
+
+    @staticmethod
+    def _store(tmp_path):
+        from aelfrice.store import MemoryStore
+
+        s = MemoryStore(str(tmp_path / "p.db"))
+        # Every belief matches the query, so all four are L1 candidates and
+        # the pack has to choose. b0 and b1 cover the same two query terms;
+        # b2 and b3 each cover a term nothing else does. A rank fill takes
+        # b0 then b1 (redundant); coverage should reach for b2 / b3.
+        s.insert_belief(_b("b0", "retrieval budget retrieval budget retrieval"))
+        s.insert_belief(_b("b1", "retrieval budget budget retrieval budget"))
+        s.insert_belief(_b("b2", "retrieval locks locks locks locks locks"))
+        s.insert_belief(_b("b3", "budget decay decay decay decay decay"))
+        return s
+
+    def test_flag_defaults_off_and_pack_is_unchanged(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        from aelfrice.retrieval import is_max_coverage_pack_enabled, retrieve_v2
+
+        monkeypatch.delenv("AELFRICE_MAX_COVERAGE_PACK", raising=False)
+        assert is_max_coverage_pack_enabled() is False
+        s = self._store(tmp_path)
+        base = [b.id for b in retrieve_v2(s, "retrieval budget", budget=4000).beliefs]
+        assert base, "fixture retrieved nothing — the test would be vacuous"
+        again = [b.id for b in retrieve_v2(s, "retrieval budget", budget=4000).beliefs]
+        assert again == base
+        s.close()
+
+    def test_env_flag_turns_the_lane_on(self, tmp_path, monkeypatch) -> None:
+        from aelfrice.retrieval import is_max_coverage_pack_enabled
+
+        monkeypatch.setenv("AELFRICE_MAX_COVERAGE_PACK", "1")
+        assert is_max_coverage_pack_enabled() is True
+        monkeypatch.setenv("AELFRICE_MAX_COVERAGE_PACK", "0")
+        assert is_max_coverage_pack_enabled() is False
+
+    def test_the_lane_is_actually_reached_when_the_flag_is_on(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Wiring assert: `pack_max_coverage` is called iff the flag is on.
+
+        Asserted by observing the call rather than by diffing the pack. A
+        retrieval-level output difference is genuinely hard to construct on
+        a small fixture, and the reason is the stage-2 finding itself:
+        BM25's idf weighting already pushes term-diverse beliefs to the top,
+        so the coverage objective and a rank fill agree on most inputs. A
+        fixture contorted until they disagreed would assert something the
+        real corpus does not do.
+        """
+        from aelfrice import retrieval as _r
+
+        calls: list[int] = []
+        real = _r.pack_max_coverage
+
+        def spy(candidates, **kw):
+            calls.append(len(candidates))
+            return real(candidates, **kw)
+
+        monkeypatch.setattr(_r, "pack_max_coverage", spy)
+        s = self._store(tmp_path)
+        q = "retrieval budget locks decay"
+
+        monkeypatch.delenv("AELFRICE_MAX_COVERAGE_PACK", raising=False)
+        off = [b.id for b in retrieve_v2(s, q, budget=24).beliefs]
+        assert calls == [], "lane ran with the flag off"
+
+        monkeypatch.setenv("AELFRICE_MAX_COVERAGE_PACK", "1")
+        on = [b.id for b in retrieve_v2(s, q, budget=24).beliefs]
+        s.close()
+        assert calls, "lane did not run with the flag on"
+        assert off, "fixture retrieved nothing — the test would be vacuous"
+        assert on, "coverage pack was empty"
+
+    def test_lane_off_is_byte_identical_to_main(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Default path must not move. The flag ships off."""
+        s = self._store(tmp_path)
+        q = "retrieval budget locks decay"
+        monkeypatch.delenv("AELFRICE_MAX_COVERAGE_PACK", raising=False)
+        a = [b.id for b in retrieve_v2(s, q, budget=24).beliefs]
+        monkeypatch.setenv("AELFRICE_MAX_COVERAGE_PACK", "0")
+        b = [b.id for b in retrieve_v2(s, q, budget=24).beliefs]
+        s.close()
+        assert a == b and a
+
+    def test_coverage_inputs_degrade_without_an_index(self, tmp_path) -> None:
+        """No BM25F index -> uniform weights, not an empty objective."""
+        from aelfrice.retrieval import _coverage_inputs
+
+        cands = [_b("b0", "alpha beta"), _b("b1", "gamma")]
+        cov, w = _coverage_inputs("alpha gamma", cands, None)
+        assert cov["b0"] and cov["b1"]
+        assert set(w.values()) == {1.0}
+
+    def test_coverage_inputs_are_empty_for_an_empty_query(self) -> None:
+        from aelfrice.retrieval import _coverage_inputs
+
+        cov, w = _coverage_inputs("   ", [_b("b0", "alpha")], None)
+        assert cov == {} and w == {}
