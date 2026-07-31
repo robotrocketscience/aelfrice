@@ -397,8 +397,9 @@ class BenchmarkResult:
     query_time_s: float = 0.0
     per_question: list[dict[str, object]] = field(default_factory=lambda: list[dict[str, object]]())
     # Per-query rank metrics over the retrieved list, one dict per
-    # question — including the unscorable categories, whose *retrieval*
-    # is measurable even where their answer is not (#1160).
+    # question — excluding the unscorable categories, which have no gold
+    # surface to rank against and would contribute a structural 0.0
+    # (#1160). `scored_qa` is the matching denominator.
     per_question_retrieval: list[dict[str, float]] = field(
         default_factory=lambda: list[dict[str, float]](),
     )
@@ -437,7 +438,16 @@ class BenchmarkResult:
         return sum(scores) / len(scores)
 
     def retrieval_quality(self) -> dict[str, float]:
-        """Reader-independent MRR / recall@k over every question."""
+        """Reader-independent MRR / recall@k over the *scorable* questions.
+
+        Excludes `UNSCORABLE_CATEGORIES` for the same reason `overall_f1`
+        does. On LoCoMo-10 category 5 is 446 of 1986 questions (22.5%),
+        each of which can only score 0.0 because its gold surface is
+        empty — including them would cap `mrr` at 0.775 regardless of
+        ranking quality, and would make the metric move with corpus
+        composition (`--conversations` / `--subset` change the category
+        mix), which is exactly the budget-invariance this block promises.
+        """
         return mean_metrics(self.per_question_retrieval)
 
 
@@ -496,11 +506,18 @@ def run_conversation(
         beliefs: list[str] = _retrieve_beliefs(store, qa.question, budget=budget)
         prediction: str = " ".join(beliefs)
 
-        # Rank metrics are computed for every category, including the
-        # unscorable ones: whether the gold answer was retrieved at all,
-        # and how highly, is measurable without a reader (#1160).
+        # Rank metrics are reader-independent, but only where a gold
+        # surface exists to rank against. Category 5 carries its gold in
+        # `adversarial_answer` and leaves `answer` empty, and
+        # `is_relevant` correctly refuses an empty gold (`"" in anything`
+        # would award a free hit) — so scoring it here appends a
+        # structural 0.0 that no ranking can move. That is the same
+        # placeholder-as-measurement defect this module exists to remove,
+        # and 0.0 would additionally conflate "correctly found nothing to
+        # find" with "failed to find what was there" (#1160).
         rank_scores: dict[str, float] = retrieval_metrics(beliefs, [qa.answer])
-        result.per_question_retrieval.append(rank_scores)
+        if qa.category not in UNSCORABLE_CATEGORIES:
+            result.per_question_retrieval.append(rank_scores)
 
         result.total_qa += 1
         if qa.category not in result.category_scores:

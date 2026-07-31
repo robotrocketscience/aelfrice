@@ -190,14 +190,22 @@ def test_report_carries_reader_independent_retrieval_quality(report: dict[str, A
     assert all(isinstance(v, float) for v in rq.values())
 
 
-def test_retrieval_quality_covers_the_unscorable_questions_too(report: dict[str, Any]):
-    """Whether the gold was retrieved is measurable without a reader.
+def test_retrieval_quality_excludes_the_unscorable_questions(report: dict[str, Any]):
+    """The adversarial row must not dilute the rank metrics (#1160).
 
-    Both questions contribute, so a single question scoring rr=1.0 can
-    only average to 0.5 — proof the adversarial row was not dropped.
+    Category 5 leaves `answer` empty, and `is_relevant` refuses an empty
+    gold, so including it appends a 0.0 no ranking can move. The fixture
+    has one scorable question retrieved at rank 1 and one adversarial
+    question: `mrr` must read 1.0, not the 0.5 that averaging in the
+    placeholder produces.
+
+    This is the same defect the module exists to remove, so it is
+    asserted rather than described — and it is asserted on the strict
+    value, because `<= 0.5` would pass against the very behaviour being
+    fixed.
     """
-    assert len(report["per_question"]) == 2
-    assert report["retrieval_quality"]["mrr"] <= 0.5
+    assert len(report["per_question"]) == 2, "both questions still run"
+    assert report["retrieval_quality"]["mrr"] == 1.0
 
 
 def test_per_question_carries_no_gold_derived_rank_metrics(report: dict[str, Any]):
@@ -348,3 +356,71 @@ def test_new_adapter_shape_never_fails_the_shipped_canonical(scale: float):
     # metric, so those leaves are not in the tree being walked.
     assert counts[tolerance.Verdict.NOT_APPLICABLE.value] == 5
     assert counts[tolerance.Verdict.PASS.value] > 0
+
+
+# ---------------------------------------------------------------------------
+# LongMemEval carries the same shape (#1160)
+# ---------------------------------------------------------------------------
+
+
+def test_longmemeval_abstention_questions_are_unscorable_for_retrieval(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The `_abs` set has no retrievable gold, so it must be excluded.
+
+    Unlike LoCoMo category 5, these golds are long non-empty refusal
+    sentences, so a guard on empty gold surfaces inside
+    `retrieval_metrics` does **not** catch them — the unscorable set has
+    to be declared per adapter. Measured on `longmemeval_s_cleaned.json`:
+    0 of 30 `_abs` golds appear anywhere in their own haystack, against
+    55 of 60 for a non-`_abs` control.
+    """
+    _stub_optional_deps(monkeypatch)
+    import importlib
+
+    lme = importlib.import_module("benchmarks.longmemeval_adapter")
+    assert lme.is_unscorable_for_retrieval("abc_abs")
+    assert not lme.is_unscorable_for_retrieval("abc")
+    # A refusal-shaped gold is non-empty, so the empty-gold path cannot
+    # be what protects the metric.
+    from benchmarks.retrieval_metrics import is_relevant
+
+    gold = [
+        "You did not mention this information. "
+        "You mentioned your cat Luna but not your hamster."
+    ]
+    assert gold[0].strip(), "gold is non-empty — an empty-gold guard would miss it"
+    assert not is_relevant("I adopted a cat named Luna last spring.", gold)
+
+
+def test_longmemeval_retrieval_quality_drops_the_abstention_rows(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The aggregate must average only the scorable questions."""
+    _stub_optional_deps(monkeypatch)
+    import importlib
+
+    lme = importlib.import_module("benchmarks.longmemeval_adapter")
+
+    def _row(qid: str, rr: float) -> lme.RetrievalResult:
+        return lme.RetrievalResult(
+            question_id=qid,
+            question_type="single-session-user",
+            question="q",
+            question_date="2023-01-01",
+            answer="a",
+            retrieved_context="ctx",
+            num_beliefs=1,
+            retrieval_latency_ms=0.0,
+            rank_scores={"reciprocal_rank": rr, "recall_at_5": rr},
+        )
+
+    res = lme.BenchmarkResult()
+    res.per_question.extend([_row("q1", 1.0), _row("q2_abs", 0.0)])
+    rq = res.retrieval_quality()
+    # `mean_metrics` reports `reciprocal_rank` under its conventional
+    # aggregate name.
+    assert rq["mrr"] == 1.0, (
+        "the _abs row diluted the aggregate — it must be excluded"
+    )
+    assert rq["recall_at_5"] == 1.0

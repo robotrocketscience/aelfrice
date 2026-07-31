@@ -117,6 +117,27 @@ _SCORE_KEYS: Final[tuple[str, ...]] = (
 )
 
 
+#: LongMemEval's abstention set. These questions ask about something the
+#: user never mentioned, and their gold is a refusal sentence ("You did
+#: not mention this information. You mentioned your cat Luna but not your
+#: hamster.") rather than a string present in the haystack. Measured on
+#: `longmemeval_s_cleaned.json`: 30 of 500 questions (6.0%) carry the
+#: `_abs` suffix, and **0 of 30** have a gold that `is_relevant` can find
+#: anywhere in their own haystack, against 55 of 60 for a non-`_abs`
+#: control. They are therefore unscorable for *retrieval* in exactly the
+#: way LoCoMo category 5 is (#1160).
+#:
+#: Note this is NOT caught by guarding `retrieval_metrics` against empty
+#: gold surfaces — these golds are long, non-empty sentences. The
+#: unscorable set has to be declared per adapter.
+UNSCORABLE_QUESTION_SUFFIX: Final[str] = "_abs"
+
+
+def is_unscorable_for_retrieval(question_id: str) -> bool:
+    """Whether `question_id` has no retrievable gold surface (#1160)."""
+    return question_id.endswith(UNSCORABLE_QUESTION_SUFFIX)
+
+
 @dataclass
 class RetrievalResult:
     """Result of retrieval for one question."""
@@ -231,8 +252,21 @@ class BenchmarkResult:
         return self.total_f1 / self.total_questions
 
     def retrieval_quality(self) -> dict[str, float]:
-        """Reader-independent MRR / recall@k over every question."""
-        return mean_metrics([qr.rank_scores for qr in self.per_question])
+        """Reader-independent MRR / recall@k over the *scorable* questions.
+
+        The `_abs` abstention set is excluded: its gold is a refusal
+        sentence that appears nowhere in the haystack, so every one of
+        those questions contributes a structural 0.0 that no ranking can
+        move. Including them would put a placeholder in 6.0% of the
+        reported value and make it drift with corpus composition
+        (`--subset` changes the abstention share) — see
+        `UNSCORABLE_QUESTION_SUFFIX`.
+        """
+        return mean_metrics([
+            qr.rank_scores
+            for qr in self.per_question
+            if not is_unscorable_for_retrieval(qr.question_id)
+        ])
 
 
 # ---------------------------------------------------------------------------

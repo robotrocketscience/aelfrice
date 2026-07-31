@@ -124,10 +124,16 @@ def mean_metrics(
 ) -> dict[str, float]:
     """Average per-query metrics into the aggregate block adapters report.
 
-    `reciprocal_rank` averages into `mrr`, the conventional name. An
-    empty input yields 0.0 for every key rather than omitting them, so
+    `reciprocal_rank` averages into `mrr`, the conventional name.
+
+    An empty input yields 0.0 for every key rather than omitting them, so
     the reported block has the same shape whether or not any query ran
     and a band-check never sees a leaf appear or vanish between runs.
+    That 0.0 is a **shape placeholder, not a score** — it means "no query
+    contributed", not "ranking was maximally bad". An empty run is
+    already `NO_DATA` by other means, so nothing reads it as a
+    measurement; the distinction is stated here because a 0.0 that looks
+    like a score is the exact defect this module exists to remove.
     """
     keys: list[str] = ["reciprocal_rank", *(f"recall_at_{k}" for k in ks)]
     n: int = len(per_query)
