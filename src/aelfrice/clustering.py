@@ -285,16 +285,31 @@ def pack_max_coverage(
     belief that matched on a lane other than term overlap.
 
     Objective ``f(S) = sum of term_weights[t] for t in union of cov(b)``
-    is monotone and submodular, so the cost-benefit greedy paired with
-    the best single feasible element carries the standard (1 - 1/e)
-    guarantee. Both halves are computed and the better is returned;
-    omitting the single-element arm is what breaks the bound in the
-    pathological case where one belief covers nearly everything at a cost
-    just under budget.
+    is monotone and submodular. Cost-benefit greedy paired with the best
+    single feasible element is KMN's *modified greedy*, which carries
+    ``(1 - 1/sqrt(e)) ~= 0.3935`` -- not the more familiar
+    ``(1 - 1/e) ~= 0.6321``, which is a different algorithm: partial
+    enumeration over all subsets up to cardinality ``d = 3``, each
+    completed by this greedy. Do not restate the stronger constant here;
+    it is not what this function computes. Both halves are computed and
+    the better is returned; omitting the single-element arm is what
+    breaks the bound in the pathological case where one belief covers
+    nearly everything at a cost just under budget.
 
     A relevance floor multiplies each marginal gain by a linear rank
-    weight ``(n - i) / n``. Without it the greedy will spend budget on a
-    low-ranked belief that happens to carry one rare term. The rank proxy
+    weight ``(n - i) / n``. This is a deliberate deviation and it is not
+    free: because the multiplier is applied per *element*, the weighted
+    gain is not the marginal of any set function (insert order changes
+    the total), so no submodularity argument covers it and neither KMN
+    bound is claimed for the weighted objective. Measured against the
+    plain coverage objective it costs coverage -- as low as 0.39 of the
+    true optimum on adversarial inputs where the unweighted greedy
+    reaches 0.59. An additive floor
+    ``f'(S) = f(S) + lambda * sum(rank_weight(b) for b in S)`` would be
+    submodular-plus-modular and keep the guarantee honest; that is a
+    follow-up, not a claim about today's code. Without any floor the
+    greedy will spend budget on a low-ranked belief that happens to
+    carry one rare term. The rank proxy
     rather than the composite rerank score matches the convention
     `retrieve_with_tiers` already uses for `cluster_scores`; the score
     itself is not threaded out of `_l1_hits` today, and using it is a

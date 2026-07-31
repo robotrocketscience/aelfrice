@@ -161,11 +161,14 @@ def test_rank_order_still_breaks_ties_between_equal_coverage() -> None:
 
 
 def test_best_single_arm_wins_when_greedy_is_cost_myopic() -> None:
-    """The arm that carries the (1 - 1/e) bound.
+    """The arm that carries the (1 - 1/sqrt(e)) bound.
 
     The greedy takes cheap high-ratio crumbs and then cannot afford the one
     belief covering nearly everything. Dropping the single-element arm is
     exactly how the approximation guarantee is lost, so the case is pinned.
+    The guarantee the pair carries is KMN's modified-greedy bound,
+    ``(1 - 1/sqrt(e))``; ``(1 - 1/e)`` needs the ``d = 3`` partial
+    enumeration and is not what this arm buys.
     """
     cands = [_b("cheap"), _b("whale")]
     cov = {
