@@ -4,11 +4,24 @@ Sizes an ordering A/B *before* it is run, from the hook audit alone. Two
 questions, both answerable without a reader model or a judge:
 
   1. **Movable set.** A block renders byte-identically under every policy
-     unless there are at least two verbatim beliefs to permute, and the
-     lock-relocating policies are the identity on a block with fewer than
-     two non-locked hits. Prompts outside the movable set cannot contribute
-     signal at any sample size, so an A/B that ignores them reports a null
-     it was never able to avoid.
+     unless there are at least two verbatim beliefs to permute. Beyond that
+     the criterion is **per policy**, because the two relocating policies
+     move different tiers:
+
+       * `score_desc` re-sorts the non-locked hits among themselves and
+         leaves the locked tier lane-leading, so it is the identity unless
+         there are >=2 non-locked hits.
+       * `locks_last` moves the whole locked tier to the end, so a single
+         lock and a single non-lock already render differently
+         (`[L1, n1]` -> `[n1, L1]`). Its criterion is that *both tiers are
+         present*, which is a strictly larger set.
+
+     Reporting only the `score_desc` threshold understates the live arm:
+     `score_desc` is currently unreachable from the config knob (no call
+     site supplies scores), so `locks_last` is the policy an A/B can
+     actually run. Prompts outside the movable set cannot contribute signal
+     at any sample size, so an A/B that ignores them reports a null it was
+     never able to avoid.
 
   2. **Lock displacement.** Any policy that moves the user-locked tier is
      spending that tier's block position to buy one for the non-locked
@@ -89,7 +102,7 @@ def report(blocks: list[str]) -> dict[str, float]:
         print("no matching audit rows — nothing to bound")
         return {}
 
-    movable_any = movable_relocating = all_locks = first_is_lock = 0
+    movable_any = movable_score_desc = all_locks = first_is_lock = 0
     both_tiers = 0
     nonlock_shares: list[float] = []
     locks_before_first_nonlock: list[int] = []
@@ -103,7 +116,7 @@ def report(blocks: list[str]) -> dict[str, float]:
         if verbatim >= 2:
             movable_any += 1
         if nonlock >= 2:
-            movable_relocating += 1
+            movable_score_desc += 1
         if nonlock == 0:
             all_locks += 1
         if tiers[0] == "user":
@@ -120,12 +133,12 @@ def report(blocks: list[str]) -> dict[str, float]:
     print()
     print("MOVABLE SET")
     print(f"  >=2 verbatim beliefs (any policy):   {pct(movable_any)}")
-    print(f"  >=2 non-locked (relocating policy):  {pct(movable_relocating)}")
+    print(f"  >=2 non-locked (score_desc):         {pct(movable_score_desc)}")
+    print(f"  both tiers present (locks_last):     {pct(both_tiers)}")
     print(f"  100% locks (no non-locked tier):     {pct(all_locks)}")
     print()
     print("LOCK DISPLACEMENT")
     print(f"  position 1 is a user lock:           {pct(first_is_lock)}")
-    print(f"  block carries both tiers:            {pct(both_tiers)}")
     if locks_before_first_nonlock:
         ordered = sorted(locks_before_first_nonlock)
         median = ordered[len(ordered) // 2]
@@ -139,7 +152,8 @@ def report(blocks: list[str]) -> dict[str, float]:
     return {
         "n": n,
         "movable_any": movable_any / n,
-        "movable_relocating": movable_relocating / n,
+        "movable_score_desc": movable_score_desc / n,
+        "movable_locks_last": both_tiers / n,
         "first_is_lock": first_is_lock / n,
     }
 
