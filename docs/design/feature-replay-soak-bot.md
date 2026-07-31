@@ -1,6 +1,6 @@
 # Spec: replay-soak-bot push path — dedicated branch
 
-Spec for issue [#461](https://github.com/robotrocketscience/aelfrice/issues/461). The replay-soak cron landed in [#403 deliverable A](https://github.com/robotrocketscience/aelfrice/issues/403) cannot write its status entry; the PR-level gate (`replay-soak / consecutive-green ≥ 7 commits`, [#403 C](https://github.com/robotrocketscience/aelfrice/issues/403)) therefore blocks every #264-touching merge with `streak < 7`. (The check counted rows until [#1239](https://github.com/robotrocketscience/aelfrice/issues/1239) made it count distinct commits — repeated entries for an unchanged `main` no longer accumulate a streak.) This memo records the design decision and implementation plan.
+Spec for issue [#461](https://github.com/robotrocketscience/aelfrice/issues/461). The replay-soak cron landed in [#403 deliverable A](https://github.com/robotrocketscience/aelfrice/issues/403) cannot write its status entry; the PR-level gate (`consecutive-green ≥ 7 commits`, [#403 C](https://github.com/robotrocketscience/aelfrice/issues/403)) therefore blocks every #264-touching merge with `streak < 7`. (The check counted rows until [#1239](https://github.com/robotrocketscience/aelfrice/issues/1239) made it count distinct commits — repeated entries for an unchanged `main` no longer accumulate a streak.) This memo records the design decision and implementation plan.
 
 ## Live-ruleset facts (verified 2026-05-06)
 
@@ -107,7 +107,7 @@ Rest unchanged. The existing `if [ ! -f .replay-soak-status.json ]; then n=0` pa
 - [x] Path picked and rationale recorded.  *(this memo)*
 - [ ] `replay-soak.yml` updated; next scheduled run (or a `workflow_dispatch`) lands an entry on `replay-soak-status`.
 - [ ] `.replay-soak-status.json` on `replay-soak-status` accumulates ≥1 row.
-- [ ] (After the soak has recorded 7 distinct commits) `scripts/replay_soak_streak.py --quiet` returns ≥7; `replay-soak / consecutive-green ≥ 7 commits` PR check passes on a no-op derivation-touching PR.
+- [ ] (After the soak has recorded 7 distinct commits) `scripts/replay_soak_streak.py --quiet` returns ≥7; `consecutive-green ≥ 7 commits` PR check passes on a no-op derivation-touching PR.
 - [ ] #264 claim becomes unblocked.
 
 ## Risks and rollback

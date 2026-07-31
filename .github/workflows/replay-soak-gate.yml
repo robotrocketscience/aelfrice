@@ -2,13 +2,20 @@ name: Replay Soak Gate
 
 # PR check that gates #264-touching merges on ≥7 consecutive green
 # soak runs against ≥7 *distinct* commits (#403 deliverable C, counting
-# corrected in #1239). The check name produced is
-# `replay-soak / consecutive-green ≥ 7 commits`. Per the 2026-05-04
-# ratification, that name is added to the branch ruleset's
-# required_status_checks list (admin step, separate from this PR) —
-# as of #1239 that step has not been taken, so this check is advisory
-# to branch protection. `merge-train.yml` blocks on any failing
-# check-run regardless, so a red gate still bounces `ready-to-merge`.
+# corrected in #1239). The check name produced is the bare job name,
+# `consecutive-green ≥ 7 commits` — no `replay-soak / ` prefix. Verify
+# against the API before wiring it anywhere, not against this comment:
+#   gh api /repos/<owner>/<repo>/commits/<sha>/check-runs \
+#     --jq '.check_runs[].name'
+# Per the 2026-05-04 ratification, that name is added to the branch
+# ruleset's required_status_checks list (admin step, separate from this
+# PR) — as of #1239 that step has not been taken, so this check is
+# advisory to branch protection. Adding a context string no check-run
+# ever reports leaves it permanently pending, which blocks every
+# derivation-touching merge with no failing check to point at; the
+# prefixed form this comment used to name would have done exactly that.
+# `merge-train.yml` blocks on any failing check-run regardless, so a red
+# gate still bounces `ready-to-merge`.
 #
 # Path scope: only fires on PRs that touch the derivation contract
 # surface (the actual #264 risk surface), the soak fixture, the soak
