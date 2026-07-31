@@ -255,6 +255,21 @@ SUPERSESSION_TREATMENTS: Final[tuple[str, ...]] = (
     SUPERSESSION_TREATMENT_DEMOTE,
     SUPERSESSION_TREATMENT_EXCLUDE,
 )
+# #1274 injection-block ordering policy (proposal 14 on #1177). Position in
+# the rendered block is currently a side effect of lane concatenation order,
+# not a choice anyone made. This names the policies so the question is a
+# config flip rather than a code change. Default `lane` is the identity
+# permutation, so the shipped block stays byte-identical.
+ORDER_POLICY_FLAG: Final[str] = "order_policy"
+ORDER_POLICY_LANE: Final[str] = "lane"
+ORDER_POLICY_SCORE_DESC: Final[str] = "score_desc"
+ORDER_POLICY_LOCKS_LAST: Final[str] = "locks_last"
+ORDER_POLICIES: Final[tuple[str, ...]] = (
+    ORDER_POLICY_LANE,
+    ORDER_POLICY_SCORE_DESC,
+    ORDER_POLICY_LOCKS_LAST,
+)
+
 SUPERSESSION_FACTOR_FLAG: Final[str] = "supersession_demote_factor"
 # 0.5 per the issue spec, the same default the uri_baki primitive carries.
 SUPERSESSION_DEMOTE_FACTOR: Final[float] = 0.5
@@ -346,6 +361,8 @@ ENV_FAN_EFFECT: Final[str] = "AELFRICE_FAN_EFFECT"
 ENV_SUPERSESSION_DEMOTE: Final[str] = "AELFRICE_SUPERSESSION_DEMOTE"
 ENV_SUPERSESSION_TREATMENT: Final[str] = "AELFRICE_SUPERSESSION_TREATMENT"
 ENV_SUPERSESSION_FACTOR: Final[str] = "AELFRICE_SUPERSESSION_FACTOR"
+# #1274 injection-block ordering policy. Default `lane` (identity).
+ENV_ORDER_POLICY: Final[str] = "AELFRICE_ORDER_POLICY"
 # #1064 temporal-spine lane flag + node-budget knob.
 ENV_TEMPORAL_SPINE: Final[str] = "AELFRICE_TEMPORAL_SPINE"
 ENV_TEMPORAL_SPINE_BUDGET: Final[str] = "AELFRICE_TEMPORAL_SPINE_BUDGET"
@@ -713,6 +730,69 @@ def lock_injection_tokens(b: Belief, *, manifest_reference_locks: bool) -> int:
     return _belief_tokens(b)
 
 
+def order_for_injection(
+    hits: list[Belief],
+    policy: str,
+    *,
+    scores: dict[str, float] | None = None,
+) -> list[Belief]:
+    """Permute retrieved hits into their rendered order (#1274, #1177 p14).
+
+    Position in the injected block is currently a side effect of lane
+    concatenation (`locked + l25 + l1 + hrr + spine + bfs`), not a policy
+    anyone chose. This makes it one, so the ordering question is answerable
+    by a config flip instead of a rewrite.
+
+    Policies:
+
+    - `lane` — identity. The default, so the shipped block is byte-identical.
+    - `locks_last` — non-locked hits first, the locked tier last.
+    - `score_desc` — locked tier first, non-locked hits by descending
+      `scores[belief.id]`.
+
+    `score_desc` needs the rerank scores, which are not carried on `Belief`.
+    When they are missing it degrades to the identity permutation **and says
+    so on stderr** rather than silently substituting a proxy such as the
+    posterior — a silent downgrade is exactly the failure #1271 documents,
+    where an explicit setting was quietly replaced by a different one and the
+    measurement it fed went unnoticed for a release.
+
+    Every policy is a stable, total permutation of `hits`: ties break on the
+    original index, so the result is a pure function of (hits, policy,
+    scores) and replay reproduces it exactly. No policy drops or adds a hit.
+    """
+    if policy == ORDER_POLICY_LANE:
+        return list(hits)
+
+    if policy == ORDER_POLICY_LOCKS_LAST:
+        locked = [b for b in hits if b.lock_level == LOCK_USER]
+        rest = [b for b in hits if b.lock_level != LOCK_USER]
+        return rest + locked
+
+    if policy == ORDER_POLICY_SCORE_DESC:
+        if scores is None:
+            print(
+                "aelfrice: order_policy=score_desc needs rerank scores; "
+                "none supplied, falling back to lane order",
+                file=sys.stderr,
+            )
+            return list(hits)
+        locked = [b for b in hits if b.lock_level == LOCK_USER]
+        rest = [b for b in hits if b.lock_level != LOCK_USER]
+        # `-score` with the original index as the tiebreak keeps the sort
+        # total and stable; scores are log-domain and negative, so a missing
+        # id must sort last, not first (-inf, not 0.0).
+        ranked = sorted(
+            enumerate(rest),
+            key=lambda t: (-scores.get(t[1].id, -math.inf), t[0]),
+        )
+        return locked + [b for _, b in ranked]
+
+    # Unrecognised policy: identity, matching the resolver's fallback rather
+    # than raising inside the render path.
+    return list(hits)
+
+
 # --- Config flag resolution ----------------------------------------------
 
 
@@ -936,6 +1016,36 @@ def resolve_supersession_treatment(
             file=sys.stderr,
         )
     return SUPERSESSION_TREATMENT_DEMOTE
+
+
+def resolve_order_policy(
+    kwarg: str | None = None, *, start: Path | None = None
+) -> str:
+    """Resolve the injection-block ordering policy (#1274).
+
+    Same env -> kwarg -> TOML precedence as the other lane resolvers.
+    Default `lane`, the identity permutation, so nothing about the rendered
+    block changes until an experiment sets this deliberately. Unrecognised
+    values fall back to the default and trace to stderr, matching
+    `resolve_supersession_treatment`.
+    """
+    candidates = (
+        os.environ.get(ENV_ORDER_POLICY),
+        kwarg,
+        _read_toml_str_for(ORDER_POLICY_FLAG, start),
+    )
+    for raw in candidates:
+        if raw is None:
+            continue
+        norm = raw.strip().lower()
+        if norm in ORDER_POLICIES:
+            return norm
+        print(
+            f"aelfrice: ignoring unknown order_policy {raw!r} "
+            f"(expected one of {', '.join(ORDER_POLICIES)})",
+            file=sys.stderr,
+        )
+    return ORDER_POLICY_LANE
 
 
 def resolve_supersession_factor(
