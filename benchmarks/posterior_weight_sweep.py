@@ -39,8 +39,10 @@ Four traps this umbrella has already paid for, and how they are handled
 Determinism
 -----------
 Ingestion runs once per question and every arm retrieves against that same
-store; ``--verify-no-write`` checks (by file digest) that retrieval leaves
-the store byte-identical, so the arms are not ordered-dependent. The
+store; ``--verify-no-write`` checks (by digesting a full SQL dump, not the
+`.db` file — the store is WAL, so committed writes sit in the sidecar and
+leave the main file byte-identical) that retrieval leaves the store
+unchanged, so the arms are not order-dependent. The
 bootstrap uses a fixed seed. Given the same dataset the whole run is
 reproducible.
 
@@ -57,6 +59,7 @@ import json
 import math
 import os
 import random
+import sqlite3
 import statistics
 import sys
 import tempfile
@@ -142,8 +145,27 @@ def _resolved_weight() -> float:
 
 
 def _digest(path: Path) -> str:
-    """SHA-256 of a store file, for the no-write assertion."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    """SHA-256 of the store's *logical* contents, for the no-write assertion.
+
+    Hashing the `.db` file itself does not work here: `MemoryStore` opens
+    with `PRAGMA journal_mode=WAL` (store.py:1196), so a committed write
+    lands in the sidecar `-wal` and the main file stays byte-identical
+    until a checkpoint. A file digest therefore cannot fail, which makes
+    the assertion it backs vacuous — it would stay green if retrieval
+    started writing (the retrieval stamp at hook_search.py:154 is exactly
+    such a write, on a path this sweep does not use *today*).
+
+    Dumping the schema and rows through a second connection reads the
+    committed state including anything resident in the WAL, so the digest
+    changes when the store changes.
+    """
+    conn = sqlite3.connect(str(path))
+    try:
+        return hashlib.sha256(
+            "\n".join(conn.iterdump()).encode("utf-8")
+        ).hexdigest()
+    finally:
+        conn.close()
 
 
 def _gold_surfaces(question: LongMemEvalQuestion) -> list[str]:
@@ -319,7 +341,7 @@ def main() -> None:
     parser.add_argument("--out", default=None, help="Write the full result JSON here.")
     parser.add_argument(
         "--verify-no-write", action="store_true",
-        help="Assert retrieval leaves the store byte-identical (first question only).",
+        help="Assert retrieval leaves the store unchanged (first question only).",
     )
     args: argparse.Namespace = parser.parse_args()
 
