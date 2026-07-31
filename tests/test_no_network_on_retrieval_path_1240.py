@@ -176,19 +176,19 @@ def test_the_guard_detects_a_real_outbound_call(
     It also pins the documented destination: if the notifier is ever
     repointed, this test names the new host out loud.
     """
-    from aelfrice.lifecycle import PYPI_JSON_URL, _fetch_pypi_json
+    import aelfrice.lifecycle as lifecycle
 
     with _network_guard(monkeypatch) as attempts:
         # Fail-soft by contract: it swallows the guard's raise and returns
         # None. The recording, not the return value, is the evidence.
-        assert _fetch_pypi_json() is None
+        assert lifecycle._fetch_pypi_json() is None
 
     assert attempts, "guard recorded nothing for a call that does reach out"
     assert all(host == "pypi.org" for _kind, host in attempts), attempts
     # Compare the parsed hostname, not a substring of the URL:
     # `"pypi.org" in url` also accepts `https://evil.example/?x=pypi.org`,
     # which is the whole point of pinning the destination here.
-    assert urlsplit(PYPI_JSON_URL).hostname == "pypi.org"
+    assert urlsplit(lifecycle.PYPI_JSON_URL).hostname == "pypi.org"
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +315,7 @@ def test_the_opt_out_is_what_removes_the_notifier_spawn(
     """
     import subprocess
 
-    from aelfrice.lifecycle import maybe_check_for_update_async
+    import aelfrice.lifecycle as lifecycle
 
     cache_path = tmp_path / "update_check.json"  # absent, therefore stale
     spawns: list[list[str]] = []
@@ -328,7 +328,7 @@ def test_the_opt_out_is_what_removes_the_notifier_spawn(
 
     monkeypatch.setenv("AELF_NO_UPDATE_CHECK", "1")
     with _network_guard(monkeypatch) as attempts:
-        assert maybe_check_for_update_async(cache_path=cache_path) is False
+        assert lifecycle.maybe_check_for_update_async(cache_path=cache_path) is False
 
     assert spawns == []
     assert attempts == []
@@ -339,7 +339,7 @@ def test_the_opt_out_is_what_removes_the_notifier_spawn(
     # function catches and reports as False. The spawn record is the evidence.
     monkeypatch.delenv("AELF_NO_UPDATE_CHECK", raising=False)
     with _network_guard(monkeypatch) as attempts:
-        maybe_check_for_update_async(cache_path=cache_path)
+        lifecycle.maybe_check_for_update_async(cache_path=cache_path)
 
     assert len(spawns) == 1, spawns
     joined = " ".join(spawns[0])
