@@ -191,10 +191,32 @@ def _read_toml_value(
     return None
 
 
+def _reject_kwarg(key: str, expected: str, value: object) -> TypeError:
+    """Build the kwarg-tier rejection for `key`.
+
+    The kwarg tier is **strict**: unlike the env and TOML tiers it does
+    not discard a value it cannot use and defer to the next tier. Env
+    and TOML carry user-supplied configuration, where a bad value should
+    not take a session down; the kwarg is supplied by calling code,
+    where discarding it silently hides the caller's bug behind whatever
+    the next tier happens to return. Two of the three resolvers already
+    raised (#1253); this makes all three agree and say so.
+    """
+    return TypeError(
+        f"aelfrice implicit_feedback: {key} kwarg must be {expected}, got "
+        f"{type(value).__name__} {value!r}",
+    )
+
+
 def resolve_grace_seconds(
     explicit: int | None = None, *, start: Path | None = None
 ) -> int:
-    """Env > kwarg > TOML > DEFAULT_T_GRACE_SECONDS. Negative clamps to 0."""
+    """Env > kwarg > TOML > DEFAULT_T_GRACE_SECONDS. Negative clamps to 0.
+
+    Env and TOML are fail-soft. The kwarg tier is strict: a non-int
+    `explicit` (bool included) raises `TypeError` rather than falling
+    through to TOML. See `_reject_kwarg`.
+    """
     raw_env = os.environ.get(ENV_GRACE)
     if raw_env is not None and raw_env.strip():
         try:
@@ -206,7 +228,9 @@ def resolve_grace_seconds(
                 file=sys.stderr,
             )
     if explicit is not None:
-        return max(0, int(explicit))
+        if isinstance(explicit, bool) or not isinstance(explicit, int):
+            raise _reject_kwarg(GRACE_KEY, "an int", explicit)
+        return max(0, explicit)
     toml_v = _read_toml_value(GRACE_KEY, start=start)
     if isinstance(toml_v, int) and not isinstance(toml_v, bool):
         return max(0, toml_v)
@@ -216,7 +240,13 @@ def resolve_grace_seconds(
 def resolve_epsilon(
     explicit: float | None = None, *, start: Path | None = None
 ) -> float:
-    """Env > kwarg > TOML > DEFAULT_EPSILON. Negative clamps to 0.0."""
+    """Env > kwarg > TOML > DEFAULT_EPSILON. Negative clamps to 0.0.
+
+    Env and TOML are fail-soft. The kwarg tier is strict: an `explicit`
+    that is not a float or int (bool included, matching the TOML tier's
+    own bool rejection) raises `TypeError` rather than falling through
+    to TOML. See `_reject_kwarg`.
+    """
     raw_env = os.environ.get(ENV_EPSILON)
     if raw_env is not None and raw_env.strip():
         try:
@@ -228,6 +258,8 @@ def resolve_epsilon(
                 file=sys.stderr,
             )
     if explicit is not None:
+        if isinstance(explicit, bool) or not isinstance(explicit, (int, float)):
+            raise _reject_kwarg(EPSILON_KEY, "a float or int", explicit)
         return max(0.0, float(explicit))
     toml_v = _read_toml_value(EPSILON_KEY, start=start)
     if isinstance(toml_v, bool):
@@ -241,6 +273,11 @@ def is_enqueue_on_retrieve_enabled(
     explicit: bool | None = None, *, start: Path | None = None
 ) -> bool:
     """Env > kwarg > TOML > default **False** (#1162).
+
+    Env and TOML are fail-soft. The kwarg tier is strict: a non-bool
+    `explicit` raises `TypeError`. It previously returned `explicit`
+    unexamined, so the string `"false"` came back as a truthy `str`
+    from a function annotated `-> bool` (#1253).
 
     This defaulted True on the argument that the queue is additive —
     nothing reads a row until the sweeper runs. That held only because
@@ -266,6 +303,8 @@ def is_enqueue_on_retrieve_enabled(
         if norm in _ENV_TRUTHY:
             return True
     if explicit is not None:
+        if not isinstance(explicit, bool):
+            raise _reject_kwarg(ENQUEUE_KEY, "a bool", explicit)
         return explicit
     toml_v = _read_toml_value(ENQUEUE_KEY, start=start)
     if isinstance(toml_v, bool):

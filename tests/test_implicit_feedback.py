@@ -543,6 +543,123 @@ def test_is_enqueue_on_retrieve_env_off(monkeypatch) -> None:
     assert is_enqueue_on_retrieve_enabled() is False
 
 
+# --- #1253: the kwarg tier is strict and never falls through -----------
+#
+# Every test here clears the three env vars first. The env tier is
+# consulted before the kwarg tier, so an ambient
+# AELFRICE_IMPLICIT_FEEDBACK_* would return early and the resolver would
+# never reach the code under test — the assert would pass without
+# exercising anything.
+
+_FEEDBACK_ENV = (
+    "AELFRICE_IMPLICIT_FEEDBACK_GRACE_SECONDS",
+    "AELFRICE_IMPLICIT_FEEDBACK_EPSILON",
+    "AELFRICE_IMPLICIT_FEEDBACK_ENQUEUE",
+)
+
+
+def _no_feedback_env(monkeypatch) -> None:
+    for name in _FEEDBACK_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_enqueue_kwarg_rejects_str_instead_of_returning_it(monkeypatch) -> None:
+    """The defect #1253 was filed for. `if explicit is not None: return
+    explicit` handed back the *string* `'false'` from a function
+    annotated `-> bool`, so a caller threading a config value through
+    got a truthy result from a value that says false."""
+    _no_feedback_env(monkeypatch)
+    with pytest.raises(
+        TypeError, match="enqueue_on_retrieve kwarg must be a bool"
+    ):
+        is_enqueue_on_retrieve_enabled("false")  # type: ignore[arg-type]
+
+
+def test_enqueue_kwarg_rejects_int(monkeypatch) -> None:
+    """`0` and `1` read as bools to a human and are not bools to
+    `isinstance`. Rejecting them keeps the `-> bool` annotation honest."""
+    _no_feedback_env(monkeypatch)
+    with pytest.raises(TypeError):
+        is_enqueue_on_retrieve_enabled(0)  # type: ignore[arg-type]
+
+
+def test_enqueue_kwarg_accepts_bool_both_ways(monkeypatch) -> None:
+    """Distinguishes rejection from breakage: the tier still works."""
+    _no_feedback_env(monkeypatch)
+    assert is_enqueue_on_retrieve_enabled(True) is True
+    assert is_enqueue_on_retrieve_enabled(False) is False
+
+
+def test_resolve_epsilon_kwarg_str_raises_type_error(monkeypatch) -> None:
+    """Before #1253 a str kwarg reached bare `float()` and surfaced as
+    `ValueError`. Asserting `TypeError` specifically is what makes this
+    a distinguishing test rather than a restatement of the old
+    behaviour — `pytest.raises(TypeError)` fails on a `ValueError`."""
+    _no_feedback_env(monkeypatch)
+    with pytest.raises(
+        TypeError, match="epsilon kwarg must be a float or int"
+    ):
+        resolve_epsilon("not-a-number")  # type: ignore[arg-type]
+
+
+def test_resolve_epsilon_kwarg_rejects_bool(monkeypatch) -> None:
+    """`float(True)` is `1.0` — a 100% exploration rate from a kwarg
+    that only says "yes". The TOML tier of this same resolver already
+    rejects bool; the kwarg tier now agrees with it."""
+    _no_feedback_env(monkeypatch)
+    with pytest.raises(TypeError):
+        resolve_epsilon(True)  # type: ignore[arg-type]
+
+
+def test_resolve_grace_seconds_kwarg_str_raises_type_error(monkeypatch) -> None:
+    """`int("900")` succeeds, so before #1253 this returned `900` and
+    looked correct. A well-formed string is the case that hid the
+    missing validation."""
+    _no_feedback_env(monkeypatch)
+    with pytest.raises(
+        TypeError, match="grace_window_seconds kwarg must be an int"
+    ):
+        resolve_grace_seconds("900")  # type: ignore[arg-type]
+
+
+def test_resolve_grace_seconds_kwarg_rejects_bool(monkeypatch) -> None:
+    """`int(True)` is a one-second grace window."""
+    _no_feedback_env(monkeypatch)
+    with pytest.raises(TypeError):
+        resolve_grace_seconds(True)  # type: ignore[arg-type]
+
+
+def test_bad_kwarg_raises_rather_than_falling_through(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Strictness is the whole point of the policy: a bad kwarg must not
+    be discarded in favour of a later tier, because a plausible value
+    from TOML would hide the caller's bug.
+
+    The first three asserts prove the TOML tier really would have
+    answered here, so the three `raises` below are rejections of a live
+    fallback and not vacuous passes."""
+    _no_feedback_env(monkeypatch)
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[implicit_feedback]\n"
+        "grace_window_seconds = 90\n"
+        "epsilon = 0.10\n"
+        "enqueue_on_retrieve = true\n"
+    )
+    assert resolve_grace_seconds(start=tmp_path) == 90
+    assert resolve_epsilon(start=tmp_path) == 0.10
+    assert is_enqueue_on_retrieve_enabled(start=tmp_path) is True
+
+    with pytest.raises(TypeError):
+        resolve_grace_seconds("900", start=tmp_path)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        resolve_epsilon("0.5", start=tmp_path)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        is_enqueue_on_retrieve_enabled(  # type: ignore[arg-type]
+            "false", start=tmp_path
+        )
+
+
 # --- Integration: epsilon respected end-to-end --------------------------
 
 
