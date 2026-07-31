@@ -230,15 +230,32 @@ def test_empty_injection_events_reports_zero_without_dividing_by_zero(
     assert st.is_dead is False
 
 
-def test_diagnose_does_not_write_to_the_store(tmp_path) -> None:
-    """Read-only contract: a diagnostic must not mutate the store it reads.
+def test_diagnose_opens_the_store_read_only(tmp_path, monkeypatch) -> None:
+    """Read-only contract: a diagnostic must not be able to mutate the store.
 
-    Constructing a `MemoryStore` would run pending one-shot migrations;
-    this path opens `mode=ro` instead. Asserted by mtime and size rather
-    than trusted from the connection string.
+    Asserted on the connection string rather than on the file's mtime.
+    An mtime check passes whether or not the guard is present — a
+    read-only *workload* through a read-write handle does not touch the
+    file either — so it would have gone green against a dropped
+    `mode=ro`. Verified by mutation: replacing the URI with a plain
+    `sqlite3.connect(store_path)` fails this test and nothing else.
     """
+    import sqlite3 as _sqlite3
+
+    from aelfrice import doctor as _doctor
+
+    seen: list[tuple[str, bool]] = []
+    real = _sqlite3.connect
+
+    def spy(dsn, *a, **kw):
+        seen.append((str(dsn), bool(kw.get("uri", False))))
+        return real(dsn, *a, **kw)
+
+    monkeypatch.setattr(_doctor.sqlite3, "connect", spy)
     db = tmp_path / "m.db"
     _mk_store(db, [("b1", 1), ("b2", 0)])
-    before = (db.stat().st_mtime_ns, db.stat().st_size)
-    diagnose_reference_signal(str(db))
-    assert (db.stat().st_mtime_ns, db.stat().st_size) == before
+    assert diagnose_reference_signal(str(db)) is not None
+    assert seen, "no sqlite connection was opened"
+    dsn, uri = seen[-1]
+    assert uri is True
+    assert "mode=ro" in dsn
