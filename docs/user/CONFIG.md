@@ -470,6 +470,31 @@ One batched query per retrieval (`SELECT DISTINCT dst … WHERE type = 'SUPERSED
 
 Precedence (first decisive wins), for all three knobs: env var `AELFRICE_SUPERSESSION_DEMOTE=1`/`0`, `AELFRICE_SUPERSESSION_TREATMENT=demote|exclude`, `AELFRICE_SUPERSESSION_FACTOR=<float>` > explicit Python kwarg on `retrieve_v2()` > TOML `[retrieval] use_supersession_demote` / `supersession_treatment` / `supersession_demote_factor` > defaults `false` / `demote` / `0.5`. Unrecognised treatments and non-numeric factors trace to stderr and fall through to the default rather than raising.
 
+### `order_policy`
+
+String, default `lane` (v4.3+, [#1274](https://github.com/robotrocketscience/aelfrice/issues/1274)). Selects the order in which retrieved beliefs are **rendered into the injected block**. This is a render-layer knob, not a retrieval one: it permutes the hits `retrieve()` already returned, changing nothing about which beliefs are selected or how many tokens they cost.
+
+Position in the block is otherwise a side effect of lane concatenation (`locked + l25 + l1 + hrr + spine + bfs`) rather than a policy anyone chose, which makes it untestable. Naming the policies makes the question a config flip.
+
+| Value | Behaviour |
+|---|---|
+| `lane` (default) | Identity permutation — the block is byte-identical to pre-#1274 output. |
+| `locks_last` | Non-locked hits first, the user-locked tier last. |
+| `score_desc` | User-locked tier first, then non-locked hits by descending rerank score. |
+
+Every policy is a **stable, total** permutation: ties break on the hit's original index, so the rendered order is a pure function of (hits, policy, scores) and replay reproduces it exactly. No policy adds or drops a hit.
+
+`score_desc` needs the L1 rerank scores, which are not carried on `Belief`. When they are not supplied it falls back to `lane` **and traces to stderr** rather than silently substituting a proxy such as the posterior — a silent downgrade of an explicit setting is the failure [#1271](https://github.com/robotrocketscience/aelfrice/issues/1271) documents. Because rerank scores are log-domain and negative, an unscored hit sorts *last*, not first.
+
+The policy that produced a block is recorded as `order_policy` on the hook-audit row, so an ordering A/B can attribute a block to its arm from the audit alone.
+
+Two cautions for anyone measuring this, both from the #1274 pre-flight over 341 real `user_prompt_submit` blocks:
+
+- **A lock-relocating policy is not attention-neutral.** Position 1 is a user lock in 100% of live blocks, with a median of 50 locks preceding the first non-locked belief. Any arm that moves the locked tier should be scored on lock-following, not answer accuracy alone.
+- **The benchmark harness has no lock tier.** `benchmarks/longmemeval_adapter.py` retrieves with `include_locked=False` and every bench adapter ingests at `LOCK_NONE`, so `lane`, `locks_last` and `score_desc` are the *same permutation* there. A null from that harness is an inert instrument, not a null result.
+
+Precedence (first decisive wins): env var `AELFRICE_ORDER_POLICY=lane|locks_last|score_desc` > explicit argument > TOML `[retrieval] order_policy` > default `lane`. Unrecognised values trace to stderr and fall through to the default rather than raising.
+
 ### `use_origin_tiebreak`
 
 Boolean, default `false` (v4.0+, [#1089](https://github.com/robotrocketscience/aelfrice/issues/1089)). Enables the **origin-priority tie-break**: when two ranked candidates tie on relevance, the higher-trust *origin* wins (e.g. a belief curated from a `user`/`feedback` fact file outranks one auto-captured from a chat transcript).
