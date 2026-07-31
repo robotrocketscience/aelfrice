@@ -169,6 +169,10 @@ DEFAULT_CACHE_CAPACITY: Final[int] = 256
 CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 RETRIEVAL_SECTION: Final[str] = "retrieval"
 ENTITY_INDEX_FLAG: Final[str] = "entity_index_enabled"
+# #1279 exploration slot — `[retrieval] exploration_*` TOML tier.
+EXPLORATION_FLAG: Final[str] = "exploration_enabled"
+EXPLORATION_CADENCE_FLAG: Final[str] = "exploration_cadence"
+EXPLORATION_SLOTS_FLAG: Final[str] = "exploration_slots"
 BFS_FLAG: Final[str] = "bfs_enabled"
 POSTERIOR_WEIGHT_FLAG: Final[str] = "posterior_weight"
 # v1.5.0 BM25F flag. Default-ON since v1.7.0: the #154 composition-
@@ -270,6 +274,14 @@ ORDER_POLICIES: Final[tuple[str, ...]] = (
     ORDER_POLICY_LOCKS_LAST,
 )
 
+# #1279: defaults live in `aelfrice.exploration`, which is kept free of
+# config/IO imports; the resolvers around them live here with every other
+# `[retrieval]` lane flag.
+from aelfrice.exploration import (  # noqa: E402, PLC0415
+    DEFAULT_EXPLORATION_CADENCE,
+    DEFAULT_EXPLORATION_SLOTS,
+)
+
 SUPERSESSION_FACTOR_FLAG: Final[str] = "supersession_demote_factor"
 # 0.5 per the issue spec, the same default the uri_baki primitive carries.
 SUPERSESSION_DEMOTE_FACTOR: Final[float] = 0.5
@@ -357,6 +369,10 @@ ENV_ORIGIN_TIEBREAK: Final[str] = "AELFRICE_ORIGIN_TIEBREAK"
 # #1176 proposal 3 — ACT-R fan-effect ranker on the L2.5 entity lane.
 # Tri-state like ENV_ORIGIN_TIEBREAK; default-OFF pending the A/B.
 ENV_FAN_EFFECT: Final[str] = "AELFRICE_FAN_EFFECT"
+# #1279 exploration slot (#1176 proposal 5). Default OFF.
+ENV_EXPLORATION: Final[str] = "AELFRICE_EXPLORATION"
+ENV_EXPLORATION_CADENCE: Final[str] = "AELFRICE_EXPLORATION_CADENCE"
+ENV_EXPLORATION_SLOTS: Final[str] = "AELFRICE_EXPLORATION_SLOTS"
 # #1187 supersession lane env overrides. Tri-state; default-OFF.
 ENV_SUPERSESSION_DEMOTE: Final[str] = "AELFRICE_SUPERSESSION_DEMOTE"
 ENV_SUPERSESSION_TREATMENT: Final[str] = "AELFRICE_SUPERSESSION_TREATMENT"
@@ -1191,6 +1207,89 @@ def is_fan_effect_enabled(kwarg: bool | None = None) -> bool:
     if kwarg is not None:
         return kwarg
     return False
+
+
+def _env_exploration_override() -> bool | None:
+    """Return True/False if AELFRICE_EXPLORATION is set to a recognised
+    truthy/falsy value, else None (#1279). Symmetric to
+    `_env_fan_effect_override`."""
+    raw = os.environ.get(ENV_EXPLORATION)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def is_exploration_enabled(
+    kwarg: bool | None = None, *, start: Path | None = None
+) -> bool:
+    """Resolve the #1279 exploration-slot flag (#1176 proposal 5).
+
+    Precedence: `AELFRICE_EXPLORATION` env var -> explicit kwarg ->
+    `[retrieval] exploration_enabled` in `.aelfrice.toml` -> default
+    **False**.
+
+    Default-OFF because the slot changes what is injected into a live
+    conversation. Its purpose is not ranking: 84.1% of the store has never
+    been injected and therefore can never earn evidence, and the slot is the
+    intervention that breaks that loop. Flipping the default is a separate
+    operator call, gated on coverage growth measured from
+    `exploration_events`, not on a relevance score.
+    """
+    env = _env_exploration_override()
+    if env is not None:
+        return env
+    if kwarg is not None:
+        return kwarg
+    toml_value = _read_toml_flag_for(EXPLORATION_FLAG, start)
+    if toml_value is not None:
+        return toml_value
+    return False
+
+
+def resolve_exploration_cadence(
+    kwarg: int | None = None, *, start: Path | None = None
+) -> int:
+    """Turns between exploration fires (#1279). Default 20.
+
+    `<= 0` disables exploration rather than raising — `should_explore`
+    guards the modulus, so a misconfigured cadence degrades to "never
+    explore" instead of a `ZeroDivisionError` inside a retrieval.
+    """
+    env = _env_positive_int(ENV_EXPLORATION_CADENCE)
+    if env is not None:
+        return env
+    if kwarg is not None:
+        return int(kwarg)
+    toml_value = _read_toml_float_for(EXPLORATION_CADENCE_FLAG, start)
+    if toml_value is not None:
+        return int(toml_value)
+    return DEFAULT_EXPLORATION_CADENCE
+
+
+def resolve_exploration_slots(
+    kwarg: int | None = None, *, start: Path | None = None
+) -> int:
+    """Pack slots given to exploration on a firing turn (#1279). Default 1.
+
+    Slots are *substituted*, never appended — see
+    `hook._substitute_exploration_slots`. A slot that grew the block would
+    be a budget increase wearing an exploration costume, and would confound
+    the coverage measurement the slot exists to produce.
+    """
+    env = _env_positive_int(ENV_EXPLORATION_SLOTS)
+    if env is not None:
+        return env
+    if kwarg is not None:
+        return int(kwarg)
+    toml_value = _read_toml_float_for(EXPLORATION_SLOTS_FLAG, start)
+    if toml_value is not None:
+        return int(toml_value)
+    return DEFAULT_EXPLORATION_SLOTS
 
 
 def _env_temporal_spine_override() -> bool | None:
