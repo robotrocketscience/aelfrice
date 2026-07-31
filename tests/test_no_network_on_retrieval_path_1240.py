@@ -19,8 +19,9 @@ raise is only there to stop real egress.
 
 **The guard is armed at the socket layer, not at `urlopen`.** Patching
 `urllib.request.urlopen` would gate exactly one library and miss
-`http.client`, `requests`, `httpx`, or a raw socket. The four `socket`
-entry points below sit underneath all of them:
+`http.client`, `requests`, and `httpx`. Those three all reach the network
+through `socket.create_connection`, so the four `socket` entry points below
+sit underneath all of them:
 
   * `getaddrinfo` and `gethostbyname` — resolution. `getaddrinfo` is
     included because DNS is the *first* network touch, without which these
@@ -34,6 +35,30 @@ entry points below sit underneath all of them:
 
 Each of the four has a test that reddens when its arm is removed; an arm
 with nothing to prove it can fire is not covered.
+
+**What this guard does NOT cover, stated rather than implied.** It enforces
+the **TCP connect path and those two resolvers** — not "any raw socket". At
+least three doors bypass all four arms, measured against this guard:
+
+```
+gethostbyname_ex         recorded=[]  -> gaierror (real resolver reached)
+getnameinfo              recorded=[]  -> ('198.51.100.7', 'http')
+UDP sendto (SOCK_DGRAM)  recorded=[]  -> returned 1   (a byte left)
+TCP connect (control)    recorded=[('connect', '198.51.100.7')]  -> blocked
+```
+
+A `SOCK_DGRAM` socket never calls `connect` or `connect_ex` — `sendto`
+takes the address directly — so UDP to a literal IP is neither recorded nor
+blocked. `gethostbyname_ex` and `getnameinfo` are further resolver doors on
+the same footing as `gethostbyname`.
+
+These are deliberately left open. Nothing in `src/` speaks UDP or reaches
+for the legacy resolvers, the guard is test-only, and an arms race here has
+no natural stopping point. The point of writing them down is that the
+previous wording — "or a raw socket" — promised coverage the arms do not
+deliver, which is the same defect #1247 was filed about. Widen the arms
+only if something on the retrieval path starts using one of these; do not
+widen the claim without widening the arms.
 
 `test_the_guard_detects_a_real_outbound_call` is the distinguishing assert:
 it drives the one function in the package that genuinely does reach the
@@ -100,8 +125,13 @@ def _network_guard(
     neither recorded nor blocked while this guard was armed.
 
     Nothing in `src/` reaches for either of the legacy spellings today. They
-    are covered so the docstring's "or a raw socket" claim below is true of
-    what is enforced rather than of what was intended.
+    are covered because the module docstring's claim should be true of what
+    is enforced rather than of what was intended.
+
+    Scope, so this is not read as wider than it is: these four cover the TCP
+    connect path and two of the resolvers. UDP `sendto`, `gethostbyname_ex`
+    and `getnameinfo` bypass all four and are deliberately not armed — see
+    the module docstring for the measurements and the reasoning.
     """
     attempts: list[tuple[str, str]] = []
     real_getaddrinfo = socket.getaddrinfo
