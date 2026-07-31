@@ -45,9 +45,12 @@ bespoke instrumentation channel.
   (`manual` or `auto`) plus pre/post token counts. Written by the host
   when it compacts. This is the independent witness #1252 says does not
   exist; it exists, it is just not in the audit log.
-- **Numerator — the hook fired for that reset.** A transcript record
-  whose text carries the `SessionStart:compact` hook-result marker.
-  Written by the host when it runs the hook, not by the hook.
+- **Numerator — the hook fired for that reset.** A `hook_success`
+  attachment record carrying the `SessionStart:compact` marker. Written
+  by the host when it runs the hook, not by the hook. Matched
+  structurally rather than by substring, because a conversation that
+  discusses the marker writes that literal into its own transcript and
+  a substring match counts the discussion as a firing.
 
 Both are host-emitted, so neither can be self-confirming: aelfrice
 cannot cause a `compact_boundary` to appear, and cannot suppress one.
@@ -136,6 +139,8 @@ from pathlib import Path
 
 COMPACT_BOUNDARY_SUBTYPE = "compact_boundary"
 SESSION_START_COMPACT_MARKER = "SessionStart:compact"
+ATTACHMENT_TYPE = "attachment"
+HOOK_SUCCESS_KIND = "hook_success"
 
 CLEARS_AT = 0.98
 KILLS_BELOW = 0.90
@@ -180,14 +185,35 @@ def _boundary_trigger(record: dict[str, object]) -> str:
     return "unknown"
 
 
-def _has_session_start_compact(raw_line: str) -> bool:
-    """True when the raw record carries the hook-result marker.
+def _is_fire_marker(record: dict[str, object]) -> bool:
+    """True only for a host-written hook-result record for the fire.
 
-    Matched on the raw line rather than a parsed field: the host nests
-    hook output at different depths across record types, and the marker
-    itself is unambiguous — no other event renders that literal.
+    Structure, not substring. The marker text is matched **inside a
+    `hook_success` attachment**, which is the record the host writes
+    when it runs the hook.
+
+    Substring-on-the-raw-line was the first version and it is wrong,
+    because writing about the marker creates markers: a conversation
+    that discusses `SessionStart:compact` puts that literal into its own
+    transcript as ordinary message text, and the scanner then counted
+    the discussion as a firing. Measured on the corpus this check was
+    developed against: 72 records carry it as a `hook_success`
+    attachment and 15 carry it as `user` / `assistant` message text,
+    every one of the latter authored while writing this script.
+
+    Those 15 landed in a session with no boundary, so they fell out as
+    unpaired and the reported rate was unaffected — luck, not design. In
+    a session that had compacted, a contaminating line following a
+    boundary would have marked it fired.
     """
-    return SESSION_START_COMPACT_MARKER in raw_line
+    if record.get("type") != ATTACHMENT_TYPE:
+        return False
+    attachment = record.get("attachment")
+    if not isinstance(attachment, dict):
+        return False
+    if attachment.get("type") != HOOK_SUCCESS_KIND:
+        return False
+    return SESSION_START_COMPACT_MARKER in json.dumps(attachment)
 
 
 def scan_file(path: Path, since: str | None, tally: Tally) -> None:
@@ -209,8 +235,10 @@ def scan_file(path: Path, since: str | None, tally: Tally) -> None:
             raw_line = raw_line.strip()
             if not raw_line:
                 continue
-            marker = _has_session_start_compact(raw_line)
-            if not marker and COMPACT_BOUNDARY_SUBTYPE not in raw_line:
+            if (
+                SESSION_START_COMPACT_MARKER not in raw_line
+                and COMPACT_BOUNDARY_SUBTYPE not in raw_line
+            ):
                 continue
             try:
                 record = json.loads(raw_line)
@@ -218,6 +246,7 @@ def scan_file(path: Path, since: str | None, tally: Tally) -> None:
                 continue
             if not isinstance(record, dict):
                 continue
+            marker = _is_fire_marker(record)
             timestamp = _record_timestamp(record)
             if since and timestamp and timestamp < since:
                 continue

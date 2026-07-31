@@ -49,7 +49,7 @@ and aelfrice emits neither:
 | side | record | source |
 |---|---|---|
 | a context reset happened | `subtype == "compact_boundary"`, with `compactMetadata.trigger` (`manual` / `auto`) and pre/post token counts | host |
-| the hook fired for it | a record carrying the `SessionStart:compact` hook-result marker | host |
+| the hook fired for it | a `hook_success` attachment record carrying the `SessionStart:compact` marker | host |
 
 This is the denominator #1252 says is unobtainable. It is obtainable —
 it was simply not in the log that was being searched. The transcript is
@@ -108,8 +108,8 @@ sessions w/o boundary: 1411
 boundaries total     : 92
   scoreable          : 73
   trailing (excluded): 19
-markers seen         : 76
-markers unpaired     : 4
+markers seen         : 72
+markers unpaired     : 0
 
 fired                : 72
 unfired              : 1
@@ -156,15 +156,43 @@ question, and it lands on #1177 rather than here. But it dwarfs the
 fire rate in consequence, and proposal 11 should not be built against a
 98.6% number while this one stands unaddressed.
 
-## 6. Known limitation
+## 6. Known limitations
 
-The numerator matches a marker that the host writes when it records the
-hook result. On this corpus 39 of 77 compact-marker lines carry no
-`aelfrice-baseline` block, so the marker is present when aelfrice emits
-nothing — it witnesses the firing, not merely the output. That is the
-favourable direction, but it is an inference from the host's recording
-behaviour rather than a documented contract, and a host change could
-invalidate it silently. If the auto path is ever powered up, the
+### The measurement contaminated itself, and the matcher was tightened
+
+The first version matched the marker as a substring of the raw line.
+That is wrong in a way worth recording, because **writing about the
+marker creates markers**: a conversation discussing
+`SessionStart:compact` puts that literal into its own transcript, and
+the scanner counted the discussion as a firing.
+
+It is separable, cleanly and structurally. On this corpus:
+
+- **72** records carry the marker inside a `hook_success` attachment —
+  host-written hook results.
+- **15** carry it as `user` / `assistant` message text, every one
+  authored while writing this check.
+
+The matcher now requires `type == "attachment"` and
+`attachment.type == "hook_success"`, and the attachment kind alone is
+not sufficient — `SessionStart:clear` is a `hook_success` too and is
+not a compaction, so the marker text is still required inside it.
+
+The reported rate did not move: 98.6% before and after, because all 15
+contaminated lines landed in a session with no compaction boundary and
+fell out as unpaired. That was luck rather than design — in a session
+that had compacted, a contaminating line following a boundary would
+have marked it fired. Any re-run of this check must use the structural
+matcher, and any tool that measures a marker it also discusses should
+assume the same problem until it has counted both populations.
+
+### The numerator is a host recording behaviour, not a contract
+
+`hook_success` is the host's record of running the hook, so it
+witnesses the firing rather than the output — the favourable direction,
+and now a structural fact rather than the inference the first draft
+rested on. It remains an undocumented host behaviour that a host change
+could alter silently. If the auto path is ever powered up, the
 numerator should be re-derived from an aelfrice-side record of the
 `source` field, which does not exist today (§1.1).
 

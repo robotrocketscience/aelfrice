@@ -47,6 +47,25 @@ def _boundary(trigger: str = "manual", ts: str = "2026-07-01T00:00:00Z") -> str:
 
 
 def _marker(ts: str = "2026-07-01T00:00:01Z") -> str:
+    """A genuine host-written hook-result record."""
+    return json.dumps(
+        {
+            "type": "attachment",
+            "timestamp": ts,
+            "attachment": {
+                "type": "hook_success",
+                "content": "SessionStart:compact hook success",
+            },
+        }
+    )
+
+
+def _authored_marker(ts: str = "2026-07-01T00:00:01Z") -> str:
+    """The same literal as ordinary message text, not a hook result.
+
+    This is what a conversation *about* the marker writes into its own
+    transcript.
+    """
     return json.dumps(
         {"type": "user", "timestamp": ts, "content": "SessionStart:compact"}
     )
@@ -173,7 +192,7 @@ def test_underpowered_pass_is_not_a_pass() -> None:
     assert mod.verdict(1.0, 20) == "CLEARS"
 
 
-# --- the divergence guard ---------------------------------------------
+# --- the divergence guard and the contamination guard ------------------
 
 
 def test_divergence_over_the_limit_withdraws_the_pooled_verdict() -> None:
@@ -222,3 +241,49 @@ def test_underpowered_still_wins_over_divergence() -> None:
     assert mod.verdict(1.0, 5, {"manual": 1.0, "auto": 0.0}) == (
         "NO VERDICT (underpowered)"
     )
+
+
+def test_authored_marker_text_does_not_count_as_a_firing(
+    tmp_path: Path,
+) -> None:
+    """Writing about the marker must not manufacture one.
+
+    A substring match on the raw line counted a conversation discussing
+    `SessionStart:compact` as a fire. Measured on the development
+    corpus: 72 genuine `hook_success` attachments against 15 authored
+    mentions. Here the authored mention follows a real boundary, which
+    is the case that would have inflated the numerator.
+    """
+    tally = _scan(tmp_path, [_boundary(), _authored_marker(), _noise()])
+    assert tally.markers_seen == 0
+    assert tally.boundaries[0].fired is False
+
+
+def test_a_genuine_marker_is_still_counted(tmp_path: Path) -> None:
+    """Negative control for the tightening: the real record still fires."""
+    tally = _scan(tmp_path, [_boundary(), _marker(), _noise()])
+    assert tally.markers_seen == 1
+    assert tally.boundaries[0].fired is True
+
+
+def test_a_hook_success_for_another_event_does_not_count(
+    tmp_path: Path,
+) -> None:
+    """The attachment kind is necessary but not sufficient.
+
+    `SessionStart:clear` is a hook result too, and it is not a
+    compaction.
+    """
+    other = json.dumps(
+        {
+            "type": "attachment",
+            "timestamp": "2026-07-01T00:00:01Z",
+            "attachment": {
+                "type": "hook_success",
+                "content": "SessionStart:clear hook success",
+            },
+        }
+    )
+    tally = _scan(tmp_path, [_boundary(), other, _noise()])
+    assert tally.markers_seen == 0
+    assert tally.boundaries[0].fired is False
