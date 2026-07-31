@@ -12,9 +12,20 @@ The store, retrieval, scoring, scanner, and feedback paths run locally against S
 grep -rE "requests|httpx|urllib|aiohttp|socket\.|http\." src/aelfrice/
 ```
 
+**That grep is necessary but not sufficient, and here is what it misses.** It matches in-process HTTP and socket calls only. It cannot match a network call made by *shelling out to another program* — `subprocess.run(["gh", ...])` contains none of those tokens. One shipped hook does exactly that (see the pre-issue guard below). To cover that class as well:
+
+```bash
+grep -rE "subprocess|Popen|os\.system" src/aelfrice/
+```
+
+and read the argv of each hit: `git` is local, `gh` is not.
+
 The optional `[mcp]` extra (`fastmcp`) speaks MCP over stdio to the host on the same machine. No remote sockets.
 
-The single exception: the update notifier (`lifecycle.py`) makes one TTL-gated GET to `https://pypi.org/pypi/aelfrice/json` to check for new releases. Disable with `export AELF_NO_UPDATE_CHECK=1`. The notifier never transmits anything; it only reads.
+Two exceptions are on by default:
+
+- **The update notifier** (`lifecycle.py`) makes one TTL-gated GET to `https://pypi.org/pypi/aelfrice/json` to check for new releases. Disable with `export AELF_NO_UPDATE_CHECK=1`. The notifier never transmits anything; it only reads.
+- **The pre-issue duplicate guard** (`pre_issue_create_hook.py`, installed by default since v3.4.0) runs `gh issue list --search <tokens>` before a `gh issue create` tool call, to warn about duplicates. **This transmits data**: the tokens are derived from the issue title you typed. It fires only on `gh issue create` — never on ordinary retrieval, ingest, or any other command. Disable with `export AELFRICE_NO_PRE_ISSUE_GUARD=1`, bypass a single call with `ALLOW_DUP_ISSUE=1`, or never install it with `aelf setup --no-pre-issue-guard`.
 
 ## No telemetry
 
@@ -62,7 +73,16 @@ Before v4.2.0 this command hardcoded its gate to open and never read the sentine
 
 **Telemetry remains zero.** aelfrice does not phone-home about its own LLM usage. Tokens consumed are reported on stdout to the user only, never written to any network endpoint or logging service. On the direct-API path, `aelf onboard --llm-classify` makes one or more requests to `https://api.anthropic.com/`; nothing else. On the host-driven path, the aelfrice CLI makes zero direct outbound calls — the host LLM handles its own network IO under its own credentials.
 
-**Update notifier remains the only outbound call from aelfrice itself by default.** The TTL-gated GET to `https://pypi.org/pypi/aelfrice/json` (covered above) is read-only and on by default (disable with `AELF_NO_UPDATE_CHECK=1`). The two LLM-classify paths — `aelf onboard --llm-classify` and `aelf doctor --classify-orphans` — are opt-in and conditional, each gated on a consent scope. Those are the only three outbound-capable paths in the shipped aelfrice package — "paths", not "calls", because either LLM path may issue several batched requests in one run. Only the update check is on by default, and it transmits no data.
+**There are four outbound-capable paths in the shipped aelfrice package, and two of them are on by default.** "Paths", not "calls", because either LLM path may issue several batched requests in one run.
+
+| path | default | transmits |
+|---|---|---|
+| Update notifier — TTL-gated GET to `https://pypi.org/pypi/aelfrice/json` (disable with `AELF_NO_UPDATE_CHECK=1`) | **on** | nothing; read-only |
+| Pre-issue duplicate guard — `gh issue list --search <tokens>` before `gh issue create` (disable with `AELFRICE_NO_PRE_ISSUE_GUARD=1`, bypass once with `ALLOW_DUP_ISSUE=1`, or `aelf setup --no-pre-issue-guard`) | **on** since v3.4.0 | **yes** — tokens derived from the issue title you typed |
+| `aelf onboard --llm-classify` | opt-in, consent-gated | extracted candidate sentences |
+| `aelf doctor --classify-orphans` | opt-in, consent-gated | content of stored beliefs |
+
+Of the two default-on paths, only the notifier transmits nothing. The pre-issue guard does transmit, and it is the one an audit is most likely to miss, because it reaches the network by running another program rather than by opening a socket — see the note on the verification grep above.
 
 **Confirm at the source:**
 
