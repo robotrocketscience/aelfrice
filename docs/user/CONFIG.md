@@ -659,12 +659,15 @@ the sweep is audit-only — it writes nothing.** No `alpha` moves, no
 one can alter a posterior. Turning implicit exposure back into real feedback
 is a separate proposal, not a matter of setting these keys.
 
-All three resolve **env var > explicit kwarg > TOML > default**, and all three
-are fail-soft — but only two of them say so. `epsilon` and
-`grace_window_seconds` ignore a malformed value with an
-`aelfrice implicit_feedback: ignoring …` trace to stderr before falling through
-to the next tier. `enqueue_on_retrieve` falls through **silently**: a value
-outside the accepted set is ignored with no diagnostic at all. Check the
+All three resolve **env var > explicit kwarg > TOML > default**, and every tier
+is fail-soft: a value the tier cannot use is discarded and the next tier
+decides. Exactly one case announces itself — a malformed **env var** for
+`epsilon` or `grace_window_seconds` prints an
+`aelfrice implicit_feedback: ignoring …` trace to stderr before falling
+through. Every other rejection is silent, including a TOML value of the wrong
+type for any of the three keys. So `[implicit_feedback] epsilon = "0.1"`
+(quoted, therefore a string) resolves to `0.05` with no diagnostic at all, and
+`AELFRICE_IMPLICIT_FEEDBACK_ENQUEUE=enabled` resolves `false`. Check the
 resolved state rather than reading the absence of a warning as acceptance.
 
 ### `enqueue_on_retrieve`
