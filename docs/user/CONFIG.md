@@ -648,7 +648,7 @@ chains (idempotent, `--dry-run` supported), and `aelf doctor` reports
 spine presence + edge count. `AELFRICE_TEMPORAL_SPINE_WRITE` env var
 overrides.
 
-## `[implicit_feedback]` (v1.x+)
+## `[implicit_feedback]` (v1.6.0+)
 
 Retrieval-exposure feedback: the queue that records which beliefs a
 `retrieve()` surfaced, and the `aelf sweep-feedback` command that reports on
