@@ -271,7 +271,6 @@ class TestRetrievalWiring:
     def test_off_is_byte_identical(self, populated, monkeypatch) -> None:
         monkeypatch.delenv(ENV_UTTERANCE_PRIOR_WEIGHT, raising=False)
         s = populated
-        s = populated
         base = [b.id for b in retrieve_v2(s, "release bench", budget=4000).beliefs]
         zero = [
             b.id
@@ -377,7 +376,6 @@ class TestRetrievalWiring:
         """Building costs a full ingest-log pass; it must not run per query."""
         monkeypatch.delenv(ENV_UTTERANCE_PRIOR_WEIGHT, raising=False)
         s = populated
-        s = populated
         assert getattr(s, "_utterance_prior_cache", None) is None
         retrieve_v2(s, "release", budget=4000, utterance_prior_weight=4.0)
         first = getattr(s, "_utterance_prior_cache", None)
@@ -388,7 +386,6 @@ class TestRetrievalWiring:
     def test_off_does_not_build_the_table(self, populated, monkeypatch) -> None:
         """At W=0 nothing may touch the ingest log."""
         monkeypatch.delenv(ENV_UTTERANCE_PRIOR_WEIGHT, raising=False)
-        s = populated
         s = populated
         retrieve_v2(s, "release bench", budget=4000)
         assert getattr(s, "_utterance_prior_cache", None) is None

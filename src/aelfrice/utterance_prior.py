@@ -111,7 +111,26 @@ class UtterancePrior:
         correct neutral: absence of evidence is not evidence of utterance.
         """
         stems = set(tokenize_stemmed(text))
-        vals = [self.logodds[s] for s in stems if s in self.logodds]
+        # Iterated in sorted order so the sum is a function of the stem
+        # set alone. Set iteration order over strings depends on the
+        # process hash seed, and float addition is not associative, so an
+        # unsorted sum is in principle only bit-stable across processes by
+        # luck of the values.
+        #
+        # In practice CPython's `sum` is Neumaier-compensated for floats
+        # (3.12+), which absorbs the reordering this would otherwise
+        # expose: `sum([1e16, 1.0, -1e16])` is 1.0 where naive
+        # left-to-right gives 0.0. Scoring 3,000 real beliefs under five
+        # different PYTHONHASHSEEDs is byte-identical with or without the
+        # sort. So this is insurance against a runtime that does not
+        # compensate, not a fix for an observed defect — and it is not
+        # separately unit-testable for that reason, since the interpreter
+        # defeats every demonstration of the difference.
+        vals = [
+            self.logodds[stem]
+            for stem in sorted(stems)
+            if stem in self.logodds
+        ]
         if not vals:
             return 0.0
         return sum(vals) / len(vals)
