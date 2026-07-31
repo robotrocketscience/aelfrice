@@ -742,18 +742,33 @@ def _write_hook_audit_record(
 
 
 def _audit_order_policy() -> str | None:
-    """The ordering policy the render applied, for the audit row (#1274).
+    """The ordering policy the render **applied**, for the audit row (#1274).
 
     Resolves the same pure env -> kwarg -> TOML resolver that
-    `_split_belief_lines` used to build the block, so within one hook
-    process the recorded value is the one that actually rendered. Returns
-    None (field omitted) if the resolver is unreachable — the audit row is
-    fail-soft and must never take the hook down for a diagnostic field.
+    `_split_belief_lines` used to build the block, then puts it through
+    `effective_order_policy` with the same score input the render boundary
+    has — `_split_belief_lines` calls `order_for_injection` without scores,
+    because rerank scores are not carried on `Belief`.
+
+    That second step is the point. Recording the *resolved* policy would
+    label a block `score_desc` whose bytes are the `lane` permutation,
+    because `score_desc` degrades without scores. An ordering A/B reading
+    those rows would see two arms with identical blocks and conclude the
+    ordering is neutral, when the arm never ran — an inert instrument
+    reported as a null result. The field is documented as the policy that
+    produced `rendered_block`, so it has to be the applied one.
+
+    Returns None (field omitted) if the resolver is unreachable — the audit
+    row is fail-soft and must never take the hook down for a diagnostic
+    field.
     """
     try:
-        from aelfrice.retrieval import resolve_order_policy  # noqa: PLC0415
+        from aelfrice.retrieval import (  # noqa: PLC0415
+            effective_order_policy,
+            resolve_order_policy,
+        )
 
-        return resolve_order_policy()
+        return effective_order_policy(resolve_order_policy(), scores=None)
     except Exception:
         return None
 

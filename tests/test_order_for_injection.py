@@ -197,3 +197,60 @@ def test_split_belief_lines_default_is_byte_identical_to_lane(
     assert _split_belief_lines(hits) == _split_belief_lines(
         hits, order_policy=ORDER_POLICY_LANE
     )
+
+
+# --- the audit must name the policy that actually ran ---------------------
+
+
+def test_audit_records_the_applied_policy_not_the_requested_one(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`score_desc` degrades without scores, so the audit must say `lane`.
+
+    `_split_belief_lines` calls `order_for_injection` with no scores — they
+    are not carried on `Belief` — so a requested `score_desc` renders the
+    `lane` permutation. Recording the *requested* value would label a block
+    with an arm that did not run: an A/B would read two arms with identical
+    blocks and call the ordering neutral, which is an inert instrument, not
+    a null result.
+    """
+    from aelfrice.hook import _audit_order_policy
+
+    monkeypatch.setattr(
+        "aelfrice.retrieval._read_toml_str_for", lambda *a, **k: None
+    )
+    monkeypatch.setenv("AELFRICE_ORDER_POLICY", ORDER_POLICY_SCORE_DESC)
+
+    # The requested arm is score_desc...
+    assert resolve_order_policy() == ORDER_POLICY_SCORE_DESC
+    # ...but the block is byte-identical to lane...
+    hits = [_mk("aaaa", LOCK_USER), _mk("bbbb"), _mk("cccc")]
+    assert _split_belief_lines(hits) == _split_belief_lines(
+        hits, order_policy=ORDER_POLICY_LANE
+    )
+    # ...so that, and not score_desc, is what the audit row must carry.
+    assert _audit_order_policy() == ORDER_POLICY_LANE
+    capsys.readouterr()
+
+
+def test_audit_records_a_policy_that_does_apply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard above must not pass by always answering `lane`.
+
+    `locks_last` needs no scores, so it survives to the render — and the
+    audit has to say so, or the field would be useless for the one arm that
+    can currently run.
+    """
+    from aelfrice.hook import _audit_order_policy
+
+    monkeypatch.setattr(
+        "aelfrice.retrieval._read_toml_str_for", lambda *a, **k: None
+    )
+    monkeypatch.setenv("AELFRICE_ORDER_POLICY", ORDER_POLICY_LOCKS_LAST)
+
+    hits = [_mk("aaaa", LOCK_USER), _mk("bbbb")]
+    assert _split_belief_lines(hits) != _split_belief_lines(
+        hits, order_policy=ORDER_POLICY_LANE
+    )
+    assert _audit_order_policy() == ORDER_POLICY_LOCKS_LAST

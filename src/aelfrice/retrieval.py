@@ -730,6 +730,29 @@ def lock_injection_tokens(b: Belief, *, manifest_reference_locks: bool) -> int:
     return _belief_tokens(b)
 
 
+def effective_order_policy(
+    policy: str, *, scores: dict[str, float] | None = None
+) -> str:
+    """The policy `order_for_injection` will actually apply (#1274).
+
+    `score_desc` degrades to `lane` when the rerank scores are absent, and an
+    unrecognised value is the identity. Both are correct behaviours, but they
+    make *requested* and *applied* two different things, and anything that
+    reports which arm produced a block has to report the applied one — a row
+    labelled with an arm that did not run turns an inert instrument into what
+    reads as a null result.
+
+    This is the single source of truth for that rule: `order_for_injection`
+    dispatches through it, and the hook audit records its output. Keeping one
+    function means the two cannot drift into disagreeing about what happened.
+    """
+    if policy == ORDER_POLICY_LOCKS_LAST:
+        return ORDER_POLICY_LOCKS_LAST
+    if policy == ORDER_POLICY_SCORE_DESC and scores is not None:
+        return ORDER_POLICY_SCORE_DESC
+    return ORDER_POLICY_LANE
+
+
 def order_for_injection(
     hits: list[Belief],
     policy: str,
@@ -757,26 +780,31 @@ def order_for_injection(
     where an explicit setting was quietly replaced by a different one and the
     measurement it fed went unnoticed for a release.
 
+    Because of that degradation the *requested* policy and the *applied* one
+    can differ; :func:`effective_order_policy` is the shared rule for which
+    is which, and anything recording what produced a block must record the
+    applied one.
+
     Every policy is a stable, total permutation of `hits`: ties break on the
     original index, so the result is a pure function of (hits, policy,
     scores) and replay reproduces it exactly. No policy drops or adds a hit.
     """
-    if policy == ORDER_POLICY_LANE:
-        return list(hits)
+    if policy == ORDER_POLICY_SCORE_DESC and scores is None:
+        print(
+            "aelfrice: order_policy=score_desc needs rerank scores; "
+            "none supplied, falling back to lane order",
+            file=sys.stderr,
+        )
 
-    if policy == ORDER_POLICY_LOCKS_LAST:
+    applied = effective_order_policy(policy, scores=scores)
+
+    if applied == ORDER_POLICY_LOCKS_LAST:
         locked = [b for b in hits if b.lock_level == LOCK_USER]
         rest = [b for b in hits if b.lock_level != LOCK_USER]
         return rest + locked
 
-    if policy == ORDER_POLICY_SCORE_DESC:
-        if scores is None:
-            print(
-                "aelfrice: order_policy=score_desc needs rerank scores; "
-                "none supplied, falling back to lane order",
-                file=sys.stderr,
-            )
-            return list(hits)
+    if applied == ORDER_POLICY_SCORE_DESC:
+        assert scores is not None  # guaranteed by `effective_order_policy`
         locked = [b for b in hits if b.lock_level == LOCK_USER]
         rest = [b for b in hits if b.lock_level != LOCK_USER]
         # `-score` with the original index as the tiebreak keeps the sort
@@ -788,8 +816,9 @@ def order_for_injection(
         )
         return locked + [b for _, b in ranked]
 
-    # Unrecognised policy: identity, matching the resolver's fallback rather
-    # than raising inside the render path.
+    # `lane`, an unrecognised policy, and a degraded `score_desc` all land
+    # here — identity, matching the resolver's fallback rather than raising
+    # inside the render path.
     return list(hits)
 
 
