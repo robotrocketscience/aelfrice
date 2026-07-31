@@ -45,7 +45,7 @@ Imports are one-directional — modules lower in the table import from higher.
 | `hook_commit_ingest.py` | `PostToolUse:Bash` hook — ingests commit messages after `git commit`. |
 | `hook_search.py` | UserPromptSubmit retrieval helper that records every hit as a `feedback_history` row tagged `source='hook'`. Audit-only since #1086 (v4.0): the row logs exposure/recurrence but `record_retrieval` passes `update_posterior=False` by default, so a surfacing does **not** move α/β unless `AELFRICE_EXPOSURE_UPDATES_POSTERIOR=1` restores the legacy promote-on-exposure behaviour. |
 | `triple_extractor.py` | Pure-regex `(subject, relation, object)` extraction over six relation families. Used by commit-ingest and transcript-ingest. |
-| `context_rebuilder.py` | PreCompact alpha that surfaces aelfrice retrieval before Claude Code summarises. |
+| `context_rebuilder.py` | Post-compaction rebuilder that re-surfaces aelfrice retrieval after the harness summarises (delivered on `SessionStart(source="compact")`, #1031). |
 | `benchmark.py` | Deterministic 16-belief × 16-query synthetic harness. Frozen `BenchmarkReport`. |
 | `cli.py` | argparse multi-subcommand CLI. Entry: `aelf`. Everyday surface in `aelf --help`; full surface (diagnostic, hook, lifecycle verbs) in `aelf --help --advanced`. |
 | `mcp_server.py` | FastMCP server, 15 tools (12 v2.0 surface + `aelf_wonder` / `aelf_wonder_persist` / `aelf_wonder_gc` added in v3.0). `[mcp]` optional extra. See [MCP](../user/MCP.md) for the full tool list. |
@@ -177,7 +177,8 @@ Non-blocking contract: every failure path exits 0 with no stdout. A hook problem
 | `aelf-pre-issue-hook` | `PreToolUse:Bash` | Duplicate-detection guard before `gh issue create` — blocks (exit 2) on Jaccard title overlap ≥ 0.5 against open issues and shipped commits (#941). | v3.5.0 |
 | `aelf-claude-memory-mirror` | `PostToolUse:Write\|Edit\|MultiEdit` | One-way mirror of host claude-memory fact-file writes into the belief graph (#985). Consent-gated since v4.0 (#1089): runs once the first-setup reconcile records per-project consent, or when `AELFRICE_MIRROR_CLAUDE_MEMORY` / `[memory] mirror_claude_memory` enables it explicitly; an explicit falsy value is the opt-out. | v3.7.0 |
 | `aelf-agent-context-hook` | `PreToolUse:Agent\|Task` | Worker-context injection — dispatched workers inherit L0 locked + task-relevant beliefs via the harness `updatedInput` channel; fail-open passthrough, kill switch `AELFRICE_AGENT_CONTEXT=0` (#1068). | v4.0.0 |
-| `aelf-pre-compact-hook` | `PreCompact` | Context rebuilder — opt-in via `--rebuilder`; default trigger flipped from `manual` to `threshold` at v3.1 (#746). | opt-in |
+| `aelf-pre-compact-hook` | `PreCompact` | Rebuilder trigger-mode bookkeeping only — never injects (#1031). Opt-in via `--rebuilder`; default trigger flipped from `manual` to `threshold` at v3.1 (#746). | opt-in |
+| `aelf-session-start-hook` | `SessionStart(source="compact")` | Emits the rebuild block after compaction — the channel the harness actually honors (#1031). | opt-in |
 
 Each lane is opt-out via `aelf setup --no-<lane>`. All non-blocking: every failure path exits 0 with no stdout.
 
@@ -187,14 +188,23 @@ observation produced by a HOME-side hook (tracked separately). See
 [hook_activity_schema](../design/hook_activity_schema.md) for the field schema
 and the consumer-side dedupe-by-fingerprint warning.
 
-## PreCompact rebuilder
+## Post-compaction rebuilder
 
-When Claude Code approaches its context limit it fires `PreCompact`. The `aelf-pre-compact-hook` intercepts this event and injects a curated retrieval block before the harness summarises:
+> **Delivery channel (corrected by [#1031](https://github.com/robotrocketscience/aelfrice/issues/1031)):** the rebuild block ships on **SessionStart** with `source == "compact"`, *after* compaction — not on `PreCompact`. The harness rejects `additionalContext` emitted from a `PreCompact` hook (`PreCompact` is absent from the events that support it), so a block written there is discarded with a validation error. `pre_compact()` therefore emits nothing on stdout; it is retained for trigger-mode parity only. `rebuild_v14` and the block content are unchanged.
+
+When the harness approaches its context limit it fires `PreCompact`, compacts, then fires `SessionStart`. The rebuilder does its bookkeeping on the first event and its injection on the last:
 
 ```
 PreCompact fires
       ↓
-aelf-pre-compact-hook reads the last N turns from turns.jsonl
+aelf-pre-compact-hook resolves trigger_mode and surfaces the
+dynamic-mode parked trace on stderr — no stdout, nothing injected
+      ↓
+the harness compacts the conversation
+      ↓
+SessionStart fires with source == "compact"
+      ↓
+aelf-session-start-hook reads the last N turns from turns.jsonl
       ↓
 rebuild_v14(recent_turns, store, token_budget)
       → L0 locked beliefs (always first)
@@ -202,8 +212,8 @@ rebuild_v14(recent_turns, store, token_budget)
       → BM25+posterior hits against the session tail
       packed to token_budget (default: [rebuilder].token_budget in .aelfrice.toml)
       ↓
-emitted as additionalContext — both the aelfrice block
-and the harness's own summary land in the new context (augment mode)
+emitted as additionalContext — the aelfrice block lands in the
+new context alongside the harness's own summary (augment mode)
 ```
 
 `aelf rebuild [--transcript PATH] [--n N] [--budget N]` runs the same codepath manually (prints block to stdout). Install via `aelf setup --rebuilder`. Default `DEFAULT_TRIGGER_MODE` flipped from `"manual"` to `"threshold"` at v3.1 ([#746](https://github.com/robotrocketscience/aelfrice/issues/746)). Spec: [context_rebuilder.md](../design/context_rebuilder.md). Eval fixture policy: [eval_fixture_policy.md](../design/eval_fixture_policy.md).

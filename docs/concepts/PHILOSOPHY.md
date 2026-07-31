@@ -170,7 +170,7 @@ aelfrice is a memory substrate, not an LLM. The honest decomposition for any "th
 |---|---|---|
 | 1. Storage | SQLite WAL + locked belief | The rule is durably written and never lost. |
 | 2. Injection | L0 always-loaded into every prompt | The rule is in the model's context on every retrieval. |
-| 3. Compression survival | Per-prompt L0 re-injection (locks re-enter context on the first prompt after compaction); strengthened by the opt-in PreCompact rebuilder (`aelf setup --rebuilder`) | The rule survives a context-window compaction. |
+| 3. Compression survival | Per-prompt L0 re-injection (locks re-enter context on the first prompt after compaction); strengthened by the opt-in post-compaction rebuilder (`aelf setup --rebuilder`), delivered on `SessionStart(source="compact")` ([#1031](https://github.com/robotrocketscience/aelfrice/issues/1031)) | The rule survives a context-window compaction. |
 | 4. Violation detection | Not implemented | — |
 | 5. Violation blocking | Not implemented | — |
 | 6. LLM compliance | The model actually obeys the injected rule | **Not under aelfrice's control.** |
