@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from aelfrice.hook import _split_belief_lines
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.retrieval import (
     ORDER_POLICIES,
@@ -167,3 +168,32 @@ def test_resolver_rejects_an_unknown_value(
     # resolve to something else that looks like it worked.
     assert resolve_order_policy() == ORDER_POLICY_LANE
     assert "u_shaped" in capsys.readouterr().err
+
+
+# --- the render boundary --------------------------------------------------
+
+
+def test_split_belief_lines_honours_the_policy() -> None:
+    hits = [_mk("aaaa", LOCK_USER), _mk("bbbb")]
+    lane_lines, _ = _split_belief_lines(hits, order_policy=ORDER_POLICY_LANE)
+    last_lines, _ = _split_belief_lines(
+        hits, order_policy=ORDER_POLICY_LOCKS_LAST
+    )
+    assert 'id="aaaa"' in lane_lines[0]
+    assert 'id="bbbb"' in last_lines[0]
+    # Same beliefs, different bytes — the ordering reaches the render.
+    assert lane_lines != last_lines
+    assert sorted(lane_lines) == sorted(last_lines)
+
+
+def test_split_belief_lines_default_is_byte_identical_to_lane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AELFRICE_ORDER_POLICY", raising=False)
+    monkeypatch.setattr(
+        "aelfrice.retrieval._read_toml_str_for", lambda *a, **k: None
+    )
+    hits = [_mk("aaaa", LOCK_USER), _mk("bbbb"), _mk("cccc")]
+    assert _split_belief_lines(hits) == _split_belief_lines(
+        hits, order_policy=ORDER_POLICY_LANE
+    )

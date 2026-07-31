@@ -475,3 +475,43 @@ def test_write_audit_record_memory_db_no_cwd_pollution(
     )
     assert not (tmp_path / AUDIT_FILENAME).exists()
     assert list(tmp_path.glob("**/" + AUDIT_FILENAME)) == []
+
+
+def test_audit_record_carries_the_order_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1274: the ordering policy that produced the block is recorded.
+
+    Without it an ordering A/B cannot attribute a block to its arm from the
+    audit alone, which is the only per-turn record of what was injected.
+    """
+    db = tmp_path / "memory.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
+    _write_hook_audit_record(
+        hook=AUDIT_HOOK_USER_PROMPT_SUBMIT,
+        prompt="which policy rendered this",
+        rendered_block='<belief id="F1">a belief</belief>',
+        n_beliefs=1,
+        n_locked=0,
+        order_policy="locks_last",
+    )
+    records = read_hook_audit(_audit_path_for_db(db))
+    assert records[-1]["order_policy"] == "locks_last"
+
+
+def test_audit_record_omits_order_policy_when_unset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The field is additive: older readers must not see a null key."""
+    db = tmp_path / "memory.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
+    _write_hook_audit_record(
+        hook=AUDIT_HOOK_USER_PROMPT_SUBMIT,
+        prompt="no policy supplied",
+        rendered_block='<belief id="F1">a belief</belief>',
+        n_beliefs=1,
+        n_locked=0,
+    )
+    assert "order_policy" not in read_hook_audit(_audit_path_for_db(db))[-1]

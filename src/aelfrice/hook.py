@@ -669,6 +669,7 @@ def _write_hook_audit_record(
     prompt_shape_gate_skip: str | None = None,
     expansion_gate_reason: str | None = None,
     expansion_gate_skipped_bfs: bool | None = None,
+    order_policy: str | None = None,
     config: HookAuditConfig | None = None,
     stderr: IO[str] | None = None,
 ) -> None:
@@ -697,6 +698,12 @@ def _write_hook_audit_record(
     `expansion_gate_skipped_bfs` — True when the adaptive expansion-gate
     forced BFS off on this retrieve() call (only meaningful when the
     BFS lane was otherwise enabled).
+
+    #1274 additive field:
+    `order_policy` — the injection-block ordering policy that produced
+    `rendered_block` (`lane`, `score_desc`, `locks_last`). Recorded so an
+    ordering A/B can attribute a block to its arm from the audit alone,
+    and so replay can reproduce the permutation.
     """
     cfg = config if config is not None else load_hook_audit_config(stderr=stderr)
     if not cfg.enabled:
@@ -729,7 +736,26 @@ def _write_hook_audit_record(
         record["expansion_gate_reason"] = expansion_gate_reason
     if expansion_gate_skipped_bfs is not None:
         record["expansion_gate_skipped_bfs"] = bool(expansion_gate_skipped_bfs)
+    if order_policy is not None:
+        record["order_policy"] = order_policy
     _append_audit(audit_path, record, cfg.max_bytes, stderr=stderr)
+
+
+def _audit_order_policy() -> str | None:
+    """The ordering policy the render applied, for the audit row (#1274).
+
+    Resolves the same pure env -> kwarg -> TOML resolver that
+    `_split_belief_lines` used to build the block, so within one hook
+    process the recorded value is the one that actually rendered. Returns
+    None (field omitted) if the resolver is unreachable — the audit row is
+    fail-soft and must never take the hook down for a diagnostic field.
+    """
+    try:
+        from aelfrice.retrieval import resolve_order_policy  # noqa: PLC0415
+
+        return resolve_order_policy()
+    except Exception:
+        return None
 
 
 def _audit_tokens_from_block(block: str) -> int:
@@ -1127,6 +1153,7 @@ def user_prompt_submit(
                 latency_ms=latency_ms,
                 expansion_gate_reason=tel.expansion_gate_reason or None,
                 expansion_gate_skipped_bfs=tel.expansion_gate_skipped_bfs,
+                order_policy=_audit_order_policy(),
                 stderr=serr,
             )
             # #740: record the per-turn injected belief ids in the
@@ -1887,6 +1914,8 @@ def _filter_session_exclusions(
 
 def _split_belief_lines(
     hits: list[Belief],
+    *,
+    order_policy: str | None = None,
 ) -> tuple[list[str], list[str]]:
     """Render hits into verbatim `<belief>` lines + reference manifest lines.
 
@@ -1895,13 +1924,23 @@ def _split_belief_lines(
     locks and non-locked hits — renders verbatim as before. Returns
     `(belief_lines, manifest_lines)`; an empty `manifest_lines` means no
     reference locks were present (byte-identical to the pre-#1016 output).
+
+    #1274: this is the render boundary, so it is where the ordering policy
+    applies — downstream of every retrieval lane, upstream of the bytes.
+    `order_policy` defaults to the resolver, whose default is `lane`, the
+    identity permutation; under it this function is byte-identical to
+    before. Passing an explicit policy keeps the function pure for tests.
     """
     # Local import: keep the heavy retrieval module off hook.py's
     # module-load path (these formatters run only after a retrieve()).
     from aelfrice.retrieval import (  # noqa: PLC0415
         is_reference_lock,
         lock_manifest_line,
+        order_for_injection,
+        resolve_order_policy,
     )
+    policy = order_policy if order_policy is not None else resolve_order_policy()
+    hits = order_for_injection(hits, policy)
     belief_lines: list[str] = []
     manifest_lines: list[str] = []
     for h in hits:
@@ -3082,6 +3121,7 @@ def session_start(
                 session_id=session_id,
                 beliefs=hits,
                 latency_ms=latency_ms,
+                order_policy=_audit_order_policy(),
                 stderr=serr,
             )
         # #1031: carry the context-rebuilder block on the post-compaction
