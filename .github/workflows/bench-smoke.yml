@@ -51,6 +51,8 @@ jobs:
               - 'benchmarks/**'
               - 'tests/test_bench_smoke.py'
               - 'tests/test_recalibrate.py'
+              - 'tests/test_amabench_scoring.py'
+              - 'tests/test_longmemeval_scoring.py'
               - 'tests/fixtures/bench_smoke/**'
               - 'pyproject.toml'
               - 'uv.lock'
@@ -74,6 +76,18 @@ jobs:
       - if: steps.filter.outputs.relevant == 'true'
         name: Run adapter scorer recalibration check
         run: uv run pytest tests/test_recalibrate.py -v --timeout=60
+
+      # #1278: these two are gated behind `importorskip("datasets")`, and
+      # `datasets` ships only in the `[benchmarks]` extra. The ci.yml pytest
+      # matrix installs `--extra archive`, so the files skip there, and this
+      # job — the only one with the dependency — did not name them. They ran
+      # in no CI job at all and were green by absence for the whole of #1160.
+      - if: steps.filter.outputs.relevant == 'true'
+        name: Run benchmark scoring tests (datasets-gated)
+        run: |
+          uv run pytest tests/test_amabench_scoring.py \
+                        tests/test_longmemeval_scoring.py \
+                        -v --timeout=120
 
       - if: steps.filter.outputs.relevant != 'true'
         run: echo "No bench-smoke-relevant paths changed; reporting pass."
