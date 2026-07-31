@@ -112,15 +112,28 @@ def test_single_word_query_still_finds_match() -> None:
     assert {h.id for h in hits} == {"b1"}
 
 
-def test_multi_word_query_implicit_and() -> None:
-    """Two tokens AND together: only beliefs containing both match."""
+def test_multi_word_query_is_disjunctive_and_ranks_the_full_match_first() -> None:
+    """Two tokens OR together, with the belief containing both ranked
+    first (#1177).
+
+    This test asserted the opposite through v4.1: `ids == {"b1"}`, the
+    implicit AND. That contract was the recall cliff — requiring every
+    token to be present returned nothing for 28.7% of real user turns
+    and 100% of harness blocks on a live store, because no single belief
+    holds every word of a natural-language question. Partial matches are
+    now returned and ordered by bm25, which is what makes the belief
+    containing both tokens still come out on top.
+    """
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("b1", "bananas are yellow"))
     s.insert_belief(_mk("b2", "yellow submarines are common"))
     s.insert_belief(_mk("b3", "bananas are tasty"))
     hits = s.search_beliefs("bananas yellow")
-    ids = {h.id for h in hits}
-    assert ids == {"b1"}
+    ids = [h.id for h in hits]
+    assert set(ids) == {"b1", "b2", "b3"}
+    assert ids[0] == "b1", (
+        "the belief containing both tokens must still rank first"
+    )
 
 
 def test_no_match_returns_empty_list() -> None:

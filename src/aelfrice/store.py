@@ -812,13 +812,39 @@ _BACKFILL_STATEMENTS: tuple[str, ...] = (
 )
 
 
-def _escape_fts5_query(query: str) -> str:
-    """Convert free-form user input into a safe FTS5 MATCH expression.
+_FTS5_RAREST_TERMS: Final[int] = 3
+"""How many query tokens the disjunctive MATCH keeps (#1177, #1158).
 
-    Strategy: tokenize on whitespace, drop tokens that are empty after
-    stripping, double-quote-wrap each remaining token (with embedded
-    `"` doubled per FTS5 syntax), join with spaces. The result is a
-    valid FTS5 query that ANDs the tokens implicitly.
+Measured on a live 44,584-belief store over 503 distinct logged
+prompts: an OR over the 3 lowest-document-frequency tokens holds 91.3%
+of the conjunctive lane's top-20 hits — indistinguishable from a full
+OR's 91.4% — while costing 4.91 ms p50 on the user arm against the full
+OR's 43.67 ms. Raising it buys no measurable agreement (a 5-token trim
+also sits at 91.4%) and roughly doubles the latency, so 3 is the knee
+rather than a round number.
+"""
+
+
+def _quote_fts5_token(token: str) -> str:
+    """Double-quote-wrap one token, doubling embedded `"` per FTS5 syntax.
+
+    Quoting is what protects against FTS5 special characters (`.`, `-`,
+    `/`, parens, quotes, and the bare `AND`/`OR`/`NEAR` keywords) being
+    read as operators and raising `OperationalError` on what is really
+    an ordinary user query.
+    """
+    return '"' + token.replace('"', '""') + '"'
+
+
+def _escape_fts5_query(query: str) -> str:
+    """Convert free-form user input into a **conjunctive** FTS5 MATCH
+    expression: quoted tokens joined with spaces, which FTS5 reads as an
+    implicit AND.
+
+    Retained for callers that genuinely want every token to be present.
+    It is no longer what `search_beliefs` uses, because requiring every
+    token is zero-recall on natural-language queries — see
+    `MemoryStore._fts5_match_expression` (#1177).
 
     Empty / whitespace-only input returns the empty string; callers
     treat that as "no match" without hitting the FTS5 engine.
@@ -826,13 +852,18 @@ def _escape_fts5_query(query: str) -> str:
     tokens = query.split()
     if not tokens:
         return ""
-    escaped: list[str] = []
-    for t in tokens:
-        if not t:
-            continue
-        inner = t.replace('"', '""')
-        escaped.append(f'"{inner}"')
-    return " ".join(escaped)
+    return " ".join(_quote_fts5_token(t) for t in tokens if t)
+
+
+def _escape_fts5_query_disjunctive(query: str) -> str:
+    """Every token, OR-joined. The no-corpus-statistics fallback used
+    when the document-frequency probe is unavailable — still fixes the
+    recall cliff, just without the rarest-term trim that keeps it cheap.
+    """
+    tokens = query.split()
+    if not tokens:
+        return ""
+    return " OR ".join(_quote_fts5_token(t) for t in tokens if t)
 
 
 def _build_origin_priority_case() -> tuple[str, tuple[str, ...]]:
@@ -1099,6 +1130,11 @@ class MemoryStore:
         # #1135: retained for sidecar-file placement (persistent BM25F
         # index). ":memory:" disables persistence.
         self._db_path: str = path
+        # #1177: tri-state for the TEMP tables backing the disjunctive
+        # MATCH builder. None = not attempted, True/False = built or not
+        # available on this SQLite. Built lazily so a store that never
+        # searches never pays for them.
+        self._fts5_probe_state: bool | None = None
         self._conn: sqlite3.Connection = sqlite3.connect(path)
         self._conn.row_factory = sqlite3.Row
         # WAL only meaningful on-disk; harmless on :memory:.
@@ -3209,6 +3245,148 @@ class MemoryStore:
             for r in cur.fetchall()
         ]
 
+    def _ensure_fts5_query_probe(self) -> bool:
+        """Build the per-connection TEMP tables the disjunctive MATCH
+        builder needs. Returns False if they cannot be built.
+
+        Two virtual tables, both views over data that already exists.
+        Nothing is written to the database file and no schema migration
+        is involved — they live in the `temp` schema for the life of the
+        connection, so this is safe on a read-only DB:
+
+        * `fts5_vocab_1177` — `fts5vocab` over `beliefs_fts`, giving the
+          document frequency of an indexed term.
+        * `fts5_probe_1177` — an empty FTS5 table declared with the
+          *same* `porter unicode61` tokenizer, plus an `instance` vocab
+          over it. Writing a token into it and reading the terms back
+          out is how we ask FTS5 itself what a raw query token indexes
+          as, rather than reimplementing its tokenizer in Python.
+
+        That last point is the reason for the probe rather than reusing
+        `aelfrice.bm25.tokenize_stemmed`: the two disagree (`unicode61`
+        splits on `_` and folds diacritics, the Python tokenizer does
+        neither), and ranking against a vocabulary keyed one way with
+        terms produced the other resolves only 62.9% of tokens on a live
+        store against 99.7% for the native path. Unresolved tokens all
+        collapse to df 0 and masquerade as the rarest, which is exactly
+        the failure #1158 records for the IDF-clip lane.
+        """
+        if self._fts5_probe_state is not None:
+            return self._fts5_probe_state
+        try:
+            self._conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS temp.fts5_vocab_1177 "
+                "USING fts5vocab('main', 'beliefs_fts', 'row')"
+            )
+            self._conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS temp.fts5_probe_1177 "
+                "USING fts5(t, tokenize='porter unicode61')"
+            )
+            self._conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS temp.fts5_probe_terms_1177 "
+                "USING fts5vocab('temp', 'fts5_probe_1177', 'instance')"
+            )
+        except sqlite3.DatabaseError:
+            # An SQLite built without fts5vocab. The caller falls back to
+            # a plain OR, which is slower but still fixes the cliff.
+            self._fts5_probe_state = False
+            return False
+        self._fts5_probe_state = True
+        return True
+
+    def _fts5_rarest_tokens(
+        self, tokens: list[str], keep: int,
+    ) -> list[str] | None:
+        """The `keep` rarest of `tokens`, ascending by document frequency.
+
+        Rarity is measured on the terms FTS5 derives from each token, but
+        the returned values are the **original** tokens: re-emitting a
+        stemmed term is not safe, because the porter stemmer is not
+        idempotent — 416 of the 15,208 terms on a live store stem again
+        to something else (`abus` -> `abu`), and those documents would
+        silently stop matching.
+
+        Tokens that index no terms at all are dropped: a term absent from
+        the index matches nothing, so ORing it in is pure cost. Returns
+        None when the probe is unavailable or nothing resolved, which
+        tells the caller to fall back to a plain OR.
+        """
+        if not self._ensure_fts5_query_probe():
+            return None
+        try:
+            self._conn.execute("DELETE FROM temp.fts5_probe_1177")
+            self._conn.executemany(
+                "INSERT INTO temp.fts5_probe_1177(rowid, t) VALUES (?, ?)",
+                list(enumerate(tokens)),
+            )
+            # One round trip: the instance vocab's `doc` is the rowid we
+            # just assigned, so it maps each term back to its token.
+            terms_for: dict[int, list[str]] = {}
+            for row in self._conn.execute(
+                "SELECT term, doc FROM temp.fts5_probe_terms_1177"
+            ):
+                terms_for.setdefault(int(row["doc"]), []).append(str(row["term"]))
+            ranked: list[tuple[int, str]] = []
+            for idx, token in enumerate(tokens):
+                freqs = [
+                    int(r["doc"])
+                    for term in terms_for.get(idx, ())
+                    for r in self._conn.execute(
+                        "SELECT doc FROM temp.fts5_vocab_1177 WHERE term = ?",
+                        (term,),
+                    )
+                ]
+                if not freqs:
+                    continue
+                # A multi-term token (`add_to_list`) is as rare as its
+                # rarest part — that part is what will make it match.
+                ranked.append((min(freqs), token))
+        except sqlite3.DatabaseError:
+            return None
+        if not ranked:
+            return None
+        ranked.sort(key=lambda pair: pair[0])
+        return [token for _, token in ranked[:keep]]
+
+    def _fts5_match_expression(
+        self, query: str, *, keep: int = _FTS5_RAREST_TERMS,
+    ) -> str:
+        """Build the MATCH expression `search_beliefs` runs (#1177).
+
+        Disjunctive over the `keep` rarest query tokens, so bm25 ranks
+        partial matches instead of the engine filtering them out. This
+        replaces the implicit AND, which required *every* token to be
+        present and therefore went silent on exactly the multi-word
+        natural-language queries the lane exists to serve: measured over
+        503 distinct logged prompts against the live store, the
+        conjunctive form returned nothing for 28.7% of user turns and
+        100% of harness blocks.
+
+        Trimming to the rarest tokens is what keeps the fix cheap. A full
+        OR matches on the common terms too — 43.67 ms p50 on the user arm
+        — while agreeing with the conjunctive lane's top-20 no better
+        than the 3-token trim does (91.4% vs 91.3%, at 4.91 ms).
+
+        "Rarest" is document frequency in *this* corpus, not a stopword
+        list: on a memory store about retrieval, `retrieval` carries a
+        df of 2,443 and `how` only 516, so `how` is kept and `retrieval`
+        dropped. That reads wrong and measures right — the trim is a
+        candidate-generation step feeding bm25, which then ranks on the
+        full expression.
+
+        Empty / whitespace-only input returns the empty string, matching
+        `_escape_fts5_query`; callers treat that as "no match".
+        """
+        tokens = [t for t in query.split() if t]
+        if not tokens:
+            return ""
+        if len(tokens) <= keep:
+            return _escape_fts5_query_disjunctive(query)
+        rarest = self._fts5_rarest_tokens(tokens, keep)
+        if rarest is None:
+            return _escape_fts5_query_disjunctive(query)
+        return " OR ".join(_quote_fts5_token(t) for t in rarest)
+
     def search_beliefs(
         self, query: str, limit: int = 20, *, origin_tiebreak: bool = False,
     ) -> list[Belief]:
@@ -3216,10 +3394,16 @@ class MemoryStore:
 
         User input is escaped before being passed to FTS5: each
         whitespace-separated token is wrapped in double quotes (with
-        embedded `"` doubled per FTS5 syntax) and joined with spaces
-        (implicit AND). This protects against FTS5 special characters
-        (., -, /, parens, quotes, AND/OR/NEAR keywords) raising
-        OperationalError on what looks like an ordinary user query.
+        embedded `"` doubled per FTS5 syntax). This protects against FTS5
+        special characters (., -, /, parens, quotes, AND/OR/NEAR
+        keywords) raising OperationalError on what looks like an
+        ordinary user query.
+
+        The quoted tokens are **OR-joined over the rarest few** rather
+        than AND-joined over all of them (#1177) — see
+        `_fts5_match_expression` for why and at what measured cost. A
+        caller that needs every token present wants
+        `_escape_fts5_query`, not this method.
 
         Empty / whitespace-only queries return [] without hitting FTS5
         (which would raise on an empty MATCH expression).
@@ -3230,7 +3414,7 @@ class MemoryStore:
         False the ORDER BY is byte-identical to the pre-#1089 default
         (bm25 only, ties arbitrary).
         """
-        escaped = _escape_fts5_query(query)
+        escaped = self._fts5_match_expression(query)
         if not escaped:
             return []
         order_by = (
@@ -3253,7 +3437,8 @@ class MemoryStore:
     ) -> list[tuple[Belief, float]]:
         """FTS5 keyword search returning `(belief, bm25_score)` pairs.
 
-        Sibling of `search_beliefs`. Same MATCH escaping, same ordering
+        Sibling of `search_beliefs`. Same MATCH construction — including
+        the #1177 rarest-token disjunction — same ordering
         (ascending by `bm25(beliefs_fts)`, which SQLite returns as a
         non-positive number — smaller = more relevant). The raw FTS5
         BM25 score is exposed for callers that need to compose it with
@@ -3270,7 +3455,7 @@ class MemoryStore:
         Empty / whitespace-only queries return [] without hitting
         FTS5.
         """
-        escaped = _escape_fts5_query(query)
+        escaped = self._fts5_match_expression(query)
         if not escaped:
             return []
         order_by = (
@@ -3427,13 +3612,20 @@ class MemoryStore:
         peer-local — no cross-peer normalisation; the merge is a simple
         union sort.
 
+        The MATCH expression is built once, from the **local** corpus's
+        document frequencies (#1177), and sent to every peer. Which of
+        the user's tokens are rare is a property of the query far more
+        than of whichever peer is answering, and building a probe per
+        peer would mean opening and scanning each peer's vocabulary on
+        every federated search.
+
         Scope filter (v3.0 #688): only peer rows with ``scope='global'``
         or ``scope`` matching a shared-group name that this DB also
         declares as a dep (dep name starts with ``'shared:'``) are
         returned. ``scope='project'`` rows stay local to their owning
         DB and are never surfaced to peers.
         """
-        escaped = _escape_fts5_query(query)
+        escaped = self._fts5_match_expression(query)
         if not escaped:
             return []
         self._load_peer_deps_if_needed()
