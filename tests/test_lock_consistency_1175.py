@@ -195,3 +195,26 @@ def test_annotation_is_pure_and_repeatable() -> None:
     for _ in range(5):
         assert lock_conflict_annotations(cands, pairs) == first
     assert first, "fixture annotated nothing — the test would be vacuous"
+
+
+def test_suppression_is_symmetric_not_lock_side_only() -> None:
+    """An ambiguous key is meaningless on the candidate side too.
+
+    The lock states one retry limit; the candidate states two. The candidate's
+    key is multi-valued and therefore not a functional dependency, so there is
+    nothing to contradict and it must not be annotated.
+
+    Verified by mutation: passing the candidate's raw slots through instead of
+    `annotation_slots(slots)` fails this test and nothing else in the file --
+    every other case here is suppressed on the lock side first, so the
+    asymmetry is invisible to them.
+    """
+    lock = _b("LK", "the retry limit is 3", lock=LOCK_USER)
+    ambiguous = _slots("the retry limit is 45 and the retry limit is 60")
+    assert "retry" in _keys(ambiguous) or "limit" in _keys(ambiguous), (
+        "fixture produced no numeric slot — the test would be vacuous"
+    )
+    out = lock_conflict_annotations(
+        [("b0", ambiguous)], [(lock, _slots(lock.content))]
+    )
+    assert out == {}, "candidate-side suppression did not run"
