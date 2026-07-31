@@ -231,8 +231,25 @@ def test_user_prompt_submit_hook_makes_no_in_process_network_call(
     number of `git` calls is an implementation detail of the recent-work
     block and would make this test fail on unrelated changes; *which
     programs run* is the property worth pinning.
+
+    The hook calls `maybe_check_for_update_async()` with no arguments, so
+    it always consults the real home-derived cache. On a machine that
+    checked recently the notifier never spawns and the allowlist's
+    notifier branch is never reached — the test would then only be pinning
+    `git`. `read_cache` is stubbed stale so the notifier spawns on every
+    machine and both branches of the allowlist are exercised.
     """
     import subprocess
+
+    import aelfrice.lifecycle as lifecycle
+
+    monkeypatch.setattr(
+        lifecycle,
+        "read_cache",
+        lambda *_a, **_k: lifecycle.UpdateStatus(
+            update_available=False, installed="0", latest="0", checked=0.0
+        ),
+    )
 
     db = tmp_path / "memory.db"
     s = MemoryStore(str(db))
@@ -264,15 +281,20 @@ def test_user_prompt_submit_hook_makes_no_in_process_network_call(
 
     assert rc == 0
     assert attempts == []
-    for argv in spawns:
+
+    def _is_notifier(argv: list[str]) -> bool:
         joined = " ".join(argv)
+        return "aelfrice.lifecycle" in joined and "check_for_update" in joined
+
+    for argv in spawns:
         is_git = Path(argv[0]).name == "git"
-        is_notifier = (
-            "aelfrice.lifecycle" in joined and "check_for_update" in joined
-        )
-        assert is_git or is_notifier, (
+        assert is_git or _is_notifier(argv), (
             f"unexpected subprocess off the hook path: {argv}"
         )
+
+    # Without this the allowlist above is satisfied by a run that spawned
+    # nothing but `git`, and the notifier branch would be unexercised code.
+    assert any(_is_notifier(argv) for argv in spawns), spawns
 
 
 def test_the_opt_out_is_what_removes_the_notifier_spawn(
