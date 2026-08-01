@@ -54,8 +54,12 @@ def _count_config_walks(monkeypatch) -> list[int]:
     return walks
 
 
-def test_one_retrieval_walks_for_the_config_once(monkeypatch) -> None:
+def test_resolvers_in_one_scope_share_a_single_walk(monkeypatch) -> None:
     """#1289: the walk was per flag, so it scaled with the number of flags.
+
+    Scoped to the resolvers, not to a whole `retrieve()` — see
+    `test_retrieve_engages_the_memo` for the entry point, and note that two
+    sibling modules still carry private walk loops of their own.
 
     ~22 `[retrieval]` resolvers each re-walked from cwd to the first
     `.aelfrice.toml`. The parse was memoized; the discovery was not. The
@@ -150,3 +154,76 @@ def test_the_memo_does_not_leak_across_scopes(tmp_path: Path) -> None:
         assert retrieval._read_toml_flag_for("use_bfs", start=tmp_path) is None
 
     assert retrieval._read_toml_flag_for("use_bfs", start=tmp_path) is True
+
+
+def test_retrieve_engages_the_memo(monkeypatch) -> None:
+    """The decorators on the entry points are what deliver the whole fix.
+
+    Every other test in this module drives `config_discovery_scope`
+    directly, so removing `@_memoize_config_discovery` from all three entry
+    points left the suite green while undoing the entire change (150 config
+    probes per `retrieve()` back from 18). This pins the wiring rather than
+    the mechanism.
+
+    Measured on `retrieval`'s own discovery only, so it does not move when
+    `expansion_gate` and `deferred_feedback` — which still carry private
+    walk loops — are cleaned up, and does not encode this checkout's path
+    depth.
+    """
+    from aelfrice.derivation import DerivationInput, derive
+    from aelfrice.models import INGEST_SOURCE_FILESYSTEM
+    from aelfrice.retrieval import retrieve
+    from aelfrice.store import MemoryStore
+
+    store = MemoryStore(":memory:")
+    for i, word in enumerate(("alpha", "beta", "gamma")):
+        out = derive(
+            DerivationInput(
+                source_kind=INGEST_SOURCE_FILESYSTEM,
+                raw_text=f"the widget {word} unit ranks beliefs",
+                source_path=f"doc{i}.md",
+                session_id=None,
+                ts="2026-01-01T00:00:00+00:00",
+            ),
+        )
+        assert out.belief is not None
+        store.insert_or_corroborate(out.belief, source_type="filesystem_ingest")
+    retrieve(store, "widget")  # warm every non-config cache
+
+    probes = _count_config_walks(monkeypatch)
+    retrieval._read_toml_flag_for("use_bfs")
+    baseline = len(probes)
+    assert baseline > 0, "baseline measured no filesystem probes"
+
+    inside_scope: list[bool] = []
+    own_probes = 0
+    real_discover = retrieval._discover_config
+
+    def spy(start):
+        nonlocal own_probes
+        inside_scope.append(
+            retrieval._CONFIG_DISCOVERY_MEMO.get() is not None
+        )
+        before = len(probes)
+        try:
+            return real_discover(start)
+        finally:
+            own_probes += len(probes) - before
+
+    monkeypatch.setattr(retrieval, "_discover_config", spy)
+    probes.clear()
+    retrieve(store, "widget")
+    store.close()
+
+    assert len(inside_scope) > 1, (
+        "retrieve() resolved fewer than two [retrieval] flags; the test "
+        "cannot distinguish a shared walk from a single lookup"
+    )
+    assert all(inside_scope), (
+        f"{inside_scope.count(False)} of {len(inside_scope)} resolvers ran "
+        "outside a discovery scope — the entry point is not decorated"
+    )
+    assert own_probes == baseline, (
+        f"retrieval's own discovery cost {own_probes} probes across "
+        f"{len(inside_scope)} resolvers; one walk is {baseline}"
+    )

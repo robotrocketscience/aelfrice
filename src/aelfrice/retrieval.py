@@ -1493,6 +1493,19 @@ def _memoize_config_discovery(fn: Any) -> Any:
     reached during one call share a single `.aelfrice.toml` walk. Nesting is
     handled by the scope itself, so an entry point calling another one costs
     nothing extra.
+
+    All three are decorated deliberately, though only two are load-bearing
+    today: `retrieve` is a thin adapter that always delegates to
+    `retrieve_v2` (#1107), so removing its decorator currently changes
+    nothing. It is kept because that delegation is an implementation detail —
+    the day `retrieve` resolves a `[retrieval]` flag before descending, the
+    absent decorator would silently restore the per-flag walk. The scope is
+    idempotent, so the redundancy costs one `ContextVar` read.
+
+    Note this covers `retrieval`'s resolvers only. `expansion_gate` and
+    `deferred_feedback` carry their own private walk loops and are reached
+    during a retrieval, so a full `retrieve()` still performs three walks
+    rather than one.
     """
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
