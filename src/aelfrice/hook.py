@@ -1092,6 +1092,7 @@ def user_prompt_submit(
                 query=prompt,
                 store=ups_store,
                 serr=serr,
+                cwd=payload_cwd,
             )
             # #288 phase-1a extension: emit one rebuild_log row per
             # UPS retrieval. Without this the high-frequency rebuild
@@ -1639,6 +1640,7 @@ def _substitute_exploration_slots(
     query: str,
     store: object | None,
     serr: IO[str],
+    cwd: Path | None = None,
 ) -> list[Belief]:
     """Give a never-injected belief a slot in the pack (#1279, #1176 p5).
 
@@ -1676,7 +1678,7 @@ def _substitute_exploration_slots(
 
         if not hits or not session_id or store is None:
             return hits
-        if not is_exploration_enabled():
+        if not is_exploration_enabled(start=cwd):
             return hits
 
         from aelfrice.exploration import (  # noqa: PLC0415
@@ -1692,7 +1694,9 @@ def _substitute_exploration_slots(
         fire_idx = state.get("next_fire_idx")
         if not isinstance(fire_idx, int) or fire_idx < 0:
             return hits
-        if not should_explore(fire_idx, cadence=resolve_exploration_cadence()):
+        if not should_explore(
+            fire_idx, cadence=resolve_exploration_cadence(start=cwd)
+        ):
             return hits
 
         present = {h.id for h in hits}
@@ -1700,7 +1704,7 @@ def _substitute_exploration_slots(
         if not pool:
             return hits
 
-        slots = resolve_exploration_slots()
+        slots = resolve_exploration_slots(start=cwd)
         seed = derive_seed(session_id, fire_idx, query)
         drawn_ids = draw_uniform(pool, seed=seed, count=slots)
         drawn = [b for b in (store.get_belief(i) for i in drawn_ids) if b is not None]

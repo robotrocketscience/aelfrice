@@ -88,11 +88,12 @@ def _fire(monkeypatch: pytest.MonkeyPatch, idx: int) -> None:
     )
 
 
-def _run(store, hits, capsys, *, query="exploration probe widget"):
+def _run(store, hits, capsys, *, query="exploration probe widget", cwd=None):
     import sys
 
     out = _substitute_exploration_slots(
         hits, session_id=_SESSION, query=query, store=store, serr=sys.stderr,
+        cwd=cwd,
     )
     capsys.readouterr()
     return out
@@ -453,3 +454,39 @@ def test_the_default_cadence_is_reachable_within_a_real_session() -> None:
         f"session of {OBSERVED_SESSION_P90_TURNS} injecting turns — the slot "
         "would be enabled and never run"
     )
+
+
+def test_the_project_toml_is_read_from_the_payload_cwd(
+    store, monkeypatch, capsys, tmp_path,
+) -> None:
+    """`[retrieval] exploration_enabled` has to resolve against the payload's
+    project directory, not the hook process's working directory.
+
+    Every other config-dependent step in `user_prompt_submit` threads
+    `payload_cwd` — `load_user_prompt_submit_config(start=payload_cwd)` and
+    both phantom configs. This one did not, so a project that opted in via
+    its own `.aelfrice.toml` got the slot only when the hook happened to be
+    running from that directory (#1285 review).
+
+    Distinguishing by construction: the same store, query and ring counter
+    are run twice and differ *only* in `cwd`, so dropping `start=cwd` from
+    the resolvers collapses the two arms and this goes red.
+    """
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".aelfrice.toml").write_text(
+        "[retrieval]\nexploration_enabled = true\n", encoding="utf-8"
+    )
+
+    _seed_pool(store)
+    _fire(monkeypatch, _FIRING)
+    hits = [_mk(f"h{i}", f"ranked hit {i} " + "filler " * 8) for i in range(4)]
+
+    # The autouse fixture has chdir'd to `tmp_path`, which does not contain
+    # the TOML, so the no-cwd arm cannot see the opt-in.
+    without_cwd = _run(store, hits, capsys)
+    with_cwd = _run(store, hits, capsys, cwd=project)
+
+    assert without_cwd == hits, "the opt-in leaked in without a cwd"
+    assert [b.id for b in with_cwd] != [b.id for b in hits]
+    assert any(b.id.startswith("pool") for b in with_cwd)
