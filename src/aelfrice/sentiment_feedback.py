@@ -300,6 +300,15 @@ def apply_sentiment_to_pending(
     `escalated` upgrades a negative signal's magnitude to
     `ESCALATED_NEGATIVE_VALENCE`. Has no effect on positive signals;
     the correction-frequency path only escalates negatives by design.
+
+    **Does not propagate** (#1291). One prose signal already credits
+    every belief on the prior turn with the same valence, which is not
+    a set of exchangeable Bernoulli trials about any one of them;
+    letting that walk the edge graph as well multiplies an attribution
+    the signal never had. The direct application is the part with a
+    defensible — if coarse — link to the user's words, so it is the
+    part that is kept. Explicit sources (`aelf feedback`) still
+    propagate; this restriction is specific to the inferred lane.
     """
     if not pending_belief_ids:
         return []
@@ -318,6 +327,7 @@ def apply_sentiment_to_pending(
             valence=valence,
             source=SENTIMENT_INFERRED_SOURCE,
             now=now,
+            propagate=False,
         )
         results.append(result)
     return results

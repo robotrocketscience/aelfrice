@@ -344,3 +344,75 @@ def test_is_enabled_missing_section(clean_env: None) -> None:
 def test_is_enabled_non_bool_value_treated_as_off(clean_env: None) -> None:
     cfg = {"feedback": {"sentiment_from_prose": "yes"}}
     assert is_enabled(cfg) is False
+
+
+# ---------------------------------------------------------------------------
+# #1291 — the inferred lane does not propagate
+# ---------------------------------------------------------------------------
+
+
+def _propagation_chain() -> "MemoryStore":
+    """A -SUPPORTS-> B, both neutral. Mirrors test_feedback_propagation."""
+    from aelfrice.models import EDGE_SUPPORTS, Edge
+    from aelfrice.store import MemoryStore
+
+    store = MemoryStore(":memory:")
+    for bid in ("A", "B"):
+        store.insert_belief(
+            Belief(
+                id=bid,
+                content=f"belief {bid}",
+                content_hash=f"h_{bid}",
+                alpha=5.0,
+                beta=5.0,
+                type=BELIEF_FACTUAL,
+                lock_level=LOCK_NONE,
+                locked_at=None,
+                created_at="2026-04-26T00:00:00Z",
+                last_retrieved_at=None,
+            )
+        )
+    store.insert_edge(Edge(src="A", dst="B", type=EDGE_SUPPORTS, weight=1.0))
+    return store
+
+
+def test_explicit_feedback_still_propagates_on_this_fixture() -> None:
+    """Control arm — without this the suppression test proves nothing.
+
+    If the fixture had no live propagation path, the assertion below
+    would pass whether or not `propagate=False` were passed.
+    """
+    store = _propagation_chain()
+    result = apply_feedback(store, "A", valence=-1.0, source="user")
+    downstream = store.get_belief("B")
+    assert result.propagated, "fixture must actually propagate"
+    assert downstream is not None
+    assert (downstream.alpha, downstream.beta) != (5.0, 5.0)
+
+
+def test_sentiment_signal_does_not_propagate() -> None:
+    """One prose signal must not walk the edge graph (#1291).
+
+    It is already credited uniformly to every belief on the prior turn,
+    which is not a set of exchangeable trials about any one of them.
+    Propagating it multiplies an attribution the signal never had.
+    """
+    store = _propagation_chain()
+    signal = detect_sentiment("no that's wrong")
+    assert signal is not None
+
+    results = apply_sentiment_to_pending(
+        store=store, signal=signal, pending_belief_ids=["A"],
+    )
+
+    assert len(results) == 1
+    assert results[0].propagated == []
+    # The directly-addressed belief still moves...
+    direct = store.get_belief("A")
+    assert direct is not None
+    assert direct.beta > 5.0
+    # ...and the neighbour is untouched.
+    downstream = store.get_belief("B")
+    assert downstream is not None
+    assert (downstream.alpha, downstream.beta) == (5.0, 5.0)
+    assert store.count_feedback_events(belief_id="B") == 0
