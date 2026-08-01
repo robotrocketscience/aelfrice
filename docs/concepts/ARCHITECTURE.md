@@ -30,7 +30,10 @@ The contract is *deterministic substrate + bounded, audited enrichment layer*, n
 Imports are *intended* to be one-directional — modules lower in the table import from higher — but this is an
 aspiration, not an enforced invariant. Two known inversions are broken by deferred (in-function) imports:
 `classification.py` imports from `scanner`, and `store.py` imports `federation`; both would be circular at
-module level, and `classification.py` says so in a comment at the import site. The table is also a curated
+module level, and `classification.py` says so in a comment at the import site. A third is avoided by
+duplication rather than by deferral — `store.py` reimplements `wonder.lifecycle`'s constituent-key hash
+inline, citing the cycle as one of two reasons — so counting deferred imports alone understates how often
+the ordering is worked around. The table is also a curated
 subset — 31 modules against the 117 `.py` files under `src/aelfrice/` — not an exhaustive map.
 
 | Module | Responsibility |
