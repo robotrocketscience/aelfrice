@@ -27,8 +27,19 @@ This script measures three things on a real store, all deterministic, no judge:
      rather than by time.
   2. **Edge census** — the type distribution behind the 97.2% claim.
   3. **Reproduction fidelity** — rebuild every session's predecessor chain
-     under two candidate durable keys and report what share of the *shipped*
-     spine each reproduces:
+     under two candidate durable keys and report what share of the
+     `TEMPORAL_NEXT` **edge table** each reproduces. The comparison is
+     against the edges the writer actually wrote, not against a re-sort of
+     the belief table, so a flaw in the recompute cannot cancel itself out.
+     The `(created_at, rowid)` recompute is reported alongside as a control:
+     it should land on the edge table almost exactly, and does.
+
+     Note the population is every session-scoped belief, **including
+     soft-deleted ones**. That is not an oversight: `session_predecessor_id`
+     documents that "soft-deleted (`valid_to` set) beliefs are eligible
+     predecessors — spine chain integrity must survive GC" (#1064).
+     Filtering them out drops 1,351 beliefs here and makes the recompute
+     miss 6.4% of the real edges, which would silently become the baseline.
 
        * `(created_at, belief_id)` — belief-table-only, #1283's option (b).
        * `(created_at, ingest_log ULID)` — log-derived, #1283's option (a).
@@ -70,7 +81,7 @@ def tie_density(conn: sqlite3.Connection) -> dict[str, int]:
         WITH g AS (
             SELECT COUNT(*) AS c
             FROM beliefs
-            WHERE valid_to IS NULL AND session_id IS NOT NULL
+            WHERE session_id IS NOT NULL
             GROUP BY session_id, created_at
         )
         SELECT COALESCE(SUM(CASE WHEN c > 1 THEN c ELSE 0 END), 0) AS tied,
@@ -80,7 +91,7 @@ def tie_density(conn: sqlite3.Connection) -> dict[str, int]:
     """).fetchone()
     distinct_ts = conn.execute("""
         SELECT COUNT(DISTINCT created_at) FROM beliefs
-        WHERE valid_to IS NULL AND session_id IS NOT NULL
+        WHERE session_id IS NOT NULL
     """).fetchone()[0]
     return {
         "tied": int(row["tied"]), "total": int(row["total"]),
@@ -158,12 +169,12 @@ def main() -> int:
 
     print()
     print("=" * 70)
-    print("3. REPRODUCTION FIDELITY vs the shipped (created_at, rowid) spine")
+    print("3. REPRODUCTION FIDELITY vs the TEMPORAL_NEXT edge table")
     print("=" * 70)
     log_ulid = belief_to_log_ulid(conn)
     rows = conn.execute("""
         SELECT session_id, id, created_at, rowid FROM beliefs
-        WHERE valid_to IS NULL AND session_id IS NOT NULL
+        WHERE session_id IS NOT NULL
     """).fetchall()
 
     covered = sum(1 for r in rows if r["id"] in log_ulid)
@@ -181,20 +192,34 @@ def main() -> int:
             (r["created_at"], int(r["rowid"]), r["id"])
         )
 
-    shipped: set[tuple[str, str]] = set()
+    shipped = {
+        (r["src"], r["dst"])
+        for r in conn.execute(
+            "SELECT src, dst FROM edges WHERE type = 'TEMPORAL_NEXT'"
+        )
+    }
+    if not shipped:
+        print("no TEMPORAL_NEXT edges; fidelity is unmeasurable here",
+              file=sys.stderr)
+        return 1
+    recomputed: set[tuple[str, str]] = set()
     candidates: dict[str, set[tuple[str, str]]] = {
         "(created_at, belief_id)  [belief-derived]": set(),
         "(created_at, log ULID)   [log-derived]": set(),
     }
     for items in by_session.values():
-        shipped |= _chain(items, key=lambda t: (t[0], t[1]))
+        recomputed |= _chain(items, key=lambda t: (t[0], t[1]))
         candidates["(created_at, belief_id)  [belief-derived]"] |= _chain(
             items, key=lambda t: (t[0], t[2]))
         candidates["(created_at, log ULID)   [log-derived]"] |= _chain(
             items, key=lambda t: (t[0], log_ulid.get(t[2],
                                                      _NO_LOG_SENTINEL + t[2])))
 
-    print(f"  shipped spine links            : {len(shipped):,}")
+    print(f"  TEMPORAL_NEXT edges in the store: {len(shipped):,}")
+    agree = len(recomputed & shipped)
+    print(f"  reproduced by (created_at, rowid): {agree:,} "
+          f"({100.0 * agree / len(shipped):.1f}% of the edge table, "
+          f"{100.0 * agree / len(recomputed):.1f}% of the recompute)")
     print()
     print(f"  {'candidate ordering key':44s} {'reproduced':>12s} {'changed':>12s}")
     for name, links in candidates.items():
