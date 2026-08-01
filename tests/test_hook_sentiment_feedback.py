@@ -580,3 +580,54 @@ def test_applied_row_carries_no_abstained_key(
     assert len(rows) == 1
     assert "abstained" not in rows[0]
     assert rows[0]["n_beliefs"] == 1
+
+
+def test_apply_records_abstention_when_every_candidate_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second abstention reason, which had no arm of its own.
+
+    `no_prior_injection` and `candidates_gone` are distinct denominators:
+    the first says the correction had nothing to attribute to, the second
+    says it had candidates and every one of them was deleted between
+    injection and the correction. Only the first was pinned, so a bug
+    that collapsed the two — or never reached this branch at all — would
+    have left the abstention rate as unmeasurable as it was before #1291.
+    """
+    _enable_sentiment(monkeypatch)
+    db = tmp_path / "memory.db"
+    # The store is seeded with a belief the prior injection does NOT name,
+    # so the session has a prior set whose every member is missing.
+    _seed_db(db, [_mk("F1", "kitchen has bananas")])
+    _set_db(monkeypatch, db)
+    audit_path = _audit_path_for_db(db)
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(
+        json.dumps(
+            {
+                "hook": AUDIT_HOOK_USER_PROMPT_SUBMIT,
+                "session_id": "s1",
+                "beliefs": [{"id": "DELETED1"}, {"id": "DELETED2"}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    n = apply_sentiment_feedback("no, wrong", "s1")
+
+    assert n == 0
+    rows = [
+        r
+        for r in read_hook_audit(audit_path)
+        if r.get("hook") == AUDIT_HOOK_SENTIMENT_FEEDBACK
+    ]
+    assert len(rows) == 1, "the abstention must be on the record"
+    assert rows[0]["abstained"] == "candidates_gone", (
+        "a prior set whose members are all deleted is `candidates_gone`, "
+        "not `no_prior_injection` — the two count different things"
+    )
+    assert rows[0]["n_beliefs"] == 0
+    # The surviving, un-injected belief must not have moved.
+    b = _read_belief(db, "F1")
+    assert b.alpha == 1.0 and b.beta == 1.0
