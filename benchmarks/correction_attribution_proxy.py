@@ -77,6 +77,19 @@ REGIME_BREAK = "2026-06-30"
 ALIGN_TOLERANCE_S = 30.0
 
 
+def _regime_key(raw: str | None) -> str:
+    """`YYYY-MM-DD` for comparison against `REGIME_BREAK`.
+
+    The two corpora carry differently-shaped timestamps — hook_audit's `ts`
+    and `injection_events.injected_at` — so both are cut to a date before
+    they meet the boundary. Comparing raw ISO strings happens to work for
+    most values and disagrees for a row landing exactly on the break, which
+    would put the same instant on opposite sides depending on which corpus
+    it came from.
+    """
+    return (raw or "")[:10]
+
+
 def content_tokens(text: str) -> set[str]:
     """The proposal's `content_tokens`: stemmed tokens minus stopwords."""
     return {t for t in tokenize_stemmed(text) if t not in _STOPWORDS}
@@ -205,7 +218,7 @@ def run_hook_audit(
     for r in rows:
         by_session.setdefault(r.get("session_id", ""), []).append(r)
 
-    total = complete = fired = negative = 0
+    total = complete = fired = negative = with_prior = 0
     records: list[dict] = []
     for _sid, session_rows in by_session.items():
         for idx, row in enumerate(session_rows):
@@ -228,6 +241,8 @@ def run_hook_audit(
                 continue
             prior = session_rows[idx - 1].get("beliefs") or []
             ids = [b.get("id") for b in prior if isinstance(b, dict)]
+            if ids:
+                with_prior += 1
             scores = sorted(
                 (jaccard(content_tokens(prompt), tok[b]) for b in ids if b in tok),
                 reverse=True,
@@ -235,7 +250,7 @@ def run_hook_audit(
             if not scores:
                 continue
             records.append({
-                "at": (session_rows[idx - 1].get("ts") or "")[:10],
+                "at": _regime_key(session_rows[idx - 1].get("ts")),
                 "p": len(scores),
                 "max": scores[0],
                 "runner": scores[1] if len(scores) > 1 else 0.0,
@@ -255,7 +270,8 @@ def run_hook_audit(
           f"({100 * fired / denom:.2f}%)")
     print(f"  ...and NEGATIVE                 : {negative} "
           f"({100 * negative / denom:.2f}%)")
-    print(f"  ...with a prior injected set    : {len(records)}")
+    print(f"  ...with a prior injected set    : {with_prior}")
+    print(f"  ...and scorable (>=1 belief in store) : {len(records)}")
     return records, total
 
 
@@ -362,6 +378,7 @@ def main(argv: list[str] | None = None) -> int:
     over_guard = 0
     fired = 0
     negative = 0
+    b_with_prior = 0
     records: list[dict] = []
 
     for sid, turns in by_session.items():
@@ -402,6 +419,8 @@ def main(argv: list[str] | None = None) -> int:
             if not prior:
                 continue
             at_prev, ids = prior[0]
+            if ids:
+                b_with_prior += 1
 
             c_tok = content_tokens(text_now)
             scores = sorted(
@@ -410,7 +429,7 @@ def main(argv: list[str] | None = None) -> int:
             if not scores:
                 continue
             records.append({
-                "at": at_prev,
+                "at": _regime_key(at_prev),
                 "p": len(scores),
                 "max": scores[0],
                 "runner": scores[1] if len(scores) > 1 else 0.0,
@@ -446,7 +465,8 @@ def main(argv: list[str] | None = None) -> int:
           f"({100 * fired / denom:.2f}%)")
     print(f"  ...and NEGATIVE                 : {negative} "
           f"({100 * negative / denom:.2f}%)")
-    print(f"  ...with a prior injected set    : {len(records)}")
+    print(f"  ...with a prior injected set    : {b_with_prior}")
+    print(f"  ...and scorable (>=1 belief in store) : {len(records)}")
 
     _describe("CORPUS B — ALL", records)
     _describe(f"POST-BREAK (> {REGIME_BREAK})",
