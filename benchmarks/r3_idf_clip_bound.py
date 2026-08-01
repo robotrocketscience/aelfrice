@@ -69,6 +69,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from collections import Counter
@@ -129,6 +130,10 @@ def load_prompts(paths: list[Path]) -> list[str]:
     out: list[str] = []
     for path in paths:
         if not path.exists():
+            # Skipping silently would report numbers over a partial corpus
+            # with no signal that one of several --audit paths was misspelt.
+            print(f"warning: audit path not found, skipping: {path}",
+                  file=sys.stderr)
             continue
         with path.open(encoding="utf-8", errors="replace") as handle:
             for line in handle:
@@ -206,11 +211,27 @@ def reachability(
     n_droppable = int((idf < low).sum()) if idf.size else 0
     # Invert the IDF form to report the cutoff as a document frequency,
     # which is the interpretable unit: "drops any term seen in >= N beliefs".
-    df_at_low = (
-        (n_docs + 0.5) / (float(np.exp(low)) - 1.0) - 0.5
-        if low > 0.0
-        else float("nan")
-    )
+    #
+    # The shipped IDF is `log(1 + (N - df + 0.5) / (df + 0.5))`, so with
+    # `E = exp(low) - 1`:
+    #
+    #     E * (df + 0.5) = N - df + 0.5
+    #     df * (E + 1)   = N + 0.5 - 0.5 * E
+    #     df             = (N + 0.5 - 0.5 * E) / (E + 1)
+    #
+    # Inverting `log(1 + (N + 0.5) / (df + 0.5))` instead — i.e. dropping the
+    # `- df` from the numerator — agrees to 0.02% at this store's operating
+    # point, where `E >> 1` and both forms are dominated by `N / E`. It
+    # diverges badly as the cutoff falls: 1.9% at idf 4, 15.7% at idf 2,
+    # 58.2% at idf 1. Re-runnability on a smaller or less Zipfian corpus is
+    # the whole point of this harness, so it uses the exact inverse.
+    if low > 0.0:
+        exp_low_minus_1 = float(np.exp(low)) - 1.0
+        df_at_low = (
+            (n_docs + 0.5 - 0.5 * exp_low_minus_1) / (exp_low_minus_1 + 1.0)
+        )
+    else:
+        df_at_low = float("nan")
     return {
         "n_docs": n_docs,
         "vocabulary": len(index.vocabulary),
@@ -392,10 +413,17 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.json_out:
+        # `df_at_low_cutoff` is NaN when `low == 0.0`, and `json.dumps` would
+        # emit the bare token `NaN`, which RFC 8259 does not permit and strict
+        # parsers reject. Serialise it as null instead.
+        reach_json = dict(reach)
+        df_cut = reach_json.get("df_at_low_cutoff")
+        if isinstance(df_cut, float) and math.isnan(df_cut):
+            reach_json["df_at_low_cutoff"] = None
         args.json_out.write_text(
             json.dumps(
                 {
-                    "reachability": reach,
+                    "reachability": reach_json,
                     "arm_a_raw_prompts": arm_a,
                     "arm_b_production_shape": arm_b,
                     "window": args.window,
