@@ -133,3 +133,39 @@ def test_benchmarks_package_imports() -> None:
     """The benchmarks/ directory is a valid (empty) package."""
     import benchmarks
     assert benchmarks is not None
+
+
+@pytest.mark.timeout(120)
+def test_posterior_channel_audit_holds_the_documented_defaults() -> None:
+    """`benchmarks/posterior_channel_audit.py` exits 0 on the shipped defaults.
+
+    The script is the regression guard behind the LIMITATIONS entry that
+    says no automatic channel moves a posterior (#1267). A guard nothing
+    invokes cannot keep a doc entry honest, and no workflow runs
+    `benchmarks/*.py` — `bench-smoke` only runs two named test modules.
+    Running it from the required `pytest` job is what makes the claim
+    enforceable.
+
+    Driven as a subprocess rather than imported: the script deletes every
+    ambient `AELFRICE_*` variable at import time so it measures defaults
+    rather than the developer's opt-ins, and that must not leak into the
+    rest of the test session.
+    """
+    import subprocess
+    import sys
+
+    repo_root = Path(__file__).resolve().parent.parent
+    script = repo_root / "benchmarks" / "posterior_channel_audit.py"
+    assert script.is_file(), f"missing {script}"
+
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        timeout=110,
+    )
+    assert proc.returncode == 0, (
+        f"posterior-channel audit failed (exit {proc.returncode}); a "
+        f"documented default moved:\n{proc.stdout}\n{proc.stderr}"
+    )
