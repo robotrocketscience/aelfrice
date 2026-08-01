@@ -14,11 +14,20 @@ from pathlib import Path
 
 import pytest
 
+from aelfrice.exploration import DEFAULT_EXPLORATION_CADENCE
 from aelfrice.hook import _substitute_exploration_slots
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.store import MemoryStore
 
 _SESSION = "sess-1279"
+
+# Fire indices are derived from the shipped cadence rather than written as
+# literals: these were `20`/`21`/`40` and every one of them silently stopped
+# exercising its branch when the default moved (#1279 review). Multiples so
+# the turn fires; `+ 1` so it does not.
+_FIRING = DEFAULT_EXPLORATION_CADENCE * 4
+_FIRING_LATER = DEFAULT_EXPLORATION_CADENCE * 8
+_NOT_FIRING = _FIRING + 1
 
 
 def _mk(bid: str, content: str, lock_level: str = LOCK_NONE) -> Belief:
@@ -95,7 +104,7 @@ def _run(store, hits, capsys, *, query="exploration probe widget"):
 def test_default_off_is_a_no_op(store, monkeypatch, capsys) -> None:
     """Nothing changes until the operator opts in."""
     _seed_pool(store)
-    _fire(monkeypatch, 20)
+    _fire(monkeypatch, _FIRING)
     hits = [_mk("h1", "ranked hit one"), _mk("h2", "ranked hit two")]
     assert _run(store, hits, capsys) == hits
 
@@ -109,7 +118,7 @@ def test_enabled_on_a_firing_turn_changes_the_pack(
     its input.
     """
     _seed_pool(store)
-    _fire(monkeypatch, 20)
+    _fire(monkeypatch, _FIRING)
     hits = [_mk(f"h{i}", f"ranked hit {i} " + "filler " * 8) for i in range(4)]
 
     off = _run(store, hits, capsys)
@@ -124,14 +133,14 @@ def test_enabled_on_a_firing_turn_changes_the_pack(
 def test_non_firing_turn_is_a_no_op_even_when_enabled(
     store, monkeypatch, capsys,
 ) -> None:
-    """Cadence has to actually gate. 21 % 20 != 0."""
+    """Cadence has to actually gate: one index off a multiple."""
     _seed_pool(store)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
     hits = [_mk(f"h{i}", f"ranked hit {i} " + "filler " * 8) for i in range(4)]
 
-    _fire(monkeypatch, 21)
+    _fire(monkeypatch, _NOT_FIRING)
     assert _run(store, hits, capsys) == hits
-    _fire(monkeypatch, 20)
+    _fire(monkeypatch, _FIRING)
     assert _run(store, hits, capsys) != hits
 
 
@@ -145,7 +154,7 @@ def test_a_user_lock_is_never_displaced(store, monkeypatch, capsys) -> None:
     it would be silently overriding the one tier the user set by hand.
     """
     _seed_pool(store)
-    _fire(monkeypatch, 20)
+    _fire(monkeypatch, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
     hits = [
         _mk("L1", "a locked belief", LOCK_USER),
@@ -163,7 +172,7 @@ def test_locks_survive_while_the_non_locked_tail_is_displaced(
     the slot never firing at all.
     """
     _seed_pool(store)
-    _fire(monkeypatch, 20)
+    _fire(monkeypatch, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
     hits = [
         _mk("L1", "a locked belief", LOCK_USER),
@@ -187,7 +196,7 @@ def test_the_block_does_not_grow_in_tokens(store, monkeypatch, capsys) -> None:
     from aelfrice.retrieval import _belief_tokens
 
     _seed_pool(store)
-    _fire(monkeypatch, 20)
+    _fire(monkeypatch, _FIRING)
     hits = [_mk(f"h{i}", f"ranked hit {i} " + "filler " * 8) for i in range(6)]
 
     before = sum(_belief_tokens(b) for b in _run(store, hits, capsys))
@@ -200,7 +209,7 @@ def test_the_block_does_not_grow_in_tokens(store, monkeypatch, capsys) -> None:
 def test_the_draw_is_deterministic(store, monkeypatch, capsys) -> None:
     """Same (session, fire_idx, query, pool) -> same belief. Replay needs it."""
     _seed_pool(store)
-    _fire(monkeypatch, 20)
+    _fire(monkeypatch, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
     hits = [_mk(f"h{i}", f"ranked hit {i} " + "filler " * 8) for i in range(6)]
 
@@ -210,7 +219,7 @@ def test_the_draw_is_deterministic(store, monkeypatch, capsys) -> None:
 
     # ...and a different turn draws a different belief, or "deterministic"
     # would be satisfied by always drawing the same one.
-    _fire(monkeypatch, 40)
+    _fire(monkeypatch, _FIRING_LATER)
     third = [b.id for b in _run(store, hits, capsys)]
     assert {i for i in third if i.startswith("pool")} != {
         i for i in first if i.startswith("pool")
@@ -227,7 +236,7 @@ def test_a_firing_turn_writes_one_ledger_row_naming_what_it_evicted(
     analysis needs.
     """
     _seed_pool(store)
-    _fire(monkeypatch, 20)
+    _fire(monkeypatch, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
     hits = [_mk(f"h{i}", f"ranked hit {i} " + "filler " * 8) for i in range(6)]
 
@@ -253,7 +262,7 @@ def test_a_raising_pool_query_leaves_the_pack_untouched(
     store, monkeypatch, capsys,
 ) -> None:
     """A research lane must never be why a hook fails."""
-    _fire(monkeypatch, 20)
+    _fire(monkeypatch, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
 
     def _boom(*a, **k):
@@ -266,7 +275,7 @@ def test_a_raising_pool_query_leaves_the_pack_untouched(
 
 def test_an_empty_pool_is_a_no_op(store, monkeypatch, capsys) -> None:
     """Nothing to explore is not an error, and must not empty the pack."""
-    _fire(monkeypatch, 20)
+    _fire(monkeypatch, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
     hits = [_mk("h1", "ranked hit one"), _mk("h2", "ranked hit two")]
     assert _run(store, hits, capsys) == hits
@@ -277,7 +286,7 @@ def test_a_belief_already_in_the_pack_is_not_drawn_again(
 ) -> None:
     """The pool is filtered against the pack, so a slot cannot duplicate."""
     pool_ids = _seed_pool(store)
-    _fire(monkeypatch, 20)
+    _fire(monkeypatch, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
 
     hits = [store.get_belief(i) for i in pool_ids]
@@ -300,7 +309,7 @@ def test_a_pack_too_cheap_to_pay_for_the_draw_is_left_alone(
     from aelfrice.retrieval import _belief_tokens
 
     _seed_pool(store)
-    _fire(monkeypatch, 20)
+    _fire(monkeypatch, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
 
     hits = [_mk("h1", "tiny"), _mk("h2", "also tiny")]
@@ -412,3 +421,35 @@ def test_slots_precedence_and_that_zero_is_still_rejected(
     assert resolve_exploration_slots(2, start=tmp_path) == 2
     monkeypatch.setenv("AELFRICE_EXPLORATION_SLOTS", "0")
     assert resolve_exploration_slots(start=tmp_path) == 4
+
+
+def test_the_default_cadence_is_reachable_within_a_real_session() -> None:
+    """The review finding this closes: at cadence 20 the slot was wired,
+    tested and never fired.
+
+    `fire_idx` is per-session — `read_ring_state` returns `{}` on a session
+    mismatch, so the counter restarts each session and never accumulates.
+    Measured on this store, sessions run a median of 2 injecting turns and a
+    p90 of 7; a cadence of 20 therefore fired on 0 of 259 turns since the
+    #1016-B regime break.
+
+    Asserting the constant equals 3 would be a tautology. This asserts the
+    *property* that made 20 wrong — that a session of typical length reaches
+    a firing turn — so raising the cadence back above the observed session
+    length fails here, and doing it legitimately (a store-level counter that
+    makes `fire_idx` global) means this test no longer describes the
+    mechanism and has to be revisited deliberately.
+    """
+    from aelfrice.exploration import DEFAULT_EXPLORATION_CADENCE, should_explore
+
+    OBSERVED_SESSION_P90_TURNS = 7
+    fires = [
+        i
+        for i in range(1, OBSERVED_SESSION_P90_TURNS + 1)
+        if should_explore(i, cadence=DEFAULT_EXPLORATION_CADENCE)
+    ]
+    assert fires, (
+        f"cadence {DEFAULT_EXPLORATION_CADENCE} never fires within a p90 "
+        f"session of {OBSERVED_SESSION_P90_TURNS} injecting turns — the slot "
+        "would be enabled and never run"
+    )

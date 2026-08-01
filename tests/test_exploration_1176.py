@@ -87,9 +87,19 @@ def test_should_explore_fires_on_every_kth_prompt() -> None:
     assert fires == [0, 20, 40, 60, 80]
 
 
-def test_should_explore_default_cadence_is_one_in_twenty() -> None:
-    n = sum(should_explore(i) for i in range(1000))
-    assert n == 1000 // DEFAULT_EXPLORATION_CADENCE
+def test_should_explore_fires_once_per_default_cadence() -> None:
+    """Counts fires over a fixed window against the shipped cadence.
+
+    The previous form asserted `1000 // DEFAULT_EXPLORATION_CADENCE`, which
+    was right only because the then-default of 20 divides 1000 exactly.
+    `fire_idx == 0` fires too, so the count is `ceil(1000 / cadence)` and
+    the floor form is off by one for any cadence that does not divide the
+    window — it would have failed for the wrong reason when the default
+    moved (#1279).
+    """
+    window = 1000
+    n = sum(should_explore(i) for i in range(window))
+    assert n == len(range(0, window, DEFAULT_EXPLORATION_CADENCE))
 
 
 @pytest.mark.parametrize("cadence", [0, -1, -20])
