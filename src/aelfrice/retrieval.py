@@ -49,6 +49,7 @@ zero-effort — see docs/design/bfs_multihop.md § Cache invalidation.
 """
 from __future__ import annotations
 
+import functools
 import math
 import os
 import re
@@ -56,6 +57,9 @@ import sys
 import time
 import tomllib
 from collections import OrderedDict
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1433,6 +1437,105 @@ def _env_hrr_persist_override() -> bool | None:
 # instead of once per resolver call).
 _TOML_SECTION_CACHE: dict[str, tuple[int, int, dict[str, Any] | None]] = {}
 
+# Discovery memo for `_discover_config`, scoped to one retrieval call.
+#
+# The *parse* above is memoized on the file, but the *walk* that finds the
+# file was not, so every `[retrieval]` resolver re-walked from cwd to the
+# first `.aelfrice.toml`. With ~22 resolvers that is O(flags x path depth)
+# filesystem work per `retrieve()` — 22 walks and 173 `posix.stat` calls
+# per retrieval, measured on a 5-belief store (#1289) — and it grew with
+# every lane flag added.
+#
+# Staleness semantics, stated rather than left implicit: the memo lives for
+# the duration of a single retrieval and is discarded at the end of it, so a
+# `.aelfrice.toml` created or deleted between two retrievals is picked up by
+# the next one exactly as before. Only a change made *during* one retrieval
+# is missed, which no caller can observe. This is deliberately narrower than
+# a process-lifetime cache, which would have made a config file created
+# mid-process invisible until restart.
+#
+# A ContextVar rather than a plain dict so concurrent retrievals in threads
+# or async tasks cannot see each other's memo.
+_CONFIG_DISCOVERY_MEMO: ContextVar[dict[Path, Path | None] | None] = ContextVar(
+    "aelfrice_config_discovery_memo",
+    default=None,
+)
+
+# Memo key standing for "the caller passed no `start`", i.e. resolve from
+# cwd. Not a real path, and cannot collide with one: every other key is an
+# absolute resolved directory.
+_CWD_KEY: Final[Path] = Path("\x00cwd")
+
+
+@contextmanager
+def config_discovery_scope() -> Iterator[None]:
+    """Memoize `.aelfrice.toml` discovery for the duration of the block.
+
+    Entering is what turns the memo on; outside a scope every resolver
+    walks, preserving the original behaviour for direct callers. Nesting is
+    safe — an inner scope reuses the outer memo rather than shadowing it, so
+    `retrieve` calling `retrieve_v2` does not re-walk.
+    """
+    if _CONFIG_DISCOVERY_MEMO.get() is not None:
+        yield
+        return
+    token = _CONFIG_DISCOVERY_MEMO.set({})
+    try:
+        yield
+    finally:
+        _CONFIG_DISCOVERY_MEMO.reset(token)
+
+
+def _memoize_config_discovery(fn: Any) -> Any:
+    """Run `fn` inside a `config_discovery_scope`.
+
+    Applied to the retrieval entry points so the ~22 `[retrieval]` resolvers
+    reached during one call share a single `.aelfrice.toml` walk. Nesting is
+    handled by the scope itself, so an entry point calling another one costs
+    nothing extra.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with config_discovery_scope():
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
+def _discover_config(start: Path | None) -> Path | None:
+    """Return the nearest `.aelfrice.toml` at or above `start`, else None.
+
+    This is the walk every `[retrieval]` resolver used to do for itself.
+    Inside a `config_discovery_scope` the result is memoized per resolved
+    start directory, so N resolvers cost one walk instead of N.
+    """
+    memo = _CONFIG_DISCOVERY_MEMO.get()
+    if memo is not None and start is None and _CWD_KEY in memo:
+        # Resolve the key before `Path.cwd().resolve()`, which is itself a
+        # syscall pair — the default `start=None` is what every one of the
+        # ~22 resolvers passes, so it is the case worth short-circuiting.
+        return memo[_CWD_KEY]
+    base = (start if start is not None else Path.cwd()).resolve()
+    if memo is not None and base in memo:
+        return memo[base]
+    located: Path | None = None
+    current = base
+    seen: set[Path] = set()
+    while current not in seen:
+        seen.add(current)
+        candidate = current / CONFIG_FILENAME
+        if candidate.is_file():
+            located = candidate
+            break
+        if current.parent == current:
+            break
+        current = current.parent
+    if memo is not None:
+        memo[base] = located
+        if start is None:
+            memo[_CWD_KEY] = located
+    return located
+
 
 def _parsed_retrieval_section(candidate: Path) -> dict[str, Any] | None:
     """Return `candidate`'s `[retrieval]` table, or None when the file
@@ -1491,27 +1594,20 @@ def _read_toml_flag_for(
     Mirrors `noise_filter.NoiseConfig.discover` semantics.
     """
     serr: IO[str] = sys.stderr
-    current = (start if start is not None else Path.cwd()).resolve()
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / CONFIG_FILENAME
-        if candidate.is_file():
-            section = _parsed_retrieval_section(candidate)
-            if section is None or key not in section:
-                return None
-            value: Any = section[key]
-            if isinstance(value, bool):
-                return value
-            print(
-                f"aelfrice retrieval: ignoring [{RETRIEVAL_SECTION}] "
-                f"{key} in {candidate} (expected bool)",
-                file=serr,
-            )
-            return None
-        if current.parent == current:
-            break
-        current = current.parent
+    candidate = _discover_config(start)
+    if candidate is None:
+        return None
+    section = _parsed_retrieval_section(candidate)
+    if section is None or key not in section:
+        return None
+    value: Any = section[key]
+    if isinstance(value, bool):
+        return value
+    print(
+        f"aelfrice retrieval: ignoring [{RETRIEVAL_SECTION}] "
+        f"{key} in {candidate} (expected bool)",
+        file=serr,
+    )
     return None
 
 
@@ -1527,27 +1623,20 @@ def _read_toml_str_for(
     stderr and returns None so the caller's default wins.
     """
     serr: IO[str] = sys.stderr
-    current = (start if start is not None else Path.cwd()).resolve()
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / CONFIG_FILENAME
-        if candidate.is_file():
-            section = _parsed_retrieval_section(candidate)
-            if section is None or key not in section:
-                return None
-            value: Any = section[key]
-            if isinstance(value, str):
-                return value
-            print(
-                f"aelfrice retrieval: ignoring [{RETRIEVAL_SECTION}] "
-                f"{key} in {candidate} (expected str)",
-                file=serr,
-            )
-            return None
-        if current.parent == current:
-            break
-        current = current.parent
+    candidate = _discover_config(start)
+    if candidate is None:
+        return None
+    section = _parsed_retrieval_section(candidate)
+    if section is None or key not in section:
+        return None
+    value: Any = section[key]
+    if isinstance(value, str):
+        return value
+    print(
+        f"aelfrice retrieval: ignoring [{RETRIEVAL_SECTION}] "
+        f"{key} in {candidate} (expected str)",
+        file=serr,
+    )
     return None
 
 
@@ -1564,37 +1653,30 @@ def _read_toml_float_for(
     `_read_toml_flag_for` semantics but accepts numeric types.
     """
     serr: IO[str] = sys.stderr
-    current = (start if start is not None else Path.cwd()).resolve()
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / CONFIG_FILENAME
-        if candidate.is_file():
-            section = _parsed_retrieval_section(candidate)
-            if section is None or key not in section:
-                return None
-            value: Any = section[key]
-            # bool is a subclass of int -- reject it explicitly so
-            # `posterior_weight = true` reads as malformed rather
-            # than silently coercing to 1.0.
-            if isinstance(value, bool):
-                print(
-                    f"aelfrice retrieval: ignoring [{RETRIEVAL_SECTION}] "
-                    f"{key} in {candidate} (expected number, got bool)",
-                    file=serr,
-                )
-                return None
-            if isinstance(value, (int, float)):
-                return float(value)
-            print(
-                f"aelfrice retrieval: ignoring [{RETRIEVAL_SECTION}] "
-                f"{key} in {candidate} (expected number)",
-                file=serr,
-            )
-            return None
-        if current.parent == current:
-            break
-        current = current.parent
+    candidate = _discover_config(start)
+    if candidate is None:
+        return None
+    section = _parsed_retrieval_section(candidate)
+    if section is None or key not in section:
+        return None
+    value: Any = section[key]
+    # bool is a subclass of int -- reject it explicitly so
+    # `posterior_weight = true` reads as malformed rather
+    # than silently coercing to 1.0.
+    if isinstance(value, bool):
+        print(
+            f"aelfrice retrieval: ignoring [{RETRIEVAL_SECTION}] "
+            f"{key} in {candidate} (expected number, got bool)",
+            file=serr,
+        )
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    print(
+        f"aelfrice retrieval: ignoring [{RETRIEVAL_SECTION}] "
+        f"{key} in {candidate} (expected number)",
+        file=serr,
+    )
     return None
 
 
@@ -4077,6 +4159,7 @@ def _l1_hits(
     return [b for _, _, b in keyed]
 
 
+@_memoize_config_discovery
 def retrieve(
     store: MemoryStore,
     query: str,
@@ -4241,6 +4324,7 @@ def retrieve(
     return out
 
 
+@_memoize_config_discovery
 def retrieve_with_tiers(
     store: MemoryStore,
     query: str,
@@ -4650,6 +4734,7 @@ def retrieve_with_tiers(
     return out, locked_ids_list, l25_ids_list, l1_ids_list, bfs_chains
 
 
+@_memoize_config_discovery
 def retrieve_v2(
     store: MemoryStore,
     query: str,
