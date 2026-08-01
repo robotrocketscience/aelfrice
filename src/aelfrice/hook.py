@@ -2375,6 +2375,17 @@ def apply_sentiment_feedback(
             return 0
         prior_ids = _load_prior_ups_belief_ids(session_id, stderr=serr)
         if not prior_ids:
+            # Abstain, but on the record (#1291). Nothing to attribute
+            # the correction to; without this row the audit shows only
+            # the corrections that landed.
+            _write_sentiment_feedback_audit(
+                prompt=prompt,
+                session_id=session_id,
+                signal=signal,
+                applied_ids=[],
+                stderr=serr,
+                abstained="no_prior_injection",
+            )
             return 0
         store = _open_store()
         try:
@@ -2392,6 +2403,11 @@ def apply_sentiment_feedback(
             signal=signal,
             applied_ids=applied_ids,
             stderr=serr,
+            # Every candidate has been deleted since it was injected.
+            # The row was already written with n_beliefs=0; naming the
+            # reason is what distinguishes it from a signal that had
+            # candidates and moved none.
+            abstained=None if applied_ids else "candidates_gone",
         )
         return len(applied_ids)
     except Exception as exc:
@@ -2496,12 +2512,19 @@ def _write_sentiment_feedback_audit(
     signal: "Any",
     applied_ids: list[str],
     stderr: IO[str] | None = None,
+    abstained: str | None = None,
 ) -> None:
     """Append one hook-audit row tagged `sentiment_feedback`. Fail-soft.
 
     Distinct from `_write_hook_audit_record`: the sentiment row carries
     pattern/matched_text/valence/applied_ids — fields the UPS audit row
     does not have. Reuses the same JSONL file + rotation policy.
+
+    `abstained` names the reason no posterior moved (#1291). A detected
+    signal that applies to nothing used to return silently, so the
+    audit recorded corrections that fired and never those that fired
+    and found no candidate — the denominator was missing. The row is
+    written either way; `abstained` is None on the applied path.
     """
     cfg = load_hook_audit_config(stderr=stderr)
     if not cfg.enabled:
@@ -2526,6 +2549,8 @@ def _write_sentiment_feedback_audit(
         "belief_ids": applied_ids,
         "n_beliefs": len(applied_ids),
     }
+    if abstained is not None:
+        record["abstained"] = abstained
     _append_audit(audit_path, record, cfg.max_bytes, stderr=stderr)
 
 

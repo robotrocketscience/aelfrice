@@ -490,3 +490,93 @@ def test_feedback_history_row_uses_sentiment_inferred_source(
     assert any(
         e.source == SENTIMENT_INFERRED_SOURCE for e in events
     ), "feedback_history row should carry the sentiment_inferred source tag"
+
+
+# ---------------------------------------------------------------------------
+# #1291 — abstention is recorded, not silent
+# ---------------------------------------------------------------------------
+
+
+def test_apply_records_abstention_when_no_prior_injection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A correction with nothing to attribute writes an audit row.
+
+    Before #1291 this path returned 0 silently, so the audit held only
+    the corrections that landed and the abstentions were invisible —
+    you could not tell a lane that never fires from one that fires and
+    finds no candidate.
+    """
+    _enable_sentiment(monkeypatch)
+    db = tmp_path / "memory.db"
+    _seed_db(db, [_mk("F1", "kitchen has bananas")])
+    _set_db(monkeypatch, db)
+    audit_path = _audit_path_for_db(db)
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    # A UPS row for a DIFFERENT session, so this session has no prior
+    # injection set of its own.
+    audit_path.write_text(
+        json.dumps(
+            {
+                "hook": AUDIT_HOOK_USER_PROMPT_SUBMIT,
+                "session_id": "other",
+                "beliefs": [{"id": "F1"}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    n = apply_sentiment_feedback("no, wrong", "s1")
+
+    assert n == 0
+    rows = [
+        r
+        for r in read_hook_audit(audit_path)
+        if r.get("hook") == AUDIT_HOOK_SENTIMENT_FEEDBACK
+    ]
+    assert len(rows) == 1, "the abstention must be on the record"
+    assert rows[0]["abstained"] == "no_prior_injection"
+    assert rows[0]["n_beliefs"] == 0
+    # Abstaining must not move anything.
+    b = _read_belief(db, "F1")
+    assert b.alpha == 1.0 and b.beta == 1.0
+
+
+def test_applied_row_carries_no_abstained_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The applied path stays clean — `abstained` is absent, not null.
+
+    Distinguishes the new field from the normal case; without this a
+    bug that stamped every row would still pass the test above.
+    """
+    _enable_sentiment(monkeypatch)
+    db = tmp_path / "memory.db"
+    _seed_db(db, [_mk("F1", "kitchen has bananas")])
+    _set_db(monkeypatch, db)
+    audit_path = _audit_path_for_db(db)
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(
+        json.dumps(
+            {
+                "hook": AUDIT_HOOK_USER_PROMPT_SUBMIT,
+                "session_id": "s1",
+                "beliefs": [{"id": "F1"}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    n = apply_sentiment_feedback("no, wrong", "s1")
+
+    assert n == 1
+    rows = [
+        r
+        for r in read_hook_audit(audit_path)
+        if r.get("hook") == AUDIT_HOOK_SENTIMENT_FEEDBACK
+    ]
+    assert len(rows) == 1
+    assert "abstained" not in rows[0]
+    assert rows[0]["n_beliefs"] == 1
