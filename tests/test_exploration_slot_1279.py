@@ -308,3 +308,107 @@ def test_a_pack_too_cheap_to_pay_for_the_draw_is_left_alone(
         store.get_belief("pool00")
     )
     assert _run(store, hits, capsys) == hits
+
+
+# --- the resolvers -------------------------------------------------------
+#
+# The suite above reaches these only through `AELFRICE_EXPLORATION`, so the
+# precedence chain and the disable contract were asserted by the docs and by
+# nothing else. Each test below pins one tier against the tier beneath it, so
+# a collapsed precedence fails rather than merely changing which default wins.
+
+
+def _toml(tmp_path: Path, body: str) -> Path:
+    (tmp_path / ".aelfrice.toml").write_text(f"[retrieval]\n{body}\n")
+    return tmp_path
+
+
+def test_exploration_flag_precedence(monkeypatch, tmp_path) -> None:
+    from aelfrice.retrieval import is_exploration_enabled
+
+    assert is_exploration_enabled(start=tmp_path) is False
+    _toml(tmp_path, "exploration_enabled = true")
+    assert is_exploration_enabled(start=tmp_path) is True
+    # kwarg loses to TOML? No — kwarg outranks it, and False must be
+    # honoured rather than treated as "unset", which is the classic
+    # tri-state bug.
+    assert is_exploration_enabled(False, start=tmp_path) is False
+    monkeypatch.setenv("AELFRICE_EXPLORATION", "0")
+    assert is_exploration_enabled(True, start=tmp_path) is False
+
+
+def test_cadence_precedence(monkeypatch, tmp_path) -> None:
+    from aelfrice.retrieval import (
+        DEFAULT_EXPLORATION_CADENCE,
+        resolve_exploration_cadence,
+    )
+
+    assert resolve_exploration_cadence(start=tmp_path) == (
+        DEFAULT_EXPLORATION_CADENCE
+    )
+    _toml(tmp_path, "exploration_cadence = 7")
+    assert resolve_exploration_cadence(start=tmp_path) == 7
+    assert resolve_exploration_cadence(3, start=tmp_path) == 3
+    monkeypatch.setenv("AELFRICE_EXPLORATION_CADENCE", "11")
+    assert resolve_exploration_cadence(3, start=tmp_path) == 11
+
+
+def test_env_cadence_zero_disables_rather_than_falling_through(
+    monkeypatch, tmp_path
+) -> None:
+    """The documented contract is "`0` or less disables". On the env tier it
+    did the opposite: `_env_positive_int` discarded the value and the caller
+    got `DEFAULT_EXPLORATION_CADENCE`, so an operator asking for "off" got
+    exploration every 20th turn. Distinguishing against the default is the
+    whole point — asserting `<= 0` alone would pass against the bug.
+    """
+    from aelfrice.exploration import should_explore
+    from aelfrice.retrieval import (
+        DEFAULT_EXPLORATION_CADENCE,
+        resolve_exploration_cadence,
+    )
+
+    for raw in ("0", "-1"):
+        monkeypatch.setenv("AELFRICE_EXPLORATION_CADENCE", raw)
+        got = resolve_exploration_cadence(start=tmp_path)
+        assert got == int(raw)
+        assert got != DEFAULT_EXPLORATION_CADENCE
+        # And it actually disables, at the fire index that would otherwise
+        # be the firing one.
+        assert should_explore(DEFAULT_EXPLORATION_CADENCE, cadence=got) is False
+
+
+def test_a_non_numeric_cadence_falls_through_to_the_default(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    from aelfrice.retrieval import (
+        DEFAULT_EXPLORATION_CADENCE,
+        resolve_exploration_cadence,
+    )
+
+    monkeypatch.setenv("AELFRICE_EXPLORATION_CADENCE", "sometimes")
+    assert resolve_exploration_cadence(start=tmp_path) == (
+        DEFAULT_EXPLORATION_CADENCE
+    )
+    assert "expected int" in capsys.readouterr().err
+
+
+def test_slots_precedence_and_that_zero_is_still_rejected(
+    monkeypatch, tmp_path
+) -> None:
+    """Slots keeps `_env_positive_int`: zero slots is not a disable knob,
+    it is a meaningless pack request, and `exploration_enabled` is the
+    documented off switch. Pinned so the cadence fix is not copied here by
+    symmetry.
+    """
+    from aelfrice.retrieval import (
+        DEFAULT_EXPLORATION_SLOTS,
+        resolve_exploration_slots,
+    )
+
+    assert resolve_exploration_slots(start=tmp_path) == DEFAULT_EXPLORATION_SLOTS
+    _toml(tmp_path, "exploration_slots = 4")
+    assert resolve_exploration_slots(start=tmp_path) == 4
+    assert resolve_exploration_slots(2, start=tmp_path) == 2
+    monkeypatch.setenv("AELFRICE_EXPLORATION_SLOTS", "0")
+    assert resolve_exploration_slots(start=tmp_path) == 4
