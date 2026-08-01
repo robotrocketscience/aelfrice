@@ -65,18 +65,15 @@ _MIX_B: Final[int] = 0x94D049BB133111EB
 # does not get shown, and one slot is the smallest intervention that can still
 # produce a signal.
 #
-# The cadence is 3 rather than the originally specified 20 because `fire_idx`
-# is **per-session**, not global — `read_ring_state` returns `{}` on a session
-# mismatch, so the counter restarts with every session and never accumulates.
-# Measured against this store's real workload, sessions are short: a median of
-# 2 injecting turns, p90 of 7. At a cadence of 20 the slot reached a firing
-# turn on 8 of 956 turns all-time and **0 of 259** since the #1016-B regime
-# break — a mechanism that is wired, tested, and never runs, which is exactly
-# the failure class #1279 exists to close. A cadence of 20 would only mean
-# "one turn in twenty" against a counter that spans sessions; that is the
-# better mechanism and is filed separately, and this constant should go back
-# up if it lands.
-DEFAULT_EXPLORATION_CADENCE: Final[int] = 3
+# Back to the originally specified 20 now that `fire_idx` is a store-level
+# counter (#1294). It was dropped to 3 in #1279 as an interim because the index
+# then came from the session ring, which holds one session — the counter
+# restarted constantly, so a cadence of 20 reached a firing turn on 8 of 956
+# turns all-time and 0 of 259 in the current regime. With a global counter the
+# knob recovers its stated meaning: one turn in `n`, across sessions, so the
+# realised rate no longer depends on how the operator happens to segment their
+# work and coverage of the never-injected pool can be planned from the setting.
+DEFAULT_EXPLORATION_CADENCE: Final[int] = 20
 DEFAULT_EXPLORATION_SLOTS: Final[int] = 1
 
 

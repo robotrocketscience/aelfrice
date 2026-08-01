@@ -1686,14 +1686,15 @@ def _substitute_exploration_slots(
             draw_uniform,
             should_explore,
         )
-        from aelfrice.session_ring import read_ring_state  # noqa: PLC0415
 
-        # The ring's counter, read before this turn's `_ring_append_ids`, so
-        # the slot fires on the same boundary the cadence dispatch sees.
-        state = read_ring_state(session_id)
-        fire_idx = state.get("next_fire_idx")
-        if not isinstance(fire_idx, int) or fire_idx < 0:
-            return hits
+        # #1294: a store-level counter, not the session ring. The ring
+        # holds exactly one session and `read_ring_state` returns `{}` on
+        # a mismatch, so `fire_idx` restarted constantly and `cadence`
+        # meant "one turn in n *of a session*" — at the specified 20 the
+        # slot reached a firing turn on 0 of 259 turns in the current
+        # regime. Claimed *after* the enabled check so a default-off
+        # install takes no write on the hot path.
+        fire_idx = store.next_exploration_fire_idx()
         if not should_explore(
             fire_idx, cadence=resolve_exploration_cadence(start=cwd)
         ):

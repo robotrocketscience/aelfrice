@@ -657,6 +657,20 @@ SCHEMA_META_STORE_GENERATION: Final[str] = "store_generation"
 # ISO timestamp on completion; absence triggers the pass on next open.
 SCHEMA_META_ORIGIN_BACKFILL: Final[str] = "origin_backfill_complete"
 
+# #1294: store-level monotonic exploration fire counter. `fire_idx` used
+# to come from the session ring, which holds exactly one session — so the
+# counter restarted with every session and `exploration_cadence` meant
+# "one turn in n *of a session*" rather than one turn in n. Measured
+# before the change: at the specified cadence of 20 the slot reached a
+# firing turn on 8 of 956 turns all-time and 0 of 259 in the current
+# regime, because the median session is 2 injecting turns.
+#
+# Lives in `schema_meta` rather than a new table deliberately: a
+# key-value row needs no migration, and an `edges`-adjacent migration is
+# the operation that left stores unopenable in #1161. Absent key reads
+# as 0, so a store written by an older binary needs no upgrade pass.
+SCHEMA_META_EXPLORATION_FIRE_IDX: Final[str] = "exploration_fire_idx"
+
 # v1.5.0 #204 federation forward-compat. Stable per-DB scope id,
 # generated on first v1.5+ open and persisted in `schema_meta`.
 # Today aelfrice is single-scope per DB; the local scope id is
@@ -3731,6 +3745,56 @@ class MemoryStore:
             (escaped, limit),
         )
         return [str(r["id"]) for r in cur.fetchall()]
+
+    def next_exploration_fire_idx(self) -> int:
+        """Claim the next global exploration fire index (#1294).
+
+        Returns a 1-based, strictly increasing counter that spans
+        sessions and processes. `should_explore` tests
+        `fire_idx % cadence == 0`, so 1-based means the first fire lands
+        on turn `cadence` rather than on the very first turn the lane is
+        ever consulted.
+
+        Replaces `session_ring.read_ring_state(...)["next_fire_idx"]`,
+        which is **per-session** — the ring file holds exactly one
+        session and `read_ring_state` returns `{}` on a session-id
+        mismatch, so the counter restarted constantly and never reached
+        a firing multiple. `exploration_cadence` now means one turn in
+        *n* rather than one turn in *n of a session*.
+
+        **Regime break for `exploration_events`.** `derive_seed` is
+        unchanged in form — still blake2b over
+        `(scope_id, fire_idx, query)` — but `fire_idx` is drawn from a
+        different sequence, so a row written before this change and a
+        row written after are not comparable and must not be pooled,
+        the same way #1016-B partitions the injection-pack series.
+        Rows are self-describing: pre-change indices restart from low
+        values repeatedly, post-change ones never decrease.
+
+        Atomic across sister sessions sharing one store: the
+        read-then-write runs under `BEGIN IMMEDIATE`, so two concurrent
+        writers cannot be handed the same index — without it both would
+        read the same value and write the same successor, and the ledger
+        would carry two rows claiming to be the same draw.
+        """
+        with self.transaction(immediate=True):
+            row = self._conn.execute(
+                "SELECT value FROM schema_meta WHERE key = ?",
+                (SCHEMA_META_EXPLORATION_FIRE_IDX,),
+            ).fetchone()
+            try:
+                current = int(row["value"]) if row is not None else 0
+            except (TypeError, ValueError):
+                # A hand-edited or corrupt value must not wedge the lane
+                # forever; restart the sequence rather than raise on a
+                # hot path whose caller is fail-soft anyway.
+                current = 0
+            nxt = current + 1
+            self._conn.execute(
+                "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+                (SCHEMA_META_EXPLORATION_FIRE_IDX, str(nxt)),
+            )
+        return nxt
 
     def record_exploration(
         self,

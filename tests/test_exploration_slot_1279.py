@@ -17,7 +17,7 @@ import pytest
 from aelfrice.exploration import DEFAULT_EXPLORATION_CADENCE
 from aelfrice.hook import _substitute_exploration_slots
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
-from aelfrice.store import MemoryStore
+from aelfrice.store import SCHEMA_META_EXPLORATION_FIRE_IDX, MemoryStore
 
 _SESSION = "sess-1279"
 
@@ -80,12 +80,20 @@ def _seed_pool(store: MemoryStore, n: int = 12) -> list[str]:
     return ids
 
 
-def _fire(monkeypatch: pytest.MonkeyPatch, idx: int) -> None:
-    """Pin the ring counter so the cadence decision is deterministic."""
-    monkeypatch.setattr(
-        "aelfrice.session_ring.read_ring_state",
-        lambda sid: {"next_fire_idx": idx},
+def _fire(store: MemoryStore, idx: int) -> None:
+    """Arm the *store* counter so the next claim lands on `idx` (#1294).
+
+    Was a `monkeypatch` of `session_ring.read_ring_state`. The fire index
+    is now store-level rather than per-session, so pinning the ring would
+    pin nothing — every one of these tests would silently stop exercising
+    its branch. Seeds `idx - 1`, because `next_exploration_fire_idx` is
+    1-based and returns the post-increment value.
+    """
+    store._conn.execute(
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+        (SCHEMA_META_EXPLORATION_FIRE_IDX, str(idx - 1)),
     )
+    store._conn.commit()
 
 
 def _run(store, hits, capsys, *, query="exploration probe widget", cwd=None):
@@ -105,7 +113,7 @@ def _run(store, hits, capsys, *, query="exploration probe widget", cwd=None):
 def test_default_off_is_a_no_op(store, monkeypatch, capsys) -> None:
     """Nothing changes until the operator opts in."""
     _seed_pool(store)
-    _fire(monkeypatch, _FIRING)
+    _fire(store, _FIRING)
     hits = [_mk("h1", "ranked hit one"), _mk("h2", "ranked hit two")]
     assert _run(store, hits, capsys) == hits
 
@@ -119,7 +127,7 @@ def test_enabled_on_a_firing_turn_changes_the_pack(
     its input.
     """
     _seed_pool(store)
-    _fire(monkeypatch, _FIRING)
+    _fire(store, _FIRING)
     hits = [_mk(f"h{i}", f"ranked hit {i} " + "filler " * 8) for i in range(4)]
 
     off = _run(store, hits, capsys)
@@ -139,9 +147,9 @@ def test_non_firing_turn_is_a_no_op_even_when_enabled(
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
     hits = [_mk(f"h{i}", f"ranked hit {i} " + "filler " * 8) for i in range(4)]
 
-    _fire(monkeypatch, _NOT_FIRING)
+    _fire(store, _NOT_FIRING)
     assert _run(store, hits, capsys) == hits
-    _fire(monkeypatch, _FIRING)
+    _fire(store, _FIRING)
     assert _run(store, hits, capsys) != hits
 
 
@@ -155,7 +163,7 @@ def test_a_user_lock_is_never_displaced(store, monkeypatch, capsys) -> None:
     it would be silently overriding the one tier the user set by hand.
     """
     _seed_pool(store)
-    _fire(monkeypatch, _FIRING)
+    _fire(store, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
     hits = [
         _mk("L1", "a locked belief", LOCK_USER),
@@ -173,7 +181,7 @@ def test_locks_survive_while_the_non_locked_tail_is_displaced(
     the slot never firing at all.
     """
     _seed_pool(store)
-    _fire(monkeypatch, _FIRING)
+    _fire(store, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
     hits = [
         _mk("L1", "a locked belief", LOCK_USER),
@@ -197,7 +205,7 @@ def test_the_block_does_not_grow_in_tokens(store, monkeypatch, capsys) -> None:
     from aelfrice.retrieval import _belief_tokens
 
     _seed_pool(store)
-    _fire(monkeypatch, _FIRING)
+    _fire(store, _FIRING)
     hits = [_mk(f"h{i}", f"ranked hit {i} " + "filler " * 8) for i in range(6)]
 
     before = sum(_belief_tokens(b) for b in _run(store, hits, capsys))
@@ -208,19 +216,26 @@ def test_the_block_does_not_grow_in_tokens(store, monkeypatch, capsys) -> None:
 
 
 def test_the_draw_is_deterministic(store, monkeypatch, capsys) -> None:
-    """Same (session, fire_idx, query, pool) -> same belief. Replay needs it."""
+    """Same (session, fire_idx, query, pool) -> same belief. Replay needs it.
+
+    The counter is re-armed between the two arms because it now advances
+    on every consultation (#1294) — previously the ring was patched to a
+    constant, so repeated calls saw the same index for free. Re-arming is
+    what makes this a test of the *seed* rather than of the counter.
+    """
     _seed_pool(store)
-    _fire(monkeypatch, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
     hits = [_mk(f"h{i}", f"ranked hit {i} " + "filler " * 8) for i in range(6)]
 
+    _fire(store, _FIRING)
     first = [b.id for b in _run(store, hits, capsys)]
+    _fire(store, _FIRING)
     second = [b.id for b in _run(store, hits, capsys)]
     assert first == second
 
     # ...and a different turn draws a different belief, or "deterministic"
     # would be satisfied by always drawing the same one.
-    _fire(monkeypatch, _FIRING_LATER)
+    _fire(store, _FIRING_LATER)
     third = [b.id for b in _run(store, hits, capsys)]
     assert {i for i in third if i.startswith("pool")} != {
         i for i in first if i.startswith("pool")
@@ -237,7 +252,7 @@ def test_a_firing_turn_writes_one_ledger_row_naming_what_it_evicted(
     analysis needs.
     """
     _seed_pool(store)
-    _fire(monkeypatch, _FIRING)
+    _fire(store, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
     hits = [_mk(f"h{i}", f"ranked hit {i} " + "filler " * 8) for i in range(6)]
 
@@ -263,7 +278,7 @@ def test_a_raising_pool_query_leaves_the_pack_untouched(
     store, monkeypatch, capsys,
 ) -> None:
     """A research lane must never be why a hook fails."""
-    _fire(monkeypatch, _FIRING)
+    _fire(store, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
 
     def _boom(*a, **k):
@@ -276,7 +291,7 @@ def test_a_raising_pool_query_leaves_the_pack_untouched(
 
 def test_an_empty_pool_is_a_no_op(store, monkeypatch, capsys) -> None:
     """Nothing to explore is not an error, and must not empty the pack."""
-    _fire(monkeypatch, _FIRING)
+    _fire(store, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
     hits = [_mk("h1", "ranked hit one"), _mk("h2", "ranked hit two")]
     assert _run(store, hits, capsys) == hits
@@ -287,7 +302,7 @@ def test_a_belief_already_in_the_pack_is_not_drawn_again(
 ) -> None:
     """The pool is filtered against the pack, so a slot cannot duplicate."""
     pool_ids = _seed_pool(store)
-    _fire(monkeypatch, _FIRING)
+    _fire(store, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
 
     hits = [store.get_belief(i) for i in pool_ids]
@@ -310,7 +325,7 @@ def test_a_pack_too_cheap_to_pay_for_the_draw_is_left_alone(
     from aelfrice.retrieval import _belief_tokens
 
     _seed_pool(store)
-    _fire(monkeypatch, _FIRING)
+    _fire(store, _FIRING)
     monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
 
     hits = [_mk("h1", "tiny"), _mk("h2", "also tiny")]
@@ -424,35 +439,109 @@ def test_slots_precedence_and_that_zero_is_still_rejected(
     assert resolve_exploration_slots(start=tmp_path) == 4
 
 
-def test_the_default_cadence_is_reachable_within_a_real_session() -> None:
-    """The review finding this closes: at cadence 20 the slot was wired,
-    tested and never fired.
+def test_the_cadence_is_reachable_and_means_one_turn_in_n() -> None:
+    """Supersedes the per-session reachability guard (#1279 -> #1294).
 
-    `fire_idx` is per-session — `read_ring_state` returns `{}` on a session
-    mismatch, so the counter restarts each session and never accumulates.
-    Measured on this store, sessions run a median of 2 injecting turns and a
-    p90 of 7; a cadence of 20 therefore fired on 0 of 259 turns since the
-    #1016-B regime break.
+    The old version asserted that a session of typical length reaches a
+    firing turn, because `fire_idx` came from the session ring and the
+    knob really did mean "one turn in n *of a session*". That property is
+    the wrong one now: the counter is store-level, so what has to hold is
+    the knob's stated meaning — one fire per `cadence` turns, however the
+    turns are distributed across sessions.
 
-    Asserting the constant equals 3 would be a tautology. This asserts the
-    *property* that made 20 wrong — that a session of typical length reaches
-    a firing turn — so raising the cadence back above the observed session
-    length fails here, and doing it legitimately (a store-level counter that
-    makes `fire_idx` global) means this test no longer describes the
-    mechanism and has to be revisited deliberately.
+    Deliberately not `assert DEFAULT_EXPLORATION_CADENCE == 20`, which
+    would be a tautology. Dropping the modulus guard, or reverting to a
+    counter that restarts, breaks the count here.
     """
     from aelfrice.exploration import DEFAULT_EXPLORATION_CADENCE, should_explore
 
-    OBSERVED_SESSION_P90_TURNS = 7
-    fires = [
-        i
-        for i in range(1, OBSERVED_SESSION_P90_TURNS + 1)
-        if should_explore(i, cadence=DEFAULT_EXPLORATION_CADENCE)
-    ]
-    assert fires, (
-        f"cadence {DEFAULT_EXPLORATION_CADENCE} never fires within a p90 "
-        f"session of {OBSERVED_SESSION_P90_TURNS} injecting turns — the slot "
-        "would be enabled and never run"
+    cadence = DEFAULT_EXPLORATION_CADENCE
+    turns = cadence * 5
+    fires = [i for i in range(1, turns + 1) if should_explore(i, cadence=cadence)]
+    assert len(fires) == 5, f"{len(fires)} fires over {turns} turns at cadence {cadence}"
+    assert fires == [cadence * k for k in range(1, 6)]
+
+
+def test_the_fire_index_accumulates_across_sessions(tmp_path) -> None:
+    """AC: a second session sees the first session's count (#1294).
+
+    This is the whole point of the issue. Under the session ring the
+    second store instance restarted at the beginning, so a cadence above
+    the typical session length was unreachable forever. Two *store
+    instances* over one file stand in for two sessions, which is exactly
+    what the ring could not do — it keyed on session id and returned
+    `{}` on a mismatch.
+    """
+    db = str(tmp_path / "memory.db")
+
+    first = MemoryStore(db)
+    a = [first.next_exploration_fire_idx() for _ in range(3)]
+    first.close()
+
+    second = MemoryStore(db)
+    b = [second.next_exploration_fire_idx() for _ in range(3)]
+    second.close()
+
+    assert a == [1, 2, 3]
+    assert b == [4, 5, 6], "the counter restarted — this is the #1294 defect"
+    assert min(b) > max(a)
+
+
+def test_sequential_claims_are_unique_monotonic_and_gapless(tmp_path) -> None:
+    """Two store handles over one file never repeat or skip an index.
+
+    This pins the increment arithmetic. It does **not** pin atomicity —
+    each claim here completes before the next begins, so it stays green
+    with the transaction downgraded to deferred. That gap is covered by
+    the test below; keeping the two separate so neither is mistaken for
+    the other.
+    """
+    db = str(tmp_path / "memory.db")
+    one, two = MemoryStore(db), MemoryStore(db)
+    try:
+        claimed = []
+        for _ in range(5):
+            claimed.append(one.next_exploration_fire_idx())
+            claimed.append(two.next_exploration_fire_idx())
+        assert claimed == list(range(1, 11))
+    finally:
+        one.close()
+        two.close()
+
+
+def test_the_claim_takes_the_write_lock_before_reading(tmp_path) -> None:
+    """AC: concurrent advancement is atomic (#1294).
+
+    The read-then-write has to run under `BEGIN IMMEDIATE`. Deferred, two
+    sister sessions sharing the store both pass the SELECT before either
+    UPDATEs, both compute the same successor, and `exploration_events`
+    gains two rows claiming to be the same draw — with the same seed, so
+    replay cannot tell them apart.
+
+    Asserts the lock discipline directly rather than trying to stage a
+    race: a sequential test cannot observe the interleaving, and a
+    threaded one would trade a real assertion for a flaky one. Dropping
+    `immediate=True` turns this red, which a behavioural test at this
+    level could not manage.
+    """
+    store = MemoryStore(str(tmp_path / "memory.db"))
+    seen: list[bool] = []
+    real = store.transaction
+
+    def spy(*args, **kwargs):
+        seen.append(bool(kwargs.get("immediate", False)))
+        return real(*args, **kwargs)
+
+    try:
+        store.transaction = spy  # type: ignore[method-assign]
+        store.next_exploration_fire_idx()
+    finally:
+        store.transaction = real  # type: ignore[method-assign]
+        store.close()
+
+    assert seen == [True], (
+        "the fire-index claim did not open an immediate transaction, so two "
+        "sessions can be handed the same index"
     )
 
 
@@ -479,7 +568,7 @@ def test_the_project_toml_is_read_from_the_payload_cwd(
     )
 
     _seed_pool(store)
-    _fire(monkeypatch, _FIRING)
+    _fire(store, _FIRING)
     hits = [_mk(f"h{i}", f"ranked hit {i} " + "filler " * 8) for i in range(4)]
 
     # The autouse fixture has chdir'd to `tmp_path`, which does not contain
