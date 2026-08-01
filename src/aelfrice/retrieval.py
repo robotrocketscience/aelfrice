@@ -1279,7 +1279,11 @@ def is_exploration_enabled(
 def resolve_exploration_cadence(
     kwarg: int | None = None, *, start: Path | None = None
 ) -> int:
-    """Turns between exploration fires (#1279). Default 20.
+    """Turns between exploration fires (#1279).
+
+    Defaults to `exploration.DEFAULT_EXPLORATION_CADENCE`, named rather than
+    restated so this cannot drift from it again — it said 20 after the
+    constant moved to 3.
 
     `<= 0` disables exploration rather than raising — `should_explore`
     guards the modulus, so a misconfigured cadence degrades to "never
