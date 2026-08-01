@@ -98,7 +98,11 @@ L0 always ships. L1, L2.5, and (when enabled) L3 are budget-trimmed against the 
 
 Your lock count doubles as a baseline-context budget: lock 200 things and every session opens with all 200, by design. Everything non-locked is BM25-ranked and budget-trimmed. The first prompt of a new session carries one extra block — a `<session-start>` sub-block listing all locks plus load-bearing unlocked beliefs (corroboration ≥ 2, or posterior mean ≥ ⅔ with α+β ≥ 4); subsequent prompts in the same session skip it.
 
-Bench evidence on the labelled query-strategy corpus measured **+0.2851 absolute NDCG@k (+94.8%)** versus the v1.4 raw-BM25 baseline (v3.0 30-row corpus, 2026-05-12) at +0.96 ms p99 over legacy-bm25 (re-measured 2026-05-26; gate budget +5 ms delta; see [`tests/bench_gate/test_query_strategy.py`](tests/bench_gate/test_query_strategy.py)). Full lane wiring, composition, and federation peer DBs: [ARCHITECTURE § Retrieval](docs/concepts/ARCHITECTURE.md#retrieval).
+Bench evidence on the labelled query-strategy corpus measured **+0.2851 absolute NDCG@k (+94.8%)** versus the v1.4 raw-BM25 baseline (v3.0 30-row corpus, 2026-05-12) at +0.96 ms p99 over legacy-bm25 (re-measured 2026-05-26; gate budget +5 ms delta). **Measured on a labelled corpus that is not shipped in
+this repository**, so the figure is not reproducible from a public clone; the in-repo gate
+[`tests/bench_gate/test_query_strategy.py`](tests/bench_gate/test_query_strategy.py) skips without
+`AELFRICE_CORPUS_ROOT` and, when it does run, asserts only that uplift is positive rather than checking the
+quoted number. For figures reproducible on HEAD see the scripts under [`benchmarks/`](benchmarks/). Full lane wiring, composition, and federation peer DBs: [ARCHITECTURE § Retrieval](docs/concepts/ARCHITECTURE.md#retrieval).
 
 ## Memory model
 
