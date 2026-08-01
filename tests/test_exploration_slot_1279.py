@@ -514,7 +514,7 @@ def test_the_claim_takes_the_write_lock_before_reading(tmp_path) -> None:
 
     The read-then-write has to run under `BEGIN IMMEDIATE`. Deferred, two
     sister sessions sharing the store both pass the SELECT before either
-    UPDATEs, both compute the same successor, and `exploration_events`
+    issues its UPDATE, both compute the same successor, and the ledger
     gains two rows claiming to be the same draw — with the same seed, so
     replay cannot tell them apart.
 
