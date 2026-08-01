@@ -30,6 +30,18 @@ from aelfrice import hook_commit_ingest as hk
 P95_BUDGET_MS = 1500.0
 ITERATIONS = 20
 
+# The timeout is a hang backstop, not the performance budget — the
+# assertion below is what guards latency, and it reports median and p95
+# when it fires. They have to be kept consistent: the test makes
+# `ITERATIONS + 1` calls (one warm-up), so tolerating the p95 the budget
+# claims to tolerate needs `(ITERATIONS + 1) * P95_BUDGET_MS` of wall
+# clock. Under the 5s project default it did the opposite — any per-call
+# cost above ~240ms killed the test on the clock before the assert could
+# run, so the failure surfaced as a hang rather than as the latency
+# regression it is, and the generous budget was unreachable by
+# construction (#1288). Move this if either constant above moves.
+TIMEOUT_S = int((ITERATIONS + 1) * P95_BUDGET_MS / 1000.0)
+
 
 def _git(repo: Path, *args: str) -> str:
     r = subprocess.run(
@@ -75,6 +87,7 @@ def commit_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str,
     }
 
 
+@pytest.mark.timeout(TIMEOUT_S)
 def test_in_process_p95_under_budget(commit_payload: dict[str, object]) -> None:
     timings_ms: list[float] = []
     # Warm up once so the first run does not skew the bucket (lazy
