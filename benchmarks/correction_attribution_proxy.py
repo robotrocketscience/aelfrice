@@ -191,7 +191,9 @@ def hook_audit_rows(path: Path) -> list[dict]:
     return out
 
 
-def run_hook_audit(path: Path, tok: dict[str, set[str]]) -> list[dict]:
+def run_hook_audit(
+    path: Path, tok: dict[str, set[str]]
+) -> tuple[list[dict], int]:
     """The proposal's experiment as specified — no join required.
 
     Consecutive UPS rows in one session give (correction text, prior
@@ -254,7 +256,7 @@ def run_hook_audit(path: Path, tok: dict[str, set[str]]) -> list[dict]:
     print(f"  ...and NEGATIVE                 : {negative} "
           f"({100 * negative / denom:.2f}%)")
     print(f"  ...with a prior injected set    : {len(records)}")
-    return records
+    return records, total
 
 
 def _describe(label: str, subset: list[dict]) -> None:
@@ -326,7 +328,18 @@ def main(argv: list[str] | None = None) -> int:
     print(f"beliefs with content       : {len(tok)}")
 
     if args.hook_audit is not None:
-        audit_records = run_hook_audit(args.hook_audit, tok)
+        audit_records, audit_total = run_hook_audit(args.hook_audit, tok)
+        if audit_total == 0:
+            # An all-zero funnel reads exactly like a real result, and it
+            # points the same way as this script's conclusion: a corpus
+            # that is empty because the path was wrong is indistinguishable
+            # from a population that is genuinely tiny. That already
+            # happened once here — the stale ~/.aelfrice copy answered with
+            # 4 rows and nothing complained. Refuse instead.
+            print(f"no user_prompt_submit rows in {args.hook_audit} — wrong "
+                  "path, or an audit that has never been written",
+                  file=sys.stderr)
+            return 1
         _describe("CORPUS A — max-Jaccard", audit_records)
 
     if args.transcripts is None:
@@ -412,6 +425,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  sessions joined to a transcript : {joined}/{len(by_session)}")
     print(f"  injection turns reachable       : {joined_injection_turns}"
           f"/{total_turns} ({pct:.1f}%)")
+
+    if user_turn_total == 0:
+        # Same reasoning as corpus A: a join that reached nothing prints a
+        # funnel of zeros that reads as a measured result.
+        print(f"no user prose turns joined from {args.transcripts} — the "
+              "transcript archive does not cover these sessions",
+              file=sys.stderr)
+        return 1
 
     print()
     print("=" * 70)
