@@ -1209,6 +1209,31 @@ def is_fan_effect_enabled(kwarg: bool | None = None) -> bool:
     return False
 
 
+def _env_int_allowing_disable(env_name: str) -> int | None:
+    """Read `env_name` as an int, keeping non-positive values (#1279).
+
+    The sibling `_env_positive_int` discards `<= 0` as invalid, which is
+    right where a non-positive value has no meaning. For the exploration
+    cadence it has one — it disables the lane — so discarding it turns an
+    explicit "off" into the default. Only a non-numeric value falls
+    through here, and it traces like its sibling.
+    """
+    raw = os.environ.get(env_name)
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    try:
+        return int(stripped)
+    except ValueError:
+        print(
+            f"aelfrice retrieval: ignoring {env_name}={raw!r} (expected int)",
+            file=sys.stderr,
+        )
+        return None
+
+
 def _env_exploration_override() -> bool | None:
     """Return True/False if AELFRICE_EXPLORATION is set to a recognised
     truthy/falsy value, else None (#1279). Symmetric to
@@ -1259,8 +1284,16 @@ def resolve_exploration_cadence(
     `<= 0` disables exploration rather than raising — `should_explore`
     guards the modulus, so a misconfigured cadence degrades to "never
     explore" instead of a `ZeroDivisionError` inside a retrieval.
+
+    That contract has to hold on the **env tier too**, which is why this
+    does not use `_env_positive_int`: that helper rejects `<= 0` and
+    returns None, so `AELFRICE_EXPLORATION_CADENCE=0` fell through to the
+    default and an operator asking for "off" silently got a cadence of 20
+    — the opposite of the request, on the highest-precedence tier. The
+    shared helper is right for the resolvers where a non-positive value is
+    merely invalid (`l1_limit`); here it is meaningful.
     """
-    env = _env_positive_int(ENV_EXPLORATION_CADENCE)
+    env = _env_int_allowing_disable(ENV_EXPLORATION_CADENCE)
     if env is not None:
         return env
     if kwarg is not None:
