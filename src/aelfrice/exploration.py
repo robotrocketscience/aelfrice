@@ -61,11 +61,22 @@ _GOLDEN_GAMMA: Final[int] = 0x9E3779B97F4A7C15
 _MIX_A: Final[int] = 0xBF58476D1CE4E5B9
 _MIX_B: Final[int] = 0x94D049BB133111EB
 
-# Explore on one prompt in twenty, one slot at a time. K matches the shipped
-# P1 cadence predicate; M is 1 because the cost of an exploration slot is a
-# ranked belief that does not get shown, and one slot is the smallest
-# intervention that can still produce a signal.
-DEFAULT_EXPLORATION_CADENCE: Final[int] = 20
+# One slot at a time: the cost of an exploration slot is a ranked belief that
+# does not get shown, and one slot is the smallest intervention that can still
+# produce a signal.
+#
+# The cadence is 3 rather than the originally specified 20 because `fire_idx`
+# is **per-session**, not global — `read_ring_state` returns `{}` on a session
+# mismatch, so the counter restarts with every session and never accumulates.
+# Measured against this store's real workload, sessions are short: a median of
+# 2 injecting turns, p90 of 7. At a cadence of 20 the slot reached a firing
+# turn on 8 of 956 turns all-time and **0 of 259** since the #1016-B regime
+# break — a mechanism that is wired, tested, and never runs, which is exactly
+# the failure class #1279 exists to close. A cadence of 20 would only mean
+# "one turn in twenty" against a counter that spans sessions; that is the
+# better mechanism and is filed separately, and this constant should go back
+# up if it lands.
+DEFAULT_EXPLORATION_CADENCE: Final[int] = 3
 DEFAULT_EXPLORATION_SLOTS: Final[int] = 1
 
 

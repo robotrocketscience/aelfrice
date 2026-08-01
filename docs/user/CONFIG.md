@@ -530,7 +530,9 @@ Precedence (first decisive wins): env var `AELFRICE_FAN_EFFECT=1`/`0` > explicit
 
 ### `exploration_enabled` / `exploration_cadence` / `exploration_slots`
 
-Boolean + two ints, defaults `false` / `20` / `1` (v4.x+, [#1279](https://github.com/robotrocketscience/aelfrice/issues/1279), [#1176](https://github.com/robotrocketscience/aelfrice/issues/1176) proposal 5). Gives a **never-injected** belief a slot in the injected block on every *n*-th turn.
+Boolean + two ints, defaults `false` / `3` / `1` (v4.x+, [#1279](https://github.com/robotrocketscience/aelfrice/issues/1279), [#1176](https://github.com/robotrocketscience/aelfrice/issues/1176) proposal 5). Gives a **never-injected** belief a slot in the injected block on every *n*-th turn.
+
+**The cadence counts turns within a session, not globally**, which is why the default is 3 rather than the originally specified 20. `fire_idx` comes from the session ring, and `read_ring_state` returns `{}` on a session mismatch, so the counter restarts with each session. Sessions are short — a median of **2** injecting turns and a p90 of **7** on this store — so a cadence of 20 reached a firing turn on **0 of 259** turns since the 2026-06-30 regime break, i.e. the lane would be enabled and never run. Read the knob as "one turn in *n* **of a session**"; a global "one turn in twenty" needs a store-level counter, which is filed separately.
 
 It targets a loop the ranker cannot escape on its own: a belief that starts underranked is never retrieved, therefore never earns evidence, therefore stays underranked. That loop is most of the store — on a live 44,586-belief store **37,489 active unlocked beliefs (84.1%) carry neither a `feedback_history` row nor an `injection_events` row**, and only **1,352 (3.0%) have ever been injected at all**.
 
