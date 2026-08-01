@@ -14,7 +14,12 @@ How aelfrice fits together. Maps directly to source under `src/aelfrice/`.
 
 The determinism contract applies to retrieval — every read is reproducible from the inputs. Some write-side operations (LLM-driven sentence classification on the polymorphic onboard path; future research-line capabilities) involve non-deterministic steps. The boundary is explicit:
 
-- Inputs to enrichment (sentence, source, model id + version, prompt template hash) are recorded.
+- Inputs to enrichment (sentence, source) and the classifier's *outputs* (`raw_meta["route_overrides"]` —
+  belief type, origin, alpha, beta) are recorded. **The model id, model version and prompt-template hash are
+  not.** They live only on the transient router object and in stdout telemetry, so "which model produced this
+  belief's type and prior?" is not answerable from the store. That bounds this carve-out less than it reads:
+  it localises the non-determinism to a recorded step without making the step reproducible. Persisting them
+  into `raw_meta` is tracked separately.
 - Outputs (belief type, prior, derived edges) are stored as deterministic content with provenance.
 - All retrieval and feedback math downstream of the enriched store is deterministic.
 
@@ -22,7 +27,11 @@ The contract is *deterministic substrate + bounded, audited enrichment layer*, n
 
 ## Modules
 
-Imports are one-directional — modules lower in the table import from higher.
+Imports are *intended* to be one-directional — modules lower in the table import from higher — but this is an
+aspiration, not an enforced invariant. Two known inversions are broken by deferred (in-function) imports:
+`classification.py` imports from `scanner`, and `store.py` imports `federation`; both would be circular at
+module level, and `classification.py` says so in a comment at the import site. The table is also a curated
+subset — 31 modules against the 117 `.py` files under `src/aelfrice/` — not an exhaustive map.
 
 | Module | Responsibility |
 |---|---|
@@ -161,7 +170,15 @@ settings.json  hooks.UserPromptSubmit: [{command: "aelf-hook"}]
                   Claude Code injects above your prompt
 ```
 
-Non-blocking contract: every failure path exits 0 with no stdout. A hook problem must never block your prompt.
+Non-blocking contract: every failure path exits 0, and a hook problem must never block your prompt. Two
+qualifications, both deliberate and both reachable today:
+
+- **One hook blocks by design.** `aelf-pre-issue-hook` exits `2` on a successful duplicate match
+  (`pre_issue_create_hook.py`) — see its row below. It never exits non-zero on *error*; the blocking exit is
+  the feature, not a failure path.
+- **Partial stdout is possible.** The UserPromptSubmit lane writes the cadence-checkpoint block before
+  retrieval runs (`hook.py`), so a failure in a later stage exits 0 with that block already flushed. The
+  guarantee is "exits 0", not "emits nothing".
 
 ## Default-on hooks (v2.1+ / v3.0+)
 
@@ -180,7 +197,9 @@ Non-blocking contract: every failure path exits 0 with no stdout. A hook problem
 | `aelf-pre-compact-hook` | `PreCompact` | Rebuilder trigger-mode bookkeeping only — never injects (#1031). Opt-in via `--rebuilder`; default trigger flipped from `manual` to `threshold` at v3.1 (#746). | opt-in |
 | `aelf-session-start-hook` | `SessionStart(source="compact")` | Emits the rebuild block after compaction — the channel the harness actually honors (#1031). | opt-in |
 
-Each lane is opt-out via `aelf setup --no-<lane>`. All non-blocking: every failure path exits 0 with no stdout.
+Each lane is opt-out via `aelf setup --no-<lane>`. All exit 0 on failure — with the two qualifications stated
+under the non-blocking contract above: `aelf-pre-issue-hook` exits `2` on a duplicate match by design, and
+partial stdout is possible when an early stage has already emitted.
 
 The `PostToolUseFailure:<tool_name>` event-name namespace inside
 `~/.aelfrice/hook-activity.jsonl` is reserved for raw tool-failure
@@ -234,7 +253,10 @@ These remain parked until a benchmark, experiment, or concrete failure mode just
 
 - Sentence-transformer embeddings (HRR primitives shipped at v1.7.0 as a structural lane, not a learned-embedding lane; v3.0 PHILOSOPHY ratification #605 keeps determinism as the property — no embedding lane planned)
 - Multi-writer federation / CRDT primitives. v3.0 ships *read-only* federation (#650 / #655 / #688) — peers open foreign DBs read-only and UNION FTS5 results. The multi-writer extension (#651-#654 CRDT primitives) closed WONTFIX at the v3.0 cut per the #661 ratification.
-- Full composition tracker — 10-round MRR uplift, ECE calibration, BM25F × heat-kernel × HRR-structural composition eval (#154). Heat-kernel and HRR-structural defaults flipped on at v2.1; the joint-composition bench gate as such was not run separately, but the #437 reproducibility-harness 11/11 covers the substrate.
+- Full composition tracker — 10-round MRR uplift, ECE calibration, BM25F × heat-kernel × HRR-structural composition eval (#154). Heat-kernel and HRR-structural defaults flipped on at v2.1; the joint-composition bench gate as such was not run separately, but the #437 reproducibility-harness cleared 11/11 **at the v2.1.0 cut (2026-05-08)** and covers the
+substrate as of that measurement. The README badge currently reads `partial (6/11 adapters)` — a later
+regression in the nightly canonical run, not a retraction of the v2.1.0 gate. Read the 11/11 as the
+evidence standing at the time of the flip, not as the harness's present state.
 
 The following were previously listed here and have since shipped:
 - Posterior-aware retrieval ranking → **shipped v1.3.0** (partial; [bayesian_ranking.md](../design/bayesian_ranking.md))
@@ -242,7 +264,7 @@ The following were previously listed here and have since shipped:
 - Entity index / NER → **shipped v1.3.0** ([entity_index.md](../design/entity_index.md))
 - LLM in the hot path (optional onboard classifier) → **shipped v1.3.0** ([llm_classifier.md](../design/llm_classifier.md))
 - BM25F anchor-text retrieval → **shipped v1.7.0**, default-on (#148/#154; +0.6650 NDCG@k uplift on the v0.1 retrieve_uplift fixture)
-- HRR primitives + structural lane → **shipped v1.7.0**, default-on as of v2.1 ([feature-hrr-integration.md](../design/feature-hrr-integration.md); source at `src/aelfrice/hrr_index.py`; closes the vocabulary-gap-recovery claim, #154 composition tracker, #437 reproducibility-harness 11/11)
+- HRR primitives + structural lane → **shipped v1.7.0**, default-on as of v2.1 ([feature-hrr-integration.md](../design/feature-hrr-integration.md); source at `src/aelfrice/hrr_index.py`; closes the vocabulary-gap-recovery claim, #154 composition tracker, #437 reproducibility-harness 11/11 at the v2.1.0 cut, 2026-05-08 — see the note above on the current badge)
 - Heat-kernel authority scorer → **shipped v1.6.0** (opt-in), default-on as of v2.1 (#154 composition tracker)
 - HRR persistence (split-format `.npy` + `.npz` save/load, default-on) → **shipped v3.0** (#553)
 - Wonder lifecycle (graph-walk + axes-dispatch + phantom promotion Surfaces A+B) → **shipped v2.0/v3.0** ([#542](https://github.com/robotrocketscience/aelfrice/issues/542) umbrella)
