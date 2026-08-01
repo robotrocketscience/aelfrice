@@ -169,3 +169,49 @@ def test_posterior_channel_audit_holds_the_documented_defaults() -> None:
         f"posterior-channel audit failed (exit {proc.returncode}); a "
         f"documented default moved:\n{proc.stdout}\n{proc.stderr}"
     )
+
+
+@pytest.mark.timeout(120)
+def test_posterior_channel_audit_ignores_an_ambient_aelfrice_toml(
+    tmp_path: Path,
+) -> None:
+    """An ambient `.aelfrice.toml` must not change the audit's verdict (#1295).
+
+    Clearing `AELFRICE_*` pins only the env tier, but every resolver the
+    script drives is env -> kwarg -> TOML -> default, and the TOML lookup
+    walks **up from the working directory**. Before #1295 a developer with
+    `[implicit_feedback] enqueue_on_retrieve = true` at or above the repo
+    got `FAIL: retrieval enqueues exposures by default` on a tree where no
+    default had moved — and because #1290 wired this script into the
+    required `pytest` job, that false failure blocks a merge.
+
+    Running from a directory that carries exactly that config is the
+    distinguishing arm: it exits 1 against the unpinned script and 0 once
+    every call site passes `start=` / `config_start=`. Without this the
+    fix is unverifiable and regresses silently — the same shape as the
+    vacuous check #1290 replaced.
+    """
+    import subprocess
+    import sys
+
+    repo_root = Path(__file__).resolve().parent.parent
+    script = repo_root / "benchmarks" / "posterior_channel_audit.py"
+    assert script.is_file(), f"missing {script}"
+
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[implicit_feedback]\nenqueue_on_retrieve = true\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=110,
+    )
+    assert proc.returncode == 0, (
+        "an ambient .aelfrice.toml changed the audit's verdict; the TOML "
+        f"tier is not pinned (exit {proc.returncode}):\n"
+        f"{proc.stdout}\n{proc.stderr}"
+    )

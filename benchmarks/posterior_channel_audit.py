@@ -32,8 +32,25 @@ Three channels are checked:
      writes nothing. Its enqueue side is also default off.
 
 No live store is read and no belief content is emitted: every belief here
-is synthetic. Ambient `AELFRICE_*` variables are cleared at import so a
-developer's own opt-ins cannot change the reported defaults.
+is synthetic.
+
+**Both configuration tiers are pinned, so a developer's own opt-ins cannot
+change the reported defaults** (#1295). These resolvers are
+env -> kwarg -> TOML -> default, and pinning only one tier is not enough:
+
+  * **env** — every ambient `AELFRICE_*` variable is deleted before
+    `aelfrice` is imported, since several resolvers read the environment
+    at import time.
+  * **TOML** — `_read_toml_flag_for` walks *up from the working
+    directory* looking for `.aelfrice.toml`, so clearing the environment
+    does nothing about it. Every call site that can take one is given a
+    scratch `start=` / `config_start=`, and `_scratch_walk_hits` fails
+    the run if anything above that scratch directory carries a config
+    after all — the pin is verified, not assumed.
+
+Only channel 3's resolvers have a TOML tier to pin. Channel 1's
+`_exposure_updates_posterior` is env-only, and channel 2's `is_enabled`
+reads a caller-supplied dict and never touches disk.
 
 Run: `python benchmarks/posterior_channel_audit.py`
 Exits non-zero if any channel's observed behaviour departs from the table
@@ -43,7 +60,9 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 # Clear ambient opt-ins BEFORE importing aelfrice: several of these
 # resolvers read the environment at import time or per call, and the
@@ -53,6 +72,7 @@ for _k in _CLEARED:
     del os.environ[_k]
 
 from aelfrice.deferred_feedback import (  # noqa: E402
+    CONFIG_FILENAME,
     enqueue_retrieval_exposures,
     is_enqueue_on_retrieve_enabled,
     resolve_epsilon,
@@ -189,15 +209,47 @@ def channel_2_sentiment() -> list[str]:
     return failures
 
 
-def channel_3_sweeper() -> list[str]:
-    """Deferred-feedback sweeper. Audit-only since #1162."""
+def _scratch_walk_hits(scratch: Path) -> list[str]:
+    """Config files an upward walk from `scratch` would still find.
+
+    Clearing the environment pins only the env tier. These resolvers are
+    env -> kwarg -> TOML -> default, and `_read_toml_flag_for` walks up
+    from its `start` looking for `.aelfrice.toml`. Passing a scratch
+    directory bounds that walk, but a scratch directory is only clean if
+    nothing above it carries a config either — so verify rather than
+    assume, and report instead of silently measuring someone's config.
+    """
+    return [
+        str(parent / CONFIG_FILENAME)
+        for parent in (scratch, *scratch.parents)
+        if (parent / CONFIG_FILENAME).exists()
+    ]
+
+
+def channel_3_sweeper(scratch: Path) -> list[str]:
+    """Deferred-feedback sweeper. Audit-only since #1162.
+
+    `scratch` pins the TOML tier: every resolver reached here accepts a
+    `start` (or `config_start`), so the walk can be bounded to a
+    directory with no `.aelfrice.toml`. Without it a developer with
+    `[feedback] enqueue_on_retrieve = true` at or above the repo gets
+    "retrieval enqueues exposures by default" on a tree where no default
+    moved (#1295).
+    """
     failures: list[str] = []
     print()
     print("=" * 72)
     print("CHANNEL 3 — deferred-feedback sweeper (#191, audit-only since #1162)")
     print("=" * 72)
 
-    enqueue_on = is_enqueue_on_retrieve_enabled()
+    stray = _scratch_walk_hits(scratch)
+    if stray:
+        failures.append(
+            "the scratch walk is not clean, so the TOML tier is unpinned: "
+            + ", ".join(stray)
+        )
+
+    enqueue_on = is_enqueue_on_retrieve_enabled(start=scratch)
     print(f"  is_enqueue_on_retrieve_enabled(default) = {enqueue_on}")
     if enqueue_on:
         failures.append("retrieval enqueues exposures by default")
@@ -209,15 +261,15 @@ def channel_3_sweeper() -> list[str]:
     # one alike — the two are indistinguishable and the check below
     # passes either way. Bank a real row and backdate it past the grace
     # window so the row is eligible and the loop actually runs on it.
-    grace = resolve_grace_seconds()
-    epsilon = resolve_epsilon()
+    grace = resolve_grace_seconds(start=scratch)
+    epsilon = resolve_epsilon(start=scratch)
     enqueued_at = (
         datetime.now(UTC) - timedelta(seconds=grace + 60)
     ).strftime("%Y-%m-%dT%H:%M:%SZ")
     enqueue_retrieval_exposures(store, ["b3"], now=enqueued_at)
 
     before = _ab(store, "b3")
-    result = sweep_deferred_feedback(store)
+    result = sweep_deferred_feedback(store, config_start=scratch)
     after = _ab(store, "b3")
     audit_rows = int(store.count_feedback_events("b3"))
     store.close()
@@ -261,7 +313,8 @@ def main() -> int:
     failures: list[str] = []
     failures += channel_1_exposure()
     failures += channel_2_sentiment()
-    failures += channel_3_sweeper()
+    with tempfile.TemporaryDirectory() as _tmp:
+        failures += channel_3_sweeper(Path(_tmp))
 
     print()
     print("=" * 72)
