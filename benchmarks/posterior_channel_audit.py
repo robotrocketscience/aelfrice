@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import UTC, datetime, timedelta
 
 # Clear ambient opt-ins BEFORE importing aelfrice: several of these
 # resolvers read the environment at import time or per call, and the
@@ -52,7 +53,10 @@ for _k in _CLEARED:
     del os.environ[_k]
 
 from aelfrice.deferred_feedback import (  # noqa: E402
+    enqueue_retrieval_exposures,
     is_enqueue_on_retrieve_enabled,
+    resolve_epsilon,
+    resolve_grace_seconds,
     sweep_deferred_feedback,
 )
 from aelfrice.hook_search import (  # noqa: E402
@@ -199,21 +203,54 @@ def channel_3_sweeper() -> list[str]:
         failures.append("retrieval enqueues exposures by default")
 
     store = _seed("b3")
+    # The queue has to be non-empty for this to test anything. A sweep
+    # over an empty queue never enters its classification loop, so it is
+    # a no-op for the audit-only sweeper and for the pre-#1162 mutating
+    # one alike — the two are indistinguishable and the check below
+    # passes either way. Bank a real row and backdate it past the grace
+    # window so the row is eligible and the loop actually runs on it.
+    grace = resolve_grace_seconds()
+    epsilon = resolve_epsilon()
+    enqueued_at = (
+        datetime.now(UTC) - timedelta(seconds=grace + 60)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    enqueue_retrieval_exposures(store, ["b3"], now=enqueued_at)
+
     before = _ab(store, "b3")
     result = sweep_deferred_feedback(store)
     after = _ab(store, "b3")
+    audit_rows = int(store.count_feedback_events("b3"))
     store.close()
 
-    print(f"  sweep mutated={result.mutated} "
+    print(f"  enqueued 1 row, backdated {grace + 60}s (grace={grace}s) "
+          f"-> eligible")
+    print(f"  sweep would_apply={result.would_apply} "
           f"alpha_withheld={result.alpha_withheld} "
-          f"would_apply={result.would_apply}")
-    print(f"  a/b {before} -> {after}  moved={before != after}")
+          f"epsilon={result.epsilon_used}")
+    print(f"  a/b {before} -> {after}  moved={before != after}  "
+          f"feedback_history rows={audit_rows}")
 
-    if result.mutated or before != after:
+    # `would_apply == 1` is what makes the rest of this load-bearing: it
+    # proves the eligibility ladder ran and elected to apply. The pre-
+    # #1162 sweeper would have moved alpha by exactly `epsilon` on this
+    # row and written a `feedback_history` entry; audit-only does neither.
+    if result.would_apply != 1:
+        failures.append(
+            f"the eligible row was not classified would_apply "
+            f"(got {result.would_apply}) — this check proves nothing"
+        )
+    if before != after:
         failures.append("the sweeper mutated a posterior")
+    if audit_rows != 0:
+        failures.append("the sweeper wrote a feedback_history row")
+    if result.alpha_withheld != round(epsilon, 6):
+        failures.append(
+            f"alpha_withheld {result.alpha_withheld} does not account for "
+            f"the one withheld epsilon ({epsilon})"
+        )
 
-    print("  => no residual exposure-as-evidence path: the sweep writes "
-          "nothing and the enqueue is off.")
+    print("  => no residual exposure-as-evidence path: an eligible row is "
+          "classified and then withheld, not applied.")
     return failures
 
 
