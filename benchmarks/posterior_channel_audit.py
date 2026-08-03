@@ -218,10 +218,17 @@ def _scratch_walk_hits(scratch: Path) -> list[str]:
     directory bounds that walk, but a scratch directory is only clean if
     nothing above it carries a config either — so verify rather than
     assume, and report instead of silently measuring someone's config.
+
+    Resolve first, because `_read_toml_value` resolves its `start` and
+    `Path.parents` is lexical: an unresolved walk checks a different
+    chain than the one actually read. On darwin `tempfile` hands back
+    `/var/folders/...`, whose resolved chain includes `/private` — a
+    directory this check would otherwise never look in.
     """
+    resolved = scratch.resolve()
     return [
         str(parent / CONFIG_FILENAME)
-        for parent in (scratch, *scratch.parents)
+        for parent in (resolved, *resolved.parents)
         if (parent / CONFIG_FILENAME).exists()
     ]
 
