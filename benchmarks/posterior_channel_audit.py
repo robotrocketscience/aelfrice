@@ -232,9 +232,9 @@ def channel_3_sweeper(scratch: Path) -> list[str]:
     `scratch` pins the TOML tier: every resolver reached here accepts a
     `start` (or `config_start`), so the walk can be bounded to a
     directory with no `.aelfrice.toml`. Without it a developer with
-    `[feedback] enqueue_on_retrieve = true` at or above the repo gets
-    "retrieval enqueues exposures by default" on a tree where no default
-    moved (#1295).
+    `[implicit_feedback] enqueue_on_retrieve = true` at or above the
+    repo gets "retrieval enqueues exposures by default" on a tree where
+    no default moved (#1295).
     """
     failures: list[str] = []
     print()
