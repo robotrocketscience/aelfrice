@@ -13,11 +13,15 @@ checkout's path depth.
 """
 from __future__ import annotations
 
+import importlib
 import os
+import pkgutil
+import sys
 from pathlib import Path
 
 import pytest
 
+import aelfrice.config_discovery as config_discovery
 import aelfrice.deferred_feedback as deferred_feedback
 import aelfrice.expansion_gate as expansion_gate
 import aelfrice.retrieval as retrieval
@@ -252,8 +256,37 @@ def test_distinct_start_dirs_are_distinct_memo_keys(tmp_path: Path) -> None:
         assert discover_config(far) != near / CONFIG_FILENAME
 
 
+def _config_filename_reexports() -> dict[str, str]:
+    """Every `aelfrice.*` module still binding a config-filename name.
+
+    Enumerated, not listed. The three-module list this replaces was
+    written when three modules had been converted and then silently
+    stopped describing the set — the same failure mode #1304's own perf
+    harness had, and the reason the shared constant exists at all.
+
+    Both spellings are collected. The public `CONFIG_FILENAME` is a
+    documented back-compat surface; the private one is scanned so that a
+    module reintroducing `_CONFIG_FILENAME` as a second literal is caught
+    the same way, rather than being invisible for being underscored.
+    """
+    package = sys.modules[config_discovery.__package__]
+    found: dict[str, str] = {}
+    for info in pkgutil.iter_modules(package.__path__):
+        if info.name == "config_discovery":
+            continue
+        try:
+            module = importlib.import_module(f"aelfrice.{info.name}")
+        except Exception:  # noqa: BLE001 - an unimportable extra is not ours
+            continue
+        for attr in ("CONFIG_FILENAME", "_CONFIG_FILENAME"):
+            value = getattr(module, attr, None)
+            if isinstance(value, str) and value.endswith(".toml"):
+                found[f"{info.name}.{attr}"] = value
+    return found
+
+
 def test_back_compat_config_filename_reexports() -> None:
-    """The three modules keep exposing `CONFIG_FILENAME`.
+    """No module re-declares the config filename as a second literal.
 
     #1304 deleted the local `Final` constant from `expansion_gate` and
     `deferred_feedback` and moved `retrieval`'s to the shared module. The
@@ -262,11 +295,31 @@ def test_back_compat_config_filename_reexports() -> None:
     rather than by a bare import so a dead-import check cannot delete
     the re-export and silently break those callers. Same object in every
     case, so the walk and the filename it walks for cannot drift.
+
+    The drift this pins is not hypothetical in one direction only: a
+    module that keeps its own literal is written under one name by a test
+    fixture and looked for under another by the loader the moment the
+    shared constant changes, and nothing else reports it.
     """
-    for module in (retrieval, expansion_gate, deferred_feedback):
-        assert module.CONFIG_FILENAME == CONFIG_FILENAME, (
-            f"{module.__name__}.CONFIG_FILENAME drifted from the shared "
-            "constant"
+    reexports = _config_filename_reexports()
+    # A scan that finds nothing passes every assertion below, so the
+    # known-present names are the floor. The first three are the
+    # documented back-compat surface; `cadence` is bound because twelve
+    # test modules build their fixture from it.
+    for expected in (
+        "retrieval.CONFIG_FILENAME",
+        "expansion_gate.CONFIG_FILENAME",
+        "deferred_feedback.CONFIG_FILENAME",
+        "cadence.CONFIG_FILENAME",
+    ):
+        assert expected in reexports, (
+            f"{expected} is no longer bound; callers import it, and the "
+            "enumeration below is vacuous without it"
+        )
+    for name, value in sorted(reexports.items()):
+        assert value == CONFIG_FILENAME, (
+            f"{name} drifted from the shared constant "
+            f"({value!r} != {CONFIG_FILENAME!r})"
         )
     assert not hasattr(retrieval, "_CONFIG_DISCOVERY_MEMO"), (
         "retrieval re-exports the memo ContextVar again. It is private to "
