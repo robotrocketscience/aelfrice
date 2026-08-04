@@ -45,13 +45,9 @@ from __future__ import annotations
 
 import os
 import sys
+import tomllib
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Final, cast
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pragma: no cover - 3.10 not supported by the project
-    import tomli as tomllib
 
 from aelfrice.models import (
     LOCK_USER,
