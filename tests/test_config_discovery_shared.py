@@ -21,7 +21,6 @@ from pathlib import Path
 
 import pytest
 
-import aelfrice.config_discovery as config_discovery
 import aelfrice.deferred_feedback as deferred_feedback
 import aelfrice.expansion_gate as expansion_gate
 import aelfrice.retrieval as retrieval
@@ -269,7 +268,11 @@ def _config_filename_reexports() -> dict[str, str]:
     module reintroducing `_CONFIG_FILENAME` as a second literal is caught
     the same way, rather than being invisible for being underscored.
     """
-    package = sys.modules[config_discovery.__package__]
+    # The package object comes from a module already bound above rather
+    # than from a second import of `config_discovery`: binding a
+    # submodule and reading a package attribute are the two forms
+    # CodeQL counts as importing the same module two ways.
+    package = sys.modules[retrieval.__package__]
     found: dict[str, str] = {}
     for info in pkgutil.iter_modules(package.__path__):
         if info.name == "config_discovery":
