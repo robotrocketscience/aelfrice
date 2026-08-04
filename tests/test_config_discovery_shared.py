@@ -13,6 +13,7 @@ checkout's path depth.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -249,3 +250,96 @@ def test_distinct_start_dirs_are_distinct_memo_keys(tmp_path: Path) -> None:
     with config_discovery_scope():
         assert discover_config(near) == near / CONFIG_FILENAME
         assert discover_config(far) != near / CONFIG_FILENAME
+
+
+def test_back_compat_config_filename_reexports() -> None:
+    """The three modules keep exposing `CONFIG_FILENAME`.
+
+    #1304 deleted the local `Final` constant from `expansion_gate` and
+    `deferred_feedback` and moved `retrieval`'s to the shared module. The
+    names stay bound so `from aelfrice.expansion_gate import
+    CONFIG_FILENAME` keeps resolving, and they are bound by assignment
+    rather than by a bare import so a dead-import check cannot delete
+    the re-export and silently break those callers. Same object in every
+    case, so the walk and the filename it walks for cannot drift.
+    """
+    for module in (retrieval, expansion_gate, deferred_feedback):
+        assert module.CONFIG_FILENAME == CONFIG_FILENAME, (
+            f"{module.__name__}.CONFIG_FILENAME drifted from the shared "
+            "constant"
+        )
+    assert not hasattr(retrieval, "_CONFIG_DISCOVERY_MEMO"), (
+        "retrieval re-exports the memo ContextVar again. It is private to "
+        "config_discovery and unread here, so the re-export is dead weight "
+        "a static analyser correctly flags; read it from config_discovery."
+    )
+
+
+def test_scope_binds_start_none_to_the_cwd_at_first_call(
+    tmp_path: Path,
+) -> None:
+    """The documented invariant: no caller may `os.chdir` inside a scope.
+
+    `start=None` is memoized on the cwd read at the scope's first such
+    call and is deliberately not re-read, because re-reading costs
+    `Path.cwd().resolve()` — O(path depth) in `lstat` — on each of the
+    ~26 `start=None` calls in one `retrieve()`. This pins both halves:
+    inside a scope the first answer is reused, and outside one the new
+    directory is seen immediately, so the staleness cannot outlive the
+    operation.
+    """
+    a = tmp_path / "a"
+    b = tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (b / CONFIG_FILENAME).write_text("[retrieval]\nuse_bfs = true\n")
+
+    saved = os.getcwd()
+    try:
+        os.chdir(a)
+        with config_discovery_scope():
+            assert discover_config() is None
+            os.chdir(b)
+            # Bound to `a` — this is the invariant, and why callers must
+            # not chdir inside a scope.
+            assert discover_config() is None
+        # Outside the scope the memo is gone and `b` is seen at once.
+        assert discover_config() == b / CONFIG_FILENAME
+    finally:
+        os.chdir(saved)
+
+
+def test_no_aelfrice_module_starts_a_thread_or_task() -> None:
+    """Keeps the memo's concurrency caveat latent rather than live.
+
+    A `ContextVar` set inside a scope is *copied* into an
+    `asyncio.create_task` child, which then keeps using the memo after
+    the scope exits. `threading.Thread` gets a fresh context and is
+    safe. Nothing in `aelfrice` creates either today, which is what
+    makes the asyncio case a documented caveat instead of a defect —
+    so assert it, rather than leaving the claim in a comment where it
+    can quietly go false.
+    """
+    import ast
+
+    src = Path(retrieval.__file__).parent
+    offenders: list[str] = []
+    for path in sorted(src.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            else:
+                continue
+            for name in names:
+                root = name.split(".")[0]
+                if root in {"asyncio"} or name.startswith("concurrent.futures"):
+                    offenders.append(f"{path.name}: imports {name}")
+    assert not offenders, (
+        "a module now creates async tasks; a task started inside a "
+        "config_discovery_scope inherits the memo and outlives it. "
+        "Enter a fresh scope in the task instead of inheriting: "
+        + "; ".join(offenders)
+    )
