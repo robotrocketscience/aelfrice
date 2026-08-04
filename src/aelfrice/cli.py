@@ -6090,6 +6090,8 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
         return _cmd_doctor_replay(args, out)
     if getattr(args, "dedup", False):
         return _cmd_doctor_dedup(args, out)
+    if getattr(args, "consolidate", False):
+        return _cmd_doctor_consolidate(args, out)
     if getattr(args, "relationships", False):
         return _cmd_doctor_relationships(args, out)
     if getattr(args, "detect_stale", False):
@@ -6401,6 +6403,63 @@ def _cmd_doctor_dedup(args: argparse.Namespace, out: object) -> int:
         print("(scanned user-locked beliefs only — #1016-C)", file=out)  # type: ignore[arg-type]
 
     print(format_audit_report(report), file=out)  # type: ignore[arg-type]
+    return 0
+
+
+def _cmd_doctor_consolidate(args: argparse.Namespace, out: object) -> int:
+    """Run the audit-only consolidation report (#1312, #1176 proposal 4).
+
+    Clusters near-duplicate active beliefs at the shipped dedup
+    thresholds, picks each component's medoid, and reports how many
+    beliefs a contraction would retire. Read-only: no edges are
+    inserted, no beliefs are retired, no log rows are written.
+
+    Contraction itself is deliberately not built — the operator funded
+    the report and not the write path, because the measured reach is
+    ~2% of the store.
+
+    Exit 0 regardless of cluster count: clusters are diagnostic, not
+    failure conditions. Exit 1 only on malformed thresholds.
+    """
+    from aelfrice.consolidate import (
+        DEFAULT_MAX_SHINGLE_DF,
+        consolidation_audit,
+        format_consolidation_report,
+    )
+    from aelfrice.dedup import load_dedup_config
+
+    config = load_dedup_config()
+    j_override = getattr(args, "consolidate_jaccard", None)
+    l_override = getattr(args, "consolidate_levenshtein", None)
+    df_override = getattr(args, "consolidate_max_shingle_df", None)
+
+    store = _open_store()
+    try:
+        report = consolidation_audit(
+            store,
+            jaccard_min=(
+                float(j_override)
+                if j_override is not None
+                else config.jaccard_min
+            ),
+            levenshtein_min=(
+                float(l_override)
+                if l_override is not None
+                else config.levenshtein_min
+            ),
+            max_shingle_df=(
+                int(df_override)
+                if df_override is not None
+                else DEFAULT_MAX_SHINGLE_DF
+            ),
+        )
+    except ValueError as exc:
+        print(f"aelf doctor consolidate: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+
+    print(format_consolidation_report(report), file=out)  # type: ignore[arg-type]
     return 0
 
 
@@ -8818,6 +8877,55 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "are inserted. Bypasses the hooks/graph checks. Tune via "
             "--dedup-jaccard / --dedup-levenshtein / --dedup-max-pairs "
             "or [dedup] in .aelfrice.toml."
+        ),
+    )
+    p_doctor.add_argument(
+        "--consolidate",
+        dest="consolidate",
+        action="store_true",
+        default=False,
+        help=(
+            "cluster near-duplicate beliefs and report what a "
+            "contraction would retire (#1312). Read-only: no edges are "
+            "inserted and no belief is retired. Bypasses the "
+            "hooks/graph checks. Tune via --consolidate-jaccard / "
+            "--consolidate-levenshtein / --consolidate-max-shingle-df."
+        ),
+    )
+    p_doctor.add_argument(
+        "--consolidate-jaccard",
+        dest="consolidate_jaccard",
+        type=float,
+        default=None,
+        metavar="F",
+        help=(
+            "with --consolidate: override the Jaccard threshold "
+            "(0.0-1.0). Default: [dedup] jaccard_min in .aelfrice.toml "
+            "> 0.8."
+        ),
+    )
+    p_doctor.add_argument(
+        "--consolidate-levenshtein",
+        dest="consolidate_levenshtein",
+        type=float,
+        default=None,
+        metavar="F",
+        help=(
+            "with --consolidate: override the Levenshtein-ratio "
+            "threshold (0.0-1.0). Default: [dedup] levenshtein_min in "
+            ".aelfrice.toml > 0.85."
+        ),
+    )
+    p_doctor.add_argument(
+        "--consolidate-max-shingle-df",
+        dest="consolidate_max_shingle_df",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "with --consolidate: skip 4-grams appearing in more than N "
+            "beliefs when blocking candidate pairs (default 32). "
+            "Skipped shingles are reported, never dropped silently."
         ),
     )
     p_doctor.add_argument(
