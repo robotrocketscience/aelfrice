@@ -291,6 +291,13 @@ def apply_decisions(
             belief.lock_level = LOCK_USER
             belief.locked_at = now
             belief.origin = ORIGIN_USER_STATED
+            # #1314: an expired time-boxed lock retains its past
+            # `lock_expires_at`, so re-locking without clearing it leaves
+            # a row the next open-time sweep is due to flip — the verdict
+            # would report `locked` and be undone before the user's next
+            # session. A review verdict carries no window, so it grants a
+            # permanent lock.
+            belief.lock_expires_at = None
             store.update_belief(belief)
             # Audit row tags the lock as review-originated.
             store.insert_feedback_event(

@@ -3530,6 +3530,15 @@ def _autolock_candidates(
             b.lock_level = LOCK_USER
             b.locked_at = now
             b.origin = ORIGIN_USER_STATED
+            # #1314: a belief whose time-boxed lock already expired keeps
+            # its past `lock_expires_at` as the audit trace of why it is
+            # unlocked, so re-locking without clearing it hands the
+            # open-time sweep a due row and the next open flips this
+            # straight back to unlocked — after this loop has already
+            # printed "auto-locked". Autolock carries no window, so the
+            # lock it grants is permanent, matching `aelf lock` with no
+            # `--for`.
+            b.lock_expires_at = None
             store.update_belief(b)
             locked += 1
             print(

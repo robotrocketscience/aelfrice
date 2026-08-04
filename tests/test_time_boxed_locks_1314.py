@@ -443,3 +443,144 @@ def test_cli_unlock_clears_the_window(
         assert b.lock_expires_at is None
     finally:
         store.close()
+
+
+# ---------------------------------------------------------------------------
+# Re-locking a belief whose window already closed (#1314 review)
+# ---------------------------------------------------------------------------
+#
+# An expired lock *retains* `lock_expires_at` as the audit trace of why
+# it is unlocked, so a non-NULL expiry does not imply "still locked".
+# The consequence is that every path which re-locks an existing belief
+# must clear it: setting `lock_level='user'` while a past expiry is still
+# on the row hands the next open-time sweep a due row, and the lock is
+# flipped straight back off — after the surface has already reported it
+# locked. `aelf lock` and the MCP tool both clear it; these two paths
+# construct the same field update by hand and did not.
+
+
+def _expired_lock(store: MemoryStore, bid: str) -> str:
+    """Insert a locked belief whose window has already closed, then let
+    the sweep expire it. Returns its id."""
+    past = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    store.insert_belief(
+        Belief(
+            id=bid,
+            content=f"the {bid} deploy key rotates once each quarter",
+            content_hash=f"h_{bid}",
+            alpha=1.0,
+            beta=1.0,
+            type="factual",
+            lock_level=LOCK_USER,
+            locked_at=past,
+            created_at=past,
+            last_retrieved_at=None,
+            lock_expires_at=past,
+        )
+    )
+    assert store.sweep_expired_locks() == 1
+    b = store.get_belief(bid)
+    assert b is not None and b.lock_level == LOCK_NONE
+    assert b.lock_expires_at is not None, "the trace must be retained"
+    return bid
+
+
+def _survives_a_reopen(db: Path, bid: str) -> bool:
+    """Reopen the store — which runs the sweep — and report the level."""
+    store = MemoryStore(str(db))
+    try:
+        b = store.get_belief(bid)
+        assert b is not None
+        return b.lock_level == LOCK_USER
+    finally:
+        store.close()
+
+
+def test_autolock_relocking_an_expired_lock_survives_the_next_sweep(
+    tmp_path: Path,
+) -> None:
+    """The hook's auto-lock path must clear the stale window.
+
+    Distinguishing: the assertion is made *after* a reopen, not on the
+    in-memory object. Before the fix the belief read back as `user`
+    immediately — the hook even printed "auto-locked" — and reverted to
+    `none` on the next open, which is the silent-vanishing failure the
+    feature exists to avoid.
+    """
+    import io
+
+    from aelfrice.hook import _autolock_candidates
+
+    db = tmp_path / "autolock.db"
+    store = MemoryStore(str(db))
+    try:
+        bid = _expired_lock(store, "autolock_target")
+        assert _autolock_candidates(store, [store.get_belief(bid)], io.StringIO()) == 1
+        assert store.get_belief(bid).lock_level == LOCK_USER
+    finally:
+        store.close()
+
+    assert _survives_a_reopen(db, bid), (
+        "auto-lock reported success and the lock was swept away on the "
+        "next open: the retained expiry was not cleared"
+    )
+
+
+def test_review_lock_verdict_on_an_expired_lock_survives_the_next_sweep(
+    tmp_path: Path,
+) -> None:
+    """`aelf review`'s `lock` verdict must clear the stale window too."""
+    from aelfrice.review import ParsedDecision, apply_decisions
+
+    db = tmp_path / "review.db"
+    store = MemoryStore(str(db))
+    try:
+        bid = _expired_lock(store, "review_target")
+        apply_decisions(
+            store,
+            [ParsedDecision(belief_id=bid, verdict="lock", row_text="")],
+            now=datetime.now(timezone.utc).isoformat(),
+        )
+        assert store.get_belief(bid).lock_level == LOCK_USER
+    finally:
+        store.close()
+
+    assert _survives_a_reopen(db, bid), (
+        "the review verdict reported `locked` and was undone by the next "
+        "open: the retained expiry was not cleared"
+    )
+
+
+def test_a_still_running_window_is_not_cleared_by_an_unrelated_reopen(
+    tmp_path: Path,
+) -> None:
+    """The control: clearing on re-lock must not mean clearing always.
+
+    Without this arm both tests above would pass against an
+    implementation that simply dropped every `lock_expires_at` at store
+    open, which would silently make every time-boxed lock permanent —
+    the opposite defect, and equally invisible.
+    """
+    db = tmp_path / "live.db"
+    future = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+    store = MemoryStore(str(db))
+    try:
+        store.insert_belief(
+            Belief(
+                id="live", content="the staging certificate rotates on friday",
+                content_hash="h_live", alpha=1.0, beta=1.0, type="factual",
+                lock_level=LOCK_USER, locked_at=future, created_at=future,
+                last_retrieved_at=None, lock_expires_at=future,
+            )
+        )
+    finally:
+        store.close()
+
+    store = MemoryStore(str(db))
+    try:
+        b = store.get_belief("live")
+        assert b is not None
+        assert b.lock_level == LOCK_USER
+        assert b.lock_expires_at == future
+    finally:
+        store.close()
