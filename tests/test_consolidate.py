@@ -169,6 +169,87 @@ class TestMedoidTiebreak:
         assert report.clusters[0].medoid_id == "z_mid"
 
 
+class TestMedoidSampleCapIsBounded:
+    """The cap itself, not just the medoid rule (AC4/AC5 of #1312).
+
+    `test_medoid_is_central_not_smallest_id` covers the *criterion* — it
+    fails at `MEDOID_SAMPLE_CAP = 1`. It does not cover the *bound*:
+    raising the cap to 10,000,000, i.e. deleting the limit this module
+    partly exists to add, leaves every other test in this file green. A
+    bound nothing distinguishes is a bound nothing protects.
+
+    So: build a component larger than the cap in which the exact medoid
+    provably lies past it, and assert the returned medoid comes from
+    inside the sampled pool. Unbounded, the exact medoid wins and the
+    assertion fails.
+    """
+
+    def test_the_shipped_cap_is_the_documented_value(self) -> None:
+        """Pins the constant, not only the mechanism.
+
+        The two arms below monkeypatch the cap, so they measure whether
+        slicing happens — they stay green if someone raises the shipped
+        value to 10,000,000 and effectively deletes the bound. This is
+        the arm that makes such a change deliberate rather than silent;
+        the 74s pass the cap exists to prevent is a real cost, and the
+        docstring's stated tradeoff is calibrated to 64.
+        """
+        from aelfrice.consolidate import MEDOID_SAMPLE_CAP
+
+        assert MEDOID_SAMPLE_CAP == 64
+
+    @pytest.mark.timeout(60)
+    def test_the_medoid_comes_from_the_sampled_prefix(
+        self, store: MemoryStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Terminates by construction: 12 short beliefs at cap 4."""
+        import aelfrice.consolidate as consolidate_mod
+
+        monkeypatch.setattr(consolidate_mod, "MEDOID_SAMPLE_CAP", 4)
+        # Ids sort ASC, so "a00".."a11" — the sampled pool is a00..a03.
+        # Distances grow with the index, so the *central* member is near
+        # a05/a06, i.e. outside the pool. An unbounded medoid returns one
+        # of those; a bounded one cannot.
+        for i in range(12):
+            _insert(store, f"a{i:02d}", f"{_PRE} {'z' * (i + 1)}")
+
+        report = consolidation_audit(store)
+        assert report.n_clusters == 1
+        assert report.largest_cluster == 12
+        pool = set(report.clusters[0].member_ids[:4])
+        assert report.clusters[0].medoid_id in pool, (
+            f"medoid {report.clusters[0].medoid_id!r} came from outside "
+            "the sampled prefix: MEDOID_SAMPLE_CAP is not bounding "
+            "anything"
+        )
+
+    @pytest.mark.timeout(60)
+    def test_an_unbounded_cap_would_pick_a_different_member(
+        self, store: MemoryStore, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The control that keeps the arm above from passing vacuously.
+
+        If the exact medoid happened to sit inside the first four
+        members, the bounded assertion would hold for the wrong reason.
+        Running the same corpus uncapped must therefore return a
+        *different* member — which is what makes the pair a measurement
+        of the bound rather than of the fixture.
+        """
+        import aelfrice.consolidate as consolidate_mod
+
+        for i in range(12):
+            _insert(store, f"a{i:02d}", f"{_PRE} {'z' * (i + 1)}")
+
+        monkeypatch.setattr(consolidate_mod, "MEDOID_SAMPLE_CAP", 4)
+        bounded = consolidation_audit(store).clusters[0].medoid_id
+        monkeypatch.setattr(consolidate_mod, "MEDOID_SAMPLE_CAP", 10_000_000)
+        exact = consolidation_audit(store).clusters[0].medoid_id
+        assert bounded != exact, (
+            f"bounded and exact both chose {bounded!r}: this fixture no "
+            "longer distinguishes the cap"
+        )
+
+
 class TestWouldRemoveArithmetic:
     def test_one_medoid_survives_per_cluster(
         self, store: MemoryStore
@@ -203,8 +284,9 @@ class TestWouldRemoveArithmetic:
         `n_beliefs_scanned` (8) differ from `n_beliefs_in_clusters` (7),
         so swapping the denominator moves the value from 62.5 to 71.43;
         and the literal band pins the `100.0` factor, so demoting the
-        percentage to a fraction (0.625) fails too. The headline
-        "2.23% of active" the issue is priced on is this property.
+        percentage to a fraction (0.625) fails too. The headline share
+        the issue is priced on (3.19% of active, re-derived at #1316)
+        is this property.
         """
         for i, suffix in enumerate(("", ".", "!", "?")):
             _insert(
@@ -231,6 +313,7 @@ class TestWouldRemoveArithmetic:
             n_clusters=0,
             n_beliefs_in_clusters=0,
             n_locked_in_clusters=0,
+            n_beliefs_rescued=0,
             largest_cluster=0,
             jaccard_min=0.8,
             levenshtein_min=0.85,
@@ -298,6 +381,103 @@ class TestLargeFamiliesDoNotVanish:
         )
 
 
+def _heterogeneous_family(
+    store: MemoryStore, k: int, *, minority: int = 5
+) -> None:
+    """`k` over-cap near-duplicates whose *minimum-df* shingles differ.
+
+    All `k` share `_FAMILY_BODY` (`df = k`); all but `minority` of them
+    also share a trailing clause (`df = k - minority`). Both frequencies
+    sit above the shipped cap of 32 at the sizes used here, so every
+    member takes the rescue path — yet the majority's minimum is
+    `k - minority` and the minority's is `k`.
+
+    That difference is the whole fixture, and it is why the per-member
+    discriminator goes at the **front**. Appending it instead creates a
+    body-to-suffix boundary shingle shared by only the `minority`, which
+    is a sub-cap posting: those members would then never reach the
+    rescue at all and the split would be the cap's doing rather than the
+    rescue rule's, testing something other than what it claims to.
+
+    Under "post a rescued belief to its rarest shingles only" the two
+    groups land in disjoint buckets and the family splits in two. Only
+    posting to *every* shared shingle keeps it whole.
+    """
+    # Three tokens: long enough to make the majority's boundary
+    # shingles a distinct, over-cap df, short enough that a
+    # majority/minority pair still clears Jaccard 0.8 (0.857) and
+    # Levenshtein 0.85 (0.886) — otherwise the family would split
+    # on the *predicate* and the test would pass or fail for a
+    # reason that has nothing to do with blocking.
+    tail = " and the ledger"
+    for i in range(k):
+        extra = "" if i < minority else tail
+        _insert(store, f"g{i:03d}", f"variant {i} {_FAMILY_BODY}{extra}")
+
+
+class TestHeterogeneousFamiliesDoNotShatter:
+    """The regression the rescue-as-*replacement* variant introduced.
+
+    Fixing #1316 by posting every belief to its own rarest shingles
+    trades the homogeneous cliff for a heterogeneous one. Two genuine
+    near-duplicates whose minimum `df` differs never share a bucket, so
+    a real family fragments into 2-components and the audit again
+    reports **zero** on a large family. Measured on the development
+    store that variant dropped 490 beliefs and 81 whole clusters that
+    the flat cap had found, including a 46-member clique in which all
+    1,035 pairs satisfy the shipped predicate.
+
+    `TestLargeFamiliesDoNotVanish` cannot catch this — its family is
+    homogeneous, so every member's minimum is the same and the shattering
+    never triggers. That is why this class exists separately.
+    """
+
+    @pytest.mark.timeout(30)
+    @pytest.mark.parametrize("k", [40, 50])
+    def test_mixed_minima_still_form_one_cluster(
+        self, store: MemoryStore, k: int
+    ) -> None:
+        """Terminates by construction: <=50 short beliefs, no waiting."""
+        _heterogeneous_family(store, k)
+        report = consolidation_audit(store)
+        assert report.n_clusters == 1, (
+            f"a heterogeneous family of {k} produced "
+            f"{report.n_clusters} clusters: blocking is shattering it"
+        )
+        assert report.largest_cluster == k
+
+    @pytest.mark.timeout(30)
+    def test_the_rescue_is_a_fallback_not_a_replacement(
+        self, store: MemoryStore
+    ) -> None:
+        """Sub-cap beliefs must keep their full posting set.
+
+        The distinguishing arm: a family small enough to sit entirely
+        under the cap must be clustered *without* anything being
+        rescued. If the rescue had replaced the cap rather than backing
+        it up, this family would route through the rarest-shingle path
+        and `n_beliefs_rescued` would be non-zero.
+        """
+        _homogeneous_family(store, 6)
+        report = consolidation_audit(store)
+        assert report.n_clusters == 1
+        assert report.n_beliefs_rescued == 0
+
+    @pytest.mark.timeout(30)
+    def test_an_over_cap_family_reports_that_it_was_rescued(
+        self, store: MemoryStore
+    ) -> None:
+        """The fallback is never silent.
+
+        Paired with the arm above so the two together distinguish which
+        path ran, rather than only that a cluster came out.
+        """
+        _heterogeneous_family(store, 40)
+        report = consolidation_audit(store)
+        assert report.n_clusters == 1
+        assert report.n_beliefs_rescued > 0
+
+
 class TestCandidateBudgetIsDisclosed:
     @pytest.mark.timeout(30)
     def test_budget_reached_sets_truncated(self, store: MemoryStore) -> None:
@@ -326,6 +506,43 @@ class TestCandidateBudgetIsDisclosed:
             consolidation_audit(store, max_candidate_pairs=10)
         )
         assert "BUDGET REACHED" in text
+
+    @pytest.mark.timeout(30)
+    def test_the_budget_bounds_work_not_just_the_result_set(
+        self, store: MemoryStore
+    ) -> None:
+        """The budget counts pairs *attempted*, not distinct pairs kept.
+
+        `candidates` is a set, so a bucket re-proposing a pair it
+        already holds does not grow it. A guard on `len(candidates)`
+        can therefore stay false forever while the nested loop keeps
+        running — the bound reads as real and is not, on exactly the
+        near-identical-boilerplate shape it is documented to bound.
+
+        A homogeneous family is that shape: every member shares every
+        shingle, so each of the many buckets re-proposes the same
+        `k*(k-1)/2` pairs. Setting the budget above that distinct total
+        but below the attempted total must still truncate.
+
+        Distinguishing both ways: the same corpus at a budget above the
+        attempted total does *not* truncate, so this cannot pass by
+        always being True.
+        """
+        _homogeneous_family(store, 12)
+        distinct_total = consolidation_audit(store).n_candidate_pairs
+        assert distinct_total == 66, distinct_total
+
+        # Above every distinct pair, so a len(candidates) guard never
+        # fires; below the attempted total, so an attempts guard does.
+        capped = consolidation_audit(store, max_candidate_pairs=100)
+        assert capped.truncated is True, (
+            "the budget did not fire at 100 with only 66 distinct pairs: "
+            "it is bounding the result set rather than the work"
+        )
+
+        roomy = consolidation_audit(store, max_candidate_pairs=1_000_000)
+        assert roomy.truncated is False
+        assert roomy.n_candidate_pairs == distinct_total
 
 
 class TestLockedMembersAreNotPriced:
