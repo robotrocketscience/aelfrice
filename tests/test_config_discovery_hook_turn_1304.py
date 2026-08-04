@@ -29,11 +29,42 @@ from pathlib import Path
 
 import pytest
 
-import aelfrice.deferred_feedback as deferred_feedback
-import aelfrice.expansion_gate as expansion_gate
+import importlib
+import pkgutil
+
+import aelfrice
 import aelfrice.retrieval as retrieval
 from aelfrice import hook
 from aelfrice.config_discovery import CONFIG_FILENAME, discover_config
+
+
+def _converted_readers() -> list[tuple[str, object, str]]:
+    """Every module that resolves config through the shared walk.
+
+    Enumerated by importing `aelfrice.*` and looking for the name, not
+    from a literal list. The whole point of #1304 is that the set grows
+    as private walk loops are converted, and a literal list would have
+    silently stopped covering the ones added after it was written —
+    which is exactly what happened to the three-module version of this
+    harness once the remaining eleven were converted: an unspied module
+    warmed the memo first and the spied ones then measured zero.
+
+    `retrieval` re-exports the helper under a private name for its own
+    callers, so it is named explicitly rather than found by the scan.
+    """
+    found: list[tuple[str, object, str]] = [
+        ("retrieval", retrieval, "_discover_config"),
+    ]
+    for info in pkgutil.iter_modules(aelfrice.__path__):
+        if info.name in {"retrieval", "config_discovery"}:
+            continue
+        try:
+            module = importlib.import_module(f"aelfrice.{info.name}")
+        except Exception:  # noqa: BLE001 - an unimportable extra is not ours
+            continue
+        if hasattr(module, "discover_config"):
+            found.append((info.name, module, "discover_config"))
+    return found
 
 _PROMPT = "which widget beliefs rank highest in the unit"
 
@@ -102,9 +133,10 @@ def _run_turn(payload_cwd: Path) -> None:
 class _Attribution:
     """Probes charged to the converted readers, and who reached them.
 
-    Attribution is per reader rather than per probe so the count ignores
-    the modules that still carry private walk loops; those are follow-up
-    work and their probes must not decide this test.
+    Attribution is per reader rather than per probe, and the reader set
+    is enumerated rather than listed — see `_converted_readers`. With
+    every module converted (#1304) there are no private walk loops left
+    to exclude, so the charged count is the turn's whole config cost.
     """
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -120,11 +152,7 @@ class _Attribution:
 
         monkeypatch.setattr(Path, "is_file", counting_is_file)
 
-        for name, module, attr in (
-            ("retrieval", retrieval, "_discover_config"),
-            ("expansion_gate", expansion_gate, "discover_config"),
-            ("deferred_feedback", deferred_feedback, "discover_config"),
-        ):
+        for name, module, attr in _converted_readers():
             self._spy(monkeypatch, name, module, attr)
 
     def _spy(
@@ -217,4 +245,32 @@ def test_a_payload_cwd_elsewhere_costs_exactly_two_walks(
         f"the converted readers cost {att.charged} probes; two walks "
         f"from the two distinct starts are "
         f"{process_walk} + {payload_walk}"
+    )
+
+
+def test_no_module_carries_a_private_config_walk() -> None:
+    """The census #1304 was filed on, as a standing assertion.
+
+    Fourteen modules each carried their own `cwd`-to-root loop, so N
+    readers cost N walks even inside a shared scope — the memo can only
+    collapse walks that go through it. Converting them is only half the
+    fix; without this arm the next reader copies the same twelve lines
+    from a neighbour, exactly as the first fourteen did.
+
+    Keyed on the loop's own shape (`while current not in seen`) rather
+    than on a module list, so a new private walk is caught wherever it
+    lands. `config_discovery` itself is the one legitimate implementor.
+    """
+    src = Path(__file__).resolve().parents[1] / "src" / "aelfrice"
+    offenders = sorted(
+        module.name
+        for module in src.glob("*.py")
+        if module.name != "config_discovery.py"
+        and "while current not in seen" in module.read_text(encoding="utf-8")
+    )
+    assert offenders == [], (
+        f"these modules walk to find .aelfrice.toml themselves: {offenders}. "
+        "Use `config_discovery.discover_config`, which is memoized inside a "
+        "`config_discovery_scope` — a private loop is invisible to the memo "
+        "and costs a full walk per reader."
     )
