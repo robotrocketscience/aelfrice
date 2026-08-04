@@ -55,7 +55,6 @@ try:
         HookAuditConfig,
         _append_audit,
         _audit_path_for_db,
-        _CONFIG_FILENAME,
         load_hook_audit_config,
     )
     # Re-exported so existing `from aelfrice.hook import ...` callers keep
@@ -320,7 +319,7 @@ def load_user_prompt_submit_config(
     # Shared discovery (#1304): inside a `config_discovery_scope`
     # N readers cost one walk instead of N. Semantics unchanged —
     # the loop this replaces already stopped at the first
-    # `_CONFIG_FILENAME` it found and never continued past it.
+    # `.aelfrice.toml` it found and never continued past it.
     candidate = discover_config(start)
     if candidate is not None:
         try:
@@ -2333,7 +2332,7 @@ def _load_aelfrice_toml(
     # Shared discovery (#1304): inside a `config_discovery_scope`
     # N readers cost one walk instead of N. Semantics unchanged —
     # the loop this replaces already stopped at the first
-    # `_CONFIG_FILENAME` it found and never continued past it.
+    # `.aelfrice.toml` it found and never continued past it.
     candidate = discover_config(start)
     if candidate is not None:
         try:

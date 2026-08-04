@@ -14,7 +14,6 @@ heavy import.
 """
 from __future__ import annotations
 
-from aelfrice.config_discovery import discover_config
 import json
 import os
 import sys
@@ -23,11 +22,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Final, cast
 
+from aelfrice.config_discovery import discover_config
+
 # ---------------------------------------------------------------------------
 # Per-turn audit log (#280 mitigation 3)
 # ---------------------------------------------------------------------------
-
-_CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 
 AUDIT_DEFAULT_MAX_BYTES: Final[int] = 10 * 1024 * 1024
 """Default size cap before rotation (10 MB). Overridable via .aelfrice.toml."""
@@ -81,7 +80,7 @@ def load_hook_audit_config(
     # Shared discovery (#1304): inside a `config_discovery_scope`
     # N readers cost one walk instead of N. Semantics unchanged —
     # the loop this replaces already stopped at the first
-    # `_CONFIG_FILENAME` it found and never continued past it.
+    # `.aelfrice.toml` it found and never continued past it.
     candidate = discover_config(start)
     if candidate is not None:
         try:
