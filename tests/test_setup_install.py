@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import cast
 
@@ -14,6 +15,13 @@ from aelfrice.setup import (
     install_user_prompt_submit_hook,
     uninstall_user_prompt_submit_hook,
 )
+
+# The module the names above came from, resolved through `sys.modules`
+# rather than imported a second way: these tests need the live module
+# object so a `monkeypatch.setattr` on it is visible, but importing it
+# alongside `from aelfrice.setup import (...)` is the dual-import form
+# CodeQL rejects.
+setup_mod = sys.modules[default_settings_path.__module__]
 
 _HOOK_CMD = "aelf retrieve --hook"
 _OTHER_CMD = "/some/other/script.sh"
@@ -52,7 +60,6 @@ def test_default_settings_path_user() -> None:
     would still equal the copy, so the copy cannot distinguish the
     defect (#1320).
     """
-    import aelfrice.setup as setup_mod
 
     assert default_settings_path("user") == setup_mod.USER_SETTINGS_PATH
 
@@ -329,7 +336,6 @@ def test_install_atomic_no_partial_file_on_simulated_failure(
     settings = tmp_path / "settings.json"
     original_payload: dict[str, object] = {"hooks": {"SessionStart": []}}
     settings.write_text(json.dumps(original_payload), encoding="utf-8")
-    import aelfrice.setup as setup_mod
 
     def boom(_src: str | Path, _dst: str | Path) -> None:
         raise RuntimeError("simulated rename failure")

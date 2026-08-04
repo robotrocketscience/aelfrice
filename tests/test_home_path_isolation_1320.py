@@ -27,12 +27,20 @@ import importlib
 import inspect
 import json
 import pkgutil
+import sys
 from pathlib import Path, PurePath
 
 import pytest
 
-import aelfrice
 from aelfrice import auto_install, lifecycle, temporal_spine
+
+# The package object, taken from a submodule already imported above rather
+# than imported a second way. `from aelfrice import auto_install` binds a
+# submodule while `from aelfrice import __name__` reads an attribute, and
+# CodeQL counts those as importing `aelfrice` two different ways.
+_PKG = sys.modules[auto_install.__package__]
+_PKG_NAME = _PKG.__name__
+_PKG_PATH = _PKG.__path__
 from tests.conftest import REAL_HOME
 
 
@@ -43,9 +51,9 @@ from tests.conftest import REAL_HOME
 
 def _iter_package_modules() -> list[str]:
     """Every importable module under the `aelfrice` package."""
-    names = [aelfrice.__name__]
+    names = [_PKG_NAME]
     for info in pkgutil.walk_packages(
-        aelfrice.__path__, prefix=aelfrice.__name__ + "."
+        _PKG_PATH, prefix=_PKG_NAME + "."
     ):
         names.append(info.name)
     return sorted(names)
