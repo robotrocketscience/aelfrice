@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -213,5 +214,85 @@ def test_posterior_channel_audit_ignores_an_ambient_aelfrice_toml(
     assert proc.returncode == 0, (
         "an ambient .aelfrice.toml changed the audit's verdict; the TOML "
         f"tier is not pinned (exit {proc.returncode}):\n"
+        f"{proc.stdout}\n{proc.stderr}"
+    )
+
+
+@pytest.mark.timeout(120)
+def test_posterior_channel_audit_scratch_walk_follows_symlinks(
+    tmp_path: Path,
+) -> None:
+    """The scratch-walk check must walk the chain the resolver reads.
+
+    `_read_toml_value` resolves its `start`; `Path.parents` is lexical.
+    Before #1311 `_scratch_walk_hits` walked the unresolved chain, so it
+    could report the pin clean while an ambient `.aelfrice.toml` above
+    the *resolved* scratch directory still fed the resolvers — the audit
+    would then silently measure a developer's config and report it as a
+    shipped default. That is the failure the pin exists to prevent, so
+    the pin needs a guard of its own.
+
+    Constructed so the two chains genuinely diverge rather than alias:
+    `TMPDIR` is `<base>/a/link`, a symlink to `<base>/b/real`, and the
+    config sits at `<base>/b`. The lexical walk sees `<base>/a` and
+    `<base>`; the resolved walk sees `<base>/b`. Note a symlink to a
+    sibling *inside the same parent* would not distinguish anything —
+    `Path.exists()` follows symlinks, so both chains would find the same
+    file.
+
+    `grace_window_seconds` is used rather than `enqueue_on_retrieve`
+    deliberately: it does not by itself fail any channel, so the run's
+    exit code isolates the scratch-walk check instead of conflating it
+    with the enqueue assertion.
+
+    Terminates deterministically: one subprocess with an explicit
+    `timeout=`, under a `pytest.mark.timeout` ceiling above it. No
+    polling, no retry, no unbounded wait.
+    """
+    import subprocess
+    import sys
+
+    repo_root = Path(__file__).resolve().parent.parent
+    script = repo_root / "benchmarks" / "posterior_channel_audit.py"
+    assert script.is_file(), f"missing {script}"
+
+    base = tmp_path.resolve()
+    (base / "b" / "real").mkdir(parents=True)
+    (base / "a").mkdir()
+    (base / "clean").mkdir()
+    (base / "a" / "link").symlink_to(base / "b" / "real")
+    (base / "b" / ".aelfrice.toml").write_text(
+        "[implicit_feedback]\ngrace_window_seconds = 7\n", encoding="utf-8"
+    )
+
+    lexical = base / "a" / "link"
+    assert not any(
+        (parent / ".aelfrice.toml").is_file()
+        for parent in (lexical, *lexical.parents)
+    ), "fixture is wrong: the config must NOT be on the lexical chain"
+    resolved = lexical.resolve()
+    assert any(
+        (parent / ".aelfrice.toml").is_file()
+        for parent in (resolved, *resolved.parents)
+    ), "fixture is wrong: the config must be on the resolved chain"
+
+    env = {**os.environ, "TMPDIR": str(lexical)}
+    proc = subprocess.run(
+        [sys.executable, str(script)],
+        cwd=base / "clean",
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=110,
+    )
+
+    assert proc.returncode == 1, (
+        "the audit did not notice a config on the resolved scratch chain; "
+        "the scratch walk is lexical again and the pin is unverified "
+        f"(exit {proc.returncode}):\n{proc.stdout}\n{proc.stderr}"
+    )
+    # The failure list is rendered on stderr, not stdout.
+    assert "the scratch walk is not clean" in proc.stderr, (
+        "exit 1 came from something other than the scratch-walk check:\n"
         f"{proc.stdout}\n{proc.stderr}"
     )
