@@ -52,7 +52,6 @@ in the project.
 """
 from __future__ import annotations
 
-from aelfrice.config_discovery import discover_config
 import json
 import os
 import sys
@@ -61,7 +60,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Final
 
-CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
+from aelfrice.config_discovery import (
+    CONFIG_FILENAME as _SHARED_CONFIG_FILENAME,
+    discover_config,
+)
+
+# Twelve test modules build their fixture as `dir / cadence.CONFIG_FILENAME`
+# and then assert `load_cadence_config` reads it, so the name stays bound.
+# Bound by assignment from the shared constant rather than re-declared as a
+# literal: the walk now lives in `config_discovery`, and two independent
+# spellings of the filename can drift without anything noticing until a
+# fixture is written under one name and looked for under the other.
+CONFIG_FILENAME: Final[str] = _SHARED_CONFIG_FILENAME
 CADENCE_SECTION: Final[str] = "cadence"
 
 ENABLED_KEY: Final[str] = "enabled"
