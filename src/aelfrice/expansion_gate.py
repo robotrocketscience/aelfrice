@@ -48,14 +48,19 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from aelfrice.store import MemoryStore
 
-from aelfrice.config_discovery import (  # noqa: F401 - CONFIG_FILENAME re-exported
-    CONFIG_FILENAME,
+from aelfrice.config_discovery import (
+    CONFIG_FILENAME as _SHARED_CONFIG_FILENAME,
     discover_config,
 )
 from aelfrice.models import EDGE_TYPES
 
 # --- Config keys ----------------------------------------------------------
 
+# Re-exported for callers that referenced this module's own constant
+# before #1304 moved the walk out. Bound by assignment rather than
+# imported under its own name so the re-export is a use, not a
+# dead import.
+CONFIG_FILENAME: Final[str] = _SHARED_CONFIG_FILENAME
 RETRIEVAL_SECTION: Final[str] = "retrieval"
 EXPANSION_GATE_FLAG: Final[str] = "expansion_gate_enabled"
 

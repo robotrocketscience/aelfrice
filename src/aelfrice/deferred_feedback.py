@@ -52,8 +52,8 @@ from typing import IO, Any, Final
 
 import tomllib
 
-from aelfrice.config_discovery import (  # noqa: F401 - CONFIG_FILENAME re-exported
-    CONFIG_FILENAME,
+from aelfrice.config_discovery import (
+    CONFIG_FILENAME as _SHARED_CONFIG_FILENAME,
     discover_config,
 )
 from aelfrice.models import LOCK_USER
@@ -64,6 +64,11 @@ from aelfrice.store import MemoryStore
 DEFAULT_T_GRACE_SECONDS: Final[int] = 1800
 DEFAULT_EPSILON: Final[float] = 0.05
 
+# Re-exported for callers that referenced this module's own constant
+# before #1304 moved the walk out. Bound by assignment rather than
+# imported under its own name so the re-export is a use, not a dead
+# import.
+CONFIG_FILENAME: Final[str] = _SHARED_CONFIG_FILENAME
 IMPLICIT_FEEDBACK_SECTION: Final[str] = "implicit_feedback"
 GRACE_KEY: Final[str] = "grace_window_seconds"
 EPSILON_KEY: Final[str] = "epsilon"

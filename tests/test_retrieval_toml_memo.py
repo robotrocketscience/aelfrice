@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import aelfrice.config_discovery as config_discovery
 import aelfrice.retrieval as retrieval
 
 
@@ -202,7 +203,7 @@ def test_retrieve_engages_the_memo(monkeypatch) -> None:
     def spy(start):
         nonlocal own_probes
         inside_scope.append(
-            retrieval._CONFIG_DISCOVERY_MEMO.get() is not None
+            config_discovery._CONFIG_DISCOVERY_MEMO.get() is not None
         )
         before = len(probes)
         try:

@@ -84,9 +84,8 @@ from aelfrice.compression import CompressedBelief, compress_for_retrieval
 # before, so `retrieval.CONFIG_FILENAME` / `retrieval._discover_config` /
 # `retrieval.config_discovery_scope` keep resolving for existing callers
 # and for the tests that monkeypatch them.
-from aelfrice.config_discovery import (  # noqa: F401 - re-exported
-    _CONFIG_DISCOVERY_MEMO,
-    CONFIG_FILENAME,
+from aelfrice.config_discovery import (
+    CONFIG_FILENAME as _SHARED_CONFIG_FILENAME,
     config_discovery_scope,
     discover_config as _discover_config,
 )
@@ -179,8 +178,11 @@ DEFAULT_CACHE_CAPACITY: Final[int] = 256
 
 # Section / key names in `.aelfrice.toml`. Public so consumers can
 # reference them in their own config. `CONFIG_FILENAME` itself now lives
-# in `aelfrice.config_discovery` and is re-exported above, so the walk
-# and the filename it walks for cannot drift apart.
+# in `aelfrice.config_discovery`; it is bound here rather than imported
+# under its own name so the re-export is an assignment a static analyser
+# can see is used, and so the walk and the filename it walks for cannot
+# drift apart.
+CONFIG_FILENAME: Final[str] = _SHARED_CONFIG_FILENAME
 RETRIEVAL_SECTION: Final[str] = "retrieval"
 ENTITY_INDEX_FLAG: Final[str] = "entity_index_enabled"
 # #1279 exploration slot — `[retrieval] exploration_*` TOML tier.
@@ -1450,6 +1452,9 @@ _TOML_SECTION_CACHE: dict[str, tuple[int, int, dict[str, Any] | None]] = {}
 # The discovery memo behind `_discover_config` and `config_discovery_scope`
 # — both re-exported from `aelfrice.config_discovery` at the top of this
 # module — is the *walk* half of the same problem this parse cache solves.
+# The memo `ContextVar` itself is private to that module and is not
+# re-exported here: it is an implementation detail, so anything that
+# needs to observe it reads `config_discovery._CONFIG_DISCOVERY_MEMO`.
 # It moved out in #1304 so `expansion_gate`, `deferred_feedback` and `hook`
 # could share it without importing 4,600 lines of retrieval; see that
 # module for the staleness contract.
