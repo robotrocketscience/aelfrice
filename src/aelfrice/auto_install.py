@@ -386,6 +386,26 @@ def remove_host_opt_out(host: str, opt_out_path: Path | None = None) -> bool:
     return True
 
 
+def _write_opt_outs(
+    hook_names: set[str], opt_out_path: Path | None = None,
+) -> None:
+    """Rewrite the ledger preserving the host-level `opt_out_hosts` key.
+
+    The mirror of `_write_host_opt_outs`. Both keys live in one document
+    (#1053); a writer that serialises only its own key silently deletes
+    the other's. `add_opt_out` / `remove_opt_out` did exactly that, so a
+    Codex-primary contributor lost their host opt-out the first time
+    `aelf setup` toggled any hook (#1320).
+    """
+    if opt_out_path is None:
+        opt_out_path = OPT_OUT_PATH
+    doc: dict[str, object] = {"opt_out": sorted(hook_names)}
+    hosts = read_host_opt_outs(opt_out_path)
+    if hosts:
+        doc["opt_out_hosts"] = sorted(hosts)
+    _atomic_write_json(opt_out_path, doc)
+
+
 def add_opt_out(hook_name: str, opt_out_path: Path | None = None) -> None:
     """Persist `hook_name` to the opt-out file. Idempotent.
 
@@ -401,10 +421,7 @@ def add_opt_out(hook_name: str, opt_out_path: Path | None = None) -> None:
     if hook_name in current:
         return
     current.add(hook_name)
-    _atomic_write_json(
-        opt_out_path,
-        {"opt_out": sorted(current)},
-    )
+    _write_opt_outs(current, opt_out_path)
 
 
 def remove_opt_out(hook_name: str, opt_out_path: Path | None = None) -> None:
@@ -422,14 +439,19 @@ def remove_opt_out(hook_name: str, opt_out_path: Path | None = None) -> None:
     if hook_name not in current:
         return
     current.discard(hook_name)
-    if current:
-        _atomic_write_json(opt_out_path, {"opt_out": sorted(current)})
-    elif opt_out_path.exists():
-        try:
-            opt_out_path.unlink()
-        except OSError:
-            # best-effort: empty opt-out file cleanup is non-critical
-            pass
+    if not current and not read_host_opt_outs(opt_out_path):
+        # Nothing left in the ledger at all — remove the file rather
+        # than leave an empty document. Guarded on the sibling key: the
+        # unconditional unlink this replaces destroyed `opt_out_hosts`
+        # whenever the last per-hook opt-out was rescinded (#1320).
+        if opt_out_path.exists():
+            try:
+                opt_out_path.unlink()
+            except OSError:
+                # best-effort: empty opt-out file cleanup is non-critical
+                pass
+        return
+    _write_opt_outs(current, opt_out_path)
 
 
 def _atomic_write_json(path: Path, data: dict[str, object]) -> None:
