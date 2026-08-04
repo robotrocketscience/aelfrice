@@ -218,8 +218,11 @@ class TestFlagOffIsByteIdentical:
         lines, manifest = _split_belief_lines(hits, provenance_render=False)
         assert lines == [
             '<belief id="l1" lock="user">content of l1</belief>',
+            # Explicit `+`: implicit adjacent-literal concatenation inside a
+            # list is a CodeQL "maybe missing a comma?" alert, and this list
+            # is the byte-parity assertion, so it has to read unambiguously.
             '<belief id="s1" lock="none" speculative="1">'
-            "content of s1</belief>",
+            + "content of s1</belief>",
         ]
         assert manifest == []
 
