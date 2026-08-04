@@ -229,6 +229,14 @@ confidence_min = 0.5
 # Cap on candidate pairs scored per audit run. Default 5000.
 max_candidate_pairs = 5000
 
+[hook]
+# #1326 / #1177 proposal 18. Group the injected per-turn block into
+# trust-tier sections (<user-locked> / <observed> / <inferred>) and emit
+# each belief's origin, evidence count and posterior. Default-OFF: with
+# it off the block is byte-identical to the pre-#1326 output, including
+# the validated framing header. AELFRICE_PROVENANCE_RENDER overrides.
+provenance_render = false
+
 [rebuilder]
 # v3.0+ / #718 (PR #719). Selects the query-rewriting stack used by
 # the context rebuilder. Default `"stack-r1-r3"` since v3.0; runs
@@ -760,6 +768,44 @@ Default-off is load-bearing. A fresh install writes no semantic edges; turning
 `auto_detect` on makes every ingested turn run an incremental contradiction
 audit over the beliefs inserted that turn. Wrong-typed values fall back to the
 default with a stderr trace and never raise.
+
+## `[hook] provenance_render` (v4.x+)
+
+Trust-tier grouping and evidence attributes on the injected per-turn block
+(#1326, decomposed from #1177 proposal 18).
+
+Off, every belief renders as `<belief id="…" lock="user|none">` plus the
+`speculative="1"` marker from #1171. On, the block is grouped:
+
+| section | membership | what the framing tells the model |
+|---|---|---|
+| `<user-locked>` | `lock_level == 'user'`, whatever the origin | standing instructions; verify factual claims against the project first |
+| `<observed>` | `user_stated`, `user_corrected`, `user_validated`, `user_transcript`, `document_recent` | recorded from what the user said or the repo contains; weigh by `n` and `mu` |
+| `<inferred>` | `agent_inferred`, `agent_remembered`, `speculative`, `unknown` | the system's own hypotheses; check them, never treat as fact |
+
+Non-locked lines gain `origin`, `n` (= `alpha + beta`), `mu` (posterior,
+3 dp) and `seen` (corroboration count). Every value is already on the
+belief object at render time — measured on a live pack, all four were
+populated on 74 of 74 retrieved hits — so this adds no query.
+
+The point is `n`. `mu = 0.6 at n = 2` is byte-identical to `mu = 0.6 at
+n = 200` at every scoring site, and the spread is not academic: one live
+pack carried 25 distinct `n` values from 1.6 to 363.2 across 74 hits. A
+ranker has to collapse that; a model shown the number can weigh it against
+the question actually being asked.
+
+Membership is a **total** function of `lock_level` and `origin`: every
+`models.ORIGIN_*` constant is classified, and an unrecognised origin falls
+back to `<inferred>` rather than being dropped. The fallback direction is
+deliberate — an origin nobody classified is one whose trustworthiness
+nobody established. A test enumerates the constants from `models`, so
+adding an origin without classifying it fails the suite.
+
+Default-off is load-bearing: the framing header is validated wording
+(rule-compliance 0/3 → 5/5) and turning this on changes every belief line.
+`AELFRICE_PROVENANCE_RENDER` (`1`/`true`/`yes`/`on` vs `0`/`false`/`no`/
+`off`) overrides the file. Wrong-typed and malformed values degrade to off
+with a stderr trace and never raise.
 
 ## `[implicit_feedback]` (v1.6.0+)
 
