@@ -25,12 +25,16 @@ import os
 import subprocess
 import sys
 import textwrap
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import pytest
 
 from aelfrice import file_lock
+from aelfrice.claude_memory import (
+    derive_memory_dir,
+    encode_project_path,
+)
 
 # Every module the CLI reaches at import time, plus the two that carried the
 # unguarded import. Kept as a literal so a new module does not silently opt
@@ -236,3 +240,71 @@ def test_posix_hosts_still_report_real_locks() -> None:
     if sys.platform == "win32":  # pragma: no cover - not our CI default
         pytest.skip("POSIX-only assertion")
     assert file_lock.HAVE_ADVISORY_LOCKS is True
+
+
+# ---------------------------------------------------------------------------
+# The claude-memory path encoder
+# ---------------------------------------------------------------------------
+
+
+class TestProjectPathEncoding:
+    """`derive_memory_dir` built `-C:\\Dev\\example\\proj` on Windows.
+
+    The old rule stripped a leading slash and replaced `/`, then prepended a
+    hardcoded `-`. On a Windows path none of the three steps did what they
+    were written for, and the result was a directory that cannot exist — so
+    both claude-memory commands and the #985 mirror silently found nothing.
+
+    These drive the pure string helper, because `Path.resolve()` cannot
+    construct a foreign-flavour absolute path from POSIX CI.
+    """
+
+    @pytest.mark.parametrize(
+        ("abs_path", "expected"),
+        [
+            # POSIX: unchanged from the pre-#1329 encoding. Regression arm —
+            # the fix must not move the directory every existing user's
+            # memories already live in.
+            ("/Users/alice/projects/myapp", "-Users-alice-projects-myapp"),
+            ("/a", "-a"),
+            # Windows: the reported case. The leading dash is not a prefix,
+            # it falls out of the leading separator; a drive letter has none,
+            # so `C:` becomes `C--` and the name starts with the drive.
+            (r"C:\Dev\example\proj", "C--Dev-example-proj"),
+            (r"D:\x", "D--x"),
+            # UNC: both leading separators are replaced, like any others.
+            (r"\\server\share\proj", "--server-share-proj"),
+        ],
+    )
+    def test_the_encoding_is_one_substitution_over_both_flavours(
+        self, abs_path: str, expected: str
+    ) -> None:
+        assert encode_project_path(abs_path) == expected
+
+    def test_no_colon_survives_into_a_directory_name(self) -> None:
+        """The specific defect. `:` is not a legal filename character on
+        Windows, so a surviving colon is not merely a wrong directory — it
+        is an uncreatable one."""
+        assert ":" not in encode_project_path(r"C:\Dev\example\proj")
+
+    def test_no_backslash_survives_into_a_directory_name(self) -> None:
+        """A surviving backslash would be read as a path separator and
+        silently nest the memory dir several levels deeper."""
+        assert "\\" not in encode_project_path(r"C:\Dev\example\proj")
+
+    def test_a_windows_path_encodes_to_exactly_one_path_segment(self) -> None:
+        """The encoded string is joined as a single directory name. If any
+        separator survived, `PurePath` would see multiple segments and the
+        memory dir would land somewhere else entirely."""
+        encoded = encode_project_path(r"C:\Dev\example\proj")
+        assert len(PureWindowsPath(encoded).parts) == 1
+        assert len(PurePosixPath(encoded).parts) == 1
+
+    def test_derive_memory_dir_still_ends_at_a_memory_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """The join is unchanged; only the encoding moved into a helper."""
+        got = derive_memory_dir(tmp_path)
+        assert got.name == "memory"
+        assert got.parent.parent.name == "projects"
+        assert got.parent.name == encode_project_path(str(tmp_path.resolve()))

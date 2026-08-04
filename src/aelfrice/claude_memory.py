@@ -144,24 +144,53 @@ class MemoryFile(NamedTuple):
 # Path derivation
 # ---------------------------------------------------------------------------
 
-# Matches one or more leading slashes to strip from the absolute path.
-_LEADING_SLASH_RE = re.compile(r"^/+")
+# Path separators and the Windows drive-letter colon. Each is replaced by a
+# single `-`; nothing is stripped and nothing is prepended (#1329).
+_PATH_PUNCTUATION_RE = re.compile(r"[/\\:]")
+
+
+def encode_project_path(abs_path: str) -> str:
+    """Encode an already-absolute path the way the upstream tool does.
+
+    The rule is one substitution: every ``/``, ``\\`` and ``:`` becomes
+    ``-``. The leading dash people associate with these directory names is
+    not a prefix — it falls out of the POSIX leading slash being replaced
+    like any other separator::
+
+        /Users/alice/projects/myapp  ->  -Users-alice-projects-myapp
+        C:\\Dev\\example\\proj       ->  C--Dev-example-proj
+
+    The previous implementation stripped the leading slash and hardcoded the
+    ``-`` back on, which is *equivalent on POSIX only*. On Windows the strip
+    matched nothing (no leading slash), the ``/`` replacement matched nothing
+    (separators are ``\\``), and the hardcoded prefix was prepended anyway,
+    producing ``-C:\\Dev\\example\\proj`` — a directory that cannot exist.
+    Both claude-memory commands and the #985 write-through mirror looked for
+    it and silently found nothing (#1329).
+
+    Takes a string rather than a `Path` so the Windows encoding is testable
+    from POSIX CI via `PureWindowsPath`; `Path.resolve()` cannot construct a
+    foreign-flavour absolute path.
+    """
+    return _PATH_PUNCTUATION_RE.sub("-", abs_path)
 
 
 def derive_memory_dir(project_path: str | Path) -> Path:
     """Return the claude-memory directory for ``project_path``.
 
-    The upstream tool encodes the absolute project directory as a filesystem
-    path by stripping the leading ``/`` and replacing every remaining ``/``
-    with ``-``.  For example ``/Users/alice/projects/myapp`` becomes
-    ``-Users-alice-projects-myapp`` and the full memory directory is
-    ``~/.claude/projects/-Users-alice-projects-myapp/memory/``.
-
-    This function replicates that encoding without touching the filesystem.
+    Resolves ``project_path`` to an absolute native path, encodes it with
+    :func:`encode_project_path`, and joins it under
+    ``~/.claude/projects/<encoded>/memory/``. Touches no filesystem beyond
+    the resolution itself.
     """
     abs_path = str(Path(project_path).resolve())
-    encoded = _LEADING_SLASH_RE.sub("", abs_path).replace("/", "-")
-    return Path.home() / ".claude" / "projects" / f"-{encoded}" / "memory"
+    return (
+        Path.home()
+        / ".claude"
+        / "projects"
+        / encode_project_path(abs_path)
+        / "memory"
+    )
 
 
 def is_memory_index(path: str | Path) -> bool:
