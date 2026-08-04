@@ -20,7 +20,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Final, Sequence, cast
 
@@ -202,6 +202,13 @@ from aelfrice.db_paths import (
     db_path,
 )
 from aelfrice.store import MemoryStore
+
+# #1314: how far ahead `aelf doctor` warns about a closing lock window,
+# and how many it names before collapsing to a count. Seven days is the
+# shortest window the surface encourages, so a user who locks for a week
+# sees the warning from the moment they set it.
+LOCK_EXPIRY_WARN_DAYS: Final[int] = 7
+LOCK_EXPIRY_WARN_MAX_LISTED: Final[int] = 5
 
 DEFAULT_HOOK_COMMAND: Final[str] = "aelf-hook"
 DEFAULT_PRE_COMPACT_HOOK_COMMAND: Final[str] = "aelf-pre-compact-hook"
@@ -7123,6 +7130,14 @@ def _print_doctor_store_check(out: object) -> None:
         return
     try:
         n = store.count_beliefs()
+        # #1314: read the expiry state on the same handle. Opening the
+        # store is what ran the sweep, so `expiring` is post-sweep by
+        # construction and never lists something already gone.
+        horizon = datetime.now(timezone.utc) + timedelta(
+            days=LOCK_EXPIRY_WARN_DAYS,
+        )
+        expiring = store.list_expiring_locks(before=horizon.isoformat())
+        last_sweep = store.last_lock_sweep()
     finally:
         try:
             store.close()
@@ -7141,7 +7156,52 @@ def _print_doctor_store_check(out: object) -> None:
             f"store: {n} belief(s) at {db_path()}",
             file=out,  # type: ignore[arg-type]
         )
+    _print_doctor_lock_expiry(expiring, last_sweep, out)
     _print_doctor_session_ring(out)
+
+
+def _print_doctor_lock_expiry(
+    expiring: "list[Any]",
+    last_sweep: "tuple[str, int] | None",
+    out: object,
+) -> None:
+    """Report locks about to expire, and the last sweep that fired.
+
+    The failure mode of time-boxed locks (#1314) is a lock silently
+    vanishing at the moment it mattered — the user asked for seven days,
+    got seven days, and has no idea day eight arrived. Both halves
+    matter and neither substitutes for the other: the forward warning is
+    the chance to extend before it goes, and the backward count is the
+    only place an expiry that already happened is visible at all.
+
+    Informational. Never affects exit status: a lock reaching the end of
+    a window the user chose is the mechanism working.
+    """
+    from aelfrice.lock_expiry import format_remaining
+
+    now = datetime.now(timezone.utc)
+    if expiring:
+        print(  # type: ignore[arg-type]
+            f"locks: {len(expiring)} expiring within "
+            f"{LOCK_EXPIRY_WARN_DAYS} days "
+            f"(`aelf lock \"<text>\" --for <window>` to extend)",
+            file=out,
+        )
+        for b in expiring[:LOCK_EXPIRY_WARN_MAX_LISTED]:
+            remaining = format_remaining(b.lock_expires_at, now=now)
+            preview = b.content if len(b.content) <= 60 else b.content[:57] + "..."
+            print(f"  {b.id} [{remaining}]: {preview}", file=out)  # type: ignore[arg-type]
+        if len(expiring) > LOCK_EXPIRY_WARN_MAX_LISTED:
+            more = len(expiring) - LOCK_EXPIRY_WARN_MAX_LISTED
+            print(f"  (+{more} more — `aelf locked`)", file=out)  # type: ignore[arg-type]
+    if last_sweep is not None:
+        at, count = last_sweep
+        print(  # type: ignore[arg-type]
+            f"locks: {count} expired and unlocked at {at} "
+            "(still stored, and searchable — only the unconditional "
+            "injection stopped)",
+            file=out,
+        )
 
 
 def _print_doctor_session_ring(out: object) -> None:

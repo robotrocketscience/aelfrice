@@ -352,8 +352,34 @@ def tool_lock(
     *,
     statement: str,
     session_id: str | None = None,
+    expires_in: str | None = None,
 ) -> dict[str, Any]:
+    """Lock `statement`; optionally time-box it with `expires_in` (#1314).
+
+    `expires_in` takes the same `<N>[d|w|mo|y]` grammar as `aelf lock
+    --for`, plus `forever`. It is resolved to an absolute UTC instant
+    here, exactly as the CLI does, so the two surfaces cannot drift.
+
+    The parse happens before any write: a malformed window returns
+    `lock.error` rather than leaving a permanent lock behind for the
+    caller to notice and undo.
+    """
+    from aelfrice.lock_expiry import LockExpiryError, parse_for
+
     now = _utc_now_iso()
+    expires_at: str | None = None
+    if expires_in is not None:
+        try:
+            expires_at = parse_for(
+                expires_in, now=datetime.now(timezone.utc),
+            )
+        except LockExpiryError as exc:
+            return {
+                "kind": "lock.error",
+                "id": "",
+                "action": "error",
+                "error": str(exc),
+            }
     sid = resolve_session_id(session_id, surface_name="mcp aelf_lock")
     # #264 slice 2: route through the derivation worker. The worker
     # handles record_ingest -> derive -> insert_or_corroborate; the
@@ -402,6 +428,23 @@ def tool_lock(
         # something is broken downstream. Surface as a kind we can grep.
         return {"kind": "lock.error", "id": "", "action": "error"}
     actual_id = str(derived_ids[0])
+    # #1314: apply the window to whichever belief resolved, on every
+    # outcome below. Mirrors the CLI: an explicit `expires_in` sets (or
+    # with `forever`, clears) the window, and its absence on a re-lock
+    # clears an existing one — the surfaces have to agree or the same
+    # phrase means different things in chat and at the shell.
+    def _apply_window() -> None:
+        belief = store.get_belief(actual_id, include_retired=True)
+        if belief is None:
+            return
+        if expires_in is not None:
+            if belief.lock_expires_at != expires_at:
+                belief.lock_expires_at = expires_at
+                store.update_belief(belief)
+        elif belief.lock_expires_at is not None:
+            belief.lock_expires_at = None
+            store.update_belief(belief)
+
     if pre_existing_at_lock_id and actual_id == lock_bid:
         # Re-lock of an existing lock-id belief: apply lock-upgrade
         # (worker's insert_or_corroborate just records corroboration).
@@ -413,13 +456,16 @@ def tool_lock(
             existing.locked_at = now
             existing.origin = ORIGIN_USER_STATED
             store.update_belief(existing)
-        return {"kind": "lock.upgraded", "id": actual_id, "action": "upgraded"}
+        _apply_window()
+        return {"kind": "lock.upgraded", "id": actual_id, "action": "upgraded", "expires_at": expires_at}
     if actual_id in ids_before:
         # content_hash collision with a different-source belief: the
         # worker corroborated it; the original behavior returned
         # `corroborated` without applying lock semantics, preserved here.
-        return {"kind": "lock.corroborated", "id": actual_id, "action": "corroborated"}
-    return {"kind": "lock.created", "id": actual_id, "action": "locked"}
+        _apply_window()
+        return {"kind": "lock.corroborated", "id": actual_id, "action": "corroborated", "expires_at": expires_at}
+    _apply_window()
+    return {"kind": "lock.created", "id": actual_id, "action": "locked", "expires_at": expires_at}
 
 
 _LOCKED_DEFAULT_LIMIT: Final[int] = 50
@@ -459,6 +505,9 @@ def tool_locked(
                 "id": b.id,
                 "content": b.content,
                 "locked_at": b.locked_at,
+                # #1314: null for a permanent lock. Post-sweep by
+                # construction, so a listed lock is still in its window.
+                "lock_expires_at": getattr(b, "lock_expires_at", None),
             }
             for b in page
         ],
@@ -1270,6 +1319,18 @@ def serve() -> None:
                 max_length=2000,
             ),
         ],
+        expires_in: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Optional time box (#1314): '<N>d', '<N>w', '<N>mo', "
+                    "'<N>y', or 'forever'. Resolved to an absolute UTC "
+                    "instant at write time. Set this only when the user "
+                    "said the fact has a known end — 'for the next week', "
+                    "'while I'm travelling'. Omit for a permanent lock."
+                ),
+            ),
+        ] = None,
     ) -> dict[str, Any]:
         """Lock a statement as user-asserted ground truth (L0).
 
@@ -1278,17 +1339,27 @@ def serve() -> None:
         the same content refreshes the lock without creating a duplicate.
         Mutates: creates or upgrades a belief.
 
+        Pass `expires_in` when the user gave the fact a horizon. When the
+        window closes the belief is not deleted — it stops being injected
+        unconditionally and re-enters ordinary ranked retrieval, where its
+        age already discounts it.
+
         Args:
             statement: The free-text claim to lock. Treated verbatim;
                 no rewriting. Example: "All commits must be signed".
+            expires_in: Optional window, e.g. "7d", "2w", "1mo",
+                "forever". Omit for a permanent lock.
 
         Returns: {"kind": one of [lock.created, lock.upgraded,
                                   lock.corroborated, lock.error],
-                  "id": belief_id, "action": str}
+                  "id": belief_id, "action": str,
+                  "expires_at": ISO timestamp or null}
         """
         store = _open_default_store()
         try:
-            return tool_lock(store, statement=statement)
+            return tool_lock(
+                store, statement=statement, expires_in=expires_in,
+            )
         finally:
             store.close()
 
