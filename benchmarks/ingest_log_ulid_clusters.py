@@ -84,11 +84,6 @@ _TOP_N: Final[int] = 4
 # corroboration.
 _SYNTH_SOURCE_KIND: Final[str] = "legacy_unknown"
 
-# A cluster this dense in time is a machine loop, not a working day.
-# Rows per distinct millisecond prefix: the synth burst runs at ~103,
-# the busiest genuine day at ~7.5. Reported, never keyed on.
-_SYNTH_DENSITY: Final[float] = 50.0
-
 
 def _ulid_ms(ulid: str) -> int | None:
     """Decode a ULID's 48-bit millisecond prefix, or None if malformed."""
@@ -191,6 +186,13 @@ def _profile(
         f" .. {dt.datetime.fromtimestamp(hi/1000, dt.timezone.utc)}"
         f"  ({(hi-lo)/1000:,.0f}s)"
     )
+    # Rows per distinct millisecond prefix. A machine loop and a working
+    # day separate cleanly here — the synth burst runs at ~103, the
+    # busiest genuine day at ~7.5 — but this is reported as corroboration
+    # and deliberately has no threshold constant: the whole finding is
+    # that the rule should key on `source_kind`, and a named cut-off
+    # sitting here would invite exactly the heuristic being argued
+    # against.
     print(
         f"  distinct ms      : {distinct_ms:,}"
         f"   density {density:,.1f} rows/ms-prefix"
