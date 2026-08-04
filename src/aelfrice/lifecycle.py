@@ -151,8 +151,17 @@ def _wheel_sha256(release_files: list[dict]) -> str | None:
     return None
 
 
-def _write_cache(status: UpdateStatus, cache_path: Path = CACHE_FILE) -> None:
-    """Persist a status snapshot. Silent fail: cache write is best-effort."""
+def _write_cache(status: UpdateStatus, cache_path: Path | None = None) -> None:
+    """Persist a status snapshot. Silent fail: cache write is best-effort.
+
+    `cache_path` resolves from the module-level `CACHE_FILE` when
+    omitted, late-bound so `monkeypatch.setattr(lifecycle, "CACHE_FILE",
+    ...)` is honoured (#1320). A bound default is evaluated at import,
+    before any test body runs, so the suite wrote the contributor's real
+    `~/.cache/aelfrice/`.
+    """
+    if cache_path is None:
+        cache_path = CACHE_FILE
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -167,11 +176,16 @@ def _write_cache(status: UpdateStatus, cache_path: Path = CACHE_FILE) -> None:
         pass
 
 
-def read_cache(cache_path: Path = CACHE_FILE) -> UpdateStatus:
+def read_cache(cache_path: Path | None = None) -> UpdateStatus:
     """Read the cached update status. Returns empty() on any failure.
 
     The statusline calls this. It MUST be cheap and never raise.
+
+    `cache_path` resolves from `CACHE_FILE` when omitted — late-bound
+    (#1320; see `_write_cache`).
     """
+    if cache_path is None:
+        cache_path = CACHE_FILE
     try:
         raw = cache_path.read_text(encoding="utf-8")
         data = json.loads(raw)
@@ -211,7 +225,7 @@ def is_disabled(env: dict[str, str] | None = None) -> bool:
 
 
 def check_for_update(
-    cache_path: Path = CACHE_FILE,
+    cache_path: Path | None = None,
     pypi_url: str = PYPI_JSON_URL,
     fetch: callable = _fetch_pypi_json,
     now: float | None = None,
@@ -222,7 +236,15 @@ def check_for_update(
     paths use maybe_check_for_update_async() which spawns a detached
     subprocess pointing at this entry. We expose a sync version for
     tests and for direct CLI use.
+
+    `cache_path` resolves from `CACHE_FILE` when omitted — late-bound
+    (#1320; see `_write_cache`). Note that the async spawn re-enters
+    this function in a *fresh interpreter*, where the module global is
+    recomputed from the real home: only `AELF_NO_UPDATE_CHECK` (or an
+    inherited HOME) stops the child, never `setattr`.
     """
+    if cache_path is None:
+        cache_path = CACHE_FILE
     if is_disabled():
         return UpdateStatus.empty()
     installed = installed_version()
@@ -250,7 +272,7 @@ def check_for_update(
 
 
 def maybe_check_for_update_async(
-    cache_path: Path = CACHE_FILE,
+    cache_path: Path | None = None,
     ttl: int = CACHE_TTL_SECONDS,
 ) -> bool:
     """Fire a detached background check iff cache is stale.
@@ -259,7 +281,14 @@ def maybe_check_for_update_async(
     the spawned process detaches via start_new_session=True so the
     parent can exit without waiting. Mirrors GSD's spawn(detached:true)
     + child.unref() pattern in Python.
+
+    `cache_path` resolves from `CACHE_FILE` when omitted — late-bound
+    (#1320). It gates only the staleness *read*: the spawned child
+    recomputes its own path, so isolating the write requires
+    `AELF_NO_UPDATE_CHECK=1`.
     """
+    if cache_path is None:
+        cache_path = CACHE_FILE
     if is_disabled():
         return False
     status = read_cache(cache_path)
@@ -1178,12 +1207,17 @@ def uninstall(
     )
 
 
-def clear_cache(cache_path: Path = CACHE_FILE) -> None:
+def clear_cache(cache_path: Path | None = None) -> None:
     """Remove the update-check cache file. Silent if absent.
 
     Called by `aelf upgrade` after a successful upgrade so the orange
     statusline banner disappears immediately.
+
+    `cache_path` resolves from `CACHE_FILE` when omitted — late-bound
+    (#1320; see `_write_cache`).
     """
+    if cache_path is None:
+        cache_path = CACHE_FILE
     try:
         cache_path.unlink()
     except FileNotFoundError:
@@ -1224,7 +1258,7 @@ class MigrationResult:
 
 def maybe_migrate_to_uv(
     *,
-    sentinel_path: Path = MIGRATED_TO_UV_SENTINEL,
+    sentinel_path: Path | None = None,
     timeout: int = MIGRATION_TIMEOUT_SECONDS,
     force: bool = False,
 ) -> MigrationResult:
@@ -1248,7 +1282,15 @@ def maybe_migrate_to_uv(
     `~/.local/bin/aelf` shim (which uv tool and pipx both target). The
     running process — still under the pipx venv — continues to function
     until exit; future invocations resolve through the new uv shim.
+
+    `sentinel_path` resolves from the module-level
+    `MIGRATED_TO_UV_SENTINEL` when omitted — late-bound so tests
+    patching the constant are honoured (#1320). Note the polarity: the
+    guard is `sentinel_path.exists()`, so pinning this at a path that
+    does NOT exist arms the subprocess rather than disarming it.
     """
+    if sentinel_path is None:
+        sentinel_path = MIGRATED_TO_UV_SENTINEL
     if not force and sentinel_path.exists():
         return MigrationResult(False, False, "already migrated (sentinel exists)")
     advice = upgrade_advice()

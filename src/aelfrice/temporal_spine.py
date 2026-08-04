@@ -375,7 +375,7 @@ class SpineAutoBackfillResult:
 def maybe_backfill_temporal_spine(
     store: "MemoryStore",
     *,
-    sentinel_path: Path = SPINE_BACKFILLED_SENTINEL,
+    sentinel_path: Path | None = None,
     write_enabled: bool | None = None,
 ) -> SpineAutoBackfillResult:
     """One-shot auto-backfill of the spine on the flip release (#1064 G4).
@@ -397,9 +397,18 @@ def maybe_backfill_temporal_spine(
       3. otherwise run ``backfill_temporal_spine`` (idempotent), write the
          sentinel, and report the edge count.
 
+    ``sentinel_path`` resolves from the module-level
+    ``SPINE_BACKFILLED_SENTINEL`` when omitted — late-bound so tests
+    patching the constant are honoured (#1320). A bound default was
+    evaluated at import, so the suite wrote the real host sentinel and
+    permanently suppressed the one-shot backfill on contributor
+    machines.
+
     Reversible via ``aelf spine clear``. Never raises — any failure
     returns a result describing it and leaves the store untouched.
     """
+    if sentinel_path is None:
+        sentinel_path = SPINE_BACKFILLED_SENTINEL
     if sentinel_path.exists():
         return SpineAutoBackfillResult(
             False, 0, "already backfilled (sentinel exists)"
