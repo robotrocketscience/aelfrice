@@ -2090,6 +2090,7 @@ def _split_belief_lines(
     hits: list[Belief],
     *,
     order_policy: str | None = None,
+    provenance_render: bool | None = None,
 ) -> tuple[list[str], list[str]]:
     """Render hits into verbatim `<belief>` lines + reference manifest lines.
 
@@ -2114,6 +2115,14 @@ def _split_belief_lines(
         resolve_order_policy,
     )
     policy = order_policy if order_policy is not None else resolve_order_policy()
+    # #1326: resolved here, next to the order policy, because both are
+    # render-boundary decisions and both must stay explicitly passable so
+    # tests can pin them without touching the environment.
+    if provenance_render is None:
+        from aelfrice.provenance_render import (  # noqa: PLC0415
+            is_provenance_render_enabled,
+        )
+        provenance_render = is_provenance_render_enabled()
     hits = order_for_injection(hits, policy)
     belief_lines: list[str] = []
     manifest_lines: list[str] = []
@@ -2145,7 +2154,63 @@ def _split_belief_lines(
             f'<belief id="{h.id}" lock="{lock_attr}"'
             f'{speculative_attr}>{content}</belief>'
         )
+    if provenance_render:
+        belief_lines = _group_by_provenance(hits, belief_lines)
     return belief_lines, manifest_lines
+
+
+def _group_by_provenance(
+    hits: list[Belief], belief_lines: list[str]
+) -> list[str]:
+    """Re-emit `belief_lines` grouped into trust-tier sections (#1326).
+
+    Takes the already-rendered lines rather than re-rendering from `hits`,
+    so escaping, ordering and the reference-lock manifest split stay in
+    exactly one place. The zip is safe because `_split_belief_lines` emits
+    one line per non-manifest hit in order; manifest hits are filtered out
+    here the same way they were there.
+
+    Inside `<inferred>`, `speculative="1"` is replaced by the origin
+    attribute rather than carried alongside it — the section plus
+    `origin="speculative"` says the same thing twice otherwise. The framing
+    *sentence* for phantoms is unaffected: `_framing_header_for` still adds
+    it whenever a phantom is present, because it is what explains the tier
+    to the model and the section header is not a substitute for it.
+    """
+    from aelfrice.provenance_render import (  # noqa: PLC0415
+        SECTION_FRAMING,
+        SECTION_ORDER,
+        evidence_attrs,
+        section_for,
+    )
+    from aelfrice.retrieval import is_reference_lock  # noqa: PLC0415
+
+    rendered = [h for h in hits if not is_reference_lock(h)]
+    if len(rendered) != len(belief_lines):  # pragma: no cover - guard
+        return belief_lines
+
+    grouped: dict[str, list[str]] = {name: [] for name in SECTION_ORDER}
+    for belief, line in zip(rendered, belief_lines):
+        name = section_for(belief)
+        if name != _PROV_LOCKED:
+            # Drop the #1171 marker in favour of origin=, and append the
+            # evidence attributes before the closing '>' of the open tag.
+            line = line.replace(' speculative="1"', "", 1)
+            head, sep, tail = line.partition(">")
+            line = head + evidence_attrs(belief) + sep + tail
+        grouped[name].append(line)
+
+    out: list[str] = []
+    for name in SECTION_ORDER:
+        members = grouped[name]
+        if not members:
+            # An empty section would spend its framing sentence explaining
+            # a tier the block does not contain.
+            continue
+        out.append(f"<{name}><!-- {SECTION_FRAMING[name]} -->")
+        out.extend(members)
+        out.append(f"</{name}>")
+    return out
 
 
 def _framing_header_for(hits: list[Belief]) -> str:
@@ -2177,6 +2242,10 @@ def _format_hits(hits: list[Belief]) -> str:
     lines.append("")
     return "\n".join(lines)
 
+
+_PROV_LOCKED: Final[str] = "user-locked"
+"""Mirror of `provenance_render.SECTION_LOCKED`, held locally so the
+grouping helper does not import at module scope (#1326)."""
 
 _COVERAGE_TOPIC_MAX_CHARS: Final[int] = 60
 
