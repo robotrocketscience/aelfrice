@@ -217,6 +217,16 @@ class TestBlockingCapIsReported:
 
 class TestReadOnly:
     def test_audit_writes_nothing(self, store: MemoryStore) -> None:
+        """No row is inserted, updated, or deleted — in any table.
+
+        Row counts alone cannot see an in-place UPDATE, and they look at
+        two tables out of the whole schema: a posterior bump, an
+        `ingest_log` append, a `lock_level` flip or a
+        `belief_corroborations` re-point would all pass a count check
+        silently. `total_changes` is the connection's cumulative count
+        of INSERT/UPDATE/DELETE rows, so a delta of zero is the actual
+        read-only claim rather than a proxy for it.
+        """
         _insert(store, "b1", "deploy via terraform on aws today")
         _insert(store, "b2", "deploy via terraform on aws today.")
         _insert(store, "b3", "deploy via terraform on aws today!")
@@ -224,9 +234,14 @@ class TestReadOnly:
         before_edges = store._conn.execute(
             "SELECT COUNT(*) FROM edges"
         ).fetchone()[0]
+        before_changes = store._conn.total_changes
 
         consolidation_audit(store)
 
+        assert store._conn.total_changes == before_changes, (
+            "the audit executed a write; it is specified as read-only "
+            "and contraction is deliberately not funded (#1312)"
+        )
         assert len(store.list_beliefs_for_indexing()) == before_beliefs
         assert (
             store._conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
