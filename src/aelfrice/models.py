@@ -306,6 +306,13 @@ CORROBORATION_SOURCES_USER_EXPLICIT: Final[frozenset[str]] = frozenset({
 # the value the belief was retired at. The re-assertion itself is recorded as
 # a belief_corroborations row, which is where that signal belongs.
 FEEDBACK_SOURCE_REASSERT_REVIVE: Final[str] = "reassert:revive"
+# #1314: written once per lock the open-time sweep expires. Lives here
+# rather than beside `SOURCE_LOCK_UNLOCK` in `promotion` because the
+# writer is `store.sweep_expired_locks`, and store cannot import
+# promotion — promotion imports store. Valence 0.0, like the unlock it
+# is the automatic sibling of: an expiry says nothing about whether the
+# belief is true, only that its injection privilege ran out.
+FEEDBACK_SOURCE_LOCK_EXPIRE: Final[str] = "lock:expire"
 
 # v2.0 #205 ingest_log source_kind enum. Wire-format strings; do not
 # rename without a migration. Spec: docs/design/write-log-as-truth.md.

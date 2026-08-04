@@ -40,6 +40,8 @@ if TYPE_CHECKING:
 from aelfrice.models import (
     BELIEF_SCOPE_PROJECT,
     DEFAULT_LOCK_TIER,
+    FEEDBACK_SOURCE_LOCK_EXPIRE,
+    LOCK_NONE,
     LOCK_TIERS,
     LOCK_USER,
     CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION,
@@ -689,6 +691,16 @@ SCHEMA_META_ORIGIN_BACKFILL: Final[str] = "origin_backfill_complete"
 # as 0, so a store written by an older binary needs no upgrade pass.
 SCHEMA_META_EXPLORATION_FIRE_IDX: Final[str] = "exploration_fire_idx"
 
+# #1314 time-boxed locks. Timestamp and row count of the most recent
+# open-time sweep that actually flipped at least one lock. Written only
+# when the count is non-zero: an unconditional per-open write would take
+# the write lock on every open even with nothing to do, which is the
+# exact pattern the origin-backfill comment above records as a defect.
+# So these report "the last sweep that did something", and their absence
+# means no lock has ever expired on this store.
+SCHEMA_META_LOCK_SWEEP_AT: Final[str] = "lock_expiry_sweep_at"
+SCHEMA_META_LOCK_SWEEP_COUNT: Final[str] = "lock_expiry_sweep_count"
+
 # v1.5.0 #204 federation forward-compat. Stable per-DB scope id,
 # generated on first v1.5+ open and persisted in `schema_meta`.
 # Today aelfrice is single-scope per DB; the local scope id is
@@ -857,6 +869,17 @@ _POST_MIGRATION_INDEXES: tuple[str, ...] = (
     # branch of the hook filter.
     "CREATE INDEX IF NOT EXISTS idx_beliefs_project_context "
     "ON beliefs(project_context)",
+    # #1314: partial index over time-boxed locks only. The open-time
+    # expiry sweep runs on every store open, and without this its
+    # predicate is a full `SCAN beliefs`: measured at 2.18 ms median on
+    # a 44,594-belief store against 0.001 ms through this index, on a
+    # latency-gated path the hook opens several times per turn. The
+    # index stays tiny because it is partial on the same
+    # `IS NOT NULL` term the sweep's query states verbatim, which is
+    # what lets SQLite match it — permanent locks are NULL here and
+    # never enter the index.
+    "CREATE INDEX IF NOT EXISTS idx_beliefs_lock_expiry "
+    "ON beliefs(lock_expires_at) WHERE lock_expires_at IS NOT NULL",
     # #1135: partial index for the derivation worker's unstamped scan.
     # ingest_log grows monotonically (one row per sentence, never
     # deleted) while the unstamped set stays tiny, so without this the
@@ -1373,6 +1396,15 @@ class MemoryStore:
         # content-hash UNIQUE swap so any same-key collisions raise
         # cleanly. Idempotent via SCHEMA_META marker.
         self._run_guarded_migration(self._maybe_rehash_speculative_v2)
+        # #1314 time-boxed locks. Not a one-shot: this runs on every
+        # open, because expiry is materialized by this sweep rather than
+        # evaluated as a predicate. It has to land before any read that
+        # consults `lock_level`, and store open is that chokepoint.
+        # Guarded like the passes above so a sweep failure degrades the
+        # store rather than making it unopenable — the cost of a skipped
+        # sweep is a lock that stays injected one session too long,
+        # which is strictly better than a store that will not open.
+        self._run_guarded_migration(self.sweep_expired_locks)
         # #1135: process-lifetime BM25F cache slot, managed by
         # `aelfrice.retrieval._store_scoped_bm25f_cache`. Typed loosely
         # to avoid a store->bm25 import cycle. One cache per store also
@@ -5494,6 +5526,121 @@ class MemoryStore:
         cur = self._conn.execute("SELECT COUNT(*) AS n FROM edges")
         row = cur.fetchone()
         return int(row["n"]) if row else 0
+
+    def sweep_expired_locks(self, *, now: str | None = None) -> int:
+        """Flip every due time-boxed lock to `lock_level='none'`.
+
+        Returns the number of rows flipped. Idempotent: a second call
+        matches nothing, because the rows it flipped no longer satisfy
+        `lock_level = 'user'`.
+
+        This is how #1314 materializes expiry, and the alternative was
+        explicitly rejected. Adding
+        `AND (lock_expires_at IS NULL OR lock_expires_at > :now)` to the
+        lock predicates would mean getting ~15 call sites right and
+        keeping them right — and `list_speculative_beliefs` (the issue
+        calls it `list_unlocked_beliefs`; no such method exists, but the
+        argument holds against the one that does) selects
+        `lock_level = 'none'` and is the *complement* of
+        `list_locked_beliefs`, so a `now`-aware predicate applied to one
+        and not the other drops an expired lock out of both tiers and
+        makes it invisible to L0 and L1 alike.
+        After this sweep every existing `lock_level` read is correct
+        unchanged.
+
+        Three properties the tests pin, each deliberate:
+
+        * `origin` is untouched. The belief *was* user-asserted; only
+          its injection privilege expired. Rewriting origin here would
+          reproduce the autolock origin-laundering defect.
+        * `lock_expires_at` and `locked_at` are retained, as the audit
+          trace of why this belief is now unlocked.
+        * one `lock:expire` audit row per flip, in the table
+          `aelf unlock` writes to, so `aelf feed` shows the transition.
+
+        Read-first, and index-backed: on a store with nothing due this
+        is one index probe and takes no write lock. See
+        `idx_beliefs_lock_expiry` for the measurement that made the
+        index non-optional.
+        """
+        ts = now if now is not None else datetime.now(timezone.utc).isoformat()
+        due = [
+            str(row["id"])
+            for row in self._conn.execute(
+                "SELECT id FROM beliefs "
+                "WHERE lock_expires_at IS NOT NULL "
+                "  AND lock_expires_at <= ? "
+                "  AND lock_level = ?",
+                (ts, LOCK_USER),
+            )
+        ]
+        if not due:
+            return 0
+        marks = ",".join("?" * len(due))
+        # Only `lock_level` moves. Listing the untouched columns would
+        # invite a future edit to "tidy" them into the SET clause.
+        self._conn.execute(
+            f"UPDATE beliefs SET lock_level = ? WHERE id IN ({marks})",
+            (LOCK_NONE, *due),
+        )
+        self._conn.executemany(
+            "INSERT INTO feedback_history "
+            "(belief_id, valence, source, created_at) VALUES (?, 0.0, ?, ?)",
+            [(bid, FEEDBACK_SOURCE_LOCK_EXPIRE, ts) for bid in due],
+        )
+        for bid in due:
+            self._bump_belief_version(bid)
+        self._conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+            (SCHEMA_META_LOCK_SWEEP_AT, ts),
+        )
+        self._conn.execute(
+            "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+            (SCHEMA_META_LOCK_SWEEP_COUNT, str(len(due))),
+        )
+        self._commit_mutation()
+        return len(due)
+
+    def last_lock_sweep(self) -> tuple[str, int] | None:
+        """`(iso_timestamp, count)` of the most recent sweep that flipped
+        at least one lock, or None if no lock has ever expired here.
+
+        Sweeps that flip nothing deliberately write no marker — see
+        `SCHEMA_META_LOCK_SWEEP_AT` — so this is "the last sweep that did
+        something", not "the last sweep".
+        """
+        rows = {
+            str(r["key"]): str(r["value"])
+            for r in self._conn.execute(
+                "SELECT key, value FROM schema_meta WHERE key IN (?, ?)",
+                (SCHEMA_META_LOCK_SWEEP_AT, SCHEMA_META_LOCK_SWEEP_COUNT),
+            )
+        }
+        at = rows.get(SCHEMA_META_LOCK_SWEEP_AT)
+        raw = rows.get(SCHEMA_META_LOCK_SWEEP_COUNT)
+        if at is None or raw is None:
+            return None
+        try:
+            return (at, int(raw))
+        except ValueError:
+            return None
+
+    def list_expiring_locks(self, *, before: str) -> list[Belief]:
+        """Active user-locks whose expiry falls at or before `before`.
+
+        Feeds the `aelf doctor` warning. Ordered soonest-first so the
+        most urgent line is the first one read.
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM beliefs "
+            "WHERE lock_expires_at IS NOT NULL "
+            "  AND lock_expires_at <= ? "
+            "  AND lock_level = ? "
+            "  AND valid_to IS NULL "
+            "ORDER BY lock_expires_at ASC, id ASC",
+            (before, LOCK_USER),
+        ).fetchall()
+        return [_row_to_belief(r) for r in rows]
 
     def count_locked(self) -> int:
         cur = self._conn.execute(
