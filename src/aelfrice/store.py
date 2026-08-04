@@ -20,7 +20,15 @@ import secrets
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Final, Iterable, Iterator, Sequence
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    Final,
+    Iterable,
+    Iterator,
+    Sequence,
+    TypeVar,
+)
 
 if TYPE_CHECKING:
     # #1126 belief categories. Imported lazily at runtime inside the
@@ -1125,6 +1133,61 @@ def _drop_stale_ingest_log(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE ingest_log")
 
 
+_SCHEMA_CHANGED_MSG: Final[str] = "schema has changed"
+_SCHEMA_RETRY_ATTEMPTS: Final[int] = 3
+
+_RetryT = TypeVar("_RetryT")
+
+
+def _retry_on_schema_change(
+    op: Callable[[], _RetryT], *, attempts: int = _SCHEMA_RETRY_ATTEMPTS
+) -> _RetryT:
+    """Run `op`, retrying only `SQLITE_SCHEMA` ("schema has changed").
+
+    #1310. SQLite raises `OperationalError: database schema has changed`
+    when the schema cookie moves between a statement's prepare and its
+    step — i.e. another connection committed DDL in between. Two
+    processes opening the same store both run the open-time
+    `CREATE TABLE IF NOT EXISTS` battery, so this is reachable on every
+    multi-worktree open. `busy_timeout` does not cover it: that pragma
+    retries `database is locked`, a different error.
+
+    Re-preparing against the new cookie is the entire fix, so `op` must
+    be idempotent. Every other `OperationalError` propagates unchanged —
+    a malformed statement must stay loud rather than be retried into
+    silence. `attempts` is bounded so a schema that keeps changing
+    fails instead of spinning forever.
+    """
+    for i in range(attempts):
+        try:
+            return op()
+        except sqlite3.OperationalError as e:
+            if _SCHEMA_CHANGED_MSG not in str(e) or i == attempts - 1:
+                raise
+    # Unreachable: the loop either returns or raises on the last pass.
+    raise AssertionError("attempts must be >= 1")
+
+
+def _execute_reprepare(
+    conn: sqlite3.Connection,
+    stmt: str,
+    *,
+    attempts: int = _SCHEMA_RETRY_ATTEMPTS,
+) -> sqlite3.Cursor:
+    """Execute one parameterless statement, re-preparing on SQLITE_SCHEMA.
+
+    #1310. Statement-level sibling of `_retry_on_schema_change`, used by
+    the open-time DDL loops so the common case re-runs one `CREATE TABLE
+    IF NOT EXISTS` rather than restarting the whole battery. The battery
+    is wrapped as well — reads and parameterised writes are exposed to
+    the same race, and a per-call-site patch would leave gaps as the
+    constructor grows.
+    """
+    return _retry_on_schema_change(
+        lambda: conn.execute(stmt), attempts=attempts
+    )
+
+
 def _ingest_row_to_dict(row: sqlite3.Row) -> dict[str, object]:
     """Decode an `ingest_log` sqlite row into a Python dict.
 
@@ -1223,68 +1286,18 @@ class MemoryStore:
         # aelfrice/memory.db. Per the v1.1.0 #89 concurrency tests.
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.execute("PRAGMA foreign_keys=ON")
-        _drop_stale_ingest_log(self._conn)
-        for stmt in _SCHEMA:
-            self._conn.execute(stmt)
-        for stmt in _MIGRATIONS:
-            try:
-                self._conn.execute(stmt)
-            except sqlite3.OperationalError as e:
-                # Idempotency catches:
-                #   - "duplicate column name: X" — ADD COLUMN already
-                #     present (fresh v1.2 DB or prior migration pass).
-                #   - "no such column: X" — DROP COLUMN already done
-                #     (fresh DB that never had the column, or prior
-                #     migration pass).
-                msg = str(e)
-                if (
-                    "duplicate column name" not in msg
-                    and "no such column" not in msg
-                ):
-                    raise
-        for stmt in _POST_MIGRATION_INDEXES:
-            self._conn.execute(stmt)
-        # #1135: one-shot. Ran unguarded on every open pre-v4.2; the
-        # marker matches the other schema_meta-gated passes. Rides the
-        # single open commit below.
-        # #1135: seed the durable mutation counter. Read-first: an
-        # unconditional INSERT OR IGNORE would take the write lock on
-        # every open even when the row exists, blocking behind any
-        # concurrent writer's open transaction. Rides the single open
-        # commit below. Two connections racing the first-ever seed both
-        # pass the SELECT; OR IGNORE makes the second insert a no-op.
-        seeded = self._conn.execute(
-            "SELECT 1 FROM schema_meta WHERE key = ?",
-            (SCHEMA_META_STORE_GENERATION,),
-        ).fetchone()
-        if seeded is None:
-            self._conn.execute(
-                "INSERT OR IGNORE INTO schema_meta (key, value) "
-                "VALUES (?, '0')",
-                (SCHEMA_META_STORE_GENERATION,),
-            )
-        marker = self._conn.execute(
-            "SELECT value FROM schema_meta WHERE key = ?",
-            (SCHEMA_META_ORIGIN_BACKFILL,),
-        ).fetchone()
-        if marker is None:
-            for stmt in _BACKFILL_STATEMENTS:
-                self._conn.execute(stmt)
-            self._conn.execute(
-                "INSERT OR REPLACE INTO schema_meta (key, value) "
-                "VALUES (?, ?)",
-                (
-                    SCHEMA_META_ORIGIN_BACKFILL,
-                    datetime.now(timezone.utc).isoformat(),
-                ),
-            )
-        self._commit()
         self._invalidation_callbacks: list[Callable[[], None]] = []
-        # v1.5.0 #204 federation forward-compat. Resolve (or
-        # generate) the local scope id BEFORE any belief/edge
-        # write path runs — write hooks consume `_local_scope_id`
-        # to bump the version-vector counter.
-        self._local_scope_id: str = self._resolve_local_scope_id()
+        # #1310: the whole open-time schema window runs under one
+        # schema-cookie retry, not just the DDL loops. Every statement
+        # in it — the `_drop_stale_ingest_log` reads, the schema_meta
+        # SELECTs, the backfill writes, and `_resolve_local_scope_id` —
+        # is exposed to a concurrent opener committing DDL between
+        # prepare and step. The window is idempotent by construction
+        # (IF NOT EXISTS / OR IGNORE / marker-gated), so re-running it
+        # is safe. See `_retry_on_schema_change`.
+        self._local_scope_id: str = _retry_on_schema_change(
+            self._apply_open_schema
+        )
         # #1161: every one-shot below runs through `_run_guarded_migration`
         # so a raising pass cannot make the store unopenable. Ordering is
         # unchanged and the guard does not alter the success path — see
@@ -1355,6 +1368,80 @@ class MemoryStore:
         self._peer_deps: list = []  # list[federation.PeerDep]; lazy fill
         self._peer_handles: dict[str, sqlite3.Connection] = {}
         self._peer_deps_loaded: bool = False
+
+    def _apply_open_schema(self) -> str:
+        """Run the open-time DDL + seed + backfill window; return scope id.
+
+        Extracted from `__init__` (#1310) so the whole window can be
+        re-run as a unit when a concurrent opener moves the schema
+        cookie — see `_retry_on_schema_change`, which is the only
+        intended caller. Idempotent: every statement here is
+        `IF NOT EXISTS`, `OR IGNORE`/`OR REPLACE`, or gated on a
+        `schema_meta` marker, so a second pass is a no-op.
+        """
+        _drop_stale_ingest_log(self._conn)
+        for stmt in _SCHEMA:
+            _execute_reprepare(self._conn, stmt)
+        for stmt in _MIGRATIONS:
+            try:
+                _execute_reprepare(self._conn, stmt)
+            except sqlite3.OperationalError as e:
+                # Idempotency catches:
+                #   - "duplicate column name: X" — ADD COLUMN already
+                #     present (fresh v1.2 DB or prior migration pass).
+                #   - "no such column: X" — DROP COLUMN already done
+                #     (fresh DB that never had the column, or prior
+                #     migration pass).
+                # It does NOT catch "database schema has changed" — that
+                # class is handled by the retry above/around, not here.
+                msg = str(e)
+                if (
+                    "duplicate column name" not in msg
+                    and "no such column" not in msg
+                ):
+                    raise
+        for stmt in _POST_MIGRATION_INDEXES:
+            _execute_reprepare(self._conn, stmt)
+        # #1135: one-shot. Ran unguarded on every open pre-v4.2; the
+        # marker matches the other schema_meta-gated passes. Rides the
+        # single open commit below.
+        # #1135: seed the durable mutation counter. Read-first: an
+        # unconditional INSERT OR IGNORE would take the write lock on
+        # every open even when the row exists, blocking behind any
+        # concurrent writer's open transaction. Rides the single open
+        # commit below. Two connections racing the first-ever seed both
+        # pass the SELECT; OR IGNORE makes the second insert a no-op.
+        seeded = self._conn.execute(
+            "SELECT 1 FROM schema_meta WHERE key = ?",
+            (SCHEMA_META_STORE_GENERATION,),
+        ).fetchone()
+        if seeded is None:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO schema_meta (key, value) "
+                "VALUES (?, '0')",
+                (SCHEMA_META_STORE_GENERATION,),
+            )
+        marker = self._conn.execute(
+            "SELECT value FROM schema_meta WHERE key = ?",
+            (SCHEMA_META_ORIGIN_BACKFILL,),
+        ).fetchone()
+        if marker is None:
+            for stmt in _BACKFILL_STATEMENTS:
+                self._conn.execute(stmt)
+            self._conn.execute(
+                "INSERT OR REPLACE INTO schema_meta (key, value) "
+                "VALUES (?, ?)",
+                (
+                    SCHEMA_META_ORIGIN_BACKFILL,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+        self._commit()
+        # v1.5.0 #204 federation forward-compat. Resolve (or generate)
+        # the local scope id BEFORE any belief/edge write path runs —
+        # write hooks consume `_local_scope_id` to bump the
+        # version-vector counter.
+        return self._resolve_local_scope_id()
 
     def close(self) -> None:
         for conn in self._peer_handles.values():
