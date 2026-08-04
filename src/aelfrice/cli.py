@@ -6000,6 +6000,8 @@ def _cmd_spine(args: argparse.Namespace, out: object) -> int:
     )
 
     action = getattr(args, "action", "backfill")
+    if action == "verify":
+        return _cmd_spine_verify(out)
     store = _open_store()
     try:
         if action == "clear":
@@ -6021,6 +6023,62 @@ def _cmd_spine(args: argparse.Namespace, out: object) -> int:
         f"({report.n_beliefs_in_sessions} session-tagged beliefs, "
         f"{report.n_edges_existing} already present)",
         file=out,  # type: ignore[arg-type]
+    )
+    return 0
+
+
+def _cmd_spine_verify(out: object) -> int:
+    """`aelf spine verify` — recompute the spine and report the gap (#1283).
+
+    Read-only, and opened read-only: this is a diagnostic, and a bare
+    `MemoryStore` open runs migrations and the #1314 lock sweep (#1328).
+
+    **It reports a gap, not drift, and says so.** The shipped writer
+    orders by `(created_at, rowid)` while the recompute keys on
+    `(created_at, ingest_log ULID)`, so until the writer is moved onto
+    the same durable key a non-zero divergence is the expected state.
+    Exit is 0 regardless — a gap the contract predicts is not a failure,
+    and making it one would turn every CI run red on a known number.
+
+    The three buckets are reported separately because only one is a
+    defect anyone can fix. A single percentage would let the
+    unreconstructible bucket mask a real key disagreement.
+    """
+    from aelfrice.spine_recompute import spine_divergence
+
+    store = MemoryStore(str(db_path()), read_only=True)
+    try:
+        report = spine_divergence(store)
+    finally:
+        store.close()
+    w = cast("Any", out)
+    print(f"shipped TEMPORAL_NEXT : {report.n_shipped:,}", file=w)
+    print(f"recomputed            : {report.n_recomputed:,}", file=w)
+    print(
+        f"reproduced            : {report.n_reproduced:,} "
+        f"({100 * report.reproduced_share:.2f}%)",
+        file=w,
+    )
+    print("--- misses, by cause ---", file=w)
+    print(
+        f"  no-log endpoint     : {report.missing_touching_no_log:,} "
+        "(unreconstructible — the ordering was never durable)",
+        file=w,
+    )
+    print(
+        f"  fan-in > 1          : {report.missing_fan_in:,} "
+        "(writer defect; expected to be non-increasing)",
+        file=w,
+    )
+    print(
+        f"  other               : {report.missing_other:,} "
+        "(the only bucket a key disagreement moves)",
+        file=w,
+    )
+    print(
+        "note: the writer still orders by (created_at, rowid); this is a "
+        "gap against the ratified key, not drift.",
+        file=w,
     )
     return 0
 
@@ -8894,10 +8952,12 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     # migration surface, not a workflow verb.
     p_spine = sub.add_parser("spine", help=argparse.SUPPRESS)
     p_spine.add_argument(
-        "action", choices=["backfill", "clear"],
+        "action", choices=["backfill", "clear", "verify"],
         help="backfill: build per-session TEMPORAL_NEXT chains over the "
              "existing store; clear: delete every TEMPORAL_NEXT edge "
-             "(reverses an auto-backfill; beliefs untouched)",
+             "(reverses an auto-backfill; beliefs untouched); verify: "
+             "recompute the spine from the log and report the divergence "
+             "by bucket (read-only)",
     )
     p_spine.add_argument(
         "--dry-run", action="store_true",
