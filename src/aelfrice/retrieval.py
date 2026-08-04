@@ -57,9 +57,6 @@ import sys
 import time
 import tomllib
 from collections import OrderedDict
-from collections.abc import Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -81,6 +78,18 @@ from aelfrice.clustering import (
     pack_with_clusters,
 )
 from aelfrice.compression import CompressedBelief, compress_for_retrieval
+# #1304: the discovery walk moved to its own stdlib-only module so
+# `expansion_gate`, `deferred_feedback` and `hook` can share the memo
+# without importing this file. Re-exported here under the names they had
+# before, so `retrieval.CONFIG_FILENAME` / `retrieval._discover_config` /
+# `retrieval.config_discovery_scope` keep resolving for existing callers
+# and for the tests that monkeypatch them.
+from aelfrice.config_discovery import (  # noqa: F401 - re-exported
+    _CONFIG_DISCOVERY_MEMO,
+    CONFIG_FILENAME,
+    config_discovery_scope,
+    discover_config as _discover_config,
+)
 from aelfrice.doc_linker import DocAnchor
 from aelfrice.hrr import DEFAULT_DIM
 from aelfrice.hrr_index import (
@@ -169,8 +178,9 @@ DEFAULT_QUERY_ENTITY_CAP: Final[int] = 16
 DEFAULT_CACHE_CAPACITY: Final[int] = 256
 
 # Section / key names in `.aelfrice.toml`. Public so consumers can
-# reference them in their own config.
-CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
+# reference them in their own config. `CONFIG_FILENAME` itself now lives
+# in `aelfrice.config_discovery` and is re-exported above, so the walk
+# and the filename it walks for cannot drift apart.
 RETRIEVAL_SECTION: Final[str] = "retrieval"
 ENTITY_INDEX_FLAG: Final[str] = "entity_index_enabled"
 # #1279 exploration slot — `[retrieval] exploration_*` TOML tier.
@@ -1437,53 +1447,12 @@ def _env_hrr_persist_override() -> bool | None:
 # instead of once per resolver call).
 _TOML_SECTION_CACHE: dict[str, tuple[int, int, dict[str, Any] | None]] = {}
 
-# Discovery memo for `_discover_config`, scoped to one retrieval call.
-#
-# The *parse* above is memoized on the file, but the *walk* that finds the
-# file was not, so every `[retrieval]` resolver re-walked from cwd to the
-# first `.aelfrice.toml`. With ~22 resolvers that is O(flags x path depth)
-# filesystem work per `retrieve()` — 22 walks and 173 `posix.stat` calls
-# per retrieval, measured on a 5-belief store (#1289) — and it grew with
-# every lane flag added.
-#
-# Staleness semantics, stated rather than left implicit: the memo lives for
-# the duration of a single retrieval and is discarded at the end of it, so a
-# `.aelfrice.toml` created or deleted between two retrievals is picked up by
-# the next one exactly as before. Only a change made *during* one retrieval
-# is missed, which no caller can observe. This is deliberately narrower than
-# a process-lifetime cache, which would have made a config file created
-# mid-process invisible until restart.
-#
-# A ContextVar rather than a plain dict so concurrent retrievals in threads
-# or async tasks cannot see each other's memo.
-_CONFIG_DISCOVERY_MEMO: ContextVar[dict[Path, Path | None] | None] = ContextVar(
-    "aelfrice_config_discovery_memo",
-    default=None,
-)
-
-# Memo key standing for "the caller passed no `start`", i.e. resolve from
-# cwd. Not a real path, and cannot collide with one: every other key is an
-# absolute resolved directory.
-_CWD_KEY: Final[Path] = Path("\x00cwd")
-
-
-@contextmanager
-def config_discovery_scope() -> Iterator[None]:
-    """Memoize `.aelfrice.toml` discovery for the duration of the block.
-
-    Entering is what turns the memo on; outside a scope every resolver
-    walks, preserving the original behaviour for direct callers. Nesting is
-    safe — an inner scope reuses the outer memo rather than shadowing it, so
-    `retrieve` calling `retrieve_v2` does not re-walk.
-    """
-    if _CONFIG_DISCOVERY_MEMO.get() is not None:
-        yield
-        return
-    token = _CONFIG_DISCOVERY_MEMO.set({})
-    try:
-        yield
-    finally:
-        _CONFIG_DISCOVERY_MEMO.reset(token)
+# The discovery memo behind `_discover_config` and `config_discovery_scope`
+# — both re-exported from `aelfrice.config_discovery` at the top of this
+# module — is the *walk* half of the same problem this parse cache solves.
+# It moved out in #1304 so `expansion_gate`, `deferred_feedback` and `hook`
+# could share it without importing 4,600 lines of retrieval; see that
+# module for the staleness contract.
 
 
 def _memoize_config_discovery(fn: Any) -> Any:
@@ -1502,10 +1471,12 @@ def _memoize_config_discovery(fn: Any) -> Any:
     absent decorator would silently restore the per-flag walk. The scope is
     idempotent, so the redundancy costs one `ContextVar` read.
 
-    Note this covers `retrieval`'s resolvers only. `expansion_gate` and
-    `deferred_feedback` carry their own private walk loops and are reached
-    during a retrieval, so a full `retrieve()` still performs three walks
-    rather than one.
+    As of #1304 the scope also covers `expansion_gate._read_toml_flag` and
+    `deferred_feedback._read_toml_value`, which are reached during a
+    retrieval and used to carry private walk loops — a `retrieve()` cost
+    three walks, and now costs one. Any module that switches to
+    `aelfrice.config_discovery.discover_config` joins the same memo for
+    free; the modules that have not switched yet still walk.
     """
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -1513,41 +1484,6 @@ def _memoize_config_discovery(fn: Any) -> Any:
             return fn(*args, **kwargs)
 
     return wrapper
-
-
-def _discover_config(start: Path | None) -> Path | None:
-    """Return the nearest `.aelfrice.toml` at or above `start`, else None.
-
-    This is the walk every `[retrieval]` resolver used to do for itself.
-    Inside a `config_discovery_scope` the result is memoized per resolved
-    start directory, so N resolvers cost one walk instead of N.
-    """
-    memo = _CONFIG_DISCOVERY_MEMO.get()
-    if memo is not None and start is None and _CWD_KEY in memo:
-        # Resolve the key before `Path.cwd().resolve()`, which is itself a
-        # syscall pair — the default `start=None` is what every one of the
-        # ~22 resolvers passes, so it is the case worth short-circuiting.
-        return memo[_CWD_KEY]
-    base = (start if start is not None else Path.cwd()).resolve()
-    if memo is not None and base in memo:
-        return memo[base]
-    located: Path | None = None
-    current = base
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / CONFIG_FILENAME
-        if candidate.is_file():
-            located = candidate
-            break
-        if current.parent == current:
-            break
-        current = current.parent
-    if memo is not None:
-        memo[base] = located
-        if start is None:
-            memo[_CWD_KEY] = located
-    return located
 
 
 def _parsed_retrieval_section(candidate: Path) -> dict[str, Any] | None:
