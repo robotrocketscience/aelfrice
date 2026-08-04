@@ -1283,7 +1283,36 @@ def hash_query(query: str) -> str:
 class MemoryStore:
     """SQLite store. Pass `:memory:` for tests, a path otherwise."""
 
-    def __init__(self, path: str, *, project_context_default: str = "") -> None:
+    def __init__(
+        self,
+        path: str,
+        *,
+        project_context_default: str = "",
+        read_only: bool = False,
+    ) -> None:
+        """Open the store. `read_only=True` opens a diagnostic-safe handle.
+
+        #1328. A bare open is a **write**: it runs the DDL battery, any
+        pending migrations, the `schema_meta` seed, `_resolve_local_scope_id`
+        (which generates and persists an id on a store that has none), and —
+        since #1314 — `sweep_expired_locks`, which flips a user's expired
+        locks to unlocked. Two shipped benchmarks pointed their `--store`
+        default at the live `.git/aelfrice/memory.db` and therefore mutated
+        the corpus they existed to measure; the sweep was observed changing
+        `lock_level` on a real belief with no analysis code having run.
+
+        `read_only=True` opens the file `mode=ro` and skips the entire
+        open-time write window. SQLite then refuses writes at the engine
+        level, so the guarantee does not rest on the caller's discipline —
+        which is the point, since the previous guarantee was a sentence in a
+        docstring and it did not hold.
+
+        The schema is taken as found: no migration runs, so a store written
+        by an older binary is read at whatever shape it has. That is correct
+        for a diagnostic (it should observe the store, not upgrade it) and
+        wrong for anything that needs the current schema, which is why this
+        is opt-in rather than the default.
+        """
         # #970: repo identity stamped on new project-scope, non-user-locked
         # beliefs whose project_context is ''. Empty (the default) disables
         # stamping and the backfill — direct callers that open a store
@@ -1308,18 +1337,29 @@ class MemoryStore:
         # #1176: (store_generation, active_belief_count) memo for the
         # fan-effect lane. `None` = not yet computed.
         self._active_count_memo: tuple[int, int] | None = None
-        self._conn: sqlite3.Connection = sqlite3.connect(path)
+        self._read_only: bool = read_only
+        if read_only and path != ":memory:":
+            # `mode=ro` requires the file to exist; a missing path raises
+            # here rather than silently creating an empty store, which is
+            # the right failure for a diagnostic pointed at the wrong file.
+            self._conn: sqlite3.Connection = sqlite3.connect(
+                f"file:{path}?mode=ro", uri=True
+            )
+        else:
+            self._conn = sqlite3.connect(path)
         self._conn.row_factory = sqlite3.Row
         # WAL only meaningful on-disk; harmless on :memory:.
+        # The documented WAL pairing: fsync on checkpoint, not on every
+        # commit. Durability window is the WAL — an app crash loses
+        # nothing; an OS crash can lose the tail of the WAL, which for a
+        # memory store is re-derivable (ingest_log is append-only and
+        # re-ingest is idempotent). Measured ~2x cheaper per commit than
+        # the FULL default (#1135). Both are writes, so a read-only
+        # handle skips them rather than relying on the except below.
         try:
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            # The documented WAL pairing: fsync on checkpoint, not on
-            # every commit. Durability window is the WAL — an app crash
-            # loses nothing; an OS crash can lose the tail of the WAL,
-            # which for a memory store is re-derivable (ingest_log is
-            # append-only and re-ingest is idempotent). Measured ~2x
-            # cheaper per commit than the FULL default (#1135).
-            self._conn.execute("PRAGMA synchronous=NORMAL")
+            if not read_only:
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA synchronous=NORMAL")
         except sqlite3.DatabaseError:
             pass
         # Block up to 5s waiting for a write lock instead of failing
@@ -1337,9 +1377,16 @@ class MemoryStore:
         # prepare and step. The window is idempotent by construction
         # (IF NOT EXISTS / OR IGNORE / marker-gated), so re-running it
         # is safe. See `_retry_on_schema_change`.
-        self._local_scope_id: str = _retry_on_schema_change(
-            self._apply_open_schema
-        )
+        if read_only:
+            # #1328: no DDL, no migrations, no seed, no sweep. The scope id
+            # is read if present and left absent otherwise — generating one
+            # is a write, and a diagnostic has no business minting the
+            # federation identity of the store it is inspecting.
+            self._local_scope_id = self._read_only_scope_id()
+        else:
+            self._local_scope_id: str = _retry_on_schema_change(
+                self._apply_open_schema
+            )
         # #1161: every one-shot below runs through `_run_guarded_migration`
         # so a raising pass cannot make the store unopenable. Ordering is
         # unchanged and the guard does not alter the success path — see
@@ -1671,6 +1718,12 @@ class MemoryStore:
 
         Returns True if the pass completed, False if it raised.
         """
+        if self._read_only:
+            # #1328: every pass here writes, and a read-only handle exists
+            # precisely so a diagnostic cannot. Gated once here rather than
+            # at each of the eleven call sites, so a twelfth added later is
+            # covered without anyone remembering to cover it.
+            return True
         name = getattr(pass_, "__name__", repr(pass_))
         key = f"{SCHEMA_META_MIGRATION_FAILED_PREFIX}{name}"
         try:
@@ -1747,6 +1800,24 @@ class MemoryStore:
         DB; never rotated.
         """
         return self._local_scope_id
+
+    def _read_only_scope_id(self) -> str:
+        """The persisted scope id, or `""` if the store has none (#1328).
+
+        `_resolve_local_scope_id` mints and persists an id when the key is
+        absent, which is a write. On a read-only handle the honest answer
+        for a store that has never had one is "none" — the value is only
+        consumed by the write paths (`_bump_belief_version` and friends),
+        and those cannot run here anyway.
+
+        Tolerates a store whose `schema_meta` table does not exist yet,
+        because a read-only open runs no DDL and must not assume the
+        current schema.
+        """
+        try:
+            return self.get_schema_meta(SCHEMA_META_LOCAL_SCOPE_ID) or ""
+        except sqlite3.DatabaseError:
+            return ""
 
     def _resolve_local_scope_id(self) -> str:
         """Read the persisted scope id, generating one on first open."""
