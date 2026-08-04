@@ -46,9 +46,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
 
+from aelfrice import setup as _setup
 from aelfrice.setup import (
     PROJECT_SETTINGS_RELPATH,
-    USER_SETTINGS_PATH,
     read_settings,
     write_settings,
 )
@@ -526,11 +526,6 @@ class DoctorReport:
         return [f for f in self.findings if f.silent_failure]
 
 
-SLASH_COMMANDS_DIR_DEFAULT: Final[Path] = (
-    Path.home() / ".claude" / "commands" / "aelf"
-)
-
-
 def diagnose(
     *,
     user_settings: Path | None = None,
@@ -568,7 +563,15 @@ def diagnose(
     the resolved DB path so doctor can read the store's failed one-shot
     migrations. Omitted (or unopenable) leaves that block quiet.
     """
-    user_path = user_settings if user_settings is not None else USER_SETTINGS_PATH
+    # Both home-derived paths are read through `_setup` rather than
+    # copied in at import: doctor used to hold a by-value alias of
+    # USER_SETTINGS_PATH and its OWN second constant named
+    # SLASH_COMMANDS_DIR_DEFAULT, so a test patching setup's globals
+    # reached neither (#1320).
+    user_path = (
+        user_settings if user_settings is not None
+        else _setup.USER_SETTINGS_PATH
+    )
     project_path = (
         project_root if project_root is not None else Path.cwd()
     ) / PROJECT_SETTINGS_RELPATH
@@ -620,7 +623,7 @@ def diagnose(
     if known_cli_subcommands is not None:
         slash_dir = (
             slash_commands_dir if slash_commands_dir is not None
-            else SLASH_COMMANDS_DIR_DEFAULT
+            else _setup.SLASH_COMMANDS_DIR_DEFAULT
         )
         report.orphan_slash_commands = _scan_orphan_slash_commands(
             slash_dir, known_cli_subcommands,

@@ -176,7 +176,6 @@ from aelfrice.setup import (
     settings_transaction,
     SettingsChangedDuringTransaction,
     SettingsScope,
-    SLASH_COMMANDS_DIR_DEFAULT,  # noqa: F401 — re-exported for monkeypatch in tests
     STOP_HOOK_SCRIPT_NAME,
     TRANSCRIPT_LOGGER_SCRIPT_NAME,
     uninstall_agent_context_hook,

@@ -48,9 +48,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Final, cast
 
+from aelfrice import setup as _setup
 from aelfrice.setup import (
     SettingsScope,
-    USER_SETTINGS_PATH,
     SETTINGS_LOCK_TIMEOUT_BACKGROUND,
     install_agent_context_hook,
     install_claude_memory_mirror_hook,
@@ -608,7 +608,13 @@ def maybe_install_manifest(
     # than silently downgrade the user's installed hooks.
     if not force and _is_downgrade(installed_version, prev):
         return _downgrade_skip_result(installed_version, prev)
-    target_path = settings_path if settings_path is not None else USER_SETTINGS_PATH
+    # Read through the module rather than a by-value `from ... import`:
+    # an import-time alias holds its own binding, so patching
+    # `setup.USER_SETTINGS_PATH` would not reach here (#1320).
+    target_path = (
+        settings_path if settings_path is not None
+        else _setup.USER_SETTINGS_PATH
+    )
 
     # Acquire exclusive lock on the stamp's parent dir (the stamp file
     # may not exist yet). Holding the lock for the duration of the

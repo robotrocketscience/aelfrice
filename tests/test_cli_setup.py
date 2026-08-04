@@ -18,7 +18,6 @@ from typing import cast
 import pytest
 
 from aelfrice.cli import DEFAULT_HOOK_COMMAND, main
-from aelfrice.doctor import SLASH_COMMANDS_DIR_DEFAULT as DOCTOR_SLASH_DIR
 from aelfrice.setup import (
     install_slash_commands,
     uninstall_slash_commands,
@@ -374,10 +373,11 @@ def test_setup_cli_installs_slash_commands(
     """aelf setup writes slash files and outputs a confirmation line."""
     slash_dir = tmp_path / "slash"
     import aelfrice.setup as setup_mod
-    import aelfrice.cli as cli_mod
 
+    # setup.py is the single authority for this path; doctor and cli read
+    # through it rather than holding copies, so one patch covers all
+    # three consumers (#1320).
     monkeypatch.setattr(setup_mod, "SLASH_COMMANDS_DIR_DEFAULT", slash_dir)
-    monkeypatch.setattr(cli_mod, "SLASH_COMMANDS_DIR_DEFAULT", slash_dir)
     code, output = _run(
         "setup", "--scope", "project", "--project-root", str(tmp_path)
     )
@@ -395,10 +395,11 @@ def test_setup_cli_idempotent_slash_commands(
     """Running aelf setup twice reports commands as already up to date."""
     slash_dir = tmp_path / "slash"
     import aelfrice.setup as setup_mod
-    import aelfrice.cli as cli_mod
 
+    # setup.py is the single authority for this path; doctor and cli read
+    # through it rather than holding copies, so one patch covers all
+    # three consumers (#1320).
     monkeypatch.setattr(setup_mod, "SLASH_COMMANDS_DIR_DEFAULT", slash_dir)
-    monkeypatch.setattr(cli_mod, "SLASH_COMMANDS_DIR_DEFAULT", slash_dir)
     _run("setup", "--scope", "project", "--project-root", str(tmp_path))
     code, output = _run(
         "setup", "--scope", "project", "--project-root", str(tmp_path)
@@ -413,12 +414,8 @@ def test_doctor_orphan_check_green_after_setup(
     """After aelf setup the doctor orphan_slash_commands check is empty."""
     slash_dir = tmp_path / "slash"
     import aelfrice.setup as setup_mod
-    import aelfrice.cli as cli_mod
-    import aelfrice.doctor as doctor_mod
 
     monkeypatch.setattr(setup_mod, "SLASH_COMMANDS_DIR_DEFAULT", slash_dir)
-    monkeypatch.setattr(cli_mod, "SLASH_COMMANDS_DIR_DEFAULT", slash_dir)
-    monkeypatch.setattr(doctor_mod, "SLASH_COMMANDS_DIR_DEFAULT", slash_dir)
 
     _run("setup", "--scope", "project", "--project-root", str(tmp_path))
 
