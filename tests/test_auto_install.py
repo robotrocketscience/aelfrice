@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from aelfrice import auto_install
+from aelfrice import setup as setup_mod
 from aelfrice.auto_install import (
     _UNSTAMPED,
     add_opt_out,
@@ -336,7 +337,11 @@ def test_auto_install_at_cli_entry_bypasses_when_env_set(
     # Point STAMP_PATH at tmp so a successful run would create files we can detect.
     monkeypatch.setattr(auto_install, "STAMP_PATH", tmp_path / "stamp")
     monkeypatch.setattr(auto_install, "OPT_OUT_PATH", tmp_path / "opt-out")
-    monkeypatch.setattr(auto_install, "USER_SETTINGS_PATH", tmp_path / "settings.json")
+    # auto_install reads this through the setup module (#1320); it used
+    # to hold a by-value alias, so patching setup alone missed it.
+    monkeypatch.setattr(
+        setup_mod, "USER_SETTINGS_PATH", tmp_path / "settings.json"
+    )
     auto_install.auto_install_at_cli_entry(installed_version="2.2.0")
     # Nothing written, nothing printed.
     assert not (tmp_path / "stamp").exists()
@@ -360,7 +365,11 @@ def test_auto_install_at_cli_entry_skips_when_not_uv_tool(
     )
     monkeypatch.setattr(auto_install, "STAMP_PATH", tmp_path / "stamp")
     monkeypatch.setattr(auto_install, "OPT_OUT_PATH", tmp_path / "opt-out")
-    monkeypatch.setattr(auto_install, "USER_SETTINGS_PATH", tmp_path / "settings.json")
+    # auto_install reads this through the setup module (#1320); it used
+    # to hold a by-value alias, so patching setup alone missed it.
+    monkeypatch.setattr(
+        setup_mod, "USER_SETTINGS_PATH", tmp_path / "settings.json"
+    )
     auto_install.auto_install_at_cli_entry(installed_version="2.2.0")
     # Nothing written, nothing printed — the global settings file must
     # not have been created (regression: #834 reproducer).

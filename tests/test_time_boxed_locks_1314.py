@@ -34,13 +34,16 @@ from aelfrice.store import MemoryStore
 
 @pytest.fixture(autouse=True)
 def _pinned_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin the dotdir and DB away from the developer's real store.
+    """Pin the DB away from the developer's real store.
 
     The live store is repo-local, so an unpinned test opens it, sweeps
     *its* locks, and passes on CI while corrupting local state. Pinned
     per-test, not per-session.
+
+    The `AELFRICE_DOTDIR` setenv that used to sit alongside was dead —
+    no module reads that variable (#1320). The dotdir is pinned by the
+    session-autouse `_sandbox_real_home` fixture in `conftest.py`.
     """
-    monkeypatch.setenv("AELFRICE_DOTDIR", str(tmp_path / "dotdir"))
     monkeypatch.setenv("AELFRICE_DB", str(tmp_path / "pinned.db"))
     monkeypatch.delenv("AELF_AUTOLOCK_CORRECTIONS", raising=False)
 

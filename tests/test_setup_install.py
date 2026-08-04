@@ -45,7 +45,16 @@ def _entry_command(entry: dict[str, object], idx: int = 0) -> str:
 
 
 def test_default_settings_path_user() -> None:
-    assert default_settings_path("user") == USER_SETTINGS_PATH
+    """The default resolves from setup's module attribute at call time.
+
+    Compared against `setup_mod.USER_SETTINGS_PATH` rather than the
+    by-value import above: a function that captured the path at import
+    would still equal the copy, so the copy cannot distinguish the
+    defect (#1320).
+    """
+    import aelfrice.setup as setup_mod
+
+    assert default_settings_path("user") == setup_mod.USER_SETTINGS_PATH
 
 
 def test_default_settings_path_project_uses_cwd_by_default(

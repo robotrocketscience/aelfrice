@@ -45,8 +45,10 @@ def pinned_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     `expansion_gate`'s read is short-circuited by either force flag and
     `deferred_feedback`'s by an explicit enqueue value, so an ambient
     export silently removes a reader from the count and the assertion
-    passes for the wrong reason. `AELFRICE_DOTDIR` is pinned so the turn
-    cannot touch the real one.
+    passes for the wrong reason. The dotdir is pinned by the
+    session-autouse `_sandbox_real_home` fixture in `conftest.py`; the
+    `AELFRICE_DOTDIR` setenv that used to stand in for it here was dead,
+    since no module reads that variable (#1320).
     """
     for name in (
         "AELFRICE_FORCE_EXPANSION",
@@ -54,9 +56,6 @@ def pinned_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "AELFRICE_IMPLICIT_FEEDBACK_ENQUEUE",
     ):
         monkeypatch.delenv(name, raising=False)
-    dotdir = tmp_path / "dotdir"
-    dotdir.mkdir()
-    monkeypatch.setenv("AELFRICE_DOTDIR", str(dotdir))
     db = tmp_path / "memory.db"
     monkeypatch.setenv("AELFRICE_DB", str(db))
     _seed(db)

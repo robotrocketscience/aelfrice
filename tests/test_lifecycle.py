@@ -119,7 +119,13 @@ def test_check_for_update_handles_network_failure(tmp_path: Path) -> None:
     assert not p.exists()  # don't write garbage
 
 
-def test_check_for_update_writes_cache_on_success(tmp_path: Path) -> None:
+def test_check_for_update_writes_cache_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # check_for_update() short-circuits on AELF_NO_UPDATE_CHECK. The test
+    # never pinned it and passed only because contributor shells happen
+    # not to set it; the conftest home sandbox does set it (#1320).
+    monkeypatch.delenv(lifecycle.ENV_DISABLE, raising=False)
     p = tmp_path / "cache.json"
     payload = {
         "info": {"version": "99.0.0"},

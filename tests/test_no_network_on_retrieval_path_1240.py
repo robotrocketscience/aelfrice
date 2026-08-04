@@ -230,15 +230,18 @@ def _pin_ambient(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     Without this the ambient `AELFRICE_DB` leaks in and retrieval ranks the
     developer's real beliefs instead of the seeded ones.
 
-    This does **not** reach the update-check cache, and no env pin can.
-    `lifecycle.CACHE_FILE` derives from `Path.home()`, not `AELFRICE_DOTDIR`,
-    and is bound as an import-time default argument on
-    `maybe_check_for_update_async` / `read_cache` — so a `setenv` after
-    import cannot move it. Tests that need a controlled cache pass
-    `cache_path` explicitly instead.
+    The dotdir pin that used to live here was a no-op: nothing in
+    `src/aelfrice` reads `AELFRICE_DOTDIR` from the environment (#1320).
+    The session-autouse `_sandbox_real_home` fixture in `conftest.py`
+    pins it for real, by `setattr` on the module constants.
+
+    `AELF_NO_UPDATE_CHECK` is deliberately unset here — this module's
+    whole point is to prove the network guard fires — which also undoes
+    the conftest fixture's only defence against the *detached* update
+    check. Tests that need a controlled cache pass `cache_path`
+    explicitly; none here trigger a spawn.
     """
     monkeypatch.setenv("AELFRICE_DB", str(tmp_path / "memory.db"))
-    monkeypatch.setenv("AELFRICE_DOTDIR", str(tmp_path / "dotdir"))
     monkeypatch.delenv("AELF_NO_UPDATE_CHECK", raising=False)
 
 
