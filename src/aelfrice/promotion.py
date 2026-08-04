@@ -341,7 +341,13 @@ def unlock(
     """Clear the user-lock on a belief. Pure inverse of `aelf lock`.
 
     Does not touch origin — the belief's origin tier is unchanged.
-    Clears `lock_level` and `locked_at`.
+    Clears `lock_level`, `locked_at` and `lock_expires_at` (#1314).
+
+    The expiry is cleared here but *retained* by the open-time sweep,
+    which is not an inconsistency: an explicit `aelf unlock` is the user
+    revoking the lock outright, so the window that would have governed it
+    is moot. The sweep keeps it because there the window is precisely the
+    explanation for why the belief is no longer locked.
 
     Idempotent: unlocking an already-unlocked belief is a no-op
     (returns `already_unlocked=True`, writes no audit row).
@@ -365,6 +371,7 @@ def unlock(
         )
     belief.lock_level = LOCK_NONE
     belief.locked_at = None
+    belief.lock_expires_at = None
     store.update_belief(belief)
     timestamp = now if now is not None else _utc_now_iso()
     audit_id = store.insert_feedback_event(

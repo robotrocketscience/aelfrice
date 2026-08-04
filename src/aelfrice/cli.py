@@ -1943,6 +1943,26 @@ def _cmd_rebuild(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_lock(args: argparse.Namespace, out: object) -> int:
+    from aelfrice.lock_expiry import LockExpiryError, parse_for, parse_until
+
+    # #1314: resolve the window to an absolute instant BEFORE opening the
+    # store, so a malformed `--for` fails without having written a
+    # permanent lock the user then has to notice and undo.
+    lock_for = getattr(args, "lock_for", None)
+    lock_until = getattr(args, "lock_until", None)
+    window_given = lock_for is not None or lock_until is not None
+    expires_at: str | None = None
+    if window_given:
+        try:
+            expires_at = (
+                parse_for(lock_for, now=datetime.now(timezone.utc))
+                if lock_for is not None
+                else parse_until(lock_until, now=datetime.now(timezone.utc))
+            )
+        except LockExpiryError as exc:
+            print(f"aelf lock: {exc}", file=sys.stderr)
+            return 1
+
     store = _open_store()
     try:
         now = _utc_now_iso()
@@ -2038,6 +2058,35 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
                 store.update_belief(tier_belief)
                 print(f"  tier: {desired_tier}", file=out)  # type: ignore[arg-type]
 
+        # #1314 time-boxed locks. Applied to the resolved belief in its own
+        # block, not folded into the lock-upgrade branch above: that branch
+        # only fires when the belief was NOT already locked, and a re-lock
+        # has to be able to move the window too.
+        #
+        # The absence of the flag is meaningful here, which is why this is
+        # not shaped like the tier block above. Re-locking a time-boxed
+        # lock with no window says "this one is permanent now" — the one
+        # genuinely ambiguous case in the surface, decided on the issue so
+        # the implementation does not have to guess.
+        window_belief = store.get_belief(actual_id, include_retired=True)
+        if window_belief is not None:
+            if window_given:
+                if window_belief.lock_expires_at != expires_at:
+                    window_belief.lock_expires_at = expires_at
+                    store.update_belief(window_belief)
+                if expires_at is None:
+                    print("  window: permanent (no expiry)", file=out)  # type: ignore[arg-type]
+                else:
+                    print(f"  window: expires {expires_at}", file=out)  # type: ignore[arg-type]
+            elif window_belief.lock_expires_at is not None:
+                window_belief.lock_expires_at = None
+                store.update_belief(window_belief)
+                print(  # type: ignore[arg-type]
+                    "  window: expiry cleared — this lock is now permanent "
+                    "(re-lock with --for to time-box it again)",
+                    file=out,
+                )
+
         # #1016-C lock-dedup hygiene: warn when this lock is a near-
         # duplicate of an existing lock. Locks are injected unbounded and
         # never trimmed (#379), so near-dups accumulate and inflate the
@@ -2116,6 +2165,8 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_locked(args: argparse.Namespace, out: object) -> int:
+    from aelfrice.lock_expiry import format_remaining
+
     _ = args
     store = _open_store()
     try:
@@ -2125,6 +2176,7 @@ def _cmd_locked(args: argparse.Namespace, out: object) -> int:
     if not locked:
         print("no locked beliefs", file=out)  # type: ignore[arg-type]
         return 0
+    now = datetime.now(timezone.utc)
     for b in locked:
         # #1016-B: annotate the bounded 'reference' tier; 'frozen' (the
         # default, always-verbatim tier) is left unmarked to keep the
@@ -2134,7 +2186,15 @@ def _cmd_locked(args: argparse.Namespace, out: object) -> int:
             if getattr(b, "lock_tier", "frozen") == "reference"
             else ""
         )
-        print(f"{b.id}{marker}: {b.content}", file=out)  # type: ignore[arg-type]
+        # #1314: the remaining-window column. Always present, so the
+        # windows are scannable down the listing rather than hiding among
+        # variable-length content. `expired` is not a value it can take —
+        # the open-time sweep has already flipped anything due, so every
+        # belief in this listing is still inside its window.
+        window = format_remaining(
+            getattr(b, "lock_expires_at", None), now=now,
+        )
+        print(f"{b.id}{marker} [{window}]: {b.content}", file=out)  # type: ignore[arg-type]
     return 0
 
 
@@ -7956,6 +8016,27 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "assign this locked belief to belief-category NAME (#1126). "
             "Repeatable. The category must already exist (`aelf category "
             "add`/`init`); a missing category is reported and skipped."
+        ),
+    )
+    lock_window_group = p_lock.add_mutually_exclusive_group()
+    lock_window_group.add_argument(
+        "--for", dest="lock_for", default=None, metavar="WINDOW",
+        help=(
+            "time-box this lock (#1314): <N><unit> where unit is d, w, mo "
+            "or y — or 'forever' for the permanent lock. Resolved to an "
+            "absolute UTC instant at write time. When the window closes, "
+            "the lock stops being injected unconditionally and the belief "
+            "re-enters ordinary ranked retrieval. Re-locking the same text "
+            "with --for refreshes the window; re-locking without it makes "
+            "the lock permanent again."
+        ),
+    )
+    lock_window_group.add_argument(
+        "--until", dest="lock_until", default=None, metavar="WHEN",
+        help=(
+            "time-box this lock to an explicit end (#1314): YYYY-MM-DD "
+            "(midnight UTC) or a full ISO-8601 timestamp. A value in the "
+            "past is rejected rather than accepted and swept away."
         ),
     )
     p_lock.set_defaults(func=_cmd_lock)
