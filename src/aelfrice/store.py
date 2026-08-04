@@ -3771,6 +3771,37 @@ class MemoryStore:
         Rows are self-describing: pre-change indices restart from low
         values repeatedly, post-change ones never decrease.
 
+        **Never re-issues an index the ledger already carries (#1308).**
+        The claim is clamped to the ledger's high-water mark on *every*
+        call, not only on the corrupt-value branch. Conditioning the
+        clamp on "the stored value looks unusable" is what fails: the
+        most likely hand-edit is a smaller *positive* value, which parses
+        fine and is not negative, so a `5` in front of ledger rows at
+        20/40/60 would sail through the guard and re-issue 6..60. Only
+        the unconditional form makes `derive_seed`'s
+        `(scope_id, fire_idx, query)` triple unique per draw, which is
+        the property the ledger is read back through.
+
+        The clamp costs one `MAX` on `idx_exploration_events_fire`, a
+        single index seek, and this method is called at most once per
+        `UserPromptSubmit` turn and only *after* the default-off enabled
+        check (`hook._substitute_exploration_slots`), so it is not on any
+        hot path worth conditioning against.
+
+        The high-water read **pools both regimes**, because the schema
+        offers no way to tell them apart: `exploration_events` has no
+        regime column, and the absent-key-reads-as-0 design (see
+        `SCHEMA_META_EXPLORATION_FIRE_IDX`) means the store records no
+        timestamp for when it crossed over, so `created_at` cannot
+        partition the rows either. Pooling is nonetheless the safe
+        direction here: the value is used only as a *floor*, so a
+        pre-change row can push the counter up but can never hand back an
+        index below one already written. The cost is a bounded one-time
+        skip on a store that carries pre-change rows — a gap, which the
+        modulus test in `should_explore` and the self-contained ledger
+        rows both tolerate. Do **not** read this `MAX` as a measurement
+        of the post-change series; that is the pooling #1016-B forbids.
+
         Atomic across sister sessions sharing one store: the
         read-then-write runs under `BEGIN IMMEDIATE`, so two concurrent
         writers cannot be handed the same index — without it both would
@@ -3786,9 +3817,22 @@ class MemoryStore:
                 current = int(row["value"]) if row is not None else 0
             except (TypeError, ValueError):
                 # A hand-edited or corrupt value must not wedge the lane
-                # forever; restart the sequence rather than raise on a
-                # hot path whose caller is fail-soft anyway.
+                # forever; fall through to the clamp rather than raise on
+                # a path whose caller is fail-soft anyway. Restarting at
+                # 0 was the #1308 defect: the clamp below is what keeps
+                # the restart from re-issuing indices.
                 current = 0
+            # Unconditional, not corrupt-branch-only: a hand-edit to a
+            # smaller *positive* value parses cleanly, so any "does this
+            # look broken?" trigger misses the likeliest case. Pools both
+            # `exploration_events` regimes because the schema cannot
+            # separate them; safe because this is only ever a floor. See
+            # the docstring.
+            high = self._conn.execute(
+                "SELECT MAX(fire_idx) AS m FROM exploration_events"
+            ).fetchone()
+            if high is not None and high["m"] is not None:
+                current = max(current, int(high["m"]))
             nxt = current + 1
             self._conn.execute(
                 "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",

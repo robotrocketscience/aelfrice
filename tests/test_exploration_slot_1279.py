@@ -88,7 +88,16 @@ def _fire(store: MemoryStore, idx: int) -> None:
     pin nothing — every one of these tests would silently stop exercising
     its branch. Seeds `idx - 1`, because `next_exploration_fire_idx` is
     1-based and returns the post-increment value.
+
+    Also drops any ledger row at or above `idx`. The claim is clamped to
+    the ledger high-water mark (#1308), so winding the counter back to a
+    turn the ledger has already recorded is exactly the state the clamp
+    exists to refuse — without this the helper would arm nothing and the
+    re-arming tests would go quietly green against a non-firing turn.
     """
+    store._conn.execute(
+        "DELETE FROM exploration_events WHERE fire_idx >= ?", (idx,)
+    )
     store._conn.execute(
         "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
         (SCHEMA_META_EXPLORATION_FIRE_IDX, str(idx - 1)),
@@ -543,6 +552,99 @@ def test_the_claim_takes_the_write_lock_before_reading(tmp_path) -> None:
         "the fire-index claim did not open an immediate transaction, so two "
         "sessions can be handed the same index"
     )
+
+
+# --- the counter cannot go backwards (#1308) -----------------------------
+
+
+def _ledger_at(store: MemoryStore, *indices: int) -> None:
+    """Put rows in `exploration_events` at the given fire indices."""
+    for i in indices:
+        store.record_exploration(
+            fire_idx=i,
+            seed=i,
+            query="a recorded draw",
+            candidate_ids=["c1"],
+            drawn_ids=["c1"],
+            displaced_ids=["d1"],
+        )
+
+
+def _set_counter(store: MemoryStore, value: str) -> None:
+    store._conn.execute(
+        "INSERT OR REPLACE INTO schema_meta (key, value) VALUES (?, ?)",
+        (SCHEMA_META_EXPLORATION_FIRE_IDX, value),
+    )
+    store._conn.commit()
+
+
+def test_a_corrupt_counter_does_not_re_issue_a_ledger_index(tmp_path) -> None:
+    """AC: a corrupt `schema_meta` value must not restart the sequence.
+
+    Against `current = 0` this returns 1 and the next sixty claims walk
+    back over indices the ledger already carries — and since `derive_seed`
+    is blake2b over `(scope_id, fire_idx, query)`, a re-issued index under
+    the same scope and query produces the same seed, i.e. two ledger rows
+    claiming to be the same draw.
+    """
+    store = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        _ledger_at(store, 20, 40, 60)
+        _set_counter(store, "not-an-integer")
+        assert store.next_exploration_fire_idx() == 61
+    finally:
+        store.close()
+
+
+def test_a_hand_edited_smaller_value_does_not_re_issue(tmp_path) -> None:
+    """The likeliest hand-edit parses fine, so "looks corrupt" is not the test.
+
+    `'5'` is a perfectly good integer and is not negative, so a clamp
+    conditioned on the value looking unusable leaves this arm re-issuing
+    6..60. Only the unconditional clamp holds here. This test is the
+    reason the fix is not the one-line `except`-branch version.
+    """
+    store = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        _ledger_at(store, 20, 40, 60)
+        _set_counter(store, "5")
+        assert store.next_exploration_fire_idx() == 61
+    finally:
+        store.close()
+
+
+def test_a_corrupt_counter_on_an_empty_ledger_still_returns_1(tmp_path) -> None:
+    """AC: the fallback still never wedges or raises.
+
+    An empty ledger has no high-water mark, so the clamp has nothing to
+    offer and the 1-based restart is the right answer. Paired with the two
+    above so "never re-issues" cannot be satisfied by refusing to issue.
+    """
+    store = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        _set_counter(store, "")
+        assert store.next_exploration_fire_idx() == 1
+    finally:
+        store.close()
+
+
+def test_the_clamp_does_not_perturb_an_intact_counter(tmp_path) -> None:
+    """The unconditional read must not change the healthy sequence.
+
+    In the post-change regime the ledger's high-water mark is always at or
+    below the counter — the row is written with the index that was just
+    claimed — so the clamp is a no-op here, and gaplessness survives it.
+    """
+    store = MemoryStore(str(tmp_path / "memory.db"))
+    try:
+        claimed = []
+        for _ in range(4):
+            idx = store.next_exploration_fire_idx()
+            claimed.append(idx)
+            _ledger_at(store, idx)
+        assert claimed == [1, 2, 3, 4]
+    finally:
+        store.close()
 
 
 def test_the_project_toml_is_read_from_the_payload_cwd(
