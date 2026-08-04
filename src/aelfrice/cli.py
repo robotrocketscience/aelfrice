@@ -8888,7 +8888,12 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "cluster near-duplicate beliefs and report what a "
             "contraction would retire (#1312). Read-only: no edges are "
             "inserted and no belief is retired. Bypasses the "
-            "hooks/graph checks. Tune via --consolidate-jaccard / "
+            "hooks/graph checks. Runs silently for a minute or more on a "
+            "large store — the medoid phase dominates and costs "
+            "O(k^2 * L^2) in the largest cluster's member count k and "
+            "belief length L, so a store with one big cluster of long "
+            "near-duplicates is far slower than its belief count "
+            "suggests. Tune via --consolidate-jaccard / "
             "--consolidate-levenshtein / --consolidate-max-shingle-df."
         ),
     )
