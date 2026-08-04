@@ -241,8 +241,19 @@ def load_manifest() -> Manifest:
 # --- stamp file ----------------------------------------------------------
 
 
-def read_stamp(stamp_path: Path = STAMP_PATH) -> str:
-    """Return the version stamp on disk, or '0.0.0' if absent / unreadable."""
+def read_stamp(stamp_path: Path | None = None) -> str:
+    """Return the version stamp on disk, or '0.0.0' if absent / unreadable.
+
+    `stamp_path` resolves from the module-level `STAMP_PATH` when
+    omitted. The default is `None` rather than the constant itself so
+    that `monkeypatch.setattr(auto_install, "STAMP_PATH", ...)`
+    propagates here (#1320); a bound default is evaluated once at
+    import and never re-reads the module global, so tests silently
+    wrote the contributor's real `~/.aelfrice/`. Same shape as
+    `maybe_install_manifest` (#839).
+    """
+    if stamp_path is None:
+        stamp_path = STAMP_PATH
     try:
         return stamp_path.read_text(encoding="utf-8").strip() or _UNSTAMPED
     except OSError:
@@ -271,12 +282,18 @@ def write_stamp(stamp_path: Path, version: str) -> None:
 # --- opt-out file --------------------------------------------------------
 
 
-def read_opt_outs(opt_out_path: Path = OPT_OUT_PATH) -> frozenset[str]:
+def read_opt_outs(opt_out_path: Path | None = None) -> frozenset[str]:
     """Return the set of hook *names* the user opted out of.
 
     Names match the manifest's `name` field (e.g. "transcript_ingest").
     Missing or unreadable file returns the empty set — no opt-outs.
+
+    `opt_out_path` resolves from the module-level `OPT_OUT_PATH` when
+    omitted — late-bound so tests monkeypatching the constant are
+    honoured (#1320; see `read_stamp`).
     """
+    if opt_out_path is None:
+        opt_out_path = OPT_OUT_PATH
     if not opt_out_path.exists():
         return frozenset()
     try:
@@ -297,7 +314,7 @@ def read_opt_outs(opt_out_path: Path = OPT_OUT_PATH) -> frozenset[str]:
     return frozenset(str(n) for n in opt_outs if isinstance(n, str))
 
 
-def read_host_opt_outs(opt_out_path: Path = OPT_OUT_PATH) -> frozenset[str]:
+def read_host_opt_outs(opt_out_path: Path | None = None) -> frozenset[str]:
     """Return the set of *hosts* whose auto-install the user opted out of.
 
     Stored under the sibling `opt_out_hosts` key of the same ledger the
@@ -305,7 +322,12 @@ def read_host_opt_outs(opt_out_path: Path = OPT_OUT_PATH) -> frozenset[str]:
     key. Missing / unreadable / malformed file returns the empty set —
     a broken marker never blocks capture (fail-open; `aelf doctor
     --host codex` surfaces the state).
+
+    `opt_out_path` resolves from the module-level `OPT_OUT_PATH` when
+    omitted — late-bound (#1320; see `read_stamp`).
     """
+    if opt_out_path is None:
+        opt_out_path = OPT_OUT_PATH
     if not opt_out_path.exists():
         return frozenset()
     try:
@@ -330,17 +352,21 @@ def read_host_opt_outs(opt_out_path: Path = OPT_OUT_PATH) -> frozenset[str]:
 
 
 def _write_host_opt_outs(
-    hosts: set[str], opt_out_path: Path = OPT_OUT_PATH,
+    hosts: set[str], opt_out_path: Path | None = None,
 ) -> None:
     """Rewrite the ledger preserving the per-hook `opt_out` key."""
+    if opt_out_path is None:
+        opt_out_path = OPT_OUT_PATH
     doc: dict[str, object] = {"opt_out": sorted(read_opt_outs(opt_out_path))}
     if hosts:
         doc["opt_out_hosts"] = sorted(hosts)
     _atomic_write_json(opt_out_path, doc)
 
 
-def add_host_opt_out(host: str, opt_out_path: Path = OPT_OUT_PATH) -> None:
+def add_host_opt_out(host: str, opt_out_path: Path | None = None) -> None:
     """Persist a host-level auto-install opt-out (#1053). Idempotent."""
+    if opt_out_path is None:
+        opt_out_path = OPT_OUT_PATH
     current = set(read_host_opt_outs(opt_out_path))
     if host in current:
         return
@@ -348,8 +374,10 @@ def add_host_opt_out(host: str, opt_out_path: Path = OPT_OUT_PATH) -> None:
     _write_host_opt_outs(current, opt_out_path)
 
 
-def remove_host_opt_out(host: str, opt_out_path: Path = OPT_OUT_PATH) -> bool:
+def remove_host_opt_out(host: str, opt_out_path: Path | None = None) -> bool:
     """Drop a host-level opt-out. Returns True if one was removed."""
+    if opt_out_path is None:
+        opt_out_path = OPT_OUT_PATH
     current = set(read_host_opt_outs(opt_out_path))
     if host not in current:
         return False
@@ -358,12 +386,17 @@ def remove_host_opt_out(host: str, opt_out_path: Path = OPT_OUT_PATH) -> bool:
     return True
 
 
-def add_opt_out(hook_name: str, opt_out_path: Path = OPT_OUT_PATH) -> None:
+def add_opt_out(hook_name: str, opt_out_path: Path | None = None) -> None:
     """Persist `hook_name` to the opt-out file. Idempotent.
 
     Called by `aelf setup --no-X` after the corresponding uninstall — the
     intent persists across upgrades so the disabled hook is not re-added.
+
+    `opt_out_path` resolves from the module-level `OPT_OUT_PATH` when
+    omitted — late-bound (#1320; see `read_stamp`).
     """
+    if opt_out_path is None:
+        opt_out_path = OPT_OUT_PATH
     current = set(read_opt_outs(opt_out_path))
     if hook_name in current:
         return
@@ -374,12 +407,17 @@ def add_opt_out(hook_name: str, opt_out_path: Path = OPT_OUT_PATH) -> None:
     )
 
 
-def remove_opt_out(hook_name: str, opt_out_path: Path = OPT_OUT_PATH) -> None:
+def remove_opt_out(hook_name: str, opt_out_path: Path | None = None) -> None:
     """Drop `hook_name` from the opt-out file. Idempotent.
 
     Called by `aelf setup` (without the matching --no-X) — the user
     explicitly turned the hook back on, so the opt-out is rescinded.
+
+    `opt_out_path` resolves from the module-level `OPT_OUT_PATH` when
+    omitted — late-bound (#1320; see `read_stamp`).
     """
+    if opt_out_path is None:
+        opt_out_path = OPT_OUT_PATH
     current = set(read_opt_outs(opt_out_path))
     if hook_name not in current:
         return
