@@ -30,13 +30,22 @@ Usage::
 
     uv run python benchmarks/consolidate_blocking_recall.py [PATH_TO_DB]
 
-Defaults to the repo-local ambient store. Read-only: open the store
-copy, never the live file, if anything may be writing to it. Exits
-non-zero if any pair, cluster, or clustered belief present under the flat
-cap is absent under the shipped blocking.
+Defaults to the repo-local ambient store.
+
+**Read-only in the strong sense**: the store is opened as a `mode=ro`
+SQLite connection rather than through `MemoryStore`, because constructing
+a `MemoryStore` runs its open-time DDL, its pending one-shot migrations,
+the `schema_meta` seed, and — since #1314 — the lock-expiry sweep, which
+can flip a user's locks. A diagnostic must not mutate what it inspects,
+and pointing this at the live store is the normal way to run it.
+
+Exit status: 0 if the shipped blocking contains the flat cap, 1 if it
+lost coverage, 2 if the store is missing, and 3 if the candidate-pair
+budget bound (see `RESULT: INCONCLUSIVE` below).
 """
 from __future__ import annotations
 
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -55,7 +64,6 @@ from aelfrice.dedup import (
     jaccard,
     levenshtein_ratio,
 )
-from aelfrice.store import MemoryStore
 
 _DEFAULT_DB = Path(".git/aelfrice/memory.db")
 
@@ -84,14 +92,33 @@ def _main_blocked(
     return candidates
 
 
+def _read_active_beliefs(db: Path) -> list[tuple[str, str]]:
+    """`[(belief_id, content)]` for active beliefs, id-ASC, without writing.
+
+    Deliberately not `MemoryStore.list_beliefs_for_indexing` even though
+    the query is copied from it: opening a `MemoryStore` runs migrations
+    and the #1314 lock-expiry sweep, so the convenient call would mutate
+    the store this script exists to measure. `mode=ro` makes that
+    impossible rather than merely unlikely.
+    """
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        cur = conn.execute(
+            "SELECT id, content FROM beliefs "
+            "WHERE valid_to IS NULL ORDER BY id ASC"
+        )
+        return [(str(r[0]), str(r[1] or "")) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 def main(argv: list[str]) -> int:
     db = Path(argv[1]) if len(argv) > 1 else _DEFAULT_DB
     if not db.exists():
         print(f"no store at {db}", file=sys.stderr)
         return 2
 
-    store = MemoryStore(str(db))
-    rows = store.list_beliefs_for_indexing()
+    rows = _read_active_beliefs(db)
     content = {bid: (text or "") for bid, text in rows}
     tokens = {bid: tokenize(text) for bid, text in content.items()}
     token_sets = {bid: frozenset(toks) for bid, toks in tokens.items()}
@@ -146,12 +173,25 @@ def main(argv: list[str]) -> int:
     print(f"clusters lost    : {len(lost_clusters):,}")
     print(f"beliefs lost     : {len(cap_members - ship_members):,}")
 
-    ok = not lost_pairs and not lost_clusters and not (
+    contained = not lost_pairs and not lost_clusters and not (
         cap_members - ship_members
     )
-    print("RESULT: " + ("PASS — shipped blocking is a superset" if ok
+    if truncated:
+        # The reference arm is unbudgeted and this one is not, so once the
+        # budget binds the two arms stop for different reasons and the
+        # containment numbers say nothing about the fallback in either
+        # direction: a non-empty `lost_pairs` means enumeration stopped,
+        # and an empty one is equally uninformative. Reporting either as
+        # PASS/FAIL would attribute a budget artefact to the mechanism,
+        # and this script is cited as evidence for the superset claim.
+        print(
+            "RESULT: INCONCLUSIVE — the candidate-pair budget bound at "
+            f"{DEFAULT_MAX_CANDIDATE_PAIRS:,}; raise it and re-run"
+        )
+        return 3
+    print("RESULT: " + ("PASS — shipped blocking is a superset" if contained
                         else "FAIL — the fallback lost coverage"))
-    return 0 if ok else 1
+    return 0 if contained else 1
 
 
 if __name__ == "__main__":  # pragma: no cover

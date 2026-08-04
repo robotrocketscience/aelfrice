@@ -460,6 +460,7 @@ def consolidation_audit(
         jaccard_min=jaccard_min,
         levenshtein_min=levenshtein_min,
         max_candidate_pairs=max_candidate_pairs,
+        max_shingle_df=max_shingle_df,
     )
     # Two beliefs are enough to form a *pair*, which the report counts
     # even though it takes three to form a cluster. Guarding on
