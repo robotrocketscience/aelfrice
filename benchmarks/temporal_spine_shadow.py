@@ -422,7 +422,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--out", default="/tmp/temporal_spine_shadow.json")
     args = ap.parse_args(argv)
 
-    store = MemoryStore(args.db)
+    # #1328: read-only unless `--backfill` was asked for. `--backfill`
+    # is the one path here that legitimately writes, so it is also the
+    # only one that gets a write handle; every other invocation reads a
+    # store it must not change, and the shipped comment above points
+    # `--db` at the live file.
+    store = MemoryStore(args.db, read_only=not args.backfill)
     if args.backfill:
         report = backfill_temporal_spine(store)
         print(f"[{HARNESS_NAME}] backfill: {report}", file=sys.stderr)

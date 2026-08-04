@@ -359,7 +359,11 @@ def main(argv: list[str] | None = None) -> int:
         print("no user-turn prompts in the audit files", file=sys.stderr)
         return 2
 
-    store = MemoryStore(str(args.store))
+    # #1328: read-only. This script's own usage line points `--store` at
+    # `.git/aelfrice/memory.db`, and a bare open runs migrations plus the
+    # #1314 lock-expiry sweep — measuring a store is not a reason to
+    # mutate it.
+    store = MemoryStore(str(args.store), read_only=True)
     try:
         index = BM25Index.build(store)
     finally:
