@@ -38,6 +38,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Final
 
+from aelfrice.config_discovery import discover_config
+
 from aelfrice.session_ring import (
     read_phantom_state,
     record_phantom_fire,
@@ -99,27 +101,24 @@ def _read_section(start: Path | None = None) -> dict[str, Any] | None:
     raising. Mirrors ``claude_memory._read_mirror_toml`` semantics.
     """
     serr: IO[str] = sys.stderr
-    current = (start if start is not None else Path.cwd()).resolve()
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / _CONFIG_FILENAME
-        if candidate.is_file():
-            try:
-                parsed: dict[str, Any] = tomllib.loads(
-                    candidate.read_bytes().decode("utf-8", errors="replace"),
-                )
-            except (OSError, tomllib.TOMLDecodeError) as exc:
-                print(
-                    f"aelfrice phantom_generation: cannot read {candidate}: {exc}",
-                    file=serr,
-                )
-                return None
-            section = parsed.get(_SECTION)
-            return section if isinstance(section, dict) else None
-        if current.parent == current:
-            break
-        current = current.parent
+    # Shared discovery (#1304): inside a `config_discovery_scope`
+    # N readers cost one walk instead of N. Semantics unchanged —
+    # the loop this replaces already stopped at the first
+    # `_CONFIG_FILENAME` it found and never continued past it.
+    candidate = discover_config(start)
+    if candidate is not None:
+        try:
+            parsed: dict[str, Any] = tomllib.loads(
+                candidate.read_bytes().decode("utf-8", errors="replace"),
+            )
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            print(
+                f"aelfrice phantom_generation: cannot read {candidate}: {exc}",
+                file=serr,
+            )
+            return None
+        section = parsed.get(_SECTION)
+        return section if isinstance(section, dict) else None
     return None
 
 

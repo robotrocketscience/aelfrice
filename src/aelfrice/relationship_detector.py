@@ -61,6 +61,8 @@ from pathlib import Path
 from typing import Any, Final, IO, cast
 
 from aelfrice.bm25 import tokenize
+
+from aelfrice.config_discovery import discover_config
 from aelfrice.dedup import _jaccard_prefiltered_pairs, jaccard
 from aelfrice.store import MemoryStore
 
@@ -547,80 +549,77 @@ def load_relationship_detector_config(
     values all degrade to defaults with a stderr trace; never raises.
     """
     serr: IO[str] = sys.stderr
-    current = (start if start is not None else Path.cwd()).resolve()
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / CONFIG_FILENAME
-        if candidate.is_file():
-            try:
-                raw = candidate.read_bytes()
-            except OSError as exc:
-                print(
-                    f"aelfrice relationship_detector: cannot read {candidate}: "
-                    f"{exc}",
-                    file=serr,
-                )
-                return RelationshipDetectorConfig()
-            try:
-                parsed: dict[str, Any] = tomllib.loads(
-                    raw.decode("utf-8", errors="replace"),
-                )
-            except tomllib.TOMLDecodeError as exc:
-                print(
-                    f"aelfrice relationship_detector: malformed TOML in "
-                    f"{candidate}: {exc}",
-                    file=serr,
-                )
-                return RelationshipDetectorConfig()
-            section_obj: Any = parsed.get(SECTION, {})
-            if not isinstance(section_obj, dict):
-                return RelationshipDetectorConfig()
-            section = cast(dict[str, Any], section_obj)
-            jm = _load_unit_float(
-                section, JACCARD_KEY, DEFAULT_JACCARD_MIN,
-                candidate, serr,
+    # Shared discovery (#1304): inside a `config_discovery_scope`
+    # N readers cost one walk instead of N. Semantics unchanged —
+    # the loop this replaces already stopped at the first
+    # `CONFIG_FILENAME` it found and never continued past it.
+    candidate = discover_config(start)
+    if candidate is not None:
+        try:
+            raw = candidate.read_bytes()
+        except OSError as exc:
+            print(
+                f"aelfrice relationship_detector: cannot read {candidate}: "
+                f"{exc}",
+                file=serr,
             )
-            cm = _load_unit_float(
-                section, CONFIDENCE_KEY, DEFAULT_CONFIDENCE_MIN,
-                candidate, serr,
+            return RelationshipDetectorConfig()
+        try:
+            parsed: dict[str, Any] = tomllib.loads(
+                raw.decode("utf-8", errors="replace"),
             )
-            mp_obj: Any = section.get(
-                MAX_CANDIDATE_PAIRS_KEY, DEFAULT_MAX_CANDIDATE_PAIRS,
+        except tomllib.TOMLDecodeError as exc:
+            print(
+                f"aelfrice relationship_detector: malformed TOML in "
+                f"{candidate}: {exc}",
+                file=serr,
             )
-            if (
-                isinstance(mp_obj, bool)
-                or not isinstance(mp_obj, int)
-                or mp_obj < 1
-            ):
-                print(
-                    f"aelfrice relationship_detector: ignoring [{SECTION}] "
-                    f"{MAX_CANDIDATE_PAIRS_KEY} in {candidate} "
-                    f"(expected positive int)",
-                    file=serr,
-                )
-                mp_resolved = DEFAULT_MAX_CANDIDATE_PAIRS
-            else:
-                mp_resolved = mp_obj
-            ad_obj: Any = section.get(AUTO_DETECT_KEY, False)
-            if isinstance(ad_obj, bool):
-                ad_resolved = ad_obj
-            else:
-                print(
-                    f"aelfrice relationship_detector: ignoring [{SECTION}] "
-                    f"{AUTO_DETECT_KEY} in {candidate} (expected bool)",
-                    file=serr,
-                )
-                ad_resolved = False
-            return RelationshipDetectorConfig(
-                jaccard_min=jm,
-                confidence_min=cm,
-                max_candidate_pairs=mp_resolved,
-                auto_detect=ad_resolved,
+            return RelationshipDetectorConfig()
+        section_obj: Any = parsed.get(SECTION, {})
+        if not isinstance(section_obj, dict):
+            return RelationshipDetectorConfig()
+        section = cast(dict[str, Any], section_obj)
+        jm = _load_unit_float(
+            section, JACCARD_KEY, DEFAULT_JACCARD_MIN,
+            candidate, serr,
+        )
+        cm = _load_unit_float(
+            section, CONFIDENCE_KEY, DEFAULT_CONFIDENCE_MIN,
+            candidate, serr,
+        )
+        mp_obj: Any = section.get(
+            MAX_CANDIDATE_PAIRS_KEY, DEFAULT_MAX_CANDIDATE_PAIRS,
+        )
+        if (
+            isinstance(mp_obj, bool)
+            or not isinstance(mp_obj, int)
+            or mp_obj < 1
+        ):
+            print(
+                f"aelfrice relationship_detector: ignoring [{SECTION}] "
+                f"{MAX_CANDIDATE_PAIRS_KEY} in {candidate} "
+                f"(expected positive int)",
+                file=serr,
             )
-        if current.parent == current:
-            break
-        current = current.parent
+            mp_resolved = DEFAULT_MAX_CANDIDATE_PAIRS
+        else:
+            mp_resolved = mp_obj
+        ad_obj: Any = section.get(AUTO_DETECT_KEY, False)
+        if isinstance(ad_obj, bool):
+            ad_resolved = ad_obj
+        else:
+            print(
+                f"aelfrice relationship_detector: ignoring [{SECTION}] "
+                f"{AUTO_DETECT_KEY} in {candidate} (expected bool)",
+                file=serr,
+            )
+            ad_resolved = False
+        return RelationshipDetectorConfig(
+            jaccard_min=jm,
+            confidence_min=cm,
+            max_candidate_pairs=mp_resolved,
+            auto_detect=ad_resolved,
+        )
     return RelationshipDetectorConfig()
 
 
@@ -646,33 +645,30 @@ def _read_auto_detect_toml(start: Path | None = None) -> bool | None:
     `.aelfrice.toml`. Returns None on missing file / section / key /
     malformed TOML / non-bool value; never raises."""
     serr: IO[str] = sys.stderr
-    current = (start if start is not None else Path.cwd()).resolve()
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / CONFIG_FILENAME
-        if candidate.is_file():
-            try:
-                parsed: dict[str, Any] = tomllib.loads(
-                    candidate.read_bytes().decode("utf-8", errors="replace"),
-                )
-            except (OSError, tomllib.TOMLDecodeError) as exc:
-                print(
-                    f"aelfrice relationship_detector: cannot read "
-                    f"{AUTO_DETECT_KEY} in {candidate}: {exc}",
-                    file=serr,
-                )
-                return None
-            section_obj: Any = parsed.get(SECTION, {})
-            if not isinstance(section_obj, dict):
-                return None
-            val: Any = cast(dict[str, Any], section_obj).get(AUTO_DETECT_KEY)
-            if isinstance(val, bool):
-                return val
+    # Shared discovery (#1304): inside a `config_discovery_scope`
+    # N readers cost one walk instead of N. Semantics unchanged —
+    # the loop this replaces already stopped at the first
+    # `CONFIG_FILENAME` it found and never continued past it.
+    candidate = discover_config(start)
+    if candidate is not None:
+        try:
+            parsed: dict[str, Any] = tomllib.loads(
+                candidate.read_bytes().decode("utf-8", errors="replace"),
+            )
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            print(
+                f"aelfrice relationship_detector: cannot read "
+                f"{AUTO_DETECT_KEY} in {candidate}: {exc}",
+                file=serr,
+            )
             return None
-        if current.parent == current:
-            break
-        current = current.parent
+        section_obj: Any = parsed.get(SECTION, {})
+        if not isinstance(section_obj, dict):
+            return None
+        val: Any = cast(dict[str, Any], section_obj).get(AUTO_DETECT_KEY)
+        if isinstance(val, bool):
+            return val
+        return None
     return None
 
 

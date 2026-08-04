@@ -35,6 +35,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Final, cast
 
+from aelfrice.config_discovery import discover_config
+
 from aelfrice.models import EDGE_TEMPORAL_NEXT, Edge
 
 if TYPE_CHECKING:
@@ -81,33 +83,30 @@ def _read_spine_write_toml(start: Path | None = None) -> bool | None:
     `.aelfrice.toml`. Returns None on missing file / section / key /
     malformed TOML / non-bool value; never raises."""
     serr: IO[str] = sys.stderr
-    current = (start if start is not None else Path.cwd()).resolve()
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / CONFIG_FILENAME
-        if candidate.is_file():
-            try:
-                parsed: dict[str, Any] = tomllib.loads(
-                    candidate.read_bytes().decode("utf-8", errors="replace"),
-                )
-            except (OSError, tomllib.TOMLDecodeError) as exc:
-                print(
-                    f"aelfrice temporal_spine: cannot read "
-                    f"{WRITE_KEY} in {candidate}: {exc}",
-                    file=serr,
-                )
-                return None
-            section_obj: Any = parsed.get(SECTION, {})
-            if not isinstance(section_obj, dict):
-                return None
-            val: Any = cast("dict[str, Any]", section_obj).get(WRITE_KEY)
-            if isinstance(val, bool):
-                return val
+    # Shared discovery (#1304): inside a `config_discovery_scope`
+    # N readers cost one walk instead of N. Semantics unchanged —
+    # the loop this replaces already stopped at the first
+    # `CONFIG_FILENAME` it found and never continued past it.
+    candidate = discover_config(start)
+    if candidate is not None:
+        try:
+            parsed: dict[str, Any] = tomllib.loads(
+                candidate.read_bytes().decode("utf-8", errors="replace"),
+            )
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            print(
+                f"aelfrice temporal_spine: cannot read "
+                f"{WRITE_KEY} in {candidate}: {exc}",
+                file=serr,
+            )
             return None
-        if current.parent == current:
-            break
-        current = current.parent
+        section_obj: Any = parsed.get(SECTION, {})
+        if not isinstance(section_obj, dict):
+            return None
+        val: Any = cast("dict[str, Any]", section_obj).get(WRITE_KEY)
+        if isinstance(val, bool):
+            return val
+        return None
     return None
 
 

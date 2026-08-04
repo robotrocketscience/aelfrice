@@ -52,6 +52,7 @@ in the project.
 """
 from __future__ import annotations
 
+from aelfrice.config_discovery import discover_config
 import json
 import os
 import sys
@@ -318,79 +319,76 @@ def load_cadence_config(start: Path | None = None) -> CadenceConfig:
     fail-soft contract.
     """
     serr: IO[str] = sys.stderr
-    current = (start if start is not None else Path.cwd()).resolve()
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / CONFIG_FILENAME
-        if candidate.is_file():
-            try:
-                raw = candidate.read_bytes()
-            except OSError as exc:
-                print(
-                    f"aelfrice cadence: cannot read {candidate}: {exc}",
-                    file=serr,
-                )
-                return CadenceConfig()
-            try:
-                parsed: dict[str, Any] = tomllib.loads(
-                    raw.decode("utf-8", errors="replace"),
-                )
-            except tomllib.TOMLDecodeError as exc:
-                print(
-                    f"aelfrice cadence: malformed TOML in {candidate}: {exc}",
-                    file=serr,
-                )
-                return CadenceConfig()
-            section_obj: Any = parsed.get(CADENCE_SECTION, {})
-            if not isinstance(section_obj, dict):
-                print(
-                    f"aelfrice cadence: ignoring [{CADENCE_SECTION}] "
-                    f"in {candidate} (expected table)",
-                    file=serr,
-                )
-                return CadenceConfig()
-            section = section_obj
-            enabled = _read_bool(section, ENABLED_KEY, DEFAULT_ENABLED, candidate, serr)
-            policy = _read_policy(section, candidate, serr)
-            k = _read_k(section, candidate, serr)
-            ctx_threshold = _read_unit_float(
-                section, CTX_THRESHOLD_KEY, DEFAULT_CTX_THRESHOLD, candidate, serr,
+    # Shared discovery (#1304): inside a `config_discovery_scope`
+    # N readers cost one walk instead of N. Semantics unchanged —
+    # the loop this replaces already stopped at the first
+    # `CONFIG_FILENAME` it found and never continued past it.
+    candidate = discover_config(start)
+    if candidate is not None:
+        try:
+            raw = candidate.read_bytes()
+        except OSError as exc:
+            print(
+                f"aelfrice cadence: cannot read {candidate}: {exc}",
+                file=serr,
             )
-            ctx_byte_window = _read_positive_int(
-                section, CTX_BYTE_WINDOW_KEY, DEFAULT_CTX_BYTE_WINDOW,
-                candidate, serr,
+            return CadenceConfig()
+        try:
+            parsed: dict[str, Any] = tomllib.loads(
+                raw.decode("utf-8", errors="replace"),
             )
-            shadow_mode_enabled = _read_bool(
-                section, SHADOW_MODE_ENABLED_KEY,
-                DEFAULT_SHADOW_MODE_ENABLED, candidate, serr,
+        except tomllib.TOMLDecodeError as exc:
+            print(
+                f"aelfrice cadence: malformed TOML in {candidate}: {exc}",
+                file=serr,
             )
-            p3_velocity_threshold = _read_positive_int(
-                section, P3_VELOCITY_THRESHOLD_KEY,
-                DEFAULT_P3_VELOCITY_THRESHOLD, candidate, serr,
+            return CadenceConfig()
+        section_obj: Any = parsed.get(CADENCE_SECTION, {})
+        if not isinstance(section_obj, dict):
+            print(
+                f"aelfrice cadence: ignoring [{CADENCE_SECTION}] "
+                f"in {candidate} (expected table)",
+                file=serr,
             )
-            p3_substantive_window = _read_positive_int(
-                section, P3_SUBSTANTIVE_WINDOW_KEY,
-                DEFAULT_P3_SUBSTANTIVE_WINDOW, candidate, serr,
-            )
-            p3_substantive_threshold = _read_unit_float(
-                section, P3_SUBSTANTIVE_THRESHOLD_KEY,
-                DEFAULT_P3_SUBSTANTIVE_THRESHOLD, candidate, serr,
-            )
-            return CadenceConfig(
-                enabled=enabled,
-                policy=policy,
-                k=k,
-                ctx_threshold=ctx_threshold,
-                ctx_byte_window=ctx_byte_window,
-                shadow_mode_enabled=shadow_mode_enabled,
-                p3_velocity_threshold=p3_velocity_threshold,
-                p3_substantive_window=p3_substantive_window,
-                p3_substantive_threshold=p3_substantive_threshold,
-            )
-        if current.parent == current:
-            break
-        current = current.parent
+            return CadenceConfig()
+        section = section_obj
+        enabled = _read_bool(section, ENABLED_KEY, DEFAULT_ENABLED, candidate, serr)
+        policy = _read_policy(section, candidate, serr)
+        k = _read_k(section, candidate, serr)
+        ctx_threshold = _read_unit_float(
+            section, CTX_THRESHOLD_KEY, DEFAULT_CTX_THRESHOLD, candidate, serr,
+        )
+        ctx_byte_window = _read_positive_int(
+            section, CTX_BYTE_WINDOW_KEY, DEFAULT_CTX_BYTE_WINDOW,
+            candidate, serr,
+        )
+        shadow_mode_enabled = _read_bool(
+            section, SHADOW_MODE_ENABLED_KEY,
+            DEFAULT_SHADOW_MODE_ENABLED, candidate, serr,
+        )
+        p3_velocity_threshold = _read_positive_int(
+            section, P3_VELOCITY_THRESHOLD_KEY,
+            DEFAULT_P3_VELOCITY_THRESHOLD, candidate, serr,
+        )
+        p3_substantive_window = _read_positive_int(
+            section, P3_SUBSTANTIVE_WINDOW_KEY,
+            DEFAULT_P3_SUBSTANTIVE_WINDOW, candidate, serr,
+        )
+        p3_substantive_threshold = _read_unit_float(
+            section, P3_SUBSTANTIVE_THRESHOLD_KEY,
+            DEFAULT_P3_SUBSTANTIVE_THRESHOLD, candidate, serr,
+        )
+        return CadenceConfig(
+            enabled=enabled,
+            policy=policy,
+            k=k,
+            ctx_threshold=ctx_threshold,
+            ctx_byte_window=ctx_byte_window,
+            shadow_mode_enabled=shadow_mode_enabled,
+            p3_velocity_threshold=p3_velocity_threshold,
+            p3_substantive_window=p3_substantive_window,
+            p3_substantive_threshold=p3_substantive_threshold,
+        )
     return CadenceConfig()
 
 

@@ -14,6 +14,7 @@ heavy import.
 """
 from __future__ import annotations
 
+from aelfrice.config_discovery import discover_config
 import json
 import os
 import sys
@@ -77,65 +78,61 @@ def load_hook_audit_config(
     env_val = env_map.get(_AUDIT_ENV_DISABLE)
     if env_val is not None and env_val.strip() == "0":
         return HookAuditConfig(enabled=False)
-    current = (start if start is not None else Path.cwd()).resolve()
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / _CONFIG_FILENAME
-        if candidate.is_file():
-            try:
-                raw = candidate.read_bytes()
-            except OSError as exc:
-                print(
-                    f"aelfrice hook: cannot read {candidate}: {exc}",
-                    file=serr,
-                )
-                return HookAuditConfig()
-            try:
-                parsed: dict[str, Any] = tomllib.loads(
-                    raw.decode("utf-8", errors="replace"),
-                )
-            except tomllib.TOMLDecodeError as exc:
-                print(
-                    f"aelfrice hook: malformed TOML in {candidate}: {exc}",
-                    file=serr,
-                )
-                return HookAuditConfig()
-            section_obj: Any = parsed.get(_AUDIT_SECTION, {})
-            if not isinstance(section_obj, dict):
-                return HookAuditConfig()
-            section = cast(dict[str, Any], section_obj)
-            enabled_obj: Any = section.get(_AUDIT_ENABLED_KEY, True)
-            if not isinstance(enabled_obj, bool):
+    # Shared discovery (#1304): inside a `config_discovery_scope`
+    # N readers cost one walk instead of N. Semantics unchanged —
+    # the loop this replaces already stopped at the first
+    # `_CONFIG_FILENAME` it found and never continued past it.
+    candidate = discover_config(start)
+    if candidate is not None:
+        try:
+            raw = candidate.read_bytes()
+        except OSError as exc:
+            print(
+                f"aelfrice hook: cannot read {candidate}: {exc}",
+                file=serr,
+            )
+            return HookAuditConfig()
+        try:
+            parsed: dict[str, Any] = tomllib.loads(
+                raw.decode("utf-8", errors="replace"),
+            )
+        except tomllib.TOMLDecodeError as exc:
+            print(
+                f"aelfrice hook: malformed TOML in {candidate}: {exc}",
+                file=serr,
+            )
+            return HookAuditConfig()
+        section_obj: Any = parsed.get(_AUDIT_SECTION, {})
+        if not isinstance(section_obj, dict):
+            return HookAuditConfig()
+        section = cast(dict[str, Any], section_obj)
+        enabled_obj: Any = section.get(_AUDIT_ENABLED_KEY, True)
+        if not isinstance(enabled_obj, bool):
+            print(
+                f"aelfrice hook: ignoring [{_AUDIT_SECTION}] "
+                f"{_AUDIT_ENABLED_KEY} in {candidate} (expected bool)",
+                file=serr,
+            )
+            enabled_obj = True
+        max_bytes_obj: Any = section.get(
+            _AUDIT_MAX_BYTES_KEY, AUDIT_DEFAULT_MAX_BYTES,
+        )
+        if not isinstance(max_bytes_obj, int) or max_bytes_obj <= 0:
+            if not (
+                isinstance(max_bytes_obj, int)
+                and max_bytes_obj == AUDIT_DEFAULT_MAX_BYTES
+            ):
                 print(
                     f"aelfrice hook: ignoring [{_AUDIT_SECTION}] "
-                    f"{_AUDIT_ENABLED_KEY} in {candidate} (expected bool)",
+                    f"{_AUDIT_MAX_BYTES_KEY} in {candidate} "
+                    f"(expected positive int)",
                     file=serr,
                 )
-                enabled_obj = True
-            max_bytes_obj: Any = section.get(
-                _AUDIT_MAX_BYTES_KEY, AUDIT_DEFAULT_MAX_BYTES,
-            )
-            if not isinstance(max_bytes_obj, int) or max_bytes_obj <= 0:
-                if not (
-                    isinstance(max_bytes_obj, int)
-                    and max_bytes_obj == AUDIT_DEFAULT_MAX_BYTES
-                ):
-                    print(
-                        f"aelfrice hook: ignoring [{_AUDIT_SECTION}] "
-                        f"{_AUDIT_MAX_BYTES_KEY} in {candidate} "
-                        f"(expected positive int)",
-                        file=serr,
-                    )
-                max_bytes_obj = AUDIT_DEFAULT_MAX_BYTES
-            return HookAuditConfig(
-                enabled=enabled_obj,
-                max_bytes=max_bytes_obj,
-            )
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
+            max_bytes_obj = AUDIT_DEFAULT_MAX_BYTES
+        return HookAuditConfig(
+            enabled=enabled_obj,
+            max_bytes=max_bytes_obj,
+        )
     return HookAuditConfig()
 
 

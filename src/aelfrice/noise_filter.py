@@ -89,6 +89,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, Final, Mapping
 
+from aelfrice.config_discovery import discover_config
+
 # Markdown heading line: 1–6 leading hashes, whitespace, then at least
 # one non-whitespace character. Matches `# Title`, `### Sub`, but not
 # `#tag` (no space) or `# ` (heading with no body).
@@ -396,16 +398,13 @@ class NoiseConfig:
         filesystem root, the default config is returned. `start=None`
         uses the current working directory.
         """
-        current = (start if start is not None else Path.cwd()).resolve()
-        seen: set[Path] = set()
-        while current not in seen:
-            seen.add(current)
-            candidate = current / CONFIG_FILENAME
-            if candidate.is_file():
-                return cls.from_toml_path(candidate, stderr=stderr)
-            if current.parent == current:
-                break
-            current = current.parent
+        # Shared discovery (#1304): inside a `config_discovery_scope`
+        # N readers cost one walk instead of N. Semantics unchanged —
+        # the loop this replaces already stopped at the first
+        # `CONFIG_FILENAME` it found and never continued past it.
+        candidate = discover_config(start)
+        if candidate is not None:
+            return cls.from_toml_path(candidate, stderr=stderr)
         return cls.default()
 
 

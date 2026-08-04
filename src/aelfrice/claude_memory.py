@@ -40,6 +40,7 @@ in any CLI surface.
 """
 from __future__ import annotations
 
+from aelfrice.config_discovery import discover_config
 import re
 import os
 import sys
@@ -227,39 +228,36 @@ def _read_mirror_toml(start: Path | None = None) -> bool | None:
     traces to stderr without raising — the default wins. Mirrors
     ``retrieval._read_toml_flag_for`` semantics for the ``[memory]`` section.
     """
-    current = (start if start is not None else Path.cwd()).resolve()
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / _CONFIG_FILENAME
-        if candidate.is_file():
-            try:
-                parsed: dict[str, Any] = tomllib.loads(
-                    candidate.read_bytes().decode("utf-8", errors="replace"),
-                )
-            except (OSError, tomllib.TOMLDecodeError) as exc:
-                print(
-                    f"aelfrice claude-memory: cannot read {candidate}: {exc}",
-                    file=sys.stderr,
-                )
-                return None
-            section_obj: Any = parsed.get(_MEMORY_SECTION, {})
-            if not isinstance(section_obj, dict):
-                return None
-            if _MIRROR_TOML_KEY not in section_obj:  # type: ignore[operator]
-                return None
-            value: Any = section_obj[_MIRROR_TOML_KEY]  # type: ignore[index]
-            if isinstance(value, bool):
-                return value
+    # Shared discovery (#1304): inside a `config_discovery_scope`
+    # N readers cost one walk instead of N. Semantics unchanged —
+    # the loop this replaces already stopped at the first
+    # `_CONFIG_FILENAME` it found and never continued past it.
+    candidate = discover_config(start)
+    if candidate is not None:
+        try:
+            parsed: dict[str, Any] = tomllib.loads(
+                candidate.read_bytes().decode("utf-8", errors="replace"),
+            )
+        except (OSError, tomllib.TOMLDecodeError) as exc:
             print(
-                f"aelfrice claude-memory: ignoring [{_MEMORY_SECTION}] "
-                f"{_MIRROR_TOML_KEY} in {candidate} (expected bool)",
+                f"aelfrice claude-memory: cannot read {candidate}: {exc}",
                 file=sys.stderr,
             )
             return None
-        if current.parent == current:
-            break
-        current = current.parent
+        section_obj: Any = parsed.get(_MEMORY_SECTION, {})
+        if not isinstance(section_obj, dict):
+            return None
+        if _MIRROR_TOML_KEY not in section_obj:  # type: ignore[operator]
+            return None
+        value: Any = section_obj[_MIRROR_TOML_KEY]  # type: ignore[index]
+        if isinstance(value, bool):
+            return value
+        print(
+            f"aelfrice claude-memory: ignoring [{_MEMORY_SECTION}] "
+            f"{_MIRROR_TOML_KEY} in {candidate} (expected bool)",
+            file=sys.stderr,
+        )
+        return None
     return None
 
 

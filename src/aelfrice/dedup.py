@@ -53,6 +53,7 @@ from typing import Any, Final, IO, Iterable, cast
 
 from aelfrice.bm25 import tokenize
 from aelfrice.store import MemoryStore
+from aelfrice.config_discovery import discover_config
 
 CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 DEDUP_SECTION: Final[str] = "dedup"
@@ -518,67 +519,64 @@ def load_dedup_config(start: Path | None = None) -> DedupConfig:
     defaults with a stderr trace; never raises.
     """
     serr: IO[str] = sys.stderr
-    current = (start if start is not None else Path.cwd()).resolve()
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / CONFIG_FILENAME
-        if candidate.is_file():
-            try:
-                raw = candidate.read_bytes()
-            except OSError as exc:
-                print(
-                    f"aelfrice dedup: cannot read {candidate}: {exc}",
-                    file=serr,
-                )
-                return DedupConfig()
-            try:
-                parsed: dict[str, Any] = tomllib.loads(
-                    raw.decode("utf-8", errors="replace"),
-                )
-            except tomllib.TOMLDecodeError as exc:
-                print(
-                    f"aelfrice dedup: malformed TOML in {candidate}: {exc}",
-                    file=serr,
-                )
-                return DedupConfig()
-            section_obj: Any = parsed.get(DEDUP_SECTION, {})
-            if not isinstance(section_obj, dict):
-                return DedupConfig()
-            section = cast(dict[str, Any], section_obj)
-            j_min = _load_float_in_unit_interval(
-                section, JACCARD_MIN_KEY, DEFAULT_JACCARD_MIN,
-                candidate, serr,
+    # Shared discovery (#1304): inside a `config_discovery_scope`
+    # N readers cost one walk instead of N. Semantics unchanged —
+    # the loop this replaces already stopped at the first
+    # `CONFIG_FILENAME` it found and never continued past it.
+    candidate = discover_config(start)
+    if candidate is not None:
+        try:
+            raw = candidate.read_bytes()
+        except OSError as exc:
+            print(
+                f"aelfrice dedup: cannot read {candidate}: {exc}",
+                file=serr,
             )
-            l_min = _load_float_in_unit_interval(
-                section, LEVENSHTEIN_MIN_KEY, DEFAULT_LEVENSHTEIN_MIN,
-                candidate, serr,
+            return DedupConfig()
+        try:
+            parsed: dict[str, Any] = tomllib.loads(
+                raw.decode("utf-8", errors="replace"),
             )
-            mp_obj: Any = section.get(
-                MAX_CANDIDATE_PAIRS_KEY, DEFAULT_MAX_CANDIDATE_PAIRS,
+        except tomllib.TOMLDecodeError as exc:
+            print(
+                f"aelfrice dedup: malformed TOML in {candidate}: {exc}",
+                file=serr,
             )
-            if (
-                isinstance(mp_obj, bool)
-                or not isinstance(mp_obj, int)
-                or mp_obj < 1
-            ):
-                print(
-                    f"aelfrice dedup: ignoring [{DEDUP_SECTION}] "
-                    f"{MAX_CANDIDATE_PAIRS_KEY} in {candidate} "
-                    f"(expected positive int)",
-                    file=serr,
-                )
-                mp_resolved = DEFAULT_MAX_CANDIDATE_PAIRS
-            else:
-                mp_resolved = mp_obj
-            return DedupConfig(
-                jaccard_min=j_min,
-                levenshtein_min=l_min,
-                max_candidate_pairs=mp_resolved,
+            return DedupConfig()
+        section_obj: Any = parsed.get(DEDUP_SECTION, {})
+        if not isinstance(section_obj, dict):
+            return DedupConfig()
+        section = cast(dict[str, Any], section_obj)
+        j_min = _load_float_in_unit_interval(
+            section, JACCARD_MIN_KEY, DEFAULT_JACCARD_MIN,
+            candidate, serr,
+        )
+        l_min = _load_float_in_unit_interval(
+            section, LEVENSHTEIN_MIN_KEY, DEFAULT_LEVENSHTEIN_MIN,
+            candidate, serr,
+        )
+        mp_obj: Any = section.get(
+            MAX_CANDIDATE_PAIRS_KEY, DEFAULT_MAX_CANDIDATE_PAIRS,
+        )
+        if (
+            isinstance(mp_obj, bool)
+            or not isinstance(mp_obj, int)
+            or mp_obj < 1
+        ):
+            print(
+                f"aelfrice dedup: ignoring [{DEDUP_SECTION}] "
+                f"{MAX_CANDIDATE_PAIRS_KEY} in {candidate} "
+                f"(expected positive int)",
+                file=serr,
             )
-        if current.parent == current:
-            break
-        current = current.parent
+            mp_resolved = DEFAULT_MAX_CANDIDATE_PAIRS
+        else:
+            mp_resolved = mp_obj
+        return DedupConfig(
+            jaccard_min=j_min,
+            levenshtein_min=l_min,
+            max_candidate_pairs=mp_resolved,
+        )
     return DedupConfig()
 
 

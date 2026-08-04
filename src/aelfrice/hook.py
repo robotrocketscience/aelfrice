@@ -43,7 +43,10 @@ from typing import IO, Any, Final, Iterator, cast
 # stdlib-only and imports nothing from `aelfrice`, so it cannot be the
 # import that fails, and the `@config_discovery_scope()` decorator has to
 # resolve at def time or `user_prompt_submit` does not exist at all.
-from aelfrice.config_discovery import config_discovery_scope
+from aelfrice.config_discovery import (
+    config_discovery_scope,
+    discover_config,
+)
 
 try:
     from aelfrice.db_paths import active_project_context, db_path
@@ -314,102 +317,98 @@ def load_user_prompt_submit_config(
     degrade to defaults with a stderr trace; never raises.
     """
     serr: IO[str] = stderr if stderr is not None else sys.stderr
-    current = (start if start is not None else Path.cwd()).resolve()
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / _CONFIG_FILENAME
-        if candidate.is_file():
-            try:
-                raw = candidate.read_bytes()
-            except OSError as exc:
-                print(
-                    f"aelfrice hook: cannot read {candidate}: {exc}",
-                    file=serr,
-                )
-                return UserPromptSubmitConfig()
-            try:
-                parsed: dict[str, Any] = tomllib.loads(
-                    raw.decode("utf-8", errors="replace"),
-                )
-            except tomllib.TOMLDecodeError as exc:
-                print(
-                    f"aelfrice hook: malformed TOML in {candidate}: {exc}",
-                    file=serr,
-                )
-                return UserPromptSubmitConfig()
-            section_obj: Any = parsed.get(_UPS_SECTION, {})
-            if not isinstance(section_obj, dict):
-                return UserPromptSubmitConfig()
-            section = cast(dict[str, Any], section_obj)
-            collapse_obj: Any = section.get(_COLLAPSE_KEY, False)
-            if not isinstance(collapse_obj, bool):
-                print(
-                    f"aelfrice hook: ignoring [{_UPS_SECTION}] "
-                    f"{_COLLAPSE_KEY} in {candidate} (expected bool)",
-                    file=serr,
-                )
-                collapse_obj = False
-            gate_obj: Any = section.get(_PROMPT_SHAPE_GATE_KEY, True)
-            if not isinstance(gate_obj, bool):
-                print(
-                    f"aelfrice hook: ignoring [{_UPS_SECTION}] "
-                    f"{_PROMPT_SHAPE_GATE_KEY} in {candidate} (expected bool)",
-                    file=serr,
-                )
-                gate_obj = True
-            conv_obj: Any = section.get(
-                _CONV_AWARE_KEY, DEFAULT_CONV_AWARE_ENABLED,
+    # Shared discovery (#1304): inside a `config_discovery_scope`
+    # N readers cost one walk instead of N. Semantics unchanged —
+    # the loop this replaces already stopped at the first
+    # `_CONFIG_FILENAME` it found and never continued past it.
+    candidate = discover_config(start)
+    if candidate is not None:
+        try:
+            raw = candidate.read_bytes()
+        except OSError as exc:
+            print(
+                f"aelfrice hook: cannot read {candidate}: {exc}",
+                file=serr,
             )
-            if not isinstance(conv_obj, bool):
-                print(
-                    f"aelfrice hook: ignoring [{_UPS_SECTION}] "
-                    f"{_CONV_AWARE_KEY} in {candidate} (expected bool)",
-                    file=serr,
-                )
-                conv_obj = DEFAULT_CONV_AWARE_ENABLED
-            window_obj: Any = section.get(
-                _CONV_AWARE_WINDOW_KEY, DEFAULT_CONV_AWARE_WINDOW,
+            return UserPromptSubmitConfig()
+        try:
+            parsed: dict[str, Any] = tomllib.loads(
+                raw.decode("utf-8", errors="replace"),
             )
-            # bool is a subclass of int — reject it explicitly so a
-            # stray `true` doesn't silently become window=1.
-            if not isinstance(window_obj, int) or isinstance(
-                window_obj, bool,
-            ) or window_obj < 0:
-                print(
-                    f"aelfrice hook: ignoring [{_UPS_SECTION}] "
-                    f"{_CONV_AWARE_WINDOW_KEY} in {candidate} "
-                    f"(expected non-negative int)",
-                    file=serr,
-                )
-                window_obj = DEFAULT_CONV_AWARE_WINDOW
-            weight_obj: Any = section.get(
-                _CONV_AWARE_WEIGHT_KEY, DEFAULT_CONV_AWARE_WEIGHT,
+        except tomllib.TOMLDecodeError as exc:
+            print(
+                f"aelfrice hook: malformed TOML in {candidate}: {exc}",
+                file=serr,
             )
-            if (
-                not isinstance(weight_obj, int)
-                or isinstance(weight_obj, bool)
-                or weight_obj < 1
-                or weight_obj > MAX_CONV_AWARE_WEIGHT
-            ):
-                print(
-                    f"aelfrice hook: ignoring [{_UPS_SECTION}] "
-                    f"{_CONV_AWARE_WEIGHT_KEY} in {candidate} "
-                    f"(expected int in [1, {MAX_CONV_AWARE_WEIGHT}])",
-                    file=serr,
-                )
-                weight_obj = DEFAULT_CONV_AWARE_WEIGHT
-            return UserPromptSubmitConfig(
-                collapse_duplicate_hashes=collapse_obj,
-                prompt_shape_gate_enabled=gate_obj,
-                conversation_aware_query_enabled=conv_obj,
-                conversation_aware_turn_window=window_obj,
-                conversation_aware_prompt_weight=weight_obj,
+            return UserPromptSubmitConfig()
+        section_obj: Any = parsed.get(_UPS_SECTION, {})
+        if not isinstance(section_obj, dict):
+            return UserPromptSubmitConfig()
+        section = cast(dict[str, Any], section_obj)
+        collapse_obj: Any = section.get(_COLLAPSE_KEY, False)
+        if not isinstance(collapse_obj, bool):
+            print(
+                f"aelfrice hook: ignoring [{_UPS_SECTION}] "
+                f"{_COLLAPSE_KEY} in {candidate} (expected bool)",
+                file=serr,
             )
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
+            collapse_obj = False
+        gate_obj: Any = section.get(_PROMPT_SHAPE_GATE_KEY, True)
+        if not isinstance(gate_obj, bool):
+            print(
+                f"aelfrice hook: ignoring [{_UPS_SECTION}] "
+                f"{_PROMPT_SHAPE_GATE_KEY} in {candidate} (expected bool)",
+                file=serr,
+            )
+            gate_obj = True
+        conv_obj: Any = section.get(
+            _CONV_AWARE_KEY, DEFAULT_CONV_AWARE_ENABLED,
+        )
+        if not isinstance(conv_obj, bool):
+            print(
+                f"aelfrice hook: ignoring [{_UPS_SECTION}] "
+                f"{_CONV_AWARE_KEY} in {candidate} (expected bool)",
+                file=serr,
+            )
+            conv_obj = DEFAULT_CONV_AWARE_ENABLED
+        window_obj: Any = section.get(
+            _CONV_AWARE_WINDOW_KEY, DEFAULT_CONV_AWARE_WINDOW,
+        )
+        # bool is a subclass of int — reject it explicitly so a
+        # stray `true` doesn't silently become window=1.
+        if not isinstance(window_obj, int) or isinstance(
+            window_obj, bool,
+        ) or window_obj < 0:
+            print(
+                f"aelfrice hook: ignoring [{_UPS_SECTION}] "
+                f"{_CONV_AWARE_WINDOW_KEY} in {candidate} "
+                f"(expected non-negative int)",
+                file=serr,
+            )
+            window_obj = DEFAULT_CONV_AWARE_WINDOW
+        weight_obj: Any = section.get(
+            _CONV_AWARE_WEIGHT_KEY, DEFAULT_CONV_AWARE_WEIGHT,
+        )
+        if (
+            not isinstance(weight_obj, int)
+            or isinstance(weight_obj, bool)
+            or weight_obj < 1
+            or weight_obj > MAX_CONV_AWARE_WEIGHT
+        ):
+            print(
+                f"aelfrice hook: ignoring [{_UPS_SECTION}] "
+                f"{_CONV_AWARE_WEIGHT_KEY} in {candidate} "
+                f"(expected int in [1, {MAX_CONV_AWARE_WEIGHT}])",
+                file=serr,
+            )
+            weight_obj = DEFAULT_CONV_AWARE_WEIGHT
+        return UserPromptSubmitConfig(
+            collapse_duplicate_hashes=collapse_obj,
+            prompt_shape_gate_enabled=gate_obj,
+            conversation_aware_query_enabled=conv_obj,
+            conversation_aware_turn_window=window_obj,
+            conversation_aware_prompt_weight=weight_obj,
+        )
     return UserPromptSubmitConfig()
 
 
@@ -2331,35 +2330,31 @@ def _load_aelfrice_toml(
     surface like `sentiment_feedback.is_enabled`).
     """
     serr: IO[str] = stderr if stderr is not None else sys.stderr
-    current = (start if start is not None else Path.cwd()).resolve()
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / _CONFIG_FILENAME
-        if candidate.is_file():
-            try:
-                raw = candidate.read_bytes()
-            except OSError as exc:
-                print(
-                    f"aelfrice hook: cannot read {candidate}: {exc}",
-                    file=serr,
-                )
-                return {}
-            try:
-                return cast(
-                    dict[str, Any],
-                    tomllib.loads(raw.decode("utf-8", errors="replace")),
-                )
-            except tomllib.TOMLDecodeError as exc:
-                print(
-                    f"aelfrice hook: malformed TOML in {candidate}: {exc}",
-                    file=serr,
-                )
-                return {}
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
+    # Shared discovery (#1304): inside a `config_discovery_scope`
+    # N readers cost one walk instead of N. Semantics unchanged —
+    # the loop this replaces already stopped at the first
+    # `_CONFIG_FILENAME` it found and never continued past it.
+    candidate = discover_config(start)
+    if candidate is not None:
+        try:
+            raw = candidate.read_bytes()
+        except OSError as exc:
+            print(
+                f"aelfrice hook: cannot read {candidate}: {exc}",
+                file=serr,
+            )
+            return {}
+        try:
+            return cast(
+                dict[str, Any],
+                tomllib.loads(raw.decode("utf-8", errors="replace")),
+            )
+        except tomllib.TOMLDecodeError as exc:
+            print(
+                f"aelfrice hook: malformed TOML in {candidate}: {exc}",
+                file=serr,
+            )
+            return {}
     return {}
 
 

@@ -93,6 +93,7 @@ from aelfrice.retrieval import (
 from aelfrice.scoring import posterior_mean
 from aelfrice.store import MemoryStore
 from aelfrice.triple_extractor import extract_triples
+from aelfrice.config_discovery import discover_config
 
 if TYPE_CHECKING:
     from aelfrice.working_state import WorkingState
@@ -687,176 +688,173 @@ def load_rebuilder_config(start: Path | None = None) -> RebuilderConfig:
     defaults with a stderr trace; never raises.
     """
     serr: IO[str] = sys.stderr
-    current = (start if start is not None else Path.cwd()).resolve()
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / CONFIG_FILENAME
-        if candidate.is_file():
-            try:
-                raw = candidate.read_bytes()
-            except OSError as exc:
-                print(
-                    f"aelfrice rebuilder: cannot read {candidate}: {exc}",
-                    file=serr,
-                )
-                return RebuilderConfig()
-            try:
-                parsed: dict[str, Any] = tomllib.loads(
-                    raw.decode("utf-8", errors="replace"),
-                )
-            except tomllib.TOMLDecodeError as exc:
-                print(
-                    f"aelfrice rebuilder: malformed TOML in {candidate}: {exc}",
-                    file=serr,
-                )
-                return RebuilderConfig()
-            section_obj: Any = parsed.get(REBUILDER_SECTION, {})
-            if not isinstance(section_obj, dict):
-                return RebuilderConfig()
-            section = cast(dict[str, Any], section_obj)
-            n_obj: Any = section.get(TURN_WINDOW_KEY, DEFAULT_TURN_WINDOW_N)
-            b_obj: Any = section.get(
-                TOKEN_BUDGET_KEY, DEFAULT_REBUILDER_TOKEN_BUDGET,
+    # Shared discovery (#1304): inside a `config_discovery_scope`
+    # N readers cost one walk instead of N. Semantics unchanged —
+    # the loop this replaces already stopped at the first
+    # `CONFIG_FILENAME` it found and never continued past it.
+    candidate = discover_config(start)
+    if candidate is not None:
+        try:
+            raw = candidate.read_bytes()
+        except OSError as exc:
+            print(
+                f"aelfrice rebuilder: cannot read {candidate}: {exc}",
+                file=serr,
             )
-            mode_obj: Any = section.get(
-                TRIGGER_MODE_KEY, DEFAULT_TRIGGER_MODE,
+            return RebuilderConfig()
+        try:
+            parsed: dict[str, Any] = tomllib.loads(
+                raw.decode("utf-8", errors="replace"),
             )
-            frac_obj: Any = section.get(
-                THRESHOLD_FRACTION_KEY, DEFAULT_THRESHOLD_FRACTION,
+        except tomllib.TOMLDecodeError as exc:
+            print(
+                f"aelfrice rebuilder: malformed TOML in {candidate}: {exc}",
+                file=serr,
             )
-            if isinstance(n_obj, bool) or not isinstance(n_obj, int) or n_obj <= 0:
+            return RebuilderConfig()
+        section_obj: Any = parsed.get(REBUILDER_SECTION, {})
+        if not isinstance(section_obj, dict):
+            return RebuilderConfig()
+        section = cast(dict[str, Any], section_obj)
+        n_obj: Any = section.get(TURN_WINDOW_KEY, DEFAULT_TURN_WINDOW_N)
+        b_obj: Any = section.get(
+            TOKEN_BUDGET_KEY, DEFAULT_REBUILDER_TOKEN_BUDGET,
+        )
+        mode_obj: Any = section.get(
+            TRIGGER_MODE_KEY, DEFAULT_TRIGGER_MODE,
+        )
+        frac_obj: Any = section.get(
+            THRESHOLD_FRACTION_KEY, DEFAULT_THRESHOLD_FRACTION,
+        )
+        if isinstance(n_obj, bool) or not isinstance(n_obj, int) or n_obj <= 0:
+            print(
+                f"aelfrice rebuilder: ignoring [{REBUILDER_SECTION}] "
+                f"{TURN_WINDOW_KEY} in {candidate} "
+                f"(expected positive int)",
+                file=serr,
+            )
+            n_resolved = DEFAULT_TURN_WINDOW_N
+        else:
+            n_resolved = n_obj
+        if isinstance(b_obj, bool) or not isinstance(b_obj, int) or b_obj <= 0:
+            print(
+                f"aelfrice rebuilder: ignoring [{REBUILDER_SECTION}] "
+                f"{TOKEN_BUDGET_KEY} in {candidate} "
+                f"(expected positive int)",
+                file=serr,
+            )
+            b_resolved = DEFAULT_REBUILDER_TOKEN_BUDGET
+        else:
+            b_resolved = b_obj
+        if (
+            not isinstance(mode_obj, str)
+            or mode_obj not in VALID_TRIGGER_MODES
+        ):
+            print(
+                f"aelfrice rebuilder: ignoring [{REBUILDER_SECTION}] "
+                f"{TRIGGER_MODE_KEY} in {candidate} "
+                f"(expected one of {VALID_TRIGGER_MODES})",
+                file=serr,
+            )
+            mode_resolved = DEFAULT_TRIGGER_MODE
+        else:
+            mode_resolved = mode_obj
+        if (
+            isinstance(frac_obj, bool)
+            or not isinstance(frac_obj, (int, float))
+            or not (0.0 < float(frac_obj) <= 1.0)
+        ):
+            print(
+                f"aelfrice rebuilder: ignoring [{REBUILDER_SECTION}] "
+                f"{THRESHOLD_FRACTION_KEY} in {candidate} "
+                f"(expected float in (0.0, 1.0])",
+                file=serr,
+            )
+            frac_resolved = DEFAULT_THRESHOLD_FRACTION
+        else:
+            frac_resolved = float(frac_obj)
+        log_section_obj: Any = parsed.get(REBUILD_LOG_SECTION, {})
+        log_enabled_resolved: bool = DEFAULT_REBUILD_LOG_ENABLED
+        if isinstance(log_section_obj, dict):
+            log_section = cast(dict[str, Any], log_section_obj)
+            log_enabled_obj: Any = log_section.get(
+                REBUILD_LOG_ENABLED_KEY, DEFAULT_REBUILD_LOG_ENABLED,
+            )
+            if isinstance(log_enabled_obj, bool):
+                log_enabled_resolved = log_enabled_obj
+            else:
                 print(
-                    f"aelfrice rebuilder: ignoring [{REBUILDER_SECTION}] "
-                    f"{TURN_WINDOW_KEY} in {candidate} "
-                    f"(expected positive int)",
+                    f"aelfrice rebuilder: ignoring "
+                    f"[{REBUILD_LOG_SECTION}] "
+                    f"{REBUILD_LOG_ENABLED_KEY} in {candidate} "
+                    f"(expected bool)",
                     file=serr,
                 )
-                n_resolved = DEFAULT_TURN_WINDOW_N
-            else:
-                n_resolved = n_obj
-            if isinstance(b_obj, bool) or not isinstance(b_obj, int) or b_obj <= 0:
-                print(
-                    f"aelfrice rebuilder: ignoring [{REBUILDER_SECTION}] "
-                    f"{TOKEN_BUDGET_KEY} in {candidate} "
-                    f"(expected positive int)",
-                    file=serr,
-                )
-                b_resolved = DEFAULT_REBUILDER_TOKEN_BUDGET
-            else:
-                b_resolved = b_obj
-            if (
-                not isinstance(mode_obj, str)
-                or mode_obj not in VALID_TRIGGER_MODES
-            ):
-                print(
-                    f"aelfrice rebuilder: ignoring [{REBUILDER_SECTION}] "
-                    f"{TRIGGER_MODE_KEY} in {candidate} "
-                    f"(expected one of {VALID_TRIGGER_MODES})",
-                    file=serr,
-                )
-                mode_resolved = DEFAULT_TRIGGER_MODE
-            else:
-                mode_resolved = mode_obj
-            if (
-                isinstance(frac_obj, bool)
-                or not isinstance(frac_obj, (int, float))
-                or not (0.0 < float(frac_obj) <= 1.0)
-            ):
-                print(
-                    f"aelfrice rebuilder: ignoring [{REBUILDER_SECTION}] "
-                    f"{THRESHOLD_FRACTION_KEY} in {candidate} "
-                    f"(expected float in (0.0, 1.0])",
-                    file=serr,
-                )
-                frac_resolved = DEFAULT_THRESHOLD_FRACTION
-            else:
-                frac_resolved = float(frac_obj)
-            log_section_obj: Any = parsed.get(REBUILD_LOG_SECTION, {})
-            log_enabled_resolved: bool = DEFAULT_REBUILD_LOG_ENABLED
-            if isinstance(log_section_obj, dict):
-                log_section = cast(dict[str, Any], log_section_obj)
-                log_enabled_obj: Any = log_section.get(
-                    REBUILD_LOG_ENABLED_KEY, DEFAULT_REBUILD_LOG_ENABLED,
-                )
-                if isinstance(log_enabled_obj, bool):
-                    log_enabled_resolved = log_enabled_obj
-                else:
-                    print(
-                        f"aelfrice rebuilder: ignoring "
-                        f"[{REBUILD_LOG_SECTION}] "
-                        f"{REBUILD_LOG_ENABLED_KEY} in {candidate} "
-                        f"(expected bool)",
-                        file=serr,
-                    )
-            floor_section_obj: Any = parsed.get(REBUILD_FLOOR_SECTION, {})
-            floor_session_resolved: float = DEFAULT_FLOOR_SESSION
-            floor_l1_resolved: float = DEFAULT_FLOOR_L1
-            if isinstance(floor_section_obj, dict):
-                floor_section = cast(dict[str, Any], floor_section_obj)
-                fs_obj: Any = floor_section.get(
-                    REBUILD_FLOOR_SESSION_KEY, DEFAULT_FLOOR_SESSION,
-                )
-                fl_obj: Any = floor_section.get(
-                    REBUILD_FLOOR_L1_KEY, DEFAULT_FLOOR_L1,
-                )
-                if (
-                    isinstance(fs_obj, bool)
-                    or not isinstance(fs_obj, (int, float))
-                    or float(fs_obj) < 0.0
-                ):
-                    print(
-                        f"aelfrice rebuilder: ignoring "
-                        f"[{REBUILD_FLOOR_SECTION}] "
-                        f"{REBUILD_FLOOR_SESSION_KEY} in {candidate} "
-                        f"(expected non-negative number)",
-                        file=serr,
-                    )
-                else:
-                    floor_session_resolved = float(fs_obj)
-                if (
-                    isinstance(fl_obj, bool)
-                    or not isinstance(fl_obj, (int, float))
-                    or float(fl_obj) < 0.0
-                ):
-                    print(
-                        f"aelfrice rebuilder: ignoring "
-                        f"[{REBUILD_FLOOR_SECTION}] "
-                        f"{REBUILD_FLOOR_L1_KEY} in {candidate} "
-                        f"(expected non-negative number)",
-                        file=serr,
-                    )
-                else:
-                    floor_l1_resolved = float(fl_obj)
-            qs_obj: Any = section.get(
-                QUERY_STRATEGY_KEY, DEFAULT_QUERY_STRATEGY,
+        floor_section_obj: Any = parsed.get(REBUILD_FLOOR_SECTION, {})
+        floor_session_resolved: float = DEFAULT_FLOOR_SESSION
+        floor_l1_resolved: float = DEFAULT_FLOOR_L1
+        if isinstance(floor_section_obj, dict):
+            floor_section = cast(dict[str, Any], floor_section_obj)
+            fs_obj: Any = floor_section.get(
+                REBUILD_FLOOR_SESSION_KEY, DEFAULT_FLOOR_SESSION,
+            )
+            fl_obj: Any = floor_section.get(
+                REBUILD_FLOOR_L1_KEY, DEFAULT_FLOOR_L1,
             )
             if (
-                not isinstance(qs_obj, str)
-                or qs_obj not in VALID_STRATEGIES
+                isinstance(fs_obj, bool)
+                or not isinstance(fs_obj, (int, float))
+                or float(fs_obj) < 0.0
             ):
                 print(
-                    f"aelfrice rebuilder: ignoring [{REBUILDER_SECTION}] "
-                    f"{QUERY_STRATEGY_KEY} in {candidate} "
-                    f"(expected one of {sorted(VALID_STRATEGIES)})",
+                    f"aelfrice rebuilder: ignoring "
+                    f"[{REBUILD_FLOOR_SECTION}] "
+                    f"{REBUILD_FLOOR_SESSION_KEY} in {candidate} "
+                    f"(expected non-negative number)",
                     file=serr,
                 )
-                qs_resolved = DEFAULT_QUERY_STRATEGY
             else:
-                qs_resolved = qs_obj
-            return RebuilderConfig(
-                turn_window_n=n_resolved,
-                token_budget=b_resolved,
-                trigger_mode=mode_resolved,
-                threshold_fraction=frac_resolved,
-                rebuild_log_enabled=log_enabled_resolved,
-                floor_session=floor_session_resolved,
-                floor_l1=floor_l1_resolved,
-                query_strategy=qs_resolved,
+                floor_session_resolved = float(fs_obj)
+            if (
+                isinstance(fl_obj, bool)
+                or not isinstance(fl_obj, (int, float))
+                or float(fl_obj) < 0.0
+            ):
+                print(
+                    f"aelfrice rebuilder: ignoring "
+                    f"[{REBUILD_FLOOR_SECTION}] "
+                    f"{REBUILD_FLOOR_L1_KEY} in {candidate} "
+                    f"(expected non-negative number)",
+                    file=serr,
+                )
+            else:
+                floor_l1_resolved = float(fl_obj)
+        qs_obj: Any = section.get(
+            QUERY_STRATEGY_KEY, DEFAULT_QUERY_STRATEGY,
+        )
+        if (
+            not isinstance(qs_obj, str)
+            or qs_obj not in VALID_STRATEGIES
+        ):
+            print(
+                f"aelfrice rebuilder: ignoring [{REBUILDER_SECTION}] "
+                f"{QUERY_STRATEGY_KEY} in {candidate} "
+                f"(expected one of {sorted(VALID_STRATEGIES)})",
+                file=serr,
             )
-        if current.parent == current:
-            break
-        current = current.parent
+            qs_resolved = DEFAULT_QUERY_STRATEGY
+        else:
+            qs_resolved = qs_obj
+        return RebuilderConfig(
+            turn_window_n=n_resolved,
+            token_budget=b_resolved,
+            trigger_mode=mode_resolved,
+            threshold_fraction=frac_resolved,
+            rebuild_log_enabled=log_enabled_resolved,
+            floor_session=floor_session_resolved,
+            floor_l1=floor_l1_resolved,
+            query_strategy=qs_resolved,
+        )
     return RebuilderConfig()
 
 
