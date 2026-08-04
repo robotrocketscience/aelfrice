@@ -320,7 +320,7 @@ def test_ingest_threads_max_candidate_pairs_from_toml(
     observe — a two-belief store never approaches any sane pair budget —
     so assert the value that arrives at ``write_semantic_edges`` instead.
     """
-    import aelfrice.relationship_detector as rd
+    from aelfrice import relationship_detector as rd
     from aelfrice.ingest import ingest_turn
 
     monkeypatch.delenv(ENV_AUTO_RELATIONSHIPS, raising=False)
@@ -406,12 +406,45 @@ def test_resolve_ingest_config_walks_the_tree_once(
     assert config.jaccard_min == 0.55
 
 
+def test_resolve_ingest_config_env_off_probes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """`AELFRICE_AUTO_RELATIONSHIPS=0` costs zero config probes (#1289).
+
+    The flag-only resolver this call site replaced checked env before
+    touching the filesystem, so an env-disabled install walked no
+    directories at all per ingested turn. Loading the config first would
+    silently move that to a full walk to root — on a path that runs every
+    turn, for a config whose only consumer is a writer that will not run.
+
+    Both arms are asserted so neither passes vacuously: env-off must be
+    0 while env-unset over the *same* tree is non-zero.
+    """
+    from aelfrice.relationship_detector import (
+        resolve_ingest_relationship_config,
+    )
+
+    deep = tmp_path / "a" / "b" / "c"
+    deep.mkdir(parents=True)
+    counter = _count_config_probes(monkeypatch)
+
+    monkeypatch.setenv(ENV_AUTO_RELATIONSHIPS, "0")
+    counter[0] = 0
+    assert resolve_ingest_relationship_config(start=deep)[0] is False
+    assert counter[0] == 0
+
+    monkeypatch.delenv(ENV_AUTO_RELATIONSHIPS, raising=False)
+    counter[0] = 0
+    assert resolve_ingest_relationship_config(start=deep)[0] is False
+    assert counter[0] > 0
+
+
 def test_resolve_ingest_config_env_still_wins_over_toml(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
-    """Env keeps precedence over `auto_detect`, and the thresholds still
-    load when the flag is forced off (#1299)."""
+    """Env keeps precedence over `auto_detect` in both directions (#1299)."""
     from aelfrice.relationship_detector import (
+        DEFAULT_JACCARD_MIN,
         resolve_ingest_relationship_config,
     )
 
@@ -421,7 +454,10 @@ def test_resolve_ingest_config_env_still_wins_over_toml(
     monkeypatch.setenv(ENV_AUTO_RELATIONSHIPS, "off")
     enabled, config = resolve_ingest_relationship_config(start=tmp_path)
     assert enabled is False
-    assert config.jaccard_min == 0.55
+    # Env-off short-circuits before the config walk, so the returned
+    # config is the module defaults, not the file's 0.55. Documented
+    # contract: the config is meaningful only when `enabled` is True.
+    assert config.jaccard_min == DEFAULT_JACCARD_MIN
 
     monkeypatch.setenv(ENV_AUTO_RELATIONSHIPS, "on")
     (tmp_path / ".aelfrice.toml").write_text(

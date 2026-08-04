@@ -724,7 +724,25 @@ def resolve_ingest_relationship_config(
     argument. A non-``None`` ``explicit`` is decisive before the
     resolver's own TOML step, so exactly one walk happens per call and
     the documented precedence (env > TOML > default-off) is unchanged.
+
+    One walk is still one walk too many when the env var has already
+    settled the question in the *off* direction: the thresholds are read
+    only to be passed to a writer that will not run. The flag-only
+    resolver this replaced short-circuited on env before touching the
+    filesystem, so an ``AELFRICE_AUTO_RELATIONSHIPS=0`` install paid
+    **zero** probes per ingested turn; loading the config first would
+    have made that 11 on a deep tree. Env-off therefore returns before
+    the walk. Env-*on* still walks, because the thresholds are then
+    actually needed — that is the intended cost of #1299, not a
+    regression.
+
+    The returned config is meaningful only when ``enabled`` is True. On
+    the env-off short-circuit it is the module defaults rather than the
+    file's values; no caller reads it, and reading it would reintroduce
+    the walk this branch exists to avoid.
     """
+    if _env_auto_relationships_override() is False:
+        return False, RelationshipDetectorConfig()
     config = load_relationship_detector_config(start)
     enabled = is_auto_relationship_detection_enabled(
         config.auto_detect, start=start,
