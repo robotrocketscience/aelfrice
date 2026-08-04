@@ -19,30 +19,53 @@ the whole store rather than a rendered sample:
   * **Candidate pairs come from 4-gram blocking, not O(n^2).** `dedup`
     budgets direct Jaccard prefiltering at a ~1.6k-belief median; at the
     44.5k-belief scale this report targets that is ~991M pairs, which is
-    not viable. Each belief is posted to its **rarest** shingles only —
-    those whose document frequency ties the minimum across that
-    belief's own shingles — and candidate pairs are drawn from the
-    resulting buckets.
+    not viable. A belief is posted to every shingle whose document
+    frequency is `<= max_shingle_df`, which is standard MinHash-free LSH
+    blocking, and candidate pairs are drawn from the resulting buckets.
 
-    An earlier version instead skipped any shingle above a `df` cap,
-    justified by the claim that genuine near-duplicates "share many
-    rarer shingles as well, so they survive the cap through those."
-    That is false exactly where it matters most: in a *homogeneous*
-    family every member shares every shingle, so all of them sit at
-    `df = K` and none is rarer. Past the cap the whole family lost all
-    its postings and the report announced **zero** duplicates precisely
-    when the duplicate family was largest — at the shipped cap of 32,
-    a 32-member family reported 31 removable and a 33-member family
-    reported 0. Blocking on each belief's own rarest shingles has no
-    such cliff: a homogeneous family is its own bucket at any size.
+    The cap has one cliff, which is #1316. It was justified by the claim
+    that genuine near-duplicates "share many rarer shingles as well, so
+    they survive the cap through those." That is false exactly where it
+    matters most: in a *homogeneous* family every member shares every
+    shingle, so all of them sit at `df = K` and none is rarer. Past the
+    cap the whole family lost all its postings and the report announced
+    **zero** duplicates precisely when the duplicate family was largest
+    — at the shipped cap of 32, a 32-member family reported 31 removable
+    and a 33-member family reported 0.
+
+    So beliefs the cap leaves with **no posting at all** are rescued
+    onto their rarest shared shingles, and a homogeneous family becomes
+    its own bucket at any size. The rescue is a fallback rather than a
+    replacement, which matters: applying rarest-shingle posting to every
+    belief fixes the homogeneous cliff and opens a *heterogeneous* one,
+    because two near-duplicates whose minimum `df` differs then never
+    share a bucket at all. Measured, that variant dropped 490 beliefs
+    and 81 whole clusters the cap had found. As a fallback the candidate
+    set is a strict superset of the cap's, so no cluster can be lost —
+    see `_blocked_pairs`. `n_beliefs_rescued` reports how many beliefs
+    took the fallback, so the mechanism is never silent.
 
     The residual cost risk is a corpus of near-identical boilerplate,
     where one bucket is quadratic in its own size. That is bounded by
-    `max_candidate_pairs` rather than by discarding evidence, and
-    hitting the bound sets `truncated` — a budget that does not report
-    itself reads as full coverage when it is not. Buckets are consumed
-    smallest-first, so truncation drops the largest, least discriminating
-    ones.
+    `max_candidate_pairs` — counted as pairs *attempted*, so the bound
+    holds even when the buckets keep re-proposing pairs already held —
+    rather than by discarding evidence, and hitting the bound sets
+    `truncated`, because a budget that does not report itself reads as
+    full coverage when it is not. Buckets are consumed smallest-first,
+    so truncation drops the largest, least discriminating ones.
+
+    **Known residual, measured rather than assumed.** The rescue fires
+    only for beliefs the cap leaves with *no* posting. A member of an
+    over-cap family that happens to carry one low-`df` shingle — a
+    version string two of them share, say — posts there instead, never
+    reaches the family's own bucket, and can still be split off. The
+    fallback does not close that; only removing the cap entirely would.
+    Priced on the development store (`benchmarks/consolidate_blocking_recall.py`,
+    2026-08-04): blocking with no cap at all clusters 1,669 beliefs
+    against the shipped 1,638, so the whole remaining gap is **31
+    beliefs of 44,594** — 98.1% of the reachable set, against a cap that
+    is the only thing standing between a boilerplate-heavy store and a
+    quadratic pass. Left as a tradeoff, not a defect.
 
   * **Only components of size >= 3 are reported.** Two-member components
     are plain supersession and are not what consolidation is for.
@@ -87,13 +110,30 @@ from aelfrice.store import MemoryStore
 SHINGLE_N: Final[int] = 4
 """Token shingle width used for candidate blocking."""
 
-DEFAULT_MAX_CANDIDATE_PAIRS: Final[int] = 2_000_000
-"""Ceiling on blocked candidate pairs before the pass reports `truncated`.
+DEFAULT_MAX_SHINGLE_DF: Final[int] = 32
+"""Shingles above this document frequency are store-wide boilerplate.
 
-Bounds the one pathological shape rarest-shingle blocking still admits:
-a corpus of near-identical boilerplate, where a single bucket is
-quadratic in its own size. The development store produces ~116k pairs at
-44.5k beliefs, so this is ample headroom rather than a working limit.
+A belief posts to its shingles below the cap. Beliefs left with *no*
+sub-cap shingle are not dropped — see `_blocked_pairs`, which rescues
+them onto their rarest shared shingles instead. That fallback is the
+#1316 fix; the cap itself is unchanged and still does the work of
+keeping common phrasing from generating quadratic noise.
+"""
+
+DEFAULT_MAX_CANDIDATE_PAIRS: Final[int] = 2_000_000
+"""Ceiling on candidate pairs *attempted* before the pass reports
+`truncated`.
+
+Bounds the one pathological shape blocking still admits: a corpus of
+near-identical boilerplate, where a single bucket is quadratic in its own
+size. Counting attempts rather than distinct pairs is what makes the
+bound real — buckets re-proposing an already-held pair do not grow the
+result set, so a size-based guard can never fire while the nested loop
+still runs.
+
+The development store attempts ~127k pairs at 44.5k active beliefs
+(measured 2026-08-04, `aelf doctor --consolidate`), so this is ample
+headroom rather than a working limit.
 """
 
 MIN_COMPONENT_SIZE: Final[int] = 3
@@ -112,8 +152,18 @@ degrades on exactly the corpus the report exists to describe.
 Above this cap the medoid is chosen from the first `MEDOID_SAMPLE_CAP`
 members in id order. Still an existing belief, still a closed-form
 criterion, still deterministic — just evaluated over a bounded, named
-subset. The report's counts are unaffected: `n_would_remove` depends on
-component sizes, not on which member is the survivor.
+subset.
+
+This does **not** leave the counts untouched, and an earlier version of
+this docstring claimed it did. `n_locked_in_clusters` excludes the
+medoid, so on a component holding a locked member the price is a
+function of *which* member is the medoid, and the cap can move that:
+with a locked member in a 3-member component, cap 64 gives
+`n_would_remove = 2` and cap 1 gives 1. Live exposure is small (3 locked
+members across all clusters on the development store, and the shipped
+cap reproduces the exact counts an uncapped pass gives there), but the
+invariant is asserted rather than measured, so it is stated as the
+approximation it is.
 """
 
 
@@ -151,6 +201,7 @@ class ConsolidationReport:
 
     n_beliefs_scanned: int
     n_candidate_pairs: int
+    n_beliefs_rescued: int
     n_duplicate_pairs: int
     n_clusters: int
     n_beliefs_in_clusters: int
@@ -159,6 +210,7 @@ class ConsolidationReport:
     jaccard_min: float
     levenshtein_min: float
     max_candidate_pairs: int
+    max_shingle_df: int = DEFAULT_MAX_SHINGLE_DF
     truncated: bool = False
     clusters: tuple[ConsolidationCluster, ...] = field(default=())
 
@@ -250,14 +302,43 @@ def _components(
 def _blocked_pairs(
     shingle_sets: dict[str, frozenset[tuple[str, ...]]],
     max_candidate_pairs: int,
-) -> tuple[set[tuple[str, str]], bool]:
-    """Candidate pairs from each belief's rarest shingles.
+    max_shingle_df: int = DEFAULT_MAX_SHINGLE_DF,
+) -> tuple[set[tuple[str, str]], bool, int]:
+    """Candidate pairs from sub-cap shingles, plus a rescue for the rest.
 
-    Posting a belief only to its minimum-df shingles keeps common
-    boilerplate from generating quadratic noise, without ever discarding
-    a belief entirely — which is what a flat df cap did to homogeneous
-    families. Buckets are consumed smallest-first so that hitting the
-    budget drops the largest, least discriminating ones.
+    Returns `(candidates, truncated, n_rescued)`.
+
+    Two posting passes, and the split is the whole point:
+
+    * **Primary — every shared shingle with `df <= max_shingle_df`.**
+      Identical to the pre-#1316 cap: a belief posts to all of its
+      shingles that are not store-wide boilerplate. This pass alone
+      reproduces the old candidate set exactly.
+    * **Rescue — beliefs the primary pass leaves with no posting at
+      all.** Those are the members of a family so large that *every*
+      shingle they share is over the cap, which is #1316: the report
+      announced zero duplicates precisely when the family was biggest
+      (at the shipped cap of 32, a 32-member family reported 31
+      removable and a 33-member family reported 0). They post to their
+      rarest shared shingles instead, so a homogeneous family becomes
+      its own bucket at any size.
+
+    The first attempt at #1316 replaced the cap with rarest-shingle
+    posting *for every belief*, which trades one cliff for another. A
+    belief posts only to shingles tying its **own** minimum df, so two
+    genuine near-duplicates with different minima never share a bucket
+    and the family shatters into 2-components that `MIN_COMPONENT_SIZE`
+    then discards — the same "reports 0 on the largest family" symptom,
+    reached from the other side. Measured on the development store it
+    dropped 490 beliefs and 81 whole clusters that the cap had found,
+    including a 46-member clique in which all 1,035 pairs satisfy the
+    shipped predicate. Making the rescue a *fallback* rather than a
+    replacement is what keeps the fix strictly additive: every bucket
+    the cap formed still forms, so the candidate set is a superset of
+    the old one and no cluster can be lost.
+
+    Buckets are consumed smallest-first — primary before rescue — so
+    hitting the budget drops the largest, least discriminating ones.
     """
     df: dict[tuple[str, ...], int] = {}
     for shingles_of in shingle_sets.values():
@@ -265,31 +346,55 @@ def _blocked_pairs(
             df[gram] = df.get(gram, 0) + 1
 
     postings: dict[tuple[str, ...], list[str]] = {}
+    rescue: dict[tuple[str, ...], list[str]] = {}
+    n_rescued = 0
     for bid, shingles_of in shingle_sets.items():
         # A df==1 shingle is unique to this belief and can never produce a
-        # pair, so it must not define "rarest" — otherwise a belief with
-        # any unique tail (an id, a version, a counter) posts only to
-        # shingles nothing else shares and silently drops out.
+        # pair, so it is not a posting anywhere and must not define
+        # "rarest" either — otherwise a belief with any unique tail (an
+        # id, a version, a counter) posts only to shingles nothing else
+        # shares and silently drops out.
         shared = [gram for gram in shingles_of if df[gram] >= 2]
         if not shared:
             continue
-        rarest = min(df[gram] for gram in shared)
-        for gram in shared:
-            if df[gram] == rarest:
+        under_cap = [gram for gram in shared if df[gram] <= max_shingle_df]
+        if under_cap:
+            for gram in under_cap:
                 postings.setdefault(gram, []).append(bid)
+            continue
+        n_rescued += 1
+        # Every shared shingle, not just the rarest ones. Posting a
+        # rescued belief to its minimum-df shingles only would rebuild
+        # the shattering this fallback exists to avoid one level down:
+        # two rescued near-duplicates whose minima differ (one has a
+        # df-35 shingle, the other bottoms out at the df-40 body) would
+        # land in different buckets and the family would fragment into
+        # components too small to report. The cost stays bounded because
+        # a rescue bucket only ever holds *rescued* beliefs, which are
+        # by construction the ones no sub-cap shingle reached.
+        for gram in shared:
+            rescue.setdefault(gram, []).append(bid)
 
     candidates: set[tuple[str, str]] = set()
-    buckets = sorted(postings.values(), key=lambda m: (len(m), m[0]))
-    for members in buckets:
-        if len(members) < 2:
-            continue
-        members.sort()
-        for i in range(len(members)):
-            for j in range(i + 1, len(members)):
-                if len(candidates) >= max_candidate_pairs:
-                    return candidates, True
-                candidates.add((members[i], members[j]))
-    return candidates, False
+    # The budget counts pairs *attempted*, not the distinct pairs kept.
+    # `candidates` is a set, so buckets re-proposing a pair it already
+    # holds do not grow it — a size-based guard can therefore stay false
+    # while the nested loop runs Theta(S*N^2) times, which makes the
+    # documented bound false for exactly the boilerplate shape it names.
+    attempted = 0
+    for source in (postings, rescue):
+        buckets = sorted(source.values(), key=lambda m: (len(m), m[0]))
+        for members in buckets:
+            if len(members) < 2:
+                continue
+            members.sort()
+            for i in range(len(members)):
+                for j in range(i + 1, len(members)):
+                    if attempted >= max_candidate_pairs:
+                        return candidates, True, n_rescued
+                    attempted += 1
+                    candidates.add((members[i], members[j]))
+    return candidates, False, n_rescued
 
 
 def consolidation_audit(
@@ -298,6 +403,7 @@ def consolidation_audit(
     jaccard_min: float = DEFAULT_JACCARD_MIN,
     levenshtein_min: float = DEFAULT_LEVENSHTEIN_MIN,
     max_candidate_pairs: int = DEFAULT_MAX_CANDIDATE_PAIRS,
+    max_shingle_df: int = DEFAULT_MAX_SHINGLE_DF,
 ) -> ConsolidationReport:
     """Cluster active beliefs and report what a contraction would remove.
 
@@ -316,6 +422,13 @@ def consolidation_audit(
         raise ValueError(
             f"max_candidate_pairs must be >= 1, got {max_candidate_pairs}"
         )
+    # df 1 is unique-to-one-belief and can never pair, so a cap below 2
+    # would post nothing through the primary pass and silently route the
+    # entire store through the rescue fallback.
+    if max_shingle_df < 2:
+        raise ValueError(
+            f"max_shingle_df must be >= 2, got {max_shingle_df}"
+        )
 
     rows = store.list_beliefs_for_indexing()
     content = {bid: (text or "") for bid, text in rows}
@@ -324,6 +437,7 @@ def consolidation_audit(
     empty = ConsolidationReport(
         n_beliefs_scanned=len(rows),
         n_candidate_pairs=0,
+        n_beliefs_rescued=0,
         n_duplicate_pairs=0,
         n_clusters=0,
         n_beliefs_in_clusters=0,
@@ -344,7 +458,9 @@ def consolidation_audit(
     token_sets = {bid: frozenset(toks) for bid, toks in tokens.items()}
     shingle_sets = {bid: shingles(toks) for bid, toks in tokens.items()}
 
-    candidates, truncated = _blocked_pairs(shingle_sets, max_candidate_pairs)
+    candidates, truncated, n_rescued = _blocked_pairs(
+        shingle_sets, max_candidate_pairs, max_shingle_df
+    )
 
     duplicates = [
         (a, b)
@@ -377,6 +493,7 @@ def consolidation_audit(
     return ConsolidationReport(
         n_beliefs_scanned=len(rows),
         n_candidate_pairs=len(candidates),
+        n_beliefs_rescued=n_rescued,
         n_duplicate_pairs=len(duplicates),
         n_clusters=len(clusters),
         n_beliefs_in_clusters=in_clusters,
@@ -385,6 +502,7 @@ def consolidation_audit(
         jaccard_min=jaccard_min,
         levenshtein_min=levenshtein_min,
         max_candidate_pairs=max_candidate_pairs,
+        max_shingle_df=max_shingle_df,
         truncated=truncated,
         clusters=clusters,
     )
@@ -405,10 +523,15 @@ def format_consolidation_report(report: ConsolidationReport) -> str:
             if report.truncated
             else ""
         ),
+        f"  rescued past df={report.max_shingle_df:<4d} : "
+        f"{report.n_beliefs_rescued:,} beliefs blocked on rarest shingles",
         f"  duplicate pairs       : {report.n_duplicate_pairs:,}",
         f"  clusters (size >= {MIN_COMPONENT_SIZE})  : {report.n_clusters:,}",
         f"  beliefs in a cluster  : {report.n_beliefs_in_clusters:,}",
-        f"  of those, user-locked : {report.n_locked_in_clusters:,} "
+        # Locked *medoids* are the survivor anyway, so they are neither
+        # counted here nor priced; naming the line "user-locked" alone
+        # over-claimed, since a locked medoid is silently absent from it.
+        f"  locked non-medoids    : {report.n_locked_in_clusters:,} "
         "(never retired, so not priced)",
         f"  largest cluster       : {report.largest_cluster:,}",
         f"  would remove          : {report.n_would_remove:,} "

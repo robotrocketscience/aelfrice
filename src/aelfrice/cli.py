@@ -9069,9 +9069,11 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         default=None,
         metavar="N",
         help=(
-            "with --consolidate: stop after N blocked candidate pairs "
-            "(default 2000000). Reaching the budget is reported, never "
-            "silent — every count then reads as a floor."
+            "with --consolidate: stop after N candidate pairs have been "
+            "attempted (default 2000000; attempts, not distinct pairs, so "
+            "the bound holds on a bucket that keeps re-proposing the same "
+            "pair). Reaching the budget is reported, never silent — every "
+            "count then reads as a floor."
         ),
     )
     p_doctor.add_argument(
