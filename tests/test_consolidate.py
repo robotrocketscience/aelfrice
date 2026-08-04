@@ -203,9 +203,9 @@ class TestMedoidSampleCapIsBounded:
         self, store: MemoryStore, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Terminates by construction: 12 short beliefs at cap 4."""
-        import aelfrice.consolidate as consolidate_mod
-
-        monkeypatch.setattr(consolidate_mod, "MEDOID_SAMPLE_CAP", 4)
+        monkeypatch.setattr(
+            "aelfrice.consolidate.MEDOID_SAMPLE_CAP", 4,
+        )
         # Ids sort ASC, so "a00".."a11" — the sampled pool is a00..a03.
         # Distances grow with the index, so the *central* member is near
         # a05/a06, i.e. outside the pool. An unbounded medoid returns one
@@ -235,14 +235,16 @@ class TestMedoidSampleCapIsBounded:
         *different* member — which is what makes the pair a measurement
         of the bound rather than of the fixture.
         """
-        import aelfrice.consolidate as consolidate_mod
-
         for i in range(12):
             _insert(store, f"a{i:02d}", f"{_PRE} {'z' * (i + 1)}")
 
-        monkeypatch.setattr(consolidate_mod, "MEDOID_SAMPLE_CAP", 4)
+        monkeypatch.setattr(
+            "aelfrice.consolidate.MEDOID_SAMPLE_CAP", 4,
+        )
         bounded = consolidation_audit(store).clusters[0].medoid_id
-        monkeypatch.setattr(consolidate_mod, "MEDOID_SAMPLE_CAP", 10_000_000)
+        monkeypatch.setattr(
+            "aelfrice.consolidate.MEDOID_SAMPLE_CAP", 10_000_000,
+        )
         exact = consolidation_audit(store).clusters[0].medoid_id
         assert bounded != exact, (
             f"bounded and exact both chose {bounded!r}: this fixture no "

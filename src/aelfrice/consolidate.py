@@ -338,7 +338,21 @@ def _blocked_pairs(
     the old one and no cluster can be lost.
 
     Buckets are consumed smallest-first — primary before rescue — so
-    hitting the budget drops the largest, least discriminating ones.
+    hitting the budget drops the largest, least discriminating ones,
+    and the primary pass is exhausted before any rescue bucket is
+    considered.
+
+    The superset property is stated for a run that does not truncate.
+    Under budget exhaustion it does not hold against the *old* code,
+    and deliberately so: the old guard counted distinct pairs kept, so
+    it could stay false while the nested loop ran, and switching it to
+    pairs attempted is what makes the bound real. A store that now
+    truncates was previously doing unbounded work rather than finding
+    more clusters. That case is not silent — it sets `truncated`, which
+    the report renders. On the development store the pass attempts
+    60,666 pairs against a ceiling of 2,000,000, so this is a
+    correctness property of the bound rather than a live behaviour
+    change.
     """
     df: dict[tuple[str, ...], int] = {}
     for shingles_of in shingle_sets.values():
