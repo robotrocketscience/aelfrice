@@ -1290,7 +1290,7 @@ class MemoryStore:
         # #1310: the whole open-time schema window runs under one
         # schema-cookie retry, not just the DDL loops. Every statement
         # in it — the `_drop_stale_ingest_log` reads, the schema_meta
-        # SELECTs, the backfill writes, and `_resolve_local_scope_id` —
+        # queries, the backfill writes, and `_resolve_local_scope_id` —
         # is exposed to a concurrent opener committing DDL between
         # prepare and step. The window is idempotent by construction
         # (IF NOT EXISTS / OR IGNORE / marker-gated), so re-running it
