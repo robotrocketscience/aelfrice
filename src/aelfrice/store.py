@@ -1716,7 +1716,11 @@ class MemoryStore:
         methods themselves still raise, so a test or repair tool that
         calls one directly sees the exception unchanged.
 
-        Returns True if the pass completed, False if it raised.
+        Returns True if the pass completed *or was skipped*, False only
+        if it raised. The skip case is the #1328 read-only handle below:
+        there is no third return value, and True is the fail-safe of the
+        two, because False is consumed as "record a failure marker" —
+        which is itself a write.
         """
         if self._read_only:
             # #1328: every pass here writes, and a read-only handle exists
