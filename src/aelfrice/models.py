@@ -395,7 +395,7 @@ class Belief:
     """A unit of memory with Bayesian confidence and lock state.
 
     Fields: id, content, content_hash, alpha, beta, type, lock_level,
-    locked_at, created_at, last_retrieved_at, session_id, origin,
+    locked_at, lock_expires_at, created_at, last_retrieved_at, session_id, origin,
     hibernation_score, activation_condition.
 
     `session_id` (v1.2+) tags the belief with the ingest session that
@@ -449,6 +449,16 @@ class Belief:
     Only meaningful when `lock_level == LOCK_USER`. Defaults to 'frozen'
     so every existing lock keeps its pre-#1016 always-verbatim behaviour
     until the user opts a lock down to 'reference'.
+
+    `lock_expires_at` (#1314) is the time-boxed lock's absolute UTC
+    expiry, ISO-8601. NULL means no expiry — the permanent lock that
+    every pre-#1314 row migrates to, byte-identical in behaviour. Only
+    meaningful when `lock_level == LOCK_USER`. It is never evaluated as
+    a predicate: an idempotent sweep at store open flips due rows to
+    `lock_level='none'`, so every existing `lock_level` read stays
+    correct without becoming `now`-aware. The column is *retained*
+    after that flip as the audit trace of why the belief is unlocked,
+    which is why a non-NULL value does not imply "still locked".
     """
 
     id: str
@@ -472,6 +482,7 @@ class Belief:
     project_context: str = ""
     last_confirmed_at: str | None = None
     lock_tier: str = DEFAULT_LOCK_TIER
+    lock_expires_at: str | None = None
 
 
 ANCHOR_TEXT_MAX_LEN: Final[int] = 1000

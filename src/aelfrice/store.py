@@ -216,7 +216,17 @@ _SCHEMA: tuple[str, ...] = (
         -- LOCK_TIERS frozenset (ALTER ADD COLUMN can't carry the CHECK
         -- reliably). Default 'frozen' = pre-#1016 always-verbatim.
         lock_tier           TEXT NOT NULL DEFAULT 'frozen'
-            CHECK (lock_tier IN ('frozen', 'reference'))
+            CHECK (lock_tier IN ('frozen', 'reference')),
+        -- #1314 time-boxed locks. Absolute ISO-8601 UTC expiry;
+        -- NULL = no expiry = the permanent lock. Only meaningful when
+        -- lock_level='user'. Never read as a predicate: the open-time
+        -- sweep materialises expiry by flipping due rows to
+        -- lock_level='none', so the ~15 existing lock_level reads stay
+        -- correct unchanged. Retained after the flip as the audit trace
+        -- of why the belief is unlocked, so non-NULL does NOT imply
+        -- "still locked". No CHECK — nothing to enumerate, and ALTER
+        -- ADD COLUMN cannot carry one reliably anyway.
+        lock_expires_at     TEXT
     )
     """,
     """
@@ -824,6 +834,11 @@ _MIGRATIONS: tuple[str, ...] = (
     # lock_level='user'. CHECK omitted on ALTER (brittle across SQLite
     # versions); python-side LOCK_TIERS validates writes.
     "ALTER TABLE beliefs ADD COLUMN lock_tier TEXT NOT NULL DEFAULT 'frozen'",
+    # v4.x #1314 time-boxed locks. Nullable with no default, so every
+    # existing row migrates to NULL — no expiry — and is behaviourally
+    # byte-identical to a pre-#1314 permanent lock. No CHECK on the
+    # ALTER, matching the convention above.
+    "ALTER TABLE beliefs ADD COLUMN lock_expires_at TEXT",
 )
 
 # Indexes that depend on migrated columns. Run after _MIGRATIONS so
@@ -1010,6 +1025,9 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
     # queries projecting a custom column list without it default to
     # 'frozen' — the always-verbatim tier, preserving prior behaviour.
     lock_tier = row["lock_tier"] if "lock_tier" in keys else DEFAULT_LOCK_TIER
+    lock_expires_at = (
+        row["lock_expires_at"] if "lock_expires_at" in keys else None
+    )
     return Belief(
         id=row["id"],
         content=row["content"],
@@ -1032,6 +1050,7 @@ def _row_to_belief(row: sqlite3.Row) -> Belief:
         project_context=project_context,
         last_confirmed_at=last_confirmed_at,
         lock_tier=lock_tier,
+        lock_expires_at=lock_expires_at,
     )
 
 
@@ -2790,8 +2809,8 @@ class MemoryStore:
                 created_at, last_retrieved_at, session_id, origin,
                 hibernation_score, activation_condition,
                 retention_class, valid_to, scope, project_context,
-                last_confirmed_at, lock_tier
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_confirmed_at, lock_tier, lock_expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 b.id, b.content, b.content_hash, b.alpha, b.beta, b.type,
@@ -2799,7 +2818,7 @@ class MemoryStore:
                 b.created_at, b.last_retrieved_at, b.session_id, b.origin,
                 b.hibernation_score, b.activation_condition,
                 b.retention_class, b.valid_to, b.scope, project_context,
-                b.last_confirmed_at, b.lock_tier,
+                b.last_confirmed_at, b.lock_tier, b.lock_expires_at,
             ),
         )
         self._conn.execute(
@@ -2916,7 +2935,8 @@ class MemoryStore:
                 scope = ?,
                 project_context = ?,
                 last_confirmed_at = ?,
-                lock_tier = ?
+                lock_tier = ?,
+                lock_expires_at = ?
             WHERE id = ?
             """,
             (
@@ -2925,7 +2945,7 @@ class MemoryStore:
                 b.created_at, b.last_retrieved_at, b.session_id,
                 b.origin, b.hibernation_score, b.activation_condition,
                 b.retention_class, b.valid_to, b.scope, b.project_context,
-                b.last_confirmed_at, b.lock_tier, b.id,
+                b.last_confirmed_at, b.lock_tier, b.lock_expires_at, b.id,
             ),
         )
         self._conn.execute("DELETE FROM beliefs_fts WHERE id = ?", (b.id,))
