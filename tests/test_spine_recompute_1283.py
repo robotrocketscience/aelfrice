@@ -99,6 +99,37 @@ def test_ulid_orders_beliefs_that_share_a_created_at(
     assert edges == {("b", "a"), ("c", "b")}
 
 
+def test_ulid_beats_belief_id_when_the_two_orders_disagree(
+    store: MemoryStore,
+) -> None:
+    """The ULID is the key — not the belief id that usually agrees with it.
+
+    The sibling test above picks ids whose alphabetical order happens to
+    match their ULID order, so `(created_at, id)` and
+    `(created_at, ULID, id)` produce the same chain and it cannot tell
+    them apart. Replacing the log key with a constant leaves it green.
+
+    Here the two orders are deliberately opposed: `aaa` carries the
+    LAST ULID and `ccc` the first, so the log says ccc-bbb-aaa while the
+    id says aaa-bbb-ccc. Only a recompute that actually consults the log
+    produces the expected set — which matters because 96.5% of this
+    store shares a `created_at`, so the id is doing the ordering
+    whenever the ULID is ignored.
+    """
+    same = "2026-03-01T00:00:00Z"
+    for bid in ("aaa", "bbb", "ccc"):
+        _belief(store, bid, session="s1", created_at=same)
+    _log(store, "01CCCCCCCCCCCCCCCCCCCCCCCC", ["aaa"])
+    _log(store, "01BBBBBBBBBBBBBBBBBBBBBBBB", ["bbb"])
+    _log(store, "01AAAAAAAAAAAAAAAAAAAAAAAA", ["ccc"])
+
+    edges, no_log = recompute_spine_edges(store)
+    assert no_log == set()
+    # ULID order ccc < bbb < aaa. An `(created_at, id)` sort would give
+    # aaa < bbb < ccc and therefore {("bbb", "aaa"), ("ccc", "bbb")}.
+    assert edges == {("bbb", "ccc"), ("aaa", "bbb")}
+
+
 def test_a_belief_takes_its_earliest_log_row(store: MemoryStore) -> None:
     """Later rows are corroborations; only the first records insertion."""
     same = "2026-03-01T00:00:00Z"

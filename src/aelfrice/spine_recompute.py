@@ -58,7 +58,7 @@ import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
-from aelfrice.models import EDGE_TEMPORAL_NEXT
+from aelfrice.models import EDGE_TEMPORAL_NEXT, INGEST_SOURCE_LEGACY_UNKNOWN
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from aelfrice.store import MemoryStore
@@ -75,7 +75,7 @@ __all__ = [
 # ULID prefix is migration wall-clock and their order is `beliefs.rowid`
 # relabelled, so keying on them would launder rowid order into a key the
 # contract calls durable.
-SYNTH_SOURCE_KIND: Final[str] = "legacy_unknown"
+SYNTH_SOURCE_KIND: Final[str] = INGEST_SOURCE_LEGACY_UNKNOWN
 
 # Sorts after every real ULID (Crockford base32 tops out at 'Z'), so the
 # no-log convention needs no branch in the sort key itself.
@@ -164,11 +164,24 @@ def recompute_spine_edges(
     so a caller can attribute divergence to that bucket without
     recomputing the join.
 
-    Deterministic: the sort key is `(created_at, log ULID or sentinel,
-    id)` and every component is durable. Soft-deleted beliefs stay in
-    the chain, matching `session_predecessor_id` — spine integrity has
-    to survive GC (#1064), and skip-but-continue happens at traversal
-    time.
+    Deterministic over a fixed store: the sort key is `(created_at, log
+    ULID or sentinel, id)` and re-running it reproduces the same edge
+    set. Durability of the ULID component is an **observed property, not
+    a guarantee**, and the operator's #1283 constraint (3) forbids
+    wording that implies otherwise: `ulid.make_generator` is monotone
+    only *within* a process, and `ulid.py`'s own docstring records that
+    "cross-process drift is possible but tolerated" because the
+    `ingest_log` primary key requires only uniqueness. Measured on the
+    development store, 0.017% of session-scoped log rows (10 groups,
+    20 rows) share a millisecond across two distinct writer processes;
+    their intra-millisecond order is 80 random bits rather than a write
+    order, and today they decide zero spine links. A hard guarantee
+    needs a deterministic intra-millisecond tiebreak, which this does
+    not add.
+
+    Soft-deleted beliefs stay in the chain, matching
+    `session_predecessor_id` — spine integrity has to survive GC
+    (#1064), and skip-but-continue happens at traversal time.
     """
     keys = _log_sort_keys(store)
     rows = store._conn.execute(  # noqa: SLF001 - read-only
