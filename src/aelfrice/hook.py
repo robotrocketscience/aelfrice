@@ -39,6 +39,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Any, Final, Iterator, cast
 
+# Deliberately outside the guarded block below: `config_discovery` is
+# stdlib-only and imports nothing from `aelfrice`, so it cannot be the
+# import that fails, and the `@config_discovery_scope()` decorator has to
+# resolve at def time or `user_prompt_submit` does not exist at all.
+from aelfrice.config_discovery import config_discovery_scope
+
 try:
     from aelfrice.db_paths import active_project_context, db_path
     from aelfrice.hook_audit import (
@@ -840,6 +846,7 @@ def read_user_prompt_submit_telemetry(
     return records
 
 
+@config_discovery_scope()
 def user_prompt_submit(
     *,
     stdin: IO[str] | None = None,
@@ -853,6 +860,23 @@ def user_prompt_submit(
     runs retrieval against the `prompt` field, and writes the
     formatted output to `stdout`. Streams default to the process
     `sys.stdin`/`sys.stdout`/`sys.stderr`.
+
+    The `.aelfrice.toml` discovery scope (#1304) covers the whole turn,
+    not just each retrieval inside it. One turn runs retrieval several
+    times, and each `retrieve()` opens its own scope; nesting means they
+    all share the outer memo instead of re-walking per call. Scoped to
+    the turn rather than the process, so a config file written between
+    two prompts is honoured by the next one.
+
+    This does not make the turn cost one walk. Readers that still carry
+    private walk loops — `cadence`, `context_rebuilder`, `hook_audit`,
+    `phantom_trigger`, `phantom_promotion_opportunity`, and this module's
+    own two TOML loaders — are untouched by the scope until they are
+    converted. And even fully converted the floor is two walks, because
+    `_load_aelfrice_toml` is called once from the hook process's cwd
+    (the sentiment lane) and once from the payload's cwd (the category
+    lane, #909/#887); those are different questions with different
+    answers, not a redundancy to collapse.
     """
     sin = stdin if stdin is not None else sys.stdin
     sout = stdout if stdout is not None else sys.stdout
