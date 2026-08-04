@@ -328,6 +328,49 @@ def test_back_compat_config_filename_reexports() -> None:
     )
 
 
+def test_onboard_config_resolves_the_same_whether_the_target_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`aelf onboard <path>` reads one config, existing target or not.
+
+    This is a real behaviour change from #1304 and not a no-op, so it is
+    pinned rather than left to be rediscovered. `cli._load_llm_config`
+    used to start its private walk at `root.resolve() if root.exists()
+    else root` — an unresolved relative target made the walk start at
+    `Path(".")`, whose `.parent` is itself, so it stopped immediately and
+    every ancestor config was invisible. An existing target resolved and
+    walked normally. `discover_config` resolves unconditionally, so the
+    two cases now agree.
+
+    They agree in the direction that keeps a project's config honoured:
+    `[onboard.llm] enabled = false` in an ancestor governs `aelf onboard
+    typo-dir` the same way it governs `aelf onboard real-dir`. The reverse
+    reading — that the old lexical start was load-bearing — does not hold,
+    because it was already not what an existing path did.
+    """
+    from aelfrice import cli
+
+    project = tmp_path / "project"
+    (project / "child").mkdir(parents=True)
+    (project / ".aelfrice.toml").write_text(
+        "[onboard.llm]\nenabled = false\nmodel = \"from-ancestor\"\n",
+    )
+    monkeypatch.chdir(project / "child")
+    (project / "child" / "real-dir").mkdir()
+
+    existing = cli._load_llm_config(Path("real-dir"))
+    missing = cli._load_llm_config(Path("typo-dir"))
+
+    assert existing.enabled is False, (
+        "an existing relative target stopped reading the ancestor config"
+    )
+    assert (missing.enabled, missing.model) == (existing.enabled, existing.model), (
+        "a target that does not exist resolves a different config than one "
+        f"that does: {missing} vs {existing}"
+    )
+
+
 def test_scope_binds_start_none_to_the_cwd_at_first_call(
     tmp_path: Path,
 ) -> None:
