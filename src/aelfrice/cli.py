@@ -24,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Final, Sequence, cast
 
+from aelfrice.config_discovery import discover_config
 from aelfrice.doc_linker import ANCHOR_MANUAL, link_belief_to_document
 from aelfrice.auditor import (
     CORPUS_MIN_DEFAULT as AUDIT_CORPUS_MIN_DEFAULT,
@@ -342,40 +343,36 @@ def _load_llm_config(root: Path) -> _LLMConfig:
     """
     import tomllib
 
-    current = root.resolve() if root.exists() else root
-    seen: set[Path] = set()
-    candidate = current if current.is_dir() else current.parent
-    while candidate not in seen:
-        seen.add(candidate)
-        cfg_path = candidate / ".aelfrice.toml"
-        if cfg_path.is_file():
-            try:
-                raw = cfg_path.read_bytes()
-                parsed: Any = tomllib.loads(
-                    raw.decode("utf-8", errors="replace")
-                )
-            except (OSError, tomllib.TOMLDecodeError) as exc:
-                print(
-                    f"aelfrice llm_classifier: cannot read {cfg_path}: {exc}",
-                    file=sys.stderr,
-                )
-                return _LLMConfig.default()
-            if not isinstance(parsed, dict):
-                return _LLMConfig.default()
-            from typing import cast
-            parsed_dict = cast(dict[str, Any], parsed)
-            section = parsed_dict.get("onboard", {})
-            if isinstance(section, dict):
-                section_dict = cast(dict[str, Any], section)
-                llm_any = section_dict.get("llm", {})
-                if isinstance(llm_any, dict):
-                    return _LLMConfig.from_mapping(
-                        cast(dict[str, Any], llm_any)
-                    )
-            return _LLMConfig.default()
-        if candidate.parent == candidate:
-            break
-        candidate = candidate.parent
+    # #1304: the walk lives in `config_discovery`, so it is memoized
+    # inside a `config_discovery_scope`. A private loop here is
+    # invisible to that memo and costs a full cwd-to-root walk.
+    start = root.resolve() if root.exists() else root
+    cfg_path = discover_config(start if start.is_dir() else start.parent)
+    if cfg_path is None:
+        return _LLMConfig.default()
+    try:
+        raw = cfg_path.read_bytes()
+        parsed: Any = tomllib.loads(
+            raw.decode("utf-8", errors="replace")
+        )
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        print(
+            f"aelfrice llm_classifier: cannot read {cfg_path}: {exc}",
+            file=sys.stderr,
+        )
+        return _LLMConfig.default()
+    if not isinstance(parsed, dict):
+        return _LLMConfig.default()
+    from typing import cast
+    parsed_dict = cast(dict[str, Any], parsed)
+    section = parsed_dict.get("onboard", {})
+    if isinstance(section, dict):
+        section_dict = cast(dict[str, Any], section)
+        llm_any = section_dict.get("llm", {})
+        if isinstance(llm_any, dict):
+            return _LLMConfig.from_mapping(
+                cast(dict[str, Any], llm_any)
+            )
     return _LLMConfig.default()
 
 
@@ -5787,25 +5784,21 @@ def _load_aelfrice_config_dict(root: Path) -> dict[str, Any] | None:
     """
     import tomllib
 
-    current = root.resolve() if root.exists() else root
-    seen: set[Path] = set()
-    candidate = current if current.is_dir() else current.parent
-    while candidate not in seen:
-        seen.add(candidate)
-        cfg_path = candidate / ".aelfrice.toml"
-        if cfg_path.is_file():
-            try:
-                raw = cfg_path.read_bytes()
-                parsed: Any = tomllib.loads(
-                    raw.decode("utf-8", errors="replace")
-                )
-            except (OSError, tomllib.TOMLDecodeError):
-                return None
-            return parsed if isinstance(parsed, dict) else None
-        if candidate.parent == candidate:
-            return None
-        candidate = candidate.parent
-    return None
+    # #1304: the walk lives in `config_discovery`, so it is memoized
+    # inside a `config_discovery_scope`. A private loop here is
+    # invisible to that memo and costs a full cwd-to-root walk.
+    start = root.resolve() if root.exists() else root
+    cfg_path = discover_config(start if start.is_dir() else start.parent)
+    if cfg_path is None:
+        return None
+    try:
+        raw = cfg_path.read_bytes()
+        parsed: Any = tomllib.loads(
+            raw.decode("utf-8", errors="replace")
+        )
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _cmd_spine(args: argparse.Namespace, out: object) -> int:

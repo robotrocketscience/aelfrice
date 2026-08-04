@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -257,16 +258,34 @@ def test_no_module_carries_a_private_config_walk() -> None:
     fix; without this arm the next reader copies the same twelve lines
     from a neighbour, exactly as the first fourteen did.
 
-    Keyed on the loop's own shape (`while current not in seen`) rather
-    than on a module list, so a new private walk is caught wherever it
-    lands. `config_discovery` itself is the one legitimate implementor.
+    Keyed on the loop's *shape* by regex, not on one spelling and not on
+    a module list, so a new private walk is caught wherever it lands and
+    whatever it names its loop variable. An earlier version of this guard
+    matched the literal `while current not in seen`; the two loops in
+    `cli.py` spell it `while candidate not in seen` and sailed past it,
+    so the guard was green while the regression it names was present.
+    Renaming the loop variable is not a defence.
+
+    `rglob` rather than `glob`: 15 modules live under `wonder/`,
+    `slash_commands/` and `query_understanding/` and were never scanned.
+
+    The second clause matches the config filename *value*, not the token
+    `CONFIG_FILENAME`: `project_warm` defines its own `_CONFIG_FILENAME`
+    (`"config.json"`) and walks for a sentinel directory, so a token
+    match reports it as an offender when its loop has nothing to do with
+    `.aelfrice.toml`.
+
+    `config_discovery` itself is the one legitimate implementor.
     """
+    walk = re.compile(r"while\s+\w+\s+not\s+in\s+seen")
     src = Path(__file__).resolve().parents[1] / "src" / "aelfrice"
     offenders = sorted(
-        module.name
-        for module in src.glob("*.py")
+        str(module.relative_to(src))
+        for module in src.rglob("*.py")
         if module.name != "config_discovery.py"
-        and "while current not in seen" in module.read_text(encoding="utf-8")
+        and "__pycache__" not in module.parts
+        and walk.search(text := module.read_text(encoding="utf-8"))
+        and CONFIG_FILENAME in text
     )
     assert offenders == [], (
         f"these modules walk to find .aelfrice.toml themselves: {offenders}. "
