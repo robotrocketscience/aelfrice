@@ -52,6 +52,8 @@ import tomllib
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Final, cast
 
+from aelfrice import config_discovery
+from aelfrice.config_discovery import discover_config
 from aelfrice.models import (
     LOCK_USER,
     ORIGIN_AGENT_INFERRED,
@@ -68,7 +70,9 @@ from aelfrice.models import (
 if TYPE_CHECKING:
     from aelfrice.models import Belief
 
-CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
+CONFIG_FILENAME: Final[str] = config_discovery.CONFIG_FILENAME
+"""Re-exported from `config_discovery` (#1304): one definition, so a
+rename cannot leave this module hunting a different filename."""
 SECTION: Final[str] = "hook"
 PROVENANCE_RENDER_KEY: Final[str] = "provenance_render"
 ENV_PROVENANCE_RENDER: Final[str] = "AELFRICE_PROVENANCE_RENDER"
@@ -155,34 +159,30 @@ def _read_toml(start: Path | None = None) -> bool | None:
     never raises. A render flag must not be able to break the hook.
     """
     serr: IO[str] = sys.stderr
-    current = (start if start is not None else Path.cwd()).resolve()
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / CONFIG_FILENAME
-        if candidate.is_file():
-            try:
-                parsed: dict[str, Any] = tomllib.loads(
-                    candidate.read_bytes().decode("utf-8", errors="replace"),
-                )
-            except (OSError, tomllib.TOMLDecodeError) as exc:
-                print(
-                    f"aelfrice provenance_render: cannot read {candidate}: "
-                    f"{exc}",
-                    file=serr,
-                )
-                return None
-            section_obj: Any = parsed.get(SECTION, {})
-            if not isinstance(section_obj, dict):
-                return None
-            val: Any = cast(dict[str, Any], section_obj).get(
-                PROVENANCE_RENDER_KEY
-            )
-            return val if isinstance(val, bool) else None
-        if current.parent == current:
-            break
-        current = current.parent
-    return None
+    # #1304: the walk lives in `config_discovery`, so it is memoized
+    # inside a `config_discovery_scope`. A private loop here is invisible
+    # to that memo and costs a full cwd-to-root walk of its own.
+    candidate = discover_config(start)
+    if candidate is None:
+        return None
+    try:
+        parsed: dict[str, Any] = tomllib.loads(
+            candidate.read_bytes().decode("utf-8", errors="replace"),
+        )
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        print(
+            f"aelfrice provenance_render: cannot read {candidate}: "
+            f"{exc}",
+            file=serr,
+        )
+        return None
+    section_obj: Any = parsed.get(SECTION, {})
+    if not isinstance(section_obj, dict):
+        return None
+    val: Any = cast(dict[str, Any], section_obj).get(
+        PROVENANCE_RENDER_KEY
+    )
+    return val if isinstance(val, bool) else None
 
 
 def is_provenance_render_enabled(
