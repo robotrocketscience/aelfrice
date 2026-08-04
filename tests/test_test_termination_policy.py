@@ -51,7 +51,25 @@ SUBPROCESS_BLOCKING = frozenset(
 )
 """`subprocess` entry points that wait on a child process."""
 
-SYNC_BLOCKING = frozenset({"wait", "join", "acquire", "get"})
+_UNAMBIGUOUS_SYNC = frozenset({"wait", "join"})
+"""Zero-argument `.wait()` / `.join()` — always a sync primitive.
+
+Checked on receiver-name-independent grounds, because the receiver name
+is exactly what a deadlocking test does not tell you: the shape that hung
+in #1318 was `t.join()`, and `t` matches no hint. The zero-argument form
+disambiguates without a name: `str.join` and `os.path.join` both take
+exactly one positional argument, and `Path.joinpath` is a different
+attribute, so `x.join()` with no args cannot be one of them.
+"""
+
+_HINTED_SYNC = frozenset({"acquire", "get"})
+"""Blocking methods that are genuinely ambiguous by name alone.
+
+`.get()` on a dict is ubiquitous and never blocks, so these two are
+gated on a receiver-name hint. `.join()`/`.wait()` are not — see above.
+"""
+
+SYNC_BLOCKING = _UNAMBIGUOUS_SYNC | _HINTED_SYNC
 """Blocking methods of `threading` / `queue` primitives.
 
 Checked only when called with no positional argument and no `timeout=`
@@ -59,12 +77,10 @@ keyword. `join(5)` and `get(True, 5)` are bounded and pass.
 """
 
 _SYNC_HINTS = ("barrier", "thread", "lock", "queue", "event", "cond", "sem")
-"""Receiver-name substrings that mark a call as a sync primitive.
+"""Receiver-name substrings that mark an ambiguous call as a primitive.
 
-Deliberately narrow. `.get()` on a dict and `.join()` on a string or a
-`Path` are extremely common and never block; matching every `.get()`
-would make this check useless. `t.join()` and `barrier.wait()` — the
-two shapes that actually deadlocked — are both caught.
+Applies to `_HINTED_SYNC` only. `t.join()` and `barrier.wait()` — the
+two shapes that actually deadlocked — are both caught without it.
 """
 
 
@@ -107,7 +123,9 @@ def _unbounded_calls(path: Path) -> list[tuple[int, str]]:
             continue
 
         if func.attr in SYNC_BLOCKING and not node.args:
-            if not any(hint in receiver for hint in _SYNC_HINTS):
+            if func.attr in _HINTED_SYNC and not any(
+                hint in receiver for hint in _SYNC_HINTS
+            ):
                 continue
             if not _is_bounded(node):
                 found.append((node.lineno, f"{receiver}.{func.attr}()"))
@@ -138,9 +156,15 @@ def test_no_unbounded_blocking_calls_in_tests() -> None:
 def test_blocking_calls_are_not_reached_through_aliases() -> None:
     """The name-based check above must not be silently bypassable.
 
-    `from subprocess import run` would make a `run(...)` call invisible
-    to `_unbounded_calls`. No test does that today; this pins it, so the
-    first one to try fails here instead of quietly opening a hole.
+    Two bypasses, both of which make a blocking call invisible to
+    `_unbounded_calls`, which matches on the literal receiver name
+    `subprocess`:
+
+    * `from subprocess import run` — the call becomes a bare `run(...)`.
+    * `import subprocess as sp` — the receiver becomes `sp`.
+
+    No test does either today; this pins both, so the first one to try
+    fails here instead of quietly opening a hole.
 
     Terminates by construction: pure AST walk, no I/O beyond reads.
     """
@@ -151,13 +175,21 @@ def test_blocking_calls_are_not_reached_through_aliases() -> None:
         except SyntaxError:  # pragma: no cover
             continue
         for node in ast.walk(tree):
+            rel = path.relative_to(TESTS_ROOT.parent)
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "subprocess" and alias.asname:
+                        aliased.append(
+                            f"{rel}:{node.lineno}: import subprocess as "
+                            f"{alias.asname}"
+                        )
+                continue
             if not isinstance(node, ast.ImportFrom):
                 continue
             if node.module != "subprocess":
                 continue
             for alias in node.names:
                 if alias.name in SUBPROCESS_BLOCKING:
-                    rel = path.relative_to(TESTS_ROOT.parent)
                     aliased.append(f"{rel}:{node.lineno}: from subprocess "
                                    f"import {alias.name}")
     assert not aliased, (
