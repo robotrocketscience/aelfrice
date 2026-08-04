@@ -43,10 +43,17 @@ __all__ = [
 # The project-config filename every reader walks up looking for.
 CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 
-# A ContextVar rather than a plain dict so concurrent operations in
-# threads or async tasks cannot see each other's memo. A thread started
-# inside a scope begins with a fresh context, so it walks — correct, if
-# slightly wasteful.
+# A ContextVar rather than a plain dict so concurrent operations cannot
+# see each other's memo. The two concurrency primitives differ and the
+# difference is worth stating: a `threading.Thread` started inside a
+# scope begins with a *fresh* context, so it walks — correct, if
+# slightly wasteful. An `asyncio` task created inside a scope *copies*
+# the context, so it keeps this dict and goes on using it after the
+# scope exits, which is a stale read of one operation's age. Nothing in
+# `aelfrice` creates a thread or a task — grep `src/aelfrice` for
+# `asyncio`, `threading.Thread`, `concurrent.futures`: no hits — so the
+# asyncio case is latent, not live. Anything that introduces one must
+# enter its own scope rather than inherit this one.
 _CONFIG_DISCOVERY_MEMO: ContextVar[dict[Path, Path | None] | None] = ContextVar(
     "aelfrice_config_discovery_memo",
     default=None,
@@ -90,6 +97,18 @@ def discover_config(start: Path | None = None) -> Path | None:
     resolves config from a *different* directory (the hook resolving the
     agent's payload cwd rather than the hook process's incidental cwd)
     is asking a different question and must get the answer to it.
+
+    **Invariant: no caller may `os.chdir` inside a scope.** `start=None`
+    binds to the cwd at the scope's *first* such call and is not
+    re-read afterwards, so a chdir mid-scope would resolve config from
+    the old directory. This is a deliberate trade, not an oversight:
+    re-reading means `Path.cwd().resolve()` per call, and `resolve()` is
+    O(path depth) in `lstat` — measured at 7 `lstat` for a depth-8 cwd,
+    against 26 `start=None` calls in one `retrieve()`, i.e. ~182 extra
+    syscalls per retrieval, the same cost class #1289 removed. The
+    invariant holds today: the only `os.chdir` in `src/aelfrice` is
+    `project_warm._warm_store`, which runs in its own CLI process,
+    restores cwd in a `finally`, and is never inside a scope.
     """
     memo = _CONFIG_DISCOVERY_MEMO.get()
     if memo is not None and start is None and _CWD_KEY in memo:
