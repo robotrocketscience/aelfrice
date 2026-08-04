@@ -16,7 +16,7 @@ as ``new`` when filtering so the session-start guarantee (locked beliefs
 re-ship on every fire) is preserved.
 
 Concurrency: read-modify-write of the JSON file is serialized by an
-``fcntl.LOCK_EX`` advisory lock on a sibling ``.session-ring.lock``
+exclusive advisory lock on a sibling ``.session-ring.lock``
 file. Multiple hook processes (UPS + PreToolUse) can fire near
 simultaneously; the lock keeps appends from clobbering each other. The
 critical section is tiny (parse JSON, append, atomic write) so no
@@ -30,7 +30,6 @@ allowed to break the hook.
 from __future__ import annotations
 
 import errno
-import fcntl
 import json
 import os
 import sys
@@ -43,6 +42,11 @@ from collections.abc import Callable, Iterator
 from typing import IO, Any, Final
 
 from aelfrice.db_paths import db_path
+from aelfrice.file_lock import (
+    lock_exclusive,
+    try_lock_exclusive,
+    unlock,
+)
 
 SESSION_RING_FILENAME: Final[str] = "session_injected_ids.json"
 """Sentinel filename; sibling of ``memory.db``."""
@@ -168,7 +172,7 @@ def _flock_until(lock_fd: int, *, timeout: float, lock_path: Path) -> None:
     deadline = time.monotonic() + max(timeout, 0.0)
     while True:
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try_lock_exclusive(lock_fd)
             return
         except OSError as err:
             if err.errno not in (errno.EACCES, errno.EAGAIN):
@@ -218,9 +222,10 @@ def exclusive_file_lock(
     read-all → rewrite pattern and share the same lost-update race that
     this lock closes for the ring (#1145).
 
-    Fail-soft: if the lock cannot be acquired (e.g. ``fcntl`` unsupported
-    on the backing filesystem), the block still runs unlocked rather than
-    drop the caller's write — matching the best-effort contract of the
+    Fail-soft: if the lock cannot be acquired (advisory locking unsupported
+    on the backing filesystem, or absent entirely — see
+    ``file_lock.HAVE_ADVISORY_LOCKS``), the block still runs unlocked rather
+    than drop the caller's write — matching the best-effort contract of the
     surfaces that use it.
     """
     lock_path = target_path.with_name(target_path.name + ".lock")
@@ -228,7 +233,7 @@ def exclusive_file_lock(
     try:
         lock_fd = _open_lock(lock_path)
         if timeout is None:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            lock_exclusive(lock_fd)
         else:
             _flock_until(lock_fd, timeout=timeout, lock_path=lock_path)
     except FileLockTimeout:
@@ -250,7 +255,7 @@ def exclusive_file_lock(
     finally:
         if lock_fd is not None:
             try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                unlock(lock_fd)
             except OSError:
                 # Best-effort unlock: closing the fd below releases the
                 # lock regardless, so a failed explicit unlock is moot.
@@ -502,7 +507,7 @@ def append_ids(
         return -1
     try:
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            lock_exclusive(lock_fd)
         except OSError as exc:
             _warn(stderr, f"session_ring: flock failed (non-fatal): {exc}")
             return -1
@@ -552,7 +557,7 @@ def append_ids(
             return -1
         finally:
             try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                unlock(lock_fd)
             except OSError:
                 # Best-effort cleanup; lock_fd may already be closed.
                 pass
@@ -653,7 +658,7 @@ def _update_p3_velocity_fields(
         return False
     try:
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            lock_exclusive(lock_fd)
         except OSError as exc:
             _warn(stderr, f"session_ring: flock failed (non-fatal): {exc}")
             return False
@@ -674,7 +679,7 @@ def _update_p3_velocity_fields(
             return False
         finally:
             try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                unlock(lock_fd)
             except OSError:
                 # Best-effort cleanup; lock_fd may already be closed.
                 pass
@@ -728,7 +733,7 @@ def push_classification(
         return False
     try:
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            lock_exclusive(lock_fd)
         except OSError as exc:
             _warn(stderr, f"session_ring: flock failed (non-fatal): {exc}")
             return False
@@ -750,7 +755,7 @@ def push_classification(
             return False
         finally:
             try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                unlock(lock_fd)
             except OSError:
                 # Best-effort cleanup; lock_fd may already be closed.
                 pass
@@ -786,7 +791,7 @@ def _locked_phantom_mutate(
         return False
     try:
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            lock_exclusive(lock_fd)
         except OSError as exc:
             _warn(stderr, f"session_ring: flock failed (non-fatal): {exc}")
             return False
@@ -804,7 +809,7 @@ def _locked_phantom_mutate(
             return False
         finally:
             try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                unlock(lock_fd)
             except OSError:
                 # Best-effort unlock; the fd is closed below regardless.
                 pass

@@ -38,7 +38,6 @@ What this module deliberately does NOT do:
 """
 from __future__ import annotations
 
-import fcntl
 import importlib.resources
 import json
 import os
@@ -49,6 +48,7 @@ from pathlib import Path
 from typing import Callable, Final, cast
 
 from aelfrice import setup as _setup
+from aelfrice.file_lock import try_lock_exclusive, unlock
 from aelfrice.setup import (
     SettingsScope,
     SETTINGS_LOCK_TIMEOUT_BACKGROUND,
@@ -646,7 +646,7 @@ def maybe_install_manifest(
     lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try_lock_exclusive(lock_fd)
         except BlockingIOError:
             # Another process holds the lock — they will finish the
             # merge, so we skip and report no-op.
@@ -673,7 +673,7 @@ def maybe_install_manifest(
         )
     finally:
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            unlock(lock_fd)
         except OSError:
             # best-effort: close() below releases the lock either way
             pass
