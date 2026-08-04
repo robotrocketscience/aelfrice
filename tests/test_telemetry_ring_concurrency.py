@@ -16,6 +16,8 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+import pytest
+
 from aelfrice.hook import _append_telemetry as _append_uprompt
 from aelfrice.hook import read_user_prompt_submit_telemetry
 from aelfrice.hook_search_tool import _append_telemetry as _append_search
@@ -24,24 +26,53 @@ from aelfrice.hook_search_tool import read_telemetry
 _WORKERS = 8
 _PER_WORKER = 25  # 200 total, well under the 1000 ring cap
 
+# These tests contend on an advisory file lock, so they need more than the
+# 5 s suite default; every blocking call below has its own ceiling under
+# this budget, so the test ends on an assertion rather than on a timeout.
+_RACE_BUDGET_SECONDS = 30
+_BARRIER_TIMEOUT_SECONDS = 10
+_JOIN_TIMEOUT_SECONDS = 15
+
 
 def _race(target) -> None:
     barrier = threading.Barrier(_WORKERS)
+    errors: list[Exception] = []
+    lock = threading.Lock()
 
     def worker(wid: int) -> None:
-        barrier.wait()  # maximise overlap on the read-modify-write
-        for i in range(_PER_WORKER):
-            target(wid, i)
+        try:
+            # Bounded: an unbounded wait here strands the siblings if any
+            # worker dies before reaching it, and non-daemon threads then
+            # block interpreter shutdown — pytest prints its summary and
+            # the process still never exits.
+            barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
+            for i in range(_PER_WORKER):
+                target(wid, i)
+        except Exception as exc:  # noqa: BLE001 - asserted below
+            barrier.abort()
+            with lock:
+                errors.append(exc)
 
     threads = [
-        threading.Thread(target=worker, args=(w,)) for w in range(_WORKERS)
+        threading.Thread(target=worker, args=(w,), daemon=True)
+        for w in range(_WORKERS)
     ]
     for t in threads:
         t.start()
+    stuck = []
     for t in threads:
-        t.join()
+        t.join(timeout=_JOIN_TIMEOUT_SECONDS)
+        if t.is_alive():
+            stuck.append(t.name)
+    assert not stuck, (
+        f"workers did not finish within {_JOIN_TIMEOUT_SECONDS}s: {stuck}. "
+        "The advisory lock is the thing under test; a hang must fail as an "
+        "assertion, not as a suite timeout."
+    )
+    assert not errors, f"workers raised: {errors!r}"
 
 
+@pytest.mark.timeout(_RACE_BUDGET_SECONDS)
 def test_uprompt_appender_loses_no_records_under_contention(
     tmp_path: Path,
 ) -> None:
@@ -61,6 +92,7 @@ def test_uprompt_appender_loses_no_records_under_contention(
     assert queries == expected
 
 
+@pytest.mark.timeout(_RACE_BUDGET_SECONDS)
 def test_search_tool_appender_loses_no_records_under_contention(
     tmp_path: Path,
 ) -> None:

@@ -33,6 +33,11 @@ _RACE_BUDGET_SECONDS = 30
 # Well under _RACE_BUDGET_SECONDS: contention must resolve as a wait, not
 # as a test timeout.
 _BUSY_TIMEOUT_MS = 2000
+# Every blocking call in the race has its own ceiling, all of them under
+# _RACE_BUDGET_SECONDS, so the test always reaches an assertion instead of
+# depending on the suite timeout to end it.
+_BARRIER_TIMEOUT_SECONDS = 10
+_JOIN_TIMEOUT_SECONDS = 15
 
 _SENTENCE = "The build cache lives under var and is pruned on every release."
 
@@ -59,12 +64,21 @@ def _race(db: Path, belief_id: str, valence: float) -> list[Exception]:
     lock = threading.Lock()
 
     def worker(wid: int) -> None:
-        store = MemoryStore(str(db))
-        store._conn.execute(  # pyright: ignore[reportPrivateUsage]
-            f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}"
-        )
+        # Store construction is inside the try. It was outside, and a
+        # worker that raised there (concurrent init can, #1310) never
+        # reached the barrier — stranding the other seven on a
+        # `wait()` that no longer had a quorum. pytest still failed the
+        # test on its own timeout, but the surviving threads were
+        # non-daemon, so the interpreter then blocked in
+        # `threading._shutdown()` and the process never exited: a clean
+        # "1 failed" summary followed by a hang to the CI job limit.
+        store = None
         try:
-            barrier.wait()
+            store = MemoryStore(str(db))
+            store._conn.execute(  # pyright: ignore[reportPrivateUsage]
+                f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}"
+            )
+            barrier.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
             for i in range(_PER_WORKER):
                 apply_feedback(
                     store=store,
@@ -74,18 +88,33 @@ def _race(db: Path, belief_id: str, valence: float) -> list[Exception]:
                     propagate=False,
                 )
         except Exception as exc:  # noqa: BLE001 - surfaced by the caller
+            # Break the barrier so siblings fail fast with
+            # BrokenBarrierError rather than waiting out their timeout.
+            barrier.abort()
             with lock:
                 errors.append(exc)
         finally:
-            store.close()
+            if store is not None:
+                store.close()
 
+    # daemon=True is the backstop: if a worker leaks despite the above,
+    # it can no longer hold the interpreter open at shutdown.
     threads = [
-        threading.Thread(target=worker, args=(w,)) for w in range(_WORKERS)
+        threading.Thread(target=worker, args=(w,), daemon=True)
+        for w in range(_WORKERS)
     ]
     for t in threads:
         t.start()
+    stuck = []
     for t in threads:
-        t.join()
+        t.join(timeout=_JOIN_TIMEOUT_SECONDS)
+        if t.is_alive():
+            stuck.append(t.name)
+    assert not stuck, (
+        f"workers did not finish within {_JOIN_TIMEOUT_SECONDS}s: {stuck}. "
+        "A hang here is a defect in the code under test, and must fail as "
+        "an assertion rather than as a suite timeout."
+    )
     return errors
 
 
