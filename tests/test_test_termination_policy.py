@@ -174,8 +174,13 @@ def test_blocking_calls_are_not_reached_through_aliases() -> None:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError:  # pragma: no cover
             continue
+        # Hoisted out of the node loop deliberately: it is a per-file
+        # fact, and computing it per AST node made this test ~6x slower
+        # than its sibling over the identical file list (3.47s vs 0.57s
+        # locally) and pushed it past the 5s default on CI — the exact
+        # failure mode this module exists to prevent.
+        rel = path.relative_to(TESTS_ROOT.parent)
         for node in ast.walk(tree):
-            rel = path.relative_to(TESTS_ROOT.parent)
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name == "subprocess" and alias.asname:
