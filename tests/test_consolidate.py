@@ -180,6 +180,40 @@ class TestWouldRemoveArithmetic:
         assert report.n_would_remove == (
             report.n_beliefs_in_clusters - report.n_clusters
         )
+        # Two differently-sized clusters (4 and 3), so max and min
+        # disagree: the only fixture in this file where an accidental
+        # `min(...)` for largest_cluster is visible. AC2 of #1312 turns
+        # on this field.
+        assert report.largest_cluster == 4
+
+    def test_share_of_store_denominator_is_the_whole_store(
+        self, store: MemoryStore
+    ) -> None:
+        """Percent of beliefs scanned, not percent of clustered beliefs.
+
+        Distinguishing on both axes. The isolated belief makes
+        `n_beliefs_scanned` (8) differ from `n_beliefs_in_clusters` (7),
+        so swapping the denominator moves the value from 62.5 to 71.43;
+        and the literal band pins the `100.0` factor, so demoting the
+        percentage to a fraction (0.625) fails too. The headline
+        "2.23% of active" the issue is priced on is this property.
+        """
+        for i, suffix in enumerate(("", ".", "!", "?")):
+            _insert(
+                store, f"b{i}", f"deploy via terraform on aws today{suffix}"
+            )
+        for i, suffix in enumerate((" now", " now.", " now!")):
+            _insert(
+                store, f"c{i}", f"rotate the signing key every quarter{suffix}"
+            )
+        _insert(store, "solo", "an unrelated singleton with no near twin")
+
+        report = consolidation_audit(store)
+        assert report.n_beliefs_scanned == 8
+        assert report.n_beliefs_in_clusters == 7
+        assert report.n_would_remove == 5
+        assert report.share_of_store == pytest.approx(100.0 * 5 / 8)
+        assert 62.0 < report.share_of_store < 63.0
 
     def test_share_of_store_is_zero_on_empty(self) -> None:
         empty = ConsolidationReport(
@@ -213,6 +247,28 @@ class TestBlockingCapIsReported:
         report = consolidation_audit(store, max_shingle_df=2)
         assert report.n_shingles_over_df > 0
         assert report.max_shingle_df == 2
+
+    def test_df_cap_boundary_is_strictly_greater(
+        self, store: MemoryStore
+    ) -> None:
+        """`df == cap` is kept; `df == cap + 1` is skipped.
+
+        Three beliefs differing only in trailing punctuation tokenize
+        identically, so every shared 4-gram has a document frequency of
+        exactly 3. At `cap=3` nothing may be skipped; at `cap=2` the
+        same postings must be. `>=` instead of `>` skips at cap=3 and
+        fails the first assertion — an off-by-one here changes which
+        pairs are examined and therefore the published share.
+        """
+        for i, suffix in enumerate(("", ".", "!")):
+            _insert(
+                store, f"b{i}", f"deploy via terraform on aws today{suffix}"
+            )
+        at_cap = consolidation_audit(store, max_shingle_df=3)
+        assert at_cap.n_shingles_over_df == 0
+        assert at_cap.n_clusters == 1, "the cluster is still found at df == cap"
+        over_cap = consolidation_audit(store, max_shingle_df=2)
+        assert over_cap.n_shingles_over_df > 0
 
 
 class TestReadOnly:
