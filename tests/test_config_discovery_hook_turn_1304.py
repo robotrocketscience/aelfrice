@@ -269,7 +269,12 @@ def test_no_module_carries_a_private_config_walk() -> None:
     matched the literal `while current not in seen`; the two loops in
     `cli.py` spell it `while candidate not in seen` and sailed past it,
     so the guard was green while the regression it names was present.
-    Renaming the loop variable is not a defence.
+    Neither the loop variable nor the visited-set name is a defence: an
+    earlier version pinned the literal `seen`, and the same loop with the
+    set called `visited` walked past it.
+
+    The upward-walk idiom has a second spelling, `for p in start.parents`,
+    which no `while` pattern can see, so it is matched too.
 
     `rglob` rather than `glob`: 15 modules live under `wonder/`,
     `slash_commands/` and `query_understanding/` and were never scanned.
@@ -282,7 +287,10 @@ def test_no_module_carries_a_private_config_walk() -> None:
 
     `config_discovery` itself is the one legitimate implementor.
     """
-    walk = re.compile(r"while\s+\w+\s+not\s+in\s+seen")
+    walk = re.compile(
+        r"while\s+\w+\s+not\s+in\s+\w+"  # cwd-to-root with a visited set
+        r"|for\s+\w+\s+in\s+[^\n]*\.parents",  # the same walk, unrolled
+    )
     src = Path(__file__).resolve().parents[1] / "src" / "aelfrice"
     offenders = sorted(
         str(module.relative_to(src))
