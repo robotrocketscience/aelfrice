@@ -74,7 +74,6 @@ def _read_transcript_source_paths(db_path: Path) -> set[str]:
     return {str(r[0]) for r in rows if r[0] is not None}
 
 
-@pytest.mark.timeout(30)
 def test_three_paths_record_distinct_source_types(
     aelf_run: Callable[..., subprocess.CompletedProcess[str]],
     installed_console_script: Callable[[str], Sequence[str]],

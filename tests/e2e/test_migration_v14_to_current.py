@@ -70,7 +70,6 @@ def v14_db(tmp_path: Path) -> Path:
     return dest
 
 
-@pytest.mark.timeout(30)
 def test_v14_snapshot_seeds_are_searchable_after_migration(
     installed_aelf,
     v14_db: Path,
@@ -107,7 +106,6 @@ def test_v14_snapshot_seeds_are_searchable_after_migration(
         )
 
 
-@pytest.mark.timeout(30)
 def test_v14_migration_grows_tables_and_preserves_belief_rows(
     installed_aelf,
     v14_db: Path,

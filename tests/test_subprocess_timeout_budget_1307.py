@@ -49,9 +49,10 @@ _SUBPROCESS_CALLS = frozenset(
 
 _KNOWN_LIMITS = """\
 Not covered by this check: a helper imported from another test module, a
-subprocess reached through a fixture, and `os.system` / `os.popen` (which
-`tests/test_test_termination_policy.py` bans outright, so they cannot
-appear). A test using one of those needs the marker on judgement.\
+subprocess reached through a fixture, and `os.system` / `os.popen`, which
+no gate in this repo bans -- `tests/test_test_termination_policy.py`
+checks that blocking calls are bounded, not that these are absent. A test
+using one of those needs the marker on judgement.\
 """
 
 _ALLOWLIST: frozenset[str] = frozenset()
@@ -136,17 +137,61 @@ def _reaches_subprocess(tree: ast.Module) -> set[str]:
     return reaching
 
 
-def _has_timeout_marker(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    for dec in fn.decorator_list:
-        node = dec.func if isinstance(dec, ast.Call) else dec
-        if (
-            isinstance(node, ast.Attribute)
-            and node.attr == "timeout"
-            and isinstance(node.value, ast.Attribute)
-            and node.value.attr == "mark"
+def _is_timeout_mark(node: ast.expr) -> bool:
+    """`pytest.mark.timeout` / `pytest.mark.timeout(N)`, either spelling."""
+    node = node.func if isinstance(node, ast.Call) else node
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "timeout"
+        and isinstance(node.value, ast.Attribute)
+        and node.value.attr == "mark"
+    )
+
+
+def _module_has_timeout_pytestmark(tree: ast.Module) -> bool:
+    """A module-level `pytestmark` budget covering every test in the file.
+
+    `pytest-timeout` resolves the budget with `item.get_closest_marker`, so
+    a module `pytestmark` is a real budget and a decorator on the test
+    *overrides* it. Reading only `decorator_list` therefore reports an
+    already-budgeted test as an offender, and the only way to satisfy the
+    report is to add a decorator that replaces the module's value with
+    this rule's -- which is how three `tests/e2e/` tests briefly went from
+    120s to 30s, under their own children's 60s `subprocess` timeouts.
+    """
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(
+            isinstance(t, ast.Name) and t.id == "pytestmark" for t in targets
         ):
+            continue
+        value = node.value
+        if value is None:
+            continue
+        marks = value.elts if isinstance(value, (ast.List, ast.Tuple)) else [value]
+        if any(_is_timeout_mark(m) for m in marks):
             return True
     return False
+
+
+def _class_marked_tests(tree: ast.Module) -> set[str]:
+    """Test names under a `class Test...` carrying a timeout marker."""
+    marked: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if not any(_is_timeout_mark(d) for d in node.decorator_list):
+            continue
+        for child in ast.walk(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                marked.add(child.name)
+    return marked
+
+
+def _has_timeout_marker(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    return any(_is_timeout_mark(dec) for dec in fn.decorator_list)
 
 
 def unbudgeted_subprocess_tests() -> list[str]:
@@ -162,6 +207,9 @@ def unbudgeted_subprocess_tests() -> list[str]:
         reaching = _reaches_subprocess(tree)
         if not reaching:
             continue
+        if _module_has_timeout_pytestmark(tree):
+            continue
+        class_marked = _class_marked_tests(tree)
         rel = path.relative_to(TESTS_ROOT.parent)
         for fn in ast.walk(tree):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -170,7 +218,7 @@ def unbudgeted_subprocess_tests() -> list[str]:
                 continue
             if fn.name not in reaching:
                 continue
-            if _has_timeout_marker(fn):
+            if _has_timeout_marker(fn) or fn.name in class_marked:
                 continue
             ident = f"{rel}::{fn.name}"
             if ident in _ALLOWLIST:
@@ -240,6 +288,60 @@ def test_an_aliased_import_is_still_seen() -> None:
         "    sp.run(['x'])\n"
     )
     assert _reaches_subprocess(tree) == {"test_leaf"}
+
+
+def test_a_module_pytestmark_is_a_budget() -> None:
+    """A module `pytestmark` budget must satisfy the rule, not trip it.
+
+    `pytest-timeout` resolves with `item.get_closest_marker`, so a
+    decorator on the test *replaces* the module value rather than adding
+    to it. A gate that cannot see `pytestmark` reports an already-budgeted
+    test as an offender, and the only way to clear the report is to write
+    a decorator that lowers the budget to this rule's number. That is not
+    hypothetical: it took three `tests/e2e/` tests from a deliberate 120s
+    to 30s, under the 60s `subprocess` timeouts of their own children.
+    """
+    tree = ast.parse(
+        "import pytest\n"
+        "import subprocess\n"
+        "pytestmark = pytest.mark.timeout(120)\n"
+        "def test_leaf():\n"
+        "    subprocess.run(['x'])\n"
+    )
+    assert _module_has_timeout_pytestmark(tree)
+    # The list spelling is the other live form.
+    listed = ast.parse(
+        "import pytest\n"
+        "pytestmark = [pytest.mark.e2e, pytest.mark.timeout(120)]\n"
+    )
+    assert _module_has_timeout_pytestmark(listed)
+    # A `pytestmark` that is not a timeout must not clear the rule.
+    other = ast.parse(
+        "import pytest\n"
+        "pytestmark = pytest.mark.regression\n"
+    )
+    assert not _module_has_timeout_pytestmark(other)
+
+
+def test_a_class_marker_is_a_budget() -> None:
+    """Same reasoning one scope in: a marked `class Test...` covers its
+    methods, so demanding a per-method decorator would lower those too."""
+    tree = ast.parse(
+        "import pytest\n"
+        "import subprocess\n"
+        "@pytest.mark.timeout(120)\n"
+        "class TestThing:\n"
+        "    def test_leaf(self):\n"
+        "        subprocess.run(['x'])\n"
+    )
+    assert _class_marked_tests(tree) == {"test_leaf"}
+    unmarked = ast.parse(
+        "import pytest\n"
+        "class TestThing:\n"
+        "    def test_leaf(self):\n"
+        "        pass\n"
+    )
+    assert _class_marked_tests(unmarked) == set()
 
 
 def test_a_marker_on_the_test_satisfies_the_rule() -> None:
