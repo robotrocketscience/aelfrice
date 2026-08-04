@@ -1,0 +1,83 @@
+name: Windows smoke
+
+# #1329. Every other workflow in this repo is `ubuntu-latest`, which is why
+# a module-scope `import fcntl` — fatal at CLI entry on Windows, `aelf
+# --help` included — shipped and was found by a user rather than by CI.
+#
+# Deliberately narrow, and NOT a required check. It answers one question:
+# does aelfrice import and run its portability surface on a host that has no
+# `fcntl`? The full suite is not run here — much of it assumes POSIX
+# semantics (permission bits, symlinks, `/tmp` layouts) and making it green
+# on Windows is a much larger piece of work than making the tool start.
+#
+# Do not promote this to required without first widening what it covers;
+# a required check this narrow buys confidence it has not earned.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/test_windows_portability_1329.py'
+      - '.github/workflows/windows-smoke.yml'
+      - 'pyproject.toml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    steps:
+      # No `step-security/harden-runner` here, unlike every other workflow:
+      # its egress policy is implemented with Linux networking primitives
+      # and it is a no-op-or-failure on Windows runners. This is the first
+      # non-Linux job in the repo, so it is also the first place that
+      # distinction has had to be made.
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen --group dev
+
+      # The reported failure, asserted directly: on Windows this died at
+      # import before argparse ever ran.
+      - name: aelf --help must run
+        run: uv run aelf --help
+
+      - name: aelf doctor must not crash at import
+        # doctor exits 1 on structural failure, which is a legitimate
+        # outcome on a host with no hooks installed. Only an import-time
+        # crash is a failure here, so any exit code is accepted as long as
+        # the process produced output rather than a traceback.
+        shell: bash
+        run: |
+          out=$(uv run aelf doctor 2>&1) || true
+          echo "$out"
+          if grep -qi "ModuleNotFoundError\|ImportError\|Traceback" <<<"$out"; then
+            echo "::error::aelf doctor failed at import on Windows"
+            exit 1
+          fi
+
+      - name: portability suite
+        run: uv run pytest tests/test_windows_portability_1329.py -q
+
+      # The one assertion that cannot be made from POSIX CI: that the
+      # encoder agrees with the directory name this host actually produces.
+      - name: the encoder produces a creatable directory name
+        shell: bash
+        run: |
+          uv run python -c "
+          from pathlib import Path
+          from aelfrice.claude_memory import encode_project_path, derive_memory_dir
+          encoded = encode_project_path(str(Path.cwd()))
+          assert ':' not in encoded, encoded
+          assert '\\\\' not in encoded, encoded
+          assert len(Path(encoded).parts) == 1, encoded
+          d = derive_memory_dir(Path.cwd())
+          d.mkdir(parents=True, exist_ok=True)
+          assert d.is_dir()
+          print('encoded ->', encoded)
+          "
