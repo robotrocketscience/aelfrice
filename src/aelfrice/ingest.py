@@ -325,14 +325,28 @@ def _ingest_turn_ids(
         # touching at least one belief from `inserted` are evaluated, which is
         # provably equivalent to a full-store audit for discovering new edges
         # while avoiding the O(n²) re-scan of the whole store every turn.
+        # #1299: the thresholds come from the same `[relationship_detector]`
+        # section as the flag. Resolving both in one walk keeps the per-turn
+        # `.aelfrice.toml` probe count identical to the flag-only version
+        # (#1289/#1298 — this is a hot path; a second walk is not free).
         if inserted:
             from aelfrice.relationship_detector import (
-                is_auto_relationship_detection_enabled,
+                resolve_ingest_relationship_config,
                 write_semantic_edges,
             )
 
-            if is_auto_relationship_detection_enabled():
-                write_semantic_edges(store, new_belief_ids=inserted)
+            auto_relationships, rel_config = (
+                resolve_ingest_relationship_config()
+            )
+            if auto_relationships:
+                write_semantic_edges(
+                    store,
+                    jaccard_min=rel_config.jaccard_min,
+                    residual_overlap_min=rel_config.residual_overlap_min,
+                    confidence_min=rel_config.confidence_min,
+                    max_candidate_pairs=rel_config.max_candidate_pairs,
+                    new_belief_ids=inserted,
+                )
 
             # #1064: optionally chain this turn's new beliefs into the
             # per-session temporal spine (TEMPORAL_NEXT, src = successor,

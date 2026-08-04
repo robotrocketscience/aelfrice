@@ -11,6 +11,7 @@ All tests use a real ``MemoryStore(":memory:")`` — no mocks.
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -34,6 +35,10 @@ _ALWAYS = "the deployment script always runs the database migration step"
 _NEVER = "the deployment script never runs the database migration step"
 # Lexically distant filler that relates to nothing else.
 _UNRELATED = "the harbor seals bask on the warm rocks at noon each day"
+# Sub-confidence contradiction: "always X" vs "rarely X" — adjacent
+# quantifier axes over identical residual content -> score 0.4, i.e.
+# below the module default confidence_min (0.5) and above 0.3.
+_RARELY = "the deployment script rarely runs the database migration step"
 
 
 def _make_belief(
@@ -230,3 +235,214 @@ def test_ingest_on_path_writes_contradicts_edge(
     ingest_turn(s, _ALWAYS, source="t", session_id="sess")
     ingest_turn(s, _NEVER, source="t", session_id="sess")
     assert len(_contradicts_edges(s)) == 1
+
+
+# ---------------------------------------------------------------------------
+# #1299 — [relationship_detector] thresholds reach the ingest write path
+# ---------------------------------------------------------------------------
+
+
+def _ingest_pair_under_toml(toml_body: str, tmp_path: Path) -> list[
+    tuple[str, str]
+]:
+    """Ingest the ALWAYS/NEVER pair with `tmp_path/.aelfrice.toml` in scope."""
+    from aelfrice.ingest import ingest_turn
+
+    (tmp_path / ".aelfrice.toml").write_text(toml_body)
+    s = MemoryStore(":memory:")
+    ingest_turn(s, _ALWAYS, source="t", session_id="sess")
+    ingest_turn(s, _NEVER, source="t", session_id="sess")
+    return _contradicts_edges(s)
+
+
+def test_ingest_honours_toml_jaccard_min(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """`jaccard_min` from TOML gates the ingest write path (#1299).
+
+    The pair's token Jaccard is ~0.78, so a threshold above it must
+    suppress the edge and a threshold below it must let it through.
+    Before #1299 ingest called ``write_semantic_edges`` with no threshold
+    arguments, so both arms wrote the edge and the key was inert here.
+    """
+    monkeypatch.delenv(ENV_AUTO_RELATIONSHIPS, raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    # Threshold ABOVE the pair's overlap -> prefilter drops it, no edge.
+    assert _ingest_pair_under_toml(
+        "[relationship_detector]\nauto_detect = true\njaccard_min = 0.95\n",
+        tmp_path,
+    ) == []
+
+    # Positive control: same corpus, threshold BELOW the overlap -> edge.
+    # Without this arm the assertion above would pass vacuously.
+    assert len(_ingest_pair_under_toml(
+        "[relationship_detector]\nauto_detect = true\njaccard_min = 0.1\n",
+        tmp_path,
+    )) == 1
+
+
+def test_ingest_honours_toml_confidence_min(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """`confidence_min` from TOML gates the ingest write path (#1299)."""
+    monkeypatch.delenv(ENV_AUTO_RELATIONSHIPS, raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    # ALWAYS vs RARELY: quantifier axes are near, so the pair scores 0.4 —
+    # below the module default 0.5 and above a configured 0.3.
+    def edges_at(floor: str) -> list[tuple[str, str]]:
+        from aelfrice.ingest import ingest_turn
+
+        (tmp_path / ".aelfrice.toml").write_text(
+            "[relationship_detector]\n"
+            "auto_detect = true\n"
+            f"confidence_min = {floor}\n"
+        )
+        s = MemoryStore(":memory:")
+        ingest_turn(s, _ALWAYS, source="t", session_id="sess")
+        ingest_turn(s, _RARELY, source="t", session_id="sess")
+        return _contradicts_edges(s)
+
+    # At the module default the pair is sub-confidence -> no edge.
+    assert edges_at("0.5") == []
+    # Lowering the floor in TOML must let it through. Before #1299 ingest
+    # passed no confidence_min, so this arm stayed empty.
+    assert len(edges_at("0.3")) == 1
+
+
+def test_ingest_threads_max_candidate_pairs_from_toml(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """`max_candidate_pairs` reaches the writer's call site (#1299).
+
+    Unlike the two threshold keys this one has no small-corpus outcome to
+    observe — a two-belief store never approaches any sane pair budget —
+    so assert the value that arrives at ``write_semantic_edges`` instead.
+    """
+    import aelfrice.relationship_detector as rd
+    from aelfrice.ingest import ingest_turn
+
+    monkeypatch.delenv(ENV_AUTO_RELATIONSHIPS, raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[relationship_detector]\n"
+        "auto_detect = true\n"
+        "jaccard_min = 0.55\n"
+        "confidence_min = 0.65\n"
+        "max_candidate_pairs = 17\n"
+    )
+
+    seen: list[dict[str, object]] = []
+    real_writer = rd.write_semantic_edges
+
+    def spy(store: MemoryStore, **kwargs: object) -> object:
+        seen.append(dict(kwargs))
+        return real_writer(store, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rd, "write_semantic_edges", spy)
+    s = MemoryStore(":memory:")
+    ingest_turn(s, _ALWAYS, source="t", session_id="sess")
+    ingest_turn(s, _NEVER, source="t", session_id="sess")
+
+    assert seen, "write_semantic_edges was never called on the on-path"
+    for call in seen:
+        assert call["jaccard_min"] == 0.55
+        assert call["confidence_min"] == 0.65
+        assert call["max_candidate_pairs"] == 17
+
+
+# ---------------------------------------------------------------------------
+# #1299 — the fix must not add a second config walk to the ingest hot path
+# ---------------------------------------------------------------------------
+
+
+def _count_config_probes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Install a counting `Path.is_file` and return its mutable counter."""
+    counter = [0]
+    real_is_file = Path.is_file
+
+    def counting_is_file(self: Path) -> bool:
+        if self.name == ".aelfrice.toml":
+            counter[0] += 1
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", counting_is_file)
+    return counter
+
+
+def test_resolve_ingest_config_walks_the_tree_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """One `.aelfrice.toml` walk per resolve, not two (#1289/#1298).
+
+    ``resolve_ingest_relationship_config`` runs on every ingested turn.
+    Calling ``load_relationship_detector_config()`` and
+    ``is_auto_relationship_detection_enabled()`` independently would probe
+    each ancestor directory twice; the flag must be handed over from the
+    config read instead.
+    """
+    from aelfrice.relationship_detector import (
+        load_relationship_detector_config,
+        resolve_ingest_relationship_config,
+    )
+
+    monkeypatch.delenv(ENV_AUTO_RELATIONSHIPS, raising=False)
+    deep = tmp_path / "a" / "b" / "c"
+    deep.mkdir(parents=True)
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[relationship_detector]\nauto_detect = true\njaccard_min = 0.55\n"
+    )
+
+    counter = _count_config_probes(monkeypatch)
+    load_relationship_detector_config(start=deep)
+    baseline = counter[0]
+    assert baseline > 0
+
+    counter[0] = 0
+    enabled, config = resolve_ingest_relationship_config(start=deep)
+    assert counter[0] == baseline
+    assert enabled is True
+    assert config.jaccard_min == 0.55
+
+
+def test_resolve_ingest_config_env_still_wins_over_toml(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Env keeps precedence over `auto_detect`, and the thresholds still
+    load when the flag is forced off (#1299)."""
+    from aelfrice.relationship_detector import (
+        resolve_ingest_relationship_config,
+    )
+
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[relationship_detector]\nauto_detect = true\njaccard_min = 0.55\n"
+    )
+    monkeypatch.setenv(ENV_AUTO_RELATIONSHIPS, "off")
+    enabled, config = resolve_ingest_relationship_config(start=tmp_path)
+    assert enabled is False
+    assert config.jaccard_min == 0.55
+
+    monkeypatch.setenv(ENV_AUTO_RELATIONSHIPS, "on")
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[relationship_detector]\nauto_detect = false\n"
+    )
+    enabled, _ = resolve_ingest_relationship_config(start=tmp_path)
+    assert enabled is True
+
+
+def test_config_loader_reads_auto_detect(tmp_path: Path) -> None:
+    """`auto_detect` is parsed onto the config object (#1299)."""
+    from aelfrice.relationship_detector import (
+        load_relationship_detector_config,
+    )
+
+    assert load_relationship_detector_config(start=tmp_path).auto_detect is False
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[relationship_detector]\nauto_detect = true\n"
+    )
+    assert load_relationship_detector_config(start=tmp_path).auto_detect is True
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[relationship_detector]\nauto_detect = \"yes\"\n"
+    )
+    assert load_relationship_detector_config(start=tmp_path).auto_detect is False

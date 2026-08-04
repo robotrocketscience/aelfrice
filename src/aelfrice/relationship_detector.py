@@ -497,11 +497,19 @@ def relationships_audit(
 
 @dataclass(frozen=True)
 class RelationshipDetectorConfig:
-    """Resolved ``[relationship_detector]`` section of `.aelfrice.toml`."""
+    """Resolved ``[relationship_detector]`` section of `.aelfrice.toml`.
+
+    ``residual_overlap_min`` has **no TOML key** — it is a caller-supplied
+    knob that carries the module default, kept on the dataclass so every
+    consumer passes a uniform quadruple to the detector.
+    """
     jaccard_min: float = DEFAULT_JACCARD_MIN
     residual_overlap_min: float = DEFAULT_RESIDUAL_OVERLAP_MIN
     confidence_min: float = DEFAULT_CONFIDENCE_MIN
     max_candidate_pairs: int = DEFAULT_MAX_CANDIDATE_PAIRS
+    # #1299: parsed here so the ingest path can resolve the flag and the
+    # thresholds in ONE `.aelfrice.toml` walk instead of two.
+    auto_detect: bool = False
 
 
 def _load_unit_float(
@@ -594,10 +602,21 @@ def load_relationship_detector_config(
                 mp_resolved = DEFAULT_MAX_CANDIDATE_PAIRS
             else:
                 mp_resolved = mp_obj
+            ad_obj: Any = section.get(AUTO_DETECT_KEY, False)
+            if isinstance(ad_obj, bool):
+                ad_resolved = ad_obj
+            else:
+                print(
+                    f"aelfrice relationship_detector: ignoring [{SECTION}] "
+                    f"{AUTO_DETECT_KEY} in {candidate} (expected bool)",
+                    file=serr,
+                )
+                ad_resolved = False
             return RelationshipDetectorConfig(
                 jaccard_min=jm,
                 confidence_min=cm,
                 max_candidate_pairs=mp_resolved,
+                auto_detect=ad_resolved,
             )
         if current.parent == current:
             break
@@ -683,6 +702,34 @@ def is_auto_relationship_detection_enabled(
     if toml_value is not None:
         return toml_value
     return False
+
+
+def resolve_ingest_relationship_config(
+    start: Path | None = None,
+) -> tuple[bool, RelationshipDetectorConfig]:
+    """Resolve the ingest-time flag **and** thresholds in one config walk.
+
+    Returns ``(enabled, config)``. Before #1299 the ingest path read only
+    ``auto_detect`` and then called ``write_semantic_edges`` with no
+    threshold arguments, so ``[relationship_detector] jaccard_min`` /
+    ``confidence_min`` / ``max_candidate_pairs`` were honoured by the
+    ``aelf doctor`` audit commands and silently ignored by the one path
+    that actually mutates the graph.
+
+    Threading the config must not cost a second filesystem walk on a hot
+    path (#1289/#1298): ``load_relationship_detector_config`` already
+    walks to the nearest `.aelfrice.toml`, so ``auto_detect`` is parsed
+    from that same read and handed to
+    ``is_auto_relationship_detection_enabled`` as its ``explicit``
+    argument. A non-``None`` ``explicit`` is decisive before the
+    resolver's own TOML step, so exactly one walk happens per call and
+    the documented precedence (env > TOML > default-off) is unchanged.
+    """
+    config = load_relationship_detector_config(start)
+    enabled = is_auto_relationship_detection_enabled(
+        config.auto_detect, start=start,
+    )
+    return enabled, config
 
 
 # --- Report formatter --------------------------------------------------
@@ -1068,6 +1115,7 @@ __all__ = [
     "is_auto_relationship_detection_enabled",
     "load_relationship_detector_config",
     "relationships_audit",
+    "resolve_ingest_relationship_config",
     "write_potentially_stale_edges",
     "write_semantic_edges",
 ]
