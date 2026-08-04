@@ -5338,35 +5338,162 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
     )
 
     # --- Hook + statusline removal (default on, --keep-hook opts out)-
+    cleaned: list[Path] = []
     if not args.keep_hook:
-        # Delegate by re-using the existing _cmd_unsetup path: pretend
-        # the user invoked `aelf unsetup --scope user`. command=None
-        # triggers basename-match cleanup, which catches both bare and
-        # absolute-path installs.
-        unsetup_args = argparse.Namespace(
-            scope="user",
-            project_root=None,
-            settings_path=args.settings_path,
-            command=None,
-            cmd="unsetup",
-            func=_cmd_unsetup,
-            # #1136: `aelf uninstall --host codex` routes the unsetup
-            # half to the codex host (hooks.json + $aelf-* skills).
-            host=getattr(args, "host", "claude"),
-            # #1173: `aelf unsetup --rebuilder` is opt-in because unsetup
-            # is a surgical command, but uninstall means "remove all of
-            # it". Omitting this left the PreCompact entry wired to a
-            # binary the user is about to `pip uninstall`, so every
-            # subsequent compaction spawned a missing command forever.
-            rebuilder=True,
-        )
-        _cmd_unsetup(unsetup_args, out)
+        # #1332: every scope that has hooks, not just user. `setup`
+        # auto-detects scope (project when cwd's .venv is the running
+        # interpreter, else user), so hardcoding `user` here left
+        # project-scope hooks firing on every prompt after a teardown the
+        # tool reported as successful.
+        for target in _uninstall_settings_targets(args):
+            # Delegate by re-using the existing _cmd_unsetup path.
+            # `settings_path` is passed explicitly rather than a scope so
+            # the resolution cannot drift from the discovery above;
+            # command=None triggers basename-match cleanup, which catches
+            # both bare and absolute-path installs.
+            unsetup_args = argparse.Namespace(
+                scope=None,
+                project_root=None,
+                settings_path=str(target),
+                command=None,
+                cmd="unsetup",
+                func=_cmd_unsetup,
+                # #1136: `aelf uninstall --host codex` routes the unsetup
+                # half to the codex host (hooks.json + $aelf-* skills).
+                host=getattr(args, "host", "claude"),
+                # #1173: `aelf unsetup --rebuilder` is opt-in because
+                # unsetup is a surgical command, but uninstall means
+                # "remove all of it". Omitting this left the PreCompact
+                # entry wired to a binary the user is about to remove, so
+                # every subsequent compaction spawned a missing command
+                # forever.
+                rebuilder=True,
+            )
+            _cmd_unsetup(unsetup_args, out)
+            cleaned.append(target)
 
+        # #1332: the teardown is not durable without this. `cli.main()`
+        # calls `auto_install_at_cli_entry` on *every* invocation, and it
+        # returns early only on the env opt-out, this host opt-out, or a
+        # non-`uv tool` install — so the next `aelf` command of any kind
+        # silently reinstalled the whole manifest, announced on stderr
+        # that nobody reads. Uninstall was not idempotent against its own
+        # entry point.
+        #
+        # Written *after* the removals, not before: `_dispose_dotdir`
+        # runs earlier in this function, and while `opt-out-hooks.json`
+        # is in `_DOTDIR_PRESERVED` today, ordering the write last means
+        # the marker cannot be silently erased if that set is ever
+        # edited. `aelf setup` clears it again (cli.py `_cmd_setup`), so
+        # this does not trade a reinstall bug for a product the user
+        # cannot turn back on.
+        _write_uninstall_opt_out(out)
+
+    _print_uninstall_remaining(cleaned, keep_hook=bool(args.keep_hook), out=out)
+    return 0
+
+
+def _uninstall_settings_targets(args: argparse.Namespace) -> list[Path]:
+    """Every settings.json `uninstall` should clean.
+
+    An explicit `--settings-path` is honoured exactly and never widened:
+    the user named a file, and quietly editing a second one is not what
+    they asked for.
+
+    Otherwise the user scope **unconditionally**, plus the project scope
+    when it exists and is a different file.
+
+    User scope is not filtered on existence, and that asymmetry is
+    deliberate. `_cmd_unsetup` does more than edit settings.json — it also
+    removes the statusline snippet — so skipping the call when the file
+    happens to be absent would silently skip that cleanup too. It is also
+    the pre-#1332 behaviour, and this change is meant to *widen* the
+    teardown, not narrow it on a path that used to work.
+
+    The project scope is filtered, because inventing a settings.json in
+    whatever directory the user happened to run from is not teardown.
+
+    Dedup matters and is not theoretical: a project rooted at HOME
+    resolves both scopes to one file, and unsetting it twice prints "no
+    matching hook" on the second pass, which reads to a user as the
+    teardown having failed.
+    """
+    if args.settings_path is not None:
+        return [Path(args.settings_path)]
+    from aelfrice.setup import default_settings_path
+
+    project_root = (
+        Path(args.project_root) if getattr(args, "project_root", None) else None
+    )
+    user_path = default_settings_path("user")
+    targets = [user_path]
+    project_path = default_settings_path("project", project_root=project_root)
+    try:
+        distinct = project_path.resolve() != user_path.resolve()
+    except OSError:  # pragma: no cover - unreadable parent
+        distinct = project_path != user_path
+    if distinct and project_path.is_file():
+        targets.append(project_path)
+    return targets
+
+
+def _write_uninstall_opt_out(out: object) -> None:
+    """Persist the auto-install opt-out so the teardown survives (#1332).
+
+    Best-effort and never raises: failing to write the marker leaves the
+    reinstall bug in place, which is bad, but raising here would abort an
+    uninstall that has already deleted data, which is worse.
+    """
+    from aelfrice.auto_install import add_host_opt_out, read_host_opt_outs
+
+    try:
+        if "claude" not in read_host_opt_outs():
+            add_host_opt_out("claude")
+        print(
+            "opted this host out of auto-install — `aelf` will no longer "
+            "reinstall hooks at CLI entry (undo with `aelf setup`).",
+            file=out,  # type: ignore[arg-type]
+        )
+    except OSError as exc:
+        print(
+            f"[warn] could not write the auto-install opt-out ({exc}); a "
+            f"later `aelf` command may reinstall the hooks. Set "
+            f"AELFRICE_NO_AUTO_INSTALL=1 or re-run `aelf uninstall`.",
+            file=out,  # type: ignore[arg-type]
+        )
+
+
+def _print_uninstall_remaining(
+    cleaned: list[Path], *, keep_hook: bool, out: object
+) -> None:
+    """Say what is still on the machine (#1332 AC3).
+
+    A user who followed this command's own output previously had no way to
+    learn that the package is still installed and that hooks could come
+    back. Name the files actually written and the one command left.
+    """
+    if keep_hook:
+        print(
+            "\n--keep-hook: settings.json was not touched, so the hooks "
+            "are still installed and still firing.",
+            file=out,  # type: ignore[arg-type]
+        )
+    elif cleaned:
+        listed = ", ".join(str(p) for p in cleaned)
+        # "ran on", not "cleaned from": the user path is always attempted
+        # even when absent, and claiming a cleanup that found nothing
+        # would be the same kind of overclaim this issue is about.
+        print(f"\nhook cleanup ran on: {listed}", file=out)  # type: ignore[arg-type]
+    else:
+        print(
+            "\nno settings.json with aelfrice hooks was found to clean.",
+            file=out,  # type: ignore[arg-type]
+        )
     print(
-        f"\nFinish removing aelfrice with: pip uninstall {_PKG}",
+        f"the {_PKG} package itself is still installed. "
+        f"Finish removing it with: uv tool uninstall {_PKG}",
         file=out,  # type: ignore[arg-type]
     )
-    return 0
 
 
 def _cmd_statusline(args: argparse.Namespace, out: object) -> int:
