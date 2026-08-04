@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from aelfrice import models
 from aelfrice.hook import _split_belief_lines
 from aelfrice.models import (
     BELIEF_FACTUAL,
@@ -71,7 +72,36 @@ def _belief(
 # ---------------------------------------------------------------------------
 
 
+def _declared_origins() -> set[str]:
+    """Every `ORIGIN_*` string constant `models` declares.
+
+    Introspected rather than read off `models.ORIGINS`, because `ORIGINS`
+    is not the set of declared origins — `ORIGIN_SPECULATIVE` is a live
+    counter-example, declared since v2.0 and deliberately held out of the
+    frozenset ("Not in ORIGINS yet", models.py). A guard anchored on
+    `ORIGINS` therefore has to hand-patch that one back in, and the
+    hand-patch is the tell: the next `ORIGIN_*` added the same way is
+    invisible to it and lands silently in `DEFAULT_SECTION`, which is the
+    exact failure mode this class exists to prevent.
+
+    The `isinstance(str)` filter drops `ORIGIN_RETRIEVAL_PRIORITY` (dict)
+    and `ORIGIN_RETRIEVAL_PRIORITY_DEFAULT` (int), which share the prefix
+    without being origins.
+    """
+    return {
+        value
+        for name, value in vars(models).items()
+        if name.startswith("ORIGIN_") and isinstance(value, str)
+    }
+
+
 class TestSectionAssignmentIsTotal:
+    def test_the_guard_sees_origins_that_are_not_in_ORIGINS(self) -> None:
+        """Pins why `_declared_origins` introspects instead of reading
+        `ORIGINS`. Without this arm the two look interchangeable and the
+        weaker one gets restored during a cleanup."""
+        assert _declared_origins() - set(ORIGINS) == {ORIGIN_SPECULATIVE}
+
     def test_every_declared_origin_has_a_section(self) -> None:
         """Enumerated from `models`, not from a literal list here.
 
@@ -81,8 +111,7 @@ class TestSectionAssignmentIsTotal:
         `ORIGIN_*` without classifying it fails the suite instead of
         silently landing in `DEFAULT_SECTION`.
         """
-        declared = set(ORIGINS) | {ORIGIN_SPECULATIVE}
-        unmapped = sorted(declared - set(SECTION_BY_ORIGIN))
+        unmapped = sorted(_declared_origins() - set(SECTION_BY_ORIGIN))
         assert unmapped == [], (
             f"origins with no section: {unmapped} — add them to "
             "SECTION_BY_ORIGIN, do not rely on the fallback"
@@ -94,8 +123,7 @@ class TestSectionAssignmentIsTotal:
         Without this arm the table could drift into naming strings nothing
         ever writes, which reads as coverage and is not.
         """
-        declared = set(ORIGINS) | {ORIGIN_SPECULATIVE}
-        invented = sorted(set(SECTION_BY_ORIGIN) - declared)
+        invented = sorted(set(SECTION_BY_ORIGIN) - _declared_origins())
         assert invented == [], f"section table names non-origins: {invented}"
 
     def test_an_unrecognised_origin_falls_back_rather_than_vanishing(

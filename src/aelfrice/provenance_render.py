@@ -37,9 +37,12 @@ So `SECTION_BY_ORIGIN` below enumerates every `models.ORIGIN_*` constant, and
 fallback direction is **`<inferred>`**, not `<observed>`: an origin nobody
 has classified is one whose trustworthiness nobody has established, and the
 safe error is to under-trust it. `test_every_declared_origin_has_a_section`
-enumerates `models.ORIGINS` rather than a literal list, so adding a new
-`ORIGIN_*` without classifying it fails the suite instead of silently
-landing in the default.
+introspects the `ORIGIN_*` constants `models` declares rather than reading
+`models.ORIGINS`, so adding a new one without classifying it fails the suite
+instead of silently landing in the default. The distinction is load-bearing
+and not pedantic: `ORIGIN_SPECULATIVE` has been declared-but-not-in-`ORIGINS`
+since v2.0, so a guard anchored on the frozenset misses exactly the case
+this module's totality claim is about.
 """
 from __future__ import annotations
 
