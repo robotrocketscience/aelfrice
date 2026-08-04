@@ -427,14 +427,47 @@ class TestReportRendering:
         assert "read-only" in text
 
 
+def _assert_no_ambient_config(start: Path) -> None:
+    """Fail loudly if a `.aelfrice.toml` is visible from `start` upward.
+
+    `_cmd_doctor_consolidate` resolves its thresholds through
+    `dedup.load_dedup_config()`, which walks up from the working
+    directory. A developer with `[dedup]` set at or above the repo would
+    otherwise see a CLI test fail for a reason that has nothing to do
+    with the code — CI green, local red (#1295 is the same shape).
+
+    Resolve first: `load_dedup_config` resolves its start and
+    `Path.parents` is lexical, so an unresolved walk checks a different
+    chain than the one actually read.
+    """
+    resolved = start.resolve()
+    stray = [
+        str(parent / ".aelfrice.toml")
+        for parent in (resolved, *resolved.parents)
+        if (parent / ".aelfrice.toml").is_file()
+    ]
+    assert not stray, (
+        "this test pins the TOML tier by running from a scratch "
+        f"directory, but that directory is not clean: {stray}"
+    )
+
+
 class TestCliSurface:
     def test_doctor_consolidate_runs(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Default path. Pinned against ambient `[dedup]` config.
+
+        Terminates by construction: pure in-process computation over
+        three beliefs, no subprocess, no waiting, no retry.
+        """
         from aelfrice.cli import main
 
         db = str(tmp_path / "brain.db")
         monkeypatch.setenv("AELFRICE_DB", db)
+        monkeypatch.chdir(tmp_path)
+        _assert_no_ambient_config(tmp_path)
+
         s = MemoryStore(db)
         _insert(s, "b1", "deploy via terraform on aws today")
         _insert(s, "b2", "deploy via terraform on aws today.")
@@ -447,6 +480,87 @@ class TestCliSurface:
         text = out.getvalue()
         assert "Consolidation audit" in text
         assert "would remove          : 2" in text
+
+    def test_ambient_toml_tier_is_honoured(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The `[dedup]` TOML tier reaches the consolidation audit.
+
+        Distinguishing rather than smoke: the three beliefs cluster at
+        the shipped defaults (the test above asserts exactly that), and
+        `levenshtein_min = 0.995` is above their pairwise ratio, so the
+        cluster must disappear. A build that ignored the TOML tier would
+        still report a cluster here.
+
+        Terminates by construction: no subprocess, no waiting.
+        """
+        from aelfrice.cli import main
+
+        db = str(tmp_path / "brain.db")
+        monkeypatch.setenv("AELFRICE_DB", db)
+        monkeypatch.chdir(tmp_path)
+        _assert_no_ambient_config(tmp_path)
+
+        (tmp_path / ".aelfrice.toml").write_text(
+            "[dedup]\nlevenshtein_min = 0.995\n", encoding="utf-8"
+        )
+
+        s = MemoryStore(db)
+        _insert(s, "b1", "deploy via terraform on aws today")
+        _insert(s, "b2", "deploy via terraform on aws today.")
+        _insert(s, "b3", "deploy via terraform on aws today!")
+        s.close()
+
+        out = io.StringIO()
+        rc = main(["doctor", "--consolidate"], out=out)
+        assert rc == 0
+        text = out.getvalue()
+        assert "Levenshtein ratio >= 0.995" in text, text
+        assert "would remove          : 0" in text, text
+
+    def test_cli_overrides_beat_the_toml_tier(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`--consolidate-*` outrank `[dedup]`, and the df cap is wired.
+
+        The same config that suppresses the cluster above is present
+        here, so a build that ignored the CLI overrides would report 0.
+
+        Terminates by construction: no subprocess, no waiting.
+        """
+        from aelfrice.cli import main
+
+        db = str(tmp_path / "brain.db")
+        monkeypatch.setenv("AELFRICE_DB", db)
+        monkeypatch.chdir(tmp_path)
+        _assert_no_ambient_config(tmp_path)
+
+        (tmp_path / ".aelfrice.toml").write_text(
+            "[dedup]\nlevenshtein_min = 0.995\n", encoding="utf-8"
+        )
+
+        s = MemoryStore(db)
+        _insert(s, "b1", "deploy via terraform on aws today")
+        _insert(s, "b2", "deploy via terraform on aws today.")
+        _insert(s, "b3", "deploy via terraform on aws today!")
+        s.close()
+
+        out = io.StringIO()
+        rc = main(
+            [
+                "doctor",
+                "--consolidate",
+                "--consolidate-levenshtein",
+                "0.85",
+                "--consolidate-max-pairs",
+                "1",
+            ],
+            out=out,
+        )
+        assert rc == 0
+        text = out.getvalue()
+        assert "Levenshtein ratio >= 0.85" in text, text
+        assert "BUDGET REACHED" in text, text
 
     def test_malformed_threshold_exits_one(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
