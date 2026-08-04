@@ -26,7 +26,13 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
+    # #1329: was "OS Independent", which was false — aelfrice could not start
+    # on Windows at all (module-scope `fcntl`). Named explicitly rather than
+    # restored to the blanket claim: Linux and macOS run the full suite on
+    # every PR, Windows runs a smoke job. See docs/user/LIMITATIONS.md.
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",

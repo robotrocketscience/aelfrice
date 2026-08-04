@@ -5,6 +5,7 @@
 - Python 3.12 or 3.13. (`uv` handles the Python version for you — no need to install Python separately.)
 - [`uv`](https://docs.astral.sh/uv/). The supported install channel (#730). If you don't have it: `curl -LsSf https://astral.sh/uv/install.sh | sh`.
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code), or any agent that can spawn a hook on `UserPromptSubmit`.
+- Linux, macOS, or Windows. Linux and macOS run the full test suite on every PR; Windows is covered by a smoke job — see [LIMITATIONS.md § Compatibility](LIMITATIONS.md#compatibility) for exactly what that does and does not assert.
 
 ## 1. Install the package
 

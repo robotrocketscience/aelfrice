@@ -80,7 +80,25 @@ One DB writes at a time. Beliefs written in project A do not get *written* into 
 ## Compatibility
 
 - Python 3.12 or 3.13.
-- macOS and Linux are routinely tested. Windows should work but is not exercised on every release.
+- macOS and Linux are routinely tested — the full suite runs on both on every PR.
+- Windows is supported at a narrower level, and the difference is worth stating
+  plainly because this page previously said "should work but is not exercised on
+  every release", which was wrong: until
+  [#1329](https://github.com/robotrocketscience/aelfrice/issues/1329) aelfrice
+  did not start on Windows at all. Every command died at import on a Unix-only
+  `fcntl`, and the claude-memory directory encoder produced a name Windows
+  cannot create. Both are fixed, and a `windows-latest` job now asserts that
+  `aelf --help` runs, `aelf doctor` does not crash at import, the portability
+  suite passes, and the encoder produces a creatable directory name. What that
+  job does **not** do is run the full suite — much of it assumes POSIX
+  semantics. So: aelfrice runs on Windows and its portability surface is
+  tested; individual subcommands are not yet verified there one by one.
+- Advisory file locking uses `flock` on POSIX and `msvcrt.locking` on Windows.
+  If neither is available on the host or backing filesystem, locking degrades
+  to a no-op: single-process use is unaffected, but two concurrent `aelf`
+  processes are **not** serialised and can interleave a read-modify-write of
+  the same settings or ring file. `aelfrice.file_lock.HAVE_ADVISORY_LOCKS`
+  reports which case you are in.
 - `uv tool install aelfrice` is the only supported install channel as of v3.0.1 ([#730](https://github.com/robotrocketscience/aelfrice/issues/730)).
 
 ## Reporting
