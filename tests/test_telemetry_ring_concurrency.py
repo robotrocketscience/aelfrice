@@ -14,6 +14,7 @@ implementation drops updates here — the lock is what makes them pass.
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -59,9 +60,12 @@ def _race(target) -> None:
     ]
     for t in threads:
         t.start()
+    # One deadline for the whole loop, not one per thread — see the same
+    # note in tests/test_feedback_atomicity.py.
+    deadline = time.monotonic() + _JOIN_TIMEOUT_SECONDS
     stuck = []
     for t in threads:
-        t.join(timeout=_JOIN_TIMEOUT_SECONDS)
+        t.join(timeout=max(0.0, deadline - time.monotonic()))
         if t.is_alive():
             stuck.append(t.name)
     assert not stuck, (

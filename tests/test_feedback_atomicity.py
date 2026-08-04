@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -33,9 +34,10 @@ _RACE_BUDGET_SECONDS = 30
 # Well under _RACE_BUDGET_SECONDS: contention must resolve as a wait, not
 # as a test timeout.
 _BUSY_TIMEOUT_MS = 2000
-# Every blocking call in the race has its own ceiling, all of them under
-# _RACE_BUDGET_SECONDS, so the test always reaches an assertion instead of
-# depending on the suite timeout to end it.
+# Every blocking call in the race has its own ceiling, and the join loop
+# shares ONE deadline rather than spending _JOIN_TIMEOUT_SECONDS per
+# thread, so the whole race stays under _RACE_BUDGET_SECONDS and the test
+# always reaches an assertion instead of depending on the suite timeout.
 _BARRIER_TIMEOUT_SECONDS = 10
 _JOIN_TIMEOUT_SECONDS = 15
 
@@ -105,9 +107,14 @@ def _race(db: Path, belief_id: str, valence: float) -> list[Exception]:
     ]
     for t in threads:
         t.start()
+    # One deadline for the whole loop, not one per thread: per-thread it
+    # is _WORKERS x _JOIN_TIMEOUT_SECONDS in the worst case, which
+    # overruns _RACE_BUDGET_SECONDS and lands the failure back on the
+    # suite timeout — the outcome this file exists to avoid.
+    deadline = time.monotonic() + _JOIN_TIMEOUT_SECONDS
     stuck = []
     for t in threads:
-        t.join(timeout=_JOIN_TIMEOUT_SECONDS)
+        t.join(timeout=max(0.0, deadline - time.monotonic()))
         if t.is_alive():
             stuck.append(t.name)
     assert not stuck, (
