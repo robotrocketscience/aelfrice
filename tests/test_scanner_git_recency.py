@@ -66,6 +66,7 @@ def test_recency_map_empty_outside_git(tmp_path: Path) -> None:
     assert _build_file_recency_map(tmp_path) == {}
 
 
+@pytest.mark.timeout(30)
 def test_recency_map_records_one_commit(tmp_path: Path) -> None:
     repo = tmp_path / "r"
     repo.mkdir()
@@ -78,6 +79,7 @@ def test_recency_map_records_one_commit(tmp_path: Path) -> None:
     assert rec["README.md"].startswith("2024-06-15")
 
 
+@pytest.mark.timeout(30)
 def test_recency_map_keeps_most_recent_when_file_touched_twice(
     tmp_path: Path,
 ) -> None:
@@ -152,6 +154,7 @@ def test_extract_ast_passes_commit_date_through(tmp_path: Path) -> None:
 # --- extract_git_log ------------------------------------------------
 
 
+@pytest.mark.timeout(30)
 def test_git_log_candidate_carries_commit_date(tmp_path: Path) -> None:
     """Each git:commit:* candidate carries the commit's own author date."""
     repo = tmp_path / "r"
@@ -169,6 +172,7 @@ def test_git_log_candidate_carries_commit_date(tmp_path: Path) -> None:
 # --- scan_repo end-to-end ------------------------------------------
 
 
+@pytest.mark.timeout(30)
 def test_scan_repo_uses_commit_date_for_committed_doc(tmp_path: Path) -> None:
     """A doc file with a git commit lands in the store with
     `belief.created_at == commit author date` rather than the wall-clock

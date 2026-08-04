@@ -1,6 +1,8 @@
 """Integration: <recent-work> wired into _build_session_start_subblock (#887)."""
 from __future__ import annotations
 
+import pytest
+
 import subprocess
 from pathlib import Path
 
@@ -56,6 +58,7 @@ def _seed_lock(db: Path, content: str) -> None:
         store.close()
 
 
+@pytest.mark.timeout(30)
 def test_recent_work_appears_with_lock_pool(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -88,6 +91,7 @@ def test_recent_work_appears_with_lock_pool(tmp_path: Path) -> None:
     assert locked_idx < core_idx < recent_idx < close_idx
 
 
+@pytest.mark.timeout(30)
 def test_recent_work_alone_emits_subblock(tmp_path: Path) -> None:
     """Empty store but live git repo: <recent-work> alone is enough to emit."""
     repo = tmp_path / "repo"

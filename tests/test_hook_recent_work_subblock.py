@@ -1,6 +1,8 @@
 """Builder for <recent-work> sub-block (#887)."""
 from __future__ import annotations
 
+import pytest
+
 import subprocess
 from pathlib import Path
 
@@ -37,6 +39,7 @@ def test_non_git_returns_empty(tmp_path: Path) -> None:
     assert _build_recent_work_subblock(not_git) == ""
 
 
+@pytest.mark.timeout(30)
 def test_renders_branch_and_commits(tmp_path: Path) -> None:
     repo = tmp_path / "r"
     _init_repo(repo)
@@ -52,6 +55,7 @@ def test_renders_branch_and_commits(tmp_path: Path) -> None:
     assert "<linked-issues>#887</linked-issues>" in block
 
 
+@pytest.mark.timeout(30)
 def test_emits_upstream_when_present(tmp_path: Path) -> None:
     bare = tmp_path / "u.git"
     _run(tmp_path, "init", "-q", "--bare", str(bare))
@@ -64,6 +68,7 @@ def test_emits_upstream_when_present(tmp_path: Path) -> None:
     assert "<upstream>github/main</upstream>" in block
 
 
+@pytest.mark.timeout(30)
 def test_omits_upstream_when_absent(tmp_path: Path) -> None:
     repo = tmp_path / "r"
     _init_repo(repo)
@@ -72,6 +77,7 @@ def test_omits_upstream_when_absent(tmp_path: Path) -> None:
     assert "<upstream>" not in block
 
 
+@pytest.mark.timeout(30)
 def test_omits_commits_section_on_empty_repo(tmp_path: Path) -> None:
     repo = tmp_path / "r"
     _init_repo(repo)
@@ -81,6 +87,7 @@ def test_omits_commits_section_on_empty_repo(tmp_path: Path) -> None:
         assert "<commits>" not in block
 
 
+@pytest.mark.timeout(30)
 def test_omits_linked_issues_when_none(tmp_path: Path) -> None:
     repo = tmp_path / "r"
     _init_repo(repo)
@@ -89,6 +96,7 @@ def test_omits_linked_issues_when_none(tmp_path: Path) -> None:
     assert "<linked-issues>" not in block
 
 
+@pytest.mark.timeout(30)
 def test_escapes_subject_that_looks_like_tag(tmp_path: Path) -> None:
     """A commit subject containing a framing tag must be entity-escaped."""
     repo = tmp_path / "r"
@@ -101,6 +109,7 @@ def test_escapes_subject_that_looks_like_tag(tmp_path: Path) -> None:
     assert block.count("<recent-work>") == 1
 
 
+@pytest.mark.timeout(30)
 def test_commit_limit_capped(tmp_path: Path) -> None:
     repo = tmp_path / "r"
     _init_repo(repo)

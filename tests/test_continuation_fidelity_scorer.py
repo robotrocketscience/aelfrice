@@ -75,6 +75,7 @@ def test_score_method_literal_accepts_three_values() -> None:
 # --------------------------------------------------------------------- #
 
 
+@pytest.mark.timeout(30)
 def test_score_against_bundled_synthetic_fixture_in_unit_interval() -> None:
     """End-to-end: `run()` populates `continuation_fidelity` in [0, 1]."""
     result = run(SYNTHETIC_FIXTURE, inject=ClearInjection(clear_at=8))
@@ -86,6 +87,7 @@ def test_score_against_bundled_synthetic_fixture_in_unit_interval() -> None:
     assert fid.n_post_clear_assistant_turns >= 1
 
 
+@pytest.mark.timeout(30)
 def test_perfect_replay_scores_one() -> None:
     """No agent answers supplied -> fixture is scored against itself.
 
@@ -106,6 +108,7 @@ def test_perfect_replay_scores_one() -> None:
 # --------------------------------------------------------------------- #
 
 
+@pytest.mark.timeout(30)
 def test_score_is_reproducible_across_runs() -> None:
     """Two runs against the same fixture produce identical scores."""
     a = run(SYNTHETIC_FIXTURE, inject=ClearInjection(clear_at=8))
@@ -122,6 +125,7 @@ def test_score_is_reproducible_across_runs() -> None:
     )
 
 
+@pytest.mark.timeout(30)
 def test_score_is_reproducible_with_explicit_answers() -> None:
     """Same explicit `post_clear_answers` -> same score on both calls."""
     result = run(SYNTHETIC_FIXTURE, inject=ClearInjection(clear_at=10))
@@ -160,6 +164,7 @@ def _post_clear_assistant_count(replay_result: ReplayResult) -> int:
     return fid.n_post_clear_assistant_turns if fid is not None else 0
 
 
+@pytest.mark.timeout(30)
 def test_exact_method_normalizes_case_and_whitespace() -> None:
     """Case differences and whitespace runs do not break the match.
 
@@ -197,6 +202,7 @@ def test_exact_method_normalizes_case_and_whitespace() -> None:
     assert rerun.continuation_fidelity.score == 1.0
 
 
+@pytest.mark.timeout(30)
 def test_exact_method_rejects_paraphrase() -> None:
     """A semantically-equivalent paraphrase is a documented false negative.
 
@@ -217,6 +223,7 @@ def test_exact_method_rejects_paraphrase() -> None:
     assert rerun.continuation_fidelity.score == 0.0
 
 
+@pytest.mark.timeout(30)
 def test_exact_method_partial_match_aggregate() -> None:
     """Half-correct answers aggregate to ~0.5."""
     result = run(SYNTHETIC_FIXTURE, inject=ClearInjection(clear_at=8))
@@ -257,6 +264,7 @@ def test_exact_method_partial_match_aggregate() -> None:
 # --------------------------------------------------------------------- #
 
 
+@pytest.mark.timeout(30)
 def test_no_clear_injected_is_vacuously_perfect() -> None:
     """`clear_injected_at is None` -> score=1.0, n=0 (documented)."""
     result = run(SYNTHETIC_FIXTURE)  # No injection.
@@ -267,6 +275,7 @@ def test_no_clear_injected_is_vacuously_perfect() -> None:
     assert result.continuation_fidelity.per_turn == []
 
 
+@pytest.mark.timeout(30)
 def test_clear_at_last_turn_is_vacuously_perfect() -> None:
     """Clear at or after the final turn -> 0 post-clear answers, score=1.0.
 
@@ -283,6 +292,7 @@ def test_clear_at_last_turn_is_vacuously_perfect() -> None:
     assert result.continuation_fidelity.n_post_clear_assistant_turns == 0
 
 
+@pytest.mark.timeout(30)
 def test_post_clear_answers_length_mismatch_raises() -> None:
     """Mismatched answer-list length is a programming error -> ValueError."""
     result = run(SYNTHETIC_FIXTURE, inject=ClearInjection(clear_at=8))
@@ -303,6 +313,7 @@ def test_post_clear_answers_length_mismatch_raises() -> None:
 # --------------------------------------------------------------------- #
 
 
+@pytest.mark.timeout(30)
 def test_embedding_method_raises_not_implemented() -> None:
     """`method='embedding'` is parked at v1.4.0; raises NotImplementedError."""
     with pytest.raises(NotImplementedError) as exc_info:
@@ -316,6 +327,7 @@ def test_embedding_method_raises_not_implemented() -> None:
     assert "#138" in msg
 
 
+@pytest.mark.timeout(30)
 def test_llm_judge_method_raises_not_implemented() -> None:
     """`method='llm-judge'` is parked at v1.4.0; raises NotImplementedError."""
     with pytest.raises(NotImplementedError) as exc_info:
@@ -329,6 +341,7 @@ def test_llm_judge_method_raises_not_implemented() -> None:
     assert "#138" in msg
 
 
+@pytest.mark.timeout(30)
 def test_unknown_method_raises_value_error() -> None:
     """A bad runtime method string raises ValueError, not silently misbehaves."""
     # Build a minimal ReplayResult and call the scorer directly.

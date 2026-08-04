@@ -119,6 +119,7 @@ def test_no_op_on_failed_commit(git_repo: Path, per_repo_db: Path) -> None:
     assert not per_repo_db.exists()
 
 
+@pytest.mark.timeout(30)
 def test_extracts_triple_from_commit_message(
     git_repo: Path, per_repo_db: Path,
 ) -> None:
@@ -149,6 +150,7 @@ def test_extracts_triple_from_commit_message(
         store.close()
 
 
+@pytest.mark.timeout(30)
 def test_session_id_is_derived_and_stable(
     git_repo: Path, per_repo_db: Path,
 ) -> None:
@@ -175,6 +177,7 @@ def test_session_id_is_derived_and_stable(
         store.close()
 
 
+@pytest.mark.timeout(30)
 def test_idempotent_on_repeated_fire(
     git_repo: Path, per_repo_db: Path,
 ) -> None:
@@ -199,6 +202,7 @@ def test_idempotent_on_repeated_fire(
         store.close()
 
 
+@pytest.mark.timeout(30)
 def test_no_triples_does_not_create_session(
     git_repo: Path, per_repo_db: Path,
 ) -> None:

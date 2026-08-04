@@ -76,6 +76,7 @@ def test_non_git_directory_returns_empty(tmp_path: Path) -> None:
     assert extract_git_log(tmp_path) == []
 
 
+@pytest.mark.timeout(30)
 @needs_git
 def test_repo_with_no_commits_returns_empty(tmp_path: Path) -> None:
     _init_repo(tmp_path)
@@ -85,6 +86,7 @@ def test_repo_with_no_commits_returns_empty(tmp_path: Path) -> None:
 # --- Single + multi-commit extraction -----------------------------------
 
 
+@pytest.mark.timeout(30)
 @needs_git
 def test_single_commit_yields_one_candidate(tmp_path: Path) -> None:
     _init_repo(tmp_path)
@@ -93,6 +95,7 @@ def test_single_commit_yields_one_candidate(tmp_path: Path) -> None:
     assert len(candidates) == 1
 
 
+@pytest.mark.timeout(30)
 @needs_git
 def test_three_commits_yield_three_candidates(tmp_path: Path) -> None:
     _init_repo(tmp_path)
@@ -103,6 +106,7 @@ def test_three_commits_yield_three_candidates(tmp_path: Path) -> None:
     assert len(candidates) == 3
 
 
+@pytest.mark.timeout(30)
 @needs_git
 def test_commit_subject_is_candidate_text(tmp_path: Path) -> None:
     _init_repo(tmp_path)
@@ -114,6 +118,7 @@ def test_commit_subject_is_candidate_text(tmp_path: Path) -> None:
 # --- Source format ------------------------------------------------------
 
 
+@pytest.mark.timeout(30)
 @needs_git
 def test_source_starts_with_git_commit_prefix(tmp_path: Path) -> None:
     _init_repo(tmp_path)
@@ -122,6 +127,7 @@ def test_source_starts_with_git_commit_prefix(tmp_path: Path) -> None:
     assert c.source.startswith("git:commit:")
 
 
+@pytest.mark.timeout(30)
 @needs_git
 def test_source_includes_seven_char_short_hash(tmp_path: Path) -> None:
     _init_repo(tmp_path)
@@ -131,6 +137,7 @@ def test_source_includes_seven_char_short_hash(tmp_path: Path) -> None:
     assert len(short_hash) == 7
 
 
+@pytest.mark.timeout(30)
 @needs_git
 def test_distinct_commits_yield_distinct_short_hashes(tmp_path: Path) -> None:
     _init_repo(tmp_path)
@@ -144,6 +151,7 @@ def test_distinct_commits_yield_distinct_short_hashes(tmp_path: Path) -> None:
 # --- Ordering -----------------------------------------------------------
 
 
+@pytest.mark.timeout(30)
 @needs_git
 def test_most_recent_commit_first(tmp_path: Path) -> None:
     _init_repo(tmp_path)
@@ -158,6 +166,7 @@ def test_most_recent_commit_first(tmp_path: Path) -> None:
 # --- Limit clamp --------------------------------------------------------
 
 
+@pytest.mark.timeout(30)
 @needs_git
 def test_limit_caps_returned_count(tmp_path: Path) -> None:
     _init_repo(tmp_path)
@@ -167,6 +176,7 @@ def test_limit_caps_returned_count(tmp_path: Path) -> None:
     assert len(candidates) == 2
 
 
+@pytest.mark.timeout(30)
 @needs_git
 def test_limit_one_returns_only_newest(tmp_path: Path) -> None:
     _init_repo(tmp_path)
@@ -180,6 +190,7 @@ def test_limit_one_returns_only_newest(tmp_path: Path) -> None:
 # --- Result types -------------------------------------------------------
 
 
+@pytest.mark.timeout(30)
 @needs_git
 def test_results_are_sentence_candidates(tmp_path: Path) -> None:
     _init_repo(tmp_path)

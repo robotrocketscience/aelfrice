@@ -253,6 +253,7 @@ def _write_fixtures(tmp_path: Path, fixtures: list[dict[str, object]]) -> Path:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.timeout(30)
 def test_runner_integration_clean(tmp_path: Path) -> None:
     """3-fixture file through run(): both MRR and ECE keys present, correct types."""
     from benchmarks.posterior_ranking.run import run

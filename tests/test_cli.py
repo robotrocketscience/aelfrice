@@ -48,6 +48,7 @@ def test_db_path_honors_env_override(tmp_path: Path,
     assert db_path() == target
 
 
+@pytest.mark.timeout(30)
 def test_db_path_resolves_to_git_common_dir_when_in_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -61,6 +62,7 @@ def test_db_path_resolves_to_git_common_dir_when_in_repo(
     assert resolved == (repo / ".git" / "aelfrice" / DEFAULT_DB_FILENAME).resolve()
 
 
+@pytest.mark.timeout(30)
 def test_db_path_worktrees_share_one_db(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -104,6 +106,7 @@ def test_db_path_falls_back_to_home_outside_git(
     assert db_path() == DEFAULT_DB_DIR / DEFAULT_DB_FILENAME
 
 
+@pytest.mark.timeout(30)
 def test_db_path_env_override_wins_inside_git_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -104,6 +104,7 @@ def test_render_bullets_match_hits():
     assert "  - beta" in out
 
 
+@pytest.mark.timeout(30)
 def test_main_emits_nothing_on_clean_body(tmp_path: Path):
     body = tmp_path / "body.md"
     body.write_text("Plain prose with no module paths or class names.\n")
@@ -141,6 +142,7 @@ def _resolve_main_ref() -> str:
     return "HEAD"
 
 
+@pytest.mark.timeout(30)
 @pytest.mark.skipif(not _have_main_with_vocab_bridge(),
                     reason="origin/main does not contain #433 ship; replay test depends on shipped surface")
 def test_replay_issue_521_surfaces_known_artifacts():
@@ -161,6 +163,7 @@ def test_replay_issue_521_surfaces_known_artifacts():
     assert "docs/feature-hrr-vocab-bridge.md" in out
 
 
+@pytest.mark.timeout(30)
 def test_no_false_positive_on_unrelated_module(tmp_path: Path):
     body = tmp_path / "body.md"
     body.write_text("Adds `src/aelfrice/this_module_will_not_ever_exist_zzz_123.py`.\n")

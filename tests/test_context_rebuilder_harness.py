@@ -76,6 +76,7 @@ def test_load_turns_reads_synthetic_fixture() -> None:
 # --------------------------------------------------------------------- #
 
 
+@pytest.mark.timeout(30)
 def test_replay_completes_against_bundled_synthetic_fixture() -> None:
     """End-to-end replay returns a well-formed ReplayResult."""
     result = run(SYNTHETIC_FIXTURE)
@@ -95,6 +96,7 @@ def test_replay_completes_against_bundled_synthetic_fixture() -> None:
 # --------------------------------------------------------------------- #
 
 
+@pytest.mark.timeout(30)
 def test_per_turn_output_has_required_keys() -> None:
     """Every turn record carries `token_budget_delta` and `hook_latency_ms`.
 
@@ -148,6 +150,7 @@ def test_json_output_has_required_keys_per_turn(tmp_path: Path) -> None:
 # --------------------------------------------------------------------- #
 
 
+@pytest.mark.timeout(30)
 def test_midpoint_clear_injection_marks_clear_turn() -> None:
     """`ClearInjection(clear_at=N)` flips `cleared=True` exactly at turn N."""
     result = run(SYNTHETIC_FIXTURE, inject=ClearInjection(clear_at=6))
@@ -157,6 +160,7 @@ def test_midpoint_clear_injection_marks_clear_turn() -> None:
     assert cleared_turns[0].turn_index == 6
 
 
+@pytest.mark.timeout(30)
 def test_midpoint_clear_changes_token_budget_delta() -> None:
     """Pre-clear deltas are 0; at-clear and post-clear deltas are non-zero.
 
@@ -197,6 +201,7 @@ def test_clear_injection_rejects_negative_clear_at() -> None:
         ClearInjection(clear_at=-1)
 
 
+@pytest.mark.timeout(30)
 def test_clear_injection_out_of_range_silently_no_ops() -> None:
     """`clear_at` >= turn count produces a result with no clear fired."""
     result = run(SYNTHETIC_FIXTURE, inject=ClearInjection(clear_at=10_000))
@@ -224,6 +229,7 @@ def test_hook_latency_ms_is_non_negative() -> None:
     assert hook_latency_ms(future) == 0.0
 
 
+@pytest.mark.timeout(30)
 def test_replay_per_turn_latency_is_non_negative() -> None:
     """Every per-turn `hook_latency_ms` reading is >= 0."""
     result = run(SYNTHETIC_FIXTURE, inject=ClearInjection(clear_at=3))
@@ -231,6 +237,7 @@ def test_replay_per_turn_latency_is_non_negative() -> None:
         assert t.hook_latency_ms >= 0.0
 
 
+@pytest.mark.timeout(30)
 def test_non_clear_turns_have_zero_latency() -> None:
     """Latency is recorded only on the clear turn -- everywhere else, 0."""
     result = run(SYNTHETIC_FIXTURE, inject=ClearInjection(clear_at=7))
@@ -327,6 +334,7 @@ def test_cli_negative_clear_at_returns_two(tmp_path: Path) -> None:
 # --------------------------------------------------------------------- #
 
 
+@pytest.mark.timeout(30)
 def test_replay_token_counts_are_deterministic() -> None:
     """Two runs against the same fixture produce identical token totals."""
     a = run(SYNTHETIC_FIXTURE)
@@ -370,6 +378,7 @@ def test_default_rebuild_overhead_tokens_is_documented() -> None:
     assert DEFAULT_REBUILD_OVERHEAD_TOKENS == 32
 
 
+@pytest.mark.timeout(30)
 def test_replay_result_to_dict_round_trip(tmp_path: Path) -> None:
     """`ReplayResult.to_dict()` is JSON-serializable end-to-end."""
     result = run(SYNTHETIC_FIXTURE, inject=ClearInjection(clear_at=2))

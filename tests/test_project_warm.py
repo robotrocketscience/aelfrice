@@ -98,6 +98,7 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 # --- resolve_project_root ---------------------------------------------------
 
 
+@pytest.mark.timeout(30)
 def test_resolve_project_root_git_repo(tmp_path: Path, fake_home: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -111,6 +112,7 @@ def test_resolve_project_root_git_repo(tmp_path: Path, fake_home: Path) -> None:
     assert len(ref.id) == 12
 
 
+@pytest.mark.timeout(30)
 def test_resolve_project_root_git_worktree(
     tmp_path: Path, fake_home: Path,
 ) -> None:
@@ -128,6 +130,7 @@ def test_resolve_project_root_git_worktree(
     assert ref.root != repo.resolve()
 
 
+@pytest.mark.timeout(30)
 def test_resolve_project_root_worktrees_share_id(
     tmp_path: Path, fake_home: Path,
 ) -> None:
@@ -202,6 +205,7 @@ def _ref_for(root: Path) -> ProjectRef:
     return ProjectRef(root=root.resolve(), id=_project_id(root.resolve()))
 
 
+@pytest.mark.timeout(30)
 def test_warm_project_writes_sentinel(
     tmp_path: Path, fake_home: Path,
 ) -> None:
@@ -218,6 +222,7 @@ def test_warm_project_writes_sentinel(
     assert float(sentinel.read_text(encoding="utf-8").strip()) == 1_700_000_000.0
 
 
+@pytest.mark.timeout(30)
 def test_warm_project_debounces_within_window(
     tmp_path: Path, fake_home: Path,
 ) -> None:
@@ -242,6 +247,7 @@ def test_warm_project_debounces_within_window(
     assert third is WarmResult.WARMED
 
 
+@pytest.mark.timeout(30)
 def test_warm_project_denied_path(
     tmp_path: Path, fake_home: Path,
 ) -> None:
@@ -262,6 +268,7 @@ def test_warm_project_denied_path(
     assert not sentinel.exists()  # denied path must not seed sentinel
 
 
+@pytest.mark.timeout(30)
 def test_warm_project_skips_when_db_does_not_exist(
     tmp_path: Path, fake_home: Path,
 ) -> None:
@@ -282,6 +289,7 @@ def test_warm_project_skips_when_db_does_not_exist(
     assert not db.exists()
 
 
+@pytest.mark.timeout(30)
 def test_warm_project_warms_real_store(
     tmp_path: Path, fake_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -402,6 +410,7 @@ def test_cli_project_warm_silent_for_unknown_path(
     assert buf.getvalue() == ""
 
 
+@pytest.mark.timeout(30)
 def test_cli_project_warm_silent_for_denied_path(
     tmp_path: Path, fake_home: Path,
 ) -> None:
@@ -425,6 +434,7 @@ def test_cli_project_warm_silent_for_denied_path(
         assert list(sentinel_dir.iterdir()) == []
 
 
+@pytest.mark.timeout(30)
 def test_cli_project_warm_warms_and_debounces(
     tmp_path: Path, fake_home: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

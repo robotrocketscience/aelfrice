@@ -171,6 +171,7 @@ def test_repeat_scan_total_belief_count_matches_first_inserted(
 # --- Multi-source --------------------------------------------------------
 
 
+@pytest.mark.timeout(30)
 @needs_git
 def test_md_plus_git_plus_py_inserts_three_or_more(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text(

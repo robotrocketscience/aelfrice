@@ -184,6 +184,7 @@ def test_load_judge_run_skips_malformed_lines(tmp_path: Path) -> None:
 
 # --- CLI smoke ------------------------------------------------------------
 
+@pytest.mark.timeout(30)
 def test_cli_emits_json_and_exits_zero_when_calibrated(tmp_path: Path) -> None:
     # Build 3 perfectly-agreeing judge files + baseline.
     for i in range(1, 4):
@@ -224,6 +225,7 @@ def test_cli_emits_json_and_exits_zero_when_calibrated(tmp_path: Path) -> None:
     assert payload["n_pairs"] == 10
 
 
+@pytest.mark.timeout(30)
 def test_cli_exits_nonzero_when_not_calibrated(tmp_path: Path) -> None:
     # 2 runs only → fails MIN_RUNS gate → exit 1.
     for i in range(1, 3):

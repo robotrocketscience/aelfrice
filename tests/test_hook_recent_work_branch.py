@@ -1,6 +1,8 @@
 """Branch + upstream resolution for <recent-work> sub-block (#887)."""
 from __future__ import annotations
 
+import pytest
+
 import subprocess
 from pathlib import Path
 
@@ -28,6 +30,7 @@ def _init_repo(path: Path) -> None:
     _run(path, "commit", "-q", "-m", "init")
 
 
+@pytest.mark.timeout(30)
 def test_resolve_branch_on_main(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -36,6 +39,7 @@ def test_resolve_branch_on_main(tmp_path: Path) -> None:
     assert upstream is None
 
 
+@pytest.mark.timeout(30)
 def test_resolve_branch_with_upstream(tmp_path: Path) -> None:
     upstream_repo = tmp_path / "upstream.git"
     _run(tmp_path, "init", "-q", "--bare", str(upstream_repo))
@@ -48,6 +52,7 @@ def test_resolve_branch_with_upstream(tmp_path: Path) -> None:
     assert upstream == "origin/main"
 
 
+@pytest.mark.timeout(30)
 def test_resolve_branch_feature_branch(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -56,6 +61,7 @@ def test_resolve_branch_feature_branch(tmp_path: Path) -> None:
     assert branch == "feat/issue-887-recent-work"
 
 
+@pytest.mark.timeout(30)
 def test_resolve_branch_detached_head(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)

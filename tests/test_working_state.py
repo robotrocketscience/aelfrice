@@ -129,6 +129,7 @@ class TestProjectWorkingState:
         ws = project_working_state(tmp_repo, recent_turns=[], max_status_lines=5)
         assert len(ws.status_porcelain) == 5
 
+    @pytest.mark.timeout(30)
     def test_recent_log_capped(self, tmp_repo: Path) -> None:
         for i in range(5):
             _git(tmp_repo, "commit", "--allow-empty", "-m", f"commit-{i}")
@@ -146,6 +147,7 @@ class TestProjectWorkingState:
         ws = project_working_state(tmp_repo, recent_turns=turns, max_user_prompts=10)
         assert ws.recent_user_prompts == ["first prompt", "second prompt"]
 
+    @pytest.mark.timeout(30)
     def test_session_commits_bounded_by_session_ts(self, tmp_repo: Path) -> None:
         # The initial commit lands first; sleep so the next commit is at
         # least 2s later (git --since has 1s granularity). Take the ts of

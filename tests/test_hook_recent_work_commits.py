@@ -1,6 +1,8 @@
 """Recent-commits resolution for <recent-work> sub-block (#887)."""
 from __future__ import annotations
 
+import pytest
+
 import subprocess
 from pathlib import Path
 
@@ -31,12 +33,14 @@ def _commit(repo: Path, name: str, subject: str) -> None:
     _run(repo, "commit", "-q", "-m", subject)
 
 
+@pytest.mark.timeout(30)
 def test_empty_repo_returns_empty(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
     assert _resolve_recent_commits(repo, 5) == []
 
 
+@pytest.mark.timeout(30)
 def test_main_branch_returns_recent_commits(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -52,6 +56,7 @@ def test_main_branch_returns_recent_commits(tmp_path: Path) -> None:
                for sha, _ in out)
 
 
+@pytest.mark.timeout(30)
 def test_feature_branch_returns_only_ahead_commits(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -68,6 +73,7 @@ def test_feature_branch_returns_only_ahead_commits(tmp_path: Path) -> None:
     assert "feat: base" not in subjects
 
 
+@pytest.mark.timeout(30)
 def test_limit_caps_count(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -78,6 +84,7 @@ def test_limit_caps_count(tmp_path: Path) -> None:
     assert out[0][1] == "feat: 9"
 
 
+@pytest.mark.timeout(30)
 def test_zero_limit_returns_empty(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _init_repo(repo)
@@ -85,6 +92,7 @@ def test_zero_limit_returns_empty(tmp_path: Path) -> None:
     assert _resolve_recent_commits(repo, 0) == []
 
 
+@pytest.mark.timeout(30)
 def test_branch_at_main_falls_back_to_last_n(tmp_path: Path) -> None:
     """On main with no commits ahead, fall back to last-N on HEAD."""
     repo = tmp_path / "repo"
@@ -102,6 +110,7 @@ def test_non_git_dir_returns_empty(tmp_path: Path) -> None:
     assert _resolve_recent_commits(not_git, 5) == []
 
 
+@pytest.mark.timeout(30)
 def test_no_main_branch_falls_back_to_head(tmp_path: Path) -> None:
     """Repo with main renamed: still returns last-N HEAD commits."""
     repo = tmp_path / "repo"

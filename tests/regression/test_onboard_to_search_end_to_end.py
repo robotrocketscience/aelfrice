@@ -82,6 +82,7 @@ def _seed_fixture(root: Path, with_git: bool = True) -> None:
 # --- Onboarding lands beliefs ------------------------------------------
 
 
+@pytest.mark.timeout(30)
 def test_scan_inserts_at_least_one_belief(tmp_path: Path) -> None:
     _seed_fixture(tmp_path, with_git=False)
     s = MemoryStore(":memory:")
@@ -89,6 +90,7 @@ def test_scan_inserts_at_least_one_belief(tmp_path: Path) -> None:
     assert result.inserted >= 1
 
 
+@pytest.mark.timeout(30)
 def test_doc_paragraph_lands_in_store(tmp_path: Path) -> None:
     _seed_fixture(tmp_path, with_git=False)
     s = MemoryStore(":memory:")
@@ -97,6 +99,7 @@ def test_doc_paragraph_lands_in_store(tmp_path: Path) -> None:
     assert len(hits) >= 1
 
 
+@pytest.mark.timeout(30)
 def test_module_docstring_lands_in_store(tmp_path: Path) -> None:
     _seed_fixture(tmp_path, with_git=False)
     s = MemoryStore(":memory:")
@@ -105,6 +108,7 @@ def test_module_docstring_lands_in_store(tmp_path: Path) -> None:
     assert any("module exposes" in h.content for h in hits)
 
 
+@pytest.mark.timeout(30)
 @needs_git
 def test_git_commit_subject_lands_in_store(tmp_path: Path) -> None:
     _seed_fixture(tmp_path, with_git=True)
@@ -117,6 +121,7 @@ def test_git_commit_subject_lands_in_store(tmp_path: Path) -> None:
 # --- Retrieval finds onboarded beliefs ---------------------------------
 
 
+@pytest.mark.timeout(30)
 def test_retrieve_finds_doc_belief_via_l1(tmp_path: Path) -> None:
     _seed_fixture(tmp_path, with_git=False)
     s = MemoryStore(":memory:")
@@ -126,6 +131,7 @@ def test_retrieve_finds_doc_belief_via_l1(tmp_path: Path) -> None:
     assert "regex fallback" in contents
 
 
+@pytest.mark.timeout(30)
 def test_retrieve_query_with_no_match_returns_empty_when_no_locks(
     tmp_path: Path,
 ) -> None:
@@ -139,6 +145,7 @@ def test_retrieve_query_with_no_match_returns_empty_when_no_locks(
 # --- Locking a scanned belief moves it to L0 ---------------------------
 
 
+@pytest.mark.timeout(30)
 def test_locked_scanned_belief_appears_first(tmp_path: Path) -> None:
     _seed_fixture(tmp_path, with_git=False)
     s = MemoryStore(":memory:")
@@ -157,6 +164,7 @@ def test_locked_scanned_belief_appears_first(tmp_path: Path) -> None:
 # --- Idempotence ------------------------------------------------------
 
 
+@pytest.mark.timeout(30)
 def test_rescan_inserts_zero_new_beliefs(tmp_path: Path) -> None:
     _seed_fixture(tmp_path, with_git=False)
     s = MemoryStore(":memory:")
@@ -165,6 +173,7 @@ def test_rescan_inserts_zero_new_beliefs(tmp_path: Path) -> None:
     assert second.inserted == 0
 
 
+@pytest.mark.timeout(30)
 def test_rescan_total_belief_set_unchanged(tmp_path: Path) -> None:
     _seed_fixture(tmp_path, with_git=False)
     s = MemoryStore(":memory:")
@@ -182,6 +191,7 @@ def test_rescan_total_belief_set_unchanged(tmp_path: Path) -> None:
 # --- Distinct sources produce distinct beliefs ---------------------------
 
 
+@pytest.mark.timeout(30)
 @needs_git
 def test_doc_and_git_with_overlapping_text_remain_distinct(
     tmp_path: Path,

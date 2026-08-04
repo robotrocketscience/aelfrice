@@ -115,6 +115,7 @@ def _run_hook(
 # --- positive cases ---------------------------------------------------------
 
 
+@pytest.mark.timeout(30)
 def test_fresh_branch_under_threshold_passes(tmp_path: Path) -> None:
     """Merge-base age 1 hour < 4h default → push allowed."""
     local, _origin = _setup_repo(tmp_path, base_age_seconds=3600)
@@ -122,6 +123,7 @@ def test_fresh_branch_under_threshold_passes(tmp_path: Path) -> None:
     assert res.returncode == 0, res.stderr
 
 
+@pytest.mark.timeout(30)
 def test_main_push_skipped(tmp_path: Path) -> None:
     """Push to main itself: hook skips even if main is stale."""
     local, _origin = _setup_repo(tmp_path, base_age_seconds=99 * 3600)
@@ -131,6 +133,7 @@ def test_main_push_skipped(tmp_path: Path) -> None:
     assert res.returncode == 0, res.stderr
 
 
+@pytest.mark.timeout(30)
 def test_branch_deletion_skipped(tmp_path: Path) -> None:
     """local sha = z40 → branch deletion → skip."""
     local, _origin = _setup_repo(tmp_path, base_age_seconds=99 * 3600)
@@ -142,6 +145,7 @@ def test_branch_deletion_skipped(tmp_path: Path) -> None:
 # --- negative cases ---------------------------------------------------------
 
 
+@pytest.mark.timeout(30)
 def test_stale_branch_aborts_with_message(tmp_path: Path) -> None:
     """Merge-base 5 hours old > 4h default → abort with rebase instructions."""
     local, _origin = _setup_repo(tmp_path, base_age_seconds=5 * 3600)
@@ -152,6 +156,7 @@ def test_stale_branch_aborts_with_message(tmp_path: Path) -> None:
     assert "ALLOW_STALE_BRANCH_PUSH=1" in res.stderr
 
 
+@pytest.mark.timeout(30)
 def test_override_env_var_bypasses(tmp_path: Path) -> None:
     """ALLOW_STALE_BRANCH_PUSH=1 lets a stale push through, with stderr warning."""
     local, _origin = _setup_repo(tmp_path, base_age_seconds=10 * 3600)
@@ -167,6 +172,7 @@ def test_override_env_var_bypasses(tmp_path: Path) -> None:
 # --- threshold knobs --------------------------------------------------------
 
 
+@pytest.mark.timeout(30)
 def test_env_var_threshold_override(tmp_path: Path) -> None:
     """AELF_PRE_PUSH_FRESHNESS_HOURS=24 lets a 5h-stale branch through."""
     local, _origin = _setup_repo(tmp_path, base_age_seconds=5 * 3600)
@@ -178,6 +184,7 @@ def test_env_var_threshold_override(tmp_path: Path) -> None:
     assert res.returncode == 0, res.stderr
 
 
+@pytest.mark.timeout(30)
 def test_invalid_threshold_falls_back_to_default(tmp_path: Path) -> None:
     """Non-numeric threshold → warning + fallback to 4h default."""
     local, _origin = _setup_repo(tmp_path, base_age_seconds=2 * 3600)
@@ -191,6 +198,7 @@ def test_invalid_threshold_falls_back_to_default(tmp_path: Path) -> None:
     assert "invalid" in res.stderr.lower()
 
 
+@pytest.mark.timeout(30)
 def test_git_config_threshold_override(tmp_path: Path) -> None:
     """aelfrice.prepushFreshnessHours git config raises threshold."""
     local, _origin = _setup_repo(tmp_path, base_age_seconds=5 * 3600)
@@ -199,6 +207,7 @@ def test_git_config_threshold_override(tmp_path: Path) -> None:
     assert res.returncode == 0, res.stderr
 
 
+@pytest.mark.timeout(30)
 def test_force_push_after_real_rebase_passes(tmp_path: Path) -> None:
     """After actually rebasing onto fresh main, the merge-base is fresh and push goes through."""
     local, _origin = _setup_repo(tmp_path, base_age_seconds=10 * 3600)
@@ -229,6 +238,7 @@ def _install_user_hook(local: Path, body: str) -> Path:
     return hook
 
 
+@pytest.mark.timeout(30)
 def test_chain_user_hook_failure_propagates(tmp_path: Path) -> None:
     """When .git/hooks/pre-push exists and exits non-zero, the freshness hook
     propagates that exit code without running its own check."""
@@ -244,6 +254,7 @@ def test_chain_user_hook_failure_propagates(tmp_path: Path) -> None:
     assert "pre-push aborted" not in res.stderr
 
 
+@pytest.mark.timeout(30)
 def test_chain_user_hook_success_continues_to_freshness(tmp_path: Path) -> None:
     """When the chained user hook exits 0, the freshness check still runs."""
     local, _origin = _setup_repo(tmp_path, base_age_seconds=10 * 3600)  # stale
@@ -253,6 +264,7 @@ def test_chain_user_hook_success_continues_to_freshness(tmp_path: Path) -> None:
     assert "pre-push aborted" in res.stderr
 
 
+@pytest.mark.timeout(30)
 def test_chain_stdin_delivered_to_user_hook(tmp_path: Path) -> None:
     """The chained user hook receives the same ref-update stdin git would
     deliver, so it can implement its own per-ref policy."""
