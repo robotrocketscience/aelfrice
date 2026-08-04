@@ -11,22 +11,30 @@ paired with a case whose expected value differs under the wrong rule.
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 import pytest
 
 from aelfrice.consolidate import (
-    DEFAULT_MAX_SHINGLE_DF,
+    DEFAULT_MAX_CANDIDATE_PAIRS,
     MIN_COMPONENT_SIZE,
     ConsolidationReport,
     consolidation_audit,
     format_consolidation_report,
     shingles,
 )
-from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
+from aelfrice.models import (
+    BELIEF_FACTUAL,
+    LOCK_NONE,
+    LOCK_USER,
+    Belief,
+)
 from aelfrice.store import MemoryStore
 
 
-def _insert(store: MemoryStore, bid: str, content: str) -> None:
+def _insert(
+    store: MemoryStore, bid: str, content: str, *, locked: bool = False
+) -> None:
     store.insert_belief(
         Belief(
             id=bid,
@@ -35,8 +43,8 @@ def _insert(store: MemoryStore, bid: str, content: str) -> None:
             alpha=1.0,
             beta=1.0,
             type=BELIEF_FACTUAL,
-            lock_level=LOCK_NONE,
-            locked_at=None,
+            lock_level=LOCK_USER if locked else LOCK_NONE,
+            locked_at="2026-08-03T00:00:00Z" if locked else None,
             created_at="2026-08-03T00:00:00Z",
             last_retrieved_at=None,
         )
@@ -77,7 +85,7 @@ class TestThresholdValidation:
         [
             ({"jaccard_min": 1.5}, "jaccard_min"),
             ({"levenshtein_min": -0.1}, "levenshtein_min"),
-            ({"max_shingle_df": 1}, "max_shingle_df"),
+            ({"max_candidate_pairs": 0}, "max_candidate_pairs"),
         ],
     )
     def test_malformed_thresholds_raise(
@@ -218,57 +226,140 @@ class TestWouldRemoveArithmetic:
     def test_share_of_store_is_zero_on_empty(self) -> None:
         empty = ConsolidationReport(
             n_beliefs_scanned=0,
-            n_shingles_over_df=0,
             n_candidate_pairs=0,
             n_duplicate_pairs=0,
             n_clusters=0,
             n_beliefs_in_clusters=0,
+            n_locked_in_clusters=0,
             largest_cluster=0,
             jaccard_min=0.8,
             levenshtein_min=0.85,
-            max_shingle_df=DEFAULT_MAX_SHINGLE_DF,
+            max_candidate_pairs=DEFAULT_MAX_CANDIDATE_PAIRS,
         )
         assert empty.share_of_store == 0.0
         assert empty.n_would_remove == 0
 
 
-class TestBlockingCapIsReported:
-    def test_skipped_shingles_are_counted_not_silent(
+_FAMILY_BODY = (
+    "the staging deploy pipeline rotates the signing key and then "
+    "revalidates every downstream artifact before promotion to prod"
+)
+
+
+def _homogeneous_family(store: MemoryStore, k: int) -> None:
+    """`k` near-identical beliefs, each with a unique trailing token."""
+    for i in range(k):
+        _insert(store, f"f{i:03d}", f"{_FAMILY_BODY} variant {i}")
+
+
+class TestLargeFamiliesDoNotVanish:
+    """The regression that shipped in the first cut of this module.
+
+    Blocking used to skip any 4-gram above a `df` cap, justified by the
+    claim that real near-duplicates also share rarer shingles. In a
+    *homogeneous* family every member shares every shingle, so they all
+    sit at `df = K` and none is rarer: past the cap the family lost all
+    its postings and the audit reported **zero** duplicates exactly when
+    the duplicate family was largest. At the shipped cap of 32, K=32
+    reported 31 removable and K=33 reported 0.
+    """
+
+    @pytest.mark.timeout(30)
+    @pytest.mark.parametrize("k", [3, 32, 33])
+    def test_family_of_any_size_is_one_cluster(
+        self, store: MemoryStore, k: int
+    ) -> None:
+        """Terminates by construction: <=60 short beliefs, no waiting."""
+        _homogeneous_family(store, k)
+        report = consolidation_audit(store)
+        assert report.n_clusters == 1
+        assert report.largest_cluster == k
+        assert report.n_would_remove == k - 1
+
+    @pytest.mark.timeout(30)
+    def test_no_cliff_between_32_and_33(self, store: MemoryStore) -> None:
+        """The specific discontinuity, pinned as its own case.
+
+        Parametrised coverage would still pass if both sides regressed
+        together; this asserts the *relation*, which is what broke.
+        """
+        _homogeneous_family(store, 32)
+        at_32 = consolidation_audit(store).n_would_remove
+        store.close()
+        bigger = MemoryStore(":memory:")
+        try:
+            _homogeneous_family(bigger, 33)
+            at_33 = consolidation_audit(bigger).n_would_remove
+        finally:
+            bigger.close()
+        assert at_33 == at_32 + 1, (
+            f"a family of 33 priced {at_33} against 32's {at_32}: "
+            "blocking is discarding whole families again"
+        )
+
+
+class TestCandidateBudgetIsDisclosed:
+    @pytest.mark.timeout(30)
+    def test_budget_reached_sets_truncated(self, store: MemoryStore) -> None:
+        """A bound that does not announce itself reads as full coverage.
+
+        Distinguishing: the same corpus without the budget reports
+        `truncated is False`, so this cannot pass by always being True.
+
+        Terminates by construction: the budget IS the bound.
+        """
+        _homogeneous_family(store, 40)
+        capped = consolidation_audit(store, max_candidate_pairs=10)
+        assert capped.truncated is True
+        assert capped.n_candidate_pairs == 10
+
+        full = consolidation_audit(store)
+        assert full.truncated is False
+        assert full.n_candidate_pairs > 10
+
+    @pytest.mark.timeout(30)
+    def test_truncation_is_named_in_the_report(
         self, store: MemoryStore
     ) -> None:
-        """A df cap below the shared-shingle count must surface.
+        _homogeneous_family(store, 40)
+        text = format_consolidation_report(
+            consolidation_audit(store, max_candidate_pairs=10)
+        )
+        assert "BUDGET REACHED" in text
 
-        Ten beliefs share every 4-gram of a common prefix; with the cap
-        at 2 those postings are skipped, and the report has to say so
-        rather than presenting reduced coverage as a full scan.
-        """
-        for i in range(10):
-            _insert(store, f"b{i}", f"the shared preamble tokens here {i}")
-        report = consolidation_audit(store, max_shingle_df=2)
-        assert report.n_shingles_over_df > 0
-        assert report.max_shingle_df == 2
 
-    def test_df_cap_boundary_is_strictly_greater(
+class TestLockedMembersAreNotPriced:
+    def test_locked_non_medoid_members_are_excluded(
         self, store: MemoryStore
     ) -> None:
-        """`df == cap` is kept; `df == cap + 1` is skipped.
+        """`aelf retire` refuses a locked belief without --force.
 
-        Three beliefs differing only in trailing punctuation tokenize
-        identically, so every shared 4-gram has a document frequency of
-        exactly 3. At `cap=3` nothing may be skipped; at `cap=2` the
-        same postings must be. `>=` instead of `>` skips at cap=3 and
-        fails the first assertion — an off-by-one here changes which
-        pairs are examined and therefore the published share.
+        Counting locks as removable prices work the product will not do.
+        Distinguishing: the same five beliefs unlocked price 4.
+
+        Terminates by construction: five beliefs, in-process.
         """
-        for i, suffix in enumerate(("", ".", "!")):
+        for i in range(5):
             _insert(
-                store, f"b{i}", f"deploy via terraform on aws today{suffix}"
+                store,
+                f"f{i:03d}",
+                f"{_FAMILY_BODY} variant {i}",
+                locked=i < 2,
             )
-        at_cap = consolidation_audit(store, max_shingle_df=3)
-        assert at_cap.n_shingles_over_df == 0
-        assert at_cap.n_clusters == 1, "the cluster is still found at df == cap"
-        over_cap = consolidation_audit(store, max_shingle_df=2)
-        assert over_cap.n_shingles_over_df > 0
+        report = consolidation_audit(store)
+        assert report.n_beliefs_in_clusters == 5
+        assert report.n_clusters == 1
+        # one of the two locks is the medoid and survives anyway
+        assert report.n_locked_in_clusters == 1
+        assert report.n_would_remove == 3
+
+    def test_same_family_unlocked_prices_higher(
+        self, store: MemoryStore
+    ) -> None:
+        _homogeneous_family(store, 5)
+        report = consolidation_audit(store)
+        assert report.n_locked_in_clusters == 0
+        assert report.n_would_remove == 4
 
 
 class TestReadOnly:

@@ -6489,7 +6489,7 @@ def _cmd_doctor_consolidate(args: argparse.Namespace, out: object) -> int:
     failure conditions. Exit 1 only on malformed thresholds.
     """
     from aelfrice.consolidate import (
-        DEFAULT_MAX_SHINGLE_DF,
+        DEFAULT_MAX_CANDIDATE_PAIRS,
         consolidation_audit,
         format_consolidation_report,
     )
@@ -6498,7 +6498,7 @@ def _cmd_doctor_consolidate(args: argparse.Namespace, out: object) -> int:
     config = load_dedup_config()
     j_override = getattr(args, "consolidate_jaccard", None)
     l_override = getattr(args, "consolidate_levenshtein", None)
-    df_override = getattr(args, "consolidate_max_shingle_df", None)
+    df_override = getattr(args, "consolidate_max_pairs", None)
 
     store = _open_store()
     try:
@@ -6514,10 +6514,10 @@ def _cmd_doctor_consolidate(args: argparse.Namespace, out: object) -> int:
                 if l_override is not None
                 else config.levenshtein_min
             ),
-            max_shingle_df=(
+            max_candidate_pairs=(
                 int(df_override)
                 if df_override is not None
-                else DEFAULT_MAX_SHINGLE_DF
+                else DEFAULT_MAX_CANDIDATE_PAIRS
             ),
         )
     except ValueError as exc:
@@ -9029,13 +9029,13 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
             "cluster near-duplicate beliefs and report what a "
             "contraction would retire (#1312). Read-only: no edges are "
             "inserted and no belief is retired. Bypasses the "
-            "hooks/graph checks. Runs silently for a minute or more on a "
-            "large store — the medoid phase dominates and costs "
-            "O(k^2 * L^2) in the largest cluster's member count k and "
-            "belief length L, so a store with one big cluster of long "
-            "near-duplicates is far slower than its belief count "
-            "suggests. Tune via --consolidate-jaccard / "
-            "--consolidate-levenshtein / --consolidate-max-shingle-df."
+            "hooks/graph checks. Runs silently for tens of seconds on a "
+            "large store: the Levenshtein confirmation dominates and is "
+            "a function of near-duplicate density rather than of belief "
+            "count, so a store with many long near-duplicates is far "
+            "slower than its belief count suggests. The medoid phase is "
+            "bounded by MEDOID_SAMPLE_CAP. Tune via --consolidate-jaccard "
+            "/ --consolidate-levenshtein / --consolidate-max-pairs."
         ),
     )
     p_doctor.add_argument(
@@ -9063,15 +9063,15 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         ),
     )
     p_doctor.add_argument(
-        "--consolidate-max-shingle-df",
-        dest="consolidate_max_shingle_df",
+        "--consolidate-max-pairs",
+        dest="consolidate_max_pairs",
         type=int,
         default=None,
         metavar="N",
         help=(
-            "with --consolidate: skip 4-grams appearing in more than N "
-            "beliefs when blocking candidate pairs (default 32). "
-            "Skipped shingles are reported, never dropped silently."
+            "with --consolidate: stop after N blocked candidate pairs "
+            "(default 2000000). Reaching the budget is reported, never "
+            "silent — every count then reads as a floor."
         ),
     )
     p_doctor.add_argument(

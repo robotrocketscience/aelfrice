@@ -19,12 +19,30 @@ the whole store rather than a rendered sample:
   * **Candidate pairs come from 4-gram blocking, not O(n^2).** `dedup`
     budgets direct Jaccard prefiltering at a ~1.6k-belief median; at the
     44.5k-belief scale this report targets that is ~991M pairs, which is
-    not viable. Blocking pairs beliefs that share at least one order-4
-    token shingle whose document frequency is `<= max_shingle_df`, which
-    is standard MinHash-free LSH blocking. Skipped high-df shingles are
-    **counted and reported** (`n_shingles_over_df`), never dropped
-    silently — a blocking cap that does not report itself reads as full
-    coverage when it is not.
+    not viable. Each belief is posted to its **rarest** shingles only —
+    those whose document frequency ties the minimum across that
+    belief's own shingles — and candidate pairs are drawn from the
+    resulting buckets.
+
+    An earlier version instead skipped any shingle above a `df` cap,
+    justified by the claim that genuine near-duplicates "share many
+    rarer shingles as well, so they survive the cap through those."
+    That is false exactly where it matters most: in a *homogeneous*
+    family every member shares every shingle, so all of them sit at
+    `df = K` and none is rarer. Past the cap the whole family lost all
+    its postings and the report announced **zero** duplicates precisely
+    when the duplicate family was largest — at the shipped cap of 32,
+    a 32-member family reported 31 removable and a 33-member family
+    reported 0. Blocking on each belief's own rarest shingles has no
+    such cliff: a homogeneous family is its own bucket at any size.
+
+    The residual cost risk is a corpus of near-identical boilerplate,
+    where one bucket is quadratic in its own size. That is bounded by
+    `max_candidate_pairs` rather than by discarding evidence, and
+    hitting the bound sets `truncated` — a budget that does not report
+    itself reads as full coverage when it is not. Buckets are consumed
+    smallest-first, so truncation drops the largest, least discriminating
+    ones.
 
   * **Only components of size >= 3 are reported.** Two-member components
     are plain supersession and are not what consolidation is for.
@@ -42,6 +60,11 @@ Shingles are built from `bm25.tokenize` (the production vocabulary),
 components come from an order-independent union-find, medoids have an
 explicit id-ASC tiebreak, and every emitted list is sorted. No clock, no
 env, no randomness, no Python `hash`.
+
+`n_would_remove` excludes user-locked members. Contraction keeps one
+medoid per component, but `aelf retire` and `aelf delete` both refuse a
+locked belief without `--force`, so counting locks as removable prices
+work the product will not do.
 
 Aggregate counts only — callers render no belief content, no ids and no
 paths, so the report is safe to paste into an issue.
@@ -64,18 +87,34 @@ from aelfrice.store import MemoryStore
 SHINGLE_N: Final[int] = 4
 """Token shingle width used for candidate blocking."""
 
-DEFAULT_MAX_SHINGLE_DF: Final[int] = 32
-"""Skip 4-grams appearing in more than this many beliefs when blocking.
+DEFAULT_MAX_CANDIDATE_PAIRS: Final[int] = 2_000_000
+"""Ceiling on blocked candidate pairs before the pass reports `truncated`.
 
-A 4-gram shared by hundreds of beliefs contributes a quadratic number of
-candidate pairs and almost no signal — two beliefs that are genuinely
-near-duplicate share many *rarer* shingles as well, so they survive the
-cap through those. Measured on the development store, tightening this
-from 400 to 32 left the resulting components bit-identical.
+Bounds the one pathological shape rarest-shingle blocking still admits:
+a corpus of near-identical boilerplate, where a single bucket is
+quadratic in its own size. The development store produces ~116k pairs at
+44.5k beliefs, so this is ample headroom rather than a working limit.
 """
 
 MIN_COMPONENT_SIZE: Final[int] = 3
 """Smallest component the report counts. Pairs are plain supersession."""
+
+MEDOID_SAMPLE_CAP: Final[int] = 64
+"""Members over which the medoid is computed exactly.
+
+The medoid needs every pairwise Levenshtein distance, which is O(K^2)
+calls of an O(L^2) pure-Python routine. On the development store the two
+largest components have 165 members each, and computing them exactly put
+the whole pass at 74s — too slow for a `doctor` subcommand and, worse,
+a function of near-duplicate density rather than of belief count, so it
+degrades on exactly the corpus the report exists to describe.
+
+Above this cap the medoid is chosen from the first `MEDOID_SAMPLE_CAP`
+members in id order. Still an existing belief, still a closed-form
+criterion, still deterministic — just evaluated over a bounded, named
+subset. The report's counts are unaffected: `n_would_remove` depends on
+component sizes, not on which member is the survivor.
+"""
 
 
 @dataclass(frozen=True)
@@ -100,27 +139,37 @@ class ConsolidationReport:
     """Summary of one audit pass.
 
     `n_would_remove` is the count of beliefs a contraction would retire:
-    one medoid survives per component, so it is
-    `n_beliefs_in_clusters - n_clusters`. It is the number that prices
-    the intervention, which is why it is computed here rather than left
-    to the caller to derive.
+    one medoid survives per component, and locked members are never
+    retired, so it is
+    `n_beliefs_in_clusters - n_clusters - n_locked_in_clusters`. It is
+    the number that prices the intervention, which is why it is computed
+    here rather than left to the caller to derive.
+
+    `truncated` is True when the candidate-pair budget was reached, so
+    every count below is a floor rather than a total.
     """
 
     n_beliefs_scanned: int
-    n_shingles_over_df: int
     n_candidate_pairs: int
     n_duplicate_pairs: int
     n_clusters: int
     n_beliefs_in_clusters: int
+    n_locked_in_clusters: int
     largest_cluster: int
     jaccard_min: float
     levenshtein_min: float
-    max_shingle_df: int
+    max_candidate_pairs: int
+    truncated: bool = False
     clusters: tuple[ConsolidationCluster, ...] = field(default=())
 
     @property
     def n_would_remove(self) -> int:
-        return self.n_beliefs_in_clusters - self.n_clusters
+        return max(
+            0,
+            self.n_beliefs_in_clusters
+            - self.n_clusters
+            - self.n_locked_in_clusters,
+        )
 
     @property
     def share_of_store(self) -> float:
@@ -150,13 +199,17 @@ def _medoid(member_ids: list[str], content: dict[str, str]) -> str:
     is assumed sorted; iterating it in order makes the strict `<`
     comparison below resolve ties toward the smaller id without a
     second key.
+
+    Bounded by `MEDOID_SAMPLE_CAP` — see that constant for why, and for
+    what the approximation does and does not change.
     """
-    best_id = member_ids[0]
+    pool = member_ids[:MEDOID_SAMPLE_CAP]
+    best_id = pool[0]
     best_cost: int | None = None
-    for candidate in member_ids:
+    for candidate in pool:
         cost = sum(
             levenshtein_distance(content[candidate], content[other])
-            for other in member_ids
+            for other in pool
             if other != candidate
         )
         if best_cost is None or cost < best_cost:
@@ -194,12 +247,57 @@ def _components(
     return [sorted(g) for g in groups.values()]
 
 
+def _blocked_pairs(
+    shingle_sets: dict[str, frozenset[tuple[str, ...]]],
+    max_candidate_pairs: int,
+) -> tuple[set[tuple[str, str]], bool]:
+    """Candidate pairs from each belief's rarest shingles.
+
+    Posting a belief only to its minimum-df shingles keeps common
+    boilerplate from generating quadratic noise, without ever discarding
+    a belief entirely — which is what a flat df cap did to homogeneous
+    families. Buckets are consumed smallest-first so that hitting the
+    budget drops the largest, least discriminating ones.
+    """
+    df: dict[tuple[str, ...], int] = {}
+    for shingles_of in shingle_sets.values():
+        for gram in shingles_of:
+            df[gram] = df.get(gram, 0) + 1
+
+    postings: dict[tuple[str, ...], list[str]] = {}
+    for bid, shingles_of in shingle_sets.items():
+        # A df==1 shingle is unique to this belief and can never produce a
+        # pair, so it must not define "rarest" — otherwise a belief with
+        # any unique tail (an id, a version, a counter) posts only to
+        # shingles nothing else shares and silently drops out.
+        shared = [gram for gram in shingles_of if df[gram] >= 2]
+        if not shared:
+            continue
+        rarest = min(df[gram] for gram in shared)
+        for gram in shared:
+            if df[gram] == rarest:
+                postings.setdefault(gram, []).append(bid)
+
+    candidates: set[tuple[str, str]] = set()
+    buckets = sorted(postings.values(), key=lambda m: (len(m), m[0]))
+    for members in buckets:
+        if len(members) < 2:
+            continue
+        members.sort()
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                if len(candidates) >= max_candidate_pairs:
+                    return candidates, True
+                candidates.add((members[i], members[j]))
+    return candidates, False
+
+
 def consolidation_audit(
     store: MemoryStore,
     *,
     jaccard_min: float = DEFAULT_JACCARD_MIN,
     levenshtein_min: float = DEFAULT_LEVENSHTEIN_MIN,
-    max_shingle_df: int = DEFAULT_MAX_SHINGLE_DF,
+    max_candidate_pairs: int = DEFAULT_MAX_CANDIDATE_PAIRS,
 ) -> ConsolidationReport:
     """Cluster active beliefs and report what a contraction would remove.
 
@@ -214,23 +312,26 @@ def consolidation_audit(
         raise ValueError(
             f"levenshtein_min must be in [0.0, 1.0], got {levenshtein_min}"
         )
-    if max_shingle_df < 2:
-        raise ValueError(f"max_shingle_df must be >= 2, got {max_shingle_df}")
+    if max_candidate_pairs < 1:
+        raise ValueError(
+            f"max_candidate_pairs must be >= 1, got {max_candidate_pairs}"
+        )
 
     rows = store.list_beliefs_for_indexing()
     content = {bid: (text or "") for bid, text in rows}
+    locked_ids = {b.id for b in store.list_locked_beliefs()}
 
     empty = ConsolidationReport(
         n_beliefs_scanned=len(rows),
-        n_shingles_over_df=0,
         n_candidate_pairs=0,
         n_duplicate_pairs=0,
         n_clusters=0,
         n_beliefs_in_clusters=0,
+        n_locked_in_clusters=0,
         largest_cluster=0,
         jaccard_min=jaccard_min,
         levenshtein_min=levenshtein_min,
-        max_shingle_df=max_shingle_df,
+        max_candidate_pairs=max_candidate_pairs,
     )
     # Two beliefs are enough to form a *pair*, which the report counts
     # even though it takes three to form a cluster. Guarding on
@@ -241,24 +342,9 @@ def consolidation_audit(
 
     tokens = {bid: tokenize(text) for bid, text in content.items()}
     token_sets = {bid: frozenset(toks) for bid, toks in tokens.items()}
+    shingle_sets = {bid: shingles(toks) for bid, toks in tokens.items()}
 
-    postings: dict[tuple[str, ...], list[str]] = {}
-    for bid, toks in tokens.items():
-        for shingle in shingles(toks):
-            postings.setdefault(shingle, []).append(bid)
-
-    candidates: set[tuple[str, str]] = set()
-    n_over_df = 0
-    for members in postings.values():
-        if len(members) < 2:
-            continue
-        if len(members) > max_shingle_df:
-            n_over_df += 1
-            continue
-        members.sort()
-        for i in range(len(members)):
-            for j in range(i + 1, len(members)):
-                candidates.add((members[i], members[j]))
+    candidates, truncated = _blocked_pairs(shingle_sets, max_candidate_pairs)
 
     duplicates = [
         (a, b)
@@ -279,18 +365,27 @@ def consolidation_audit(
         for g in groups
     )
     in_clusters = sum(c.size for c in clusters)
+    # A locked medoid is the survivor anyway, so only locked NON-medoid
+    # members inflate the price.
+    n_locked = sum(
+        1
+        for c in clusters
+        for m in c.member_ids
+        if m in locked_ids and m != c.medoid_id
+    )
 
     return ConsolidationReport(
         n_beliefs_scanned=len(rows),
-        n_shingles_over_df=n_over_df,
         n_candidate_pairs=len(candidates),
         n_duplicate_pairs=len(duplicates),
         n_clusters=len(clusters),
         n_beliefs_in_clusters=in_clusters,
+        n_locked_in_clusters=n_locked,
         largest_cluster=max((c.size for c in clusters), default=0),
         jaccard_min=jaccard_min,
         levenshtein_min=levenshtein_min,
-        max_shingle_df=max_shingle_df,
+        max_candidate_pairs=max_candidate_pairs,
+        truncated=truncated,
         clusters=clusters,
     )
 
@@ -303,12 +398,18 @@ def format_consolidation_report(report: ConsolidationReport) -> str:
         f"  thresholds            : Jaccard >= {report.jaccard_min}, "
         f"Levenshtein ratio >= {report.levenshtein_min}",
         f"  active beliefs        : {report.n_beliefs_scanned:,}",
-        f"  4-grams over df={report.max_shingle_df:<4d}  : "
-        f"{report.n_shingles_over_df:,} skipped by blocking",
-        f"  candidate pairs       : {report.n_candidate_pairs:,}",
+        f"  candidate pairs       : {report.n_candidate_pairs:,}"
+        + (
+            f"  (BUDGET REACHED at {report.max_candidate_pairs:,} — every "
+            "count below is a floor)"
+            if report.truncated
+            else ""
+        ),
         f"  duplicate pairs       : {report.n_duplicate_pairs:,}",
         f"  clusters (size >= {MIN_COMPONENT_SIZE})  : {report.n_clusters:,}",
         f"  beliefs in a cluster  : {report.n_beliefs_in_clusters:,}",
+        f"  of those, user-locked : {report.n_locked_in_clusters:,} "
+        "(never retired, so not priced)",
         f"  largest cluster       : {report.largest_cluster:,}",
         f"  would remove          : {report.n_would_remove:,} "
         f"({report.share_of_store:.2f}% of active)",
