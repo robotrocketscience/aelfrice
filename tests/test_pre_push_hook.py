@@ -27,7 +27,8 @@ def _git(cwd: Path, *args: str, env: dict[str, str] | None = None) -> str:
         capture_output=True,
         text=True,
         env={**os.environ, **(env or {})},
-    )
+            timeout=30,
+)
     return result.stdout.strip()
 
 
@@ -43,10 +44,20 @@ def _setup_repo(
     age check has a deterministic input.
     """
     origin = tmp_path / "origin.git"
-    subprocess.run(["git", "init", "--bare", str(origin)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(origin)],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
 
     local = tmp_path / "local"
-    subprocess.run(["git", "clone", "-q", str(origin), str(local)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "clone", "-q", str(origin), str(local)],
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
     _git(local, "config", "user.email", "test@example.com")
     _git(local, "config", "user.name", "Test")
     _git(local, "config", "commit.gpgsign", "false")
@@ -97,7 +108,8 @@ def _run_hook(
         capture_output=True,
         text=True,
         env={**os.environ, **(env or {})},
-    )
+            timeout=30,
+)
 
 
 # --- positive cases ---------------------------------------------------------

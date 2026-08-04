@@ -157,7 +157,8 @@ def tiny_project(tmp_path: Path) -> Path:
             env=git_env,
             check=True,
             capture_output=True,
-        )
+                    timeout=30,
+)
 
     git("init", "-q", "-b", "main")
     git("add", "README.md")

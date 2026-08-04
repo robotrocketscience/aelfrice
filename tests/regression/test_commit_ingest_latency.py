@@ -46,7 +46,8 @@ TIMEOUT_S = int((ITERATIONS + 1) * P95_BUDGET_MS / 1000.0)
 def _git(repo: Path, *args: str) -> str:
     r = subprocess.run(
         ["git", *args], cwd=repo, capture_output=True, text=True, check=False,
-    )
+            timeout=30,
+)
     if r.returncode != 0:
         raise RuntimeError(f"git {args!r} failed: {r.stderr}")
     return r.stdout

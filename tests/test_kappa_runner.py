@@ -214,7 +214,8 @@ def test_cli_emits_json_and_exits_zero_when_calibrated(tmp_path: Path) -> None:
             "--run-id", "cli_smoke",
         ],
         capture_output=True, text=True,
-    )
+            timeout=30,
+)
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["calibrated"] is True
@@ -240,7 +241,8 @@ def test_cli_exits_nonzero_when_not_calibrated(tmp_path: Path) -> None:
             "--out", str(out),
         ],
         capture_output=True, text=True,
-    )
+            timeout=30,
+)
     assert proc.returncode == 1
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["calibrated"] is False

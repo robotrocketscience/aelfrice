@@ -28,7 +28,7 @@ from aelfrice.store import MemoryStore
 
 
 def _git_init(repo: Path, env_extra: dict[str, str] | None = None) -> None:
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, timeout=30)
 
 
 def _git_commit(
@@ -37,7 +37,7 @@ def _git_commit(
     message: str,
     author_date: str = "2024-01-01T00:00:00+00:00",
 ) -> None:
-    subprocess.run(["git", "add", *files], cwd=repo, check=True)
+    subprocess.run(["git", "add", *files], cwd=repo, check=True, timeout=30)
     subprocess.run(
         [
             "git",
@@ -54,7 +54,8 @@ def _git_commit(
             "GIT_AUTHOR_DATE": author_date,
             "GIT_COMMITTER_DATE": author_date,
         },
-    )
+            timeout=30,
+)
 
 
 # --- _build_file_recency_map ---------------------------------------

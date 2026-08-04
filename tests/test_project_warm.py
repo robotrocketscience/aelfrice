@@ -64,7 +64,8 @@ def _git(args: list[str], cwd: Path) -> None:
         cwd=str(cwd),
         check=True,
         capture_output=True,
-    )
+            timeout=30,
+)
 
 
 def _init_repo(repo: Path) -> None:

@@ -54,7 +54,7 @@ def test_db_path_resolves_to_git_common_dir_when_in_repo(
     """Inside a git work-tree, the DB lives at <git-common-dir>/aelfrice/memory.db."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, timeout=30)
     monkeypatch.delenv("AELFRICE_DB", raising=False)
     monkeypatch.chdir(repo)
     resolved = db_path()
@@ -67,21 +67,23 @@ def test_db_path_worktrees_share_one_db(
     """Two worktrees of one repo resolve to the same DB path."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, timeout=30)
     # need at least one commit before adding a worktree
     (repo / "README").write_text("seed", encoding="utf-8")
-    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, timeout=30)
     subprocess.run(
         ["git", "-c", "user.email=t@t", "-c", "user.name=t",
          "-c", "commit.gpgsign=false",
          "commit", "-q", "-m", "seed"],
         cwd=repo, check=True,
-    )
+            timeout=30,
+)
     wt = tmp_path / "worktree-feature"
     subprocess.run(
         ["git", "worktree", "add", "-q", "-b", "feature", str(wt)],
         cwd=repo, check=True,
-    )
+            timeout=30,
+)
     monkeypatch.delenv("AELFRICE_DB", raising=False)
 
     monkeypatch.chdir(repo)
@@ -108,7 +110,7 @@ def test_db_path_env_override_wins_inside_git_repo(
     """$AELFRICE_DB beats git-common-dir resolution."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, timeout=30)
     target = tmp_path / "explicit.db"
     monkeypatch.setenv("AELFRICE_DB", str(target))
     monkeypatch.chdir(repo)

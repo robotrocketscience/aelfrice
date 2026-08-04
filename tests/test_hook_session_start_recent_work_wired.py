@@ -14,7 +14,13 @@ from aelfrice.store import MemoryStore
 
 
 def _run(cwd: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True)
+    subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
 
 
 def _init_repo(path: Path) -> None:

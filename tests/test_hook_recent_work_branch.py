@@ -8,7 +8,13 @@ from aelfrice.hook import _resolve_branch
 
 
 def _run(cwd: Path, *args: str) -> None:
-    subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True)
+    subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        check=True,
+        capture_output=True,
+        timeout=30,
+    )
 
 
 def _init_repo(path: Path) -> None:
@@ -56,7 +62,7 @@ def test_resolve_branch_detached_head(tmp_path: Path) -> None:
     sha = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=str(repo),
         capture_output=True, text=True, check=True,
-    ).stdout.strip()
+    timeout=30).stdout.strip()
     _run(repo, "checkout", "-q", sha)
     branch, upstream = _resolve_branch(repo)
     assert branch is None

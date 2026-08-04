@@ -39,9 +39,9 @@ _WRITES_PER_WORKER: int = 20
 
 def _init_repo(repo: Path) -> None:
     """Create a fresh git repo with one commit, ready for `git worktree add`."""
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, timeout=30)
     (repo / "README").write_text("seed", encoding="utf-8")
-    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, timeout=30)
     subprocess.run(
         ["git",
          "-c", "user.email=test@example.invalid",
@@ -49,14 +49,16 @@ def _init_repo(repo: Path) -> None:
          "-c", "commit.gpgsign=false",
          "commit", "-q", "-m", "seed"],
         cwd=repo, check=True,
-    )
+            timeout=30,
+)
 
 
 def _add_worktree(repo: Path, wt: Path, branch: str) -> None:
     subprocess.run(
         ["git", "worktree", "add", "-q", "-b", branch, str(wt)],
         cwd=repo, check=True,
-    )
+            timeout=30,
+)
 
 
 def _belief(worker_id: str, n: int) -> Belief:

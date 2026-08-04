@@ -125,15 +125,18 @@ def test_three_paths_record_distinct_source_types(
     subprocess.run(  # noqa: S603, S607
         ["git", "add", "MARKER"], cwd=tiny_project, env=git_env, check=True,
         capture_output=True,
-    )
+            timeout=30,
+)
     commit_proc = subprocess.run(  # noqa: S603, S607
         ["git", "commit", "-q", "-m", commit_msg],
         cwd=tiny_project, env=git_env, check=True, capture_output=True, text=True,
-    )
+            timeout=30,
+)
     short_hash_proc = subprocess.run(  # noqa: S603, S607
         ["git", "rev-parse", "--short=12", "HEAD"],
         cwd=tiny_project, env=git_env, check=True, capture_output=True, text=True,
-    )
+            timeout=30,
+)
     short_hash = short_hash_proc.stdout.strip()
     # Synthesise the bracket-prefix line `[branch hash] subject` the
     # hook expects in tool_response.stdout. Real the host harness prints

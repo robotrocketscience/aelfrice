@@ -110,7 +110,8 @@ def test_main_emits_nothing_on_clean_body(tmp_path: Path):
     result = subprocess.run(
         ["python3", str(SCRIPT_PATH), "--body-file", str(body), "--main-ref", "HEAD"],
         capture_output=True, text=True, cwd=REPO_ROOT, check=False,
-    )
+            timeout=30,
+)
     assert result.returncode == 0
     assert result.stdout == ""
 
@@ -121,7 +122,8 @@ def _have_main_with_vocab_bridge() -> bool:
         r = subprocess.run(
             ["git", "ls-tree", "-r", "--name-only", ref, "--", "src/aelfrice/vocab_bridge.py"],
             capture_output=True, text=True, cwd=REPO_ROOT, check=False,
-        )
+                    timeout=30,
+)
         if r.returncode == 0 and r.stdout.strip() == "src/aelfrice/vocab_bridge.py":
             return True
     return False
@@ -132,7 +134,8 @@ def _resolve_main_ref() -> str:
         r = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", ref],
             capture_output=True, text=True, cwd=REPO_ROOT, check=False,
-        )
+                    timeout=30,
+)
         if r.returncode == 0:
             return ref
     return "HEAD"
@@ -148,7 +151,8 @@ def test_replay_issue_521_surfaces_known_artifacts():
     result = subprocess.run(
         ["python3", str(SCRIPT_PATH), "--body-file", str(fixture), "--main-ref", main_ref],
         capture_output=True, text=True, cwd=REPO_ROOT, check=False,
-    )
+            timeout=30,
+)
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert "src/aelfrice/vocab_bridge.py" in out
@@ -164,6 +168,7 @@ def test_no_false_positive_on_unrelated_module(tmp_path: Path):
     result = subprocess.run(
         ["python3", str(SCRIPT_PATH), "--body-file", str(body), "--main-ref", main_ref],
         capture_output=True, text=True, cwd=REPO_ROOT, check=False,
-    )
+            timeout=30,
+)
     assert result.returncode == 0
     assert result.stdout == ""

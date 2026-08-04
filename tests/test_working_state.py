@@ -27,7 +27,8 @@ def _git(repo: Path, *args: str) -> None:
         cwd=str(repo),
         check=True,
         capture_output=True,
-    )
+            timeout=30,
+)
 
 
 @pytest.fixture
@@ -156,7 +157,7 @@ class TestProjectWorkingState:
         out = subprocess.run(  # noqa: S603
             ["git", "log", "-1", "--format=%cI"],
             cwd=str(tmp_repo), check=True, capture_output=True, text=True,
-        ).stdout.strip()
+        timeout=30).stdout.strip()
         earliest_ts = out
         turns = [
             RecentTurn(role="user", text="q", session_id="s1", ts=earliest_ts),
