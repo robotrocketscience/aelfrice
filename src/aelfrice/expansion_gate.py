@@ -48,11 +48,14 @@ from typing import TYPE_CHECKING, Final
 if TYPE_CHECKING:
     from aelfrice.store import MemoryStore
 
+from aelfrice.config_discovery import (  # noqa: F401 - CONFIG_FILENAME re-exported
+    CONFIG_FILENAME,
+    discover_config,
+)
 from aelfrice.models import EDGE_TYPES
 
 # --- Config keys ----------------------------------------------------------
 
-CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 RETRIEVAL_SECTION: Final[str] = "retrieval"
 EXPANSION_GATE_FLAG: Final[str] = "expansion_gate_enabled"
 
@@ -156,31 +159,32 @@ def _read_toml_flag(start: Path | None = None) -> bool | None:
     ``.aelfrice.toml``. Returns ``None`` when the file / section /
     key is absent or the value is not a bool. Fail-soft: malformed
     TOML returns ``None``.
+
+    Discovery is delegated to :func:`aelfrice.config_discovery.
+    discover_config` (#1304), so inside a retrieval's
+    ``config_discovery_scope`` this shares the walk that
+    ``retrieval``'s own resolvers already paid for. The section and key
+    read here are unchanged, and outside a scope the walk is identical
+    to the private loop this replaced.
     """
     try:
         import tomllib
     except ImportError:  # Python <3.11 fallback; aelfrice ships >=3.11
         return None
-    cur = (start or Path.cwd()).resolve()
-    seen: set[Path] = set()
-    while True:
-        candidate = cur / CONFIG_FILENAME
-        if candidate.is_file():
-            try:
-                with candidate.open("rb") as fh:
-                    data = tomllib.load(fh)
-            except (OSError, ValueError, tomllib.TOMLDecodeError):
-                return None
-            section = data.get(RETRIEVAL_SECTION)
-            if isinstance(section, dict):
-                value = section.get(EXPANSION_GATE_FLAG)
-                if isinstance(value, bool):
-                    return value
-            return None
-        if cur in seen or cur.parent == cur:
-            return None
-        seen.add(cur)
-        cur = cur.parent
+    candidate = discover_config(start)
+    if candidate is None:
+        return None
+    try:
+        with candidate.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        return None
+    section = data.get(RETRIEVAL_SECTION)
+    if isinstance(section, dict):
+        value = section.get(EXPANSION_GATE_FLAG)
+        if isinstance(value, bool):
+            return value
+    return None
 
 
 def _has_structural_markers(text: str) -> bool:

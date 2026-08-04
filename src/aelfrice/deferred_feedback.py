@@ -52,6 +52,10 @@ from typing import IO, Any, Final
 
 import tomllib
 
+from aelfrice.config_discovery import (  # noqa: F401 - CONFIG_FILENAME re-exported
+    CONFIG_FILENAME,
+    discover_config,
+)
 from aelfrice.models import LOCK_USER
 from aelfrice.store import MemoryStore
 
@@ -60,7 +64,6 @@ from aelfrice.store import MemoryStore
 DEFAULT_T_GRACE_SECONDS: Final[int] = 1800
 DEFAULT_EPSILON: Final[float] = 0.05
 
-CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 IMPLICIT_FEEDBACK_SECTION: Final[str] = "implicit_feedback"
 GRACE_KEY: Final[str] = "grace_window_seconds"
 EPSILON_KEY: Final[str] = "epsilon"
@@ -160,35 +163,37 @@ def _parse_iso(ts: str) -> datetime:
 def _read_toml_value(
     key: str, *, start: Path | None = None
 ) -> Any:  # noqa: ANN401 - typed by callers
-    """Walk up from `start` finding `[implicit_feedback] <key>`. Returns
-    the raw TOML value, or None when no file / no key. Fail-soft."""
+    """Find the nearest `.aelfrice.toml` above `start` and read
+    `[implicit_feedback] <key>` from it. Returns the raw TOML value, or
+    None when no file / no key. Fail-soft.
+
+    Discovery is delegated to :func:`aelfrice.config_discovery.
+    discover_config` (#1304). `[implicit_feedback]` is a different
+    section from the `[retrieval]` one the retrieval resolvers read, but
+    *discovery is section-independent*: the walk finds the file, the
+    section lookup below is separate. So inside a retrieval's
+    `config_discovery_scope` this costs no walk at all, while resolving
+    exactly what it resolved before.
+    """
     serr: IO[str] = sys.stderr
-    current = (start if start is not None else Path.cwd()).resolve()
-    seen: set[Path] = set()
-    while current not in seen:
-        seen.add(current)
-        candidate = current / CONFIG_FILENAME
-        if candidate.is_file():
-            try:
-                raw = candidate.read_bytes()
-                parsed: dict[str, Any] = tomllib.loads(
-                    raw.decode("utf-8", errors="replace"),
-                )
-            except (OSError, tomllib.TOMLDecodeError) as exc:
-                print(
-                    f"aelfrice implicit_feedback: cannot read {candidate}: "
-                    f"{exc}",
-                    file=serr,
-                )
-                return None
-            section = parsed.get(IMPLICIT_FEEDBACK_SECTION, {})
-            if not isinstance(section, dict):
-                return None
-            return section.get(key)  # type: ignore[no-any-return]
-        if current.parent == current:
-            break
-        current = current.parent
-    return None
+    candidate = discover_config(start)
+    if candidate is None:
+        return None
+    try:
+        raw = candidate.read_bytes()
+        parsed: dict[str, Any] = tomllib.loads(
+            raw.decode("utf-8", errors="replace"),
+        )
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        print(
+            f"aelfrice implicit_feedback: cannot read {candidate}: {exc}",
+            file=serr,
+        )
+        return None
+    section = parsed.get(IMPLICIT_FEEDBACK_SECTION, {})
+    if not isinstance(section, dict):
+        return None
+    return section.get(key)  # type: ignore[no-any-return]
 
 
 def _reject_kwarg(key: str, expected: str, value: object) -> TypeError:
