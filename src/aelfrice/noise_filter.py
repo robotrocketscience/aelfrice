@@ -232,7 +232,6 @@ _STRANDED_HEADER_RE: Final[re.Pattern[str]] = re.compile(
 # bare prompt ("$ python run_all.py"). No prose belief opens with "$ ".
 _STRANDED_DOLLAR_PROMPT_PREFIX: Final[str] = "$ "
 
-CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 
 
 @dataclass(frozen=True)
@@ -401,7 +400,7 @@ class NoiseConfig:
         # Shared discovery (#1304): inside a `config_discovery_scope`
         # N readers cost one walk instead of N. Semantics unchanged —
         # the loop this replaces already stopped at the first
-        # `CONFIG_FILENAME` it found and never continued past it.
+        # `.aelfrice.toml` it found and never continued past it.
         candidate = discover_config(start)
         if candidate is not None:
             return cls.from_toml_path(candidate, stderr=stderr)

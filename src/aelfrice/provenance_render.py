@@ -70,9 +70,6 @@ from aelfrice.models import (
 if TYPE_CHECKING:
     from aelfrice.models import Belief
 
-CONFIG_FILENAME: Final[str] = config_discovery.CONFIG_FILENAME
-"""Re-exported from `config_discovery` (#1304): one definition, so a
-rename cannot leave this module hunting a different filename."""
 SECTION: Final[str] = "hook"
 PROVENANCE_RENDER_KEY: Final[str] = "provenance_render"
 ENV_PROVENANCE_RENDER: Final[str] = "AELFRICE_PROVENANCE_RENDER"

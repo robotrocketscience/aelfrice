@@ -46,7 +46,6 @@ if TYPE_CHECKING:
     from aelfrice.store import MemoryStore
 
 ENV_TEMPORAL_SPINE_WRITE: Final[str] = "AELFRICE_TEMPORAL_SPINE_WRITE"
-CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 SECTION: Final[str] = "ingest"
 WRITE_KEY: Final[str] = "write_temporal_spine"
 
@@ -86,7 +85,7 @@ def _read_spine_write_toml(start: Path | None = None) -> bool | None:
     # Shared discovery (#1304): inside a `config_discovery_scope`
     # N readers cost one walk instead of N. Semantics unchanged —
     # the loop this replaces already stopped at the first
-    # `CONFIG_FILENAME` it found and never continued past it.
+    # `.aelfrice.toml` it found and never continued past it.
     candidate = discover_config(start)
     if candidate is not None:
         try:

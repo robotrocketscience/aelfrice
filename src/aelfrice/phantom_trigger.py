@@ -54,7 +54,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 ENV_PHANTOM_GENERATION: Final[str] = "AELFRICE_PHANTOM_GENERATION"
-_CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 _SECTION: Final[str] = "phantom_generation"
 _ENABLED_KEY: Final[str] = "enabled"
 _MAX_FIRES_KEY: Final[str] = "max_fires_per_session"
@@ -104,7 +103,7 @@ def _read_section(start: Path | None = None) -> dict[str, Any] | None:
     # Shared discovery (#1304): inside a `config_discovery_scope`
     # N readers cost one walk instead of N. Semantics unchanged —
     # the loop this replaces already stopped at the first
-    # `_CONFIG_FILENAME` it found and never continued past it.
+    # `.aelfrice.toml` it found and never continued past it.
     candidate = discover_config(start)
     if candidate is not None:
         try:

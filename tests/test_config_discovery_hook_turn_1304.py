@@ -32,8 +32,8 @@ import pytest
 
 import importlib
 import pkgutil
+import sys
 
-import aelfrice
 import aelfrice.retrieval as retrieval
 from aelfrice import hook
 from aelfrice.config_discovery import CONFIG_FILENAME, discover_config
@@ -56,7 +56,12 @@ def _converted_readers() -> list[tuple[str, object, str]]:
     found: list[tuple[str, object, str]] = [
         ("retrieval", retrieval, "_discover_config"),
     ]
-    for info in pkgutil.iter_modules(aelfrice.__path__):
+    # The package object comes from a module already imported above rather
+    # than from a second `import aelfrice`: binding a submodule and reading
+    # a package attribute are the two forms CodeQL counts as importing the
+    # same module two ways.
+    package = sys.modules[hook.__package__]
+    for info in pkgutil.iter_modules(package.__path__):
         if info.name in {"retrieval", "config_discovery"}:
             continue
         try:

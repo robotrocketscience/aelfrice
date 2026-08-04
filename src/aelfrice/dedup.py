@@ -55,7 +55,6 @@ from aelfrice.bm25 import tokenize
 from aelfrice.store import MemoryStore
 from aelfrice.config_discovery import discover_config
 
-CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 DEDUP_SECTION: Final[str] = "dedup"
 JACCARD_MIN_KEY: Final[str] = "jaccard_min"
 LEVENSHTEIN_MIN_KEY: Final[str] = "levenshtein_min"
@@ -522,7 +521,7 @@ def load_dedup_config(start: Path | None = None) -> DedupConfig:
     # Shared discovery (#1304): inside a `config_discovery_scope`
     # N readers cost one walk instead of N. Semantics unchanged —
     # the loop this replaces already stopped at the first
-    # `CONFIG_FILENAME` it found and never continued past it.
+    # `.aelfrice.toml` it found and never continued past it.
     candidate = discover_config(start)
     if candidate is not None:
         try:

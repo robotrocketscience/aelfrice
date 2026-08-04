@@ -66,7 +66,6 @@ from aelfrice.config_discovery import discover_config
 from aelfrice.dedup import _jaccard_prefiltered_pairs, jaccard
 from aelfrice.store import MemoryStore
 
-CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 SECTION: Final[str] = "relationship_detector"
 JACCARD_KEY: Final[str] = "jaccard_min"
 CONFIDENCE_KEY: Final[str] = "confidence_min"
@@ -552,7 +551,7 @@ def load_relationship_detector_config(
     # Shared discovery (#1304): inside a `config_discovery_scope`
     # N readers cost one walk instead of N. Semantics unchanged —
     # the loop this replaces already stopped at the first
-    # `CONFIG_FILENAME` it found and never continued past it.
+    # `.aelfrice.toml` it found and never continued past it.
     candidate = discover_config(start)
     if candidate is not None:
         try:
@@ -648,7 +647,7 @@ def _read_auto_detect_toml(start: Path | None = None) -> bool | None:
     # Shared discovery (#1304): inside a `config_discovery_scope`
     # N readers cost one walk instead of N. Semantics unchanged —
     # the loop this replaces already stopped at the first
-    # `CONFIG_FILENAME` it found and never continued past it.
+    # `.aelfrice.toml` it found and never continued past it.
     candidate = discover_config(start)
     if candidate is not None:
         try:

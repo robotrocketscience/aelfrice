@@ -132,7 +132,6 @@ cap, additional entities are dropped on the floor. Sized so a 50-turn
 window with diverse subject matter still fits without pathological
 slowdown in the regex pass."""
 
-CONFIG_FILENAME: Final[str] = ".aelfrice.toml"
 REBUILDER_SECTION: Final[str] = "rebuilder"
 TURN_WINDOW_KEY: Final[str] = "turn_window_n"
 TOKEN_BUDGET_KEY: Final[str] = "token_budget"
@@ -691,7 +690,7 @@ def load_rebuilder_config(start: Path | None = None) -> RebuilderConfig:
     # Shared discovery (#1304): inside a `config_discovery_scope`
     # N readers cost one walk instead of N. Semantics unchanged —
     # the loop this replaces already stopped at the first
-    # `CONFIG_FILENAME` it found and never continued past it.
+    # `.aelfrice.toml` it found and never continued past it.
     candidate = discover_config(start)
     if candidate is not None:
         try:
