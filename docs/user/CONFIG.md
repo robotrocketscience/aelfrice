@@ -211,6 +211,24 @@ temporal_spine_budget = 32
 # is byte-identical. AELFRICE_TEMPORAL_SPINE_WRITE env var overrides.
 write_temporal_spine = true
 
+[relationship_detector]
+# #988 / #1299. Deterministic contradiction detector. `auto_detect` is
+# default-OFF: when false, ingest writes no CONTRADICTS edges and the
+# section only affects the read-only `aelf doctor --relationships` /
+# `--detect-stale` audits. AELFRICE_AUTO_RELATIONSHIPS env var overrides
+# `auto_detect`; the three thresholds have no env override.
+auto_detect = false
+# Minimum token Jaccard for a belief pair to enter the classifier.
+# Default 0.4. Unrelated to `dedup`'s 0.8 — different module, different
+# consumer.
+jaccard_min = 0.4
+# Minimum verdict score for a `contradicts` pair to be auto-emitted as
+# an edge. Default 0.5. Sub-confidence pairs are the POTENTIALLY_STALE
+# writer's domain.
+confidence_min = 0.5
+# Cap on candidate pairs scored per audit run. Default 5000.
+max_candidate_pairs = 5000
+
 [rebuilder]
 # v3.0+ / #718 (PR #719). Selects the query-rewriting stack used by
 # the context rebuilder. Default `"stack-r1-r3"` since v3.0; runs
@@ -707,6 +725,41 @@ Existing stores predate the writer: `aelf spine backfill` builds their
 chains (idempotent, `--dry-run` supported), and `aelf doctor` reports
 spine presence + edge count. `AELFRICE_TEMPORAL_SPINE_WRITE` env var
 overrides.
+
+## `[relationship_detector]` (v4.x+)
+
+The deterministic contradiction detector (#201 / #988). Two consumers read
+this section and they are **not** equivalent, so each key is documented with
+its reach:
+
+* the **ingest write path** — runs on every ingested turn, inserts
+  `CONTRADICTS` edges, gated entirely on `auto_detect`;
+* the **audit commands** — `aelf doctor --relationships` (read-only report)
+  and `aelf doctor --detect-stale` (writes `POTENTIALLY_STALE` edges), which
+  run on demand and ignore `auto_detect`.
+
+| Key | Type | Default | Ingest write path | `aelf doctor` audits |
+|---|---|---|---|---|
+| `auto_detect` | bool | `false` | **honoured** — the on/off switch | not read (the flag gates ingest only) |
+| `jaccard_min` | float `[0.0, 1.0]` | `0.4` | **honoured** (since [#1299](https://github.com/robotrocketscience/aelfrice/issues/1299); silently ignored before) | **honoured**, `--relationships-jaccard` overrides |
+| `confidence_min` | float `[0.0, 1.0]` | `0.5` | **honoured** (since #1299; silently ignored before) | **honoured**, `--relationships-confidence` overrides |
+| `max_candidate_pairs` | int `>= 1` | `5000` | **honoured** (since #1299; silently ignored before) | **honoured**, `--relationships-max-pairs` overrides |
+| `residual_overlap_min` | — | `0.4` | **no TOML key** — not parsed anywhere | **no TOML key** |
+| `max_edges_per_belief` | — | `8` | **no TOML key** by design (Exp-48 write-gate, caller kwarg only) | n/a (audits do not write `CONTRADICTS`) |
+
+So the section still does not mean exactly one thing for every key: the last
+two rows are module constants with no configuration surface at all. What
+changed in #1299 is that the three keys that *do* parse now reach the path
+that mutates the graph, instead of only the read-only audit.
+
+`auto_detect` resolves env > TOML > default-off: `AELFRICE_AUTO_RELATIONSHIPS`
+(`1`/`true`/`yes`/`on` vs `0`/`false`/`no`/`off`) wins over the file. The three
+thresholds have no env override.
+
+Default-off is load-bearing. A fresh install writes no semantic edges; turning
+`auto_detect` on makes every ingested turn run an incremental contradiction
+audit over the beliefs inserted that turn. Wrong-typed values fall back to the
+default with a stderr trace and never raise.
 
 ## `[implicit_feedback]` (v1.6.0+)
 
