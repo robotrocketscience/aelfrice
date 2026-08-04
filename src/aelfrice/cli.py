@@ -72,6 +72,7 @@ from aelfrice import wonder_consolidation
 from aelfrice import __version__ as _AELFRICE_VERSION
 from aelfrice import auto_install as _auto_install
 from aelfrice.auto_install import auto_install_at_cli_entry
+from aelfrice.stream_encoding import ensure_utf8_streams
 from aelfrice.benchmark import run_benchmark, seed_corpus
 from aelfrice.classification import (
     HostClassification,
@@ -10298,6 +10299,7 @@ def main(argv: Sequence[str] | None = None, out: object = None) -> int:
     is a *help-modifier* flag: it is consumed before argparse sees the rest of
     the argv, and always results in help being printed then a clean exit (0).
     """
+    ensure_utf8_streams()
     if out is None:
         out = sys.stdout
 

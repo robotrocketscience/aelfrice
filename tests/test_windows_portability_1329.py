@@ -31,6 +31,7 @@ from typing import Any
 import pytest
 
 from aelfrice import file_lock
+from aelfrice.stream_encoding import ensure_utf8_streams
 from aelfrice.claude_memory import (
     derive_memory_dir,
     encode_project_path,
@@ -308,3 +309,83 @@ class TestProjectPathEncoding:
         assert got.name == "memory"
         assert got.parent.parent.name == "projects"
         assert got.parent.name == encode_project_path(str(tmp_path.resolve()))
+
+
+# ---------------------------------------------------------------------------
+# Console encoding
+# ---------------------------------------------------------------------------
+
+
+class _FakeStream:
+    """A stream that encodes like a legacy Windows console.
+
+    `reconfigure` records the request the way `TextIOWrapper` would honour
+    it, so the test asserts on what the code *asked for* rather than on
+    what a POSIX terminal happens to do.
+    """
+
+    def __init__(self, encoding: str) -> None:
+        self.encoding = encoding
+        self.reconfigured: tuple[str, str] | None = None
+
+    def reconfigure(self, *, encoding: str, errors: str) -> None:
+        self.reconfigured = (encoding, errors)
+        self.encoding = encoding
+
+
+class _StreamWithoutReconfigure:
+    """A `StringIO`-shaped stream: no `reconfigure`, no charmap codec."""
+
+    def __init__(self, encoding: str) -> None:
+        self.encoding = encoding
+
+
+class TestConsoleEncoding:
+    """`aelf --help` crashed on Windows *after* the fcntl fix.
+
+    argparse ran, then `print_help` hit `cp1252.encode` and raised
+    `UnicodeEncodeError` on an em dash. This surfaced only because the
+    windows-latest job exists — the POSIX suite cannot see it, since POSIX
+    streams are already UTF-8.
+    """
+
+    def test_a_cp1252_stream_is_reconfigured(self) -> None:
+        stream = _FakeStream("cp1252")
+        ensure_utf8_streams((stream,))  # type: ignore[arg-type]
+        assert stream.reconfigured == ("utf-8", "replace")
+
+    def test_a_utf8_stream_is_left_alone(self) -> None:
+        """No-op on POSIX. Reconfiguring an already-UTF-8 stream would be
+        a needless side effect at every process entry."""
+        for spelling in ("utf-8", "UTF-8", "utf8"):
+            stream = _FakeStream(spelling)
+            ensure_utf8_streams((stream,))  # type: ignore[arg-type]
+            assert stream.reconfigured is None, spelling
+
+    def test_a_stream_that_cannot_reconfigure_is_skipped(self) -> None:
+        """`out` is a StringIO under test and a pipe wrapper in places.
+        Neither goes through a charmap codec, and neither should raise."""
+        stream = _StreamWithoutReconfigure("cp1252")
+        assert not hasattr(stream, "reconfigure")
+        ensure_utf8_streams((stream,))  # type: ignore[arg-type]
+
+    def test_a_raising_reconfigure_is_swallowed(self) -> None:
+        """A detached or closed stream must not turn into an exception at
+        process entry — that is the failure mode being fixed, not a new
+        place to introduce it."""
+
+        class _Detached(_FakeStream):
+            def reconfigure(self, *, encoding: str, errors: str) -> None:
+                raise ValueError("underlying buffer has been detached")
+
+        ensure_utf8_streams((_Detached("cp1252"),))  # type: ignore[arg-type]
+
+    def test_help_text_contains_characters_cp1252_cannot_encode(self) -> None:
+        """Pins *why* this is needed. If the help text were pure ASCII the
+        reconfigure would be dead code; it is not, and this fails loudly if
+        someone concludes otherwise and removes the call."""
+        from aelfrice.cli import build_parser
+
+        help_text = build_parser().format_help()
+        with pytest.raises(UnicodeEncodeError):
+            help_text.encode("cp1252")

@@ -47,6 +47,7 @@ from aelfrice.config_discovery import (
     config_discovery_scope,
     discover_config,
 )
+from aelfrice.stream_encoding import ensure_utf8_streams
 
 try:
     from aelfrice.db_paths import active_project_context, db_path
@@ -4785,21 +4786,25 @@ def build_session_start_recap_line(
 
 def main() -> int:
     """Entry point for `python -m aelfrice.hook`."""
+    ensure_utf8_streams()
     return user_prompt_submit()
 
 
 def main_pre_compact() -> int:
     """Entry point for the PreCompact hook console script."""
+    ensure_utf8_streams()
     return pre_compact()
 
 
 def main_session_start() -> int:
     """Entry point for the SessionStart hook console script."""
+    ensure_utf8_streams()
     return session_start()
 
 
 def main_stop() -> int:
     """Entry point for the Stop hook console script (#582)."""
+    ensure_utf8_streams()
     return stop()
 
 
