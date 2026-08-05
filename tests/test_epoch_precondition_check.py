@@ -170,6 +170,12 @@ def test_malformed_json_is_skipped_not_fatal(tmp_path: Path) -> None:
     assert tally.boundaries[0].fired is True
 
 
+# Per-arm power is its own rung (#1360). Tests below that exercise a
+# different rung supply counts that satisfy it, so a failure names the
+# rung it is actually about.
+_POWERED: dict[str, int] = {"manual": 40, "auto": 40}
+
+
 @pytest.mark.parametrize(
     ("fired", "unfired", "expected"),
     [
@@ -183,13 +189,15 @@ def test_verdict_thresholds(fired: int, unfired: int, expected: str) -> None:
     """Pins the pre-registered rule so a later edit to the thresholds
     is a visible test change rather than a quiet re-scoring."""
     rate = mod._rate(fired, unfired)
-    assert mod.verdict(rate, fired + unfired).startswith(expected)
+    assert mod.verdict(
+        rate, fired + unfired, None, _POWERED
+    ).startswith(expected)
 
 
 def test_underpowered_pass_is_not_a_pass() -> None:
     """100% on 19 boundaries must not read as CLEARS."""
-    assert mod.verdict(1.0, 19).startswith("NO VERDICT")
-    assert mod.verdict(1.0, 20) == "CLEARS"
+    assert mod.verdict(1.0, 19, None, _POWERED).startswith("NO VERDICT")
+    assert mod.verdict(1.0, 20, None, _POWERED) == "CLEARS"
 
 
 # --- the divergence guard and the contamination guard ------------------
@@ -203,26 +211,95 @@ def test_divergence_over_the_limit_withdraws_the_pooled_verdict() -> None:
     turned a 98.6% pooled rate into no verdict. Without the guard
     inside `verdict()` this returns CLEARS.
     """
-    v = mod.verdict(0.986, 73, {"manual": 1.0, "auto": 0.0})
+    v = mod.verdict(0.986, 73, {"manual": 1.0, "auto": 0.0}, _POWERED)
     assert v.startswith("NO VERDICT")
     assert "diverge" in v
 
 
 def test_divergence_within_the_limit_still_clears() -> None:
     """Negative control: the guard must not swallow every verdict."""
-    assert mod.verdict(0.99, 73, {"manual": 1.0, "auto": 0.95}) == "CLEARS"
+    assert (
+        mod.verdict(0.99, 73, {"manual": 1.0, "auto": 0.95}, _POWERED)
+        == "CLEARS"
+    )
 
 
 def test_a_single_trigger_cannot_diverge() -> None:
     """One trigger is not agreement between two.
 
-    Returning 0.0 here would let a single-trigger corpus clear on a rule
-    that never ran; the spread is undefined, so the guard abstains and
-    the other rungs decide.
+    The spread is genuinely undefined here, so `trigger_divergence`
+    abstains -- that part was always right. What was wrong (#1360) is
+    what happened next: abstention let the other rungs decide, and the
+    other rungs had nothing to say about an arm that was never observed,
+    so a single-trigger corpus reached CLEARS. The per-arm power rung is
+    what catches it; divergence is not, and should not be, that guard.
     """
     assert mod.trigger_divergence({"manual": 1.0}) is None
     assert mod.trigger_divergence(None) is None
-    assert mod.verdict(0.99, 73, {"manual": 1.0}) == "CLEARS"
+    v = mod.verdict(0.99, 73, {"manual": 1.0}, {"manual": 73})
+    assert v.startswith("NO VERDICT")
+    assert "auto: n=0" in v
+
+
+# --- #1360: an unobserved arm must score, not vanish -------------------
+
+
+def test_an_unobserved_arm_does_not_clear() -> None:
+    """The real-corpus failure, reduced.
+
+    63 manual boundaries at 100%, zero auto: the pooled floor is
+    satisfied by the one arm carrying the whole corpus, and divergence
+    has no second arm to measure against. Before the per-arm rung this
+    printed `VERDICT: CLEARS` on a rule whose whole purpose is the auto
+    arm.
+    """
+    v = mod.verdict(1.0, 63, {"manual": 1.0}, {"manual": 63})
+    assert v.startswith("NO VERDICT")
+    assert "auto: n=0" in v
+
+
+def test_the_rule_is_monotonic_in_evidence() -> None:
+    """Observing more must never make the verdict strictly worse.
+
+    This is the sharp form of #1360. With zero auto boundaries the old
+    rule said CLEARS; adding a single failing auto boundary flipped it to
+    NO VERDICT. A decision rule that pays you to stop looking is not a
+    decision rule, so both must now be NO VERDICT -- and for the same
+    reason, that the auto arm is too thin to score either way.
+    """
+    without = mod.verdict(1.0, 63, {"manual": 1.0}, {"manual": 63})
+    with_one = mod.verdict(
+        63 / 64, 64, {"manual": 1.0, "auto": 0.0}, {"manual": 63, "auto": 1}
+    )
+    assert without.startswith("NO VERDICT")
+    assert with_one.startswith("NO VERDICT")
+    # The precise regression: these must not straddle the CLEARS boundary.
+    assert ("CLEARS" == without) is ("CLEARS" == with_one)
+
+
+def test_a_powered_auto_arm_can_still_clear() -> None:
+    """Negative control: the rung must not swallow every verdict.
+
+    Without this the fix is indistinguishable from hard-wiring NO
+    VERDICT, and the check would be useless in the state it exists to
+    report on.
+    """
+    assert (
+        mod.verdict(
+            0.99, 80, {"manual": 1.0, "auto": 0.98}, {"manual": 40, "auto": 40}
+        )
+        == "CLEARS"
+    )
+
+
+def test_unknown_arm_power_is_not_treated_as_fine() -> None:
+    """`None` counts means the caller could not say, not that it is ok.
+
+    Defaulting the unknown case to "powered" is the same shape as the
+    bug: an absence that reads as an affirmation.
+    """
+    assert mod.underpowered_arms(None) == list(mod.EXPECTED_TRIGGERS)
+    assert mod.verdict(1.0, 100, {"manual": 1.0}).startswith("NO VERDICT")
 
 
 def test_divergence_is_checked_before_the_clears_rung() -> None:
@@ -231,14 +308,14 @@ def test_divergence_is_checked_before_the_clears_rung() -> None:
     A rate comfortably over the bar plus a divergence must resolve to
     NO VERDICT, not to CLEARS with a footnote.
     """
-    assert mod.verdict(1.0, 100, {"manual": 1.0, "auto": 0.0}).startswith(
-        "NO VERDICT"
-    )
+    assert mod.verdict(
+        1.0, 100, {"manual": 1.0, "auto": 0.0}, _POWERED
+    ).startswith("NO VERDICT")
 
 
 def test_underpowered_still_wins_over_divergence() -> None:
     """Too little data is the more fundamental objection of the two."""
-    assert mod.verdict(1.0, 5, {"manual": 1.0, "auto": 0.0}) == (
+    assert mod.verdict(1.0, 5, {"manual": 1.0, "auto": 0.0}, _POWERED) == (
         "NO VERDICT (underpowered)"
     )
 

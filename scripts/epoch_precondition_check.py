@@ -147,6 +147,13 @@ KILLS_BELOW = 0.90
 MIN_SCOREABLE = 20
 TRIGGER_DIVERGENCE_LIMIT = 0.10
 
+# The arms the rule is pre-registered over. Naming them is what makes an
+# arm's ABSENCE scoreable: a corpus carrying only `manual` boundaries has
+# no `auto` key at all, so a rule that reads the observed triggers alone
+# cannot tell "auto fires reliably" from "auto was never observed". Both
+# render as silence, and silence used to fall through to CLEARS (#1360).
+EXPECTED_TRIGGERS: tuple[str, ...] = ("manual", "auto")
+
 
 @dataclass
 class Boundary:
@@ -295,10 +302,28 @@ def trigger_divergence(trigger_rates: dict[str, float] | None) -> float | None:
     return max(trigger_rates.values()) - min(trigger_rates.values())
 
 
+def underpowered_arms(
+    trigger_counts: dict[str, int] | None,
+    floor: int = MIN_SCOREABLE,
+) -> list[str]:
+    """Expected arms with too few scoreable boundaries to score.
+
+    A missing key counts as zero, which is the whole point: the failure
+    this guards is an arm that was never observed, not an arm that fired
+    badly. `None` means the caller could not say, and every expected arm
+    is reported — a verdict cannot be rendered on unknown power, and
+    defaulting the unknown case to "fine" is the exact shape of #1360.
+    """
+    if trigger_counts is None:
+        return list(EXPECTED_TRIGGERS)
+    return [t for t in EXPECTED_TRIGGERS if trigger_counts.get(t, 0) < floor]
+
+
 def verdict(
     rate: float | None,
     scoreable: int,
     trigger_rates: dict[str, float] | None = None,
+    trigger_counts: dict[str, int] | None = None,
 ) -> str:
     """Apply the pre-registered rule and return the whole verdict.
 
@@ -311,6 +336,22 @@ def verdict(
     """
     if scoreable < MIN_SCOREABLE or rate is None:
         return "NO VERDICT (underpowered)"
+    # Per-arm power, ahead of divergence and ahead of CLEARS. The pooled
+    # floor above is satisfied by one arm carrying the whole corpus, and
+    # the divergence rung cannot object because one trigger has no spread
+    # to measure -- so without this rung an unobserved arm reaches CLEARS
+    # unremarked (#1360).
+    thin = underpowered_arms(trigger_counts)
+    if thin:
+        detail = ", ".join(
+            f"{t}: n={0 if trigger_counts is None else trigger_counts.get(t, 0)}"
+            for t in thin
+        )
+        return (
+            f"NO VERDICT (arm underpowered -- {detail}; floor is "
+            f"{MIN_SCOREABLE} per arm, and an arm that was never "
+            "observed is not an arm that agreed)"
+        )
     spread = trigger_divergence(trigger_rates)
     if spread is not None and spread > TRIGGER_DIVERGENCE_LIMIT:
         return (
@@ -379,15 +420,21 @@ def main(argv: list[str] | None = None) -> int:
     print("")
     print("--- by trigger ---")
     trigger_rates: dict[str, float] = {}
-    for name in sorted(by_trigger):
-        group = by_trigger[name]
+    trigger_counts: dict[str, int] = {}
+    # Expected arms are listed even at n=0. An arm that is simply missing
+    # from the output reads as "nothing to report" when what it means is
+    # "never observed", which is the reading that produced #1360.
+    for name in sorted(set(by_trigger) | set(EXPECTED_TRIGGERS)):
+        group = by_trigger.get(name, [])
         group_fired = sum(1 for b in group if b.fired)
         group_rate = _rate(group_fired, len(group) - group_fired)
+        trigger_counts[name] = len(group)
         if group_rate is not None:
             trigger_rates[name] = group_rate
+        flag = "" if len(group) >= MIN_SCOREABLE else "   <- under the per-arm floor"
         print(
             f"{name:8s} n={len(group):4d}  fired={group_fired:4d}  "
-            f"rate={_fmt_rate(group_rate)}"
+            f"rate={_fmt_rate(group_rate)}{flag}"
         )
 
     spread = trigger_divergence(trigger_rates)
@@ -395,7 +442,9 @@ def main(argv: list[str] | None = None) -> int:
     if spread is not None:
         print(f"trigger divergence   : {spread * 100:.1f}pp "
               f"(limit {TRIGGER_DIVERGENCE_LIMIT * 100:.0f}pp)")
-    print(f"VERDICT: {verdict(rate, len(scoreable), trigger_rates)}")
+    print(
+        f"VERDICT: {verdict(rate, len(scoreable), trigger_rates, trigger_counts)}"
+    )
     return 0
 
 
