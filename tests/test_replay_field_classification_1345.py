@@ -19,8 +19,14 @@ import dataclasses
 
 import pytest
 
-from aelfrice.models import Belief
-from aelfrice.replay import EXCLUDED_FIELDS, MUTABLE_FIELDS, STRICT_FIELDS
+from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
+from aelfrice.replay import (
+    EXCLUDED_FIELDS,
+    MUTABLE_FIELDS,
+    STRICT_FIELDS,
+    _FLOAT_MUTABLE_FIELDS,
+    _mutable_fields_diff,
+)
 
 # `edge_set` is a reporting key, not a `Belief` column: it compares
 # `derive()`'s emitted edges against the log row's `derived_edge_ids`.
@@ -113,6 +119,54 @@ def test_the_fields_this_issue_was_filed_over_are_compared(name: str) -> None:
         f"{name} was moved out of the compared set; that restores the "
         "#1345 blindness rather than fixing it"
     )
+
+
+def test_every_float_field_is_also_in_the_mutable_tuple() -> None:
+    """`_mutable_fields_diff` walks `MUTABLE_FIELDS` and branches on this set.
+
+    A float field named here but absent from `MUTABLE_FIELDS` would never be
+    reached, so it would stop being compared while still reading as handled.
+    """
+    assert _FLOAT_MUTABLE_FIELDS <= set(MUTABLE_FIELDS), (
+        sorted(_FLOAT_MUTABLE_FIELDS - set(MUTABLE_FIELDS))
+    )
+
+
+def test_the_diff_is_keyed_in_declared_field_order() -> None:
+    """The report order is `MUTABLE_FIELDS` order, not a set's iteration order.
+
+    `MUTABLE_FIELDS` documents itself as "the reporting order", and the diff
+    dict is rendered verbatim into the drift examples `aelf doctor replay`
+    prints. Walking a `frozenset` instead keys that output on string hash
+    randomisation, so the same store prints a different field order on every
+    process — nondeterministic output from the instrument whose purpose is to
+    falsify the determinism claim.
+    """
+    base = Belief(
+        id="b1",
+        content="c",
+        content_hash="h",
+        alpha=1.0,
+        beta=1.0,
+        type=BELIEF_FACTUAL,
+        lock_level=LOCK_NONE,
+        locked_at=None,
+        created_at="2026-01-01T00:00:00Z",
+        last_retrieved_at=None,
+    )
+    other = dataclasses.replace(
+        base,
+        alpha=2.0,
+        beta=3.0,
+        hibernation_score=0.5,
+        lock_level=LOCK_USER,
+        session_id="s",
+    )
+    diff = _mutable_fields_diff(base, other, set(), set())
+    changed = [n for n in MUTABLE_FIELDS if n in diff]
+    assert list(diff) == changed, (list(diff), changed)
+    # Guard the guard: an assertion over an empty diff is vacuous.
+    assert len(diff) >= 4, diff
 
 
 def test_created_at_is_excluded_on_the_record() -> None:

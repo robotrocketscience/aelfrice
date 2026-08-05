@@ -265,22 +265,27 @@ def _mutable_fields_diff(
     every field outside the strict contract.
     """
     diff: dict[str, object] = {}
-    for name in _FLOAT_MUTABLE_FIELDS:
-        c_raw = getattr(canonical, name)
-        d_raw = getattr(synthesized, name)
-        if c_raw is None or d_raw is None:
-            if c_raw != d_raw:
-                diff[name] = {"canonical": c_raw, "derived": d_raw}
-            continue
-        c = float(c_raw)
-        d = float(d_raw)
-        if abs(c - d) > _POSTERIOR_EPSILON:
-            diff[name] = {"canonical": c, "derived": d}
+    # One pass, in MUTABLE_FIELDS order. The order matters: `diff` is a dict,
+    # it is rendered verbatim into the drift examples `aelf doctor replay`
+    # prints, and iterating `_FLOAT_MUTABLE_FIELDS` (a frozenset) instead
+    # would key that output on string hash randomisation — a different field
+    # order every process, for the same store. Nondeterministic output from
+    # the instrument that exists to falsify the determinism claim.
     for name in MUTABLE_FIELDS:
-        if name in _FLOAT_MUTABLE_FIELDS or name == "edge_set":
+        if name == "edge_set":
             continue
         c_val = getattr(canonical, name)
         d_val = getattr(synthesized, name)
+        if name in _FLOAT_MUTABLE_FIELDS:
+            if c_val is None or d_val is None:
+                if c_val != d_val:
+                    diff[name] = {"canonical": c_val, "derived": d_val}
+                continue
+            c = float(c_val)
+            d = float(d_val)
+            if abs(c - d) > _POSTERIOR_EPSILON:
+                diff[name] = {"canonical": c, "derived": d}
+            continue
         if c_val != d_val:
             diff[name] = {"canonical": c_val, "derived": d_val}
     if canonical_edges != derived_edges:
