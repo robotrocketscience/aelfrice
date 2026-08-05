@@ -1,0 +1,21 @@
+{
+  "issue": 1356,
+  "measured_at": "2026-08-05",
+  "script": "benchmarks/spine_fan_in_baseline.py",
+  "store": "development store (repo-local .git/aelfrice/memory.db); not a shipped fixture, so CI cannot re-derive this — `aelf spine verify` compares against it on the operator's machine",
+  "constraint": "n_fan_in_successors is non-increasing (ratified constraint (2) on #1283 AC4). Equal is not a regression; the fan-in surplus is a standing writer defect that #1356 measures rather than fixes.",
+  "provenance": "reproduced_share was previously published as 0.9368 against a denominator that included the fan-in surplus. The figure below uses the corrected fan-in-1 eligible denominator and is NOT comparable to it.",
+  "figures": {
+    "missing_fan_in": 546,
+    "missing_other": 3,
+    "missing_touching_no_log": 2100,
+    "n_eligible_reproduced": 38789,
+    "n_eligible_shipped": 40892,
+    "n_fan_in_successors": 546,
+    "n_recomputed": 41437,
+    "n_recomputed_only": 2102,
+    "n_reproduced": 39335,
+    "n_shipped": 41984,
+    "reproduced_share": 0.948572
+  }
+}

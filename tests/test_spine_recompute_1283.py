@@ -30,6 +30,7 @@ from aelfrice import cli
 from aelfrice.models import EDGE_TEMPORAL_NEXT, LOCK_USER, Belief, Edge
 from aelfrice.spine_recompute import (
     SYNTH_SOURCE_KIND,
+    fan_in_regressed_against,
     recompute_spine_edges,
     spine_divergence,
 )
@@ -485,7 +486,12 @@ def test_spine_verify_reports_every_bucket_and_names_the_gap(
     # parenthetical, so `: 1` cannot quietly match a printed `12`.
     assert "shipped TEMPORAL_NEXT : 10\n" in text
     assert "recomputed            : 7\n" in text
-    assert "reproduced            : 4 (40.00%)\n" in text
+    assert "recomputed-only       : 3\n" in text
+    # 4 of 6 fan-in-1 eligible, not 4 of 10 (#1356). `c` and `d` each
+    # carry two predecessors, so all four of their shipped edges leave
+    # the denominator -- the reproduced ones as well as the missed.
+    assert "reproduced            : 4 (33.33% of the 6 fan-in-1 eligible)\n" in text
+    assert "fan-in > 1 successors : 2 (" in text
     assert "--- misses, by cause ---" in text
     assert "no-log endpoint     : 3 (" in text
     assert "fan-in > 1          : 2 (" in text
@@ -596,7 +602,7 @@ def test_spine_verify_exits_zero_on_an_empty_store(
     assert _verify(out) == 0
     text = out.getvalue()
     assert "shipped TEMPORAL_NEXT : 0\n" in text
-    assert "reproduced            : 0 (100.00%)\n" in text
+    assert "reproduced            : 0 (100.00% of the 0 fan-in-1 eligible)\n" in text
 
 
 def test_spine_verify_says_so_when_there_is_no_store_yet(
@@ -625,4 +631,154 @@ def test_spine_verify_says_so_when_there_is_no_store_yet(
     assert "nothing to verify" in out.getvalue()
     assert not missing.exists(), (
         "a read-only diagnostic created the store it was asked to read"
+    )
+
+
+# --- #1356: both directions, and the share denominator -------------------
+
+
+def test_the_recomputed_only_direction_is_reported(
+    store: MemoryStore,
+) -> None:
+    """Links the recompute produces that the shipped spine lacks must be
+    counted.
+
+    A misses-only meter renders "the recompute missed links" and "the
+    recompute invented links" identically, and those have opposite
+    fixes. Falsifiable by dropping `n_recomputed_only`: every other
+    counter here is zero, so nothing else in the report moves and the
+    divergence would read as a clean reproduction.
+    """
+    same = "2026-03-01T00:00:00Z"
+    _belief(store, "a", session="s1", created_at=same)
+    _belief(store, "b", session="s1", created_at=same)
+    _log(store, "01AAAAAAAAAAAAAAAAAAAAAAAA", ["a"])
+    _log(store, "01BBBBBBBBBBBBBBBBBBBBBBBB", ["b"])
+    # The writer wrote no edge at all; the recompute produces b -> a.
+
+    report = spine_divergence(store)
+    assert report.n_shipped == 0
+    assert report.missing_touching_no_log == 0
+    assert report.missing_fan_in == 0
+    assert report.missing_other == 0
+    assert report.n_recomputed_only == 1
+
+
+def test_both_edges_of_a_fan_in_successor_leave_the_denominator(
+    store: MemoryStore,
+) -> None:
+    """The share excludes every shipped edge whose successor has fan-in
+    > 1 — the reproduced one as well as the missed one.
+
+    Dropping only the miss moves the denominator without moving the
+    numerator and INFLATES the share instead of correcting it. This
+    fixture separates the two: a second session contributes an eligible
+    miss, so "drop both" gives 1/2 while "drop only the miss" gives 2/3.
+    A fixture with one session cannot tell them apart — both give 1.0.
+    """
+    # Session 1: a < b < c, with c wrongly gaining a second predecessor.
+    for i, bid in enumerate(("a", "b", "c")):
+        _belief(store, bid, session="s1", created_at=f"2026-03-0{i+1}T00:00:00Z")
+    _log(store, "01AAAAAAAAAAAAAAAAAAAAAAAA", ["a"])
+    _log(store, "01BBBBBBBBBBBBBBBBBBBBBBBB", ["b"])
+    _log(store, "01CCCCCCCCCCCCCCCCCCCCCCCC", ["c"])
+    store.insert_edge(Edge(src="b", dst="a", type=EDGE_TEMPORAL_NEXT, weight=1.0))
+    store.insert_edge(Edge(src="c", dst="b", type=EDGE_TEMPORAL_NEXT, weight=1.0))
+    store.insert_edge(Edge(src="c", dst="a", type=EDGE_TEMPORAL_NEXT, weight=1.0))
+
+    # Session 2: an eligible (fan-in 1) miss — `x` has no log row, so the
+    # recompute sorts it last and reverses the writer's order.
+    same = "2026-03-01T00:00:00Z"
+    _belief(store, "x", session="s2", created_at=same)
+    _belief(store, "y", session="s2", created_at=same)
+    _log(store, "01DDDDDDDDDDDDDDDDDDDDDDDD", ["y"])
+    store.insert_edge(Edge(src="y", dst="x", type=EDGE_TEMPORAL_NEXT, weight=1.0))
+
+    report = spine_divergence(store)
+    assert report.n_shipped == 4
+    assert report.n_reproduced == 2
+    assert report.n_fan_in_successors == 1
+
+    # Both of `c`'s edges are gone from the eligible set.
+    assert report.n_eligible_shipped == 2
+    assert report.n_eligible_reproduced == 1
+    assert report.reproduced_share == 0.5
+
+    # The two wrong readings, named so the assertion above is not a
+    # coincidence: uncorrected is 2/4, drop-only-the-miss is 2/3.
+    assert report.n_reproduced / report.n_shipped == 0.5  # uncorrected
+    assert report.reproduced_share != 2 / 3
+
+
+def test_the_share_ignores_a_fan_in_defect_entirely(
+    store: MemoryStore,
+) -> None:
+    """With the fan-in surplus out of the denominator, a store whose only
+    defect is fan-in reports full reproduction.
+
+    That is the point of the correction: the key reproduced everything
+    it can express, and the residue is a writer defect reported in its
+    own counter. Falsifiable by leaving the surplus in — the share drops
+    to 2/3 and the key is charged for it.
+    """
+    for i, bid in enumerate(("a", "b", "c")):
+        _belief(store, bid, session="s1", created_at=f"2026-03-0{i+1}T00:00:00Z")
+    _log(store, "01AAAAAAAAAAAAAAAAAAAAAAAA", ["a"])
+    _log(store, "01BBBBBBBBBBBBBBBBBBBBBBBB", ["b"])
+    _log(store, "01CCCCCCCCCCCCCCCCCCCCCCCC", ["c"])
+    store.insert_edge(Edge(src="b", dst="a", type=EDGE_TEMPORAL_NEXT, weight=1.0))
+    store.insert_edge(Edge(src="c", dst="b", type=EDGE_TEMPORAL_NEXT, weight=1.0))
+    store.insert_edge(Edge(src="c", dst="a", type=EDGE_TEMPORAL_NEXT, weight=1.0))
+
+    report = spine_divergence(store)
+    assert report.reproduced_share == 1.0
+    assert report.missing_fan_in == 1
+    assert report.n_fan_in_successors == 1
+
+
+@pytest.mark.parametrize(
+    ("observed", "baseline", "regressed"),
+    [
+        pytest.param(547, 546, True, id="grew"),
+        pytest.param(546, 546, False, id="held"),
+        pytest.param(545, 546, False, id="shrank"),
+    ],
+)
+def test_the_fan_in_constraint_fires_in_one_direction_only(
+    observed: int, baseline: int, regressed: bool
+) -> None:
+    """The ratified constraint is non-increasing, not a tolerance band.
+
+    All three arms are asserted because the two failure modes are
+    opposite: `>=` would flag the steady state (the surplus is a
+    standing defect this issue measures rather than fixes, so holding is
+    expected), and a tolerance would let real growth through.
+    """
+    assert fan_in_regressed_against(observed, baseline) is regressed
+
+
+def test_the_committed_baseline_is_internally_consistent() -> None:
+    """The baseline JSON must re-derive its own published share.
+
+    It is hand-editable and CI cannot re-measure it — the store it was
+    taken on is not a shipped fixture — so the one thing that can be
+    checked is that its numbers agree with each other. A baseline whose
+    share does not follow from its own numerator and denominator is
+    either stale or was edited by hand, and either way nothing else
+    would notice.
+    """
+    from benchmarks.spine_fan_in_baseline import load_baseline
+
+    figures = load_baseline()["figures"]
+    derived = (
+        figures["n_eligible_reproduced"] / figures["n_eligible_shipped"]
+    )
+    assert round(derived, 6) == figures["reproduced_share"]
+
+    # The eligible set is a strict subset, or the correction did nothing.
+    assert figures["n_eligible_shipped"] < figures["n_shipped"]
+    assert figures["n_fan_in_successors"] > 0
+    # And it is the corrected figure, not the one published before it.
+    assert figures["reproduced_share"] != round(
+        figures["n_reproduced"] / figures["n_shipped"], 6
     )

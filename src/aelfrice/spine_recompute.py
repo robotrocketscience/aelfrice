@@ -107,6 +107,26 @@ class SpineDivergence:
     ``missing_other``
         Everything else. This is the only bucket that should move when
         the key is wrong, which is why it is worth having on its own.
+
+    ``n_recomputed_only``
+        The other direction of the diff (#1356): links the recompute
+        produces that the shipped spine does not have. Without it the
+        meter is one-directional and cannot tell "the recompute missed
+        links" from "the recompute invented links" — two failures with
+        opposite fixes that a misses-only report renders identically.
+
+    ``n_fan_in_successors``
+        Successors carrying more than one predecessor edge in the
+        *shipped* set. A chain gives each successor exactly one, so
+        every one of these is a writer defect. Expected to be
+        non-increasing; `benchmarks/spine_fan_in_baseline.py` commits
+        the baseline and `fan_in_regressed_against` compares to it.
+
+    ``n_eligible_shipped`` / ``n_eligible_reproduced``
+        The same two counts restricted to successors with fan-in 1 —
+        the denominator and numerator of `reproduced_share`. Carried as
+        fields rather than recomputed at the property, so the
+        subtraction is inspectable in the report rather than implied.
     """
 
     n_shipped: int
@@ -115,13 +135,35 @@ class SpineDivergence:
     missing_touching_no_log: int
     missing_fan_in: int
     missing_other: int
+    n_recomputed_only: int = 0
+    n_fan_in_successors: int = 0
+    n_eligible_shipped: int = 0
+    n_eligible_reproduced: int = 0
 
     @property
     def reproduced_share(self) -> float:
-        """Fraction of the shipped spine the recompute reproduces."""
-        if self.n_shipped == 0:
+        """Fraction of the *eligible* shipped spine the recompute reproduces.
+
+        Eligible excludes shipped edges whose successor carries fan-in
+        > 1 (#1356). Those are a known writer defect, not a key
+        disagreement: the recompute emits a chain, so it gives each
+        successor exactly one predecessor and can only ever reproduce
+        one of the two shipped edges. Leaving them in the denominator
+        charges the key for a defect it cannot express, which is the
+        single depressed percentage the ratified constraint forbade.
+
+        The direction of the change is data-dependent, not fixed: the
+        share moves up when the excluded edges were reproducing worse
+        than the overall rate and down when they were reproducing
+        better. On the development store it moves 93.69% -> 94.86%
+        (those edges reproduced at 50%); on this module's own CLI
+        fixture it moves 40% -> 33.33%. Either way it is a denominator
+        correction and not a movement in fidelity, so a figure taken
+        before it must never be compared with one taken after.
+        """
+        if self.n_eligible_shipped == 0:
             return 1.0
-        return self.n_reproduced / self.n_shipped
+        return self.n_eligible_reproduced / self.n_eligible_shipped
 
 
 def _log_sort_keys(store: "MemoryStore") -> dict[str, str]:
@@ -209,6 +251,25 @@ def recompute_spine_edges(
     return edges, no_log
 
 
+def fan_in_regressed_against(observed: int, baseline: int) -> bool:
+    """True iff the fan-in surplus GREW against a committed baseline.
+
+    The ratified constraint on AC4 is that the fan-in > 1 successor
+    count is **non-increasing** — not that it sits under a percentage
+    tolerance. Before #1356 that constraint existed only as prose in
+    this module's docstring and in `aelf spine verify`'s printed output,
+    with no baseline committed anywhere, so nothing could assert it.
+
+    Equal is not a regression: the surplus is a standing writer defect
+    that this issue does not fix, so holding steady is the expected
+    state and only growth is a signal.
+
+    `benchmarks/spine_fan_in_baseline.py` re-derives the baseline and
+    writes `benchmarks/spine_fan_in_baseline.json`.
+    """
+    return observed > baseline
+
+
 def spine_divergence(store: "MemoryStore") -> SpineDivergence:
     """Compare the shipped `TEMPORAL_NEXT` set against the recompute.
 
@@ -239,6 +300,13 @@ def spine_divergence(store: "MemoryStore") -> SpineDivergence:
         else:
             other += 1
 
+    # #1356 (2): the eligible set drops every shipped edge whose
+    # successor carries fan-in > 1 — both the reproduced one and the
+    # missed one, not just the miss. Dropping only the miss would move
+    # the numerator and denominator by different amounts and inflate
+    # the share instead of correcting it.
+    eligible = {e for e in shipped if fan_in.get(e[0], 0) == 1}
+
     return SpineDivergence(
         n_shipped=len(shipped),
         n_recomputed=len(recomputed),
@@ -246,4 +314,9 @@ def spine_divergence(store: "MemoryStore") -> SpineDivergence:
         missing_touching_no_log=touching_no_log,
         missing_fan_in=fan_in_misses,
         missing_other=other,
+        # #1356 (1): the direction the shipped meter could not see.
+        n_recomputed_only=len(recomputed - shipped),
+        n_fan_in_successors=sum(1 for n in fan_in.values() if n > 1),
+        n_eligible_shipped=len(eligible),
+        n_eligible_reproduced=len(eligible & recomputed),
     )

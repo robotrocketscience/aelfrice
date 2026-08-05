@@ -6071,9 +6071,16 @@ def _cmd_spine_verify(out: object) -> int:
     w = cast("Any", out)
     print(f"shipped TEMPORAL_NEXT : {report.n_shipped:,}", file=w)
     print(f"recomputed            : {report.n_recomputed:,}", file=w)
+    print(f"recomputed-only       : {report.n_recomputed_only:,}", file=w)
     print(
         f"reproduced            : {report.n_reproduced:,} "
-        f"({100 * report.reproduced_share:.2f}%)",
+        f"({100 * report.reproduced_share:.2f}% of the "
+        f"{report.n_eligible_shipped:,} fan-in-1 eligible)",
+        file=w,
+    )
+    print(
+        f"fan-in > 1 successors : {report.n_fan_in_successors:,} "
+        "(excluded from the share denominator; expected non-increasing)",
         file=w,
     )
     print("--- misses, by cause ---", file=w)
@@ -6084,7 +6091,9 @@ def _cmd_spine_verify(out: object) -> int:
     )
     print(
         f"  fan-in > 1          : {report.missing_fan_in:,} "
-        "(writer defect; expected to be non-increasing)",
+        "(edges dropped by those successors; a chain reproduces one "
+        "predecessor each, so this exceeds the successor count only "
+        "where fan-in > 2)",
         file=w,
     )
     print(
