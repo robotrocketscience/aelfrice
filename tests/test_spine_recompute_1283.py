@@ -187,15 +187,23 @@ def test_sessions_do_not_chain_into_each_other(store: MemoryStore) -> None:
 def test_synth_source_kind_is_the_literal_the_contract_names() -> None:
     """Amended constraint (1) names a value, not a symbol.
 
-    The prefix/density detector was rejected because it dropped 51.8% of
-    the log; the replacement selects on `source_kind = 'legacy_unknown'`.
-    Every other test here plants its fixture row with the same symbol the
-    recompute reads, so renaming the constant's *value* would leave them
-    all green while the exclusion silently stopped matching the rows on
-    disk. This pins the value.
+    The ULID-prefix date-cluster detector was rejected because it dropped
+    51.8% of the log — 72,411 rows in the 2026-07-07 bulk backfill, over
+    the whole ~139.6k-row log rather than over the ~60.5k rows the rule
+    actually sees per belief. (The *other* rejected detector, "ULID prefix
+    disagrees with `ts` by more than a day", is the 34.75% one; they are
+    easy to conflate.) The replacement selects on
+    `source_kind = 'legacy_unknown'`.
+
+    The fixture below plants that row with the **literal**, not with
+    `SYNTH_SOURCE_KIND`. Planting it with the symbol the recompute also
+    reads makes both sides move together under a value rename, leaving the
+    assertion green while the exclusion silently stops matching any row on
+    disk. This test pins the value itself; note it is a contract pin
+    rather than a behavioural one, and would still hold if the recompute
+    were broken — the behavioural catch is the fixture literal.
     """
     assert SYNTH_SOURCE_KIND == "legacy_unknown"
-
 
 
 def test_synth_rows_supply_no_ordering_key(store: MemoryStore) -> None:
