@@ -165,6 +165,12 @@ def test_user_prompt_submit_writes_audit_record(
     assert rec["n_beliefs"] == 1
     assert rec["n_locked"] == 0
     assert rec["session_id"] == "sess-abc"
+    # #1357: `source` is a SessionStart-only field. Nothing else passes it,
+    # so this row must not grow one. Pinned here because the omission rests
+    # entirely on the helper's parameter default: flipping that default to
+    # any truthy string makes every UPS row carry it, and the SessionStart
+    # tests cannot see it — they read row [0] of a SessionStart-only file.
+    assert "source" not in rec
     rendered = rec["rendered_block"]
     assert isinstance(rendered, str)
     assert "<belief id=\"F1\"" in rendered
