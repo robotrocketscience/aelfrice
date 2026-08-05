@@ -268,6 +268,66 @@ def test_session_start_writes_audit_record(
     assert "<aelfrice-baseline>" in rec["rendered_block"]  # type: ignore[operator]
 
 
+def _session_start_audit_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: dict[str, object],
+) -> dict[str, object]:
+    """Fire SessionStart with `payload` and return its audit row."""
+    db = tmp_path / "memory.db"
+    _seed_db(
+        db,
+        [
+            _mk(
+                "L1", "ground truth",
+                lock_level=LOCK_USER,
+                locked_at="2026-04-26T01:00:00Z",
+            ),
+        ],
+    )
+    _set_db(monkeypatch, db)
+    monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".aelfrice.toml").write_text(
+        "[user_prompt_submit_hook]\ninject_all_locked = true\n",
+        encoding="utf-8",
+    )
+    sin = io.StringIO(json.dumps(payload))
+    sout = io.StringIO()
+    assert session_start(stdin=sin, stdout=sout) == 0
+    return read_hook_audit(_audit_path_for_db(db))[0]
+
+
+@pytest.mark.parametrize("source", ["compact", "startup", "resume"])
+def test_session_start_audit_records_its_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str,
+) -> None:
+    """#1357: the row carries the trigger it was fired with.
+
+    Parametrised over distinct values on purpose. Asserting only that the
+    key is present would pass against a hardcoded constant, which is the
+    failure mode that left `0 of 58` rows carrying a usable value while
+    the field looked recorded.
+    """
+    rec = _session_start_audit_record(
+        tmp_path, monkeypatch, {"session_id": "s", "source": source},
+    )
+    assert rec["hook"] == AUDIT_HOOK_SESSION_START
+    assert rec["source"] == source
+
+
+def test_session_start_audit_omits_an_absent_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No trigger in the payload means no key, not an empty string.
+
+    Every historical row predates the field, so readers must keep
+    tolerating its absence rather than seeing a null-ish sentinel.
+    """
+    rec = _session_start_audit_record(
+        tmp_path, monkeypatch, {"session_id": "s"},
+    )
+    assert "source" not in rec
+
+
 def test_env_disable_suppresses_audit_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

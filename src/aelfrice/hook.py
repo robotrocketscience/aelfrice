@@ -692,6 +692,7 @@ def _write_hook_audit_record(
     expansion_gate_reason: str | None = None,
     expansion_gate_skipped_bfs: bool | None = None,
     order_policy: str | None = None,
+    source: str | None = None,
     config: HookAuditConfig | None = None,
     stderr: IO[str] | None = None,
 ) -> None:
@@ -726,6 +727,14 @@ def _write_hook_audit_record(
     `rendered_block` (`lane`, `score_desc`, `locks_last`). Recorded so an
     ordering A/B can attribute a block to its arm from the audit alone,
     and so replay can reproduce the permutation.
+
+    #1357 additive field:
+    `source` — the harness-supplied SessionStart trigger (`startup`,
+    `resume`, `compact`, …). Written only when non-empty, so the
+    `user_prompt_submit` rows that never carry one do not grow a null
+    field. Without it a `session_start` row cannot be attributed to a
+    cold start versus a post-compaction re-anchor, which is what left
+    #1252 unresolvable and blocks #1177's injection-ledger build.
     """
     cfg = config if config is not None else load_hook_audit_config(stderr=stderr)
     if not cfg.enabled:
@@ -760,6 +769,11 @@ def _write_hook_audit_record(
         record["expansion_gate_skipped_bfs"] = bool(expansion_gate_skipped_bfs)
     if order_policy is not None:
         record["order_policy"] = order_policy
+    # #1357: empty string is the parse-failure sentinel at the
+    # SessionStart call site, so it carries no more information than an
+    # absent key — record only a real trigger.
+    if source:
+        record["source"] = source
     _append_audit(audit_path, record, cfg.max_bytes, stderr=stderr)
 
 
@@ -3468,6 +3482,7 @@ def session_start(
                 beliefs=hits,
                 latency_ms=latency_ms,
                 order_policy=_audit_order_policy(),
+                source=source,
                 stderr=serr,
             )
         # #1031: carry the context-rebuilder block on the post-compaction
