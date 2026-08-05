@@ -37,7 +37,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Any, Final, Iterator, cast
+from typing import IO, Any, Final, Iterator, Sequence, cast
 
 # Deliberately outside the guarded block below: `config_discovery` is
 # stdlib-only and imports nothing from `aelfrice`, so it cannot be the
@@ -112,11 +112,18 @@ SESSION_STATE_FILENAME: Final[str] = "session_first_prompt.json"
 """Filename for the per-repo session-start state, sibling of memory.db
 under <git-common-dir>/aelfrice/.
 
-Contains a single JSON object: {"session_id": "<last-seen-session-id>"}.
-When the incoming session_id differs from the stored value (or the file is
+Contains a single JSON object with two keys:
+{"session_id": "<most-recently-seen-id>", "session_ids": [<window>, ...]}.
+When the incoming session_id is absent from the window (or the file is
 absent), the hook treats the current call as the first prompt of a new
-session, writes the new session_id, and injects the <session-start>
-sub-block. Subsequent calls with the same session_id skip injection.
+session, appends the id, and injects the <session-start> sub-block.
+Subsequent calls with the same session_id skip injection.
+
+#1344: `session_ids` is the window this is keyed on; `session_id` is
+retained for `session_exclusions.read_active_session_id`, which resolves
+the active session for `aelf scope-out`. Before #1344 the file held only
+the single key and the window was effectively of size one, so concurrent
+sessions evicted each other and every one of them re-fired on every turn.
 
 Detection mechanism: option (b) from the issue spec — a single persistent
 state file rather than a transcript-tail age scan. Rationale: the state
@@ -124,6 +131,16 @@ file requires one read + one write per session with no filesystem walk and
 no dependency on transcript format or timestamp parsing. The session_id
 field in the UserPromptSubmit payload is already extracted for audit
 cross-reference, so no new payload fields are consumed.
+"""
+
+SESSION_STATE_MAX_IDS: Final[int] = 128
+"""Bound on the session-id window in SESSION_STATE_FILENAME (#1344).
+
+FIFO by first-seen: a new id is appended and the oldest is dropped once the
+window is full. Sized well above the number of sessions that realistically
+interleave on one checkout, so eviction of a still-live session is remote;
+if it does happen the cost is one redundant <session-start> injection, which
+is the pre-#1344 behaviour rather than a new failure mode.
 """
 
 DEFAULT_SESSION_START_TOKEN_BUDGET: Final[int] = 1500
@@ -3043,14 +3060,50 @@ def _session_state_path() -> Path | None:
     return p.parent / SESSION_STATE_FILENAME
 
 
+def _read_seen_session_ids(state_path: Path) -> list[str]:
+    """Return the recently-seen session ids from the state file, oldest first.
+
+    Reads the `session_ids` list written by `_write_session_state`. Falls back
+    to the pre-#1344 single-key shape (`{"session_id": "..."}`) so a state file
+    written by an older release is honoured rather than treated as absent.
+    Returns [] on a missing, unreadable or malformed file (fail-soft).
+    """
+    if not state_path.exists():
+        return []
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    raw = data.get("session_ids")
+    if isinstance(raw, list):
+        return [s for s in raw if isinstance(s, str) and s]
+    # Pre-#1344 shape: one slot.
+    val = data.get("session_id")
+    return [val] if isinstance(val, str) and val else []
+
+
 def is_session_first_prompt(session_id: str | None) -> bool:
     """Return True iff this is the first UserPromptSubmit of a new session.
 
     Detection mechanism: option (b) — a persistent state file at
-    `<git-common-dir>/aelfrice/session_first_prompt.json`. If the stored
-    session_id differs from `session_id` (or the file is absent), returns
-    True and atomically updates the state file. Subsequent calls with the
-    same session_id return False.
+    `<git-common-dir>/aelfrice/session_first_prompt.json`. If `session_id` is
+    not among the recently-seen ids recorded there (or the file is absent),
+    returns True and atomically updates the state file. Subsequent calls with
+    the same session_id return False.
+
+    #1344: the file records a bounded FIFO window of ids, not one slot. The
+    single slot was only correct for a lone session — two or more sessions
+    sharing a `--git-common-dir` alternate in it, so each one re-read an id
+    that was not its own and re-fired as "first prompt" on every turn. Measured
+    on a 286-turn hook-audit corpus: 109 redundant `<session-start>` re-fires
+    across 36 of 48 sessions, 39.8% of all injected block tokens.
+
+    Eviction beyond `SESSION_STATE_MAX_IDS` can only cause an *extra* fire,
+    never a missed one, which is the same failure direction as the code it
+    replaces. The concurrent read-modify-write is likewise fail-soft in that
+    direction: a lost update drops an id and costs one redundant fire.
 
     Returns False when `session_id` is None or empty — the hook cannot
     distinguish sessions without an id. Also returns False on any I/O or
@@ -3062,30 +3115,31 @@ def is_session_first_prompt(session_id: str | None) -> bool:
     if state_path is None:
         return False
     try:
-        stored_sid: str | None = None
-        if state_path.exists():
-            try:
-                data = json.loads(state_path.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    val = data.get("session_id")
-                    if isinstance(val, str):
-                        stored_sid = val
-            except (json.JSONDecodeError, OSError):
-                stored_sid = None
-        if stored_sid == session_id:
+        seen = _read_seen_session_ids(state_path)
+        if session_id in seen:
             return False
         # New session: update state file atomically.
-        _write_session_state(state_path, session_id)
+        _write_session_state(state_path, session_id, seen)
         return True
     except Exception:
         return False
 
 
-def _write_session_state(state_path: Path, session_id: str) -> None:
-    """Write the session_id to the state file. Fail-soft: never raises."""
+def _write_session_state(
+    state_path: Path, session_id: str, seen: Sequence[str] = ()
+) -> None:
+    """Write the seen-session window to the state file. Fail-soft: never raises.
+
+    `session_id` becomes the most recent entry; `seen` is the prior window,
+    oldest first, and is truncated from the front to `SESSION_STATE_MAX_IDS`.
+    The top-level `session_id` key is retained and holds the most recent id —
+    `session_exclusions.read_active_session_id` and `aelf scope-out` read it.
+    """
     try:
         state_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps({"session_id": session_id})
+        window = [s for s in seen if s != session_id]
+        window = window[-(SESSION_STATE_MAX_IDS - 1):] + [session_id]
+        payload = json.dumps({"session_id": session_id, "session_ids": window})
         fd, tmp_name = tempfile.mkstemp(
             prefix=state_path.name + ".",
             suffix=".tmp",

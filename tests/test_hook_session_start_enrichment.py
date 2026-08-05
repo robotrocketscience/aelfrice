@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from aelfrice import hook
 from aelfrice.hook import (
     DEFAULT_SESSION_START_CORE_TOKEN_BUDGET,
     SESSION_START_CORE_BUDGET_ENV,
@@ -145,6 +146,110 @@ def test_is_session_first_prompt_writes_state_file(
     assert state_file.exists()
     data = json.loads(state_file.read_text())
     assert data["session_id"] == "session-1"
+
+
+# ---------------------------------------------------------------------------
+# #1344: the state file holds a window of ids, not one slot. Without this the
+# predicate is only correct for a lone session — two sessions sharing a
+# git-common-dir alternate in the slot and each re-fires on every turn.
+# ---------------------------------------------------------------------------
+
+
+def test_is_session_first_prompt_false_when_session_interleaves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1344: A, B, A -> True, True, False.
+
+    This is the distinguishing assert. The pre-#1344 single slot returns True
+    on the third call, and re-fires forever for any number of interleaved
+    sessions; the tests that shipped with #578 cover only A,A and A,B and so
+    pass under both implementations.
+    """
+    db = tmp_path / "memory.db"
+    _set_db(monkeypatch, db)
+    assert is_session_first_prompt("session-A") is True
+    assert is_session_first_prompt("session-B") is True
+    assert is_session_first_prompt("session-A") is False
+    assert is_session_first_prompt("session-B") is False
+
+
+def test_is_session_first_prompt_holds_across_many_interleavings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each of several concurrent sessions fires exactly once, in any order."""
+    db = tmp_path / "memory.db"
+    _set_db(monkeypatch, db)
+    sids = [f"session-{i}" for i in range(5)]
+    fires = 0
+    for _turn in range(10):
+        for sid in sids:
+            if is_session_first_prompt(sid):
+                fires += 1
+    assert fires == len(sids)
+
+
+def test_is_session_first_prompt_evicts_oldest_beyond_the_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The window is bounded, and eviction is FIFO by first-seen.
+
+    Eviction costs one redundant injection; it must never suppress the first
+    fire of a genuinely new session.
+    """
+    db = tmp_path / "memory.db"
+    _set_db(monkeypatch, db)
+    # The bound is exercised at 3 for tractability; pin the shipped value too,
+    # so a regression that sets it to 1 (the pre-#1344 behaviour) is caught.
+    assert hook.SESSION_STATE_MAX_IDS == 128
+    monkeypatch.setattr(hook, "SESSION_STATE_MAX_IDS", 3)
+    for sid in ("s1", "s2", "s3"):
+        assert is_session_first_prompt(sid) is True
+    assert is_session_first_prompt("s1") is False
+    # s4 evicts s1, the oldest.
+    assert is_session_first_prompt("s4") is True
+    data = json.loads((tmp_path / SESSION_STATE_FILENAME).read_text())
+    assert data["session_ids"] == ["s2", "s3", "s4"]
+    assert is_session_first_prompt("s1") is True
+    assert is_session_first_prompt("s3") is False
+
+
+def test_is_session_first_prompt_reads_pre_1344_state_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A state file in the old single-key shape is honoured, not re-fired."""
+    db = tmp_path / "memory.db"
+    _set_db(monkeypatch, db)
+    state_file = tmp_path / SESSION_STATE_FILENAME
+    state_file.write_text(json.dumps({"session_id": "legacy"}), encoding="utf-8")
+    assert is_session_first_prompt("legacy") is False
+    assert is_session_first_prompt("fresh") is True
+    data = json.loads(state_file.read_text())
+    assert data["session_ids"] == ["legacy", "fresh"]
+
+
+def test_is_session_first_prompt_keeps_active_session_id_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`session_id` tracks the most recent id — session_exclusions reads it."""
+    db = tmp_path / "memory.db"
+    _set_db(monkeypatch, db)
+    state_file = tmp_path / SESSION_STATE_FILENAME
+    is_session_first_prompt("session-A")
+    assert json.loads(state_file.read_text())["session_id"] == "session-A"
+    is_session_first_prompt("session-B")
+    assert json.loads(state_file.read_text())["session_id"] == "session-B"
+
+
+def test_is_session_first_prompt_survives_malformed_state_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unreadable state is treated as absent, not raised."""
+    db = tmp_path / "memory.db"
+    _set_db(monkeypatch, db)
+    state_file = tmp_path / SESSION_STATE_FILENAME
+    for junk in ("{not json", "[]", json.dumps({"session_ids": "nope"})):
+        state_file.write_text(junk, encoding="utf-8")
+        assert is_session_first_prompt("session-1") is True
 
 
 # ---------------------------------------------------------------------------
