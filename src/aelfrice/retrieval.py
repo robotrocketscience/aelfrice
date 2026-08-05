@@ -113,13 +113,20 @@ from aelfrice.store import MemoryStore
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     # #1351: these modules pull numpy/scipy, so they are imported inside the
-    # functions that use them rather than here. `from __future__ import
-    # annotations` (line 50) leaves annotations unevaluated, so the names below
-    # still type-check and still read as documentation without costing every
-    # hook process the numeric stack at import.
+    # functions that use them rather than here.
+    #
+    # Only names used in *signature* position need to be listed here. A
+    # parameter or return annotation is resolved in the scope the function is
+    # defined in — module scope — so a body-local `from aelfrice.X import Y`
+    # does not bind it, even under `from __future__ import annotations`
+    # (line 50). A name used only in a body-scope variable annotation *is*
+    # bound by the body-local import and must not be listed, or it reads as a
+    # dead import: `HRRStructIndex` was listed here and CodeQL flagged it,
+    # correctly — its one annotation is `idx: HRRStructIndex` inside
+    # `_route_structural_query`, which imports it locally.
     from aelfrice.bm25 import BM25IndexCache
     from aelfrice.graph_spectral import GraphEigenbasisCache
-    from aelfrice.hrr_index import HRRStructIndex, HRRStructIndexCache
+    from aelfrice.hrr_index import HRRStructIndexCache
     from aelfrice.utterance_prior import UtterancePrior
 
 # v1.0 / v1.2 baseline. Used by the disabled-flag fallback so the
@@ -2885,7 +2892,6 @@ def _route_structural_query(
     """
     from aelfrice.hrr_index import (  # noqa: PLC0415
         HRRStructIndex,
-        HRRStructIndexCache,
         parse_structural_marker,
     )
 
@@ -3543,7 +3549,6 @@ def _heat_by_id(
     from aelfrice.graph_spectral import (  # noqa: PLC0415
         DEFAULT_BM25_SEED_TOP_K,
         DEFAULT_HEAT_BANDWIDTH,
-        GraphEigenbasisCache,
         heat_kernel_score,
         seeds_from_bm25,
     )
@@ -3829,11 +3834,9 @@ def _l1_hits(
     """
     from aelfrice.utterance_prior import utterance_prior_penalty  # noqa: PLC0415
 
-    from aelfrice.bm25 import BM25IndexCache  # noqa: PLC0415
     from aelfrice.graph_spectral import (  # noqa: PLC0415
         DEFAULT_HEAT_KERNEL_WEIGHT,
         DEFAULT_POSTERIOR_LOG_WEIGHT,
-        GraphEigenbasisCache,
         HEAT_SCORE_FLOOR,
         combine_log_scores,
     )
@@ -4221,10 +4224,6 @@ def retrieve(
     bare `retrieve()` so `rebuild_v14`'s call site observes the
     toggle that A4 (#775) measures.
     """
-    from aelfrice.bm25 import BM25IndexCache  # noqa: PLC0415
-    from aelfrice.graph_spectral import (  # noqa: PLC0415
-        GraphEigenbasisCache,
-    )
 
     # #1107 cutover: `retrieve()` is a thin adapter over `retrieve_v2`, the
     # single retrieval implementation the production hook path shares with
@@ -4379,13 +4378,7 @@ def retrieve_with_tiers(
     `use_type_aware_compression`: both arms account in the same
     currency (raw token estimate or compressed `rendered_tokens`).
     """
-    from aelfrice.hrr_index import HRRStructIndexCache  # noqa: PLC0415
     from aelfrice.utterance_prior import resolve_utterance_prior_weight  # noqa: PLC0415
-
-    from aelfrice.bm25 import BM25IndexCache  # noqa: PLC0415
-    from aelfrice.graph_spectral import (  # noqa: PLC0415
-        GraphEigenbasisCache,
-    )
 
     global _LAST_TELEMETRY
     # #1143 clock seam: read the wall clock at most once per call.
@@ -4868,11 +4861,6 @@ def retrieve_v2(
     """
     from aelfrice.hrr_index import HRRStructIndexCache  # noqa: PLC0415
 
-    from aelfrice.bm25 import BM25IndexCache  # noqa: PLC0415
-    from aelfrice.graph_spectral import (  # noqa: PLC0415
-        GraphEigenbasisCache,
-    )
-
     # #1045 wide-retrieval knobs: resolve here so both the HRR-structural
     # lane below and the retrieve_with_tiers delegation see the same
     # env/TOML-resolved values (default 50 / 2400 keep the hot path narrow).
@@ -5140,7 +5128,6 @@ class RetrievalCache:
         path. Resolving on every hit would walk Path.cwd().resolve()
         each time and blow the same AC2 cache-hit latency budget.
         """
-        from aelfrice.bm25 import BM25IndexCache  # noqa: PLC0415
 
         if posterior_weight is None:
             key_weight: float | None = None
