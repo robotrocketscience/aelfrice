@@ -4,7 +4,7 @@ How aelfrice fits together. Maps directly to source under `src/aelfrice/`.
 
 ## Principles
 
-1. **Determinism end to end.** Every retrieval result is bit-identical given the same write log and the same code. Every result traces to named beliefs and named rules. See [PHILOSOPHY § Determinism is the property](PHILOSOPHY.md#determinism-is-the-property).
+1. **Determinism end to end.** Every retrieval result is bit-identical given the same write log and the same code. Every result traces to named beliefs and named rules. See [PHILOSOPHY § Determinism is the property](PHILOSOPHY.md#determinism-is-the-property). **`edges` are the standing exception:** they are written outside the log as shipped, so two stores with identical `ingest_log` content can hold different graphs and the L3 edge-walk lane can return different results ([#1283](https://github.com/robotrocketscience/aelfrice/issues/1283)).
 2. **SQLite plus a small numeric stack.** No vector DB, no embeddings, no LLM in the hot path. Required deps beyond stdlib: `numpy` and `scipy` (added v1.5.0, #148, for the BM25 sparse-matvec lane; now also used by the HRR and spectral-graph lanes) and `snowballstemmer` (added v1.7.0, #154, for Porter stemming). Optional extras: `[mcp]` (fastmcp), `[onboard-llm]` (the direct-API onboard classifier SDK, for `aelf onboard --llm-classify`), `[archive]` (cryptography, for `aelf uninstall --archive`), `[benchmarks]` (dev-side adapters).
 3. **Bayesian, not vibes.** Confidence is `α / (α + β)`. Every update has a closed-form rule. At v1.3.0+ the posterior is combined log-additively with BM25 on the L1 tier — see [LIMITATIONS](../user/LIMITATIONS.md) for what the partial ranking does and doesn't cover.
 4. **`apply_feedback` is the central endpoint.** One writer of `(α, β)`. One audit row per successful update.
@@ -20,7 +20,7 @@ The determinism contract applies to retrieval — every read is reproducible fro
   belief's type and prior?" is not answerable from the store. That bounds this carve-out less than it reads:
   it localises the non-determinism to a recorded step without making the step reproducible. Persisting them
   into `raw_meta` is tracked separately.
-- Outputs (belief type, prior, derived edges) are stored as deterministic content with provenance.
+- Outputs (belief type, prior, derived edges) are stored as deterministic content with provenance — except that *derived edges* carry none: all six `derive()` return paths emit `edges=[]`, so `ingest_log.derived_edge_ids` is NULL on every row and no edge has a log row pointing at its origin ([#1283](https://github.com/robotrocketscience/aelfrice/issues/1283)).
 - All retrieval and feedback math downstream of the enriched store is deterministic.
 
 The contract is *deterministic substrate + bounded, audited enrichment layer*, not "no model ever touches the data."
