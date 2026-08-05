@@ -209,7 +209,18 @@ _SERIALIZE_MAGIC: Final[bytes] = b"AELFBM25"
 # `update_from` re-tokenise only the documents whose indexed text
 # actually changed. 16 bytes per belief; a rebuild without them is
 # still correct, just not incremental.
-_SERIALIZE_VERSION: Final[int] = 5
+# v6 (#1348): no bytes changed. The bump is a validity token for the
+# *tokenisation* the rows were built under, and it is load-bearing —
+# do not "clean it up" because the layout looks identical to v5.
+# Nothing else in `_load_sidecar` describes the tokenizer, and
+# `store_generation()` moves only on belief/edge mutation, so a code
+# upgrade alone would hand the new query tokenizer an index keyed by
+# the old one and every disagreeing term would silently match nothing.
+# The #1199 fingerprints cannot cover this either: they digest the
+# source text, not the tokens, so `update_from` would rebuild nothing
+# and return a hybrid index. Rejecting the blob at deserialize is what
+# closes both paths. Costs one rebuild per store, same posture as v3.
+_SERIALIZE_VERSION: Final[int] = 6
 
 
 def tokenize(text: str) -> list[str]:
@@ -1161,6 +1172,17 @@ class BM25Index:
               nnz_anchor       uint64
               tf_anchor.indices int64 x nnz_anchor
               tf_anchor.data   float32 x nnz_anchor
+
+        v5 (#1199) appends the per-document source fingerprints that let
+        `update_from` re-tokenise only the beliefs whose indexed text
+        changed — 16 bytes per belief, and an index built without them
+        is still correct, only not incrementally updatable.
+
+        v6 (#1348) changes no bytes. It marks the *tokenisation* the
+        rows were built under, because nothing else in the blob or in
+        `_load_sidecar` describes it and the v5 fingerprints cannot:
+        they digest the source text, which a tokenizer change leaves
+        untouched. See `_SERIALIZE_VERSION`.
         """
         buf = io.BytesIO()
         buf.write(_SERIALIZE_MAGIC)
