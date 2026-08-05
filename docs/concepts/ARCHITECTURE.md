@@ -20,7 +20,7 @@ The determinism contract applies to retrieval — every read is reproducible fro
   belief's type and prior?" is not answerable from the store. That bounds this carve-out less than it reads:
   it localises the non-determinism to a recorded step without making the step reproducible. Persisting them
   into `raw_meta` is tracked separately.
-- Outputs (belief type, prior, derived edges) are stored as deterministic content with provenance — except that *derived edges* carry none: all six `derive()` return paths emit `edges=[]`, so `ingest_log.derived_edge_ids` is NULL on every row and no edge has a log row pointing at its origin ([#1283](https://github.com/robotrocketscience/aelfrice/issues/1283)).
+- Outputs (belief type, prior, derived edges) are stored as deterministic content with provenance — except that *derived edges* carry provenance only in part: until [#1354](https://github.com/robotrocketscience/aelfrice/issues/1354) all six `derive()` return paths emitted `edges=[]`, so `ingest_log.derived_edge_ids` was NULL on every row and no edge had a log row pointing at its origin ([#1283](https://github.com/robotrocketscience/aelfrice/issues/1283)). `derive()` now emits `DERIVED_FROM` for the intra-turn case and the column populates forward-only — at most 1.93% of the live edge set. `TEMPORAL_NEXT` (88.3%) and the detector edges are still written outside the log.
 - All retrieval and feedback math downstream of the enriched store is deterministic.
 
 The contract is *deterministic substrate + bounded, audited enrichment layer*, not "no model ever touches the data."
