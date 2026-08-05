@@ -194,13 +194,63 @@ MUTABLE_FIELDS: tuple[str, ...] = (
     "retention_class",
     "scope",
     "last_retrieved_at",
+    "locked_at",
+    "lock_tier",
+    "lock_expires_at",
+    "last_confirmed_at",
+    "valid_to",
+    "corroboration_count",
+    "hibernation_score",
+    "activation_condition",
+    "session_id",
+    "project_context",
     "edge_set",
 )
+
+# The strict shape-equality contract, named rather than left implicit
+# (#1345). These are the fields `derive()` alone determines and that no
+# post-ingest operation rewrites, so a divergence is unambiguously a
+# derivation regression -- and only these set `has_drift`.
+STRICT_FIELDS: tuple[str, ...] = ("content_hash", "type", "origin")
+
+# Belief fields deliberately compared by neither set, each with the reason
+# (#1345). This exists so "not compared" is a decision on the record: the
+# gap this issue closed was 13 fields that nothing had ever classified,
+# and an enumeration without a home for the exclusions would just move the
+# silence one level up.
+EXCLUDED_FIELDS: dict[str, str] = {
+    "id": (
+        "content-addressed identity. It is a function of the same inputs "
+        "as content_hash, which is in the strict set, so comparing it "
+        "again reports the same divergence twice."
+    ),
+    "created_at": (
+        "the wall clock at insert, not a re-derivable value. Measured "
+        "rather than reasoned: comparing it reported divergence on 25 of "
+        "25 rows of a clean synthetic store, because the canonical value "
+        "is when the writer ran and the re-derived one is the log row's "
+        "ts. A field that diverges on every row is not a signal, it is a "
+        "constant that hides the fields that are. Reconstructing insert "
+        "order from the log is #1283, and it is bounded there, not here."
+    ),
+    "content": (
+        "the input `content_hash` is computed over. A content difference "
+        "is already a strict-contract failure; comparing the text as well "
+        "adds a second report of one defect and puts belief text into the "
+        "drift examples."
+    ),
+}
 
 # Absolute tolerance for the alpha/beta comparison. derive() recomputes the
 # prior from the same table the writer used, so an exact match is expected;
 # the epsilon only absorbs SQLite REAL round-trip noise.
 _POSTERIOR_EPSILON: float = 1e-9
+
+# Mutable fields compared with the epsilon rather than by equality, because
+# they round-trip through SQLite REAL.
+_FLOAT_MUTABLE_FIELDS: frozenset[str] = frozenset(
+    {"alpha", "beta", "hibernation_score"}
+)
 
 
 def _mutable_fields_diff(
@@ -215,12 +265,20 @@ def _mutable_fields_diff(
     every field outside the strict contract.
     """
     diff: dict[str, object] = {}
-    for name in ("alpha", "beta"):
-        c = float(getattr(canonical, name))
-        d = float(getattr(synthesized, name))
+    for name in _FLOAT_MUTABLE_FIELDS:
+        c_raw = getattr(canonical, name)
+        d_raw = getattr(synthesized, name)
+        if c_raw is None or d_raw is None:
+            if c_raw != d_raw:
+                diff[name] = {"canonical": c_raw, "derived": d_raw}
+            continue
+        c = float(c_raw)
+        d = float(d_raw)
         if abs(c - d) > _POSTERIOR_EPSILON:
             diff[name] = {"canonical": c, "derived": d}
-    for name in ("lock_level", "retention_class", "scope", "last_retrieved_at"):
+    for name in MUTABLE_FIELDS:
+        if name in _FLOAT_MUTABLE_FIELDS or name == "edge_set":
+            continue
         c_val = getattr(canonical, name)
         d_val = getattr(synthesized, name)
         if c_val != d_val:
