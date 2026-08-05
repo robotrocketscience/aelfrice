@@ -2,7 +2,14 @@
 
 Iteration spec for issue [#374](https://github.com/robotrocketscience/aelfrice/issues/374). Successor memo to [`v2_enforcement.md` § H1](v2_enforcement.md#h1-directive-detection--defer-to-v2x-with-benchmark-gate); does not re-decide the deferral or the gate, only the path to clearing it.
 
-Status: deferred. Harness shipped (PR [#377](https://github.com/robotrocketscience/aelfrice/pull/377)). Path A intent-prefix filter shipped at PR [#467](https://github.com/robotrocketscience/aelfrice/pull/467) (issue #374) — `src/aelfrice/directive_detector.py` is in-tree. Candidate detector measured at P=0.664 / R=0.937 against the lab corpus v0.1 (285 rows, ≥200 floor met). Below the P≥0.80 floor, so H1 stays deferred per spec; iteration target is precision, not recall.
+Status: deferred, and **the gate is not currently a valid measurement** — see § Gate validity. Harness shipped (PR [#377](https://github.com/robotrocketscience/aelfrice/pull/377)). Path A intent-prefix filter shipped at PR [#467](https://github.com/robotrocketscience/aelfrice/pull/467) (issue #374) — `src/aelfrice/directive_detector.py` is in-tree.
+
+The shipped detector measures **P=0.706 / R=0.937** against lab corpus v0.1 (285 rows; TP=89, FP=37, FN=6, TN=153), re-run 2026-08-05 under [#1341](https://github.com/robotrocketscience/aelfrice/issues/1341). Below the P≥0.80 floor, so H1 stays deferred per spec.
+
+Two corrections to what this memo previously published, both from that re-run:
+
+- The status line carried **P=0.664** for three months. That was the *pre-*Path-A number. Path A shipped in May and the confirming re-run this memo asked for (§ Path A, "needs corpus re-run to confirm") never happened until now.
+- Path A removed **8** false positives, not the "~45" § Path A estimated — the estimate was off by roughly 5x. 37 false positives remain, and they are not the single monolithic cluster § Failure-mode analysis claimed.
 
 ## What's being decided
 
@@ -12,16 +19,48 @@ Which detector-iteration path to commit to before the next implementation attemp
 
 None. Directive detection operates on prompt text only; no belief schema, posterior, or edge-type interaction. The detector is a pure function `str → bool`.
 
-## Failure-mode analysis (from the gate run on lab corpus v0.1)
+## Failure-mode analysis (re-run 2026-08-05, lab corpus v0.1)
 
-The 45 false positives that drag precision to 0.664 cluster as a single dominant pattern: **imperative-grammar one-shot coding tasks**. Examples documented publicly on the issue thread:
+The original analysis called the false positives "a single dominant pattern: imperative-grammar one-shot coding tasks", and Path A was built for that one cluster. The measured error set does not support that. The 37 surviving false positives fall into at least six structurally distinct families:
 
-- "Refactor X so it never blocks"
-- "Add a test that ensures …"
+1. **Interrogatives the filters miss.** The detector tests for a trailing `?` on the whole string and a wh-word at position 0. It does not see a question embedded mid-message, an auxiliary-leading clause (`should we …`, `is there …`), or a question that trails off unpunctuated.
+2. **Reported speech / attribution.** A deontic marker governed by a speech or claim verb belongs to the cited source, not to the speaker.
+3. **Third-person descriptive statements and past tense** — describing how a system or a person behaves, rather than instructing.
+4. **Use/mention.** The imperative appears only inside quotation marks, or as a cited example or maxim.
+5. **One-shot task imperatives outside the 16-verb prefix bank.** The only family Path A targets; the bank is simply too small.
+6. **Affirmations, stated intent, and observations** — assent to something already proposed, or an evidential frame, carrying a real modal.
 
-These are imperatives the user issues to the agent for the immediate session — task instructions, not durable rules to remember. The 29-verb regex correctly fires on `never` / `ensure`; the spec's three filters (wh-question, hedge, "I never X when Y" narration) do not catch this class because the surface form is a clean second-person imperative.
+The 6 false negatives are not the load-bearing problem — recall at 0.937 is comfortably above the 0.60 floor and has 34 percentage points of headroom for a more conservative detector.
 
-The 6 false negatives are not the load-bearing problem — recall at 0.937 is comfortably above the 0.60 floor and has 23 percentage points of headroom for a more conservative detector.
+## Gate validity — the corpus admits a one-token solution
+
+**Do not iterate the detector against corpus v0.1. It cannot tell a working detector from a memorised one.**
+
+Measured 2026-08-05 (#1341). Partition the 285 rows deterministically by `sha1(id) % 100 < 60` into 163 train / 122 held-out. Build the weakest classifier that can be written: read the **first word** of the prompt, look up the majority label for that word among the training rows, answer with it. It has no representation of mood, grammar, attribution, durability, or task-versus-rule. On held-out rows it scores:
+
+```
+P=0.912  R=0.795   (TP=31, FP=3, FN=8)     -> clears P>=0.80 / R>=0.60
+```
+
+It clears the H1 gate. The real detector scores P=0.706 and does not.
+
+The cause is in how the corpus separates its classes. Of 114 distinct opening words, only **7** appear in both classes; 87.9% of rows are perfectly classified by their first word alone. The positive class opens overwhelmingly with deontic or policy vocabulary (`always`, `never`, `don't`, `avoid`, `prefer`, `use`) and the negative class with task, question, and discourse vocabulary (`write`, `run`, `check`, `what`, `should`, `can`, `ok`, `please`). No row labeled `directive` opens with a one-shot task verb, and none labeled `not-directive` opens with a bare deontic.
+
+The consequence for detector work: **any rule keyed on head position buys precision for free.** It cannot be charged for the durable directives it would wrongly suppress, because the corpus contains none of them — no "Check every PR for a changelog entry before you approve it", no "Run the full suite before pushing to a shared branch". Those are ordinary standing rules that open with a task verb, and a head-verb filter eats them silently in production while scoring a clean sweep in-corpus.
+
+This was found by building six family-scoped suppression rules against the train split and putting each through independent adversarial review. Composed, they took the corpus to P=0.953 / R=0.853 — a comfortable pass. All six were then judged both overfit and over-reaching, unanimously, with concrete minimal pairs; the one-token baseline above explains why. **None of them shipped.** A gate that a one-token lookup table passes will bless an overfit detector, and did.
+
+`tests/bench_gate/test_directive_detection.py::test_directive_corpus_defeats_a_first_token_baseline` now asserts this property, so the condition cannot silently return. It is red against v0.1, by design.
+
+### What corpus v0.2 needs
+
+Not more rows — **minimal pairs that break the head-word/class correlation**. Every opening word that currently predicts a class needs rows on both sides of it:
+
+- Durable directives opening with task verbs (`check`, `run`, `review`, `update`, `remove`) — the hard positives, entirely absent today.
+- One-shot requests opening with deontic/policy verbs ("avoid the deprecated call in the function I'm about to paste") — the hard negatives.
+- Attribution, use/mention, and third-person descriptive rows on both sides, so those families are learnable rather than guessable.
+
+Target: the share of rows whose first word is class-ambiguous rises from 12.1% to a majority. Until then the gate's number is not about the detector.
 
 ## Iteration paths
 
@@ -55,11 +94,17 @@ Replace the regex with an LLM call ("does this prompt encode a durable rule?"). 
 
 ## Recommendation
 
-**Path A (intent-prefix filter)** at v2.x re-entry. Reasons:
+**Corpus v0.2 first. No further detector iteration against v0.1.**
 
-1. The failure mode is monolithic — one cluster, one structural property. A targeted filter beats a coarse partition (Path B) or a model swap (Path C).
-2. Determinism preserved. No new dependency. ~30 LOC.
-3. Failure cost is bounded: if Path A under-performs against an updated corpus, Path B is the natural next step (already a strict subset of A's verb bank); the iteration order does not lock anything in.
+Path A was this memo's recommendation and it shipped (PR #467). It moved precision 0.664 → 0.706. The paths above are retained as the historical record, but the choice between them is no longer the live question: § Gate validity shows that v0.1 cannot distinguish a detector that generalises from one that has memorised opening vocabulary, so any measured preference among A / B / C is uninterpretable.
+
+Ordering:
+
+1. **Lab-side.** Author corpus v0.2 to the minimal-pair standard in § What corpus v0.2 needs. This is the blocking item and it is a labelling investment, not a code change.
+2. **Verify the corpus, not the detector.** `test_directive_corpus_defeats_a_first_token_baseline` must go green on v0.2 before any P/R number from it is quoted anywhere.
+3. **Then** re-measure the shipped detector on v0.2 and resume iteration, with Path B (deontic-anchor partition) as the next candidate — its recall risk finally becomes measurable once hard positives exist.
+
+Detector work done before step 2 will be tuned against an artifact.
 
 ## Decision asks
 
@@ -89,9 +134,10 @@ H1 reopens for implementation when:
 
 - ≥0.80 precision on the lab corpus (currently `aelfrice-lab/tests/corpus/v2_0/directive_detection/`, ≥200 rows).
 - ≥0.60 recall on the same corpus.
+- **The corpus defeats the one-token baseline** — `test_directive_corpus_defeats_a_first_token_baseline` green. Added 2026-08-05 (#1341); without it the two thresholds above can be met by a lookup table. This condition is new and is not a re-decision of the gate, which § H1 fixes; it is the precondition under which the gate's numbers mean what § H1 intends.
 - A reproducible bench-gate run is recorded on the closing PR (lab `pytest -q tests/bench_gate/test_directive_detection.py` output; numbers cited in PR body).
 
-If those numbers are not met after Path A, this memo's recommendation is to revisit Path B (deontic-anchor partition) before any model-based approach. Path C stays out of scope until the determinism property is explicitly re-decided.
+Path B (deontic-anchor partition) is the next candidate once the corpus is valid. Path C stays out of scope until the determinism property is explicitly re-decided.
 
 ## Provenance
 
