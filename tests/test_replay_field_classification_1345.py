@@ -1,0 +1,129 @@
+"""#1345: every `Belief` field is classified, or the guard says so.
+
+The replay probe is what #1157 calls "the falsification instrument for
+every other claim here". Before this, 13 of 22 `Belief` fields were
+compared by neither the strict contract nor the #1167 mutable bucket --
+including `valid_to` (so an all-soft-deleted store passed), and
+`lock_tier` / `lock_expires_at` / `locked_at` (so the #1314 time-boxed
+lock window was invisible to it).
+
+The enumeration is the smaller half. The gap existed because nothing
+forced a decision when a field was added, so a fix that only names
+today's 13 goes stale on the next schema change -- exactly how the parent
+umbrella's own "3 of 21" went stale after #1167 shipped and nobody
+noticed. The guard below is what stops that.
+"""
+from __future__ import annotations
+
+import dataclasses
+
+import pytest
+
+from aelfrice.models import Belief
+from aelfrice.replay import EXCLUDED_FIELDS, MUTABLE_FIELDS, STRICT_FIELDS
+
+# `edge_set` is a reporting key, not a `Belief` column: it compares
+# `derive()`'s emitted edges against the log row's `derived_edge_ids`.
+_PSEUDO_FIELDS = frozenset({"edge_set"})
+
+
+def _belief_field_names() -> set[str]:
+    return {f.name for f in dataclasses.fields(Belief)}
+
+
+def _classified() -> set[str]:
+    return (
+        set(STRICT_FIELDS) | set(MUTABLE_FIELDS) | set(EXCLUDED_FIELDS)
+    ) - _PSEUDO_FIELDS
+
+
+def test_every_belief_field_is_classified() -> None:
+    """The rule this issue exists to make permanent.
+
+    A field classified nowhere is compared by nothing, and nothing else in
+    the suite notices -- which is the whole defect. Adding a column to
+    `Belief` must force a decision about whether it is log-derivable.
+    """
+    unclassified = sorted(_belief_field_names() - _classified())
+    assert unclassified == [], (
+        f"{len(unclassified)} Belief field(s) are compared by neither the "
+        "strict contract nor the mutable bucket, and are not on the "
+        "excluded list with a reason (#1345): " + ", ".join(unclassified)
+    )
+
+
+def test_the_classification_is_a_partition() -> None:
+    """Exactly one set each, or the report double-counts or contradicts."""
+    strict, mutable, excluded = (
+        set(STRICT_FIELDS),
+        set(MUTABLE_FIELDS) - _PSEUDO_FIELDS,
+        set(EXCLUDED_FIELDS),
+    )
+    assert strict & mutable == set(), strict & mutable
+    assert strict & excluded == set(), strict & excluded
+    assert mutable & excluded == set(), mutable & excluded
+
+
+def test_no_classified_name_is_a_phantom() -> None:
+    """The inverse direction: a renamed column leaves a dead entry behind,
+    and a dead entry in `STRICT_FIELDS` silently stops being compared
+    while still reading as covered."""
+    phantom = sorted(_classified() - _belief_field_names())
+    assert phantom == [], (
+        "these are classified but are not `Belief` fields, so they are "
+        "compared against nothing: " + ", ".join(phantom)
+    )
+
+
+def test_the_classification_is_not_empty() -> None:
+    """A scan that sees no fields satisfies every assertion above.
+
+    `dataclasses.fields` on the wrong object, or an import that resolves
+    to a stub, would make the guard vacuous and it would read exactly like
+    a fully-classified tree.
+    """
+    assert len(_belief_field_names()) >= 20, _belief_field_names()
+    assert len(STRICT_FIELDS) >= 3
+    assert len(set(MUTABLE_FIELDS) - _PSEUDO_FIELDS) >= 15
+
+
+def test_every_exclusion_carries_a_reason() -> None:
+    """An exclusion without a stated reason is indistinguishable from an
+    oversight, which is the state this issue found the 13 fields in."""
+    for name, reason in EXCLUDED_FIELDS.items():
+        assert isinstance(reason, str) and len(reason) >= 40, (
+            f"{name} is excluded with no substantive reason: {reason!r}"
+        )
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["valid_to", "lock_tier", "lock_expires_at", "locked_at",
+     "corroboration_count", "session_id", "project_context"],
+)
+def test_the_fields_this_issue_was_filed_over_are_compared(name: str) -> None:
+    """Named individually so the fix cannot be satisfied by excluding them.
+
+    Moving any of these to `EXCLUDED_FIELDS` would make
+    `test_every_belief_field_is_classified` green again while restoring
+    the exact blindness #1345 reports -- a store whose retirement flags or
+    lock windows were corrupted passing the probe.
+    """
+    assert name in set(MUTABLE_FIELDS), (
+        f"{name} was moved out of the compared set; that restores the "
+        "#1345 blindness rather than fixing it"
+    )
+
+
+def test_created_at_is_excluded_on_the_record() -> None:
+    """The one field measurement moved back out of the compared set.
+
+    Comparing it reported divergence on 25 of 25 rows of a clean synthetic
+    store -- the canonical value is when the writer ran, the re-derived
+    one is the log row's `ts`. A field that diverges on every row is not a
+    signal, it is a constant that hides the ones that are. Pinned so the
+    next person to enumerate fields does not "fix" the omission and drown
+    `mutable_divergence` again.
+    """
+    assert "created_at" in EXCLUDED_FIELDS
+    assert "created_at" not in set(MUTABLE_FIELDS)
