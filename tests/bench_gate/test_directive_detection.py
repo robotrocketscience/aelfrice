@@ -35,6 +35,16 @@ TRAIN_BUCKET_CEILING = 60
 # exist: v0.1 lets the baseline clear on 196/200 partitions, v0.1+v0.2 on 0/200
 # with a maximum precision of 0.754. The two populations are far enough apart
 # that the exact K is not delicate.
+#
+# One property of the "clears on any of K" rule to hold on to before changing
+# this number: it is monotone in K. The salts are `s0..s{K-1}`, so raising K
+# only adds candidates — the guard can become redder, never greener. The
+# v0.1+v0.2 result is therefore a K=200 statement, and its margin (worst
+# partition 0.754 against a 0.800 gate) is the max of K draws rather than a
+# property of the distribution; the median separation quoted above does not
+# bound it. A session that raises K and sees the union corpus go red should
+# read that as the tail being sampled further out, report the new count, and
+# not lower K back to hide it.
 PARTITION_SWEEP_K = 200
 
 _HEAD_WORD = re.compile(r"^\s*[-*\d.)\s]*([A-Za-z']+)")
@@ -158,7 +168,17 @@ def test_directive_corpus_defeats_a_first_token_baseline(
         for i, (p, r, _, _, _) in enumerate(results)
         if p >= PRECISION_GATE and r >= RECALL_GATE
     ]
-    worst = max(results, key=lambda t: t[0])
+    # Report a partition that actually cleared, not the globally
+    # highest-precision one: `max` by precision alone can name a partition whose
+    # recall is under the floor, i.e. one that did not clear, offered as the
+    # evidence that something did. Only fall back to the global max when nothing
+    # cleared, where the message does not render anyway.
+    cleared_idx = {i for i, _, _ in clearing}
+    worst = max(
+        (t for i, t in enumerate(results) if i in cleared_idx),
+        key=lambda t: t[0],
+        default=max(results, key=lambda t: t[0]),
+    )
 
     assert not clearing, (
         f"a first-token-only classifier clears the H1 gate on "
