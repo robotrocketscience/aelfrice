@@ -44,6 +44,7 @@ import os
 import re
 import sys
 import tempfile
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -143,11 +144,33 @@ DEFAULT_K3: Final[float] = 0.0
 # by default.
 DEFAULT_TOP_K: Final[int] = 50
 
-# Tokenisation regex — `\w+` over Unicode by default in Python 3,
-# matching the FTS5 `unicode61` tokenizer's word-character class
-# closely enough for the W=0 equivalence guarantee in
-# `tests/test_bm25_index.py::test_w0_equivalence_with_fts5`.
+# Tokenisation regex for `tokenize()` — `\w+` over Unicode. This is the
+# word-form-preserving vocabulary; it deliberately keeps `_` inside a
+# token so `snake_case` identifiers survive whole. Its consumers
+# (`consolidate` blocking shingles, `dedup`, `relationship_detector`,
+# `query_understanding.strategy`) compare against their own vocabularies
+# and have no parity obligation to FTS5, so #1348 left it alone.
 _TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\w+", re.UNICODE)
+
+# Tokenisation regex for `tokenize_stemmed()` — the BM25F *index* lane,
+# which does have a parity obligation: it must key its vocabulary the
+# same way `beliefs_fts` (declared `porter unicode61`, `store.py`) keys
+# its own, or the two lanes describe different corpora.
+#
+# `[^\W_]+` is `\w+` minus the underscore, because unicode61 treats `_`
+# as a separator: `ADD_TO_LIST` indexes as `add`/`to`/`list`, not as one
+# opaque term. That single character is the bulk of the fix — measured
+# over 44,655 live beliefs it takes tokeniser-attributable divergence
+# from 22.52% of documents to 0.07%.
+#
+# No Python character class reproduces unicode61's word class exactly
+# (they disagree on 3,368 assigned codepoints, mostly `So` symbols that
+# unicode61 counts as word characters). The residual is stated rather
+# than chased — see `benchmarks/bm25_fts5_divergence.py`, which measures
+# it against a real FTS5 table.
+_FTS5_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"[^\W_]+", re.UNICODE,
+)
 
 # Serialisation magic + version. Bumped if the on-disk layout
 # changes incompatibly. The format is documented in
@@ -192,25 +215,56 @@ def tokenize(text: str) -> list[str]:
     return [m.group(0).lower() for m in _TOKEN_PATTERN.finditer(text)]
 
 
-def tokenize_stemmed(text: str) -> list[str]:
-    """Lowercase + Unicode-word tokenisation + Porter stemming.
+def _fold_diacritics(text: str) -> str:
+    """Strip combining marks the way unicode61's default folding does.
 
-    Used by `BM25Index.build` and `BM25Index.score` so the BM25F
-    lane has FTS5-equivalent stemming. SQLite FTS5 uses Porter by
-    default; without stemming on the BM25F path,
-    `q="banana"` against content `"bananas"` would miss matches that
-    the legacy FTS5 lane catches. Added at v1.7.0 (#154) when the
-    default-on flip was prepared.
+    Canonical decomposition (NFD), **not** compatibility decomposition
+    (NFKD): unicode61 applies essentially no compatibility mappings, so
+    NFKD over-folds. Measured over 44,655 live beliefs, NFKD fixes 24
+    documents that a bare split gets wrong and breaks 49 it gets right —
+    it is net-negative against doing nothing. NFD fixes 13 and breaks 0.
+
+    Runs on the **whole string, before splitting**, and the order is
+    load-bearing. Combining marks sit outside Python's `\\w` but inside
+    unicode61's word class, so folding after the split cannot re-join
+    what the split already broke: decomposed ``"áb"`` splits to
+    ``["a", "b"]`` where FTS5 yields the single token ``"ab"``.
+
+    Two known residuals, both stated rather than chased. SQLite folds
+    U+00B5 MICRO SIGN to Greek mu — a compatibility mapping NFD does not
+    perform — and `remove_diacritics=1` (what a bare `unicode61`
+    declaration gets) leaves 112 double-diacritic codepoints such as
+    U+01D5 unfolded where a blanket strip folds them.
+    """
+    return "".join(
+        ch for ch in unicodedata.normalize("NFD", text)
+        if not unicodedata.combining(ch)
+    )
+
+
+def tokenize_stemmed(text: str) -> list[str]:
+    """Tokenise the way `beliefs_fts` does: fold, split, lowercase, stem.
+
+    Used by `BM25Index.build` and `BM25Index.score`. This is the BM25F
+    *index* vocabulary, and it is the one surface here that owes FTS5
+    parity — `retrieval` advertises the BM25F and FTS5 lanes as
+    interchangeable, and `AELFRICE_BM25F=0` is the documented way to
+    debug one against the other, so the two must describe one corpus.
+
+    The pipeline mirrors `porter unicode61` stage for stage:
+    `_fold_diacritics` (NFD, whole string), `_FTS5_TOKEN_PATTERN` (word
+    class excluding `_`), lowercase, then `_stem`. Order is load-bearing
+    at every step; see each helper for why.
 
     Non-BM25 callers (relationship_detector, scoring helpers, etc.)
     that depend on word-form-preserving tokens should keep using
-    `tokenize()`; stemming is BM25-specific.
+    `tokenize()`; stemming is BM25-specific, and so is the `_` split.
     """
     if not text:
         return []
     return [
         _stem(m.group(0).lower())
-        for m in _TOKEN_PATTERN.finditer(text)
+        for m in _FTS5_TOKEN_PATTERN.finditer(_fold_diacritics(text))
     ]
 
 
