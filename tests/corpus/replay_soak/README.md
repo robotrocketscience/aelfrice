@@ -47,14 +47,15 @@ tests/corpus/replay_soak/
     ├── mcp_remember_v0_1.jsonl                10 rows
     ├── cli_remember_v0_1.jsonl                10 rows
     ├── feedback_loop_synthesis_v0_1.jsonl     10 rows
-    ├── transcript_v0_1.jsonl                  13 rows
+    ├── transcript_v0_1.jsonl                  16 rows
     └── claude_memory_v0_1.jsonl               6 rows
 ```
 
-v0.1 target: 80 rows total across 8 source kinds (10 per kind except
-`claude_memory` at 6, plus the four `raw_meta` rows added for #1167).
-Ratification floor was 60–120; v0.1 starts at the floor and v0.2
-expansion can extend per kind without breaking the runner.
+v0.1 target: 83 rows total across 8 source kinds (10 per kind except
+`claude_memory` at 6, plus the four `raw_meta` rows added for #1167 and
+the three `derived_from` rows added for #1354). Ratification floor was
+60–120; v0.1 starts at the floor and v0.2 expansion can extend per kind
+without breaking the runner.
 
 ## `raw_meta` coverage (#1167)
 
@@ -75,6 +76,32 @@ without reconstructing them, so such a row would drift in the harness
 rather than in the code under test. Adding one is gated on the runner
 being rewritten onto the real `record_ingest` + `run_worker` path
 (tracked in the determinism umbrella, #1157).
+
+That exclusion is specific to `route_overrides` and does **not**
+generalise to every `derive()` input. The distinguishing question is
+whether the runner reconstructs the field: `raw_meta` it passes through
+verbatim, `route_overrides` it drops. Anything carried *inside*
+`raw_meta` is therefore corpus-safe, which is why the `derived_from`
+rows below are admissible where a `route_overrides` row is not.
+
+## `derived_from` coverage (#1354)
+
+`derive()` emits a `DERIVED_FROM` edge when `raw_meta` carries a
+`derived_from` block naming the preceding sentence's verbatim text.
+Three rows cover both arms; without them the branch would have no soak
+coverage while the gate still reported green.
+
+| Row | `raw_meta.derived_from` | Expected |
+|---|---|---|
+| `transcript-014` | absent | zero edges; it is the `dst` target the next row names |
+| `transcript-015` | `{prior_text: <014's raw_text>, anchor_text}` | exactly one edge, `015 -> 014` |
+| `transcript-016` | `{prior_text: ""}` | zero edges — the malformed-block guard |
+
+The runner stamps `derived_edge_ids` on every row it writes. That is
+load-bearing: NULL is the #1354 watermark for "no edge-aware writer saw
+this row" and NULL rows are **exempt** from the edge comparison, so a
+runner that omitted the stamp would produce a soak that passes by
+comparing nothing.
 
 ## Per-row shape
 

@@ -18,6 +18,7 @@ from typing import Iterator
 
 import pytest
 
+from aelfrice.derivation import META_DERIVED_FROM, DerivationInput, derive
 from aelfrice.models import INGEST_SOURCE_KINDS, INGEST_SOURCE_LEGACY_UNKNOWN
 from aelfrice.store import MemoryStore
 
@@ -138,6 +139,79 @@ def test_corpus_covers_raw_meta_and_the_user_transcript_path() -> None:
     assert user_role >= 2, (
         f"corpus has only {user_role} rows with raw_meta.role == 'user'; "
         "that is the transcript path that produced the #1167 drift"
+    )
+
+
+def test_corpus_covers_the_derived_from_branch() -> None:
+    """The corpus must exercise both arms of `_derived_from_edges`.
+
+    Same reasoning as the `raw_meta` test above, for the branch #1354
+    added: a corpus that carries no `derived_from` block leaves the new
+    `derive()` path with zero soak coverage while the gate still reports
+    green. Both arms are pinned — a well-formed block that yields an
+    edge, and a malformed one that must not.
+    """
+    emitting = 0
+    block_but_no_edge = 0
+    for path in _iter_corpus_files():
+        with path.open() as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                rm = row["raw_meta"]
+                if not isinstance(rm, dict) or META_DERIVED_FROM not in rm:
+                    continue
+                out = derive(
+                    DerivationInput(
+                        raw_text=row["raw_text"],
+                        source_kind=row["source_kind"],
+                        source_path=row.get("source_path"),
+                        raw_meta=rm,
+                    )
+                )
+                if out.edges:
+                    emitting += 1
+                else:
+                    block_but_no_edge += 1
+
+    assert emitting >= 1, (
+        "no corpus row carries a derived_from block that yields an edge; "
+        "the #1354 derive() branch would have zero soak coverage"
+    )
+    assert block_but_no_edge >= 1, (
+        "no corpus row carries a malformed derived_from block; the "
+        "guard that rejects one would have zero soak coverage"
+    )
+
+
+def test_soak_stamps_derived_edge_ids_on_the_log(tmp_path: Path) -> None:
+    """The runner must stamp `derived_edge_ids`, not leave it NULL.
+
+    NULL is the #1354 watermark meaning "no edge-aware writer saw this
+    row", and NULL rows are exempt from the edge comparison. A runner
+    that omits the kwarg therefore produces a soak that is green because
+    it compared nothing. Falsifiable by dropping the kwarg: the
+    non-empty assertion fails while drift stays 0.
+    """
+    store = MemoryStore(str(tmp_path / "replay_soak_edges.db"))
+    try:
+        run_replay_soak(store)
+        cur = store._conn.execute(  # type: ignore[attr-defined]
+            "SELECT derived_edge_ids FROM ingest_log"
+        )
+        blobs = [r[0] for r in cur.fetchall()]
+    finally:
+        store.close()
+
+    assert blobs, "soak loaded no log rows"
+    assert all(b is not None for b in blobs), (
+        "some soak log rows left derived_edge_ids NULL; those are exempt "
+        "from the edge comparison and cover nothing"
+    )
+    assert any(b not in ("[]", None) for b in blobs), (
+        "no soak log row stamped a non-empty derived_edge_ids; the "
+        "comparison is vacuous on an all-empty corpus"
     )
 
 

@@ -85,6 +85,13 @@ def run_replay_soak(store: MemoryStore) -> FullEqualityReport:
             raw_text=row["raw_text"],
             raw_meta=row.get("raw_meta"),
             derived_belief_ids=[out.belief.id],
+            # #1354: always a list, mirroring the worker's watermark.
+            # Omitting it would leave every corpus row NULL, and NULL is
+            # exempt from the edge comparison — the soak would report
+            # green while covering the new branch not at all.
+            derived_edge_ids=[
+                (e.src, e.dst, e.type) for e in out.edges
+            ],
             ts=_FIXED_TS,
         )
         if out.belief.id not in inserted:
