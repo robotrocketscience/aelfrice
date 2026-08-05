@@ -184,6 +184,20 @@ def test_sessions_do_not_chain_into_each_other(store: MemoryStore) -> None:
 
 # --- the synth exclusion ------------------------------------------------
 
+def test_synth_source_kind_is_the_literal_the_contract_names() -> None:
+    """Amended constraint (1) names a value, not a symbol.
+
+    The prefix/density detector was rejected because it dropped 51.8% of
+    the log; the replacement selects on `source_kind = 'legacy_unknown'`.
+    Every other test here plants its fixture row with the same symbol the
+    recompute reads, so renaming the constant's *value* would leave them
+    all green while the exclusion silently stopped matching the rows on
+    disk. This pins the value.
+    """
+    assert SYNTH_SOURCE_KIND == "legacy_unknown"
+
+
+
 def test_synth_rows_supply_no_ordering_key(store: MemoryStore) -> None:
     """A belief covered only by a synth row counts as having no log row.
 
@@ -198,7 +212,9 @@ def test_synth_rows_supply_no_ordering_key(store: MemoryStore) -> None:
     _log(store, "01BBBBBBBBBBBBBBBBBBBBBBBB", ["real"])
     _log(
         store, "01AAAAAAAAAAAAAAAAAAAAAAAA", ["synthetic"],
-        source_kind=SYNTH_SOURCE_KIND,
+        # The literal, not the symbol: this row must look like a real #263
+        # migration row, which carries the string and not the constant.
+        source_kind="legacy_unknown",
     )
 
     edges, no_log = recompute_spine_edges(store)
