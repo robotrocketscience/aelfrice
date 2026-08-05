@@ -12,7 +12,15 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from aelfrice.bm25 import BM25Index, BM25IndexCache, sidecar_path_for
+import numpy as np
+
+from aelfrice.bm25 import (
+    _SERIALIZE_MAGIC,
+    _SERIALIZE_VERSION,
+    BM25Index,
+    BM25IndexCache,
+    sidecar_path_for,
+)
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
 from aelfrice.store import MemoryStore
 
@@ -221,3 +229,75 @@ def test_resident_cache_sees_sibling_process_writes(tmp_path: Path) -> None:
     finally:
         resident.close()
         sibling.close()
+
+
+def test_sidecar_from_an_older_serialize_version_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """#1348: a blob built under a different tokeniser must not be served.
+
+    Nothing in `_load_sidecar` describes the tokenisation, and
+    `store_generation()` moves only on belief or edge mutation, so a code
+    upgrade invalidates nothing on its own. `_SERIALIZE_VERSION` is what
+    carries it, which makes the bump load-bearing even though v6 changed
+    no bytes.
+
+    Both load paths are asserted. `require_fresh=False` is the
+    incremental base — the one `update_from` starts from, and the one a
+    reviewer is most likely to assume the first assertion already
+    covers. It does not: they are separate call sites, and the #1199
+    fingerprints cannot catch a tokeniser change because they digest the
+    source text, which does not change.
+    """
+    db = tmp_path / "m.db"
+    store = MemoryStore(str(db))
+    try:
+        _seed(store)
+        cache = BM25IndexCache(store)
+        fresh_build = cache.get()
+        sidecar = sidecar_path_for(store)
+        assert sidecar is not None
+
+        # Rewrite the embedded blob's version dword in place. Located by
+        # searching for the blob magic rather than by a computed offset,
+        # so this keeps working if the sidecar envelope changes.
+        raw = bytearray(sidecar.read_bytes())
+        start = raw.find(_SERIALIZE_MAGIC)
+        assert start >= 0, "no serialised index inside the sidecar"
+        version_at = start + len(_SERIALIZE_MAGIC)
+        assert (
+            int(np.frombuffer(raw[version_at:version_at + 4], np.uint32)[0])
+            == _SERIALIZE_VERSION
+        )
+        raw[version_at:version_at + 4] = np.uint32(
+            _SERIALIZE_VERSION - 1
+        ).tobytes()
+        sidecar.write_bytes(bytes(raw))
+
+        stale = BM25IndexCache(store)
+        assert stale._load_sidecar() is None
+        assert stale._load_sidecar(require_fresh=False) is None
+
+        # And the cache recovers by building, not by raising or by
+        # serving the stale vocabulary.
+        rebuilt = stale.get()
+        assert rebuilt.vocabulary == fresh_build.vocabulary
+        assert BM25IndexCache(store)._load_sidecar() is not None
+    finally:
+        store.close()
+
+
+def test_serialize_version_still_carries_the_1348_invalidation() -> None:
+    """The v6 bump must not be reverted as a no-op cleanup.
+
+    v6 changed no bytes — the layout is identical to v5 — so it reads
+    like dead weight to anyone who did not need it. It is the only thing
+    that stops a store upgraded across #1348 from serving an index built
+    by the old tokeniser to the new query tokeniser, silently, with
+    every disagreeing term matching nothing.
+
+    The test above deliberately forges `_SERIALIZE_VERSION - 1` so it
+    survives future bumps; that also means it stays green if the bump is
+    undone. This is the assertion that does not.
+    """
+    assert _SERIALIZE_VERSION >= 6
