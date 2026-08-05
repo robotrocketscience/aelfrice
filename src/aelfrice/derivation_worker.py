@@ -313,8 +313,24 @@ def _process_row(
 
     derived_edge_ids: list[tuple[str, str, str]] = []
     for edge in out.edges:
-        store.insert_edge(edge)
+        # The column records what `derive()` DERIVED, so the id is
+        # appended unconditionally. The INSERT is separately guarded:
+        # `store.insert_edge` is a bare INSERT (store.py) into a table
+        # keyed `PRIMARY KEY (src, dst, type)`, and `run_worker` has no
+        # per-row `try/except` — so a duplicate raises IntegrityError
+        # and aborts the whole turn, which on the entry points that do
+        # not wrap the worker in a transaction is a permanent crash
+        # loop on re-ingest. `ingest.py` remains the authority on the
+        # live edge set (it resolves ids post-derivation), so the
+        # worker must never widen it either.
         derived_edge_ids.append((edge.src, edge.dst, edge.type))
+        if store.get_edge(edge.src, edge.dst, edge.type) is not None:
+            continue
+        if store.get_belief(edge.src, include_retired=True) is None:
+            continue
+        if store.get_belief(edge.dst, include_retired=True) is None:
+            continue
+        store.insert_edge(edge)
 
     # #435 doc-linker. When source_path is materialised on the ingest
     # row, write a belief↔document anchor. Idempotent on (belief_id,
