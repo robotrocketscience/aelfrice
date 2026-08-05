@@ -19,7 +19,8 @@ else the legacy global `~/.aelfrice/memory.db`. The user must pick exactly one o
 
 After data disposition, runs `unsetup` to remove the hook + statusline
 unless `--keep-hook` is passed. Tail message points the user at
-`pip uninstall aelfrice` for the final wheel removal.
+`uv tool uninstall aelfrice` for the final removal, which is what the
+command's own tail message now prints.
 </objective>
 
 <process>

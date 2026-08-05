@@ -5162,7 +5162,8 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
       2. Print the affected DB path + size.
       3. Require user to type 'PURGE' verbatim (or --yes to skip).
       4. Final [y/N] confirmation (or --yes to skip).
-    Default: also runs `aelf unsetup` for the user-scope settings.json
+    Default: also runs `aelf unsetup` for every settings.json scope
+    that has hooks (user, and project when it exists and differs)
     so the hook + statusline are removed in one go (--keep-hook opts
     out).
     """
@@ -5339,38 +5340,62 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
 
     # --- Hook + statusline removal (default on, --keep-hook opts out)-
     cleaned: list[Path] = []
+    host = getattr(args, "host", "claude")
     if not args.keep_hook:
-        # #1332: every scope that has hooks, not just user. `setup`
-        # auto-detects scope (project when cwd's .venv is the running
-        # interpreter, else user), so hardcoding `user` here left
-        # project-scope hooks firing on every prompt after a teardown the
-        # tool reported as successful.
-        for target in _uninstall_settings_targets(args):
-            # Delegate by re-using the existing _cmd_unsetup path.
-            # `settings_path` is passed explicitly rather than a scope so
-            # the resolution cannot drift from the discovery above;
-            # command=None triggers basename-match cleanup, which catches
-            # both bare and absolute-path installs.
-            unsetup_args = argparse.Namespace(
-                scope=None,
-                project_root=None,
-                settings_path=str(target),
-                command=None,
-                cmd="unsetup",
-                func=_cmd_unsetup,
-                # #1136: `aelf uninstall --host codex` routes the unsetup
-                # half to the codex host (hooks.json + $aelf-* skills).
-                host=getattr(args, "host", "claude"),
-                # #1173: `aelf unsetup --rebuilder` is opt-in because
-                # unsetup is a surgical command, but uninstall means
-                # "remove all of it". Omitting this left the PreCompact
-                # entry wired to a binary the user is about to remove, so
-                # every subsequent compaction spawned a missing command
-                # forever.
-                rebuilder=True,
+        if host != "claude":
+            # The sibling branch sweeps *Claude* settings files.
+            # `_cmd_unsetup` routes a non-claude host to its own
+            # teardown (`_cmd_unsetup_codex` for codex), which discards
+            # `settings_path` entirely and works on `~/.codex/hooks.json`
+            # plus the skills dir -- so running it once per discovered
+            # Claude scope repeats an identical teardown and then names
+            # Claude files that were never opened. One call, and
+            # `cleaned` stays empty because no settings.json was touched.
+            _cmd_unsetup(
+                argparse.Namespace(
+                    scope=None,
+                    project_root=None,
+                    settings_path=None,
+                    command=None,
+                    cmd="unsetup",
+                    func=_cmd_unsetup,
+                    host=host,
+                    rebuilder=True,
+                ),
+                out,
             )
-            _cmd_unsetup(unsetup_args, out)
-            cleaned.append(target)
+        else:
+            # #1332: every scope that has hooks, not just user. `setup`
+            # auto-detects scope (project when cwd's .venv is the running
+            # interpreter, else user), so hardcoding `user` here left
+            # project-scope hooks firing on every prompt after a teardown the
+            # tool reported as successful.
+            for target in _uninstall_settings_targets(args):
+                # Delegate by re-using the existing _cmd_unsetup path.
+                # `settings_path` is passed explicitly rather than a scope so
+                # the resolution cannot drift from the discovery above;
+                # command=None triggers basename-match cleanup, which catches
+                # both bare and absolute-path installs.
+                unsetup_args = argparse.Namespace(
+                    scope=None,
+                    project_root=None,
+                    settings_path=str(target),
+                    command=None,
+                    cmd="unsetup",
+                    func=_cmd_unsetup,
+                    # #1136: `aelf uninstall --host codex` routes the unsetup
+                    # half to the codex host (hooks.json + $aelf-* skills).
+                    host=getattr(args, "host", "claude"),
+                    # #1173: `aelf unsetup --rebuilder` is opt-in because
+                    # unsetup is a surgical command, but uninstall means
+                    # "remove all of it". Omitting this left the PreCompact
+                    # entry wired to a binary the user is about to remove, so
+                    # every subsequent compaction spawned a missing command
+                    # forever.
+                    rebuilder=True,
+                )
+                _cmd_unsetup(unsetup_args, out)
+                cleaned.append(target)
 
         # #1332: the teardown is not durable without this. `cli.main()`
         # calls `auto_install_at_cli_entry` on *every* invocation, and it
@@ -5387,9 +5412,21 @@ def _cmd_uninstall(args: argparse.Namespace, out: object) -> int:
         # edited. `aelf setup` clears it again (cli.py `_cmd_setup`), so
         # this does not trade a reinstall bug for a product the user
         # cannot turn back on.
-        _write_uninstall_opt_out(out)
+        #
+        # Claude host only, and guarded here rather than left implicit
+        # in the branch above: the ledger entry
+        # `auto_install_at_cli_entry` reads is literally `"claude"` --
+        # the only host auto-install ever rewrites -- so writing it
+        # during a codex teardown disables a host the user did not name
+        # while leaving its hooks installed and unrepairable.
+        # `_cmd_setup_codex` states the same rule from the other side
+        # (#1053): a dual-host user keeps Claude auto-install.
+        if host == "claude":
+            _write_uninstall_opt_out(out)
 
-    _print_uninstall_remaining(cleaned, keep_hook=bool(args.keep_hook), out=out)
+    _print_uninstall_remaining(
+        cleaned, keep_hook=bool(args.keep_hook), host=host, out=out,
+    )
     return 0
 
 
@@ -5464,7 +5501,7 @@ def _write_uninstall_opt_out(out: object) -> None:
 
 
 def _print_uninstall_remaining(
-    cleaned: list[Path], *, keep_hook: bool, out: object
+    cleaned: list[Path], *, keep_hook: bool, host: str = "claude", out: object
 ) -> None:
     """Say what is still on the machine (#1332 AC3).
 
@@ -5484,7 +5521,19 @@ def _print_uninstall_remaining(
         # even when absent, and claiming a cleanup that found nothing
         # would be the same kind of overclaim this issue is about.
         print(f"\nhook cleanup ran on: {listed}", file=out)  # type: ignore[arg-type]
-    else:
+    elif host != "claude":
+        # Reachable, and the only way to reach it: a non-claude teardown
+        # edits no settings.json at all, so `cleaned` is empty by
+        # construction rather than by nothing having been found. Saying
+        # "no settings.json was found" here would be the overclaim in the
+        # other direction -- none was looked for.
+        print(
+            f"\nhook cleanup ran on the {host} host; no Claude "
+            "settings.json was touched (re-run without `--host` to "
+            "clean the Claude host too).",
+            file=out,  # type: ignore[arg-type]
+        )
+    else:  # pragma: no cover - `cleaned` always holds the user path
         print(
             "\nno settings.json with aelfrice hooks was found to clean.",
             file=out,  # type: ignore[arg-type]
@@ -9648,7 +9697,10 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     p_uninstall.add_argument(
         "--settings-path", default=None,
-        help="explicit settings.json for the unsetup half (defaults to user-scope)",
+        help=(
+            "explicit settings.json for the unsetup half; without it "
+            "every scope with hooks is cleaned"
+        ),
     )
     p_uninstall.add_argument(
         "--host", choices=("claude", "codex"), default="claude",

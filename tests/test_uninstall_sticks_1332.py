@@ -177,6 +177,93 @@ def _uninstall_args(**overrides: Any) -> argparse.Namespace:
 
 
 # ---------------------------------------------------------------------------
+# The non-claude host: the sweep is a sweep over Claude settings files
+# ---------------------------------------------------------------------------
+
+
+class TestNonClaudeHostIsNotSweptAsClaude:
+    """`--host codex` must not touch, name, or opt out the Claude host.
+
+    `_cmd_unsetup` routes a non-claude host straight to its own teardown,
+    which discards `settings_path` entirely. So a per-Claude-scope loop
+    repeats an identical teardown once per discovered file and then
+    reports those files as cleaned, having never opened them. And the
+    ledger entry `auto_install_at_cli_entry` reads is literally
+    `"claude"` -- writing it during a codex teardown disables a host the
+    user did not name while leaving its hooks installed.
+    """
+
+    @staticmethod
+    def _run(monkeypatch: Any, home: Path, host: str) -> tuple[str, list]:
+        import io
+
+        from aelfrice import cli as cli_mod
+
+        calls: list[str | None] = []
+
+        def _fake_unsetup(ns: argparse.Namespace, _out: object) -> int:
+            calls.append(ns.settings_path)
+            return 0
+
+        monkeypatch.setattr(cli_mod, "_cmd_unsetup", _fake_unsetup)
+        monkeypatch.setattr(
+            cli_mod, "_dispose_dotdir", lambda **kw: None, raising=False
+        )
+        buf = io.StringIO()
+        args = _uninstall_args(host=host, yes=True)
+        cli_mod._cmd_uninstall(args, buf)
+        return buf.getvalue(), calls
+
+    def test_codex_tears_down_once_and_names_no_claude_file(
+        self, sandboxed_host: Path, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        _write_settings(sandboxed_host / ".claude" / "settings.json")
+        project = tmp_path / "proj"
+        _write_settings(project / ".claude" / "settings.json")
+        monkeypatch.chdir(project)
+
+        text, calls = self._run(monkeypatch, sandboxed_host, "codex")
+
+        assert calls == [None], (
+            "the codex teardown ran once per discovered Claude scope; it "
+            f"discards settings_path, so these are repeats: {calls}"
+        )
+        assert "hook cleanup ran on: " not in text, text
+        assert ".claude/settings.json" not in text, (
+            "named a Claude settings file that was never opened:\n" + text
+        )
+
+    def test_codex_does_not_opt_the_claude_host_out(
+        self, sandboxed_host: Path, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """The Claude hooks stay installed, so freezing auto-install would
+        leave them unrepairable by any later `aelf` command."""
+        _write_settings(sandboxed_host / ".claude" / "settings.json")
+        monkeypatch.chdir(tmp_path)
+
+        self._run(monkeypatch, sandboxed_host, "codex")
+
+        assert "claude" not in auto_install.read_host_opt_outs(), (
+            "uninstalling the codex host opted the claude host out of "
+            "auto-install; `_cmd_setup_codex` states the same rule from "
+            "the other side (#1053)"
+        )
+
+    def test_the_claude_host_still_opts_itself_out(
+        self, sandboxed_host: Path, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        """The distinguishing arm: the guard above must not disarm #1332
+        itself. Without this, deleting the opt-out write entirely would
+        leave both tests above green."""
+        _write_settings(sandboxed_host / ".claude" / "settings.json")
+        monkeypatch.chdir(tmp_path)
+
+        self._run(monkeypatch, sandboxed_host, "claude")
+
+        assert "claude" in auto_install.read_host_opt_outs()
+
+
+# ---------------------------------------------------------------------------
 # AC2 — scope discovery
 # ---------------------------------------------------------------------------
 
