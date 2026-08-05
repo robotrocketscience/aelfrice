@@ -154,8 +154,18 @@ def pin_value(obj: Any) -> str:
     pin as a digest of their canonical form — a stopword set is not
     reviewable inline, but its digest changes the moment a token is added
     or removed, which is the property the manifest needs.
+
+    ``bool`` counts as a scalar here, and deliberately so. It is not
+    ambiguous with ``int`` — ``json.dumps`` renders ``True`` as ``true``
+    and ``1`` as ``1`` — so digesting it buys no discrimination and costs
+    readability. Excluding it also put this function at odds with
+    :func:`size_of`, which reports ``None`` (scalar) for a bool: a pinned
+    boolean constant would have carried ``size=None`` and a ``sha256:``
+    value at once, which is precisely the combination
+    ``test_scalar_entries_pin_a_literal_not_a_digest`` rejects. No boolean
+    is pinned today; the point is that one now can be.
     """
-    if isinstance(obj, bool) or not isinstance(obj, (int, float, str)):
+    if not isinstance(obj, (int, float, str)):
         return "sha256:" + hashlib.sha256(
             _dumps(_canonical(obj)).encode("utf-8")
         ).hexdigest()

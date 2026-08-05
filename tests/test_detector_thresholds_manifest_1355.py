@@ -125,6 +125,35 @@ def test_scalar_entries_pin_a_literal_not_a_digest() -> None:
             )
 
 
+def test_pin_value_and_size_of_agree_on_what_a_scalar_is() -> None:
+    """The two functions must not disagree, or a whole type becomes unpinnable.
+
+    ``test_scalar_entries_pin_a_literal_not_a_digest`` above selects scalars
+    by ``entry.size is None`` — i.e. by :func:`size_of` — and then demands
+    :func:`pin_value` produced a literal. So the two have to classify the
+    same values the same way. ``bool`` is the case where they can drift
+    apart: it is the one type that is both a scalar and an ``int`` subclass,
+    and excluding it from ``pin_value``'s scalar branch (as the first
+    revision of this module did) made a hypothetical pinned boolean carry
+    ``size=None`` and a ``sha256:`` value simultaneously — the exact pair
+    that guard rejects. Digesting it bought nothing either: ``true`` and
+    ``1`` are already distinct JSON.
+
+    No boolean is pinned today, which is why this is asserted directly
+    rather than left to the manifest to demonstrate.
+    """
+    for scalar in (True, False, 0, 1, 0.4, "v2"):
+        assert size_of(scalar) is None, f"size_of says {scalar!r} is not a scalar"
+        assert not pin_value(scalar).startswith("sha256:"), (
+            f"pin_value digested {scalar!r}, but size_of classifies it as a "
+            f"scalar — a manifest entry for it would fail "
+            f"test_scalar_entries_pin_a_literal_not_a_digest with nothing wrong"
+        )
+
+    assert pin_value(True) == "true"
+    assert pin_value(1) == "1", "bools and ints must still pin distinguishably"
+
+
 def test_entries_are_wellformed_and_unique() -> None:
     seen: set[tuple[str, str]] = set()
     for entry in THRESHOLDS:
