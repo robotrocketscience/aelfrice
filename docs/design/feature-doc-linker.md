@@ -185,7 +185,7 @@ A future revision could synthesise CITES edges from doc anchors (when two belief
 
 ### vs. `ingest_log` source_path (#205)
 
-`ingest_log` (`store.py:242`) records the per-turn `source_path` of every ingest event. It is the **event log**; doc anchors are the **materialised state**. The relationship parallels #264 (the v2.x derivation worker) — `ingest_log` is the source of truth, materialised tables (beliefs, edges, and now `belief_documents`) are derived.
+`ingest_log` (`store.py:242`) records the per-turn `source_path` of every ingest event. It is the **event log**; doc anchors are the **materialised state**. The relationship parallels #264 (the v2.x derivation worker) — `ingest_log` is the source of truth, materialised tables (beliefs, edges, and now `belief_documents`) are derived. That is the ratified contract, not a description of the shipped system: `edges` are written outside the log on every path today, so the source-of-truth invariant holds for beliefs and not yet for edges ([#1283](https://github.com/robotrocketscience/aelfrice/issues/1283)).
 
 The linker writer is a sibling of the derivation worker: both consume `ingest_log` rows and write into derived tables. The implementation PR may build the linker as a derivation-worker output node, or as a standalone writer wired into the same paths. Either choice keeps the source-of-truth invariant intact.
 

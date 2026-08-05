@@ -22,7 +22,7 @@ mechanisms.
 | Format | Markdown files with YAML frontmatter | FTS5-indexed beliefs with α/β posteriors and typed edges |
 | Write path | Harness directive in `~/.claude/CLAUDE.md` ("If the user explicitly asks you to remember something, save it…") | Explicit `aelf lock` / `aelf:lock` / `aelf onboard`, plus the v2.1+ default-on capture hooks (transcript-ingest, commit-ingest) |
 | Read path | Auto-loaded into every prompt by Claude Code itself | The `UserPromptSubmit` hook injects retrieval results above each prompt |
-| Determinism | None (LLM decides what to write and when) | Bit-level reproducible — write log replay reconstructs every state |
+| Determinism | None (LLM decides what to write and when) | Bit-level reproducible — write log replay reconstructs every *belief* state; **edges are excepted**, being written outside the log as shipped ([#1283](https://github.com/robotrocketscience/aelfrice/issues/1283)) |
 | Apply feedback | No | Yes — explicit `used`/`harmful` signals move posteriors; retrieval *exposure* is audit-only by default (#1086), recorded as recurrence rather than evidence. Contradictions resolve via tie-breaker |
 
 The two stores capture different things by design and they do not
