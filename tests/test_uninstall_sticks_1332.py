@@ -62,11 +62,20 @@ def _sandbox_paths() -> dict[str, Path]:
 
 
 def _assert_all_sandboxed(root: Path) -> None:
-    escaped = {
-        name: path
-        for name, path in _sandbox_paths().items()
-        if not str(path.resolve()).startswith(str(root.resolve()))
-    }
+    """Containment by path component, never by string prefix.
+
+    `str.startswith` accepts a sibling: a root of `/tmp/run` admits
+    `/tmp/run-other`, so a constant pointing just outside the sandbox
+    reads as contained and the tripwire waves through the destructive
+    command it exists to stop. `relative_to` compares components.
+    """
+    resolved_root = root.resolve()
+    escaped: dict[str, Path] = {}
+    for name, path in _sandbox_paths().items():
+        try:
+            path.resolve().relative_to(resolved_root)
+        except ValueError:
+            escaped[name] = path
     if escaped:
         detail = "\n".join(f"  {n} -> {p}" for n, p in escaped.items())
         raise AssertionError(
@@ -134,6 +143,35 @@ def test_the_tripwire_fails_closed(
     # OPT_OUT_PATH deliberately left pointing at the developer's real home.
     with pytest.raises(AssertionError, match="REFUSING TO RUN"):
         _assert_all_sandboxed(tmp_path)
+
+
+def test_the_tripwire_rejects_a_sibling_of_the_sandbox(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A sibling directory is not containment, and a prefix test says it is.
+
+    `<tmp>/home-other` shares every character of `<tmp>/home` and is a
+    different directory. Under the old string-prefix check it passed, so
+    a constant left pointing one directory over would have been waved
+    through into a command that deletes settings.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    sibling = tmp_path / "home-other"
+    (sibling / ".aelfrice").mkdir(parents=True)
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setattr(
+        setup_mod, "USER_SETTINGS_PATH", home / ".claude" / "settings.json"
+    )
+    monkeypatch.setattr(auto_install, "AELFRICE_DOTDIR", home / ".aelfrice")
+    # The one escapee: a sibling, not a child.
+    monkeypatch.setattr(
+        auto_install, "OPT_OUT_PATH", sibling / ".aelfrice" / "opt-out.json"
+    )
+
+    with pytest.raises(AssertionError, match="REFUSING TO RUN"):
+        _assert_all_sandboxed(home)
 
 
 def test_the_tripwire_passes_when_fully_sandboxed(
