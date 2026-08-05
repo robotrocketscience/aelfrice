@@ -251,6 +251,28 @@ def test_is_session_first_prompt_survives_malformed_state_file(
         state_file.write_text(junk, encoding="utf-8")
         assert is_session_first_prompt("session-1") is True
 
+def test_is_session_first_prompt_fires_on_a_non_utf8_state_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bytes that are not UTF-8 read as "never seen", not as "already seen".
+
+    `read_text(encoding="utf-8")` raises `UnicodeDecodeError`, which is a
+    sibling of `JSONDecodeError` under `ValueError` and **not** an `OSError`.
+    Caught one frame too high it lands in the caller's blanket handler, which
+    returns False — suppressing the first fire of every session for as long as
+    the file stays corrupt, and in the wrong direction: every other failure
+    here costs an extra injection, never a missing one.
+
+    The other malformed-state test cannot see this: its inputs are all valid
+    UTF-8 that merely fails to parse as the expected shape.
+    """
+    db = tmp_path / "memory.db"
+    _set_db(monkeypatch, db)
+    state_file = tmp_path / SESSION_STATE_FILENAME
+    state_file.write_bytes(b"\xff\xfe\x00 not utf-8")
+    assert is_session_first_prompt("session-1") is True
+
+
 
 # ---------------------------------------------------------------------------
 # _build_session_start_subblock content

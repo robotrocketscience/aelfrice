@@ -3067,12 +3067,21 @@ def _read_seen_session_ids(state_path: Path) -> list[str]:
     to the pre-#1344 single-key shape (`{"session_id": "..."}`) so a state file
     written by an older release is honoured rather than treated as absent.
     Returns [] on a missing, unreadable or malformed file (fail-soft).
+
+    The decode is caught by `ValueError` rather than `json.JSONDecodeError`:
+    a state file holding non-UTF-8 bytes raises `UnicodeDecodeError` out of
+    `read_text`, and that is a sibling of `JSONDecodeError` under `ValueError`,
+    not of `OSError`. Landing it here keeps the fail-soft direction the caller
+    documents — an unreadable file reads as "never seen", costing one extra
+    injection. Escaping to the caller's blanket handler returns False instead,
+    which *suppresses* the first fire of every session while the file stays
+    corrupt.
     """
     if not state_path.exists():
         return []
     try:
         data = json.loads(state_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (ValueError, OSError):
         return []
     if not isinstance(data, dict):
         return []
