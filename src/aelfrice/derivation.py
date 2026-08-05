@@ -23,6 +23,7 @@ from aelfrice.classification_core import (
 )
 from aelfrice.models import (
     BELIEF_FACTUAL,
+    EDGE_DERIVED_FROM,
     INGEST_SOURCE_CLI_REMEMBER,
     INGEST_SOURCE_GIT,
     INGEST_SOURCE_MCP_REMEMBER,
@@ -52,6 +53,24 @@ _BELIEF_ID_HEX_LEN: Final[int] = 16
 # circular import (triple_extractor imports from models, not from
 # derivation). Both constants must stay in sync.
 _TRIPLE_BELIEF_SOURCE: Final[str] = "triple"
+
+# #1354 — the reserved `raw_meta` block carrying the one input `derive()`
+# needs to emit a DERIVED_FROM edge: the verbatim text of the preceding
+# belief-bearing sentence in the same turn.
+#
+# It travels in `raw_meta` rather than as a `DerivationInput` field
+# because `raw_meta` is already passed through verbatim by BOTH
+# reconstructors (`derivation_worker._derivation_input_from_row` and the
+# replay harness), so a new key costs no edit to either and cannot drift
+# between them. `prior_text` rather than a prior belief id keeps the id
+# scheme in this module alone — `_belief_id` is the single minter, and
+# stamping ids at the ingest entry point would re-open that.
+#
+# A row that lacks the block derives no edge, which is exactly what makes
+# the population forward-only: no historical row carries it.
+META_DERIVED_FROM: Final[str] = "derived_from"
+_DF_PRIOR_TEXT: Final[str] = "prior_text"
+_DF_ANCHOR_TEXT: Final[str] = "anchor_text"
 
 
 # ---------------------------------------------------------------------------
@@ -130,8 +149,19 @@ class DerivationOutput:
     writing to the store.
 
     `edges` is the list of edges to insert after the belief lands.
-    Currently always empty; placeholder for v2.x paths that derive
-    edges from a single text block.
+
+    Non-empty only on the three `_belief_id`-scheme return paths, and
+    only when `raw_meta` carries a well-formed `derived_from` block —
+    see `_derived_from_edges` (#1354). The lock/remember and
+    triple-extraction paths mint ids under different schemes and always
+    return `[]`, as does the `persist=False` path.
+
+    The list is what `derive()` DERIVED, which is not the same as what
+    was inserted: `derivation_worker` records every entry in
+    `ingest_log.derived_edge_ids` but guards the INSERT on both
+    endpoints existing, so an edge can be logged without landing in
+    `edges`. That is the correct reading for a write-log column — replay
+    re-derives this list, not the edge table.
 
     `skip_reason` is a short string explaining why `belief` is None, or
     None when the belief will be persisted.
@@ -162,6 +192,50 @@ def _belief_id(text: str, source: str) -> str:
     """
     h = hashlib.sha256(f"{source}\x00{text}".encode("utf-8")).hexdigest()
     return h[:_BELIEF_ID_HEX_LEN]
+
+
+def _derived_from_edges(
+    raw_meta: dict[str, object] | None,
+    raw_text: str,
+    source: str,
+) -> list[Edge]:
+    """DERIVED_FROM edges recoverable from this log row alone (#1354).
+
+    Mirrors the intra-turn wiring in `ingest.py`: `src` is the later
+    belief, `dst` the earlier one — "this is derived from that earlier
+    one" — with `weight=1.0` and the demoted sub-floor clauses as
+    `anchor_text`.
+
+    Returns `[]` whenever the block is absent or malformed. That absence
+    is what makes pre-#1354 rows self-exempting: no historical row
+    carries the key, so re-deriving one yields no edge.
+
+    Both endpoints go through `_belief_id`, so only the return paths that
+    mint their id the same way may attach these edges — the lock/remember
+    and triple paths use different schemes and would name a `dst` that
+    does not exist.
+    """
+    if not isinstance(raw_meta, dict):
+        return []
+    block = raw_meta.get(META_DERIVED_FROM)
+    if not isinstance(block, dict):
+        return []
+    prior = block.get(_DF_PRIOR_TEXT)
+    if not isinstance(prior, str) or not prior or prior == raw_text:
+        # The `prior == raw_text` arm is the self-loop guard; `ingest.py`
+        # skips those explicitly and an edge from a belief to itself is
+        # not a relationship.
+        return []
+    anchor = block.get(_DF_ANCHOR_TEXT)
+    return [
+        Edge(
+            src=_belief_id(raw_text, source),
+            dst=_belief_id(prior, source),
+            type=EDGE_DERIVED_FROM,
+            weight=1.0,
+            anchor_text=anchor if isinstance(anchor, str) and anchor else None,
+        )
+    ]
 
 
 def _lock_id(text: str) -> str:
@@ -296,6 +370,13 @@ def derive(inp: DerivationInput) -> DerivationOutput:
     # 3. Classifier paths (filesystem, python_ast, etc.) ------------------
     source = inp.source_path or inp.source_kind
 
+    # #1354. Every return path below mints its id with `_belief_id(raw,
+    # source)`, so both endpoints of this edge are scheme-compatible.
+    # Paths 1 and 2 above deliberately do not attach it: they use
+    # `_lock_id` / `_triple_belief_id`, so a `_belief_id`-scheme `dst`
+    # would name a belief that does not exist.
+    df_edges = _derived_from_edges(inp.raw_meta, raw, source)
+
     if inp.override_belief_type is not None:
         # Host-LLM-classified path (polymorphic onboard handshake): the
         # caller has already determined the belief type; skip regex
@@ -317,7 +398,7 @@ def derive(inp: DerivationInput) -> DerivationOutput:
             origin=ORIGIN_AGENT_INFERRED,
             retention_class=retention_class_for_source(inp.source_kind),
         )
-        return DerivationOutput(belief=belief, edges=[])
+        return DerivationOutput(belief=belief, edges=df_edges)
 
     if inp.route_overrides is not None:
         # LLM-router path: skip the regex classifier entirely. The
@@ -343,7 +424,7 @@ def derive(inp: DerivationInput) -> DerivationOutput:
             origin=ro.origin,
             retention_class=retention_class_for_source(inp.source_kind),
         )
-        return DerivationOutput(belief=belief, edges=[])
+        return DerivationOutput(belief=belief, edges=df_edges)
 
     # 4. Transcript ingest, role=user (#888). User-typed chat content
     #    enters via the source_kind=transcript path (#1089), and within
@@ -389,4 +470,4 @@ def derive(inp: DerivationInput) -> DerivationOutput:
         ),
         retention_class=retention_class_for_source(inp.source_kind),
     )
-    return DerivationOutput(belief=belief, edges=[])
+    return DerivationOutput(belief=belief, edges=df_edges)

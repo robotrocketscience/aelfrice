@@ -24,17 +24,29 @@ from pathlib import Path
 import pytest
 
 from aelfrice import derivation_worker
-from aelfrice.derivation import DerivationOutput, derive
+from aelfrice.derivation import (
+    META_DERIVED_FROM,
+    _TRANSCRIPT_SOURCE_LABEL,
+    DerivationInput,
+    DerivationOutput,
+    derive,
+)
 from aelfrice.derivation_worker import run_worker
 from aelfrice.models import (
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     EDGE_DERIVED_FROM,
+    INGEST_SOURCE_CLI_REMEMBER,
+    INGEST_SOURCE_GIT,
+    INGEST_SOURCE_MCP_REMEMBER,
     INGEST_SOURCE_TRANSCRIPT,
     Edge,
 )
 from aelfrice.store import MemoryStore
 
 _ABSENT_ID = "ffffffffffffffff"
+
+# Sentinel distinguishing "no block" from "block explicitly set to None".
+_UNSET: object = object()
 
 
 @pytest.fixture
@@ -207,3 +219,157 @@ def test_a_prestamped_row_is_never_revisited(store: MemoryStore) -> None:
     run_worker(store)
 
     assert _edge_ids_of(store, log_id) is None
+
+
+# --- 3. derive() emits DERIVED_FROM from the logged block ----------------
+
+_PRIOR = "The compaction pass runs once per epoch."
+_LATER = "The scheduler retries on a transient failure."
+
+
+def _transcript_input(
+    text: str, *, block: object = _UNSET, role: str = "user"
+) -> DerivationInput:
+    meta: dict[str, object] = {
+        "call_site": CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
+        "role": role,
+    }
+    if block is not _UNSET:
+        meta[META_DERIVED_FROM] = block
+    return DerivationInput(
+        raw_text=text,
+        source_kind=INGEST_SOURCE_TRANSCRIPT,
+        source_path=_TRANSCRIPT_SOURCE_LABEL,
+        raw_meta=meta,
+        ts="2026-08-05T00:00:00+00:00",
+    )
+
+
+def test_derive_emits_one_derived_from_edge_from_the_block() -> None:
+    """Hypothesis: a row carrying a well-formed `derived_from` block
+    derives exactly one DERIVED_FROM edge, with every field pinned.
+
+    Falsifiable by reverting the return path to `edges=[]`, by dropping
+    the anchor, or by changing the weight.
+    """
+    out = derive(
+        _transcript_input(
+            _LATER, block={"prior_text": _PRIOR, "anchor_text": "Notes:"}
+        )
+    )
+    assert out.belief is not None
+    assert len(out.edges) == 1
+    edge = out.edges[0]
+    assert edge.type == EDGE_DERIVED_FROM
+    assert edge.weight == 1.0
+    assert edge.anchor_text == "Notes:"
+
+
+def test_derive_emits_no_edge_without_the_block() -> None:
+    """Hypothesis: the identical row minus the block derives no edge.
+
+    Pairs with the test above — that one yields 1, this one yields 0 —
+    so a helper that emits unconditionally, or synthesises a default
+    predecessor, fails here while passing there.
+    """
+    out = derive(_transcript_input(_LATER))
+    assert out.belief is not None
+    assert out.edges == []
+
+
+def test_edge_direction_is_later_to_earlier() -> None:
+    """Hypothesis: `src` is the belief being derived and `dst` is the
+    belief named by `prior_text`, matching `ingest.py`'s convention.
+
+    Both endpoints are obtained by calling `derive()` rather than by
+    hand-computing an id, so a swapped `src`/`dst` cannot survive by
+    being wrong in the same direction as the expectation.
+    """
+    later = derive(_transcript_input(_LATER, block={"prior_text": _PRIOR}))
+    earlier = derive(_transcript_input(_PRIOR))
+    assert later.belief is not None
+    assert earlier.belief is not None
+
+    edge = later.edges[0]
+    assert edge.src == later.belief.id
+    assert edge.dst == earlier.belief.id
+    assert edge.src != edge.dst
+
+
+def test_a_self_referential_block_emits_no_edge() -> None:
+    """Hypothesis: `prior_text` equal to the row's own text derives no
+    edge. An edge from a belief to itself is not a relationship, and
+    `ingest.py` skips that case explicitly.
+
+    Falsifiable by dropping the `prior == raw_text` arm of the guard.
+    """
+    out = derive(_transcript_input(_LATER, block={"prior_text": _LATER}))
+    assert out.belief is not None
+    assert out.edges == []
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        pytest.param({"prior_text": ""}, id="empty-prior"),
+        pytest.param({"anchor_text": "Notes:"}, id="no-prior-key"),
+        pytest.param({"prior_text": 17}, id="non-string-prior"),
+        pytest.param("not-a-dict", id="block-not-a-dict"),
+        pytest.param(None, id="block-null"),
+    ],
+)
+def test_a_malformed_block_emits_no_edge(block: object) -> None:
+    """Hypothesis: every malformed shape of the block derives no edge and
+    raises nothing. `raw_meta` is attacker-adjacent in the sense that it
+    round-trips through JSON on the log row, so shape cannot be assumed.
+    """
+    out = derive(_transcript_input(_LATER, block=block))
+    assert out.belief is not None
+    assert out.edges == []
+
+
+@pytest.mark.parametrize(
+    "source_kind",
+    [
+        pytest.param(INGEST_SOURCE_CLI_REMEMBER, id="cli-remember"),
+        pytest.param(INGEST_SOURCE_MCP_REMEMBER, id="mcp-remember"),
+        pytest.param(INGEST_SOURCE_GIT, id="git-triple"),
+    ],
+)
+def test_the_other_id_schemes_ignore_the_block(source_kind: str) -> None:
+    """Hypothesis: the lock/remember and triple-extraction paths never
+    attach the edge, even when the block is present and well-formed.
+
+    Those paths mint ids via `_lock_id` / `_triple_belief_id`, so a
+    `_belief_id`-scheme `dst` would name a belief that does not exist.
+    The `belief is not None` assertion keeps this from passing vacuously
+    on a path that simply produced nothing.
+    """
+    out = derive(
+        DerivationInput(
+            raw_text=_LATER,
+            source_kind=source_kind,
+            raw_meta={META_DERIVED_FROM: {"prior_text": _PRIOR}},
+            ts="2026-08-05T00:00:00+00:00",
+        )
+    )
+    assert out.belief is not None
+    assert out.edges == []
+
+
+def test_a_persist_false_row_emits_no_edge() -> None:
+    """Hypothesis: a row the classifier declines to persist derives no
+    edge, even carrying a valid block — there is no `src` belief for it
+    to hang from.
+
+    Falsifiable by computing the edges after the `persist` gate in a way
+    that leaks them onto the no-belief return.
+    """
+    out = derive(
+        _transcript_input(
+            "What happens when the queue drains?",
+            block={"prior_text": _PRIOR},
+        )
+    )
+    assert out.belief is None
+    assert out.edges == []
