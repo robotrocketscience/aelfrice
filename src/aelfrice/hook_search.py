@@ -112,7 +112,10 @@ def record_retrieval(
     """Write one feedback_history row per belief; return rows written.
 
     For each belief, calls `apply_feedback(store, belief.id, valence,
-    source)` — Beta-Bernoulli posterior update plus an audit row.
+    source)`. Since #1086 that writes an audit row only — the
+    Beta-Bernoulli posterior is left untouched unless
+    `AELFRICE_EXPOSURE_UPDATES_POSTERIOR=1` restores the pre-#1086
+    behaviour. The default is audit-row-only.
 
     Best-effort: any per-belief failure is logged to `stderr` (defaults
     to `sys.stderr`) and the loop continues. Returns the number of
