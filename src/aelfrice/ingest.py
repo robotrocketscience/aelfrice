@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final, cast
 
+from aelfrice.derivation import META_DERIVED_FROM
 from aelfrice.derivation_worker import run_worker
 from aelfrice.extraction import extract_sentences
 from aelfrice.noise_filter import is_transcript_noise
@@ -238,14 +239,33 @@ def _ingest_turn_ids(
     # leaves no unstamped orphan rows.
     with store.transaction():
         log_ids: list[str] = []
-        for sentence in full_sentences:
+        for idx, sentence in enumerate(full_sentences):
+            # #1354: carry the intra-turn DERIVED_FROM anchor on the log
+            # row itself, under the same condition the edge loop below
+            # uses. This is the one input `derive()` cannot recover on
+            # its own — the predecessor's belief id is only resolved
+            # after `run_worker`, so without it the edge is derivable
+            # from the store but not from the log, and
+            # `derived_edge_ids` stays NULL forever.
+            #
+            # Per-sentence copy: `raw_meta` above is shared across the
+            # turn, and mutating it in place would leak sentence i's
+            # predecessor onto every other row.
+            row_meta = raw_meta
+            between = subfloor_between[idx]
+            if idx > 0 and between:
+                row_meta = dict(raw_meta)
+                row_meta[META_DERIVED_FROM] = {
+                    "prior_text": full_sentences[idx - 1],
+                    "anchor_text": " | ".join(between)[:ANCHOR_TEXT_MAX_LEN],
+                }
             log_id = store.record_ingest(
                 source_kind=INGEST_SOURCE_TRANSCRIPT,
                 source_path=source,
                 raw_text=sentence,
                 session_id=session_id,
                 ts=ts,
-                raw_meta=raw_meta,
+                raw_meta=row_meta,
             )
             log_ids.append(log_id)
 

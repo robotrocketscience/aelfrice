@@ -32,6 +32,7 @@ from aelfrice.derivation import (
     derive,
 )
 from aelfrice.derivation_worker import run_worker
+from aelfrice.ingest import _ingest_turn_ids
 from aelfrice.models import (
     CORROBORATION_SOURCE_TRANSCRIPT_INGEST,
     EDGE_DERIVED_FROM,
@@ -76,6 +77,14 @@ def _belief_id_of(store: MemoryStore, log_id: str) -> str:
     ids = entry["derived_belief_ids"]
     assert isinstance(ids, list) and ids
     return str(ids[0])
+
+
+def _log_ids_in_order(store: MemoryStore) -> list[str]:
+    """Every ingest_log id, in insertion order (ULIDs sort lexically)."""
+    cur = store._conn.execute(  # type: ignore[attr-defined]
+        "SELECT id FROM ingest_log ORDER BY id"
+    )
+    return [str(r[0]) for r in cur.fetchall()]
 
 
 def _edge_ids_of(store: MemoryStore, log_id: str) -> object:
@@ -373,3 +382,178 @@ def test_a_persist_false_row_emits_no_edge() -> None:
     )
     assert out.belief is None
     assert out.edges == []
+
+
+# --- 4. the intra-turn ingest writer ------------------------------------
+
+# Fixture shape borrowed from the #809 suite: two full-length sentences
+# with a header stub between them, which `_ingest_turn_ids` demotes to
+# the intra-turn edge's anchor_text. Paragraph breaks matter — the
+# sentence splitter keeps `Header: text` as one sentence otherwise.
+_FULL_A = "The configuration file lives at /etc/aelfrice/conf."
+_SUB_HEADER = "Acceptance criteria:"
+_FULL_B = "Astronomers process supernova imagery nightly using clusters."
+
+_FULL_C = "Radio telescopes calibrate against known pulsar timings."
+
+_SUBFLOOR_TURN = f"{_FULL_A}\n\n{_SUB_HEADER}\n\n{_FULL_B}"
+_PLAIN_TURN = f"{_FULL_A}\n\n{_FULL_B}"
+# Anchored pair followed by an unanchored third sentence. The third row
+# must NOT inherit the second row's block.
+_TRAILING_TURN = f"{_FULL_A}\n\n{_SUB_HEADER}\n\n{_FULL_B}\n\n{_FULL_C}"
+
+
+def test_ingest_stamps_the_edge_on_the_second_row_only(
+    store: MemoryStore,
+) -> None:
+    """Hypothesis: ingesting a turn whose sentences are separated by a
+    sub-floor clause stamps `derived_edge_ids` as `[]` on the first row
+    and as the one derived edge on the second.
+
+    The two rows must DIFFER — a writer that stamps the same value
+    everywhere, or that never consumes `out.edges`, fails here. Ids are
+    read back from `derived_belief_ids` rather than hardcoded.
+    """
+    _ingest_turn_ids(
+        store=store,
+        text=_SUBFLOOR_TURN,
+        source=_TRANSCRIPT_SOURCE_LABEL,
+        session_id="s-1354",
+        created_at="2026-08-05T00:00:00+00:00",
+        role="user",
+    )
+    rows = [
+        store.get_ingest_log_entry(r)
+        for r in _log_ids_in_order(store)
+    ]
+    assert len(rows) == 2
+    first, second = rows[0], rows[1]
+    assert first is not None and second is not None
+
+    first_bid = first["derived_belief_ids"][0]  # type: ignore[index]
+    second_bid = second["derived_belief_ids"][0]  # type: ignore[index]
+
+    assert first["derived_edge_ids"] == []
+    assert second["derived_edge_ids"] == [
+        [second_bid, first_bid, EDGE_DERIVED_FROM]
+    ]
+
+
+def test_the_live_edge_set_is_unchanged_by_the_stamp(
+    store: MemoryStore,
+) -> None:
+    """Hypothesis: the same turn still produces exactly one DERIVED_FROM
+    edge, with both endpoints resolving and the anchor preserved.
+
+    This is the regression guard on the whole change: the column is new,
+    the edge table must be byte-identical to pre-#1354 behaviour.
+    Falsifiable by either idempotency guard being removed (two edges, or
+    an IntegrityError) or by a dangling endpoint.
+    """
+    _ingest_turn_ids(
+        store=store,
+        text=_SUBFLOOR_TURN,
+        source=_TRANSCRIPT_SOURCE_LABEL,
+        session_id="s-1354",
+        created_at="2026-08-05T00:00:00+00:00",
+        role="user",
+    )
+    edges = [e for e in store.iter_all_edges() if e.type == EDGE_DERIVED_FROM]
+    assert len(edges) == 1
+    edge = edges[0]
+    assert edge.anchor_text == _SUB_HEADER
+    assert edge.weight == 1.0
+    assert store.get_belief(edge.src) is not None
+    assert store.get_belief(edge.dst) is not None
+
+
+def test_reingesting_the_same_turn_is_still_idempotent(
+    store: MemoryStore,
+) -> None:
+    """Hypothesis: ingesting the same turn twice raises nothing and
+    leaves exactly one edge — the documented re-ingest contract, now
+    exercised on a path where `derive()` actually emits an edge.
+
+    Falsifiable by reverting the worker's INSERT guard: the second pass
+    violates `PRIMARY KEY (src, dst, type)` inside the turn transaction.
+    """
+    for _ in range(2):
+        _ingest_turn_ids(
+            store=store,
+            text=_SUBFLOOR_TURN,
+            source=_TRANSCRIPT_SOURCE_LABEL,
+            session_id="s-1354",
+            created_at="2026-08-05T00:00:00+00:00",
+            role="user",
+        )
+    edges = [e for e in store.iter_all_edges() if e.type == EDGE_DERIVED_FROM]
+    assert len(edges) == 1
+
+
+def test_an_unanchored_later_sentence_does_not_inherit_the_block(
+    store: MemoryStore,
+) -> None:
+    """Hypothesis: in a turn (A, header, B, C), only row B carries the
+    block — row C, which has no sub-floor clause before it, stamps `[]`.
+
+    This is the per-sentence-copy guard. `raw_meta` is one dict shared
+    across the turn; setting the key on it in place would leave it
+    visible to every subsequent `record_ingest` in the loop, so C would
+    silently derive a spurious edge to A — skipping over its real
+    predecessor B. Falsifiable by `row_meta = raw_meta` in place of the
+    copy, which no two-sentence fixture can detect.
+    """
+    _ingest_turn_ids(
+        store=store,
+        text=_TRAILING_TURN,
+        source=_TRANSCRIPT_SOURCE_LABEL,
+        session_id="s-1354",
+        created_at="2026-08-05T00:00:00+00:00",
+        role="user",
+    )
+    rows = [store.get_ingest_log_entry(r) for r in _log_ids_in_order(store)]
+    assert len(rows) == 3
+    assert all(r is not None for r in rows)
+
+    a, b, c = rows[0], rows[1], rows[2]
+    assert a is not None and b is not None and c is not None
+    assert a["derived_edge_ids"] == []
+    assert b["derived_edge_ids"] == [
+        [
+            b["derived_belief_ids"][0],  # type: ignore[index]
+            a["derived_belief_ids"][0],  # type: ignore[index]
+            EDGE_DERIVED_FROM,
+        ]
+    ]
+    assert c["derived_edge_ids"] == []
+
+    # And the live edge set agrees: exactly one edge, B -> A.
+    edges = [e for e in store.iter_all_edges() if e.type == EDGE_DERIVED_FROM]
+    assert len(edges) == 1
+
+
+def test_a_turn_without_subfloor_clauses_stamps_empty_lists(
+    store: MemoryStore,
+) -> None:
+    """Hypothesis: an ordinary two-sentence turn — no sub-floor clause
+    between them — carries no block and so stamps `[]` on both rows.
+
+    Pairs with the stamping test above: that turn yields one edge, this
+    one yields none, so a writer that attaches the block unconditionally
+    fails here.
+    """
+    _ingest_turn_ids(
+        store=store,
+        text=_PLAIN_TURN,
+        source=_TRANSCRIPT_SOURCE_LABEL,
+        session_id="s-1354",
+        created_at="2026-08-05T00:00:00+00:00",
+        role="user",
+    )
+    for log_id in _log_ids_in_order(store):
+        entry = store.get_ingest_log_entry(log_id)
+        assert entry is not None
+        assert entry["derived_edge_ids"] == []
+    assert [
+        e for e in store.iter_all_edges() if e.type == EDGE_DERIVED_FROM
+    ] == []
