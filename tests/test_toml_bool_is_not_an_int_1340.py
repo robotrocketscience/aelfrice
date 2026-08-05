@@ -15,6 +15,7 @@ coin flip that landed well six times.
 from __future__ import annotations
 
 import ast
+import copy
 import io
 import pathlib
 from typing import Any
@@ -99,6 +100,22 @@ def _numeric_type_names(node: ast.expr) -> set[str]:
     return {e.id for e in getattr(node, "elts", []) if isinstance(e, ast.Name)}
 
 
+def _code_text(fn: ast.AST) -> str:
+    """`ast.unparse(fn)` with string constants blanked out.
+
+    `ast.unparse` re-emits docstrings and literals verbatim, so a function
+    whose docstring mentions a "cross-section" or an "intersection" reads
+    as a TOML reader and any `isinstance(x, int)` in it is reported as a
+    config defect. 19 of the functions the raw text pulled in matched on
+    prose alone. Membership has to be keyed on code.
+    """
+    blanked = copy.deepcopy(fn)
+    for node in ast.walk(blanked):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            node.value = ""
+    return ast.unparse(blanked)
+
+
 def _guards_bool_in_scope(scope: ast.AST, var: str) -> bool:
     """Whether anything in the enclosing function excludes `bool` for `var`.
 
@@ -148,7 +165,7 @@ def _toml_numeric_validations_admitting_bool() -> list[str]:
         for fn in ast.walk(tree):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            body = ast.unparse(fn)
+            body = _code_text(fn)
             if "tomllib" not in body and "section" not in body:
                 continue
             for node in ast.walk(fn):
@@ -199,7 +216,7 @@ def test_the_census_actually_scans_something() -> None:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for fn in ast.walk(tree):
             if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                body = ast.unparse(fn)
+                body = _code_text(fn)
                 if "tomllib" in body or "section" in body:
                     scanned += 1
     assert scanned >= 20, (
@@ -240,6 +257,27 @@ def test_the_census_sees_an_unguarded_reader() -> None:
         n for n in ast.walk(guarded) if isinstance(n, ast.FunctionDef)
     )
     assert _guards_bool_in_scope(gfn, "raw")
+
+
+def test_prose_alone_does_not_make_a_function_a_toml_reader() -> None:
+    """`ast.unparse` re-emits docstrings, so the population must ignore them.
+
+    Without blanking string constants, a function whose docstring says
+    "cross-section" is judged a config reader and any `isinstance(x, int)`
+    in it is reported as a `.aelfrice.toml` defect -- a red CI run naming a
+    file that reads no config at all. 19 of the members the raw text
+    admitted matched on prose only.
+    """
+    tree = ast.parse(
+        "def area(n):\n"
+        '    """Compute the cross-section, per the intersection rule."""\n'
+        "    if not isinstance(n, int):\n"
+        "        raise TypeError\n"
+        "    return n * n\n"
+    )
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef))
+    body = _code_text(fn)
+    assert "section" not in body and "tomllib" not in body
 
 
 def test_a_preceding_early_return_counts_as_a_guard() -> None:
