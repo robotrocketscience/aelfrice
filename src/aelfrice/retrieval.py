@@ -60,7 +60,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Any, Final
+from typing import IO, TYPE_CHECKING, Any, Final
 
 from aelfrice.bfs_multihop import (
     DEFAULT_MAX_DEPTH as BFS_DEFAULT_MAX_DEPTH,
@@ -69,7 +69,6 @@ from aelfrice.bfs_multihop import (
     DEFAULT_TOTAL_BUDGET_NODES as BFS_DEFAULT_TOTAL_BUDGET_NODES,
     expand_bfs,
 )
-from aelfrice.bm25 import BM25IndexCache
 from aelfrice.clustering import (
     DEFAULT_CLUSTER_DIVERSITY_TARGET,
     DEFAULT_CLUSTER_EDGE_FLOOR,
@@ -90,24 +89,7 @@ from aelfrice.config_discovery import (
     discover_config as _discover_config,
 )
 from aelfrice.doc_linker import DocAnchor
-from aelfrice.hrr import DEFAULT_DIM
-from aelfrice.hrr_index import (
-    HRRStructIndex,
-    HRRStructIndexCache,
-    parse_structural_marker,
-)
 from aelfrice.entity_extractor import extract_entities
-from aelfrice.graph_spectral import (
-    DEFAULT_BM25_SEED_TOP_K,
-    DEFAULT_HEAT_BANDWIDTH,
-    DEFAULT_HEAT_KERNEL_WEIGHT,
-    DEFAULT_POSTERIOR_LOG_WEIGHT,
-    HEAT_SCORE_FLOOR,
-    GraphEigenbasisCache,
-    combine_log_scores,
-    heat_kernel_score,
-    seeds_from_bm25,
-)
 from aelfrice.models import (
     EDGE_TEMPORAL_NEXT,
     LOCK_NONE,
@@ -128,12 +110,17 @@ from aelfrice.scoring import (
     zeta_posterior_score,
 )
 from aelfrice.store import MemoryStore
-from aelfrice.utterance_prior import (
-    UtterancePrior,
-    resolve_utterance_prior_weight,
-    utterance_logodds,
-    utterance_prior_penalty,
-)
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    # #1351: these modules pull numpy/scipy, so they are imported inside the
+    # functions that use them rather than here. `from __future__ import
+    # annotations` (line 50) leaves annotations unevaluated, so the names below
+    # still type-check and still read as documentation without costing every
+    # hook process the numeric stack at import.
+    from aelfrice.bm25 import BM25IndexCache
+    from aelfrice.graph_spectral import GraphEigenbasisCache
+    from aelfrice.hrr_index import HRRStructIndex, HRRStructIndexCache
+    from aelfrice.utterance_prior import UtterancePrior
 
 # v1.0 / v1.2 baseline. Used by the disabled-flag fallback so the
 # byte-identical regression test sees the same budget the v1.2 caller
@@ -2840,7 +2827,7 @@ def make_hrr_struct_cache(
     store: MemoryStore,
     *,
     store_path: str | None = None,
-    dim: int = DEFAULT_DIM,
+    dim: int | None = None,
     seed: int | None = None,
     start: Path | None = None,
 ) -> HRRStructIndexCache:
@@ -2854,6 +2841,15 @@ def make_hrr_struct_cache(
     env → TOML → default precedence chain so callers do not need to
     import or call :func:`is_hrr_persist_enabled` directly.
     """
+    from aelfrice.hrr import DEFAULT_DIM  # noqa: PLC0415
+    from aelfrice.hrr_index import HRRStructIndexCache  # noqa: PLC0415
+
+    # `dim=None` means DEFAULT_DIM. It cannot be the literal parameter default:
+    # defaults are evaluated at `def` time, so naming DEFAULT_DIM there imports
+    # `aelfrice.hrr` — and numpy behind it — into every hook process (#1351).
+    # The resolved value is identical; only the moment of resolution moves.
+    if dim is None:
+        dim = DEFAULT_DIM
     persist = is_hrr_persist_enabled(start=start)
     return HRRStructIndexCache(
         store=store,
@@ -2887,6 +2883,12 @@ def _route_structural_query(
     among the locks are de-duped from the HRR tail so the locked
     pin-to-head invariant is preserved.
     """
+    from aelfrice.hrr_index import (  # noqa: PLC0415
+        HRRStructIndex,
+        HRRStructIndexCache,
+        parse_structural_marker,
+    )
+
     parsed = parse_structural_marker(query)
     if parsed is None:
         return None
@@ -3538,6 +3540,14 @@ def _heat_by_id(
     explicit None signal lets the caller short-circuit the matvec when
     propagation is guaranteed to be a no-op.
     """
+    from aelfrice.graph_spectral import (  # noqa: PLC0415
+        DEFAULT_BM25_SEED_TOP_K,
+        DEFAULT_HEAT_BANDWIDTH,
+        GraphEigenbasisCache,
+        heat_kernel_score,
+        seeds_from_bm25,
+    )
+
     import numpy as np
 
     if cache.eigvals is None or cache.eigvecs is None or not cache.belief_ids:
@@ -3599,6 +3609,11 @@ def _store_scoped_utterance_prior(store: MemoryStore) -> UtterancePrior:
     rebuild the whole table on every write. A long-running process picks
     up new vocabulary on restart.
     """
+    from aelfrice.utterance_prior import (  # noqa: PLC0415
+        UtterancePrior,
+        utterance_logodds,
+    )
+
     cached = getattr(store, "_utterance_prior_cache", None)
     if not isinstance(cached, UtterancePrior):
         cached = utterance_logodds(store)
@@ -3637,6 +3652,8 @@ def _store_scoped_bm25f_cache(
     can move it between calls) drops the cached index; the sidecar
     check in `BM25IndexCache.get()` compares weights independently.
     """
+    from aelfrice.bm25 import BM25IndexCache  # noqa: PLC0415
+
     from aelfrice.bm25 import DEFAULT_B_ANCHOR
 
     effective_b_anchor = (
@@ -3810,6 +3827,17 @@ def _l1_hits(
     heat-off contract. AC4 / AC8 of #151 are preserved by this fall-
     through.
     """
+    from aelfrice.utterance_prior import utterance_prior_penalty  # noqa: PLC0415
+
+    from aelfrice.bm25 import BM25IndexCache  # noqa: PLC0415
+    from aelfrice.graph_spectral import (  # noqa: PLC0415
+        DEFAULT_HEAT_KERNEL_WEIGHT,
+        DEFAULT_POSTERIOR_LOG_WEIGHT,
+        GraphEigenbasisCache,
+        HEAT_SCORE_FLOOR,
+        combine_log_scores,
+    )
+
     heat_active = (
         heat_kernel_on
         and eigenbasis_cache is not None
@@ -4193,6 +4221,11 @@ def retrieve(
     bare `retrieve()` so `rebuild_v14`'s call site observes the
     toggle that A4 (#775) measures.
     """
+    from aelfrice.bm25 import BM25IndexCache  # noqa: PLC0415
+    from aelfrice.graph_spectral import (  # noqa: PLC0415
+        GraphEigenbasisCache,
+    )
+
     # #1107 cutover: `retrieve()` is a thin adapter over `retrieve_v2`, the
     # single retrieval implementation the production hook path shares with
     # the benchmark/eval surface. Lanes light up in production one at a time
@@ -4346,6 +4379,14 @@ def retrieve_with_tiers(
     `use_type_aware_compression`: both arms account in the same
     currency (raw token estimate or compressed `rendered_tokens`).
     """
+    from aelfrice.hrr_index import HRRStructIndexCache  # noqa: PLC0415
+    from aelfrice.utterance_prior import resolve_utterance_prior_weight  # noqa: PLC0415
+
+    from aelfrice.bm25 import BM25IndexCache  # noqa: PLC0415
+    from aelfrice.graph_spectral import (  # noqa: PLC0415
+        GraphEigenbasisCache,
+    )
+
     global _LAST_TELEMETRY
     # #1143 clock seam: read the wall clock at most once per call.
     # `retrieve_v2` threads its own pinned `now_ts` through here, so a
@@ -4825,6 +4866,13 @@ def retrieve_v2(
       `result.beliefs` (and stub diagnostics fields, plus the new
       v1.3 `entity_hits` and `bfs_chains`).
     """
+    from aelfrice.hrr_index import HRRStructIndexCache  # noqa: PLC0415
+
+    from aelfrice.bm25 import BM25IndexCache  # noqa: PLC0415
+    from aelfrice.graph_spectral import (  # noqa: PLC0415
+        GraphEigenbasisCache,
+    )
+
     # #1045 wide-retrieval knobs: resolve here so both the HRR-structural
     # lane below and the retrieve_with_tiers delegation see the same
     # env/TOML-resolved values (default 50 / 2400 keep the hot path narrow).
@@ -5092,6 +5140,8 @@ class RetrievalCache:
         path. Resolving on every hit would walk Path.cwd().resolve()
         each time and blow the same AC2 cache-hit latency budget.
         """
+        from aelfrice.bm25 import BM25IndexCache  # noqa: PLC0415
+
         if posterior_weight is None:
             key_weight: float | None = None
         else:

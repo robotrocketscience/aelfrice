@@ -26,7 +26,10 @@ from __future__ import annotations
 
 from typing import Final
 
-import numpy as np
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    import numpy as np
 
 # 25th / 75th percentile of the live IDF distribution as the default
 # low / high cutoffs. These are deliberately liberal -- the lab R5
@@ -65,6 +68,8 @@ def compute_idf_quantile_thresholds(
         )
     if idf.size == 0:
         return (0.0, 0.0)
+    import numpy as np  # noqa: PLC0415  (#1351: hot-path import)
+
     low_t = float(np.quantile(idf, low_quantile))
     high_t = float(np.quantile(idf, high_quantile))
     return (low_t, high_t)

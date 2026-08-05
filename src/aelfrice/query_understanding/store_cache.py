@@ -21,8 +21,8 @@ object is garbage-collected.
 from __future__ import annotations
 
 import weakref
+from typing import TYPE_CHECKING
 
-from aelfrice.bm25 import BM25Index
 from aelfrice.query_understanding.idf_clip import (
     DEFAULT_HIGH_QUANTILE,
     DEFAULT_LOW_QUANTILE,
@@ -30,7 +30,16 @@ from aelfrice.query_understanding.idf_clip import (
 )
 from aelfrice.store import MemoryStore
 
-_CacheValue = tuple[BM25Index, tuple[float, float]]
+# `_CacheValue` is referenced only from annotations, which `from __future__
+# import annotations` leaves unevaluated — so both it and `BM25Index` can live
+# here and `aelfrice.bm25` (with numpy and scipy behind it) stays out of the
+# import graph of every hook process (#1351). A module-scope alias defined
+# outside this block would not: an alias is a real assignment, evaluated at
+# import, and would pull the module straight back in.
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from aelfrice.bm25 import BM25Index
+
+    _CacheValue = tuple[BM25Index, tuple[float, float]]
 _cache: weakref.WeakKeyDictionary[MemoryStore, _CacheValue] = (
     weakref.WeakKeyDictionary()
 )
@@ -60,6 +69,8 @@ def get_bm25_and_quantiles(
     cached = _cache.get(store)
     if cached is not None:
         return cached
+    from aelfrice.bm25 import BM25Index  # noqa: PLC0415  (#1351: hot-path import)
+
     index = BM25Index.build(store)
     thresholds = compute_idf_quantile_thresholds(
         index.idf, low_quantile, high_quantile,

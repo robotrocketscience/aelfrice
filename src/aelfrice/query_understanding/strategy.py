@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from typing import Final
 
-from aelfrice.bm25 import tokenize
 from aelfrice.query_understanding.entity_expand import (
     expand_with_capitalised_entities,
 )
@@ -68,6 +67,8 @@ def transform_query(
         return ""
     if strategy == LEGACY_STRATEGY:
         return raw_query
+    from aelfrice.bm25 import tokenize  # noqa: PLC0415  (#1351: hot-path import)
+
     base_terms = tokenize(raw_query)
     expanded = expand_with_capitalised_entities(raw_query, base_terms)
     index, (low_t, high_t) = get_bm25_and_quantiles(store)
