@@ -275,12 +275,36 @@ class TestProjectPathEncoding:
             (r"D:\x", "D--x"),
             # UNC: both leading separators are replaced, like any others.
             (r"\\server\share\proj", "--server-share-proj"),
+            # A dotted component. The doubled dash is the separator and
+            # the dot each mapping to one -- not a special leading-dot
+            # rule. Taken from a real host directory rather than
+            # derived: `~/.claude/projects` held 97 entries and none
+            # contained a literal `.`.
+            (
+                "/Users/alice/projects/app/.claude/worktrees/7",
+                "-Users-alice-projects-app--claude-worktrees-7",
+            ),
+            ("/Users/alice/my.app", "-Users-alice-my-app"),
+            (r"C:\Dev\my.app", "C--Dev-my-app"),
         ],
     )
     def test_the_encoding_is_one_substitution_over_both_flavours(
         self, abs_path: str, expected: str
     ) -> None:
         assert encode_project_path(abs_path) == expected
+
+    def test_no_dot_survives_into_a_directory_name(self) -> None:
+        """The POSIX half of the same defect the Windows half names.
+
+        A surviving dot is a legal filename character, so it does not fail
+        loudly the way a surviving colon does -- the directory is simply
+        not the one the host tool made, and every lookup finds nothing.
+        Any path with a dotted component is affected, which includes every
+        project under a `.claude/` or `.config/` directory.
+        """
+        encoded = encode_project_path("/Users/alice/.claude/worktrees/7")
+        assert "." not in encoded
+        assert encoded == "-Users-alice--claude-worktrees-7"
 
     def test_no_colon_survives_into_a_directory_name(self) -> None:
         """The specific defect. `:` is not a legal filename character on

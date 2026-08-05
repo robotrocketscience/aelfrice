@@ -146,19 +146,31 @@ class MemoryFile(NamedTuple):
 
 # Path separators and the Windows drive-letter colon. Each is replaced by a
 # single `-`; nothing is stripped and nothing is prepended (#1329).
-_PATH_PUNCTUATION_RE = re.compile(r"[/\\:]")
+_PATH_PUNCTUATION_RE = re.compile(r"[/\\:.]")
 
 
 def encode_project_path(abs_path: str) -> str:
     """Encode an already-absolute path the way the upstream tool does.
 
-    The rule is one substitution: every ``/``, ``\\`` and ``:`` becomes
-    ``-``. The leading dash people associate with these directory names is
-    not a prefix — it falls out of the POSIX leading slash being replaced
-    like any other separator::
+    The rule is one substitution: every ``/``, ``\\``, ``:`` and ``.``
+    becomes ``-``. The leading dash people associate with these directory
+    names is not a prefix — it falls out of the POSIX leading slash being
+    replaced like any other separator::
 
         /Users/alice/projects/myapp  ->  -Users-alice-projects-myapp
+        /Users/alice/.config/app     ->  -Users-alice--config-app
         C:\\Dev\\example\\proj       ->  C--Dev-example-proj
+
+    ``.`` is in the set because the host tool puts it there, established
+    by observation rather than from a spec: of 97 directories under a real
+    ``~/.claude/projects``, **none** contains a literal ``.``, and a
+    project at ``…/aelfrice/.claude/worktrees/N`` is stored as
+    ``…-aelfrice--claude-worktrees-N`` — the doubled dash is the separator
+    and the dot each mapping to one. Omitting it is not cosmetic: every
+    lookup for a project path with a dotted component resolves to a
+    directory the host tool never created, so both the claude-memory
+    commands and the #985 mirror find nothing, silently. That is the same
+    failure shape as the Windows one this PR fixes, on POSIX.
 
     The previous implementation stripped the leading slash and hardcoded the
     ``-`` back on, which is *equivalent on POSIX only*. On Windows the strip
