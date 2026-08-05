@@ -5979,7 +5979,7 @@ def _load_aelfrice_config_dict(root: Path) -> dict[str, Any] | None:
 
 
 def _cmd_spine(args: argparse.Namespace, out: object) -> int:
-    """`aelf spine {backfill,clear}` — manage the TEMPORAL_NEXT spine (#1064).
+    """`aelf spine {backfill,clear,verify}` — the TEMPORAL_NEXT spine (#1064).
 
     `backfill` builds per-session chains over the existing store — the
     migration path (re-ingesting everything is not) that the default-ON
@@ -5990,6 +5990,10 @@ def _cmd_spine(args: argparse.Namespace, out: object) -> int:
     `clear` deletes every TEMPORAL_NEXT edge — the reversibility path for
     an auto-backfill (beliefs untouched). Deterministic backfill means a
     later re-backfill rebuilds the identical spine (G5 byte-identity).
+
+    `verify` recomputes the spine from the log and reports the gap
+    (#1283); it writes nothing and is delegated to `_cmd_spine_verify`
+    before the store is opened, because that path opens read-only.
 
     Exits 0 always — an empty store, a fully-chained store, and an
     already-clear store are all no-ops, not errors.
