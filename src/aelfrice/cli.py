@@ -6050,7 +6050,20 @@ def _cmd_spine_verify(out: object) -> int:
     """
     from aelfrice.spine_recompute import spine_divergence
 
-    store = MemoryStore(str(db_path()), read_only=True)
+    # Opening read-only means SQLite will not create the file, so a store
+    # that does not exist yet raises rather than materialising an empty
+    # one. Every sibling `spine` action reaches it through `_open_store()`
+    # and never sees this. Say so in one line instead of a traceback: a
+    # store that was never built is the expected state of a fresh repo,
+    # not a diagnostic failure, and the exit stays 0 with the rest.
+    target = db_path()
+    if not target.exists():
+        print(
+            f"no store at {target} — nothing to verify",
+            file=cast("Any", out),
+        )
+        return 0
+    store = MemoryStore(str(target), read_only=True)
     try:
         report = spine_divergence(store)
     finally:

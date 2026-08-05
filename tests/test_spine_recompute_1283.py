@@ -573,3 +573,32 @@ def test_spine_verify_exits_zero_on_an_empty_store(
     text = out.getvalue()
     assert "shipped TEMPORAL_NEXT : 0\n" in text
     assert "reproduced            : 0 (100.00%)\n" in text
+
+
+def test_spine_verify_says_so_when_there_is_no_store_yet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A store that was never built is a message, not a traceback.
+
+    `read_only=True` opens through SQLite's `mode=ro` URI, which refuses
+    to create the file — so unlike `backfill` and `clear`, which reach
+    the store through `_open_store()`, `verify` is the one spine action
+    that meets a fresh repo with nothing there. Without the existence
+    guard this raises `sqlite3.OperationalError` out through `main()`,
+    which wraps nothing, and the user sees a raw traceback that reads
+    identically to a corrupt store or a permissions fault.
+
+    Catches: deletion of the guard. The assertion is on the exit code
+    and the message, not on the absence of an exception, so a guard
+    that swallows the error and returns 1 fails too.
+    """
+    missing = tmp_path / "never-built" / "memory.db"
+    monkeypatch.setenv("AELFRICE_DB", str(missing))
+    monkeypatch.setattr(cli, "db_path", lambda: missing)
+
+    out = io.StringIO()
+    assert _verify(out) == 0
+    assert "nothing to verify" in out.getvalue()
+    assert not missing.exists(), (
+        "a read-only diagnostic created the store it was asked to read"
+    )
