@@ -120,7 +120,7 @@ session, appends the id, and injects the <session-start> sub-block.
 Subsequent calls with the same session_id skip injection.
 
 #1344: `session_ids` is the window this is keyed on; `session_id` is
-retained for `session_exclusions.read_active_session_id`, which resolves
+retained for `session_exclusions.read_current_session_id`, which resolves
 the active session for `aelf scope-out`. Before #1344 the file held only
 the single key and the window was effectively of size one, so concurrent
 sessions evicted each other and every one of them re-fired on every turn.
@@ -3153,7 +3153,7 @@ def _write_session_state(
     `session_id` becomes the most recent entry; `seen` is the prior window,
     oldest first, and is truncated from the front to `SESSION_STATE_MAX_IDS`.
     The top-level `session_id` key is retained and holds the most recent id —
-    `session_exclusions.read_active_session_id` and `aelf scope-out` read it.
+    `session_exclusions.read_current_session_id` and `aelf scope-out` read it.
     """
     try:
         state_path.parent.mkdir(parents=True, exist_ok=True)
