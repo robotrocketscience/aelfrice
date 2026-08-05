@@ -28,11 +28,20 @@ MIN_ROWS = 200
 # row id so the split is stable across runs and independent of file order.
 TRAIN_BUCKET_CEILING = 60
 
+# The guard sweeps this many salted partitions rather than asserting on one.
+# A single partition decides precision on ~34 positive predictions, whose 95%
+# interval straddles the gate — so one draw can clear it on an unchanged corpus
+# and read as "corpus fixed" (#1349). Measured over K=200 on the corpora that
+# exist: v0.1 lets the baseline clear on 196/200 partitions, v0.1+v0.2 on 0/200
+# with a maximum precision of 0.754. The two populations are far enough apart
+# that the exact K is not delicate.
+PARTITION_SWEEP_K = 200
+
 _HEAD_WORD = re.compile(r"^\s*[-*\d.)\s]*([A-Za-z']+)")
 
 
-def _bucket(row_id: str) -> int:
-    return int(hashlib.sha1(row_id.encode()).hexdigest(), 16) % 100
+def _bucket(row_id: str, salt: str = "") -> int:
+    return int(hashlib.sha1((salt + row_id).encode()).hexdigest(), 16) % 100
 
 
 def _head_word(prompt: str) -> str:
@@ -99,6 +108,14 @@ def test_directive_corpus_defeats_a_first_token_baseline(
 
     This guard fails when that happens. It is a statement about the corpus, not
     about `detect_directive`.
+
+    It sweeps `PARTITION_SWEEP_K` salted partitions and fails if the baseline
+    clears the gate on **any** of them. One partition is not enough evidence:
+    precision there rests on ~34 positive predictions and its 95% interval
+    straddles the gate, so a re-partition alone can turn a single-draw guard
+    green while the head-word correlation is untouched (#1349). Failing on any
+    partition is the conservative direction — a false alarm costs a corpus
+    inspection, a false clearance blesses an overfit detector.
     """
     rows = load_corpus_module(aelfrice_corpus_root, "directive_detection")
 
@@ -108,40 +125,48 @@ def test_directive_corpus_defeats_a_first_token_baseline(
             f"guard needs the same ≥{MIN_ROWS} floor as the gate it guards"
         )
 
-    train = [r for r in rows if _bucket(r["id"]) < TRAIN_BUCKET_CEILING]
-    held_out = [r for r in rows if _bucket(r["id"]) >= TRAIN_BUCKET_CEILING]
+    def score(salt: str) -> tuple[float, float, int, int, int]:
+        train, held_out = [], []
+        for row in rows:
+            bucket = _bucket(row["id"], salt)
+            (train if bucket < TRAIN_BUCKET_CEILING else held_out).append(row)
 
-    table: defaultdict[str, Counter[str]] = defaultdict(Counter)
-    for row in train:
-        table[_head_word(row["prompt"])][row["label"]] += 1
+        table: defaultdict[str, Counter[str]] = defaultdict(Counter)
+        for row in train:
+            table[_head_word(row["prompt"])][row["label"]] += 1
 
-    def predict(prompt: str) -> bool:
-        counts = table.get(_head_word(prompt))
-        if not counts:
-            return False
-        directive = counts["directive"]
-        return directive > sum(counts.values()) - directive
+        tp = fp = fn = 0
+        for row in held_out:
+            counts = table.get(_head_word(row["prompt"]))
+            directive = counts["directive"] if counts else 0
+            predicted = bool(counts) and directive > sum(counts.values()) - directive
+            actual = row["label"] == "directive"
+            if predicted and actual:
+                tp += 1
+            elif predicted and not actual:
+                fp += 1
+            elif actual:
+                fn += 1
 
-    tp = fp = fn = 0
-    for row in held_out:
-        actual = row["label"] == "directive"
-        predicted = predict(row["prompt"])
-        if predicted and actual:
-            tp += 1
-        elif predicted and not actual:
-            fp += 1
-        elif actual:
-            fn += 1
+        precision = tp / (tp + fp) if (tp + fp) else 0.0
+        recall = tp / (tp + fn) if (tp + fn) else 0.0
+        return precision, recall, tp, fp, fn
 
-    precision = tp / (tp + fp) if (tp + fp) else 0.0
-    recall = tp / (tp + fn) if (tp + fn) else 0.0
+    results = [score(f"s{i}") for i in range(PARTITION_SWEEP_K)]
+    clearing = [
+        (i, p, r)
+        for i, (p, r, _, _, _) in enumerate(results)
+        if p >= PRECISION_GATE and r >= RECALL_GATE
+    ]
+    worst = max(results, key=lambda t: t[0])
 
-    assert not (precision >= PRECISION_GATE and recall >= RECALL_GATE), (
-        f"a first-token-only classifier clears the H1 gate on held-out rows "
-        f"(P={precision:.3f}, R={recall:.3f}, TP={tp}, FP={fp}, FN={fn}, "
-        f"train={len(train)}, held_out={len(held_out)}). The corpus separates "
-        f"its classes by opening vocabulary, so clearing the gate is not "
-        f"evidence that a detector distinguishes durable rules from one-shot "
-        f"tasks. Fix the corpus before reading anything into the gate: see "
+    assert not clearing, (
+        f"a first-token-only classifier clears the H1 gate on "
+        f"{len(clearing)}/{PARTITION_SWEEP_K} salted partitions of this corpus "
+        f"(n={len(rows)} rows). Worst partition: P={worst[0]:.3f}, R={worst[1]:.3f} "
+        f"(TP={worst[2]}, FP={worst[3]}, FN={worst[4]}). The corpus separates its "
+        f"classes by opening vocabulary, so clearing the gate is not evidence that "
+        f"a detector distinguishes durable rules from one-shot tasks. Fix the "
+        f"corpus before reading anything into the gate: see "
         f"docs/design/v2_directive_detection.md § Gate validity."
     )
