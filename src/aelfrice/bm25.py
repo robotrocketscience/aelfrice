@@ -77,7 +77,23 @@ def _stem(token: str) -> str:
     relative to total tokens (Zipfian), so a 64K-entry LRU has very
     high hit rate after warm-up. Cache is module-global; reset on
     process exit.
+
+    The length guards reproduce SQLite's, and they are the larger half
+    of #1348. `fts5_porter_tokenizer` leaves a token alone unless it is
+    3..64 **bytes** long; snowballstemmer stems it regardless. That
+    single disagreement covers only 64 of 21,751 vocabulary terms, but
+    the terms it covers are the most frequent words in English — `is`
+    stemmed to `i` 14,021 times on the live store, `as` to `a` 3,670,
+    and `s` to the empty string 5,426 — so it reaches 31.26% of
+    *documents*. Fixing the word class alone leaves all of it in place.
+
+    Bytes, not characters, and measured on the already-folded token:
+    `μs` is two characters but three bytes and IS stemmed, while `és`
+    folds to `es` (two bytes) and is not.
     """
+    n_bytes = len(token.encode("utf-8"))
+    if n_bytes < 3 or n_bytes > 64:
+        return token
     return _PORTER_STEMMER.stemWord(token)
 
 # Default weight for the incoming-anchor token stream, per the #148
@@ -253,8 +269,18 @@ def tokenize_stemmed(text: str) -> list[str]:
 
     The pipeline mirrors `porter unicode61` stage for stage:
     `_fold_diacritics` (NFD, whole string), `_FTS5_TOKEN_PATTERN` (word
-    class excluding `_`), lowercase, then `_stem`. Order is load-bearing
-    at every step; see each helper for why.
+    class excluding `_`), lowercase, then `_stem` — which carries
+    SQLite's own length guards. Order is load-bearing at every step; see
+    each helper for why.
+
+    Parity is close but not exact, and the residual is measured rather
+    than asserted: 232 of 44,655 live beliefs (0.52%) still tokenise
+    differently, against 19,915 (44.60%) before #1348.
+    `benchmarks/bm25_fts5_divergence.py` re-derives both numbers against
+    a real FTS5 table. What is left is SQLite's Porter step-2 `-logi ->
+    -log` and `-bli -> -ble` rules, which snowballstemmer's original
+    Porter does not implement (`methodologi` vs `methodolog`). Switching
+    to snowballstemmer's `english` (Porter2) makes it 11x worse.
 
     Non-BM25 callers (relationship_detector, scoring helpers, etc.)
     that depend on word-form-preserving tokens should keep using
