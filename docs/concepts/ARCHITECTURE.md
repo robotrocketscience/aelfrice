@@ -8,7 +8,7 @@ How aelfrice fits together. Maps directly to source under `src/aelfrice/`.
 2. **SQLite plus a small numeric stack.** No vector DB, no embeddings, no LLM in the hot path. Required deps beyond stdlib: `numpy` and `scipy` (added v1.5.0, #148, for the BM25 sparse-matvec lane; now also used by the HRR and spectral-graph lanes) and `snowballstemmer` (added v1.7.0, #154, for Porter stemming). Optional extras: `[mcp]` (fastmcp), `[onboard-llm]` (the direct-API onboard classifier SDK, for `aelf onboard --llm-classify`), `[archive]` (cryptography, for `aelf uninstall --archive`), `[benchmarks]` (dev-side adapters).
 3. **Bayesian, not vibes.** Confidence is `α / (α + β)`. Every update has a closed-form rule. At v1.3.0+ the posterior is combined log-additively with BM25 on the L1 tier — see [LIMITATIONS](../user/LIMITATIONS.md) for what the partial ranking does and doesn't cover.
 4. **`apply_feedback` is the central endpoint.** One writer of `(α, β)`. One audit row per successful update.
-5. **Locks are user-asserted ground truth.** A user-locked belief short-circuits decay. Lock correction is an explicit user act via `aelf lock` overwriting (PHILOSOPHY [#605](https://github.com/robotrocketscience/aelfrice/issues/605)); contradiction-driven auto-demotion was removed in [#814](https://github.com/robotrocketscience/aelfrice/issues/814).
+5. **Locks are user-asserted ground truth.** A user-locked belief short-circuits decay — a mechanism that does not currently run; see the posterior-decay note below. Lock correction is an explicit user act via `aelf lock` overwriting (PHILOSOPHY [#605](https://github.com/robotrocketscience/aelfrice/issues/605)); contradiction-driven auto-demotion was removed in [#814](https://github.com/robotrocketscience/aelfrice/issues/814).
 
 ### Enrichment-step boundary
 
@@ -250,7 +250,7 @@ new context alongside the harness's own summary (augment mode)
 | Property | default | Pre-registered invariants: Bayesian inertia, decay-required, lock-floor sharpness, token-budget invariant, broker-attenuation. |
 | Regression | `@pytest.mark.regression` | Cross-module scenarios: retrieval round-trip, feedback loop, onboarding, setup→hook→unsetup, `aelf bench` end-to-end. |
 
-`uv run pytest` (5,900+ tests at v4.1.0).
+`uv run pytest` (5,900+ tests at v4.2.0).
 
 ## Out of scope through v1.x
 
