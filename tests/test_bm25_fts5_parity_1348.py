@@ -29,12 +29,14 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import unicodedata
 
 import pytest
 
 from aelfrice.bm25 import (
     _FTS5_TOKEN_PATTERN,
     _PORTER_STEMMER,
+    _REMOVED_MARKS,
     BM25Index,
     _stem,
     tokenize,
@@ -64,6 +66,23 @@ PARITY_CORPUS = (
     "MixedCase_Identifiers Are Common",
     "__dunder__ and _leading and trailing_",
     "running as it was, abusive organizations",
+)
+
+# Inputs the fix must not BREAK, as opposed to inputs it repairs. Kept
+# out of PARITY_CORPUS deliberately: the pre-#1348 pipeline handled all
+# of these correctly, so they fail that corpus's distinguishing
+# assertion by construction. They are here because the first cut of this
+# fix regressed every one of them, and the Latin-only corpus above could
+# not see it — the same blind spot, one layer up.
+NON_LATIN_REGRESSION_GUARD = (
+    "الوَلَد",         # Arabic harakat: separators, not diacritics
+    "בְּרֵאשִׁית",        # Hebrew points: separators
+    "हिन्दी",           # Devanagari matras: separators
+    "ភាសាខ្មែរ",        # Khmer: separators
+    "한국어",           # NFD explodes these into conjoining jamo
+    "Tiếng Việt",    # two marks: unicode61 folds neither
+    "ばか",            # dakuten is not a removable diacritic
+    "ǖber",          # U+01D5, the remove_diacritics=1 limit
 )
 
 # unicode61 folds U+00B5 MICRO SIGN to Greek mu (U+03BC) — a
@@ -244,3 +263,65 @@ def test_bm25f_lane_answers_the_queries_fts5_answers() -> None:
         fts5 = {b.id for b in store.search_beliefs(query, limit=10)}
         assert bm25f, f"BM25F lane returned nothing for {query!r}"
         assert bm25f == fts5, f"lanes disagree on {query!r}"
+
+
+def test_removed_marks_matches_sqlite() -> None:
+    """Re-derive `_REMOVED_MARKS` from SQLite rather than trusting it.
+
+    The set is the whole correctness argument for `_fold_diacritics`:
+    unicode61 *removes* 25 combining marks and treats 628 others as
+    token separators, so a fold keyed on `unicodedata.combining()`
+    instead of on this set is wrong for 628 of 653 marks. Nothing in
+    Python's Unicode tables encodes which is which — the only authority
+    is SQLite, so this asks SQLite every run.
+
+    A drift here means the host SQLite disagrees with the set the fold
+    was measured against, which is a real signal and not a flaky test:
+    it says the BM25F lane and `beliefs_fts` have started to disagree on
+    this machine.
+    """
+    removed: set[str] = set()
+    separators: set[str] = set()
+    for codepoint in range(0x300, 0x2000):
+        mark = chr(codepoint)
+        if not unicodedata.combining(mark):
+            continue
+        terms = fts5_terms(f"zz{mark}zz")
+        if len(terms) > 1:
+            separators.add(mark)
+        elif terms == ["zzzz"]:
+            removed.add(mark)
+
+    assert removed == set(_REMOVED_MARKS), (
+        "SQLite removes a different set of combining marks than "
+        "_REMOVED_MARKS records"
+    )
+    # The asymmetry is the reason the set exists at all; if it ever
+    # inverted, `unicodedata.combining()` would have been fine.
+    assert len(separators) > 10 * len(removed)
+
+
+@pytest.mark.parametrize("text", NON_LATIN_REGRESSION_GUARD)
+def test_non_latin_text_is_not_over_folded(text: str) -> None:
+    """The class the first cut of this fix got wrong.
+
+    A blanket NFD + strip-combining-marks welded `الوَلَد` into one token
+    where FTS5 emits three, turned `한국어` into jamo that match no row,
+    and folded `ばか` to `はか` — which additionally makes the BM25F lane
+    return documents FTS5 does not, a precision loss rather than a mere
+    cross-lane gap.
+    """
+    assert tokenize_stemmed(text) == fts5_terms(text)
+
+
+@pytest.mark.parametrize("text", NON_LATIN_REGRESSION_GUARD)
+def test_non_latin_guard_is_a_regression_guard_not_a_fix(text: str) -> None:
+    """State the premise the guard rests on: main already got these right.
+
+    Without this, someone reading `test_non_latin_text_is_not_over_folded`
+    would reasonably assume those inputs are part of what #1348 repairs
+    and might weaken them alongside PARITY_CORPUS. They are the opposite
+    — the pre-#1348 pipeline matched FTS5 on every one, so any failure
+    there is a regression this branch introduced, not a gap it inherited.
+    """
+    assert _legacy_tokenize_stemmed(text) == fts5_terms(text)

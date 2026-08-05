@@ -248,31 +248,72 @@ def tokenize(text: str) -> list[str]:
     return [m.group(0).lower() for m in _TOKEN_PATTERN.finditer(text)]
 
 
-def _fold_diacritics(text: str) -> str:
-    """Strip combining marks the way unicode61's default folding does.
-
-    Canonical decomposition (NFD), **not** compatibility decomposition
-    (NFKD): unicode61 applies essentially no compatibility mappings, so
-    NFKD over-folds. Measured over 44,655 live beliefs, NFKD fixes 24
-    documents that a bare split gets wrong and breaks 49 it gets right —
-    it is net-negative against doing nothing. NFD fixes 13 and breaks 0.
-
-    Runs on the **whole string, before splitting**, and the order is
-    load-bearing. Combining marks sit outside Python's `\\w` but inside
-    unicode61's word class, so folding after the split cannot re-join
-    what the split already broke: decomposed ``"áb"`` splits to
-    ``["a", "b"]`` where FTS5 yields the single token ``"ab"``.
-
-    Two known residuals, both stated rather than chased. SQLite folds
-    U+00B5 MICRO SIGN to Greek mu — a compatibility mapping NFD does not
-    perform — and `remove_diacritics=1` (what a bare `unicode61`
-    declaration gets) leaves 112 double-diacritic codepoints such as
-    U+01D5 unfolded where a blanket strip folds them.
-    """
-    return "".join(
-        ch for ch in unicodedata.normalize("NFD", text)
-        if not unicodedata.combining(ch)
+# The complete set of combining marks a bare `unicode61` declaration
+# removes — `remove_diacritics=1`, which is what `beliefs_fts` gets.
+# Derived by probing SQLite itself rather than from the Unicode
+# categories, and re-derived on every test run by
+# `test_removed_marks_matches_sqlite`.
+#
+# The size is the point. Only these 25 marks are *removed*; unicode61
+# treats 628 other combining marks as token **separators**, so stripping
+# a mark it does not remove concatenates two tokens FTS5 keeps apart.
+# That is why this is a set membership test and not
+# `unicodedata.combining(ch)` — the categorical test is wrong for 628 of
+# 653 marks, across Hebrew points, Arabic harakat, Devanagari matras and
+# Khmer.
+_REMOVED_MARKS: Final[frozenset[str]] = frozenset(
+    chr(cp) for cp in (
+        0x300, 0x301, 0x302, 0x303, 0x304, 0x306, 0x307, 0x308,
+        0x309, 0x30A, 0x30B, 0x30C, 0x30F, 0x311, 0x31B, 0x323,
+        0x324, 0x325, 0x326, 0x327, 0x328, 0x32D, 0x32E, 0x330,
+        0x331,
     )
+)
+
+
+def _fold_diacritics(text: str) -> str:
+    """Remove the diacritics `unicode61` removes — and only those.
+
+    Per character, never over the whole string. A blanket `NFD` +
+    strip-every-combining-mark is wrong in two independent ways, both
+    measured against a real `porter unicode61` table before this was
+    written:
+
+    * It strips the 628 marks unicode61 uses as **separators**, welding
+      together tokens FTS5 splits. ``"الوَلَد"`` became one token where
+      FTS5 yields three; Hebrew, Devanagari and Khmer behave the same.
+    * NFD is a normalisation change, not just a fold, and it reaches
+      12,189 codepoints carrying no combining mark at all — every one of
+      the 11,172 Hangul syllables decomposes into conjoining jamo, which
+      are ``Lo`` and so survive a combining-mark filter. ``"한국어"`` came
+      out as jamo that print identically to the syllables, compare
+      unequal, and match no row in ``beliefs_fts``.
+
+    Only a base plus **exactly one** removed mark folds. Two marks is
+    the documented limit of ``remove_diacritics=1``: SQLite leaves
+    ``"ǖ"`` (U+01D5, u + diaeresis + macron) alone, and so does this.
+
+    A standalone mark in the set is dropped, because unicode61 drops it:
+    decomposed ``"áb"`` is the single token ``"ab"`` to FTS5. A
+    standalone mark outside the set is kept, and `_FTS5_TOKEN_PATTERN`
+    then splits on it — which is what unicode61 does with it.
+
+    One residual remains, stated rather than chased: SQLite folds U+00B5
+    MICRO SIGN to Greek mu, a compatibility mapping no canonical
+    decomposition performs. It costs 12 of 44,655 live beliefs.
+    """
+    out: list[str] = []
+    for ch in text:
+        if unicodedata.combining(ch):
+            if ch not in _REMOVED_MARKS:
+                out.append(ch)
+            continue
+        decomposed = unicodedata.normalize("NFD", ch)
+        if len(decomposed) == 2 and decomposed[1] in _REMOVED_MARKS:
+            out.append(decomposed[0])
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def tokenize_stemmed(text: str) -> list[str]:

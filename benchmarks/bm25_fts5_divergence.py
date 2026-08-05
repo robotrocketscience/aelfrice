@@ -43,7 +43,6 @@ import argparse
 import re
 import sqlite3
 import sys
-import unicodedata
 from collections import Counter
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -53,7 +52,7 @@ import snowballstemmer
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from aelfrice.bm25 import tokenize_stemmed  # noqa: E402
+from aelfrice.bm25 import _fold_diacritics, tokenize_stemmed  # noqa: E402
 
 # The declaration under test. Kept as a literal rather than imported so a
 # change to `store.py` shows up here as a measured divergence instead of
@@ -82,11 +81,12 @@ def _stem_guarded(token: str) -> str:
     return _STEMMER.stemWord(token)
 
 
-def _fold(text: str) -> str:
-    return "".join(
-        ch for ch in unicodedata.normalize("NFD", text)
-        if not unicodedata.combining(ch)
-    )
+# The fold is not one of the arms — it is held constant across them so
+# the comparison attributes the gap to the word class and the stemmer
+# guard. Imported rather than re-spelled: a local copy is what let the
+# blanket-NFD fold look correct here while it was welding Hebrew and
+# Devanagari tokens together in the shipped path.
+_fold = _fold_diacritics
 
 
 def arm_legacy(text: str) -> list[str]:
