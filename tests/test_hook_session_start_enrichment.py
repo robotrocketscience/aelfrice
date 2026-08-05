@@ -311,6 +311,26 @@ def test_is_session_first_prompt_refreshes_the_active_id_for_a_known_session(
 
 
 
+def test_session_state_window_is_bounded_at_a_cap_of_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cap of 1 means one slot — the pre-#1344 behaviour, as documented.
+
+    `window[-(SESSION_STATE_MAX_IDS - 1):]` is `window[-0:]` at a cap of 1,
+    and `lst[0:]` is the whole list, so the one setting the docstring offers
+    as "the pre-#1344 behaviour" grew the window without bound instead. The
+    shipped cap of 128 is asserted separately; this pins the arithmetic at
+    the boundary where it inverts.
+    """
+    db = tmp_path / "memory.db"
+    _set_db(monkeypatch, db)
+    monkeypatch.setattr(hook, "SESSION_STATE_MAX_IDS", 1)
+    for i in range(5):
+        assert is_session_first_prompt(f"s{i}") is True
+    data = json.loads((tmp_path / SESSION_STATE_FILENAME).read_text())
+    assert data["session_ids"] == ["s4"]
+
+
 # ---------------------------------------------------------------------------
 # _build_session_start_subblock content
 # ---------------------------------------------------------------------------

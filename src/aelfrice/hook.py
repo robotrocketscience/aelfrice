@@ -3162,8 +3162,12 @@ def _write_session_state(
             # window: keep the window and its first-seen order untouched.
             window = list(seen)
         else:
+            # `-(MAX_IDS - 1)` is `-0` at a bound of 1, and `lst[0:]` is the
+            # whole list — the one setting the docstring offers as "the
+            # pre-#1344 behaviour" would instead grow without bound.
+            keep = max(SESSION_STATE_MAX_IDS - 1, 0)
             window = [s for s in seen if s != session_id]
-            window = window[-(SESSION_STATE_MAX_IDS - 1):] + [session_id]
+            window = (window[-keep:] if keep else []) + [session_id]
         payload = json.dumps({"session_id": session_id, "session_ids": window})
         fd, tmp_name = tempfile.mkstemp(
             prefix=state_path.name + ".",
