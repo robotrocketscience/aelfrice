@@ -116,9 +116,20 @@ def load_hook_audit_config(
         max_bytes_obj: Any = section.get(
             _AUDIT_MAX_BYTES_KEY, AUDIT_DEFAULT_MAX_BYTES,
         )
-        if not isinstance(max_bytes_obj, int) or max_bytes_obj <= 0:
+        # `bool` is a subclass of `int`, so a bare `isinstance(..., int)`
+        # accepts `max_bytes = true`, and `True <= 0` is False -- the value
+        # passes both arms, no trace prints, and the config carries a cap
+        # of 1 byte, rotating the log on every append. Guarded explicitly,
+        # in the spelling `dedup`, `relationship_detector`, `cadence`,
+        # `auto_install`, `hook` and `noise_filter` already use (#1340).
+        if (
+            isinstance(max_bytes_obj, bool)
+            or not isinstance(max_bytes_obj, int)
+            or max_bytes_obj <= 0
+        ):
             if not (
-                isinstance(max_bytes_obj, int)
+                not isinstance(max_bytes_obj, bool)
+                and isinstance(max_bytes_obj, int)
                 and max_bytes_obj == AUDIT_DEFAULT_MAX_BYTES
             ):
                 print(
