@@ -1,8 +1,12 @@
 """#1283 AC2: the spine is recomputable from the log, and the gap is named.
 
-The recompute keys on `(created_at, ingest_log ULID, id)` — every
-component durable — against the shipped writer's `(created_at, rowid)`,
-where `rowid` is implicit and `VACUUM` may renumber it.
+The recompute keys on `(created_at, ingest_log ULID, id)` against the
+shipped writer's `(created_at, rowid)`, where `rowid` is implicit and
+`VACUUM` may renumber it. The ULID component is durable as an *observed
+property, not a guarantee* — `ulid.make_generator` is monotone only
+within a process — so nothing here may be written as if the key were
+guaranteed; see `spine_recompute.recompute_spine_edges` for the measured
+exposure.
 
 **A test here must not assert that divergence is zero.** The writer has
 not been changed yet, so writer and recompute key on different things
