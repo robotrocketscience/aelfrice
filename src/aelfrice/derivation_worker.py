@@ -268,7 +268,12 @@ def _process_row(
     if out.belief is None:
         # Stamp the row with an explicit empty list so a subsequent
         # worker pass treats it as covered (vs ambiguous NULL = unstamped).
-        store.update_ingest_derived_ids(log_id, derived_belief_ids=[])
+        # `derived_edge_ids` gets the same treatment for the same reason
+        # (#1354): NULL now means "no edge-aware writer ever saw this
+        # row", which is what makes the column's population forward-only.
+        store.update_ingest_derived_ids(
+            log_id, derived_belief_ids=[], derived_edge_ids=[],
+        )
         acc.outcomes[log_id] = (None, False)
         return WorkerResult(
             rows_scanned=rows_scanned,
@@ -348,7 +353,11 @@ def _process_row(
     store.update_ingest_derived_ids(
         log_id,
         derived_belief_ids=[actual_id],
-        derived_edge_ids=derived_edge_ids if derived_edge_ids else None,
+        # #1354: always a list, never None. `None` would leave the
+        # column NULL and make a zero-edge row indistinguishable from a
+        # row that predates the edge-aware writer — which is precisely
+        # the distinction the replay probe's watermark reads.
+        derived_edge_ids=derived_edge_ids,
     )
 
     acc.outcomes[log_id] = (actual_id, was_inserted)

@@ -148,3 +148,62 @@ def test_edge_with_an_absent_endpoint_is_logged_but_not_inserted(
 
     assert _edge_ids_of(store, log_id) == [[first, _ABSENT_ID, EDGE_DERIVED_FROM]]
     assert store.get_edge(first, _ABSENT_ID, EDGE_DERIVED_FROM) is None
+
+
+# --- 2. the []-vs-NULL watermark ----------------------------------------
+
+
+def test_a_zero_edge_row_stamps_an_empty_list_not_null(
+    store: MemoryStore,
+) -> None:
+    """Hypothesis: a row the worker processed but which derived no edges
+    is stamped `[]`, not left NULL.
+
+    This is the watermark. NULL must mean "no edge-aware writer ever saw
+    this row" so the replay probe can exempt the historical cohort;
+    if a zero-edge row were also NULL the two are indistinguishable.
+    Falsifiable by restoring `derived_edge_ids if derived_edge_ids else
+    None` — `is not None` then fails.
+    """
+    log_id = _record(store, "The planner emits one task per shard.")
+    run_worker(store)
+
+    assert _edge_ids_of(store, log_id) is not None
+    assert _edge_ids_of(store, log_id) == []
+
+
+def test_a_persist_false_row_also_stamps_an_empty_edge_list(
+    store: MemoryStore,
+) -> None:
+    """Hypothesis: the no-belief early return stamps `derived_edge_ids`
+    too, so it does not leave a NULL the probe would read as historical.
+
+    Falsifiable by stamping only `derived_belief_ids` on that path.
+    """
+    log_id = _record(store, "What happens when the queue drains?")
+    run_worker(store)
+
+    entry = store.get_ingest_log_entry(log_id)
+    assert entry is not None
+    assert entry["derived_belief_ids"] == []  # persist=False
+    assert entry["derived_edge_ids"] == []
+
+
+def test_a_prestamped_row_is_never_revisited(store: MemoryStore) -> None:
+    """Hypothesis: the worker only ever visits rows whose
+    `derived_belief_ids` is NULL, so a historical row keeps its NULL
+    `derived_edge_ids` forever. This is what makes the change
+    forward-only without a date, a ULID boundary or a migration.
+
+    Falsifiable by any backfill sweep, or by widening
+    `list_unstamped_ingest_log`'s predicate.
+    """
+    log_id = store.record_ingest(
+        source_kind=INGEST_SOURCE_TRANSCRIPT,
+        raw_text="A row a previous release already stamped.",
+        raw_meta={"call_site": CORROBORATION_SOURCE_TRANSCRIPT_INGEST},
+        derived_belief_ids=["0123456789abcdef"],
+    )
+    run_worker(store)
+
+    assert _edge_ids_of(store, log_id) is None
