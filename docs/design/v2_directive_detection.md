@@ -13,7 +13,7 @@ Two corrections to what this memo previously published, both from that re-run:
 
 ## What's being decided
 
-Which detector-iteration path to commit to before the next implementation attempt at #374. The harness is in place; what's missing is a chosen direction for raising precision from 0.664 to ≥0.80 without dropping recall below 0.60. This memo proposes three concrete paths, recommends one, and defines the public-tree vs lab-tree work split so the issue stops bouncing.
+**Superseded — read § Gate validity first.** As originally written: which detector-iteration path to commit to before the next implementation attempt at #374; the harness is in place, and what was missing was a chosen direction for raising precision from 0.664 to ≥0.80 without dropping recall below 0.60. That framing no longer holds. The measured figure is **0.706**, not 0.664, and § Gate validity shows corpus v0.1 cannot distinguish a detector that generalises from one that has memorised opening vocabulary — so no measured preference among the three paths below is interpretable. The live decision is corpus v0.2, not a detector path.
 
 ## Substrate dependency
 
