@@ -2,7 +2,7 @@
 
 Iteration spec for issue [#374](https://github.com/robotrocketscience/aelfrice/issues/374). Successor memo to [`v2_enforcement.md` § H1](v2_enforcement.md#h1-directive-detection--defer-to-v2x-with-benchmark-gate); does not re-decide the deferral or the gate, only the path to clearing it.
 
-Status: deferred, and **the gate is not currently a valid measurement** — see § Gate validity. Harness shipped (PR [#377](https://github.com/robotrocketscience/aelfrice/pull/377)). Path A intent-prefix filter shipped at PR [#467](https://github.com/robotrocketscience/aelfrice/pull/467) (issue #374) — `src/aelfrice/directive_detector.py` is in-tree.
+Status: deferred. The gate was **not a valid measurement** against corpus v0.1 alone; corpus v0.2 (2026-08-05) fixes that and the deferral now rests on a real number — see § Gate validity. Harness shipped (PR [#377](https://github.com/robotrocketscience/aelfrice/pull/377)). Path A intent-prefix filter shipped at PR [#467](https://github.com/robotrocketscience/aelfrice/pull/467) (issue #374) — `src/aelfrice/directive_detector.py` is in-tree.
 
 The shipped detector measures **P=0.706 / R=0.937** against lab corpus v0.1 (285 rows; TP=89, FP=37, FN=6, TN=153), re-run 2026-08-05 under [#1341](https://github.com/robotrocketscience/aelfrice/issues/1341). Below the P≥0.80 floor, so H1 stays deferred per spec.
 
@@ -13,7 +13,7 @@ Two corrections to what this memo previously published, both from that re-run:
 
 ## What's being decided
 
-**Superseded — read § Gate validity first.** As originally written: which detector-iteration path to commit to before the next implementation attempt at #374; the harness is in place, and what was missing was a chosen direction for raising precision from 0.664 to ≥0.80 without dropping recall below 0.60. That framing no longer holds. The measured figure is **0.706**, not 0.664, and § Gate validity shows corpus v0.1 cannot distinguish a detector that generalises from one that has memorised opening vocabulary — so no measured preference among the three paths below is interpretable. The live decision is corpus v0.2, not a detector path.
+**Superseded — read § Gate validity first.** As originally written: which detector-iteration path to commit to before the next implementation attempt at #374; the harness is in place, and what was missing was a chosen direction for raising precision from 0.664 to ≥0.80 without dropping recall below 0.60. That framing no longer holds. The measured figure is **0.706**, not 0.664, and § Gate validity shows corpus v0.1 cannot distinguish a detector that generalises from one that has memorised opening vocabulary — so no measured preference among the three paths below was interpretable at the time. Corpus v0.2 landed 2026-08-05 and closed that gap; the live decision is again a detector path, but chosen against the union corpus and against recall, not precision — see § Recommendation.
 
 ## Substrate dependency
 
@@ -36,13 +36,18 @@ The 6 false negatives are not the load-bearing problem — recall at 0.937 is co
 
 **Do not iterate the detector against corpus v0.1. It cannot tell a working detector from a memorised one.**
 
-Measured 2026-08-05 (#1341). Partition the 285 rows deterministically by `sha1(id) % 100 < 60` into 163 train / 122 held-out. Build the weakest classifier that can be written: read the **first word** of the prompt, look up the majority label for that word among the training rows, answer with it. It has no representation of mood, grammar, attribution, durability, or task-versus-rule. On held-out rows it scores:
+Measured 2026-08-05 (#1341, swept under #1349). Build the weakest classifier that can be written: read the **first word** of the prompt, look up the majority label for that word among the training rows, answer with it. It has no representation of mood, grammar, attribution, durability, or task-versus-rule. Partition the 285 rows 60/40 by `sha1(salt + id)` and score it on the held-out half, over **K=200 salted partitions**:
 
 ```
-P=0.912  R=0.795   (TP=31, FP=3, FN=8)     -> clears P>=0.80 / R>=0.60
+partitions where it CLEARS P>=0.80 / R>=0.60 : 196 / 200  (98.0%)
+precision   min 0.833   median 0.941   max 1.000
+recall      min 0.529   median 0.729   max 0.875
+pooled      P=0.9381 (n=5,978 positive predictions, Wilson 95% [0.9317, 0.9439])
 ```
 
-It clears the H1 gate. The real detector scores P=0.706 and does not.
+It clears the H1 gate on 98% of partitions. The real detector scores P=0.706 and does not clear it on any.
+
+The sweep is not decoration. A single partition decides precision on ~34 positive predictions, and that interval straddles the gate — the first published figure for this finding was one such draw (P=0.912, R=0.795), which is a sample from the distribution above rather than a property of the corpus. The claim that survives is the swept one. The **partition-independent** statistics below are what the conclusion actually rests on, and they do not depend on any split at all.
 
 The cause is in how the corpus separates its classes. Of 114 distinct opening words, only **7** appear in both classes; 87.9% of rows are perfectly classified by their first word alone. The positive class opens overwhelmingly with deontic or policy vocabulary (`always`, `never`, `don't`, `avoid`, `prefer`, `use`) and the negative class with task, question, and discourse vocabulary (`write`, `run`, `check`, `what`, `should`, `can`, `ok`, `please`). No row labeled `directive` opens with a one-shot task verb, and none labeled `not-directive` opens with a bare deontic.
 
@@ -50,17 +55,27 @@ The consequence for detector work: **any rule keyed on head position buys precis
 
 This was found by building six family-scoped suppression rules against the train split and putting each through independent adversarial review. Composed, they took the corpus to P=0.953 / R=0.853 — a comfortable pass. All six were then judged both overfit and over-reaching, unanimously, with concrete minimal pairs; the one-token baseline above explains why. **None of them shipped.** A gate that a one-token lookup table passes will bless an overfit detector, and did.
 
-`tests/bench_gate/test_directive_detection.py::test_directive_corpus_defeats_a_first_token_baseline` now asserts this property, so the condition cannot silently return. It is red against v0.1, by design.
+`tests/bench_gate/test_directive_detection.py::test_directive_corpus_defeats_a_first_token_baseline` asserts this property over the same K=200 sweep, failing if the baseline clears the gate on **any** partition, so the condition cannot silently return. It is red against v0.1 alone, by design.
 
-### What corpus v0.2 needs
+### Corpus v0.2 — delivered 2026-08-05
 
-Not more rows — **minimal pairs that break the head-word/class correlation**. Every opening word that currently predicts a class needs rows on both sides of it:
+Not more rows — **minimal pairs that break the head-word/class correlation**: the same opening word carrying both labels, so no head-position rule can buy precision for free.
 
-- Durable directives opening with task verbs (`check`, `run`, `review`, `update`, `remove`) — the hard positives, entirely absent today.
-- One-shot requests opening with deontic/policy verbs ("avoid the deprecated call in the function I'm about to paste") — the hard negatives.
-- Attribution, use/mention, and third-person descriptive rows on both sides, so those families are learnable rather than guessable.
+`v0_2.jsonl` adds **225 rows** across six head-word buckets — durable rules opening with task verbs (`check`, `run`, `review`, `update`, `remove`, `write`, `add`), which v0.1 lacked entirely, and one-shot requests opening with policy verbs (`always`, `never`, `avoid`, `use`, `prefer`, `ensure`). Effect on the union (510 rows):
 
-Target: the share of rows whose first word is class-ambiguous rises from 12.1% to a majority. Until then the gate's number is not about the detector.
+| | v0.1 | v0.1 + v0.2 |
+|---|---|---|
+| rows whose first word is class-ambiguous | 12.1% | **71.6%** |
+| partitions where the one-token baseline clears the gate | 196/200 | **0/200** |
+| baseline precision, max over K=200 | 1.000 | **0.754** |
+| baseline pooled precision | 0.9381 | 0.6108 |
+| real detector | P=0.706 / R=0.937 | **P=0.665 / R=0.636** |
+
+The validity guard goes green on the union. The gate itself stays red, now for a real reason: the detector genuinely does not clear P≥0.80 on a corpus that cannot be solved by memorising opening vocabulary. **H1 remains deferred, and its number now means what § H1 intends.**
+
+Labels were authored per bucket, then reproduced by two independent passes with labels stripped, row ids replaced by opaque hashes, and rows reshuffled — 225/225 agreement, κ=1.000, zero unclear. Two caveats bound that: both passes are the same model family, and minimal pairs stay recognisable by topic however the ids are scrambled. It bounds label noise; it is not proof of independence.
+
+Remaining known weakness, self-reported by the authors: one-shot rows still carry concrete referents (a file, a PR number, a version) more often than durable rows do. That is arguably the real semantics of durability rather than an artifact, but it is the next shortcut a classifier would find, and v0.3 should be sized against it rather than against head words.
 
 ## Iteration paths
 
@@ -94,17 +109,19 @@ Replace the regex with an LLM call ("does this prompt encode a durable rule?"). 
 
 ## Recommendation
 
-**Corpus v0.2 first. No further detector iteration against v0.1.**
+**Path B (deontic-anchor partition), measured against the v0.1+v0.2 union.**
 
-Path A was this memo's recommendation and it shipped (PR #467). It moved precision 0.664 → 0.706. The paths above are retained as the historical record, but the choice between them is no longer the live question: § Gate validity shows that v0.1 cannot distinguish a detector that generalises from one that has memorised opening vocabulary, so any measured preference among A / B / C is uninterpretable.
+Steps 1 and 2 of this memo's previous ordering are done: corpus v0.2 landed 2026-08-05 and the validity guard is green on the union, so a P/R number from this corpus is now worth quoting. Detector iteration is unblocked.
 
-Ordering:
+Path A was this memo's original recommendation and it shipped (PR #467), moving precision 0.664 → 0.706 on v0.1. That preference was never interpretable — it was measured on a corpus a lookup table could solve — so it should not be read as evidence for A over B.
 
-1. **Lab-side.** Author corpus v0.2 to the minimal-pair standard in § What corpus v0.2 needs. This is the blocking item and it is a labelling investment, not a code change.
-2. **Verify the corpus, not the detector.** `test_directive_corpus_defeats_a_first_token_baseline` must go green on v0.2 before any P/R number from it is quoted anywhere.
-3. **Then** re-measure the shipped detector on v0.2 and resume iteration, with Path B (deontic-anchor partition) as the next candidate — its recall risk finally becomes measurable once hard positives exist.
+Against the union the detector sits at **P=0.665 / R=0.636**, and the shape of the problem has changed: recall is no longer comfortable. On v0.1 recall was 0.937 with 34 points of headroom, which is what licensed "trade recall for precision freely". On the union it is 0.636, barely above the 0.60 floor, because v0.2's hard positives are durable rules the 29-verb regex never fires on. **Any further precision work now has to pay for its recall**, which is exactly the constraint § Path B's risk note anticipated and could not previously measure.
 
-Detector work done before step 2 will be tuned against an artifact.
+Ordering from here:
+
+1. Re-derive the failure families against the union — the six in § Failure-mode analysis were read off v0.1 and their relative weights will have moved.
+2. Attack recall first, not precision. The floor is the binding constraint now.
+3. Path B on the union, with its recall cost finally observable.
 
 ## Decision asks
 
