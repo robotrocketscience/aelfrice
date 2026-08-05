@@ -272,6 +272,43 @@ def test_is_session_first_prompt_fires_on_a_non_utf8_state_file(
     state_file.write_bytes(b"\xff\xfe\x00 not utf-8")
     assert is_session_first_prompt("session-1") is True
 
+def test_is_session_first_prompt_refreshes_the_active_id_for_a_known_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A, B, A leaves `session_id` on A — the session that just submitted.
+
+    This is the assert that distinguishes the two implementations;
+    `..._keeps_active_session_id_key` above uses A then B, two *first* fires,
+    and so passes whether or not a returning session refreshes the key.
+
+    The key is not decoration: `session_exclusions.read_current_session_id`
+    resolves it, and `aelf scope-out` binds the exclusion it writes to
+    whatever it names. Keyed on first-fire instead of most-recent-submit, a
+    pattern typed in the older of two live sessions attaches to the newer
+    one — the older keeps injecting exactly what the user asked it to drop.
+
+    The window itself must not be reordered by the refresh: eviction is FIFO
+    by first-seen, so a refresh that moved the id to the back would make a
+    chatty session immortal and evict a quiet one early.
+    """
+    db = tmp_path / "memory.db"
+    _set_db(monkeypatch, db)
+    state_file = tmp_path / SESSION_STATE_FILENAME
+
+    assert is_session_first_prompt("session-A") is True
+    assert is_session_first_prompt("session-B") is True
+    assert is_session_first_prompt("session-A") is False
+
+    data = json.loads(state_file.read_text())
+    assert data["session_id"] == "session-A"
+    assert data["session_ids"] == ["session-A", "session-B"]
+
+    assert is_session_first_prompt("session-B") is False
+    data = json.loads(state_file.read_text())
+    assert data["session_id"] == "session-B"
+    assert data["session_ids"] == ["session-A", "session-B"]
+
+
 
 
 # ---------------------------------------------------------------------------

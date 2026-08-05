@@ -3060,37 +3060,40 @@ def _session_state_path() -> Path | None:
     return p.parent / SESSION_STATE_FILENAME
 
 
-def _read_seen_session_ids(state_path: Path) -> list[str]:
-    """Return the recently-seen session ids from the state file, oldest first.
+def _read_session_state(state_path: Path) -> tuple[str | None, list[str]]:
+    """Return `(active_session_id, recently-seen ids oldest first)`.
 
-    Reads the `session_ids` list written by `_write_session_state`. Falls back
-    to the pre-#1344 single-key shape (`{"session_id": "..."}`) so a state file
-    written by an older release is honoured rather than treated as absent.
-    Returns [] on a missing, unreadable or malformed file (fail-soft).
+    The window is the `session_ids` list written by `_write_session_state`;
+    the active id is the top-level `session_id` key, which is what
+    `session_exclusions.read_current_session_id` resolves `aelf scope-out`
+    against. Falls back to the pre-#1344 single-key shape
+    (`{"session_id": "..."}`) so a state file written by an older release is
+    honoured rather than treated as absent.
 
-    The decode is caught by `ValueError` rather than `json.JSONDecodeError`:
-    a state file holding non-UTF-8 bytes raises `UnicodeDecodeError` out of
-    `read_text`, and that is a sibling of `JSONDecodeError` under `ValueError`,
-    not of `OSError`. Landing it here keeps the fail-soft direction the caller
-    documents — an unreadable file reads as "never seen", costing one extra
-    injection. Escaping to the caller's blanket handler returns False instead,
-    which *suppresses* the first fire of every session while the file stays
-    corrupt.
+    Returns `(None, [])` on a missing, unreadable or malformed file. The
+    decode is caught by `ValueError` rather than `json.JSONDecodeError`
+    because a state file holding non-UTF-8 bytes raises `UnicodeDecodeError`
+    out of `read_text`, and that is a sibling of `JSONDecodeError` under
+    `ValueError`, not of `OSError`. Landing it here keeps the fail-soft
+    direction the caller documents — an unreadable file reads as "never
+    seen", which costs one extra injection; escaping to the caller's blanket
+    handler would instead return False and *suppress* a genuine first fire.
     """
     if not state_path.exists():
-        return []
+        return None, []
     try:
         data = json.loads(state_path.read_text(encoding="utf-8"))
     except (ValueError, OSError):
-        return []
+        return None, []
     if not isinstance(data, dict):
-        return []
+        return None, []
+    val = data.get("session_id")
+    active = val if isinstance(val, str) and val else None
     raw = data.get("session_ids")
     if isinstance(raw, list):
-        return [s for s in raw if isinstance(s, str) and s]
-    # Pre-#1344 shape: one slot.
-    val = data.get("session_id")
-    return [val] if isinstance(val, str) and val else []
+        return active, [s for s in raw if isinstance(s, str) and s]
+    # Pre-#1344 shape: one slot, which is both the active id and the window.
+    return active, [active] if active else []
 
 
 def is_session_first_prompt(session_id: str | None) -> bool:
@@ -3124,8 +3127,16 @@ def is_session_first_prompt(session_id: str | None) -> bool:
     if state_path is None:
         return False
     try:
-        seen = _read_seen_session_ids(state_path)
+        active, seen = _read_session_state(state_path)
         if session_id in seen:
+            # Not a first prompt. But the top-level `session_id` key is how
+            # `aelf scope-out` resolves which session it acts on, and under a
+            # membership test a returning session no longer rewrites it — so
+            # without this the key names whichever session most recently
+            # *started* rather than the one submitting now, and an exclusion
+            # typed in this session would attach to another one.
+            if active != session_id:
+                _write_session_state(state_path, session_id, seen)
             return False
         # New session: update state file atomically.
         _write_session_state(state_path, session_id, seen)
@@ -3146,8 +3157,13 @@ def _write_session_state(
     """
     try:
         state_path.parent.mkdir(parents=True, exist_ok=True)
-        window = [s for s in seen if s != session_id]
-        window = window[-(SESSION_STATE_MAX_IDS - 1):] + [session_id]
+        if session_id in seen:
+            # Refreshing the active marker for a session already in the
+            # window: keep the window and its first-seen order untouched.
+            window = list(seen)
+        else:
+            window = [s for s in seen if s != session_id]
+            window = window[-(SESSION_STATE_MAX_IDS - 1):] + [session_id]
         payload = json.dumps({"session_id": session_id, "session_ids": window})
         fd, tmp_name = tempfile.mkstemp(
             prefix=state_path.name + ".",
