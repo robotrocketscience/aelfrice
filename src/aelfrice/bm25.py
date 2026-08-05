@@ -184,6 +184,12 @@ _TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\w+", re.UNICODE)
 # unicode61 counts as word characters). The residual is stated rather
 # than chased — see `benchmarks/bm25_fts5_divergence.py`, which measures
 # it against a real FTS5 table.
+#
+# Pinned by `tests/test_bm25_fts5_parity_1348.py`, which compares this
+# against terms an actual `fts5vocab` reports and asserts its own corpus
+# would fail under the old rule. The comment that used to sit here cited
+# `test_w0_equivalence_with_fts5`, which never existed; do not replace
+# this reference with a test name without checking that it resolves.
 _FTS5_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"[^\W_]+", re.UNICODE,
 )
