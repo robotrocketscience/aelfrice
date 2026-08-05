@@ -6321,12 +6321,18 @@ def _print_replay_report(
         legacy_origin_backfill:    <n>
         feedback_derived_edges:    <n>   (informational)
         mutable_divergence:        <n>   (informational)
+        edge_set_divergence:       <n>
 
     When `mutable_divergence` is non-zero a per-field breakdown follows,
     one indented `<field>: <n>` line per diverging field. These are the
     fields outside the strict shape-equality contract (#1167) — mutated
     legitimately after ingest, so a non-zero count is expected on a live
     store and never means drift.
+
+    `edge_set_divergence` carries no `(informational)` suffix because it
+    is the one counter here that DOES mean drift (#1354): the edge set is
+    re-derivable from the log row, so a disagreement is a derivation
+    regression rather than a legitimate post-ingest rewrite.
 
     If drift > 0, a "drift examples" section follows with one sub-block
     per non-empty bucket.
@@ -6347,6 +6353,7 @@ def _print_replay_report(
         "   (informational)",
         f"mutable_divergence:        {report.mutable_divergence}"
         "   (informational)",
+        f"edge_set_divergence:       {report.edge_set_divergence}",
     ]
     for name in MUTABLE_FIELDS:
         count = report.mutable_field_counts.get(name, 0)

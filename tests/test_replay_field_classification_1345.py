@@ -22,15 +22,19 @@ import pytest
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.replay import (
     EXCLUDED_FIELDS,
+    FullEqualityReport,
     MUTABLE_FIELDS,
     STRICT_FIELDS,
     _FLOAT_MUTABLE_FIELDS,
     _mutable_fields_diff,
 )
 
-# `edge_set` is a reporting key, not a `Belief` column: it compares
-# `derive()`'s emitted edges against the log row's `derived_edge_ids`.
-_PSEUDO_FIELDS = frozenset({"edge_set"})
+# No pseudo-fields remain in `MUTABLE_FIELDS`. `edge_set` used to sit
+# there as a reporting key despite not being a `Belief` column; #1354
+# moved it out into its own drift-triggering counter, so every name in
+# the classified set is now a real column. Kept as an empty frozenset so
+# the set algebra below still states that the exclusion is deliberate.
+_PSEUDO_FIELDS: frozenset[str] = frozenset()
 
 
 def _belief_field_names() -> set[str]:
@@ -91,6 +95,23 @@ def test_the_classification_is_not_empty() -> None:
     assert len(_belief_field_names()) >= 20, _belief_field_names()
     assert len(STRICT_FIELDS) >= 3
     assert len(set(MUTABLE_FIELDS) - _PSEUDO_FIELDS) >= 15
+
+
+def test_edge_set_is_not_folded_back_into_the_informational_bucket() -> None:
+    """`edge_set` must stay out of `MUTABLE_FIELDS` and keep its own
+    drift-triggering counter (#1354).
+
+    Every name in `MUTABLE_FIELDS` is informational by construction — the
+    bucket exists for fields no post-ingest operation can be blamed for.
+    The edge set is not one of those: `derive()` reconstructs it from the
+    log row, so a divergence is a derivation regression. Folding it back
+    in would silently restore exactly the blindness #1345 exists to
+    prevent, and no other assertion in this file would notice.
+    """
+    assert "edge_set" not in set(MUTABLE_FIELDS)
+    assert "edge_set_divergence" in {
+        f.name for f in dataclasses.fields(FullEqualityReport)
+    }
 
 
 def test_every_exclusion_carries_a_reason() -> None:
@@ -162,7 +183,7 @@ def test_the_diff_is_keyed_in_declared_field_order() -> None:
         lock_level=LOCK_USER,
         session_id="s",
     )
-    diff = _mutable_fields_diff(base, other, set(), set())
+    diff = _mutable_fields_diff(base, other)
     changed = [n for n in MUTABLE_FIELDS if n in diff]
     assert list(diff) == changed, (list(diff), changed)
     # Guard the guard: an assertion over an empty diff is vacuous.

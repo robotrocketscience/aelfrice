@@ -45,6 +45,15 @@ _FACTUAL_SENTENCE_2 = (
     "The default listening port for the web server is 8443 on all interfaces."
 )
 
+# A turn shaped (full, header-stub, full): the sub-floor clause is demoted
+# to an intra-turn DERIVED_FROM anchor, so the second log row carries a
+# `derived_from` block and `derive()` re-emits one edge for it (#1354).
+_SUBFLOOR_TURN = (
+    "The configuration file lives at /etc/aelfrice/conf."
+    "\n\nAcceptance criteria:\n\n"
+    "Astronomers process supernova imagery nightly using clusters."
+)
+
 
 @pytest.fixture
 def store(tmp_path: Path) -> Iterator[MemoryStore]:
@@ -125,12 +134,14 @@ def test_empty_store_all_zero(store: MemoryStore) -> None:
     assert report.feedback_derived_edges == 0
     assert report.mutable_divergence == 0
     assert report.mutable_field_counts == {}
+    assert report.edge_set_divergence == 0
     assert report.has_drift is False
     assert report.drift_examples == {
         "mismatched": [],
         "derived_orphan": [],
         "canonical_orphan": [],
         "mutable_divergence": [],
+        "edge_set": [],
     }
 
 
@@ -248,30 +259,70 @@ def test_clean_store_has_no_mutable_divergence(store: MemoryStore) -> None:
     assert report.mutable_field_counts == {}
 
 
-def test_edge_set_divergence_reported(store: MemoryStore) -> None:
-    """Hypothesis: a log row claiming a derived edge that `derive()` does not
-    re-emit is reported under `edge_set`.
-
-    `derive()` hardcodes `edges=[]` on every path today, so this shape can
-    only be produced by hand — the assertion pins the wiring so the probe is
-    live the moment #1157 lands edge derivation. Falsifiable by
-    mutable_field_counts lacking 'edge_set'."""
-    bid = _ingest(store, _FACTUAL_SENTENCE)
+def _set_edge_blob(store: MemoryStore, bid: str, blob: str | None) -> None:
     store._conn.execute(  # pyright: ignore[reportPrivateUsage]
         "UPDATE ingest_log SET derived_edge_ids = ? "
         "WHERE derived_belief_ids LIKE ?",
-        ('[["a", "b", "SUPPORTS"]]', f"%{bid}%"),
+        (blob, f"%{bid}%"),
     )
     store._conn.commit()  # pyright: ignore[reportPrivateUsage]
 
+
+def test_edge_set_divergence_is_drift(store: MemoryStore) -> None:
+    """Hypothesis: a stamped log row whose `derived_edge_ids` disagrees with
+    the re-derived edge set counts as drift (#1354), in its own counter
+    rather than inside the informational mutable bucket.
+
+    The edge set is log-derivable — `derive()` emits it from the row's own
+    raw_meta — so a divergence is a derivation regression, unlike alpha or
+    lock_level. Falsifiable by not promoting it into `has_drift`, or by
+    leaving `edge_set` in `MUTABLE_FIELDS`."""
+    bid = _ingest(store, _FACTUAL_SENTENCE)
+    _set_edge_blob(store, bid, '[["a", "b", "SUPPORTS"]]')
+
     report = replay_full_equality(store)
+    assert report.edge_set_divergence == 1
+    assert report.has_drift is True
+    assert "edge_set" not in report.mutable_field_counts
+
+    example = report.drift_examples["edge_set"][0]
+    assert example["canonical"] == [("a", "b", "SUPPORTS")]
+    assert example["derived"] == []
+
+
+def test_a_null_edge_blob_is_exempt_from_drift(store: MemoryStore) -> None:
+    """Hypothesis: a row whose `derived_edge_ids` is SQL NULL is exempt from
+    the edge comparison even when `derive()` re-emits an edge for it.
+
+    This is the #1354 watermark. NULL means no edge-aware writer ever
+    stamped the row; without the exemption, promoting the edge set would
+    report the entire pre-#1354 history as drift. Falsifiable by removing
+    the `is not None` guard."""
+    ids = _ingest_transcript_turn(store, _SUBFLOOR_TURN, role="user")
+    assert len(ids) == 2
+    _set_edge_blob(store, ids[1], None)
+
+    report = replay_full_equality(store)
+    assert report.edge_set_divergence == 0
     assert report.has_drift is False
-    assert report.mutable_field_counts["edge_set"] == 1
-    example = report.drift_examples["mutable_divergence"][0]
-    assert example["fields_diff"]["edge_set"]["canonical"] == [
-        ("a", "b", "SUPPORTS"),
-    ]
-    assert example["fields_diff"]["edge_set"]["derived"] == []
+
+
+def test_an_empty_list_edge_blob_is_compared(store: MemoryStore) -> None:
+    """Hypothesis: a row stamped `'[]'` IS compared, so a row that derives an
+    edge but logged none is drift.
+
+    Pairs with the NULL test above — same row, NULL yields 0 and `'[]'`
+    yields 1. That pair is the only thing separating the two sentinel
+    values: `_logged_edge_set` collapses both to the empty set, so a guard
+    written against its output, or against truthiness of the blob, would
+    exempt `'[]'` too and pass the NULL test while failing this one."""
+    ids = _ingest_transcript_turn(store, _SUBFLOOR_TURN, role="user")
+    assert len(ids) == 2
+    _set_edge_blob(store, ids[1], "[]")
+
+    report = replay_full_equality(store)
+    assert report.edge_set_divergence == 1
+    assert report.has_drift is True
 
 
 def test_malformed_derived_edge_ids_does_not_abort_walk(
@@ -281,17 +332,43 @@ def test_malformed_derived_edge_ids_does_not_abort_walk(
     empty set rather than raising, so one corrupt row cannot take down the
     whole probe. Falsifiable by an exception or by total_log_rows < 1."""
     bid = _ingest(store, _FACTUAL_SENTENCE)
-    store._conn.execute(  # pyright: ignore[reportPrivateUsage]
-        "UPDATE ingest_log SET derived_edge_ids = ? "
-        "WHERE derived_belief_ids LIKE ?",
-        ("{not json", f"%{bid}%"),
-    )
-    store._conn.commit()  # pyright: ignore[reportPrivateUsage]
+    _set_edge_blob(store, bid, "{not json")
 
     report = replay_full_equality(store)
     assert report.total_log_rows == 1
     assert report.matched == 1
-    assert report.mutable_field_counts.get("edge_set", 0) == 0
+    assert report.edge_set_divergence == 0
+
+
+@pytest.mark.parametrize(
+    "blob",
+    [
+        pytest.param("{not json", id="unparseable"),
+        pytest.param("", id="empty-string"),
+        pytest.param("null", id="json-null"),
+        pytest.param("42", id="not-a-list"),
+    ],
+)
+def test_a_malformed_blob_is_compared_not_exempted(
+    store: MemoryStore, blob: str
+) -> None:
+    """Hypothesis: corruption is compared, not exempted. A row that derives
+    an edge but whose blob is not a well-formed edge list counts as drift,
+    whatever shape the corruption takes.
+
+    Falsifiable by guarding the comparison on `_logged_edge_set(...)` being
+    non-empty, or on the blob being truthy — either treats a corrupt row as
+    historical and makes corruption invisible, which is the opposite of
+    what the probe exists for. The empty-string case is what separates
+    `is not None` from a truthiness test: every other blob here is a
+    non-empty string, so a truthy guard passes on all of them."""
+    ids = _ingest_transcript_turn(store, _SUBFLOOR_TURN, role="user")
+    assert len(ids) == 2
+    _set_edge_blob(store, ids[1], blob)
+
+    report = replay_full_equality(store)
+    assert report.edge_set_divergence == 1
+    assert report.has_drift is True
 
 
 # ---------------------------------------------------------------------------
