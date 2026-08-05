@@ -100,22 +100,6 @@ def _numeric_type_names(node: ast.expr) -> set[str]:
     return {e.id for e in getattr(node, "elts", []) if isinstance(e, ast.Name)}
 
 
-def _code_text(fn: ast.AST) -> str:
-    """`ast.unparse(fn)` with string constants blanked out.
-
-    `ast.unparse` re-emits docstrings and literals verbatim, so a function
-    whose docstring mentions a "cross-section" or an "intersection" reads
-    as a TOML reader and any `isinstance(x, int)` in it is reported as a
-    config defect. 19 of the functions the raw text pulled in matched on
-    prose alone. Membership has to be keyed on code.
-    """
-    blanked = copy.deepcopy(fn)
-    for node in ast.walk(blanked):
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            node.value = ""
-    return ast.unparse(blanked)
-
-
 def _guards_bool_in_scope(scope: ast.AST, var: str) -> bool:
     """Whether anything in the enclosing function excludes `bool` for `var`.
 
@@ -148,6 +132,72 @@ def _guards_bool_in_scope(scope: ast.AST, var: str) -> bool:
     return False
 
 
+def _code_text(fn: ast.AST) -> str:
+    """`ast.unparse(fn)` with string constants blanked out.
+
+    `ast.unparse` re-emits docstrings and literals verbatim, so a function
+    whose docstring mentions a "cross-section" or an "intersection" reads
+    as a TOML reader and any `isinstance(x, int)` in it is reported as a
+    config defect. 19 of the functions the raw text pulled in matched on
+    prose alone. Membership has to be keyed on code.
+    """
+    blanked = copy.deepcopy(fn)
+    for node in ast.walk(blanked):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            node.value = ""
+    return ast.unparse(blanked)
+
+
+def _reads_toml_directly(fn: ast.AST) -> bool:
+    """Whether this function itself parses TOML or reads a parsed section."""
+    body = _code_text(fn)
+    return "tomllib" in body or "section" in body
+
+
+def _toml_reading_functions(
+    tree: ast.Module,
+) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Every function in a module that reads a `.aelfrice.toml` value.
+
+    Direct readers name `tomllib` or a parsed `section`. **Indirect ones
+    do not**, and that is not a corner case: `deferred_feedback`'s three
+    `[implicit_feedback]` resolvers pull the raw value through a
+    module-local `_read_toml_value` helper and do the numeric validation
+    in their own bodies, which mention neither token. Keyed on the direct
+    text alone they are invisible, and both of their bool guards could be
+    deleted with this file still green -- the census would report the
+    class closed while three documented TOML knobs sat outside it.
+
+    So membership is closed transitively over module-local calls, to a
+    fixed point: a function that calls a reader is a reader. Restricted to
+    same-module names, which is what keeps the population from swallowing
+    the package through some generic utility.
+    """
+    fns = [
+        n for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    by_name = {fn.name: fn for fn in fns}
+    readers = {fn.name for fn in fns if _reads_toml_directly(fn)}
+    changed = True
+    while changed:
+        changed = False
+        for fn in fns:
+            if fn.name in readers:
+                continue
+            for node in ast.walk(fn):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id in readers
+                    and node.func.id in by_name
+                ):
+                    readers.add(fn.name)
+                    changed = True
+                    break
+    return [fn for fn in fns if fn.name in readers]
+
+
 def _toml_numeric_validations_admitting_bool() -> list[str]:
     """`["<file>:<line> <var>", ...]` for TOML readers that accept a bool.
 
@@ -162,12 +212,7 @@ def _toml_numeric_validations_admitting_bool() -> list[str]:
     offenders: list[str] = []
     for path in sorted(SRC_ROOT.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        for fn in ast.walk(tree):
-            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            body = _code_text(fn)
-            if "tomllib" not in body and "section" not in body:
-                continue
+        for fn in _toml_reading_functions(tree):
             for node in ast.walk(fn):
                 if not (
                     isinstance(node, ast.Call)
@@ -212,16 +257,28 @@ def test_the_census_actually_scans_something() -> None:
     is an instance of.
     """
     scanned = 0
+    direct = 0
+    indirect = 0
     for path in SRC_ROOT.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        for fn in ast.walk(tree):
-            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                body = _code_text(fn)
-                if "tomllib" in body or "section" in body:
-                    scanned += 1
-    assert scanned >= 20, (
+        for fn in _toml_reading_functions(tree):
+            scanned += 1
+            if _reads_toml_directly(fn):
+                direct += 1
+            else:
+                indirect += 1
+    assert scanned >= 50, (
         f"only {scanned} TOML-reading functions found; the scan is not "
         "reaching the package and the guard above is vacuous"
+    )
+    # Both halves asserted, not just the total. A floor the direct half
+    # meets on its own goes green after a refactor that silently drops
+    # transitive closure -- which is the half `deferred_feedback` needs.
+    assert direct >= 20, f"direct TOML readers collapsed to {direct}"
+    assert indirect >= 3, (
+        f"only {indirect} functions reach TOML through a module-local "
+        "helper; the transitive closure is not running, so a reader like "
+        "`deferred_feedback.resolve_epsilon` is invisible again"
     )
 
 
@@ -259,6 +316,34 @@ def test_the_census_sees_an_unguarded_reader() -> None:
     assert _guards_bool_in_scope(gfn, "raw")
 
 
+def test_a_reader_reached_through_a_module_local_helper_is_in_scope() -> None:
+    """The transitive arm: `deferred_feedback`'s shape, synthetically.
+
+    Its three `[implicit_feedback]` resolvers pull the raw value through a
+    module-local `_read_toml_value` helper and validate in their own
+    bodies, which name neither `tomllib` nor `section`. Keyed on the
+    direct text alone they sit outside the census, and both of their bool
+    guards were deletable with this file green -- the census would have
+    reported the class closed with three documented TOML knobs outside it.
+    """
+    tree = ast.parse(
+        "import tomllib\n"
+        "def _read(key, start):\n"
+        "    section = tomllib.loads(start.read_text()).get('x', {})\n"
+        "    return section.get(key)\n"
+        "def resolve(start):\n"
+        "    raw = _read('n', start)\n"
+        "    if not isinstance(raw, int) or raw <= 0:\n"
+        "        return 1800\n"
+        "    return raw\n"
+    )
+    names = {fn.name for fn in _toml_reading_functions(tree)}
+    assert names == {"_read", "resolve"}, (
+        "the closure must reach a validator that only touches TOML "
+        f"through a module-local helper; got {sorted(names)}"
+    )
+
+
 def test_prose_alone_does_not_make_a_function_a_toml_reader() -> None:
     """`ast.unparse` re-emits docstrings, so the population must ignore them.
 
@@ -275,9 +360,7 @@ def test_prose_alone_does_not_make_a_function_a_toml_reader() -> None:
         "        raise TypeError\n"
         "    return n * n\n"
     )
-    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef))
-    body = _code_text(fn)
-    assert "section" not in body and "tomllib" not in body
+    assert _toml_reading_functions(tree) == []
 
 
 def test_a_preceding_early_return_counts_as_a_guard() -> None:
