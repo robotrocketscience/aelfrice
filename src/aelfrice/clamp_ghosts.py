@@ -84,6 +84,7 @@ beliefs. ``--target`` flag lets the operator pick a different value.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import IO
@@ -109,9 +110,85 @@ A row on one of these origins can sit at α=9.0 with an empty audit
 trail and still be entirely legitimate — it is simply new. They are
 excluded from the ghost selector so the clamp cannot fire on them.
 
-A tuple, not a set: it is spliced into the selector as bound
-parameters, and a set's iteration order would make the emitted
-parameter sequence vary between runs."""
+A tuple, not a set: it reaches the selector as one bound JSON array
+(``_ELIGIBILITY_SQL`` below), and a set's iteration order would make
+that array's byte value vary between runs. It is serialised sorted for
+the same reason."""
+
+
+_ELIGIBILITY_SQL: str = (
+    "  AND b.origin NOT IN (SELECT je.value FROM json_each(?) je) "
+    "  AND (? IS NULL OR b.created_at < ?) "
+    "  AND NOT EXISTS ("
+    "    SELECT 1 FROM feedback_history fh WHERE fh.belief_id = b.id"
+    "  ) "
+    "  AND NOT EXISTS ("
+    "    SELECT 1 FROM belief_corroborations bc WHERE bc.belief_id = b.id"
+    "  ) "
+)
+"""The eligibility predicate, shared verbatim by both selectors.
+
+The enumeration query and the under-the-write-lock re-check must agree
+exactly, or the re-check becomes a second, looser selector that can
+clamp a row the enumeration would never have offered. Making it one
+module constant rather than a locally-composed fragment is what makes
+that agreement checkable — see
+``test_both_selectors_share_one_eligibility_predicate``.
+
+The SQL text is fully static. The origin exclusion arrives as a single
+bound JSON array read by ``json_each`` rather than an interpolated
+``IN (?, ?, …)`` list, and the optional ``created_before`` cutoff is a
+bound ``? IS NULL`` disjunction rather than a conditionally-appended
+clause. So there is no placeholder count to keep in sync with a
+parameter count, and no injection-shaped construction for a reader (or
+a scanner) to have to reason about — the same mechanism, and the same
+motivation, as ``store.list_stale_speculative_ids`` (#1171).
+``json_each`` is available in SQLite ≥ 3.38, standard in Python 3.12+.
+
+Takes three bound parameters, in order: the origins JSON array, then
+``created_before`` twice."""
+
+
+def _eligibility_params(created_before: str | None) -> list[object]:
+    """Bound parameters for one ``_ELIGIBILITY_SQL`` splice, in order.
+
+    Kept next to the predicate so a change to one is a change to the
+    other in the same edit; both call sites go through it, so they
+    cannot drift in parameter order either.
+    """
+    return [
+        json.dumps(sorted(USER_PRIOR_ORIGINS)),
+        created_before,
+        created_before,
+    ]
+
+
+_GHOST_SELECT_SQL: str = (
+    "SELECT b.id AS id, b.alpha AS alpha, b.beta AS beta, "
+    "substr(b.content, 1, 100) AS preview "
+    "FROM beliefs b "
+    "WHERE b.lock_level = 'none' "
+    "  AND b.alpha > ? " + _ELIGIBILITY_SQL + "ORDER BY b.alpha DESC LIMIT ?"
+)
+"""Enumeration query. Parameters: threshold_alpha, *eligibility, limit.
+
+``LIMIT`` is always bound rather than conditionally appended; SQLite
+reads a negative limit as no upper bound, so the no-cap case passes
+``-1`` instead of building a second query string."""
+
+
+_GHOST_RECHECK_SQL: str = (
+    "SELECT b.alpha AS alpha "
+    "FROM beliefs b "
+    "WHERE b.id = ? "
+    "  AND b.lock_level = 'none' "
+    "  AND b.alpha > ? " + _ELIGIBILITY_SQL
+)
+"""Under-the-write-lock re-check. Parameters: id, target_alpha, *eligibility."""
+
+
+_NO_LIMIT: int = -1
+"""``LIMIT`` value meaning "no cap" — SQLite treats a negative limit as unbounded."""
 
 
 CLAMP_SOURCE: str = "clamp_ghosts"
@@ -221,41 +298,17 @@ def clamp_ghost_alphas(
 
     conn = store._conn  # noqa: SLF001 — same access pattern as deferred_feedback.py:300
 
-    # Shared eligibility predicate. The enumeration query below and the
-    # under-the-write-lock re-check must agree exactly, or the re-check
-    # becomes a second, looser selector that can clamp a row the
-    # enumeration would never have offered.
-    origin_placeholders = ", ".join("?" for _ in USER_PRIOR_ORIGINS)
-    eligibility = (
-        "  AND b.origin NOT IN (" + origin_placeholders + ") "
-        "  AND NOT EXISTS ("
-        "    SELECT 1 FROM feedback_history fh WHERE fh.belief_id = b.id"
-        "  ) "
-        "  AND NOT EXISTS ("
-        "    SELECT 1 FROM belief_corroborations bc WHERE bc.belief_id = b.id"
-        "  ) "
-    )
-    created_clause = "  AND b.created_at < ? " if created_before else ""
+    # Normalise falsy-but-not-None to None so the `? IS NULL` arm of
+    # _ELIGIBILITY_SQL reproduces the previous truthiness test exactly:
+    # created_before="" must mean "no cutoff", not "created before the
+    # empty string" (which would match nothing).
+    created_before = created_before or None
 
-    query = (
-        "SELECT b.id AS id, b.alpha AS alpha, b.beta AS beta, "
-        "substr(b.content, 1, 100) AS preview "
-        "FROM beliefs b "
-        "WHERE b.lock_level = 'none' "
-        "  AND b.alpha > ? "
-        + created_clause
-        + eligibility
-        + "ORDER BY b.alpha DESC"
-    )
     params: list[object] = [threshold_alpha]
-    if created_before:
-        params.append(created_before)
-    params.extend(USER_PRIOR_ORIGINS)
-    if limit is not None:
-        query += " LIMIT ?"
-        params.append(int(limit))
+    params.extend(_eligibility_params(created_before))
+    params.append(_NO_LIMIT if limit is None else int(limit))
 
-    rows = conn.execute(query, params).fetchall()
+    rows = conn.execute(_GHOST_SELECT_SQL, params).fetchall()
     matched = len(rows)
     sample = [
         {
@@ -287,19 +340,8 @@ def clamp_ghost_alphas(
             # duplicate CLAMP_SOURCE audit rows (breaks the one-row
             # reversible-audit invariant).
             recheck_params: list[object] = [r["id"], target_alpha]
-            if created_before:
-                recheck_params.append(created_before)
-            recheck_params.extend(USER_PRIOR_ORIGINS)
-            current = conn.execute(
-                "SELECT b.alpha AS alpha "
-                "FROM beliefs b "
-                "WHERE b.id = ? "
-                "  AND b.lock_level = 'none' "
-                "  AND b.alpha > ? "
-                + created_clause
-                + eligibility,
-                recheck_params,
-            ).fetchone()
+            recheck_params.extend(_eligibility_params(created_before))
+            current = conn.execute(_GHOST_RECHECK_SQL, recheck_params).fetchone()
             if current is None:
                 conn.execute("ROLLBACK")
                 continue

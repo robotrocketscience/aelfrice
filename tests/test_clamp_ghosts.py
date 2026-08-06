@@ -20,16 +20,22 @@ Verifies:
 from __future__ import annotations
 
 import io
+import json
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from aelfrice import clamp_ghosts
 from aelfrice.cli import build_parser
 from aelfrice.clamp_ghosts import (
     CLAMP_SOURCE,
     DEFAULT_TARGET_ALPHA,
     USER_PRIOR_ORIGINS,
+    _ELIGIBILITY_SQL,
+    _GHOST_RECHECK_SQL,
+    _GHOST_SELECT_SQL,
+    _eligibility_params,
     clamp_ghost_alphas,
 )
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
@@ -439,3 +445,86 @@ def test_clamp_ghosts_cli_created_before_flag(cli_store_path: Path) -> None:
         assert s2.get_belief("new").alpha == 10.0
     finally:
         s2.close()
+
+
+# -- static-SQL selector invariants (#1374) ---------------------------------
+
+def test_both_selectors_share_one_eligibility_predicate() -> None:
+    # The enumeration query and the under-the-write-lock re-check must
+    # apply the SAME predicate: a looser re-check would clamp a row the
+    # enumeration never offered. Asserting the substring is what makes
+    # that structural rather than a comment — inlining the predicate into
+    # either query separately fails here.
+    assert _ELIGIBILITY_SQL in _GHOST_SELECT_SQL
+    assert _ELIGIBILITY_SQL in _GHOST_RECHECK_SQL
+
+
+def test_selector_sql_is_static_and_fully_parameterised() -> None:
+    # Both query strings are module constants with no interpolation, so
+    # no caller value can reach the SQL text. Pinned as a test because
+    # the previous shape composed them per-call from an origin-count
+    # placeholder list and a conditionally-appended cutoff clause.
+    for sql in (_GHOST_SELECT_SQL, _GHOST_RECHECK_SQL):
+        assert "{" not in sql and "}" not in sql
+        for origin in USER_PRIOR_ORIGINS:
+            assert origin not in sql
+    # Three bound parameters per splice, in the order _eligibility_params
+    # emits them; a drift between the two desynchronises every call site.
+    assert _ELIGIBILITY_SQL.count("?") == 3
+    assert len(_eligibility_params(None)) == 3
+
+
+def test_origins_bind_as_one_sorted_json_array() -> None:
+    # The SHIPPED value, written out. Comparing against
+    # sorted(USER_PRIOR_ORIGINS) would pass either way today, because
+    # the constant already happens to be in alphabetical order — so it
+    # would pin nothing and would go green if the exclusion shrank.
+    assert json.loads(_eligibility_params(None)[0]) == [
+        "user_corrected",
+        "user_stated",
+        "user_transcript",
+        "user_validated",
+    ]
+
+
+def test_origins_array_is_sorted_regardless_of_constant_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The MECHANISM, which the shipped value cannot exercise. The
+    # docstring claims the array is serialised sorted so its byte value
+    # is stable if the tuple is ever reordered; without this, dropping
+    # the sort is a silent no-op edit.
+    monkeypatch.setattr(
+        clamp_ghosts, "USER_PRIOR_ORIGINS", ("user_validated", "user_corrected")
+    )
+    assert json.loads(_eligibility_params(None)[0]) == [
+        "user_corrected",
+        "user_validated",
+    ]
+
+
+def test_empty_created_before_means_no_cutoff(store: MemoryStore) -> None:
+    # "" is falsy and previously selected the no-clause branch. Under a
+    # bound `? IS NULL` cutoff an empty string is NOT null, so it would
+    # read as "created before the empty string" and match nothing. The
+    # normalisation that preserves the old meaning is only visible here.
+    store.insert_belief(replace(_mk("old", alpha=10.0), created_at="2026-04-01T00:00:00Z"))
+    store.insert_belief(replace(_mk("new", alpha=10.0), created_at="2026-04-30T00:00:00Z"))
+
+    result = clamp_ghost_alphas(store, created_before="")
+
+    assert sorted(s["id"] for s in result.sample) == ["new", "old"]
+    assert result.matched == 2
+
+
+def test_none_limit_processes_every_match(store: MemoryStore) -> None:
+    # LIMIT is always bound now; the no-cap case passes a negative
+    # sentinel rather than omitting the clause. A sentinel of 0 (or any
+    # non-negative value) silently returns nothing.
+    for i in range(5):
+        store.insert_belief(_mk(f"g{i}", alpha=9.0))
+
+    result = clamp_ghost_alphas(store, dry_run=False, limit=None)
+
+    assert result.matched == 5
+    assert result.clamped == 5
