@@ -4468,8 +4468,8 @@ def retrieve(
         use_hrr_expand=False,
     ).beliefs
     # v1.6.0 #191: enqueue one retrieval_exposure row per surfaced belief
-    # for the deferred-feedback sweeper. Default-on; opt-out via
-    # [implicit_feedback] enqueue_on_retrieve = false. Fail-soft: any DB
+    # for the deferred-feedback sweeper. Default-OFF since #1162; opt-in via
+    # [implicit_feedback] enqueue_on_retrieve = true. Fail-soft: any DB
     # error here is logged but never breaks retrieval. This is a `retrieve()`
     # (production-hook) side effect, kept here rather than in `retrieve_v2`
     # so the benchmark / eval surface stays side-effect-free.
