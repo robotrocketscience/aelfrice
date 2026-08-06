@@ -79,6 +79,21 @@ NON_LATIN_REGRESSION_GUARD = (
     "Tiếng Việt",    # two marks: unicode61 folds neither
     "ばか",            # dakuten is not a removable diacritic
     "ǖber",          # U+01D5, the remove_diacritics=1 limit
+    # Greek and Cyrillic: a *removable* mark (U+0301, U+0308, U+0306) on a
+    # NON-ASCII base. Every entry above exercises a separator, a
+    # normalisation blow-up or a mark unicode61 never removes, so none of
+    # them can see a mark that IS in `_REMOVED_MARKS` sitting on a base
+    # SQLite has no fold entry for — which is the one class the first cut
+    # of this fix got wrong. `πότε` (when) and `ποτέ` (ever) are here as a
+    # pair on purpose: over-folding collapses two distinct words into one
+    # term, so the cost is precision inside the lane, not just a gap
+    # against FTS5.
+    "мой",           # и + U+0306; SQLite keeps it, ASCII-base rule keeps it
+    "ёлка",          # е + U+0308
+    "всё",
+    "Ελλάδα",        # α + U+0301
+    "πότε",
+    "ποτέ",
 )
 
 # unicode61 folds U+00B5 MICRO SIGN to Greek mu (U+03BC) — a
@@ -259,6 +274,65 @@ def test_bm25f_lane_answers_the_queries_fts5_answers() -> None:
         fts5 = {b.id for b in store.search_beliefs(query, limit=10)}
         assert bm25f, f"BM25F lane returned nothing for {query!r}"
         assert bm25f == fts5, f"lanes disagree on {query!r}"
+
+
+def test_which_precomposed_codepoints_fold_matches_sqlite() -> None:
+    """Sweep every base+one-mark codepoint, not a sample of them.
+
+    `test_removed_marks_matches_sqlite` establishes *which marks* are
+    removable, and it does so by probing with an ASCII base (``zz{mark}zz``).
+    That is the right way to learn the mark set and the wrong way to learn
+    the fold rule: ``remove_diacritics=1`` is a per-**codepoint** table, so
+    "U+0301 is removable after a" says nothing about U+0301 after alpha.
+    Applying the mark set across scripts folded `ά`, `й` and `ё`, which
+    SQLite leaves alone.
+
+    A sample corpus cannot close this — `NON_LATIN_REGRESSION_GUARD` had
+    eight entries and none of them could see it, because separators,
+    conjoining jamo and non-removable marks are all different mechanisms.
+    So this asks SQLite about the entire class: all 723 codepoints whose
+    NFD is a base plus exactly one combining mark.
+
+    The rule that comes back is exact — SQLite folds precisely those with
+    an ASCII base, 375 of them, with no false folds and no false keeps.
+    The four near-misses worth naming are `ǣ`, `ǯ`, `ǽ` and `ǿ`: their
+    bases are ae, ezh and o-with-stroke, so a rule saying "Latin base"
+    rather than "ASCII base" would wrongly fold all four.
+    """
+    folds: set[str] = set()
+    keeps: set[str] = set()
+    for codepoint in range(0x20, 0x110000):
+        ch = chr(codepoint)
+        decomposed = unicodedata.normalize("NFD", ch)
+        if len(decomposed) != 2 or not unicodedata.combining(decomposed[1]):
+            continue
+        if unicodedata.combining(decomposed[0]):
+            continue
+        terms = fts5_terms(ch)
+        if terms == [decomposed[0].lower()]:
+            folds.add(ch)
+        elif terms == [ch.lower()]:
+            keeps.add(ch)
+        # anything else is a separator producing no token; not a fold rule.
+
+    assert folds, "oracle produced no folds at all — the probe is broken"
+    predicted = {
+        ch
+        for ch in folds | keeps
+        if unicodedata.normalize("NFD", ch)[1] in bm25._REMOVED_MARKS
+        and unicodedata.normalize("NFD", ch)[0].isascii()
+        and unicodedata.normalize("NFD", ch)[0].isalpha()
+    }
+    assert predicted == folds, (
+        "the shipped fold rule disagrees with SQLite. Wrongly folded: "
+        f"{sorted(predicted - folds)}; wrongly kept: {sorted(folds - predicted)}"
+    )
+
+    # And the rule as written is the one actually running.
+    for ch in sorted(folds):
+        assert bm25._fold_diacritics(ch) == unicodedata.normalize("NFD", ch)[0]
+    for ch in sorted(keeps):
+        assert bm25._fold_diacritics(ch) == ch
 
 
 def test_removed_marks_matches_sqlite() -> None:

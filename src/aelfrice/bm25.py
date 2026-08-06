@@ -298,6 +298,27 @@ def _fold_diacritics(text: str) -> str:
     standalone mark outside the set is kept, and `_FTS5_TOKEN_PATTERN`
     then splits on it — which is what unicode61 does with it.
 
+    The **base must be an ASCII letter**, and that condition is the whole
+    difference between folding Latin and corrupting everything else.
+    ``remove_diacritics=1`` is a per-*codepoint* fold table, not a
+    per-*mark* rule: `_REMOVED_MARKS` is learned by probing with an ASCII
+    base, so it establishes "U+0301 is removable **after a**", which is
+    simply not evidence about U+0301 after alpha or after ie. SQLite has
+    no fold entry for those, and applying the mark set across scripts
+    turned ``"мой"`` into ``"мои"``, ``"ёлка"`` into ``"елка"`` and
+    ``"πότε"``/``"ποτέ"`` into a single ``"ποτε"`` — collapsing two
+    distinct Greek words into one term, which is a precision loss inside
+    the lane rather than a cross-lane gap.
+
+    Swept exhaustively against the oracle: of the 723 codepoints whose
+    NFD is a base plus exactly one mark, SQLite folds **375** and keeps
+    **284** (63 more are separators that produce no token). The 375 are
+    exactly those with an ASCII base — no false folds, no false keeps —
+    which is why the test pins the rule against all 723 rather than
+    against a sample. The nine near-misses are the reason the condition
+    is ASCII rather than "Latin": SQLite leaves ``"ǣ"``, ``"ǯ"``,
+    ``"ǽ"`` and ``"ǿ"`` alone, whose bases are ae, ezh and o-stroke.
+
     One residual remains, stated rather than chased: SQLite folds U+00B5
     MICRO SIGN to Greek mu, a compatibility mapping no canonical
     decomposition performs. It costs 12 of 44,655 live beliefs.
@@ -309,7 +330,12 @@ def _fold_diacritics(text: str) -> str:
                 out.append(ch)
             continue
         decomposed = unicodedata.normalize("NFD", ch)
-        if len(decomposed) == 2 and decomposed[1] in _REMOVED_MARKS:
+        if (
+            len(decomposed) == 2
+            and decomposed[1] in _REMOVED_MARKS
+            and decomposed[0].isascii()
+            and decomposed[0].isalpha()
+        ):
             out.append(decomposed[0])
         else:
             out.append(ch)
