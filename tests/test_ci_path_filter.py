@@ -138,20 +138,56 @@ def test_docs_only_changes_still_skip_the_suite() -> None:
 _E2E_WORKFLOW = _REPO / ".github" / "workflows" / "e2e.yml"
 
 
+def _block_range(lines: list[str], start: int) -> range:
+    """Indices of the block nested under `lines[start]`.
+
+    Index range rather than a list of line *contents*: two sibling blocks
+    can hold byte-identical lines (`branches: [main]` appears under both
+    triggers in e2e.yml), and membership-testing on content would match
+    the wrong one.
+    """
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    end = start + 1
+    while end < len(lines):
+        line = lines[end]
+        if line.strip() and not line.strip().startswith("#"):
+            if len(line) - len(line.lstrip()) <= indent:
+                break
+        end += 1
+    return range(start + 1, end)
+
+
+def _sole_key(lines: list[str], within: range, key: str, where: str) -> int:
+    """The single index in `within` whose stripped content is `key`."""
+    hits = [i for i in within if lines[i].strip() == key]
+    assert len(hits) == 1, (
+        f"expected exactly one `{key}` {where} in {_E2E_WORKFLOW.name}, found "
+        f"{len(hits)} — a parser that finds the wrong block, or none, turns "
+        f"every assertion below green for free"
+    )
+    return hits[0]
+
+
 def _e2e_pull_request_paths() -> list[str]:
     """The glob list under `on.pull_request.paths` in e2e.yml.
 
-    Parsed the same way `_code_filter_globs` parses ci.yml, and asserted
-    non-empty for the same reason: a parser that quietly finds nothing turns
-    every assertion below green for free.
+    Walks `on:` -> `pull_request:` -> `paths:` by indentation rather than
+    grepping the file for `paths:`. The difference is load-bearing twice
+    over. A file-wide search cannot tell a `paths:` under `pull_request:`
+    from one under `push:`, so it would (a) bind these assertions to the
+    wrong trigger without saying so, and (b) fail — with a message about
+    parser trust — the moment someone legitimately adds a `push: paths:`,
+    which is a confusing signal for an unrelated edit.
+
+    Asserted non-empty for the same reason `_code_filter_globs` is: a
+    parser that quietly finds nothing turns every assertion below green
+    for free.
     """
     lines = _E2E_WORKFLOW.read_text(encoding="utf-8").splitlines()
-    starts = [i for i, line in enumerate(lines) if line.strip() == "paths:"]
-    assert len(starts) == 1, (
-        f"expected exactly one `paths:` key in {_E2E_WORKFLOW.name}, found "
-        f"{len(starts)}"
-    )
-    start = starts[0]
+
+    on_key = _sole_key(lines, range(len(lines)), "on:", "top-level key")
+    pr_key = _sole_key(lines, _block_range(lines, on_key), "pull_request:", "trigger under `on:`")
+    start = _sole_key(lines, _block_range(lines, pr_key), "paths:", "key under `on.pull_request`")
     indent = len(lines[start]) - len(lines[start].lstrip())
     globs: list[str] = []
     for line in lines[start + 1 :]:
@@ -178,7 +214,32 @@ def test_e2e_runs_on_code_prs_without_an_opt_in_label() -> None:
     is the whole point; a test that only checked the workflow parses would
     have passed in the broken state.
     """
-    text = _E2E_WORKFLOW.read_text(encoding="utf-8")
+    lines = _E2E_WORKFLOW.read_text(encoding="utf-8").splitlines()
+    text = "\n".join(lines)
+
+    # The invariant, not one spelling of its violation: the job carries no
+    # `if:` at all. Asserting only the absence of the old label expression
+    # lets any re-gate through — `if: github.event_name == 'push'`, a
+    # differently-quoted `contains(...)`, or a `vars.`-driven toggle would
+    # each fully negate AC1 while keeping that string absent.
+    jobs_key = _sole_key(lines, range(len(lines)), "jobs:", "top-level key")
+    e2e_job = _sole_key(lines, _block_range(lines, jobs_key), "e2e:", "job under `jobs:`")
+    job_body = _block_range(lines, e2e_job)
+    job_indent = min(
+        (len(lines[i]) - len(lines[i].lstrip()) for i in job_body if lines[i].strip()),
+        default=0,
+    )
+    gating = [
+        lines[i].strip()
+        for i in job_body
+        if lines[i].strip().startswith("if:")
+        and len(lines[i]) - len(lines[i].lstrip()) == job_indent
+    ]
+    assert not gating, (
+        f"the `e2e` job is conditionally gated again ({gating}) — AC1 says it "
+        f"runs on any code PR, and *any* job-level `if:` can negate that. "
+        f"Trigger-level `paths` is where docs-only PRs are excluded."
+    )
     assert "labels.*.name, 'e2e'" not in text, (
         "e2e is gated on an opt-in label again — a PR without the label gets "
         "no end-to-end coverage and the regression lands on main"
@@ -207,6 +268,29 @@ def test_e2e_paths_cover_the_ci_code_filter() -> None:
         f"{missing} are in ci.yml's `code` filter but not in e2e.yml's "
         f"`paths`. A PR touching only those runs pytest but not e2e."
     )
+
+
+def test_e2e_still_skips_docs_only_prs() -> None:
+    """#1420 §1 AC2, which the subset check above cannot express.
+
+    `test_e2e_paths_cover_the_ci_code_filter` asserts `ci - e2e == {}` — e2e's
+    list is a *superset* of ci's. A superset assertion is blind to additions,
+    so appending `docs/**` (or `'**'`) to the e2e trigger keeps every other
+    test in this module green while putting the 3-leg install matrix on every
+    docs-only and CHANGELOG-only PR. That is AC2 reversed, with nothing red to
+    show for it.
+
+    The mirror of `test_docs_only_changes_still_skip_the_suite`, which is the
+    same guard on the ci.yml side and the reason that side cannot drift.
+    """
+    globs = _e2e_pull_request_paths()
+    for directory in ("docs", "CHANGELOG"):
+        assert not _is_covered(directory, globs), (
+            f"'{directory}' entered e2e's trigger paths, so docs-only PRs now "
+            f"run the install matrix — reversing #1420 §1 AC2. Intentional? "
+            f"Confirm the installed-package path can actually regress from a "
+            f"prose change first."
+        )
 
 
 def test_e2e_is_path_filtered_at_the_trigger_not_inside_the_job() -> None:
