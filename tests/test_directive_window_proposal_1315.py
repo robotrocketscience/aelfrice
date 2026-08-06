@@ -153,12 +153,17 @@ def test_two_different_windows_are_ambiguous_and_refused() -> None:
     `extract_stated_window` alone does, deliberately, so the refusal has
     to live in the caller and be asserted there.
     """
-    # The text must ALSO pass `detect_directive`, or this test passes for
-    # the wrong reason: a non-directive is refused by the detector arm and
-    # never reaches the ambiguity check, so removing the ambiguity check
-    # leaves it green. Asserted explicitly so the trap cannot reopen.
-    text = "Always use tabs for two days, then for a week."
+    # The text must clear EVERY gate upstream of the ambiguity check, or
+    # this test passes for the wrong reason. It originally guarded only
+    # `detect_directive`; the attachment gate then landed upstream of the
+    # ambiguity arm and reopened the trap in a new place, because
+    # "use tabs" is not a memory anchor and the fixture was refused one
+    # gate earlier. Both are asserted now.
+    text = "Always remember this for two days, then for a week."
     assert detect_directive(text) is True, "fixture must reach the ambiguity arm"
+    assert stated_window_attaches_to_memory(text) is True, (
+        "fixture must reach the ambiguity arm"
+    )
     assert stated_window_is_ambiguous(text) is True
     assert extract_stated_window(text) == "2d"      # first match, alone
     assert _directive_window_spec(text) is None      # but refused overall
@@ -168,17 +173,17 @@ def test_two_different_windows_are_ambiguous_and_refused() -> None:
     ("text", "first"),
     [
         pytest.param(
-            "Always use tabs for the next week, then for two days.",
+            "Always remember this for the next week, then for two days.",
             "1w",
             id="next-form-first",
         ),
         pytest.param(
-            "Always use tabs for two days, then for the next week.",
+            "Always remember this for two days, then for the next week.",
             "2d",
             id="counted-form-first",
         ),
         pytest.param(
-            "Always use tabs for the next week, and for the next month.",
+            "Always remember this for the next week, and for the next month.",
             "1w",
             id="both-in-the-next-form",
         ),
@@ -195,12 +200,18 @@ def test_ambiguity_sees_both_spellings_of_a_window(text: str, first: str) -> Non
     `next-form-first` that is `2d`, the window stated **second**, which
     also contradicts the documented "first stated wins" rule.
 
-    Falsifiable by narrowing `_stated_windows` back to one pattern: each
-    param then proposes a concrete spec instead of refusing. Pairs with
-    the `first` assertion so that a fix which refuses *everything*
+    Falsifiable by narrowing `_stated_windows` back to one pattern: the
+    two counted-form params then propose a concrete spec instead of
+    refusing, and `both-in-the-next-form` proposes nothing at all, because
+    neither of its windows is visible to the counted pattern. Both are
+    caught — the first two by the ambiguity assertion, the third by the
+    `first` assertion, which also means a fix that refuses *everything*
     (making the module useless) fails here too.
     """
     assert detect_directive(text) is True, "fixture must reach the ambiguity arm"
+    assert stated_window_attaches_to_memory(text) is True, (
+        "fixture must reach the ambiguity arm"
+    )
     assert extract_stated_window(text) == first, "first stated window wins"
     assert stated_window_is_ambiguous(text) is True
     assert _directive_window_spec(text) is None
@@ -215,8 +226,11 @@ def test_a_zero_window_beside_a_real_one_still_refuses() -> None:
     exactly one window and would propose `1w`, silently discarding the
     half of the sentence that could not be parsed.
     """
-    text = "Always use tabs for 0 days, then for a week."
+    text = "Always remember this for 0 days, then for a week."
     assert detect_directive(text) is True, "fixture must reach the ambiguity arm"
+    assert stated_window_attaches_to_memory(text) is True, (
+        "fixture must reach the ambiguity arm"
+    )
     assert stated_window_is_ambiguous(text) is True
     assert _directive_window_spec(text) is None
 
@@ -225,13 +239,25 @@ def test_a_non_directive_with_a_window_is_not_proposed() -> None:
     """Hypothesis: both halves are required — a window alone is not a
     directive.
 
-    "the outage lasted for three days" states a window and asks for
-    nothing. Falsifiable by dropping the `detect_directive` arm, which
-    would propose a lock on ordinary narration.
+    Falsifiable by dropping the `detect_directive` arm, which would
+    propose a lock on ordinary narration. That requires a fixture which
+    clears the *attachment* gate and fails only the detector: a question
+    about retaining "this" is a memory-anchored window that asks for
+    nothing. "The outage lasted for three days." is kept as a second case
+    but does not discriminate on its own — it has no memory anchor, so it
+    is refused one gate later whether the detector arm exists or not.
     """
-    text = "The outage lasted for three days."
-    assert extract_stated_window(text) == "3d"
+    text = "Why would anyone retain this for two years?"
+    assert detect_directive(text) is False, "fixture must fail only the detector arm"
+    assert stated_window_attaches_to_memory(text) is True, (
+        "fixture must reach the detector arm"
+    )
+    assert extract_stated_window(text) == "2y"
     assert _directive_window_spec(text) is None
+
+    narration = "The outage lasted for three days."
+    assert extract_stated_window(narration) == "3d"
+    assert _directive_window_spec(narration) is None
 
 
 # --- the proposal, and that it is only a proposal ------------------------
@@ -392,6 +418,15 @@ def test_a_windowed_directive_is_a_candidate_whatever_its_type() -> None:
     of the pre-#1315 arms matches — so this fails if the new clause is
     dropped. An already-locked one is still excluded, since locking it
     again is a no-op.
+
+    The negative controls state a window and are excluded by an *upstream*
+    gate, which is what pins the arm to `_directive_window_spec` rather
+    than to the bare extractor. Without them the whole clause reduces to
+    `extract_stated_window(b.content) is not None` — "does this text
+    mention any duration" — with the suite green, which would admit
+    ordinary narration into the population autolock then has to filter.
+    `The build finished.` states no window at all, so it is excluded by
+    the extractor alone and discriminates nothing on its own.
     """
     assert _belief_is_lock_candidate(_belief(_DIRECTIVE), _SESSION) is True
     assert _belief_is_lock_candidate(
@@ -399,6 +434,19 @@ def test_a_windowed_directive_is_a_candidate_whatever_its_type() -> None:
     ) is False
     assert _belief_is_lock_candidate(
         _belief("The build finished."), _SESSION
+    ) is False
+    # states a window, but is not a directive
+    assert _belief_is_lock_candidate(
+        _belief("The outage lasted for three days."), _SESSION
+    ) is False
+    # is a directive stating a window, but the window is the subject
+    # matter's rather than the memory's
+    assert _belief_is_lock_candidate(
+        _belief("Always keep CI logs for 30 days."), _SESSION
+    ) is False
+    # states two windows, so it is refused rather than resolved
+    assert _belief_is_lock_candidate(
+        _belief("Always remember this for two days, then for a week."), _SESSION
     ) is False
 
 
@@ -470,9 +518,13 @@ def test_a_subject_matter_duration_is_not_proposed(text: str) -> None:
 def test_the_memory_verb_alone_does_not_attach_a_window() -> None:
     """The self-referential object is what carries the gate.
 
-    An anchor of just the verb admits `keep CI logs for 30 days`, which
-    is the single most common live shape. This pins that the object is
-    required, so a future simplification to a keyword test fails here.
+    An anchor of just the verb admits `keep CI logs for 30 days` — the
+    shape the gate exists to reject, since the 30 days belongs to the
+    logs. This pins that the object is required, so a future
+    simplification to a keyword test fails here. (It is an illustrative
+    shape, not a measured one: retention-of-CI-logs appears in none of the
+    nine live hits, and the only beliefs in that store mentioning CI logs
+    state no duration at all.)
     """
     assert stated_window_attaches_to_memory("Always keep CI logs for 30 days.") is False
     assert stated_window_attaches_to_memory("Always keep this for 30 days.") is True
