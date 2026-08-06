@@ -495,3 +495,66 @@ def test_an_anchor_in_a_different_clause_does_not_govern() -> None:
         "Always remember this rule, which the team agreed after a long "
         "discussion last Thursday, for 30 days."
     ) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(
+            "Always remember this, and cache the index for two weeks.", id="and-comma"
+        ),
+        pytest.param(
+            "Always remember this and cache the index for two weeks.", id="and"
+        ),
+        pytest.param(
+            "Always remember this but cache the index for two weeks.", id="but"
+        ),
+        pytest.param(
+            "Always remember this then cache the index for two weeks.", id="then"
+        ),
+        pytest.param(
+            "Always remember this while caching the index for two weeks.", id="while"
+        ),
+        pytest.param(
+            "Always remember this so cache the index for two weeks.", id="so"
+        ),
+        pytest.param(
+            "Always remember this - cache the index for two weeks.", id="hyphen"
+        ),
+        pytest.param(
+            "Always remember this — cache the index for two weeks.", id="em-dash"
+        ),
+    ],
+)
+def test_a_new_predicate_after_the_anchor_takes_the_window_with_it(
+    text: str,
+) -> None:
+    """Prefixing a memory clause must not license a subject-matter window.
+
+    `Always cache the index for two weeks.` is refused, and it has to stay
+    refused when a memory clause is put in front of it: the two weeks is
+    still how long to cache, not how long to remember. This is the gate's
+    cheapest bypass — the attacker is ordinary English, not adversarial
+    input — and punctuation cannot see it, because none of these spellings
+    needs a comma. Adding `,` to `_CLAUSE_BREAKS` closes `and-comma` only
+    and leaves the other seven open.
+
+    Falsifiable by dropping the connective half of
+    `_gap_opens_a_new_predicate`: all eight then propose `2w`.
+    """
+    assert detect_directive(text) is True, "fixture must reach the gate"
+    assert extract_stated_window(text) == "2w", "fixture must state a window"
+    assert stated_window_attaches_to_memory(text) is False
+    assert _directive_window_spec(text) is None
+
+
+def test_the_bare_connective_does_not_swallow_a_hyphenated_word() -> None:
+    """`-` is in the connective set; `build-time` must survive it.
+
+    Tokens are stripped of surrounding punctuation rather than split on
+    it, so the clause-joining bare `-` and the compound-word character are
+    distinguishable. Falsifiable by splitting the gap on punctuation
+    instead of stripping it: this proposes nothing.
+    """
+    text = "Always remember this build-time rule for a week."
+    assert _directive_window_spec(text) == "1w"
