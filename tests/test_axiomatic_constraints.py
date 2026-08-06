@@ -33,6 +33,7 @@ import pytest
 
 from aelfrice.bm25 import BM25Index
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief, Edge
+from aelfrice.retrieval import retrieve
 from aelfrice.scoring import partial_bayesian_score
 from aelfrice.store import MemoryStore
 
@@ -201,6 +202,39 @@ def test_on_topic_anchor_text_cannot_demote(mode: dict) -> None:
         **mode,
     )
     assert _score(index, "alpha", "cited") > _score(index, "alpha", "uncited")
+
+
+# --- the constraint has to survive the whole retrieval path ---------------
+
+
+@pytest.mark.parametrize("lane", [True, False], ids=["bm25f", "fts5"])
+def test_tfc1_survives_the_full_retrieve_path(lane: bool) -> None:
+    """TFC1 again, this time through `retrieve()` rather than the index.
+
+    Everything above scores `BM25Index` directly, but nothing reaches a
+    caller that way: `retrieve()` picks the lane, reranks the raw score
+    through `scoring.*` and sorts the result. A rerank that inverts the
+    magnitude, or a penalty that outweighs the lexical signal, breaks
+    TFC1 end-to-end while every index-level assertion above stays green.
+
+    Asserted on **both** lanes so the constraint is a property of
+    retrieval rather than of whichever lane is currently default. The two
+    beliefs are equal-length with unequal query-term counts, carry equal
+    posteriors, and neither is locked, so lexical relevance is the only
+    thing that can order them.
+    """
+    store = MemoryStore(":memory:")
+    store.insert_belief(_mk("more", f"alpha alpha {PAD}"))
+    store.insert_belief(_mk("fewer", f"alpha beta {PAD}"))
+
+    order = [b.id for b in retrieve(store, "alpha", use_bm25f_anchors=lane)]
+    assert {"more", "fewer"} <= set(order), (
+        f"fixture broken: both beliefs must be retrieved, got {order}"
+    )
+    assert order.index("more") < order.index("fewer"), (
+        f"TFC1 violated end-to-end: the belief with fewer occurrences of "
+        f"the query term ranked first ({order})"
+    )
 
 
 # --- posterior blend ------------------------------------------------------
