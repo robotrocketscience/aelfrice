@@ -185,7 +185,8 @@ def apply_feedback(
     # Lock floor (#1168). A user lock is ground truth the user asserted
     # explicitly; docs/user/LIMITATIONS.md and docs/user/PRIVACY.md both
     # state that passive feedback does not move one. The floor lived only
-    # in `scoring.decay()`, so `aelf feedback <locked-id> harmful` — and,
+    # in the unwired `scoring.decay()` (deleted under #1369), which no
+    # module called, so `aelf feedback <locked-id> harmful` — and,
     # far worse, every sentiment-derived turn valence, since L0 locks are
     # injected on every prompt and so sit in every turn's pending set —
     # moved locked posteriors anyway. Correcting a lock stays an explicit

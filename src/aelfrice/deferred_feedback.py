@@ -387,10 +387,11 @@ def sweep_deferred_feedback(
     The sweeper used to apply `+epsilon` per eligible row. Two things
     made that unsafe rather than merely unused:
 
-      * **No counterweight.** `scoring.decay` / `type_half_life` have
-        no production caller, so a frequently-retrieved belief's alpha
-        grows without bound and its posterior mean walks to 1.0,
-        permanently outranking equal-BM25 peers.
+      * **No counterweight.** Nothing decays a stored posterior — the
+        unwired `scoring.decay` surface was deleted under #1369 rather
+        than wired — so a frequently-retrieved belief's alpha grows
+        without bound and its posterior mean walks to 1.0, permanently
+        outranking equal-BM25 peers.
       * **A banked backlog.** Enqueuing was default-on inside every
         `retrieve()`, so real stores carry six figures of pending rows.
         One invocation would have fired the entire backlog at once —

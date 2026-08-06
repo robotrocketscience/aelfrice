@@ -8,7 +8,7 @@ How aelfrice fits together. Maps directly to source under `src/aelfrice/`.
 2. **SQLite plus a small numeric stack.** No vector DB, no embeddings, no LLM in the hot path. Required deps beyond stdlib: `numpy` and `scipy` (added v1.5.0, #148, for the BM25 sparse-matvec lane; now also used by the HRR and spectral-graph lanes) and `snowballstemmer` (added v1.7.0, #154, for Porter stemming). Optional extras: `[mcp]` (fastmcp), `[onboard-llm]` (the direct-API onboard classifier SDK, for `aelf onboard --llm-classify`), `[archive]` (cryptography, for `aelf uninstall --archive`), `[benchmarks]` (dev-side adapters).
 3. **Bayesian, not vibes.** Confidence is `α / (α + β)`. Every update has a closed-form rule. At v1.3.0+ the posterior is combined log-additively with BM25 on the L1 tier — see [LIMITATIONS](../user/LIMITATIONS.md) for what the partial ranking does and doesn't cover.
 4. **`apply_feedback` is the central endpoint.** One writer of `(α, β)`. One audit row per successful update.
-5. **Locks are user-asserted ground truth.** A user-locked belief short-circuits decay — a mechanism that does not currently run; see the posterior-decay note below. Lock correction is an explicit user act via `aelf lock` overwriting (PHILOSOPHY [#605](https://github.com/robotrocketscience/aelfrice/issues/605)); contradiction-driven auto-demotion was removed in [#814](https://github.com/robotrocketscience/aelfrice/issues/814).
+5. **Locks are user-asserted ground truth.** There is no posterior decay for a lock to be exempt from — the unwired mechanism that carried that exemption was deleted in [#1369](https://github.com/robotrocketscience/aelfrice/issues/1369); see the `scoring.py` row below. What keeps a lock durable is the lock floor in `apply_feedback` and in the rerank path. Lock correction is an explicit user act via `aelf lock` overwriting (PHILOSOPHY [#605](https://github.com/robotrocketscience/aelfrice/issues/605)); contradiction-driven auto-demotion was removed in [#814](https://github.com/robotrocketscience/aelfrice/issues/814).
 
 ### Enrichment-step boundary
 
@@ -41,7 +41,7 @@ subset — 31 modules against the 117 `.py` files under `src/aelfrice/` — not 
 | Module | Responsibility |
 |---|---|
 | `models.py` | `Belief`, `Edge`, `FeedbackEvent`, `OnboardSession` dataclasses; type / lock / origin constants. No I/O. |
-| `scoring.py` | `posterior_mean`, `partial_bayesian_score`, and the gamma / zeta posterior rerank scorers — the functions retrieval actually imports. Also defines `decay` / `type_half_life` / `TYPE_HALF_LIFE_SECONDS` (lock-floor short-circuit, Jeffreys `(0.5, 0.5)` target), which **no module under `src/` calls**: posterior decay is designed but not wired ([#1218](https://github.com/robotrocketscience/aelfrice/issues/1218)); disposition tracked under [#1162](https://github.com/robotrocketscience/aelfrice/issues/1162). |
+| `scoring.py` | `posterior_mean`, `partial_bayesian_score`, and the gamma / zeta posterior rerank scorers — the functions retrieval actually imports. **There is no posterior decay.** A `decay` / `type_half_life` / `TYPE_HALF_LIFE_SECONDS` surface sat here unwired from v1.0 ([#1218](https://github.com/robotrocketscience/aelfrice/issues/1218)) and was deleted rather than wired under [#1369](https://github.com/robotrocketscience/aelfrice/issues/1369) (parent [#1162](https://github.com/robotrocketscience/aelfrice/issues/1162)); nothing moves a stored `(α, β)` toward the Jeffreys prior. |
 | `store.py` | SQLite WAL + FTS5 + CRUD. `propagate_valence` BFS with broker-confidence attenuation — fired by `apply_feedback` on every direct feedback event (disable with `AELFRICE_VALENCE_PROPAGATION=0`). |
 | `retrieval.py` | `retrieve(store, query, token_budget=2400)` — L0 locked + L2.5 entity-index (v1.3+) + L1 FTS5 BM25/BM25F (BM25F default-on since v1.7.0) with Bayesian log-additive reranking (v1.3+) + L3 BFS multi-hop (v1.3+, default-off) over the L0+L2.5+L1 seed set. L0 never trimmed. |
 | `feedback.py` | `apply_feedback(store, belief_id, valence, source)` — only Bayesian-update path. Writes `feedback_history`. |
@@ -247,7 +247,7 @@ new context alongside the harness's own summary (augment mode)
 | Layer | Marker | Coverage |
 |---|---|---|
 | Unit | default | One property per test. Pyright strict. |
-| Property | default | Pre-registered invariants: Bayesian inertia, decay-required, lock-floor sharpness, token-budget invariant, broker-attenuation. |
+| Property | default | Pre-registered invariants: Bayesian inertia, token-budget invariant, broker-attenuation. The decay-required and lock-floor-sharpness invariants were retired with `scoring.decay` in [#1369](https://github.com/robotrocketscience/aelfrice/issues/1369) — both exercised the function rather than the pipeline, which is why they passed while production held the opposite invariant. |
 | Regression | `@pytest.mark.regression` | Cross-module scenarios: retrieval round-trip, feedback loop, onboarding, setup→hook→unsetup, `aelf bench` end-to-end. |
 
 `uv run pytest` (7,300+ tests at v4.2.0).

@@ -1,14 +1,16 @@
-"""Scoring primitives: Beta-Bernoulli posterior, type-specific decay, relevance.
+"""Scoring primitives: Beta-Bernoulli posterior and relevance.
 
-Half-lives (in hours, converted to seconds below):
-    factual     336   (14 days)
-    requirement 720   (30 days)
-    preference  2016  (12 weeks)
-    correction  4032  (24 weeks)
-
-Lock-floor: when a belief's lock_level is "user", decay() is a no-op
-regardless of age (zero work, sharp step). Above the floor decay is
-exponential toward the Jeffreys prior (0.5, 0.5).
+There is no posterior decay. A `decay()` / `type_half_life()` /
+`TYPE_HALF_LIFE_SECONDS` surface lived here from v1.0 with zero
+callers under `src/`, and was deleted under #1369 (parent #1162)
+rather than wired: nothing moves a stored `(alpha, beta)` toward the
+Jeffreys prior, and the lock short-circuit it carried was an
+exemption from a mechanism that never ran. What forgetting ships
+acts on ranking position — `retrieval._apply_temporal_decay` and the
+entity-persistence demote — never on the stored posterior. The
+meta-belief series engine has its own half-life pull
+(`meta_beliefs._decay_toward_static`), which targets that series'
+static default rather than the Jeffreys prior and is unrelated.
 
 v1.3.0 partial Bayesian-weighted ranking
 -----------------------------------------
@@ -36,7 +38,7 @@ from __future__ import annotations
 import math
 from typing import Final
 
-from aelfrice.models import LOCK_USER, Belief
+from aelfrice.models import Belief
 
 # Numerical floor for the BM25-side log term. SQLite FTS5 returns
 # `0.0` for non-matches and very small magnitudes (~1e-6) for
@@ -73,20 +75,6 @@ ZETA_SCALE_DEFAULT: Final[float] = 14.5
 # so retrieval never crashes on degenerate posteriors.
 ZETA_POSTERIOR_FLOOR: Final[float] = PARTIAL_BAYESIAN_BM25_FLOOR
 
-# --- Half-lives in seconds ---
-_HOUR: Final[float] = 3600.0
-TYPE_HALF_LIFE_SECONDS: Final[dict[str, float]] = {
-    "factual": 336.0 * _HOUR,         # 14 days
-    "requirement": 720.0 * _HOUR,     # 30 days
-    "preference": 2016.0 * _HOUR,     # 12 weeks
-    "correction": 4032.0 * _HOUR,     # 24 weeks
-}
-
-# Jeffreys prior -- decay target.
-_PRIOR_ALPHA: Final[float] = 0.5
-_PRIOR_BETA: Final[float] = 0.5
-
-
 def posterior_mean(alpha: float, beta: float) -> float:
     """Beta-Bernoulli posterior mean: alpha / (alpha + beta).
 
@@ -98,44 +86,6 @@ def posterior_mean(alpha: float, beta: float) -> float:
         # since alpha,beta start at 0.5,0.5 and only grow.
         return 0.5
     return alpha / total
-
-
-def type_half_life(belief_type: str) -> float:
-    """Return the half-life (seconds) for the given belief type.
-
-    Unknown types fall back to the factual half-life (most aggressive decay).
-    """
-    return TYPE_HALF_LIFE_SECONDS.get(belief_type, TYPE_HALF_LIFE_SECONDS["factual"])
-
-
-def decay(
-    alpha: float,
-    beta: float,
-    age_seconds: float,
-    half_life_seconds: float,
-    lock_level: str = "none",
-) -> tuple[float, float]:
-    """Exponentially decay (alpha, beta) toward the Jeffreys prior (0.5, 0.5).
-
-    Lock-floor short-circuit: if lock_level == "user", returns (alpha, beta)
-    unchanged regardless of age. Sharp step, not gradient.
-
-    Otherwise both alpha and beta move toward the prior by the same factor
-    f = 0.5 ** (age_seconds / half_life_seconds), so total evidence (alpha+beta)
-    shrinks toward 1.0 (the prior mass) while the ratio alpha/(alpha+beta)
-    is preserved when the deltas relative to prior are symmetric.
-
-    Concretely: new_alpha = prior_alpha + (alpha - prior_alpha) * f
-                new_beta  = prior_beta  + (beta  - prior_beta)  * f
-    """
-    if lock_level == LOCK_USER:
-        return (alpha, beta)
-    if half_life_seconds <= 0.0 or age_seconds <= 0.0:
-        return (alpha, beta)
-    factor = 0.5 ** (age_seconds / half_life_seconds)
-    new_alpha = _PRIOR_ALPHA + (alpha - _PRIOR_ALPHA) * factor
-    new_beta = _PRIOR_BETA + (beta - _PRIOR_BETA) * factor
-    return (new_alpha, new_beta)
 
 
 def relevance(belief: Belief, query_overlap_score: float) -> float:
@@ -210,7 +160,7 @@ def partial_bayesian_score(
     `posterior_mean` reuses the existing module-level helper, which
     returns `α / (α + β)` (Jeffreys prior, reads 0.5 for unobserved
     beliefs). Do not switch to Laplace at this layer — the prior
-    must agree with `aelf stats`, the MCP, and `decay()`.
+    must agree with `aelf stats` and the MCP.
 
     Higher score = more relevant (matches the convention used by
     sort-descending callers).

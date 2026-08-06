@@ -133,9 +133,11 @@ def decay_toward_default(
 
     where ``(alpha0, beta0) = prior_alpha_beta(static_default)``.
     Zero-evidence series converges to ``(alpha0, beta0)`` as
-    ``age >> half_life``. Symmetric to ``aelfrice.scoring.decay`` but
-    targets ``static_default`` rather than the Jeffreys (0.5, 0.5)
-    prior.
+    ``age >> half_life``. This is the only half-life pull in the tree:
+    it targets ``static_default`` rather than the Jeffreys (0.5, 0.5)
+    prior, and it acts on a meta-belief series, never on a belief's
+    stored posterior. The general ``scoring.decay`` it was once
+    described as symmetric to had no caller and was deleted (#1369).
 
     Pass-through when ``age <= 0`` or ``half_life <= 0`` so callers
     can apply a same-tick read without distortion.
