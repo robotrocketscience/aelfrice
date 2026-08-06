@@ -36,10 +36,10 @@ clampable origin can clear the α=4.0 threshold. That bound is pinned by
 `test_no_deterministic_non_user_insert_can_reach_the_clamp_threshold`
 rather than left to this paragraph.
 
-It bounds α by **source**, while the selector excludes by **origin**,
-and two paths join those two differently. Both are named here because
-the value of this file is that its selector's justification is
-auditable.
+`get_source_adjusted_prior` bounds α by **source**, while the selector
+excludes by **origin**, and two paths join those two differently. Both
+are named here because the value of this file is that its selector's
+justification is auditable.
 
 **`route_overrides` writes (origin, α) verbatim.** `derive()` skips the
 classifier entirely on that branch (`derivation.py`, the
@@ -111,9 +111,10 @@ development store the shipped selector matches 0 rows at α>4.0 and
 tops out at 3.0; on another store on the same machine it matches 1,310
 rows and tops out above α=100. Both are the same code.
 
-``migrate()`` can. It is reachable today via ``aelf migrate --apply``
-and ``aelf doctor``'s in-place upgrade, and a legacy store imported
-after a clamp will land fresh candidates. So "one-shot" is a statement
+``migrate()`` can regrow the population, though, and it is reachable
+today via ``aelf migrate --apply`` and ``aelf doctor``'s in-place
+upgrade: a legacy store imported after a clamp lands fresh candidates
+whose α was copied through verbatim. So "one-shot" is a statement
 about a *given* store's existing rows, not a property of the tool:
 re-run the clamp after any migration, and scope it with
 ``created_before``.
