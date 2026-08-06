@@ -215,6 +215,99 @@ def diagnose_reference_signal(store_path: str) -> ReferenceSignalStats | None:
 
 
 # ---------------------------------------------------------------------------
+# Dangling-edge check (#1375)
+# ---------------------------------------------------------------------------
+
+# How many per-type rows the dangling-edge section prints before it
+# stops. The count is the finding; the type breakdown is only there to
+# point at which producer to look at, and a long tail of one-row types
+# would bury the total.
+DANGLING_EDGE_TYPES_SHOWN: Final[int] = 5
+
+
+@dataclass(frozen=True)
+class DanglingEdgeStats:
+    """Counts of `edges` rows whose endpoints are absent from `beliefs` (#1375).
+
+    The `edges` table has `PRIMARY KEY (src, dst, type)` and no foreign
+    key, and `insert_edge` gates only on federation ownership —
+    `assert_local_ownership` is a documented no-op for an id the store
+    has never seen. So an edge naming a belief that does not exist is
+    accepted silently and nothing has ever reported it.
+
+    `total` counts *edges*: an edge missing both endpoints is one row,
+    counted once. `missing_src` and `missing_dst` count endpoints, so
+    they can sum to more than `total`.
+
+    `total_edges` is the whole table, for scale — "12 dangling" reads
+    very differently against 40 edges than against 40,000.
+
+    `by_type` is the dangling count per edge type, largest first.
+    """
+
+    total: int
+    total_edges: int
+    missing_src: int
+    missing_dst: int
+    by_type: tuple[tuple[str, int], ...] = ()
+
+
+def diagnose_dangling_edges(store_path: str) -> DanglingEdgeStats | None:
+    """Return dangling-edge counts for `store_path`, or None (#1375).
+
+    Read-only, via a plain sqlite connection rather than a `MemoryStore`
+    — opening a store *runs* its pending one-shot migrations, which a
+    diagnostic must not do (same reasoning as
+    :func:`diagnose_reference_signal`).
+
+    Report-only by design. The structural fix is a foreign key on
+    `edges`, which needs a table rebuild; an `edges` migration is what
+    bricked stores in #1161, so this leaf counts and does not repair.
+
+    Fail-soft: a missing file, a store with no `edges` table, or any
+    sqlite error yields None and the section is not rendered.
+    """
+    if store_path == ":memory:" or not Path(store_path).exists():
+        return None
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(f"file:{store_path}?mode=ro", uri=True)
+        # One LEFT JOIN pair drives both queries: `beliefs.id` is the
+        # primary key, so each probe is an index lookup rather than a
+        # scan of the belief table.
+        dangling_from = (
+            "FROM edges e "
+            "LEFT JOIN beliefs bs ON bs.id = e.src "
+            "LEFT JOIN beliefs bd ON bd.id = e.dst "
+            "WHERE bs.id IS NULL OR bd.id IS NULL"
+        )
+        row = conn.execute(
+            "SELECT COUNT(*), SUM(bs.id IS NULL), SUM(bd.id IS NULL) "
+            + dangling_from
+        ).fetchone()
+        total_row = conn.execute("SELECT COUNT(*) FROM edges").fetchone()
+        by_type = conn.execute(
+            "SELECT e.type, COUNT(*) AS n "
+            + dangling_from
+            + " GROUP BY e.type ORDER BY n DESC, e.type ASC"
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+    if row is None or total_row is None:
+        return None
+    return DanglingEdgeStats(
+        total=int(row[0] or 0),
+        total_edges=int(total_row[0] or 0),
+        missing_src=int(row[1] or 0),
+        missing_dst=int(row[2] or 0),
+        by_type=tuple((str(t), int(n)) for t, n in by_type),
+    )
+
+
+# ---------------------------------------------------------------------------
 # UserPromptSubmit telemetry section (#218 AC4)
 # ---------------------------------------------------------------------------
 
@@ -449,6 +542,11 @@ class DoctorReport:
     # #1232: close-the-loop reference-detection counters. None when no
     # store path was supplied or the store has no injection_events.
     reference_signal: ReferenceSignalStats | None = None
+    # #1375: edges whose src or dst names a belief that does not exist.
+    # The `edges` table carries no foreign key and `insert_edge` does not
+    # check endpoint existence, so nothing else reports these. None when
+    # no store path was supplied or the store could not be read.
+    dangling_edges: DanglingEdgeStats | None = None
     # Runtime deps declared in pyproject.toml that are not importable
     # in the current environment (issue #236: stale uv tool env).
     missing_runtime_deps: list[str] = field(
@@ -612,6 +710,8 @@ def diagnose(
         )
         # #1232: same read-only handle policy, same fail-soft contract.
         report.reference_signal = diagnose_reference_signal(store_path)
+        # #1375: dangling-edge count, same policy again.
+        report.dangling_edges = diagnose_dangling_edges(store_path)
     # #593: auto-migrate any detected legacy DBs in place. Operator
     # decision was "no prompt, no banner" — silent migration with a
     # `.pre-v1x.bak` backup hop. Failures degrade to the residual
@@ -1322,6 +1422,8 @@ def format_report(report: DoctorReport) -> str:
         _format_failed_migrations_section(report, lines)
         # #1232: store-derived, independent of settings.json.
         _format_reference_signal_section(report, lines)
+        # #1375: store-derived too.
+        _format_dangling_edges_section(report, lines)
         return "\n".join(lines)
     for scope, path in report.scopes_scanned:
         lines.append(f"scanned {scope}: {path}")
@@ -1388,6 +1490,7 @@ def format_report(report: DoctorReport) -> str:
     _format_legacy_schema_section(report, lines)
     _format_failed_migrations_section(report, lines)
     _format_reference_signal_section(report, lines)
+    _format_dangling_edges_section(report, lines)
     _format_hrr_section(report, lines)
     return "\n".join(lines)
 
@@ -1922,6 +2025,48 @@ def _format_reference_signal_section(
             f"  status: too few resolved events to judge "
             f"(need {REFERENCE_SIGNAL_MIN_RESOLVED})"
         )
+
+
+def _format_dangling_edges_section(
+    report: DoctorReport, lines: list[str],
+) -> None:
+    """Append the dangling-edge block to `lines` (#1375).
+
+    Rendered whenever the store could be read, including at zero — a
+    check that is silent when clean is indistinguishable from a check
+    that never ran, and "0 dangling" is the reading an operator wants
+    confirmed before trusting a graph walk.
+    """
+    st = report.dangling_edges
+    if st is None:
+        return
+    lines.append("")
+    lines.append("dangling edges (endpoint missing from `beliefs`):")
+    if st.total == 0:
+        lines.append(f"  none of {st.total_edges} edge(s)")
+        return
+    lines.append(
+        f"  {st.total} of {st.total_edges} edge(s) — "
+        f"{st.missing_src} missing src, {st.missing_dst} missing dst"
+    )
+    for edge_type, n in st.by_type[:DANGLING_EDGE_TYPES_SHOWN]:
+        lines.append(f"    {edge_type}: {n}")
+    remainder = len(st.by_type) - DANGLING_EDGE_TYPES_SHOWN
+    if remainder > 0:
+        lines.append(f"    ... and {remainder} more type(s)")
+    lines.append(
+        "  cause: `edges` has no foreign key and `insert_edge` does not "
+        "check that its endpoints exist, so a producer writing against a "
+        "deleted or never-inserted belief id succeeds silently. These "
+        "rows are not inert: BFS spends a `nodes_per_hop` slot on the "
+        "neighbour before it tries to load it, so a dangling edge can "
+        "displace a real one, and the edge-type rerank reads incoming "
+        "edges by `dst` without checking that `src` exists, so a "
+        "dangling POTENTIALLY_STALE row still demotes its target. They "
+        "also inflate every edge count. Report-only: repairing them "
+        "needs an `edges` table rebuild, which is out of scope here "
+        "(#1161)."
+    )
 
 
 # ---------------------------------------------------------------------------

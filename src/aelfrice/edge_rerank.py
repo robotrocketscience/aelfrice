@@ -126,7 +126,15 @@ def apply_edge_type_rerank(
         incoming = store.edges_to_in_scope(hop.belief.id, hop.owning_scope)
         firing = {e.type for e in incoming if e.type in cfg}
         new_score = hop.score
-        for edge_type in firing:
+        # `sorted` is load-bearing, not cosmetic (#1375). `firing` is a
+        # `set[str]`, whose iteration order depends on the per-process
+        # string hash seed, and float multiplication is not associative
+        # — so folding the penalties in set order makes the last bits of
+        # `new_score` vary between interpreter runs on any belief with
+        # two or more distinct firing edge types. The docstring above
+        # promises byte-identical output for the same input; a total
+        # order over the fold is what makes that true.
+        for edge_type in sorted(firing):
             new_score *= cfg[edge_type]
         # `replace` rather than a field-by-field rebuild (#1207).
         # `ScoredHop` gained `belief_id_trail` (#658) and
