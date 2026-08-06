@@ -3852,7 +3852,18 @@ def stop(
                             [c for c in candidates if _belief_is_correction_class(c)],
                             serr,
                         )
-                    else:
+                        # Excluding them from the writer must not discard
+                        # them. The prompt is a #1315 proposal's only
+                        # surface, so what autolock may not write falls
+                        # through to it — otherwise this flag is an
+                        # off-switch for the feature rather than an
+                        # automation of its locking step, and the block
+                        # advertising the flag is advertising its own
+                        # suppression.
+                        candidates = [
+                            c for c in candidates if not _belief_is_correction_class(c)
+                        ]
+                    if candidates:
                         block = _format_stop_prompt(candidates)
                         if block:
                             # stderr per the Stop-hook contract: any

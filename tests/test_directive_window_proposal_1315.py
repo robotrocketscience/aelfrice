@@ -341,6 +341,49 @@ def test_autolock_does_not_write_a_windowed_directive(
         reopened.close()
 
 
+def test_autolock_still_proposes_what_it_may_not_write(
+    store: MemoryStore, tmp_path: Path
+) -> None:
+    """Excluding a windowed directive from autolock must not discard it.
+
+    Withholding these from `_autolock_candidates` is correct, but the
+    Stop prompt is the only surface a #1315 proposal has: if the
+    exclusion also skips the prompt, then `AELF_AUTOLOCK_CORRECTIONS=1`
+    is an off-switch for the feature rather than an automation of its
+    locking step. The user is left with a belief that is neither locked
+    nor suggested — and the block itself recommends setting this very
+    flag, so the advice would be advertising its own suppression.
+
+    Falsifiable by restoring the `if/else` at the `stop()` call site:
+    the directive is then silently dropped and the `--for` assertion
+    fails on empty stderr. The correction is the control in the other
+    direction — it is written, so it must NOT also be proposed, which is
+    what fails if the exclusion is dropped and everything is prompted.
+    """
+    directive = _belief(_DIRECTIVE)
+    correction = _belief("Actually the flag is --foo, not --bar.")
+    correction.type = BELIEF_CORRECTION
+    store.insert_belief(directive)
+    store.insert_belief(correction)
+    store.close()
+
+    err = io.StringIO()
+    hook.stop(
+        stdin=io.StringIO(json.dumps({"session_id": _SESSION})),
+        stdout=io.StringIO(),
+        stderr=err,
+        env={"AELF_AUTOLOCK_CORRECTIONS": "1"},
+    )
+    out = err.getvalue()
+
+    assert "--for 1w" in out, "autolock dropped the proposal instead of showing it"
+    assert directive.content in out
+    assert correction.content not in out, (
+        "control: an auto-locked correction is written, so it must not "
+        "also be proposed"
+    )
+
+
 def test_a_windowed_directive_is_a_candidate_whatever_its_type() -> None:
     """Hypothesis: the candidate predicate admits a windowed directive on
     its own merits, not only via the correction-class arms.
