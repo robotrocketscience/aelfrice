@@ -1,6 +1,6 @@
 """`EDGE_LAPLACIAN_WEIGHTS` is total over `models.EDGE_TYPES` (#1375).
 
-`_build_adjacency` reads the weight table through `w_map.get(e.type,
+`build_signed_adjacency` reads the weight table through `w_map.get(e.type,
 0.0)` and drops any edge whose weight is 0.0. Before #1375 the table
 listed only the six edge types that existed when #149 was written, so
 `IMPLEMENTS`, `TESTS`, `TEMPORAL_NEXT` and `RESOLVES` fell through the
