@@ -158,15 +158,17 @@ jobs:
           fi
 
           echo "[5/6] waiting for required checks to complete..."
-          # Resolve the branch's REQUIRED contexts at run time rather than
-          # hard-coding them, so this cannot drift from the ruleset. The
-          # `rules/branches` endpoint needs only read access; `rulesets`
-          # needs admin, which the default token does not have.
+          # #1397: advisory bots were de facto merge-blocking, and the
+          # failure message called them required. The gate now excludes
+          # them BY NAME and keeps gating on every other check-run —
+          # gating on the required set alone was tried and rejected in
+          # review, because it would demote 19 real checks (including
+          # migration-policy-check, whose absence once left stores
+          # unopenable) to fix 2 bots.
           #
-          # #1397: this used to gate on EVERY check-run on the SHA, which
-          # made advisory bots (Sourcery, CodeRabbit) merge-blocking while
-          # the failure message called them required. The decision now
-          # lives in scripts/merge_train_gate.py so it can be tested —
+          # The required set is still resolved at run time, but only to
+          # LABEL which failures were required. The decision lives in
+          # scripts/merge_train_gate.py so it can be tested —
           # tests/test_merge_train_gate.py asserts both directions.
           gh api "repos/${REPO}/rules/branches/main" > /tmp/rules.json
           deadline=$(( $(date +%s) + CHECK_TIMEOUT_SECONDS ))
@@ -174,8 +176,10 @@ jobs:
               gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" \
                   > /tmp/rollup.json
 
-              # A non-zero exit is a fail-closed abort (e.g. zero required
-              # contexts resolved), never a green light.
+              # A non-zero exit is a fail-closed abort (unreadable
+              # payload), never a green light. An unresolvable required
+              # set does NOT abort: it cannot narrow the gate, so it
+              # degrades the message only.
               if ! verdict=$(python3 scripts/merge_train_gate.py \
                       --rollup /tmp/rollup.json --rules /tmp/rules.json); then
                   fail_and_unlabel "could not resolve the branch's required status checks, so the merge gate refused to decide. This is a fail-closed abort — see the job log."
@@ -183,25 +187,37 @@ jobs:
 
               fails=$(echo "${verdict}" | jq -r '.failing | join(", ")')
               if [ -n "${fails}" ]; then
-                  advisory=$(echo "${verdict}" | jq -r '.advisory_failing | join(", ")')
-                  note=""
-                  if [ -n "${advisory}" ]; then
-                      note=" (advisory checks also failing, not gating: \`${advisory}\`)"
+                  req=$(echo "${verdict}" | jq -r '.failing_required | join(", ")')
+                  other=$(echo "${verdict}" | jq -r '.failing_not_required | join(", ")')
+                  msg="check(s) failed."
+                  if [ -n "${req}" ]; then
+                      msg="${msg} Required: \`${req}\`."
                   fi
-                  fail_and_unlabel "required check(s) failed: \`${fails}\`.${note} Fix CI and re-add the label."
+                  if [ -n "${other}" ]; then
+                      msg="${msg} Not required by the ruleset but still gating: \`${other}\`."
+                  fi
+                  fail_and_unlabel "${msg} Fix CI and re-add the label."
+              fi
+
+              unmatched=$(echo "${verdict}" | jq -r '.advisory_unmatched | join(", ")')
+              if [ -n "${unmatched}" ]; then
+                  echo "note: advisory exclusion(s) matched no check-run on this SHA: ${unmatched}"
               fi
 
               pending=$(echo "${verdict}" | jq -r '.pending | length')
               missing=$(echo "${verdict}" | jq -r '.missing | length')
-              if [ "${pending}" = "0" ] && [ "${missing}" = "0" ]; then
+              if [ "${pending}" = "0" ]; then
                   advisory=$(echo "${verdict}" | jq -r '.advisory_failing | join(", ")')
                   if [ -n "${advisory}" ]; then
                       echo "advisory check(s) failing, not gating merge: ${advisory}"
                   fi
-                  echo "all required checks settled."
+                  if [ "${missing}" != "0" ]; then
+                      echo "warning: ${missing} required context(s) never reported a check-run; the push will be rejected by branch protection if they are genuinely unsatisfied."
+                  fi
+                  echo "all gating checks settled."
                   break
               fi
-              echo "...${pending} required check(s) running, ${missing} not yet reported, sleeping 20s"
+              echo "...${pending} gating check(s) running (${missing} required context(s) not yet reported), sleeping 20s"
               sleep 20
           done
 
