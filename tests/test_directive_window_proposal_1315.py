@@ -141,6 +141,63 @@ def test_two_different_windows_are_ambiguous_and_refused() -> None:
     assert _directive_window_spec(text) is None      # but refused overall
 
 
+@pytest.mark.parametrize(
+    ("text", "first"),
+    [
+        pytest.param(
+            "Always use tabs for the next week, then for two days.",
+            "1w",
+            id="next-form-first",
+        ),
+        pytest.param(
+            "Always use tabs for two days, then for the next week.",
+            "2d",
+            id="counted-form-first",
+        ),
+        pytest.param(
+            "Always use tabs for the next week, and for the next month.",
+            "1w",
+            id="both-in-the-next-form",
+        ),
+    ],
+)
+def test_ambiguity_sees_both_spellings_of_a_window(text: str, first: str) -> None:
+    """Hypothesis: ambiguity is judged over *every* window the text
+    states, not only the ones the counted-form pattern can see.
+
+    `"for the next week"` has no count word, so it is matched by
+    `_NEXT_UNIT_RE` and is invisible to `_STATED_WINDOW_RE`. An ambiguity
+    check that scans only the latter reports a single window on all three
+    of these and resolves to whichever one it *can* see — for
+    `next-form-first` that is `2d`, the window stated **second**, which
+    also contradicts the documented "first stated wins" rule.
+
+    Falsifiable by narrowing `_stated_windows` back to one pattern: each
+    param then proposes a concrete spec instead of refusing. Pairs with
+    the `first` assertion so that a fix which refuses *everything*
+    (making the module useless) fails here too.
+    """
+    assert detect_directive(text) is True, "fixture must reach the ambiguity arm"
+    assert extract_stated_window(text) == first, "first stated window wins"
+    assert stated_window_is_ambiguous(text) is True
+    assert _directive_window_spec(text) is None
+
+
+def test_a_zero_window_beside_a_real_one_still_refuses() -> None:
+    """Hypothesis: a zero-length window is *stated*, so a sentence naming
+    it alongside a usable window is ambiguous rather than resolvable.
+
+    Falsifiable by dropping zero-length windows from the scan instead of
+    keeping them as `None`: the sentence would then look like it names
+    exactly one window and would propose `1w`, silently discarding the
+    half of the sentence that could not be parsed.
+    """
+    text = "Always use tabs for 0 days, then for a week."
+    assert detect_directive(text) is True, "fixture must reach the ambiguity arm"
+    assert stated_window_is_ambiguous(text) is True
+    assert _directive_window_spec(text) is None
+
+
 def test_a_non_directive_with_a_window_is_not_proposed() -> None:
     """Hypothesis: both halves are required — a window alone is not a
     directive.

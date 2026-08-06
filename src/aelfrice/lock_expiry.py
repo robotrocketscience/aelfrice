@@ -251,6 +251,41 @@ _NEXT_UNIT_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 
+def _stated_windows(text: str) -> list[str | None]:
+    """Every window `text` states, in the order it states them.
+
+    Both patterns are scanned and the results merged by position, so
+    that "first" means *first in the sentence* rather than *first
+    pattern tried*. Scanning only one of them is how a sentence that
+    names two windows can look unambiguous: `_STATED_WINDOW_RE` cannot
+    see a bare "for the next week", so a text naming that plus a counted
+    window used to report a single window and resolve to the wrong one.
+
+    A zero-length window appears as `None` — stated, but unusable, since
+    `parse_for` rejects it. It stays in the list rather than being
+    dropped so that it still counts as *a* stated window: "for 0 days,
+    then for a week" names two things and must refuse, not silently
+    resolve to the survivor.
+    """
+    found: list[tuple[int, str | None]] = []
+    for match in _STATED_WINDOW_RE.finditer(text):
+        raw = match.group("count").lower()
+        count = int(raw) if raw.isdigit() else _NUMBER_WORDS[raw]
+        spec = (
+            None
+            if count == 0
+            else f"{count}{_UNIT_WORDS[match.group('unit').lower()]}"
+        )
+        found.append((match.start(), spec))
+    for match in _NEXT_UNIT_RE.finditer(text):
+        found.append((match.start(), f"1{_UNIT_WORDS[match.group('unit').lower()]}"))
+    # The two patterns cannot match the same span — one requires a count
+    # word where the other requires a unit word — so position alone is a
+    # total order over the matches.
+    found.sort(key=lambda item: item[0])
+    return [spec for _, spec in found]
+
+
 def extract_stated_window(text: str) -> str | None:
     """Return the `--for` spec the text states, or None if it states none.
 
@@ -264,26 +299,20 @@ def extract_stated_window(text: str) -> str | None:
     inferring an expiry the user did not state, and the failure mode of
     guessing is a lock that expires on a date the user never agreed to.
 
-    Only the first match is used. A sentence naming two different
-    windows is ambiguous, and the caller is expected to refuse rather
-    than pick one — see `stated_window_is_ambiguous`.
+    Only the first window stated is returned, counting both spellings.
+    A sentence naming two different windows is ambiguous, and the caller
+    is expected to refuse rather than pick one — see
+    `stated_window_is_ambiguous`.
     """
     if not text:
         return None
-    match = _STATED_WINDOW_RE.search(text)
-    if match is not None:
-        raw = match.group("count").lower()
-        count = int(raw) if raw.isdigit() else _NUMBER_WORDS[raw]
-        if count == 0:
-            # `parse_for` rejects a zero window; surfacing None here
-            # keeps the refusal in one place rather than raising from a
-            # detector that is supposed to be total.
-            return None
-        return f"{count}{_UNIT_WORDS[match.group('unit').lower()]}"
-    next_match = _NEXT_UNIT_RE.search(text)
-    if next_match is not None:
-        return f"1{_UNIT_WORDS[next_match.group('unit').lower()]}"
-    return None
+    windows = _stated_windows(text)
+    if not windows:
+        return None
+    # None here means the first thing stated was a zero-length window,
+    # which `parse_for` rejects; surfacing None keeps that refusal in one
+    # place rather than raising from a detector that must stay total.
+    return windows[0]
 
 
 def stated_window_is_ambiguous(text: str) -> bool:
@@ -295,9 +324,4 @@ def stated_window_is_ambiguous(text: str) -> bool:
     """
     if not text:
         return False
-    found = {
-        f"{int(m.group('count')) if m.group('count').isdigit() else _NUMBER_WORDS[m.group('count').lower()]}"
-        f"{_UNIT_WORDS[m.group('unit').lower()]}"
-        for m in _STATED_WINDOW_RE.finditer(text)
-    }
-    return len(found) > 1
+    return len(set(_stated_windows(text))) > 1
