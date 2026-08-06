@@ -255,6 +255,13 @@ _HARNESS_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 
+# #1371 §10: fenced code block, including the language tag. This is the
+# single implementation shared by the transcript path
+# (`extraction.extract_sentences`) and the onboard path
+# (`scanner._split_paragraphs`) — the asymmetry between the two was the
+# bug, so there is exactly one regex now.
+_CODE_FENCE_RE: Final[re.Pattern[str]] = re.compile(r"```[\s\S]*?```")
+
 # #1025: a sentence that begins with a CLOSING tag ("</…") is a stray
 # harness fragment (e.g. "</task-notification>", "</event>"). No prose
 # belief starts with a closing tag, so this is high-precision.
@@ -739,6 +746,21 @@ def strip_harness_blocks(text: str) -> str:
     if "<" not in text:
         return text
     return _HARNESS_BLOCK_RE.sub(" ", text)
+
+
+def strip_code_fences(text: str) -> str:
+    """Remove fenced code blocks (including the language tag) from `text`.
+
+    The single shared implementation behind both ingest paths (#1371
+    §10). `extraction.extract_sentences` has stripped fences since the
+    beginning; `scanner._split_paragraphs` did not, so the same document
+    onboarded produced 371 fence-bearing beliefs that the transcript path
+    never created. Behaviour is intentionally identical to the regex it
+    replaces — an unterminated fence is left in place.
+    """
+    if "```" not in text:
+        return text
+    return _CODE_FENCE_RE.sub(" ", text)
 
 
 def is_transcript_noise(sentence: str) -> bool:

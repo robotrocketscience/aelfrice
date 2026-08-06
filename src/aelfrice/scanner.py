@@ -31,7 +31,7 @@ from aelfrice.models import (
     CORROBORATION_SOURCE_FILESYSTEM_INGEST,
     INGEST_SOURCE_FILESYSTEM,
 )
-from aelfrice.noise_filter import NoiseConfig, is_noise
+from aelfrice.noise_filter import NoiseConfig, is_noise, strip_code_fences
 from aelfrice.store import MemoryStore
 
 # Optional v1.3+ LLM-classify routing path. `LLMRouter` is a Protocol
@@ -383,12 +383,21 @@ def _iter_doc_files(root: Path) -> list[Path]:
 def _split_paragraphs(text: str) -> list[str]:
     """Split a document into paragraph-shaped units.
 
+    Fenced code blocks are removed first (#1371 §10), using the same
+    `noise_filter.strip_code_fences` the transcript path runs in
+    `extraction.extract_sentences`. Before this, the same document
+    ingested through onboard and through the transcript path produced
+    different beliefs: onboard stored the raw fence bodies (XML samples,
+    shell transcripts, JSON payloads) as prose. The strip runs on the
+    whole document, not per paragraph, because a fence may span the
+    blank lines this function splits on.
+
     Paragraph boundary: one or more blank lines. Leading/trailing
     whitespace stripped per paragraph. Paragraphs shorter than
     _MIN_PARAGRAPH_CHARS dropped (markdown headings, list bullets, code
     fence markers, etc.).
     """
-    raw_paragraphs = [p.strip() for p in text.split("\n\n")]
+    raw_paragraphs = [p.strip() for p in strip_code_fences(text).split("\n\n")]
     return [p for p in raw_paragraphs if len(p) >= _MIN_PARAGRAPH_CHARS]
 
 

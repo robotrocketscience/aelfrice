@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 
-from aelfrice.noise_filter import strip_harness_blocks
+from aelfrice.noise_filter import strip_code_fences, strip_harness_blocks
 
 
 # Minimum character length for a sentence fragment to be kept.
@@ -35,8 +35,10 @@ def extract_sentences(text: str) -> list[str]:
     # interior sentences are stored as user-authored beliefs.
     cleaned: str = strip_harness_blocks(text)
 
-    # Step 1: strip code blocks (triple-backtick regions, including language tag)
-    cleaned = re.sub(r"```[\s\S]*?```", " ", cleaned)
+    # Step 1: strip code blocks (triple-backtick regions, including
+    # language tag). Shared with the onboard path via noise_filter so
+    # the two ingest routes cannot drift again (#1371 §10).
+    cleaned = strip_code_fences(cleaned)
 
     # Step 2: strip inline code backticks, keep surrounding text
     cleaned = re.sub(r"`[^`]*`", " ", cleaned)
