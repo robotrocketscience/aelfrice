@@ -183,10 +183,13 @@ jobs:
                   "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" \
                   | jq -s '{check_runs: [.[].check_runs[]]}' > /tmp/rollup.json
 
-              # A non-zero exit is a fail-closed abort (unreadable
-              # payload), never a green light. An unresolvable required
-              # set does NOT abort: it cannot narrow the gate, so it
-              # degrades the message only.
+              # A non-zero exit is a fail-closed abort, never a green
+              # light. Two cases reach it: an unreadable payload, and an
+              # unresolvable required set. The second aborts because the
+              # required set is what `missing` is derived from, and
+              # `missing` is the only signal below that is not an
+              # absence-test — without it an empty rollup reads as green
+              # (#1435).
               if ! verdict=$(python3 scripts/merge_train_gate.py \
                       --rollup /tmp/rollup.json --rules /tmp/rules.json); then
                   fail_and_unlabel "could not resolve the branch's required status checks, so the merge gate refused to decide. This is a fail-closed abort — see the job log."
@@ -211,17 +214,49 @@ jobs:
                   echo "note: advisory exclusion(s) matched no check-run on this SHA: ${unmatched}"
               fi
 
+              # `pending` and `missing` both have to reach zero (#1435).
+              #
+              # Both of this loop's exit conditions are defined as absences —
+              # nothing failing, nothing pending — so an EMPTY rollup satisfies
+              # them exactly as a green one does. A head SHA that carries no
+              # check-runs at all therefore read as "all checks settled" and
+              # went straight to the FF push. That is not hypothetical: during
+              # the 2026-08-06 Actions outage eight open PRs sat with only a
+              # skipped advisory bot on their heads, one `ready-to-merge` label
+              # away from landing with zero test evidence.
+              #
+              # `missing` is the required contexts with no check-run on the SHA,
+              # which is the presence floor the absence-tests lack: it turns
+              # "nothing is objecting" into "the things that must pass, ran".
+              # It is waited on rather than aborted on because immediately
+              # after a push every context is legitimately missing — missing
+              # and not-yet-started are the same observation, distinguished
+              # only by time. The deadline below does the distinguishing.
+              #
+              # Whether the ruleset would have caught it is UNKNOWN, in both
+              # directions, and the gate deliberately does not depend on the
+              # answer. Ruleset 15575532 is active on refs/heads/main and
+              # carries both `pull_request` and `required_status_checks`; its
+              # sole bypass actor is RepositoryRole 5 in bypass_mode
+              # `pull_request`, which does not cover a direct push. Yet this
+              # job has FF-pushed to main 26 times, so the `pull_request` rule
+              # plainly does not reject these pushes — most likely because
+              # GitHub recognises pushing an open PR's head as merging that
+              # PR. If that is what happens, the same recognition governs
+              # `required_status_checks`, and every one of those 26 pushes
+              # carried five green contexts, so none of them discriminates.
+              #
+              # The hole is therefore latent rather than observed: no merged PR
+              # has landed without its required contexts. Do not resolve the
+              # question by experiment on `main`.
               pending=$(echo "${verdict}" | jq -r '.pending | length')
               missing=$(echo "${verdict}" | jq -r '.missing | length')
-              if [ "${pending}" = "0" ]; then
+              if [ "${pending}" = "0" ] && [ "${missing}" = "0" ]; then
                   advisory=$(echo "${verdict}" | jq -r '.advisory_failing | join(", ")')
                   if [ -n "${advisory}" ]; then
                       echo "advisory check(s) failing, not gating merge: ${advisory}"
                   fi
-                  if [ "${missing}" != "0" ]; then
-                      echo "warning: ${missing} required context(s) never reported a check-run; the push will be rejected by branch protection if they are genuinely unsatisfied."
-                  fi
-                  echo "all gating checks settled."
+                  echo "all gating checks settled, and every required context reported."
                   break
               fi
               pending_names=$(echo "${verdict}" | jq -r '.pending | join(", ")')

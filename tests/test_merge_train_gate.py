@@ -251,31 +251,59 @@ def test_contexts_from_several_rulesets_are_unioned() -> None:
     assert required_contexts(rules) == {"secrets-scan", "pytest (3.12)"}
 
 
-def test_an_unresolvable_required_set_degrades_the_message_not_the_gate(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Unknown means gate on MORE, never on less.
+def test_an_unresolvable_required_set_aborts(tmp_path: Path) -> None:
+    """Losing the required set removes the presence floor, so it is fatal.
 
-    Once the gate covers every non-advisory check, the required set only
-    labels failures. So losing it must not abort (that would brick merges on
-    a ruleset edit) and must not widen what passes. Both asserted: exit 0,
-    and a red non-required check still lands in `failing`.
+    This deliberately reverses the earlier behaviour, and the reason is
+    #1435. While the required set only *labelled* failures, losing it cost
+    nothing and aborting would have bricked merges on a ruleset edit. Now
+    `missing` gates, and `missing` is derived from that set — so an empty set
+    yields an empty `missing`, which silently removes the only signal here
+    that is not an absence-test.
+
+    The failure mode being prevented is specifically a quiet one: with no
+    required set, a rollup of nothing at all produces a verdict whose every
+    field is empty, which the workflow reads as green.
     """
     rollup = tmp_path / "rollup.json"
-    rollup.write_text(json.dumps({
-        "check_runs": [*_all_required_green(), _run("deptry", "failure")],
-    }))
+    rollup.write_text(json.dumps({"check_runs": []}))
     rules = tmp_path / "rules.json"
     rules.write_text(json.dumps([{"type": "pull_request", "parameters": {}}]))
 
-    assert main(["--rollup", str(rollup), "--rules", str(rules)]) == 0
-    verdict = json.loads(capsys.readouterr().out)
-    assert verdict["failing"] == ["deptry"], (
-        "losing the required set must not widen what passes: a red "
-        "non-required check still gates"
+    assert main(["--rollup", str(rollup), "--rules", str(rules)]) == 2
+
+
+def test_an_empty_rollup_is_all_missing_not_all_green() -> None:
+    """The #1435 defect, at the level the gate can see it.
+
+    Every other field in the verdict is defined as an absence, so a head SHA
+    with no check-runs produces `failing: []` and `pending: []` — indis-
+    tinguishable from a fully green head. Only `missing` separates them.
+    """
+    verdict = evaluate([], REQUIRED)
+    assert verdict["failing"] == []
+    assert verdict["pending"] == []
+    assert verdict["missing"] == sorted(REQUIRED), (
+        "an empty rollup must report every required context as missing; "
+        "without that the workflow cannot tell it from a green one"
     )
-    assert verdict["required"] == []
-    assert verdict["failing_required"] == []
+
+
+def test_advisory_bots_alone_do_not_satisfy_the_floor() -> None:
+    """The exact shape eight PRs carried during the 2026-08-06 outage.
+
+    A skipped Sourcery review and a green CodeRabbit are the entire rollup.
+    Neither is gating, so `failing` and `pending` are empty and the pre-#1435
+    loop broke straight to the FF push.
+    """
+    runs = [
+        _run("Sourcery review", "skipped"),
+        _run("CodeRabbit", "success"),
+    ]
+    verdict = evaluate(runs, REQUIRED)
+    assert verdict["failing"] == []
+    assert verdict["pending"] == []
+    assert verdict["missing"] == sorted(REQUIRED)
 
 
 def test_an_unreadable_payload_still_aborts(tmp_path: Path) -> None:
@@ -355,6 +383,34 @@ def test_the_workflow_gates_on_failing_not_on_failing_required() -> None:
     assert not re.search(r"fails=\$\(echo \"\$\{verdict\}\" \| jq -r '\.failing_required", text), (
         "gating on .failing_required is the required-only design; it demotes "
         "every non-required check to advisory"
+    )
+
+
+def test_the_workflow_waits_for_missing_required_contexts_too() -> None:
+    """`missing` gates, and only the workflow can enforce that (#1435).
+
+    `evaluate()` reports `missing`; the wait loop is what acts on it. Every
+    module-level test here would still pass with the workflow breaking on
+    `pending == 0` alone — which is precisely the state that would have
+    FF-pushed a head carrying nothing but a skipped advisory bot.
+
+    Asserted as the conjunction rather than as "the string `missing` appears",
+    because it appeared in the old code too: as a warning printed on the way
+    past it.
+    """
+    text = _WORKFLOW.read_text()
+    assert re.search(
+        r'if \[ "\$\{pending\}" = "0" \] && \[ "\$\{missing\}" = "0" \]; then',
+        text,
+    ), (
+        "the wait loop must break only when pending AND missing are both "
+        "zero; breaking on pending alone lets an empty rollup merge"
+    )
+    assert "the push will be rejected by branch protection" not in text, (
+        "that claim is unverified in both directions -- the ruleset carries a "
+        "`pull_request` rule this job demonstrably pushes past, and every "
+        "push it has made carried green required contexts, so none of them "
+        "discriminates. The gate must not lean on it either way"
     )
 
 

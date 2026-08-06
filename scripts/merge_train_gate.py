@@ -31,14 +31,21 @@ is how the original defect survived. The decision is a pure function of
 `tests/test_merge_train_gate.py`, including the case that matters most — a red
 advisory check with every required context green must **merge**.
 
-**An unresolvable required set degrades the message, not the decision.** Since
-the gate covers every non-advisory check either way, the required set never
-narrows it — losing the set costs only the ability to *label* which failures
-were required. So resolution returning nothing warns and continues rather than
-aborting: unknown means gate on more, never on less. (Under the required-only
-design this file no longer implements, an empty set would have meant "nothing
-is required, merge anything", and aborting would have been the only safe
-reading. That is not the trade this code makes.)
+**An unresolvable required set is fatal (#1435).** It was not, while the gate
+read the set only to *label* which failures were required: the gate covered
+every non-advisory check either way, so losing the set cost nothing but the
+annotation, and resolution returning nothing warned and continued.
+
+Adding the presence floor changed that. `missing` — required contexts absent
+from the rollup — is the one signal here that is not an absence-test, and it is
+derived *from the required set*. An empty set yields an empty `missing`, which
+removes the floor entirely and restores exactly the hole #1435 describes: a
+head SHA carrying no check-runs reads as fully green. Worse, it fails silently,
+because every remaining signal reports clean.
+
+So resolution returning nothing now exits non-zero and the workflow aborts
+fail-closed. Unknown still means gate on more, never on less — it is just that
+"more" now includes a set we must actually have.
 
 Two behaviours are inherited deliberately and must not be simplified away:
 
@@ -141,8 +148,15 @@ def evaluate(
     `missing` is a required context with no check-run on the SHA at all, held
     separately from `pending` because they mean different things: pending is
     "reported, not finished", missing is "never reported", and only the second
-    can sit forever. It is reported, not gated on, since a required context
-    that never posts is already fatal at push time.
+    can sit forever.
+
+    It **gates** (#1435). Every other signal here is an absence — nothing
+    failing, nothing pending — and an empty rollup satisfies all of them, so
+    without a presence floor a head carrying no check-runs at all evaluates
+    identically to a fully green one. `missing` is that floor. The workflow
+    waits on it rather than aborting on it, because a context that has not
+    started yet and one that never will are the same observation until the
+    deadline separates them.
     """
     latest = latest_per_name(check_runs)
     gating = {n: r for n, r in latest.items() if n not in ADVISORY_NAMES}
@@ -189,18 +203,21 @@ def main(argv: list[str] | None = None) -> int:
         print("merge-train-gate: unreadable branch-rules payload", file=sys.stderr)
         return 2
 
-    # An unresolvable required set no longer narrows anything — the gate
-    # covers every non-advisory check either way — so it degrades the
-    # *message* rather than the decision. That is the fail-closed direction:
-    # unknown means gate on more, never on less.
+    # The required set is the presence floor `missing` is derived from, so an
+    # empty one is not a degraded message — it is no floor at all, and every
+    # other signal in the verdict is an absence-test that an empty rollup
+    # satisfies. Refuse rather than emit a verdict that reads green because
+    # nothing was checked (#1435).
     required = required_contexts(rules)
     if not required:
         print(
             "merge-train-gate: resolved zero required contexts from the "
-            "branch rules; gating is unaffected (every non-advisory check "
-            "still gates), but failures cannot be labelled required.",
+            "branch rules. That removes the presence floor that stops an "
+            "empty check-run rollup reading as green, so the gate refuses "
+            "to decide rather than merge on absences alone.",
             file=sys.stderr,
         )
+        return 2
 
     print(json.dumps(evaluate(check_runs, required), indent=2))
     return 0
