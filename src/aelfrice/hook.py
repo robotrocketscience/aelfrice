@@ -3608,14 +3608,22 @@ def _autolock_enabled(env: dict[str, str] | None = None) -> bool:
 
 
 def _belief_is_lock_candidate(b: "Belief", session_id: str) -> bool:
-    """Return True iff `b` is a session-scoped, unlocked correction-class
-    belief — the population the Stop hook prompts the user to lock.
+    """Return True iff `b` is a session-scoped, unlocked belief the Stop
+    hook should prompt the user to lock.
 
     Conditions:
       * `b.session_id == session_id` (created in this session).
       * `b.lock_level != LOCK_USER` (locking would be a no-op otherwise).
-      * `b.type == BELIEF_CORRECTION` OR `b.origin in
-        {agent_inferred, agent_remembered}` (correction-class signal).
+      * and then any one of:
+          - `b.type == BELIEF_CORRECTION`,
+          - `b.origin in {agent_inferred, agent_remembered}`
+            (both correction-class signal, per #582),
+          - `_directive_window_spec(b.content) is not None` — a directive
+            stating its own window, whatever its type or origin (#1315).
+
+    The two session/lock guards come first and are not weakened by the
+    #1315 arm: an already-locked belief and a belief from another session
+    are still excluded however clearly they state a window.
     """
     if b.session_id != session_id:
         return False
