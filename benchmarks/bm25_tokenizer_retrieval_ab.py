@@ -24,11 +24,66 @@ going from zero hits to some hits is the recall claim #1348 makes; a
 query going the other way is the precision cost it concedes. Both are
 counted, and neither is called an improvement here.
 
-Queries are user turns recovered from the hook audit, filtered with
-`r3_idf_clip_bound`'s own predicate — imported rather than re-spelled,
-because #1268 made that filter mandatory and two copies would drift.
-Note the audit stores `prompt_prefix`, which is truncated, so these are
-prefixes of real turns rather than the turns themselves.
+**Two populations, and only one of them is evidence** (#1388).
+
+``RECORDED``
+    `input.extracted_query` from `.git/aelfrice/rebuild_logs/`.
+
+    **This is not what production scores either, and the label says so
+    rather than implying otherwise** (#1405). It is
+    `_query_for_recent_turns(...)`, an entity/triple extraction, and
+    neither caller hands that string to `retrieve()`:
+
+    * `user_prompt_submit` — **97.7%** of recorded rows — scores
+      `_build_conversation_aware_query(prompt, turns)`, the prompt
+      repeated `conversation_aware_prompt_weight` times plus the last
+      `turn_window` turns, composed in `hook.py` and never seen here.
+      Default **on**, but *conditional*: `hook.py:1083` guards the
+      composition with `if recent_turns:`, so when neither the aelfrice
+      turns log nor the host transcript yields a turn, the scored string
+      is the **raw prompt** — which is the diagnostic arm's population,
+      modulo the audit's prefix cap. What share of rows that is has not
+      been measured; on a host with the transcript-logger hooks
+      installed it should be small, but it is not zero and it is the one
+      regime where the diagnostic arm is exactly right rather than an
+      approximation.
+    * `rebuild_v14` — 2.3% — scores `transform_query(raw_query, ...)`,
+      which the log recomputes *before* the transform.
+
+    So this arm is a third population. It is retained because it is the
+    only recorded one, and because the shapes it does share with
+    production (identifier density, length) are the ones a tokeniser
+    change acts on. It is **not** the production number.
+
+    Re-applying `transform_query` here was tried and reverted: it is
+    correct for the 2.3% and wrong for the rest.
+
+``DIAGNOSTIC``
+    Raw user turns recovered from the hook audit, filtered with
+    `r3_idf_clip_bound`'s own predicate — imported rather than
+    re-spelled, because #1268 made that filter mandatory and two copies
+    would drift. **Production never issues these.** The audit also
+    stores `prompt_prefix`, which is truncated, so they are prefixes of
+    real turns rather than the turns themselves.
+
+Neither arm is the production population, and the honest state is that
+**no arm can be, until `input.scored_query` (#1405) accumulates** — that
+field records the string `retrieve()` was actually handed. Report both,
+quote neither as "what production does", and revisit once the field has
+data.
+
+The two are still worth having together. A raw user turn is the input
+*least* able to express a tokeniser change, because natural-language
+turns rarely carry the identifier-shaped tokens the fix targets, so the
+diagnostic arm systematically understates movement — which is how "movement
+on real queries is small" came to be published. The recorded arm carries
+extracted identifiers and moves more. Production, composing the prompt
+with recent turns, plausibly sits between them; that is a hypothesis this
+instrument cannot test.
+
+**Emit aggregates only.** The production population is user prompt text.
+Counts, shares and correlations may be printed or committed; query
+strings, belief content and ids may not.
 
 Usage::
 
@@ -36,11 +91,14 @@ Usage::
         --store .git/aelfrice/memory.db \\
         --audit .git/aelfrice/hook_audit.jsonl \\
                 .git/aelfrice/hook_audit.jsonl.1
+
+`--rebuild-logs` defaults to `<store parent>/rebuild_logs`.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import re
 import statistics
@@ -120,28 +178,63 @@ def rank_agreement(
     return None if math.isnan(tau) else float(tau)
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--store", type=Path, required=True)
-    parser.add_argument("--audit", type=Path, nargs="+", required=True)
-    parser.add_argument("--limit-queries", type=int, default=0)
-    args = parser.parse_args(argv)
+def load_recorded_queries(log_dir: Path) -> list[str]:
+    """`input.extracted_query` as logged — NOT what production scores.
 
-    queries = load_prompts(list(args.audit))
-    if args.limit_queries:
-        queries = queries[:args.limit_queries]
-    if not queries:
-        print("no user-turn prompts in the audit files", file=sys.stderr)
-        return 2
+    This docstring previously claimed the recorded string "is what
+    reaches `index.score`" and is "a recording, not a model of one". That
+    was the claim `fac8c25d` reverted, and it was self-refuting: the
+    recorded value *is* `_query_for_recent_turns(...)`, the very function
+    it claimed to be preferable to. See the module docstring for the two
+    production paths, neither of which scores this string.
 
-    # #1328: read-only. A bare open runs migrations plus the #1314
-    # lock-expiry sweep, and measuring a store is not a reason to write.
-    store = MemoryStore(str(args.store), read_only=True)
-    try:
-        before = build_and_score(store, queries, legacy=True)
-        after = build_and_score(store, queries, legacy=False)
-    finally:
-        store.close()
+    It is loaded anyway because it is the only *recorded* population, and
+    because the shapes it shares with production — identifier density,
+    length — are the ones a tokeniser change acts on. `input.scored_query`
+    (#1405) is the field that will settle it, and it is forward-only, so
+    it has no rows yet.
+
+    Deduplicated and sorted, so the population is a deterministic function
+    of the log directory and two runs are comparable. Malformed lines are
+    skipped rather than fatal: these logs are appended by a hook that can
+    be killed mid-write.
+
+    **Returns query text, which is user content.** Nothing derived from it
+    may be printed or committed beyond aggregate counts — see the note in
+    the module docstring.
+    """
+    seen: set[str] = set()
+    for path in sorted(log_dir.glob("*.jsonl")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict):
+                continue
+            payload = record.get("input")
+            if not isinstance(payload, dict):
+                continue
+            query = payload.get("extracted_query")
+            if isinstance(query, str) and query.strip():
+                seen.add(query)
+    return sorted(seen)
+
+
+def report(
+    label: str, caveat: str, store_label: str, queries: list[str],
+    store: MemoryStore,
+) -> dict[str, object]:
+    """Score one population and print its block. Aggregates only."""
+    before = build_and_score(store, queries, legacy=True)
+    after = build_and_score(store, queries, legacy=False)
 
     n = len(queries)
     identical_top10 = 0
@@ -174,8 +267,9 @@ def main(argv: list[str] | None = None) -> int:
     def pct(x: int) -> str:
         return f"{x:5d}  ({100.0 * x / n:5.1f}%)"
 
-    print(f"store          : {args.store}")
-    print(f"queries        : {n}   (user turns, truncated prefixes)")
+    print(f"=== {label} ===")
+    print(f"store          : {store_label}")
+    print(f"queries        : {n}   {caveat}")
     print(f"top-K scored   : {TOP_K}, overlap measured at {OVERLAP_AT}")
     print()
     print("agreement between the arms")
@@ -197,11 +291,101 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  lost   (hits -> 0)   {pct(lost)}")
     print(f"  empty in both arms   {pct(both_empty)}")
     print()
+    return {
+        "population": label,
+        "queries": n,
+        "identical_top10": identical_top10,
+        "identical_top10_share": round(identical_top10 / n, 4),
+        "mean_jaccard_at_10": (
+            round(statistics.fmean(jaccards), 4) if jaccards else None
+        ),
+        "median_kendall_tau": (
+            round(statistics.median(taus), 4) if taus else None
+        ),
+        "tau_scored": len(taus),
+        "tau_unscorable": unscorable_tau,
+        "gained": gained,
+        "lost": lost,
+        "both_empty": both_empty,
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--store", type=Path, required=True)
+    parser.add_argument("--audit", type=Path, nargs="+", required=True)
+    parser.add_argument(
+        "--rebuild-logs", type=Path, default=None,
+        help=(
+            "directory of rebuild_logs/*.jsonl carrying "
+            "input.extracted_query — the RECORDED population, which is "
+            "not the one production issues (#1388/#1405). Defaults to "
+            "<store parent>/rebuild_logs."
+        ),
+    )
+    parser.add_argument("--limit-queries", type=int, default=0)
+    args = parser.parse_args(argv)
+
+    audit_queries = load_prompts(list(args.audit))
+    log_dir = args.rebuild_logs or args.store.parent / "rebuild_logs"
+    recorded_queries = (
+        load_recorded_queries(log_dir) if log_dir.is_dir() else []
+    )
+    if args.limit_queries:
+        audit_queries = audit_queries[:args.limit_queries]
+        recorded_queries = recorded_queries[:args.limit_queries]
+    if not audit_queries and not recorded_queries:
+        print("no queries in either population", file=sys.stderr)
+        return 2
+
+    # #1328: read-only. A bare open runs migrations plus the #1314
+    # lock-expiry sweep, and measuring a store is not a reason to write.
+    store = MemoryStore(str(args.store), read_only=True)
+    results: list[dict[str, object]] = []
+    try:
+        if recorded_queries:
+            results.append(report(
+                "RECORDED POPULATION — not what production scores",
+                "(extracted_query as logged; see #1405)",
+                args.store.name, recorded_queries, store,
+            ))
+        else:
+            print(
+                f"no rebuild logs under {log_dir} — the recorded arm "
+                "did not run, so only the diagnostic arm is reported.",
+                file=sys.stderr,
+            )
+        if audit_queries:
+            results.append(report(
+                "DIAGNOSTIC POPULATION — NOT the production input",
+                "(raw user turns, truncated at the audit prefix cap)",
+                args.store.name, audit_queries, store,
+            ))
+    finally:
+        store.close()
+
     print(
         "This is agreement and reach, not quality. Neither arm is scored\n"
         "against relevance labels, because no labelled corpus exists for\n"
-        "this store — see the #1268 hold."
+        "this store — see the #1268 hold.\n"
+        "\n"
+        "NEITHER ARM IS THE PRODUCTION POPULATION, and quoting one as if\n"
+        "it were is what this benchmark got wrong twice. The recorded\n"
+        "query is an entity extraction that no caller scores; the\n"
+        "diagnostic arm is raw user turns, which the UPS path composes\n"
+        "with recent turns before scoring. The field that settles it is\n"
+        "`input.scored_query` (#1405) — revisit once it has data."
     )
+    if len(results) == 2:
+        prod, diag = results
+        print(
+            f"\nidentical top-10: recorded "
+            f"{100 * float(prod['identical_top10_share']):.1f}% vs "
+            f"diagnostic {100 * float(diag['identical_top10_share']):.1f}% "
+            "— two approximations, neither of them production, and not a "
+            "before/after. That production falls BETWEEN them is a "
+            "hypothesis this instrument cannot test."
+        )
     return 0
 
 
