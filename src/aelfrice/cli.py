@@ -3384,35 +3384,47 @@ def _cmd_introspect(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_confirm(args: argparse.Namespace, out: object) -> int:
-    """Explicit user affirmation of a belief. Bumps Beta-Bernoulli alpha by 1.0."""
-    from aelfrice.mcp_server import tool_confirm
+    """Explicit user affirmation of a belief. Bumps Beta-Bernoulli alpha by 1.0.
 
+    `respect_lock=False` is load-bearing and not a default: confirm is the one
+    feedback surface exempt from the #1168 lock floor, because
+    docs/user/COMMANDS.md defines it as explicit user affirmation, "distinct
+    from ... implicit retrieval feedback". Dropping it would leave confirm
+    reporting success on a locked belief whose posterior never moved.
+    `tests/test_cli_confirm.py::test_confirm_moves_a_locked_beliefs_posterior`
+    is the guard.
+    """
+    from aelfrice.feedback import apply_feedback
+
+    note = getattr(args, "note", "") or ""
     store = _open_store()
     try:
-        result = tool_confirm(
-            store,
+        # ForeignBeliefError subclasses ValueError, so one clause covers both
+        # the unknown-belief and foreign-belief rejections.
+        result = apply_feedback(
+            store=store,
             belief_id=args.belief_id,
+            valence=1.0,
             source=args.source,
-            note=getattr(args, "note", "") or "",
+            respect_lock=False,
         )
+    except ValueError as exc:
+        print(f"confirm error: {exc}", file=sys.stderr)
+        return 1
     finally:
         store.close()
 
-    if result.get("kind") == "confirm.unknown_belief":
-        print(f"confirm error: {result['error']}", file=sys.stderr)
-        return 1
-
-    prior_alpha: float = result["prior_alpha"]
-    new_alpha: float = result["new_alpha"]
-    new_beta: float = result["new_beta"]
+    prior_alpha: float = result.prior_alpha
+    new_alpha: float = result.new_alpha
+    new_beta: float = result.new_beta
     posterior_mean = new_alpha / (new_alpha + new_beta)
     msg = (
         f"confirmed {args.belief_id}: "
         f"alpha {prior_alpha:.3f}->{new_alpha:.3f}, "
         f"mean {posterior_mean:.3f}"
     )
-    if result.get("note"):
-        msg += f" [{result['note']}]"
+    if note:
+        msg += f" [{note}]"
     print(msg, file=out)  # type: ignore[arg-type]
     _feed_log_event(
         "feedback.applied",
