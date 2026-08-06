@@ -742,9 +742,9 @@ EXCLUDED_WRITERS: Final[tuple[tuple[str, str], ...]] = (
 __all__ = [
     "COVERED_WRITER_MODULES",
     "DETECTOR_THRESHOLDS_VERSION",
+    "DIGEST_HISTORY",
     "EXCLUDED_WRITERS",
     "KINDS",
-    "DIGEST_HISTORY",
     "MANIFEST_DIGEST",
     "PinnedThreshold",
     "THRESHOLDS",
