@@ -16,12 +16,20 @@ Two properties are load-bearing and each has its own test below:
   field here has a test that goes red if its `_record_lane_fired` call
   is deleted, and the "lane on but did no work" cases pin that the
   counter is not just the flag with extra steps.
+
+  That claim was false for `compression_renders` as first shipped: both
+  of its cases asserted `== 0`, because the shared store fixture's
+  beliefs are all `RETENTION_UNKNOWN` and `compression.py:139` routes
+  those to `STRATEGY_VERBATIM`. Suppressing the record left the whole
+  suite green. The pair now uses a `RETENTION_SNAPSHOT` fixture, so the
+  lane-on case is non-zero and the two halves actually differ.
 * **The counters are per call.** A stale value carried in from the
   previous call would attribute one call's work to the next.
 """
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -34,6 +42,7 @@ from aelfrice.models import (
     LOCK_NONE,
     ORIGIN_AGENT_INFERRED,
     ORIGIN_USER_VALIDATED,
+    RETENTION_SNAPSHOT,
     Belief,
     Edge,
 )
@@ -154,36 +163,74 @@ def test_pre_1366_construction_still_works() -> None:
 # --- type_aware_compression ---------------------------------------------
 
 
-def test_compression_renders_counts_only_shortened_beliefs(
-    store: MemoryStore,
-) -> None:
-    """Counts work done, not calls made.
+@pytest.fixture()
+def snapshot_store() -> MemoryStore:
+    """Beliefs the compressor genuinely shortens.
 
-    A `STRATEGY_VERBATIM` return costs exactly `_estimate_tokens(content)`,
-    which is what the uncompressed path already charges — so counting it
-    would report a fire for a call that changed no cost, and the rate would
-    restate "the flag is on". Held to the same standard as
-    `entity_persist_demoted`, which records only when the penalty is real.
-
-    The fixture's beliefs are FACT/UNKNOWN retention, so the compressor
-    returns verbatim for every one of them: the counter must read **0**
-    with the lane fully enabled. That is the distinguishing case — the
-    previous assertion (`> 0`) passed on exactly this input and so could
-    not tell the two semantics apart.
+    The shared `store` fixture is all `RETENTION_UNKNOWN`, which
+    `compression.py:143` routes to `STRATEGY_VERBATIM` — so on that
+    fixture the counter is 0 whether the record fires or not, and the
+    lane-on / lane-off pair below could not distinguish a working record
+    from a deleted one. `RETENTION_SNAPSHOT` with multi-sentence content
+    takes the `_headline` arm and really does shrink.
     """
-    retrieve(store, "alpha beta", use_type_aware_compression=True)
-    assert last_lane_telemetry().compression_renders == 0
+    s = MemoryStore(":memory:")
+    for i in range(6):
+        b = _mk(
+            f"s{i}",
+            f"alpha beta shared token variant {i} was recorded on Tuesday. "
+            f"It lists twelve distinct items counted by hand, including "
+            f"bananas, apples and pears, none of which fit in one line.",
+        )
+        s.insert_belief(replace(b, retention_class=RETENTION_SNAPSHOT))
+    yield s
+    s.close()
+
+
+def test_compression_renders_is_nonzero_when_the_compressor_shortens(
+    snapshot_store: MemoryStore,
+) -> None:
+    """The distinguishing half — this is what deletion of the record kills.
+
+    As first shipped both cases asserted `== 0` on the all-UNKNOWN
+    fixture, so suppressing `_record_lane_fired("compression_renders")`
+    left the entire suite green. That is the exact defect this module
+    exists to catch, in this module's own instrument.
+
+    Asserted as `> 0` rather than as an exact count deliberately: `_cost`
+    is unmemoised and the packer costs a belief several times per call,
+    so the magnitude is an arm-dependent multiple of the belief count.
+    `> 0` is the only part of this field any consumer reads.
+    """
+    retrieve(snapshot_store, "alpha beta", use_type_aware_compression=True)
+    assert last_lane_telemetry().compression_renders > 0
 
 
 def test_compression_renders_is_zero_when_the_lane_is_off(
-    store: MemoryStore,
+    snapshot_store: MemoryStore,
 ) -> None:
     """The counter is the compressor's work, not the flag's value.
 
-    A field derived from `compress_on` would be identical to the flag;
-    this half of the pair is what makes the other half mean something.
+    Runs on the SAME fixture as the case above, so the pair differs only
+    in the flag. On the old all-verbatim fixture both halves read 0 and
+    the comparison was vacuous.
     """
-    retrieve(store, "alpha beta", use_type_aware_compression=False)
+    retrieve(snapshot_store, "alpha beta", use_type_aware_compression=False)
+    assert last_lane_telemetry().compression_renders == 0
+
+
+def test_compression_renders_stays_zero_when_nothing_shortens(
+    store: MemoryStore,
+) -> None:
+    """Lane on, work absent: the third case, and the reason for the rate.
+
+    A `STRATEGY_VERBATIM` return costs exactly `_estimate_tokens(content)`,
+    which is what the uncompressed path already charges — counting it
+    would report a fire for a call that changed no cost, and the rate
+    would restate "the flag is on". This is what took the live figure
+    from 500/500 to 212/500.
+    """
+    retrieve(store, "alpha beta", use_type_aware_compression=True)
     assert last_lane_telemetry().compression_renders == 0
 
 
