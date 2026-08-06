@@ -6388,8 +6388,10 @@ def _cmd_doctor(args: argparse.Namespace, out: object) -> int:
 
     `--replay` routes to the v2.x full-equality probe (#262); it
     bypasses the hooks/graph checks and exits after printing the report.
-    Exit 0 if ``mismatched + derived_orphan == 0`` (or <= ``--max-drift``
-    when that flag is set); exit 1 otherwise.
+    Exit 0 if ``mismatched + derived_orphan + edge_set_divergence == 0``
+    (or <= ``--max-drift`` when that flag is set); exit 1 otherwise. The
+    sum is the drift-triggering set of `FullEqualityReport.has_drift`;
+    the informational counters are excluded from both.
 
     Exit 1 if any structural failure fires in either subcheck;
     informational warnings never trip exit. The v1.2 deprecated alias
@@ -6976,7 +6978,14 @@ def _cmd_doctor_replay(args: argparse.Namespace, out: object) -> int:
 
     _print_replay_report(report, out)
 
-    drift_total = report.mismatched + report.derived_orphan
+    # Must match `FullEqualityReport.has_drift`. #1354 promoted the edge
+    # set into that property; leaving it out here would print the drift
+    # block and still exit 0, so every automated consumer — the nightly
+    # soak, CI, anything reading the status code rather than the text —
+    # would report all-clear on a derivation regression.
+    drift_total = (
+        report.mismatched + report.derived_orphan + report.edge_set_divergence
+    )
     threshold = max(0, max_drift) if max_drift is not None else 0
     return 0 if drift_total <= threshold else 1
 
@@ -9150,8 +9159,9 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help=(
             "run the v2.x full-equality replay probe (#262): re-derive "
             "every non-legacy ingest_log row and compare to canonical "
-            "beliefs. Exits 0 when mismatched + derived_orphan == 0 "
-            "(or <= --max-drift N). Bypasses the hooks/graph checks."
+            "beliefs. Exits 0 when mismatched + derived_orphan + "
+            "edge_set_divergence == 0 (or <= --max-drift N). Bypasses "
+            "the hooks/graph checks."
         ),
     )
     p_doctor.add_argument(
@@ -9234,8 +9244,8 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         default=None,
         metavar="N",
         help=(
-            "with --replay: exit 0 when mismatched + derived_orphan <= N "
-            "instead of requiring exactly 0."
+            "with --replay: exit 0 when mismatched + derived_orphan + "
+            "edge_set_divergence <= N instead of requiring exactly 0."
         ),
     )
     p_doctor.add_argument(

@@ -786,6 +786,40 @@ def test_cli_doctor_replay_exit_1_on_mismatch(
     assert rc == 1
 
 
+def test_cli_doctor_replay_exit_1_on_edge_set_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hypothesis: `aelf doctor --replay` exits 1 when the ONLY drift is an
+    edge-set divergence (#1354).
+
+    `has_drift` promotes the edge set, but the exit code is computed from
+    its own sum in `_cmd_doctor_replay`, so the two can disagree. They
+    must not: everything automated — the nightly soak, CI, any wrapper
+    script — reads the status code, not the printed text, and would
+    report all-clear on a derivation regression.
+
+    Falsifiable by dropping `edge_set_divergence` from `drift_total`,
+    which returns 0 here while still printing the drift block."""
+    import io
+    from aelfrice.cli import main
+
+    db = str(tmp_path / "brain.db")
+    monkeypatch.setenv("AELFRICE_DB", db)
+
+    s = MemoryStore(db)
+    bid = _ingest(s, _FACTUAL_SENTENCE)
+    # Stamped, and disagreeing: derive() emits no edge for this row.
+    _set_edge_blob(s, bid, '[["a", "b", "SUPPORTS"]]')
+    s.close()
+
+    out = io.StringIO()
+    rc = main(["doctor", "--replay"], out=out)
+    text = out.getvalue()
+    assert "edge_set_divergence:       1" in text
+    assert "mismatched:" in text
+    assert rc == 1
+
+
 def test_cli_doctor_replay_max_drift_exit_0(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
