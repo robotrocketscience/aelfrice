@@ -31,10 +31,14 @@ is how the original defect survived. The decision is a pure function of
 `tests/test_merge_train_gate.py`, including the case that matters most — a red
 advisory check with every required context green must **merge**.
 
-**Fail-closed on an unresolvable required set.** An empty set would otherwise
-mean "nothing is required", i.e. merge anything, which is strictly worse than
-the over-blocking this replaces. Resolution returning nothing is treated as an
-error, not as permission.
+**An unresolvable required set degrades the message, not the decision.** Since
+the gate covers every non-advisory check either way, the required set never
+narrows it — losing the set costs only the ability to *label* which failures
+were required. So resolution returning nothing warns and continues rather than
+aborting: unknown means gate on more, never on less. (Under the required-only
+design this file no longer implements, an empty set would have meant "nothing
+is required, merge anything", and aborting would have been the only safe
+reading. That is not the trade this code makes.)
 
 Two behaviours are inherited deliberately and must not be simplified away:
 
@@ -43,12 +47,15 @@ Two behaviours are inherited deliberately and must not be simplified away:
   blocking merge. `cancelled` is therefore *not* a failure — after the dedup a
   genuine cancellation surfaces as the only row for its name and an operator
   can re-trigger.
-* **`pending` is scoped to the required set too**, so a slow or silent advisory
-  bot no longer holds the train to `CHECK_TIMEOUT_SECONDS`.
+* **`pending` is scoped to the same non-advisory set as `failing`**, so a slow
+  or silent *advisory* bot no longer holds the train to
+  `CHECK_TIMEOUT_SECONDS`. Any other slow check still does, by design — it
+  gates, so waiting for it is the point.
 
 Usage::
 
-    gh api "repos/${REPO}/commits/${SHA}/check-runs?per_page=100" > rollup.json
+    gh api --paginate "repos/${REPO}/commits/${SHA}/check-runs?per_page=100" \
+        | jq -s '{check_runs: [.[].check_runs[]]}' > rollup.json
     gh api "repos/${REPO}/rules/branches/main" > rules.json
     python scripts/merge_train_gate.py --rollup rollup.json --rules rules.json
 """
