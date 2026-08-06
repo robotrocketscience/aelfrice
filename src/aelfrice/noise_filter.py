@@ -204,6 +204,13 @@ _TRANSCRIPT_XML_PREFIXES: Final[tuple[str, ...]] = (
     "<command-message",
     "<command-args",
     "<local-command-stdout",
+    # Emitted in the same block as the three <command-* tags above, so
+    # omitting it filtered one slash-command invocation inconsistently.
+    # Named individually rather than broadened to "<local-command": the
+    # wider stem would also eat a belief that opens by naming the tag.
+    # Other harness tags (<bash-input, <bash-stdout, <user-prompt-submit-hook)
+    # are NOT added here — they are a separate inventory, not this block.
+    "<local-command-caveat",
 )
 
 # #1025: a sentence that begins with a CLOSING tag ("</…") is a stray
