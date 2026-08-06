@@ -1,6 +1,8 @@
 """Unit tests for `aelfrice.value_compare` (#422)."""
 from __future__ import annotations
 
+import ast
+
 import pytest
 
 from aelfrice.value_compare import (
@@ -328,6 +330,13 @@ def test_enum_extraction_order_is_stable_across_hash_seeds() -> None:
         + "\n  ".join(sorted(orderings))
     )
     # The scenario must actually exercise the multi-member case, or the
-    # assertion above is satisfied by a one-element list.
+    # assertion above is satisfied by a one-element list. Parsed rather
+    # than counted: the child prints a list literal, so `literal_eval`
+    # gives the members exactly, where counting quote characters in the
+    # repr is a proxy that a member name containing an apostrophe — or a
+    # change in list formatting — would silently break.
     (only,) = orderings
-    assert only.count("'") >= 6, f"scenario stopped matching >=3 members: {only}"
+    members = ast.literal_eval(only)
+    assert len(members) >= 3, (
+        f"scenario stopped matching >=3 members: {members}"
+    )
