@@ -6072,10 +6072,21 @@ def _cmd_spine_verify(out: object) -> int:
     print(f"shipped TEMPORAL_NEXT : {report.n_shipped:,}", file=w)
     print(f"recomputed            : {report.n_recomputed:,}", file=w)
     print(f"recomputed-only       : {report.n_recomputed_only:,}", file=w)
+    # The share is over the fan-in-1 eligible subset, so its numerator is
+    # `n_eligible_reproduced`. Printing `n_reproduced` beside it instead
+    # gives a line that does not divide: on the development store that read
+    # `39,335 (94.86% of the 40,892 fan-in-1 eligible)`, and 39,335/40,892
+    # is 96.19%. Both counts are worth having, so both are printed, each
+    # against the denominator it belongs to.
     print(
-        f"reproduced            : {report.n_reproduced:,} "
+        f"reproduced (eligible) : {report.n_eligible_reproduced:,} "
         f"({100 * report.reproduced_share:.2f}% of the "
         f"{report.n_eligible_shipped:,} fan-in-1 eligible)",
+        file=w,
+    )
+    print(
+        f"reproduced (all)      : {report.n_reproduced:,} "
+        f"of {report.n_shipped:,} shipped",
         file=w,
     )
     print(

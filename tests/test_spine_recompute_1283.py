@@ -487,10 +487,20 @@ def test_spine_verify_reports_every_bucket_and_names_the_gap(
     assert "shipped TEMPORAL_NEXT : 10\n" in text
     assert "recomputed            : 7\n" in text
     assert "recomputed-only       : 3\n" in text
-    # 4 of 6 fan-in-1 eligible, not 4 of 10 (#1356). `c` and `d` each
+    # 2 of 6 fan-in-1 eligible, not 4 of 10 (#1356). `c` and `d` each
     # carry two predecessors, so all four of their shipped edges leave
-    # the denominator -- the reproduced ones as well as the missed.
-    assert "reproduced            : 4 (33.33% of the 6 fan-in-1 eligible)\n" in text
+    # the denominator -- the reproduced ones as well as the missed --
+    # which takes the numerator down with it: of the 4 reproduced edges
+    # overall, only b<-a and z<-y have a fan-in-1 successor.
+    #
+    # Both counts are asserted because they are over different sets and
+    # the share belongs to only one of them. The first revision printed
+    # the all-shipped numerator against the eligible denominator, and
+    # the comment here said "4 of 6" while the line said 33.33% -- 4/6
+    # is 66.67%, so the comment falsified the string it sat above and
+    # the assertion pinned the slip rather than catching it.
+    assert "reproduced (eligible) : 2 (33.33% of the 6 fan-in-1 eligible)\n" in text
+    assert "reproduced (all)      : 4 of 10 shipped\n" in text
     assert "fan-in > 1 successors : 2 (" in text
     assert "--- misses, by cause ---" in text
     assert "no-log endpoint     : 3 (" in text
@@ -602,7 +612,12 @@ def test_spine_verify_exits_zero_on_an_empty_store(
     assert _verify(out) == 0
     text = out.getvalue()
     assert "shipped TEMPORAL_NEXT : 0\n" in text
-    assert "reproduced            : 0 (100.00% of the 0 fan-in-1 eligible)\n" in text
+    # 100.00% of an empty eligible set is `reproduced_share`'s vacuous
+    # case. Harmless on a genuinely empty store, but the same branch also
+    # fires on a NON-empty store where every successor carries fan-in > 1,
+    # and there it reports perfect fidelity having compared nothing.
+    assert "reproduced (eligible) : 0 (100.00% of the 0 fan-in-1 eligible)\n" in text
+    assert "reproduced (all)      : 0 of 0 shipped\n" in text
 
 
 def test_spine_verify_says_so_when_there_is_no_store_yet(
