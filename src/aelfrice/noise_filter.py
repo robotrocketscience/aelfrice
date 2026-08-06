@@ -213,6 +213,23 @@ _TOKEN_EDGE_PUNCT: Final[str] = "\"'`.,;:!?()[]{}"
 # U+23FA — tool-call rendering glyph emitted by some transcript surfaces.
 _TRANSCRIPT_GLYPH_PREFIX: Final[str] = "⏺"
 
+# #1371 §9: tag names the host harness injects into turns that carry
+# `type: "user"`. Text inside them was never typed by the user, but the
+# ingest path stamped it `ORIGIN_USER_TRANSCRIPT` with the undeflated
+# user prior. Canonical list — `_TRANSCRIPT_XML_PREFIXES` derives its
+# open-tag prefixes from it and `strip_harness_blocks` strips the
+# balanced regions so the *interior* sentences never reach ingest
+# either.
+HARNESS_TAG_NAMES: Final[tuple[str, ...]] = (
+    "system-reminder",
+    "command-name",
+    "command-message",
+    "command-args",
+    "local-command-stdout",
+    "local-command-stderr",
+    "user-prompt-submit-hook",
+)
+
 _TRANSCRIPT_XML_PREFIXES: Final[tuple[str, ...]] = (
     "<worktree",
     "<output-file",
@@ -226,6 +243,16 @@ _TRANSCRIPT_XML_PREFIXES: Final[tuple[str, ...]] = (
     "<usage",
     "<event",
     "<total_tokens",
+) + tuple(f"<{name}" for name in HARNESS_TAG_NAMES)
+
+# #1371 §9: balanced harness region, e.g.
+# `<system-reminder>…</system-reminder>`. Non-greedy so two adjacent
+# blocks are stripped separately rather than merged with the prose
+# between them.
+_HARNESS_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
+    r"<(" + "|".join(re.escape(n) for n in HARNESS_TAG_NAMES) + r")\b[^>]*>"
+    r"[\s\S]*?</\1>",
+    re.IGNORECASE,
 )
 
 # #1025: a sentence that begins with a CLOSING tag ("</…") is a stray
@@ -693,6 +720,27 @@ def is_agent_ack(sentence: str) -> bool:
     return True
 
 
+def strip_harness_blocks(text: str) -> str:
+    """Remove balanced harness-injected regions from `text` (#1371 §9).
+
+    The host harness emits `<system-reminder>…</system-reminder>`,
+    slash-command scaffolding (`<command-name>`, `<command-message>`,
+    `<command-args>`) and hook output (`<local-command-stdout>`,
+    `<user-prompt-submit-hook>`) as text chunks inside turns whose
+    `type` is `"user"`. `ingest._normalize_jsonl_turn` cannot tell them
+    apart from typed prose, so every interior sentence was stored with
+    `origin=ORIGIN_USER_TRANSCRIPT` and the undeflated user prior.
+
+    Matching a *balanced* region is what keeps this high-precision: an
+    unpaired `<system-reminder>` in ordinary prose is left alone (the
+    sentence-start prefix check in `is_transcript_noise` still covers
+    the common single-line case).
+    """
+    if "<" not in text:
+        return text
+    return _HARNESS_BLOCK_RE.sub(" ", text)
+
+
 def is_transcript_noise(sentence: str) -> bool:
     """Return True if `sentence` is transcript scaffolding, not a belief.
 
@@ -704,8 +752,10 @@ def is_transcript_noise(sentence: str) -> bool:
     2. **Tool-call rendering glyph** — starts with ⏺ (U+23FA).
     3. **Pseudo-XML structural tags** — starts with `<worktree`,
        `<output-file`, `<task-`, `<summary>Background`,
-       `<summary>Monitor`, or a harness tool/usage tag (`<tool-use-id`,
-       `<usage`, `<event`, `<total_tokens`); OR begins with a closing
+       `<summary>Monitor`, a harness tool/usage tag (`<tool-use-id`,
+       `<usage`, `<event`, `<total_tokens`), or a harness scaffolding
+       tag (`<system-reminder`, `<command-name`, … — see
+       `HARNESS_TAG_NAMES`, #1371 §9); OR begins with a closing
        tag (`</…`) or a box-drawing glyph (┌─┐ …) — both stray
        harness layout fragments (#1025).
     4. **Single-word progress emit** — matches `^[A-Z][a-z]+ing\\.$`

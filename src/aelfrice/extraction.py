@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import re
 
+from aelfrice.noise_filter import strip_harness_blocks
+
 
 # Minimum character length for a sentence fragment to be kept.
 _MIN_LEN: int = 10
@@ -16,6 +18,7 @@ def extract_sentences(text: str) -> list[str]:
     """Extract atomic sentences from conversation text.
 
     Process:
+    0. Strip balanced harness-injected blocks (#1371 §9)
     1. Strip code blocks (triple-backtick regions)
     2. Strip inline code backticks but keep surrounding text
     3. Strip URLs
@@ -26,8 +29,14 @@ def extract_sentences(text: str) -> list[str]:
 
     Returns list of clean sentences.
     """
+    # Step 0 (#1371 §9): drop `<system-reminder>…</system-reminder>` and
+    # the other harness scaffolding regions. These arrive inside turns
+    # the host harness types as `type: "user"`, so without this their
+    # interior sentences are stored as user-authored beliefs.
+    cleaned: str = strip_harness_blocks(text)
+
     # Step 1: strip code blocks (triple-backtick regions, including language tag)
-    cleaned: str = re.sub(r"```[\s\S]*?```", " ", text)
+    cleaned = re.sub(r"```[\s\S]*?```", " ", cleaned)
 
     # Step 2: strip inline code backticks, keep surrounding text
     cleaned = re.sub(r"`[^`]*`", " ", cleaned)
