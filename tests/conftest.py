@@ -147,6 +147,7 @@ _HOME_PINS: list[tuple[str, str, str]] = [
     ("aelfrice.lifecycle", "CACHE_FILE", ".cache/aelfrice/update_check.json"),
     ("aelfrice.lifecycle", "MIGRATED_TO_UV_SENTINEL", ".aelfrice/migrated-to-uv"),
     ("aelfrice.temporal_spine", "SPINE_BACKFILLED_SENTINEL", ".aelfrice/spine-backfilled"),
+    ("aelfrice.mcp_cleanup", "MCP_CLEANUP_SENTINEL", ".aelfrice/mcp-surface-removed"),
     # Read-only today, but pinned so the dotdir stays internally
     # consistent: `test_uninstall_dotdir` asserts HOOK_FAILURES_LOG is
     # addressed relative to AELFRICE_DOTDIR, and that invariant has to
@@ -164,6 +165,7 @@ _HOME_PINS: list[tuple[str, str, str]] = [
 _PRECREATED_SENTINELS: frozenset[str] = frozenset({
     "MIGRATED_TO_UV_SENTINEL",
     "SPINE_BACKFILLED_SENTINEL",
+    "MCP_CLEANUP_SENTINEL",
 })
 
 

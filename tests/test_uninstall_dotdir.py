@@ -270,7 +270,7 @@ def test_install_state_matches_its_owning_modules() -> None:
     for the store directory: `lifecycle` spells these as literals (import
     graph), and this test is what keeps the two in step.
     """
-    from aelfrice import claude_memory, llm_classifier, temporal_spine
+    from aelfrice import claude_memory, llm_classifier, mcp_cleanup, temporal_spine
 
     expected = {
         llm_classifier.SENTINEL_FILENAME,
@@ -279,6 +279,7 @@ def test_install_state_matches_its_owning_modules() -> None:
         lifecycle.MIGRATED_TO_UV_SENTINEL.name,
         auto_install.AUTO_INSTALL_LOCK_FILENAME,
         claude_memory._RECONCILE_SENTINEL_NAME,
+        mcp_cleanup.MCP_CLEANUP_SENTINEL.name,
     }
     named = set(lifecycle._DOTDIR_INSTALL_STATE)
     assert expected <= named, (
