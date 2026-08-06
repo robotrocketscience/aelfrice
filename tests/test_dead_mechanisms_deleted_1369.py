@@ -95,6 +95,29 @@ def test_no_module_imports_the_posterior_decay_surface() -> None:
     assert offenders == {}
 
 
+def test_no_module_defines_a_retrieval_query_cache() -> None:
+    """#1369 §2: `retrieval.RetrievalCache` is gone and stays gone.
+
+    Every constructor call was in `tests/`; the class docstring said so
+    itself. Its key tuple had also drifted to omit every lane flag added
+    after v1.7 (hrr_structural, temporal_spine, intentional_clustering,
+    entity_persist_demote, heat_kernel, gamma, zeta), so a caller
+    toggling any of them would have been served another lane's results.
+    Fixing the key would only have produced a correct cache nobody calls.
+
+    Checked across all of `src/`, not just `retrieval.py`: a resurrected
+    memoizer is as likely to land beside the thing it wraps as inside it.
+    The store's invalidation registry is deliberately *not* asserted
+    against — it is live for the BM25F sidecar and the spectral lane.
+    """
+    offenders = {
+        name: sorted(_bound_names(tree) & {"RetrievalCache"})
+        for name, tree in _module_asts().items()
+        if _bound_names(tree) & {"RetrievalCache"}
+    }
+    assert offenders == {}
+
+
 def test_stored_posteriors_are_never_moved_by_age() -> None:
     """The behavioural half: `scoring` exposes no age-taking function.
 

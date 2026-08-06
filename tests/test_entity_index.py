@@ -9,8 +9,9 @@ One test per acceptance criterion in docs/design/entity_index.md § Validation:
   AC3. On-write trigger fires: insert_belief / update_belief writes
        belief_entities rows without the test calling the index
        directly.
-  AC4. Cache invalidation: RetrievalCache fronting an L2.5-aware
-       retrieve() invalidates on belief mutations exactly as v1.0.
+  AC4. A belief written after a query reaches the next retrieve().
+       Filed as "cache invalidation" against RetrievalCache, deleted
+       in #1369; restated against the free retrieve().
   AC5. Budget enforcement: L2.5 sub-budget is bounded; total output
        ≤ token_budget; monotonicity holds.
   AC6. Forward compatibility: a v1.0-shaped store opens cleanly on
@@ -47,7 +48,6 @@ from aelfrice.retrieval import (
     ENV_RETRIEVAL_TOKEN_BUDGET,
     resolve_token_budget_with_provenance,
     ENV_ENTITY_INDEX,
-    RetrievalCache,
     is_entity_index_enabled,
     retrieve,
 )
@@ -303,36 +303,42 @@ def test_ac3_delete_belief_cascades_to_entity_rows() -> None:
 
 
 # ---------------------------------------------------------------------------
-# AC4: cache invalidation
+# AC4: a belief written after a query reaches the next L2.5 retrieve
+#
+# Filed as "cache invalidation" and written against `RetrievalCache`,
+# which had no production call site and was deleted in #1369. The
+# store-mutation callback registry the AC really rested on is still live
+# (BM25F sidecar, HRR index, spectral graph) and is covered exhaustively
+# by `tests/test_store_invalidation_callbacks.py`. What is L2.5-specific,
+# and asserted here, is that entity-index rows written by a mutation are
+# visible to the next `retrieve()`.
 # ---------------------------------------------------------------------------
 
 
-def test_ac4_cache_invalidates_on_entity_relevant_mutation() -> None:
-    """A RetrievalCache fronting an L2.5-aware retrieve() invalidates
-    on belief mutations — same contract as v1.0.
-    """
+def test_ac4_insert_is_visible_to_the_next_l25_retrieve() -> None:
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("B1", "uses aelfrice.retrieval today"))
-    cache = RetrievalCache(s)
-    cache.retrieve("aelfrice.retrieval")
-    assert len(cache) == 1
-    # Insert another belief — invalidate fires.
-    s.insert_belief(_mk("B2", "extra fact"))
-    assert len(cache) == 0
+    assert {b.id for b in retrieve(s, "aelfrice.retrieval")} == {"B1"}
+    s.insert_belief(_mk("B2", "also uses aelfrice.retrieval"))
+    assert {b.id for b in retrieve(s, "aelfrice.retrieval")} == {"B1", "B2"}
 
 
-def test_ac4_cache_invalidates_on_update_too() -> None:
-    """update_belief fires the same callback registry."""
+def test_ac4_update_is_visible_to_the_next_l25_retrieve() -> None:
+    """update_belief re-indexes entities: an identifier introduced by the
+    edit matches on the next retrieve, having matched nothing before it.
+
+    The negative half runs first and on the same query, so a store that
+    ignored the update — or one that matched the identifier for some
+    reason unrelated to indexing — fails rather than passes quietly.
+    """
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("B1", "uses aelfrice.retrieval"))
-    cache = RetrievalCache(s)
-    cache.retrieve("aelfrice.retrieval")
-    assert len(cache) == 1
+    assert retrieve(s, "quokka_manifest") == []
     b = s.get_belief("B1")
     assert b is not None
-    b.content = "changed content with v1.3.0 noted"
+    b.content = "uses aelfrice.retrieval and quokka_manifest"
     s.update_belief(b)
-    assert len(cache) == 0
+    assert {b.id for b in retrieve(s, "quokka_manifest")} == {"B1"}
 
 
 # ---------------------------------------------------------------------------

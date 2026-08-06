@@ -459,7 +459,7 @@ Behaviour at the boundaries:
 
 Locked beliefs (L0) bypass scoring entirely; the weight only reranks the L1 BM25 candidate set. L2.5 entity-index hits and L3 BFS expansions are unaffected.
 
-Negative values clamp to `0.0`. Non-numeric env values trace to stderr and fall through. The cache key is extended with the resolved weight (rounded to four decimals), so two callers passing different weights against the same store do not collide on a shared `RetrievalCache`.
+Negative values clamp to `0.0`. Non-numeric env values trace to stderr and fall through. There is no query cache to collide in: the `RetrievalCache` LRU wrapper this weight was once a cache-key component of had no production call site and was deleted in [#1369](https://github.com/robotrocketscience/aelfrice/issues/1369). Every `retrieve()` resolves the weight fresh.
 
 Precedence (first decisive wins): env var `AELFRICE_POSTERIOR_WEIGHT=<float>` > explicit Python kwarg `posterior_weight=<float>` on `retrieve()` / `retrieve_v2()` > TOML `[retrieval] posterior_weight` > default `0.5`.
 

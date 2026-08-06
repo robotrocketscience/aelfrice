@@ -1,6 +1,6 @@
 # BFS multi-hop graph traversal
 
-**Status:** shipped opt-in. Implementation wired in `src/aelfrice/retrieval.py` (`bfs_enabled` flag, default `False`). Default-on flip is gated on benchmark uplift; per-edge ship-gate notes for #383–#388 (RELATES_TO, IMPLEMENTS, TESTS, TEMPORAL_NEXT, DERIVED_FROM weights) live in this doc's body.
+**Status:** shipped opt-in. Implementation wired in `src/aelfrice/retrieval.py` (`bfs_enabled` flag, default `False`). Default-on flip is gated on benchmark uplift; per-edge ship-gate notes for #383–#388 (RELATES_TO, IMPLEMENTS, TESTS, TEMPORAL_NEXT, DERIVED_FROM weights) live in this doc's body. **The `RetrievalCache` cache-invalidation sections below describe a class that no longer exists** — it had no production call site and was deleted under [#1369](https://github.com/robotrocketscience/aelfrice/issues/1369); the BFS lane itself is unchanged, since nothing was memoizing it.
 **Shipped at milestone:** v1.3.0.
 **Tracking issue:** [#144](https://github.com/robotrocketscience/aelfrice/issues/144).
 **Dependencies:** stdlib only. Reads the v1.2 edge schema (`anchor_text`,

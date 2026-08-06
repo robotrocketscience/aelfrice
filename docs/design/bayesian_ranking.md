@@ -2,7 +2,7 @@
 
 Spec for issue [#146](https://github.com/robotrocketscience/aelfrice/issues/146). Closely related: issue [#151](https://github.com/robotrocketscience/aelfrice/issues/151) (full log-additive Beta-Bernoulli ranking).
 
-Status: shipped. v1.3.0 wired the partial Bayesian re-rank (`DEFAULT_POSTERIOR_WEIGHT = 0.5` in `src/aelfrice/scoring.py`). v1.7.0 added heat-kernel and HRR-structural primitives behind opt-in flags. v2.1.0 (#154) flipped both default-on after the #437 reproducibility-harness gate cleared 11/11; #1162 returned `use_heat_kernel` to default-off, because no production caller builds the eigenbasis the lane needs and the flag was therefore describing a lane that could not fire. HRR-structural remains default-on.
+Status: shipped. v1.3.0 wired the partial Bayesian re-rank (`DEFAULT_POSTERIOR_WEIGHT = 0.5` in `src/aelfrice/scoring.py`). **The `RetrievalCache` sections below describe a class that no longer exists**: it had no production call site and was deleted under [#1369](https://github.com/robotrocketscience/aelfrice/issues/1369), so the cache-key extension and cache-invalidation acceptance criteria specified here are moot — the ranking behaviour they guarded is unaffected, because nothing was memoizing it. v1.7.0 added heat-kernel and HRR-structural primitives behind opt-in flags. v2.1.0 (#154) flipped both default-on after the #437 reproducibility-harness gate cleared 11/11; #1162 returned `use_heat_kernel` to default-off, because no production caller builds the eigenbasis the lane needs and the flag was therefore describing a lane that could not fire. HRR-structural remains default-on.
 
 ## Motivation
 

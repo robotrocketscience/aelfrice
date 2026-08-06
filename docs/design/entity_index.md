@@ -223,7 +223,7 @@ with its regex and a one-line rationale.
 | `file_path` | `(?<![\w/])(?:[\w.-]+/)+[\w.-]+\.[\w]+(?![\w/])` | POSIX-ish path with at least one `/` and a dotted extension. Excludes URL-internal paths via the URL pattern's earlier match. |
 | `file_path` (Windows) | `(?<![\w])[A-Za-z]:\\(?:[\w. -]+\\)+[\w.-]+\.[\w]+` | Drive-letter Windows path. Documented but optional at v1.3.0 — the agent rarely emits these on macOS / Linux. |
 | `identifier` | `\b[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+\b` | Dotted Python identifier (`aelfrice.retrieval`, `store.list_locked_beliefs`). Disambiguated from sentence prose by requiring at least one dot AND lowercase head. |
-| `identifier` (snake/camel) | `\b(?:[a-z]+_[a-z0-9_]+\|[A-Z][a-z]+(?:[A-Z][a-z]+)+)\b` | snake_case (`session_id`, `apply_feedback`) or CamelCase (`MemoryStore`, `RetrievalCache`) with at least two parts. The two-part requirement keeps single English words out. |
+| `identifier` (snake/camel) | `\b(?:[a-z]+_[a-z0-9_]+\|[A-Z][a-z]+(?:[A-Z][a-z]+)+)\b` | snake_case (`session_id`, `apply_feedback`) or CamelCase (`MemoryStore`, `BM25IndexCache`) with at least two parts. The two-part requirement keeps single English words out. |
 | `branch` | `\b(?:feat\|fix\|docs\|refactor\|chore\|exp\|test\|ci\|build\|style\|perf\|gate\|audit\|release\|revert)/[A-Za-z0-9._/-]+\b` | Conventional-branch prefix `<type>/<rest>` per the project commit-message rules. Catches `feat/invisibility-reframe`, `docs/entity-index-spec`, etc. |
 | `version` | `\bv?\d+\.\d+\.\d+(?:[.-][A-Za-z0-9.-]+)?\b` | Semver-shaped. `v1.2.0`, `1.2.0a0`, `1.2.0-rc1`. The optional leading `v` is mandatory in product copy and required by `release/v*` tags. |
 | `url` | `\bhttps?://[^\s<>"')\]]+` (IGNORECASE) | HTTP(S) URL up to the first whitespace / closing bracket. Conservative on the right boundary so trailing punctuation in prose (`see https://x.y/z.`) doesn't get pulled into the entity. |
@@ -563,10 +563,13 @@ The implementation PR (separate from this spec) must demonstrate:
 3. **On-write trigger fires.** A test inserts a belief through
    `MemoryStore.insert_belief` and verifies `belief_entities` rows
    exist for it without the test calling the index directly.
-4. **Cache invalidation.** A `RetrievalCache` fronting an L2.5-aware
+4. **Cache invalidation.** ~~A `RetrievalCache` fronting an L2.5-aware
    `retrieve()` invalidates on belief mutations exactly as v1.0
-   already does (regression coverage; the L2.5 work must not break
-   existing cache semantics).
+   already does.~~ Moot: `RetrievalCache` had no production call site
+   and was deleted under
+   [#1369](https://github.com/robotrocketscience/aelfrice/issues/1369).
+   The store-mutation callback registry it subscribed to is unchanged
+   and still fires on `belief_entities` writes.
 5. **Budget regression.** A new
    `tests/regression/test_l25_latency.py` runs the full L0 + L1 +
    L2.5 pipeline on a 10k-belief fixture store. Asserts:

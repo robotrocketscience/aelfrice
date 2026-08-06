@@ -17,8 +17,8 @@ confidence (``α/(α+β)``); ``combine_log_scores`` is the log-additive
 ranking formula ``log(BM25F) + 1.0 * log(heat_safe) + 0.5 * log(post)``.
 
 All construction is offline — no query-time cost. Rebuild is wired to
-the same store-mutation invalidation callback that ``RetrievalCache``
-subscribes to (extending the registry, not duplicating it).
+the store-mutation invalidation callback registry (extending it, not
+duplicating it).
 """
 from __future__ import annotations
 

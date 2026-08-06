@@ -19,7 +19,6 @@ from aelfrice.retrieval import (
     DEFAULT_L1_LIMIT,
     DEFAULT_TOKEN_BUDGET,
     POSTERIOR_WEIGHT_KEY_PRECISION,
-    RetrievalCache,
     resolve_l1_limit,
     resolve_posterior_weight,
     resolve_token_budget,
@@ -213,42 +212,17 @@ def test_ac5_apply_feedback_promotes_mid_rank_belief() -> None:
     )
 
 
-# --- AC6: cache key includes posterior_weight (hit / miss matrix) --------
-
-
-def test_ac6_cache_key_includes_posterior_weight() -> None:
-    s = _equal_bm25_store()
-    cache = RetrievalCache(s)
-    cache.retrieve("widget", posterior_weight=0.5)
-    assert len(cache) == 1
-    # Same query, different weight -> miss + new entry.
-    cache.retrieve("widget", posterior_weight=1.0)
-    assert len(cache) == 2
-    # Same weight again -> hit, no new entry.
-    cache.retrieve("widget", posterior_weight=0.5)
-    assert len(cache) == 2
-    # Weight 0.0 is its own bucket (must not collide with default).
-    cache.retrieve("widget", posterior_weight=0.0)
-    assert len(cache) == 3
-
-
-# --- AC7: apply_feedback wipes the cache via the existing callback -------
-
-
-def test_ac7_apply_feedback_wipes_cache_via_store_callback() -> None:
-    """apply_feedback must NOT reach into the cache directly. The
-    wipe comes through store.update_belief -> _fire_invalidation
-    -> cache.invalidate.
-    """
-    s = _equal_bm25_store()
-    cache = RetrievalCache(s)
-    cache.retrieve("widget", posterior_weight=0.5)
-    assert len(cache) == 1
-    target = cache.retrieve("widget", posterior_weight=0.5)[0].id
-    # Feedback application happens entirely without referencing
-    # the cache. The wipe must come through the store hook.
-    apply_feedback(s, target, valence=+1.0, source="test_ac7")
-    assert len(cache) == 0, "cache should have been invalidated"
+# --- AC6/AC7 retired with `RetrievalCache` (#1369) -----------------------
+#
+# Both were properties of the LRU wrapper: AC6 asserted `posterior_weight`
+# was part of its key tuple, AC7 that `apply_feedback` wiped it through
+# the store callback rather than by reaching into it. The wrapper had no
+# production call site and was deleted. `apply_feedback` still fires the
+# store-mutation callback registry, which is live for the BM25F sidecar
+# and the spectral lane — asserted in
+# `tests/test_store_invalidation_callbacks.py`. The ranking behaviour
+# `posterior_weight` drives is covered by AC1–AC5 and AC8 here, which
+# call `retrieve()` directly.
 
 
 # --- AC8: locked beliefs unaffected by posterior_weight ------------------

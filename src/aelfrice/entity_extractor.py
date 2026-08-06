@@ -107,7 +107,7 @@ _IDENT_DOTTED: Final[re.Pattern[str]] = re.compile(
 )
 
 # snake_case (`session_id`, `apply_feedback`) or CamelCase
-# (`MemoryStore`, `RetrievalCache`) with at least two parts. The two-
+# (`MemoryStore`, `BM25IndexCache`) with at least two parts. The two-
 # part requirement keeps single English words (`apply`, `session`)
 # out — those are noun_phrase candidates.
 _IDENT_SNAKE_OR_CAMEL: Final[re.Pattern[str]] = re.compile(

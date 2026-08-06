@@ -38,14 +38,13 @@ regression tests.
 
 NO HRR in v1.3.0. That lands at v2.0.0.
 
-A `RetrievalCache` wrapper provides bounded LRU memoization. Cache
-invalidation is wired through the store's callback registry, which
-fires on every belief / edge / entity-row mutation (the entity rows
-mutate inside `insert_belief` / `update_belief` / `delete_belief`,
-so the existing callback semantics already cover them). The v1.0.1
-wipe-on-write policy on edge mutators (`insert_edge`, `update_edge`,
-`delete_edge`) is exactly what makes the v1.3 BFS cache correctness
-zero-effort — see docs/design/bfs_multihop.md § Cache invalidation.
+There is no query cache here. A `RetrievalCache` LRU wrapper shipped
+from v1.0.1 and was deleted under #1369 (parent #1162): every
+constructor call was in `tests/`, its own docstring said so, and its
+key tuple had drifted to omit every lane flag added after v1.7 — so
+fixing it would only have produced a correct cache nobody calls. The
+store's invalidation callback registry it subscribed to stays: the
+BM25F sidecar and the spectral-graph lane still use it.
 """
 from __future__ import annotations
 
@@ -56,7 +55,6 @@ import re
 import sys
 import time
 import tomllib
-from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -5048,124 +5046,3 @@ def retrieve_v2(
         compressed_beliefs=compressed,
         doc_anchors=doc_anchors_list,
     )
-
-
-class RetrievalCache:
-    """Bounded LRU cache wrapping `retrieve()` for an attached store.
-
-    Subscribes to the store's invalidation callback registry on
-    construction, so any belief / edge / entity-row mutation wipes
-    the cache. Per-instance: two `RetrievalCache` objects pointing
-    at different stores never share state.
-
-    Cache key includes the entity-index flag (v1.3.0 default-on),
-    the BFS flag (v1.3.0 default-off), `use_bm25f_anchors`
-    (v1.7.0 default-on per #154), and `posterior_weight`
-    (v1.3.0 default 0.5, rounded to `POSTERIOR_WEIGHT_KEY_PRECISION`
-    decimals so floating-point jitter does not fragment the cache).
-    Two queries that differ in any of these are distinct entries.
-    BFS knobs (`bfs_max_depth` etc.) are NOT in the key — per
-    docs/design/bfs_multihop.md § Cache invalidation, callers that toggle
-    them per call would defeat the cache anyway.
-
-    The `posterior_weight` cache-key extension is a structural fix
-    against cross-caller collisions per docs/design/bayesian_ranking.md §
-    "Cache invalidation". Posterior-write staleness is handled by
-    the existing store-mutation callback (apply_feedback ->
-    update_belief -> _fire_invalidation -> cache wipe).
-    """
-
-    def __init__(
-        self,
-        store: MemoryStore,
-        capacity: int = DEFAULT_CACHE_CAPACITY,
-    ) -> None:
-        if capacity < 1:
-            raise ValueError("capacity must be >= 1")
-        self._store = store
-        self._capacity = capacity
-        self._entries: OrderedDict[
-            tuple[
-                str, int, int,
-                bool | None, bool | None, float | None, bool | None,
-            ],
-            list[Belief],
-        ] = OrderedDict()
-        store.add_invalidation_callback(self.invalidate)
-
-    def retrieve(
-        self,
-        query: str,
-        token_budget: int = DEFAULT_TOKEN_BUDGET,
-        l1_limit: int = DEFAULT_L1_LIMIT,
-        *,
-        entity_index_enabled: bool | None = None,
-        bfs_enabled: bool | None = None,
-        posterior_weight: float | None = None,
-        use_bm25f_anchors: bool | None = None,
-        bm25f_cache: BM25IndexCache | None = None,
-    ) -> list[Belief]:
-        """Cached `retrieve()`. Same returned beliefs as the free
-        function; **not** its side effects on a hit (#1144).
-
-        A cache hit returns the memoized beliefs without re-running the
-        pipeline, so it also does not repeat `retrieve()`'s
-        retrieval-exposure enqueue (#191): exposure is recorded once, on
-        the miss that populates the entry, not on every subsequent hit.
-        This is deliberate — the enqueue is a `deferred_feedback_queue`
-        write, and a DB write per hit would blow the AC2 cache-hit
-        latency budget (≤ 50 µs; see `test_ac2_cache_hit_under_fifty_microseconds`).
-        Exposure is audit-only recurrence data (#1086), never evidence,
-        so under-counting repeat hits of a cached query is a bounded,
-        documented approximation. The production hook path calls the free
-        `retrieve()` directly (no cache), so its exposure stream — the one
-        the #1086 recurrence consumer reads — is unaffected; this class
-        has no production call site.
-
-        Cache key keeps `posterior_weight` in its caller-supplied
-        form (None or a float) — `None` is its own bucket and
-        deferred env / TOML resolution happens once on the miss
-        path. Resolving on every hit would walk Path.cwd().resolve()
-        each time and blow the same AC2 cache-hit latency budget.
-        """
-
-        if posterior_weight is None:
-            key_weight: float | None = None
-        else:
-            key_weight = round(
-                float(posterior_weight),
-                POSTERIOR_WEIGHT_KEY_PRECISION,
-            )
-        key = (
-            canonicalize_query(query),
-            token_budget,
-            l1_limit,
-            entity_index_enabled,
-            bfs_enabled,
-            key_weight,
-            use_bm25f_anchors,
-        )
-        cached = self._entries.get(key)
-        if cached is not None:
-            self._entries.move_to_end(key)
-            return list(cached)
-        result = retrieve(
-            self._store, query,
-            token_budget=token_budget, l1_limit=l1_limit,
-            entity_index_enabled=entity_index_enabled,
-            bfs_enabled=bfs_enabled,
-            posterior_weight=posterior_weight,
-            use_bm25f_anchors=use_bm25f_anchors,
-            bm25f_cache=bm25f_cache,
-        )
-        self._entries[key] = list(result)
-        if len(self._entries) > self._capacity:
-            self._entries.popitem(last=False)
-        return result
-
-    def invalidate(self) -> None:
-        """Drop every cached entry. Wired to the store's mutation hook."""
-        self._entries.clear()
-
-    def __len__(self) -> int:
-        return len(self._entries)

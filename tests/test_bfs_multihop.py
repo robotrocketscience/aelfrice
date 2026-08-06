@@ -19,9 +19,10 @@ One section per acceptance criterion in `docs/design/bfs_multihop.md`:
   AC8. Default-OFF byte-identical retrieve(): with `bfs_enabled=
        False` (the v1.3.0 default), `retrieve()` returns the same
        beliefs in the same order as the v1.3.0 L0+L2.5+L1 baseline.
-  AC9. Cache invalidation end-to-end: a new SUPERSEDES edge
-       between two cached beliefs is reflected in the next L3
-       expansion.
+  AC9. A new SUPERSEDES edge is reflected in the next L3 expansion.
+       Filed as "cache invalidation end-to-end" against
+       RetrievalCache, deleted in #1369; restated against the free
+       retrieve().
   AC10. Latency regression guard: 1k-belief / 5k-edge synthetic
         store completes one BFS-enabled retrieve under the
         documented band.
@@ -70,7 +71,6 @@ from aelfrice.models import (
 from aelfrice.retrieval import (
     ENV_BFS,
     ENV_ENTITY_INDEX,
-    RetrievalCache,
     is_bfs_enabled,
     retrieve,
     retrieve_v2,
@@ -498,37 +498,37 @@ def test_ac8_toml_flag_resolution(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# AC9: cache invalidation end-to-end
+# AC9: a new edge reaches the next BFS-enabled retrieve
+#
+# Filed as "cache invalidation end-to-end" and written against
+# `RetrievalCache`, which had no production call site and was deleted in
+# #1369. The property the AC was protecting is not about the cache: an
+# edge written after a query must be visible to the next one. Asserted
+# against the free `retrieve()`, which is the function production calls.
 # ---------------------------------------------------------------------------
 
 
-def test_ac9_new_supersedes_edge_invalidates_cached_bfs_result() -> None:
-    """RetrievalCache wipes on edge mutation; the next BFS-enabled
-    retrieve picks up the new edge."""
+def test_ac9_new_supersedes_edge_reaches_the_next_bfs_retrieve() -> None:
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("Q1", "the kitchen has bananas"))
     s.insert_belief(_mk("S2", "the new yellow fruit policy"))
-    cache = RetrievalCache(s)
-    out1 = cache.retrieve("bananas", bfs_enabled=True)
+    out1 = retrieve(s, "bananas", bfs_enabled=True)
     assert "S2" not in {b.id for b in out1}
     # Add a SUPERSEDES edge and re-query.
     s.insert_edge(_edge("S2", "Q1", EDGE_SUPERSEDES))
-    out2 = cache.retrieve("bananas", bfs_enabled=True)
+    out2 = retrieve(s, "bananas", bfs_enabled=True)
     assert "S2" in {b.id for b in out2}
 
 
-def test_ac9_cache_key_distinguishes_bfs_flag() -> None:
-    """Two queries that differ only in `bfs_enabled` are distinct
-    cache entries."""
+def test_ac9_bfs_flag_changes_the_result_set() -> None:
+    """`bfs_enabled` is a real behavioural switch, not a no-op knob."""
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("Q1", "the kitchen has bananas"))
     s.insert_belief(_mk("S2", "the new yellow fruit policy"))
     s.insert_edge(_edge("S2", "Q1", EDGE_SUPERSEDES))
-    cache = RetrievalCache(s)
-    off = cache.retrieve("bananas", bfs_enabled=False)
-    on = cache.retrieve("bananas", bfs_enabled=True)
+    off = retrieve(s, "bananas", bfs_enabled=False)
+    on = retrieve(s, "bananas", bfs_enabled=True)
     assert {b.id for b in off} != {b.id for b in on}
-    assert len(cache) == 2
 
 
 # ---------------------------------------------------------------------------
