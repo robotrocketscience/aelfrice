@@ -423,7 +423,7 @@ def remove_registration(
     except OSError as exc:
         return False, f"{path}: write failed ({exc}); backup kept at {backup}"
     return True, (
-        f"removed 'mcpServers.{registration.key}' from {path} "
+        f"removed '{registration.location()}' from {path} "
         f"(backup: {backup}; JSON formatting normalised to 2-space indent)"
     )
 

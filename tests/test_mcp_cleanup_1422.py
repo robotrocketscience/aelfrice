@@ -471,3 +471,26 @@ def test_a_scalar_tool_key_reads_as_not_installed(tmp_path: Path) -> None:
     receipt = tmp_path / "uv-receipt.toml"
     receipt.write_text('tool = "aelfrice"\n', encoding="utf-8")
     assert mcp_extra_is_installed(receipt) is False
+
+
+def test_the_success_message_names_a_project_scoped_entry_correctly(
+    tmp_path: Path,
+) -> None:
+    """The message is the undo instruction; naming the wrong key misleads.
+
+    A locally-scoped registration lives at `projects.<dir>.mcpServers.<key>`.
+    Reporting it as `mcpServers.<key>` sends the user to a key that does not
+    exist in their file. `Registration.location()` exists to spell this, and
+    every other message in the module already uses it.
+    """
+    project = "/home/u/proj"
+    config = _write(tmp_path / "cfg.json", {
+        "projects": {project: {"mcpServers": {
+            "aelfrice": {"command": "aelf", "args": ["mcp"]},
+        }}},
+    })
+    found, _ = find_registrations([config])
+    assert len(found) == 1
+    changed, message = remove_registration(found[0], now=_NOW)
+    assert changed is True
+    assert f"projects.{project}.mcpServers.aelfrice" in message
