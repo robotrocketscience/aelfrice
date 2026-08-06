@@ -62,7 +62,7 @@ def _render(seed: str) -> str:
         capture_output=True,
         text=True,
         env=env,
-        timeout=120,
+        timeout=_SUBPROCESS_TIMEOUT_S,
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
