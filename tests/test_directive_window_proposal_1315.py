@@ -13,11 +13,14 @@ would pass just as happily on a design that writes first and asks after.
 """
 from __future__ import annotations
 
+import io
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from aelfrice import hook
 from aelfrice.directive_detector import detect_directive
 from aelfrice.hook import (
     _belief_is_lock_candidate,
@@ -30,6 +33,7 @@ from aelfrice.lock_expiry import (
     stated_window_is_ambiguous,
 )
 from aelfrice.models import (
+    BELIEF_CORRECTION,
     BELIEF_FACTUAL,
     LOCK_NONE,
     LOCK_USER,
@@ -272,6 +276,62 @@ def test_proposing_writes_nothing_to_the_store(store: MemoryStore) -> None:
     assert after.lock_level == LOCK_NONE, "proposing locked the belief"
     assert after.lock_expires_at is None, "proposing wrote an expiry"
     assert store.count_feedback_events() == 0, "proposing wrote an audit row"
+
+
+def test_autolock_does_not_write_a_windowed_directive(
+    store: MemoryStore, tmp_path: Path
+) -> None:
+    """The confirmation gate has to hold on the one path that writes
+    without asking.
+
+    `AELF_AUTOLOCK_CORRECTIONS=1` locks candidates unprompted, and it
+    grants a *permanent* lock — `_autolock_candidates` sets
+    `lock_expires_at = None` and rewrites origin to `user_stated`. With
+    the #1315 arm feeding it, a detector measured at P=0.665 mints
+    permanent ground truth on a false positive, with the stated window
+    discarded: strictly worse than the wrong-expiry case the precision
+    bar existed to prevent, and the direct contradiction of "nothing
+    reaches the store until they do".
+
+    Driven through `stop()` rather than `_autolock_candidates` directly,
+    because the defect was in which candidates reach that call — a
+    unit-level test of the helper cannot see it.
+
+    Falsifiable by dropping the `_belief_is_correction_class` filter at
+    the `stop()` call site: the directive is then locked and this fails
+    on `lock_level`. The correction alongside it is the control — it must
+    still be locked, so a filter that disables autolock outright fails
+    here too.
+    """
+    directive = _belief(_DIRECTIVE)
+    correction = _belief("Actually the flag is --foo, not --bar.")
+    correction.type = BELIEF_CORRECTION
+    store.insert_belief(directive)
+    store.insert_belief(correction)
+    store.close()
+
+    err = io.StringIO()
+    hook.stop(
+        stdin=io.StringIO(json.dumps({"session_id": _SESSION})),
+        stdout=io.StringIO(),
+        stderr=err,
+        env={"AELF_AUTOLOCK_CORRECTIONS": "1"},
+    )
+
+    reopened = MemoryStore(str(_db_path(tmp_path)))
+    try:
+        after_directive = reopened.get_belief(directive.id)
+        assert after_directive is not None
+        assert after_directive.lock_level == LOCK_NONE, "autolock wrote a proposal"
+        assert after_directive.origin == ORIGIN_USER_TRANSCRIPT, "origin laundered"
+
+        after_correction = reopened.get_belief(correction.id)
+        assert after_correction is not None
+        assert after_correction.lock_level == LOCK_USER, (
+            "control: corrections must still auto-lock"
+        )
+    finally:
+        reopened.close()
 
 
 def test_a_windowed_directive_is_a_candidate_whatever_its_type() -> None:

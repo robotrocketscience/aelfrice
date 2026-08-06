@@ -3629,16 +3629,26 @@ def _belief_is_lock_candidate(b: "Belief", session_id: str) -> bool:
         return False
     if b.lock_level == LOCK_USER:
         return False
-    if b.type == BELIEF_CORRECTION:
-        return True
-    if b.origin in _STOP_PROMPT_AGENT_ORIGINS:
+    if _belief_is_correction_class(b):
         return True
     # #1315: a directive that STATES its own window is a candidate too,
     # whatever its type or origin. The prompt proposes; nothing is
     # written until the user runs the command, so a false positive here
     # costs a declined suggestion rather than a wrong expiring lock —
-    # which is why this does not need the H1 precision bar.
+    # which is why this does not need the H1 precision bar. That argument
+    # only holds while no path writes these unprompted, which is what
+    # `_autolock_candidates` enforces.
     return _directive_window_spec(b.content) is not None
+
+
+def _belief_is_correction_class(b: "Belief") -> bool:
+    """Correction-class by type or origin — the pre-#1315 population.
+
+    Split out because it is the population `AELF_AUTOLOCK_CORRECTIONS` is
+    allowed to write without asking. The #1315 arm is deliberately not
+    part of it.
+    """
+    return b.type == BELIEF_CORRECTION or b.origin in _STOP_PROMPT_AGENT_ORIGINS
 
 
 def _directive_window_spec(content: str) -> str | None:
@@ -3724,7 +3734,12 @@ def _autolock_candidates(
     """Upgrade every candidate's lock_level to LOCK_USER in place. Returns
     the count actually locked. Mirrors the re-lock-upgrade path from
     `_cmd_lock` (cli.py) without going through the derivation worker —
-    these beliefs already exist; only the lock fields change."""
+    these beliefs already exist; only the lock fields change.
+
+    Locks exactly what it is handed. Deciding *which* candidates may be
+    written without confirmation is the caller's job — see the
+    `_belief_is_correction_class` filter in `stop()`.
+    """
     now = _utc_now_iso()
     locked = 0
     for b in candidates:
@@ -3811,7 +3826,21 @@ def stop(
                 candidates = _collect_lock_candidates(store, session_id)
                 if candidates:
                     if _autolock_enabled(env):
-                        _autolock_candidates(store, candidates, serr)
+                        # Autolock writes without asking, so it stays on
+                        # the correction-class population it is named for.
+                        # The #1315 arm admits a directive on a detector
+                        # measured at P=0.665, and the argument for
+                        # retiring that precision bar is that a false
+                        # positive costs a declined suggestion. Letting
+                        # this path write them would make that false —
+                        # and worse than the case the bar guarded, since
+                        # autolock grants a *permanent* lock and drops
+                        # the very window that identified the belief.
+                        _autolock_candidates(
+                            store,
+                            [c for c in candidates if _belief_is_correction_class(c)],
+                            serr,
+                        )
                     else:
                         block = _format_stop_prompt(candidates)
                         if block:
