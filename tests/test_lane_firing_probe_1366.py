@@ -386,6 +386,12 @@ def test_truncation_control_is_quiet_when_nothing_moves() -> None:
 
 _FLAG_TRACKING_LANES = {
     "l1_bm25f_anchors", "posterior_weight_rerank", "fan_effect",
+    # Not a resolver echo like the three above, but uninformative for the
+    # same reason: all six `should_run_expansion` return paths set a
+    # non-empty reason, so `bool(expansion_gate_reason)` is constant-True
+    # inside `retrieve_with_tiers`. A 1.0000 rate that cannot be anything
+    # else is not evidence, and the table must not read as if it were.
+    "expansion_gate",
 }
 
 
@@ -694,6 +700,27 @@ def test_main_refuses_a_corpus_below_the_floor(
     )
     assert probe.main(argv) == 1
     assert _FakeStore.opened == []
+
+
+def test_main_rejects_a_prompts_flag_below_the_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI guard, which the corpus-floor test does not reach.
+
+    `_harness` always passes `--prompts MIN_PROMPTS` and varies only how
+    many prompts the corpus holds, so
+    `test_main_refuses_a_corpus_below_the_floor` exercises the *substantive*
+    floor (exit 1) and the argument check at the top of `main()` (exit 2)
+    was never executed. Two different refusals with two different exit
+    codes; asserting the code is what keeps them apart.
+    """
+    argv, _, _ = _harness(tmp_path, monkeypatch)
+    argv[argv.index("--prompts") + 1] = str(probe.MIN_PROMPTS - 1)
+
+    assert probe.main(argv) == 2
+    assert _FakeStore.opened == [], (
+        "the guard must refuse before opening the store"
+    )
 
 
 def test_probe_calls_retrieve_once_per_prompt_with_the_shipped_kwargs(

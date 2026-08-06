@@ -76,7 +76,11 @@ from aelfrice.clustering import (
     pack_max_coverage,
     pack_with_clusters,
 )
-from aelfrice.compression import CompressedBelief, compress_for_retrieval
+from aelfrice.compression import (
+    STRATEGY_VERBATIM,
+    CompressedBelief,
+    compress_for_retrieval,
+)
 # #1304: the discovery walk moved to its own stdlib-only module so
 # `expansion_gate`, `deferred_feedback` and `hook` can share the memo
 # without importing this file. Re-exported here under the names they had
@@ -4607,11 +4611,16 @@ def retrieve_with_tiers(
         cb = compress_for_retrieval(
             b, locked=(b.lock_level == LOCK_USER),
         )
-        # #1366 leaf record: one per belief actually rendered through the
-        # compressor on this call. The flag being on says nothing about
-        # whether anything was costed — a call that packs nothing renders
-        # nothing, and this reports that.
-        _record_lane_fired("compression_renders")
+        # #1366 leaf record: one per belief the compressor actually
+        # shortened. `STRATEGY_VERBATIM` returns `rendered_tokens =
+        # _estimate_tokens(content)` (compression.py:143-149), which is
+        # byte-identical to the uncompressed `_belief_tokens` at :707 — so
+        # counting it would report a fire for a call that changed no cost,
+        # and the rate would restate "the flag is on" the way the three
+        # `tracks_flag` lanes do. Held to the same standard as
+        # `entity_persist_demoted`: record only when the work landed.
+        if cb.strategy != STRATEGY_VERBATIM:
+            _record_lane_fired("compression_renders")
         return cb.rendered_tokens
 
     locked: list[Belief] = store.list_locked_beliefs()
