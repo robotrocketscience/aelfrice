@@ -11,7 +11,6 @@
 
 ```bash
 uv tool install aelfrice                # core (deps: numpy, scipy, snowballstemmer — local-only)
-uv tool install "aelfrice[mcp]"         # add the MCP server (fastmcp)
 uv tool install "aelfrice[archive]"     # add the encrypted-archive uninstall path
 ```
 

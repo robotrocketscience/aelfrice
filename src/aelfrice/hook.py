@@ -4744,7 +4744,7 @@ def _wonder_autogc_ttl_days(env: dict[str, str] | None = None) -> int:
     """Return the auto-GC TTL in days (default 14, min 1).
 
     Honors AELFRICE_WONDER_AUTOGC_TTL_DAYS; blank, malformed, or
-    sub-1 values fall back to the 14-day default the CLI/MCP GC paths use.
+    sub-1 values fall back to the 14-day default the CLI GC path uses.
     """
     src = env if env is not None else os.environ
     raw = src.get(ENV_WONDER_AUTOGC_TTL_DAYS, "").strip()

@@ -210,7 +210,7 @@ def partial_bayesian_score(
     `posterior_mean` reuses the existing module-level helper, which
     returns `α / (α + β)` (Jeffreys prior, reads 0.5 for unobserved
     beliefs). Do not switch to Laplace at this layer — the prior
-    must agree with `aelf stats`, the MCP, and `decay()`.
+    must agree with `aelf stats` and `decay()`.
 
     Higher score = more relevant (matches the convention used by
     sort-descending callers).

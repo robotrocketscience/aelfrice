@@ -1544,7 +1544,7 @@ def _cmd_wonder_axes(args: argparse.Namespace, out: object) -> int:
     """Emit dispatch-payload JSON for `aelf wonder QUERY` (#645) or
     the legacy alias `aelf wonder --axes QUERY` (#551).
 
-    Mirrors the MCP `aelf_wonder` tool. Always JSON on stdout; exit 0
+    Always JSON on stdout; exit 0
     on success.
 
     The query may carry agent-count shorthand ("quick 2-agent",
@@ -3667,7 +3667,7 @@ def _cmd_stats(args: argparse.Namespace, out: object) -> int:
     print(f"version:           {_aelf_version}", file=out)  # type: ignore[arg-type]
     print(f"beliefs:           {n_beliefs}", file=out)  # type: ignore[arg-type]
     # v1.1.0 user-facing rename: "edges" -> "threads". Internal schema
-    # keeps `edges`. MCP `aelf:stats` emits both keys for one minor.
+    # keeps `edges`.
     print(f"threads:           {n_threads}", file=out)  # type: ignore[arg-type]
     print(f"locked:            {n_locked}", file=out)  # type: ignore[arg-type]
     print(f"feedback events:   {n_history}", file=out)  # type: ignore[arg-type]
@@ -8935,7 +8935,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     p_resolve.set_defaults(func=_cmd_resolve)
 
-    # Hidden: agents emit feedback automatically via the MCP path. Manual
+    # Hidden: agents emit feedback automatically via the hook path. Manual
     # invocation is rare.
     p_feedback = sub.add_parser("feedback", help=argparse.SUPPRESS)
     p_feedback.add_argument("belief_id", help="id of the belief")

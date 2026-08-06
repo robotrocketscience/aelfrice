@@ -14,7 +14,7 @@ Best categories of PR:
 
 Hard to land without prior alignment:
 
-- New CLI subcommands or MCP tools.
+- New CLI subcommands.
 - Schema changes.
 - Anything that adds a hard dependency.
 - Reintroducing earlier research-line features without a benchmark / experiment showing the impact.
@@ -29,9 +29,9 @@ search: locked-belief order is unstable when budget is exhausted
 
 Body should include:
 
-- **What happened** — exact CLI invocation or MCP call, exact output.
+- **What happened** — exact CLI invocation, exact output.
 - **What you expected** — one-line.
-- **Environment** — OS, Python version (`python --version`), aelfrice version, MCP host (if relevant).
+- **Environment** — OS, Python version (`python --version`), aelfrice version, host agent (if relevant).
 - **A minimal repro.** A directory you can `aelf onboard <here>` and reproduce, or the smallest sequence of CLI calls that triggers it.
 
 Don't include your real memory.db (at `<repo>/.git/aelfrice/memory.db`, or `~/.aelfrice/memory.db` for non-git directories) — it contains your private beliefs. Reproduce on a scratch DB (`AELFRICE_DB=/tmp/scratch.db`) and share that.
@@ -87,7 +87,7 @@ Highest-leverage contributions tend to land in three places:
 - Vector embeddings or ANN in retrieval (would require a hard dep on a vector library; defeats the local-stdlib design).
 - Cloud sync, accounts, or any non-local data path.
 - A web UI.
-- Integration with chat platforms outside MCP.
+- Integration with chat platforms.
 
 ## Development setup
 

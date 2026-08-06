@@ -10,7 +10,7 @@ body:
 
         - [README](https://github.com/robotrocketscience/aelfrice#readme)
         - [QUICKSTART](https://github.com/robotrocketscience/aelfrice/blob/main/docs/QUICKSTART.md)
-        - [COMMANDS](https://github.com/robotrocketscience/aelfrice/blob/main/docs/COMMANDS.md) and [MCP](https://github.com/robotrocketscience/aelfrice/blob/main/docs/MCP.md)
+        - [COMMANDS](https://github.com/robotrocketscience/aelfrice/blob/main/docs/COMMANDS.md)
         - [ARCHITECTURE](https://github.com/robotrocketscience/aelfrice/blob/main/docs/ARCHITECTURE.md) and [PHILOSOPHY](https://github.com/robotrocketscience/aelfrice/blob/main/docs/PHILOSOPHY.md)
         - [LIMITATIONS](https://github.com/robotrocketscience/aelfrice/blob/main/docs/LIMITATIONS.md)
   - type: textarea

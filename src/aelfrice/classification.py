@@ -5,7 +5,7 @@ v1.0 ships the synchronous regex/keyword fallback only. This is the
 single classifier used in onboarding, CI, and any environment without a
 host LLM. The polymorphic onboard handshake — where a host LLM
 classifies sentences in its own context and returns results — lands in
-v0.6.0 alongside the MCP server, when there's actually a host present.
+v0.6.0, when there's actually a host present.
 
 Aelfrice never imports the `anthropic` SDK at any point in v1.0
 (pre-commit #7). Classification calls flow through the host's existing

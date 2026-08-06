@@ -2,7 +2,7 @@
 
 Thirty markdown files in `src/aelfrice/slash_commands/`, tracking the v1.2.0 CLI consolidation, the v1.4.0 `rebuild` promotion, the v2.0 reasoning surfaces, the v2.x `eval` calibration surface, the v3.3.0 `/aelf:graph` viz (#629), the v3.3.0 `/aelf:scope-out` session-scoped retrieval exclusion (#856), the v3.5 belief-hygiene additions (`/aelf:feed`, `/aelf:stale`, `/aelf:review`, `/aelf:speculative`, `/aelf:audit-claude-memory`), the v4.0 belief-curation additions (`/aelf:introspect`, `/aelf:retire`, `/aelf:restore`, #1081), and the v4.x `/aelf:category` keyword-triggered categories (#1126). After `aelf setup`, they appear as `/aelf:*` in the host. Each is a thin wrapper over the CLI — `/aelf:foo` invokes `aelf foo` against the active project's DB.
 
-Slash files cover the everyday user-facing surface, plus a handful of operator workflows where one keystroke matters (`/aelf:uninstall`, `/aelf:upgrade`). Hidden CLI subcommands (`bench`, `cadence-score`, `clamp-ghosts`, `demote`, `export-canvas`, `feedback`, `gate`, `health`, `ingest-transcript`, `label`, `project-warm`, `regime`, `resolve`, `session-delta`, `spine`, `stats`, `statusline`, `unsetup`, `upgrade-cmd`, `validate`) and the per-hook entry points stay callable from the CLI for scripting and back-compat — they're not surfaced as slashes. The visible CLI verbs `migrate`, `mcp`, `sweep-feedback`, and `scan-derivation` are likewise CLI-only because they're operator / scripting flows rather than per-turn agent surface.
+Slash files cover the everyday user-facing surface, plus a handful of operator workflows where one keystroke matters (`/aelf:uninstall`, `/aelf:upgrade`). Hidden CLI subcommands (`bench`, `cadence-score`, `clamp-ghosts`, `demote`, `export-canvas`, `feedback`, `gate`, `health`, `ingest-transcript`, `label`, `project-warm`, `regime`, `resolve`, `session-delta`, `spine`, `stats`, `statusline`, `unsetup`, `upgrade-cmd`, `validate`) and the per-hook entry points stay callable from the CLI for scripting and back-compat — they're not surfaced as slashes. The visible CLI verbs `migrate`, `sweep-feedback`, and `scan-derivation` are likewise CLI-only because they're operator / scripting flows rather than per-turn agent surface.
 
 `aelf setup` installs all slash-command files automatically into `~/.claude/commands/aelf/` and prunes any stale files left behind by renames (e.g. `stats.md` after the v1.2.0 rename to `status.md`). Re-running `aelf setup` after an upgrade is sufficient to keep the set current.
 
@@ -49,9 +49,8 @@ Behaviour matches the CLI exactly — see [COMMANDS](COMMANDS.md). The v1.1.0 `e
 |---|---|
 | You, in Claude Code | `/aelf:*` slash command |
 | You, in Codex CLI | `$aelf-*` agent skill — see [Codex host](#codex-host-aelf--skills) |
-| The agent, mid-turn | `aelf:*` MCP tool — see [MCP](MCP.md) |
 | Shell or script | `aelf` CLI — see [COMMANDS](COMMANDS.md) |
-| Tests / embedded | `tool_*` handlers from `aelfrice.mcp_server` |
+| Tests / embedded | the library functions in `aelfrice.*` directly |
 
 Remove with `aelf unsetup` — it strips the hooks from settings.json and deletes the bundled files under `~/.claude/commands/aelf/` in one pass.
 

@@ -328,7 +328,7 @@ _SCHEMA: tuple[str, ...] = (
     # 'enqueued' -> 'applied' (no contradiction in grace window) or
     # 'cancelled' (explicit feedback / contradiction within grace).
     # event_type is open-ended so future signals (search exposure,
-    # MCP tool reads) can ride the same sweeper. ON DELETE CASCADE
+    # reads) can ride the same sweeper. ON DELETE CASCADE
     # keeps the queue consistent if a belief is deleted.
     """
     CREATE TABLE IF NOT EXISTS deferred_feedback_queue (
@@ -1457,7 +1457,7 @@ class MemoryStore:
         # to avoid a store->bm25 import cycle. One cache per store also
         # means one invalidation-callback subscription per store — the
         # pre-#1135 per-retrieve construction leaked one callback per
-        # query on long-running processes (MCP server).
+        # query on long-running processes.
         self._bm25f_shared_cache: object | None = None
         # #655 read-only federation. Peer DBs are opened on demand via
         # `federation.open_peer_connection`; the deps list itself is
@@ -4524,7 +4524,7 @@ class MemoryStore:
         The ratified policy is tiered by who is asserting:
 
         - **A person** (`CORROBORATION_SOURCES_USER_EXPLICIT` — `aelf
-          lock`, `aelf remember`, and their MCP twins) **revives** the
+          lock`, `aelf remember`) **revives** the
           belief. Re-typing a sentence is a deliberate act, and it comes
           back at the posterior it was retired at, with an audit row
           naming the revival.

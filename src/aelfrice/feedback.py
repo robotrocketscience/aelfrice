@@ -174,7 +174,7 @@ def apply_feedback(
 
     # #655 read-only federation: reject mutations on foreign belief ids
     # at the API surface. Raised as ForeignBeliefError (a ValueError
-    # subclass) so existing `except ValueError` blocks in CLI / MCP
+    # subclass) so existing `except ValueError` blocks in the CLI
     # surfaces continue to flag the call without special handling.
     store.assert_local_ownership(belief_id)
 
@@ -195,7 +195,7 @@ def apply_feedback(
     # define as explicit user affirmation rather than passive feedback:
     # `aelf confirm` / `aelf_confirm`, which docs/user/COMMANDS.md calls
     # out as "distinct from ... implicit retrieval feedback". Every other
-    # caller — CLI `aelf feedback`, MCP `aelf_feedback`, sentiment,
+    # caller — CLI `aelf feedback`, sentiment,
     # retrieval exposure, valence propagation — takes the floor.
     locked: bool = respect_lock and b.lock_level == LOCK_USER
     posterior_applied: bool = update_posterior and not locked

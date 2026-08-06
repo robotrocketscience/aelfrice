@@ -14,7 +14,7 @@ clamping; only `d` and `w` are fixed-length. Getting this wrong is the
 kind of error that surfaces once a year, on the day it matters.
 
 Stdlib-only, and it imports nothing from `aelfrice`, so the CLI, the
-MCP surface and the store can all reach it without an import cycle.
+hooks and the store can all reach it without an import cycle.
 """
 from __future__ import annotations
 

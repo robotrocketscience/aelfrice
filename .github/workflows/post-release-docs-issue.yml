@@ -42,7 +42,7 @@ jobs:
           - [ ] \`docs/user/INSTALL.md\` — new optional extras and post-install verification commands present
           - [ ] \`docs/concepts/BENCHMARKS.md\` — "Activation status" version label refreshed if any adapter changed status
           - [ ] \`docs/user/LIMITATIONS.md\` — any items resolved by ${TAG} moved out of "known issues at v1.0" into resolved/historical
-          - [ ] \`docs/user/MCP.md\` / \`docs/user/SLASH_COMMANDS.md\` — surface counts and new entries reflect ${TAG}
+          - [ ] \`docs/user/SLASH_COMMANDS.md\` — surface counts and new entries reflect ${TAG}
 
           ## What CI already verified (do not re-check)
 

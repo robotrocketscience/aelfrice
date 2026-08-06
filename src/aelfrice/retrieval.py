@@ -988,7 +988,7 @@ def is_entity_persist_demote_enabled(
 
     Live on the production path too: since the #1107 cutover `retrieve()`
     is a thin adapter over `retrieve_v2()` and passes this lane
-    resolver-driven, so hook/rebuilder/MCP callers all observe it."""
+    resolver-driven, so hook and rebuilder callers all observe it."""
     env = _env_entity_persist_demote_override()
     if env is not None:
         return env
@@ -3651,7 +3651,7 @@ def _store_scoped_bm25f_cache(
 
     Replaces the pre-#1135 per-retrieve construction, which leaked one
     invalidation-callback subscription per query and threw away the
-    built index between calls on long-running processes (MCP server).
+    built index between calls on long-running processes.
     The cache lives on `store._bm25f_shared_cache` so its lifetime is
     the store's. A changed `anchor_weight` (the meta-belief consumer
     can move it between calls) drops the cached index; the sidecar
