@@ -20,6 +20,7 @@ Verifies:
 from __future__ import annotations
 
 import io
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -28,6 +29,7 @@ from aelfrice.cli import build_parser
 from aelfrice.clamp_ghosts import (
     CLAMP_SOURCE,
     DEFAULT_TARGET_ALPHA,
+    USER_PRIOR_ORIGINS,
     clamp_ghost_alphas,
 )
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
@@ -325,5 +327,115 @@ def test_clamp_ghosts_cli_threshold_and_target_flags(cli_store_path: Path) -> No
     s2 = MemoryStore(cli_store_path)
     try:
         assert s2.get_belief("g1").alpha == 6.0
+    finally:
+        s2.close()
+
+
+# -- legitimately-ingested rows are not ghosts (#1374 §12) ------------------
+
+def _fresh_user_belief() -> Belief:
+    """A brand-new user-sourced belief, built by the production insert
+    path rather than by hand.
+
+    `derive()` on a user transcript turn that classifies as a
+    `requirement` stamps the undeflated TYPE_PRIORS prior — alpha=9.0,
+    lock_level='none', origin='user_transcript' — and the row has no
+    feedback_history and no belief_corroborations because it was just
+    created. That is every condition the pre-fix selector tested for.
+    """
+    from aelfrice.derivation import DerivationInput, derive
+    from aelfrice.models import INGEST_SOURCE_TRANSCRIPT
+
+    out = derive(DerivationInput(
+        raw_text="Deploys must run the migration check before shipping.",
+        source_kind=INGEST_SOURCE_TRANSCRIPT,
+        source_path="transcript",
+        raw_meta={"role": "user"},
+        ts="2026-04-26T00:00:00Z",
+    ))
+    assert out.belief is not None
+    # Pin the properties that make this a hard case. If the insert path
+    # ever stops writing an above-threshold alpha here, the test below
+    # would start passing for the wrong reason.
+    assert out.belief.alpha > DEFAULT_TARGET_ALPHA
+    assert out.belief.lock_level == LOCK_NONE
+    return out.belief
+
+
+def test_skips_freshly_ingested_user_belief_but_still_clamps_a_ghost(
+    store: MemoryStore,
+) -> None:
+    legit = _fresh_user_belief()
+    store.insert_belief(legit)
+    # A real ghost sits alongside it: same alpha band, same empty audit
+    # trail, but a legacy origin no insert path writes at that alpha.
+    store.insert_belief(_mk("ghost", alpha=10.0))
+
+    result = clamp_ghost_alphas(store, dry_run=False)
+
+    assert [s["id"] for s in result.sample] == ["ghost"]
+    assert result.matched == 1 and result.clamped == 1
+    assert _alpha_of(store, "ghost") == DEFAULT_TARGET_ALPHA
+    # The legitimate row keeps its birth prior and gains no fabricated
+    # audit row attributing a clamp to the tool.
+    assert _alpha_of(store, legit.id) == legit.alpha
+    assert _feedback_rows_for(store, legit.id) == []
+
+
+def test_user_prior_origins_are_all_excluded(store: MemoryStore) -> None:
+    # Enumerated literally rather than read off USER_PRIOR_ORIGINS: a
+    # fixture built from the constant under test shrinks to nothing the
+    # moment the constant does, and would stay green either way.
+    user_origins = (
+        "user_corrected",
+        "user_stated",
+        "user_transcript",
+        "user_validated",
+    )
+    assert set(user_origins) == set(USER_PRIOR_ORIGINS)
+    for i, origin in enumerate(user_origins):
+        store.insert_belief(replace(_mk(f"u{i}", alpha=9.0), origin=origin))
+    store.insert_belief(_mk("ghost", alpha=9.0))
+
+    result = clamp_ghost_alphas(store)
+
+    assert [s["id"] for s in result.sample] == ["ghost"]
+
+
+def test_created_before_cutoff_excludes_newer_rows(store: MemoryStore) -> None:
+    old = replace(_mk("old", alpha=10.0), created_at="2026-04-01T00:00:00Z")
+    new = replace(_mk("new", alpha=10.0), created_at="2026-04-30T00:00:00Z")
+    store.insert_belief(old)
+    store.insert_belief(new)
+
+    result = clamp_ghost_alphas(
+        store, dry_run=False, created_before="2026-04-15T00:00:00Z"
+    )
+
+    assert [s["id"] for s in result.sample] == ["old"]
+    assert result.clamped == 1
+    assert _alpha_of(store, "old") == DEFAULT_TARGET_ALPHA
+    assert _alpha_of(store, "new") == 10.0
+
+
+def test_clamp_ghosts_cli_created_before_flag(cli_store_path: Path) -> None:
+    s = MemoryStore(cli_store_path)
+    s.insert_belief(
+        replace(_mk("old", alpha=10.0), created_at="2026-04-01T00:00:00Z")
+    )
+    s.insert_belief(
+        replace(_mk("new", alpha=10.0), created_at="2026-04-30T00:00:00Z")
+    )
+    s.close()
+
+    code, output = _run_cli("--created-before", "2026-04-15T00:00:00Z", "--apply")
+
+    assert code == 0
+    assert "matched=1" in output and "clamped=1" in output
+
+    s2 = MemoryStore(cli_store_path)
+    try:
+        assert s2.get_belief("old").alpha == DEFAULT_TARGET_ALPHA
+        assert s2.get_belief("new").alpha == 10.0
     finally:
         s2.close()

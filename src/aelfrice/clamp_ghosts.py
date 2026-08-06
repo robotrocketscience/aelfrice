@@ -18,6 +18,21 @@ Every current α-mutation path leaves at least one of those trails:
 - ``store.insert_or_corroborate`` content-hash hit → does NOT bump α
   but DOES record a corroboration row.
 
+That list has one hole, and it is the *insert* path. `derive()` stamps
+the undeflated `TYPE_PRIORS` α straight onto a brand-new row for
+user-sourced content — α=9.0 for a `requirement` or `correction`, 7.0
+for a `preference` — and a row that was created five minutes ago has
+neither a feedback event nor a corroboration yet. Such a row matched
+all four conditions above by construction, so the selector could not
+tell a fabricated ghost from a legitimate belief that is merely new,
+and `CLAMP_SOURCE` then wrote an audit row attributing the clamp to
+itself. `USER_PRIOR_ORIGINS` closes that hole: origins whose insert
+path writes the full undeflated prior are excluded outright. Non-user
+origins get α deflated by `_AGENT_INFERRED_DEFLATION` at insert
+(9.0 → 1.8 at the top of the range), so no legitimate insert on those
+origins can clear the α=4.0 threshold. `created_before` narrows
+further for operators who know when the migration ran.
+
 So a row with α > 1.0 + a small posterior-fitting tolerance, no
 feedback events, and no corroborations is structurally inexplicable
 under current production code. Empirically (lab campaign
@@ -55,7 +70,30 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import IO
 
+from aelfrice.models import (
+    ORIGIN_USER_CORRECTED,
+    ORIGIN_USER_STATED,
+    ORIGIN_USER_TRANSCRIPT,
+    ORIGIN_USER_VALIDATED,
+)
 from aelfrice.store import MemoryStore
+
+
+USER_PRIOR_ORIGINS: tuple[str, ...] = (
+    ORIGIN_USER_CORRECTED,
+    ORIGIN_USER_STATED,
+    ORIGIN_USER_TRANSCRIPT,
+    ORIGIN_USER_VALIDATED,
+)
+"""Origins whose insert path writes the full undeflated `TYPE_PRIORS` α.
+
+A row on one of these origins can sit at α=9.0 with an empty audit
+trail and still be entirely legitimate — it is simply new. They are
+excluded from the ghost selector so the clamp cannot fire on them.
+
+A tuple, not a set: it is spliced into the selector as bound
+parameters, and a set's iteration order would make the emitted
+parameter sequence vary between runs."""
 
 
 CLAMP_SOURCE: str = "clamp_ghosts"
@@ -107,6 +145,7 @@ def clamp_ghost_alphas(
     target_alpha: float = DEFAULT_TARGET_ALPHA,
     dry_run: bool = True,
     limit: int | None = None,
+    created_before: str | None = None,
     stderr: IO[str] | None = None,
 ) -> ClampResult:
     """Clamp α to ``target_alpha`` on ghost-α belief rows.
@@ -115,7 +154,11 @@ def clamp_ghost_alphas(
 
     - ``lock_level = 'none'`` (locked beliefs are never clamped — their
       α reflects an explicit user assertion)
+    - ``origin`` is not in ``USER_PRIOR_ORIGINS`` (a user-sourced row is
+      born at the full type prior with no audit trail, so an empty trail
+      says nothing about it)
     - ``alpha > threshold_alpha``
+    - ``created_at < created_before``, when that cutoff is supplied
     - no rows in ``feedback_history`` for this belief
     - no rows in ``belief_corroborations`` for this belief
 
@@ -134,6 +177,10 @@ def clamp_ghost_alphas(
         target_alpha: α value to clamp matching rows down to.
         dry_run: when True, enumerate matches but do not mutate.
         limit: optional cap on rows processed in one call (None = no cap).
+        created_before: optional ISO-8601 ``created_at`` cutoff; only
+            rows created strictly before it are candidates. Lets an
+            operator confine a one-shot clamp to rows that predate the
+            migration that produced the ghosts.
         stderr: optional stream for any non-fatal warnings.
 
     Returns:
@@ -156,21 +203,36 @@ def clamp_ghost_alphas(
 
     conn = store._conn  # noqa: SLF001 — same access pattern as deferred_feedback.py:300
 
-    query = (
-        "SELECT b.id AS id, b.alpha AS alpha, b.beta AS beta, "
-        "substr(b.content, 1, 100) AS preview "
-        "FROM beliefs b "
-        "WHERE b.lock_level = 'none' "
-        "  AND b.alpha > ? "
+    # Shared eligibility predicate. The enumeration query below and the
+    # under-the-write-lock re-check must agree exactly, or the re-check
+    # becomes a second, looser selector that can clamp a row the
+    # enumeration would never have offered.
+    origin_placeholders = ", ".join("?" for _ in USER_PRIOR_ORIGINS)
+    eligibility = (
+        "  AND b.origin NOT IN (" + origin_placeholders + ") "
         "  AND NOT EXISTS ("
         "    SELECT 1 FROM feedback_history fh WHERE fh.belief_id = b.id"
         "  ) "
         "  AND NOT EXISTS ("
         "    SELECT 1 FROM belief_corroborations bc WHERE bc.belief_id = b.id"
         "  ) "
-        "ORDER BY b.alpha DESC"
+    )
+    created_clause = "  AND b.created_at < ? " if created_before else ""
+
+    query = (
+        "SELECT b.id AS id, b.alpha AS alpha, b.beta AS beta, "
+        "substr(b.content, 1, 100) AS preview "
+        "FROM beliefs b "
+        "WHERE b.lock_level = 'none' "
+        "  AND b.alpha > ? "
+        + created_clause
+        + eligibility
+        + "ORDER BY b.alpha DESC"
     )
     params: list[object] = [threshold_alpha]
+    if created_before:
+        params.append(created_before)
+    params.extend(USER_PRIOR_ORIGINS)
     if limit is not None:
         query += " LIMIT ?"
         params.append(int(limit))
@@ -206,21 +268,19 @@ def clamp_ghost_alphas(
             # --apply runs can't both clamp the same belief and insert
             # duplicate CLAMP_SOURCE audit rows (breaks the one-row
             # reversible-audit invariant).
+            recheck_params: list[object] = [r["id"], target_alpha]
+            if created_before:
+                recheck_params.append(created_before)
+            recheck_params.extend(USER_PRIOR_ORIGINS)
             current = conn.execute(
                 "SELECT b.alpha AS alpha "
                 "FROM beliefs b "
                 "WHERE b.id = ? "
                 "  AND b.lock_level = 'none' "
                 "  AND b.alpha > ? "
-                "  AND NOT EXISTS ("
-                "    SELECT 1 FROM feedback_history fh "
-                "    WHERE fh.belief_id = b.id"
-                "  ) "
-                "  AND NOT EXISTS ("
-                "    SELECT 1 FROM belief_corroborations bc "
-                "    WHERE bc.belief_id = b.id"
-                "  )",
-                (r["id"], target_alpha),
+                + created_clause
+                + eligibility,
+                recheck_params,
             ).fetchone()
             if current is None:
                 conn.execute("ROLLBACK")

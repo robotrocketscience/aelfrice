@@ -7639,6 +7639,7 @@ def _cmd_clamp_ghosts(args: argparse.Namespace, out: object) -> int:
                 target_alpha=float(args.target),
                 dry_run=not bool(args.apply),
                 limit=(int(args.limit) if args.limit is not None else None),
+                created_before=args.created_before,
             )
         except ValueError as exc:
             print(f"aelf clamp-ghosts: {exc}", file=sys.stderr)
@@ -9603,6 +9604,13 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_clamp_ghosts.add_argument(
         "--limit", type=int, default=None,
         help="cap rows processed in one call (default: no cap)",
+    )
+    p_clamp_ghosts.add_argument(
+        "--created-before", type=str, default=None,
+        help=(
+            "only consider rows with created_at strictly before this "
+            "ISO-8601 timestamp (default: no cutoff)"
+        ),
     )
     p_clamp_ghosts.set_defaults(func=_cmd_clamp_ghosts)
 
