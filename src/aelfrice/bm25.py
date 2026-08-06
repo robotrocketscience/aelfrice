@@ -393,13 +393,24 @@ def tokenize_stemmed(text: str) -> list[str]:
     vs `methodolog`). **They do not account for all of it.** SQLite
     implements original Porter's step-1b undoubling as *"\\*d and not
     (\\*L or \\*S or \\*Z)"*, while snowballstemmer restricts it to the
-    explicit pairs `bb dd ff gg mm nn pp rr tt` — so every *other* double
-    consonant survives here and is undoubled there: `specced` indexes as
-    `spec` in `beliefs_fts` and `specc` in this lane, `trekked` as `trek`
-    against `trekk`. That was 11 of the 232 residual documents when
-    #1389 was filed, but the class is every double consonant outside
-    those nine pairs, not a fixed count — anyone re-deriving the residual
-    who searches only for step-2 rules will find these unexplained.
+    explicit pairs `bb dd ff gg mm nn pp rr tt`. The diverging class is
+    the pairs SQLite undoubles that snowball does not — which is **not**
+    simply "outside those nine": `ll`, `ss` and `zz` are outside them and
+    are also exempted by SQLite's own `not (*L or *S or *Z)`, so both
+    stemmers keep those doubled and they do not diverge. Swept against a
+    real `porter unicode61` table over every consonant, stemming
+    `gra<XX>ed` so the stem ends in the doubled pair:
+
+        diverge  cc hh jj kk qq vv ww xx yy
+        agree    bb dd ff gg ll mm nn pp rr ss tt zz
+
+    So `specced` indexes as `spec` in `beliefs_fts` and `specc` in this
+    lane, and `trekked` as `trek` against `trekk`, while `summed` and
+    `banned` agree. Nine pairs, stated as a closed set rather than as the
+    11 documents it reached when #1389 was filed — the document count
+    moves with the corpus, the set does not. Anyone re-deriving the
+    residual who searches only for step-2 rules will find these
+    unexplained.
     Switching to snowballstemmer's `english` (Porter2) makes it 11x worse.
 
     Non-BM25 callers (relationship_detector, scoring helpers, etc.)
