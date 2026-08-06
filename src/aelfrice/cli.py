@@ -5577,40 +5577,6 @@ def _cmd_statusline(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
-def _cmd_mcp(args: argparse.Namespace, out: object) -> int:
-    """Start the FastMCP stdio server exposing the aelfrice tool surface.
-
-    Requires the `[mcp]` extra: `uv tool install "aelfrice[mcp]"` (or
-    the equivalent `uv tool install --with fastmcp aelfrice`). Blocks until the host
-    closes the stdio pipes; SIGINT exits cleanly with status 0.
-
-    stdio MCP servers must never write to stdout — that channel carries
-    the JSON-RPC protocol. The aelfrice tool handlers return dicts and
-    never print; fastmcp itself respects the boundary.
-    """
-    _ = (args, out)
-    try:
-        from aelfrice.mcp_server import serve
-    except ImportError as exc:  # pragma: no cover — defensive
-        print(
-            f"error: aelfrice.mcp_server import failed: {exc}",
-            file=sys.stderr,
-        )
-        return 1
-    try:
-        serve()
-    except RuntimeError as exc:
-        # serve() raises RuntimeError when fastmcp is not installed —
-        # the message includes the install hint.
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    except KeyboardInterrupt:
-        # Clean stop on Ctrl-C; hosts may signal shutdown via SIGINT
-        # and a traceback would clutter their logs.
-        return 0
-    return 0
-
-
 _UPGRADE_CONTEXT_NOTE: dict[str, str] = {
     "uv_tool": "installed via uv tool — use uv to upgrade",
     # #730: every non-uv install (pipx/venv/system) is routed to a
@@ -9868,15 +9834,6 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     # Hidden: statusline command target in settings.json. Not a verb humans invoke.
     p_statusline = sub.add_parser("statusline", help=argparse.SUPPRESS)
     p_statusline.set_defaults(func=_cmd_statusline)
-
-    # `aelf mcp`: start the FastMCP stdio server. Visible in --help so
-    # MCP-capable hosts configuring a server entry can discover it;
-    # the [mcp] extra must be installed for it to actually run.
-    p_mcp = sub.add_parser(
-        "mcp",
-        help="start the FastMCP stdio server (requires aelfrice[mcp])",
-    )
-    p_mcp.set_defaults(func=_cmd_mcp)
 
     # Hidden: the orange statusline banner already prompts users when an
     # update is pending — direct CLI invocation is auxiliary.

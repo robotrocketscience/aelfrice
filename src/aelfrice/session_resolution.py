@@ -12,7 +12,6 @@ The two surfaces that consult this helper today are:
 
   * ``aelfrice.ingest.ingest_turn`` — library-direct ingest path.
   * ``aelfrice.cli._cmd_lock`` — the ``aelf lock`` CLI subcommand.
-  * ``aelfrice.mcp_server.tool_lock`` — the MCP ``aelf_lock`` tool.
 
 Surfaces with their own per-call session context (commit-ingest hook,
 JSONL replay, onboard scanner/classification) do **not** call this
