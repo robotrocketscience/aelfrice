@@ -40,6 +40,10 @@ from aelfrice.detector_thresholds import (
     COVERED_WRITER_MODULES,
     DETECTOR_THRESHOLDS_VERSION,
     EXCLUDED_WRITERS,
+    KIND_CAP,
+    KIND_CUTOFF,
+    KIND_LITERAL,
+    KIND_WEIGHT,
     KINDS,
     DIGEST_HISTORY,
     MANIFEST_DIGEST,
@@ -136,7 +140,15 @@ def test_scalar_entries_pin_a_literal_not_a_digest() -> None:
     shipped values").
     """
     for entry in THRESHOLDS:
-        if entry.size is None and entry.kind in {"numeric_cutoff", "cap", "weight", "literal"}:
+        # Selected through the KIND_* constants, not their literal strings:
+        # a rename would otherwise make this filter match nothing and the
+        # guard would go silently vacuous instead of red.
+        if entry.size is None and entry.kind in {
+            KIND_CUTOFF,
+            KIND_CAP,
+            KIND_WEIGHT,
+            KIND_LITERAL,
+        }:
             assert not entry.value.startswith("sha256:"), (
                 f"{entry.module}.{entry.name} is a scalar and must pin its "
                 f"literal, not a digest"
@@ -307,9 +319,12 @@ def test_covered_and_excluded_do_not_overlap() -> None:
     for module, reason in EXCLUDED_WRITERS:
         assert reason.strip(), f"{module} excluded without a reason"
 
-    # `manifest_digest()` covers the version and THRESHOLDS, not the two
-    # coverage lists, so moving a module from covered to excluded moves no
-    # digest and no version. Without this, that move is silent AND leaves the
+    # `manifest_digest()` is content-only -- it covers THRESHOLDS and NOT
+    # the version (see its docstring; `DETECTOR_THRESHOLDS_VERSION` does not
+    # appear in the payload). The version bump is forced by `DIGEST_HISTORY`
+    # being keyed by version, not by the digest covering it. Neither covers
+    # the two coverage lists, so moving a module from covered to excluded
+    # moves no digest and no version. Without this, that move is silent AND leaves the
     # manifest self-contradictory: `test_covered_modules_all_have_entries`
     # stops applying to the module while its entries still sit in THRESHOLDS
     # claiming to gate edges the exclusion says it does not decide.
