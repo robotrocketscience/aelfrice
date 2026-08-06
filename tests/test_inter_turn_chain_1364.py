@@ -196,3 +196,44 @@ def test_the_chain_is_unchanged_when_no_turn_corroborates(
 
     a, b, c = _bid(store, _TURN_A), _bid(store, _TURN_B), _bid(store, _TURN_C)
     assert _derived_from(store) == {(b, a), (c, b)}
+
+
+def test_resolved_stays_aligned_with_the_sentences_it_describes(
+    store: MemoryStore,
+) -> None:
+    """`resolved` is per-SENTENCE, including the ones that resolved to nothing.
+
+    `TurnIngest.resolved` documents "one entry per sentence ... `None`
+    where the sentence produced no belief", and that alignment is the
+    only reason a future consumer can zip it against the turn's
+    sentences. Nothing else pins it: `head` scans for the last non-None,
+    so it is identical whether the Nones are present or filtered out,
+    and every other test here goes through `head`. Compacting the list
+    is therefore a silent, currently-invisible break of the contract the
+    dataclass exists to state — verified by mutation: replacing
+    `resolved=log_belief_ids` with a None-filtered copy leaves all 27
+    tests in this file and #1354's green.
+
+    A short interrogative resolves to no belief, so it holds a slot
+    without filling it.
+    """
+    turn = _ingest_turn(
+        store,
+        "The retry budget is eight attempts. "
+        "Do you think the retry budget should be eight attempts or sixteen? "
+        "The backoff is exponential.",
+        source="user_stated",
+        session_id="s-align",
+    )
+
+    assert len(turn.resolved) >= 3, (
+        f"expected one slot per candidate sentence, got {turn.resolved!r}"
+    )
+    assert turn.resolved[1] is None, (
+        f"the middle sentence is an interrogative that resolves to no "
+        f"belief, so its slot must hold None rather than be dropped — "
+        f"dropping it shifts every later sentence's index. got "
+        f"{turn.resolved!r}"
+    )
+    assert turn.resolved[0] is not None and turn.resolved[2] is not None
+    assert turn.head == next(b for b in reversed(turn.resolved) if b is not None)
