@@ -24,7 +24,12 @@ from aelfrice.doctor import (
 )
 from aelfrice.models import (
     BELIEF_FACTUAL,
+    EDGE_CITES,
+    EDGE_CONTRADICTS,
+    EDGE_DERIVED_FROM,
+    EDGE_IMPLEMENTS,
     EDGE_RELATES_TO,
+    EDGE_SUPERSEDES,
     EDGE_SUPPORTS,
     EDGE_TEMPORAL_NEXT,
     Belief,
@@ -204,3 +209,78 @@ def test_section_absent_without_a_store_path(tmp_path: Path) -> None:
     )
     assert report.dangling_edges is None
     assert "dangling edges" not in format_report(report)
+
+
+def test_asymmetric_fixture_pins_src_dst_order_sort_and_truncation(
+    tmp_path: Path,
+) -> None:
+    """One fixture for the three constructs a symmetric one cannot see.
+
+    Every other case here is symmetric — equal `missing_src` and
+    `missing_dst`, one dangling edge per type, and fewer types than
+    `DANGLING_EDGE_TYPES_SHOWN`. Under those inputs three shipped
+    constructs are free variables: the `SUM(bs.id IS NULL),
+    SUM(bd.id IS NULL)` column order transposes undetected, `ORDER BY n
+    DESC` can be `ASC` because the `e.type` tie-break carries the
+    assertion when every count is 1, and the "... and N more type(s)"
+    remainder never renders. All three were confirmed dead by mutation
+    before this was written.
+
+    So: unequal src/dst counts, unequal per-type counts, and **seven**
+    dangling types against a limit of five. The rendered line is read
+    here too, because `_format_dangling_edges_section` is where the
+    src/dst pair reaches a human and no other test asserts its text.
+    """
+    path, store = _store(tmp_path)
+    # 7 types; counts deliberately distinct so DESC and ASC disagree on
+    # the head, and so the head is not reachable by the type tie-break.
+    plan = (
+        (EDGE_SUPPORTS, 4, "src"),
+        (EDGE_RELATES_TO, 3, "src"),
+        (EDGE_TEMPORAL_NEXT, 2, "dst"),
+        (EDGE_CITES, 1, "dst"),
+        (EDGE_CONTRADICTS, 1, "dst"),
+        (EDGE_SUPERSEDES, 1, "dst"),
+        (EDGE_DERIVED_FROM, 1, "dst"),
+    )
+    try:
+        for edge_type, count, missing_end in plan:
+            for i in range(count):
+                ghost = f"GHOST_{edge_type}_{i}"
+                src = ghost if missing_end == "src" else "A"
+                dst = "B" if missing_end == "src" else ghost
+                store.insert_edge(
+                    Edge(src=src, dst=dst, type=edge_type, weight=1.0)
+                )
+    finally:
+        store.close()
+
+    stats = diagnose_dangling_edges(str(path))
+    assert stats is not None
+
+    # (a) src/dst are not interchangeable: 7 edges miss src, 6 miss dst.
+    assert stats.missing_src == 7
+    assert stats.missing_dst == 6
+
+    # (b) largest first, and the head is decided by the count rather
+    # than by the alphabetical tie-break — SUPPORTS sorts last of the
+    # seven by name, so seeing it first can only be the DESC ordering.
+    assert stats.by_type[0] == (EDGE_SUPPORTS, 4)
+    assert stats.by_type[1] == (EDGE_RELATES_TO, 3)
+    assert stats.by_type[2] == (EDGE_TEMPORAL_NEXT, 2)
+    assert [n for _t, n in stats.by_type] == sorted(
+        [n for _t, n in stats.by_type], reverse=True
+    )
+
+    report = diagnose(
+        user_settings=tmp_path / "missing-user.json",
+        project_root=tmp_path / "missing-project",
+        store_path=str(path),
+    )
+    rendered = format_report(report)
+
+    # (c) the rendered src/dst pair, which no other test reads.
+    assert "7 missing src, 6 missing dst" in rendered
+    # (d) truncation fires: 7 types, 5 shown, 2 held back.
+    assert f"{EDGE_SUPPORTS}: 4" in rendered
+    assert "... and 2 more type(s)" in rendered
