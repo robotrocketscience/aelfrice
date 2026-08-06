@@ -27,11 +27,22 @@ be:
 themselves; the locked floor is applied last so a relevant locked
 belief cannot be evicted by either effect.
 
-This module ships only the pure-function primitives. Issue #153 is a
-research issue: the deliverable is the benchmark result table at
-``benchmarks/uri_baki_retest/``, not production wiring. If the retest
-is positive, integration into ``retrieval.py`` lands in a follow-up
-issue under the retrieval pipeline tracker (#154).
+**Not a shipped module.** This lived at ``src/aelfrice/uri_baki.py``
+from v1.7 with no importer outside this benchmark, and moved here
+under #1369 (parent #1162) rather than being wired: #153 is a research
+issue whose deliverable is the result table in ``RESULTS.md``, and
+that table is an **honest negative** — the effects did not clear the
+ratification gate. Keeping the primitives beside the benchmark that
+produced the verdict keeps it reproducible without shipping them in
+the package.
+
+Do not re-import these from ``src/``. ``apply_supersession_demote`` is
+in particular **wrong for the score scale retrieval actually uses**:
+the composite rerank score is log-domain and routinely negative
+(measured ~-13 on a two-belief store), so multiplying by ``0.5``
+*raises* it and promotes the superseded belief. The in-tree
+replacement, ``retrieval._supersession_demote``, adds ``log(factor)``
+instead, which is the log-domain equivalent of scaling a probability.
 """
 from __future__ import annotations
 

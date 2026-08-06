@@ -1,8 +1,13 @@
-"""Unit tests for the post-rank score adjusters in `aelfrice.uri_baki`.
+"""Unit tests for the post-rank score adjusters used by the #153 retest.
 
 Issue #153 is a research issue; the deliverable is the benchmark
-result table. These tests pin the pure-function semantics so the
-benchmark cannot drift away from the documented effects.
+result table, and that table is an honest negative. These tests pin
+the pure-function semantics so the benchmark cannot drift away from
+the documented effects, and so the recorded verdict stays reproducible.
+
+The adjusters lived at `src/aelfrice/uri_baki.py` until #1369 moved
+them beside their only consumer. Nothing under `src/` imports them,
+and `test_dead_mechanisms_deleted_1369` asserts that stays true.
 """
 from __future__ import annotations
 
@@ -18,7 +23,7 @@ from aelfrice.models import (
     RETENTION_UNKNOWN,
     Belief,
 )
-from aelfrice.uri_baki import (
+from benchmarks.uri_baki_retest.adjusters import (
     DEFAULT_LOCKED_FLOOR,
     DEFAULT_RECENCY_LAMBDA,
     DEFAULT_SUPERSESSION_FACTOR,

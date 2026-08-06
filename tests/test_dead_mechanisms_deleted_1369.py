@@ -152,6 +152,40 @@ def test_correction_detector_has_no_directive_category() -> None:
     }
 
 
+def test_the_multiplicative_post_rank_adjusters_are_not_in_the_package() -> None:
+    """#1369 §4: `aelfrice.uri_baki` is gone from `src/`.
+
+    Its verdict is an honest negative (`benchmarks/uri_baki_retest/`),
+    and `apply_supersession_demote` is actively wrong for the scale
+    retrieval uses: the composite rerank score is log-domain and
+    routinely negative, so `score * 0.5` *raises* it and promotes the
+    superseded belief. `retrieval._supersession_demote` (#1187) is the
+    corrected, log-additive replacement.
+
+    Asserted as un-importable rather than as an absent file: the risk is
+    someone re-adding the primitives under a different module name and
+    calling them from the rerank path.
+    """
+    import importlib
+
+    for module in ("aelfrice.uri_baki", "aelfrice.post_rank_adjusters"):
+        try:
+            importlib.import_module(module)
+        except ModuleNotFoundError:
+            continue
+        raise AssertionError(f"{module} is back in the shipped package")
+
+    offenders = {
+        name: sorted(
+            _bound_names(tree)
+            & {"apply_locked_floor", "apply_recency_decay",
+               "apply_supersession_demote"}
+        )
+        for name, tree in _module_asts().items()
+    }
+    assert {k: v for k, v in offenders.items() if v} == {}
+
+
 def test_stored_posteriors_are_never_moved_by_age() -> None:
     """The behavioural half: `scoring` exposes no age-taking function.
 

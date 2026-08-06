@@ -127,9 +127,16 @@ uv run python -m benchmarks.uri_baki_retest.harness \
     --json benchmarks/uri_baki_retest/results_n50k.json
 ```
 
-Harness lives in `benchmarks/uri_baki_retest/harness.py`. The
-synthetic corpus is fully deterministic at the configured seed;
-re-running yields identical numbers.
+Harness lives in `benchmarks/uri_baki_retest/harness.py`; the three
+adjusters it scores live beside it in
+`benchmarks/uri_baki_retest/adjusters.py`. They were at
+`src/aelfrice/uri_baki.py` when this table was produced and moved out
+of the shipped package under
+[#1369](https://github.com/robotrocketscience/aelfrice/issues/1369),
+which changes nothing about the numbers: no module under `src/` ever
+imported them, which is what "not-adopted" meant. The synthetic corpus
+is fully deterministic at the configured seed; re-running yields
+identical numbers.
 
 ## Follow-up paths (out of scope for this retest)
 

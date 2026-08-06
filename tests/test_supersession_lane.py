@@ -3,8 +3,8 @@
 Superseded beliefs were never demoted or excluded at retrieval: the user
 corrects "deploy target is heroku" to "fly.io", contradiction resolution
 records the supersession, and the next prompt still injects heroku *first*.
-`uri_baki.apply_supersession_demote` was the only implementation and had no
-importer.
+The #153 research primitive was the only implementation and had no
+importer; #1369 moved it out of `src/` entirely.
 
 Both arms ship behind a default-OFF flag; the ratified three-arm bench
 (demote vs exclusion vs control) picks the default. These tests pin the
@@ -147,7 +147,7 @@ def test_a_multiplicative_demote_would_have_inverted(store: MemoryStore) -> None
 
     The composite rerank score is a log-domain quantity and is routinely
     negative (measured ~-13 on this two-belief store). `score * 0.5` on a
-    negative score *raises* it, so wiring `uri_baki.apply_supersession_demote`
+    negative score *raises* it, so wiring the multiplicative #153 primitive
     as the issue suggested would have promoted the superseded belief to the
     top of the pack. This asserts the premise directly, so nobody
     "simplifies" the additive penalty back into a multiplication.
@@ -371,7 +371,7 @@ def test_retrieve_v2_threads_the_lane(
 ) -> None:
     """The lane has to be reachable from `retrieve_v2`, not just `_l1_hits`.
 
-    `uri_baki.apply_supersession_demote` had no importer for exactly this
+    The #153 primitive had no importer for exactly this
     reason — a primitive nothing calls is not a fix. Uses the exclusion arm
     because it is unambiguous end-to-end (the demote arm composes with the
     default-ON entity lane, per the composition test above).
