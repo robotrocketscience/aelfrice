@@ -30,6 +30,7 @@ from aelfrice import cli
 from aelfrice.models import EDGE_TEMPORAL_NEXT, LOCK_USER, Belief, Edge
 from aelfrice.spine_recompute import (
     SYNTH_SOURCE_KIND,
+    SpineDivergence,
     fan_in_regressed_against,
     recompute_spine_edges,
     spine_divergence,
@@ -339,14 +340,20 @@ def test_a_fan_in_miss_lands_in_its_own_bucket(store: MemoryStore) -> None:
     assert report.missing_other == 0
 
 
-def test_an_empty_store_reports_full_reproduction(
+def test_an_empty_store_reports_no_share_not_a_zero_one(
     store: MemoryStore,
 ) -> None:
     """A zero-edge store is not a 0% reproduction — it is nothing to
-    reproduce. Getting this wrong makes a fresh store look broken."""
+    reproduce. Getting that wrong makes a fresh store look broken.
+
+    It is not a 100% one either: there is no share over an empty
+    denominator, so the property reports None and the CLI renders it as
+    "n/a" (#1356). Asserting `is None` rather than a number is what keeps
+    the two failure modes distinguishable — 0.0 and 1.0 are both claims
+    about fidelity that nothing measured."""
     report = spine_divergence(store)
     assert report.n_shipped == 0
-    assert report.reproduced_share == 1.0
+    assert report.reproduced_share is None
 
 
 # --- the CLI surface ----------------------------------------------------
@@ -599,7 +606,7 @@ def test_spine_verify_exits_zero_on_an_empty_store(
 ) -> None:
     """The "exits 0 regardless" promise, on the degenerate store.
 
-    A zero-edge store reports full reproduction — there is nothing to
+    A zero-edge store has no share to report — there is nothing to
     reproduce — and that has to survive the trip through the CLI's
     formatting, where a naive percentage would divide by zero.
     """
@@ -612,11 +619,14 @@ def test_spine_verify_exits_zero_on_an_empty_store(
     assert _verify(out) == 0
     text = out.getvalue()
     assert "shipped TEMPORAL_NEXT : 0\n" in text
-    # 100.00% of an empty eligible set is `reproduced_share`'s vacuous
-    # case. Harmless on a genuinely empty store, but the same branch also
-    # fires on a NON-empty store where every successor carries fan-in > 1,
-    # and there it reports perfect fidelity having compared nothing.
-    assert "reproduced (eligible) : 0 (100.00% of the 0 fan-in-1 eligible)\n" in text
+    # Not "100.00%". That branch also fires on a NON-empty store where
+    # every successor carries fan-in > 1, and there it reported perfect
+    # fidelity having compared nothing — so the property now returns None
+    # and this line has to say so rather than pick a number.
+    assert (
+        "reproduced (eligible) : 0 "
+        "(n/a — no fan-in-1 eligible edges to compare)\n" in text
+    )
     assert "reproduced (all)      : 0 of 0 shipped\n" in text
 
 
@@ -770,6 +780,33 @@ def test_the_fan_in_constraint_fires_in_one_direction_only(
     expected), and a tolerance would let real growth through.
     """
     assert fan_in_regressed_against(observed, baseline) is regressed
+
+
+def test_an_empty_eligible_set_reports_no_share_rather_than_a_perfect_one() -> None:
+    """Hypothesis: with nothing eligible, `reproduced_share` is None.
+
+    Falsifiable if it returns 1.0 -- which is what a non-empty store whose
+    every successor carries fan-in > 1 would have reported: 100% reproduced
+    having compared nothing. That is missing evidence rendered as agreement,
+    the shape #1360/#1361 went through, and it is the flattering answer
+    rather than the true one.
+
+    Distinguishing on purpose: `n_shipped` is non-zero here, so a guard that
+    only special-cases the empty store passes while this fails.
+    """
+    d = SpineDivergence(
+        n_shipped=10,
+        n_recomputed=10,
+        n_reproduced=4,
+        missing_touching_no_log=0,
+        missing_fan_in=6,
+        missing_other=0,
+        n_recomputed_only=0,
+        n_fan_in_successors=5,
+        n_eligible_shipped=0,
+        n_eligible_reproduced=0,
+    )
+    assert d.reproduced_share is None
 
 
 def test_the_committed_baseline_is_internally_consistent() -> None:

@@ -6078,10 +6078,20 @@ def _cmd_spine_verify(out: object) -> int:
     # `39,335 (94.86% of the 40,892 fan-in-1 eligible)`, and 39,335/40,892
     # is 96.19%. Both counts are worth having, so both are printed, each
     # against the denominator it belongs to.
+    # `reproduced_share` is None when nothing was eligible. That is a real
+    # state on a non-empty store -- every successor carrying fan-in > 1 --
+    # and it must print as "not applicable" rather than as a percentage,
+    # because the alternative is a fidelity number nothing was measured for.
+    share = report.reproduced_share
+    if share is None:
+        detail = "n/a — no fan-in-1 eligible edges to compare"
+    else:
+        detail = (
+            f"{100 * share:.2f}% of the "
+            f"{report.n_eligible_shipped:,} fan-in-1 eligible"
+        )
     print(
-        f"reproduced (eligible) : {report.n_eligible_reproduced:,} "
-        f"({100 * report.reproduced_share:.2f}% of the "
-        f"{report.n_eligible_shipped:,} fan-in-1 eligible)",
+        f"reproduced (eligible) : {report.n_eligible_reproduced:,} ({detail})",
         file=w,
     )
     print(

@@ -136,13 +136,13 @@ class SpineDivergence:
     missing_touching_no_log: int
     missing_fan_in: int
     missing_other: int
-    n_recomputed_only: int = 0
-    n_fan_in_successors: int = 0
-    n_eligible_shipped: int = 0
-    n_eligible_reproduced: int = 0
+    n_recomputed_only: int
+    n_fan_in_successors: int
+    n_eligible_shipped: int
+    n_eligible_reproduced: int
 
     @property
-    def reproduced_share(self) -> float:
+    def reproduced_share(self) -> float | None:
         """Fraction of the *eligible* shipped spine the recompute reproduces.
 
         Eligible excludes shipped edges whose successor carries fan-in
@@ -161,9 +161,18 @@ class SpineDivergence:
         fixture it moves 40% -> 33.33%. Either way it is a denominator
         correction and not a movement in fidelity, so a figure taken
         before it must never be compared with one taken after.
+
+        Returns ``None`` when the eligible set is empty, because nothing
+        was compared and there is no share to report. Returning ``1.0``
+        there would read as perfect fidelity on a store where every
+        successor carries fan-in > 1 -- a non-empty store whose spine
+        was never checked -- which is the #1360/#1361 shape of missing
+        evidence rendered as agreement. The caller decides how to print
+        "not applicable"; this property will not pick the flattering
+        number on its behalf.
         """
         if self.n_eligible_shipped == 0:
-            return 1.0
+            return None
         return self.n_eligible_reproduced / self.n_eligible_shipped
 
 
