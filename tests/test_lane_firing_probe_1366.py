@@ -771,3 +771,143 @@ def test_committed_report_is_well_formed_and_content_free() -> None:
         assert 0.0 <= row["fire_rate"] <= 1.0
     for reason in report["expansion_gate"]["reason_histogram"]:
         assert "(" not in reason, "gate operands leaked into the histogram"
+
+
+# --- what `main()` actually produces ---------------------------------------
+#
+# Everything above `main()` asserts how it *calls* things. Nothing asserted
+# what came out, so the report's own half of the diff — the `reported`
+# column, resolved by `build_report` — was unpinned. That is the side whose
+# constraint the module docstring states first, and moving `build_report`
+# outside `pinned_environment()` left every test green while turning the
+# `reported` column into a readout of the developer's shell.
+
+
+def _run_and_read_report(
+    argv: list[str], tmp_path: Path,
+) -> dict[str, Any]:
+    """Run `main()` with `--json` and return the report it wrote."""
+    out = tmp_path / "report.json"
+    assert probe.main([*argv, "--json", str(out)]) == 0
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+def test_the_reported_column_is_resolved_inside_the_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`reported` must describe the shipped default, not the ambient shell.
+
+    The two halves of the diff have to be resolved under the same
+    conditions or the comparison is meaningless: `observed` comes from
+    retrieval calls made inside `pinned_environment()`, so `reported` has
+    to be read there too. `AELFRICE_BFS` ships false; exporting it true and
+    seeing `reported_enabled` come back true would mean `build_report` ran
+    after the environment was restored, and every lane's "reported enabled"
+    claim would be about the machine that ran the probe.
+
+    `test_main_clears_ambient_config_for_the_run_only` does not cover this —
+    it watches the *retrieve* calls, and `build_report` is a separate call
+    that can drift out of the `with` block on its own.
+    """
+    monkeypatch.setenv("AELFRICE_BFS", "1")
+    argv, _, _ = _harness(tmp_path, monkeypatch)
+
+    report = _run_and_read_report(argv, tmp_path)
+
+    rows = {row["lane"]: row for row in report["observable_lanes"]}
+    assert "bfs_multihop" in rows, "the bfs_multihop lane vanished"
+    assert rows["bfs_multihop"]["reported_enabled"] is False, (
+        "AELFRICE_BFS leaked into the reported column — build_report ran "
+        "outside pinned_environment(), so the diff compares shipped-default "
+        "firing against this machine's configuration"
+    )
+    # And the caller's environment is still its own afterwards.
+    assert os.environ.get("AELFRICE_BFS") == "1"
+
+
+def test_the_report_counts_what_the_run_cleared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The clear is evidence, and it is per-run rather than per-import.
+
+    A reader cannot tell a clean run from one whose clear silently matched
+    nothing unless the run says how much it removed. The report carries a
+    count rather than the names, because it is meant to be pasteable into a
+    public issue — so the count is the only thing that can carry it, and it
+    has to move with the environment.
+    """
+    argv, _, _ = _harness(tmp_path, monkeypatch)
+    baseline = _run_and_read_report(argv, tmp_path)["environment"]
+
+    monkeypatch.setenv("AELFRICE_BFS", "1")
+    monkeypatch.setenv("AELF_SESSION_ID", "probe-1366")
+    with_ambient = _run_and_read_report(argv, tmp_path)["environment"]
+
+    assert with_ambient["cleared_env_vars"] == baseline["cleared_env_vars"] + 2, (
+        "the cleared-variable count did not move when two AELF* variables "
+        "were exported, so it is not measuring this run"
+    )
+    assert with_ambient["env_prefixes_cleared"] == ["AELFRICE_", "AELF_"]
+
+
+def test_truncate_control_is_off_unless_asked_for(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The control is a second full pass; it must not run by default."""
+    argv, seen_kwargs, _ = _harness(tmp_path, monkeypatch)
+
+    report = _run_and_read_report(argv, tmp_path)
+
+    assert report.get("truncation_control") in (None, {}), (
+        "the truncation control ran without --truncate-control"
+    )
+    assert len(seen_kwargs) == probe.MIN_PROMPTS, (
+        "one corpus pass expected; the control replayed it anyway"
+    )
+
+
+def test_truncate_control_replays_the_corpus_cut_to_the_audit_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC: the flag is wired from argv all the way into the report.
+
+    `truncation_control()` was unit-tested against hand-built dicts, so the
+    wiring in `main()` — the part that decides whether the measurement
+    happens at all — had no coverage. Deleting the `if args.truncate_control`
+    branch leaves the unit tests green and this red.
+    """
+    argv, seen_kwargs, _ = _harness(tmp_path, monkeypatch)
+
+    report = _run_and_read_report([*argv, "--truncate-control"], tmp_path)
+
+    assert report.get("truncation_control"), (
+        "--truncate-control produced no control section"
+    )
+    assert len(seen_kwargs) == probe.MIN_PROMPTS * 2, (
+        "the control did not replay the corpus a second time"
+    )
+
+
+def test_render_surfaces_the_truncation_control(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A measurement nobody can see in the printed report is not reported.
+
+    `render()`'s control block is the only place the truncation finding
+    reaches a human reading stdout, and it was unasserted.
+    """
+    argv, _, _ = _harness(tmp_path, monkeypatch)
+    with_control = _run_and_read_report(
+        [*argv, "--truncate-control"], tmp_path
+    )
+    without = _run_and_read_report(argv, tmp_path)
+
+    shown = probe.render(with_control)
+    hidden = probe.render(without)
+
+    assert "truncat" in shown.lower(), (
+        "render() dropped the truncation control from its output"
+    )
+    assert len(shown) > len(hidden), (
+        "render() produced the same text with and without the control"
+    )
