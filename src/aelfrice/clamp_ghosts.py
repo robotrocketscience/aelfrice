@@ -89,6 +89,28 @@ which copies α through unchanged and cannot manufacture that lattice.
 That consolidation is marker-gated (`content_hash_dedup_complete`) and
 short-circuits forever once set, so it genuinely cannot re-run.
 
+**Those rows are selectable only because of a bug that is now fixed.**
+Consolidation is not a trail-less writer: it inserts one synthetic
+``consolidation_migration`` corroboration per consumed duplicate
+(``store.py``, the ``CORROBORATION_SOURCE_CONSOLIDATION_MIGRATION``
+executemany), which would have excluded every row it produced. Zero
+survive on the development store —
+``_maybe_apply_content_hash_unique`` ran 82 seconds later
+(``content_hash_dedup_complete`` 01:38:58Z →
+``content_hash_unique_applied`` 01:40:20Z) and its ``DROP TABLE
+beliefs`` cascaded ``belief_corroborations`` away wholesale: the
+earliest surviving corroboration is 01:40:55Z, against 6,382 beliefs
+created before it. That is #336, since fixed by ``PRAGMA
+foreign_keys=OFF`` around the table swap. So a consolidation running
+today leaves a trail and produces no candidates; the existing ones are
+the residue of the two migrations interacting, which is a second
+reason the population cannot regrow the same way.
+
+Quote no headroom figure without naming the store it came from. On the
+development store the shipped selector matches 0 rows at α>4.0 and
+tops out at 3.0; on another store on the same machine it matches 1,310
+rows and tops out above α=100. Both are the same code.
+
 ``migrate()`` can. It is reachable today via ``aelf migrate --apply``
 and ``aelf doctor``'s in-place upgrade, and a legacy store imported
 after a clamp will land fresh candidates. So "one-shot" is a statement
