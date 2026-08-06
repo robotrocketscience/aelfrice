@@ -70,20 +70,42 @@ Method constraints
 * **No RNG.** Transcript files are walked in sorted path order and lines
   in file order; the first `--prompts` qualifying user turns are taken.
   Re-running on the same archive selects the same corpus.
-* **Nothing is persisted and no new telemetry field is added.** The probe
-  reads the shipped 13-field `LaneTelemetry` through
-  `last_lane_telemetry()`. `_LAST_TELEMETRY` is documented as not
-  thread-safe and is contended by other work; a parallel observation
-  surface would be a second thing to keep true.
+* **Nothing is persisted.** The probe reads `LaneTelemetry` through
+  `last_lane_telemetry()` and writes only its own JSON report.
+  `_LAST_TELEMETRY` is documented as not thread-safe and is contended by
+  other work; a parallel observation surface would be a second thing to
+  keep true, so the probe reuses the carrier that already ships.
 
 What the probe can and cannot see
 ---------------------------------
-`LaneTelemetry` observes ten lanes. Roughly a dozen further retrieval
-flags have a resolver but **no telemetry field at all**, so their firing
-cannot be observed by any runtime record — the probe reports what they
-resolve to and lists them as unobservable rather than silently scoring
-them as "never fired". A lane with no observation surface is a finding
-about the pipeline, not a null result.
+`LaneTelemetry` observes twenty lanes. Ten of those are the #1366
+record-at-site fields added to the shipped carrier for this work: each
+is written at the leaf where the lane does its work, never derived from
+a tier count and never re-resolved from the flag, because a derived
+field keeps reporting the old answer after a lane is re-wired.
+
+Three retrieval flags still have a resolver but **no telemetry field**,
+so their firing cannot be observed by any runtime record — the probe
+reports what they resolve to and lists them as unobservable rather than
+silently scoring them as "never fired". A lane with no observation
+surface is a finding about the pipeline, not a null result. Why each is
+still unobservable is recorded per-lane in `UNOBSERVABLE_LANES`.
+
+Two lanes are observable but their telemetry field **tracks the resolved
+flag by construction** (`bm25f_used`, `posterior_weight`): the field
+records what the resolver returned, so a 100% fire rate on them is a
+restatement of the flag, not evidence that anything fired. Those rows
+carry `tracks_flag_by_construction: true` and are named in the report,
+because "fired 500/500" read off a resolver is exactly the false
+positive this probe exists to catch.
+
+Diff sensitivity
+----------------
+The two diff directions do **not** have the same sensitivity, and an
+empty `fired_but_not_reported_enabled` must not be read as a null
+result — see `diff_sensitivity` in the report and `DIFF_SENSITIVITY`
+below for the reason and for what would have to change to make that
+direction reachable.
 
 Output is aggregate counts only — no belief content, no belief ids, no
 paths — so the JSON is safe to paste into an issue.
@@ -175,6 +197,14 @@ class ObservableLane:
     resolver with no kwargs, so it reports what the shipped default
     resolves to rather than what the retrieval call happened to be
     passed. `observed` reads the telemetry the same call produced.
+
+    `tracks_flag` marks a lane whose telemetry field is written from the
+    resolved flag rather than from anything the lane did. The two sides
+    of the diff are then the same number twice, its fire rate is a
+    restatement of the flag, and reporting "fired 500/500" off it would
+    be the exact false positive this probe exists to catch. Those lanes
+    stay in the table — dropping them would hide that the flag is all
+    the pipeline records — but every output path marks them.
     """
 
     name: str
@@ -183,6 +213,7 @@ class ObservableLane:
     reported: Callable[[], bool]
     observed: Callable[[LaneTelemetry], bool]
     note: str = ""
+    tracks_flag: bool = False
 
 
 def _always_on() -> bool:
@@ -222,7 +253,10 @@ OBSERVABLE_LANES: tuple[ObservableLane, ...] = (
         reported=resolve_use_bm25f_anchors,
         observed=lambda t: t.bm25f_used,
         note="bm25f_used records the resolved L1 implementation, not a "
-             "packed-hit count, so it tracks the flag by construction.",
+             "packed-hit count, so it tracks the flag by construction: "
+             "its fire rate restates the resolver and is not evidence "
+             "that the BM25F scorer produced anything.",
+        tracks_flag=True,
     ),
     ObservableLane(
         name="bfs_multihop",
@@ -260,6 +294,12 @@ OBSERVABLE_LANES: tuple[ObservableLane, ...] = (
         field="posterior_weight",
         reported=lambda: resolve_posterior_weight() > 0.0,
         observed=lambda t: t.posterior_weight > 0.0,
+        note="posterior_weight carries the resolved weight, not a count "
+             "of rerank decisions — `LaneTelemetry(posterior_weight=...)` "
+             "is fed by `resolve_posterior_weight(...)` at the same call "
+             "site. Its fire rate is the flag restated; nothing here "
+             "observes the rerank doing work.",
+        tracks_flag=True,
     ),
     ObservableLane(
         name="expansion_gate",
@@ -268,43 +308,137 @@ OBSERVABLE_LANES: tuple[ObservableLane, ...] = (
         reported=_always_on,
         observed=lambda t: bool(t.expansion_gate_reason),
     ),
+    # --- #1366 record-at-site lanes -------------------------------------
+    # Each field below is written where the lane does its work, so a
+    # non-zero count is an observation and a zero is a real absence.
+    ObservableLane(
+        name="type_aware_compression",
+        resolver="resolve_use_type_aware_compression()",
+        field="compression_renders",
+        reported=resolve_use_type_aware_compression,
+        observed=lambda t: t.compression_renders > 0,
+        note="counts beliefs actually rendered through the compressor in "
+             "the pack-cost closure; a call that packs nothing renders "
+             "nothing regardless of the flag.",
+    ),
+    ObservableLane(
+        name="intentional_clustering",
+        resolver="resolve_use_intentional_clustering()",
+        field="cluster_packed",
+        reported=resolve_use_intentional_clustering,
+        observed=lambda t: t.cluster_packed > 0,
+        note="counts beliefs the cluster pack selected. The max-coverage "
+             "selector takes precedence over this arm when both resolve "
+             "on, so a zero here can mean 'lost the precedence contest' "
+             "as well as 'off' — read it against max_coverage_pack.",
+    ),
+    ObservableLane(
+        name="max_coverage_pack",
+        resolver="is_max_coverage_pack_enabled()",
+        field="max_coverage_packed",
+        reported=is_max_coverage_pack_enabled,
+        observed=lambda t: t.max_coverage_packed > 0,
+    ),
+    ObservableLane(
+        name="entity_persist_demote",
+        resolver="is_entity_persist_demote_enabled()",
+        field="entity_persist_demoted",
+        reported=is_entity_persist_demote_enabled,
+        observed=lambda t: t.entity_persist_demoted > 0,
+        note="counts beliefs whose score the demotion actually moved; a "
+             "belief with no extracted entities, or with S1 → 1, clamps "
+             "to 0.0 and keeps the lane-off ordering.",
+    ),
+    ObservableLane(
+        name="supersession_demote",
+        resolver="is_supersession_demote_enabled()",
+        field="supersession_demoted",
+        reported=is_supersession_demote_enabled,
+        observed=lambda t: t.supersession_demoted > 0,
+    ),
+    ObservableLane(
+        name="origin_tiebreak",
+        resolver="is_origin_tiebreak_enabled()",
+        field="origin_tiebreak_decided",
+        reported=is_origin_tiebreak_enabled,
+        observed=lambda t: t.origin_tiebreak_decided > 0,
+        note="counts adjacent pairs in the final L1 order that the origin "
+             "term decided (equal composite score, different origin "
+             "priority) — not that the sort key carried the term.",
+    ),
+    ObservableLane(
+        name="gamma_posterior_temperature",
+        resolver="resolve_use_gamma_posterior_temperature()",
+        field="gamma_rerank_scored",
+        reported=resolve_use_gamma_posterior_temperature,
+        observed=lambda t: t.gamma_rerank_scored > 0,
+    ),
+    ObservableLane(
+        name="zeta_posterior_rerank",
+        resolver="resolve_use_zeta_posterior_rerank()",
+        field="zeta_rerank_scored",
+        reported=resolve_use_zeta_posterior_rerank,
+        observed=lambda t: t.zeta_rerank_scored > 0,
+    ),
+    ObservableLane(
+        name="fan_effect",
+        resolver="is_fan_effect_enabled()",
+        field="fan_effect_ranked",
+        reported=is_fan_effect_enabled,
+        observed=lambda t: t.fan_effect_ranked > 0,
+        note="recorded where the fan-weighted entity ordering is consumed "
+             "rather than where the flag resolves, but the only thing "
+             "between the two is whether L2.5 returned any hits at all — "
+             "treat a non-zero count as 'flag on and L2.5 non-empty', "
+             "not as evidence the fan weighting reordered anything.",
+        tracks_flag=True,
+    ),
+    ObservableLane(
+        name="hrr_structural",
+        resolver="is_hrr_structural_enabled()",
+        field="hrr_structural_hit",
+        reported=is_hrr_structural_enabled,
+        observed=lambda t: t.hrr_structural_hit,
+        note="True only when the marker parsed AND the struct index "
+             "answered, i.e. when the lane took the whole call; the two "
+             "fall-through returns record nothing. A zero here is a fact "
+             "about the corpus, not a reachability verdict: the lane is "
+             "reachable (a `KIND:target` prompt routes through it, pinned "
+             "by tests/test_retrieve_v2_hrr_structural.py), and no "
+             "natural-language prompt parses as a structural marker. "
+             "'Enabled but never fires on real prompts' is the finding; "
+             "'unreachable from src/' is a different claim this does not "
+             "support.",
+    ),
 )
 
 
-UNOBSERVABLE_LANES: tuple[tuple[str, str, Callable[[], bool]], ...] = (
-    # (name, resolver expression, reported-enabled callable)
-    ("type_aware_compression", "resolve_use_type_aware_compression()",
-     resolve_use_type_aware_compression),
-    ("intentional_clustering", "resolve_use_intentional_clustering()",
-     resolve_use_intentional_clustering),
-    ("gamma_posterior_temperature",
-     "resolve_use_gamma_posterior_temperature()",
-     resolve_use_gamma_posterior_temperature),
-    ("zeta_posterior_rerank", "resolve_use_zeta_posterior_rerank()",
-     resolve_use_zeta_posterior_rerank),
-    ("hrr_structural", "is_hrr_structural_enabled()",
-     is_hrr_structural_enabled),
-    ("entity_persist_demote", "is_entity_persist_demote_enabled()",
-     is_entity_persist_demote_enabled),
-    ("origin_tiebreak", "is_origin_tiebreak_enabled()",
-     is_origin_tiebreak_enabled),
-    ("fan_effect", "is_fan_effect_enabled()", is_fan_effect_enabled),
-    ("supersession_demote", "is_supersession_demote_enabled()",
-     is_supersession_demote_enabled),
-    ("exploration_slots", "is_exploration_enabled()", is_exploration_enabled),
-    ("max_coverage_pack", "is_max_coverage_pack_enabled()",
-     is_max_coverage_pack_enabled),
-    ("bm25f_per_field", "resolve_bm25f_per_field()", resolve_bm25f_per_field),
+UNOBSERVABLE_LANES: tuple[tuple[str, str, Callable[[], bool], str], ...] = (
+    # (name, resolver expression, reported-enabled callable, why)
+    ("bm25f_per_field", "resolve_bm25f_per_field()", resolve_bm25f_per_field,
+     "the leaf is the two-field scorer inside `aelfrice.bm25`, below the "
+     "module that owns LaneTelemetry; recording there means threading a "
+     "channel across the module boundary, which is a larger change than "
+     "the record-at-site extension this probe shipped"),
     ("bm25_k3_query_saturation", "resolve_bm25_k3() > 0",
-     lambda: resolve_bm25_k3() > 0.0),
+     lambda: resolve_bm25_k3() > 0.0,
+     "same leaf as bm25f_per_field — the k3 saturation term is applied "
+     "inside the scorer. Note the shipped default is 0.0, at which the "
+     "boost arm is a verified no-op, so a firing record would be about "
+     "an arm nothing reaches"),
+    ("exploration_slots", "is_exploration_enabled()", is_exploration_enabled,
+     "resolved and applied in `aelfrice.hook`, outside the retrieval call "
+     "LaneTelemetry describes; a field here would be recorded by a "
+     "different process stage than the one it is filed under"),
 )
 """Retrieval flags with a resolver but no `LaneTelemetry` field.
 
 These cannot be diffed by observation at all — not "observed as never
 firing", *unobservable*. Scoring them as never-fired would fabricate the
 finding; omitting them would hide that the observation surface has holes.
-They are reported with their resolved value and an explicit
-`observable: false`.
+They are reported with their resolved value, an explicit
+`observable: false`, and the reason recording them was out of reach —
+"no field" on its own invites the reader to assume nobody looked.
 """
 
 
@@ -412,6 +546,49 @@ def collect_corpus(root: Path, limit: int) -> list[str]:
 
 
 # --- Diff ----------------------------------------------------------------
+
+
+DIFF_SENSITIVITY: dict[str, dict[str, Any]] = {
+    "enabled_but_never_fired": {
+        "can_be_populated_by_this_instrument": True,
+        "why": (
+            "A lane's resolver can report enabled while the branch that "
+            "writes its counter never runs — the flag resolves against "
+            "env/TOML/default with no kwarg, but `retrieve()` passes an "
+            "explicit kwarg to some lanes and pins others OFF. The "
+            "resolver and the counter can therefore disagree, so an "
+            "entry here is a measurement."
+        ),
+    },
+    "fired_but_not_reported_enabled": {
+        "can_be_populated_by_this_instrument": False,
+        "why": (
+            "Structurally unreachable on the current wiring, for every "
+            "lane in the table. Each counter is written only inside a "
+            "branch guarded by the same resolver `reported` queries, and "
+            "the kwarg `retrieve()` passes is either None (so the "
+            "no-kwarg resolver gives the same answer) or False (which "
+            "can only produce the *other* direction). The unconditional "
+            "lanes report True by definition and cannot appear here "
+            "either. **An empty set in this direction is a property of "
+            "the instrument, not a null result** — reporting it as a "
+            "finding would be the R3 IDF-clip failure mode, where an "
+            "unreachable arm was read as a measured absence."
+        ),
+        "what_would_make_it_reachable": (
+            "a caller that forces a lane ON against its resolver (an "
+            "explicit `True` kwarg from `retrieve()` / `retrieve_v2`, or "
+            "a branch guarded by a different flag than the one the lane "
+            "is filed under). The direction is kept precisely so that "
+            "re-wiring shows up here instead of going unnoticed."
+        ),
+    },
+}
+"""Per-direction sensitivity of `diff_lanes`, reported alongside it.
+
+The two directions are not equally informative and the report must not
+present them as if they were. See each entry's `why`.
+"""
 
 
 def diff_lanes(
@@ -620,6 +797,9 @@ def build_report(
             "fired_calls": count,
             "fire_rate": round(count / n, 4) if n else 0.0,
             "note": lane.note,
+            # A row whose field is written from the resolver rather than
+            # from the lane's work. Its counts are the flag restated.
+            "tracks_flag_by_construction": lane.tracks_flag,
         })
 
     return {
@@ -646,17 +826,27 @@ def build_report(
             "env_prefixes_cleared": list(_ENV_PREFIXES),
         },
         "observable_lanes": lanes,
+        # Named separately as well as flagged per-row: a reader skimming
+        # the table for 100% fire rates has to be told which of them are
+        # the resolver echoed back.
+        "lanes_whose_field_tracks_the_flag": [
+            lane.name for lane in OBSERVABLE_LANES if lane.tracks_flag
+        ],
         "unobservable_lanes": [
             {
                 "lane": name,
                 "resolver": expr,
                 "reported_enabled": bool(fn()),
                 "observable": False,
-                "reason": "no LaneTelemetry field records this lane firing",
+                "reason": (
+                    "no LaneTelemetry field records this lane firing: "
+                    + why
+                ),
             }
-            for name, expr, fn in UNOBSERVABLE_LANES
+            for name, expr, fn, why in UNOBSERVABLE_LANES
         ],
         "diff": diff_lanes(reported, fired),
+        "diff_sensitivity": DIFF_SENSITIVITY,
         "trim_seam": {
             "temporal_spine_candidate_calls":
                 observed["temporal_spine_candidate_calls"],
@@ -695,21 +885,53 @@ def render(report: dict[str, Any]) -> str:
         f"{report['environment']['cleared_env_vars']} variables"
     )
     out.append("")
-    out.append(f"  {'lane':<26} {'reported':>9} {'fired':>8} {'rate':>8}")
-    out.append(f"  {'-' * 26} {'-' * 9} {'-' * 8} {'-' * 8}")
+    out.append(f"  {'lane':<28} {'reported':>9} {'fired':>8} {'rate':>8}")
+    out.append(f"  {'-' * 28} {'-' * 9} {'-' * 8} {'-' * 8}")
     for row in report["observable_lanes"]:
+        mark = "*" if row["tracks_flag_by_construction"] else " "
         out.append(
-            f"  {row['lane']:<26} {str(row['reported_enabled']):>9} "
+            f"{mark} {row['lane']:<28} {str(row['reported_enabled']):>9} "
             f"{row['fired_calls']:>8} {row['fire_rate']:>8.4f}"
         )
+    tracks = report["lanes_whose_field_tracks_the_flag"]
+    if tracks:
+        out.append("")
+        out.append(
+            "  * telemetry field is written from the resolved flag, not "
+            "from the lane's work:"
+        )
+        out.append(
+            f"    {', '.join(tracks)} — these fire rates restate the "
+            f"resolver and are NOT"
+        )
+        out.append("    evidence that anything fired.")
     out.append("")
     diff = report["diff"]
+    sens = report["diff_sensitivity"]
     out.append("  DIFF — enabled but never fired:")
     out.append("    " + (", ".join(diff["enabled_but_never_fired"]) or "(none)"))
     out.append("  DIFF — fired but not reported enabled:")
     out.append(
         "    " + (", ".join(diff["fired_but_not_reported_enabled"]) or "(none)")
     )
+    for direction, entry in sens.items():
+        if not entry["can_be_populated_by_this_instrument"]:
+            out.append(
+                f"    ^ {direction}: this instrument CANNOT populate this "
+                f"direction on the"
+            )
+            out.append(
+                "      current wiring — every counter is written inside a "
+                "branch guarded by"
+            )
+            out.append(
+                "      the same resolver the 'reported' side queries. An "
+                "empty set here is"
+            )
+            out.append(
+                "      NOT a null result; it is zero sensitivity. Kept as "
+                "a re-wiring guard."
+            )
     out.append("")
     unobs = [r["lane"] for r in report["unobservable_lanes"]]
     out.append(
