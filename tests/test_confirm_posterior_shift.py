@@ -1,8 +1,8 @@
-"""Posterior-trajectory shift fixture for the confirm MCP tool.
+"""Posterior-trajectory shift fixture for the confirm operation.
 
 Hypothesis
 ----------
-Calling tool_confirm on a belief applies a unit positive valence through
+Confirming a belief applies a unit positive valence through
 apply_feedback, incrementing alpha by 1.0 and leaving beta unchanged.
 The resulting posterior_mean(alpha, beta) is strictly higher than before
 the call, demonstrating a measurable upward shift in posterior trajectory.
@@ -22,10 +22,31 @@ from __future__ import annotations
 
 import pytest
 
-from aelfrice.mcp_server import tool_confirm
+from aelfrice.feedback import apply_feedback
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
 from aelfrice.scoring import posterior_mean
 from aelfrice.store import MemoryStore
+
+
+def _confirm(
+    store: MemoryStore, *, belief_id: str, source: str = "user_confirmed"
+):
+    """The confirm operation exactly as `cli._cmd_confirm` performs it.
+
+    `respect_lock=False` is the #1168 lock-floor exemption and is part of
+    what "confirm" means, not an incidental argument. The *CLI contract* —
+    exit codes, the unknown-belief message, the note echo, and that the
+    exemption survives — is pinned in tests/test_cli_confirm.py; this module
+    stays at the library level because what it measures is the posterior
+    mathematics, not the command surface.
+    """
+    return apply_feedback(
+        store=store,
+        belief_id=belief_id,
+        valence=1.0,
+        source=source,
+        respect_lock=False,
+    )
 
 # Minimum absolute uplift in posterior_mean that must be observed after one
 # confirm event. Mirrors the ≥1pp MRR-uplift floor from the issue spec.
@@ -58,12 +79,12 @@ def store() -> MemoryStore:
 
 
 class TestConfirmPosteriorShift:
-    """End-to-end: tool_confirm -> apply_feedback -> posterior moves up."""
+    """End-to-end: confirm -> apply_feedback -> posterior moves up."""
 
     def test_alpha_increments_by_one(self, store: MemoryStore) -> None:
         """A single confirm call increments alpha by exactly 1.0."""
         store.insert_belief(_mk_belief(alpha=1.0, beta=1.0))
-        tool_confirm(store, belief_id="b1")
+        _confirm(store, belief_id="b1")
         b = store.get_belief("b1")
         assert b is not None
         assert b.alpha == 2.0
@@ -71,7 +92,7 @@ class TestConfirmPosteriorShift:
     def test_beta_unchanged(self, store: MemoryStore) -> None:
         """Confirm does not touch beta — only alpha rises."""
         store.insert_belief(_mk_belief(alpha=1.0, beta=3.0))
-        tool_confirm(store, belief_id="b1")
+        _confirm(store, belief_id="b1")
         b = store.get_belief("b1")
         assert b is not None
         assert b.beta == 3.0
@@ -81,7 +102,7 @@ class TestConfirmPosteriorShift:
         alpha_0, beta_0 = 1.0, 1.0
         store.insert_belief(_mk_belief(alpha=alpha_0, beta=beta_0))
         prior_score = posterior_mean(alpha_0, beta_0)
-        tool_confirm(store, belief_id="b1")
+        _confirm(store, belief_id="b1")
         b = store.get_belief("b1")
         assert b is not None
         post_score = posterior_mean(b.alpha, b.beta)
@@ -90,63 +111,30 @@ class TestConfirmPosteriorShift:
             f"posterior_mean delta {delta:.4f} < floor {_MIN_POSTERIOR_UPLIFT}"
         )
 
-    def test_return_kind(self, store: MemoryStore) -> None:
-        """tool_confirm returns kind='confirm.applied' on success."""
-        store.insert_belief(_mk_belief())
-        result = tool_confirm(store, belief_id="b1")
-        assert result["kind"] == "confirm.applied"
-
-    def test_return_contains_prior_and_new_alpha(self, store: MemoryStore) -> None:
-        """Return payload carries prior_alpha, new_alpha, prior_beta, new_beta."""
-        store.insert_belief(_mk_belief(alpha=2.0, beta=1.0))
-        result = tool_confirm(store, belief_id="b1")
-        assert result["prior_alpha"] == 2.0
-        assert result["new_alpha"] == 3.0
-        assert result["prior_beta"] == 1.0
-        assert result["new_beta"] == 1.0
-
-    def test_unknown_belief_returns_error_kind(self, store: MemoryStore) -> None:
-        """tool_confirm on a missing belief_id returns confirm.unknown_belief."""
-        result = tool_confirm(store, belief_id="nonexistent")
-        assert result["kind"] == "confirm.unknown_belief"
-        assert "nonexistent" in result["error"]
-
     def test_source_default_is_user_confirmed(self, store: MemoryStore) -> None:
         """Default source tag is 'user_confirmed' so confirm events are distinguishable."""
         store.insert_belief(_mk_belief())
-        result = tool_confirm(store, belief_id="b1")
-        assert result["source"] == "user_confirmed"
+        result = _confirm(store, belief_id="b1")
+        assert result.source == "user_confirmed"
 
     def test_custom_source_propagates(self, store: MemoryStore) -> None:
         """A caller-supplied source is forwarded through apply_feedback."""
         store.insert_belief(_mk_belief())
-        result = tool_confirm(store, belief_id="b1", source="test_harness")
-        assert result["source"] == "test_harness"
-
-    def test_note_present_when_supplied(self, store: MemoryStore) -> None:
-        """Optional note surfaces in the return payload when non-empty."""
-        store.insert_belief(_mk_belief())
-        result = tool_confirm(store, belief_id="b1", note="seen in prod")
-        assert result.get("note") == "seen in prod"
-
-    def test_note_absent_when_empty(self, store: MemoryStore) -> None:
-        """Return payload omits 'note' key when note is empty string."""
-        store.insert_belief(_mk_belief())
-        result = tool_confirm(store, belief_id="b1")
-        assert "note" not in result
+        result = _confirm(store, belief_id="b1", source="test_harness")
+        assert result.source == "test_harness"
 
     def test_feedback_history_row_written(self, store: MemoryStore) -> None:
         """apply_feedback writes a feedback_history row; count rises by 1."""
         store.insert_belief(_mk_belief())
         before = store.count_feedback_events()
-        tool_confirm(store, belief_id="b1")
+        _confirm(store, belief_id="b1")
         assert store.count_feedback_events() == before + 1
 
     def test_cumulative_shift_multi_confirm(self, store: MemoryStore) -> None:
         """Three confirms triple the alpha increment; posterior converges upward."""
         store.insert_belief(_mk_belief(alpha=1.0, beta=1.0))
         for _ in range(3):
-            tool_confirm(store, belief_id="b1")
+            _confirm(store, belief_id="b1")
         b = store.get_belief("b1")
         assert b is not None
         assert b.alpha == 4.0
@@ -201,7 +189,7 @@ class TestConfirmMRRUplift:
         prior_pm = posterior_mean(1.0, 1.0)
 
         for _ in range(3):
-            tool_confirm(store, belief_id=known_id)
+            _confirm(store, belief_id=known_id)
 
         known = store.get_belief(known_id)
         assert known is not None

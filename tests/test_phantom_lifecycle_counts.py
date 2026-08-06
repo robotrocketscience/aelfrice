@@ -14,7 +14,6 @@ import io
 import pytest
 
 from aelfrice.cli import _cmd_stats
-from aelfrice.mcp_server import tool_stats
 from aelfrice.models import (
     BELIEF_FACTUAL,
     LOCK_NONE,
@@ -188,23 +187,3 @@ def test_cli_status_phantom_line_empty_store(
     out = buf.getvalue()
     assert "0 active · 0 promoted · 0 retired" in out
     assert "latest: —" in out
-
-
-def test_mcp_stats_payload_includes_phantoms(store: MemoryStore) -> None:
-    wonder_ingest(store, [_phantom("p1")])
-    payload = tool_stats(store)
-    assert payload["phantoms"] == {
-        "active": 1,
-        "promoted": 0,
-        "retired": 0,
-        "latest": payload["phantoms"]["latest"],
-    }
-    assert payload["phantoms"]["latest"] is not None
-
-
-def test_mcp_stats_markdown_renders_phantom_line(store: MemoryStore) -> None:
-    wonder_ingest(store, [_phantom("p1")])
-    result = tool_stats(store, response_format="markdown")
-    markdown = result["text"]
-    assert "Phantoms:" in markdown
-    assert "1 active" in markdown
