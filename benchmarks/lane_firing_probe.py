@@ -323,11 +323,15 @@ OBSERVABLE_LANES: tuple[ObservableLane, ...] = (
         field="compression_renders",
         reported=resolve_use_type_aware_compression,
         observed=lambda t: t.compression_renders > 0,
-        note="counts only beliefs the compressor actually SHORTENED. A "
-             "`STRATEGY_VERBATIM` return costs exactly the uncompressed "
-             "token count, so counting it would report a fire for a call "
-             "that changed nothing — held to the same standard as "
-             "`entity_persist_demoted`.",
+        note="fires only when the compressor actually SHORTENED "
+             "something. A `STRATEGY_VERBATIM` return costs exactly the "
+             "uncompressed token count, so counting it would report a "
+             "fire for a call that changed nothing — held to the same "
+             "standard as `entity_persist_demoted`. The counter's "
+             "MAGNITUDE is calls, not beliefs: `_cost` is unmemoised and "
+             "costs a belief several times per retrieve(), so the raw "
+             "number is an arm-dependent multiple. Only the `> 0` "
+             "predicate below is read, and that is exact.",
     ),
     ObservableLane(
         name="intentional_clustering",

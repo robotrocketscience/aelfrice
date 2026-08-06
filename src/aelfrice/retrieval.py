@@ -4611,8 +4611,19 @@ def retrieve_with_tiers(
         cb = compress_for_retrieval(
             b, locked=(b.lock_level == LOCK_USER),
         )
-        # #1366 leaf record: one per belief the compressor actually
-        # shortened. `STRATEGY_VERBATIM` returns `rendered_tokens =
+        # #1366 leaf record: one per `_cost` call whose render came back
+        # shortened — NOT one per belief. `_cost` is the shared `cost_fn`
+        # and is unmemoised, so a single belief is costed several times
+        # per call: once inside the packer, again in the `used += _cost(b)`
+        # accumulate loop, and once more for each candidate the budget
+        # loop rejects. Measured on 6 snapshot-class beliefs: 12 in the
+        # cluster arm, 29 in max_coverage. The magnitude is therefore
+        # arm-dependent and is NOT comparable with the adjacent
+        # `cluster_packed` / `max_coverage_packed` fields, which are exact
+        # belief counts. Only the `> 0` predicate is consumed (the probe's
+        # `observed=` lambda), and that is true iff at least one belief was
+        # shortened, which is the property this field exists to report.
+        # `STRATEGY_VERBATIM` returns `rendered_tokens =
         # _estimate_tokens(content)` (compression.py:143-149), which is
         # byte-identical to the uncompressed `_belief_tokens` at :707 — so
         # counting it would report a fire for a call that changed no cost,
