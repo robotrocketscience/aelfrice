@@ -395,3 +395,47 @@ def test_non_latin_guard_is_a_regression_guard_not_a_fix(text: str) -> None:
     there is a regression this branch introduced, not a gap it inherited.
     """
     assert _legacy_tokenize_stemmed(text) == fts5_terms(text)
+
+
+# The step-1b undoubling pairs on which SQLite's Porter and
+# snowballstemmer disagree, swept against the oracle rather than reasoned
+# from the two rule statements (#1389). Reasoning from them is exactly
+# how the first cut of this docstring got the class wrong: snowball
+# undoubles only `bb dd ff gg mm nn pp rr tt`, so "every other double
+# consonant" looks right — but SQLite's rule carries its own exception,
+# `not (*L or *S or *Z)`, which puts `ll`, `ss` and `zz` back on the
+# agreeing side.
+UNDOUBLING_DIVERGENT_PAIRS = frozenset(
+    {"cc", "hh", "jj", "kk", "qq", "vv", "ww", "xx", "yy"}
+)
+
+
+def test_undoubling_divergence_is_exactly_the_documented_pairs() -> None:
+    """Pin the class `tokenize_stemmed`'s docstring names.
+
+    A prose class in a docstring rots silently; this is the same claim,
+    enforced. The probe stems `gra<XX>ed` so the stem ends in the doubled
+    pair, which is what step 1b keys on.
+
+    Asserted as set equality in **both** directions on purpose. A subset
+    check passes when a pair stops diverging, and a superset check passes
+    when a new one starts — and either would be a real change in the
+    BM25F-vs-FTS5 residual that the docstring would then misdescribe.
+    """
+    diverging: set[str] = set()
+    for consonant in "bcdfghjklmnpqrstvwxyz":
+        word = f"gra{consonant}{consonant}ed"
+        if bm25.tokenize_stemmed(word) != fts5_terms(word):
+            diverging.add(consonant * 2)
+
+    assert diverging == set(UNDOUBLING_DIVERGENT_PAIRS)
+
+    # And the exception that makes the class non-obvious: these are
+    # outside snowball's nine pairs yet still agree, because SQLite
+    # exempts them too.
+    for pair in ("ll", "ss", "zz"):
+        word = f"gra{pair}ed"
+        assert bm25.tokenize_stemmed(word) == fts5_terms(word), (
+            f"{pair} is outside snowball's nine pairs but SQLite's "
+            "*L/*S/*Z exception should keep both stemmers in agreement"
+        )
