@@ -151,6 +151,36 @@ def test_unterminated_fence_keeps_its_content_on_both_paths() -> None:
     assert not any("```" in s for s in transcript)
 
 
+def test_an_inline_fence_mention_does_not_open_a_fenced_region() -> None:
+    """A ``` inside prose must not flip fence parity for the rest of the doc.
+
+    `CODE_FENCE_RE` is anchored to line starts. Unanchored, the mention below
+    pairs with the *opening* delimiter of the real fence that follows: the
+    prose tail is deleted as fence interior, and the code body — token literal
+    included — is promoted into a prose paragraph, clears `is_noise`, and is
+    stored as a belief. That is the inverse of what §10 set out to do, and the
+    onboard path is the one that walks a repo's own documentation, where prose
+    about fences is common: on this repo `docs/user/CONFIG.md` drops from 248
+    paragraphs to 120 unanchored, against 206 anchored.
+
+    Every other §10 case here uses a well-formed fence and cannot see this.
+    """
+    doc = (
+        "Markdown opens a code block with ``` at the start of a line.\n\n"
+        '```python\nAPI_TOKEN = "do-not-store-me"\n```\n\n'
+        "Beliefs are deduplicated by a content hash across rescans of one tree."
+    )
+    paragraphs = _split_paragraphs(doc)
+
+    assert len(paragraphs) == 2
+    # The prose survives whole. Unanchored it was truncated at the mention,
+    # losing "at the start of a line." and gaining the fence body.
+    assert paragraphs[0] == "Markdown opens a code block with ``` at the start of a line."
+    assert paragraphs[1].startswith("Beliefs are deduplicated")
+    # And the fenced body is dropped rather than stored as prose.
+    assert not any("API_TOKEN" in p for p in paragraphs)
+
+
 def test_shared_pattern_is_one_object_not_two_copies() -> None:
     """Both paths must reference the *same* compiled pattern.
 

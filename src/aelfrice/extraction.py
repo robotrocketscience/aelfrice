@@ -12,7 +12,21 @@ import re
 # than inlined because the onboard path strips fences too (#1371 §10) and
 # the two must agree: a second copy of this pattern is a divergence
 # waiting to happen, and the whole defect was that only one path had it.
-CODE_FENCE_RE: re.Pattern[str] = re.compile(r"```[\s\S]*?```")
+#
+# Anchored to line starts (`(?m)^`), and deliberately so. Unanchored, a
+# ``` appearing *inside prose* — a sentence about markdown, an inline code
+# span — pairs with the opening delimiter of the next real fence and flips
+# parity for the rest of the document: the prose tail is deleted as fence
+# interior and the code body is promoted to prose. On the onboard path,
+# which walks a repo's own documentation, that is common enough to matter
+# — this repo's `docs/user/CONFIG.md` loses 128 of its 248 paragraphs to
+# it. Both paths inherit the anchoring, which is the point of sharing one
+# object. Up to three leading spaces are allowed, matching CommonMark; a
+# closing delimiter is still required, so an unterminated fence matches
+# nothing and its content survives, unchanged from before.
+CODE_FENCE_RE: re.Pattern[str] = re.compile(
+    r"(?m)^[ \t]{0,3}```[^\n]*\n[\s\S]*?^[ \t]{0,3}```[^\n]*$"
+)
 
 # Minimum character length for a sentence fragment to be kept.
 _MIN_LEN: int = 10
