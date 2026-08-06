@@ -8,11 +8,14 @@ past `datetime.max` used to escape as a bare `ValueError` or an `OverflowError`.
 
 Two things make these assertions non-vacuous:
 
-* **`LockExpiryError` subclasses `ValueError`.** `pytest.raises(ValueError)` passes
-  on the unfixed code *and* the fixed code, so it pins nothing. The type is
-  asserted exactly, and the chained `__cause__` is asserted to be the original
-  arithmetic error — which proves the escape was wrapped rather than the raise
-  site merely moved.
+* **Neither single exception type covers both families.** `LockExpiryError`
+  subclasses `ValueError`, so for the calendar units `pytest.raises(ValueError)`
+  passes on the unfixed code *and* the fixed code and pins nothing; for the
+  fixed-length units the unfixed error is an `OverflowError`, which is not a
+  `ValueError`, so the mirror-image expectation misses the calendar half. The
+  type is therefore asserted exactly, and the chained `__cause__` is asserted to
+  be the original arithmetic error — which proves the escape was wrapped rather
+  than the raise site merely moved.
 * **The boundary is anchor-dependent.** The first failing count differs with the
   `now` passed in, so #1396's table (binary-searched on a different 2026 anchor)
   does not reproduce on an arbitrary one — three of its five values resolve fine
@@ -21,6 +24,7 @@ Two things make these assertions non-vacuous:
 """
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -114,6 +118,39 @@ def test_the_boundary_table_is_actually_the_boundary() -> None:
         assert parse_for(f"{count - 1}{unit}", now=_ANCHOR) is not None, spec
         with pytest.raises(LockExpiryError):
             parse_for(f"{count}{unit}", now=_ANCHOR)
+
+
+def test_a_count_with_too_many_digits_is_wrapped_too() -> None:
+    """AC1: the escape one statement above the arithmetic, not just inside it.
+
+    `_DURATION_RE` bounds the count's shape (`\\d+`) but not its length, and
+    CPython refuses to convert a decimal string longer than
+    `sys.get_int_max_str_digits()`, raising a bare `ValueError` — from the
+    `int()` call, which sits before any window arithmetic. Wrapping only the
+    arithmetic leaves this family escaping to `cli._cmd_lock` as a traceback,
+    which is the failure mode AC1 and AC2 name.
+
+    The limit is process-settable (`PYTHONINTMAXSTRDIGITS` moves it), so it is
+    pinned here to CPython's own minimum rather than assumed, and the spec is
+    sized against the pinned value. Without pinning, a raised limit would let
+    `int()` succeed and the assertion would silently start exercising the
+    `timedelta` overflow instead — a different path that is already covered.
+    """
+    original = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(640)  # the smallest limit CPython accepts
+    try:
+        spec = "9" * 641 + "d"
+        with pytest.raises(LockExpiryError) as excinfo:
+            parse_for(spec, now=_ANCHOR)
+    finally:
+        sys.set_int_max_str_digits(original)
+
+    exc = excinfo.value
+    assert type(exc) is LockExpiryError
+    # The bare ValueError from `int()`, chained rather than replaced — and
+    # distinguishable from the arithmetic overflow by its own message.
+    assert isinstance(exc.__cause__, ValueError)
+    assert "digits" in str(exc.__cause__)
 
 
 def test_zero_and_unparseable_still_raise_their_own_messages() -> None:
