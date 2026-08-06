@@ -24,8 +24,14 @@ import re
 # object. Up to three leading spaces are allowed, matching CommonMark; a
 # closing delimiter is still required, so an unterminated fence matches
 # nothing and its content survives, unchanged from before.
+#
+# The closing delimiter takes only trailing whitespace, never an info
+# string. CommonMark allows a language on the *opening* fence alone, so a
+# ```` ```python ```` line inside a block is body text — matching it as a
+# close ends the span early, leaking the remainder of the block into the
+# cleaned output along with the real closing delimiter as stray prose.
 CODE_FENCE_RE: re.Pattern[str] = re.compile(
-    r"(?m)^[ \t]{0,3}```[^\n]*\n[\s\S]*?^[ \t]{0,3}```[^\n]*$"
+    r"(?m)^[ \t]{0,3}```[^\n]*\n[\s\S]*?^[ \t]{0,3}```[ \t]*\r?$"
 )
 
 # Minimum character length for a sentence fragment to be kept.

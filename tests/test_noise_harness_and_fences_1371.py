@@ -190,6 +190,35 @@ def test_an_inline_fence_mention_does_not_open_a_fenced_region() -> None:
     assert not any("API_TOKEN" in p for p in paragraphs)
 
 
+def test_a_language_tagged_line_inside_a_block_does_not_close_it() -> None:
+    """A closing delimiter may not carry an info string (CommonMark).
+
+    ``` ```python ``` on its own line is body text when a block is already
+    open. Accepting `[^\\n]*` on the closing side ends the span there, which
+    leaks the rest of the block into the cleaned output *and* leaves the real
+    closing delimiter behind as stray prose — the opposite of what a fence
+    stripper is for.
+
+    Every other case in this module closes with a bare ```, so none can see
+    it. Reachability is not bounded by this repo: 0 of its 176 markdown files
+    change under the fix, but both paths read documents the repo does not own.
+    """
+    doc = (
+        "Intro paragraph that must survive the strip entirely.\n\n"
+        "```\nfirst = 1\n```python\nSECRET = \"do-not-store-me\"\n```\n\n"
+        "Closing paragraph that must also survive."
+    )
+    paragraphs = _split_paragraphs(doc)
+
+    assert paragraphs[0] == "Intro paragraph that must survive the strip entirely."
+    assert paragraphs[-1] == "Closing paragraph that must also survive."
+    # The whole block goes, including the half after the language-tagged line.
+    assert not any("SECRET" in p for p in paragraphs)
+    assert not any("first = 1" in p for p in paragraphs)
+    # And no orphaned delimiter is promoted to prose.
+    assert not any(p.strip().startswith("```") for p in paragraphs)
+
+
 def test_shared_pattern_is_one_object_not_two_copies() -> None:
     """Both paths must reference the *same* compiled pattern.
 
