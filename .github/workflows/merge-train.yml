@@ -173,8 +173,15 @@ jobs:
           gh api "repos/${REPO}/rules/branches/main" > /tmp/rules.json
           deadline=$(( $(date +%s) + CHECK_TIMEOUT_SECONDS ))
           while [ "$(date +%s)" -lt "${deadline}" ]; do
-              gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" \
-                  > /tmp/rollup.json
+              # --paginate: per_page caps at 100 and this repo's heads already
+              # carry up to 37 check-runs. A required context landing on page
+              # two would read as `missing` and stall the train to the poll
+              # timeout, so every page is fetched. `jq -s` merges the
+              # per-page objects rather than `gh --slurp`, which needs a
+              # newer gh than the runner image guarantees.
+              gh api --paginate \
+                  "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" \
+                  | jq -s '{check_runs: [.[].check_runs[]]}' > /tmp/rollup.json
 
               # A non-zero exit is a fail-closed abort (unreadable
               # payload), never a green light. An unresolvable required
@@ -217,12 +224,16 @@ jobs:
                   echo "all gating checks settled."
                   break
               fi
-              echo "...${pending} gating check(s) running (${missing} required context(s) not yet reported), sleeping 20s"
+              pending_names=$(echo "${verdict}" | jq -r '.pending | join(", ")')
+              missing_names=$(echo "${verdict}" | jq -r '.missing | join(", ")')
+              echo "...${pending} gating check(s) running: ${pending_names:-none}"
+              echo "   ${missing} required context(s) not yet reported: ${missing_names:-none}"
+              echo "   sleeping 20s"
               sleep 20
           done
 
           if [ "$(date +%s)" -ge "${deadline}" ]; then
-              fail_and_unlabel "timed out waiting for the branch's REQUIRED checks to complete after $((CHECK_TIMEOUT_SECONDS / 60)) minutes. Any check named above as not-yet-reported never posted a result. Retrigger once they have settled."
+              fail_and_unlabel "timed out waiting for this branch's gating checks (every check-run except the advisory bots) to complete after $((CHECK_TIMEOUT_SECONDS / 60)) minutes. The job log names which were still running and which required contexts never reported. Retrigger once they have settled."
           fi
 
           echo "[6/6] FF push..."
