@@ -12,15 +12,16 @@ in-memory SQLite ``fts5`` table declared exactly as ``store.py`` declares
 comparison is against terms SQLite actually indexed — not against a second
 Python reimplementation of what SQLite is believed to do.
 
-Four arms, so both the before and the after number are re-derivable from
-one command:
+Cumulative arms, one change per step, so every row is attributable to
+the single thing that row adds:
 
 ``legacy``
     ``\\w+`` + unguarded stem. What shipped before #1348.
-``split-only``
-    the unicode61 word class, unguarded stem. Isolates how much of the gap
-    the tokeniser alone accounts for.
-``split+guard``
+``+ word class``
+    the unicode61 word class (``_`` is a separator), nothing else.
+``+ diacritic fold``
+    adds the shipped per-character fold.
+``+ byte guard``
     adds SQLite's 3..64-**byte** stemming guards. Isolates the stemmer.
 ``shipped``
     calls :func:`aelfrice.bm25.tokenize_stemmed` itself, so this arm tracks
@@ -81,11 +82,9 @@ def _stem_guarded(token: str) -> str:
     return _STEMMER.stemWord(token)
 
 
-# The fold is not one of the arms — it is held constant across them so
-# the comparison attributes the gap to the word class and the stemmer
-# guard. Imported rather than re-spelled: a local copy is what let the
-# blanket-NFD fold look correct here while it was welding Hebrew and
-# Devanagari tokens together in the shipped path.
+# The shipped fold, imported rather than re-spelled — a local copy is
+# what let a blanket-NFD fold look correct here while it was welding
+# Hebrew and Devanagari tokens together in the shipped path.
 _fold = _fold_diacritics
 
 
@@ -96,25 +95,48 @@ def arm_legacy(text: str) -> list[str]:
     ]
 
 
-def arm_split_only(text: str) -> list[str]:
+def arm_split_no_fold(text: str) -> list[str]:
+    """Word class only. No fold, no guard — one change off legacy."""
+    return [
+        _stem_unguarded(m.group(0).lower())
+        for m in _UNICODE61_PATTERN.finditer(text)
+    ]
+
+
+def arm_split_fold(text: str) -> list[str]:
     return [
         _stem_unguarded(m.group(0).lower())
         for m in _UNICODE61_PATTERN.finditer(_fold(text))
     ]
 
 
-def arm_split_guard(text: str) -> list[str]:
+def arm_split_fold_guard(text: str) -> list[str]:
     return [
         _stem_guarded(m.group(0).lower())
         for m in _UNICODE61_PATTERN.finditer(_fold(text))
     ]
 
 
+def arm_shipped(text: str) -> list[str]:
+    """Resolved at call time, not bound at import.
+
+    Binding `tokenize_stemmed` into the tuple would snapshot the
+    function object, so this arm would keep reporting the old pipeline
+    if anything rebound it — the opposite of what it is for.
+    """
+    return tokenize_stemmed(text)
+
+
+# Cumulative, one change per step, so each row is attributable to the
+# single thing added on that line. The earlier version folded inside the
+# "split only" arm, which silently charged the fold's delta to the word
+# class.
 ARMS: tuple[tuple[str, Callable[[str], list[str]]], ...] = (
     ("legacy (pre-#1348)", arm_legacy),
-    ("split only", arm_split_only),
-    ("split + byte guard", arm_split_guard),
-    ("shipped tokenize_stemmed", tokenize_stemmed),
+    ("+ word class", arm_split_no_fold),
+    ("+ diacritic fold", arm_split_fold),
+    ("+ byte guard", arm_split_fold_guard),
+    ("shipped tokenize_stemmed", arm_shipped),
 )
 
 
@@ -158,16 +180,22 @@ def load_documents(store: Path, limit: int) -> dict[int, str]:
     `MemoryStore` open runs migrations plus the #1314 lock-expiry sweep.
     Measuring a store is not a reason to write to it.
     """
+    query = "SELECT rowid, content FROM beliefs_fts ORDER BY rowid"
+    params: tuple[int, ...] = ()
+    if limit:
+        # Bounded in SQL, not after fetchall(): a small --limit is meant
+        # to make a trial run cheap, and slicing in Python would still
+        # read every row. ORDER BY makes "first N" mean insertion order
+        # rather than whatever the scan happens to yield.
+        query += " LIMIT ?"
+        params = (limit,)
     conn = sqlite3.connect(f"file:{store}?mode=ro", uri=True)
     try:
         rows: Iterable[tuple[int, str | None]] = conn.execute(
-            "SELECT rowid, content FROM beliefs_fts"
+            query, params,
         ).fetchall()
     finally:
         conn.close()
-    rows = list(rows)
-    if limit:
-        rows = rows[:limit]
     return {int(rowid): (content or "") for rowid, content in rows}
 
 

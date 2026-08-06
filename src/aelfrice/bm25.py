@@ -326,14 +326,14 @@ def tokenize_stemmed(text: str) -> list[str]:
     debug one against the other, so the two must describe one corpus.
 
     The pipeline mirrors `porter unicode61` stage for stage:
-    `_fold_diacritics` (NFD, whole string), `_FTS5_TOKEN_PATTERN` (word
-    class excluding `_`), lowercase, then `_stem` — which carries
-    SQLite's own length guards. Order is load-bearing at every step; see
-    each helper for why.
+    `_fold_diacritics` (per character, and only the 25 marks unicode61
+    removes), `_FTS5_TOKEN_PATTERN` (word class excluding `_`),
+    lowercase, then `_stem` — which carries SQLite's own length guards.
+    Order is load-bearing at every step; see each helper for why.
 
     Parity is close but not exact, and the residual is measured rather
-    than asserted: 232 of 44,655 live beliefs (0.52%) still tokenise
-    differently, against 19,915 (44.60%) before #1348.
+    than asserted: 232 of 44,658 live beliefs (0.52%) still tokenise
+    differently, against 19,915 (44.59%) before #1348.
     `benchmarks/bm25_fts5_divergence.py` re-derives both numbers against
     a real FTS5 table. What is left is SQLite's Porter step-2 `-logi ->
     -log` and `-bli -> -ble` rules, which snowballstemmer's original

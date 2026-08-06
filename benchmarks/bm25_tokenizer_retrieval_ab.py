@@ -41,6 +41,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import statistics
 import sys
@@ -52,8 +53,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from scipy.stats import kendalltau  # noqa: E402
 
+# Imported as a module, not `from ... import`: `build_and_score` rebinds
+# `bm25.tokenize_stemmed` to swap tokenisers, and a name bound at import
+# would not see the swap.
 import aelfrice.bm25 as bm25  # noqa: E402
-from aelfrice.bm25 import BM25Index  # noqa: E402
 from aelfrice.store import MemoryStore  # noqa: E402
 from r3_idf_clip_bound import load_prompts  # noqa: E402
 
@@ -87,7 +90,7 @@ def build_and_score(
     if legacy:
         bm25.tokenize_stemmed = legacy_tokenize_stemmed
     try:
-        index = BM25Index.build(store)
+        index = bm25.BM25Index.build(store)
         return [index.score(q, top_k=TOP_K) for q in queries]
     finally:
         bm25.tokenize_stemmed = original
@@ -112,7 +115,9 @@ def rank_agreement(
     tau = kendalltau(
         [lrank[b] for b in shared], [rrank[b] for b in shared],
     ).statistic
-    return None if tau != tau else float(tau)
+    # NaN when one side has no rank variance at all; that is a
+    # no-measurement, not an agreement of zero.
+    return None if math.isnan(tau) else float(tau)
 
 
 def main(argv: list[str] | None = None) -> int:
