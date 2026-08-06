@@ -25,12 +25,15 @@ def test_anchor_widens_short_match_with_context() -> None:
     """When the bare match is shorter than the soft target, the
     extractor pulls surrounding prose to give downstream retrieval
     a useful context window."""
+    # The subject carries an overt determiner because single-token
+    # relation verbs require one (#1376); the match is still far
+    # shorter than ANCHOR_CONTEXT_TARGET, which is what this asserts.
     text = (
         "Background paragraph that frames the discussion. "
-        "X supports Y. "
+        "the X supports Y. "
         "Followup sentence with more context."
     )
     triples = extract_triples(text)
     assert triples
-    bare_match_len = len("X supports Y")
+    bare_match_len = len("the X supports Y")
     assert all(len(t.anchor_text) >= bare_match_len for t in triples)

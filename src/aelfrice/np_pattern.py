@@ -17,4 +17,15 @@ _NP: Final[str] = (
     rf"(?:(?:{_DET})\s+)?{_TOKEN}(?:\s+{_TOKEN}){{0,4}}"
 )
 
+_DET_LED_NP: Final[str] = (
+    rf"(?:{_DET})\s+{_TOKEN}(?:\s+{_TOKEN}){{0,4}}"
+)
+"""Same shape as `_NP` but the determiner is mandatory.
+
+Used as a grammatical frame by relation patterns whose verb token is
+also an ordinary English word: an overt determiner is cheap evidence
+that the span really is a full noun-phrase subject rather than a
+modifier fragment that happens to sit left of the token."""
+
 NOUN_PHRASE_PATTERN: Final[str] = _NP
+DETERMINER_LED_NOUN_PHRASE_PATTERN: Final[str] = _DET_LED_NP

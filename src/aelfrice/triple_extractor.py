@@ -34,7 +34,7 @@ from typing import Final
 # `entity_extractor` can share the NP regex without closing a
 # store ↔ extractors cycle through this module (#499).
 from aelfrice.derivation_worker import run_worker
-from aelfrice.np_pattern import NOUN_PHRASE_PATTERN, _NP
+from aelfrice.np_pattern import NOUN_PHRASE_PATTERN, _DET_LED_NP, _NP
 from aelfrice.models import (
     CORROBORATION_SOURCE_COMMIT_INGEST,
     EDGE_CITES,
@@ -93,9 +93,13 @@ class IngestResult:
 # --- Pattern bank --------------------------------------------------------
 
 
-def _np(group_name: str) -> str:
-    """Build a named non-greedy noun-phrase capture group."""
-    return rf"(?P<{group_name}>{_NP})"
+def _np(group_name: str, *, det_led: bool = False) -> str:
+    """Build a named non-greedy noun-phrase capture group.
+
+    `det_led=True` selects the determiner-mandatory NP shape — the
+    grammatical frame used by single-token relation verbs (#1376).
+    """
+    return rf"(?P<{group_name}>{_DET_LED_NP if det_led else _NP})"
 
 
 # Each entry: (compiled regex, edge_type, swap_subject_object).
@@ -107,61 +111,91 @@ class _RelationPattern:
     regex: re.Pattern[str]
     edge_type: str
     swap: bool
+    template: str = ""
+    """The verb phrase this pattern was compiled from, kept so the
+    registration itself is assertable (#1376)."""
+    det_subject: bool = False
+    """True when the subject NP must carry an overt determiner."""
 
 
-def _build_pattern(template: str, edge_type: str, *, swap: bool = False) -> _RelationPattern:
+def _build_pattern(
+    template: str,
+    edge_type: str,
+    *,
+    swap: bool = False,
+    det_subject: bool = False,
+) -> _RelationPattern:
     """Compile a template like 'supports' or 'is supported by' into a
     full regex with NP captures around it. The verb phrase tokens are
     space-separated; `\\s+` is inserted between each so multi-space
     inputs still match.
+
+    `det_subject=True` requires the subject NP to carry an overt
+    determiner. Single-token relation verbs are ordinary English words
+    that also occur as nouns, gerunds and non-relational verbs; without
+    a frame, bare containment matches any two token runs either side of
+    the word (#1376). Multi-token templates ('is supported by') are
+    already unambiguous and do not need the frame.
     """
     verb_pattern = r"\s+".join(re.escape(t) for t in template.split())
-    full = rf"(?<![\w-]){_np('subject')}\s+{verb_pattern}\s+{_np('object')}"
+    subject = _np("subject", det_led=det_subject)
+    full = rf"(?<![\w-]){subject}\s+{verb_pattern}\s+{_np('object')}"
     return _RelationPattern(
         regex=re.compile(full, re.IGNORECASE),
         edge_type=edge_type,
         swap=swap,
+        template=template,
+        det_subject=det_subject,
     )
 
 
+# Single-token templates carry `det_subject=True`: the verb word alone
+# is not enough evidence that a relation was asserted, so the subject
+# must be an overt determiner-led noun phrase (#1376). Templates whose
+# verb word is *also* a common plural noun are not rescuable by any
+# frame — "the existing medoid tests cover the criterion" has a
+# perfectly well-formed determiner-led span left of "tests" — so those
+# forms are dropped in favour of their unambiguous passive spellings.
 _PATTERNS: Final[tuple[_RelationPattern, ...]] = (
-    _build_pattern("supports", EDGE_SUPPORTS),
+    _build_pattern("supports", EDGE_SUPPORTS, det_subject=True),
     _build_pattern("is supported by", EDGE_SUPPORTS, swap=True),
-    _build_pattern("cites", EDGE_CITES),
-    _build_pattern("mentions", EDGE_CITES),
-    _build_pattern("contradicts", EDGE_CONTRADICTS),
+    _build_pattern("cites", EDGE_CITES, det_subject=True),
+    _build_pattern("mentions", EDGE_CITES, det_subject=True),
+    _build_pattern("contradicts", EDGE_CONTRADICTS, det_subject=True),
     _build_pattern("disagrees with", EDGE_CONTRADICTS),
-    _build_pattern("supersedes", EDGE_SUPERSEDES),
-    _build_pattern("replaces", EDGE_SUPERSEDES),
+    _build_pattern("supersedes", EDGE_SUPERSEDES, det_subject=True),
+    _build_pattern("replaces", EDGE_SUPERSEDES, det_subject=True),
     _build_pattern("relates to", EDGE_RELATES_TO),
     _build_pattern("is related to", EDGE_RELATES_TO),
     _build_pattern("is derived from", EDGE_DERIVED_FROM),
     _build_pattern("is based on", EDGE_DERIVED_FROM),
-    _build_pattern("extends", EDGE_DERIVED_FROM),
+    _build_pattern("extends", EDGE_DERIVED_FROM, det_subject=True),
     # IMPLEMENTS: source = implementation, target = spec/claim being implemented.
     # "implements" / "is an implementation of" / "realizes" / "fulfills" all
     # express that the subject satisfies or concretizes the object spec.
-    _build_pattern("implements", EDGE_IMPLEMENTS),
+    _build_pattern("implements", EDGE_IMPLEMENTS, det_subject=True),
     _build_pattern("is an implementation of", EDGE_IMPLEMENTS),
-    _build_pattern("realizes", EDGE_IMPLEMENTS),
-    _build_pattern("fulfills", EDGE_IMPLEMENTS),
+    _build_pattern("realizes", EDGE_IMPLEMENTS, det_subject=True),
+    _build_pattern("fulfills", EDGE_IMPLEMENTS, det_subject=True),
     # TEMPORAL_NEXT: source = temporal successor, target = temporal predecessor.
-    # "follows" / "comes after" / "is after" / "succeeds" all express
+    # "comes after" / "is after" / "is followed by" / "succeeds" all express
     # that the subject belief occurred or applies chronologically after
-    # the object belief. Patterns require multi-token verb phrases or
-    # unambiguous verbs to avoid over-firing on common prose ("after"
-    # alone, "next" alone, bare "follows" with a direct object).
-    _build_pattern("follows", EDGE_TEMPORAL_NEXT),
+    # the object belief. Bare "follows" is gone: in commit prose it far
+    # more often means "conforms to" or "results from" than "comes after".
     _build_pattern("comes after", EDGE_TEMPORAL_NEXT),
     _build_pattern("is after", EDGE_TEMPORAL_NEXT),
-    _build_pattern("succeeds", EDGE_TEMPORAL_NEXT),
+    _build_pattern("is followed by", EDGE_TEMPORAL_NEXT, swap=True),
+    _build_pattern("succeeds", EDGE_TEMPORAL_NEXT, det_subject=True),
     # TESTS: source = test belief, target = spec/claim under test.
-    # "tests" / "is a test for" / "is test of" / "covers" all express
-    # the same evidential relationship — the subject exercises the object.
-    _build_pattern("tests", EDGE_TESTS),
+    # "is a test for" / "is test of" / "is tested by" / "is covered by"
+    # all express the same evidential relationship — the subject
+    # exercises the object. Bare "tests" and bare "covers" are gone:
+    # both are far commoner as plural nouns in the prose this extractor
+    # is pointed at than as finite verbs.
     _build_pattern("is a test for", EDGE_TESTS),
     _build_pattern("is test of", EDGE_TESTS),
-    _build_pattern("covers", EDGE_TESTS),
+    _build_pattern("is tested by", EDGE_TESTS, swap=True),
+    _build_pattern("is covered by", EDGE_TESTS, swap=True),
 )
 
 
