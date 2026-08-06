@@ -85,6 +85,75 @@ def test_user_prompt_submit_skips_transcript_noise_prompt(tdir: Path) -> None:
     assert not (tdir / "turns.jsonl").is_file()
 
 
+def test_user_prompt_submit_keeps_prompt_whose_first_sentence_is_noise(
+    tdir: Path,
+) -> None:
+    """#1371: the noise gate runs per sentence, not on the whole prompt.
+
+    The predicate used to run on the whole prompt string and `return`
+    before `_append_turn`, so one leading scaffolding token erased the
+    entire turn from turns.jsonl — the user's statement was not merely
+    un-ingested, it was invisible to the rebuilder too.
+
+    The fixture is deliberately a *structural* leading token: it is the
+    shape that still matches `is_transcript_noise` as a whole string
+    after the §1 regex narrowing, so this test distinguishes the
+    per-sentence gate from the whole-prompt gate on its own rather than
+    riding on the narrowing.
+    """
+    prompt = (
+        "<task-notification>worker idle</task-notification>\n"
+        "The retrieval budget is fifty beliefs per turn."
+    )
+    rc = _run_main({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": prompt,
+        "session_id": "sess-sentence-1",
+    })
+    assert rc == 0
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 1
+    assert lines[0]["text"] == prompt
+
+
+def test_user_prompt_submit_keeps_prompt_opening_on_an_ack_token(
+    tdir: Path,
+) -> None:
+    """#1371 §1, end to end through the logger.
+
+    "No vector embeddings, ever." was `is_transcript_noise == True` on
+    its own before the narrowing; the turn that states it must reach
+    turns.jsonl intact.
+    """
+    prompt = (
+        "No vector embeddings, ever. "
+        "That is a policy line, not a preference."
+    )
+    rc = _run_main({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": prompt,
+        "session_id": "sess-sentence-3",
+    })
+    assert rc == 0
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 1
+    assert lines[0]["text"] == prompt
+
+
+def test_user_prompt_submit_still_drops_all_noise_prompt(tdir: Path) -> None:
+    """The complement: a turn whose *every* sentence is noise still goes.
+
+    Guards against "fixing" the over-drop by removing the gate.
+    """
+    rc = _run_main({
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "Standing by. Polling. Nothing to report.",
+        "session_id": "sess-sentence-2",
+    })
+    assert rc == 0
+    assert not (tdir / "turns.jsonl").is_file()
+
+
 def test_user_prompt_submit_no_session_id_writes_null(tdir: Path) -> None:
     rc = _run_main({
         "hook_event_name": "UserPromptSubmit",

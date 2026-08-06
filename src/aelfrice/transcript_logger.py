@@ -419,10 +419,25 @@ def _handle_user_prompt_submit(payload: dict[str, object]) -> None:
     # the rebuilder's recent-turns window. Gate the append on the same
     # noise predicate ingest.py uses; fail-soft so a noise_filter import
     # error never breaks the logger.
+    #
+    # #1371: apply that predicate at *sentence* granularity, matching
+    # `ingest.py`. Running it on the whole prompt string erased the entire
+    # turn when only its first sentence looked like scaffolding — "No
+    # vector embeddings, ever. That is a policy line." was never appended
+    # to turns.jsonl at all, so the rebuilder could not see it either.
+    # The turn is dropped only when *every* extracted sentence is noise,
+    # which is what still drops a pure `<task-notification>` wrapper.
     try:
+        from aelfrice.extraction import extract_sentences  # noqa: PLC0415
         from aelfrice.noise_filter import is_transcript_noise  # noqa: PLC0415
 
-        if is_transcript_noise(prompt):
+        sentences = extract_sentences(prompt)
+        # A prompt too short to yield a sentence ("hi") still needs the
+        # whole-string check — there is nothing finer to apply.
+        if not sentences:
+            if is_transcript_noise(prompt.strip()):
+                return
+        elif all(is_transcript_noise(s) for s in sentences):
             return
     except Exception:
         # Fail-soft: any noise_filter regression falls through to the
