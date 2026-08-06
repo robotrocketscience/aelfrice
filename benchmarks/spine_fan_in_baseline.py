@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -86,7 +87,9 @@ def measure(store_path: str) -> dict[str, Any]:
         "n_fan_in_successors": d.n_fan_in_successors,
         "n_eligible_shipped": d.n_eligible_shipped,
         "n_eligible_reproduced": d.n_eligible_reproduced,
-        "reproduced_share": round(d.reproduced_share, 6),
+        "reproduced_share": (
+            None if d.reproduced_share is None else round(d.reproduced_share, 6)
+        ),
         "missing_touching_no_log": d.missing_touching_no_log,
         "missing_fan_in": d.missing_fan_in,
         "missing_other": d.missing_other,
@@ -128,7 +131,13 @@ def main(argv: list[str] | None = None) -> int:
         print("OK — non-increasing.")
 
     if args.write:
+        # Refresh the stamp with the figures. Leaving it alone dates the
+        # new measurement to the previous one, which is exactly the kind of
+        # provenance drift the `provenance` block exists to prevent.
         baseline["figures"] = measured
+        baseline["measured_at"] = (
+            datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        )
         with BASELINE_PATH.open("w") as f:
             json.dump(baseline, f, indent=2, sort_keys=True)
             f.write("\n")
