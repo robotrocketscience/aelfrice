@@ -834,3 +834,26 @@ def test_the_committed_baseline_is_internally_consistent() -> None:
     assert figures["reproduced_share"] != round(
         figures["n_reproduced"] / figures["n_shipped"], 6
     )
+
+    # Two identities that tie down the fields the share does not reach.
+    # Without these the share only constrains its own numerator and
+    # denominator, leaving `n_fan_in_successors` -- the single figure the
+    # non-increasing constraint reads -- and all three miss buckets free to
+    # be hand-edited with nothing noticing.
+
+    # Every fan-in-n successor removes all n of its shipped edges from the
+    # eligible set, and n >= 2, so the eligible set gives up at least two
+    # edges per such successor. Equality here means every one of them is
+    # exactly fan-in 2.
+    assert (
+        figures["n_shipped"] - figures["n_eligible_shipped"]
+        >= 2 * figures["n_fan_in_successors"]
+    )
+
+    # The three miss buckets are a partition of what was not reproduced.
+    assert (
+        figures["missing_touching_no_log"]
+        + figures["missing_fan_in"]
+        + figures["missing_other"]
+        == figures["n_shipped"] - figures["n_reproduced"]
+    )
