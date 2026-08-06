@@ -2058,9 +2058,13 @@ def _format_dangling_edges_section(
         "  cause: `edges` has no foreign key and `insert_edge` does not "
         "check that its endpoints exist, so a producer writing against a "
         "deleted or never-inserted belief id succeeds silently. These "
-        "rows are inert for retrieval (BFS skips endpoints it cannot "
-        "load) but they inflate every edge count. Report-only: repairing "
-        "them needs an `edges` table rebuild, which is out of scope here "
+        "rows are not inert: BFS spends a `nodes_per_hop` slot on the "
+        "neighbour before it tries to load it, so a dangling edge can "
+        "displace a real one, and the edge-type rerank reads incoming "
+        "edges by `dst` without checking that `src` exists, so a "
+        "dangling POTENTIALLY_STALE row still demotes its target. They "
+        "also inflate every edge count. Report-only: repairing them "
+        "needs an `edges` table rebuild, which is out of scope here "
         "(#1161)."
     )
 
