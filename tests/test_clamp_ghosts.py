@@ -26,10 +26,13 @@ from pathlib import Path
 
 import pytest
 
+from aelfrice import classification_core as cc
 from aelfrice import clamp_ghosts
 from aelfrice.cli import build_parser
+from aelfrice.classification_core import TYPE_PRIORS, get_source_adjusted_prior
 from aelfrice.clamp_ghosts import (
     CLAMP_SOURCE,
+    DEFAULT_THRESHOLD_ALPHA,
     DEFAULT_TARGET_ALPHA,
     USER_PRIOR_ORIGINS,
     _ELIGIBILITY_SQL,
@@ -38,7 +41,7 @@ from aelfrice.clamp_ghosts import (
     _eligibility_params,
     clamp_ghost_alphas,
 )
-from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
+from aelfrice.models import BELIEF_FACTUAL, BELIEF_TYPES, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.store import MemoryStore
 
 
@@ -528,3 +531,89 @@ def test_none_limit_processes_every_match(store: MemoryStore) -> None:
 
     assert result.matched == 5
     assert result.clamped == 5
+
+
+# -- the α ceiling the origin exclusion rests on (#1374) --------------------
+
+# Source labels the non-user insert paths actually mint (scanner's
+# `doc:` / `ast:` / `git:` prefixes), plus case and whitespace variants:
+# the deflation gate is `source != USER_SOURCE`, an exact case-sensitive
+# comparison, so "User" and " user" must deflate like any other.
+_NON_USER_SOURCES: tuple[str, ...] = (
+    "",
+    "agent",
+    "transcript",
+    "doc:README.md:p0",
+    "ast:src/aelfrice/store.py:module",
+    "git:commit:0123abc",
+    "User",
+    "USER",
+    " user",
+    "user ",
+)
+
+
+def test_no_deterministic_non_user_insert_can_reach_the_clamp_threshold() -> None:
+    """The module docstring's safety argument, as an executable assertion.
+
+    The selector excludes only USER_PRIOR_ORIGINS; every other origin is
+    clampable. The justification is a numeric claim — a non-user source's
+    α is deflated to at most 1.8, below the α=4.0 threshold, so no insert
+    on a clampable origin can be selected.
+
+    That claim is the product of four shipped constants. Asserting only
+    the inequality would let the margin erode silently: deflation
+    0.2 → 0.4 leaves the max at 3.6, still under 4.0, while the
+    docstring's "1.8" quietly becomes false. So the constants, the
+    derived ceiling, and the inequality are pinned separately.
+
+    SCOPE, so this does not read as a stronger guarantee than it is. It
+    bounds α by *source*. It says nothing about `route_overrides`, which
+    bypasses `get_source_adjusted_prior` and writes the producer's α
+    verbatim, nor about migration-preserved legacy rows on
+    `origin='unknown'` — both named in the module docstring, and neither
+    constrained here.
+    """
+    # Shipped values written out literally: a fixture read off the
+    # constant it guards stays green through any edit to that constant.
+    assert TYPE_PRIORS == {
+        "requirement": (9.0, 0.5),
+        "correction": (9.0, 0.5),
+        "preference": (7.0, 1.0),
+        "factual": (3.0, 1.0),
+    }
+    assert cc._AGENT_INFERRED_DEFLATION == 0.2  # noqa: SLF001
+    assert cc._DEFLATED_ALPHA_FLOOR == 0.5  # noqa: SLF001
+    assert cc.USER_SOURCE == "user"
+    assert DEFAULT_THRESHOLD_ALPHA == 4.0
+
+    # Every type the classifier can emit, plus an unmapped string that
+    # exercises the unknown-type fallback. `speculative` is in
+    # BELIEF_TYPES but has no prior, so it takes that fallback too.
+    belief_types = sorted({*TYPE_PRIORS, *BELIEF_TYPES, "not-a-belief-type"})
+    assert "speculative" in belief_types and "speculative" not in TYPE_PRIORS
+    # The fallback is the factual prior. Repointing it at `requirement`
+    # would raise the real ceiling while every aggregate below still
+    # passed, so it is pinned on its own.
+    assert get_source_adjusted_prior("not-a-belief-type", "user") == TYPE_PRIORS[
+        "factual"
+    ]
+
+    ceiling = max(
+        get_source_adjusted_prior(t, s)[0]
+        for t in belief_types
+        for s in _NON_USER_SOURCES
+    )
+    assert ceiling == pytest.approx(1.8)
+    assert ceiling < DEFAULT_THRESHOLD_ALPHA
+    # The margin, named. The reviewed claim was that headroom is 2.2 on
+    # the insert path; if a prior moves it, that fails here.
+    assert DEFAULT_THRESHOLD_ALPHA - ceiling == pytest.approx(2.2)
+
+    # And the contrast that makes the origin exclusion necessary at all:
+    # the user source is deliberately NOT bounded by that ceiling.
+    user_max = max(
+        get_source_adjusted_prior(t, cc.USER_SOURCE)[0] for t in belief_types
+    )
+    assert user_max == pytest.approx(9.0)
+    assert user_max > DEFAULT_THRESHOLD_ALPHA
