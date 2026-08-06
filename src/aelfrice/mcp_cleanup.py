@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import os
 import tomllib
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -80,6 +81,17 @@ _AELF_SUBCOMMANDS: Final[frozenset[str]] = frozenset({"mcp", "serve"})
 # rather than a flag because every one of these paths already returns a
 # note; a parallel boolean would be a second thing to keep in sync.
 _SCAN_INCOMPLETE: Final[str] = "; not inspected"
+
+
+def scan_was_incomplete(notes: Iterable[str]) -> bool:
+    """True when the scan could not read one of its inputs.
+
+    "No registration found" and "could not look" are different answers and
+    have different fixes, so both the one-shot report and the `aelf migrate
+    --remove-mcp-config` verb have to tell them apart. Shared so the two
+    cannot drift.
+    """
+    return any(_SCAN_INCOMPLETE in note for note in notes)
 
 
 @dataclass(frozen=True)
@@ -473,7 +485,7 @@ def maybe_clean_up_mcp(
     # would suppress the one-shot report for good on exactly the machines
     # that still need it. Re-arm instead; the docstring above promises
     # this.
-    if any(_SCAN_INCOMPLETE in note for note in result.notes):
+    if scan_was_incomplete(result.notes):
         result.reason = "scan incomplete; will re-check next run"
         return result
 
