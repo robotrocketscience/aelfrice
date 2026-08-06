@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import functools
 import io
 import pathlib
 from typing import Any
@@ -25,6 +26,32 @@ import pytest
 from aelfrice.hook_audit import AUDIT_DEFAULT_MAX_BYTES, load_hook_audit_config
 
 SRC_ROOT = pathlib.Path(__file__).resolve().parents[1] / "src" / "aelfrice"
+
+
+@functools.lru_cache(maxsize=1)
+def _parsed_tree() -> tuple[tuple[pathlib.Path, ast.Module], ...]:
+    """Every `src/aelfrice` module, parsed once per session (#1383).
+
+    The census tests below each walk the whole package. Parsing it per
+    test cost ~1.0 s apiece against the 5 s unit-test budget in
+    `pyproject.toml`, so on a machine running several suites at once the
+    file timed out — and since `aelf-pr-open.sh` runs pytest with `-x`,
+    one red test there blocked the PR gate for every session on the box.
+    The tell that it was budget and not defect: the failing test moved
+    between runs.
+
+    Cached rather than budgeted. Raising the timeout would hide a real
+    regression the next time one appears, and the cost here is pure
+    redundancy — the same 124 files re-read and re-parsed for each
+    caller.
+
+    Returned sorted, because `_census` depends on a stable order for its
+    offender list and `rglob` does not promise one.
+    """
+    return tuple(
+        (path, ast.parse(path.read_text(encoding="utf-8")))
+        for path in sorted(SRC_ROOT.rglob("*.py"))
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -210,8 +237,7 @@ def _toml_numeric_validations_admitting_bool() -> list[str]:
     different defect with a different fix, and out of scope here.
     """
     offenders: list[str] = []
-    for path in sorted(SRC_ROOT.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for path, tree in _parsed_tree():
         for fn in _toml_reading_functions(tree):
             for node in ast.walk(fn):
                 if not (
@@ -232,6 +258,27 @@ def _toml_numeric_validations_admitting_bool() -> list[str]:
     return sorted(set(offenders))
 
 
+# The census tests below are whole-package static analysis, not unit
+# tests, and the global `timeout = 5` in pyproject.toml is calibrated for
+# unit tests. Measured on this tree: 124 files / 74,452 lines cost ~1.0 s
+# to parse and ~1.0 s per full `ast.walk`, and each census performs
+# several walks. `_parsed_tree` removes the redundant re-parsing (#1383)
+# but the residual is irreducible — it is the work the census exists to
+# do, and it grows with the package.
+#
+# So these three carry an explicit override, which is the mechanism
+# pyproject's own comment reserves for tests that are not unit-sized.
+# This is NOT the "raise the budget until it goes green" move: the
+# global budget is untouched, so a genuine regression anywhere else
+# still trips it, and the number below is derived from a measurement
+# rather than tuned until the red went away. Before #1383 these timed
+# out non-deterministically under concurrent load — a different test
+# failed on each run — and because `aelf-pr-open.sh` runs pytest with
+# `-x`, one of them red blocked the PR gate for every session.
+_CENSUS_TIMEOUT_SECONDS = 30
+
+
+@pytest.mark.timeout(_CENSUS_TIMEOUT_SECONDS)
 def test_no_toml_numeric_knob_accepts_a_bool() -> None:
     """The convention, asserted instead of assumed.
 
@@ -249,6 +296,7 @@ def test_no_toml_numeric_knob_accepts_a_bool() -> None:
     )
 
 
+@pytest.mark.timeout(_CENSUS_TIMEOUT_SECONDS)
 def test_the_census_actually_scans_something() -> None:
     """A scan that finds nothing satisfies the assertion above.
 
@@ -259,8 +307,7 @@ def test_the_census_actually_scans_something() -> None:
     scanned = 0
     direct = 0
     indirect = 0
-    for path in SRC_ROOT.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+    for _path, tree in _parsed_tree():
         for fn in _toml_reading_functions(tree):
             scanned += 1
             if _reads_toml_directly(fn):
@@ -381,6 +428,7 @@ def test_a_preceding_early_return_counts_as_a_guard() -> None:
     assert _guards_bool_in_scope(fn, "value")
 
 
+@pytest.mark.timeout(_CENSUS_TIMEOUT_SECONDS)
 def test_state_readers_are_out_of_scope_on_purpose() -> None:
     """Records the disposition the issue asked for.
 
@@ -398,3 +446,27 @@ def test_state_readers_are_out_of_scope_on_purpose() -> None:
 
 def _unused(_: Any) -> None:  # pragma: no cover - typing shim
     return None
+
+
+@pytest.mark.timeout(_CENSUS_TIMEOUT_SECONDS)
+def test_the_parsed_tree_cache_covers_the_package() -> None:
+    """The shared parse must not go empty (#1383).
+
+    `_parsed_tree` is a new way for every census above to silently scan
+    nothing — a bad glob or a moved `SRC_ROOT` turns them all green at
+    once, which is the exact failure mode `test_the_census_actually_
+    scans_something` exists to prevent, one level further down.
+
+    Asserts coverage rather than a count of files, so it does not need
+    editing every time a module is added, and pins that the cache is
+    genuinely shared: two calls must return the *same object*, or the
+    redundancy this issue removed is quietly back.
+    """
+    trees = _parsed_tree()
+    assert len(trees) >= 100, f"only {len(trees)} modules parsed"
+    assert all(isinstance(t, ast.Module) for _p, t in trees)
+
+    on_disk = {p.name for p in SRC_ROOT.rglob("*.py")}
+    assert {p.name for p, _t in trees} == on_disk
+
+    assert _parsed_tree() is trees, "the parse is not being reused"
