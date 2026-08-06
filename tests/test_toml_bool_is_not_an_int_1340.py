@@ -466,7 +466,14 @@ def test_the_parsed_tree_cache_covers_the_package() -> None:
     assert len(trees) >= 100, f"only {len(trees)} modules parsed"
     assert all(isinstance(t, ast.Module) for _p, t in trees)
 
-    on_disk = {p.name for p in SRC_ROOT.rglob("*.py")}
-    assert {p.name for p, _t in trees} == on_disk
+    # Relative paths, not `.name`. The package has 124 modules but only
+    # 120 distinct basenames -- `lifecycle.py`, `models.py` and
+    # `__init__.py` each appear at top level and again under `wonder/`.
+    # Compared by name, dropping `wonder/lifecycle.py` from the glob
+    # leaves the set unchanged, because the top-level `lifecycle.py`
+    # still supplies the name. That is this test's own failure mode one
+    # level further down.
+    on_disk = {p.relative_to(SRC_ROOT) for p in SRC_ROOT.rglob("*.py")}
+    assert {p.relative_to(SRC_ROOT) for p, _t in trees} == on_disk
 
     assert _parsed_tree() is trees, "the parse is not being reused"
