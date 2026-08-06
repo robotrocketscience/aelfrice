@@ -89,7 +89,19 @@ def parse_for(spec: str, *, now: datetime) -> str | None:
             f"cannot parse --for {spec!r}; expected <N><unit> where unit is "
             f"{_UNIT_NAMES}, or {FOREVER!r}"
         )
-    count = int(match.group("n"))
+    # `_DURATION_RE` bounds the count's *shape* (`\d+`) but not its length,
+    # and CPython refuses to convert a decimal string longer than
+    # `sys.get_int_max_str_digits()` (4300 by default), raising a bare
+    # `ValueError`. That is the same contract escape as the arithmetic
+    # below, one statement earlier, so it is wrapped the same way rather
+    # than left to reach a caller that only catches `LockExpiryError`.
+    try:
+        count = int(match.group("n"))
+    except ValueError as exc:
+        raise LockExpiryError(
+            f"--for {spec!r} has too many digits to read as a count; "
+            f"use a smaller window or {FOREVER!r}"
+        ) from exc
     if count == 0:
         raise LockExpiryError(
             f"--for {spec!r} is a zero-length window; use {FOREVER!r} for a "
