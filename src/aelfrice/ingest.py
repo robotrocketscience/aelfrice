@@ -164,7 +164,74 @@ def ingest_turn(
     ))
 
 
+@dataclass(frozen=True)
+class TurnIngest:
+    """Both readings of "what beliefs did this turn produce" (#1364).
+
+    `inserted` — brand-new canonical rows only, deduped, in input order.
+    This is the public count: `ingest_turn` returns its length, and that
+    contract predates #264.
+
+    `resolved` — one entry per belief-bearing sentence, in input order,
+    naming the belief the sentence RESOLVED to whether it was newly
+    inserted or corroborated onto an existing row. `None` where the
+    sentence produced no belief.
+
+    The two differ exactly when a turn corroborates, and conflating them
+    is what made the inter-turn `DERIVED_FROM` chain skip such a turn:
+    `inserted` is empty for a fully-corroborating turn, so the caller
+    saw "no beliefs here" and linked across it, asserting a derivation
+    the transcript does not support.
+    """
+
+    inserted: list[str]
+    resolved: list[str | None]
+
+    @property
+    def head(self) -> str | None:
+        """The last belief this turn resolved to, or None if it made none.
+
+        The anchor for the next turn's `DERIVED_FROM` edge. Last
+        *resolved*, not last *inserted* — that distinction is the whole
+        of #1364.
+        """
+        for bid in reversed(self.resolved):
+            if bid is not None:
+                return bid
+        return None
+
+
 def _ingest_turn_ids(
+    store: MemoryStore,
+    text: str,
+    source: str,
+    session_id: str | None = None,
+    created_at: str | None = None,
+    *,
+    bulk: bool = False,
+    role: str | None = None,
+) -> list[str]:
+    """Newly-inserted belief ids for one turn, deduped, in input order.
+
+    **This is not the per-sentence list**, and the difference is
+    load-bearing: a sentence that corroborates an existing belief
+    contributes nothing here, so a turn that corroborates entirely
+    returns `[]`. `ingest_turn` returns this list's length as its public
+    count of newly-inserted beliefs, which is why the contract stays
+    (#1364, operator ruling 2026-08-05).
+
+    Callers that need "which belief did each sentence resolve to" —
+    edge wiring, chain anchors — want `_ingest_turn` and its `resolved`
+    / `head`, not this. Reading this list as per-sentence is the defect
+    #1364 was filed for.
+    """
+    return _ingest_turn(
+        store, text, source, session_id, created_at,
+        bulk=bulk, role=role,
+    ).inserted
+
+
+def _ingest_turn(
     store: MemoryStore,
     text: str,
     source: str,
@@ -173,16 +240,13 @@ def _ingest_turn_ids(
     *,
     bulk: bool = False,  # noqa: ARG001
     role: str | None = None,
-) -> list[str]:
-    """Internal variant of ingest_turn returning the derived belief ids.
+) -> TurnIngest:
+    """Ingest one turn; return both the inserted and the resolved views.
 
     Under #264 the entry point's job collapses to: split the turn into
     sentences, append one log row per sentence (unstamped), then invoke
     the derivation worker once at end-of-batch. The worker handles
-    `derive()` + `insert_or_corroborate` + log-stamping. The returned
-    list is the per-sentence derived belief id (in input order, with
-    duplicates dropped) — `ingest_jsonl` uses the last entry to wire
-    DERIVED_FROM edges between consecutive turns within a session.
+    `derive()` + `insert_or_corroborate` + log-stamping.
 
     #809 adds a pattern-based subfloor filter: sentences matching
     `_looks_like_subfloor_noise` (code-fence prefix, header ending in
@@ -195,7 +259,7 @@ def _ingest_turn_ids(
     sentences = extract_sentences(text)
     sentences = [s for s in sentences if not is_transcript_noise(s)]
     if not sentences:
-        return []
+        return TurnIngest(inserted=[], resolved=[])
 
     # #809: partition sentences into full-length belief candidates and
     # sub-floor clauses pending demotion to edge anchor_text. The
@@ -216,7 +280,7 @@ def _ingest_turn_ids(
     # Anything left in pending_subfloor has no following full sentence —
     # unanchored, silently dropped.
     if not full_sentences:
-        return []
+        return TurnIngest(inserted=[], resolved=[])
 
     ts = created_at or _now_utc_iso()
 
@@ -382,7 +446,7 @@ def _ingest_turn_ids(
             if is_temporal_spine_write_enabled():
                 write_temporal_spine(store, new_belief_ids=inserted)
 
-    return inserted
+    return TurnIngest(inserted=inserted, resolved=log_belief_ids)
 
 
 @dataclass(frozen=True)
@@ -556,16 +620,24 @@ def ingest_jsonl(
             if role == "assistant":
                 skipped += 1
                 continue
-            ids = _ingest_turn_ids(
+            turn = _ingest_turn(
                 store=store, text=cast(str, text), source=source_label,
                 session_id=sess_str, created_at=created_at,
                 role=cast(str, role) if isinstance(role, str) else None,
             )
             turns_ingested += 1
-            beliefs_inserted += len(ids)
-            if not ids or sess_str is None:
+            beliefs_inserted += len(turn.inserted)
+            # #1364: the chain anchors on the last belief this turn
+            # RESOLVED to, not the last it newly inserted. Those differ
+            # exactly when the turn corroborates, and reading the
+            # inserted list here is what made a fully-corroborating turn
+            # return nothing, skip the `continue` below, and leave
+            # `last_per_session` pointing at the turn before it — so the
+            # next turn linked across it and claimed a derivation from a
+            # turn that was not its predecessor.
+            head_id = turn.head
+            if head_id is None or sess_str is None:
                 continue
-            head_id = ids[-1]
             prior = last_per_session.get(sess_str)
             if prior is not None:
                 prior_id, prior_text = prior
