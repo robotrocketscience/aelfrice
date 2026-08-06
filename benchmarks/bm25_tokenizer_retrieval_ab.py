@@ -27,12 +27,22 @@ counted, and neither is called an improvement here.
 **Two populations, and only one of them is evidence** (#1388).
 
 ``PRODUCTION``
-    `input.extracted_query` as recorded in `.git/aelfrice/rebuild_logs/`.
-    These are the strings `index.score` actually receives:
-    `context_rebuilder` builds its query from a window of **user and
-    assistant** turns and then rewrites it through `transform_query`
-    before retrieval sees it. Logged verbatim, so this is a recording
-    rather than a reconstruction. **Quote this block.**
+    `input.extracted_query` from `.git/aelfrice/rebuild_logs/`, **put
+    back through `transform_query`**. `context_rebuilder` builds its
+    query from a window of **user and assistant** turns, then rewrites it
+    through `transform_query`, and retrieval sees only the rewritten
+    form (`context_rebuilder.py:388-395`). The log record recomputes the
+    **raw** form separately (`context_rebuilder.py:1184`), so replaying
+    it as-recorded scores a third population — neither the user prompt
+    nor what production scores. The transform is re-applied here to close
+    that gap. **Quote this block.**
+
+    Stated limit: the transform runs against **today's** IDF distribution
+    (`get_bm25_and_quantiles`), not the one live when the row was logged,
+    so this reproduces production's query *shape* rather than its exact
+    historical string. The correct fix is for `_build_rebuild_log_record`
+    to record the post-transform query; until it does, this is the closest
+    reachable population.
 
 ``DIAGNOSTIC``
     Raw user turns recovered from the hook audit, filtered with
@@ -84,6 +94,10 @@ from scipy.stats import kendalltau  # noqa: E402
 # `bm25.tokenize_stemmed` to swap tokenisers, and a name bound at import
 # would not see the swap.
 import aelfrice.bm25 as bm25  # noqa: E402
+from aelfrice.query_understanding.strategy import (  # noqa: E402
+    DEFAULT_STRATEGY,
+    transform_query,
+)
 from aelfrice.store import MemoryStore  # noqa: E402
 from r3_idf_clip_bound import load_prompts  # noqa: E402
 
@@ -148,14 +162,16 @@ def rank_agreement(
 
 
 def load_production_queries(log_dir: Path) -> list[str]:
-    """The strings production actually hands to `index.score` (#1388).
+    """The raw queries recorded in the rebuild logs (#1388).
 
-    `context_rebuilder` builds its query from a window of **user and
-    assistant** turns and then rewrites it through `transform_query`; the
-    result is what reaches `index.score`, and it is logged verbatim as
-    `input.extracted_query` in the rebuild logs. So this population needs
-    no reconstruction — it is a recording, not a model of one, which is
-    the whole reason to prefer it over `_query_for_recent_turns` here.
+    `input.extracted_query` is the **pre-transform** string:
+    `context_rebuilder.py:388-389` retrieves with
+    `transform_query(raw_query, ...)`, while `:1184` recomputes
+    `_query_for_recent_turns(recent_turns)` for the log record. Replaying
+    these as-recorded would score a population production never issues —
+    the same defect class this issue was filed about, one layer in. Callers
+    must pass the result through `transform_query`; `apply_transform`
+    below does it.
 
     Deduplicated and sorted, so the population is a deterministic function
     of the log directory and two runs are comparable. Malformed lines are
@@ -189,6 +205,32 @@ def load_production_queries(log_dir: Path) -> list[str]:
             if isinstance(query, str) and query.strip():
                 seen.add(query)
     return sorted(seen)
+
+
+def apply_transform(
+    raw_queries: list[str], store: MemoryStore, strategy: str,
+) -> list[str]:
+    """Put raw recorded queries through the rewrite production applies.
+
+    `transform_query` is not a passthrough at the shipped default:
+    `DEFAULT_STRATEGY` is `stack-r1-r3`, and only `legacy-bm25` returns
+    its input unchanged. It tokenises, applies R1 entity expansion, then
+    R3 IDF clipping.
+
+    Two consequences worth stating rather than discovering:
+
+    * it can return the **empty string**, and those queries retrieve
+      nothing on the L1 lane in production — so scoring their non-empty
+      raw form inflates the movable population;
+    * it calls `bm25.tokenize`, so for tokeniser work the **query side**
+      of the change happens inside the transform. Replaying the raw
+      string measures the index side only.
+
+    Empties are kept rather than dropped: a query production cannot move
+    is a real member of the population, and silently removing it would
+    overstate agreement on the rest.
+    """
+    return [transform_query(q, store, strategy) for q in raw_queries]
 
 
 def report(
@@ -285,6 +327,13 @@ def main(argv: list[str] | None = None) -> int:
             "(#1388). Defaults to <store parent>/rebuild_logs."
         ),
     )
+    parser.add_argument(
+        "--strategy", default=DEFAULT_STRATEGY,
+        help=(
+            "query strategy to re-apply to the recorded raw queries; "
+            "the shipped default is what production runs"
+        ),
+    )
     parser.add_argument("--limit-queries", type=int, default=0)
     args = parser.parse_args(argv)
 
@@ -306,10 +355,23 @@ def main(argv: list[str] | None = None) -> int:
     results: list[dict[str, object]] = []
     try:
         if production_queries:
+            transformed = apply_transform(
+                production_queries, store, args.strategy,
+            )
+            n_empty = sum(1 for q in transformed if not q.strip())
+            n_changed = sum(
+                1 for raw, new in zip(production_queries, transformed, strict=True)
+                if raw != new
+            )
+            print(
+                f"transform ({args.strategy}): changed "
+                f"{n_changed}/{len(transformed)} queries, "
+                f"{n_empty} became empty\n"
+            )
             results.append(report(
                 "PRODUCTION POPULATION",
-                "(extracted_query as logged; the strings index.score sees)",
-                args.store.name, production_queries, store,
+                "(recorded query put back through transform_query)",
+                args.store.name, transformed, store,
             ))
         else:
             print(
