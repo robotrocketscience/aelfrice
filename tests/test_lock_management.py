@@ -4,13 +4,13 @@ Covers:
 - unlock() idempotency, error paths, audit row, field clearing
 - demote lock-drop path writes audit row (regression)
 - promote CLI parity with validate CLI
-- tool_unlock / tool_promote MCP shape parity
 - lock state machine round-trip: locked → unlocked → re-locked
 """
 from __future__ import annotations
 
 import argparse
 import io
+from pathlib import Path
 
 import pytest
 
@@ -22,7 +22,6 @@ from aelfrice.models import (
     ORIGIN_USER_VALIDATED,
     Belief,
 )
-from aelfrice.mcp_server import tool_demote, tool_promote, tool_unlock, tool_validate
 from aelfrice.promotion import SOURCE_LOCK_UNLOCK, unlock
 from aelfrice.store import MemoryStore
 
@@ -205,29 +204,66 @@ def test_unlock_returns_audit_event_id_on_active_path() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_demote_lock_drop_writes_lock_unlock_row() -> None:
-    """tool_demote lock-drop path now writes lock:unlock audit row via unlock()."""
-    s = _seed(_locked_belief("A"))
-    tool_demote(s, belief_id="A")
-    events = s.list_feedback_events()
-    assert len(events) == 1
-    assert events[0].source == SOURCE_LOCK_UNLOCK
+def _seed_file_backed(db: Path, *beliefs: Belief) -> None:
+    """`_seed`, but on a file-backed store the CLI handlers can re-open."""
+    s = MemoryStore(str(db))
+    try:
+        for b in beliefs:
+            s.insert_belief(b)
+    finally:
+        s.close()
 
 
-def test_demote_lock_drop_result_shape() -> None:
-    s = _seed(_locked_belief("A"))
-    result = tool_demote(s, belief_id="A")
-    assert result["kind"] == "demote.demoted"
-    assert result["id"] == "A"
-    assert result["demoted"] is True
+def _demote_via_cli(db: Path, belief_id: str) -> int:
+    import os
+
+    from aelfrice.cli import main as cli_main
+
+    env_db = os.environ.get("AELFRICE_DB")
+    os.environ["AELFRICE_DB"] = str(db)
+    try:
+        return cli_main(["demote", belief_id])
+    finally:
+        if env_db is None:
+            os.environ.pop("AELFRICE_DB", None)
+        else:
+            os.environ["AELFRICE_DB"] = env_db
 
 
-def test_demote_still_clears_lock_level() -> None:
-    s = _seed(_locked_belief("A"))
-    tool_demote(s, belief_id="A")
-    after = s.get_belief("A")
-    assert after is not None
-    assert after.lock_level == LOCK_NONE
+def test_demote_lock_drop_writes_lock_unlock_row(tmp_path: Path) -> None:
+    """#391 regression: demote's lock-drop path writes a lock:unlock audit row.
+
+    Asserted through `aelf demote` since #1422 removed the MCP surface this was
+    previously driven through; the audit-row contract belongs to the demote
+    operation, not to the entry point.
+    """
+    db = tmp_path / "demote.db"
+    _seed_file_backed(db, _locked_belief("A"))
+
+    assert _demote_via_cli(db, "A") == 0
+
+    s = MemoryStore(str(db))
+    try:
+        events = s.list_feedback_events()
+        assert len(events) == 1
+        assert events[0].source == SOURCE_LOCK_UNLOCK
+    finally:
+        s.close()
+
+
+def test_demote_still_clears_lock_level(tmp_path: Path) -> None:
+    db = tmp_path / "demote_clear.db"
+    _seed_file_backed(db, _locked_belief("A"))
+
+    assert _demote_via_cli(db, "A") == 0
+
+    s = MemoryStore(str(db))
+    try:
+        after = s.get_belief("A")
+        assert after is not None
+        assert after.lock_level == LOCK_NONE
+    finally:
+        s.close()
 
 
 # ---------------------------------------------------------------------------
@@ -318,146 +354,102 @@ def test_promote_and_validate_same_audit_row_source(
 
 
 # ---------------------------------------------------------------------------
-# MCP tool_unlock shape parity
+# Lock state machine round-trip: locked -> unlocked -> re-locked
 # ---------------------------------------------------------------------------
+#
+# These drive `aelf lock` rather than seeding a locked belief with `_locked_belief`
+# on purpose: what they exercise is the lock *ingest* path (derive -> record ->
+# worker), which is what makes "re-lock" mean corroborate-the-canonical-belief
+# rather than insert-a-duplicate. Seeding the row directly would still assert the
+# lock levels while testing none of that. Previously driven through the MCP
+# `tool_lock` surface, removed in #1422.
 
 
-def test_tool_unlock_active_path_shape() -> None:
-    s = _seed(_locked_belief("A"))
-    result = tool_unlock(s, belief_id="A")
-    assert result["kind"] == "unlock.unlocked"
-    assert result["id"] == "A"
-    assert result["unlocked"] is True
-    assert "audit_event_id" in result
+def _lock_via_cli(db: Path, statement: str) -> int:
+    """Run `aelf lock <statement>` against `db`, returning the exit code."""
+    import os
+
+    from aelfrice.cli import main as cli_main
+
+    env_db = os.environ.get("AELFRICE_DB")
+    os.environ["AELFRICE_DB"] = str(db)
+    try:
+        return cli_main(["lock", statement])
+    finally:
+        if env_db is None:
+            os.environ.pop("AELFRICE_DB", None)
+        else:
+            os.environ["AELFRICE_DB"] = env_db
 
 
-def test_tool_unlock_already_unlocked_shape() -> None:
-    s = _seed(_mk("A"))  # never locked
-    result = tool_unlock(s, belief_id="A")
-    assert result["kind"] == "unlock.already"
-    assert result["id"] == "A"
-    assert result["unlocked"] is False
-
-
-def test_tool_unlock_not_found_shape() -> None:
-    s = _seed(_mk("A"))
-    result = tool_unlock(s, belief_id="ghost")
-    assert result["kind"] == "unlock.not_found"
-    assert result["unlocked"] is False
-    assert "error" in result
-
-
-def test_tool_unlock_clears_lock_in_store() -> None:
-    s = _seed(_locked_belief("A"))
-    tool_unlock(s, belief_id="A")
-    after = s.get_belief("A")
-    assert after is not None
-    assert after.lock_level == LOCK_NONE
-
-
-# ---------------------------------------------------------------------------
-# MCP tool_promote shape parity with tool_validate
-# ---------------------------------------------------------------------------
-
-
-def test_tool_promote_active_path_shape_matches_validate() -> None:
-    s_v = _seed(_mk("X"))
-    s_p = _seed(_mk("X"))
-    result_v = tool_validate(s_v, belief_id="X")
-    result_p = tool_promote(s_p, belief_id="X")
-    # Both should return same structure / kind
-    assert result_v["kind"] == result_p["kind"]
-    assert result_v.keys() == result_p.keys()
-
-
-def test_tool_promote_changes_origin() -> None:
-    s = _seed(_mk("X", origin=ORIGIN_AGENT_INFERRED))
-    result = tool_promote(s, belief_id="X")
-    assert result["kind"] == "validate.promoted"
-    after = s.get_belief("X")
-    assert after is not None
-    assert after.origin == ORIGIN_USER_VALIDATED
-
-
-def test_tool_promote_idempotent_already_path() -> None:
-    s = _seed(_mk("X", origin=ORIGIN_USER_VALIDATED))
-    result = tool_promote(s, belief_id="X")
-    assert result["kind"] == "validate.already"
-
-
-def test_tool_promote_writes_same_audit_source_as_validate() -> None:
-    s_v = _seed(_mk("X"))
-    s_p = _seed(_mk("X"))
-    tool_validate(s_v, belief_id="X")
-    tool_promote(s_p, belief_id="X")
-    evs_v = s_v.list_feedback_events()
-    evs_p = s_p.list_feedback_events()
-    assert len(evs_v) == len(evs_p) == 1
-    assert evs_v[0].source == evs_p[0].source
-
-
-# ---------------------------------------------------------------------------
-# Lock state machine round-trip: locked → unlocked → re-locked
-# ---------------------------------------------------------------------------
-
-
-def test_lock_unlock_relock_round_trip() -> None:
+def test_lock_unlock_relock_round_trip(tmp_path: Path) -> None:
     """Full round-trip: lock a belief, unlock it, re-lock it."""
-    from aelfrice.mcp_server import tool_lock
+    db = tmp_path / "roundtrip.db"
+    statement = "the sky is blue"
+    assert _lock_via_cli(db, statement) == 0
 
-    s = MemoryStore(":memory:")
+    s = MemoryStore(str(db))
+    try:
+        locked = list(s.list_locked_beliefs())
+        assert len(locked) == 1
+        bid = locked[0].id
+        assert locked[0].lock_level == LOCK_USER
 
-    # Lock via tool_lock (inserts new belief at lock priors)
-    lock_result = tool_lock(s, statement="the sky is blue")
-    bid = lock_result["id"]
+        result = unlock(s, bid)
+        assert result.already_unlocked is False
+        after_unlock = s.get_belief(bid)
+        assert after_unlock is not None
+        assert after_unlock.lock_level == LOCK_NONE
+    finally:
+        s.close()
 
-    belief_after_lock = s.get_belief(bid)
-    assert belief_after_lock is not None
-    assert belief_after_lock.lock_level == LOCK_USER
-
-    # Unlock
-    result = unlock(s, bid)
-    assert result.already_unlocked is False
-    belief_after_unlock = s.get_belief(bid)
-    assert belief_after_unlock is not None
-    assert belief_after_unlock.lock_level == LOCK_NONE
-
-    # Re-lock by calling tool_lock again — lock is idempotent
-    relock_result = tool_lock(s, statement="the sky is blue")
-    assert relock_result["action"] in ("locked", "upgraded")
-    belief_after_relock = s.get_belief(bid)
-    assert belief_after_relock is not None
-    assert belief_after_relock.lock_level == LOCK_USER
+    # Re-lock the same content: idempotent, and lands on the same belief.
+    assert _lock_via_cli(db, statement) == 0
+    s = MemoryStore(str(db))
+    try:
+        after_relock = s.get_belief(bid)
+        assert after_relock is not None
+        assert after_relock.lock_level == LOCK_USER
+    finally:
+        s.close()
 
 
-def test_lock_unlock_relock_audit_trail() -> None:
+def test_lock_unlock_relock_audit_trail(tmp_path: Path) -> None:
     """Audit trail after round-trip: at least a lock:unlock row exists."""
-    from aelfrice.mcp_server import tool_lock
+    db = tmp_path / "audit.db"
+    assert _lock_via_cli(db, "another locked fact") == 0
 
-    s = MemoryStore(":memory:")
-    lock_result = tool_lock(s, statement="another locked fact")
-    bid = lock_result["id"]
+    s = MemoryStore(str(db))
+    try:
+        bid = list(s.list_locked_beliefs())[0].id
+        unlock(s, bid)
+        sources = [ev.source for ev in s.list_feedback_events()]
+        assert SOURCE_LOCK_UNLOCK in sources
+    finally:
+        s.close()
 
-    unlock(s, bid)
 
-    events = s.list_feedback_events()
-    sources = [ev.source for ev in events]
-    assert SOURCE_LOCK_UNLOCK in sources
-
-
-def test_unlock_after_relock_clears_again() -> None:
+def test_unlock_after_relock_clears_again(tmp_path: Path) -> None:
     """unlock() after a re-lock cycle clears the lock a second time."""
-    from aelfrice.mcp_server import tool_lock
+    db = tmp_path / "relock.db"
+    statement = "re-lockable fact"
+    assert _lock_via_cli(db, statement) == 0
 
-    s = MemoryStore(":memory:")
-    tool_lock(s, statement="re-lockable fact")
-    bid = list(s.list_locked_beliefs())[0].id
+    s = MemoryStore(str(db))
+    try:
+        bid = list(s.list_locked_beliefs())[0].id
+        unlock(s, bid)
+    finally:
+        s.close()
 
-    unlock(s, bid)
-    tool_lock(s, statement="re-lockable fact")  # re-lock same content
-    second_unlock = unlock(s, bid)
-    assert second_unlock.already_unlocked is False
+    assert _lock_via_cli(db, statement) == 0
 
-    final = s.get_belief(bid)
-    assert final is not None
-    assert final.lock_level == LOCK_NONE
+    s = MemoryStore(str(db))
+    try:
+        second_unlock = unlock(s, bid)
+        assert second_unlock.already_unlocked is False
+        final = s.get_belief(bid)
+        assert final is not None
+        assert final.lock_level == LOCK_NONE
+    finally:
+        s.close()
