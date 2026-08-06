@@ -10,7 +10,7 @@ Two pure functions plus dataclasses:
   orthogonal :class:`ResearchAxis` records sized for ``agent_count``
   parallel research lanes.
 
-The ``aelf wonder <query> --axes`` CLI flag
+The ``aelf wonder QUERY`` command and its ``--axes QUERY`` alias
 both wrap these two functions; the skill layer (E4, separate sub-issue)
 consumes the axes JSON, fans out research agents, and pipes their results back
 through ``wonder_ingest`` (track C).
@@ -109,7 +109,7 @@ class ResearchAxis:
 
 @dataclass(frozen=True)
 class DispatchPayload:
-    """Top-level shape returned by the CLI ``--axes`` flag."""
+    """Top-level shape the CLI returns for either invocation form."""
 
     gap_analysis: GapAnalysis
     research_axes: tuple[ResearchAxis, ...]
@@ -429,7 +429,7 @@ def build_dispatch_payload(
 ) -> DispatchPayload:
     """Convenience wrapper composing :func:`analyze_gaps` and
     :func:`generate_research_axes` into the JSON-serialisable shape
-    that the ``aelf wonder --axes`` CLI flag
+    that ``aelf wonder QUERY`` and its ``--axes QUERY`` alias
     both return.
 
     ``speculative_anchor_ids`` is the candidate-belief id list — track
