@@ -457,3 +457,17 @@ def test_the_with_fastmcp_install_shape_is_detected(tmp_path: Path) -> None:
         "[tool]\nrequirements = [{ name = \"aelfrice\" }]\n", encoding="utf-8",
     )
     assert mcp_extra_is_installed(plain) is False
+
+
+def test_a_scalar_tool_key_reads_as_not_installed(tmp_path: Path) -> None:
+    """A hand-edited receipt must not escape as AttributeError.
+
+    `receipt.get("tool", {}).get(...)` calls `.get` on whatever the receipt
+    holds. `aelf setup`'s broad handler happens to swallow the resulting
+    AttributeError, so only a direct call — the one `/aelf:upgrade` makes —
+    shows the docstring's "unparseable reads as not-an-mcp-install"
+    contract being broken.
+    """
+    receipt = tmp_path / "uv-receipt.toml"
+    receipt.write_text('tool = "aelfrice"\n', encoding="utf-8")
+    assert mcp_extra_is_installed(receipt) is False
