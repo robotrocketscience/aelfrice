@@ -36,7 +36,7 @@ from __future__ import annotations
 import json
 import os
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Final
@@ -76,15 +76,34 @@ _MODULE_PATH: Final[str] = "aelfrice.mcp_server"
 _AELF_COMMANDS: Final[frozenset[str]] = frozenset({"aelf", "aelf-mcp"})
 _AELF_SUBCOMMANDS: Final[frozenset[str]] = frozenset({"mcp", "serve"})
 
+# Substrings `_scan_file` emits when it could NOT read a config. Keyed on
+# rather than a flag because every one of these paths already returns a
+# note; a parallel boolean would be a second thing to keep in sync.
+_SCAN_INCOMPLETE: Final[str] = "; not inspected"
+
 
 @dataclass(frozen=True)
 class Registration:
-    """One `mcpServers` entry that aelfrice published a recipe for."""
+    """One `mcpServers` entry that aelfrice published a recipe for.
+
+    `project` names the `projects.<dir>` the entry lives under, or None for
+    the top-level map. Hosts store a *locally*-scoped server nested rather
+    than at the top level, and a config can legitimately hold both, so the
+    container has to travel with the entry — without it a nested
+    registration is found but cannot be removed from the right map.
+    """
 
     path: Path
     key: str
     command: str
     args: tuple[str, ...]
+    project: str | None = None
+
+    def location(self) -> str:
+        """How to name this entry to a user reading their own config."""
+        if self.project is None:
+            return f"mcpServers.{self.key}"
+        return f"projects.{self.project}.mcpServers.{self.key}"
 
 
 @dataclass
@@ -110,7 +129,16 @@ def _basename(command: str) -> str:
     venv, so the match has to be on the name rather than the whole string.
     """
     normalised = command.replace("\\", "/").rstrip("/")
-    return normalised.rsplit("/", 1)[-1] if normalised else ""
+    name = normalised.rsplit("/", 1)[-1] if normalised else ""
+    # A Windows install spells the launcher `aelf.exe`. Without this the
+    # entry is unrecognised and, when the map key is `aelfrice`, the
+    # routine prints the affirmatively false "aelfrice did not publish
+    # that command" about a command aelfrice did publish.
+    lowered = name.lower()
+    for extension in (".exe", ".cmd", ".bat"):
+        if lowered.endswith(extension):
+            return name[: -len(extension)]
+    return name
 
 
 def is_aelfrice_mcp_entry(command: str, args: object) -> bool:
@@ -156,41 +184,75 @@ def _scan_file(path: Path) -> tuple[list[Registration], list[str]]:
         # Comments, trailing commas, or truncation. Guessing at a malformed
         # config is worse than leaving it: report and stop.
         return [], [
-            f"{path}: not parseable as strict JSON; not modified — "
+            f"{path}: not parseable as strict JSON; not inspected — "
             f"remove the aelfrice entry by hand"
         ]
 
     if not isinstance(document, dict):
         return [], [f"{path}: top level is not an object; not inspected"]
-    servers = document.get("mcpServers")
-    if servers is None:
-        return [], notes
-    if not isinstance(servers, dict):
-        return [], [f"{path}: 'mcpServers' is not an object; not modified"]
 
     found: list[Registration] = []
-    for key, entry in servers.items():
-        if not isinstance(entry, dict):
+    # Both scopes. A *locally*-scoped server is stored under
+    # `projects.<dir>.mcpServers`, not at the top level, so scanning only
+    # the latter reports "nothing to clean up" on the commonest
+    # registration shape — and the sentinel then suppresses the report
+    # for good.
+    for project, servers in _server_maps(document):
+        if not isinstance(servers, dict):
+            where = "mcpServers" if project is None else (
+                f"projects.{project}.mcpServers"
+            )
+            notes.append(f"{path}: '{where}' is not an object; not modified")
             continue
-        command = entry.get("command")
-        if not isinstance(command, str):
-            continue
-        if is_aelfrice_mcp_entry(command, entry.get("args")):
-            args = entry.get("args")
-            found.append(Registration(
+        for key, entry in servers.items():
+            if not isinstance(entry, dict):
+                continue
+            command = entry.get("command")
+            if not isinstance(command, str):
+                continue
+            registration = Registration(
                 path=path,
                 key=key,
                 command=command,
-                args=tuple(a for a in args if isinstance(a, str))
-                if isinstance(args, list) else (),
-            ))
-        elif key in {"aelfrice", "aelfrice_mcp", "aelf"}:
-            # Named like ours but running something else. Say so; do not touch.
-            notes.append(
-                f"{path}: 'mcpServers.{key}' points at {command!r}, which "
-                f"aelfrice did not publish; left in place"
+                args=(),
+                project=project,
             )
+            if is_aelfrice_mcp_entry(command, entry.get("args")):
+                args = entry.get("args")
+                found.append(replace(
+                    registration,
+                    args=tuple(a for a in args if isinstance(a, str))
+                    if isinstance(args, list) else (),
+                ))
+            elif key in {"aelfrice", "aelfrice_mcp", "aelf"}:
+                # Named like ours but running something else. Say so; do
+                # not touch.
+                notes.append(
+                    f"{path}: '{registration.location()}' points at "
+                    f"{command!r}, which aelfrice did not publish; left in "
+                    f"place"
+                )
     return found, notes
+
+
+def _server_maps(document: dict[str, object]) -> list[tuple[str | None, object]]:
+    """Every `mcpServers` map in one config, with the project it belongs to.
+
+    Yields the top-level map first (None), then one entry per
+    `projects.<dir>` that carries its own. A key that is absent is skipped
+    entirely; a key that is present but the wrong type is yielded so the
+    caller can report it rather than silently ignoring a map it could not
+    read.
+    """
+    maps: list[tuple[str | None, object]] = []
+    if "mcpServers" in document:
+        maps.append((None, document["mcpServers"]))
+    projects = document.get("projects")
+    if isinstance(projects, dict):
+        for name, project in projects.items():
+            if isinstance(project, dict) and "mcpServers" in project:
+                maps.append((name, project["mcpServers"]))
+    return maps
 
 
 def candidate_config_paths() -> list[Path]:
@@ -207,11 +269,25 @@ def candidate_config_paths() -> list[Path]:
     if override:
         return [Path(override).expanduser()]
     home = Path.home()
-    return [
+    candidates = [
         home / ".claude.json",
         home / ".mcp.json",
         Path.cwd() / ".mcp.json",
     ]
+    # `cwd` is the user's home often enough to matter, and the same file
+    # scanned twice duplicated every note and made a successful removal
+    # exit 1 on the second pass ("already gone"). Order is preserved.
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for candidate in candidates:
+        try:
+            key = str(candidate.resolve())
+        except OSError:
+            key = str(candidate)
+        if key not in seen:
+            seen.add(key)
+            unique.append(candidate)
+    return unique
 
 
 def find_registrations(
@@ -254,7 +330,31 @@ def mcp_extra_is_installed(receipt_path: Path | None = None) -> bool:
         extras = requirement.get("extras")
         if isinstance(extras, list) and "mcp" in extras:
             return True
+        # `uv tool install --with fastmcp aelfrice` was published too, and
+        # it records a sibling requirement rather than an extra. Checking
+        # only the extra reports "nothing installed" to that whole
+        # population while the dead dependency is still on disk.
+        name = requirement.get("name")
+        if isinstance(name, str) and name.strip().lower() == "fastmcp":
+            return True
     return False
+
+
+def _container_for(
+    document: dict[str, object], registration: Registration
+) -> dict[str, object] | None:
+    """The live `mcpServers` dict a registration sits in, or None."""
+    if registration.project is None:
+        servers = document.get("mcpServers")
+        return servers if isinstance(servers, dict) else None
+    projects = document.get("projects")
+    if not isinstance(projects, dict):
+        return None
+    project = projects.get(registration.project)
+    if not isinstance(project, dict):
+        return None
+    servers = project.get("mcpServers")
+    return servers if isinstance(servers, dict) else None
 
 
 def remove_registration(
@@ -270,17 +370,27 @@ def remove_registration(
     normalised — said plainly in the message rather than discovered later.
     """
     path = registration.path
-    stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
-    backup = path.with_name(f"{path.name}.aelfrice-{stamp}.bak")
     try:
         raw = path.read_text(encoding="utf-8")
         document = json.loads(raw)
     except (OSError, ValueError) as exc:
         return False, f"{path}: could not read ({exc}); not modified"
 
-    servers = document.get("mcpServers")
-    if not isinstance(servers, dict) or registration.key not in servers:
-        return False, f"{path}: '{registration.key}' is already gone"
+    container = _container_for(document, registration)
+    if container is None or registration.key not in container:
+        return False, f"{path}: '{registration.location()}' is already gone"
+
+    # The stamp is only second-resolution, so two registrations in one file
+    # removed in the same run resolved to the same backup name and the
+    # second write clobbered the first — with already-edited content, so
+    # the pre-edit original was gone while both messages still named it as
+    # the undo path. Take the first free name instead.
+    stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+    backup = path.with_name(f"{path.name}.aelfrice-{stamp}.bak")
+    suffix = 1
+    while backup.exists():
+        backup = path.with_name(f"{path.name}.aelfrice-{stamp}-{suffix}.bak")
+        suffix += 1
 
     try:
         backup.write_text(raw, encoding="utf-8")
@@ -288,9 +398,16 @@ def remove_registration(
         # No backup, no edit. The user's config is not worth a one-way trip.
         return False, f"{path}: could not write backup {backup} ({exc}); not modified"
 
-    del servers[registration.key]
-    if not servers:
-        del document["mcpServers"]
+    del container[registration.key]
+    if not container:
+        if registration.project is None:
+            del document["mcpServers"]
+        else:
+            projects = document.get("projects")
+            if isinstance(projects, dict):
+                project = projects.get(registration.project)
+                if isinstance(project, dict):
+                    del project["mcpServers"]
     try:
         path.write_text(
             json.dumps(document, indent=2, ensure_ascii=False) + "\n",
@@ -336,13 +453,22 @@ def maybe_clean_up_mcp(
         )
     for registration in result.registrations:
         result.notes.append(
-            f"{registration.path}: 'mcpServers.{registration.key}' starts "
+            f"{registration.path}: '{registration.location()}' starts "
             f"`{registration.command}`, which no longer exists — remove that "
             f"entry, or run `aelf migrate --remove-mcp-config`"
         )
 
     if not result.notes:
         result.reason = "nothing to clean up"
+
+    # A scan that could not read one of its inputs has not established
+    # that there is nothing to clean up, so latching the sentinel on it
+    # would suppress the one-shot report for good on exactly the machines
+    # that still need it. Re-arm instead; the docstring above promises
+    # this.
+    if any(_SCAN_INCOMPLETE in note for note in result.notes):
+        result.reason = "scan incomplete; will re-check next run"
+        return result
 
     try:
         sentinel_path.parent.mkdir(parents=True, exist_ok=True)
