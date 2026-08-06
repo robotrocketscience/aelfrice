@@ -990,12 +990,20 @@ def _build_origin_priority_case() -> tuple[str, tuple[str, ...]]:
 
 _ORIGIN_PRIORITY_CASE, _ORIGIN_PRIORITY_PARAMS = _build_origin_priority_case()
 
-# Two ORDER BY tails for the FTS search: the default (bm25 only, ties
-# arbitrary — byte-identical to pre-#1089 behaviour) and the axis-2
-# tie-break (bm25, then origin priority DESC, then id ASC for a stable
-# deterministic order). Assembled from constants (no f-string of user
+# Two ORDER BY tails for the FTS search: the default (bm25, then id ASC)
+# and the axis-2 tie-break (bm25, then origin priority DESC, then id ASC).
+# Both are a total order. Assembled from constants (no f-string of user
 # data) so the query text is fixed at import.
-_ORDER_BY_BM25: Final[str] = "ORDER BY bm25(beliefs_fts)"
+#
+# The trailing `b.id` on the default tail is load-bearing (#1370 §5/§6,
+# #1157): `search_beliefs` / `search_beliefs_scored` apply `LIMIT` to a
+# bm25-ranked scan, and bm25 ties are common at the L1 cut boundary
+# (`l1_limit` defaults to 50). Without a secondary key, *which* tied row
+# survives the cut is decided by SQLite's scan order, so the top-K is not
+# reproducible from the write log — and `retrieve()` hard-forces
+# `origin_tiebreak=False`, so this tail is the one production uses. Same
+# argument as `list_unexplored_belief_ids` (see its docstring).
+_ORDER_BY_BM25: Final[str] = "ORDER BY bm25(beliefs_fts), b.id"
 _ORDER_BY_BM25_ORIGIN: Final[str] = (
     "ORDER BY bm25(beliefs_fts), " + _ORIGIN_PRIORITY_CASE + " DESC, b.id"
 )
@@ -3843,9 +3851,9 @@ class MemoryStore:
 
         `origin_tiebreak` (#1089 axis 2, default off): when True, a bm25
         tie is broken by origin priority (curated `user_validated` over
-        conversational `user_transcript`) then id — deterministic. When
-        False the ORDER BY is byte-identical to the pre-#1089 default
-        (bm25 only, ties arbitrary).
+        conversational `user_transcript`) then id. When False the tie is
+        broken by id alone. Both orders are total, so the truncated
+        result is reproducible either way (#1370 §5).
         """
         escaped = self._fts5_match_expression(query)
         if not escaped:
@@ -3873,7 +3881,8 @@ class MemoryStore:
         Sibling of `search_beliefs`. Same MATCH construction — including
         the #1177 rarest-token disjunction — same ordering
         (ascending by `bm25(beliefs_fts)`, which SQLite returns as a
-        non-positive number — smaller = more relevant). The raw FTS5
+        non-positive number — smaller = more relevant, then `b.id` to
+        make the truncation total). The raw FTS5
         BM25 score is exposed for callers that need to compose it with
         other signals (e.g. v1.3 partial Bayesian-weighted ranking,
         which combines `log(-bm25)` with `log(posterior_mean)` log-
