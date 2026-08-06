@@ -3704,18 +3704,37 @@ def _collect_lock_candidates(
 
 def _format_stop_prompt(candidates: list["Belief"]) -> str:
     """Render the stderr block listing each candidate with a pre-filled
-    `aelf lock` command. Empty list → empty string."""
+    `aelf lock` command. Empty list → empty string.
+
+    Says "belief", not "correction": since #1315 the candidate population
+    includes windowed directives, which are typically `factual` or
+    `requirement` rather than `BELIEF_CORRECTION`, so the old noun
+    described a `requirement` row to the user as a correction. The
+    per-item line prints the real type, and the header no longer
+    contradicts it.
+    """
     if not candidates:
         return ""
     n = len(candidates)
-    plural = "correction" if n == 1 else "corrections"
+    noun = "belief" if n == 1 else "beliefs"
+    verb = "isn't" if n == 1 else "aren't"
     lines: list[str] = [
         STOP_PROMPT_OPEN_TAG,
-        f"Found {n} {plural} in this session that aren't locked.",
-        "Run the suggested commands to make them survive into the next session,",
-        "or set AELF_AUTOLOCK_CORRECTIONS=1 to auto-lock corrections at session end.",
-        "",
+        f"Found {n} {noun} in this session that {verb} locked.",
+        "Run the suggested commands to make them survive into the next session.",
     ]
+    # Offer autolock only when something in this list would actually be
+    # auto-locked. `AELF_AUTOLOCK_CORRECTIONS` does not cover the #1315
+    # arm, so on a list of windowed directives the old unconditional
+    # advice pointed the user at a flag that leaves the list untouched.
+    covered = [b for b in candidates if _belief_is_correction_class(b)]
+    if covered:
+        caveat = "" if len(covered) == n else "; it does not cover the rest"
+        lines.append(
+            "Corrections can be locked automatically instead by setting "
+            f"AELF_AUTOLOCK_CORRECTIONS=1{caveat}."
+        )
+    lines.append("")
     for b in candidates:
         snippet = b.content.strip().replace("\n", " ")
         if len(snippet) > 120:
