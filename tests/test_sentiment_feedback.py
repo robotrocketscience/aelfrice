@@ -6,12 +6,13 @@ corpus lives at tests/bench_gate/test_sentiment.py.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from typing import Iterator
 
 import pytest
 
 from aelfrice.feedback import apply_feedback
-from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
+from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.sentiment_feedback import (
     AMPLIFIED_VALENCE,
     BASE_VALENCE,
@@ -298,16 +299,137 @@ def test_correction_frequency_threshold_override() -> None:
 # --- apply_sentiment_to_pending ------------------------------------------
 
 
-def test_apply_distributes_positive_signal_across_all_pending(
-    store: MemoryStore,
-) -> None:
+def test_apply_reaches_every_pending_belief(store: MemoryStore) -> None:
     sig = SentimentSignal(POSITIVE, BASE_VALENCE, 0.6, "yes", "yes")
     results = apply_sentiment_to_pending(store, sig, ["b1", "b2", "b3"])
     assert len(results) == 3
+    assert {r.belief_id for r in results} == {"b1", "b2", "b3"}
     for bid in ("b1", "b2", "b3"):
         b = store.get_belief(bid)
         assert b is not None
-        assert b.alpha == 2.0  # was 1.0, +1.0 valence
+        assert b.alpha > 1.0
+
+
+# --- one utterance is one unit of evidence (#1372 §13) -------------------
+#
+# The lane used to write the *whole* valence onto every belief in the
+# prior turn's retrieval pack, so a wide pack manufactured evidence in
+# proportion to its own width. It is split into equal shares now. This
+# is the magnitude half of §13; the credit-assignment half (only the
+# referenced belief should move) needs an instrument this module lacks.
+
+
+def test_apply_splits_valence_into_equal_shares(store: MemoryStore) -> None:
+    sig = SentimentSignal(POSITIVE, BASE_VALENCE, 0.6, "yes", "yes")
+    apply_sentiment_to_pending(store, sig, ["b1", "b2", "b3"])
+    for bid in ("b1", "b2", "b3"):
+        b = store.get_belief(bid)
+        assert b is not None
+        assert b.alpha == pytest.approx(1.0 + BASE_VALENCE / 3.0)
+
+
+def test_apply_total_evidence_is_one_unit_regardless_of_pack_width(
+    store: MemoryStore,
+) -> None:
+    """Two packs of different width must move the same total mass."""
+    narrow = MemoryStore(":memory:")
+    narrow.insert_belief(_mk("only"))
+    sig = SentimentSignal(POSITIVE, BASE_VALENCE, 0.6, "yes", "yes")
+
+    apply_sentiment_to_pending(narrow, sig, ["only"])
+    apply_sentiment_to_pending(store, sig, ["b1", "b2", "b3"])
+
+    narrow_total = sum(
+        b.alpha - 1.0
+        for b in (narrow.get_belief("only"),)
+        if b is not None
+    )
+    wide_total = sum(
+        b.alpha - 1.0
+        for b in (store.get_belief(x) for x in ("b1", "b2", "b3"))
+        if b is not None
+    )
+    assert wide_total == pytest.approx(narrow_total)
+    assert wide_total == pytest.approx(BASE_VALENCE)
+
+
+def test_apply_negative_signal_splits_the_same_way(store: MemoryStore) -> None:
+    sig = SentimentSignal(NEGATIVE, -BASE_VALENCE, 0.6, "no", "no")
+    apply_sentiment_to_pending(store, sig, ["b1", "b2"])
+    for bid in ("b1", "b2"):
+        b = store.get_belief(bid)
+        assert b is not None
+        assert b.beta == pytest.approx(1.0 + BASE_VALENCE / 2.0)
+
+
+def test_apply_escalated_negative_is_split_too(store: MemoryStore) -> None:
+    sig = SentimentSignal(NEGATIVE, -BASE_VALENCE, 0.6, "no", "no")
+    apply_sentiment_to_pending(store, sig, ["b1", "b2"], escalated=True)
+    for bid in ("b1", "b2"):
+        b = store.get_belief(bid)
+        assert b is not None
+        assert b.beta == pytest.approx(1.0 + ESCALATED_NEGATIVE_VALENCE / 2.0)
+
+
+def test_apply_share_divides_by_resolvable_ids_only(store: MemoryStore) -> None:
+    """Stale ids in the pack must not shrink the evidence delivered.
+
+    Two of the four ids no longer exist; the divisor is 2, not 4, so the
+    live pair still absorbs one whole unit between them.
+    """
+    sig = SentimentSignal(POSITIVE, BASE_VALENCE, 0.6, "yes", "yes")
+    apply_sentiment_to_pending(store, sig, ["b1", "ghost1", "b2", "ghost2"])
+    delivered = 0.0
+    for bid in ("b1", "b2"):
+        b = store.get_belief(bid)
+        assert b is not None
+        assert b.alpha == pytest.approx(1.0 + BASE_VALENCE / 2.0)
+        delivered += b.alpha - 1.0
+    assert delivered == pytest.approx(BASE_VALENCE)
+
+
+def test_apply_records_the_share_not_the_whole_signal_in_the_audit_row(
+    store: MemoryStore,
+) -> None:
+    """feedback_history must record what was actually applied."""
+    sig = SentimentSignal(NEGATIVE, -BASE_VALENCE, 0.6, "no", "no")
+    apply_sentiment_to_pending(store, sig, ["b1", "b2", "b3", "b1"])
+    rows = store._conn.execute(
+        "SELECT valence FROM feedback_history WHERE source = ?",
+        (SENTIMENT_INFERRED_SOURCE,),
+    ).fetchall()
+    assert rows, "no feedback_history rows written"
+    for (valence,) in rows:
+        assert valence == pytest.approx(-BASE_VALENCE / 4.0)
+
+
+def test_apply_locked_belief_consumes_a_share_without_moving(
+    store: MemoryStore,
+) -> None:
+    """The divisor counts locked beliefs, so the movable set gets <= 1 unit.
+
+    Rescaling over only the movable subset was rejected: on a pack that
+    is nearly all locks it would hand one unlocked belief the entire
+    signal. Under-delivering is the conservative direction for an
+    inferred lane, so it is what this pins.
+    """
+    store.insert_belief(replace(_mk("locked1"), lock_level=LOCK_USER))
+    sig = SentimentSignal(POSITIVE, BASE_VALENCE, 0.6, "yes", "yes")
+    apply_sentiment_to_pending(store, sig, ["b1", "locked1"])
+
+    unlocked = store.get_belief("b1")
+    held = store.get_belief("locked1")
+    assert unlocked is not None and held is not None
+    assert unlocked.alpha == pytest.approx(1.0 + BASE_VALENCE / 2.0)
+    assert held.alpha == 1.0, "the lock floor must hold"
+    delivered = (unlocked.alpha - 1.0) + (held.alpha - 1.0)
+    assert delivered == pytest.approx(BASE_VALENCE / 2.0)
+    assert delivered < BASE_VALENCE
+
+
+def test_apply_all_ids_stale_returns_empty(store: MemoryStore) -> None:
+    sig = SentimentSignal(POSITIVE, BASE_VALENCE, 0.6, "yes", "yes")
+    assert apply_sentiment_to_pending(store, sig, ["ghost1", "ghost2"]) == []
 
 
 def test_apply_uses_sentiment_inferred_source(store: MemoryStore) -> None:

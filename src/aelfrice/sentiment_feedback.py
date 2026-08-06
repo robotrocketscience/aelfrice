@@ -2,7 +2,7 @@
 
 Reads each user prompt, regex-matches against twelve positive and
 twelve negative sentiment patterns, and emits a `SentimentSignal`.
-The signal is distributed equally across the previous turn's
+The signal is split into equal shares across the previous turn's
 retrieved beliefs via `apply_sentiment_to_pending`, which calls
 `feedback.apply_feedback` once per pending belief id.
 
@@ -34,10 +34,15 @@ Design contract (spec: `docs/design/v2_sentiment_feedback.md`):
     fraction of the recent N turns were corrections. Stateless beyond
     the caller-supplied window.
 
-Distribution shape: `apply_sentiment_to_pending` distributes the signal
-equally across all pending belief ids. Per-rank scaling is explicitly
-out of scope (decision ratified 2026-04-29: "matches the research-line
-behavior; ranked distribution adds a knob without an evidence-gate").
+Distribution shape: `apply_sentiment_to_pending` splits the signal into
+equal shares across the pending belief ids — one utterance contributes
+one unit of evidence in total, not one unit *per* retrieved belief
+(#1372 §13). That is a magnitude fix, not a credit-assignment fix: the
+share still lands on beliefs the utterance never referred to. Per-rank
+scaling remains out of scope (decision ratified 2026-04-29: "matches
+the research-line behavior; ranked distribution adds a knob without an
+evidence-gate"), and referent-scoped attribution — the fix that would
+actually close §13 — needs an instrument this module does not have.
 
 This module does NOT decide *when* to call into it. The hook layer is
 responsible for: (a) checking the config flag, (b) resolving the
@@ -325,16 +330,42 @@ def apply_sentiment_to_pending(
     now: str | None = None,
     escalated: bool = False,
 ) -> list[FeedbackResult]:
-    """Distribute one sentiment signal equally across the pending belief
-    set. Calls `apply_feedback` once per belief id.
+    """Split one sentiment signal across the pending belief set. Calls
+    `apply_feedback` once per resolvable belief id, each with an equal
+    **share** of the signal rather than the whole of it.
 
     Returns the list of FeedbackResults. Beliefs that no longer exist
     in the store are skipped silently (not an error: the previous turn
-    may have surfaced a belief that has since been deleted).
+    may have surfaced a belief that has since been deleted); the share
+    is computed over the beliefs that actually resolve, so a pack
+    carrying stale ids does not silently deliver less than it should.
+
+    User-locked beliefs still consume a share without moving — the lock
+    floor in `apply_feedback` is what stops them — so the movable set
+    receives *at most* one unit, not exactly one. Rescaling over only
+    the movable subset was rejected: on a pack that is nearly all
+    locks it would hand a single unlocked belief the entire signal,
+    which is a larger and more arbitrary claim than under-delivering.
 
     `escalated` upgrades a negative signal's magnitude to
     `ESCALATED_NEGATIVE_VALENCE`. Has no effect on positive signals;
     the correction-frequency path only escalates negatives by design.
+    The escalated magnitude is split the same way.
+
+    **This is the cheap fix, not the principled one** (#1372 §13). The
+    defect is credit assignment: the user said one thing, presumably
+    about one belief, and the lane wrote the *same* valence onto all N
+    beliefs that happened to be retrieved that turn — so N-1 of the
+    resulting Beta-Bernoulli updates are about beliefs the utterance
+    never mentioned, and `alpha + beta` stops counting exchangeable
+    trials. Dividing by N does not fix the attribution; every unrelated
+    belief still receives a nonzero update. What it fixes is the
+    *magnitude*: one utterance now contributes one unit of evidence in
+    total instead of N units, so a wide retrieval pack can no longer
+    manufacture evidence in proportion to its own width. Attributing
+    only to demonstrably-referenced beliefs is the real fix and is
+    strictly larger than this one; it needs a referent-resolution
+    instrument this module does not have.
 
     **Does not propagate** (#1291). One prose signal already credits
     every belief on the prior turn with the same valence, which is not
@@ -352,14 +383,24 @@ def apply_sentiment_to_pending(
     if escalated and signal.sentiment == NEGATIVE:
         valence = -ESCALATED_NEGATIVE_VALENCE
 
+    # Resolve first, then divide: the divisor has to be the number of
+    # beliefs that will actually receive an update, or a pack carrying
+    # stale ids would deliver less than the one unit it is supposed to.
+    live_ids = [
+        bid for bid in pending_belief_ids if store.get_belief(bid) is not None
+    ]
+    if not live_ids:
+        return []
+    share = valence / len(live_ids)
+
     results: list[FeedbackResult] = []
-    for bid in pending_belief_ids:
-        if store.get_belief(bid) is None:
+    for bid in live_ids:
+        if store.get_belief(bid) is None:  # pragma: no cover — TOCTOU guard
             continue
         result = apply_feedback(
             store=store,
             belief_id=bid,
-            valence=valence,
+            valence=share,
             source=SENTIMENT_INFERRED_SOURCE,
             now=now,
             propagate=False,
