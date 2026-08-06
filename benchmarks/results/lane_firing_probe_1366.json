@@ -24,7 +24,8 @@
       "reported_enabled": true,
       "fired_calls": 500,
       "fire_rate": 1.0,
-      "note": ""
+      "note": "",
+      "tracks_flag_by_construction": false
     },
     {
       "lane": "l25_entity_index",
@@ -33,7 +34,8 @@
       "reported_enabled": true,
       "fired_calls": 379,
       "fire_rate": 0.758,
-      "note": ""
+      "note": "",
+      "tracks_flag_by_construction": false
     },
     {
       "lane": "l1_bm25",
@@ -42,7 +44,8 @@
       "reported_enabled": true,
       "fired_calls": 500,
       "fire_rate": 1.0,
-      "note": ""
+      "note": "",
+      "tracks_flag_by_construction": false
     },
     {
       "lane": "l1_bm25f_anchors",
@@ -51,7 +54,8 @@
       "reported_enabled": true,
       "fired_calls": 500,
       "fire_rate": 1.0,
-      "note": "bm25f_used records the resolved L1 implementation, not a packed-hit count, so it tracks the flag by construction."
+      "note": "bm25f_used records the resolved L1 implementation, not a packed-hit count, so it tracks the flag by construction: its fire rate restates the resolver and is not evidence that the BM25F scorer produced anything.",
+      "tracks_flag_by_construction": true
     },
     {
       "lane": "bfs_multihop",
@@ -60,7 +64,8 @@
       "reported_enabled": false,
       "fired_calls": 0,
       "fire_rate": 0.0,
-      "note": ""
+      "note": "",
+      "tracks_flag_by_construction": false
     },
     {
       "lane": "hrr_expand",
@@ -69,7 +74,8 @@
       "reported_enabled": false,
       "fired_calls": 0,
       "fire_rate": 0.0,
-      "note": ""
+      "note": "",
+      "tracks_flag_by_construction": false
     },
     {
       "lane": "temporal_spine",
@@ -78,7 +84,8 @@
       "reported_enabled": true,
       "fired_calls": 209,
       "fire_rate": 0.418,
-      "note": ""
+      "note": "",
+      "tracks_flag_by_construction": false
     },
     {
       "lane": "heat_kernel",
@@ -87,7 +94,8 @@
       "reported_enabled": false,
       "fired_calls": 0,
       "fire_rate": 0.0,
-      "note": "heat_used is True only when the heat branch rewrote the L1 ordering, not when the flag resolved True (#1162)."
+      "note": "heat_used is True only when the heat branch rewrote the L1 ordering, not when the flag resolved True (#1162).",
+      "tracks_flag_by_construction": false
     },
     {
       "lane": "posterior_weight_rerank",
@@ -96,7 +104,8 @@
       "reported_enabled": true,
       "fired_calls": 500,
       "fire_rate": 1.0,
-      "note": ""
+      "note": "posterior_weight carries the resolved weight, not a count of rerank decisions \u2014 `LaneTelemetry(posterior_weight=...)` is fed by `resolve_posterior_weight(...)` at the same call site. Its fire rate is the flag restated; nothing here observes the rerank doing work.",
+      "tracks_flag_by_construction": true
     },
     {
       "lane": "expansion_gate",
@@ -105,105 +114,154 @@
       "reported_enabled": true,
       "fired_calls": 500,
       "fire_rate": 1.0,
-      "note": ""
-    }
-  ],
-  "unobservable_lanes": [
+      "note": "",
+      "tracks_flag_by_construction": false
+    },
     {
       "lane": "type_aware_compression",
+      "telemetry_field": "compression_renders",
       "resolver": "resolve_use_type_aware_compression()",
       "reported_enabled": true,
-      "observable": false,
-      "reason": "no LaneTelemetry field records this lane firing"
+      "fired_calls": 500,
+      "fire_rate": 1.0,
+      "note": "counts beliefs actually rendered through the compressor in the pack-cost closure; a call that packs nothing renders nothing regardless of the flag.",
+      "tracks_flag_by_construction": false
     },
     {
       "lane": "intentional_clustering",
+      "telemetry_field": "cluster_packed",
       "resolver": "resolve_use_intentional_clustering()",
       "reported_enabled": true,
-      "observable": false,
-      "reason": "no LaneTelemetry field records this lane firing"
-    },
-    {
-      "lane": "gamma_posterior_temperature",
-      "resolver": "resolve_use_gamma_posterior_temperature()",
-      "reported_enabled": false,
-      "observable": false,
-      "reason": "no LaneTelemetry field records this lane firing"
-    },
-    {
-      "lane": "zeta_posterior_rerank",
-      "resolver": "resolve_use_zeta_posterior_rerank()",
-      "reported_enabled": false,
-      "observable": false,
-      "reason": "no LaneTelemetry field records this lane firing"
-    },
-    {
-      "lane": "hrr_structural",
-      "resolver": "is_hrr_structural_enabled()",
-      "reported_enabled": true,
-      "observable": false,
-      "reason": "no LaneTelemetry field records this lane firing"
-    },
-    {
-      "lane": "entity_persist_demote",
-      "resolver": "is_entity_persist_demote_enabled()",
-      "reported_enabled": true,
-      "observable": false,
-      "reason": "no LaneTelemetry field records this lane firing"
-    },
-    {
-      "lane": "origin_tiebreak",
-      "resolver": "is_origin_tiebreak_enabled()",
-      "reported_enabled": false,
-      "observable": false,
-      "reason": "no LaneTelemetry field records this lane firing"
-    },
-    {
-      "lane": "fan_effect",
-      "resolver": "is_fan_effect_enabled()",
-      "reported_enabled": false,
-      "observable": false,
-      "reason": "no LaneTelemetry field records this lane firing"
-    },
-    {
-      "lane": "supersession_demote",
-      "resolver": "is_supersession_demote_enabled()",
-      "reported_enabled": false,
-      "observable": false,
-      "reason": "no LaneTelemetry field records this lane firing"
-    },
-    {
-      "lane": "exploration_slots",
-      "resolver": "is_exploration_enabled()",
-      "reported_enabled": false,
-      "observable": false,
-      "reason": "no LaneTelemetry field records this lane firing"
+      "fired_calls": 500,
+      "fire_rate": 1.0,
+      "note": "counts beliefs the cluster pack selected. The max-coverage selector takes precedence over this arm when both resolve on, so a zero here can mean 'lost the precedence contest' as well as 'off' \u2014 read it against max_coverage_pack.",
+      "tracks_flag_by_construction": false
     },
     {
       "lane": "max_coverage_pack",
+      "telemetry_field": "max_coverage_packed",
       "resolver": "is_max_coverage_pack_enabled()",
       "reported_enabled": false,
-      "observable": false,
-      "reason": "no LaneTelemetry field records this lane firing"
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "",
+      "tracks_flag_by_construction": false
     },
+    {
+      "lane": "entity_persist_demote",
+      "telemetry_field": "entity_persist_demoted",
+      "resolver": "is_entity_persist_demote_enabled()",
+      "reported_enabled": true,
+      "fired_calls": 472,
+      "fire_rate": 0.944,
+      "note": "counts beliefs whose score the demotion actually moved; a belief with no extracted entities, or with S1 \u2192 1, clamps to 0.0 and keeps the lane-off ordering.",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "supersession_demote",
+      "telemetry_field": "supersession_demoted",
+      "resolver": "is_supersession_demote_enabled()",
+      "reported_enabled": false,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "origin_tiebreak",
+      "telemetry_field": "origin_tiebreak_decided",
+      "resolver": "is_origin_tiebreak_enabled()",
+      "reported_enabled": false,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "counts adjacent pairs in the final L1 order that the origin term decided (equal composite score, different origin priority) \u2014 not that the sort key carried the term.",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "gamma_posterior_temperature",
+      "telemetry_field": "gamma_rerank_scored",
+      "resolver": "resolve_use_gamma_posterior_temperature()",
+      "reported_enabled": false,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "zeta_posterior_rerank",
+      "telemetry_field": "zeta_rerank_scored",
+      "resolver": "resolve_use_zeta_posterior_rerank()",
+      "reported_enabled": false,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "fan_effect",
+      "telemetry_field": "fan_effect_ranked",
+      "resolver": "is_fan_effect_enabled()",
+      "reported_enabled": false,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "recorded where the fan-weighted entity ordering is consumed rather than where the flag resolves, but the only thing between the two is whether L2.5 returned any hits at all \u2014 treat a non-zero count as 'flag on and L2.5 non-empty', not as evidence the fan weighting reordered anything.",
+      "tracks_flag_by_construction": true
+    },
+    {
+      "lane": "hrr_structural",
+      "telemetry_field": "hrr_structural_hit",
+      "resolver": "is_hrr_structural_enabled()",
+      "reported_enabled": true,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "True only when the marker parsed AND the struct index answered, i.e. when the lane took the whole call; the two fall-through returns record nothing. A zero here is a fact about the corpus, not a reachability verdict: the lane is reachable (a `KIND:target` prompt routes through it, pinned by tests/test_retrieve_v2_hrr_structural.py), and no natural-language prompt parses as a structural marker. 'Enabled but never fires on real prompts' is the finding; 'unreachable from src/' is a different claim this does not support.",
+      "tracks_flag_by_construction": false
+    }
+  ],
+  "lanes_whose_field_tracks_the_flag": [
+    "l1_bm25f_anchors",
+    "posterior_weight_rerank",
+    "fan_effect"
+  ],
+  "unobservable_lanes": [
     {
       "lane": "bm25f_per_field",
       "resolver": "resolve_bm25f_per_field()",
       "reported_enabled": false,
       "observable": false,
-      "reason": "no LaneTelemetry field records this lane firing"
+      "reason": "no LaneTelemetry field records this lane firing: the leaf is the two-field scorer inside `aelfrice.bm25`, below the module that owns LaneTelemetry; recording there means threading a channel across the module boundary, which is a larger change than the record-at-site extension this probe shipped"
     },
     {
       "lane": "bm25_k3_query_saturation",
       "resolver": "resolve_bm25_k3() > 0",
       "reported_enabled": false,
       "observable": false,
-      "reason": "no LaneTelemetry field records this lane firing"
+      "reason": "no LaneTelemetry field records this lane firing: same leaf as bm25f_per_field \u2014 the k3 saturation term is applied inside the scorer. Note the shipped default is 0.0, at which the boost arm is a verified no-op, so a firing record would be about an arm nothing reaches"
+    },
+    {
+      "lane": "exploration_slots",
+      "resolver": "is_exploration_enabled()",
+      "reported_enabled": false,
+      "observable": false,
+      "reason": "no LaneTelemetry field records this lane firing: resolved and applied in `aelfrice.hook`, outside the retrieval call LaneTelemetry describes; a field here would be recorded by a different process stage than the one it is filed under"
     }
   ],
   "diff": {
-    "enabled_but_never_fired": [],
+    "enabled_but_never_fired": [
+      "hrr_structural"
+    ],
     "fired_but_not_reported_enabled": []
+  },
+  "diff_sensitivity": {
+    "enabled_but_never_fired": {
+      "can_be_populated_by_this_instrument": true,
+      "why": "A lane's resolver can report enabled while the branch that writes its counter never runs \u2014 the flag resolves against env/TOML/default with no kwarg, but `retrieve()` passes an explicit kwarg to some lanes and pins others OFF. The resolver and the counter can therefore disagree, so an entry here is a measurement."
+    },
+    "fired_but_not_reported_enabled": {
+      "can_be_populated_by_this_instrument": false,
+      "why": "Structurally unreachable on the current wiring, for every lane in the table. Each counter is written only inside a branch guarded by the same resolver `reported` queries, and the kwarg `retrieve()` passes is either None (so the no-kwarg resolver gives the same answer) or False (which can only produce the *other* direction). The unconditional lanes report True by definition and cannot appear here either. **An empty set in this direction is a property of the instrument, not a null result** \u2014 reporting it as a finding would be the R3 IDF-clip failure mode, where an unreachable arm was read as a measured absence.",
+      "what_would_make_it_reachable": "a caller that forces a lane ON against its resolver (an explicit `True` kwarg from `retrieve()` / `retrieve_v2`, or a branch guarded by a different flag than the one the lane is filed under). The direction is kept precisely so that re-wiring shows up here instead of going unnoticed."
+    }
   },
   "trim_seam": {
     "temporal_spine_candidate_calls": 500,
@@ -225,6 +283,11 @@
     "prompt_chars": 200,
     "prompts": 500,
     "lanes_whose_fire_count_moved": {
+      "entity_persist_demote": {
+        "full": 472,
+        "truncated": 473,
+        "delta": 1
+      },
       "l25_entity_index": {
         "full": 379,
         "truncated": 483,

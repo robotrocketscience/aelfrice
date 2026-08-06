@@ -6,7 +6,9 @@ result and a broken instrument. These tests pin the differences:
 
 * both diff directions are computed, so removing the second one (the
   direction nobody has looked for) fails here rather than silently
-  halving the finding;
+  halving the finding — *and* the report discloses that only one of the
+  two directions has any sensitivity, so an empty set in the other is
+  never presented as a null result;
 * the corpus reader keeps untruncated user text and drops the record
   types that never reached the retrieval path;
 * the lane table is wired to `LaneTelemetry` fields that exist, so a
@@ -14,14 +16,22 @@ result and a broken instrument. These tests pin the differences:
 * the flags with no telemetry field are reported as *unobservable*, not
   as never-fired — scoring them as never-fired would fabricate the
   finding the probe exists to detect;
-* importing this module has no side effect on the environment.
+* the lanes whose telemetry field is written from the resolved flag are
+  marked as such, because a 100% fire rate read off a resolver is the
+  false positive this probe exists to catch;
+* importing this module has no side effect on the environment, and the
+  method constraints `main()` promises (read-only store, cleared env,
+  pinned TOML walk, production `retrieve()` kwargs, corpus floor) each
+  have an assertion that goes red when they are removed.
 """
 from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from dataclasses import fields
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -126,6 +136,16 @@ def test_observed_predicates_are_true_when_their_field_is_set() -> None:
         "heat_kernel": LaneTelemetry(heat_used=True),
         "posterior_weight_rerank": LaneTelemetry(posterior_weight=0.5),
         "expansion_gate": LaneTelemetry(expansion_gate_reason="narrow"),
+        "type_aware_compression": LaneTelemetry(compression_renders=1),
+        "intentional_clustering": LaneTelemetry(cluster_packed=1),
+        "max_coverage_pack": LaneTelemetry(max_coverage_packed=1),
+        "entity_persist_demote": LaneTelemetry(entity_persist_demoted=1),
+        "supersession_demote": LaneTelemetry(supersession_demoted=1),
+        "origin_tiebreak": LaneTelemetry(origin_tiebreak_decided=1),
+        "gamma_posterior_temperature": LaneTelemetry(gamma_rerank_scored=1),
+        "zeta_posterior_rerank": LaneTelemetry(zeta_rerank_scored=1),
+        "fan_effect": LaneTelemetry(fan_effect_ranked=1),
+        "hrr_structural": LaneTelemetry(hrr_structural_hit=True),
     }
     by_name = {lane.name: lane for lane in probe.OBSERVABLE_LANES}
     assert set(cases) == set(by_name), "lane table and this table disagree"
@@ -142,11 +162,23 @@ def test_unobservable_lanes_are_not_scored_as_never_fired() -> None:
     `observable: false`.
     """
     observable = {lane.name for lane in probe.OBSERVABLE_LANES}
-    unobservable = {name for name, _, _ in probe.UNOBSERVABLE_LANES}
+    unobservable = {name for name, _, _, _ in probe.UNOBSERVABLE_LANES}
     assert observable.isdisjoint(unobservable)
     known = {f.name for f in fields(LaneTelemetry)}
     for name in unobservable:
         assert name not in known
+
+
+def test_every_unobservable_lane_says_why_it_is_out_of_reach() -> None:
+    """"No telemetry field" invites the reader to assume nobody looked.
+
+    Each remaining hole names where its leaf actually is, so the next
+    reader can tell "not instrumented yet" from "cannot be instrumented
+    from this module".
+    """
+    for name, _, _, why in probe.UNOBSERVABLE_LANES:
+        assert why.strip(), name
+        assert len(why) > 40, name
 
 
 # --- Corpus reader -------------------------------------------------------
@@ -350,6 +382,114 @@ def test_truncation_control_is_quiet_when_nothing_moves() -> None:
     assert out["lanes_falsely_dead_under_truncation"] == []
 
 
+# --- Flag-tracking disclosure -------------------------------------------
+
+_FLAG_TRACKING_LANES = {
+    "l1_bm25f_anchors", "posterior_weight_rerank", "fan_effect",
+}
+
+
+def test_the_flag_tracking_set_is_exactly_the_audited_one() -> None:
+    """Drift guard on the audit of which fields restate their resolver.
+
+    A new lane whose field is written from the flag has to be added
+    here deliberately; a lane that stops being flag-tracking has to be
+    removed. Either way the audit is re-done rather than inherited.
+    """
+    got = {lane.name for lane in probe.OBSERVABLE_LANES if lane.tracks_flag}
+    assert got == _FLAG_TRACKING_LANES
+
+
+def test_posterior_weight_rerank_is_disclosed_not_reported_as_firing() -> None:
+    """`posterior_weight` is the resolved flag, not a firing observation.
+
+    `LaneTelemetry(posterior_weight=weight)` is fed by
+    `resolve_posterior_weight(...)` at the same call site, so a 500/500
+    fire rate on it is the resolver echoed back — the exact false
+    positive this probe exists to catch. It stays in the table (dropping
+    it would hide that the flag is all the pipeline records) but every
+    output path has to say so.
+    """
+    lane = next(
+        x for x in probe.OBSERVABLE_LANES
+        if x.name == "posterior_weight_rerank"
+    )
+    assert lane.tracks_flag is True
+    assert "resolved weight" in lane.note
+
+
+def test_every_flag_tracking_lane_carries_a_note() -> None:
+    for lane in probe.OBSERVABLE_LANES:
+        if lane.tracks_flag:
+            assert lane.note.strip(), lane.name
+
+
+def test_report_marks_the_flag_tracking_rows() -> None:
+    report = probe.build_report(["p"], _observed({}))
+    marked = {
+        r["lane"] for r in report["observable_lanes"]
+        if r["tracks_flag_by_construction"]
+    }
+    assert marked == _FLAG_TRACKING_LANES
+    assert set(report["lanes_whose_field_tracks_the_flag"]) == marked
+
+
+def test_render_marks_the_flag_tracking_rows() -> None:
+    """The human rendering is what gets pasted into an issue.
+
+    Disclosing only in the JSON leaves the table anyone actually reads
+    claiming an unqualified 100% for a lane nothing observed firing.
+    """
+    text = probe.render(
+        probe.build_report(["p"], _observed({"posterior_weight_rerank": 1}))
+    )
+    row = next(
+        line for line in text.splitlines()
+        if "posterior_weight_rerank" in line and "1.0000" in line
+    )
+    assert row.startswith("*")
+    assert "restate the resolver" in text
+
+
+# --- Diff sensitivity ----------------------------------------------------
+
+
+def test_report_declares_the_sensitivity_of_each_diff_direction() -> None:
+    report = probe.build_report(["p"], _observed({}))
+    assert set(report["diff_sensitivity"]) == set(report["diff"])
+
+
+def test_the_fired_but_not_enabled_direction_declares_zero_sensitivity(
+) -> None:
+    """An empty set from an instrument that cannot produce a non-empty
+    one is not a null result.
+
+    Every counter is written inside a branch guarded by the same
+    resolver the `reported` side queries, so no observation on this
+    table can populate this direction. Presenting the empty set as a
+    finding would be the R3 IDF-clip failure mode. The direction is
+    kept as a re-wiring guard, which is a different claim.
+    """
+    report = probe.build_report(["p"], _observed({}))
+    entry = report["diff_sensitivity"]["fired_but_not_reported_enabled"]
+    assert entry["can_be_populated_by_this_instrument"] is False
+    assert entry["what_would_make_it_reachable"].strip()
+    other = report["diff_sensitivity"]["enabled_but_never_fired"]
+    assert other["can_be_populated_by_this_instrument"] is True
+
+
+def test_render_qualifies_the_zero_sensitivity_direction() -> None:
+    text = probe.render(probe.build_report(["p"], _observed({})))
+    assert "CANNOT populate this direction" in text
+    assert "NOT a null result" in text
+
+
+def test_the_zero_sensitivity_direction_is_still_computed() -> None:
+    """Kept, not deleted: re-wiring is what would make it fire."""
+    out = probe.diff_lanes({"stealth": False}, {"stealth": 3})
+    assert out["fired_but_not_reported_enabled"] == ["stealth"]
+
+
 # --- Import-time side effects -------------------------------------------
 
 
@@ -401,6 +541,179 @@ def test_pinned_environment_restores_on_an_exception(
     with pytest.raises(RuntimeError), probe.pinned_environment():
         raise RuntimeError("boom")
     assert os.environ.get("AELFRICE_SENTINEL_1366") == "kept"
+
+
+# --- Method constraints of the run --------------------------------------
+#
+# `main()` and `probe()` had no coverage at all: the instrument checks
+# above exercise pure helpers, and every constraint the module docstring
+# promises could be deleted with all of them still green.
+
+
+class _FakeStore:
+    """Records how it was opened; does nothing else."""
+
+    opened: list[tuple[str, dict[str, Any]]] = []
+
+    def __init__(self, path: str, **kwargs: Any) -> None:
+        type(self).opened.append((path, kwargs))
+
+    def close(self) -> None:
+        pass
+
+
+def _write_corpus(root: Path, n: int) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "s.jsonl").write_text(
+        "\n".join(json.dumps(_user(f"prompt number {i}")) for i in range(n))
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _harness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    prompts: int = probe.MIN_PROMPTS,
+) -> tuple[list[str], list[dict[str, Any]], list[str | None]]:
+    """Wire `main()` to fakes and return its recorded observations.
+
+    Returns `(argv, retrieve_kwargs, env_seen_inside_the_run)`.
+    """
+    import aelfrice.retrieval as retrieval
+
+    store_path = tmp_path / "memory.db"
+    sqlite3.connect(store_path).close()
+    transcripts = tmp_path / "transcripts"
+    _write_corpus(transcripts, prompts)
+
+    _FakeStore.opened = []
+    monkeypatch.setattr(probe, "MemoryStore", _FakeStore)
+    monkeypatch.setattr(probe, "last_lane_telemetry", LaneTelemetry)
+
+    seen_kwargs: list[dict[str, Any]] = []
+    seen_env: list[str | None] = []
+
+    def _fake_retrieve(store: object, query: str, **kwargs: Any) -> list[str]:
+        seen_kwargs.append(kwargs)
+        seen_env.append(os.environ.get("AELFRICE_SENTINEL_1366"))
+        return []
+
+    monkeypatch.setattr(retrieval, "retrieve", _fake_retrieve)
+    argv = [
+        "--store", str(store_path),
+        "--transcripts", str(transcripts),
+        "--prompts", str(probe.MIN_PROMPTS),
+    ]
+    return argv, seen_kwargs, seen_env
+
+
+def test_main_opens_the_store_read_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare `MemoryStore(...)` open is a write.
+
+    DDL, migrations, scope-id persistence and — since #1314 — the
+    lock-expiry sweep, which flips a user's expired locks. Measuring a
+    store is not a reason to mutate it. Drop the `read_only=True` and
+    this goes red.
+    """
+    argv, _, _ = _harness(tmp_path, monkeypatch)
+    assert probe.main(argv) == 0
+    assert len(_FakeStore.opened) == 1
+    assert _FakeStore.opened[0][1] == {"read_only": True}
+
+
+def test_main_clears_ambient_config_for_the_run_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retrieval calls see no ambient opt-in; the caller keeps its.
+
+    Without the clear the diff measures the developer's own environment
+    rather than the shipped defaults. Delete the `pinned_environment()`
+    wrapper and the first assertion fails; delete the restore and the
+    last one does.
+    """
+    monkeypatch.setenv("AELFRICE_SENTINEL_1366", "ambient")
+    argv, _, seen_env = _harness(tmp_path, monkeypatch)
+    assert probe.main(argv) == 0
+    assert seen_env, "the probe made no retrieval calls"
+    assert set(seen_env) == {None}
+    assert os.environ.get("AELFRICE_SENTINEL_1366") == "ambient"
+
+
+def test_main_passes_the_production_manifest_reference_locks_kwarg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The probe measures the shipped call, not a convenient one.
+
+    `hook_search.search_and_record` passes
+    `manifest_reference_locks=True`; a probe that omits it measures a
+    path production never takes.
+    """
+    argv, seen_kwargs, _ = _harness(tmp_path, monkeypatch)
+    assert probe.main(argv) == 0
+    assert seen_kwargs
+    assert all(
+        kw.get("manifest_reference_locks") is True for kw in seen_kwargs
+    )
+
+
+def test_main_refuses_when_the_toml_walk_is_not_pinned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`_read_toml_flag_for` walks up from the working directory.
+
+    Clearing the environment pins only the env tier (#1295). If a
+    `.aelfrice.toml` sits above the scratch cwd the TOML tier is
+    unpinned and the run must refuse rather than report a diff against
+    somebody's config. Delete the `scratch_walk_hits` check and this
+    returns 0 with the store opened anyway.
+    """
+    argv, _, _ = _harness(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        probe, "scratch_walk_hits", lambda _s: ["/somewhere/.aelfrice.toml"],
+    )
+    assert probe.main(argv) == 1
+    assert _FakeStore.opened == []
+
+
+def test_main_refuses_a_corpus_below_the_floor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A thin corpus reads exactly like a real "every lane is dead".
+
+    A lane that fires on 1% of calls is indistinguishable from a dead
+    one on a few dozen prompts, so the run refuses instead of
+    manufacturing the finding. Delete the floor check and this returns
+    0 on a corpus of `MIN_PROMPTS - 1`.
+    """
+    argv, _, _ = _harness(
+        tmp_path, monkeypatch, prompts=probe.MIN_PROMPTS - 1,
+    )
+    assert probe.main(argv) == 1
+    assert _FakeStore.opened == []
+
+
+def test_probe_calls_retrieve_once_per_prompt_with_the_shipped_kwargs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`probe()` itself, without the `main()` scaffolding."""
+    import aelfrice.retrieval as retrieval
+
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    def _fake_retrieve(store: object, query: str, **kwargs: Any) -> list[str]:
+        seen.append((query, kwargs))
+        return []
+
+    monkeypatch.setattr(retrieval, "retrieve", _fake_retrieve)
+    monkeypatch.setattr(probe, "last_lane_telemetry", LaneTelemetry)
+    out = probe.probe(object(), ["one", "two"])
+    assert [q for q, _ in seen] == ["one", "two"]
+    assert all(kw == {"manifest_reference_locks": True} for _, kw in seen)
+    assert out["empty_output_calls"] == 2
 
 
 # --- Committed result ----------------------------------------------------
