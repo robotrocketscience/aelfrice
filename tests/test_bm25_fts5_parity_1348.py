@@ -500,3 +500,37 @@ def test_ascii_fast_path_is_identity_over_every_ascii_codepoint() -> None:
         for b in ascii_chars:
             pair = a + b
             assert bm25._fold_diacritics(pair) == _unguarded_fold(pair)
+
+
+def test_the_ascii_fast_path_is_actually_taken(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one thing #1387 ships, and the only test that would notice it go.
+
+    Every other test here asserts the guarded fold agrees with the
+    unguarded one. The *unguarded* code satisfies that by construction, so
+    deleting `if text.isascii(): return text` leaves all of them green — a
+    perf change whose entire deliverable no assertion can see.
+
+    This counts the per-character work instead. On all-ASCII input the loop
+    must not run at all; on input with one non-ASCII codepoint it must, or
+    the test would pass against a fold that had stopped folding.
+    """
+    calls: list[str] = []
+    real_combining = unicodedata.combining
+    monkeypatch.setattr(
+        bm25.unicodedata,
+        "combining",
+        lambda ch: (calls.append(ch), real_combining(ch))[1],
+    )
+
+    assert bm25._fold_diacritics("plain ascii text, 123") == "plain ascii text, 123"
+    assert calls == [], (
+        "the ASCII fast path was not taken: _fold_diacritics entered the "
+        "per-character loop on an all-ASCII string"
+    )
+
+    # The distinguishing half. Without it, a fold that returned `text`
+    # unconditionally would pass the assertion above.
+    assert bm25._fold_diacritics("café") == "cafe"
+    assert calls != [], "the per-character loop must still run on non-ASCII input"
