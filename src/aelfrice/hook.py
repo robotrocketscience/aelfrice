@@ -3655,19 +3655,30 @@ def _directive_window_spec(content: str) -> str | None:
     """The `--for` spec a directive states, or None (#1315).
 
     None on every arm that is not an unambiguous, explicitly-stated
-    window: not a directive, no window named, or more than one named.
-    Ambiguity refuses rather than picking the first — proposing a lock
-    the user has to notice is wrong is worse than proposing none.
+    window **governed by a memory verb**: not a directive, no window
+    named, more than one named, or a window that belongs to the subject
+    matter rather than to how long to remember the rule. Ambiguity
+    refuses rather than picking the first — proposing a lock the user has
+    to notice is wrong is worse than proposing none.
+
+    The attachment gate is the operator's 2026-08-06 ruling. Without it
+    the arm fired 9 times on a 44,679-belief live store and **0** of the
+    9 stated a retention window; every hit was a subject-matter duration
+    (`Blocked for 9 days`, `traveling for a week`). See
+    `lock_expiry.stated_window_attaches_to_memory`.
     """
     from aelfrice.directive_detector import detect_directive  # noqa: PLC0415
     from aelfrice.lock_expiry import (  # noqa: PLC0415
         extract_stated_window,
+        stated_window_attaches_to_memory,
         stated_window_is_ambiguous,
     )
 
     if not detect_directive(content):
         return None
     if stated_window_is_ambiguous(content):
+        return None
+    if not stated_window_attaches_to_memory(content):
         return None
     return extract_stated_window(content)
 
