@@ -147,19 +147,40 @@ def test_every_failing_conclusion_blocks(conclusion: str) -> None:
 # --- inherited behaviour that must survive ------------------------------
 
 
-def test_superseded_cancelled_run_does_not_block(monkeypatch=None) -> None:
+@pytest.mark.parametrize("stale_first", [False, True])
+def test_superseded_cancelled_run_does_not_block(stale_first: bool) -> None:
     """#632: keep the newest row per name, and cancelled is not a failure.
 
-    The stale row is `cancelled` and *newer in list order* than the success,
-    so a implementation that takes the first or last element rather than
-    sorting on `started_at` fails here.
+    Both list orders are exercised, because either one alone is passed by a
+    positional implementation: with the stale row last, first-wins survives;
+    with it first, last-wins survives. Only sorting on `started_at` passes
+    both.
+
+    `failing == []` cannot carry this on its own — `cancelled` is not a
+    failing conclusion, so that assertion is true whichever row is picked.
+    The discriminating assertion is on `latest_per_name`.
     """
+    fresh = _run("pytest (3.12)", "success", started_at="2026-08-06T11:00:00Z")
+    stale = _run("pytest (3.12)", "cancelled", started_at="2026-08-06T10:00:00Z")
     runs = [r for r in _all_required_green() if r["name"] != "pytest (3.12)"]
-    runs.append(_run("pytest (3.12)", "success", started_at="2026-08-06T11:00:00Z"))
-    runs.append(_run("pytest (3.12)", "cancelled", started_at="2026-08-06T10:00:00Z"))
-    verdict = evaluate(runs, REQUIRED)
-    assert verdict["failing"] == []
+    runs.extend([stale, fresh] if stale_first else [fresh, stale])
+
+    assert evaluate(runs, REQUIRED)["failing"] == []
     assert latest_per_name(runs)["pytest (3.12)"]["conclusion"] == "success"
+
+
+def test_a_superseded_failure_is_also_dropped_by_the_dedup() -> None:
+    """The direction where the dedup is load-bearing for `failing`.
+
+    Above, `failing == []` holds either way because `cancelled` is benign.
+    Here the stale row is a genuine `failure`, so taking the wrong row per
+    name puts a green context into `failing` and unlabels a mergeable PR.
+    """
+    runs = [r for r in _all_required_green() if r["name"] != "history-scan"]
+    runs.append(_run("history-scan", "failure", started_at="2026-08-06T10:00:00Z"))
+    runs.append(_run("history-scan", "success", started_at="2026-08-06T11:00:00Z"))
+
+    assert evaluate(runs, REQUIRED)["failing"] == []
 
 
 def test_a_genuine_lone_cancellation_is_not_a_failure_either() -> None:
@@ -231,7 +252,7 @@ def test_contexts_from_several_rulesets_are_unioned() -> None:
 
 
 def test_an_unresolvable_required_set_degrades_the_message_not_the_gate(
-    tmp_path: Path,
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Unknown means gate on MORE, never on less.
 
@@ -248,6 +269,13 @@ def test_an_unresolvable_required_set_degrades_the_message_not_the_gate(
     rules.write_text(json.dumps([{"type": "pull_request", "parameters": {}}]))
 
     assert main(["--rollup", str(rollup), "--rules", str(rules)]) == 0
+    verdict = json.loads(capsys.readouterr().out)
+    assert verdict["failing"] == ["deptry"], (
+        "losing the required set must not widen what passes: a red "
+        "non-required check still gates"
+    )
+    assert verdict["required"] == []
+    assert verdict["failing_required"] == []
 
 
 def test_an_unreadable_payload_still_aborts(tmp_path: Path) -> None:
@@ -295,21 +323,73 @@ def test_the_workflow_calls_the_gate_and_no_longer_greps_every_check_run() -> No
 def test_the_failure_message_distinguishes_required_from_advisory() -> None:
     """The second half of #1397: the message misattributed the cause.
 
-    `required check(s) failed` is kept — it is now *true*, because `fails`
-    is drawn from the required set alone. What makes it honest is that a
-    failing advisory check is reported alongside and explicitly labelled as
-    not gating, rather than being folded into the same list under the same
-    word.
+    The old message said `required check(s) failed` while listing whatever
+    had gone red, so an advisory bot was reported as a required context.
+    The word `required` is now dropped from the unconditional part of the
+    message and applied only to the failures that really are required, with
+    the rest labelled as gating-but-not-required.
     """
     text = _WORKFLOW.read_text()
     assert ".failing_required | join" in text
     assert ".failing_not_required | join" in text
     assert "Not required by the ruleset but still gating" in text
+    assert "required check(s) failed" not in text, (
+        "the unconditional message must not call every failure required — "
+        "that misattribution is the half of #1397 this fixes"
+    )
+
+
+def test_the_workflow_gates_on_failing_not_on_failing_required() -> None:
+    """The design rejected in review must not come back in one word.
+
+    `failing` covers every non-advisory check; `failing_required` is the
+    required set alone. Swapping which one the workflow branches on is the
+    entire required-only design — a one-token edit that demotes 19 real
+    gates, including `migration-policy-check`. Nothing else in the suite
+    distinguishes them, because both fields are correct in the verdict.
+    """
+    text = _WORKFLOW.read_text()
+    assert re.search(r"fails=\$\(echo \"\$\{verdict\}\" \| jq -r '\.failing \| join", text), (
+        "the gating branch must read .failing"
+    )
+    assert not re.search(r"fails=\$\(echo \"\$\{verdict\}\" \| jq -r '\.failing_required", text), (
+        "gating on .failing_required is the required-only design; it demotes "
+        "every non-required check to advisory"
+    )
+
+
+def test_the_gate_imports_only_the_standard_library() -> None:
+    """The workflow runs it as bare `python3`, with no project deps installed.
+
+    Asserted structurally rather than by spawning an interpreter: the test
+    suite's `sys.executable` IS the project venv, so a subprocess run there
+    would import a third-party module happily and prove nothing.
+    """
+    import ast
+
+    source = (_REPO / "scripts" / "merge_train_gate.py").read_text()
+    imported: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            imported.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imported.add(node.module.split(".")[0])
+
+    non_stdlib = sorted(imported - sys.stdlib_module_names - {"__future__"})
+    assert non_stdlib == [], (
+        f"merge_train_gate.py imports non-stdlib module(s) {non_stdlib}; the "
+        f"merge-train runner has no project dependencies installed"
+    )
 
 
 @pytest.mark.timeout(30)
-def test_the_gate_script_runs_under_the_repo_python() -> None:
-    """It runs on a runner with no dependencies installed beyond stdlib.
+def test_the_gate_script_is_invocable_as_a_script() -> None:
+    """A smoke test that the file parses and argparse is wired.
+
+    This does NOT establish the stdlib-only property — `sys.executable` is
+    the project venv, where every dependency is importable. That property is
+    asserted structurally by
+    `test_the_gate_imports_only_the_standard_library`.
 
     Carries its own budget (#1307): a test that spawns a subprocess on the
     suite's 5 s default reports contention as a hang rather than as
