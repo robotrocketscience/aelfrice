@@ -6,7 +6,7 @@ abstract: >
   It records facts, corrections, preferences, and requirements as beliefs
   with Beta-Bernoulli posterior confidence; supports user-locked beliefs
   with sharp decay-floor and demotion-pressure auto-correction; and
-  exposes the same core operations through a CLI, an MCP server, and
+  exposes the same core operations through a CLI and
   Claude Code slash commands.
 type: software
 version: 3.8.0

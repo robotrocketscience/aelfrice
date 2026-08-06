@@ -112,7 +112,7 @@ with:
 # Memory
 
 This project uses aelfrice as the canonical memory store. To save
-something durable, call `aelf:lock` (MCP / slash). Do NOT create
+something durable, call `/aelf:lock`. Do NOT create
 new files under .claude/projects/.../memory/ — those are read-only
 legacy.
 ```
@@ -120,8 +120,8 @@ legacy.
 When this is right:
 - You want one source of truth for new memories.
 - You like the deterministic-replay properties of aelfrice.
-- You're willing to use the MCP tool surface explicitly when you
-  want something durable saved.
+- You're willing to run `/aelf:lock` explicitly when you want
+  something durable saved.
 
 When this is wrong:
 - You depend on the auto-memory's "save proactively without being

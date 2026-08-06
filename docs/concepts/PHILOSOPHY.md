@@ -124,8 +124,8 @@ prompt-injection surface and revert it — silently re-breaking lock
 compliance.
 
 What makes the instruction tier safe is that it is **user-authored by
-construction**: locks are set by explicit user acts (`aelf lock`, the MCP
-equivalent, an `aelf review` verdict), and `aelf promote` moves *origin*,
+construction**: locks are set by explicit user acts (`aelf lock`, the
+`/aelf:lock` slash form, an `aelf review` verdict), and `aelf promote` moves *origin*,
 never `lock_level`. Nothing ingested, inferred, or synthesised reaches that
 tier on its own.
 
@@ -166,7 +166,7 @@ The earlier research line had a much bigger surface — twenty-nine MCP tools, `
 
 ## Lean dependencies, on purpose
 
-Three hard runtime dependencies, each one argued in: `numpy` and `scipy` (v1.5, #148 — the BM25 sparse-matvec retrieval lane, now also the HRR and spectral-graph math) and `snowballstemmer` (v1.7, #154 — Porter stemming). Everything else is Python stdlib plus SQLite (the stdlib already wraps it). Optional extras add capability without entering the default install: `[mcp]` (fastmcp), `[onboard-llm]` (the direct-API classifier SDK), `[archive]` (cryptography), `[benchmarks]` (dev-side adapters).
+Three hard runtime dependencies, each one argued in: `numpy` and `scipy` (v1.5, #148 — the BM25 sparse-matvec retrieval lane, now also the HRR and spectral-graph math) and `snowballstemmer` (v1.7, #154 — Porter stemming). Everything else is Python stdlib plus SQLite (the stdlib already wraps it). Optional extras add capability without entering the default install: `[onboard-llm]` (the direct-API classifier SDK), `[archive]` (cryptography), `[benchmarks]` (dev-side adapters).
 
 Every dependency is maintenance debt and attack surface. Heavier machinery — vector indices, embedding services, neural rerankers — earns its way in only when an experiment shows the existing stack is the bottleneck.
 

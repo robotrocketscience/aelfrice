@@ -1527,7 +1527,7 @@ class BM25IndexCache:
         if self._index is not None and self._generation is not None:
             # Revalidate against the durable counter: the in-process
             # invalidation callback only covers own-process mutations,
-            # so without this a long-running process (MCP server) would
+            # so without this a long-running process would
             # never see a sibling process's writes (the default-on
             # ingest hooks). One indexed point-read per get(); the
             # pre-#1135 behavior was a full rebuild per query.

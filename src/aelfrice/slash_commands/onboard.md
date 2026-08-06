@@ -8,7 +8,7 @@ allowed-tools:
 ---
 <objective>
 Onboard a project into aelfrice using LLM-quality classification driven
-by host subagent tasks — no separate API key, no MCP roundtrip, no extra
+by host subagent tasks — no separate API key, no extra
 billing. Classification runs on a low-cost model by default and is
 user-selectable at run time (step 3a). Falls back to the regex
 classifier on `--no-subagents` or when the subagent tool is unavailable.

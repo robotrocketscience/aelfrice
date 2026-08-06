@@ -63,9 +63,6 @@ body:
       multiple: true
       options:
         - aelf CLI
-        - MCP server (Claude Code)
-        - MCP server (Codex)
-        - MCP server (other host)
         - Slash commands in Claude Code
         - Pure handler import (tests/embedding)
     validations:

@@ -2,7 +2,7 @@
 
 Kept here (not in ``aelfrice.wonder.models``) because ``WonderResult``
 is the CLI / Python API surface -- it lives at the boundary between the
-wonder internals and callers (MCP, CLI, tests).  ``Phantom`` and the
+wonder internals and callers (CLI, tests).  ``Phantom`` and the
 strategy-level dataclasses remain in the wonder sub-package.
 """
 from __future__ import annotations
