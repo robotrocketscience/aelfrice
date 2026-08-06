@@ -1,0 +1,317 @@
+{
+  "issue": 1366,
+  "corpus": {
+    "source": "session transcript archive (untruncated user turns)",
+    "prompts": 500,
+    "median_prompt_chars": 714,
+    "max_prompt_chars": 653519,
+    "prompts_over_audit_prefix_cap": 334,
+    "audit_prompt_prefix_cap": 200,
+    "why_not_hook_audit": "hook_audit truncates prompt_prefix at AUDIT_PROMPT_PREFIX_CAP = 200 (src/aelfrice/hook.py); prompt length gates the expansion gate, so a truncated corpus under-fires expansion-dependent lanes \u2014 see truncation_control for the measured effect"
+  },
+  "environment": {
+    "cleared_env_vars": 0,
+    "env_prefixes_cleared": [
+      "AELFRICE_",
+      "AELF_"
+    ]
+  },
+  "observable_lanes": [
+    {
+      "lane": "l0_locked",
+      "telemetry_field": "locked",
+      "resolver": "(unconditional \u2014 no flag)",
+      "reported_enabled": true,
+      "fired_calls": 500,
+      "fire_rate": 1.0,
+      "note": "",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "l25_entity_index",
+      "telemetry_field": "l25",
+      "resolver": "is_entity_index_enabled()",
+      "reported_enabled": true,
+      "fired_calls": 379,
+      "fire_rate": 0.758,
+      "note": "",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "l1_bm25",
+      "telemetry_field": "l1",
+      "resolver": "(unconditional \u2014 no flag)",
+      "reported_enabled": true,
+      "fired_calls": 500,
+      "fire_rate": 1.0,
+      "note": "",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "l1_bm25f_anchors",
+      "telemetry_field": "bm25f_used",
+      "resolver": "resolve_use_bm25f_anchors()",
+      "reported_enabled": true,
+      "fired_calls": 500,
+      "fire_rate": 1.0,
+      "note": "bm25f_used records the resolved L1 implementation, not a packed-hit count, so it tracks the flag by construction: its fire rate restates the resolver and is not evidence that the BM25F scorer produced anything.",
+      "tracks_flag_by_construction": true
+    },
+    {
+      "lane": "bfs_multihop",
+      "telemetry_field": "bfs",
+      "resolver": "is_bfs_enabled()",
+      "reported_enabled": false,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "hrr_expand",
+      "telemetry_field": "hrr_expand",
+      "resolver": "is_hrr_expand_enabled()",
+      "reported_enabled": false,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "temporal_spine",
+      "telemetry_field": "temporal_spine",
+      "resolver": "is_temporal_spine_enabled()",
+      "reported_enabled": true,
+      "fired_calls": 209,
+      "fire_rate": 0.418,
+      "note": "",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "heat_kernel",
+      "telemetry_field": "heat_used",
+      "resolver": "is_heat_kernel_enabled()",
+      "reported_enabled": false,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "heat_used is True only when the heat branch rewrote the L1 ordering, not when the flag resolved True (#1162).",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "posterior_weight_rerank",
+      "telemetry_field": "posterior_weight",
+      "resolver": "resolve_posterior_weight() > 0",
+      "reported_enabled": true,
+      "fired_calls": 500,
+      "fire_rate": 1.0,
+      "note": "posterior_weight carries the resolved weight, not a count of rerank decisions \u2014 `LaneTelemetry(posterior_weight=...)` is fed by `resolve_posterior_weight(...)` at the same call site. Its fire rate is the flag restated; nothing here observes the rerank doing work.",
+      "tracks_flag_by_construction": true
+    },
+    {
+      "lane": "expansion_gate",
+      "telemetry_field": "expansion_gate_reason",
+      "resolver": "(unconditional \u2014 no flag)",
+      "reported_enabled": true,
+      "fired_calls": 500,
+      "fire_rate": 1.0,
+      "note": "all six `should_run_expansion` return paths set a non-empty reason, so this predicate is constant-True inside `retrieve_with_tiers` and its 1.0000 rate is uninformative. The gate's real signal is the reason histogram below, not this row.",
+      "tracks_flag_by_construction": true
+    },
+    {
+      "lane": "type_aware_compression",
+      "telemetry_field": "compression_renders",
+      "resolver": "resolve_use_type_aware_compression()",
+      "reported_enabled": true,
+      "fired_calls": 212,
+      "fire_rate": 0.424,
+      "note": "counts only beliefs the compressor actually SHORTENED. A `STRATEGY_VERBATIM` return costs exactly the uncompressed token count, so counting it would report a fire for a call that changed nothing \u2014 held to the same standard as `entity_persist_demoted`.",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "intentional_clustering",
+      "telemetry_field": "cluster_packed",
+      "resolver": "resolve_use_intentional_clustering()",
+      "reported_enabled": true,
+      "fired_calls": 500,
+      "fire_rate": 1.0,
+      "note": "counts beliefs the cluster pack selected. The max-coverage selector takes precedence over this arm when both resolve on, so a zero here can mean 'lost the precedence contest' as well as 'off' \u2014 read it against max_coverage_pack.",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "max_coverage_pack",
+      "telemetry_field": "max_coverage_packed",
+      "resolver": "is_max_coverage_pack_enabled()",
+      "reported_enabled": false,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "entity_persist_demote",
+      "telemetry_field": "entity_persist_demoted",
+      "resolver": "is_entity_persist_demote_enabled()",
+      "reported_enabled": true,
+      "fired_calls": 472,
+      "fire_rate": 0.944,
+      "note": "counts beliefs whose score the demotion actually moved; a belief with no extracted entities, or with S1 \u2192 1, clamps to 0.0 and keeps the lane-off ordering.",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "supersession_demote",
+      "telemetry_field": "supersession_demoted",
+      "resolver": "is_supersession_demote_enabled()",
+      "reported_enabled": false,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "origin_tiebreak",
+      "telemetry_field": "origin_tiebreak_decided",
+      "resolver": "is_origin_tiebreak_enabled()",
+      "reported_enabled": false,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "counts adjacent pairs in the final L1 order that the origin term decided (equal composite score, different origin priority) \u2014 not that the sort key carried the term.",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "gamma_posterior_temperature",
+      "telemetry_field": "gamma_rerank_scored",
+      "resolver": "resolve_use_gamma_posterior_temperature()",
+      "reported_enabled": false,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "zeta_posterior_rerank",
+      "telemetry_field": "zeta_rerank_scored",
+      "resolver": "resolve_use_zeta_posterior_rerank()",
+      "reported_enabled": false,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "",
+      "tracks_flag_by_construction": false
+    },
+    {
+      "lane": "fan_effect",
+      "telemetry_field": "fan_effect_ranked",
+      "resolver": "is_fan_effect_enabled()",
+      "reported_enabled": false,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "recorded where the fan-weighted entity ordering is consumed rather than where the flag resolves, but the only thing between the two is whether L2.5 returned any hits at all \u2014 treat a non-zero count as 'flag on and L2.5 non-empty', not as evidence the fan weighting reordered anything.",
+      "tracks_flag_by_construction": true
+    },
+    {
+      "lane": "hrr_structural",
+      "telemetry_field": "hrr_structural_hit",
+      "resolver": "is_hrr_structural_enabled()",
+      "reported_enabled": true,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "True only when the marker parsed AND the struct index answered, i.e. when the lane took the whole call; the two fall-through returns record nothing. A zero here is a fact about the corpus, not a reachability verdict: the lane is reachable (a `KIND:target` prompt routes through it, pinned by tests/test_retrieve_v2_hrr_structural.py), and no natural-language prompt parses as a structural marker. 'Enabled but never fires on real prompts' is the finding; 'unreachable from src/' is a different claim this does not support.",
+      "tracks_flag_by_construction": false
+    }
+  ],
+  "lanes_whose_field_tracks_the_flag": [
+    "l1_bm25f_anchors",
+    "posterior_weight_rerank",
+    "expansion_gate",
+    "fan_effect"
+  ],
+  "unobservable_lanes": [
+    {
+      "lane": "bm25f_per_field",
+      "resolver": "resolve_bm25f_per_field()",
+      "reported_enabled": false,
+      "observable": false,
+      "reason": "no LaneTelemetry field records this lane firing: the leaf is the two-field scorer inside `aelfrice.bm25`, below the module that owns LaneTelemetry; recording there means threading a channel across the module boundary, which is a larger change than the record-at-site extension this probe shipped"
+    },
+    {
+      "lane": "bm25_k3_query_saturation",
+      "resolver": "resolve_bm25_k3() > 0",
+      "reported_enabled": false,
+      "observable": false,
+      "reason": "no LaneTelemetry field records this lane firing: same leaf as bm25f_per_field \u2014 the k3 saturation term is applied inside the scorer. Note the shipped default is 0.0, at which the boost arm is a verified no-op, so a firing record would be about an arm nothing reaches"
+    },
+    {
+      "lane": "exploration_slots",
+      "resolver": "is_exploration_enabled()",
+      "reported_enabled": false,
+      "observable": false,
+      "reason": "no LaneTelemetry field records this lane firing: resolved and applied in `aelfrice.hook`, outside the retrieval call LaneTelemetry describes; a field here would be recorded by a different process stage than the one it is filed under"
+    }
+  ],
+  "diff": {
+    "enabled_but_never_fired": [
+      "hrr_structural"
+    ],
+    "fired_but_not_reported_enabled": []
+  },
+  "diff_sensitivity": {
+    "enabled_but_never_fired": {
+      "can_be_populated_by_this_instrument": true,
+      "why": "A lane's resolver can report enabled while the branch that writes its counter never runs \u2014 the flag resolves against env/TOML/default with no kwarg, but `retrieve()` passes an explicit kwarg to some lanes and pins others OFF. The resolver and the counter can therefore disagree, so an entry here is a measurement."
+    },
+    "fired_but_not_reported_enabled": {
+      "can_be_populated_by_this_instrument": false,
+      "why": "Structurally unreachable on the current wiring, for every lane in the table. Each counter is written only inside a branch guarded by the same resolver `reported` queries, and the kwarg `retrieve()` passes is either None (so the no-kwarg resolver gives the same answer) or False (which can only produce the *other* direction). The unconditional lanes report True by definition and cannot appear here either. **An empty set in this direction is a property of the instrument, not a null result** \u2014 reporting it as a finding would be the R3 IDF-clip failure mode, where an unreachable arm was read as a measured absence.",
+      "what_would_make_it_reachable": "a caller that forces a lane ON against its resolver (an explicit `True` kwarg from `retrieve()` / `retrieve_v2`, or a branch guarded by a different flag than the one the lane is filed under). The direction is kept precisely so that re-wiring shows up here instead of going unnoticed."
+    }
+  },
+  "trim_seam": {
+    "temporal_spine_candidate_calls": 500,
+    "temporal_spine_packed_calls": 209,
+    "l1_trimmed_calls": 342
+  },
+  "expansion_gate": {
+    "reason_histogram": {
+      "broad:long": 216,
+      "broad:long,no-markers": 4,
+      "broad:no-markers": 236,
+      "broad:no-markers,question-form": 2,
+      "narrow": 42
+    },
+    "skipped_bfs_calls": 0
+  },
+  "empty_output_calls": 0,
+  "truncation_control": {
+    "prompt_chars": 200,
+    "prompts": 500,
+    "lanes_whose_fire_count_moved": {
+      "entity_persist_demote": {
+        "full": 472,
+        "truncated": 473,
+        "delta": 1
+      },
+      "l25_entity_index": {
+        "full": 379,
+        "truncated": 483,
+        "delta": 104
+      },
+      "temporal_spine": {
+        "full": 209,
+        "truncated": 192,
+        "delta": -17
+      },
+      "type_aware_compression": {
+        "full": 212,
+        "truncated": 3,
+        "delta": -209
+      }
+    },
+    "lanes_falsely_dead_under_truncation": [],
+    "expansion_gate_reason_histogram": {
+      "broad:no-markers": 486,
+      "broad:no-markers,question-form": 2,
+      "narrow": 12
+    },
+    "temporal_spine_candidate_calls": 500,
+    "temporal_spine_packed_calls": 192
+  }
+}

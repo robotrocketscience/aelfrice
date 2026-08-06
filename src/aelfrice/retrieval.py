@@ -76,7 +76,11 @@ from aelfrice.clustering import (
     pack_max_coverage,
     pack_with_clusters,
 )
-from aelfrice.compression import CompressedBelief, compress_for_retrieval
+from aelfrice.compression import (
+    STRATEGY_VERBATIM,
+    CompressedBelief,
+    compress_for_retrieval,
+)
 # #1304: the discovery walk moved to its own stdlib-only module so
 # `expansion_gate`, `deferred_feedback` and `hook` can share the memo
 # without importing this file. Re-exported here under the names they had
@@ -124,6 +128,8 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     # dead import: `HRRStructIndex` was listed here and CodeQL flagged it,
     # correctly — its one annotation is `idx: HRRStructIndex` inside
     # `_route_structural_query`, which imports it locally.
+    from collections.abc import Sequence
+
     from aelfrice.bm25 import BM25IndexCache
     from aelfrice.graph_spectral import GraphEigenbasisCache
     from aelfrice.hrr_index import HRRStructIndexCache
@@ -1156,7 +1162,14 @@ def _supersession_penalty(
     """
     if superseded is None or belief_id not in superseded:
         return 0.0
-    return min(0.0, math.log(max(factor, SUPERSESSION_FACTOR_EPS)))
+    penalty = min(0.0, math.log(max(factor, SUPERSESSION_FACTOR_EPS)))
+    if penalty < 0.0:
+        # #1366 leaf record. Only a penalty that actually moves the score
+        # counts as the lane firing: `factor = 1.0` resolves the flag on
+        # and demotes nothing, and calling that a firing is the same
+        # conflation as reading the resolver.
+        _record_lane_fired("supersession_demoted")
+    return penalty
 
 
 def _env_origin_tiebreak_override() -> bool | None:
@@ -2913,6 +2926,12 @@ def _route_structural_query(
         # marker string — better than returning an empty result.
         return None
 
+    # #1366 leaf record. Past this point the structural lane owns the
+    # call: the marker parsed *and* the index answered. The two earlier
+    # returns are fall-throughs, and recording on either would report a
+    # lane firing on every non-marker prompt.
+    _record_lane_fired("hrr_structural_hit")
+
     locked: list[Belief] = (
         list(store.list_locked_beliefs()) if include_locked else []
     )
@@ -3308,6 +3327,34 @@ class LaneTelemetry:
     # caller constructs a `GraphEigenbasisCache`. This field is what
     # turns that from a grep into a runtime fact.
     heat_used: bool = False
+    # #1366 record-at-site lane firing. Every field below is written at
+    # the leaf where the lane's work happens (`_record_lane_fired`) —
+    # never derived from a tier count, never re-resolved from the flag.
+    # That is the whole point: a field derived from either keeps
+    # reporting the old answer after the lane is re-wired, which is how
+    # the heat-kernel lane, `edge_rerank` and the R3 IDF-clip arm all
+    # stayed "enabled" for releases after they stopped being reachable.
+    # These are per-call counters, not per-belief attribution: the value
+    # is how many units of work the lane did on this call, with no map
+    # back to which belief got them. All default to the did-not-fire
+    # value, so callers built against the pre-#1366 surface are
+    # unaffected and nothing is persisted.
+    #
+    # `hrr_structural_hit` is the one bool: the structural lane either
+    # takes the whole call or falls through, so a count would only ever
+    # be 0 or 1. It is written by `retrieve_v2` on the early-return path
+    # (`retrieve_with_tiers` never runs when the lane hits, so it can
+    # only ever leave this False — which is the honest answer there).
+    compression_renders: int = 0
+    cluster_packed: int = 0
+    max_coverage_packed: int = 0
+    entity_persist_demoted: int = 0
+    supersession_demoted: int = 0
+    origin_tiebreak_decided: int = 0
+    gamma_rerank_scored: int = 0
+    zeta_rerank_scored: int = 0
+    fan_effect_ranked: int = 0
+    hrr_structural_hit: bool = False
 
 
 # Per-process snapshot of the most recent retrieval call. Test-
@@ -3348,6 +3395,82 @@ def _record_heat_used(used: bool) -> None:
     """Record whether the heat-kernel branch fired on this L1 pass."""
     global _LAST_HEAT_USED
     _LAST_HEAT_USED = used
+
+
+# #1366. Per-call leaf counters for the lanes whose work is invisible to
+# the tier counts. Same contract as `_LAST_HEAT_USED`, generalised: the
+# only place an answer comes from is the site that does the work.
+LANE_FIRING_FIELDS: tuple[str, ...] = (
+    "compression_renders",
+    "cluster_packed",
+    "max_coverage_packed",
+    "entity_persist_demoted",
+    "supersession_demoted",
+    "origin_tiebreak_decided",
+    "gamma_rerank_scored",
+    "zeta_rerank_scored",
+    "fan_effect_ranked",
+    "hrr_structural_hit",
+)
+"""Names of the `LaneTelemetry` fields fed by `_record_lane_fired`.
+
+Kept as a tuple so a test can assert every one of them is a real
+`LaneTelemetry` field and that no site records under a name the
+telemetry never reads — a typo'd key would otherwise leave a lane
+silently reading as dead, which is the finding this surface exists to
+avoid manufacturing.
+"""
+
+_LANE_FIRINGS: dict[str, int] = {}
+
+
+def _reset_lane_firings() -> None:
+    """Zero the per-call leaf counters. Called once per retrieval call,
+    before any lane runs — the counters are per call, so a stale value
+    carried in from the previous call would attribute one call's work to
+    the next."""
+    _LANE_FIRINGS.clear()
+
+
+def _record_lane_fired(field: str, n: int = 1) -> None:
+    """Record `n` units of lane work at this call site.
+
+    Call this *at the leaf where the work happens*. Do not call it from
+    a flag-resolution site and do not compute `n` from a tier count:
+    either would reproduce the "reported enabled, nothing observed
+    firing" conflation instead of measuring past it.
+    """
+    if n:
+        _LANE_FIRINGS[field] = _LANE_FIRINGS.get(field, 0) + n
+
+
+def _lane_fired(field: str) -> int:
+    """Read one per-call leaf counter."""
+    return _LANE_FIRINGS.get(field, 0)
+
+
+def _origin_tiebreak_decisions(
+    keyed: Sequence[tuple[float, str, Belief]],
+) -> int:
+    """How many adjacent pairs the origin tie-break actually decided.
+
+    #1366. `use_origin_tiebreak` resolving True says the sort *key*
+    carried an origin term; it does not say the term changed anything. A
+    pair is decided by the tie-break only when the composite scores are
+    equal — so the primary term is silent — and the origin priorities
+    differ, so the secondary term rather than the id break picked the
+    order. Counting those is the difference between "the flag is on" and
+    "the lane did work", which is the distinction #1366 exists to draw.
+
+    `keyed` must already be sorted; adjacency is what makes a pair one
+    the sort had to decide.
+    """
+    return sum(
+        1
+        for (s_a, _, b_a), (s_b, _, b_b) in zip(keyed, keyed[1:], strict=False)
+        if s_a == s_b
+        and _origin_priority(b_a.origin) != _origin_priority(b_b.origin)
+    )
 
 
 def warn_placeholder_flags(start: Path | None = None) -> list[str]:
@@ -3507,6 +3630,13 @@ def _l25_hits(
         keys, limit=l25_limit, origin_tiebreak=use_origin_tiebreak,
         fan_effect=use_fan_effect,
     )
+    if use_fan_effect:
+        # #1366 leaf record, at the site that *consumes* the fan-weighted
+        # ordering rather than where the flag resolves. An empty `hits`
+        # means the lane produced no ordering for this call to consume,
+        # and records nothing — which is the difference between the flag
+        # being on and the lane doing work.
+        _record_lane_fired("fan_effect_ranked", len(hits))
     out: list[Belief] = []
     used = 0
     for bid, _overlap in hits:
@@ -3594,10 +3724,16 @@ def _entity_persist_penalty(
         return 0.0
     # Clamp at 0 so this is a pure demotion, never a promotion — a
     # well-grounded belief (S1 → 1) is neutral, not boosted.
-    return min(
+    penalty = min(
         0.0,
         ENTITY_PERSIST_DEMOTE_WEIGHT * math.log(s1 + ENTITY_PERSIST_DEMOTE_EPS),
     )
+    if penalty < 0.0:
+        # #1366 leaf record. A belief with S1 → 1 clamps to 0.0 and its
+        # ordering is the lane-off ordering, so it is not a firing; the
+        # lane fired on the beliefs it actually moved.
+        _record_lane_fired("entity_persist_demoted")
+    return penalty
 
 
 def _store_scoped_utterance_prior(store: MemoryStore) -> UtterancePrior:
@@ -4012,10 +4148,15 @@ def _l1_hits(
                     ),
                 )
             elif gamma_temperature is not None:
+                # #1366 leaf record: inside the branch, so a call where
+                # heat dominates γ (the branch above wins) records
+                # nothing — which is the truth about that call.
+                _record_lane_fired("gamma_rerank_scored")
                 s = gamma_posterior_score(
                     -raw, b.alpha, b.beta, gamma_temperature,
                 )
             elif zeta_params is not None:
+                _record_lane_fired("zeta_rerank_scored")
                 ζα, ζβ, ζscale = zeta_params
                 s = zeta_posterior_score(
                     -raw, ζα, ζβ, ζscale,
@@ -4035,6 +4176,13 @@ def _l1_hits(
         if use_origin_tiebreak:
             keyed.sort(
                 key=lambda x: (-x[0], -_origin_priority(x[2].origin), x[1])
+            )
+            # #1366 leaf record. Counted *after* the sort, from the order
+            # the sort produced: the number of adjacent pairs the origin
+            # term actually decided. Recording `use_origin_tiebreak`
+            # here instead would just be the flag with extra steps.
+            _record_lane_fired(
+                "origin_tiebreak_decided", _origin_tiebreak_decisions(keyed),
             )
         else:
             keyed.sort(key=lambda x: (-x[0], x[1]))
@@ -4110,10 +4258,13 @@ def _l1_hits(
                 ),
             )
         elif gamma_temperature is not None:
+            # #1366 leaf record — see the BM25F arm above.
+            _record_lane_fired("gamma_rerank_scored")
             s = gamma_posterior_score(
                 bm25_raw, b.alpha, b.beta, gamma_temperature,
             )
         elif zeta_params is not None:
+            _record_lane_fired("zeta_rerank_scored")
             ζα, ζβ, ζscale = zeta_params
             s = zeta_posterior_score(
                 bm25_raw, ζα, ζβ, ζscale,
@@ -4138,6 +4289,10 @@ def _l1_hits(
     if use_origin_tiebreak:
         keyed.sort(
             key=lambda x: (-x[0], -_origin_priority(x[2].origin), x[1])
+        )
+        # #1366 leaf record — see the BM25F arm above.
+        _record_lane_fired(
+            "origin_tiebreak_decided", _origin_tiebreak_decisions(keyed),
         )
     else:
         keyed.sort(key=lambda x: (-x[0], x[1]))
@@ -4381,6 +4536,10 @@ def retrieve_with_tiers(
     from aelfrice.utterance_prior import resolve_utterance_prior_weight  # noqa: PLC0415
 
     global _LAST_TELEMETRY
+    # #1366: zero the leaf counters before any lane runs. They are
+    # per-call, so a value carried in from the previous call would
+    # attribute that call's work to this one.
+    _reset_lane_firings()
     # #1143 clock seam: read the wall clock at most once per call.
     # `retrieve_v2` threads its own pinned `now_ts` through here, so a
     # pinned outer call performs no wall-clock read anywhere in the
@@ -4452,6 +4611,27 @@ def retrieve_with_tiers(
         cb = compress_for_retrieval(
             b, locked=(b.lock_level == LOCK_USER),
         )
+        # #1366 leaf record: one per `_cost` call whose render came back
+        # shortened — NOT one per belief. `_cost` is the shared `cost_fn`
+        # and is unmemoised, so a single belief is costed several times
+        # per call: once inside the packer, again in the `used += _cost(b)`
+        # accumulate loop, and once more for each candidate the budget
+        # loop rejects. Measured on 6 snapshot-class beliefs: 12 in the
+        # cluster arm, 29 in max_coverage. The magnitude is therefore
+        # arm-dependent and is NOT comparable with the adjacent
+        # `cluster_packed` / `max_coverage_packed` fields, which are exact
+        # belief counts. Only the `> 0` predicate is consumed (the probe's
+        # `observed=` lambda), and that is true iff at least one belief was
+        # shortened, which is the property this field exists to report.
+        # `STRATEGY_VERBATIM` returns `rendered_tokens =
+        # _estimate_tokens(content)` (compression.py:143-149), which is
+        # byte-identical to the uncompressed `_belief_tokens` at :707 — so
+        # counting it would report a fire for a call that changed no cost,
+        # and the rate would restate "the flag is on" the way the three
+        # `tracks_flag` lanes do. Held to the same standard as
+        # `entity_persist_demoted`: record only when the work landed.
+        if cb.strategy != STRATEGY_VERBATIM:
+            _record_lane_fired("compression_renders")
         return cb.rendered_tokens
 
     locked: list[Belief] = store.list_locked_beliefs()
@@ -4550,6 +4730,10 @@ def retrieve_with_tiers(
             term_weights=cov_weights,
             cost_fn=_cost,
         )
+        # #1366 leaf record: what this selector actually packed. Reaching
+        # the branch is not firing — a zero budget reaches it and packs
+        # nothing.
+        _record_lane_fired("max_coverage_packed", len(l1_packed))
         for b in l1_packed:
             out.append(b)
             used += _cost(b)
@@ -4575,6 +4759,8 @@ def retrieve_with_tiers(
             cluster_diversity_target=DEFAULT_CLUSTER_DIVERSITY_TARGET,
             cost_fn=_cost,
         )
+        # #1366 leaf record — see the max-coverage arm above.
+        _record_lane_fired("cluster_packed", len(l1_packed))
         for b in l1_packed:
             out.append(b)
             used += _cost(b)
@@ -4718,6 +4904,21 @@ def retrieve_with_tiers(
         temporal_spine=len(temporal_spine_ids_list),
         temporal_spine_candidates=n_spine_candidates,
         heat_used=heat_used,
+        # #1366. Read straight off the leaf counters — nothing here is
+        # recomputed from a flag or a tier count, so a lane that stops
+        # being reachable stops reporting. `hrr_structural_hit` is
+        # deliberately absent: the structural lane returns from
+        # `retrieve_v2` before this function runs, so its honest value
+        # here is the field default, False.
+        compression_renders=_lane_fired("compression_renders"),
+        cluster_packed=_lane_fired("cluster_packed"),
+        max_coverage_packed=_lane_fired("max_coverage_packed"),
+        entity_persist_demoted=_lane_fired("entity_persist_demoted"),
+        supersession_demoted=_lane_fired("supersession_demoted"),
+        origin_tiebreak_decided=_lane_fired("origin_tiebreak_decided"),
+        gamma_rerank_scored=_lane_fired("gamma_rerank_scored"),
+        zeta_rerank_scored=_lane_fired("zeta_rerank_scored"),
+        fan_effect_ranked=_lane_fired("fan_effect_ranked"),
     )
     return out, locked_ids_list, l25_ids_list, l1_ids_list, bfs_chains
 
@@ -4871,6 +5072,10 @@ def retrieve_v2(
     # unknown-target, or flag OFF) so the textual lane handles the
     # call.
     if is_hrr_structural_enabled(use_hrr_structural):
+        # #1366: zero the leaf counters here too. This branch runs before
+        # `retrieve_with_tiers` does its own reset, and on a hit it
+        # returns without ever reaching that reset.
+        _reset_lane_firings()
         struct_result = _route_structural_query(
             store, query, hrr_struct_index_cache,
             top_k=l1_limit,
@@ -4878,6 +5083,16 @@ def retrieve_v2(
             budget=budget,
         )
         if struct_result is not None:
+            # #1366: the structural lane took the whole call, so
+            # `retrieve_with_tiers` never runs and never publishes
+            # telemetry. Before this, `last_lane_telemetry()` on this
+            # path returned the *previous* call's counters — a stale
+            # snapshot read as the current one. Publish the honest one:
+            # the structural lane fired, no textual tier ran.
+            _reset_last_telemetry(LaneTelemetry(
+                locked=len(struct_result.locked_ids),
+                hrr_structural_hit=_lane_fired("hrr_structural_hit") > 0,
+            ))
             return struct_result
 
     effective_now_ts = now_ts if now_ts is not None else int(time.time())
