@@ -366,6 +366,11 @@ def clamp_ghost_alphas(
     params.extend(_eligibility_params(created_before))
     params.append(_NO_LIMIT if limit is None else int(limit))
 
+    # The query text is a module constant assembled from string literals only
+    # (_GHOST_SELECT_SQL); every variable part is a bound `?`, including the
+    # origin set, which travels as one JSON array read by json_each. The
+    # concatenation the scanner flags therefore cannot carry untrusted input.
+    # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query
     rows = conn.execute(_GHOST_SELECT_SQL, params).fetchall()
     matched = len(rows)
     sample = [
@@ -399,6 +404,9 @@ def clamp_ghost_alphas(
             # reversible-audit invariant).
             recheck_params: list[object] = [r["id"], target_alpha]
             recheck_params.extend(_eligibility_params(created_before))
+            # Same shape as the selector above: _GHOST_RECHECK_SQL is literal
+            # text and every variable part is bound.
+            # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query
             current = conn.execute(_GHOST_RECHECK_SQL, recheck_params).fetchone()
             if current is None:
                 conn.execute("ROLLBACK")
