@@ -259,3 +259,75 @@ def test_extract_returns_value_slots_type() -> None:
 def test_enum_slot_dataclass_round_trip() -> None:
     e = EnumSlot(category="execution_mode", group_id="async", member="async")
     assert (e.category, e.group_id, e.member) == ("execution_mode", "async", "async")
+
+
+# ---------------------------------------------------------------------------
+# Extraction order determinism (#1365 AC4)
+# ---------------------------------------------------------------------------
+
+# Subprocess-driven: one interpreter has one PYTHONHASHSEED, so an
+# in-process assertion structurally cannot see this defect. The global
+# `timeout = 5` in pyproject.toml is calibrated for unit tests; four
+# interpreter starts are not unit-sized work.
+_HASHSEED_BUDGET_SECONDS = 60
+
+# Several members of ONE group must match, or the ordering is stable by
+# accident: members of different categories are ordered by ENUM_VOCAB's
+# own insertion order, which was never randomised.
+_MULTI_MEMBER_TEXT = (
+    "the run is nondeterministic and stochastic and also non-deterministic"
+)
+
+
+@pytest.mark.timeout(_HASHSEED_BUDGET_SECONDS)
+def test_enum_extraction_order_is_stable_across_hash_seeds() -> None:
+    """`ValueSlots.enum` order must not depend on PYTHONHASHSEED.
+
+    `_ENUM_MEMBER_INDEX` is built by iterating the `ENUM_VOCAB` groups,
+    which are frozensets. Iterated directly, string hash randomisation
+    seeds the dict in a per-process order, and `_extract_enums` appends
+    matches in the order it walks that dict -- so the enum half of
+    `ValueSlots` came out differently in different processes. Measured
+    before the fix: five distinct orderings across eight seeds.
+
+    Latent for the conflict *set*, which is order-independent. Not latent
+    for the rendered annotation naming which lock a belief conflicts with
+    (#1365), where the order picks what the agent is shown.
+
+    Asserts the orderings AGREE rather than pinning one literal, so the
+    test keeps its meaning when a vocabulary entry is added.
+    """
+    import subprocess
+    import sys
+
+    script = (
+        "from aelfrice.value_compare import extract_values;"
+        f"print([e.member for e in extract_values({_MULTI_MEMBER_TEXT!r}).enum])"
+    )
+    seeds = ["1", "2", "3", "4"]
+    orderings = set()
+    for seed in seeds:
+        proc = subprocess.run(  # noqa: S603
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=True,
+            # Explicit per-call bound, not just the pytest budget above:
+            # `tests/test_test_termination_policy.py` requires every
+            # blocking call in the suite to carry its own exit, so a hung
+            # child reports as a timeout here rather than consuming the
+            # whole test budget and reading as a slow test.
+            timeout=_HASHSEED_BUDGET_SECONDS // len(seeds),
+            env={"PYTHONHASHSEED": seed, "PATH": "", "HOME": ""},
+        )
+        orderings.add(proc.stdout.strip())
+
+    assert len(orderings) == 1, (
+        "enum extraction order varies with PYTHONHASHSEED; "
+        f"{len(orderings)} orderings across {len(seeds)} seeds:\n  "
+        + "\n  ".join(sorted(orderings))
+    )
+    # The scenario must actually exercise the multi-member case, or the
+    # assertion above is satisfied by a one-element list.
+    (only,) = orderings
+    assert only.count("'") >= 6, f"scenario stopped matching >=3 members: {only}"

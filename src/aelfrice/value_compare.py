@@ -138,11 +138,21 @@ ENUM_VOCAB: Final[dict[str, tuple[frozenset[str], ...]]] = {
 # Reverse lookup: member token → (category, group_id). The group_id
 # is the alphabetically-first member of its group, used as a stable
 # identifier in conflict reporting. Built once at import.
+#
+# `sorted(group)` in the innermost clause, not plain `group`: the groups
+# are frozensets, so iterating them directly seeds this dict in string-hash
+# order, which PYTHONHASHSEED varies per process. `_extract_enums` walks
+# this dict and appends matches in the order it finds them, so the enum
+# half of `ValueSlots` came out in a different order in different
+# processes — measured, 5 distinct orderings across 8 seeds for one input
+# where several members of one group match. The conflict *set* is
+# order-independent, which is why this stayed latent; the rendered
+# annotation that names a conflicting lock (#1365) is not.
 _ENUM_MEMBER_INDEX: Final[dict[str, tuple[str, str]]] = {
     member: (category, sorted(group)[0])
     for category, groups in ENUM_VOCAB.items()
     for group in groups
-    for member in group
+    for member in sorted(group)
 }
 
 
