@@ -202,8 +202,33 @@ def test_format_pluralizes_correctly() -> None:
         _mk("B1", "x", type_=BELIEF_CORRECTION),
         _mk("B2", "y", type_=BELIEF_CORRECTION),
     ])
-    assert "1 correction" in one
-    assert "2 corrections" in many
+    # "belief", not "correction": since #1315 the population includes
+    # windowed directives, which are usually `factual`/`requirement`.
+    # The subject and its verb have to agree, which the pre-#1315
+    # wording ("1 correction … that aren't locked") did not.
+    assert "1 belief in this session that isn't locked" in one
+    assert "2 beliefs in this session that aren't locked" in many
+
+
+def test_format_offers_autolock_only_for_the_population_it_covers() -> None:
+    """`AELF_AUTOLOCK_CORRECTIONS` does not cover the #1315 arm.
+
+    Advertising it unconditionally pointed a user whose only candidate is
+    a windowed directive at a flag that leaves the list exactly as it is
+    — and, before the `stop()` fall-through fix, at one that suppressed
+    the list entirely.
+    """
+    correction = _format_stop_prompt(
+        [_mk("B1", "x", type_=BELIEF_CORRECTION)])
+    assert "AELF_AUTOLOCK_CORRECTIONS=1" in correction
+
+    # `_mk` defaults to a factual belief with a non-agent origin, which is
+    # exactly a #1315-only candidate: not correction-class by type or by
+    # origin, admitted solely because it states its own window.
+    windowed = _format_stop_prompt(
+        [_mk("B2", "Always use tabs. Remember this for the next week.")])
+    assert "--for 1w" in windowed, "fixture must be a #1315 candidate"
+    assert "AELF_AUTOLOCK_CORRECTIONS" not in windowed
 
 
 def test_format_truncates_long_content() -> None:
