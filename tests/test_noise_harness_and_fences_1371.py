@@ -28,6 +28,8 @@ HARNESS_SCAFFOLDING = [
     "<command-message>clear</command-message>",
     "<command-args></command-args>",
     "<local-command-stdout></local-command-stdout>",
+    "<local-command-caveat>Caveat: the messages below were generated "
+    "while running local commands.</local-command-caveat>",
 ]
 
 # Prose that must NOT be caught by the §9 prefixes. Each is chosen to sit close
@@ -38,6 +40,13 @@ MUST_SURVIVE_PROSE = [
     "Use <system> design docs when planning the rollout of the new indexer.",
     "Commands are dispatched through a single entry point in the CLI module.",
     "The system reminder mechanism is documented in the hook design notes.",
+    # The two that make the widening claim in the docstring below true. The
+    # rule is `startswith`, so a must-survive string can only engage a widened
+    # prefix if it *begins* with the widened stem — none of the four above do,
+    # and without these two, collapsing the six prefixes to "<command" and
+    # "<system" passes the entire suite.
+    "<system> blocks in the prompt template are rendered before the user turn.",
+    "<command> elements in the legacy XML schema map to CLI subcommands.",
 ]
 
 
