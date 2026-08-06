@@ -86,6 +86,9 @@ def main() -> int:
         "total_log_rows": report.total_log_rows,
         "mismatched": report.mismatched,
         "derived_orphan": report.derived_orphan,
+        # Counts toward `has_drift` (#1354), so a soak failure caused only by
+        # an edge-set divergence has to be legible in the row that records it.
+        "edge_set_divergence": report.edge_set_divergence,
         # Informational, never a pass/fail input (#1167). Recorded so a
         # posterior or lock divergence appearing on the fixture is visible
         # in the soak history rather than dropped.

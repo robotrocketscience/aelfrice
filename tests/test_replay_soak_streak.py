@@ -100,6 +100,43 @@ def test_streak_breaks_on_drift_count(tmp_path: Path) -> None:
     assert replay_soak_streak.streak(replay_soak_streak.load_rows(p)) == 1
 
 
+def test_streak_breaks_on_edge_set_divergence(tmp_path: Path) -> None:
+    """Hypothesis: `edge_set_divergence != 0` breaks the streak on its own,
+    with `mismatched` and `derived_orphan` both zero. Falsifiable if the
+    numeric guard mirrors an older, narrower drift definition than
+    `ReplayReport.has_drift` -- which counts this field since #1354.
+
+    Distinguishing on purpose: the row sets ONLY the new counter, so a guard
+    that still sums just the two original fields returns 3 here, not 1."""
+    rows = [
+        _pass("2026-05-01"),
+        _pass("2026-05-02"),
+        {
+            **_pass("2026-05-03"),
+            "mismatched": 0,
+            "derived_orphan": 0,
+            "edge_set_divergence": 1,
+        },
+        _pass("2026-05-04"),
+    ]
+    p = tmp_path / "status.json"
+    _write(rows, p)
+    assert replay_soak_streak.streak(replay_soak_streak.load_rows(p)) == 1
+
+
+def test_rows_predating_the_edge_counter_still_count(tmp_path: Path) -> None:
+    """Hypothesis: history written before #1354 carries no
+    `edge_set_divergence` key, and must not be read as drift. Falsifiable if
+    the guard indexes the key instead of defaulting it to 0."""
+    rows = [_pass(f"2026-05-0{i}") for i in range(1, 4)]
+    for row in rows:
+        row.pop("edge_set_divergence", None)
+        assert "edge_set_divergence" not in row
+    p = tmp_path / "status.json"
+    _write(rows, p)
+    assert replay_soak_streak.streak(replay_soak_streak.load_rows(p)) == 3
+
+
 def test_malformed_jsonl_raises(tmp_path: Path) -> None:
     """Hypothesis: a non-JSON line raises SystemExit (exit code 2 in main)."""
     p = tmp_path / "status.json"

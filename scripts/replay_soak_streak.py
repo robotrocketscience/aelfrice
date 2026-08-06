@@ -48,7 +48,11 @@ def streak(rows: list[dict]) -> int:  # type: ignore[type-arg]
     for row in reversed(rows):
         if row.get("replay_full_equality_result") != "pass":
             break
-        if int(row.get("mismatched", 0)) + int(row.get("derived_orphan", 0)) != 0:
+        if (
+            int(row.get("mismatched", 0))
+            + int(row.get("derived_orphan", 0))
+            + int(row.get("edge_set_divergence", 0))
+        ) != 0:
             break
         sha = row.get("sha")
         if not sha or sha != prev_sha:
