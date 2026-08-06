@@ -321,7 +321,14 @@ def mcp_extra_is_installed(receipt_path: Path | None = None) -> bool:
             receipt = tomllib.load(handle)
     except (OSError, tomllib.TOMLDecodeError):
         return False
-    requirements = receipt.get("tool", {}).get("requirements", [])
+    # A hand-edited receipt can spell `tool` as a scalar. `.get` on a str
+    # raises AttributeError, which contradicts the "unparseable reads as
+    # not-an-mcp-install" contract above and escapes any caller that is
+    # not `aelf setup` (whose broad handler happens to swallow it).
+    tool = receipt.get("tool")
+    if not isinstance(tool, dict):
+        return False
+    requirements = tool.get("requirements", [])
     if not isinstance(requirements, list):
         return False
     for requirement in requirements:
