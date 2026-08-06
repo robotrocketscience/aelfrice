@@ -17,6 +17,7 @@ phantom until this PR. These tests assert the wiring is real:
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -32,7 +33,11 @@ from aelfrice.models import (
     Belief,
     Edge,
 )
-from aelfrice.retrieval import RetrievalResult, retrieve_v2
+from aelfrice.retrieval import (
+    RELEVANCE_BUDGET_FLOOR_FRACTION,
+    RetrievalResult,
+    retrieve_v2,
+)
 from aelfrice.store import MemoryStore
 
 
@@ -201,3 +206,87 @@ def test_locked_beliefs_pin_to_head_under_structural_lane(
     assert result.beliefs, "result must be non-empty"
     assert result.beliefs[0].lock_level == LOCK_USER
     assert result.locked_ids == ["b0"]
+
+
+# --- IT7: relevance floor under lock saturation (#1374 §1) ---------------
+
+# Each filler belief is sized to an exact token count so the floor can be
+# pinned as a number of admitted beliefs rather than "some results".
+_TOKENS_PER_TAIL = 100
+_TAIL_CONTENT_CHARS = _TOKENS_PER_TAIL * 4
+_TOKENS_PER_LOCK = 400
+_LOCK_CONTENT_CHARS = _TOKENS_PER_LOCK * 4
+
+
+def _mk_sized(bid: str, chars: int, *, locked: bool = False) -> Belief:
+    b = _mk(bid, locked=locked)
+    return replace(b, content=(bid + " ").ljust(chars, "x")[:chars])
+
+
+def _saturated_store(s: MemoryStore, *, n_locks: int, n_tail: int) -> None:
+    """12 fat locks (4800 tok) against a 2400 budget, plus `n_tail`
+    equal-cost beliefs all CONTRADICTS-linked to the probe target."""
+    for i in range(n_locks):
+        s.insert_belief(_mk_sized(f"L{i:02d}", _LOCK_CONTENT_CHARS, locked=True))
+    s.insert_belief(_mk_sized("target", _TAIL_CONTENT_CHARS))
+    for i in range(n_tail):
+        s.insert_belief(_mk_sized(f"t{i:02d}", _TAIL_CONTENT_CHARS))
+        s.insert_edge(
+            Edge(src=f"t{i:02d}", dst="target", type=EDGE_CONTRADICTS, weight=1.0)
+        )
+
+
+def test_structural_lane_reserves_relevance_floor_under_lock_saturation(
+    store: MemoryStore,
+) -> None:
+    budget = 2400
+    # 12 locks x 400 tok = 4800 tok, i.e. 2x the whole budget. Charging
+    # locks against the full budget leaves zero for the HRR tail (#1014).
+    n_tail = 20
+    _saturated_store(store, n_locks=12, n_tail=n_tail)
+    cache = HRRStructIndexCache(store=store, dim=512, seed=42)
+
+    result = retrieve_v2(
+        store, "CONTRADICTS:target",
+        use_hrr_structural=True,
+        hrr_struct_index_cache=cache,
+        include_locked=True,
+        budget=budget,
+    )
+
+    ids = [b.id for b in result.beliefs]
+    assert len(result.locked_ids) == 12, "all locks must still be pinned"
+    tail = [b for b in result.beliefs if b.id not in set(result.locked_ids)]
+
+    # The floor is a number, not "non-empty": floor(2400 * 0.50) = 1200
+    # tokens, and each tail belief costs exactly 100, so exactly 12 are
+    # admitted. 20 were reachable, so this pins a cap, not exhaustion.
+    floor_tokens = int(budget * RELEVANCE_BUDGET_FLOOR_FRACTION)
+    expected = floor_tokens // _TOKENS_PER_TAIL
+    assert expected < n_tail, "fixture must offer more candidates than the floor"
+    assert len(tail) == expected, f"expected {expected} tail hits, got {ids}"
+    assert sum(len(b.content) // 4 for b in tail) == floor_tokens
+
+
+def test_structural_lane_floor_is_a_noop_when_locks_are_light(
+    store: MemoryStore,
+) -> None:
+    # One 400-token lock against a 2400 budget leaves 2000 tokens — more
+    # than the 1200 floor — so the floor must not fire and the tail must
+    # fill to budget - locked_used, exactly as it did before the fix.
+    budget = 2400
+    n_tail = 40
+    _saturated_store(store, n_locks=1, n_tail=n_tail)
+    cache = HRRStructIndexCache(store=store, dim=512, seed=42)
+
+    result = retrieve_v2(
+        store, "CONTRADICTS:target",
+        use_hrr_structural=True,
+        hrr_struct_index_cache=cache,
+        include_locked=True,
+        budget=budget,
+    )
+    tail = [b for b in result.beliefs if b.id not in set(result.locked_ids)]
+    expected = (budget - _TOKENS_PER_LOCK) // _TOKENS_PER_TAIL
+    assert expected < n_tail, "fixture must offer more candidates than the budget"
+    assert len(tail) == expected

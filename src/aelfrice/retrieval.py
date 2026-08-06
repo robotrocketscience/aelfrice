@@ -2875,6 +2875,7 @@ def _route_structural_query(
     top_k: int,
     include_locked: bool,
     budget: int,
+    manifest_reference_locks: bool = False,
 ) -> RetrievalResult | None:
     """Probe the HRR structural lane and pack results to budget.
 
@@ -2886,9 +2887,21 @@ def _route_structural_query(
     On hit, locks (when ``include_locked=True``) are pinned at the
     head of the result and bypass the budget per the existing public-
     API contract; HRR-ranked beliefs are appended in score-descending
-    order until the budget is exhausted. Beliefs already present
-    among the locks are de-duped from the HRR tail so the locked
-    pin-to-head invariant is preserved.
+    order until the relevance budget is exhausted. Beliefs already
+    present among the locks are de-duped from the HRR tail so the
+    locked pin-to-head invariant is preserved.
+
+    The tail fills against the same reserved relevance floor the
+    textual lane uses (`RELEVANCE_BUDGET_FLOOR_FRACTION`), not against
+    whatever the uncapped locks happen to leave. Charging locks
+    against the whole budget re-introduced #1014 on this lane: the
+    lane is default-ON and returns early, so on a lock-saturated store
+    a structural query returned locks and nothing else. Lock cost is
+    measured with `lock_injection_tokens` so a reference-tier lock is
+    charged at its one-line manifest entry when the caller renders it
+    that way (#1016-B), exactly as on the textual path. The floor is a
+    strict no-op — byte-identical packing — whenever the locks already
+    leave at least that much room.
     """
     from aelfrice.hrr_index import (  # noqa: PLC0415
         HRRStructIndex,
@@ -2917,7 +2930,18 @@ def _route_structural_query(
         list(store.list_locked_beliefs()) if include_locked else []
     )
     locked_ids: set[str] = {b.id for b in locked}
-    used: int = sum(_belief_tokens(b) for b in locked)
+    locked_used: int = sum(
+        lock_injection_tokens(
+            b, manifest_reference_locks=manifest_reference_locks
+        )
+        for b in locked
+    )
+    relevance_budget: int = max(
+        int(budget * RELEVANCE_BUDGET_FLOOR_FRACTION),
+        budget - locked_used,
+    )
+    tail_cap: int = locked_used + relevance_budget
+    used: int = locked_used
     out: list[Belief] = list(locked)
 
     for belief_id, _score in hits:
@@ -2927,7 +2951,7 @@ def _route_structural_query(
         if belief is None:
             continue
         cost = _belief_tokens(belief)
-        if used + cost > budget:
+        if used + cost > tail_cap:
             break
         out.append(belief)
         used += cost
@@ -4876,6 +4900,7 @@ def retrieve_v2(
             top_k=l1_limit,
             include_locked=include_locked,
             budget=budget,
+            manifest_reference_locks=manifest_reference_locks,
         )
         if struct_result is not None:
             return struct_result
