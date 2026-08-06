@@ -2,7 +2,7 @@
 
 Extracted out of `aelfrice.cli` so feature modules
 (`context_rebuilder`, `hook_tail`, `hook`, `hook_commit_ingest`,
-`hook_search_tool`, `project_warm`, `mcp_server`, `telemetry`,
+`hook_search_tool`, `project_warm`, `telemetry`,
 `transcript_logger`) can resolve the canonical DB path without
 importing from `cli`. CLI was the historical home for these helpers
 but is the project's top of stack — feature modules importing from it

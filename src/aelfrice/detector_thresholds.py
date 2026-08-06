@@ -537,7 +537,7 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
     # which phantoms reach it. There are two such paths, and NEITHER is
     # the bake-off:
     #
-    #   1. `cli.py` / `mcp_server.py` rank BFS hops by
+    #   1. `cli.py` ranks BFS hops by
     #      `wonder_consolidation.score` and keep `[: --top]`.
     #   2. `wonder.skill_integration` turns research-agent documents into
     #      phantoms over an anchor tuple, seeded by `wonder.dispatch`.

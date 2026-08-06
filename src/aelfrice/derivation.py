@@ -241,7 +241,7 @@ def _derived_from_edges(
 def _lock_id(text: str) -> str:
     """Deterministic id for lock/remember call sites.
 
-    This id becomes `derived.belief.id`; `mcp_server.py` and `cli.py`
+    This id becomes `derived.belief.id`; `cli.py`
     call `derive()` directly and read that id rather than
     re-deriving it locally — neither module defines its own id
     helper.
