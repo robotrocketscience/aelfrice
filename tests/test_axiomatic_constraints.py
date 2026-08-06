@@ -289,10 +289,23 @@ def test_qtfc_is_currently_violated_at_the_default_k3(mode: dict) -> None:
     fixed the underlying assignment-vs-accumulation bug but kept 0.0 as
     the default, because three shipped components express a boost as a
     duplicated token and their multipliers were tuned against the FTS5
-    lane. Flipping `k3` is bench-gated separately.
+    lane.
+
+    **Why it is not fixed here** (#1381): satisfying QTFC means giving
+    `k3` a non-zero default, and that changes default retrieval ranking
+    for every user. A ranking change is exactly the class of change that
+    cannot be justified from these constraints — they say the axiom is
+    violated, not that any particular `k3` produces better results — so
+    it needs the labelled gold set the ranking register is held on, and
+    it is out of scope for a test-only leaf. Flipping `k3` is bench-gated
+    separately.
 
     Pinned both ways so the default's cost is visible and the mechanism
-    is proven live rather than assumed.
+    is proven live rather than assumed. Recorded as an assertion rather
+    than an `xfail` per this module's docstring: with `xfail_strict` both
+    forms fail loudly if the default moves, but only the assertion form
+    can also pin that the mechanism works once enabled, and the file
+    handles its other two known violations the same way.
     """
     kw = {"docs": [("d", f"budget token {PAD}"), ("o", f"other {PAD}")]}
     once, thrice = "budget token", "budget budget budget token"
