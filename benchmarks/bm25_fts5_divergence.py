@@ -53,7 +53,10 @@ import snowballstemmer
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from aelfrice.bm25 import _fold_diacritics, tokenize_stemmed  # noqa: E402
+# Module, not `from ... import`: `arm_shipped` must resolve
+# `tokenize_stemmed` through the module every call, or this arm
+# snapshots the function object and stops tracking the shipped code.
+import aelfrice.bm25 as bm25  # noqa: E402
 
 # The declaration under test. Kept as a literal rather than imported so a
 # change to `store.py` shows up here as a measured divergence instead of
@@ -85,7 +88,7 @@ def _stem_guarded(token: str) -> str:
 # The shipped fold, imported rather than re-spelled — a local copy is
 # what let a blanket-NFD fold look correct here while it was welding
 # Hebrew and Devanagari tokens together in the shipped path.
-_fold = _fold_diacritics
+_fold = bm25._fold_diacritics
 
 
 def arm_legacy(text: str) -> list[str]:
@@ -120,11 +123,12 @@ def arm_split_fold_guard(text: str) -> list[str]:
 def arm_shipped(text: str) -> list[str]:
     """Resolved at call time, not bound at import.
 
-    Binding `tokenize_stemmed` into the tuple would snapshot the
-    function object, so this arm would keep reporting the old pipeline
-    if anything rebound it — the opposite of what it is for.
+    Reached through the module rather than a name bound at import, so
+    rebinding `aelfrice.bm25.tokenize_stemmed` is visible here. Binding
+    it would snapshot the function object and this arm would keep
+    reporting the old pipeline — the opposite of what it is for.
     """
-    return tokenize_stemmed(text)
+    return bm25.tokenize_stemmed(text)
 
 
 # Cumulative, one change per step, so each row is attributable to the

@@ -33,6 +33,10 @@ import unicodedata
 
 import pytest
 
+# `tokenize_stemmed` is reached through the module so these tests read
+# whatever is bound at call time — the point is to pin the shipped
+# pipeline, not a function object captured at import.
+import aelfrice.bm25 as bm25
 from aelfrice.bm25 import (
     _FTS5_TOKEN_PATTERN,
     _PORTER_STEMMER,
@@ -40,7 +44,6 @@ from aelfrice.bm25 import (
     BM25Index,
     _stem,
     tokenize,
-    tokenize_stemmed,
 )
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
 from aelfrice.store import MemoryStore
@@ -159,7 +162,7 @@ def test_tokenize_stemmed_matches_the_fts5_term_list(text: str) -> None:
     BM25F lane's term-frequency counts depend on the multiset, not the
     set.
     """
-    assert tokenize_stemmed(text) == fts5_terms(text)
+    assert bm25.tokenize_stemmed(text) == fts5_terms(text)
 
 
 @pytest.mark.parametrize("text", PARITY_CORPUS)
@@ -183,7 +186,7 @@ def test_micro_sign_is_a_known_and_bounded_residual() -> None:
     the residual count in `tokenize_stemmed`'s docstring updated — it
     failing is the signal, not an excuse to loosen it.
     """
-    ours = tokenize_stemmed(KNOWN_RESIDUAL)
+    ours = bm25.tokenize_stemmed(KNOWN_RESIDUAL)
     theirs = fts5_terms(KNOWN_RESIDUAL)
     assert ours != theirs
     assert "µ" in ours and "μ" in theirs
@@ -204,7 +207,7 @@ def test_compatibility_forms_are_not_folded(text: str) -> None:
     take the normalisation form its own body proposed. These inputs are
     the ones that separate the two forms.
     """
-    assert tokenize_stemmed(text) == fts5_terms(text)
+    assert bm25.tokenize_stemmed(text) == fts5_terms(text)
 
 
 def test_shipped_word_class_and_stem_guards_are_the_measured_ones() -> None:
@@ -240,7 +243,7 @@ def test_tokenize_still_keeps_underscores_whole() -> None:
     assert tokenize("ADD_TO_LIST") == ["add_to_list"]
     assert tokenize("max_retry_count") == ["max_retry_count"]
     assert tokenize("café") == ["café"]
-    assert tokenize_stemmed("ADD_TO_LIST") == ["add", "to", "list"]
+    assert bm25.tokenize_stemmed("ADD_TO_LIST") == ["add", "to", "list"]
 
 
 def test_bm25f_lane_answers_the_queries_fts5_answers() -> None:
@@ -311,7 +314,7 @@ def test_non_latin_text_is_not_over_folded(text: str) -> None:
     return documents FTS5 does not, a precision loss rather than a mere
     cross-lane gap.
     """
-    assert tokenize_stemmed(text) == fts5_terms(text)
+    assert bm25.tokenize_stemmed(text) == fts5_terms(text)
 
 
 @pytest.mark.parametrize("text", NON_LATIN_REGRESSION_GUARD)
