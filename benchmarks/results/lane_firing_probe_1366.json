@@ -114,17 +114,17 @@
       "reported_enabled": true,
       "fired_calls": 500,
       "fire_rate": 1.0,
-      "note": "",
-      "tracks_flag_by_construction": false
+      "note": "all six `should_run_expansion` return paths set a non-empty reason, so this predicate is constant-True inside `retrieve_with_tiers` and its 1.0000 rate is uninformative. The gate's real signal is the reason histogram below, not this row.",
+      "tracks_flag_by_construction": true
     },
     {
       "lane": "type_aware_compression",
       "telemetry_field": "compression_renders",
       "resolver": "resolve_use_type_aware_compression()",
       "reported_enabled": true,
-      "fired_calls": 500,
-      "fire_rate": 1.0,
-      "note": "counts beliefs actually rendered through the compressor in the pack-cost closure; a call that packs nothing renders nothing regardless of the flag.",
+      "fired_calls": 212,
+      "fire_rate": 0.424,
+      "note": "counts only beliefs the compressor actually SHORTENED. A `STRATEGY_VERBATIM` return costs exactly the uncompressed token count, so counting it would report a fire for a call that changed nothing \u2014 held to the same standard as `entity_persist_demoted`.",
       "tracks_flag_by_construction": false
     },
     {
@@ -221,6 +221,7 @@
   "lanes_whose_field_tracks_the_flag": [
     "l1_bm25f_anchors",
     "posterior_weight_rerank",
+    "expansion_gate",
     "fan_effect"
   ],
   "unobservable_lanes": [
@@ -297,6 +298,11 @@
         "full": 209,
         "truncated": 192,
         "delta": -17
+      },
+      "type_aware_compression": {
+        "full": 212,
+        "truncated": 3,
+        "delta": -209
       }
     },
     "lanes_falsely_dead_under_truncation": [],

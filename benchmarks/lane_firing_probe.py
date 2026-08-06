@@ -307,6 +307,12 @@ OBSERVABLE_LANES: tuple[ObservableLane, ...] = (
         field="expansion_gate_reason",
         reported=_always_on,
         observed=lambda t: bool(t.expansion_gate_reason),
+        note="all six `should_run_expansion` return paths set a non-empty "
+             "reason, so this predicate is constant-True inside "
+             "`retrieve_with_tiers` and its 1.0000 rate is uninformative. "
+             "The gate's real signal is the reason histogram below, not "
+             "this row.",
+        tracks_flag=True,
     ),
     # --- #1366 record-at-site lanes -------------------------------------
     # Each field below is written where the lane does its work, so a
@@ -317,9 +323,11 @@ OBSERVABLE_LANES: tuple[ObservableLane, ...] = (
         field="compression_renders",
         reported=resolve_use_type_aware_compression,
         observed=lambda t: t.compression_renders > 0,
-        note="counts beliefs actually rendered through the compressor in "
-             "the pack-cost closure; a call that packs nothing renders "
-             "nothing regardless of the flag.",
+        note="counts only beliefs the compressor actually SHORTENED. A "
+             "`STRATEGY_VERBATIM` return costs exactly the uncompressed "
+             "token count, so counting it would report a fire for a call "
+             "that changed nothing — held to the same standard as "
+             "`entity_persist_demoted`.",
     ),
     ObservableLane(
         name="intentional_clustering",

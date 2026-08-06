@@ -133,9 +133,13 @@ def test_counters_are_per_call_not_cumulative(store: MemoryStore) -> None:
     call's work and every rate above 1.0 is an artifact.
     """
     retrieve(store, "alpha beta")
-    first = last_lane_telemetry().compression_renders
+    first = last_lane_telemetry().cluster_packed
     retrieve(store, "alpha beta")
-    second = last_lane_telemetry().compression_renders
+    second = last_lane_telemetry().cluster_packed
+    # `cluster_packed` rather than `compression_renders`: the latter is 0
+    # on this fixture by construction (every belief compresses verbatim),
+    # and a counter that is 0 in both calls cannot distinguish a working
+    # reset from a missing one.
     assert first > 0
     assert second == first
 
@@ -150,13 +154,25 @@ def test_pre_1366_construction_still_works() -> None:
 # --- type_aware_compression ---------------------------------------------
 
 
-def test_compression_renders_counts_the_compressor_calls(
+def test_compression_renders_counts_only_shortened_beliefs(
     store: MemoryStore,
 ) -> None:
-    """Delete the `_record_lane_fired` in the pack-cost closure and this
-    reads 0."""
+    """Counts work done, not calls made.
+
+    A `STRATEGY_VERBATIM` return costs exactly `_estimate_tokens(content)`,
+    which is what the uncompressed path already charges — so counting it
+    would report a fire for a call that changed no cost, and the rate would
+    restate "the flag is on". Held to the same standard as
+    `entity_persist_demoted`, which records only when the penalty is real.
+
+    The fixture's beliefs are FACT/UNKNOWN retention, so the compressor
+    returns verbatim for every one of them: the counter must read **0**
+    with the lane fully enabled. That is the distinguishing case — the
+    previous assertion (`> 0`) passed on exactly this input and so could
+    not tell the two semantics apart.
+    """
     retrieve(store, "alpha beta", use_type_aware_compression=True)
-    assert last_lane_telemetry().compression_renders > 0
+    assert last_lane_telemetry().compression_renders == 0
 
 
 def test_compression_renders_is_zero_when_the_lane_is_off(
@@ -562,3 +578,53 @@ def test_supersession_penalty_is_still_log_additive() -> None:
     assert _supersession_penalty(
         frozenset({"b1"}), "b1", 0.5,
     ) == pytest.approx(math.log(0.5))
+
+
+# --- the two reset sites, pinned INDEPENDENTLY ---------------------------
+#
+# `_reset_lane_firings()` is called from two places: `retrieve_with_tiers`
+# and `retrieve_v2`'s structural early-return branch. Review found they
+# mask each other — deleting either one alone left the whole suite green,
+# because every existing test that would notice passes through the other.
+# Jointly pinned is not pinned: a refactor removing one site would ship.
+
+
+def test_the_retrieve_with_tiers_reset_is_pinned_on_its_own(
+    store: MemoryStore,
+) -> None:
+    """Exercises the tiers path only, so the structural reset cannot cover.
+
+    `use_hrr_structural=False` keeps `retrieve_v2` out of the branch that
+    holds the other reset, so these counters can only have been zeroed by
+    the one inside `retrieve_with_tiers`. Deleting that call alone turns
+    this red; with the structural branch left enabled it does not, because
+    its reset runs first and masks the deletion.
+    """
+    retrieve_v2(store, "alpha beta", use_hrr_structural=False)
+    first = last_lane_telemetry().cluster_packed
+    assert first > 0
+    retrieve_v2(store, "alpha beta", use_hrr_structural=False)
+    assert last_lane_telemetry().cluster_packed == first
+
+
+# The sibling reset inside `retrieve_v2`'s structural branch
+# (retrieval.py:5067) is NOT independently pinned, and that is a statement
+# about the code rather than a gap in this file.
+#
+# That branch publishes `LaneTelemetry(locked=..., hrr_structural_hit=...)`
+# at retrieval.py:5081 — every other field takes its dataclass default, so
+# no accumulator-backed counter it exposes can carry a stale value. The one
+# field it does read, `hrr_structural_hit`, is recorded by
+# `_route_structural_query` on exactly the path that early-returns, so it
+# is True with or without the reset.
+#
+# So the reset there is defensive, not load-bearing, and no assertion can
+# distinguish its presence. Writing one that appeared to would be the
+# defect this whole issue is about. If the publish ever widens to pass
+# through more accumulator fields, that reset becomes load-bearing and
+# should get a pin at the same time.
+#
+# The property that IS observable on that path — that it publishes its own
+# snapshot rather than leaving the previous call's — is covered by
+# `test_hrr_structural_hit_is_recorded_on_the_early_return` above, which
+# asserts `tel.l1 == 0` after a textual call that set `l1 > 0`.
