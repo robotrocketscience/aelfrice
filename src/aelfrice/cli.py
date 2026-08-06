@@ -4091,6 +4091,21 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
                 f"aelfrice: {verb} — {migration.reason}",
                 file=sys.stderr,
             )
+    # #1422: one-shot report of what the removed MCP surface left behind —
+    # a `[mcp]` extra in the uv environment, a host registration pointing at
+    # the deleted `aelf mcp`. Report-only by design: aelfrice never wrote
+    # that registration, so it is named rather than edited (the opt-in verb
+    # is `aelf migrate --remove-mcp-config`). Wrapped so a cleanup failure
+    # can never break setup.
+    try:
+        from aelfrice.mcp_cleanup import maybe_clean_up_mcp
+
+        mcp_cleanup = maybe_clean_up_mcp()
+        if mcp_cleanup.ran:
+            for note in mcp_cleanup.notes:
+                print(f"aelfrice: mcp cleanup — {note}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 — cleanup must never break setup
+        print(f"aelfrice: mcp cleanup skipped — {exc}", file=sys.stderr)
     # #1064 G4: one-shot auto-backfill of the temporal spine over an
     # existing store. Sentinel-gated inside maybe_backfill_temporal_spine
     # and inert while the writer is default-off (pre-flip) — it re-arms and
@@ -6115,6 +6130,31 @@ def _cmd_spine_verify(out: object) -> int:
     return 0
 
 
+def _remove_mcp_config(out: object) -> int:
+    """Delete the stale aelfrice `mcpServers` entries the host still carries.
+
+    The opt-in half of #1422's cleanup. `aelf setup` only *reports* these,
+    because aelfrice never wrote the registration and the file usually holds
+    the user's other servers; this is the verb that says "yes, edit it".
+    Every write is preceded by a timestamped backup, and anything that does
+    not parse as strict JSON is reported and left alone.
+    """
+    from aelfrice.mcp_cleanup import find_registrations, remove_registration
+
+    registrations, notes = find_registrations()
+    for note in notes:
+        print(note, file=out)  # type: ignore[arg-type]
+    if not registrations:
+        print("no aelfrice MCP registration found", file=out)  # type: ignore[arg-type]
+        return 0
+    failed = False
+    for registration in registrations:
+        changed, message = remove_registration(registration)
+        print(message, file=out)  # type: ignore[arg-type]
+        failed = failed or not changed
+    return 1 if failed else 0
+
+
 def _cmd_migrate(args: argparse.Namespace, out: object) -> int:
     """Copy beliefs from the legacy global DB into the active project's DB.
 
@@ -6124,6 +6164,8 @@ def _cmd_migrate(args: argparse.Namespace, out: object) -> int:
     Exits 0 on success or no-op, 1 when source DB is missing or refuses
     to open.
     """
+    if getattr(args, "remove_mcp_config", False):
+        return _remove_mcp_config(out)
     legacy = (
         Path(args.from_path) if args.from_path
         else default_legacy_db_path()
@@ -8991,6 +9033,13 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_migrate.add_argument(
         "--yes", action="store_true",
         help="skip the confirmation prompt under --apply",
+    )
+    p_migrate.add_argument(
+        "--remove-mcp-config", dest="remove_mcp_config", action="store_true",
+        help=(
+            "remove the stale aelfrice entry from your host's MCP config "
+            "(#1422); writes a timestamped backup first"
+        ),
     )
     p_migrate.set_defaults(func=_cmd_migrate)
 
