@@ -53,7 +53,20 @@ _PKG_ROOT = Path(aelfrice.__file__).resolve().parent
 _CALL_RE = re.compile(r"\.insert_edge\s*\(")
 # A writer that reaches the table directly would bypass the call-site
 # sweep entirely, so it is checked separately.
-_RAW_SQL_RE = re.compile(r"INSERT\s+(?:OR\s+\w+\s+)?INTO\s+edges", re.IGNORECASE)
+#
+# `REPLACE INTO` has to be here, not as a nicety: `MemoryStore.insert_edge`
+# issues a bare INSERT against a `PRIMARY KEY (src, dst, type)` table, so a
+# module wanting an idempotent write reaches for REPLACE first — the one
+# spelling most likely to be used is the one the first pattern could not see.
+# The table name is also matched through a schema qualifier and the three
+# quoting styles SQLite accepts; `store.py` already ships a qualified write
+# (`INSERT INTO temp.fts ...`), so that form is house style rather than
+# hypothetical. The trailing `\b` additionally stops `edges_backup` and
+# `edge_versions` from reading as writes to `edges`.
+_RAW_SQL_RE = re.compile(
+    r"\b(?:INSERT(?:\s+OR\s+\w+)?|REPLACE)\s+INTO\s+(?:\w+\s*\.\s*)?[\"'`\[]?edges\b",
+    re.IGNORECASE,
+)
 
 
 def _module_name(path: Path) -> str:
@@ -252,6 +265,18 @@ def test_covered_and_excluded_do_not_overlap() -> None:
     assert not (COVERED_WRITER_MODULES & excluded)
     for module, reason in EXCLUDED_WRITERS:
         assert reason.strip(), f"{module} excluded without a reason"
+
+    # `manifest_digest()` covers the version and THRESHOLDS, not the two
+    # coverage lists, so moving a module from covered to excluded moves no
+    # digest and no version. Without this, that move is silent AND leaves the
+    # manifest self-contradictory: `test_covered_modules_all_have_entries`
+    # stops applying to the module while its entries still sit in THRESHOLDS
+    # claiming to gate edges the exclusion says it does not decide.
+    pinned = {t.module for t in THRESHOLDS}
+    assert not (pinned & excluded), (
+        f"these modules are excluded as making no detection decision, yet "
+        f"carry pinned thresholds that say otherwise: {sorted(pinned & excluded)}"
+    )
 
 
 def test_only_the_store_writes_the_edges_table_directly() -> None:
