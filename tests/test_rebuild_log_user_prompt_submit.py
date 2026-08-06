@@ -109,9 +109,16 @@ def test_user_prompt_submit_writes_rebuild_log(
     # Schema parity with the PreCompact rebuild_log: same input/
     # candidates/pack_summary keys with the same `_empty_scores`
     # block per candidate.
+    #
+    # `scored_query` joined the set in #1405. Kept as an exact-equality
+    # pin rather than a subset check: this is the row both replay
+    # consumers read, and a key appearing or vanishing unnoticed is the
+    # class of defect #1405 documents — `extracted_query` was recorded
+    # for a year while matching neither production path.
     assert set(rec["input"]) == {
         "recent_turns_hash", "n_recent_turns",
         "extracted_query", "extracted_entities", "extracted_intent",
+        "scored_query",
     }
     assert rec["input"]["n_recent_turns"] == 1
     assert isinstance(rec["candidates"], list)

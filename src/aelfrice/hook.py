@@ -1157,6 +1157,11 @@ def user_prompt_submit(
                 session_id=session_id,
                 hits_pre_dedup=hits_pre_dedup,
                 hits_post_dedup=hits,
+                # #1405: the string `_retrieve` was handed, not a
+                # re-derivation of it. Conversation-aware composition is
+                # default-on, so this is `prompt` repeated plus the recent
+                # window — nothing else records it.
+                scored_query=retrieval_query,
                 stderr=serr,
             )
             # #779 Layer 1: record one injection_events row per
@@ -1282,6 +1287,12 @@ def user_prompt_submit(
                 session_id=session_id,
                 hits_pre_dedup=[],
                 hits_post_dedup=[],
+                # None, not `retrieval_query`: this is the gate-skip
+                # branch, so retrieval never ran and nothing was scored.
+                # `retrieval_query` is also unbound here — it is assigned
+                # only in the sibling branch — so naming it would raise
+                # NameError inside the hook.
+                scored_query=None,
                 stderr=serr,
             )
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
@@ -1867,6 +1878,7 @@ def _emit_user_prompt_submit_rebuild_log(
     session_id: str | None,
     hits_pre_dedup: list[Belief],
     hits_post_dedup: list[Belief],
+    scored_query: str | None = None,
     stderr: IO[str] | None = None,
 ) -> None:
     """Append a phase-1a rebuild_log row for this UPS retrieval.
@@ -1895,6 +1907,7 @@ def _emit_user_prompt_submit_rebuild_log(
             session_id=session_id,
             hits_pre_dedup=hits_pre_dedup,
             hits_post_dedup=hits_post_dedup,
+            scored_query=scored_query,
             log_path=log_path,
             enabled=rebuilder_cfg.rebuild_log_enabled,
             stderr=serr,
