@@ -642,6 +642,94 @@ def test_delete_edges_by_type_counts_and_scopes(store: MemoryStore) -> None:
     assert store.edges_from("a1")  # RELATES_TO edge still present
 
 
+# --- #1379: the clear must not eat rows the backfill cannot rebuild -------
+
+
+def _all_temporal_next(store: MemoryStore) -> set[tuple[str, str, float, str | None]]:
+    """Every TEMPORAL_NEXT row as (src, dst, weight, anchor_text)."""
+    rows = store._conn.execute(  # type: ignore[attr-defined]
+        "SELECT src, dst, weight, anchor_text FROM edges WHERE type = ?",
+        (EDGE_TEMPORAL_NEXT,),
+    ).fetchall()
+    return {(r[0], r[1], r[2], r[3]) for r in rows}
+
+
+def test_delete_spine_edges_keeps_anchored_and_off_weight_rows(
+    store: MemoryStore,
+) -> None:
+    """Both conjuncts of the scope predicate are load-bearing.
+
+    An anchored row at the spine weight and an unanchored row at another
+    weight each survive; only the (anchor_text IS NULL, weight 0.8) row
+    goes. Dropping either conjunct from the DELETE fails this.
+    """
+    from aelfrice.models import Edge
+    _make_belief(store, belief_id="p1", content="p1", session_id="s")
+    _make_belief(store, belief_id="p2", content="p2", session_id="s")
+    _make_belief(store, belief_id="p3", content="p3", session_id="s")
+    spine = Edge(
+        src="p2", dst="p1", type=EDGE_TEMPORAL_NEXT,
+        weight=TEMPORAL_SPINE_EDGE_WEIGHT,
+    )
+    anchored = Edge(
+        src="p1", dst="p2", type=EDGE_TEMPORAL_NEXT,
+        weight=TEMPORAL_SPINE_EDGE_WEIGHT, anchor_text="p1 succeeds p2",
+    )
+    off_weight = Edge(
+        src="p3", dst="p1", type=EDGE_TEMPORAL_NEXT, weight=1.0,
+    )
+    for e in (spine, anchored, off_weight):
+        store.insert_edge(e)
+
+    removed = store.delete_spine_edges(
+        EDGE_TEMPORAL_NEXT, TEMPORAL_SPINE_EDGE_WEIGHT,
+    )
+
+    assert removed == 1
+    assert _all_temporal_next(store) == {
+        ("p1", "p2", TEMPORAL_SPINE_EDGE_WEIGHT, "p1 succeeds p2"),
+        ("p3", "p1", 1.0, None),
+    }
+
+
+def test_clear_then_backfill_preserves_prose_edge_direction(
+    store: MemoryStore,
+) -> None:
+    """A prose-derived TEMPORAL_NEXT survives clear+backfill unreversed.
+
+    The triple extractor writes src = the belief the sentence says came
+    later; the backfill writes src = the belief that ingested later. For
+    "X succeeds Y" those are opposite, so an unscoped clear followed by a
+    backfill re-mints the row *inverted* — at an identical row count, which
+    is why a count assertion cannot see it (#1379). Assert direction.
+    """
+    from aelfrice.triple_extractor import extract_triples, ingest_triples
+
+    result = ingest_triples(
+        store,
+        extract_triples("deployment phase two succeeds deployment phase one"),
+        session_id="sess1",
+    )
+    assert len(result.new_edges) == 1
+    src, dst, _rel = result.new_edges[0]
+    before = _all_temporal_next(store)
+    assert before == {
+        (src, dst, 1.0,
+         "deployment phase two succeeds deployment phase one"),
+    }
+
+    clear_temporal_spine(store)
+    backfill_temporal_spine(store)
+
+    after = _all_temporal_next(store)
+    # The prose row is still there, pointing the way it was asserted.
+    assert before <= after
+    # And the reversed row, if the backfill added one, is a spine row —
+    # never a rewrite of the prose row.
+    assert (dst, src, 1.0,
+            "deployment phase two succeeds deployment phase one") not in after
+
+
 # --- maybe_backfill_temporal_spine (sentinel-gated auto migration) ---------
 
 

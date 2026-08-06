@@ -6418,12 +6418,48 @@ class MemoryStore:
         """Delete every edge of ``type_``; return how many were removed.
 
         Bulk counterpart to ``delete_edge`` — one statement, one commit.
-        Backs ``aelf spine clear`` (the #1064 reversibility path for the
-        auto-backfilled TEMPORAL_NEXT spine). Beliefs are untouched; only
-        the edges are dropped.
+        Beliefs are untouched; only the edges are dropped.
+
+        Type alone is *not* a provenance discriminator: a single edge
+        type can have more than one writer. ``aelf spine clear`` used to
+        call this and so deleted prose-derived TEMPORAL_NEXT rows it
+        could not rebuild (#1379); it now calls ``delete_spine_edges``.
+        Keep this method for callers that really do mean "every row of
+        this type".
         """
         cur = self._conn.execute(
             "DELETE FROM edges WHERE type = ?", (type_,)
+        )
+        removed = cur.rowcount
+        self._commit_mutation()
+        return removed
+
+    def delete_spine_edges(self, type_: str, weight: float) -> int:
+        """Delete the *spine-written* rows of ``type_``; return the count.
+
+        Narrower sibling of ``delete_edges_by_type``: the predicate adds
+        ``anchor_text IS NULL AND weight = ?``, which is the shape the
+        temporal-spine writer emits and which no prose-derived edge has
+        (the triple extractor always stamps an ``anchor_text`` and writes
+        weight 1.0).
+
+        This exists because ``aelf spine clear`` is only reversible for
+        rows its own backfill can rebuild. Deleting a prose-derived
+        TEMPORAL_NEXT row and letting the backfill re-mint it from ingest
+        order silently *reverses* it — same row count, opposite direction
+        (#1379). Scoping the DELETE is what keeps the clear/backfill pair
+        an actual round trip.
+
+        The predicate is a shape match, not a provenance column — the
+        ``edges`` table has none, and adding one means rebuilding a
+        ``PRIMARY KEY (src, dst, type)`` table, which is off the table
+        after #1161. Callers pass the weight rather than this module
+        hard-coding it, so the constant stays owned by the writer.
+        """
+        cur = self._conn.execute(
+            "DELETE FROM edges "
+            "WHERE type = ? AND anchor_text IS NULL AND weight = ?",
+            (type_, weight),
         )
         removed = cur.rowcount
         self._commit_mutation()

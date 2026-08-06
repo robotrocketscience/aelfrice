@@ -5987,9 +5987,12 @@ def _cmd_spine(args: argparse.Namespace, out: object) -> int:
     triple; `--dry-run` counts what a real run would write without
     touching the store.
 
-    `clear` deletes every TEMPORAL_NEXT edge — the reversibility path for
-    an auto-backfill (beliefs untouched). Deterministic backfill means a
-    later re-backfill rebuilds the identical spine (G5 byte-identity).
+    `clear` deletes the spine's own TEMPORAL_NEXT edges — the
+    reversibility path for an auto-backfill (beliefs untouched).
+    Deterministic backfill means a later re-backfill rebuilds the
+    identical spine (G5 byte-identity). Scoped to the writer's rows, not
+    to the type: prose-derived TEMPORAL_NEXT edges have the opposite
+    direction convention and the backfill cannot rebuild them (#1379).
 
     `verify` recomputes the spine from the log and reports the gap
     (#1283); it writes nothing and is delegated to `_cmd_spine_verify`
@@ -9021,8 +9024,8 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_spine.add_argument(
         "action", choices=["backfill", "clear", "verify"],
         help="backfill: build per-session TEMPORAL_NEXT chains over the "
-             "existing store; clear: delete every TEMPORAL_NEXT edge "
-             "(reverses an auto-backfill; beliefs untouched); verify: "
+             "existing store; clear: delete the spine's own TEMPORAL_NEXT "
+             "edges (reverses an auto-backfill; beliefs untouched); verify: "
              "recompute the spine from the log and report the divergence "
              "by bucket (read-only)",
     )

@@ -333,14 +333,30 @@ def backfill_temporal_spine(
 
 
 def clear_temporal_spine(store: "MemoryStore") -> int:
-    """Delete every ``TEMPORAL_NEXT`` edge; return the count removed.
+    """Delete the spine's own ``TEMPORAL_NEXT`` edges; return the count.
 
     The reversibility counterpart to ``backfill_temporal_spine`` — backs
     ``aelf spine clear`` (#1064 G4). Beliefs are untouched; only the
     per-session chain edges are dropped, so a later backfill rebuilds
     them byte-identically (the G5 determinism property).
+
+    The byte-identical rebuild holds for rows *this module wrote* and
+    only those. ``TEMPORAL_NEXT`` has a second writer: the triple
+    extractor mints it from prose ("X succeeds Y"), with the opposite
+    direction convention — there src is the belief the sentence asserts
+    came later, here src is the belief that ingested later. The backfill
+    reads ingest order, so it cannot reproduce a prose row; re-minting
+    one from ingest order flips it, at an unchanged row count that no
+    count-based check can see (#1379).
+
+    So the delete is scoped to the writer's own shape — ``anchor_text IS
+    NULL`` and weight ``TEMPORAL_SPINE_EDGE_WEIGHT`` — via
+    ``store.delete_spine_edges``. Prose-derived rows survive the clear,
+    which is the only reason the round trip is one.
     """
-    return store.delete_edges_by_type(EDGE_TEMPORAL_NEXT)
+    return store.delete_spine_edges(
+        EDGE_TEMPORAL_NEXT, TEMPORAL_SPINE_EDGE_WEIGHT,
+    )
 
 
 # --- Auto-backfill migration (G4) -----------------------------------------
