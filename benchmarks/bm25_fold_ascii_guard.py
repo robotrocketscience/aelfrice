@@ -325,18 +325,40 @@ def time_min(fn: object, repeat: int) -> float:
     return best
 
 
+def _at_least_one(value: str) -> int:
+    """`--repeat` must run the timed body at least once.
+
+    `time_min` starts at `inf` and only ever takes a min, so a repeat of
+    zero leaves every figure at infinity — and `json.dumps` writes that
+    as the bare token `Infinity`, which is not valid JSON. The committed
+    report would then be unparseable by anything but Python.
+    """
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def _non_negative(value: str) -> int:
+    """Zero disables an optional arm; negative is a typo, not a request."""
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be zero or more")
+    return parsed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--store", type=Path, required=True)
-    parser.add_argument("--limit", type=int, default=0)
-    parser.add_argument("--repeat", type=int, default=6)
+    parser.add_argument("--limit", type=_non_negative, default=0)
+    parser.add_argument("--repeat", type=_at_least_one, default=6)
     parser.add_argument(
-        "--cold", type=int, default=0,
+        "--cold", type=_non_negative, default=0,
         metavar="N",
         help="also time N cold-process builds per arm (slow; off by default)",
     )
     parser.add_argument(
-        "--hook", type=int, default=0, metavar="N",
+        "--hook", type=_non_negative, default=0, metavar="N",
         help=(
             "also time N cold UserPromptSubmit fires per arm against a "
             "COPY of the store with the sidecar deleted (slowest; this is "
