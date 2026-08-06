@@ -3696,13 +3696,34 @@ class MemoryStore:
           as, rather than reimplementing its tokenizer in Python.
 
         That last point is the reason for the probe rather than reusing
-        `aelfrice.bm25.tokenize_stemmed`: the two disagree (`unicode61`
-        splits on `_` and folds diacritics, the Python tokenizer does
-        neither), and ranking against a vocabulary keyed one way with
-        terms produced the other resolves only 62.9% of tokens on a live
-        store against 99.7% for the native path. Unresolved tokens all
-        collapse to df 0 and masquerade as the rarest, which is exactly
-        the failure #1158 records for the IDF-clip lane.
+        `aelfrice.bm25.tokenize_stemmed`. **The original reason is gone
+        and the probe still earns its place — those are two different
+        claims and the difference matters** (#1389). #1348 taught
+        `tokenize_stemmed` to split on `_` and fold diacritics, so the
+        gap that once justified this is closed; reading the docstring
+        that preceded this one and concluding the probe is now redundant
+        would be reasonable, and wrong.
+
+        What still differs, measured 2026-08-06 by
+        `benchmarks/bm25_fts5_divergence.py` on a 44,658-belief store:
+        **232 documents (0.52%)** tokenise differently. SQLite's Porter
+        applies step-1b consonant undoubling to any `*d and not (*L or
+        *S or *Z)` while snowballstemmer restricts it to an explicit
+        nine-pair list, so `specced` indexes as `spec` here and `specc`
+        there; and the case stage disagrees on **403 codepoints**
+        (`benchmarks/bm25_fold_codepoint_sweep.py`). A query token
+        landing in either class resolves against the wrong vocabulary.
+
+        The historical figures — 62.9% of tokens resolved against 99.7%
+        for the native path — are a **measurement taken before #1348**,
+        not a standing property, and are retained only to record why the
+        probe was built. Do not quote them as current.
+
+        The probe is not cheap: two TEMP virtual tables plus an INSERT
+        and a vocab read per query token. Anyone costing it should price
+        it against the 0.52%, not against the pre-#1348 gap. Unresolved
+        tokens collapse to df 0 and masquerade as the rarest, which is
+        exactly the failure #1158 records for the IDF-clip lane.
         """
         if self._fts5_probe_state is not None:
             return self._fts5_probe_state
