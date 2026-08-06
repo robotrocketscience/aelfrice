@@ -22,6 +22,7 @@ subscribes to (extending the registry, not duplicating it).
 """
 from __future__ import annotations
 
+from collections.abc import Mapping, Set as AbstractSet
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
@@ -34,9 +35,14 @@ from aelfrice.models import (
     EDGE_CITES,
     EDGE_CONTRADICTS,
     EDGE_DERIVED_FROM,
+    EDGE_IMPLEMENTS,
     EDGE_RELATES_TO,
+    EDGE_RESOLVES,
     EDGE_SUPERSEDES,
     EDGE_SUPPORTS,
+    EDGE_TEMPORAL_NEXT,
+    EDGE_TESTS,
+    EDGE_TYPES,
 )
 from aelfrice.store import MemoryStore
 
@@ -45,6 +51,14 @@ from aelfrice.store import MemoryStore
 # propagation; different polarity convention). Per #149 spec; exposed
 # as a constant so a follow-up sweep issue can override without
 # touching call sites.
+#
+# The table must be **total** over `models.EDGE_TYPES` (#1375). It used
+# to list only the six #149 types, and `_build_adjacency` reads it via
+# `.get(e.type, 0.0)` — so the four types added after #149 dropped out
+# of the Laplacian silently, with no line anywhere saying they had. The
+# zeros below are now a stated decision rather than a fall-through, and
+# the totality guard underneath fails the import if a new edge type is
+# added to `models` without one.
 EDGE_LAPLACIAN_WEIGHTS: Final[dict[str, float]] = {
     EDGE_SUPPORTS: 1.0,
     EDGE_CITES: 1.0,
@@ -52,7 +66,59 @@ EDGE_LAPLACIAN_WEIGHTS: Final[dict[str, float]] = {
     EDGE_DERIVED_FROM: 1.0,
     EDGE_CONTRADICTS: -1.0,
     EDGE_SUPERSEDES: -0.5,
+    # --- Deliberate zeros. Each of these is excluded from the spectral
+    # graph, not merely unassigned. Changing any of them off 0.0 alters
+    # every eigenpair and therefore every heat-kernel authority score,
+    # so it is a benchmarked change, not a typo fix.
+    #
+    # IMPLEMENTS / TESTS: provenance and evidential edges the #149 spec
+    # predates. Both are plausible +1.0 members; neither has been run
+    # through an authority-scoring gate, and shipping them at a guessed
+    # weight would move the ranking on the strength of a guess.
+    EDGE_IMPLEMENTS: 0.0,
+    EDGE_TESTS: 0.0,
+    # TEMPORAL_NEXT: ~88% of all edges on a live store. Chronological
+    # adjacency carries no evidential or argumentative content, and at
+    # that density a non-zero weight would make the top eigenvectors a
+    # picture of ingest order rather than of the belief graph. This is
+    # the one zero here that is a positive design choice.
+    EDGE_TEMPORAL_NEXT: 0.0,
+    # RESOLVES: wonder-lifecycle marker (#548), same rationale as its
+    # 0.0 in `EDGE_VALENCE` — resolution intent is not evidence.
+    EDGE_RESOLVES: 0.0,
 }
+
+
+def missing_laplacian_weights(
+    weights: Mapping[str, float], edge_types: AbstractSet[str],
+) -> frozenset[str]:
+    """Edge types in `edge_types` with no entry in `weights` (#1375).
+
+    A named function rather than an inline expression so the guard below
+    has a distinguishing test: an invariant that only ever runs against
+    the shipped table is checked by "it did not raise", which is the same
+    observation you would get from a guard that cannot fire at all.
+    """
+    return frozenset(edge_types) - frozenset(weights)
+
+
+# Import-time totality guard (#1375). An explicit raise rather than
+# `assert` so it survives `python -O` — a silently-dropped edge type is
+# precisely the failure mode this exists to prevent, and stripping the
+# check under optimisation would restore it.
+#
+# `POTENTIALLY_STALE` is intentionally absent from both sides: it is a
+# marker tag and not a member of `EDGE_TYPES`, so the containment is
+# one-directional (weights ⊇ edge types), not equality.
+_UNWEIGHTED_EDGE_TYPES: Final[frozenset[str]] = missing_laplacian_weights(
+    EDGE_LAPLACIAN_WEIGHTS, EDGE_TYPES
+)
+if _UNWEIGHTED_EDGE_TYPES:  # pragma: no cover - import-time invariant
+    raise RuntimeError(
+        "EDGE_LAPLACIAN_WEIGHTS is not total over models.EDGE_TYPES; "
+        f"missing: {sorted(_UNWEIGHTED_EDGE_TYPES)}. Add an explicit "
+        "entry (0.0 excludes the type from the spectral graph)."
+    )
 
 # Top-K eigenpairs retained from the signed Laplacian. K=200 is the
 # spec default: at bandwidth t=8 the heat-kernel filter exp(-tL)
