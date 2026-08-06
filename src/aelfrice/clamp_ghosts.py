@@ -341,12 +341,24 @@ def clamp_ghost_alphas(
 
     Raises:
         ValueError: if threshold_alpha < target_alpha (would no-op
-            silently); if either value is non-positive.
+            silently); if either value is non-positive; if limit is
+            negative (SQLite reads a negative LIMIT as unbounded, so
+            the cap would silently invert into "every row").
     """
     if threshold_alpha <= 0 or target_alpha <= 0:
         raise ValueError(
             f"threshold_alpha and target_alpha must be positive; "
             f"got threshold={threshold_alpha} target={target_alpha}"
+        )
+    if limit is not None and int(limit) < 0:
+        # SQLite treats a negative LIMIT as no limit at all, so
+        # `--limit -1` would process every matching row rather than
+        # capping at one — the opposite of what the caller asked for,
+        # on a path that mutates under --apply. `limit=0` is left
+        # alone: LIMIT 0 selects nothing, which is what it says.
+        raise ValueError(
+            f"limit must be non-negative; got {limit} "
+            f"(a negative LIMIT means 'no cap' to SQLite)"
         )
     if target_alpha > threshold_alpha:
         raise ValueError(

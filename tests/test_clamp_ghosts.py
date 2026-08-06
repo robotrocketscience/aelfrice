@@ -262,6 +262,44 @@ def test_validation_rejects_nonpositive_alphas(store: MemoryStore) -> None:
         clamp_ghost_alphas(store, target_alpha=-1.0)
 
 
+def test_validation_rejects_negative_limit(store: MemoryStore) -> None:
+    """A negative --limit must raise, not silently mean 'no cap'.
+
+    SQLite reads a negative ``LIMIT`` as unbounded, so ``limit=-1``
+    would clamp *every* matching row on the ``--apply`` path — the
+    exact inverse of the cap the caller asked for. The assertion that
+    distinguishes the fix from the bug is the row count: without the
+    guard this call clamps all five.
+    """
+    for i in range(5):
+        store.insert_belief(_mk(f"g{i}", alpha=10.0))
+
+    with pytest.raises(ValueError, match="must be non-negative"):
+        clamp_ghost_alphas(store, dry_run=False, limit=-1)
+
+    still_inflated = sum(
+        1 for i in range(5) if _alpha_of(store, f"g{i}") == 10.0
+    )
+    assert still_inflated == 5
+
+
+def test_zero_limit_selects_nothing(store: MemoryStore) -> None:
+    """``limit=0`` is not rejected — LIMIT 0 means what it says.
+
+    Pins the boundary of the negative-limit guard: 0 is a legitimate
+    "process nothing" cap, so the guard must reject ``< 0`` rather
+    than falsy values.
+    """
+    for i in range(3):
+        store.insert_belief(_mk(f"g{i}", alpha=10.0))
+
+    result = clamp_ghost_alphas(store, dry_run=False, limit=0)
+
+    assert result.matched == 0
+    assert result.clamped == 0
+    assert all(_alpha_of(store, f"g{i}") == 10.0 for i in range(3))
+
+
 # -- CLI surface ------------------------------------------------------------
 
 @pytest.fixture
