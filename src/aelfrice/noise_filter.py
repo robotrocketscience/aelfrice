@@ -192,6 +192,18 @@ _TRANSCRIPT_XML_PREFIXES: Final[tuple[str, ...]] = (
     "<usage",
     "<event",
     "<total_tokens",
+    # #1371 §9: reminder and slash-command scaffolding the harness injects
+    # into the turn. These reach ingest as `type in ("user","assistant")`
+    # like anything else in the transcript, so `derivation` stamps them
+    # ORIGIN_USER_TRANSCRIPT with the undeflated user prior — i.e. stored
+    # as if the user had typed them. Additive prefixes only; the positive
+    # marker for genuinely user-authored text is a separate redesign that
+    # #1371 explicitly holds out of scope.
+    "<system-reminder",
+    "<command-name",
+    "<command-message",
+    "<command-args",
+    "<local-command-stdout",
 )
 
 # #1025: a sentence that begins with a CLOSING tag ("</…") is a stray
