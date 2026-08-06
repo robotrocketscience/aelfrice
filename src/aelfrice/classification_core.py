@@ -48,13 +48,41 @@ USER_SOURCE: Final[str] = "user"
 
 # --- Heuristic keyword sets ---------------------------------------------
 
+# #1159 §6: these were tested with bare substring containment, which typed
+# "See requirements.txt …", "Mustard is not a dependency." and any SQL
+# sentence mentioning a FOREIGN KEY `constraint` as BELIEF_REQUIREMENT at
+# the 94.7% prior. Two changes:
+#  - matching is a word-boundary alternation (`_REQUIREMENT_RE`), the shape
+#    `directive_detector.py` already uses. Inflections that used to ride in
+#    on the substring ("requires", "required") are now spelled out; the
+#    plural "requirements" is deliberately absent so a bare mention of the
+#    filename stem cannot type a belief on its own.
+#  - bare "constraint" is dropped. It is ordinary schema vocabulary, not a
+#    directive; only the explicit "hard constraint" survives.
 _REQUIREMENT_KEYWORDS: Final[tuple[str, ...]] = (
     "must",
     "require",
+    "requires",
+    "required",
+    "requirement",
     "mandatory",
     "hard cap",
-    "constraint",
     "hard rule",
+    "hard constraint",
+)
+
+# Word-boundary alternation, length-descending so multi-word phrases match
+# ahead of their single-word prefixes. The trailing guard rejects a keyword
+# that is really a dotted filename stem ("requirements.txt",
+# "requirements.in", "requirement.md"): those are paths a document points
+# at, not requirements a document states.
+_REQUIREMENT_RE: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:"
+    + "|".join(
+        re.escape(kw)
+        for kw in sorted(_REQUIREMENT_KEYWORDS, key=len, reverse=True)
+    )
+    + r")\b(?!\.[a-z0-9])"
 )
 
 _PREFERENCE_KEYWORDS: Final[tuple[str, ...]] = (
@@ -301,7 +329,7 @@ def classify_sentence(text: str, source: str) -> ClassificationResult:
     #    already lowers alpha for non-user sources, so the
     #    false-positive risk is handled at the scoring layer
     #    rather than by gating classification.
-    if _has_any(text_lower, _REQUIREMENT_KEYWORDS):
+    if _REQUIREMENT_RE.search(text_lower) is not None:
         alpha, beta = get_source_adjusted_prior(BELIEF_REQUIREMENT, source)
         return ClassificationResult(
             belief_type=BELIEF_REQUIREMENT,
