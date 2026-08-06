@@ -95,12 +95,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, fields, is_dataclass
-from typing import TYPE_CHECKING, Any, Final, cast
-
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    # Used only inside a string-literal `cast`, so the name is never
-    # evaluated at runtime and importing it unconditionally reads as dead.
-    from collections.abc import Sequence
+from typing import Any, Final, cast
 
 # Bump when any pinned value below changes, and append the new content
 # digest to DIGEST_HISTORY at the bottom of this module. The guard in
@@ -158,7 +153,7 @@ def _canonical(obj: Any) -> Any:
         mapping = cast("dict[str, Any]", obj)
         return [[k, _canonical(v)] for k, v in sorted(mapping.items())]
     if isinstance(obj, (tuple, list)):
-        seq = cast("Sequence[Any]", obj)
+        seq = cast("tuple[Any, ...] | list[Any]", obj)
         return [_canonical(x) for x in seq]
     if isinstance(obj, (bool, int, float, str)) or obj is None:
         return obj
