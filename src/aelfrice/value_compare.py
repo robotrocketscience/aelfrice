@@ -145,6 +145,27 @@ _ENUM_MEMBER_INDEX: Final[dict[str, tuple[str, str]]] = {
     for member in group
 }
 
+# Characters that may not sit immediately either side of a member match.
+# The hyphen is the load-bearing addition (#1159 §13): without it
+# "deterministic" matched *inside* "non-deterministic", so a single belief
+# tagged both groups of the `determinism` category and `find_conflicts`
+# short-circuited on the group-disjointness test — the category could never
+# report a conflict. The same hazard covered `full` inside `full-scan`
+# (cross-category noise between `completeness` and `storage_mode`).
+# Hyphenated members in `ENUM_VOCAB` are unaffected: the boundary is only
+# tested at the two ends of the member, never inside it.
+_ENUM_BOUNDARY_CLASS: Final[str] = r"[A-Za-z0-9_-]"
+
+# One compiled pattern per member, built once at import rather than
+# re-resolved from the `re` module cache on every extraction.
+_ENUM_MEMBER_PATTERNS: Final[dict[str, re.Pattern[str]]] = {
+    member: re.compile(
+        rf"(?<!{_ENUM_BOUNDARY_CLASS}){re.escape(member)}"
+        rf"(?!{_ENUM_BOUNDARY_CLASS})"
+    )
+    for member in _ENUM_MEMBER_INDEX
+}
+
 
 # --- Slot dataclasses -------------------------------------------------
 
@@ -237,7 +258,7 @@ def _extract_enums(text: str) -> tuple[EnumSlot, ...]:
     out: list[EnumSlot] = []
     seen: set[tuple[str, str]] = set()
     for member, (category, group_id) in _ENUM_MEMBER_INDEX.items():
-        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(member)}(?![A-Za-z0-9_])", lowered):
+        if _ENUM_MEMBER_PATTERNS[member].search(lowered):
             pair = (category, member)
             if pair in seen:
                 continue

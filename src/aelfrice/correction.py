@@ -1,9 +1,9 @@
 """No-LLM correction detector.
 
 Heuristic detector that identifies user corrections / directives by
-counting signal-class hits across seven categories: imperative-verb
+counting signal-class hits across six categories: imperative-verb
 start, always/never absolutist language, negation, emphasis, prior
-reference, declarative override, and strong directive. A text counts
+reference, and declarative override. A text counts
 as a correction when at least two distinct signals fire (precision
 trade-off: single-signal matches have ~60% precision; the explicit
 two-signal threshold trades recall for precision so the explicit
@@ -60,20 +60,34 @@ _ALWAYS_NEVER_TERMS: tuple[str, ...] = (
     "period",
 )
 
+# #1159 §5: these were tested with bare substring containment, so `"no "`
+# matched inside "pia*no* is" and `"not "` inside "can*not* ". Every term
+# list in this module is now compiled into a word-boundary alternation
+# (see `_boundary_alternation`), the shape `directive_detector.py` already
+# uses. The trailing spaces that used to stand in for a right-hand
+# boundary are gone — `\b` does that job and does it on both sides.
+#
+# #1159 §4: "stop" used to appear in three of the categories below
+# (`_IMPERATIVE_RE`, `_NEGATION_TERMS`, `_EMPHASIS_TERMS`), so a single
+# token cleared a `CORRECTION_SIGNAL_THRESHOLD` that exists to require two
+# *independent* signals. The categories are now token-disjoint: "stop"
+# lives only in `_IMPERATIVE_RE`, where an imperative-verb start is what it
+# actually is. (The other cross-category token, "cannot" satisfying both
+# `_REQUIREMENT_ANCHOR_RE` and negation's `"not "`, is fixed by the word
+# boundary alone: `\bnot\b` does not match inside "cannot".)
+# `test_classifier_word_boundaries_1368.py` asserts the disjointness.
 _NEGATION_TERMS: tuple[str, ...] = (
     "do not",
     "don't",
     "dont",
-    "stop",
-    "not ",
+    "not",
     "no more",
-    "no ",
+    "no",
 )
 
 _EMPHASIS_TERMS: tuple[str, ...] = (
     "!",
     "hate",
-    "stop",
     "ever again",
     "zero question",
     "100 times",
@@ -89,13 +103,33 @@ _PRIOR_REF_TERMS: tuple[str, ...] = (
     "we decided",
 )
 
-_DIRECTIVE_TERMS: tuple[str, ...] = (
-    "must",
-    "require",
-    "mandatory",
-    "hard cap",
-    "hard rule",
-)
+
+def _boundary_alternation(terms: tuple[str, ...]) -> re.Pattern[str]:
+    """Compile `terms` into one word-boundary alternation.
+
+    Same shape as `directive_detector.py`'s verb pattern: alternatives are
+    sorted length-descending so a multi-word phrase matches before its own
+    single-word prefix. `\\b` is attached only on the sides where the term
+    actually starts/ends with a word character — `"!"` carries no boundary
+    at all, and `"don't"` gets one on each end.
+
+    Terms must already be lowercase; callers match against lowercased text.
+    """
+    parts: list[str] = []
+    for term in sorted(terms, key=len, reverse=True):
+        pattern = re.escape(term)
+        if term[:1].isalnum() or term[:1] == "_":
+            pattern = r"\b" + pattern
+        if term[-1:].isalnum() or term[-1:] == "_":
+            pattern = pattern + r"\b"
+        parts.append(pattern)
+    return re.compile("(?:" + "|".join(parts) + ")")
+
+
+_ALWAYS_NEVER_RE: re.Pattern[str] = _boundary_alternation(_ALWAYS_NEVER_TERMS)
+_NEGATION_RE: re.Pattern[str] = _boundary_alternation(_NEGATION_TERMS)
+_EMPHASIS_RE: re.Pattern[str] = _boundary_alternation(_EMPHASIS_TERMS)
+_PRIOR_REF_RE: re.Pattern[str] = _boundary_alternation(_PRIOR_REF_TERMS)
 
 CORRECTION_SIGNAL_THRESHOLD: int = 2
 _CONFIDENCE_PER_SIGNAL: float = 0.3
@@ -119,11 +153,11 @@ class CorrectionResult:
 
 
 def detect_correction(text: str) -> CorrectionResult:
-    """Score `text` against the seven correction-signal categories.
+    """Score `text` against the six correction-signal categories.
 
     Categories (in evaluation order, which is also the output order):
         imperative, always_never, negation, emphasis, prior_ref,
-        declarative, directive
+        declarative
 
     Pure function: no I/O, no side effects, deterministic for any input.
     """
@@ -137,23 +171,28 @@ def detect_correction(text: str) -> CorrectionResult:
     ):
         signals.append("imperative")
 
-    if any(term in text_lower for term in _ALWAYS_NEVER_TERMS):
+    if _ALWAYS_NEVER_RE.search(text_lower):
         signals.append("always_never")
 
-    if any(term in text_lower for term in _NEGATION_TERMS):
+    if _NEGATION_RE.search(text_lower):
         signals.append("negation")
 
-    if any(term in text_lower for term in _EMPHASIS_TERMS):
+    if _EMPHASIS_RE.search(text_lower):
         signals.append("emphasis")
 
-    if any(term in text_lower for term in _PRIOR_REF_TERMS):
+    if _PRIOR_REF_RE.search(text_lower):
         signals.append("prior_ref")
 
     if _DECLARATIVE_RE.search(text_lower):
         signals.append("declarative")
 
-    if any(term in text_lower for term in _DIRECTIVE_TERMS):
-        signals.append("directive")
+    # #1162 §5: a seventh `directive` category used to fire here off
+    # `_DIRECTIVE_TERMS`, a strict subset of
+    # `classification_core._REQUIREMENT_KEYWORDS`. Because
+    # `classify_sentence` returns `requirement` at step 3, before it ever
+    # calls `detect_correction` at step 4, no text that could set
+    # `directive` reached this line through the production path. Deleted
+    # per operator ruling rather than reordered.
 
     is_correction: bool = len(signals) >= CORRECTION_SIGNAL_THRESHOLD
     confidence: float = min(1.0, len(signals) * _CONFIDENCE_PER_SIGNAL)

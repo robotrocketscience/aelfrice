@@ -141,14 +141,19 @@ def test_declarative_signal_fires_on_should_be_only() -> None:
     assert "declarative" in r.signals
 
 
-def test_directive_signal_fires_on_must() -> None:
-    r = detect_correction("commits must be signed")
-    assert "directive" in r.signals
+def test_directive_signal_category_no_longer_exists() -> None:
+    """#1162 §5: the seventh `directive` category was deleted.
 
-
-def test_directive_signal_fires_on_hard_rule() -> None:
-    r = detect_correction("hard rule: every PR has a test")
-    assert "directive" in r.signals
+    `_DIRECTIVE_TERMS` was a strict subset of
+    `classification_core._REQUIREMENT_KEYWORDS`, and `classify_sentence`
+    returns `requirement` before it ever calls this detector, so the
+    category was unreachable from the production path. The texts that used
+    to set it now set nothing here.
+    """
+    assert "directive" not in detect_correction("commits must be signed").signals
+    assert "directive" not in detect_correction(
+        "hard rule: every PR has a test"
+    ).signals
 
 
 # --- Threshold (default 2): is_correction transition --------------------
@@ -161,9 +166,9 @@ def test_zero_signals_is_not_correction() -> None:
 
 
 def test_one_signal_is_not_correction() -> None:
-    r = detect_correction("commits must be signed")
-    # "must" -> directive only (one signal); below threshold of 2.
-    assert r.signals == ["directive"]
+    r = detect_correction("the export should be only json")
+    # "should be only" -> declarative only (one signal); below threshold of 2.
+    assert r.signals == ["declarative"]
     assert r.is_correction is False
 
 
@@ -190,7 +195,7 @@ def test_confidence_zero_when_no_signals() -> None:
 
 
 def test_confidence_scales_linearly_below_cap() -> None:
-    r = detect_correction("commits must be signed")  # 1 signal
+    r = detect_correction("the export should be only json")  # 1 signal
     assert abs(r.confidence - 0.3) < 1e-9
 
 
