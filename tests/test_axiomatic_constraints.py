@@ -26,8 +26,25 @@ hold at shipped defaults. Each is pinned as an explicit assertion of the
 
 A test named ``test_*_is_currently_violated`` is therefore a defect
 record, not a passing property.
+
+**The gate has to run on what it guards** (#1381). Constraints that only
+run when someone happens to touch a broadly-filtered path are not a
+gate, and that failure mode is not hypothetical here: `eval-calibration`
+once filtered on a hand-listed set of modules that omitted the entire
+retrieval stack, so a PR editing `scoring.py` merged without the ranking
+check ever running (#1160). `.github/workflows/scorer-axioms.yml` names
+the three modules whose behaviour this file pins — `bm25.py`,
+`scoring.py`, `retrieval.py` — and the last section below parses that
+filter and fails if one drops out of it. Each of the three is exercised:
+`retrieval.py` by the end-to-end ordering constraint, which asserts TFC1
+survives the lane selection, the posterior rerank and the sort that
+`retrieve()` applies on top of the raw score.
 """
 from __future__ import annotations
+
+import re
+from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
 
@@ -351,3 +368,111 @@ def test_ingest_prior_is_currently_penalised_against_no_evidence() -> None:
     assert on_prior < no_evidence
     # Pin the size too — a fix that shrinks it should have to say so.
     assert no_evidence - on_prior == pytest.approx(0.1438, abs=1e-3)
+
+
+# --- the gate must run on the files it guards -----------------------------
+
+_REPO = Path(__file__).resolve().parents[1]
+_WORKFLOW = _REPO / ".github" / "workflows" / "scorer-axioms.yml"
+
+# The modules whose behaviour every constraint above pins. A change to any
+# of them can move any assertion in this file, so a PR touching one has to
+# run it. `ci.yml` happens to cover them under `src/**`, but that filter is
+# a coarse "did any code change" switch argued on unrelated grounds
+# (#413/#427, #1160) and states nothing about which tests guard which
+# files; it can be narrowed without anyone noticing this gate went quiet.
+_GUARDED = (
+    "src/aelfrice/bm25.py",
+    "src/aelfrice/scoring.py",
+    "src/aelfrice/retrieval.py",
+)
+
+
+def _pr_path_globs() -> list[str]:
+    """Return the `paths:` list under the workflow's `pull_request:` trigger."""
+    lines = _WORKFLOW.read_text(encoding="utf-8").splitlines()
+    starts = [i for i, line in enumerate(lines) if line.strip() == "pull_request:"]
+    assert len(starts) == 1, (
+        f"expected one `pull_request:` trigger in {_WORKFLOW.name}, found "
+        f"{len(starts)} — a parser that finds nothing would make every "
+        f"assertion below pass for free"
+    )
+    paths_at: int | None = None
+    for i in range(starts[0] + 1, len(lines)):
+        stripped = lines[i].strip()
+        if stripped == "paths:":
+            paths_at = i
+            break
+        # a new top-level trigger key (e.g. `push:`) ends the block
+        if stripped and not lines[i].startswith("    "):
+            break
+    assert paths_at is not None, (
+        "the pull_request trigger has no `paths:` filter — if that was "
+        "deliberate the job now runs on every PR, which also satisfies the "
+        "gate; delete these tests rather than weakening them"
+    )
+    indent = len(lines[paths_at]) - len(lines[paths_at].lstrip())
+    globs: list[str] = []
+    for line in lines[paths_at + 1:]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if len(line) - len(line.lstrip()) <= indent:
+            break
+        matched = re.fullmatch(r"-\s*'([^']+)'", stripped)
+        assert matched, f"unparsed entry in the paths filter: {stripped!r}"
+        globs.append(matched.group(1))
+    return globs
+
+
+def _glob_matches(glob: str, path: str) -> bool:
+    """Match a GitHub-Actions path glob, where `**` spans separators."""
+    pattern = "".join(
+        r"[^/]*" if part == "*" else r".*" if part == "**" else re.escape(part)
+        for part in re.split(r"(\*\*|\*)", glob)
+    )
+    return re.fullmatch(pattern, path) is not None
+
+
+def _path_is_included(globs: Sequence[str], path: str) -> bool:
+    """Whether GitHub would trigger on `path`, honouring `!` negation order.
+
+    A later negative excludes what an earlier positive matched, so a plain
+    `any()` would read `src/aelfrice/**` followed by `!src/aelfrice/bm25.py`
+    as covering `bm25.py` — the guard failing *open* in the one case it
+    exists to catch. There are no negated entries today; this keeps the
+    guard correct if one is ever added.
+    """
+    included = False
+    for glob in globs:
+        negated = glob.startswith("!")
+        if _glob_matches(glob[1:] if negated else glob, path):
+            included = not negated
+    return included
+
+
+def test_the_gate_workflow_triggers_on_every_module_these_axioms_guard() -> None:
+    """Derived from `_GUARDED`, not copied from the workflow's own list.
+
+    A guard that restates the thing it checks can only fail on a rename;
+    #1161 shipped exactly that on the doctor side. The expectation here
+    is the set of modules the constraints actually depend on, so dropping
+    one from the filter fails even though the filter still parses.
+    """
+    globs = _pr_path_globs()
+    uncovered = [p for p in _GUARDED if not _path_is_included(globs, p)]
+    assert not uncovered, (
+        f"{uncovered} would not trigger {_WORKFLOW.name}, so a PR changing "
+        f"only those files can move every score asserted in this module "
+        f"without running any of it"
+    )
+
+
+def test_the_gate_workflow_triggers_on_this_test_module() -> None:
+    """Editing the constraints themselves must re-run them — otherwise a
+    PR weakening an assertion here is checked by nothing."""
+    globs = _pr_path_globs()
+    own_path = f"tests/{Path(__file__).name}"
+    assert _path_is_included(globs, own_path), (
+        f"{own_path} does not match the workflow's paths filter"
+    )

@@ -1,0 +1,75 @@
+name: Scorer Axioms
+
+# #1381 — run the axiomatic retrieval constraints (Fang, Tao & Zhai) as a
+# gate named for the modules it guards.
+#
+# `tests/test_axiomatic_constraints.py` already encodes the constraints,
+# but until now nothing tied them to the scorer. They ran only via
+# `ci.yml`'s `code:` filter, which is a coarse "did any code change"
+# switch whose scope is argued on unrelated grounds (#413/#427 docs-only
+# PRs, #1160 benchmarks//scripts/). It covers `src/**` today; narrowing
+# it would take this gate offline with nothing to say so.
+#
+# `eval-calibration` cannot fill the role either. It pins one corpus's
+# metrics byte-for-byte, which tells you the ranking *changed*, not
+# whether the new one is sane — a query-term-frequency discard survived
+# in the default lane until #1166 with that check green throughout.
+#
+# The filter below is asserted from the test side rather than only
+# written here: `tests/test_axiomatic_constraints.py::
+# test_the_gate_workflow_triggers_on_every_module_these_axioms_guard`
+# parses this `paths:` list and fails if a guarded module drops out of
+# it. Adding a constraint that depends on a fourth module means adding
+# that module to both places.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/aelfrice/bm25.py'
+      - 'src/aelfrice/scoring.py'
+      - 'src/aelfrice/retrieval.py'
+      - 'tests/test_axiomatic_constraints.py'
+      - '.github/workflows/scorer-axioms.yml'
+      - 'pyproject.toml'
+      - 'uv.lock'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scorer-axioms-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  axioms:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install
+        # `dev` carries pytest and pytest-timeout. No archive extra: the
+        # constraints reach bm25, scoring, retrieval, store and models only.
+        run: uv sync --frozen --group dev
+
+      - name: Run the axiomatic constraints
+        # `-rA` so the constraint names appear in the log. This suite is
+        # also a defect register — three axioms are pinned as violated at
+        # shipped defaults — and a reviewer reading the job output should
+        # see which ones ran, not just a count.
+        run: uv run pytest tests/test_axiomatic_constraints.py -q -rA
