@@ -245,10 +245,16 @@ def test_the_failure_message_distinguishes_required_from_advisory() -> None:
     assert ".advisory_failing" in text
 
 
+@pytest.mark.timeout(30)
 def test_the_gate_script_runs_under_the_repo_python() -> None:
-    """It runs on a runner with no dependencies installed beyond stdlib."""
+    """It runs on a runner with no dependencies installed beyond stdlib.
+
+    Carries its own budget (#1307): a test that spawns a subprocess on the
+    suite's 5 s default reports contention as a hang rather than as
+    slowness. 30 s is an interpreter start plus an argparse `--help`.
+    """
     proc = subprocess.run(
         [sys.executable, str(_REPO / "scripts" / "merge_train_gate.py"), "--help"],
-        capture_output=True, text=True, check=False,
+        capture_output=True, text=True, check=False, timeout=20,
     )
     assert proc.returncode == 0, proc.stderr
