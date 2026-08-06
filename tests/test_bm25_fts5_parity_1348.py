@@ -189,7 +189,7 @@ def test_micro_sign_is_a_known_and_bounded_residual() -> None:
     """Parity is close, not exact, and the gap is named.
 
     SQLite folds U+00B5 to Greek mu; NFD does not. Special-casing it
-    would buy 12 of 44,655 live beliefs, so it is recorded instead. If a
+    would buy 12 of 44,683 live beliefs, so it is recorded instead. If a
     later change makes this pass, the assertion should be deleted and
     the residual count in `tokenize_stemmed`'s docstring updated — it
     failing is the signal, not an excuse to loosen it.
@@ -209,9 +209,11 @@ def test_compatibility_forms_are_not_folded(text: str) -> None:
     """The fold is NFD, and swapping it for NFKD is a regression.
 
     unicode61 applies essentially no compatibility mappings; NFKD
-    applies all of them. Measured over 44,655 live beliefs NFKD fixes 24
-    documents a bare split gets wrong and breaks 49 it gets right — it
-    is net-negative against doing nothing, which is why #1348 did not
+    applies all of them. Re-derived over 44,683 live beliefs by
+    `benchmarks/bm25_fts5_divergence.py`, whose fold table scores each
+    form against a no-fold baseline rather than in isolation: NFKD fixes
+    23 documents that baseline gets wrong and breaks 49 it gets right,
+    net -26 — it is net-negative against doing nothing, which is why #1348 did not
     take the normalisation form its own body proposed. These inputs are
     the ones that separate the two forms.
     """
