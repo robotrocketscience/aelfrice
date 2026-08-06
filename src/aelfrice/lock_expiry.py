@@ -89,7 +89,19 @@ def parse_for(spec: str, *, now: datetime) -> str | None:
             f"cannot parse --for {spec!r}; expected <N><unit> where unit is "
             f"{_UNIT_NAMES}, or {FOREVER!r}"
         )
-    count = int(match.group("n"))
+    # `_DURATION_RE` bounds the count's *shape* (`\d+`) but not its length,
+    # and CPython refuses to convert a decimal string longer than
+    # `sys.get_int_max_str_digits()` (4300 by default), raising a bare
+    # `ValueError`. That is the same contract escape as the arithmetic
+    # below, one statement earlier, so it is wrapped the same way rather
+    # than left to reach a caller that only catches `LockExpiryError`.
+    try:
+        count = int(match.group("n"))
+    except ValueError as exc:
+        raise LockExpiryError(
+            f"--for {spec!r} has too many digits to read as a count; "
+            f"use a smaller window or {FOREVER!r}"
+        ) from exc
     if count == 0:
         raise LockExpiryError(
             f"--for {spec!r} is a zero-length window; use {FOREVER!r} for a "
@@ -97,14 +109,36 @@ def parse_for(spec: str, *, now: datetime) -> str | None:
         )
     unit = match.group("unit").lower()
     base = now.astimezone(timezone.utc)
-    if unit == "d":
-        expires = base + timedelta(days=count)
-    elif unit == "w":
-        expires = base + timedelta(weeks=count)
-    elif unit == "mo":
-        expires = _add_months(base, count)
-    else:
-        expires = _add_months(base, count * 12)
+    # A spec can match `_DURATION_RE` and still be unrepresentable: the
+    # result lands past `datetime.max`, or the count is too large to
+    # convert to a C int at all. Left unhandled, the calendar units
+    # surface a bare `ValueError` ("year N is out of range") and the
+    # fixed-length ones an `OverflowError` — neither of which is the
+    # documented contract, and `cli._cmd_lock` deliberately catches
+    # `LockExpiryError` and nothing else so that a malformed window
+    # fails without writing a lock the user then has to undo. Every
+    # caller resolving a window through here (`cli.py:1950-1962`,
+    # `mcp_server.py:367-373`) is written to that one exception.
+    try:
+        if unit == "d":
+            expires = base + timedelta(days=count)
+        elif unit == "w":
+            expires = base + timedelta(weeks=count)
+        elif unit == "mo":
+            expires = _add_months(base, count)
+        else:
+            expires = _add_months(base, count * 12)
+    except LockExpiryError:  # pragma: no cover - defensive; see below
+        # `LockExpiryError` subclasses `ValueError`, so it would be
+        # caught and re-wrapped by the clause below. Nothing in the
+        # arithmetic raises it today; re-raising unchanged keeps that
+        # true if something ever does.
+        raise
+    except (OverflowError, ValueError) as exc:
+        raise LockExpiryError(
+            f"--for {spec!r} resolves past the largest representable date; "
+            f"use a smaller window or {FOREVER!r}"
+        ) from exc
     return expires.isoformat()
 
 
