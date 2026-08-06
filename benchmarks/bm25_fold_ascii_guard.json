@@ -1,0 +1,30 @@
+{
+  "store": "memory.db",
+  "documents": 44668,
+  "ascii_documents": 33618,
+  "ascii_document_share": 0.752619,
+  "ascii_character_share": 0.566752,
+  "repeat": 10,
+  "cold_repeat": 5,
+  "statistic": "min",
+  "tokenize_stemmed_ms": {
+    "unguarded": 677.2,
+    "shipped": 433.2,
+    "saved": 244.0
+  },
+  "index_build_ms": {
+    "unguarded": 1276.5,
+    "shipped": 1024.7,
+    "saved": 251.8
+  },
+  "cold_build_ms": {
+    "unguarded": 1639.5,
+    "shipped": 1373.8,
+    "saved": 265.7
+  },
+  "cold_hook_fire_ms": {
+    "unguarded": 1830.2,
+    "shipped": 1535.8,
+    "saved": 294.4
+  }
+}

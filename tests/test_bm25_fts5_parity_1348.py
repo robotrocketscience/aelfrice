@@ -395,3 +395,142 @@ def test_non_latin_guard_is_a_regression_guard_not_a_fix(text: str) -> None:
     there is a regression this branch introduced, not a gap it inherited.
     """
     assert _legacy_tokenize_stemmed(text) == fts5_terms(text)
+
+
+def _unguarded_fold(text: str) -> str:
+    """`_fold_diacritics` without the ASCII fast path (#1387).
+
+    Spelled out rather than reached for, for the same reason as
+    `_legacy_tokenize_stemmed`: this is the fixed reference the shortcut
+    is measured against, so it must not follow `bm25` when `bm25`
+    changes. `_REMOVED_MARKS` is read through the module on purpose —
+    the mark set is shared data, and only the loop is duplicated here.
+    """
+    out: list[str] = []
+    for ch in text:
+        if unicodedata.combining(ch):
+            if ch not in bm25._REMOVED_MARKS:
+                out.append(ch)
+            continue
+        decomposed = unicodedata.normalize("NFD", ch)
+        if (
+            len(decomposed) == 2
+            and decomposed[1] in bm25._REMOVED_MARKS
+            and decomposed[0].isascii()
+            and decomposed[0].isalpha()
+        ):
+            out.append(decomposed[0])
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+_GUARD_CORPUS = PARITY_CORPUS + NON_LATIN_REGRESSION_GUARD + (KNOWN_RESIDUAL,)
+
+
+def test_the_guard_corpus_exercises_both_sides_of_the_fast_path() -> None:
+    """Both branches are reached, so the identity tests are not vacuous.
+
+    A corpus that happened to be all-ASCII would make the differential
+    below pass while proving only that the shortcut returns its input,
+    and an all-non-ASCII corpus would never enter the shortcut at all.
+    Assert the split rather than trust the fixtures to keep it.
+    """
+    taken = [t for t in _GUARD_CORPUS if t.isascii()]
+    not_taken = [t for t in _GUARD_CORPUS if not t.isascii()]
+    assert taken, "no all-ASCII fixture: the fast path is never entered"
+    assert not_taken, "no non-ASCII fixture: the loop is never entered"
+
+
+@pytest.mark.parametrize("text", _GUARD_CORPUS)
+def test_ascii_fast_path_is_identity_on_the_corpus(
+    text: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shortcut changes speed and nothing else.
+
+    Asserted at both levels the acceptance criterion names: the fold
+    itself, and the token stream `BM25Index.build` consumes. The second
+    is not implied by the first for a reader — `tokenize_stemmed` folds,
+    splits, lowercases and stems, and it is the tokens that reach the
+    index.
+
+    The token-stream half swaps the fold out from under the *shipped*
+    `tokenize_stemmed` rather than restating its pipeline here. A second
+    copy of the split/lowercase/stem chain would be a second source of
+    truth: it could drift from the real one and still agree with itself,
+    which is how a parity test comes to assert nothing.
+    """
+    assert bm25._fold_diacritics(text) == _unguarded_fold(text)
+
+    guarded_tokens = bm25.tokenize_stemmed(text)
+    monkeypatch.setattr(bm25, "_fold_diacritics", _unguarded_fold)
+    assert bm25.tokenize_stemmed(text) == guarded_tokens
+
+
+def test_ascii_fast_path_is_identity_over_every_ascii_codepoint() -> None:
+    """Exhaustive on the branch the shortcut actually changes.
+
+    The corpus above samples; this does not. The fast path fires on
+    exactly one class of input — strings where every codepoint is ASCII
+    — so that class can be swept whole rather than sampled, which is the
+    same standard `test_which_precomposed_codepoints_fold_matches_sqlite`
+    holds the fold rule to. Every single ASCII codepoint and every
+    ordered ASCII pair is 16,512 inputs, cheap and total.
+
+    The argument the shortcut rests on is that ASCII takes neither loop
+    branch, so both halves of it are asserted directly below rather than
+    only through their consequence — a future Unicode revision that gave
+    an ASCII codepoint a combining class or a two-codepoint NFD would
+    silently invalidate the shortcut, and this says so in that voice
+    instead of failing as an unexplained fold mismatch.
+    """
+    ascii_chars = [chr(cp) for cp in range(0x80)]
+    for ch in ascii_chars:
+        assert not unicodedata.combining(ch), (
+            f"U+{ord(ch):04X} is now combining — the ASCII fast path in "
+            "_fold_diacritics is no longer identity"
+        )
+        assert len(unicodedata.normalize("NFD", ch)) == 1, (
+            f"U+{ord(ch):04X} now has a multi-codepoint NFD — the ASCII "
+            "fast path in _fold_diacritics is no longer identity"
+        )
+
+    for a in ascii_chars:
+        assert bm25._fold_diacritics(a) == _unguarded_fold(a)
+        for b in ascii_chars:
+            pair = a + b
+            assert bm25._fold_diacritics(pair) == _unguarded_fold(pair)
+
+
+def test_the_ascii_fast_path_is_actually_taken(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one thing #1387 ships, and the only test that would notice it go.
+
+    Every other test here asserts the guarded fold agrees with the
+    unguarded one. The *unguarded* code satisfies that by construction, so
+    deleting `if text.isascii(): return text` leaves all of them green — a
+    perf change whose entire deliverable no assertion can see.
+
+    This counts the per-character work instead. On all-ASCII input the loop
+    must not run at all; on input with one non-ASCII codepoint it must, or
+    the test would pass against a fold that had stopped folding.
+    """
+    calls: list[str] = []
+    real_combining = unicodedata.combining
+    monkeypatch.setattr(
+        bm25.unicodedata,
+        "combining",
+        lambda ch: (calls.append(ch), real_combining(ch))[1],
+    )
+
+    assert bm25._fold_diacritics("plain ascii text, 123") == "plain ascii text, 123"
+    assert calls == [], (
+        "the ASCII fast path was not taken: _fold_diacritics entered the "
+        "per-character loop on an all-ASCII string"
+    )
+
+    # The distinguishing half. Without it, a fold that returned `text`
+    # unconditionally would pass the assertion above.
+    assert bm25._fold_diacritics("café") == "cafe"
+    assert calls != [], "the per-character loop must still run on non-ASCII input"
