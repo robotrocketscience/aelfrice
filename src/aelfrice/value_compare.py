@@ -146,11 +146,15 @@ ENUM_VOCAB: Final[dict[str, tuple[frozenset[str], ...]]] = {
 # `extract_values` would violate its own "same input → byte-identical
 # output" contract. Same bug class as the `MUTABLE_FIELDS` iteration in
 # `replay._mutable_field_diff`.
+#
+# The sort is hoisted into its own clause rather than repeated: written
+# as `sorted(group)[0]` in the value position it re-sorts once per
+# *member*, not once per group.
 _ENUM_MEMBER_INDEX: Final[dict[str, tuple[str, str]]] = {
-    member: (category, sorted(group)[0])
+    member: (category, members[0])
     for category, groups in ENUM_VOCAB.items()
-    for group in groups
-    for member in sorted(group)
+    for members in (sorted(group) for group in groups)
+    for member in members
 }
 
 
