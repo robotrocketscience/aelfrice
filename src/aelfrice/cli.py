@@ -6138,13 +6138,29 @@ def _remove_mcp_config(out: object) -> int:
     the user's other servers; this is the verb that says "yes, edit it".
     Every write is preceded by a timestamped backup, and anything that does
     not parse as strict JSON is reported and left alone.
+
+    Exits non-zero when a config could not be read: the user asked for an
+    edit and one input was never inspected, so "nothing to remove" would be
+    a claim this run did not establish.
     """
-    from aelfrice.mcp_cleanup import find_registrations, remove_registration
+    from aelfrice.mcp_cleanup import (
+        find_registrations,
+        remove_registration,
+        scan_was_incomplete,
+    )
 
     registrations, notes = find_registrations()
     for note in notes:
         print(note, file=out)  # type: ignore[arg-type]
+    incomplete = scan_was_incomplete(notes)
     if not registrations:
+        if incomplete:
+            print(  # type: ignore[arg-type]
+                "could not read every config listed above; "
+                "no registration found in the ones that were readable",
+                file=out,
+            )
+            return 1
         print("no aelfrice MCP registration found", file=out)  # type: ignore[arg-type]
         return 0
     failed = False
@@ -6152,7 +6168,7 @@ def _remove_mcp_config(out: object) -> int:
         changed, message = remove_registration(registration)
         print(message, file=out)  # type: ignore[arg-type]
         failed = failed or not changed
-    return 1 if failed else 0
+    return 1 if (failed or incomplete) else 0
 
 
 def _cmd_migrate(args: argparse.Namespace, out: object) -> int:

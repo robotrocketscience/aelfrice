@@ -494,3 +494,67 @@ def test_the_success_message_names_a_project_scoped_entry_correctly(
     changed, message = remove_registration(found[0], now=_NOW)
     assert changed is True
     assert f"projects.{project}.mcpServers.aelfrice" in message
+
+
+def test_the_verb_exits_nonzero_when_a_config_could_not_be_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """"Nothing to remove" and "could not look" are different answers.
+
+    The user asked for an edit. If a config never parsed, the run has not
+    established that there is nothing to remove, and exiting 0 reports a
+    success it did not earn — the caller cannot tell the two apart.
+    """
+    import io
+
+    from aelfrice import mcp_cleanup
+    from aelfrice.cli import _remove_mcp_config
+
+    unreadable = tmp_path / "cfg.json"
+    unreadable.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(
+        mcp_cleanup, "candidate_config_paths", lambda: [unreadable],
+    )
+
+    buf = io.StringIO()
+    assert _remove_mcp_config(buf) == 1
+    assert "no aelfrice MCP registration found" not in buf.getvalue()
+
+    # The control: a readable config with no entry must still exit 0, or
+    # the check would fire for every clean install.
+    clean = _write(tmp_path / "clean.json", {"mcpServers": {}})
+    monkeypatch.setattr(
+        mcp_cleanup, "candidate_config_paths", lambda: [clean],
+    )
+    buf2 = io.StringIO()
+    assert _remove_mcp_config(buf2) == 0
+    assert "no aelfrice MCP registration found" in buf2.getvalue()
+
+
+def test_a_successful_removal_still_exits_nonzero_if_another_file_was_unread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The partial case, which the all-or-nothing branch above cannot reach.
+
+    One config parses and its entry is removed; a second never parsed. The
+    removal succeeded, so `failed` is False — but the run still did not
+    establish that nothing else remains, and reporting success would tell
+    the user the cleanup was complete when one input was never opened.
+    """
+    import io
+
+    from aelfrice import mcp_cleanup
+    from aelfrice.cli import _remove_mcp_config
+
+    good = _write(tmp_path / "good.json", {
+        "mcpServers": {"aelfrice": {"command": "aelf", "args": ["mcp"]}},
+    })
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(
+        mcp_cleanup, "candidate_config_paths", lambda: [good, bad],
+    )
+
+    buf = io.StringIO()
+    assert _remove_mcp_config(buf) == 1
+    assert "removed 'mcpServers.aelfrice'" in buf.getvalue()
