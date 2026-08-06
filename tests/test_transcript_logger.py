@@ -4,6 +4,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -214,6 +216,159 @@ def test_stop_writes_empty_text_when_no_transcript(tdir: Path) -> None:
     assert len(lines) == 1
     assert lines[0]["role"] == "assistant"
     assert lines[0]["text"] == ""
+
+
+# --- #1051: assistant text carried on the Stop payload itself -------------
+#
+# Codex CLI 0.146.1 sends `transcript_path: null` and puts the answer in
+# `last_assistant_message`. Before the ordered adapter the rollout parser
+# had no file to read, so every Codex turn degraded to an empty stub.
+
+
+def test_stop_payload_message_used_when_transcript_path_null(
+    tdir: Path,
+) -> None:
+    """#1051: the reopen repro — null transcript_path, text on the payload."""
+    rc = _run_main({
+        "hook_event_name": "Stop",
+        "transcript_path": None,
+        "last_assistant_message": "codex-stop-sentinel",
+        "session_id": "01JCODEX0000000000000000",
+    })
+    assert rc == 0
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 1
+    assert lines[0]["role"] == "assistant"
+    assert lines[0]["text"] == "codex-stop-sentinel"
+
+
+def test_stop_payload_message_absent_falls_back_to_rollout(
+    tdir: Path, tmp_path: Path,
+) -> None:
+    """No payload field -> the Codex rollout parser still runs."""
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        _codex_rollout_line("assistant", "from the rollout") + "\n",
+        encoding="utf-8",
+    )
+    _run_main({
+        "hook_event_name": "Stop",
+        "transcript_path": str(transcript),
+    })
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 1
+    assert lines[0]["text"] == "from the rollout"
+
+
+def test_stop_payload_message_wins_over_rollout(
+    tdir: Path, tmp_path: Path,
+) -> None:
+    """Both sources readable -> exactly one row, and the payload wins.
+
+    The two sources carry *different* text on purpose: identical text
+    would leave the precedence unobservable, so the row count alone
+    could not tell which branch produced it.
+    """
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        _codex_rollout_line("assistant", "from the rollout") + "\n",
+        encoding="utf-8",
+    )
+    _run_main({
+        "hook_event_name": "Stop",
+        "transcript_path": str(transcript),
+        "last_assistant_message": "from the payload",
+    })
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 1
+    assert lines[0]["text"] == "from the payload"
+
+
+def test_stop_payload_whitespace_message_falls_back_to_rollout(
+    tdir: Path, tmp_path: Path,
+) -> None:
+    """Whitespace-only is absent, not an answer — it must not suppress."""
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        _codex_rollout_line("assistant", "from the rollout") + "\n",
+        encoding="utf-8",
+    )
+    _run_main({
+        "hook_event_name": "Stop",
+        "transcript_path": str(transcript),
+        "last_assistant_message": "   \n\t ",
+    })
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 1
+    assert lines[0]["text"] == "from the rollout"
+
+
+def test_stop_payload_whitespace_message_no_transcript_writes_stub(
+    tdir: Path,
+) -> None:
+    """Neither source has text -> the explicit stub behaviour is kept."""
+    rc = _run_main({
+        "hook_event_name": "Stop",
+        "transcript_path": None,
+        "last_assistant_message": "   ",
+    })
+    assert rc == 0
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 1
+    assert lines[0]["role"] == "assistant"
+    assert lines[0]["text"] == ""
+
+
+def test_stop_payload_message_preserves_non_ascii(tdir: Path) -> None:
+    """Every Unicode scalar survives verbatim, astral planes included."""
+    answer = "café — 東京 \U0001f642"
+    _run_main({
+        "hook_event_name": "Stop",
+        "transcript_path": None,
+        "last_assistant_message": answer,
+    })
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert lines[0]["text"] == answer
+
+
+@pytest.mark.timeout(60)
+def test_stop_payload_message_survives_redirected_stdin(
+    tdir: Path, tmp_path: Path,
+) -> None:
+    """End-to-end over a real redirected pipe, not an in-process StringIO.
+
+    Drives the module entry point in a subprocess with UTF-8 bytes on
+    stdin, which is how the hook is actually invoked. This covers the
+    adapter on the wire; the Windows locale-decode half of the same
+    surface is #1426 and is not addressed here.
+    """
+    answer = "café — 東京 \U0001f642"
+    wire = json.dumps(
+        {
+            "hook_event_name": "Stop",
+            "transcript_path": None,
+            "last_assistant_message": answer,
+            "session_id": "01JCODEXSTDIN00000000000",
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+    env = dict(os.environ)
+    env["AELFRICE_TRANSCRIPTS_DIR"] = str(tdir)
+    env["PYTHONUTF8"] = "1"
+    proc = subprocess.run(
+        [sys.executable, "-m", "aelfrice.transcript_logger"],
+        input=wire,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        check=False,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 1
+    assert lines[0]["text"] == answer
 
 
 def test_pre_compact_rotates_and_marks(tdir: Path) -> None:

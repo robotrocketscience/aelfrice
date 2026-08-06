@@ -438,10 +438,34 @@ def _handle_user_prompt_submit(payload: dict[str, object]) -> None:
     _append_turn(line)
 
 
+def _stop_payload_assistant_text(payload: dict[str, object]) -> str | None:
+    """Assistant text carried directly on the Stop payload (#1051).
+
+    Codex CLI 0.146.1 sends `transcript_path: null` and puts the
+    answer in `last_assistant_message`, so the rollout parser has
+    no file to read and every turn used to degrade to a stub.
+    Whitespace-only values count as absent — they carry no answer
+    content and must fall through to the transcript instead of
+    suppressing it.
+    """
+    raw = payload.get("last_assistant_message")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return raw
+
+
 def _handle_stop(payload: dict[str, object]) -> None:
-    transcript_path = payload.get("transcript_path")
-    text_path = transcript_path if isinstance(transcript_path, str) else None
-    text = _last_assistant_text(text_path)
+    # Ordered adapter (#1051): the payload field wins when present,
+    # then the host transcript. Exactly one assistant row is written
+    # either way, so a payload field plus a readable rollout cannot
+    # duplicate the turn.
+    text = _stop_payload_assistant_text(payload)
+    if text is None:
+        transcript_path = payload.get("transcript_path")
+        text_path = (
+            transcript_path if isinstance(transcript_path, str) else None
+        )
+        text = _last_assistant_text(text_path)
     if not text:
         # No accessible assistant text — write a stub line so the
         # rebuilder can still see a turn boundary. role='assistant'
