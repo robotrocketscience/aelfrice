@@ -113,8 +113,9 @@ def test_user_prompt_submit_writes_rebuild_log(
     # `scored_query` joined the set in #1405. Kept as an exact-equality
     # pin rather than a subset check: this is the row both replay
     # consumers read, and a key appearing or vanishing unnoticed is the
-    # class of defect #1405 documents — `extracted_query` was recorded
-    # for a year while matching neither production path.
+    # class of defect #1405 documents — `extracted_query` matched neither
+    # production path for the whole life of the field (introduced
+    # 2026-04-28, UPS path instrumented 2026-05-02 in v1.6.0).
     assert set(rec["input"]) == {
         "recent_turns_hash", "n_recent_turns",
         "extracted_query", "extracted_entities", "extracted_intent",
@@ -312,4 +313,141 @@ def test_record_user_prompt_submit_log_no_path_is_noop(
         log_path=None,
         enabled=True,
         stderr=io.StringIO(),
+    )
+
+
+def test_ups_row_carries_the_string_retrieve_was_handed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The forwarding hop at `hook.py:1910`, which nothing else covers.
+
+    `scored_query=scored_query` in the `record_user_prompt_submit_log(...)`
+    call carries this fix for 97.7% of rows, and it is a defaulted
+    parameter on all three signatures — so deleting it raises nothing and
+    every row silently reverts to `null`, the pre-fix state.
+
+    Neither existing test can see that. The source grep still matches two
+    frames up at `hook.py:1164`; the schema test pins the *key* set, and
+    the builder always emits the key with a `None` default.
+
+    So this spies on `_retrieve` — the function the hook actually hands
+    the query to — and asserts the logged value is that same string, in
+    the same fire. Both composition regimes are covered, because the
+    conversation-aware branch is guarded by `if recent_turns:`
+    (`hook.py:1083`) and is therefore *not* taken on a session whose
+    transcript yields no turns.
+    """
+    from aelfrice import hook as hook_mod
+
+    db = tmp_path / "memory.db"
+    _seed_db(db, [_mk("F1", "the kitchen is full of bananas")])
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+
+    seen: list[str] = []
+    real_retrieve = hook_mod._retrieve
+
+    def spy(query: str, *args: object, **kwargs: object) -> object:
+        seen.append(query)
+        return real_retrieve(query, *args, **kwargs)
+
+    monkeypatch.setattr(hook_mod, "_retrieve", spy)
+
+    prompt = "are there bananas in the kitchen"
+    rc = user_prompt_submit(
+        stdin=io.StringIO(_payload(prompt, "ups-sq-1")),
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+    )
+    assert rc == 0
+    assert len(seen) == 1, f"expected one _retrieve call, got {len(seen)}"
+
+    rows = _read_log(tmp_path / "rebuild_logs" / "ups-sq-1.jsonl")
+    assert len(rows) == 1
+    scored = rows[0]["input"]["scored_query"]
+
+    assert scored is not None, (
+        "the UPS row must carry the string retrieve() was handed; None "
+        "means the forwarding hop in hook.py was lost and the row is back "
+        "to 'unknown'"
+    )
+    assert scored == seen[0], (
+        f"_retrieve got {seen[0]!r}, the row recorded {scored!r}"
+    )
+    # With no readable transcript the composition branch is skipped, so
+    # the composed and raw forms coincide here; the divergent regime is
+    # covered below.
+
+
+def test_ups_row_carries_the_composition_when_the_branch_is_taken(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The regime where the recorded string is not the raw prompt.
+
+    `_build_conversation_aware_query` is reached only when
+    `_read_recent_for_pre_compact` yields turns (`hook.py:1083`). With a
+    real turns log present the scored string becomes the prompt repeated
+    `conversation_aware_prompt_weight` times plus the turn window — a
+    string `_query_for_recent_turns` could not produce — so this arm is
+    what distinguishes recording the caller's value from re-deriving one.
+    """
+    from aelfrice import hook as hook_mod
+
+    cwd = tmp_path / "proj"
+    turns_log = cwd / ".git" / "aelfrice" / "transcripts" / "turns.jsonl"
+    turns_log.parent.mkdir(parents=True)
+    turns_log.write_text(
+        "\n".join(
+            json.dumps({"role": r, "text": t, "session_id": "ups-sq-2"})
+            for r, t in [
+                ("user", "we were discussing fruit storage"),
+                ("assistant", "yes, the pantry inventory"),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    db = tmp_path / "memory.db"
+    _seed_db(db, [_mk("F1", "the kitchen is full of bananas")])
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+
+    seen: list[str] = []
+    real_retrieve = hook_mod._retrieve
+
+    def spy(query: str, *args: object, **kwargs: object) -> object:
+        seen.append(query)
+        return real_retrieve(query, *args, **kwargs)
+
+    monkeypatch.setattr(hook_mod, "_retrieve", spy)
+
+    prompt = "are there bananas in the kitchen"
+    payload = json.dumps({
+        "session_id": "ups-sq-2",
+        "transcript_path": "/dev/null",
+        "cwd": str(cwd),
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": prompt,
+    })
+    rc = user_prompt_submit(
+        stdin=io.StringIO(payload),
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+    )
+    assert rc == 0
+    assert len(seen) == 1
+
+    rows = _read_log(tmp_path / "rebuild_logs" / "ups-sq-2.jsonl")
+    assert len(rows) == 1
+    scored = rows[0]["input"]["scored_query"]
+
+    assert scored == seen[0], (
+        f"_retrieve got {seen[0]!r}, the row recorded {scored!r}"
+    )
+    assert scored.count(prompt) > 1, (
+        "expected the conversation-aware composition (prompt repeated "
+        f"{hook_mod.DEFAULT_CONV_AWARE_WEIGHT}x), got {scored!r}"
+    )
+    assert "fruit storage" in scored, "the turn window must be appended"
+    assert scored != rows[0]["input"]["extracted_query"], (
+        "the row must record the composed string, not the extraction"
     )
