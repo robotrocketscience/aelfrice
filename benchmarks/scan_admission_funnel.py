@@ -34,7 +34,11 @@ between move this corpus not at all. Two figures from two trees are not a
 before-and-after.
 
 The script also scans the repository it lives in, so its own source enters the
-corpus — 10,829 from a checkout carrying this file, 10,823 pristine. `sha` and
+corpus: a checkout carrying this file and its test measures higher than a
+pristine one by their own line count. **Quote the pristine figure** — 10,823 at
+`9848be03` — and point `--root` at a clean worktree to reproduce it. The
+self-including count is deliberately not written down here: it moves every time
+either file is edited, including by the edit that would record it. `sha` and
 `dirty` are printed on every run for exactly this reason.
 
 Noise attribution is reported **first-match-wins**, mirroring `is_noise`'s
