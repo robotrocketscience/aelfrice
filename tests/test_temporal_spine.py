@@ -724,10 +724,25 @@ def test_clear_then_backfill_preserves_prose_edge_direction(
     after = _all_temporal_next(store)
     # The prose row is still there, pointing the way it was asserted.
     assert before <= after
-    # And the reversed row, if the backfill added one, is a spine row —
-    # never a rewrite of the prose row.
-    assert (dst, src, 1.0,
-            "deployment phase two succeeds deployment phase one") not in after
+    # And whatever the backfill re-minted is separable from the prose row
+    # by the exact predicate the scoped DELETE keys on. Asserting instead
+    # that the *inverted prose tuple* is absent would be vacuous: the
+    # backfill only ever writes weight 0.8 with a NULL anchor, so a row
+    # carrying weight 1.0 and this anchor text is not a shape it can
+    # produce, and that assertion would pass with the fix reverted.
+    # This one cannot: if the two writers ever agreed on (weight,
+    # anchor_text), the scoped DELETE would have no discriminator and
+    # would go back to eating prose rows.
+    for edge_src, edge_dst, weight, anchor in after - before:
+        assert anchor is None, (
+            f"backfill wrote an anchored row ({edge_src}->{edge_dst}); the "
+            "scoped DELETE keys on anchor_text IS NULL and can no longer "
+            "tell the two writers apart"
+        )
+        assert weight == 0.8, (
+            f"backfill wrote weight {weight}; the scoped DELETE keys on "
+            "weight = 0.8 and can no longer tell the two writers apart"
+        )
 
 
 # --- maybe_backfill_temporal_spine (sentinel-gated auto migration) ---------
