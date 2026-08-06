@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from aelfrice.derivation_worker import run_worker
+from aelfrice.extraction import CODE_FENCE_RE
 from aelfrice.inedible import is_inedible
 from aelfrice.models import (
     CORROBORATION_SOURCE_FILESYSTEM_INGEST,
@@ -387,8 +388,22 @@ def _split_paragraphs(text: str) -> list[str]:
     whitespace stripped per paragraph. Paragraphs shorter than
     _MIN_PARAGRAPH_CHARS dropped (markdown headings, list bullets, code
     fence markers, etc.).
+
+    Fenced code regions are removed first (#1371 §10), using the same
+    `extraction.CODE_FENCE_RE` the transcript path uses, so one document
+    ingested through onboard and through `extract_sentences` yields the
+    same beliefs. Before this, `is_noise`'s four categories had no fence
+    rule and a fenced block over `_MIN_PARAGRAPH_CHARS` was stored
+    verbatim as a belief on the onboard path only.
+
+    Stripping precedes the split, matching `extract_sentences`' ordering:
+    a fence sitting between blank lines collapses to whitespace and its
+    paragraph drops on length, while a fence inline in a prose paragraph
+    leaves the prose intact. An *unterminated* fence matches nothing and
+    is left alone — also matching the transcript path, so the two agree
+    on the malformed case rather than only the well-formed one.
     """
-    raw_paragraphs = [p.strip() for p in text.split("\n\n")]
+    raw_paragraphs = [p.strip() for p in CODE_FENCE_RE.sub(" ", text).split("\n\n")]
     return [p for p in raw_paragraphs if len(p) >= _MIN_PARAGRAPH_CHARS]
 
 
