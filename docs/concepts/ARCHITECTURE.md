@@ -250,7 +250,7 @@ new context alongside the harness's own summary (augment mode)
 | Property | default | Pre-registered invariants: Bayesian inertia, decay-required, lock-floor sharpness, token-budget invariant, broker-attenuation. |
 | Regression | `@pytest.mark.regression` | Cross-module scenarios: retrieval round-trip, feedback loop, onboarding, setup→hook→unsetup, `aelf bench` end-to-end. |
 
-`uv run pytest` (5,900+ tests at v4.2.0).
+`uv run pytest` (7,300+ tests at v4.2.0).
 
 ## Out of scope through v1.x
 
