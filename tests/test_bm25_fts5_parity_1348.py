@@ -290,7 +290,7 @@ def test_which_precomposed_codepoints_fold_matches_sqlite() -> None:
     A sample corpus cannot close this — `NON_LATIN_REGRESSION_GUARD` had
     eight entries and none of them could see it, because separators,
     conjoining jamo and non-removable marks are all different mechanisms.
-    So this asks SQLite about the entire class: all 723 codepoints whose
+    So this asks SQLite about the entire class: all 727 codepoints whose
     NFD is a base plus exactly one combining mark.
 
     The rule that comes back is exact — SQLite folds precisely those with

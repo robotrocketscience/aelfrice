@@ -310,18 +310,31 @@ def _fold_diacritics(text: str) -> str:
     distinct Greek words into one term, which is a precision loss inside
     the lane rather than a cross-lane gap.
 
-    Swept exhaustively against the oracle: of the 723 codepoints whose
-    NFD is a base plus exactly one mark, SQLite folds **375** and keeps
-    **284** (63 more are separators that produce no token). The 375 are
-    exactly those with an ASCII base — no false folds, no false keeps —
-    which is why the test pins the rule against all 723 rather than
-    against a sample. The nine near-misses are the reason the condition
+    Swept exhaustively against the oracle. The 727 codepoints whose NFD
+    is a base plus exactly one mark partition exactly:
+
+        375  folded to the base
+        284  kept as-is
+         67  separators, producing no single token
+          1  U+1E9B (see the residual below)
+        ---
+        727
+
+    The 375 are exactly those with an ASCII base — no false folds, no
+    false keeps — which is why the test pins the rule against all 727
+    rather than against a sample. The nine near-misses are the reason the condition
     is ASCII rather than "Latin": SQLite leaves ``"ǣ"``, ``"ǯ"``,
     ``"ǽ"`` and ``"ǿ"`` alone, whose bases are ae, ezh and o-stroke.
 
-    One residual remains, stated rather than chased: SQLite folds U+00B5
-    MICRO SIGN to Greek mu, a compatibility mapping no canonical
-    decomposition performs. It costs 12 of 44,655 live beliefs.
+    Two residuals remain, stated rather than chased, and they are the
+    same class: SQLite applies a **compatibility** mapping that no
+    canonical decomposition performs, so a rule built on NFD cannot
+    reach either. U+00B5 MICRO SIGN folds to Greek mu (12 of 44,655 live
+    beliefs), and U+1E9B LATIN SMALL LETTER LONG S WITH DOT ABOVE folds
+    to plain `s` — its NFD base is U+017F LONG S, which is not ASCII, so
+    this rule correctly declines to fold it and SQLite maps it anyway.
+    U+1E9B is the single codepoint in the 727 where the two still
+    differ; it has no occurrences on the live corpus.
     """
     out: list[str] = []
     for ch in text:
