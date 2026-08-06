@@ -28,8 +28,10 @@ HARNESS_SCAFFOLDING = [
     "<command-message>clear</command-message>",
     "<command-args></command-args>",
     "<local-command-stdout></local-command-stdout>",
-    "<local-command-caveat>Caveat: the messages below were generated "
-    "while running local commands.</local-command-caveat>",
+    (
+        "<local-command-caveat>Caveat: the messages below were generated "
+        "while running local commands.</local-command-caveat>"
+    ),
 ]
 
 # Prose that must NOT be caught by the §9 prefixes. Each is chosen to sit close
