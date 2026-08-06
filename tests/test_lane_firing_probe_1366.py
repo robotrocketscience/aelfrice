@@ -13,11 +13,13 @@ result and a broken instrument. These tests pin the differences:
   renamed field is a red test rather than a lane that reads as dead;
 * the flags with no telemetry field are reported as *unobservable*, not
   as never-fired — scoring them as never-fired would fabricate the
-  finding the probe exists to detect.
+  finding the probe exists to detect;
+* importing this module has no side effect on the environment.
 """
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import fields
 from pathlib import Path
 
@@ -346,6 +348,59 @@ def test_truncation_control_is_quiet_when_nothing_moves() -> None:
     out = probe.truncation_control(same, _observed({"l1_bm25": 500}), 500)
     assert out["lanes_whose_fire_count_moved"] == {}
     assert out["lanes_falsely_dead_under_truncation"] == []
+
+
+# --- Import-time side effects -------------------------------------------
+
+
+def test_importing_the_probe_leaves_ambient_config_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Importing this module must not touch the caller's environment.
+
+    The clear used to run at module scope. `tests/conftest.py` reads
+    ``AELFRICE_CORPUS_ROOT`` at test time to decide whether the
+    corpus-gated tests run, and this module is imported at pytest
+    *collection* — so a full ``pytest tests/`` silently skipped every
+    bench gate, the same class of defect as #1278.
+
+    Re-executing module scope is the direct form: move the clear back up
+    there and the sentinel is gone when this returns.
+    """
+    import importlib
+
+    monkeypatch.setenv("AELFRICE_SENTINEL_1366", "kept")
+    monkeypatch.setenv("AELF_SENTINEL_1366", "kept")
+    importlib.reload(probe)
+    assert os.environ.get("AELFRICE_SENTINEL_1366") == "kept"
+    assert os.environ.get("AELF_SENTINEL_1366") == "kept"
+
+
+def test_pinned_environment_clears_then_restores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AELFRICE_SENTINEL_1366", "kept")
+    monkeypatch.setenv("AELF_SENTINEL_1366", "kept")
+    monkeypatch.setenv("UNRELATED_SENTINEL_1366", "kept")
+    with probe.pinned_environment() as cleared:
+        assert "AELFRICE_SENTINEL_1366" in cleared
+        assert "AELF_SENTINEL_1366" in cleared
+        assert os.environ.get("AELFRICE_SENTINEL_1366") is None
+        assert os.environ.get("AELF_SENTINEL_1366") is None
+        # Only the aelfrice-prefixed vars, never the whole environment.
+        assert os.environ.get("UNRELATED_SENTINEL_1366") == "kept"
+    assert os.environ.get("AELFRICE_SENTINEL_1366") == "kept"
+    assert os.environ.get("AELF_SENTINEL_1366") == "kept"
+
+
+def test_pinned_environment_restores_on_an_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed run must not leave the caller stripped of its config."""
+    monkeypatch.setenv("AELFRICE_SENTINEL_1366", "kept")
+    with pytest.raises(RuntimeError), probe.pinned_environment():
+        raise RuntimeError("boom")
+    assert os.environ.get("AELFRICE_SENTINEL_1366") == "kept"
 
 
 # --- Committed result ----------------------------------------------------

@@ -37,12 +37,24 @@ session transcripts and there is no `--hook-audit` option.
 
 Method constraints
 ------------------
-* **Environment pinned before `aelfrice` is imported.** Every ambient
-  ``AELFRICE_*`` / ``AELF_*`` variable is deleted at module import, ahead
-  of the first `aelfrice` import, because several resolvers read the
-  environment at import time. Without this the diff measures the
-  developer's own opt-ins rather than the shipped defaults.
-  `benchmarks/posterior_channel_audit.py` establishes the pattern.
+* **Environment pinned for the duration of the run, and only then.**
+  Every ambient ``AELFRICE_*`` / ``AELF_*`` variable is deleted at the
+  top of `main()` and restored before it returns; without the clear the
+  diff measures the developer's own opt-ins rather than the shipped
+  defaults. `benchmarks/posterior_channel_audit.py` establishes the
+  pattern.
+
+  The clear is deliberately **not** at module scope. It used to be, on
+  the theory that resolvers read the environment at import time — they
+  do not: there is not one module-scope ``os.environ`` read in
+  ``src/aelfrice``, every resolver reads it per call. What the
+  import-time clear did instead was delete the variables of any process
+  that merely *imported* this module, including pytest at collection
+  time, where `tests/conftest.py` reads ``AELFRICE_CORPUS_ROOT`` to
+  decide whether the corpus-gated tests run. A full ``pytest tests/``
+  then silently skipped every one of them — the same class of defect as
+  #1278. `test_importing_the_probe_leaves_ambient_config_alone` fails if
+  the clear moves back.
 * **TOML pinned too.** These resolvers are env -> kwarg -> TOML ->
   default and `_read_toml_flag_for` walks *up from the working
   directory*, so clearing the environment alone is not enough (#1295).
@@ -96,26 +108,20 @@ import os
 import sys
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# Whether `aelfrice` was already imported before this module cleared the
-# environment. If it was, the clear below happened too late to matter and
-# `main()` refuses to report defaults it cannot vouch for.
-_AELFRICE_PREIMPORTED: bool = any(
-    m == "aelfrice" or m.startswith("aelfrice.") for m in sys.modules
-)
-
-# Clear ambient opt-ins BEFORE importing aelfrice: several of these
-# resolvers read the environment at import time, and the whole point of
-# this script is to report the *shipped default* posture.
 _ENV_PREFIXES = ("AELFRICE_", "AELF_")
-_CLEARED: list[str] = sorted(
-    k for k in os.environ if k.startswith(_ENV_PREFIXES)
-)
-for _k in _CLEARED:
-    del os.environ[_k]
+"""Prefixes of the ambient opt-ins `main()` clears for the run.
+
+**No side effect at module scope.** Importing this module must leave the
+caller's environment exactly as it found it: `tests/conftest.py` reads
+``AELFRICE_CORPUS_ROOT`` at test time to decide whether the corpus-gated
+tests run, and an import-time clear made a full ``pytest tests/`` skip
+every one of them without saying so.
+"""
 
 # Imported rather than restated: the cap is the reason this probe refuses a
 # `hook_audit` corpus, and a citation that cannot go stale is worth the
@@ -436,6 +442,31 @@ def diff_lanes(
 # --- Config pinning ------------------------------------------------------
 
 
+@contextmanager
+def pinned_environment() -> Iterator[list[str]]:
+    """Delete every ambient `AELFRICE_*` / `AELF_*` var for the block.
+
+    Yields the sorted names that were removed, and puts them back on the
+    way out — including on an exception, so a failed run does not leave
+    the caller's shell or the pytest session stripped of its config.
+
+    Restoring matters as much as clearing. This clear used to run at
+    module import, which stripped the environment of every process that
+    imported the module and never gave it back; a `pytest tests/` run
+    that collected the probe's test file lost ``AELFRICE_CORPUS_ROOT``
+    and silently skipped every corpus-gated test.
+    """
+    saved = {
+        k: v for k, v in os.environ.items() if k.startswith(_ENV_PREFIXES)
+    }
+    for k in saved:
+        del os.environ[k]
+    try:
+        yield sorted(saved)
+    finally:
+        os.environ.update(saved)
+
+
 def scratch_walk_hits(scratch: Path) -> list[str]:
     """Config files an upward walk from `scratch` would still find.
 
@@ -560,12 +591,18 @@ def build_report(
     prompts: Sequence[str],
     observed: dict[str, Any],
     control: dict[str, Any] | None = None,
+    *,
+    cleared_env: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Assemble the JSON report. Aggregate counts only.
 
     Nothing derived from a prompt or a belief goes in here beyond
     lengths and counts: the report is meant to be pasteable into a
     public issue.
+
+    `cleared_env` is the list `pinned_environment()` yielded for this
+    run — passed in rather than read from a module global, because the
+    clear is a property of the run and not of importing this file.
     """
     reported = {lane.name: bool(lane.reported()) for lane in OBSERVABLE_LANES}
     fired = observed["fired_calls"]
@@ -605,7 +642,7 @@ def build_report(
             ),
         },
         "environment": {
-            "cleared_env_vars": len(_CLEARED),
+            "cleared_env_vars": len(cleared_env),
             "env_prefixes_cleared": list(_ENV_PREFIXES),
         },
         "observable_lanes": lanes,
@@ -743,16 +780,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                          "asserting it")
     args = ap.parse_args(argv)
 
-    if _AELFRICE_PREIMPORTED:
-        print("aelfrice was imported before this module cleared the "
-              "environment; the reported defaults would be the caller's, "
-              "not the shipped ones", file=sys.stderr)
-        return 1
-    stragglers = sorted(k for k in os.environ if k.startswith(_ENV_PREFIXES))
-    if stragglers:
-        print(f"ambient config survived the clear: {', '.join(stragglers)}",
-              file=sys.stderr)
-        return 1
     if args.prompts < MIN_PROMPTS:
         print(f"--prompts must be at least {MIN_PROMPTS}", file=sys.stderr)
         return 2
@@ -777,7 +804,17 @@ def main(argv: Sequence[str] | None = None) -> int:
               f"of tool-result turns only", file=sys.stderr)
         return 1
 
-    with tempfile.TemporaryDirectory() as tmp:
+    # The env clear scopes to the run, not to importing this module. Both
+    # the retrieval calls and `build_report`'s resolver reads happen
+    # inside it, so the two sides of the diff see the same tier.
+    with pinned_environment() as cleared, tempfile.TemporaryDirectory() as tmp:
+        stragglers = sorted(
+            k for k in os.environ if k.startswith(_ENV_PREFIXES)
+        )
+        if stragglers:
+            print(f"ambient config survived the clear: "
+                  f"{', '.join(stragglers)}", file=sys.stderr)
+            return 1
         scratch = Path(tmp)
         stray = scratch_walk_hits(scratch)
         if stray:
@@ -798,7 +835,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     control = truncation_control(
                         observed, probe(store, cut), len(cut),
                     )
-                report = build_report(prompts, observed, control)
+                report = build_report(
+                    prompts, observed, control, cleared_env=cleared,
+                )
             finally:
                 store.close()
         finally:
