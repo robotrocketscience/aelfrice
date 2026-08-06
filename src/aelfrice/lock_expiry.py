@@ -25,6 +25,8 @@ from typing import Final
 __all__ = [
     "FOREVER",
     "LockExpiryError",
+    "extract_stated_window",
+    "stated_window_is_ambiguous",
     "format_remaining",
     "parse_for",
     "parse_until",
@@ -209,3 +211,93 @@ def format_remaining(expires_at: str | None, *, now: datetime) -> str:
     if not shown:
         return "0m"
     return " ".join(shown[:2])
+
+
+# --- natural-language window extraction (#1315) --------------------------
+#
+# Maps a window the user SPELLED OUT to a `--for` spec. It never infers
+# one: "remember this" has no window and returns None, because inferring
+# an expiry the user did not state is an explicit non-goal of #1315 — a
+# guessed window expires their lock on a date they never agreed to.
+#
+# Deliberately small. Every pattern requires an explicit unit word, so
+# the ambiguous cases the issue names ("for the trip", "until I'm back")
+# do not match and the caller refuses-and-asks rather than guessing.
+_NUMBER_WORDS: Final[dict[str, int]] = {
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4,
+    "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+
+# Unit word -> the `parse_for` unit it resolves to. Plurals are handled
+# by the `s?` in the pattern rather than by separate entries.
+_UNIT_WORDS: Final[dict[str, str]] = {
+    "day": "d", "week": "w", "month": "mo", "year": "y",
+}
+
+_STATED_WINDOW_RE: Final[re.Pattern[str]] = re.compile(
+    r"\bfor\s+(?:the\s+)?(?:next\s+)?"
+    r"(?P<count>\d+|" + "|".join(_NUMBER_WORDS) + r")\s+"
+    r"(?P<unit>" + "|".join(_UNIT_WORDS) + r")s?\b",
+    re.IGNORECASE,
+)
+
+# "for the next week" with no count word — the count is implied by
+# "next". Kept as its own pattern rather than making the count optional
+# in the one above, because an optional count would also match a bare
+# "for week" and there is no such English.
+_NEXT_UNIT_RE: Final[re.Pattern[str]] = re.compile(
+    r"\bfor\s+the\s+next\s+(?P<unit>" + "|".join(_UNIT_WORDS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def extract_stated_window(text: str) -> str | None:
+    """Return the `--for` spec the text states, or None if it states none.
+
+    `"prioritise this for the next week"` -> `"1w"`.
+    `"keep this for two months"`          -> `"2mo"`.
+    `"remember this"`                     -> `None`.
+    `"keep this for the trip"`            -> `None`.
+
+    None means *no window was stated*, not *no window is wanted*. The
+    caller must not substitute a default: #1315's non-goals forbid
+    inferring an expiry the user did not state, and the failure mode of
+    guessing is a lock that expires on a date the user never agreed to.
+
+    Only the first match is used. A sentence naming two different
+    windows is ambiguous, and the caller is expected to refuse rather
+    than pick one — see `stated_window_is_ambiguous`.
+    """
+    if not text:
+        return None
+    match = _STATED_WINDOW_RE.search(text)
+    if match is not None:
+        raw = match.group("count").lower()
+        count = int(raw) if raw.isdigit() else _NUMBER_WORDS[raw]
+        if count == 0:
+            # `parse_for` rejects a zero window; surfacing None here
+            # keeps the refusal in one place rather than raising from a
+            # detector that is supposed to be total.
+            return None
+        return f"{count}{_UNIT_WORDS[match.group('unit').lower()]}"
+    next_match = _NEXT_UNIT_RE.search(text)
+    if next_match is not None:
+        return f"1{_UNIT_WORDS[next_match.group('unit').lower()]}"
+    return None
+
+
+def stated_window_is_ambiguous(text: str) -> bool:
+    """True when the text states more than one distinct window.
+
+    "for two days, actually for a week" names two, and picking either is
+    a guess. The caller refuses and asks instead of proposing a lock the
+    user has to notice is wrong.
+    """
+    if not text:
+        return False
+    found = {
+        f"{int(m.group('count')) if m.group('count').isdigit() else _NUMBER_WORDS[m.group('count').lower()]}"
+        f"{_UNIT_WORDS[m.group('unit').lower()]}"
+        for m in _STATED_WINDOW_RE.finditer(text)
+    }
+    return len(found) > 1

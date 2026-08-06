@@ -3625,7 +3625,33 @@ def _belief_is_lock_candidate(b: "Belief", session_id: str) -> bool:
         return True
     if b.origin in _STOP_PROMPT_AGENT_ORIGINS:
         return True
-    return False
+    # #1315: a directive that STATES its own window is a candidate too,
+    # whatever its type or origin. The prompt proposes; nothing is
+    # written until the user runs the command, so a false positive here
+    # costs a declined suggestion rather than a wrong expiring lock —
+    # which is why this does not need the H1 precision bar.
+    return _directive_window_spec(b.content) is not None
+
+
+def _directive_window_spec(content: str) -> str | None:
+    """The `--for` spec a directive states, or None (#1315).
+
+    None on every arm that is not an unambiguous, explicitly-stated
+    window: not a directive, no window named, or more than one named.
+    Ambiguity refuses rather than picking the first — proposing a lock
+    the user has to notice is wrong is worse than proposing none.
+    """
+    from aelfrice.directive_detector import detect_directive  # noqa: PLC0415
+    from aelfrice.lock_expiry import (  # noqa: PLC0415
+        extract_stated_window,
+        stated_window_is_ambiguous,
+    )
+
+    if not detect_directive(content):
+        return None
+    if stated_window_is_ambiguous(content):
+        return None
+    return extract_stated_window(content)
 
 
 def _collect_lock_candidates(
@@ -3666,7 +3692,13 @@ def _format_stop_prompt(candidates: list["Belief"]) -> str:
         if len(snippet) > 120:
             snippet = snippet[:117] + "..."
         lines.append(f"  - {b.id} ({b.type}, origin={b.origin}): {snippet}")
-        lines.append(f"    aelf lock {_shell_quote(b.content)}")
+        # #1315: when the belief states its own window, pre-fill it. The
+        # window resolves to an absolute UTC instant inside `aelf lock
+        # --for`, at write time — this renders the spec, it does not
+        # resolve it, so there is no second anchor.
+        window = _directive_window_spec(b.content)
+        suffix = f" --for {window}" if window else ""
+        lines.append(f"    aelf lock {_shell_quote(b.content)}{suffix}")
     lines.append(STOP_PROMPT_CLOSE_TAG)
     lines.append("")
     return "\n".join(lines)
