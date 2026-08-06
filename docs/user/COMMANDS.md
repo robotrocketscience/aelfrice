@@ -104,6 +104,34 @@ Where `<reason>` is one of `no store path`, `AELFRICE_HRR_PERSIST=0`, `ephemeral
 
 See [CONFIG § `hrr_persist`](CONFIG.md) for the underlying flag, [`docs/design/feature-hrr-integration.md`](../design/feature-hrr-integration.md) for the substrate spec, and `tests/test_hrr_struct_index.py` for the matrix of observable states.
 
+## Dangling-edge reporter
+
+(#1375) `aelf doctor` counts `edges` rows whose `src` or `dst` names a
+belief that is not in the `beliefs` table:
+
+```
+dangling edges (endpoint missing from `beliefs`):
+  3 of 412 edge(s) — 2 missing src, 2 missing dst
+    TEMPORAL_NEXT: 2
+    SUPPORTS: 1
+```
+
+The zero reading (`none of 412 edge(s)`) is printed too — a check that
+is silent when clean cannot be told apart from one that never ran.
+
+Endpoint counts are per endpoint, so an edge missing both ends adds one
+to `total` and one to each of `missing src` / `missing dst`. A **retired**
+belief is still a row, so its edges are not dangling; `--classify-orphans`
+([#206](https://github.com/robotrocketscience/aelfrice/issues/206)) is a
+different report about *belief* orphans.
+
+Report-only. `edges` has `PRIMARY KEY (src, dst, type)` and no foreign
+key, and `insert_edge` checks federation ownership rather than endpoint
+existence, so these rows are written without complaint. Adding the
+foreign key needs an `edges` table rebuild, which is deliberately not
+attempted — an `edges` migration is what bricked stores in
+[#1161](https://github.com/robotrocketscience/aelfrice/issues/1161).
+
 ## Help flags
 
 `aelf --help` shows the everyday surface (visible subcommands). `aelf --help --advanced` (or `aelf --advanced`) shows the full surface including hidden subcommands (`bench`, `cadence-score`, `clamp-ghosts`, `context`, `demote`, `export-canvas`, `feedback`, `gate`, `health`, `ingest-transcript`, `label`, `project-warm`, `regime`, `resolve`, `session-delta`, `spine`, `stats`, `statusline`, `uninstall`, `unsetup`, `upgrade`, `upgrade-cmd`, `validate`). The `--advanced` flag was wired in v1.4 (PR #174). `export-obsidian` is visible in the everyday `--help`.
