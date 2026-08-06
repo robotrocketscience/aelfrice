@@ -27,11 +27,29 @@ all four conditions above by construction, so the selector could not
 tell a fabricated ghost from a legitimate belief that is merely new,
 and `CLAMP_SOURCE` then wrote an audit row attributing the clamp to
 itself. `USER_PRIOR_ORIGINS` closes that hole: origins whose insert
-path writes the full undeflated prior are excluded outright. Non-user
-origins get α deflated by `_AGENT_INFERRED_DEFLATION` at insert
-(9.0 → 1.8 at the top of the range), so no legitimate insert on those
-origins can clear the α=4.0 threshold. `created_before` narrows
-further for operators who know when the migration ran.
+path writes the full undeflated prior are excluded outright.
+
+On the **deterministic classifier path** that exclusion is complete:
+non-user origins get α deflated by `_AGENT_INFERRED_DEFLATION` at
+insert, and the maximum reachable there is 1.8 (`correction` from a
+non-user source), so no legitimate insert on those origins can clear
+the α=4.0 threshold.
+
+**The LLM-router path is the stated exception.** `route_overrides`
+(#265 PR-B) bypasses `get_source_adjusted_prior` and writes the
+router's `(origin, alpha)` verbatim, so a row can carry α=9.0 on
+`agent_inferred`; when the route also carries no `audit_source` the
+worker writes no feedback event, and such a row matches every arm of
+the selector below. That is deliberate rather than overlooked: an
+arbitrary router-assigned α with no audit trail is the class this tool
+exists to clamp, and excluding `agent_inferred` wholesale would gut it.
+It is named here so the selector's justification stays auditable — the
+guarantee is "no *deterministically* derived belief is a false
+positive", not "no belief is". Reach is small; that path is
+`aelf onboard --llm-classify`, default off.
+
+`created_before` narrows further for operators who know when the
+migration ran.
 
 So a row with α > 1.0 + a small posterior-fitting tolerance, no
 feedback events, and no corroborations is structurally inexplicable
