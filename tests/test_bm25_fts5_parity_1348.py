@@ -33,18 +33,11 @@ import unicodedata
 
 import pytest
 
-# `tokenize_stemmed` is reached through the module so these tests read
-# whatever is bound at call time — the point is to pin the shipped
-# pipeline, not a function object captured at import.
+# One import style, module-qualified throughout. Everything here is
+# read through `bm25.` at call time so the tests pin whatever is bound
+# then — the point is to pin the shipped pipeline, not function objects
+# captured at import.
 import aelfrice.bm25 as bm25
-from aelfrice.bm25 import (
-    _FTS5_TOKEN_PATTERN,
-    _PORTER_STEMMER,
-    _REMOVED_MARKS,
-    BM25Index,
-    _stem,
-    tokenize,
-)
 from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
 from aelfrice.store import MemoryStore
 
@@ -148,7 +141,7 @@ def _legacy_tokenize_stemmed(text: str) -> list[str]:
     so this stays a fixed historical baseline even as `bm25` changes.
     """
     return [
-        _PORTER_STEMMER.stemWord(m.group(0).lower())
+        bm25._PORTER_STEMMER.stemWord(m.group(0).lower())
         for m in _LEGACY_PATTERN.finditer(text)
     ]
 
@@ -217,18 +210,18 @@ def test_shipped_word_class_and_stem_guards_are_the_measured_ones() -> None:
     were monkeypatched at runtime, so pin what actually ships. `3` and
     `64` are SQLite's own bounds, measured in UTF-8 bytes.
     """
-    assert _FTS5_TOKEN_PATTERN.pattern == r"[^\W_]+"
+    assert bm25._FTS5_TOKEN_PATTERN.pattern == r"[^\W_]+"
 
     # 2 bytes: below SQLite's floor, left alone. `is` -> `i` was the
     # single largest source of divergence on the live store.
-    assert _stem("is") == "is"
-    assert _stem("as") == "as"
+    assert bm25._stem("is") == "is"
+    assert bm25._stem("as") == "as"
     # 3 bytes, including a multi-byte character: stemmed.
-    assert _stem("μs") == "μ"
-    assert _stem("running") == "run"
+    assert bm25._stem("μs") == "μ"
+    assert bm25._stem("running") == "run"
     # 64 bytes stemmed, 65 passed through.
-    assert _stem("a" * 63 + "s") == "a" * 63
-    assert _stem("a" * 64 + "s") == "a" * 64 + "s"
+    assert bm25._stem("a" * 63 + "s") == "a" * 63
+    assert bm25._stem("a" * 64 + "s") == "a" * 64 + "s"
 
 
 def test_tokenize_still_keeps_underscores_whole() -> None:
@@ -240,9 +233,9 @@ def test_tokenize_still_keeps_underscores_whole() -> None:
     on `_` would move dedup behaviour with no measurement behind it, so
     the divergence is intentional and pinned here.
     """
-    assert tokenize("ADD_TO_LIST") == ["add_to_list"]
-    assert tokenize("max_retry_count") == ["max_retry_count"]
-    assert tokenize("café") == ["café"]
+    assert bm25.tokenize("ADD_TO_LIST") == ["add_to_list"]
+    assert bm25.tokenize("max_retry_count") == ["max_retry_count"]
+    assert bm25.tokenize("café") == ["café"]
     assert bm25.tokenize_stemmed("ADD_TO_LIST") == ["add", "to", "list"]
 
 
@@ -260,7 +253,7 @@ def test_bm25f_lane_answers_the_queries_fts5_answers() -> None:
     store.insert_belief(_mk("b2", "the café menu changes weekly"))
     store.insert_belief(_mk("b3", "garden grows tomatoes"))
 
-    index = BM25Index.build(store, anchor_weight=0)
+    index = bm25.BM25Index.build(store, anchor_weight=0)
     for query in ("retry", "count", "cafe", "max_retry_count", "café"):
         bm25f = {bid for bid, _score in index.score(query, top_k=10)}
         fts5 = {b.id for b in store.search_beliefs(query, limit=10)}
@@ -295,7 +288,7 @@ def test_removed_marks_matches_sqlite() -> None:
         elif terms == ["zzzz"]:
             removed.add(mark)
 
-    assert removed == set(_REMOVED_MARKS), (
+    assert removed == set(bm25._REMOVED_MARKS), (
         "SQLite removes a different set of combining marks than "
         "_REMOVED_MARKS records"
     )
