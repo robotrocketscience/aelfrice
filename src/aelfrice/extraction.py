@@ -8,6 +8,32 @@ from __future__ import annotations
 import re
 
 
+# Triple-backtick region, including the language tag. Exported rather
+# than inlined because the onboard path strips fences too (#1371 §10) and
+# the two must agree: a second copy of this pattern is a divergence
+# waiting to happen, and the whole defect was that only one path had it.
+#
+# Anchored to line starts (`(?m)^`), and deliberately so. Unanchored, a
+# ``` appearing *inside prose* — a sentence about markdown, an inline code
+# span — pairs with the opening delimiter of the next real fence and flips
+# parity for the rest of the document: the prose tail is deleted as fence
+# interior and the code body is promoted to prose. On the onboard path,
+# which walks a repo's own documentation, that is common enough to matter
+# — this repo's `docs/user/CONFIG.md` loses 128 of its 248 paragraphs to
+# it. Both paths inherit the anchoring, which is the point of sharing one
+# object. Up to three leading spaces are allowed, matching CommonMark; a
+# closing delimiter is still required, so an unterminated fence matches
+# nothing and its content survives, unchanged from before.
+#
+# The closing delimiter takes only trailing whitespace, never an info
+# string. CommonMark allows a language on the *opening* fence alone, so a
+# ```` ```python ```` line inside a block is body text — matching it as a
+# close ends the span early, leaking the remainder of the block into the
+# cleaned output along with the real closing delimiter as stray prose.
+CODE_FENCE_RE: re.Pattern[str] = re.compile(
+    r"(?m)^[ \t]{0,3}```[^\n]*\n[\s\S]*?^[ \t]{0,3}```[ \t]*\r?$"
+)
+
 # Minimum character length for a sentence fragment to be kept.
 _MIN_LEN: int = 10
 
@@ -27,7 +53,7 @@ def extract_sentences(text: str) -> list[str]:
     Returns list of clean sentences.
     """
     # Step 1: strip code blocks (triple-backtick regions, including language tag)
-    cleaned: str = re.sub(r"```[\s\S]*?```", " ", text)
+    cleaned: str = CODE_FENCE_RE.sub(" ", text)
 
     # Step 2: strip inline code backticks, keep surrounding text
     cleaned = re.sub(r"`[^`]*`", " ", cleaned)
