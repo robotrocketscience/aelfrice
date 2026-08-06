@@ -22,6 +22,10 @@ Design contract (spec: `docs/design/v2_sentiment_feedback.md`):
     per the v2.0 ratification. Two strong-amplifier subsets
     (STRONG_POSITIVE, STRONG_NEGATIVE) escalate `confidence` when the
     matched pattern carries higher signal-to-noise than the base set.
+    One pattern is no longer a verbatim port: `correct` requires an
+    evaluative frame, because the research-line word-boundary match on
+    the bare word scored the imperative "correct the import path" as
+    strong praise (#1372 §11).
   * **Audit row source.** All apply_feedback calls from this module use
     `source = SENTIMENT_INFERRED_SOURCE` so the audit trail can split
     explicit-user feedback from sentiment-inferred feedback.
@@ -92,6 +96,37 @@ _ENV_FALSY: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
 # are checked separately so a base-set match still wins when the prompt
 # does not also hit a strong pattern.
 
+# `correct` is the one adjective in the bank that is also a common
+# imperative verb: "Correct the import path" is a *correction*, not
+# praise, and a bare `\bcorrect\b` scored it as the strongest positive
+# the lane can emit (#1372 §11). The fix requires an evaluative frame —
+# a copula, a contraction, an evaluative verb, an intensifier, or a
+# sentence-initial bare affirmation. Frame-requiring was chosen over
+# "sentence-initial `correct` is negative" because the single most
+# common affirmation in a coding session is exactly the sentence-initial
+# bare "Correct." — that rule would invert the very case it fires on.
+# Unframed imperative uses now fall through to no match (neutral)
+# rather than being reclassified; declining to score is the honest
+# outcome for a detector that cannot tell request from praise.
+_CORRECT_EVALUATIVE: Final[str] = (
+    r"(?:"
+    # Sentence-initial bare affirmation: "Correct.", "Correct!",
+    # "Correct, that's the one.", or the whole prompt being "correct".
+    r"\A\s*correct\b\s*(?:[.!,;:–—]|\Z)"
+    # Contracted copula: "that's correct", "youre correct", "its correct".
+    r"|\b(?:that|this|it|they|these|those|you)\s*['’]?(?:s|re)\s+correct\b"
+    # Explicit copula: "that is correct", "the path was correct".
+    r"|\b(?:is|are|was|were)\s+correct\b"
+    # Evaluative verb: "looks correct", "seems correct".
+    r"|\b(?:looks?|sounds?|seems?|reads?)\s+correct\b"
+    # Affirmation prefix: "yes, correct", "ok correct".
+    r"|\b(?:yes|yeah|yep|yup|ok|okay)\b[\s,!.]+correct\b"
+    # Intensifier: "absolutely correct", "all correct".
+    r"|\b(?:absolutely|exactly|totally|perfectly|quite|entirely"
+    r"|completely|all|both)\s+correct\b"
+    r")"
+)
+
 _POSITIVE_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
     ("ok_good", r"\bok(ay)?[\s,!.]+good\b"),
     ("yes", r"\byes\b"),
@@ -100,7 +135,7 @@ _POSITIVE_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
     ("great", r"\bgreat\b"),
     ("nice", r"\bnice\b"),
     ("thanks", r"\bthanks?\b"),
-    ("correct", r"\bcorrect\b"),
+    ("correct", _CORRECT_EVALUATIVE),
     ("right", r"\bthat'?s right\b"),
     ("works", r"\b(it|that) works?\b"),
     ("looks_good", r"\blooks? good\b"),

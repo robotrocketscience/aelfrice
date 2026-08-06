@@ -173,6 +173,69 @@ def test_pattern_id_records_pattern_name() -> None:
     assert s.pattern == "perfect"
 
 
+# --- imperative "correct" must not read as praise (#1372 §11) ------------
+
+# Real corrective phrasings a user types when asking for a repair. Every
+# one of these contains the literal word "correct"; under the bare
+# word-boundary pattern every one scored +1.5 strong-positive — the
+# largest magnitude the lane emits, with the sign inverted.
+CORRECTIVE_PHRASINGS: tuple[str, ...] = (
+    "Correct the import path in the hook.",
+    "correct that typo",
+    "Please correct the docstring.",
+    "Can you correct the config?",
+    "correct it",
+    "You need to correct the test name.",
+    "correct this before committing",
+    "Let's correct the ordering.",
+    "I want you to correct the regex.",
+    "correct the spelling of the module",
+    "go back and correct the earlier edit",
+    "correct these paths",
+    "Correct the formatting, then run the suite.",
+    "please correct my earlier statement",
+    "we should correct the doc",
+    "correct the failing assertion",
+    "Correct me if I am off here.",
+)
+
+
+@pytest.mark.parametrize("prompt", CORRECTIVE_PHRASINGS)
+def test_corrective_phrasing_never_scores_positive(prompt: str) -> None:
+    assert classify(prompt) != POSITIVE, (
+        f"corrective phrasing scored as praise: {prompt!r}"
+    )
+
+
+# Evaluative frames that genuinely are affirmations. Guards the fix
+# against over-correcting into "never score `correct` at all".
+AFFIRMATIVE_CORRECT_PHRASINGS: tuple[str, ...] = (
+    "correct",
+    "Correct.",
+    "Correct!",
+    "Correct, that's the one.",
+    "that's correct",
+    "thats correct",
+    "That is correct.",
+    "you're correct",
+    "you are correct",
+    "its correct",
+    "yes, correct",
+    "looks correct",
+    "the path is correct",
+    "absolutely correct",
+)
+
+
+@pytest.mark.parametrize("prompt", AFFIRMATIVE_CORRECT_PHRASINGS)
+def test_evaluative_correct_frame_still_scores_positive(prompt: str) -> None:
+    s = detect_sentiment(prompt)
+    assert s is not None, f"affirmation went unmatched: {prompt!r}"
+    assert s.sentiment == POSITIVE
+    assert s.pattern == "correct"
+    assert s.valence == AMPLIFIED_VALENCE
+
+
 # --- classify: three-way label adapter -----------------------------------
 
 
