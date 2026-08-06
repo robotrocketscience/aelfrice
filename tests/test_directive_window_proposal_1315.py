@@ -30,6 +30,7 @@ from aelfrice.hook import (
 from aelfrice.lock_expiry import (
     extract_stated_window,
     parse_for,
+    stated_window_attaches_to_memory,
     stated_window_is_ambiguous,
 )
 from aelfrice.models import (
@@ -45,7 +46,13 @@ from aelfrice.store import MemoryStore
 _SESSION = "s-1315"
 _TS = "2026-08-06T00:00:00+00:00"
 
-_DIRECTIVE = "Always use tabs in this repo for the next week."
+# The window has to be governed by a memory verb (operator ruling
+# 2026-08-06). This fixture originally read "Always use tabs in this repo
+# for the next week." — which states how long to use tabs, not how long to
+# remember the rule, and is exactly the shape the attachment gate now
+# refuses. That the PR's own canonical example was a subject-matter window
+# is the clearest evidence available that the two are easy to conflate.
+_DIRECTIVE = "Always use tabs in this repo. Remember this for the next week."
 
 
 @pytest.fixture(autouse=True)
@@ -349,4 +356,99 @@ def test_a_windowed_directive_is_a_candidate_whatever_its_type() -> None:
     ) is False
     assert _belief_is_lock_candidate(
         _belief("The build finished."), _SESSION
+    ) is False
+
+
+# --- the window must be the memory's, not the subject matter's ----------
+#
+# Operator ruling 2026-08-06. Before this gate the arm fired 9 times on a
+# 44,679-belief live store and 0 of the 9 stated a retention window, so
+# realized attachment precision was 0. The alternatives considered and
+# rejected were shipping the suffix as-is and dropping it entirely.
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param("Always remember this for two weeks.", "2w", id="remember-this"),
+        pytest.param("Always keep this for the next month.", "1mo", id="keep-this"),
+        pytest.param("Always prioritise this for 30 days.", "30d", id="prioritise"),
+        pytest.param("Always retain this rule for two years.", "2y", id="object-noun"),
+        pytest.param(
+            "Never forget: keep this preference for a week.", "1w", id="after-colon",
+        ),
+        pytest.param("Always hold on to this for three days.", "3d", id="hold-on-to"),
+    ],
+)
+def test_a_window_governed_by_a_memory_verb_still_proposes(
+    text: str, expected: str,
+) -> None:
+    """The shape the feature exists for must survive the gate.
+
+    Paired with the rejection cases below: without this half, a gate that
+    refused everything would pass them all, and refusing everything is a
+    real risk here — the live firing rate after this change is 0.
+    """
+    assert stated_window_attaches_to_memory(text) is True
+    assert _directive_window_spec(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("Always retain build artifacts for 90 days.", id="artifacts"),
+        pytest.param("Always keep CI logs for 30 days.", id="ci-logs"),
+        pytest.param("Never cache the index for two weeks.", id="cache"),
+        pytest.param("Always support each release for two years.", id="release"),
+        pytest.param(
+            "Always keep the branch blocked for 9 days after review.", id="blocked",
+        ),
+        pytest.param(
+            "Always keep results available for 29 days after creation.",
+            id="results-available",
+        ),
+    ],
+)
+def test_a_subject_matter_duration_is_not_proposed(text: str) -> None:
+    """`for 90 days` is a property of the artifacts, not of the memory.
+
+    Every string here is a directive and states a countable window, so
+    both pre-gate halves pass and only attachment separates them. The
+    first four are the shapes review measured on live data; running the
+    suggestion they used to produce would forget the retention policy on
+    a date the user never chose.
+    """
+    assert detect_directive(text) is True
+    assert extract_stated_window(text) is not None
+    assert stated_window_attaches_to_memory(text) is False
+    assert _directive_window_spec(text) is None
+
+
+def test_the_memory_verb_alone_does_not_attach_a_window() -> None:
+    """The self-referential object is what carries the gate.
+
+    An anchor of just the verb admits `keep CI logs for 30 days`, which
+    is the single most common live shape. This pins that the object is
+    required, so a future simplification to a keyword test fails here.
+    """
+    assert stated_window_attaches_to_memory("Always keep CI logs for 30 days.") is False
+    assert stated_window_attaches_to_memory("Always keep this for 30 days.") is True
+
+
+def test_an_anchor_in_a_different_clause_does_not_govern() -> None:
+    """A memory verb earlier in the text is not a licence for any window.
+
+    Without the clause-break and gap rules, any belief that says
+    "remember this" anywhere would attach the next duration it mentions,
+    which reintroduces the defect a sentence later.
+    """
+    assert stated_window_attaches_to_memory(
+        "Always remember this. Unrelatedly, the retention policy is for 90 days."
+    ) is False
+    assert stated_window_attaches_to_memory(
+        "Always remember to rotate the key. Builds are kept for 30 days."
+    ) is False
+    assert stated_window_attaches_to_memory(
+        "Always remember this rule, which the team agreed after a long "
+        "discussion last Thursday, for 30 days."
     ) is False

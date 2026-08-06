@@ -26,6 +26,7 @@ __all__ = [
     "FOREVER",
     "LockExpiryError",
     "extract_stated_window",
+    "stated_window_attaches_to_memory",
     "stated_window_is_ambiguous",
     "format_remaining",
     "parse_for",
@@ -233,6 +234,17 @@ def _stated_windows(text: str) -> list[str | None]:
     then for a week" names two things and must refuse, not silently
     resolve to the survivor.
     """
+    return [spec for _, spec in _stated_windows_with_positions(text)]
+
+
+def _stated_windows_with_positions(text: str) -> list[tuple[int, str | None]]:
+    """`_stated_windows`, keeping each match's start offset.
+
+    Split out for `stated_window_attaches_to_memory`, which needs to know
+    *where* the first window sits in order to ask what governs it. The
+    ordering contract lives here so both callers share one definition of
+    "first".
+    """
     found: list[tuple[int, str | None]] = []
     for match in _STATED_WINDOW_RE.finditer(text):
         raw = match.group("count").lower()
@@ -249,7 +261,7 @@ def _stated_windows(text: str) -> list[str | None]:
     # word where the other requires a unit word — so position alone is a
     # total order over the matches.
     found.sort(key=lambda item: item[0])
-    return [spec for _, spec in found]
+    return found
 
 
 def extract_stated_window(text: str) -> str | None:
@@ -279,6 +291,77 @@ def extract_stated_window(text: str) -> str | None:
     # which `parse_for` rejects; surfacing None keeps that refusal in one
     # place rather than raising from a detector that must stay total.
     return windows[0]
+
+
+# A memory verb plus a **self-referential object**. Both halves are
+# required, and the object is what makes it work: "keep CI logs for 30
+# days" has the verb but its object is the logs, so the 30 days is a
+# property of the logs and not of how long to remember the rule. Only
+# "keep *this* for 30 days" attaches the window to the memory.
+_MEMORY_ANCHOR_RE: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:remember|recall|keep|retain|memori[sz]e|prioriti[sz]e|"
+    r"hold\s+on\s+to|lock|store|bear\s+in\s+mind)\b"
+    r"(?:\s+(?:that|about|onto))?"
+    r"\s+(?:this|that|it|these|those|the\s+above|the\s+following)\b",
+    re.IGNORECASE,
+)
+
+# How far after the anchor the window may sit and still be its object.
+# One short intervening phrase, not a clause.
+_ANCHOR_WINDOW_MAX_GAP: Final[int] = 40
+
+# A window on the far side of one of these is in a different clause, so
+# the anchor before it is not governing it.
+_CLAUSE_BREAKS: Final[frozenset[str]] = frozenset(".!?;:\n")
+
+
+def stated_window_attaches_to_memory(text: str) -> bool:
+    """True when the first stated window is governed by a memory verb.
+
+    #1315's extractor cannot otherwise tell *"remember this for two
+    weeks"* from *"the rule is: do Y for two weeks"* — both are
+    directives, and both state a countable window. The second is a
+    subject-matter duration, and proposing `--for` from it produces a
+    lock that expires on a date the user never agreed to, which is the
+    failure this module's docstring names.
+
+    Measured before this gate existed: on a 44,679-belief live store the
+    directive-window arm fired 9 times and **0** of the 9 stated a
+    retention window — `Blocked for 9 days`, `traveling for a week`,
+    `Results available for 29 days`. Realized attachment precision was
+    0/9 locally and 0/90 across other stores, so the gate is not a
+    refinement, it is the difference between the suffix being right
+    sometimes and never.
+
+    Ratified by the operator 2026-08-06 over the alternatives of shipping
+    the suffix as-is or dropping it: narrow the extractor, and accept the
+    recall cost.
+
+    Deliberately structural rather than a keyword test. The anchor needs
+    the verb **and** a self-referential object, because the verb alone is
+    what admits `keep CI logs for 30 days`. The object noun, if any, is
+    left to the gap rather than absorbed into the anchor — an anchor that
+    swallowed trailing words would swallow the window too and never
+    match. The window must then follow within `_ANCHOR_WINDOW_MAX_GAP`
+    characters with no clause break between, so an anchor early in a
+    paragraph cannot govern a duration in a later sentence.
+    """
+    if not text:
+        return False
+    windows = _stated_windows_with_positions(text)
+    if not windows:
+        return False
+    position = windows[0][0]
+    for match in _MEMORY_ANCHOR_RE.finditer(text):
+        end = match.end()
+        if end > position:
+            break
+        gap = text[end:position]
+        if len(gap) <= _ANCHOR_WINDOW_MAX_GAP and not (
+            set(gap) & _CLAUSE_BREAKS
+        ):
+            return True
+    return False
 
 
 def stated_window_is_ambiguous(text: str) -> bool:
