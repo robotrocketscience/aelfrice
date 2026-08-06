@@ -370,14 +370,48 @@ def tokenize_stemmed(text: str) -> list[str]:
     lowercase, then `_stem` — which carries SQLite's own length guards.
     Order is load-bearing at every step; see each helper for why.
 
+    **The lowercase stage is `str.lower()`, and that is not unicode61's
+    fold** (#1389). SQLite's table is frozen; Python's tracks Unicode.
+    They disagree on **403 codepoints** in U+0020..U+2FFFF, re-derived by
+    `benchmarks/bm25_fold_codepoint_sweep.py`: final sigma (SQLite maps
+    `ς` to `σ`, Python does not), long s, the Greek symbol variants, and
+    the uppercase letters added after SQLite's table was fixed — 86 of
+    them Cherokee. So `ο λόγος` keys as `λόγοσ` in `beliefs_fts` and
+    `λόγος` here, and the two lanes disagree on Greek text. Named at the
+    stage that causes it, the way the word-class residual is named at
+    `_FTS5_TOKEN_PATTERN`. **Changing the case fold is a separate,
+    measured decision and is deliberately not made here** — it would
+    move every term in the index.
+
     Parity is close but not exact, and the residual is measured rather
     than asserted: 232 of 44,658 live beliefs (0.52%) still tokenise
     differently, against 19,915 (44.59%) before #1348.
     `benchmarks/bm25_fts5_divergence.py` re-derives both numbers against
-    a real FTS5 table. What is left is SQLite's Porter step-2 `-logi ->
-    -log` and `-bli -> -ble` rules, which snowballstemmer's original
-    Porter does not implement (`methodologi` vs `methodolog`). Switching
-    to snowballstemmer's `english` (Porter2) makes it 11x worse.
+    a real FTS5 table. Two stemmer rules account for most of it: SQLite's
+    Porter step-2 `-logi -> -log` and `-bli -> -ble`, which
+    snowballstemmer's original Porter does not implement (`methodologi`
+    vs `methodolog`). **They do not account for all of it.** SQLite
+    implements original Porter's step-1b undoubling as *"\\*d and not
+    (\\*L or \\*S or \\*Z)"*, while snowballstemmer restricts it to the
+    explicit pairs `bb dd ff gg mm nn pp rr tt`. The diverging class is
+    the pairs SQLite undoubles that snowball does not — which is **not**
+    simply "outside those nine": `ll`, `ss` and `zz` are outside them and
+    are also exempted by SQLite's own `not (*L or *S or *Z)`, so both
+    stemmers keep those doubled and they do not diverge. Swept against a
+    real `porter unicode61` table over every consonant, stemming
+    `gra<XX>ed` so the stem ends in the doubled pair:
+
+        diverge  cc hh jj kk qq vv ww xx yy
+        agree    bb dd ff gg ll mm nn pp rr ss tt zz
+
+    So `specced` indexes as `spec` in `beliefs_fts` and `specc` in this
+    lane, and `trekked` as `trek` against `trekk`, while `summed` and
+    `banned` agree. Nine pairs, stated as a closed set rather than as the
+    11 documents it reached when #1389 was filed — the document count
+    moves with the corpus, the set does not. Anyone re-deriving the
+    residual who searches only for step-2 rules will find these
+    unexplained.
+    Switching to snowballstemmer's `english` (Porter2) makes it 11x worse.
 
     Non-BM25 callers (relationship_detector, scoring helpers, etc.)
     that depend on word-form-preserving tokens should keep using
