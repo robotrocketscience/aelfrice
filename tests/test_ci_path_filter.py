@@ -131,3 +131,97 @@ def test_docs_only_changes_still_skip_the_suite() -> None:
             f"the full matrix — reversing #413/#427. Intentional? Confirm a "
             f"test actually depends on those files first."
         )
+
+
+# --- e2e trigger coverage (#1420 §1) -------------------------------------
+
+_E2E_WORKFLOW = _REPO / ".github" / "workflows" / "e2e.yml"
+
+
+def _e2e_pull_request_paths() -> list[str]:
+    """The glob list under `on.pull_request.paths` in e2e.yml.
+
+    Parsed the same way `_code_filter_globs` parses ci.yml, and asserted
+    non-empty for the same reason: a parser that quietly finds nothing turns
+    every assertion below green for free.
+    """
+    lines = _E2E_WORKFLOW.read_text(encoding="utf-8").splitlines()
+    starts = [i for i, line in enumerate(lines) if line.strip() == "paths:"]
+    assert len(starts) == 1, (
+        f"expected exactly one `paths:` key in {_E2E_WORKFLOW.name}, found "
+        f"{len(starts)}"
+    )
+    start = starts[0]
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    globs: list[str] = []
+    for line in lines[start + 1 :]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if len(line) - len(line.lstrip()) <= indent:
+            break
+        matched = re.fullmatch(r"-\s*'([^']+)'", stripped)
+        assert matched, f"unparsed entry in the e2e paths list: {stripped!r}"
+        globs.append(matched.group(1))
+    assert globs, "the e2e paths list parsed empty"
+    return globs
+
+
+def test_e2e_runs_on_code_prs_without_an_opt_in_label() -> None:
+    """#1420 §1: e2e must not require a label to run on a PR.
+
+    Before this, the job carried
+    `if: github.event_name == 'push' || contains(...labels..., 'e2e')`, so an
+    installed-package regression — which the unit suite structurally cannot
+    see, because it imports from the source tree — was caught on `main` after
+    merge instead of on the PR. Asserting the absence of the label condition
+    is the whole point; a test that only checked the workflow parses would
+    have passed in the broken state.
+    """
+    text = _E2E_WORKFLOW.read_text(encoding="utf-8")
+    assert "labels.*.name, 'e2e'" not in text, (
+        "e2e is gated on an opt-in label again — a PR without the label gets "
+        "no end-to-end coverage and the regression lands on main"
+    )
+    assert "types: [opened, synchronize, reopened]" in text, (
+        "e2e's pull_request trigger must include `opened`; with only "
+        "[labeled, synchronize, reopened] a freshly-opened PR never fires it"
+    )
+
+
+def test_e2e_paths_cover_the_ci_code_filter() -> None:
+    """The two path lists must agree, or e2e silently under-triggers.
+
+    `e2e.yml` says to keep its `paths` in sync with ci.yml's `code` filter.
+    A comment cannot enforce that: a path added to ci.yml and forgotten here
+    means a PR that changes installed behaviour runs the unit suite and skips
+    e2e, with nothing red to show for it.
+
+    Each list may legitimately reference its *own* workflow file, so those are
+    excluded from the comparison rather than the assertion being loosened.
+    """
+    ci_globs = {g for g in _code_filter_globs() if not g.startswith(".github/")}
+    e2e_globs = {g for g in _e2e_pull_request_paths() if not g.startswith(".github/")}
+    missing = sorted(ci_globs - e2e_globs)
+    assert not missing, (
+        f"{missing} are in ci.yml's `code` filter but not in e2e.yml's "
+        f"`paths`. A PR touching only those runs pytest but not e2e."
+    )
+
+
+def test_e2e_is_path_filtered_at_the_trigger_not_inside_the_job() -> None:
+    """Pin *why* the trigger-level filter is safe here.
+
+    A path-filtered **required** context never reports on a PR it skips and
+    leaves that PR permanently pending — which is exactly why ci.yml has no
+    `paths` and filters inside the job instead. e2e is not a required context,
+    so filtering at the trigger is fine and cheaper. If e2e is ever promoted
+    to required, this must move inside the job first.
+    """
+    ci_text = _CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "dorny/paths-filter" in ci_text, (
+        "ci.yml stopped filtering inside the job; if it gained a trigger-level "
+        "`paths` it would leave docs-only PRs permanently pending on the "
+        "required pytest contexts"
+    )
+    assert "dorny/paths-filter" not in _E2E_WORKFLOW.read_text(encoding="utf-8")

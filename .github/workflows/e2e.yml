@@ -1,16 +1,41 @@
 name: E2E
 
 # End-to-end suite (#334). Triggers:
-#  - PR opt-in via the `e2e` label (label / synchronize / reopened).
+#  - every PR that touches code (#1420 §1).
 #  - push to main (post-merge regression catch).
 # Failure surfacing (#370):
 #  - push:main fail → open issue tagged `attn:e2e-failure` referencing the SHA.
 #  - PR fail → add `attn:e2e-failure` label to the PR.
+#
+# #1420 §1: this used to run only on `push` or when someone added an `e2e`
+# label, so a regression in the *installed-package* path — which the unit
+# suite cannot see, because it imports from the source tree — was caught on
+# `main` after merging rather than on the PR that introduced it. The label
+# opt-in is gone; the `paths` filter below is what keeps docs-only PRs off it.
+#
+# `paths` is safe here specifically because `e2e` is NOT one of the branch's
+# required contexts (those are `history-scan`, `pattern-scan`,
+# `pytest (3.12)`, `pytest (3.13)`, `secrets-scan`). A path-filtered *required*
+# check never reports on a PR it skips and leaves it permanently pending —
+# which is why `ci.yml` deliberately has no `paths` and filters inside the job
+# instead. Do not copy this pattern into a required workflow.
+#
+# The path list mirrors `ci.yml`'s `code` filter. Keep them in sync: a path
+# that can change installed behaviour but is missing here is an e2e regression
+# nobody sees until it is on main.
 
 on:
   pull_request:
-    types: [labeled, synchronize, reopened]
+    types: [opened, synchronize, reopened]
     branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'benchmarks/**'
+      - 'scripts/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/e2e.yml'
   push:
     branches: [main]
 
@@ -23,7 +48,6 @@ concurrency:
 
 jobs:
   e2e:
-    if: github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'e2e')
     runs-on: ubuntu-latest
     timeout-minutes: 8
     strategy:
