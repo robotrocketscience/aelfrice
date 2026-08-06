@@ -3704,15 +3704,32 @@ class MemoryStore:
         that preceded this one and concluding the probe is now redundant
         would be reasonable, and wrong.
 
-        What still differs, measured 2026-08-06 by
-        `benchmarks/bm25_fts5_divergence.py` on a 44,658-belief store:
-        **232 documents (0.52%)** tokenise differently. SQLite's Porter
-        applies step-1b consonant undoubling to any `*d and not (*L or
-        *S or *Z)` while snowballstemmer restricts it to an explicit
-        nine-pair list, so `specced` indexes as `spec` here and `specc`
-        there; and the case stage disagrees on **403 codepoints**
-        (`benchmarks/bm25_fold_codepoint_sweep.py`). A query token
-        landing in either class resolves against the wrong vocabulary.
+        What still differs, re-derived 2026-08-06 by
+        `benchmarks/bm25_fts5_divergence.py --store .git/aelfrice/memory.db`
+        over 44,683 beliefs: **232 documents (0.52%)**. That script now
+        prints the attribution itself rather than leaving it to be read
+        off a residual dump, because two incompatible attributions of
+        this same set shipped simultaneously (#1389) — this docstring
+        carried one of them and it was the wrong one.
+
+        Measured split of the residual, python-only side:
+
+        - step-2 `-logi`  155 occurrences (68.3%), 15 distinct terms
+        - step-2 `-bli`    49 occurrences (21.6%), 14 distinct terms
+        - case stage       12 occurrences (5.3%), 1 term (U+00B5)
+        - step-1b undoubling 11 occurrences (4.8%), 2 distinct terms
+
+        So it is **step-2 that dominates at ~90%**: SQLite's Porter
+        applies `logi -> log` and `bli -> bl`, snowballstemmer does not,
+        and `methodologi`/`methodolog` alone is 53 of them. Step-1b
+        consonant undoubling — SQLite taking any `*d and not (*L or *S
+        or *Z)` where snowballstemmer restricts to an explicit nine-pair
+        list, so `specced` indexes as `spec` here and `specc` there — is
+        real but accounts for 4.8%, not the bulk. The case stage
+        disagrees on **403 codepoints**
+        (`benchmarks/bm25_fold_codepoint_sweep.py`) yet reaches only one
+        term on this corpus. A query token landing in any of these
+        classes resolves against the wrong vocabulary.
 
         The historical figures — 62.9% of tokens resolved against 99.7%
         for the native path — are a **measurement taken before #1348**,

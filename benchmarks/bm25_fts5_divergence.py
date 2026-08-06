@@ -44,6 +44,7 @@ import argparse
 import re
 import sqlite3
 import sys
+import unicodedata
 from collections import Counter
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -120,6 +121,53 @@ def arm_split_fold_guard(text: str) -> list[str]:
     ]
 
 
+def _strip_marks(text: str, form: str) -> str:
+    """Blanket normalise-and-drop-every-combining-mark, the obvious fold.
+
+    The one the issue proposed and review rejected. Spelled out here rather
+    than imported because nothing ships it -- it exists only to be measured
+    against, and the point of the FOLD_ARMS table is that it loses.
+    """
+    return "".join(
+        ch for ch in unicodedata.normalize(form, text)
+        if not unicodedata.combining(ch)
+    )
+
+
+def arm_guard_no_fold(text: str) -> list[str]:
+    """Word class + byte guard, no fold at all. The FOLD_ARMS baseline."""
+    return [
+        _stem_guarded(m.group(0).lower())
+        for m in _UNICODE61_PATTERN.finditer(text)
+    ]
+
+
+def arm_guard_blanket_nfd(text: str) -> list[str]:
+    return [
+        _stem_guarded(m.group(0).lower())
+        for m in _UNICODE61_PATTERN.finditer(_strip_marks(text, "NFD"))
+    ]
+
+
+def arm_guard_blanket_nfkd(text: str) -> list[str]:
+    return [
+        _stem_guarded(m.group(0).lower())
+        for m in _UNICODE61_PATTERN.finditer(_strip_marks(text, "NFKD"))
+    ]
+
+
+# Fold choices, compared against each other rather than counted in isolation.
+# "NFKD fixes 24 and breaks 49" is a *paired* claim -- it only means anything
+# relative to a stated baseline -- and it shipped without one, which is why it
+# could not be re-derived. Every arm here holds the word class and the byte
+# guard fixed so the only variable is the fold.
+FOLD_ARMS: tuple[tuple[str, Callable[[str], list[str]]], ...] = (
+    ("shipped per-character fold", arm_split_fold_guard),
+    ("blanket NFD, drop marks", arm_guard_blanket_nfd),
+    ("blanket NFKD, drop marks", arm_guard_blanket_nfkd),
+)
+
+
 def arm_shipped(text: str) -> list[str]:
     """Resolved at call time, not bound at import.
 
@@ -142,6 +190,32 @@ ARMS: tuple[tuple[str, Callable[[str], list[str]]], ...] = (
     ("+ byte guard", arm_split_fold_guard),
     ("shipped tokenize_stemmed", arm_shipped),
 )
+
+
+def residual_rule_class(term: str) -> str:
+    """Which stemmer disagreement a python-only residual term belongs to.
+
+    The residual is *attributed* in prose — "almost all step-2 `-logi`/`-bli`"
+    versus "step-1b consonant undoubling" — and those two attributions shipped
+    simultaneously in this repo, disagreeing with each other. An attribution
+    arrived at by eyeballing a `--show-residual` list is not reproducible and
+    cannot be re-checked when the corpus moves, so it lives here instead.
+
+    A suffix heuristic on the python-only side, deliberately, and not a proof:
+    it reads which suffix snowballstemmer *kept* that SQLite's porter removed.
+    `-logi` and `-bli` are step-2 rules (`methodologi` -> `methodolog`,
+    `possibli` -> `possibl`); a doubled final consonant is step-1b (`specc`
+    -> `spec`). Anything else is reported as `other` rather than forced into
+    a class -- U+00B5 MICRO SIGN lands there, and it is a case-stage
+    disagreement, not a stemmer one.
+    """
+    if term.endswith("logi"):
+        return "step-2 -logi"
+    if term.endswith("bli"):
+        return "step-2 -bli"
+    if len(term) >= 2 and term[-1] == term[-2]:
+        return "step-1b undoubling"
+    return "other (not a stemmer rule)"
 
 
 def fts5_terms(
@@ -261,6 +335,54 @@ def main(argv: list[str] | None = None) -> int:
         pct = 100.0 * differing / total
         print(f"  {name:26s} {differing:7d} / {total}  = {pct:6.2f}%")
         shipped_residual = residual
+
+    # Fold arms, scored as fixes/breaks against the no-fold baseline so the
+    # published pair is reproducible instead of asserted.
+    base_ok = {
+        doc: (arm_guard_no_fold(text) == truth[doc])
+        for doc, text in docs.items()
+    }
+    print()
+    print("fold choice, vs word-class + byte-guard with NO fold:")
+    for name, tokenizer in FOLD_ARMS:
+        fixed = broken = differing = 0
+        for doc, text in docs.items():
+            ok = tokenizer(text) == truth[doc]
+            if not ok:
+                differing += 1
+            if ok and not base_ok[doc]:
+                fixed += 1
+            elif not ok and base_ok[doc]:
+                broken += 1
+        print(
+            f"  {name:28s} fixes {fixed:4d}  breaks {broken:4d}  "
+            f"net {fixed - broken:+5d}   ({differing} / {total} still differ)"
+        )
+    print(
+        f"  {'(baseline: no fold)':28s} "
+        f"{sum(1 for v in base_ok.values() if not v)} / {total} differ"
+    )
+
+    # Attribution of the residual, computed rather than eyeballed. Two
+    # incompatible attributions of this same set shipped at once (#1389);
+    # printing the split is what stops a third.
+    by_class: Counter[str] = Counter()
+    terms_per_class: Counter[str] = Counter()
+    for (side, term), count in shipped_residual.items():
+        if side != "python-only":
+            continue
+        by_class[residual_rule_class(term)] += count
+        terms_per_class[residual_rule_class(term)] += 1
+    if by_class:
+        occurrences = sum(by_class.values())
+        print()
+        print("shipped residual, attributed (python-only side):")
+        for name, count in by_class.most_common():
+            share = 100.0 * count / occurrences
+            print(
+                f"  {name:28s} {count:6d} occurrences  "
+                f"{share:5.1f}%  ({terms_per_class[name]} distinct terms)"
+            )
 
     if args.show_residual and shipped_residual:
         print()

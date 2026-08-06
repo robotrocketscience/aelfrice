@@ -176,7 +176,7 @@ _TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\w+", re.UNICODE)
 # `[^\W_]+` is `\w+` minus the underscore, because unicode61 treats `_`
 # as a separator: `ADD_TO_LIST` indexes as `add`/`to`/`list`, not as one
 # opaque term. That single character is the bulk of the fix — measured
-# over 44,655 live beliefs it takes tokeniser-attributable divergence
+# over 44,683 live beliefs it takes tokeniser-attributable divergence
 # from 22.52% of documents to 0.07%.
 #
 # No Python character class reproduces unicode61's word class exactly
@@ -329,7 +329,7 @@ def _fold_diacritics(text: str) -> str:
     Two residuals remain, stated rather than chased, and they are the
     same class: SQLite applies a **compatibility** mapping that no
     canonical decomposition performs, so a rule built on NFD cannot
-    reach either. U+00B5 MICRO SIGN folds to Greek mu (12 of 44,655 live
+    reach either. U+00B5 MICRO SIGN folds to Greek mu (12 of 44,683 live
     beliefs), and U+1E9B LATIN SMALL LETTER LONG S WITH DOT ABOVE folds
     to plain `s` — its NFD base is U+017F LONG S, which is not ASCII, so
     this rule correctly declines to fold it and SQLite maps it anyway.
@@ -384,8 +384,8 @@ def tokenize_stemmed(text: str) -> list[str]:
     move every term in the index.
 
     Parity is close but not exact, and the residual is measured rather
-    than asserted: 232 of 44,658 live beliefs (0.52%) still tokenise
-    differently, against 19,915 (44.59%) before #1348.
+    than asserted: 232 of 44,683 live beliefs (0.52%) still tokenise
+    differently, against 19,918 (44.58%) before #1348.
     `benchmarks/bm25_fts5_divergence.py` re-derives both numbers against
     a real FTS5 table. Two stemmer rules account for most of it: SQLite's
     Porter step-2 `-logi -> -log` and `-bli -> -ble`, which
