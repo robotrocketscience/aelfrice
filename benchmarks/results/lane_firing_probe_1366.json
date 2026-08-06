@@ -1,0 +1,248 @@
+{
+  "issue": 1366,
+  "corpus": {
+    "source": "session transcript archive (untruncated user turns)",
+    "prompts": 500,
+    "median_prompt_chars": 714,
+    "max_prompt_chars": 653519,
+    "prompts_over_audit_prefix_cap": 334,
+    "audit_prompt_prefix_cap": 200,
+    "why_not_hook_audit": "hook_audit truncates prompt_prefix at AUDIT_PROMPT_PREFIX_CAP = 200 (src/aelfrice/hook.py); prompt length gates the expansion gate, so a truncated corpus under-fires expansion-dependent lanes \u2014 see truncation_control for the measured effect"
+  },
+  "environment": {
+    "cleared_env_vars": 0,
+    "env_prefixes_cleared": [
+      "AELFRICE_",
+      "AELF_"
+    ]
+  },
+  "observable_lanes": [
+    {
+      "lane": "l0_locked",
+      "telemetry_field": "locked",
+      "resolver": "(unconditional \u2014 no flag)",
+      "reported_enabled": true,
+      "fired_calls": 500,
+      "fire_rate": 1.0,
+      "note": ""
+    },
+    {
+      "lane": "l25_entity_index",
+      "telemetry_field": "l25",
+      "resolver": "is_entity_index_enabled()",
+      "reported_enabled": true,
+      "fired_calls": 379,
+      "fire_rate": 0.758,
+      "note": ""
+    },
+    {
+      "lane": "l1_bm25",
+      "telemetry_field": "l1",
+      "resolver": "(unconditional \u2014 no flag)",
+      "reported_enabled": true,
+      "fired_calls": 500,
+      "fire_rate": 1.0,
+      "note": ""
+    },
+    {
+      "lane": "l1_bm25f_anchors",
+      "telemetry_field": "bm25f_used",
+      "resolver": "resolve_use_bm25f_anchors()",
+      "reported_enabled": true,
+      "fired_calls": 500,
+      "fire_rate": 1.0,
+      "note": "bm25f_used records the resolved L1 implementation, not a packed-hit count, so it tracks the flag by construction."
+    },
+    {
+      "lane": "bfs_multihop",
+      "telemetry_field": "bfs",
+      "resolver": "is_bfs_enabled()",
+      "reported_enabled": false,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": ""
+    },
+    {
+      "lane": "hrr_expand",
+      "telemetry_field": "hrr_expand",
+      "resolver": "is_hrr_expand_enabled()",
+      "reported_enabled": false,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": ""
+    },
+    {
+      "lane": "temporal_spine",
+      "telemetry_field": "temporal_spine",
+      "resolver": "is_temporal_spine_enabled()",
+      "reported_enabled": true,
+      "fired_calls": 209,
+      "fire_rate": 0.418,
+      "note": ""
+    },
+    {
+      "lane": "heat_kernel",
+      "telemetry_field": "heat_used",
+      "resolver": "is_heat_kernel_enabled()",
+      "reported_enabled": false,
+      "fired_calls": 0,
+      "fire_rate": 0.0,
+      "note": "heat_used is True only when the heat branch rewrote the L1 ordering, not when the flag resolved True (#1162)."
+    },
+    {
+      "lane": "posterior_weight_rerank",
+      "telemetry_field": "posterior_weight",
+      "resolver": "resolve_posterior_weight() > 0",
+      "reported_enabled": true,
+      "fired_calls": 500,
+      "fire_rate": 1.0,
+      "note": ""
+    },
+    {
+      "lane": "expansion_gate",
+      "telemetry_field": "expansion_gate_reason",
+      "resolver": "(unconditional \u2014 no flag)",
+      "reported_enabled": true,
+      "fired_calls": 500,
+      "fire_rate": 1.0,
+      "note": ""
+    }
+  ],
+  "unobservable_lanes": [
+    {
+      "lane": "type_aware_compression",
+      "resolver": "resolve_use_type_aware_compression()",
+      "reported_enabled": true,
+      "observable": false,
+      "reason": "no LaneTelemetry field records this lane firing"
+    },
+    {
+      "lane": "intentional_clustering",
+      "resolver": "resolve_use_intentional_clustering()",
+      "reported_enabled": true,
+      "observable": false,
+      "reason": "no LaneTelemetry field records this lane firing"
+    },
+    {
+      "lane": "gamma_posterior_temperature",
+      "resolver": "resolve_use_gamma_posterior_temperature()",
+      "reported_enabled": false,
+      "observable": false,
+      "reason": "no LaneTelemetry field records this lane firing"
+    },
+    {
+      "lane": "zeta_posterior_rerank",
+      "resolver": "resolve_use_zeta_posterior_rerank()",
+      "reported_enabled": false,
+      "observable": false,
+      "reason": "no LaneTelemetry field records this lane firing"
+    },
+    {
+      "lane": "hrr_structural",
+      "resolver": "is_hrr_structural_enabled()",
+      "reported_enabled": true,
+      "observable": false,
+      "reason": "no LaneTelemetry field records this lane firing"
+    },
+    {
+      "lane": "entity_persist_demote",
+      "resolver": "is_entity_persist_demote_enabled()",
+      "reported_enabled": true,
+      "observable": false,
+      "reason": "no LaneTelemetry field records this lane firing"
+    },
+    {
+      "lane": "origin_tiebreak",
+      "resolver": "is_origin_tiebreak_enabled()",
+      "reported_enabled": false,
+      "observable": false,
+      "reason": "no LaneTelemetry field records this lane firing"
+    },
+    {
+      "lane": "fan_effect",
+      "resolver": "is_fan_effect_enabled()",
+      "reported_enabled": false,
+      "observable": false,
+      "reason": "no LaneTelemetry field records this lane firing"
+    },
+    {
+      "lane": "supersession_demote",
+      "resolver": "is_supersession_demote_enabled()",
+      "reported_enabled": false,
+      "observable": false,
+      "reason": "no LaneTelemetry field records this lane firing"
+    },
+    {
+      "lane": "exploration_slots",
+      "resolver": "is_exploration_enabled()",
+      "reported_enabled": false,
+      "observable": false,
+      "reason": "no LaneTelemetry field records this lane firing"
+    },
+    {
+      "lane": "max_coverage_pack",
+      "resolver": "is_max_coverage_pack_enabled()",
+      "reported_enabled": false,
+      "observable": false,
+      "reason": "no LaneTelemetry field records this lane firing"
+    },
+    {
+      "lane": "bm25f_per_field",
+      "resolver": "resolve_bm25f_per_field()",
+      "reported_enabled": false,
+      "observable": false,
+      "reason": "no LaneTelemetry field records this lane firing"
+    },
+    {
+      "lane": "bm25_k3_query_saturation",
+      "resolver": "resolve_bm25_k3() > 0",
+      "reported_enabled": false,
+      "observable": false,
+      "reason": "no LaneTelemetry field records this lane firing"
+    }
+  ],
+  "diff": {
+    "enabled_but_never_fired": [],
+    "fired_but_not_reported_enabled": []
+  },
+  "trim_seam": {
+    "temporal_spine_candidate_calls": 500,
+    "temporal_spine_packed_calls": 209,
+    "l1_trimmed_calls": 342
+  },
+  "expansion_gate": {
+    "reason_histogram": {
+      "broad:long": 216,
+      "broad:long,no-markers": 4,
+      "broad:no-markers": 236,
+      "broad:no-markers,question-form": 2,
+      "narrow": 42
+    },
+    "skipped_bfs_calls": 0
+  },
+  "empty_output_calls": 0,
+  "truncation_control": {
+    "prompt_chars": 200,
+    "prompts": 500,
+    "lanes_whose_fire_count_moved": {
+      "l25_entity_index": {
+        "full": 379,
+        "truncated": 483,
+        "delta": 104
+      },
+      "temporal_spine": {
+        "full": 209,
+        "truncated": 192,
+        "delta": -17
+      }
+    },
+    "lanes_falsely_dead_under_truncation": [],
+    "expansion_gate_reason_histogram": {
+      "broad:no-markers": 486,
+      "broad:no-markers,question-form": 2,
+      "narrow": 12
+    },
+    "temporal_spine_candidate_calls": 500,
+    "temporal_spine_packed_calls": 192
+  }
+}
