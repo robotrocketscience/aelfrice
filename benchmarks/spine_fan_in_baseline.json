@@ -1,10 +1,5 @@
 {
-  "issue": 1356,
-  "measured_at": "2026-08-05",
-  "script": "benchmarks/spine_fan_in_baseline.py",
-  "store": "development store (repo-local .git/aelfrice/memory.db); not a shipped fixture, so CI cannot re-derive this — `aelf spine verify` compares against it on the operator's machine",
   "constraint": "n_fan_in_successors is non-increasing (ratified constraint (2) on #1283 AC4). Equal is not a regression; the fan-in surplus is a standing writer defect that #1356 measures rather than fixes.",
-  "provenance": "reproduced_share was previously published as 0.9368 against a denominator that included the fan-in surplus. The figure below uses the corrected fan-in-1 eligible denominator and is NOT comparable to it.",
   "figures": {
     "missing_fan_in": 546,
     "missing_other": 3,
@@ -17,5 +12,10 @@
     "n_reproduced": 39335,
     "n_shipped": 41984,
     "reproduced_share": 0.948572
-  }
+  },
+  "issue": 1356,
+  "measured_at": "2026-08-05",
+  "provenance": "reproduced_share under the old, uncorrected denominator is 0.936905 (39,335 / 41,984) on THIS store \u2014 that is the figure to subtract from. The 0.9368 published in #1336 is a different measurement (39,280 / 41,929, a snapshot 55 edges smaller) and must not be paired with the figure below. The figure below uses the corrected fan-in-1 eligible denominator and is NOT comparable to either.",
+  "script": "benchmarks/spine_fan_in_baseline.py",
+  "store": "development store (repo-local .git/aelfrice/memory.db); not a shipped fixture, so CI cannot re-derive this \u2014 re-derive and compare on the operator's machine with `uv run python -m benchmarks.spine_fan_in_baseline --store <path>`, which exits 1 if the surplus has grown. `aelf spine verify` reports the count but does not read this file."
 }

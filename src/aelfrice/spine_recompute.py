@@ -66,6 +66,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = [
     "SYNTH_SOURCE_KIND",
     "SpineDivergence",
+    "fan_in_regressed_against",
     "recompute_spine_edges",
     "spine_divergence",
 ]
