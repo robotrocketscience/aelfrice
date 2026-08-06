@@ -583,6 +583,9 @@ def rebuild_v14(
             session_id=session_id_for_log,
             candidates=log_candidates,
             pack_summary=pack_summary,
+            # The post-transform string handed to retrieve() above, not a
+            # re-derivation (#1405).
+            scored_query=query,
         )
         _append_rebuild_log_record(rebuild_log_path, record)
 
@@ -1179,7 +1182,26 @@ def _build_rebuild_log_record(
     session_id: str | None,
     candidates: list[dict[str, object]],
     pack_summary: dict[str, int],
+    scored_query: str | None = None,
 ) -> dict[str, object]:
+    """Build one Layer-1 rebuild-log row.
+
+    `scored_query` is the string `retrieve()` was **actually handed**, passed
+    in by the caller rather than recomputed here (#1405). Recomputing is what
+    made the row unusable: `extracted_query` below is
+    `_query_for_recent_turns(...)`, and neither production path scores that.
+    `rebuild_v14` scores `transform_query()` of it, and the
+    `user_prompt_submit` path scores a conversation-aware composition built in
+    `hook.py` that this module never sees. So the recorded query matched
+    neither caller, and every replay of it measured a population production
+    does not issue.
+
+    Both are kept. `extracted_query` stays because it is what makes the
+    transform's effect auditable; `scored_query` is what a replay must use.
+    **Forward-only**: rows written before this carry no `scored_query`, and a
+    consumer must treat its absence as "unknown", never as "no transform was
+    applied".
+    """
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     extracted_query = _query_for_recent_turns(recent_turns)
     return {
@@ -1189,6 +1211,9 @@ def _build_rebuild_log_record(
             "recent_turns_hash": _recent_turns_hash(recent_turns),
             "n_recent_turns": len(recent_turns),
             "extracted_query": extracted_query,
+            # The string retrieve() received. Absent on rows predating
+            # #1405; absent is "unknown", not "same as extracted_query".
+            "scored_query": scored_query,
             "extracted_entities": _extracted_entities_for_log(recent_turns),
             # Intent classification is not part of the v1.4 rebuild
             # path; null until #291 query-understanding lands.
@@ -1259,6 +1284,7 @@ def record_user_prompt_submit_log(
     hits_pre_dedup: list[Belief],
     hits_post_dedup: list[Belief],
     log_path: Path | None,
+    scored_query: str | None = None,
     enabled: bool = DEFAULT_REBUILD_LOG_ENABLED,
     stderr: IO[str] | None = None,
 ) -> None:
@@ -1347,6 +1373,7 @@ def record_user_prompt_submit_log(
         session_id=session_id,
         candidates=candidates,
         pack_summary=pack_summary,
+        scored_query=scored_query,
     )
     _append_rebuild_log_record(log_path, record, stderr=stderr)
 
