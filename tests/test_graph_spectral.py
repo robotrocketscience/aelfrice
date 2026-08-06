@@ -9,6 +9,7 @@ Acceptance map (#149 §Test plan):
 - AC5: save/load round-trip is byte-identical (numerically lossless)
 - AC6: invalidation callback fires on store mutation
 - AC7: build is deterministic at fixed seed for the eigsolve
+- #1370 §10: the eigsolve is *bit*-identical run to run (seeded v0)
 """
 from __future__ import annotations
 
@@ -18,14 +19,18 @@ from pathlib import Path
 import numpy as np
 import pytest
 import scipy.sparse as sp
+import scipy.sparse.linalg as spla
 
 from aelfrice.graph_spectral import (
+    ARPACK_MAXITER_FACTOR,
+    ARPACK_MAXITER_FLOOR,
     DEFAULT_K,
     EDGE_LAPLACIAN_WEIGHTS,
     GraphEigenbasisCache,
     build_signed_adjacency,
     build_signed_normalized_laplacian,
     compute_eigenbasis,
+    deterministic_start_vector,
     load_eigenbasis,
     save_eigenbasis,
 )
@@ -268,10 +273,9 @@ def test_rebuild_after_invalidation_diverges(tmp_path: Path) -> None:
 
 
 def test_build_deterministic(tmp_path: Path) -> None:
-    """Same store, two builds → identical eigenvalues (numerically).
-    Eigenvector signs may differ across eigsh runs; we test eigvals
-    plus the absolute-value subspace projection norm, which is
-    sign-invariant."""
+    """Same store, two builds → the same eigenvalues and the same
+    invariant subspace. This is the weak (numerical) form; the bit
+    identity is asserted separately below."""
     s = _toy_store()
     W, _ = build_signed_adjacency(s)
     L = build_signed_normalized_laplacian(W)
@@ -281,6 +285,103 @@ def test_build_deterministic(tmp_path: Path) -> None:
     # Subspace agreement: |vc1.T @ vc2| diagonal close to 1
     overlap = np.abs(vc1.T @ vc2)
     np.testing.assert_allclose(np.diag(overlap), np.ones(3), atol=1e-8)
+
+
+# --- #1370 §10: seeded eigsolve ----------------------------------------------
+#
+# ARPACK draws its own start vector when `v0` is omitted, from an RNG
+# whose state advances per call. Two solves of the same L therefore
+# return different bit patterns — numerically equivalent, but the
+# heat-kernel authority ranking built on them is not reproducible from
+# the write log. `compute_eigenbasis` pins `v0` to a content-derived
+# vector, `tol=0` and an explicit `maxiter`.
+
+
+def test_compute_eigenbasis_is_bit_identical_across_calls() -> None:
+    s = _toy_store()
+    W, _ = build_signed_adjacency(s)
+    L = build_signed_normalized_laplacian(W)
+    runs = [compute_eigenbasis(L, k=3) for _ in range(4)]
+    assert len({ev.tobytes() for ev, _ in runs}) == 1
+    assert len({vc.tobytes() for _, vc in runs}) == 1
+
+
+def test_cache_build_is_bit_identical_across_builds(tmp_path: Path) -> None:
+    """Acceptance form: two `build()` calls on the same store return
+    bit-identical eigenvectors."""
+    s = _toy_store()
+    cache = GraphEigenbasisCache(store=s, path=tmp_path / "eb.npz", k=3)
+    cache.build()
+    assert cache.eigvals is not None and cache.eigvecs is not None
+    ev1 = cache.eigvals.tobytes()
+    vc1 = cache.eigvecs.tobytes()
+    cache.build()
+    assert cache.eigvals is not None and cache.eigvecs is not None
+    assert cache.eigvecs.tobytes() == vc1
+    assert cache.eigvals.tobytes() == ev1
+
+
+def test_compute_eigenbasis_bit_identical_on_a_larger_graph() -> None:
+    """The toy graph is 5 nodes; repeat at a size where the Arnoldi
+    iteration actually runs several restarts."""
+    rng = np.random.default_rng(11)
+    n = 120
+    rows = rng.integers(0, n, size=6 * n)
+    cols = rng.integers(0, n, size=6 * n)
+    signs = rng.choice([-1.0, 1.0], size=6 * n, p=[0.25, 0.75])
+    W = sp.csr_matrix((signs, (rows, cols)), shape=(n, n))
+    L = build_signed_normalized_laplacian((W + W.T).tocsr())
+    runs = [compute_eigenbasis(L, k=8) for _ in range(3)]
+    assert len({vc.tobytes() for _, vc in runs}) == 1
+
+
+def test_eigsh_is_called_with_pinned_tolerance_and_iteration_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`tol` and `maxiter` are passed explicitly, not inherited.
+
+    Pin the shipped values too, not just the mechanism: a `maxiter`
+    inherited from SciPy's default would change under a SciPy upgrade
+    with no code change here.
+    """
+    assert ARPACK_MAXITER_FACTOR == 10
+    assert ARPACK_MAXITER_FLOOR == 1000
+
+    captured: dict[str, object] = {}
+    real = spla.eigsh
+
+    def spy(*args: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("aelfrice.graph_spectral.spla.eigsh", spy)
+    s = _toy_store()
+    W, _ = build_signed_adjacency(s)
+    L = build_signed_normalized_laplacian(W)
+    compute_eigenbasis(L, k=3)
+
+    assert captured["tol"] == 0.0
+    assert captured["maxiter"] == 1000
+    assert captured["v0"] is not None
+
+
+def test_start_vector_is_derived_from_graph_content() -> None:
+    """`v0` is a function of the Laplacian, not of the call count: the
+    same graph yields the same vector, a changed weight does not."""
+    s = _toy_store()
+    W, _ = build_signed_adjacency(s)
+    L = build_signed_normalized_laplacian(W)
+    v_a = deterministic_start_vector(L)
+    v_b = deterministic_start_vector(L)
+    np.testing.assert_array_equal(v_a, v_b)
+    assert v_a.shape == (5,)
+    # Not the degenerate constant vector.
+    assert len(set(v_a.tolist())) > 1
+
+    s.insert_edge(Edge(src="b1", dst="b5", type=EDGE_SUPPORTS, weight=1.0))
+    W2, _ = build_signed_adjacency(s)
+    v_c = deterministic_start_vector(build_signed_normalized_laplacian(W2))
+    assert v_c.tobytes() != v_a.tobytes()
 
 
 # --- Perf gate ----------------------------------------------------------------
