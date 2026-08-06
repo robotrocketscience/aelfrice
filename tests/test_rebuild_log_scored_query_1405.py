@@ -203,3 +203,94 @@ def test_rebuild_v14_passes_the_post_transform_query() -> None:
     call = _call_block(source, "record = _build_rebuild_log_record(")
     assert "scored_query=query," in call
     assert "scored_query=raw_query" not in call
+
+
+def _rebuild_store(db_path: Path):
+    """A store whose L0 lock makes the candidate set deterministic."""
+    from aelfrice.models import LOCK_USER
+    from aelfrice.store import MemoryStore
+
+    store = MemoryStore(str(db_path))
+    store.insert_belief(
+        Belief(
+            id="L1",
+            content="user prefers uv over pip",
+            content_hash="h_L1",
+            alpha=1.0,
+            beta=1.0,
+            type=BELIEF_FACTUAL,
+            lock_level=LOCK_USER,
+            locked_at="2026-04-28T00:00:00Z",
+            created_at="2026-04-28T00:00:00Z",
+            last_retrieved_at=None,
+        )
+    )
+    return store
+
+# ---- same-fire equality, executed rather than grepped -------------------
+
+
+def test_rebuild_v14_logs_the_same_string_it_handed_retrieve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1405's load-bearing AC, on the path a source grep cannot cover.
+
+    `test_rebuild_v14_passes_the_post_transform_query` asserts the literal
+    `scored_query=query,` appears in the call block. That is a claim about
+    identifier spelling, not about a value: rebinding `query` between
+    `retrieve(...)` at :395 and the log block at :588 — a later lane doing
+    `query = expand(query)` — leaves the grep green while every row again
+    records a string `retrieve()` never saw.
+
+    This spies on the real `retrieve` and compares what it received with
+    what landed on disk, in the same fire. A marker on `transform_query`
+    keeps the two distinguishable: without it the pre- and post-transform
+    strings can coincide and the assertion would hold for the wrong
+    reason.
+    """
+    from aelfrice import context_rebuilder as cr
+
+    seen: list[str] = []
+    real_retrieve = cr.retrieve
+
+    def spy(store: Any, query: str, *args: Any, **kwargs: Any) -> Any:
+        seen.append(query)
+        return real_retrieve(store, query, *args, **kwargs)
+
+    monkeypatch.setattr(cr, "retrieve", spy)
+    monkeypatch.setattr(
+        cr, "transform_query", lambda raw, *a, **k: f"TRANSFORMED {raw}"
+    )
+
+    store = _rebuild_store(tmp_path / "m.db")
+    log_path = tmp_path / "rebuild_logs" / "sess1.jsonl"
+    try:
+        cr.rebuild_v14(
+            [cr.RecentTurn(role="user", text="uv over pip for environments")],
+            store,
+            rebuild_log_path=log_path,
+            session_id_for_log="sess1",
+        )
+    finally:
+        store.close()
+
+    assert len(seen) == 1, f"expected one retrieve() call, got {len(seen)}"
+    rows = [
+        json.loads(ln)
+        for ln in log_path.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(rows) == 1
+    logged = rows[0]["input"]["scored_query"]
+
+    assert logged == seen[0], (
+        "the row must carry the string retrieve() was handed in this same "
+        f"fire; retrieve() got {seen[0]!r}, the row recorded {logged!r}"
+    )
+    # Distinguishing half: proves the marker actually rode through, so a
+    # regression to the pre-transform string cannot satisfy the equality
+    # above by the two happening to coincide.
+    assert logged.startswith("TRANSFORMED "), logged
+    assert rows[0]["input"]["extracted_query"] == logged.removeprefix(
+        "TRANSFORMED "
+    ), "extracted_query must remain the pre-transform value, not be overwritten"
