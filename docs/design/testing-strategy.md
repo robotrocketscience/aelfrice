@@ -40,9 +40,13 @@ a real `BeliefStore`?
 the way an external user would experience it?
 
 - Run by `.github/workflows/e2e.yml`:
-  - on PR with the `e2e` label (opt-in for PRs touching cross-module seams),
+  - on every PR whose diff matches the trigger's `paths` list, which mirrors
+    `ci.yml`'s `code` filter — no label, no opt-in (#1420 §1),
   - on every push to `main` (post-merge regression catch),
   - across an install-method matrix: `uv-tool`, `pipx`, `venv-pip`.
+
+  The `e2e` label no longer triggers anything; `labeled` was dropped from the
+  trigger's event types along with the job's opt-in `if:`.
 - **No in-process imports of `aelfrice.*`.** Tests invoke the installed
   `aelf` binary (e.g. `aelf mcp` for the MCP server) via `subprocess.run`
   and assert on its observable output.
