@@ -38,7 +38,15 @@ counted, and neither is called an improvement here.
       `_build_conversation_aware_query(prompt, turns)`, the prompt
       repeated `conversation_aware_prompt_weight` times plus the last
       `turn_window` turns, composed in `hook.py` and never seen here.
-      Default **on**.
+      Default **on**, but *conditional*: `hook.py:1083` guards the
+      composition with `if recent_turns:`, so when neither the aelfrice
+      turns log nor the host transcript yields a turn, the scored string
+      is the **raw prompt** — which is the diagnostic arm's population,
+      modulo the audit's prefix cap. What share of rows that is has not
+      been measured; on a host with the transcript-logger hooks
+      installed it should be small, but it is not zero and it is the one
+      regime where the diagnostic arm is exactly right rather than an
+      approximation.
     * `rebuild_v14` — 2.3% — scores `transform_query(raw_query, ...)`,
       which the log recomputes *before* the transform.
 
@@ -170,15 +178,21 @@ def rank_agreement(
     return None if math.isnan(tau) else float(tau)
 
 
-def load_production_queries(log_dir: Path) -> list[str]:
-    """The strings production actually hands to `index.score` (#1388).
+def load_recorded_queries(log_dir: Path) -> list[str]:
+    """`input.extracted_query` as logged — NOT what production scores.
 
-    `context_rebuilder` builds its query from a window of **user and
-    assistant** turns and then rewrites it through `transform_query`; the
-    result is what reaches `index.score`, and it is logged verbatim as
-    `input.extracted_query` in the rebuild logs. So this population needs
-    no reconstruction — it is a recording, not a model of one, which is
-    the whole reason to prefer it over `_query_for_recent_turns` here.
+    This docstring previously claimed the recorded string "is what
+    reaches `index.score`" and is "a recording, not a model of one". That
+    was the claim `fac8c25d` reverted, and it was self-refuting: the
+    recorded value *is* `_query_for_recent_turns(...)`, the very function
+    it claimed to be preferable to. See the module docstring for the two
+    production paths, neither of which scores this string.
+
+    It is loaded anyway because it is the only *recorded* population, and
+    because the shapes it shares with production — identifier density,
+    length — are the ones a tokeniser change acts on. `input.scored_query`
+    (#1405) is the field that will settle it, and it is forward-only, so
+    it has no rows yet.
 
     Deduplicated and sorted, so the population is a deterministic function
     of the log directory and two runs are comparable. Malformed lines are
@@ -304,8 +318,9 @@ def main(argv: list[str] | None = None) -> int:
         "--rebuild-logs", type=Path, default=None,
         help=(
             "directory of rebuild_logs/*.jsonl carrying "
-            "input.extracted_query — the population production issues "
-            "(#1388). Defaults to <store parent>/rebuild_logs."
+            "input.extracted_query — the RECORDED population, which is "
+            "not the one production issues (#1388/#1405). Defaults to "
+            "<store parent>/rebuild_logs."
         ),
     )
     parser.add_argument("--limit-queries", type=int, default=0)
@@ -313,13 +328,13 @@ def main(argv: list[str] | None = None) -> int:
 
     audit_queries = load_prompts(list(args.audit))
     log_dir = args.rebuild_logs or args.store.parent / "rebuild_logs"
-    production_queries = (
-        load_production_queries(log_dir) if log_dir.is_dir() else []
+    recorded_queries = (
+        load_recorded_queries(log_dir) if log_dir.is_dir() else []
     )
     if args.limit_queries:
         audit_queries = audit_queries[:args.limit_queries]
-        production_queries = production_queries[:args.limit_queries]
-    if not audit_queries and not production_queries:
+        recorded_queries = recorded_queries[:args.limit_queries]
+    if not audit_queries and not recorded_queries:
         print("no queries in either population", file=sys.stderr)
         return 2
 
@@ -328,16 +343,16 @@ def main(argv: list[str] | None = None) -> int:
     store = MemoryStore(str(args.store), read_only=True)
     results: list[dict[str, object]] = []
     try:
-        if production_queries:
+        if recorded_queries:
             results.append(report(
                 "RECORDED POPULATION — not what production scores",
                 "(extracted_query as logged; see #1405)",
-                args.store.name, production_queries, store,
+                args.store.name, recorded_queries, store,
             ))
         else:
             print(
-                f"no rebuild logs under {log_dir} — the production arm is "
-                "the one that answers #1388, and it did not run.",
+                f"no rebuild logs under {log_dir} — the recorded arm "
+                "did not run, so only the diagnostic arm is reported.",
                 file=sys.stderr,
             )
         if audit_queries:
@@ -367,8 +382,9 @@ def main(argv: list[str] | None = None) -> int:
             f"\nidentical top-10: recorded "
             f"{100 * float(prod['identical_top10_share']):.1f}% vs "
             f"diagnostic {100 * float(diag['identical_top10_share']):.1f}% "
-            "— two approximations that bracket production, not a "
-            "before/after."
+            "— two approximations, neither of them production, and not a "
+            "before/after. That production falls BETWEEN them is a "
+            "hypothesis this instrument cannot test."
         )
     return 0
 
