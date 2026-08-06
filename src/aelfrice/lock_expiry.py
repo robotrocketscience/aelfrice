@@ -311,8 +311,37 @@ _MEMORY_ANCHOR_RE: Final[re.Pattern[str]] = re.compile(
 _ANCHOR_WINDOW_MAX_GAP: Final[int] = 40
 
 # A window on the far side of one of these is in a different clause, so
-# the anchor before it is not governing it.
-_CLAUSE_BREAKS: Final[frozenset[str]] = frozenset(".!?;:\n")
+# the anchor before it is not governing it. An en/em dash joins clauses as
+# surely as a semicolon; the ASCII hyphen is left out because it is also
+# the compound-word character, and is caught as a bare token below instead.
+_CLAUSE_BREAKS: Final[frozenset[str]] = frozenset(".!?;:\n–—")
+
+# Words that open a new predicate. A window after one of them is the
+# object of *that* predicate, not of the memory verb: "always remember
+# this and cache the index for two weeks" says how long to cache, not how
+# long to remember. Punctuation-only gating cannot see this — the leak
+# needs no comma at all, so adding one to `_CLAUSE_BREAKS` closes exactly
+# one of its spellings and leaves `and`/`but`/`then`/`while`/`so` open.
+_GAP_CONNECTIVES: Final[frozenset[str]] = frozenset({
+    "-", "also", "after", "although", "and", "as", "because", "before",
+    "but", "however", "if", "meanwhile", "or", "plus", "since", "so",
+    "then", "though", "unless", "when", "whenever", "while", "whilst",
+    "yet",
+})
+
+
+def _gap_opens_a_new_predicate(gap: str) -> bool:
+    """True when `gap` is not a bare continuation of the memory clause.
+
+    Split out so the anchor rule reads as one question. Tokens are
+    stripped of surrounding punctuation but not split on it, so a
+    hyphenated compound (`build-time`) is one token and does not collide
+    with the clause-joining bare `-`.
+    """
+    if set(gap) & _CLAUSE_BREAKS:
+        return True
+    words = {word.strip(",.'\"()").lower() for word in gap.split()}
+    return bool(words & _GAP_CONNECTIVES)
 
 
 def stated_window_attaches_to_memory(text: str) -> bool:
@@ -343,8 +372,12 @@ def stated_window_attaches_to_memory(text: str) -> bool:
     left to the gap rather than absorbed into the anchor — an anchor that
     swallowed trailing words would swallow the window too and never
     match. The window must then follow within `_ANCHOR_WINDOW_MAX_GAP`
-    characters with no clause break between, so an anchor early in a
-    paragraph cannot govern a duration in a later sentence.
+    characters, with the gap between them opening no new predicate, so an
+    anchor early in a paragraph cannot govern a duration in a later
+    sentence *or* in a later clause of the same sentence. Length and
+    punctuation alone are not enough for the second of those: prefixing a
+    memory clause to a rejected sentence is otherwise all it takes to
+    license its subject-matter window — see `_gap_opens_a_new_predicate`.
     """
     if not text:
         return False
@@ -357,8 +390,8 @@ def stated_window_attaches_to_memory(text: str) -> bool:
         if end > position:
             break
         gap = text[end:position]
-        if len(gap) <= _ANCHOR_WINDOW_MAX_GAP and not (
-            set(gap) & _CLAUSE_BREAKS
+        if len(gap) <= _ANCHOR_WINDOW_MAX_GAP and not _gap_opens_a_new_predicate(
+            gap
         ):
             return True
     return False
