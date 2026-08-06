@@ -26,23 +26,29 @@ counted, and neither is called an improvement here.
 
 **Two populations, and only one of them is evidence** (#1388).
 
-``PRODUCTION``
-    `input.extracted_query` from `.git/aelfrice/rebuild_logs/`, **put
-    back through `transform_query`**. `context_rebuilder` builds its
-    query from a window of **user and assistant** turns, then rewrites it
-    through `transform_query`, and retrieval sees only the rewritten
-    form (`context_rebuilder.py:388-395`). The log record recomputes the
-    **raw** form separately (`context_rebuilder.py:1184`), so replaying
-    it as-recorded scores a third population — neither the user prompt
-    nor what production scores. The transform is re-applied here to close
-    that gap. **Quote this block.**
+``RECORDED``
+    `input.extracted_query` from `.git/aelfrice/rebuild_logs/`.
 
-    Stated limit: the transform runs against **today's** IDF distribution
-    (`get_bm25_and_quantiles`), not the one live when the row was logged,
-    so this reproduces production's query *shape* rather than its exact
-    historical string. The correct fix is for `_build_rebuild_log_record`
-    to record the post-transform query; until it does, this is the closest
-    reachable population.
+    **This is not what production scores either, and the label says so
+    rather than implying otherwise** (#1405). It is
+    `_query_for_recent_turns(...)`, an entity/triple extraction, and
+    neither caller hands that string to `retrieve()`:
+
+    * `user_prompt_submit` — **97.7%** of recorded rows — scores
+      `_build_conversation_aware_query(prompt, turns)`, the prompt
+      repeated `conversation_aware_prompt_weight` times plus the last
+      `turn_window` turns, composed in `hook.py` and never seen here.
+      Default **on**.
+    * `rebuild_v14` — 2.3% — scores `transform_query(raw_query, ...)`,
+      which the log recomputes *before* the transform.
+
+    So this arm is a third population. It is retained because it is the
+    only recorded one, and because the shapes it does share with
+    production (identifier density, length) are the ones a tokeniser
+    change acts on. It is **not** the production number.
+
+    Re-applying `transform_query` here was tried and reverted: it is
+    correct for the 2.3% and wrong for the rest.
 
 ``DIAGNOSTIC``
     Raw user turns recovered from the hook audit, filtered with
@@ -52,13 +58,20 @@ counted, and neither is called an improvement here.
     stores `prompt_prefix`, which is truncated, so they are prefixes of
     real turns rather than the turns themselves.
 
-The distinction is not pedantic: the arms disagree far more on the
-population production issues. As first published, this benchmark scored
-only the diagnostic one and the entry it fed said "movement on real
-queries is small". A raw user turn is the input *least* able to express a
-tokeniser change, because natural-language turns rarely carry the
-identifier-shaped tokens the fix targets — so that arm reads as
-reassurance and is not evidence for the claim it was used to support.
+Neither arm is the production population, and the honest state is that
+**no arm can be, until `input.scored_query` (#1405) accumulates** — that
+field records the string `retrieve()` was actually handed. Report both,
+quote neither as "what production does", and revisit once the field has
+data.
+
+The two are still worth having together. A raw user turn is the input
+*least* able to express a tokeniser change, because natural-language
+turns rarely carry the identifier-shaped tokens the fix targets, so the
+diagnostic arm systematically understates movement — which is how "movement
+on real queries is small" came to be published. The recorded arm carries
+extracted identifiers and moves more. Production, composing the prompt
+with recent turns, plausibly sits between them; that is a hypothesis this
+instrument cannot test.
 
 **Emit aggregates only.** The production population is user prompt text.
 Counts, shares and correlations may be printed or committed; query
@@ -94,10 +107,6 @@ from scipy.stats import kendalltau  # noqa: E402
 # `bm25.tokenize_stemmed` to swap tokenisers, and a name bound at import
 # would not see the swap.
 import aelfrice.bm25 as bm25  # noqa: E402
-from aelfrice.query_understanding.strategy import (  # noqa: E402
-    DEFAULT_STRATEGY,
-    transform_query,
-)
 from aelfrice.store import MemoryStore  # noqa: E402
 from r3_idf_clip_bound import load_prompts  # noqa: E402
 
@@ -162,16 +171,14 @@ def rank_agreement(
 
 
 def load_production_queries(log_dir: Path) -> list[str]:
-    """The raw queries recorded in the rebuild logs (#1388).
+    """The strings production actually hands to `index.score` (#1388).
 
-    `input.extracted_query` is the **pre-transform** string:
-    `context_rebuilder.py:388-389` retrieves with
-    `transform_query(raw_query, ...)`, while `:1184` recomputes
-    `_query_for_recent_turns(recent_turns)` for the log record. Replaying
-    these as-recorded would score a population production never issues —
-    the same defect class this issue was filed about, one layer in. Callers
-    must pass the result through `transform_query`; `apply_transform`
-    below does it.
+    `context_rebuilder` builds its query from a window of **user and
+    assistant** turns and then rewrites it through `transform_query`; the
+    result is what reaches `index.score`, and it is logged verbatim as
+    `input.extracted_query` in the rebuild logs. So this population needs
+    no reconstruction — it is a recording, not a model of one, which is
+    the whole reason to prefer it over `_query_for_recent_turns` here.
 
     Deduplicated and sorted, so the population is a deterministic function
     of the log directory and two runs are comparable. Malformed lines are
@@ -205,32 +212,6 @@ def load_production_queries(log_dir: Path) -> list[str]:
             if isinstance(query, str) and query.strip():
                 seen.add(query)
     return sorted(seen)
-
-
-def apply_transform(
-    raw_queries: list[str], store: MemoryStore, strategy: str,
-) -> list[str]:
-    """Put raw recorded queries through the rewrite production applies.
-
-    `transform_query` is not a passthrough at the shipped default:
-    `DEFAULT_STRATEGY` is `stack-r1-r3`, and only `legacy-bm25` returns
-    its input unchanged. It tokenises, applies R1 entity expansion, then
-    R3 IDF clipping.
-
-    Two consequences worth stating rather than discovering:
-
-    * it can return the **empty string**, and those queries retrieve
-      nothing on the L1 lane in production — so scoring their non-empty
-      raw form inflates the movable population;
-    * it calls `bm25.tokenize`, so for tokeniser work the **query side**
-      of the change happens inside the transform. Replaying the raw
-      string measures the index side only.
-
-    Empties are kept rather than dropped: a query production cannot move
-    is a real member of the population, and silently removing it would
-    overstate agreement on the rest.
-    """
-    return [transform_query(q, store, strategy) for q in raw_queries]
 
 
 def report(
@@ -327,13 +308,6 @@ def main(argv: list[str] | None = None) -> int:
             "(#1388). Defaults to <store parent>/rebuild_logs."
         ),
     )
-    parser.add_argument(
-        "--strategy", default=DEFAULT_STRATEGY,
-        help=(
-            "query strategy to re-apply to the recorded raw queries; "
-            "the shipped default is what production runs"
-        ),
-    )
     parser.add_argument("--limit-queries", type=int, default=0)
     args = parser.parse_args(argv)
 
@@ -355,23 +329,10 @@ def main(argv: list[str] | None = None) -> int:
     results: list[dict[str, object]] = []
     try:
         if production_queries:
-            transformed = apply_transform(
-                production_queries, store, args.strategy,
-            )
-            n_empty = sum(1 for q in transformed if not q.strip())
-            n_changed = sum(
-                1 for raw, new in zip(production_queries, transformed, strict=True)
-                if raw != new
-            )
-            print(
-                f"transform ({args.strategy}): changed "
-                f"{n_changed}/{len(transformed)} queries, "
-                f"{n_empty} became empty\n"
-            )
             results.append(report(
-                "PRODUCTION POPULATION",
-                "(recorded query put back through transform_query)",
-                args.store.name, transformed, store,
+                "RECORDED POPULATION — not what production scores",
+                "(extracted_query as logged; see #1405)",
+                args.store.name, production_queries, store,
             ))
         else:
             print(
@@ -393,21 +354,21 @@ def main(argv: list[str] | None = None) -> int:
         "against relevance labels, because no labelled corpus exists for\n"
         "this store — see the #1268 hold.\n"
         "\n"
-        "Quote the PRODUCTION block. The diagnostic block scores raw user\n"
-        "turns, which production never issues: `context_rebuilder` builds\n"
-        "its query from a window of user AND assistant turns and rewrites\n"
-        "it through `transform_query` before `index.score` sees it. It is\n"
-        "also the population least able to express a tokeniser change,\n"
-        "because natural-language turns rarely carry identifier-shaped\n"
-        "tokens — so it reads as reassurance and is not evidence."
+        "NEITHER ARM IS THE PRODUCTION POPULATION, and quoting one as if\n"
+        "it were is what this benchmark got wrong twice. The recorded\n"
+        "query is an entity extraction that no caller scores; the\n"
+        "diagnostic arm is raw user turns, which the UPS path composes\n"
+        "with recent turns before scoring. The field that settles it is\n"
+        "`input.scored_query` (#1405) — revisit once it has data."
     )
     if len(results) == 2:
         prod, diag = results
         print(
-            f"\nidentical top-10: production "
+            f"\nidentical top-10: recorded "
             f"{100 * float(prod['identical_top10_share']):.1f}% vs "
             f"diagnostic {100 * float(diag['identical_top10_share']):.1f}% "
-            "— the gap is the reason this issue exists."
+            "— two approximations that bracket production, not a "
+            "before/after."
         )
     return 0
 
