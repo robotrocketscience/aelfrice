@@ -1,6 +1,6 @@
-"""#1371 §9 — harness scaffolding stored as user-authored belief.
+"""#1371 §9 and §10 — harness scaffolding, and fence parity between the paths.
 
-Scope note: this covers §9 only. **§1 is deliberately not fixed here**
+Scope note: this covers §9 and §10 only. **§1 is deliberately not fixed here**
 — the ack/shell regexes still discard durable beliefs like
 "No vector embeddings, ever.", and `test_section_1_is_still_open` pins that so
 the split cannot be mistaken for a complete fix. §1 is held behind a funded
@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import pytest
 
+from aelfrice.extraction import extract_sentences
 from aelfrice.noise_filter import is_transcript_noise
+from aelfrice.scanner import _split_paragraphs
 
 # The scaffolding the harness injects into a turn. These arrive at ingest as
 # `type in ("user","assistant")` like any other transcript text, so before
@@ -66,6 +68,99 @@ def test_section_9_prefixes_are_anchored_not_substring() -> None:
         "must not treat them as user-authored content."
     )
     assert is_transcript_noise(quoted) is False
+
+
+# --- §10 -----------------------------------------------------------------
+
+_FENCED_DOC = (
+    "The scanner walks the tree and emits one candidate per paragraph.\n\n"
+    "```xml\n"
+    "<system-reminder>scaffolding, not prose, and comfortably long</system-reminder>\n"
+    "```\n\n"
+    "Beliefs are deduplicated by a content hash across rescans of one tree."
+)
+
+
+def test_onboard_path_strips_fences() -> None:
+    """§10: a fenced block no longer survives `_split_paragraphs`.
+
+    Before the fix the fenced paragraph was over `_MIN_PARAGRAPH_CHARS`, had no
+    matching `is_noise` category, and was stored verbatim.
+    """
+    paragraphs = _split_paragraphs(_FENCED_DOC)
+    assert len(paragraphs) == 2
+    assert not any("```" in p for p in paragraphs)
+    assert not any("system-reminder" in p for p in paragraphs)
+
+
+def test_both_ingest_paths_agree_on_fenced_content() -> None:
+    """§10's acceptance criterion: one document, two paths, no fence in either.
+
+    The paths tokenise differently — paragraphs vs sentences — so the assertion
+    is that neither retains the fenced region, not that the units match.
+    """
+    onboard = _split_paragraphs(_FENCED_DOC)
+    transcript = extract_sentences(_FENCED_DOC)
+    for unit in [*onboard, *transcript]:
+        assert "```" not in unit
+        assert "system-reminder" not in unit
+    # Both paths still carry the surrounding prose, so the strip is targeted
+    # rather than a blanket drop of the document.
+    assert any("scanner walks the tree" in u for u in onboard)
+    assert any("scanner walks the tree" in u for u in transcript)
+
+
+def test_prose_paragraph_survives_an_inline_fence() -> None:
+    """A fence inside a prose paragraph removes the code, keeps the prose."""
+    doc = (
+        "Run the migration before upgrading:\n"
+        "```\naelf spine clear\n```\n"
+        "and confirm the edge count afterwards."
+    )
+    paragraphs = _split_paragraphs(doc)
+    assert len(paragraphs) == 1
+    assert "aelf spine clear" not in paragraphs[0]
+    assert "Run the migration before upgrading" in paragraphs[0]
+    assert "confirm the edge count afterwards" in paragraphs[0]
+
+
+def test_unterminated_fence_keeps_its_content_on_both_paths() -> None:
+    """The malformed case: neither path silently swallows the text.
+
+    `CODE_FENCE_RE` requires a closing delimiter, so an unterminated fence is
+    not matched and its content survives. That is the transcript path's
+    long-standing behaviour and onboard now inherits it rather than inventing a
+    stricter rule — a stricter one would delete real prose after a stray
+    backtick run.
+
+    One residual difference is asserted rather than glossed: onboard keeps the
+    literal ``` marker, the transcript path does not, because
+    `extract_sentences` also strips *inline* backticks (its step 2). That strip
+    is outside §10's scope, which is the fenced-region rule only. Pinned here so
+    the divergence is on the record instead of being discovered as a surprise.
+    """
+    tail = "this fence is never closed and the text after it runs on long enough"
+    doc = f"Intro paragraph that is long enough to be kept.\n\n```\n{tail}"
+
+    onboard = _split_paragraphs(doc)
+    transcript = extract_sentences(doc)
+    assert any(tail in p for p in onboard)
+    assert any(tail in s for s in transcript)
+
+    assert any("```" in p for p in onboard)
+    assert not any("```" in s for s in transcript)
+
+
+def test_shared_pattern_is_one_object_not_two_copies() -> None:
+    """Both paths must reference the *same* compiled pattern.
+
+    The defect §10 fixes was one path having a fence rule and the other not.
+    Re-inlining a second copy in either module would reintroduce exactly that
+    divergence, and every behavioural test above would still pass.
+    """
+    from aelfrice import extraction, scanner
+
+    assert scanner.CODE_FENCE_RE is extraction.CODE_FENCE_RE
 
 
 # --- the part deliberately NOT fixed -------------------------------------

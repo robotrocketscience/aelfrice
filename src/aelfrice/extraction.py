@@ -8,6 +8,12 @@ from __future__ import annotations
 import re
 
 
+# Triple-backtick region, including the language tag. Exported rather
+# than inlined because the onboard path strips fences too (#1371 §10) and
+# the two must agree: a second copy of this pattern is a divergence
+# waiting to happen, and the whole defect was that only one path had it.
+CODE_FENCE_RE: re.Pattern[str] = re.compile(r"```[\s\S]*?```")
+
 # Minimum character length for a sentence fragment to be kept.
 _MIN_LEN: int = 10
 
@@ -27,7 +33,7 @@ def extract_sentences(text: str) -> list[str]:
     Returns list of clean sentences.
     """
     # Step 1: strip code blocks (triple-backtick regions, including language tag)
-    cleaned: str = re.sub(r"```[\s\S]*?```", " ", text)
+    cleaned: str = CODE_FENCE_RE.sub(" ", text)
 
     # Step 2: strip inline code backticks, keep surrounding text
     cleaned = re.sub(r"`[^`]*`", " ", cleaned)
