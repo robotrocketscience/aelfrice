@@ -47,12 +47,24 @@ _DIRECTIVE = "Always use tabs in this repo for the next week."
 @pytest.fixture(autouse=True)
 def _pinned_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AELFRICE_DOTDIR", str(tmp_path / "dotdir"))
-    monkeypatch.setenv("AELFRICE_DB", str(tmp_path / "pinned.db"))
+    monkeypatch.setenv("AELFRICE_DB", str(_db_path(tmp_path)))
+
+
+def _db_path(tmp_path: Path) -> Path:
+    """The one database both the test and the production path resolve to.
+
+    The store-untouched test is only meaningful if it inspects the store
+    a write would actually land in. `_open_store()` resolves `$AELFRICE_DB`,
+    so a fixture on any other path would leave the load-bearing assertion
+    watching an empty file while the write went elsewhere — and a
+    write-first implementation would pass.
+    """
+    return tmp_path / "pinned.db"
 
 
 @pytest.fixture
 def store(tmp_path: Path) -> Iterator[MemoryStore]:
-    s = MemoryStore(str(tmp_path / "prop.db"))
+    s = MemoryStore(str(_db_path(tmp_path)))
     yield s
     s.close()
 
