@@ -3,7 +3,7 @@ after a two-session synthetic ingest run across all three entry points.
 
 This is a rate-level assertion on top of the per-surface unit tests in
 :mod:`tests.test_session_id_propagation`.  It exercises `ingest_turn`,
-`cli._cmd_lock`, and `mcp_server.tool_lock` in a single shared store,
+`cli._cmd_lock` in a single shared store,
 interleaving explicit session_id kwargs, $AELF_SESSION_ID env fallbacks,
 and a small remainder with neither, so the null rate never drops to zero
 and the 80% threshold is meaningful.
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from aelfrice import ingest, mcp_server, session_resolution
+from aelfrice import ingest, session_resolution
 from aelfrice.cli import _cmd_lock
 from aelfrice.store import MemoryStore
 
@@ -63,7 +63,7 @@ def test_session_id_population_rate_at_least_80_pct(
 
     Synthetic run: 12 ingest calls total.
     Session A (session-a): 4 ingest_turn (2 explicit, 2 env), 2 _cmd_lock (1 explicit, 1 env).
-    Session B (session-b): 4 mcp tool_lock (2 explicit, 2 env).
+    Session B (session-b): 4 _cmd_lock (2 explicit, 2 env).
     No-session (NULL): 2 ingest_turn calls with neither explicit nor env,
     keeping the NULL population small but non-zero.
     """
@@ -112,26 +112,33 @@ def test_session_id_population_rate_at_least_80_pct(
         assert rc == 0
         monkeypatch.delenv("AELF_SESSION_ID")
 
-        # --- Session B: tool_lock — explicit session_id ---
-        result = mcp_server.tool_lock(
-            store, statement="The MCP interface exposes aelf_lock.", session_id="session-b"
+        # --- Session B: _cmd_lock — explicit session_id ---
+        # Four distinct statements: content-hash dedup collapses repeats, so a
+        # repeated statement would corroborate rather than add a belief and the
+        # denominator below would silently shrink.
+        rc = _cmd_lock(
+            _make_args("Locks are resolved to an absolute instant at write time.", "session-b"),
+            io.StringIO(),
         )
-        assert result["action"] in ("locked", "corroborated")
-        result = mcp_server.tool_lock(
-            store, statement="MCP tool responses include the belief id.", session_id="session-b"
+        assert rc == 0
+        rc = _cmd_lock(
+            _make_args("A lock response carries the belief id.", "session-b"),
+            io.StringIO(),
         )
-        assert result["action"] in ("locked", "corroborated")
+        assert rc == 0
 
-        # --- Session B: tool_lock — env fallback ---
+        # --- Session B: _cmd_lock — env fallback ---
         monkeypatch.setenv("AELF_SESSION_ID", "session-b")
-        result = mcp_server.tool_lock(
-            store, statement="MCP session context flows through resolve_session_id."
+        rc = _cmd_lock(
+            _make_args("Session context flows through resolve_session_id."),
+            io.StringIO(),
         )
-        assert result["action"] in ("locked", "corroborated")
-        result = mcp_server.tool_lock(
-            store, statement="Session ids are stamped on every ingest surface."
+        assert rc == 0
+        rc = _cmd_lock(
+            _make_args("Session ids are stamped on every ingest surface."),
+            io.StringIO(),
         )
-        assert result["action"] in ("locked", "corroborated")
+        assert rc == 0
         monkeypatch.delenv("AELF_SESSION_ID")
 
         # --- NULL remainder: ingest_turn with neither explicit nor env ---

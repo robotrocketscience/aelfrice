@@ -10,7 +10,7 @@ The generation strategies here (``random_walk``, ``triangle_closure``,
 ``Store``. Production wiring ships separately as
 ``aelfrice.wonder.lifecycle`` (``wonder_ingest`` / ``wonder_gc``,
 #548/#549), exposed via ``aelf wonder --persist`` / ``aelf wonder --gc``
-and the ``aelf_wonder_persist`` / ``aelf_wonder_gc`` MCP tools.
+and the ``aelf wonder`` CLI verb.
 """
 from __future__ import annotations
 

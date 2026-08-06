@@ -52,7 +52,7 @@ class ForeignBeliefError(ValueError):
     """Raised when a mutation targets a belief owned by a foreign scope.
 
     Carries ``belief_id`` and ``owning_scope`` so structured error
-    responses (MCP tool calls, CLI exit codes) can surface them. Subclass
+    responses (CLI error messages) can surface them. Subclass
     of ``ValueError`` so existing ``except ValueError`` blocks in CLI
     surfaces keep working — they will print the message and exit 1.
     """

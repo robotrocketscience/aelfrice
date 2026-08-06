@@ -805,6 +805,7 @@ _DOTDIR_INSTALL_STATE: Final[tuple[str, ...]] = (
     "spine-backfilled",            # temporal_spine.SPINE_BACKFILLED_SENTINEL
     "installed-manifest-version",  # auto_install.STAMP_PATH
     "migrated-to-uv",              # MIGRATED_TO_UV_SENTINEL (this module)
+    "mcp-surface-removed",         # mcp_cleanup.MCP_CLEANUP_SENTINEL (#1422)
     ".auto-install.lock",          # auto_install.AUTO_INSTALL_LOCK_FILENAME
     # claude_memory._RECONCILE_SENTINEL_NAME lives beside the store, and
     # lands here only for an in-memory store (`reconcile_sentinel_path`).

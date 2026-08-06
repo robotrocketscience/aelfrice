@@ -644,7 +644,7 @@ def test_aelfrice_default_install_does_not_import_anthropic_at_module_load(
     Importing aelfrice (every public entry point) must not produce
     an `anthropic` symbol resolvable in any aelfrice module's
     globals at module-load time. Mirrors the existing test for
-    `fastmcp` in test_mcp_server.py.
+    the MCP surface, now removed (#1422).
     """
     import importlib
 

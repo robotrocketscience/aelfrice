@@ -15,6 +15,7 @@ from aelfrice.cli import main
 from aelfrice.models import (
     BELIEF_FACTUAL,
     LOCK_NONE,
+    LOCK_USER,
     ORIGIN_AGENT_INFERRED,
     Belief,
 )
@@ -191,5 +192,81 @@ def test_confirm_does_not_write_belief_corroborations(isolated_db: Path) -> None
             )
         # Either way, feedback_history must have exactly one row.
         assert s.count_feedback_events(bid) == 1
+    finally:
+        s.close()
+
+
+# --- the #1168 lock-floor exemption ----------------------------------------
+
+
+def _seed_locked_belief(db: Path, content: str, bid: str = "ddccbbaa9988") -> str:
+    """A user-locked belief, otherwise identical to `_seed_belief`."""
+    s = MemoryStore(str(db))
+    try:
+        s.insert_belief(Belief(
+            id=bid, content=content, content_hash="lockedhash",
+            alpha=1.0, beta=1.0, type=BELIEF_FACTUAL,
+            lock_level=LOCK_USER, locked_at="2026-05-05T00:00:00Z",
+            created_at="2026-05-05T00:00:00Z",
+            last_retrieved_at=None,
+            origin=ORIGIN_AGENT_INFERRED,
+        ))
+    finally:
+        s.close()
+    return bid
+
+
+def test_confirm_moves_a_locked_beliefs_posterior(isolated_db: Path) -> None:
+    """`aelf confirm` is the one feedback surface exempt from the #1168 floor.
+
+    `apply_feedback` skips the posterior update when `respect_lock` is true and
+    the belief is user-locked (feedback.py:200). Confirm passes
+    `respect_lock=False` on purpose: docs/user/COMMANDS.md defines it as explicit
+    user affirmation, "distinct from ... implicit retrieval feedback", so it
+    still moves a locked belief's posterior where passive feedback does not.
+
+    That exemption had no test. It is carried by a single keyword argument at one
+    call site, so dropping it during a refactor is silent, and the failure — a
+    confirm that reports success while the posterior never moves — is invisible
+    to every other assertion in this file, all of which use unlocked beliefs.
+    """
+    bid = _seed_locked_belief(isolated_db, "locked beliefs still take affirmation")
+
+    code, _ = _run("confirm", bid)
+    assert code == 0
+
+    s = MemoryStore(str(isolated_db))
+    try:
+        belief = s.get_belief(bid)
+        assert belief is not None
+        assert belief.lock_level == LOCK_USER, "the belief must still be locked"
+        assert belief.alpha == 2.0, (
+            "confirm did not move a locked belief's posterior — the "
+            "respect_lock=False exemption was dropped"
+        )
+    finally:
+        s.close()
+
+
+def test_plain_feedback_still_takes_the_lock_floor(isolated_db: Path) -> None:
+    """The other half of the contract, so the test above cannot pass vacuously.
+
+    If the floor stopped applying everywhere, the exemption assertion would go
+    green for the wrong reason. `aelf feedback` on the same locked belief must
+    leave the posterior where it is.
+    """
+    bid = _seed_locked_belief(isolated_db, "passive feedback respects the floor")
+
+    code, _ = _run("feedback", bid, "used")
+    assert code == 0
+
+    s = MemoryStore(str(isolated_db))
+    try:
+        belief = s.get_belief(bid)
+        assert belief is not None
+        assert belief.alpha == 1.0, (
+            "passive feedback moved a locked belief's posterior — the #1168 "
+            "floor is not being applied"
+        )
     finally:
         s.close()

@@ -20,7 +20,6 @@ grep -rE "subprocess|Popen|os\.system" src/aelfrice/
 
 and read the argv of each hit: `git` is local, `gh` is not.
 
-The optional `[mcp]` extra (`fastmcp`) speaks MCP over stdio to the host on the same machine. No remote sockets.
 
 Two exceptions are on by default:
 
@@ -29,7 +28,7 @@ Two exceptions are on by default:
 
 ## No telemetry
 
-No phone-home. **No network telemetry — that capability does not exist in the shipped package.** No conditional import, no commented-out endpoint, no env-var toggle to enable it. A local-only session-stats writer (`aelf session-delta`, [`src/aelfrice/telemetry.py`](../../src/aelfrice/telemetry.py)) exists but is inert unless you wire a SessionEnd hook yourself; it appends counts to `~/.aelfrice/telemetry.jsonl` and makes no network calls. Confirm by reading `pyproject.toml`: the base install adds only `numpy`, `scipy`, and `snowballstemmer` (local retrieval math — no network code), and the `[mcp]`, `[onboard-llm]`, `[archive]`, and `[benchmarks]` extras are opt-in; none is installed by `pip install aelfrice` alone.
+No phone-home. **No network telemetry — that capability does not exist in the shipped package.** No conditional import, no commented-out endpoint, no env-var toggle to enable it. A local-only session-stats writer (`aelf session-delta`, [`src/aelfrice/telemetry.py`](../../src/aelfrice/telemetry.py)) exists but is inert unless you wire a SessionEnd hook yourself; it appends counts to `~/.aelfrice/telemetry.jsonl` and makes no network calls. Confirm by reading `pyproject.toml`: the base install adds only `numpy`, `scipy`, and `snowballstemmer` (local retrieval math — no network code), and the `[onboard-llm]`, `[archive]`, and `[benchmarks]` extras are opt-in; none is installed by `pip install aelfrice` alone.
 
 ## Onboard-time outbound call
 
@@ -119,7 +118,7 @@ Resolution order:
 
 ## You control all writes
 
-- New beliefs from `onboard` and ingest hooks are inserted unlocked. Only an explicit `aelf lock` (or MCP `aelf:lock`) marks something permanent — unless you opt into `AELF_AUTOLOCK_CORRECTIONS=1`, which lets the Stop hook auto-lock session corrections at turn end.
+- New beliefs from `onboard` and ingest hooks are inserted unlocked. Only an explicit `aelf lock` (or `/aelf:lock`) marks something permanent — unless you opt into `AELF_AUTOLOCK_CORRECTIONS=1`, which lets the Stop hook auto-lock session corrections at turn end.
 - Lock prior is `(α, β) = (9.0, 0.5)` — durable. Passive feedback does not move a lock; the event is audited and the posterior held ([#1168](https://github.com/robotrocketscience/aelfrice/issues/1168)). `aelf confirm` is an explicit affirmation and is exempt. Also true at v3.x ([#814](https://github.com/robotrocketscience/aelfrice/issues/814) removed the v2.x auto-demote); change a lock via `aelf unlock` / `aelf delete` / `aelf demote`.
 - `aelf demote` removes a lock immediately. The belief itself remains; you can also delete it via the store API.
 - Every Bayesian update writes one `feedback_history` audit row — explicit signals via `apply_feedback`, and the manual deferred retrieval-exposure sweep via its own atomic update+insert. (Automatic retrieval *exposure* is audit-only by default since #1086: it writes a `feedback_history` row for the recurrence record but does not move the posterior — see [LIMITATIONS](LIMITATIONS.md).) Provenance is queryable either way.

@@ -5,7 +5,6 @@ Covers the three call sites that consume
 
   * ``ingest.ingest_turn`` (Q1.a, library-direct)
   * ``cli._cmd_lock`` (Q3.a, CLI ``aelf lock``)
-  * ``mcp_server.tool_lock`` (Q4.a, MCP ``aelf_lock``)
 
 Each surface must:
 
@@ -28,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from aelfrice import ingest, mcp_server, session_resolution
+from aelfrice import ingest, session_resolution
 from aelfrice.cli import _cmd_lock
 from aelfrice.store import MemoryStore
 
@@ -199,33 +198,3 @@ def test_cli_lock_null_and_warns(
     assert _belief_session_ids(db_path_fixture) == [None]
     assert _ingest_log_session_ids(db_path_fixture) == [None]
     assert "aelf lock" in capsys.readouterr().err
-
-
-# ---------------------------------------------------------------------------
-# MCP tool_lock (Q4.a)
-
-def test_mcp_lock_explicit_session_id_stamped(store: MemoryStore) -> None:
-    out = mcp_server.tool_lock(
-        store, statement="mcp locked A", session_id="sess-mcp"
-    )
-    assert out["action"] in ("locked", "corroborated")
-    assert _belief_session_ids(store) == ["sess-mcp"]
-    assert _ingest_log_session_ids(store) == ["sess-mcp"]
-
-
-def test_mcp_lock_env_fallback(
-    store: MemoryStore, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("AELF_SESSION_ID", "sess-mcp-env")
-    out = mcp_server.tool_lock(store, statement="mcp locked B")
-    assert out["action"] in ("locked", "corroborated")
-    assert _belief_session_ids(store) == ["sess-mcp-env"]
-
-
-def test_mcp_lock_null_and_warns(
-    store: MemoryStore, capsys: pytest.CaptureFixture[str]
-) -> None:
-    out = mcp_server.tool_lock(store, statement="mcp locked C")
-    assert out["action"] in ("locked", "corroborated")
-    assert _belief_session_ids(store) == [None]
-    assert "mcp aelf_lock" in capsys.readouterr().err

@@ -1544,7 +1544,7 @@ def _cmd_wonder_axes(args: argparse.Namespace, out: object) -> int:
     """Emit dispatch-payload JSON for `aelf wonder QUERY` (#645) or
     the legacy alias `aelf wonder --axes QUERY` (#551).
 
-    Mirrors the MCP `aelf_wonder` tool. Always JSON on stdout; exit 0
+    Always JSON on stdout; exit 0
     on success.
 
     The query may carry agent-count shorthand ("quick 2-agent",
@@ -3384,35 +3384,47 @@ def _cmd_introspect(args: argparse.Namespace, out: object) -> int:
 
 
 def _cmd_confirm(args: argparse.Namespace, out: object) -> int:
-    """Explicit user affirmation of a belief. Bumps Beta-Bernoulli alpha by 1.0."""
-    from aelfrice.mcp_server import tool_confirm
+    """Explicit user affirmation of a belief. Bumps Beta-Bernoulli alpha by 1.0.
 
+    `respect_lock=False` is load-bearing and not a default: confirm is the one
+    feedback surface exempt from the #1168 lock floor, because
+    docs/user/COMMANDS.md defines it as explicit user affirmation, "distinct
+    from ... implicit retrieval feedback". Dropping it would leave confirm
+    reporting success on a locked belief whose posterior never moved.
+    `tests/test_cli_confirm.py::test_confirm_moves_a_locked_beliefs_posterior`
+    is the guard.
+    """
+    from aelfrice.feedback import apply_feedback
+
+    note = getattr(args, "note", "") or ""
     store = _open_store()
     try:
-        result = tool_confirm(
-            store,
+        # ForeignBeliefError subclasses ValueError, so one clause covers both
+        # the unknown-belief and foreign-belief rejections.
+        result = apply_feedback(
+            store=store,
             belief_id=args.belief_id,
+            valence=1.0,
             source=args.source,
-            note=getattr(args, "note", "") or "",
+            respect_lock=False,
         )
+    except ValueError as exc:
+        print(f"confirm error: {exc}", file=sys.stderr)
+        return 1
     finally:
         store.close()
 
-    if result.get("kind") == "confirm.unknown_belief":
-        print(f"confirm error: {result['error']}", file=sys.stderr)
-        return 1
-
-    prior_alpha: float = result["prior_alpha"]
-    new_alpha: float = result["new_alpha"]
-    new_beta: float = result["new_beta"]
+    prior_alpha: float = result.prior_alpha
+    new_alpha: float = result.new_alpha
+    new_beta: float = result.new_beta
     posterior_mean = new_alpha / (new_alpha + new_beta)
     msg = (
         f"confirmed {args.belief_id}: "
         f"alpha {prior_alpha:.3f}->{new_alpha:.3f}, "
         f"mean {posterior_mean:.3f}"
     )
-    if result.get("note"):
-        msg += f" [{result['note']}]"
+    if note:
+        msg += f" [{note}]"
     print(msg, file=out)  # type: ignore[arg-type]
     _feed_log_event(
         "feedback.applied",
@@ -3655,7 +3667,7 @@ def _cmd_stats(args: argparse.Namespace, out: object) -> int:
     print(f"version:           {_aelf_version}", file=out)  # type: ignore[arg-type]
     print(f"beliefs:           {n_beliefs}", file=out)  # type: ignore[arg-type]
     # v1.1.0 user-facing rename: "edges" -> "threads". Internal schema
-    # keeps `edges`. MCP `aelf:stats` emits both keys for one minor.
+    # keeps `edges`.
     print(f"threads:           {n_threads}", file=out)  # type: ignore[arg-type]
     print(f"locked:            {n_locked}", file=out)  # type: ignore[arg-type]
     print(f"feedback events:   {n_history}", file=out)  # type: ignore[arg-type]
@@ -4079,6 +4091,21 @@ def _cmd_setup_locked(args: argparse.Namespace, out: object) -> int:
                 f"aelfrice: {verb} — {migration.reason}",
                 file=sys.stderr,
             )
+    # #1422: one-shot report of what the removed MCP surface left behind —
+    # a `[mcp]` extra in the uv environment, a host registration pointing at
+    # the deleted `aelf mcp`. Report-only by design: aelfrice never wrote
+    # that registration, so it is named rather than edited (the opt-in verb
+    # is `aelf migrate --remove-mcp-config`). Wrapped so a cleanup failure
+    # can never break setup.
+    try:
+        from aelfrice.mcp_cleanup import maybe_clean_up_mcp
+
+        mcp_cleanup = maybe_clean_up_mcp()
+        if mcp_cleanup.ran:
+            for note in mcp_cleanup.notes:
+                print(f"aelfrice: mcp cleanup — {note}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 — cleanup must never break setup
+        print(f"aelfrice: mcp cleanup skipped — {exc}", file=sys.stderr)
     # #1064 G4: one-shot auto-backfill of the temporal spine over an
     # existing store. Sentinel-gated inside maybe_backfill_temporal_spine
     # and inert while the writer is default-off (pre-flip) — it re-arms and
@@ -5565,40 +5592,6 @@ def _cmd_statusline(args: argparse.Namespace, out: object) -> int:
     return 0
 
 
-def _cmd_mcp(args: argparse.Namespace, out: object) -> int:
-    """Start the FastMCP stdio server exposing the aelfrice tool surface.
-
-    Requires the `[mcp]` extra: `uv tool install "aelfrice[mcp]"` (or
-    the equivalent `uv tool install --with fastmcp aelfrice`). Blocks until the host
-    closes the stdio pipes; SIGINT exits cleanly with status 0.
-
-    stdio MCP servers must never write to stdout — that channel carries
-    the JSON-RPC protocol. The aelfrice tool handlers return dicts and
-    never print; fastmcp itself respects the boundary.
-    """
-    _ = (args, out)
-    try:
-        from aelfrice.mcp_server import serve
-    except ImportError as exc:  # pragma: no cover — defensive
-        print(
-            f"error: aelfrice.mcp_server import failed: {exc}",
-            file=sys.stderr,
-        )
-        return 1
-    try:
-        serve()
-    except RuntimeError as exc:
-        # serve() raises RuntimeError when fastmcp is not installed —
-        # the message includes the install hint.
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    except KeyboardInterrupt:
-        # Clean stop on Ctrl-C; hosts may signal shutdown via SIGINT
-        # and a traceback would clutter their logs.
-        return 0
-    return 0
-
-
 _UPGRADE_CONTEXT_NOTE: dict[str, str] = {
     "uv_tool": "installed via uv tool — use uv to upgrade",
     # #730: every non-uv install (pipx/venv/system) is routed to a
@@ -6137,6 +6130,47 @@ def _cmd_spine_verify(out: object) -> int:
     return 0
 
 
+def _remove_mcp_config(out: object) -> int:
+    """Delete the stale aelfrice `mcpServers` entries the host still carries.
+
+    The opt-in half of #1422's cleanup. `aelf setup` only *reports* these,
+    because aelfrice never wrote the registration and the file usually holds
+    the user's other servers; this is the verb that says "yes, edit it".
+    Every write is preceded by a timestamped backup, and anything that does
+    not parse as strict JSON is reported and left alone.
+
+    Exits non-zero when a config could not be read: the user asked for an
+    edit and one input was never inspected, so "nothing to remove" would be
+    a claim this run did not establish.
+    """
+    from aelfrice.mcp_cleanup import (
+        find_registrations,
+        remove_registration,
+        scan_was_incomplete,
+    )
+
+    registrations, notes = find_registrations()
+    for note in notes:
+        print(note, file=out)  # type: ignore[arg-type]
+    incomplete = scan_was_incomplete(notes)
+    if not registrations:
+        if incomplete:
+            print(  # type: ignore[arg-type]
+                "could not read every config listed above; "
+                "no registration found in the ones that were readable",
+                file=out,
+            )
+            return 1
+        print("no aelfrice MCP registration found", file=out)  # type: ignore[arg-type]
+        return 0
+    failed = False
+    for registration in registrations:
+        changed, message = remove_registration(registration)
+        print(message, file=out)  # type: ignore[arg-type]
+        failed = failed or not changed
+    return 1 if (failed or incomplete) else 0
+
+
 def _cmd_migrate(args: argparse.Namespace, out: object) -> int:
     """Copy beliefs from the legacy global DB into the active project's DB.
 
@@ -6146,6 +6180,8 @@ def _cmd_migrate(args: argparse.Namespace, out: object) -> int:
     Exits 0 on success or no-op, 1 when source DB is missing or refuses
     to open.
     """
+    if getattr(args, "remove_mcp_config", False):
+        return _remove_mcp_config(out)
     legacy = (
         Path(args.from_path) if args.from_path
         else default_legacy_db_path()
@@ -8957,7 +8993,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     )
     p_resolve.set_defaults(func=_cmd_resolve)
 
-    # Hidden: agents emit feedback automatically via the MCP path. Manual
+    # Hidden: agents emit feedback automatically via the hook path. Manual
     # invocation is rare.
     p_feedback = sub.add_parser("feedback", help=argparse.SUPPRESS)
     p_feedback.add_argument("belief_id", help="id of the belief")
@@ -9013,6 +9049,13 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_migrate.add_argument(
         "--yes", action="store_true",
         help="skip the confirmation prompt under --apply",
+    )
+    p_migrate.add_argument(
+        "--remove-mcp-config", dest="remove_mcp_config", action="store_true",
+        help=(
+            "remove the stale aelfrice entry from your host's MCP config "
+            "(#1422); writes a timestamped backup first"
+        ),
     )
     p_migrate.set_defaults(func=_cmd_migrate)
 
@@ -9848,15 +9891,6 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     # Hidden: statusline command target in settings.json. Not a verb humans invoke.
     p_statusline = sub.add_parser("statusline", help=argparse.SUPPRESS)
     p_statusline.set_defaults(func=_cmd_statusline)
-
-    # `aelf mcp`: start the FastMCP stdio server. Visible in --help so
-    # MCP-capable hosts configuring a server entry can discover it;
-    # the [mcp] extra must be installed for it to actually run.
-    p_mcp = sub.add_parser(
-        "mcp",
-        help="start the FastMCP stdio server (requires aelfrice[mcp])",
-    )
-    p_mcp.set_defaults(func=_cmd_mcp)
 
     # Hidden: the orange statusline banner already prompts users when an
     # update is pending — direct CLI invocation is auxiliary.

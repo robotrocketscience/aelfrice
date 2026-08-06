@@ -16,7 +16,7 @@ You correct your agent. *"Got it,"* it says. Next session, same mistake.
 
 aelfrice runs in the background and stops the amnesia. Write a rule once and every relevant prompt thereafter ships with that rule already attached, *before* the model sees your message. There is no rules file to maintain and nothing for the agent to skip: the matched beliefs are in the prompt itself.
 
-Built for developers using AI coding agents. Hosts that expose a `UserPromptSubmit` hook get first-class support; any MCP host can use the included stdio server. Local-only by design — embeddings, vector RAG, and cloud sync are out of scope, and [Philosophy](docs/concepts/PHILOSOPHY.md) explains why that trade-off is worth it.
+Built for developers using AI coding agents. Hosts that expose a `UserPromptSubmit` hook get first-class support — the hook is what makes the guarantee possible, since a tool the model chooses whether to call cannot put the right beliefs in front of it before it reads your message. Local-only by design — embeddings, vector RAG, and cloud sync are out of scope, and [Philosophy](docs/concepts/PHILOSOPHY.md) explains why that trade-off is worth it.
 
 ## Install
 
@@ -76,7 +76,7 @@ aelf stale --older-than 90 --cold-for 30   # surface forgotten beliefs (v3.5+)
 aelf review --generate               # weekly keep / remove / lock checkpoint (v3.5+)
 ```
 
-`aelf --help` shows the everyday surface; `aelf --help --advanced` lists the rest. Full reference: [COMMANDS](docs/user/COMMANDS.md). The same operations are exposed as MCP tools and `/aelf:*` slash commands — same library underneath. See [MCP](docs/user/MCP.md) and [SLASH_COMMANDS](docs/user/SLASH_COMMANDS.md).
+`aelf --help` shows the everyday surface; `aelf --help --advanced` lists the rest. Full reference: [COMMANDS](docs/user/COMMANDS.md). The same operations are exposed as `/aelf:*` slash commands — same library underneath. See [SLASH_COMMANDS](docs/user/SLASH_COMMANDS.md).
 
 ## How it works
 
@@ -160,7 +160,7 @@ Latest stable: **v4.2.0** (2026-07-21). Per-entry detail in [CHANGELOG § 4.2.0]
 ## Documentation
 
 - **Getting started:** [Install](docs/user/INSTALL.md) · [Quickstart](docs/user/QUICKSTART.md)
-- **Reference:** [Commands](docs/user/COMMANDS.md) · [MCP](docs/user/MCP.md) · [Slash commands](docs/user/SLASH_COMMANDS.md) · [Config](docs/user/CONFIG.md)
+- **Reference:** [Commands](docs/user/COMMANDS.md) · [Slash commands](docs/user/SLASH_COMMANDS.md) · [Config](docs/user/CONFIG.md)
 - **Background:** [Architecture](docs/concepts/ARCHITECTURE.md) · [Philosophy](docs/concepts/PHILOSOPHY.md) · [Comparison](docs/concepts/COMPARISON.md) · [Privacy](docs/user/PRIVACY.md) · [Limitations](docs/user/LIMITATIONS.md)
 - **Development:** [Releasing](docs/concepts/RELEASING.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 

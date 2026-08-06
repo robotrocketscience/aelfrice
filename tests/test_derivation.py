@@ -420,7 +420,7 @@ def test_mcp_remember_yields_user_locked_belief() -> None:
 
 def test_mcp_remember_belief_id_matches_lock_scheme() -> None:
     """Hypothesis: mcp_remember id is sha256(lock NUL text)[:16], matching
-    cli._lock_id_for and mcp_server._lock_id_for.  Falsifiable by mismatch."""
+    cli._lock_id_for.  Falsifiable by mismatch."""
     stmt = "Always use uv for package management."
     expected = hashlib.sha256(f"lock\x00{stmt}".encode()).hexdigest()[:16]
     out = derive(DerivationInput(

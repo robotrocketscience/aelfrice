@@ -600,7 +600,7 @@ class PhantomLifecycleCounts:
     """Snapshot of the phantom (speculative) belief lifecycle (#980).
 
     Produced by ``MemoryStore.count_phantom_lifecycle`` and surfaced by
-    ``aelf status`` / the MCP ``aelf:stats`` tool so phantom generation,
+    ``aelf status`` so phantom generation,
     promotion, and GC are observable rather than silent. The three counts
     partition every ``type='speculative'`` belief into mutually exclusive
     lifecycle states; ``latest`` is the ISO ``created_at`` of the most

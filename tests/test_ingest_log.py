@@ -421,26 +421,54 @@ def test_ingest_triples_writes_log_row_per_new_belief(
         assert all(r["session_id"] == "commit-abcdef" for r in rows)
 
 
-def test_mcp_lock_writes_log_row(store: MemoryStore) -> None:
-    """Hypothesis (post-#264 contract): tool_lock writes one log row
-    per call with source_kind=mcp_remember (canonical raw-input record),
-    even on re-lock. The worker corroborates the canonical belief
-    instead of inserting a duplicate. Falsifiable if the second call
-    leaves log count unchanged (old #205 contract) OR if a duplicate
-    belief appears."""
-    from aelfrice.mcp_server import tool_lock
-    tool_lock(store, statement="atomic commits beat batched commits")
-    n_after_first = store.count_ingest_log()
-    beliefs_after_first = store.count_beliefs()
-    assert n_after_first == 1
-    rows = store._conn.execute(  # pyright: ignore[reportPrivateUsage]
-        "SELECT source_kind FROM ingest_log"
-    ).fetchall()
-    assert rows[0]["source_kind"] == "mcp_remember"
-    # Re-lock appends a new log row; canonical belief is corroborated.
-    tool_lock(store, statement="atomic commits beat batched commits")
-    assert store.count_ingest_log() == n_after_first + 1
-    assert store.count_beliefs() == beliefs_after_first
+def test_relock_appends_a_log_row_and_corroborates(tmp_path: Path) -> None:
+    """Post-#264 contract: a re-lock appends a log row and does NOT duplicate.
+
+    The canonical raw-input record is per *call*, so locking the same statement
+    twice leaves two log rows and one belief — the worker corroborates the
+    canonical belief instead of inserting a second. Falsifiable in both
+    directions: if the second call leaves the log count unchanged that is the
+    old #205 contract returning, and if the belief count rises the
+    corroboration path has broken.
+
+    Previously asserted only through the MCP `tool_lock` surface, which is gone
+    (#1422). The contract is a property of the lock/remember ingest path, not of
+    the entry point, so it is asserted here through `aelf lock`.
+    """
+    import os
+
+    from aelfrice.cli import main as cli_main
+
+    db = tmp_path / "relock.db"
+    statement = "atomic commits beat batched commits"
+    env_db = os.environ.get("AELFRICE_DB")
+    os.environ["AELFRICE_DB"] = str(db)
+    try:
+        assert cli_main(["lock", statement]) == 0
+        s = MemoryStore(str(db))
+        try:
+            n_after_first = s.count_ingest_log()
+            beliefs_after_first = s.count_beliefs()
+            assert n_after_first == 1
+            rows = s._conn.execute(  # pyright: ignore[reportPrivateUsage]
+                "SELECT source_kind FROM ingest_log"
+            ).fetchall()
+            assert rows[0]["source_kind"] == "cli_remember"
+        finally:
+            s.close()
+
+        assert cli_main(["lock", statement]) == 0
+        s = MemoryStore(str(db))
+        try:
+            assert s.count_ingest_log() == n_after_first + 1
+            assert s.count_beliefs() == beliefs_after_first
+        finally:
+            s.close()
+    finally:
+        if env_db is None:
+            os.environ.pop("AELFRICE_DB", None)
+        else:
+            os.environ["AELFRICE_DB"] = env_db
 
 
 def test_cli_lock_writes_log_row(tmp_path: Path) -> None:

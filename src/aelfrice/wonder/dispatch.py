@@ -10,7 +10,7 @@ Two pure functions plus dataclasses:
   orthogonal :class:`ResearchAxis` records sized for ``agent_count``
   parallel research lanes.
 
-The MCP ``wonder()`` tool and the ``aelf wonder <query> --axes`` CLI flag
+The ``aelf wonder QUERY`` command and its ``--axes QUERY`` alias
 both wrap these two functions; the skill layer (E4, separate sub-issue)
 consumes the axes JSON, fans out research agents, and pipes their results back
 through ``wonder_ingest`` (track C).
@@ -58,7 +58,7 @@ class GapAnalysis:
     """Snapshot of what the store knows (and doesn't) about a query.
 
     Fields are populated by :func:`analyze_gaps` and consumed by
-    :func:`generate_research_axes`. The MCP tool serialises this via
+    :func:`generate_research_axes`. The CLI serialises this via
     :meth:`to_dict`.
     """
 
@@ -109,7 +109,7 @@ class ResearchAxis:
 
 @dataclass(frozen=True)
 class DispatchPayload:
-    """Top-level shape returned by the MCP tool / CLI ``--axes`` flag."""
+    """Top-level shape the CLI returns for either invocation form."""
 
     gap_analysis: GapAnalysis
     research_axes: tuple[ResearchAxis, ...]
@@ -415,7 +415,7 @@ def generate_research_axes(
 
 
 # ---------------------------------------------------------------------------
-# E3 helper — bundle gap analysis + axes for the MCP tool / CLI flag
+# E3 helper — bundle gap analysis + axes for the CLI flag
 # ---------------------------------------------------------------------------
 
 
@@ -429,7 +429,7 @@ def build_dispatch_payload(
 ) -> DispatchPayload:
     """Convenience wrapper composing :func:`analyze_gaps` and
     :func:`generate_research_axes` into the JSON-serialisable shape
-    that the MCP ``wonder()`` tool and ``aelf wonder --axes`` CLI flag
+    that ``aelf wonder QUERY`` and its ``--axes QUERY`` alias
     both return.
 
     ``speculative_anchor_ids`` is the candidate-belief id list — track

@@ -1642,7 +1642,7 @@ class _SettingsTransaction:
 # existing tests unaffected.
 #
 # Thread-local, not a plain module global: a process can run two of these
-# concurrently (a threaded host, the MCP server), and with a shared slot
+# concurrently (a threaded host), and with a shared slot
 # one thread would see another's transaction — buffering its writes into
 # the wrong document, or tripping the nesting guard for no reason. Each
 # thread opens its own lock fd, and `flock` is per open file description,
