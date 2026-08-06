@@ -202,13 +202,23 @@ def test_manifest_digest_is_pinned() -> None:
     the honest limit of this mechanism — see the constant's comment. Only
     a merge-base check in CI is fully mechanical, and that is not built.
     """
-    assert manifest_digest() == DIGEST_HISTORY[DETECTOR_THRESHOLDS_VERSION], (
+    # Ordered deliberately. The module resolves MANIFEST_DIGEST with
+    # `DIGEST_HISTORY.get(VERSION, "")` so that a missing row does not take
+    # the import down with a KeyError — but subscripting DIGEST_HISTORY
+    # here would reintroduce exactly that KeyError and report the contract
+    # breach as a crash. Naming it first is what the `.get` is for.
+    assert MANIFEST_DIGEST, (
+        f"MANIFEST_DIGEST resolved to the empty-string fallback: "
+        f"DIGEST_HISTORY has no row for version "
+        f"{DETECTOR_THRESHOLDS_VERSION}. APPEND one — do not rewrite an "
+        f"existing row."
+    )
+    assert manifest_digest() == MANIFEST_DIGEST, (
         f"pinned content does not match the digest recorded for version "
         f"{DETECTOR_THRESHOLDS_VERSION}. Revert the change, or bump "
         f"DETECTOR_THRESHOLDS_VERSION and APPEND a row to DIGEST_HISTORY. "
         f"Do not rewrite the existing row."
     )
-    assert MANIFEST_DIGEST == DIGEST_HISTORY[DETECTOR_THRESHOLDS_VERSION]
 
 
 def test_digest_history_is_contiguous_and_complete() -> None:
