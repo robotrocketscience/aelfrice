@@ -141,14 +141,47 @@ def test_declarative_signal_fires_on_should_be_only() -> None:
     assert "declarative" in r.signals
 
 
-def test_directive_signal_fires_on_must() -> None:
-    r = detect_correction("commits must be signed")
-    assert "directive" in r.signals
+# --- The deleted `directive` category (#1369) ---------------------------
 
 
-def test_directive_signal_fires_on_hard_rule() -> None:
-    r = detect_correction("hard rule: every PR has a test")
-    assert "directive" in r.signals
+def test_directive_terms_do_not_fire_a_signal() -> None:
+    """A seventh `directive` category was deleted as unreachable.
+
+    Its terms are a strict subset of
+    `classification_core._REQUIREMENT_KEYWORDS`, matched against the same
+    lowercased text one branch earlier, so any text that would fire it is
+    already classified `requirement` before `detect_correction` runs.
+    Asserted on bare directive terms, which fired exactly one signal
+    before the deletion and must now fire none.
+    """
+    for text in (
+        "commits must be signed",
+        "hard rule: every PR has a test",
+        "a review is mandatory",
+        "we require two approvals",
+        "retries carry a hard cap",
+    ):
+        r = detect_correction(text)
+        assert r.signals == [], f"{text!r} fired {r.signals}"
+        assert "directive" not in r.signals
+
+
+def test_directive_text_classifies_as_requirement_not_correction() -> None:
+    """The reason deleting it is behaviour-neutral, asserted end to end.
+
+    `classify_sentence` is the only production caller of
+    `detect_correction`. A directive-term text takes the requirement
+    branch, which returns before the correction branch is reached — so
+    the category could never have changed a stored belief's type.
+    """
+    from aelfrice.classification_core import classify_sentence
+    from aelfrice.models import BELIEF_REQUIREMENT
+
+    # Also carries always_never + emphasis + prior_ref, so the correction
+    # branch would win on signal count if it were ever reached.
+    text = "never skip it! we already agreed a review is mandatory"
+    assert len(detect_correction(text).signals) >= 2
+    assert classify_sentence(text, "user").belief_type == BELIEF_REQUIREMENT
 
 
 # --- Threshold (default 2): is_correction transition --------------------
@@ -161,9 +194,9 @@ def test_zero_signals_is_not_correction() -> None:
 
 
 def test_one_signal_is_not_correction() -> None:
-    r = detect_correction("commits must be signed")
-    # "must" -> directive only (one signal); below threshold of 2.
-    assert r.signals == ["directive"]
+    r = detect_correction("the export should be only json")
+    # "should be only" -> declarative only (one signal); below threshold of 2.
+    assert r.signals == ["declarative"]
     assert r.is_correction is False
 
 
@@ -190,7 +223,8 @@ def test_confidence_zero_when_no_signals() -> None:
 
 
 def test_confidence_scales_linearly_below_cap() -> None:
-    r = detect_correction("commits must be signed")  # 1 signal
+    r = detect_correction("the export should be only json")  # 1 signal
+    assert len(r.signals) == 1
     assert abs(r.confidence - 0.3) < 1e-9
 
 

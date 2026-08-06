@@ -1,9 +1,9 @@
 """No-LLM correction detector.
 
 Heuristic detector that identifies user corrections / directives by
-counting signal-class hits across seven categories: imperative-verb
+counting signal-class hits across six categories: imperative-verb
 start, always/never absolutist language, negation, emphasis, prior
-reference, declarative override, and strong directive. A text counts
+reference, and declarative override. A text counts
 as a correction when at least two distinct signals fire (precision
 trade-off: single-signal matches have ~60% precision; the explicit
 two-signal threshold trades recall for precision so the explicit
@@ -16,6 +16,16 @@ Ported from the previous codebase's correction_detection.py
 correction corpus; that corpus is not part of v1.0 so this module
 ships the regex set verbatim and unit tests cover each signal class
 in isolation rather than retrying the corpus accuracy claim.
+
+A seventh `directive` category ("must", "require", "mandatory", "hard
+cap", "hard rule") was deleted under #1369 as unreachable by
+construction: its term list is a strict subset of
+`classification_core._REQUIREMENT_KEYWORDS`, which is tested against
+the same lowercased text and returns a `requirement` classification
+before `detect_correction` is ever called. Verified over the full
+cross-product of directive terms and correction-shaped carrier
+sentences: the signal fired on 35 of 35 at this layer and 0 of 35
+reached the correction branch.
 """
 from __future__ import annotations
 
@@ -89,14 +99,6 @@ _PRIOR_REF_TERMS: tuple[str, ...] = (
     "we decided",
 )
 
-_DIRECTIVE_TERMS: tuple[str, ...] = (
-    "must",
-    "require",
-    "mandatory",
-    "hard cap",
-    "hard rule",
-)
-
 CORRECTION_SIGNAL_THRESHOLD: int = 2
 _CONFIDENCE_PER_SIGNAL: float = 0.3
 
@@ -119,11 +121,11 @@ class CorrectionResult:
 
 
 def detect_correction(text: str) -> CorrectionResult:
-    """Score `text` against the seven correction-signal categories.
+    """Score `text` against the six correction-signal categories.
 
     Categories (in evaluation order, which is also the output order):
         imperative, always_never, negation, emphasis, prior_ref,
-        declarative, directive
+        declarative
 
     Pure function: no I/O, no side effects, deterministic for any input.
     """
@@ -151,9 +153,6 @@ def detect_correction(text: str) -> CorrectionResult:
 
     if _DECLARATIVE_RE.search(text_lower):
         signals.append("declarative")
-
-    if any(term in text_lower for term in _DIRECTIVE_TERMS):
-        signals.append("directive")
 
     is_correction: bool = len(signals) >= CORRECTION_SIGNAL_THRESHOLD
     confidence: float = min(1.0, len(signals) * _CONFIDENCE_PER_SIGNAL)

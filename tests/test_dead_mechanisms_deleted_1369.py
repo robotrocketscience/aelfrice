@@ -118,6 +118,40 @@ def test_no_module_defines_a_retrieval_query_cache() -> None:
     assert offenders == {}
 
 
+def test_correction_detector_has_no_directive_category() -> None:
+    """#1369 §3: `correction._DIRECTIVE_TERMS` is gone and stays gone.
+
+    Unreachable by construction, not merely uncalled: the term list is a
+    strict subset of `classification_core._REQUIREMENT_KEYWORDS`, which
+    is tested against the same lowercased text one branch earlier and
+    returns, so `detect_correction` never sees a text that would fire it.
+
+    The subset relation is asserted rather than assumed — it is the whole
+    argument, and it would silently stop holding if someone added a term
+    to `_REQUIREMENT_KEYWORDS`' would-be sibling without checking. Since
+    the sibling no longer exists, what is checkable is that no six-name
+    signal list grew a seventh entry back.
+    """
+    from aelfrice import correction
+
+    assert not hasattr(correction, "_DIRECTIVE_TERMS")
+
+    # `signals` is built in evaluation order; the categories are the
+    # module's contract with `classification_core`.
+    result = correction.detect_correction(
+        "always do not commit secrets! we already agreed the rule is the rule"
+    )
+    assert "directive" not in result.signals
+    assert set(result.signals) <= {
+        "imperative",
+        "always_never",
+        "negation",
+        "emphasis",
+        "prior_ref",
+        "declarative",
+    }
+
+
 def test_stored_posteriors_are_never_moved_by_age() -> None:
     """The behavioural half: `scoring` exposes no age-taking function.
 
