@@ -370,14 +370,37 @@ def tokenize_stemmed(text: str) -> list[str]:
     lowercase, then `_stem` — which carries SQLite's own length guards.
     Order is load-bearing at every step; see each helper for why.
 
+    **The lowercase stage is `str.lower()`, and that is not unicode61's
+    fold** (#1389). SQLite's table is frozen; Python's tracks Unicode.
+    They disagree on **403 codepoints** in U+0020..U+2FFFF, re-derived by
+    `benchmarks/bm25_fold_codepoint_sweep.py`: final sigma (SQLite maps
+    `ς` to `σ`, Python does not), long s, the Greek symbol variants, and
+    the uppercase letters added after SQLite's table was fixed — 86 of
+    them Cherokee. So `ο λόγος` keys as `λόγοσ` in `beliefs_fts` and
+    `λόγος` here, and the two lanes disagree on Greek text. Named at the
+    stage that causes it, the way the word-class residual is named at
+    `_FTS5_TOKEN_PATTERN`. **Changing the case fold is a separate,
+    measured decision and is deliberately not made here** — it would
+    move every term in the index.
+
     Parity is close but not exact, and the residual is measured rather
     than asserted: 232 of 44,658 live beliefs (0.52%) still tokenise
     differently, against 19,915 (44.59%) before #1348.
     `benchmarks/bm25_fts5_divergence.py` re-derives both numbers against
-    a real FTS5 table. What is left is SQLite's Porter step-2 `-logi ->
-    -log` and `-bli -> -ble` rules, which snowballstemmer's original
-    Porter does not implement (`methodologi` vs `methodolog`). Switching
-    to snowballstemmer's `english` (Porter2) makes it 11x worse.
+    a real FTS5 table. Two stemmer rules account for most of it: SQLite's
+    Porter step-2 `-logi -> -log` and `-bli -> -ble`, which
+    snowballstemmer's original Porter does not implement (`methodologi`
+    vs `methodolog`). **They do not account for all of it.** SQLite
+    implements original Porter's step-1b undoubling as *"\\*d and not
+    (\\*L or \\*S or \\*Z)"*, while snowballstemmer restricts it to the
+    explicit pairs `bb dd ff gg mm nn pp rr tt` — so every *other* double
+    consonant survives here and is undoubled there: `specced` indexes as
+    `spec` in `beliefs_fts` and `specc` in this lane, `trekked` as `trek`
+    against `trekk`. That was 11 of the 232 residual documents when
+    #1389 was filed, but the class is every double consonant outside
+    those nine pairs, not a fixed count — anyone re-deriving the residual
+    who searches only for step-2 rules will find these unexplained.
+    Switching to snowballstemmer's `english` (Porter2) makes it 11x worse.
 
     Non-BM25 callers (relationship_detector, scoring helpers, etc.)
     that depend on word-form-preserving tokens should keep using
