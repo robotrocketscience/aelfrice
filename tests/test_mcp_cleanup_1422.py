@@ -270,3 +270,190 @@ def test_the_extra_is_advised_never_reinstalled(tmp_path: Path) -> None:
     )
     assert result.extra_installed is True
     assert any("uv tool install --force aelfrice" in n for n in result.notes)
+
+
+# --- locally-scoped registrations, backup collisions, re-arming ----------
+#
+# Four defects found in review. Each is a user-machine failure on a
+# destructive one-shot path, so each gets a test that fails without its fix.
+
+
+def test_a_locally_scoped_registration_is_found_and_removable(
+    tmp_path: Path,
+) -> None:
+    """A host stores a *local*-scope server nested, not at the top level.
+
+    Scanning only `mcpServers` reports "nothing to clean up" on that shape
+    and then latches the sentinel, so the user is never told again. Both
+    halves are asserted: finding it, and removing it from the right map —
+    a scan that found it without carrying the container could not remove
+    it.
+    """
+    config = _write(tmp_path / "cfg.json", {
+        "mcpServers": {},
+        "projects": {
+            "/home/u/proj": {
+                "mcpServers": {"aelfrice": {"command": "aelf", "args": ["mcp"]}},
+            },
+        },
+    })
+
+    found, _notes = find_registrations([config])
+    assert [r.key for r in found] == ["aelfrice"]
+    assert found[0].project == "/home/u/proj"
+    assert found[0].location() == "projects./home/u/proj.mcpServers.aelfrice"
+
+    changed, _message = remove_registration(found[0], now=_NOW)
+    assert changed is True
+    document = json.loads(config.read_text(encoding="utf-8"))
+    assert "mcpServers" not in document["projects"]["/home/u/proj"]
+    # The top-level empty map is untouched: this removed one entry, not
+    # everything that looked like one.
+    assert document["mcpServers"] == {}
+
+
+def test_both_scopes_are_scanned_in_one_pass(tmp_path: Path) -> None:
+    """A config may carry a global and a local registration at once.
+
+    Asserted so a fix that merely *switched* which map is read would fail
+    here rather than trading one blind spot for another.
+    """
+    config = _write(tmp_path / "cfg.json", {
+        "mcpServers": {"aelfrice": {"command": "aelf", "args": ["mcp"]}},
+        "projects": {
+            "/p": {"mcpServers": {"aelf-local": {"command": "aelf", "args": ["mcp"]}}},
+        },
+    })
+    found, _notes = find_registrations([config])
+    assert sorted(r.location() for r in found) == [
+        "mcpServers.aelfrice",
+        "projects./p.mcpServers.aelf-local",
+    ]
+
+
+def test_two_removals_from_one_file_keep_both_backups(tmp_path: Path) -> None:
+    """The first backup must survive the second removal.
+
+    The stamp is second-resolution, so two removals in one run resolved to
+    the same filename and the second wrote *already-edited* content over
+    it — destroying the only copy of the pre-edit config while the message
+    still named it as the undo path. `now` is pinned here precisely so the
+    collision is forced rather than left to timing.
+    """
+    original = {"mcpServers": {
+        "aelfrice": {"command": "aelf", "args": ["mcp"]},
+        "aelfrice-src": {
+            "command": "uv",
+            "args": ["run", "--project", "/abs", "aelf", "mcp"],
+        },
+        "other": {"command": "somethingelse", "args": []},
+    }}
+    config = _write(tmp_path / "cfg.json", original)
+
+    found, _notes = find_registrations([config])
+    assert len(found) == 2
+    for registration in found:
+        changed, _message = remove_registration(registration, now=_NOW)
+        assert changed is True
+
+    backups = sorted(tmp_path.glob("cfg.json.aelfrice-*.bak"))
+    assert len(backups) == 2, "the second removal overwrote the first backup"
+    # One backup must hold the untouched original — that is the whole
+    # point of naming it as the undo path.
+    restored = [
+        sorted(json.loads(b.read_text(encoding="utf-8"))["mcpServers"])
+        for b in backups
+    ]
+    assert sorted(original["mcpServers"]) in restored
+    assert sorted(json.loads(config.read_text(encoding="utf-8"))["mcpServers"]) == [
+        "other"
+    ]
+
+
+def test_the_same_file_reached_by_two_candidate_paths_is_scanned_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`cwd` is the user's home often enough to matter.
+
+    Scanning one file twice duplicated every note and made a successful
+    removal report failure on the second pass.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.chdir(tmp_path)
+    _write(tmp_path / ".mcp.json", {
+        "mcpServers": {"aelfrice": {"command": "aelf", "args": ["mcp"]}},
+    })
+
+    found, _notes = find_registrations()
+    assert len(found) == 1, "the same file was scanned twice"
+
+
+def test_an_unreadable_config_re_arms_rather_than_latching(
+    tmp_path: Path,
+) -> None:
+    """A scan that could not read its input has not proved anything.
+
+    Latching the sentinel on it suppresses the one-shot report for good on
+    exactly the machines that still need it — and the module docstring
+    already promises the opposite.
+    """
+    broken = tmp_path / "broken.json"
+    broken.write_text("{ not json,", encoding="utf-8")
+    sentinel = tmp_path / "sentinel"
+
+    result = maybe_clean_up_mcp(
+        config_paths=[broken],
+        sentinel_path=sentinel,
+        receipt_path=tmp_path / "absent.toml",
+    )
+    assert result.ran is True
+    assert sentinel.exists() is False, "an incomplete scan latched the sentinel"
+
+    # The control: a clean scan still latches, or this test would pass
+    # against a build that never wrote the sentinel at all.
+    clean = _write(tmp_path / "clean.json", {"mcpServers": {}})
+    result = maybe_clean_up_mcp(
+        config_paths=[clean],
+        sentinel_path=sentinel,
+        receipt_path=tmp_path / "absent.toml",
+    )
+    assert sentinel.exists() is True
+
+
+def test_a_windows_launcher_is_recognised(tmp_path: Path) -> None:
+    """`aelf.exe` is the same command, and saying otherwise is a lie.
+
+    Unrecognised plus a key named `aelfrice` makes the routine print that
+    aelfrice did not publish that command, about one it did.
+    """
+    assert is_aelfrice_mcp_entry(r"C:\Users\u\.local\bin\aelf.exe", ["mcp"]) is True
+    assert is_aelfrice_mcp_entry("aelf.exe", ["mcp"]) is True
+    # Still needs the verb: the suffix strip must not widen the match.
+    assert is_aelfrice_mcp_entry("aelf.exe", ["status"]) is False
+
+
+def test_the_with_fastmcp_install_shape_is_detected(tmp_path: Path) -> None:
+    """`uv tool install --with fastmcp aelfrice` was published too.
+
+    uv records it as a sibling requirement, not as an extra, so checking
+    only `extras` reported "nothing installed" to that whole population
+    while the dead dependency sat on disk — and the CHANGELOG promises the
+    pass reports it.
+    """
+    receipt = tmp_path / "uv-receipt.toml"
+    receipt.write_text(
+        'requirements = [{ name = "aelfrice" }, { name = "fastmcp" }]\n'
+        "[tool]\n"
+        'requirements = [{ name = "aelfrice" }, { name = "fastmcp" }]\n',
+        encoding="utf-8",
+    )
+    assert mcp_extra_is_installed(receipt) is True
+
+    # The control: a plain install must still read as clean, or the check
+    # would fire for everyone.
+    plain = tmp_path / "plain.toml"
+    plain.write_text(
+        "[tool]\nrequirements = [{ name = \"aelfrice\" }]\n", encoding="utf-8",
+    )
+    assert mcp_extra_is_installed(plain) is False
