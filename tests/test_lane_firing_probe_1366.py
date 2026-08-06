@@ -905,7 +905,7 @@ def test_render_surfaces_the_truncation_control(
     shown = probe.render(with_control)
     hidden = probe.render(without)
 
-    assert "truncat" in shown.lower(), (
+    assert "truncation control" in shown.lower(), (
         "render() dropped the truncation control from its output"
     )
     assert len(shown) > len(hidden), (
