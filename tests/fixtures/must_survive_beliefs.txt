@@ -1,0 +1,44 @@
+# Must-survive regression corpus (#1371 / #1159 AC4).
+#
+# Every line below is a durable belief that the write-side admission
+# filter used to delete. `is_transcript_noise` returned True for all of
+# them before #1371: the ack regex `^(Yes|No|Standing by|Ready|Nothing|
+# Polling)( .{0,40})?\.?$` swallowed any clause opening on one of six
+# words, and `_TRANSCRIPT_SHELL_PREFIXES` was matched with a bare
+# `startswith`, so any sentence beginning with a command name went too.
+#
+# Rules for this file:
+#   * one statement per line; blank lines and `#` comments ignored
+#   * a line here is an assertion that `is_transcript_noise` returns
+#     False for it — nothing else
+#   * add a row whenever a real statement is found to have been dropped;
+#     never delete a row to make a filter change pass
+#
+# The complementary corpus — utterances that must STILL be filtered —
+# lives in tests/test_noise_filter.py, so a narrowing change cannot
+# quietly gut the categories.
+
+# --- ack keywords in belief position (the six-word prefix set) --------
+No vector embeddings, ever.
+No tests exist for the temporal spine.
+No we should use uv instead of pip.
+Nothing in retrieval may call the network.
+Ready means the gate passed.
+Yes is not a valid value for the lock column.
+Standing by is what the monitor prints when idle.
+Polling the API costs one request per turn.
+
+# --- shell command names in belief position --------------------------
+git history rewrite is denied by the ruleset.
+pytest is the only test runner we support.
+gh api is the only way to delete refs.
+python 3.13 is the minimum supported version.
+uv run is the required invocation for every script.
+cd /tmp is not a portable assumption on Windows.
+
+# --- guard rows: longer prose that escaped the old regexes only by
+# --- exceeding their 40-char tail budget. Not red before #1371; here so
+# --- a future widening of that budget goes red instead of shipping.
+Nothing in the hook path may import the numeric stack.
+No belief is ever hard-deleted by the review flow.
+Ready state for the merge train means the bot check is green.

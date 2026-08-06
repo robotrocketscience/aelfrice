@@ -144,10 +144,14 @@ _VALID_DISABLE_TOKENS: Final[frozenset[str]] = frozenset({
 # tests/test_noise_filter.py.
 #
 # 1. Shell-command shape: starts with a recognised shell prefix at the
-#    leftmost position (case-sensitive). Covers `cd /`, `git `, `gh `,
+#    leftmost position (case-sensitive) **and** the rest of the line
+#    parses as argv rather than as prose. Covers `cd /`, `git `, `gh `,
 #    `uv run`, `pytest`, `python `. The leading space in `git ` and
 #    `gh ` is intentional — it distinguishes the command from prose that
 #    starts with a word that merely contains the token (e.g. "ghosts").
+#    The argv check is the #1371 narrowing: a bare `startswith` deleted
+#    real policy statements such as "pytest is the only test runner we
+#    support." and "git history rewrite is denied by the ruleset."
 #
 # 2. Tool-call rendering glyph: ⏺ (U+23FA). Emitted at the start
 #    of tool-call narration lines by some transcript surfaces.
@@ -162,10 +166,13 @@ _VALID_DISABLE_TOKENS: Final[frozenset[str]] = frozenset({
 #    this pattern (two words); it is caught by category 5.
 #
 # 5. Agent ack emits: short one-line acknowledgements that convey no
-#    project-specific knowledge. Pattern allows the bare keyword or the
-#    keyword followed by up to 40 characters. Examples: "Yes.",
-#    "Standing by.", "Polling for results.", "Nothing to report.",
-#    "Ready when you are.", "No changes needed."
+#    project-specific knowledge. The bare keyword ("Yes.", "Standing
+#    by.") always qualifies; a trailing tail qualifies only when it is
+#    a short verbless adjunct ("Nothing to report.", "Ready when you
+#    are.", "Polling for results."). The #1371 narrowing replaced a
+#    `( .{0,40})?` wildcard tail that swallowed any clause opening on
+#    one of six words — including "No vector embeddings, ever." and
+#    "Nothing in retrieval may call the network."
 
 _TRANSCRIPT_SHELL_PREFIXES: Final[tuple[str, ...]] = (
     "cd /",
@@ -175,6 +182,33 @@ _TRANSCRIPT_SHELL_PREFIXES: Final[tuple[str, ...]] = (
     "pytest",
     "python ",
 )
+
+# #1371: tokens that never appear as a bare argv word but are the
+# backbone of an English clause. A shell-prefixed line containing one of
+# these standalone is prose *about* the command, not the command.
+# Two closed classes: finite auxiliaries/copulas, and
+# determiners/pronouns. Both are closed-class, so the set cannot drift.
+_COMMAND_DISQUALIFYING_TOKENS: Final[frozenset[str]] = frozenset({
+    # finite auxiliaries and copulas
+    "am", "is", "are", "was", "were", "be", "been", "being",
+    "has", "have", "had", "do", "does", "did",
+    "can", "could", "may", "might", "must", "shall", "should",
+    "will", "would",
+    # determiners and pronouns
+    "the", "a", "an", "this", "that", "these", "those",
+    "i", "we", "you", "they", "it", "its", "our", "their",
+})
+
+# #1371: sentence-final punctuation. A command line does not end in one
+# of these — except when the final argv token is the cwd path `.` / `..`
+# (`git add .`), which is why the last token is checked separately.
+_SENTENCE_FINAL_PUNCT: Final[str] = ".!?;:,"
+_ARGV_DOT_TOKENS: Final[frozenset[str]] = frozenset({".", ".."})
+
+# #1371: punctuation stripped from a token's edges before it is compared
+# against a closed-class word set. Keeps `"is:open"` (a search qualifier)
+# distinct from the bare copula `is`.
+_TOKEN_EDGE_PUNCT: Final[str] = "\"'`.,;:!?()[]{}"
 
 # U+23FA — tool-call rendering glyph emitted by some transcript surfaces.
 _TRANSCRIPT_GLYPH_PREFIX: Final[str] = "⏺"
@@ -209,10 +243,54 @@ _TRANSCRIPT_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
     r"^[A-Z][a-z]+ing\.$"
 )
 
-# Agent ack emit: bare keyword or keyword + optional short trailing text.
-_TRANSCRIPT_ACK_RE: Final[re.Pattern[str]] = re.compile(
-    r"^(Yes|No|Standing by|Ready|Nothing|Polling)( .{0,40})?\.?$"
-)
+# Agent ack emit (#1371). The keyword set is unchanged; what changed is
+# the tail. A bare keyword is always an ack. A keyword plus a tail is an
+# ack only when the tail is a short *verbless adjunct*:
+#
+#   * the whole utterance is at most `_ACK_MAX_WORDS` words,
+#   * the first tail word is one of a closed set of adjunct leads
+#     (`to report`, `for results`, `when you are`), and
+#   * no finite auxiliary appears outside a subordinate clause — that
+#     is what separates "Ready when you are." (ack) from "Nothing in
+#     retrieval may call the network." (belief).
+#
+# The three conditions are independent; each one alone rescues part of
+# the must-survive corpus, and every one of them is mutation-checked in
+# tests/test_noise_filter_must_survive.py.
+_ACK_KEYWORDS_SINGLE: Final[frozenset[str]] = frozenset({
+    "Yes", "No", "Ready", "Nothing", "Polling",
+})
+_ACK_KEYWORD_PAIR: Final[tuple[str, str]] = ("Standing", "by")
+
+# Closed set of adjunct leads an ack tail may open with. Deliberately
+# excludes bare locative prepositions ("in", "of", "at", "with"): those
+# open belief clauses far more often than acks ("Nothing in retrieval
+# calls the network.").
+_ACK_TAIL_LEAD_WORDS: Final[frozenset[str]] = frozenset({
+    "after", "again", "as", "before", "else", "for", "further", "here",
+    "if", "now", "on", "once", "so", "then", "to", "until", "when",
+    "whenever", "while", "yet",
+})
+
+# Subordinators. A finite auxiliary *after* one of these sits in a
+# subordinate clause and does not make the utterance an assertion.
+_ACK_SUBORDINATORS: Final[frozenset[str]] = frozenset({
+    "after", "as", "before", "if", "once", "since", "than", "that",
+    "unless", "until", "when", "whenever", "while",
+})
+
+# Finite auxiliaries and copulas. One of these in main-clause position
+# means the utterance predicates something — it is a belief, not an ack.
+_ACK_FINITE_VERBS: Final[frozenset[str]] = frozenset({
+    "am", "is", "are", "was", "were", "be", "been", "being",
+    "has", "have", "had", "do", "does", "did",
+    "can", "could", "may", "might", "must", "shall", "should",
+    "will", "would",
+})
+
+# Longest ack observed in the wild is "Standing by for your direction."
+# (five words). Six is one word of headroom.
+_ACK_MAX_WORDS: Final[int] = 6
 
 # #1081: an orphan section header — a short capitalised phrase terminated
 # by a colon with nothing after it ("Recommendation:", "Two paths:",
@@ -529,14 +607,100 @@ def is_license_boilerplate(
     return any(p.search(text) is not None for p in _LICENSE_PATTERNS)
 
 
+def _strip_edge_punct(token: str) -> str:
+    """Strip quoting/sentence punctuation from both ends of `token`."""
+    return token.strip(_TOKEN_EDGE_PUNCT)
+
+
+def is_shell_command(sentence: str) -> bool:
+    """True when `sentence` is an invoked shell command, not prose.
+
+    Two conditions on top of the leftmost-prefix match (#1371):
+
+    1. **No sentence-final punctuation.** A command does not end in
+       `.!?;:,` — the sole exception is a trailing `.` / `..` argv token
+       (`git add .`), which is checked as a whole token.
+    2. **No clause backbone.** No standalone token may be a finite
+       auxiliary/copula or a determiner/pronoun
+       (`_COMMAND_DISQUALIFYING_TOKENS`). Both are closed word classes
+       that argv never contains bare, and both are unavoidable in the
+       prose the old bare `startswith` was deleting.
+
+    Deliberately conservative in the *other* direction too: a real
+    command whose quoted argument reads like prose (`git commit -m "fix
+    the parser"`) now survives as a candidate belief. That is the
+    intended trade — a stored command echo is recoverable noise; a
+    deleted policy statement is not.
+    """
+    if not any(sentence.startswith(p) for p in _TRANSCRIPT_SHELL_PREFIXES):
+        return False
+    line = sentence.strip()
+    tokens = line.split()
+    if not tokens:
+        return False
+    if line[-1] in _SENTENCE_FINAL_PUNCT and tokens[-1] not in _ARGV_DOT_TOKENS:
+        return False
+    for token in tokens:
+        if _strip_edge_punct(token).lower() in _COMMAND_DISQUALIFYING_TOKENS:
+            return False
+    return True
+
+
+def is_agent_ack(sentence: str) -> bool:
+    """True when `sentence` is a contentless agent acknowledgement.
+
+    A bare keyword ("Yes.", "No.", "Standing by.", "Ready", "Nothing",
+    "Polling") always qualifies. A keyword plus a tail qualifies only
+    when all three hold (#1371):
+
+    * the whole utterance is at most `_ACK_MAX_WORDS` words;
+    * the tail's first word is in `_ACK_TAIL_LEAD_WORDS`; and
+    * no `_ACK_FINITE_VERBS` token appears before the first
+      `_ACK_SUBORDINATORS` token — a main-clause auxiliary means the
+      utterance predicates something.
+
+    Keyword matching is case-sensitive (so "polling." is not an ack, per
+    the pre-existing contract); tail matching is case-insensitive.
+    """
+    core = sentence.strip()
+    if core.endswith("."):
+        core = core[:-1].rstrip()
+    tokens = core.split()
+    if not tokens or len(tokens) > _ACK_MAX_WORDS:
+        return False
+    if tokens[0] == _ACK_KEYWORD_PAIR[0] and len(tokens) >= 2 and (
+        tokens[1] == _ACK_KEYWORD_PAIR[1]
+    ):
+        tail = tokens[2:]
+    elif tokens[0] in _ACK_KEYWORDS_SINGLE:
+        tail = tokens[1:]
+    else:
+        return False
+    if not tail:
+        return True
+    lowered = [_strip_edge_punct(t).lower() for t in tail]
+    if lowered[0] not in _ACK_TAIL_LEAD_WORDS:
+        return False
+    first_subordinator = next(
+        (i for i, t in enumerate(lowered) if t in _ACK_SUBORDINATORS),
+        None,
+    )
+    for i, token in enumerate(lowered):
+        if token not in _ACK_FINITE_VERBS:
+            continue
+        if first_subordinator is None or i < first_subordinator:
+            return False
+    return True
+
+
 def is_transcript_noise(sentence: str) -> bool:
     """Return True if `sentence` is transcript scaffolding, not a belief.
 
     Checks five categories in order; first match returns True:
 
     1. **Shell-command shape** — starts with a recognised shell prefix
-       (`cd /`, `git `, `gh `, `uv run`, `pytest`, `python `).
-       Match is case-sensitive and position-anchored at index 0.
+       (`cd /`, `git `, `gh `, `uv run`, `pytest`, `python `) *and*
+       parses as argv rather than prose. See `is_shell_command`.
     2. **Tool-call rendering glyph** — starts with ⏺ (U+23FA).
     3. **Pseudo-XML structural tags** — starts with `<worktree`,
        `<output-file`, `<task-`, `<summary>Background`,
@@ -546,12 +710,17 @@ def is_transcript_noise(sentence: str) -> bool:
        harness layout fragments (#1025).
     4. **Single-word progress emit** — matches `^[A-Z][a-z]+ing\\.$`
        (a lone capitalised gerund and a full stop, nothing else).
-    5. **Agent ack emit** — matches
-       `^(Yes|No|Standing by|Ready|Nothing|Polling)( .{0,40})?\\.?$`;
-       covers bare keywords and short trailing phrases up to 40 chars.
+    5. **Agent ack emit** — a bare ack keyword, or a keyword plus a
+       short verbless adjunct. See `is_agent_ack`.
 
     All patterns are case-sensitive as written. Empty or whitespace-only
     strings return False (they are handled upstream by `is_noise`).
+
+    Categories 1 and 5 were narrowed in #1371: both used to fire on any
+    sentence that merely *started* with the token, which deleted durable
+    beliefs including this project's own policy statements. The
+    statements that must survive are pinned in
+    `tests/test_noise_filter_must_survive.py`.
 
     Note: orphan section headers ("Recommendation:") and shell-output
     echoes ("$ …") are handled on the ingest path by
@@ -564,9 +733,8 @@ def is_transcript_noise(sentence: str) -> bool:
         return False
 
     # Category 1: shell-command shape
-    for prefix in _TRANSCRIPT_SHELL_PREFIXES:
-        if sentence.startswith(prefix):
-            return True
+    if is_shell_command(sentence):
+        return True
 
     # Category 2: tool-call rendering glyph (U+23FA)
     if sentence.startswith(_TRANSCRIPT_GLYPH_PREFIX):
@@ -589,7 +757,7 @@ def is_transcript_noise(sentence: str) -> bool:
         return True
 
     # Category 5: agent ack emit
-    if _TRANSCRIPT_ACK_RE.match(sentence) is not None:
+    if is_agent_ack(sentence):
         return True
 
     return False
