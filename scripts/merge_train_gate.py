@@ -7,10 +7,23 @@ failure message said `required check(s) failed` — naming a set the workflow
 never read. PR #1394 sat blocked behind a verified-false SQL-injection finding
 because of it.
 
-This module gates on the branch's **actual** required contexts, resolved at run
-time from `GET /repos/{owner}/{repo}/rules/branches/{branch}` so the workflow
-cannot drift from the ruleset. Advisory results stay visible on the PR; they
-stop deciding whether main moves.
+This module keeps gating on **every** check-run and excludes advisory bots by
+name. Gating on the *required set only* was tried and rejected in review: the
+required set is 5 contexts while a PR carries ~25 check-runs, so required-only
+would demote **19** real gates — including `migration-policy-check`, which
+exists because a migration once collided the `edges` primary key and left
+stores unopenable forever, and `release-docs-check`, which carries the
+CHANGELOG-duplicate detector. Promoting them into the required set is not an
+option either: a path-filtered check that does not run on a given PR would sit
+permanently pending and brick it, which is the documented reason the
+replay-soak gate was never made required.
+
+So this trades the narrow fix for the narrow problem. One name comes out of the
+gate; nothing else is demoted.
+
+The required set is still resolved at run time, but only to **label** which
+failures were required — the message misattributing an advisory bot as required
+was the second half of #1397.
 
 It lives here rather than in the workflow because a gate that cannot be tested
 is how the original defect survived. The decision is a pure function of
@@ -51,6 +64,18 @@ from typing import Any
 # The train's own jobs. Waiting on them would deadlock: they are the
 # thing doing the waiting.
 SELF_NAMES: frozenset[str] = frozenset({"Attempt merge-train FF", "merge"})
+
+# Advisory bots: reviewers whose opinion is worth reading and must not decide
+# whether `main` moves. This is a literal list because no repo API distinguishes
+# "advisory" from "gating" — the ruleset only knows *required*, and required is
+# the wrong axis (see the module docstring).
+#
+# A name that stops matching is the failure mode, so the gate reports which
+# entries matched nothing on this SHA rather than letting a rename silently
+# restore blocking. `CodeRabbit` posts a commit *status* rather than a
+# check-run, so it never reached this filter and its entry is inert today —
+# kept because it costs nothing and a bot can change surface.
+ADVISORY_NAMES: frozenset[str] = frozenset({"Sourcery review", "CodeRabbit"})
 
 FAILING_CONCLUSIONS: frozenset[str] = frozenset(
     {"failure", "timed_out", "action_required"}
@@ -99,36 +124,44 @@ def latest_per_name(check_runs: list[dict[str, Any]]) -> dict[str, dict[str, Any
 def evaluate(
     check_runs: list[dict[str, Any]], required: set[str],
 ) -> dict[str, list[str]]:
-    """Classify the required contexts. Advisory results are ignored.
+    """Classify every check-run. Advisory names are excluded from the gate.
 
-    `missing` is required contexts with no check-run on the SHA at all. They
-    are held separately from `pending` because they mean something different:
-    pending is "reported, not finished", missing is "never reported", and only
-    the second can sit there forever. The caller decides which is fatal.
+    `failing` and `pending` cover everything that is not this train's own job
+    and not advisory — so a red `migration-policy-check` still blocks, exactly
+    as before. `required` is used only to annotate which of the failures were
+    required contexts; it never narrows the gate.
+
+    `missing` is a required context with no check-run on the SHA at all, held
+    separately from `pending` because they mean different things: pending is
+    "reported, not finished", missing is "never reported", and only the second
+    can sit forever. It is reported, not gated on, since a required context
+    that never posts is already fatal at push time.
     """
     latest = latest_per_name(check_runs)
-    failing: list[str] = []
-    pending: list[str] = []
-    missing: list[str] = []
-    for name in sorted(required):
-        run = latest.get(name)
-        if run is None:
-            missing.append(name)
-        elif run.get("status") in PENDING_STATUSES:
-            pending.append(name)
-        elif run.get("conclusion") in FAILING_CONCLUSIONS:
-            failing.append(name)
+    gating = {n: r for n, r in latest.items() if n not in ADVISORY_NAMES}
+
+    failing = sorted(
+        n for n, r in gating.items()
+        if r.get("conclusion") in FAILING_CONCLUSIONS
+    )
+    pending = sorted(
+        n for n, r in gating.items() if r.get("status") in PENDING_STATUSES
+    )
     advisory_failing = sorted(
-        name
-        for name, run in latest.items()
-        if name not in required and run.get("conclusion") in FAILING_CONCLUSIONS
+        n for n, r in latest.items()
+        if n in ADVISORY_NAMES and r.get("conclusion") in FAILING_CONCLUSIONS
     )
     return {
         "required": sorted(required),
         "failing": failing,
+        "failing_required": sorted(n for n in failing if n in required),
+        "failing_not_required": sorted(n for n in failing if n not in required),
         "pending": pending,
-        "missing": missing,
+        "missing": sorted(n for n in required if n not in latest),
         "advisory_failing": advisory_failing,
+        # Advisory entries that matched nothing on this SHA. A renamed bot
+        # would silently start blocking again, so the run says so out loud.
+        "advisory_unmatched": sorted(ADVISORY_NAMES - set(latest)),
     }
 
 
@@ -149,18 +182,18 @@ def main(argv: list[str] | None = None) -> int:
         print("merge-train-gate: unreadable branch-rules payload", file=sys.stderr)
         return 2
 
+    # An unresolvable required set no longer narrows anything — the gate
+    # covers every non-advisory check either way — so it degrades the
+    # *message* rather than the decision. That is the fail-closed direction:
+    # unknown means gate on more, never on less.
     required = required_contexts(rules)
     if not required:
-        # Fail closed. An empty set here is indistinguishable from "the
-        # ruleset moved" or "the token lost read access", and treating it
-        # as "nothing is required" would merge anything.
         print(
             "merge-train-gate: resolved zero required contexts from the "
-            "branch rules — refusing to decide. This is a fail-closed abort, "
-            "not a green light.",
+            "branch rules; gating is unaffected (every non-advisory check "
+            "still gates), but failures cannot be labelled required.",
             file=sys.stderr,
         )
-        return 2
 
     print(json.dumps(evaluate(check_runs, required), indent=2))
     return 0

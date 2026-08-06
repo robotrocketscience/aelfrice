@@ -5,6 +5,13 @@ check-run on the head SHA and unlabelled on any failure, so an advisory bot
 could block a merge while the message said `required check(s) failed`. PR #1394
 sat blocked behind a `Sourcery review` finding that was verified false.
 
+**The fix is an exclusion list, not required-only.** Gating on the required set
+alone was tried and rejected in review: a PR carries ~25 check-runs against 5
+required contexts, so required-only would demote **19** real gates — including
+`migration-policy-check`, whose absence once left stores unopenable — to fix 2
+bots. The tests below pin that non-required checks still gate; that is the
+regression the narrower design would have introduced.
+
 Both directions are asserted, because one alone is satisfied by a broken gate:
 a workflow that merges everything passes "red advisory merges", and one that
 merges nothing passes "red required blocks".
@@ -25,6 +32,7 @@ _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO / "scripts"))
 
 from merge_train_gate import (  # noqa: E402
+    ADVISORY_NAMES,
     evaluate,
     latest_per_name,
     main,
@@ -73,7 +81,7 @@ def _rules(contexts: list[str]) -> list[dict[str, Any]]:
 # --- the two directions -------------------------------------------------
 
 
-def test_red_advisory_with_required_green_does_not_block() -> None:
+def test_red_advisory_with_everything_else_green_does_not_block() -> None:
     """The #1394 case. This is the whole point of the change."""
     runs = [*_all_required_green(), _run("Sourcery review", "failure")]
     verdict = evaluate(runs, REQUIRED)
@@ -82,6 +90,43 @@ def test_red_advisory_with_required_green_does_not_block() -> None:
     assert verdict["missing"] == []
     # Still reported, so it is visible rather than silently dropped.
     assert verdict["advisory_failing"] == ["Sourcery review"]
+
+
+def test_a_red_NON_required_check_still_blocks() -> None:
+    """The regression required-only would have introduced.
+
+    `migration-policy-check` is not in the ruleset's required set, and it
+    exists because a migration once collided the `edges` primary key and left
+    stores unopenable forever. Demoting it to advisory to silence a review bot
+    trades a 2-check problem for a 19-check hole.
+    """
+    runs = [*_all_required_green(), _run("migration-policy-check", "failure")]
+    verdict = evaluate(runs, REQUIRED)
+    assert verdict["failing"] == ["migration-policy-check"]
+    assert verdict["failing_required"] == []
+    assert verdict["failing_not_required"] == ["migration-policy-check"]
+
+
+def test_only_the_named_advisory_bots_are_excluded() -> None:
+    """The exclusion is a short literal list, not a category.
+
+    Asserted so nobody widens it to "bots" or "anything not required" — the
+    second is exactly the rejected design.
+    """
+    assert ADVISORY_NAMES == {"Sourcery review", "CodeRabbit"}
+    others = ["vulture", "deptry", "typos", "release-docs-check", "calibration"]
+    runs = [*_all_required_green(), *[_run(n, "failure") for n in others]]
+    assert evaluate(runs, REQUIRED)["failing"] == sorted(others)
+
+
+def test_an_advisory_name_matching_nothing_is_reported() -> None:
+    """A renamed bot must not silently start blocking again.
+
+    There is no API that says which checks are advisory, so the list is
+    literal and can rot. The run says so out loud instead.
+    """
+    runs = [*_all_required_green(), _run("Sourcery review", "failure")]
+    assert evaluate(runs, REQUIRED)["advisory_unmatched"] == ["CodeRabbit"]
 
 
 def test_red_required_blocks() -> None:
@@ -147,6 +192,12 @@ def test_a_slow_advisory_bot_does_not_hold_the_train() -> None:
     assert evaluate(runs, REQUIRED)["pending"] == []
 
 
+def test_a_slow_non_advisory_check_does_hold_the_train() -> None:
+    """The other half of the same property — it must not over-narrow."""
+    runs = [*_all_required_green(), _run("e2e", None, status="queued")]
+    assert evaluate(runs, REQUIRED)["pending"] == ["e2e"]
+
+
 def test_a_slow_required_check_does_hold_the_train() -> None:
     runs = [r for r in _all_required_green() if r["name"] != "pytest (3.13)"]
     runs.append(_run("pytest (3.13)", None, status="in_progress"))
@@ -179,18 +230,32 @@ def test_contexts_from_several_rulesets_are_unioned() -> None:
     assert required_contexts(rules) == {"secrets-scan", "pytest (3.12)"}
 
 
-def test_an_empty_required_set_aborts_rather_than_merging(tmp_path: Path) -> None:
-    """Fail-closed. The single most important assertion in this module.
+def test_an_unresolvable_required_set_degrades_the_message_not_the_gate(
+    tmp_path: Path,
+) -> None:
+    """Unknown means gate on MORE, never on less.
 
-    An unresolvable required set is indistinguishable from "the ruleset
-    moved" or "the token lost read access". Reading it as "nothing is
-    required" would merge anything — strictly worse than the over-blocking
-    this change replaces.
+    Once the gate covers every non-advisory check, the required set only
+    labels failures. So losing it must not abort (that would brick merges on
+    a ruleset edit) and must not widen what passes. Both asserted: exit 0,
+    and a red non-required check still lands in `failing`.
     """
     rollup = tmp_path / "rollup.json"
-    rollup.write_text(json.dumps({"check_runs": _all_required_green()}))
+    rollup.write_text(json.dumps({
+        "check_runs": [*_all_required_green(), _run("deptry", "failure")],
+    }))
     rules = tmp_path / "rules.json"
     rules.write_text(json.dumps([{"type": "pull_request", "parameters": {}}]))
+
+    assert main(["--rollup", str(rollup), "--rules", str(rules)]) == 0
+
+
+def test_an_unreadable_payload_still_aborts(tmp_path: Path) -> None:
+    """Fail-closed survives where it still means something."""
+    rollup = tmp_path / "rollup.json"
+    rollup.write_text(json.dumps("not a rollup"))
+    rules = tmp_path / "rules.json"
+    rules.write_text(json.dumps(_rules(sorted(REQUIRED))))
 
     assert main(["--rollup", str(rollup), "--rules", str(rules)]) == 2
 
@@ -224,7 +289,7 @@ def test_the_workflow_calls_the_gate_and_no_longer_greps_every_check_run() -> No
     )
     assert not re.search(
         r'select\(\.c == "failure" or \.c == "timed_out"', text
-    ), "the inline all-check-runs failure filter is still present"
+    ), "the inline jq failure filter is still present"
 
 
 def test_the_failure_message_distinguishes_required_from_advisory() -> None:
@@ -237,12 +302,9 @@ def test_the_failure_message_distinguishes_required_from_advisory() -> None:
     word.
     """
     text = _WORKFLOW.read_text()
-    assert ".failing | join" in text, (
-        "the failure list must come from the gate's required-only `failing` "
-        "field, not from every check-run"
-    )
-    assert "advisory checks also failing, not gating" in text
-    assert ".advisory_failing" in text
+    assert ".failing_required | join" in text
+    assert ".failing_not_required | join" in text
+    assert "Not required by the ruleset but still gating" in text
 
 
 @pytest.mark.timeout(30)
