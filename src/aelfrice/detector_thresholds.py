@@ -70,7 +70,24 @@ scoring), and ``config_discovery`` decides *which* ``.aelfrice.toml``
 supplies the overridable values above. Both are behavioural surfaces
 rather than constants; pinning them means pinning functions, which this
 mechanism does not do. They are named here so their absence is a recorded
-decision rather than an oversight.
+decision rather than an oversight. So is ``--axes-budget`` (default 24 on
+``analyze_gaps`` / ``build_dispatch_payload``), which caps the anchor tuple
+and therefore how many ``RELATES_TO`` edges each persisted phantom writes:
+a bigger lever than several constants pinned below, but a signature default
+rather than a module constant, so it is out of reach of the ``(module,
+name)`` scheme for the same reason the inline weights are.
+
+**Pinning these is necessary, not sufficient.** Two stores with identical
+belief sets and every value below at its manifest reading can still hold
+different ``CONTRADICTS`` edges, because ``DEFAULT_MAX_EDGES_PER_BELIEF`` is
+consumed in sorted pair order and the shipped path is incremental — the cap
+is spent on whichever pairs arrived first. A full-store
+``write_semantic_edges()`` and the incremental
+``write_semantic_edges(new_belief_ids=[…])`` can therefore disagree on the
+same beliefs. So belief arrival ORDER is a third input alongside the belief
+set and these thresholds, and anyone re-deriving edges from beliefs plus
+this manifest will see a false mismatch on any incrementally built store —
+which is every real one.
 """
 from __future__ import annotations
 
@@ -252,7 +269,10 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
         gates=(
             "Token-overlap floor a pair must clear to enter the "
             "classifier at all. Lowering it enlarges the candidate pool "
-            "and can only add edges; raising it can only remove them."
+            "monotonically, but the written edge set does NOT move "
+            "monotonically with it: `DEFAULT_MAX_EDGES_PER_BELIEF` is "
+            "consumed in sorted pair order, so a newly-admitted pair can "
+            "evict one that was previously written."
         ),
     ),
     PinnedThreshold(
@@ -320,9 +340,13 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
         edge_types=("CONTRADICTS", "POTENTIALLY_STALE"),
         overridable=OVERRIDE_NONE,
         gates=(
-            "Quantifier positions on the frequency axis. The score is "
-            "half the axis distance, so moving any value moves the score "
-            "across confidence_min and reclassifies the pair."
+            "Quantifier positions on the frequency axis. The axis "
+            "distance is halved into `q_term` and the score halves it "
+            "again, so a pure quantifier disagreement scores a QUARTER "
+            "of the distance: `always` vs `sometimes` is 1.0 apart and "
+            "scores 0.25 — below `confidence_min`, so it lands as "
+            "POTENTIALLY_STALE, not CONTRADICTS. Size any edit here "
+            "against 4x the axis gap, not 2x."
         ),
     ),
     PinnedThreshold(
@@ -379,8 +403,13 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
         overridable=OVERRIDE_NONE,
         gates=(
             "Weight stamped on every SUPERSEDES edge. Does not change "
-            "which edges are written, but does change the propagation "
-            "arithmetic a recompute must reproduce byte-for-byte."
+            "which edges are written. It does decide whether they are "
+            "visible downstream: `clustering` drops any edge below "
+            "`DEFAULT_CLUSTER_EDGE_FLOOR` (0.4), so at 1.0 these clear "
+            "the floor and any value under 0.4 silently removes every "
+            "SUPERSEDES edge from candidate clustering. It is also a BFS "
+            "sort key. Note this is `Edge.weight`, not `EDGE_VALENCE` — "
+            "valence is keyed on edge TYPE and is untouched by this."
         ),
     ),
     PinnedThreshold(
@@ -410,12 +439,16 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
         edge_types=(
             "SUPPORTS", "CITES", "CONTRADICTS", "SUPERSEDES",
             "RELATES_TO", "DERIVED_FROM", "IMPLEMENTS", "TESTS",
+            "TEMPORAL_NEXT",
         ),
         overridable=OVERRIDE_NONE,
         gates=(
             "The phrase-to-edge-type table. This is the only writer that "
             "chooses among most edge types, so it decides both whether "
-            "an edge exists and which type it is."
+            "an edge exists and which type it is. Note it includes four "
+            "TEMPORAL_NEXT patterns (`follows`, `comes after`, `is "
+            "after`, `succeeds`), so the spine is NOT the only producer "
+            "of that type — see EXCLUDED_WRITERS."
         ),
     ),
     PinnedThreshold(
@@ -546,11 +579,14 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
         edge_types=("RELATES_TO",),
         overridable=OVERRIDE_NONE,
         gates=(
-            "Posterior-uncertainty floor for a belief to become a wonder "
-            "anchor in the `--axes` dispatch payload. Those anchors are "
-            "the constituent tuple `skill_integration` persists, so the "
-            "floor decides which RELATES_TO edges the persist-docs path "
-            "writes. It does NOT touch the BFS path in item 1 above."
+            "Posterior-uncertainty floor selecting "
+            "`high_uncertainty_beliefs`, which decides whether an "
+            "`uncertainty_deep_dive` research axis is emitted at all. "
+            "That axis is a document, and documents become phantoms with "
+            "RELATES_TO edges, so the floor gates a whole class of them. "
+            "It does NOT filter the anchor tuple — `anchors` is built "
+            "from the unfiltered `known_beliefs` — and it does not touch "
+            "the BFS path in item 1 above."
         ),
     ),
     PinnedThreshold(
@@ -632,7 +668,7 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
 # digest differs from `main`'s, require VERSION to have increased — is
 # truly mechanical. That belongs in CI and is deliberately not built here.
 DIGEST_HISTORY: Final[dict[int, str]] = {
-    1: "6e516b17be9b76fce3006b4a0e02efadc9bcddc28db6472537cd1f7fa4675510",
+    1: "ffaaca91fa8e74cb9d79d9a9322cf8ce0d3d3d41ac628694609e7c1fbbaeec74",
 }
 
 # The digest the current version must produce. Derived, never hand-edited.
@@ -675,7 +711,11 @@ COVERED_WRITER_MODULES: Final[frozenset[str]] = frozenset({
 EXCLUDED_WRITERS: Final[tuple[tuple[str, str], ...]] = (
     (
         "aelfrice.temporal_spine",
-        "writes TEMPORAL_NEXT only — the spine, recomputed by #1336",
+        "writes TEMPORAL_NEXT only — the spine, recomputed by #1336. "
+        "Read as a statement about THIS module, not about the type: "
+        "`triple_extractor` also mints TEMPORAL_NEXT from four prose "
+        "patterns, so the spine recompute does not account for the "
+        "whole TEMPORAL_NEXT population",
     ),
     (
         "aelfrice.ingest",
