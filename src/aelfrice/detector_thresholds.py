@@ -30,8 +30,10 @@ edge cannot be attributed to the thresholds that produced it. Adding those
 columns is an ``edges``-table migration — the operation that left stores
 unopenable-forever in #1161 — and historical reproduction is explicitly
 out of scope here. What this buys is that from ``DETECTOR_THRESHOLDS_VERSION
-= 1`` onward, a change to any listed value cannot land without bumping the
-version, because :data:`MANIFEST_DIGEST` goes red.
+= 1`` onward, a change to any listed value makes :data:`DIGEST_HISTORY`
+disagree with the pinned content, so landing it means either bumping the
+version and appending a row or visibly rewriting a historical one. See
+that constant for what this does and does not enforce.
 
 **Honesty about overrides.** Several entries are defaults that a config
 file or environment variable can override at runtime — ``jaccard_min``,
@@ -83,9 +85,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     # evaluated at runtime and importing it unconditionally reads as dead.
     from collections.abc import Sequence
 
-# Bump when any pinned value below changes. The digest guard in
-# tests/test_detector_thresholds_manifest_1355.py makes this mechanical:
-# edit a value without bumping, and the test names both.
+# Bump when any pinned value below changes, and append the new content
+# digest to DIGEST_HISTORY at the bottom of this module. The guard in
+# tests/test_detector_thresholds_manifest_1355.py fails until you do.
 DETECTOR_THRESHOLDS_VERSION: Final[int] = 1
 
 # --- Kinds -------------------------------------------------------------
@@ -608,19 +610,50 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
 
 # --- Digest guard ------------------------------------------------------
 
-# sha256 over the whole manifest. Editing any pinned value changes this,
-# which is what forces DETECTOR_THRESHOLDS_VERSION to move with it.
-MANIFEST_DIGEST: Final[str] = (
-    "1edce3ea3ddd950f7a81201a6fda33cae89da96332abd0f4c2d20bcfb0053c02"
+# Content digest of THRESHOLDS at each version. **Append a row when you
+# bump the version; never rewrite one.**
+#
+# This is keyed by version rather than held as a single literal for a
+# specific reason. A lone `MANIFEST_DIGEST = "<hex>"` sitting beside the
+# thing it digests does not force anything: edit a constant, edit its
+# manifest entry, edit the digest, and the suite is green again with the
+# version untouched — two different edge-producing behaviours both
+# shipping as version 1. That is failure mode 2 in the test file's own
+# docstring, and a bare literal invites exactly the repair that causes it.
+#
+# Keyed by version, the cheap repair is gone: a content change makes
+# `manifest_digest()` disagree with `DIGEST_HISTORY[VERSION]`, and the
+# ways back to green are to revert, or to bump the version and append a
+# row. Overwriting a historical row still works, but it is a visibly
+# dishonest edit in the diff rather than the obvious one.
+#
+# Honest limit: this raises the cost of the wrong move, it does not make
+# it impossible. Only a check against the merge-base — if the THRESHOLDS
+# digest differs from `main`'s, require VERSION to have increased — is
+# truly mechanical. That belongs in CI and is deliberately not built here.
+DIGEST_HISTORY: Final[dict[int, str]] = {
+    1: "6e516b17be9b76fce3006b4a0e02efadc9bcddc28db6472537cd1f7fa4675510",
+}
+
+# The digest the current version must produce. Derived, never hand-edited.
+# `.get` rather than `[...]`: bumping the version without appending a row
+# is a contract breach the tests should NAME, and an import-time KeyError
+# would instead take the whole module down and report as a collection
+# error in every unrelated test that imports it.
+MANIFEST_DIGEST: Final[str] = DIGEST_HISTORY.get(
+    DETECTOR_THRESHOLDS_VERSION, ""
 )
 
 
 def manifest_digest() -> str:
-    """Digest the manifest, including the version it was recorded under."""
-    payload = {
-        "version": DETECTOR_THRESHOLDS_VERSION,
-        "thresholds": [_canonical(t) for t in THRESHOLDS],
-    }
+    """Digest the pinned content, independent of the version it ships under.
+
+    Content-only on purpose: the version is the key into
+    :data:`DIGEST_HISTORY`, so folding it into the digested payload would
+    make every version bump change the digest for reasons unrelated to
+    what the manifest says.
+    """
+    payload = {"thresholds": [_canonical(t) for t in THRESHOLDS]}
     return hashlib.sha256(_dumps(payload).encode("utf-8")).hexdigest()
 
 
@@ -676,6 +709,7 @@ __all__ = [
     "DETECTOR_THRESHOLDS_VERSION",
     "EXCLUDED_WRITERS",
     "KINDS",
+    "DIGEST_HISTORY",
     "MANIFEST_DIGEST",
     "PinnedThreshold",
     "THRESHOLDS",

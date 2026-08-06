@@ -10,7 +10,11 @@ Three independent failure modes, three independent arms:
    manifest to match their new constant and ships, leaving
    ``DETECTOR_THRESHOLDS_VERSION`` at 1 — so two different edge-producing
    behaviours claim the same version.
-   → ``test_manifest_digest_is_pinned``.
+   → ``test_manifest_digest_is_pinned`` +
+   ``test_digest_history_is_contiguous_and_complete``, which together make
+   the repair an append to ``DIGEST_HISTORY`` rather than an edit to one
+   literal. Not airtight — a historical row can still be overwritten — and
+   the module says so rather than overclaiming.
 
 3. **A new writer lands unpinned.** Someone adds a module that writes a
    non-spine edge and never touches the manifest.
@@ -37,6 +41,7 @@ from aelfrice.detector_thresholds import (
     DETECTOR_THRESHOLDS_VERSION,
     EXCLUDED_WRITERS,
     KINDS,
+    DIGEST_HISTORY,
     MANIFEST_DIGEST,
     PinnedThreshold,
     THRESHOLDS,
@@ -182,22 +187,48 @@ def test_entries_are_wellformed_and_unique() -> None:
 
 
 def test_manifest_digest_is_pinned() -> None:
-    """The digest covers the version, so the two move together.
+    """The pinned content must match the digest recorded for this version.
 
-    This is what makes "changing a value forces a version bump" mechanical
-    rather than a convention. Editing a pinned value changes
-    ``manifest_digest()``; the only way back to green is to update
-    ``MANIFEST_DIGEST``, and a reviewer seeing that line move knows to look
-    for the version bump beside it.
+    The earlier shape of this test held a single hand-written
+    ``MANIFEST_DIGEST`` literal, and it did NOT close failure mode 2 above
+    — it only announced it. Editing a constant, its manifest entry and the
+    digest literal returned the suite to green with the version untouched,
+    which is precisely two behaviours shipping as version 1. The failure
+    message even instructed that repair.
 
-    Verified by mutation, both directions: bumping
-    ``DETECTOR_THRESHOLDS_VERSION`` alone turns this red, and editing any
-    pinned value alone turns this red.
+    Keyed by version, the cheap repair is gone: the ways back to green are
+    to revert, or to bump the version and append a row to
+    ``DIGEST_HISTORY``. Overwriting a historical row still works and is
+    the honest limit of this mechanism — see the constant's comment. Only
+    a merge-base check in CI is fully mechanical, and that is not built.
     """
-    assert manifest_digest() == MANIFEST_DIGEST, (
-        "manifest content or version changed without updating "
-        "MANIFEST_DIGEST"
+    assert manifest_digest() == DIGEST_HISTORY[DETECTOR_THRESHOLDS_VERSION], (
+        f"pinned content does not match the digest recorded for version "
+        f"{DETECTOR_THRESHOLDS_VERSION}. Revert the change, or bump "
+        f"DETECTOR_THRESHOLDS_VERSION and APPEND a row to DIGEST_HISTORY. "
+        f"Do not rewrite the existing row."
     )
+    assert MANIFEST_DIGEST == DIGEST_HISTORY[DETECTOR_THRESHOLDS_VERSION]
+
+
+def test_digest_history_is_contiguous_and_complete() -> None:
+    """Every version from 1 to the current one has exactly one digest.
+
+    Without this, bumping the version without appending a row raises
+    KeyError in a place that reads like a crash rather than a contract
+    breach, and a gap in the history would let a version be skipped to
+    dodge a row.
+    """
+    assert set(DIGEST_HISTORY) == set(range(1, DETECTOR_THRESHOLDS_VERSION + 1)), (
+        f"DIGEST_HISTORY keys {sorted(DIGEST_HISTORY)} are not exactly "
+        f"1..{DETECTOR_THRESHOLDS_VERSION}"
+    )
+    assert len(set(DIGEST_HISTORY.values())) == len(DIGEST_HISTORY), (
+        "two versions record the same content digest — one of them did "
+        "not need a bump"
+    )
+    for version, digest in DIGEST_HISTORY.items():
+        assert len(digest) == 64, f"version {version}: not a sha256 hex digest"
 
 
 def test_version_is_a_positive_int() -> None:
