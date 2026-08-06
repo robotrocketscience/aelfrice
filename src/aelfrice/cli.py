@@ -6113,13 +6113,17 @@ def _cmd_spine_verify(out: object) -> int:
     print(
         f"  fan-in > 1          : {report.missing_fan_in:,} "
         "(edges dropped by those successors; a chain reproduces one "
-        "predecessor each, so this exceeds the successor count only "
-        "where fan-in > 2)",
+        "predecessor each, so a fan-in-n successor loses n-1 edges when "
+        "the recompute picks one of its shipped predecessors and all n "
+        "when it picks neither — which is why this can exceed the "
+        "successor count from fan-in 2 up, not only above 2)",
         file=w,
     )
     print(
         f"  other               : {report.missing_other:,} "
-        "(the only bucket a key disagreement moves)",
+        "(where a key disagreement lands — but not only that: the "
+        "fan-in exclusion is one-sided, so two shipped edges sharing a "
+        "predecessor are an equally guaranteed miss and fall here too)",
         file=w,
     )
     print(
