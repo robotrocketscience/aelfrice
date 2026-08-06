@@ -37,6 +37,7 @@ from __future__ import annotations
 import os
 import sys
 import traceback
+from datetime import datetime, timezone
 from typing import IO, Final, Iterable
 
 from aelfrice.feedback import apply_feedback
@@ -64,6 +65,13 @@ without restart."""
 
 def _exposure_updates_posterior() -> bool:
     return os.environ.get(ENV_EXPOSURE_UPDATES_POSTERIOR, "0") == "1"
+
+
+def _utc_now_iso() -> str:
+    """ISO-8601 UTC timestamp suffixed Z. Matches `feedback._utc_now_iso`
+    so a timestamp resolved here is byte-comparable with one resolved
+    there."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 HOOK_RETRIEVAL_VALENCE: Final[float] = 0.1
@@ -107,6 +115,7 @@ def record_retrieval(
     *,
     valence: float = HOOK_RETRIEVAL_VALENCE,
     source: str = HOOK_FEEDBACK_SOURCE,
+    now: str | None = None,
     stderr: IO[str] | None = None,
 ) -> int:
     """Write one feedback_history row per belief; return rows written.
@@ -121,9 +130,18 @@ def record_retrieval(
     to `sys.stderr`) and the loop continues. Returns the number of
     successful writes — callers can use this as a smoke metric without
     needing to inspect the audit log.
+
+    One retrieval is one event, so it gets one timestamp (#1373, #1157
+    §7): `now` is resolved once here and threaded to both
+    `apply_feedback` and `stamp_retrieved`. #1135 made the two writes
+    one transaction; until this they were still two independent clock
+    reads, so the audit row and the `last_retrieved_at` projection could
+    disagree about when the retrieval happened. Callers may pass `now`
+    to stamp a whole batch at a caller-chosen instant.
     """
     serr: IO[str] = stderr if stderr is not None else sys.stderr
     update_posterior: bool = _exposure_updates_posterior()
+    stamped_at: str = now if now is not None else _utc_now_iso()
     written: int = 0
     stamped_ids: list[str] = []
     # #1135: one write group per retrieval instead of a commit per hit
@@ -141,6 +159,7 @@ def record_retrieval(
                         b.id,
                         valence,
                         source,
+                        now=stamped_at,
                         update_posterior=update_posterior,
                     )
                     written += 1
@@ -154,7 +173,7 @@ def record_retrieval(
             # loop above.
             if stamped_ids:
                 try:
-                    store.stamp_retrieved(stamped_ids)
+                    store.stamp_retrieved(stamped_ids, stamped_at)
                 except Exception:
                     traceback.print_exc(file=serr)
     except Exception:  # non-blocking: the whole group rolled back

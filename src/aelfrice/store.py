@@ -4498,6 +4498,7 @@ class MemoryStore:
         source_type: str,
         session_id: str | None = None,
         source_path_hash: str | None = None,
+        ts: str | None = None,
     ) -> tuple[str, bool]:
         """Insert belief or corroborate existing one with same content_hash.
 
@@ -4536,6 +4537,13 @@ class MemoryStore:
         genuinely did resolve to that row, and the ingest-log stamp
         should say so. The caller learns nothing was inserted, which is
         true either way.
+
+        `ts` (#1373, #1157 §7) is passed straight through to
+        `record_corroboration` and to the revival audit row, so a caller
+        that already holds the event's timestamp (the derivation worker
+        holds `inp.ts`) stamps every row of the group with it instead of
+        letting each write resolve its own clock. Omitted, each write
+        reads the wall clock as before.
         """
         # Validate source_type up-front so the error surfaces at the
         # call site, not inside record_corroboration after the lookup.
@@ -4558,7 +4566,10 @@ class MemoryStore:
                 belief_id=existing.id,
                 valence=0.0,
                 source=FEEDBACK_SOURCE_REASSERT_REVIVE,
-                created_at=datetime.now(timezone.utc).isoformat(),
+                created_at=(
+                    ts if ts is not None
+                    else datetime.now(timezone.utc).isoformat()
+                ),
             )
         if existing is not None:
             self.record_corroboration(
@@ -4566,6 +4577,7 @@ class MemoryStore:
                 source_type=source_type,
                 session_id=session_id,
                 source_path_hash=source_path_hash,
+                ts=ts,
             )
             return (existing.id, False)
         # Race / migration guard (#264): same id may already exist under
@@ -4585,6 +4597,7 @@ class MemoryStore:
                 source_type=source_type,
                 session_id=session_id,
                 source_path_hash=source_path_hash,
+                ts=ts,
             )
             return (existing_by_id.id, False)
         self.insert_belief(b)
@@ -4597,6 +4610,7 @@ class MemoryStore:
         source_type: str,
         session_id: str | None = None,
         source_path_hash: str | None = None,
+        ts: str | None = None,
     ) -> None:
         """Record one corroboration row for an already-existing belief.
 
@@ -4614,13 +4628,21 @@ class MemoryStore:
         #1012 Stop-flush re-reading `turns.jsonl`) no longer inflates the
         count — corroboration measures *distinct* re-assertions, not raw
         re-ingests. A genuinely new session or source still records a row.
+
+        `ts` (#1373, #1157 §7) is the clock-injection seam: pass the
+        timestamp of the event this corroboration belongs to so every
+        row written for one logical re-assertion carries one timestamp.
+        Omitted, it reads the wall clock — which is what a caller that
+        has no event time should do, and what every caller did before
+        the seam existed.
         """
         if source_type not in CORROBORATION_SOURCE_TYPES:
             raise ValueError(
                 f"Unknown source_type {source_type!r}. "
                 f"Must be one of {sorted(CORROBORATION_SOURCE_TYPES)}"
             )
-        ts = datetime.now(timezone.utc).isoformat()
+        if ts is None:
+            ts = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
             """
             INSERT OR IGNORE INTO belief_corroborations

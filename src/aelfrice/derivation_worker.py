@@ -44,7 +44,12 @@ import os
 from dataclasses import dataclass, field
 from typing import Final
 
-from aelfrice.derivation import DerivationInput, RouteOverrides, derive
+from aelfrice.derivation import (
+    DerivationInput,
+    DerivationOutput,
+    RouteOverrides,
+    derive,
+)
 from aelfrice.doc_linker import ANCHOR_INGEST, file_uri_from_path
 from aelfrice.models import (
     CORROBORATION_SOURCE_CLAUDE_MEMORY,
@@ -258,13 +263,44 @@ def _process_row(
     row: dict[str, object],
     acc: WorkerResult,
 ) -> WorkerResult:
+    """Derive one log row and write its results as one transaction.
+
+    The derivation itself (`derive()`) is pure and runs outside the
+    transaction so the write lock is not held across it. Everything the
+    row produces — the belief, its corroboration row, the LLM-route
+    audit row, edges, the doc anchor and the log stamp — commits as one
+    group or not at all (#1373, #1157 §3). Before this, each of those
+    was its own commit, so a crash mid-row left `ingest_log` and
+    `beliefs` disagreeing: exactly the divergence the write-log-as-truth
+    refactor exists to rule out. On failure the row stays unstamped and
+    the next `run_worker()` pass re-derives it from scratch, which the
+    module's idempotency contract already requires.
+    """
     log_id = str(row.get("id") or "")
     if not log_id:
         return acc
-    rows_scanned = acc.rows_scanned + 1
 
     inp = _derivation_input_from_row(row)
     out = derive(inp)
+    with store.transaction(immediate=True):
+        return _write_derived_row(
+            store, row, acc, log_id=log_id, inp=inp, out=out,
+        )
+
+
+def _write_derived_row(
+    store: MemoryStore,
+    row: dict[str, object],
+    acc: WorkerResult,
+    *,
+    log_id: str,
+    inp: DerivationInput,
+    out: DerivationOutput,
+) -> WorkerResult:
+    """Write one derived row's results. Runs inside `_process_row`'s
+    transaction — every store call below defers its commit to it."""
+    rows_scanned = acc.rows_scanned + 1
+
     if out.belief is None:
         # Stamp the row with an explicit empty list so a subsequent
         # worker pass treats it as covered (vs ambiguous NULL = unstamped).
@@ -292,11 +328,16 @@ def _process_row(
         if isinstance(sph, str) and sph:
             source_path_hash = sph
 
+    # `ts=inp.ts` (#1373, #1157 §7): the log row's own timestamp is the
+    # time of this ingest event, so the corroboration row carries it
+    # rather than resolving a second, later clock. Falls back to None —
+    # i.e. store-side wall clock — when the log row has no `ts`.
     actual_id, was_inserted = store.insert_or_corroborate(
         out.belief,
         source_type=corroboration_source,
         session_id=inp.session_id,
         source_path_hash=source_path_hash,
+        ts=inp.ts or None,
     )
 
     # #265 PR-B: relocate scanner's post-insert audit row into the
@@ -304,6 +345,15 @@ def _process_row(
     # AND the belief was newly inserted (matches scanner.py:301-310's
     # `if was_inserted` guard intent — corroborations don't need a
     # second audit row).
+    #
+    # #1373: this window used to be a loss path. The insert committed
+    # on its own, so a failure here (or in any later write in the row)
+    # left the belief durable and the audit row missing — and the retry
+    # could never recover it, because the re-derive would find the
+    # belief by content_hash, take the corroboration branch, and skip
+    # the `was_inserted`-gated write forever. Inside the transaction the
+    # belief rolls back with the audit row, so the retry re-inserts and
+    # the guard fires. The window closes rather than changing shape.
     if (
         was_inserted
         and inp.route_overrides is not None
