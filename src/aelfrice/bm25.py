@@ -335,7 +335,19 @@ def _fold_diacritics(text: str) -> str:
     this rule correctly declines to fold it and SQLite maps it anyway.
     U+1E9B is the single codepoint in the 727 where the two still
     differ; it has no occurrences on the live corpus.
+
+    An all-ASCII string returns unchanged without entering the loop, and
+    that shortcut is **identity rather than an approximation**: the loop
+    has exactly two branches and ASCII takes neither. No ASCII codepoint
+    is combining, so the first branch never fires; and no ASCII codepoint
+    has a multi-codepoint NFD, so ``len(decomposed) == 2`` is never true
+    and the second branch always falls through to ``out.append(ch)``.
+    The guard is worth its line because the loop is per character over
+    every document on `BM25Index.build` and the corpus is overwhelmingly
+    ASCII — `benchmarks/bm25_fold_ascii_guard.py` re-derives the saving.
     """
+    if text.isascii():
+        return text
     out: list[str] = []
     for ch in text:
         if unicodedata.combining(ch):
