@@ -83,6 +83,52 @@ ARMS: dict[str, Callable[[str], list[str]]] = {
 }
 
 
+def case_fold_divergence(codepoints: list[int]) -> list[tuple[int, str, str]]:
+    """Codepoints where ``str.lower()`` disagrees with unicode61's fold.
+
+    A separate probe from `_oracle`, and deliberately so: that one declares
+    ``porter unicode61``, whose default ``remove_diacritics=1`` folds marks
+    as well, so measuring the *case* stage against it charges the diacritic
+    fold's work to it — the sweep would report every accented capital and
+    the number would be meaningless. ``remove_diacritics 0`` and no
+    stemmer isolates the one stage.
+
+    The pipeline runs the diacritic fold and then `str.lower()`, and
+    `str.lower()` is not unicode61's table: SQLite's is frozen, so it maps
+    final sigma and long s where Python does not, and it leaves alone the
+    uppercase letters Unicode added after that table was fixed. Returns
+    ``(codepoint, str.lower() result, unicode61 result)``.
+    """
+    con = sqlite3.connect(":memory:")
+    con.execute(
+        'CREATE VIRTUAL TABLE temp.p USING fts5(t, '
+        'tokenize="unicode61 remove_diacritics 0")'
+    )
+    con.execute(
+        "CREATE VIRTUAL TABLE temp.pt USING fts5vocab('temp', 'p', 'instance')"
+    )
+    out: list[tuple[int, str, str]] = []
+    try:
+        for cp in codepoints:
+            ch = chr(cp)
+            con.execute("DELETE FROM temp.p")
+            # Padded with ASCII so a codepoint unicode61 treats as a
+            # separator still yields one token; a bare probe would return
+            # zero terms and be indistinguishable from a fold to nothing.
+            con.execute("INSERT INTO temp.p(rowid, t) VALUES (1, ?)", (f"zz{ch}zz",))
+            terms = [r[0] for r in con.execute(
+                "SELECT term FROM temp.pt ORDER BY offset"
+            )]
+            if len(terms) != 1:
+                continue
+            sqlite_fold = terms[0][2:-2]
+            if sqlite_fold != ch.lower():
+                out.append((cp, ch.lower(), sqlite_fold))
+    finally:
+        con.close()
+    return out
+
+
 def main() -> int:
     codepoints = _universe()
     oracle = _oracle(codepoints)
@@ -96,6 +142,12 @@ def main() -> int:
         )
         print(f"  {name:<10} {bad:>7,} disagreements  "
               f"({100 * bad / len(codepoints):.2f}%)")
+
+    case = case_fold_divergence(codepoints)
+    print(f"\ncase fold  {len(case):>7,} codepoints where str.lower() "
+          f"!= unicode61 (#1389 item 3)")
+    for cp, lowered, folded in case[:6]:
+        print(f"    U+{cp:04X}  str.lower()={lowered!r}  unicode61={folded!r}")
     return 0
 
 
