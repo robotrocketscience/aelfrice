@@ -53,7 +53,7 @@ from aelfrice.store import MemoryStore
 # touching call sites.
 #
 # The table must be **total** over `models.EDGE_TYPES` (#1375). It used
-# to list only the six #149 types, and `_build_adjacency` reads it via
+# to list only the six #149 types, and `build_signed_adjacency` reads it via
 # `.get(e.type, 0.0)` — so the four types added after #149 dropped out
 # of the Laplacian silently, with no line anywhere saying they had. The
 # zeros below are now a stated decision rather than a fall-through, and
