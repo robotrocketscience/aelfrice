@@ -138,11 +138,23 @@ ENUM_VOCAB: Final[dict[str, tuple[frozenset[str], ...]]] = {
 # Reverse lookup: member token → (category, group_id). The group_id
 # is the alphabetically-first member of its group, used as a stable
 # identifier in conflict reporting. Built once at import.
+#
+# `sorted(group)` is load-bearing, not cosmetic (#1370 §8, #1157): the
+# groups are frozensets, so iterating them raw keys this dict's insertion
+# order on string hash randomisation — a different order every process.
+# `_extract_enums` walks this dict and appends in the order it gets, so
+# `extract_values` would violate its own "same input → byte-identical
+# output" contract. Same bug class as the `MUTABLE_FIELDS` iteration in
+# `replay._mutable_field_diff`.
+#
+# The sort is hoisted into its own clause rather than repeated: written
+# as `sorted(group)[0]` in the value position it re-sorts once per
+# *member*, not once per group.
 _ENUM_MEMBER_INDEX: Final[dict[str, tuple[str, str]]] = {
-    member: (category, sorted(group)[0])
+    member: (category, members[0])
     for category, groups in ENUM_VOCAB.items()
-    for group in groups
-    for member in group
+    for members in (sorted(group) for group in groups)
+    for member in members
 }
 
 

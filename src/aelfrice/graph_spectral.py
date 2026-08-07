@@ -22,6 +22,7 @@ subscribes to (extending the registry, not duplicating it).
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
@@ -61,6 +62,14 @@ DEFAULT_K: Final[int] = 200
 
 # Persisted .npz layout version. Bump on incompatible field changes.
 _NPZ_VERSION: Final[int] = 1
+
+# Explicit ARPACK iteration budget (#1370 §10). ARPACK's own default is
+# `n * 10`; pinning it here keeps the budget a property of this module
+# rather than of the installed SciPy, so a SciPy upgrade cannot silently
+# change which eigenpairs converge. The floor covers tiny graphs, where
+# `10 * n` is a handful of iterations.
+ARPACK_MAXITER_FACTOR: Final[int] = 10
+ARPACK_MAXITER_FLOOR: Final[int] = 1000
 
 
 def build_signed_adjacency(
@@ -131,6 +140,46 @@ def build_signed_normalized_laplacian(W: sp.csr_matrix) -> sp.csr_matrix:
     return L
 
 
+def _content_seed(L: "sp.spmatrix | np.ndarray") -> int:
+    """Derive a 64-bit RNG seed from the matrix's own bytes.
+
+    Deterministic in the graph, not in the clock or the process: the
+    same Laplacian always yields the same seed, and any change to the
+    structure or the weights yields a different one.
+    """
+    h = hashlib.blake2b(digest_size=8)
+    if sp.issparse(L):
+        csr = L.tocsr()
+        h.update(np.asarray(csr.shape, dtype=np.int64).tobytes())
+        h.update(np.ascontiguousarray(csr.indptr, dtype=np.int64).tobytes())
+        h.update(np.ascontiguousarray(csr.indices, dtype=np.int64).tobytes())
+        h.update(np.ascontiguousarray(csr.data, dtype=np.float64).tobytes())
+    else:
+        arr = np.ascontiguousarray(L, dtype=np.float64)
+        h.update(np.asarray(arr.shape, dtype=np.int64).tobytes())
+        h.update(arr.tobytes())
+    return int.from_bytes(h.digest(), "big")
+
+
+def deterministic_start_vector(L: "sp.spmatrix | np.ndarray") -> np.ndarray:
+    """Content-derived ARPACK start vector ``v0`` for ``L`` (#1370 §10).
+
+    ``eigsh`` with ``v0=None`` lets ARPACK draw its own residual vector
+    from an internal RNG whose state advances per call, so consecutive
+    solves of the *same* matrix return different (though numerically
+    equivalent) eigenvectors — and the heat-kernel authority ranking
+    built on them is then not reproducible from the write log.
+
+    A constant vector is not a usable substitute: it is close to an
+    eigenvector of the normalized Laplacian, which degenerates the
+    Krylov subspace. So the vector is pseudo-random but seeded from the
+    matrix content itself.
+    """
+    n = L.shape[0]
+    rng = np.random.default_rng(_content_seed(L))
+    return rng.standard_normal(n)
+
+
 def compute_eigenbasis(
     L: sp.csr_matrix, k: int = DEFAULT_K
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -139,6 +188,12 @@ def compute_eigenbasis(
     ``eigvals`` shape ``(k,)``; ``eigvecs`` shape ``(n, k)``. Sorted
     ascending by eigenvalue. For ``k >= n`` falls back to dense
     ``eigh`` (eigsh requires k < n).
+
+    The sparse path is pinned to be reproducible (#1370 §10, #1157):
+    ``v0`` is derived from ``L``'s own bytes, ``tol=0`` asks for machine
+    precision rather than an early exit, and ``maxiter`` is explicit
+    rather than inherited from ARPACK's default. Two calls on the same
+    ``L`` return bit-identical arrays.
     """
     n = L.shape[0]
     if n == 0:
@@ -148,7 +203,14 @@ def compute_eigenbasis(
         L_dense = L.toarray() if sp.issparse(L) else np.asarray(L)
         eigvals, eigvecs = np.linalg.eigh(L_dense)
         return eigvals[:k], eigvecs[:, :k]
-    eigvals, eigvecs = spla.eigsh(L, k=k_eff, which="SM")
+    eigvals, eigvecs = spla.eigsh(
+        L,
+        k=k_eff,
+        which="SM",
+        v0=deterministic_start_vector(L),
+        tol=0.0,
+        maxiter=max(ARPACK_MAXITER_FACTOR * n, ARPACK_MAXITER_FLOOR),
+    )
     order = np.argsort(eigvals)
     return eigvals[order], eigvecs[:, order]
 
