@@ -25,6 +25,9 @@ from typing import Final
 __all__ = [
     "FOREVER",
     "LockExpiryError",
+    "extract_stated_window",
+    "stated_window_attaches_to_memory",
+    "stated_window_is_ambiguous",
     "format_remaining",
     "parse_for",
     "parse_until",
@@ -175,3 +178,232 @@ def format_remaining(expires_at: str | None, *, now: datetime) -> str:
     if not shown:
         return "0m"
     return " ".join(shown[:2])
+
+
+# --- natural-language window extraction (#1315) --------------------------
+#
+# Maps a window the user SPELLED OUT to a `--for` spec. It never infers
+# one: "remember this" has no window and returns None, because inferring
+# an expiry the user did not state is an explicit non-goal of #1315 — a
+# guessed window expires their lock on a date they never agreed to.
+#
+# Deliberately small. Every pattern requires an explicit unit word, so
+# the ambiguous cases the issue names ("for the trip", "until I'm back")
+# do not match and the caller refuses-and-asks rather than guessing.
+_NUMBER_WORDS: Final[dict[str, int]] = {
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4,
+    "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+}
+
+# Unit word -> the `parse_for` unit it resolves to. Plurals are handled
+# by the `s?` in the pattern rather than by separate entries.
+_UNIT_WORDS: Final[dict[str, str]] = {
+    "day": "d", "week": "w", "month": "mo", "year": "y",
+}
+
+_STATED_WINDOW_RE: Final[re.Pattern[str]] = re.compile(
+    r"\bfor\s+(?:the\s+)?(?:next\s+)?"
+    r"(?P<count>\d+|" + "|".join(_NUMBER_WORDS) + r")\s+"
+    r"(?P<unit>" + "|".join(_UNIT_WORDS) + r")s?\b",
+    re.IGNORECASE,
+)
+
+# "for the next week" with no count word — the count is implied by
+# "next". Kept as its own pattern rather than making the count optional
+# in the one above, because an optional count would also match a bare
+# "for week" and there is no such English.
+_NEXT_UNIT_RE: Final[re.Pattern[str]] = re.compile(
+    r"\bfor\s+the\s+next\s+(?P<unit>" + "|".join(_UNIT_WORDS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _stated_windows(text: str) -> list[str | None]:
+    """Every window `text` states, in the order it states them.
+
+    Both patterns are scanned and the results merged by position, so
+    that "first" means *first in the sentence* rather than *first
+    pattern tried*. Scanning only one of them is how a sentence that
+    names two windows can look unambiguous: `_STATED_WINDOW_RE` cannot
+    see a bare "for the next week", so a text naming that plus a counted
+    window used to report a single window and resolve to the wrong one.
+
+    A zero-length window appears as `None` — stated, but unusable, since
+    `parse_for` rejects it. It stays in the list rather than being
+    dropped so that it still counts as *a* stated window: "for 0 days,
+    then for a week" names two things and must refuse, not silently
+    resolve to the survivor.
+    """
+    return [spec for _, spec in _stated_windows_with_positions(text)]
+
+
+def _stated_windows_with_positions(text: str) -> list[tuple[int, str | None]]:
+    """`_stated_windows`, keeping each match's start offset.
+
+    Split out for `stated_window_attaches_to_memory`, which needs to know
+    *where* the first window sits in order to ask what governs it. The
+    ordering contract lives here so both callers share one definition of
+    "first".
+    """
+    found: list[tuple[int, str | None]] = []
+    for match in _STATED_WINDOW_RE.finditer(text):
+        raw = match.group("count").lower()
+        count = int(raw) if raw.isdigit() else _NUMBER_WORDS[raw]
+        spec = (
+            None
+            if count == 0
+            else f"{count}{_UNIT_WORDS[match.group('unit').lower()]}"
+        )
+        found.append((match.start(), spec))
+    for match in _NEXT_UNIT_RE.finditer(text):
+        found.append((match.start(), f"1{_UNIT_WORDS[match.group('unit').lower()]}"))
+    # The two patterns cannot match the same span — one requires a count
+    # word where the other requires a unit word — so position alone is a
+    # total order over the matches.
+    found.sort(key=lambda item: item[0])
+    return found
+
+
+def extract_stated_window(text: str) -> str | None:
+    """Return the `--for` spec the text states, or None if it states none.
+
+    `"prioritise this for the next week"` -> `"1w"`.
+    `"keep this for two months"`          -> `"2mo"`.
+    `"remember this"`                     -> `None`.
+    `"keep this for the trip"`            -> `None`.
+
+    None means *no window was stated*, not *no window is wanted*. The
+    caller must not substitute a default: #1315's non-goals forbid
+    inferring an expiry the user did not state, and the failure mode of
+    guessing is a lock that expires on a date the user never agreed to.
+
+    Only the first window stated is returned, counting both spellings.
+    A sentence naming two different windows is ambiguous, and the caller
+    is expected to refuse rather than pick one — see
+    `stated_window_is_ambiguous`.
+    """
+    if not text:
+        return None
+    windows = _stated_windows(text)
+    if not windows:
+        return None
+    # None here means the first thing stated was a zero-length window,
+    # which `parse_for` rejects; surfacing None keeps that refusal in one
+    # place rather than raising from a detector that must stay total.
+    return windows[0]
+
+
+# A memory verb plus a **self-referential object**. Both halves are
+# required, and the object is what makes it work: "keep CI logs for 30
+# days" has the verb but its object is the logs, so the 30 days is a
+# property of the logs and not of how long to remember the rule. Only
+# "keep *this* for 30 days" attaches the window to the memory.
+_MEMORY_ANCHOR_RE: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:remember|recall|keep|retain|memori[sz]e|prioriti[sz]e|"
+    r"hold\s+on\s+to|lock|store|bear\s+in\s+mind)\b"
+    r"(?:\s+(?:that|about|onto))?"
+    r"\s+(?:this|that|it|these|those|the\s+above|the\s+following)\b",
+    re.IGNORECASE,
+)
+
+# How far after the anchor the window may sit and still be its object.
+# One short intervening phrase, not a clause.
+_ANCHOR_WINDOW_MAX_GAP: Final[int] = 40
+
+# A window on the far side of one of these is in a different clause, so
+# the anchor before it is not governing it. An en/em dash joins clauses as
+# surely as a semicolon; the ASCII hyphen is left out because it is also
+# the compound-word character, and is caught as a bare token below instead.
+_CLAUSE_BREAKS: Final[frozenset[str]] = frozenset(".!?;:\n–—")
+
+# Words that open a new predicate. A window after one of them is the
+# object of *that* predicate, not of the memory verb: "always remember
+# this and cache the index for two weeks" says how long to cache, not how
+# long to remember. Punctuation-only gating cannot see this — the leak
+# needs no comma at all, so adding one to `_CLAUSE_BREAKS` closes exactly
+# one of its spellings and leaves `and`/`but`/`then`/`while`/`so` open.
+_GAP_CONNECTIVES: Final[frozenset[str]] = frozenset({
+    "-", "also", "after", "although", "and", "as", "because", "before",
+    "but", "however", "if", "meanwhile", "or", "plus", "since", "so",
+    "then", "though", "unless", "when", "whenever", "while", "whilst",
+    "yet",
+})
+
+
+def _gap_opens_a_new_predicate(gap: str) -> bool:
+    """True when `gap` is not a bare continuation of the memory clause.
+
+    Split out so the anchor rule reads as one question. Tokens are
+    stripped of surrounding punctuation but not split on it, so a
+    hyphenated compound (`build-time`) is one token and does not collide
+    with the clause-joining bare `-`.
+    """
+    if set(gap) & _CLAUSE_BREAKS:
+        return True
+    words = {word.strip(",.'\"()").lower() for word in gap.split()}
+    return bool(words & _GAP_CONNECTIVES)
+
+
+def stated_window_attaches_to_memory(text: str) -> bool:
+    """True when the first stated window is governed by a memory verb.
+
+    #1315's extractor cannot otherwise tell *"remember this for two
+    weeks"* from *"the rule is: do Y for two weeks"* — both are
+    directives, and both state a countable window. The second is a
+    subject-matter duration, and proposing `--for` from it produces a
+    lock that expires on a date the user never agreed to, which is the
+    failure this module's docstring names.
+
+    Measured before this gate existed: on a 44,679-belief live store the
+    directive-window arm fired 9 times and **0** of the 9 stated a
+    retention window — `Blocked for 9 days`, `traveling for a week`,
+    `Results available for 29 days`. Realized attachment precision was
+    0/9 locally and 0/90 across other stores, so the gate is not a
+    refinement, it is the difference between the suffix being right
+    sometimes and never.
+
+    Ratified by the operator 2026-08-06 over the alternatives of shipping
+    the suffix as-is or dropping it: narrow the extractor, and accept the
+    recall cost.
+
+    Deliberately structural rather than a keyword test. The anchor needs
+    the verb **and** a self-referential object, because the verb alone is
+    what admits `keep CI logs for 30 days`. The object noun, if any, is
+    left to the gap rather than absorbed into the anchor — an anchor that
+    swallowed trailing words would swallow the window too and never
+    match. The window must then follow within `_ANCHOR_WINDOW_MAX_GAP`
+    characters, with the gap between them opening no new predicate, so an
+    anchor early in a paragraph cannot govern a duration in a later
+    sentence *or* in a later clause of the same sentence. Length and
+    punctuation alone are not enough for the second of those: prefixing a
+    memory clause to a rejected sentence is otherwise all it takes to
+    license its subject-matter window — see `_gap_opens_a_new_predicate`.
+    """
+    if not text:
+        return False
+    windows = _stated_windows_with_positions(text)
+    if not windows:
+        return False
+    position = windows[0][0]
+    for match in _MEMORY_ANCHOR_RE.finditer(text):
+        end = match.end()
+        if end > position:
+            break
+        gap = text[end:position]
+        if len(gap) <= _ANCHOR_WINDOW_MAX_GAP and not _gap_opens_a_new_predicate(
+            gap
+        ):
+            return True
+    return False
+
+
+def stated_window_is_ambiguous(text: str) -> bool:
+    """True when the text states more than one distinct window.
+
+    "for two days, actually for a week" names two, and picking either is
+    a guess. The caller refuses and asks instead of proposing a lock the
+    user has to notice is wrong.
+    """
+    if not text:
+        return False
+    return len(set(_stated_windows(text))) > 1

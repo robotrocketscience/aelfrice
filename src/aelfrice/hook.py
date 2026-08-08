@@ -3608,24 +3608,79 @@ def _autolock_enabled(env: dict[str, str] | None = None) -> bool:
 
 
 def _belief_is_lock_candidate(b: "Belief", session_id: str) -> bool:
-    """Return True iff `b` is a session-scoped, unlocked correction-class
-    belief — the population the Stop hook prompts the user to lock.
+    """Return True iff `b` is a session-scoped, unlocked belief the Stop
+    hook should prompt the user to lock.
 
     Conditions:
       * `b.session_id == session_id` (created in this session).
       * `b.lock_level != LOCK_USER` (locking would be a no-op otherwise).
-      * `b.type == BELIEF_CORRECTION` OR `b.origin in
-        {agent_inferred, agent_remembered}` (correction-class signal).
+      * and then any one of:
+          - `b.type == BELIEF_CORRECTION`,
+          - `b.origin in {agent_inferred, agent_remembered}`
+            (both correction-class signal, per #582),
+          - `_directive_window_spec(b.content) is not None` — a directive
+            stating its own window, whatever its type or origin (#1315).
+
+    The two session/lock guards come first and are not weakened by the
+    #1315 arm: an already-locked belief and a belief from another session
+    are still excluded however clearly they state a window.
     """
     if b.session_id != session_id:
         return False
     if b.lock_level == LOCK_USER:
         return False
-    if b.type == BELIEF_CORRECTION:
+    if _belief_is_correction_class(b):
         return True
-    if b.origin in _STOP_PROMPT_AGENT_ORIGINS:
-        return True
-    return False
+    # #1315: a directive that STATES its own window is a candidate too,
+    # whatever its type or origin. The prompt proposes; nothing is
+    # written until the user runs the command, so a false positive here
+    # costs a declined suggestion rather than a wrong expiring lock —
+    # which is why this does not need the H1 precision bar. That argument
+    # only holds while no path writes these unprompted, which is what
+    # `_autolock_candidates` enforces.
+    return _directive_window_spec(b.content) is not None
+
+
+def _belief_is_correction_class(b: "Belief") -> bool:
+    """Correction-class by type or origin — the pre-#1315 population.
+
+    Split out because it is the population `AELF_AUTOLOCK_CORRECTIONS` is
+    allowed to write without asking. The #1315 arm is deliberately not
+    part of it.
+    """
+    return b.type == BELIEF_CORRECTION or b.origin in _STOP_PROMPT_AGENT_ORIGINS
+
+
+def _directive_window_spec(content: str) -> str | None:
+    """The `--for` spec a directive states, or None (#1315).
+
+    None on every arm that is not an unambiguous, explicitly-stated
+    window **governed by a memory verb**: not a directive, no window
+    named, more than one named, or a window that belongs to the subject
+    matter rather than to how long to remember the rule. Ambiguity
+    refuses rather than picking the first — proposing a lock the user has
+    to notice is wrong is worse than proposing none.
+
+    The attachment gate is the operator's 2026-08-06 ruling. Without it
+    the arm fired 9 times on a 44,679-belief live store and **0** of the
+    9 stated a retention window; every hit was a subject-matter duration
+    (`Blocked for 9 days`, `traveling for a week`). See
+    `lock_expiry.stated_window_attaches_to_memory`.
+    """
+    from aelfrice.directive_detector import detect_directive  # noqa: PLC0415
+    from aelfrice.lock_expiry import (  # noqa: PLC0415
+        extract_stated_window,
+        stated_window_attaches_to_memory,
+        stated_window_is_ambiguous,
+    )
+
+    if not detect_directive(content):
+        return None
+    if stated_window_is_ambiguous(content):
+        return None
+    if not stated_window_attaches_to_memory(content):
+        return None
+    return extract_stated_window(content)
 
 
 def _collect_lock_candidates(
@@ -3649,24 +3704,49 @@ def _collect_lock_candidates(
 
 def _format_stop_prompt(candidates: list["Belief"]) -> str:
     """Render the stderr block listing each candidate with a pre-filled
-    `aelf lock` command. Empty list → empty string."""
+    `aelf lock` command. Empty list → empty string.
+
+    Says "belief", not "correction": since #1315 the candidate population
+    includes windowed directives, which are typically `factual` or
+    `requirement` rather than `BELIEF_CORRECTION`, so the old noun
+    described a `requirement` row to the user as a correction. The
+    per-item line prints the real type, and the header no longer
+    contradicts it.
+    """
     if not candidates:
         return ""
     n = len(candidates)
-    plural = "correction" if n == 1 else "corrections"
+    noun = "belief" if n == 1 else "beliefs"
+    verb = "isn't" if n == 1 else "aren't"
     lines: list[str] = [
         STOP_PROMPT_OPEN_TAG,
-        f"Found {n} {plural} in this session that aren't locked.",
-        "Run the suggested commands to make them survive into the next session,",
-        "or set AELF_AUTOLOCK_CORRECTIONS=1 to auto-lock corrections at session end.",
-        "",
+        f"Found {n} {noun} in this session that {verb} locked.",
+        "Run the suggested commands to make them survive into the next session.",
     ]
+    # Offer autolock only when something in this list would actually be
+    # auto-locked. `AELF_AUTOLOCK_CORRECTIONS` does not cover the #1315
+    # arm, so on a list of windowed directives the old unconditional
+    # advice pointed the user at a flag that leaves the list untouched.
+    covered = [b for b in candidates if _belief_is_correction_class(b)]
+    if covered:
+        caveat = "" if len(covered) == n else "; it does not cover the rest"
+        lines.append(
+            "Corrections can be locked automatically instead by setting "
+            f"AELF_AUTOLOCK_CORRECTIONS=1{caveat}."
+        )
+    lines.append("")
     for b in candidates:
         snippet = b.content.strip().replace("\n", " ")
         if len(snippet) > 120:
             snippet = snippet[:117] + "..."
         lines.append(f"  - {b.id} ({b.type}, origin={b.origin}): {snippet}")
-        lines.append(f"    aelf lock {_shell_quote(b.content)}")
+        # #1315: when the belief states its own window, pre-fill it. The
+        # window resolves to an absolute UTC instant inside `aelf lock
+        # --for`, at write time — this renders the spec, it does not
+        # resolve it, so there is no second anchor.
+        window = _directive_window_spec(b.content)
+        suffix = f" --for {window}" if window else ""
+        lines.append(f"    aelf lock {_shell_quote(b.content)}{suffix}")
     lines.append(STOP_PROMPT_CLOSE_TAG)
     lines.append("")
     return "\n".join(lines)
@@ -3684,7 +3764,12 @@ def _autolock_candidates(
     """Upgrade every candidate's lock_level to LOCK_USER in place. Returns
     the count actually locked. Mirrors the re-lock-upgrade path from
     `_cmd_lock` (cli.py) without going through the derivation worker —
-    these beliefs already exist; only the lock fields change."""
+    these beliefs already exist; only the lock fields change.
+
+    Locks exactly what it is handed. Deciding *which* candidates may be
+    written without confirmation is the caller's job — see the
+    `_belief_is_correction_class` filter in `stop()`.
+    """
     now = _utc_now_iso()
     locked = 0
     for b in candidates:
@@ -3771,8 +3856,33 @@ def stop(
                 candidates = _collect_lock_candidates(store, session_id)
                 if candidates:
                     if _autolock_enabled(env):
-                        _autolock_candidates(store, candidates, serr)
-                    else:
+                        # Autolock writes without asking, so it stays on
+                        # the correction-class population it is named for.
+                        # The #1315 arm admits a directive on a detector
+                        # measured at P=0.665, and the argument for
+                        # retiring that precision bar is that a false
+                        # positive costs a declined suggestion. Letting
+                        # this path write them would make that false —
+                        # and worse than the case the bar guarded, since
+                        # autolock grants a *permanent* lock and drops
+                        # the very window that identified the belief.
+                        _autolock_candidates(
+                            store,
+                            [c for c in candidates if _belief_is_correction_class(c)],
+                            serr,
+                        )
+                        # Excluding them from the writer must not discard
+                        # them. The prompt is a #1315 proposal's only
+                        # surface, so what autolock may not write falls
+                        # through to it — otherwise this flag is an
+                        # off-switch for the feature rather than an
+                        # automation of its locking step, and the block
+                        # advertising the flag is advertising its own
+                        # suppression.
+                        candidates = [
+                            c for c in candidates if not _belief_is_correction_class(c)
+                        ]
+                    if candidates:
                         block = _format_stop_prompt(candidates)
                         if block:
                             # stderr per the Stop-hook contract: any
