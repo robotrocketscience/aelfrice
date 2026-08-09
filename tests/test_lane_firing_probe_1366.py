@@ -776,6 +776,32 @@ def test_committed_report_is_well_formed_and_content_free() -> None:
         assert "(" not in reason, "gate operands leaked into the histogram"
 
 
+def test_committed_report_names_the_fields_the_lane_table_names() -> None:
+    """#1434. A renamed telemetry field has to reach the artifact too.
+
+    The published run cites a `telemetry_field` per lane. Left on the
+    old name it names a field `LaneTelemetry` no longer has, so the
+    report points a reader at a lane the probe could not have seen.
+
+    The fan row also pins the rename as value-preserving: `fired_calls`
+    is 0 on both sides of it, because the counter never fired in the
+    measured population — that is why no published figure moves, not
+    because the rename was checked against a re-measurement.
+    """
+    path = (Path(__file__).resolve().parents[1]
+            / "benchmarks" / "results" / "lane_firing_probe_1366.json")
+    report = json.loads(path.read_text())
+    published = {r["lane"]: r["telemetry_field"]
+                 for r in report["observable_lanes"]}
+    assert published == {lane.name: lane.field
+                         for lane in probe.OBSERVABLE_LANES}
+    assert published["fan_effect"] == "fan_effect_hits_consumed"
+    fan = next(r for r in report["observable_lanes"]
+               if r["lane"] == "fan_effect")
+    assert fan["fired_calls"] == 0
+    assert fan["fire_rate"] == 0.0
+
+
 # --- what `main()` actually produces ---------------------------------------
 #
 # Everything above `main()` asserts how it *calls* things. Nothing asserted

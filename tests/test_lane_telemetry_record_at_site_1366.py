@@ -29,7 +29,7 @@ Two properties are load-bearing and each has its own test below:
 from __future__ import annotations
 
 import math
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
@@ -546,6 +546,45 @@ def test_fan_effect_hits_consumed_is_zero_when_the_lane_is_off(
 ) -> None:
     retrieve_v2(store, "alpha beta", use_fan_effect=False)
     assert last_lane_telemetry().fan_effect_hits_consumed == 0
+
+
+def test_fan_effect_counter_is_named_for_the_hits_it_consumes() -> None:
+    """#1434. The field is named for hits consumed, not rows ranked.
+
+    `MemoryStore.lookup_entities` returns the same belief set with the
+    fan weighting on or off — only the ordering differs — so this
+    counter can never be evidence that the weighting reordered
+    anything. The old name (`fan_effect_ranked`) claimed it was. Pinned
+    on both sides, the dataclass and the record-key tuple, because a
+    half-rename leaves the lane reading as permanently dead.
+    """
+    names = {f.name for f in fields(LaneTelemetry)}
+    assert "fan_effect_hits_consumed" in names
+    assert "fan_effect_ranked" not in names
+    assert "fan_effect_hits_consumed" in LANE_FIRING_FIELDS
+    assert "fan_effect_ranked" not in LANE_FIRING_FIELDS
+
+
+def test_fan_effect_hits_consumed_counts_every_entity_hit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The value is the L2.5 hit count — unchanged by the #1434 rename.
+
+    Three beliefs carry the queried entity, so the counter reads 3.
+    Pinning the quantity as well as the name stops a later edit from
+    changing what is counted (reordered rows, calls, packed survivors)
+    under cover of a name that no longer says `ranked`.
+    """
+    monkeypatch.setenv(ENV_FAN_EFFECT, "1")
+    s = MemoryStore(":memory:")
+    try:
+        for i in range(3):
+            s.insert_belief(_mk(f"f{i}", f"the deploy target is fly.io #{i}"))
+            _add_entity(s, f"f{i}", "fly.io", "identifier")
+        retrieve_v2(s, "fly.io deploy", use_fan_effect=True)
+        assert last_lane_telemetry().fan_effect_hits_consumed == 3
+    finally:
+        s.close()
 
 
 # --- hrr_structural ------------------------------------------------------
