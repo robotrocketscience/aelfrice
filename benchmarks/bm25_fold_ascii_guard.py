@@ -18,9 +18,9 @@ The `unguarded` arm is a local reimplementation for one reason: after the
 fix ships there is no other way to re-derive the before-figure. It is
 deliberately a duplicate of the loop and **not** a monkeypatched constant —
 what it must reproduce is the pre-#1387 behaviour, which no longer exists in
-the tree. Its output is checked against the shipped fold on every document
-before timing starts, so an arm that has drifted reports a drift rather than
-a fabricated speedup.
+the tree. Both its fold output *and* the token stream built on it are checked
+against the shipped code on every document before timing starts, so an arm
+that has drifted reports a drift rather than a fabricated speedup.
 
 Timing is **min-of-N**, not mean: this measures a floor for a deterministic
 CPU-bound loop, so on a busy machine the mean measures the other work rather
@@ -141,7 +141,7 @@ def load_documents(store: Path, limit: int) -> list[tuple[int, str]]:
 
 
 def assert_arms_agree(docs: list[tuple[int, str]]) -> int:
-    """Both arms must emit the same tokens before either is timed.
+    """Both arms must emit the same fold and the same tokens before timing.
 
     A speedup between two arms that disagree is not a speedup, and after
     #1387 ships the `unguarded` arm is the only surviving description of
@@ -154,6 +154,16 @@ def assert_arms_agree(docs: list[tuple[int, str]]) -> int:
     for rowid, text in docs:
         if text.isascii():
             ascii_docs += 1
+        # The fold itself, then the tokens built on it. Comparing only
+        # the token streams would let a fold difference hide behind the
+        # regex split and the stemmer — the docstring above claims the
+        # fold is checked, so check it.
+        if bm25._fold_diacritics(text) != unguarded_fold(text):
+            raise SystemExit(
+                f"folds disagree on belief rowid={rowid}: the unguarded "
+                "reference has drifted from the shipped fold, so no timing "
+                "below would be attributable to the fast path"
+            )
         shipped = bm25.tokenize_stemmed(text)
         reference = unguarded_tokenize_stemmed(text)
         if shipped != reference:
