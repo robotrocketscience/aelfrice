@@ -144,10 +144,13 @@ _VALID_DISABLE_TOKENS: Final[frozenset[str]] = frozenset({
 # tests/test_noise_filter.py.
 #
 # 1. Shell-command shape: starts with a recognised shell prefix at the
-#    leftmost position (case-sensitive). Covers `cd /`, `git `, `gh `,
-#    `uv run`, `pytest`, `python `. The leading space in `git ` and
-#    `gh ` is intentional — it distinguishes the command from prose that
-#    starts with a word that merely contains the token (e.g. "ghosts").
+#    leftmost position (case-sensitive) AND does not end like a written
+#    sentence. Covers `cd /`, `git `, `gh `, `uv run`, `pytest`,
+#    `python `. The leading space in `git ` and `gh ` is intentional — it
+#    distinguishes the command from prose that starts with a word that
+#    merely contains the token (e.g. "ghosts"). The prose escape hatch is
+#    #1371 §1: bare `startswith` discarded every sentence *about* one of
+#    these tools ("pytest is the only test runner we support.").
 #
 # 2. Tool-call rendering glyph: ⏺ (U+23FA). Emitted at the start
 #    of tool-call narration lines by some transcript surfaces.
@@ -162,10 +165,15 @@ _VALID_DISABLE_TOKENS: Final[frozenset[str]] = frozenset({
 #    this pattern (two words); it is caught by category 5.
 #
 # 5. Agent ack emits: short one-line acknowledgements that convey no
-#    project-specific knowledge. Pattern allows the bare keyword or the
-#    keyword followed by up to 40 characters. Examples: "Yes.",
-#    "Standing by.", "Polling for results.", "Nothing to report.",
-#    "Ready when you are.", "No changes needed."
+#    project-specific knowledge. Three arms, in order: a bare keyword
+#    ("Yes.", "Standing by."); a member of the closed
+#    `_TRANSCRIPT_ACK_PHRASES` allowlist ("Ready when you are.",
+#    "Nothing to report.", "No changes needed."); or the keyword plus a
+#    continuation of up to 40 characters that does NOT end like a written
+#    sentence ("Yes keep working"). The last clause is #1371 §1 — matching
+#    the keyword pattern is necessary, not sufficient, because the
+#    40-character tail also matched the product's own policy statements
+#    ("No vector embeddings, ever.").
 
 _TRANSCRIPT_SHELL_PREFIXES: Final[tuple[str, ...]] = (
     "cd /",
@@ -603,8 +611,11 @@ def is_transcript_noise(sentence: str) -> bool:
     Checks five categories in order; first match returns True:
 
     1. **Shell-command shape** — starts with a recognised shell prefix
-       (`cd /`, `git `, `gh `, `uv run`, `pytest`, `python `).
-       Match is case-sensitive and position-anchored at index 0.
+       (`cd /`, `git `, `gh `, `uv run`, `pytest`, `python `) and does
+       *not* end like a written sentence. Match is case-sensitive and
+       position-anchored at index 0; the prose escape hatch (#1371 §1)
+       is what keeps `pytest is the only test runner we support.` while
+       still dropping `git add .`.
     2. **Tool-call rendering glyph** — starts with ⏺ (U+23FA).
     3. **Pseudo-XML structural tags** — starts with `<worktree`,
        `<output-file`, `<task-`, `<summary>Background`,
@@ -614,9 +625,13 @@ def is_transcript_noise(sentence: str) -> bool:
        harness layout fragments (#1025).
     4. **Single-word progress emit** — matches `^[A-Z][a-z]+ing\\.$`
        (a lone capitalised gerund and a full stop, nothing else).
-    5. **Agent ack emit** — matches
-       `^(Yes|No|Standing by|Ready|Nothing|Polling)( .{0,40})?\\.?$`;
-       covers bare keywords and short trailing phrases up to 40 chars.
+    5. **Agent ack emit** — a bare keyword
+       (`^(Yes|No|Standing by|Ready|Nothing|Polling)\\.?$`), a member of
+       the closed `_TRANSCRIPT_ACK_PHRASES` allowlist, or the keyword
+       plus a trailing phrase of up to 40 characters that does *not*
+       end like a written sentence. The last clause is #1371 §1: the
+       old rule allowed 40 characters of arbitrary content, so
+       `"No vector embeddings, ever."` read as an acknowledgement.
 
     All patterns are case-sensitive as written. Empty or whitespace-only
     strings return False (they are handled upstream by `is_noise`).
