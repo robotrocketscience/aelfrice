@@ -5,17 +5,28 @@
 #
 # Provenance is recorded per block, because a corpus whose rows nobody can
 # trace back decays into a list of things that happen to pass. Two sources:
-# rows quoted in #1159 §1 / #1371 §1, and rows the filter was measurably
-# discarding on this repo's own archived transcripts (17,562 user
-# sentences) before the fix.
+# the nine examples #1371's acceptance text names (executed against the
+# pre-fix predicate in #1159's audit finding, all nine returning True), and
+# rows the filter was measurably discarding on this repo's own archived
+# transcripts (17,562 user sentences) before the fix.
 #
 # Add a row here when a real belief is found to have been filtered. Do not
 # add a row to make a failing test pass without first checking the sentence
 # is genuinely durable content.
 
-# --- quoted in the issue: the product's own policy statements -----------
+# --- #1371 AC1: the nine executed examples ------------------------------
+# The acceptance criterion names these nine strings specifically — they are
+# the rows #1159's audit finding executed against the real predicate and
+# reported as True (discarded). All nine, verbatim, none paraphrased: the
+# AC is satisfied by these strings or it is not satisfied.
 No vector embeddings, ever.
+No tests exist for the temporal spine.
+No we should use uv instead of pip.
+Nothing in retrieval may call the network.
+Ready means the gate passed.
+git history rewrite is denied by the ruleset.
 pytest is the only test runner we support.
+gh api is the only way to delete refs.
 python 3.13 is the minimum supported version.
 
 # --- ack-keyword openings that are real sentences -----------------------

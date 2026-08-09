@@ -47,6 +47,39 @@ def test_the_corpora_are_not_empty_and_do_not_overlap() -> None:
     assert not (set(MUST_SURVIVE) & set(MUST_DIE))
 
 
+#: The nine strings #1371's AC1 names. #1159's audit finding executed each
+#: against the pre-fix predicate and reported all nine as discarded, so the
+#: AC is met by these strings verbatim or it is not met. Duplicated here
+#: rather than read from the corpus: the point of the assertion below is
+#: that the corpus file still contains them.
+_AC1_EXECUTED_EXAMPLES = (
+    "No vector embeddings, ever.",
+    "No tests exist for the temporal spine.",
+    "No we should use uv instead of pip.",
+    "Nothing in retrieval may call the network.",
+    "Ready means the gate passed.",
+    "git history rewrite is denied by the ruleset.",
+    "pytest is the only test runner we support.",
+    "gh api is the only way to delete refs.",
+    "python 3.13 is the minimum supported version.",
+)
+
+
+def test_ac1_names_nine_strings_and_the_corpus_carries_all_nine() -> None:
+    """AC1's corpus clause, pinned as a membership claim.
+
+    The parametrized test above only asserts that whatever rows are in the
+    file survive; it says nothing about which rows are in the file. Dropping
+    one of the nine — or paraphrasing it into a structural analogue — would
+    leave that test green and quietly unsatisfy the AC.
+
+    Falsifiable by deleting any row of the AC1 block in
+    `tests/data/must_survive_1371.txt`.
+    """
+    missing = [s for s in _AC1_EXECUTED_EXAMPLES if s not in MUST_SURVIVE]
+    assert not missing, f"AC1 examples absent from the must-survive corpus: {missing}"
+
+
 @pytest.mark.parametrize("sentence", MUST_SURVIVE, ids=range(len(MUST_SURVIVE)))
 def test_a_real_belief_is_not_discarded(sentence: str) -> None:
     """#1159 AC4's must-survive corpus. Each row is a sentence the filter
