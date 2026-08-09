@@ -70,7 +70,7 @@ jobs:
               - 'uv.lock'
               - '.github/workflows/ci.yml'
       - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true

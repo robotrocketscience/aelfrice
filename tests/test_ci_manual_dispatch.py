@@ -147,9 +147,18 @@ def test_every_paths_filter_gated_step_admits_a_dispatch() -> None:
     ]
     assert gated, "expected ci.yml to still gate its install/test steps on the filter"
     for cond in gated:
-        assert "workflow_dispatch" in cond, (
-            "ci.yml step gated on the paths-filter without a workflow_dispatch "
-            f"disjunct, so a dispatched run would skip it: {cond!r}"
+        # The token alone is not enough, and the difference is the whole test:
+        # `… && github.event_name != 'workflow_dispatch'` also contains the
+        # word, and it skips every setup and test step on a dispatch while the
+        # docs-only branch stays skipped too — so the job reports success having
+        # run nothing. Require the positive equality, joined as a disjunct.
+        assert "github.event_name == 'workflow_dispatch'" in cond, (
+            "ci.yml step gated on the paths-filter without a positive "
+            f"workflow_dispatch disjunct, so a dispatched run would skip it: {cond!r}"
+        )
+        assert "||" in cond, (
+            "the workflow_dispatch condition must be a disjunct — joined with "
+            f"`&&` it narrows the gate instead of widening it: {cond!r}"
         )
 
 
