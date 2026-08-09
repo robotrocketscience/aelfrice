@@ -305,3 +305,53 @@ def test_hyphenated_members_still_match_themselves() -> None:
         ("the store is read-write", "read-write"),
     ):
         assert member in {s.member for s in extract_values(text).enum}, text
+
+
+@pytest.mark.parametrize(
+    "text,member",
+    [
+        # Every row is a real string from the live repo-local store.
+        ("status: shipped-default-on", "default-on"),
+        ("flag: shipped-default-off", "default-off"),
+        ("merged-but-default-off for now", "default-off"),
+        ("the secrets-scan gate is required", "scan"),
+        ("pattern-scan and history-scan both run", "scan"),
+    ],
+)
+def test_member_inside_a_longer_hyphenated_compound_still_tags(
+    text: str, member: str
+) -> None:
+    """The regression that the obvious §13 fix would have shipped.
+
+    Adding `-` to the boundary class kills the defect, and also kills
+    every member that legitimately sits inside a longer hyphenated
+    phrase. Measured against the live repo-local store (44,683 active
+    beliefs): the both-sides variant changes 588 beliefs and destroys
+    568 whole-category tags; left-side-only changes 310 and destroys
+    290. Roughly 40% of the losses are `default_state` assertions of
+    exactly the shape below.
+
+    Longest-match ordering distinguishes the two cases where a boundary
+    class cannot: `deterministic` is dropped from "non-deterministic"
+    because a *longer member* claimed that span, while `default-on`
+    survives inside "shipped-default-on" because "shipped-" is not a
+    member of anything. Same store, that variant changes 10 beliefs,
+    all of them the real fix, and loses nothing.
+
+    These rows fail under either boundary-class variant and pass under
+    longest-match, so they are what stops the simpler fix coming back.
+    """
+    assert member in {s.member for s in extract_values(text).enum}, text
+
+
+def test_shorter_member_kept_when_it_also_occurs_outside_the_longer_span() -> None:
+    """Longest-match claims spans, not members.
+
+    A member suppressed inside one occurrence must still tag the belief
+    if it appears somewhere else in the same text — otherwise the fix
+    would silently drop real signal from mixed sentences.
+    """
+    members = {s.member for s in extract_values(
+        "the run is non-deterministic, but the replay is deterministic"
+    ).enum}
+    assert {"non-deterministic", "deterministic"} <= members

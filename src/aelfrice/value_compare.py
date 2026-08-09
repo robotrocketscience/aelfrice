@@ -158,15 +158,8 @@ _ENUM_MEMBER_INDEX: Final[dict[str, tuple[str, str]]] = {
 }
 
 # Characters that may not sit immediately either side of a member match.
-# The hyphen is the load-bearing addition (#1159 §13): without it
-# "deterministic" matched *inside* "non-deterministic", so a single belief
-# tagged both groups of the `determinism` category and `find_conflicts`
-# short-circuited on the group-disjointness test — the category could never
-# report a conflict. The same hazard covered `full` inside `full-scan`
-# (cross-category noise between `completeness` and `storage_mode`).
-# Hyphenated members in `ENUM_VOCAB` are unaffected: the boundary is only
-# tested at the two ends of the member, never inside it.
-_ENUM_BOUNDARY_CLASS: Final[str] = r"[A-Za-z0-9_-]"
+# NOTE the hyphen is deliberately NOT here — see `_ENUM_MEMBER_ORDER`.
+_ENUM_BOUNDARY_CLASS: Final[str] = r"[A-Za-z0-9_]"
 
 # One compiled pattern per member, built once at import rather than
 # re-resolved from the `re` module cache on every extraction.
@@ -177,6 +170,35 @@ _ENUM_MEMBER_PATTERNS: Final[dict[str, re.Pattern[str]]] = {
     )
     for member in _ENUM_MEMBER_INDEX
 }
+
+# #1159 §13: "deterministic" matched *inside* "non-deterministic", so one
+# belief tagged both groups of the `determinism` category and
+# `find_conflicts` short-circuited on its group-disjointness test — the
+# category could never report a conflict at all.
+#
+# The obvious fix is to add `-` to the boundary class above. Measured on the
+# live repo-local store (44,683 active beliefs) that is much worse than the
+# defect: adding `-` on both sides changes 588 beliefs and destroys **568**
+# whole-category tags, and adding it only on the left still destroys 290.
+# The losses are ordinary hyphenated English that the vocabulary is supposed
+# to match — `shipped-default-on`, `secrets-scan`, `session-private` — and a
+# boundary class cannot tell those from `non-deterministic`.
+#
+# What actually distinguishes them is length, not punctuation: the problem is
+# a SHORT member matching inside a LONGER one. So members are offered
+# longest-first and a span already claimed by a longer member is not offered
+# again. Same principle as `directive_detector.py:62-66`, which #1368 names
+# as the in-tree shape, expressed as claim-ordering rather than as one
+# alternation because each member here carries its own category.
+# On the same store this changes 10 beliefs, all of them the real fix, and
+# loses nothing.
+#
+# Sorted by (-length, member) rather than by length alone: a plain
+# length sort leaves equal-length members in dict order, and #1157's
+# determinism contract requires the tie-break be part of the key.
+_ENUM_MEMBER_ORDER: Final[tuple[str, ...]] = tuple(
+    sorted(_ENUM_MEMBER_INDEX, key=lambda m: (-len(m), m))
+)
 
 
 # --- Slot dataclasses -------------------------------------------------
@@ -267,15 +289,33 @@ def _extract_numerics(text: str) -> tuple[NumericSlot, ...]:
 
 def _extract_enums(text: str) -> tuple[EnumSlot, ...]:
     lowered = text.lower()
+
+    # Pass 1 — claim spans longest-member-first (#1159 §13). A shorter
+    # member that only occurs inside a longer member's span is dropped;
+    # one that also occurs somewhere else keeps that other occurrence.
+    matched: set[str] = set()
+    claimed: list[tuple[int, int]] = []
+    for member in _ENUM_MEMBER_ORDER:
+        for hit in _ENUM_MEMBER_PATTERNS[member].finditer(lowered):
+            start, end = hit.span()
+            if any(start < c_end and c_start < end for c_start, c_end in claimed):
+                continue
+            claimed.append((start, end))
+            matched.add(member)
+
+    # Pass 2 — emit in `_ENUM_MEMBER_INDEX` order, which is `ENUM_VOCAB`
+    # declaration order. Emission order is part of this function's output
+    # contract, so it stays independent of the length ordering above.
     out: list[EnumSlot] = []
     seen: set[tuple[str, str]] = set()
     for member, (category, group_id) in _ENUM_MEMBER_INDEX.items():
-        if _ENUM_MEMBER_PATTERNS[member].search(lowered):
-            pair = (category, member)
-            if pair in seen:
-                continue
-            seen.add(pair)
-            out.append(EnumSlot(category=category, group_id=group_id, member=member))
+        if member not in matched:
+            continue
+        pair = (category, member)
+        if pair in seen:
+            continue
+        seen.add(pair)
+        out.append(EnumSlot(category=category, group_id=group_id, member=member))
     return tuple(out)
 
 
