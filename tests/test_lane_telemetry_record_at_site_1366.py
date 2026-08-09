@@ -40,6 +40,7 @@ from aelfrice.models import (
     EDGE_CONTRADICTS,
     EDGE_SUPERSEDES,
     LOCK_NONE,
+    LOCK_USER,
     ORIGIN_AGENT_INFERRED,
     ORIGIN_USER_VALIDATED,
     RETENTION_SNAPSHOT,
@@ -575,10 +576,23 @@ def test_fan_effect_hits_consumed_counts_every_entity_hit(
 ) -> None:
     """The value is the L2.5 hit count — unchanged by the #1434 rename.
 
-    Three beliefs carry the queried entity, so the counter reads 3.
-    Pinning the quantity as well as the name stops a later edit from
-    changing what is counted (reordered rows, calls, packed survivors)
-    under cover of a name that no longer says `ranked`.
+    Four beliefs carry the queried entity, so `lookup_entities` returns
+    four and the counter reads 4. Pinning the quantity as well as the
+    name stops a later edit from changing what is counted under cover of
+    a name that no longer says `ranked`.
+
+    The fixture is built so that the three plausible substitutes are all
+    distinguishable from the hit count, because a value pin is only a
+    pin against the values it can tell apart:
+
+    * *the call* — recording `1 if hits else 0` reads 1, not 4;
+    * *the entity keys* — the query extracts one entity, so a key count
+      reads 1;
+    * *the packed survivors* — one of the four is locked, so L0 claims
+      it and `_l25_hits` skips it in the packing loop. `l25` is 3 while
+      the hit count is 4, and the two are asserted apart below. Without
+      that fourth belief every hit survives, hits == survivors, and
+      re-recording `len(out)` after the loop leaves the suite green.
     """
     monkeypatch.setenv(ENV_FAN_EFFECT, "1")
     s = MemoryStore(":memory:")
@@ -586,8 +600,17 @@ def test_fan_effect_hits_consumed_counts_every_entity_hit(
         for i in range(3):
             s.insert_belief(_mk(f"f{i}", f"the deploy target is fly.io #{i}"))
             _add_entity(s, f"f{i}", "fly.io", "identifier")
+        s.insert_belief(replace(
+            _mk("fL", "the deploy target is fly.io, locked"),
+            lock_level=LOCK_USER, locked_at="2026-06-02T00:00:00Z",
+        ))
+        _add_entity(s, "fL", "fly.io", "identifier")
         retrieve_v2(s, "fly.io deploy", use_fan_effect=True)
-        assert last_lane_telemetry().fan_effect_hits_consumed == 3
+        telemetry = last_lane_telemetry()
+        assert telemetry.fan_effect_hits_consumed == 4
+        # The locked belief is an L2.5 hit and not an L2.5 survivor.
+        assert telemetry.locked == 1
+        assert telemetry.l25 == 3
     finally:
         s.close()
 
