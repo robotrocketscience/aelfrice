@@ -15,6 +15,7 @@ A single optional TOML file at the root of a project (or any ancestor). It expos
 - `[cadence]`, `[implicit_feedback]`, and `[hook_audit]` — feedback-cadence scoring, deferred retrieval-exposure feedback, and the per-turn hook audit log. Recognised here but documented in their module docstrings (`src/aelfrice/cadence.py`, `src/aelfrice/deferred_feedback.py`, `src/aelfrice/hook.py`).
 - `[feedback]` (v3.0+) — feedback-lane opt-ins. `sentiment_from_prose` (default `false`) wires the sentiment-feedback detector into `UserPromptSubmit` (#606).
 - `[belief_categories]` (v4.x+) — keyword-triggered belief categories. `enabled` (default `false`) wires the category-injection lane into `UserPromptSubmit` (#1126). Manage categories with `aelf category`.
+- `[memory_block]` (v4.x+, #1359) — the off-switch for the injected `<aelfrice-memory>` block. `enabled` (default `true`); set `false`, or export `AELFRICE_MEMORY_BLOCK=0`, to stop `UserPromptSubmit` writing the block to your prompt. The env var wins over the TOML key in both directions (`AELFRICE_MEMORY_BLOCK=1` re-enables a project that disabled it). Nothing else stops: retrieval still runs, the correction and relevance lanes still fire, `hook_audit.jsonl` still records what was retrieved (with `tokens: 0`, since nothing was injected), `aelf rebuild` still prints the block on demand, and the SessionStart `<aelfrice-baseline>` block is untouched.
 - `[user_prompt_submit_hook]` (v3.0+) — UPS hook knobs. `prompt_shape_gate_enabled` (default `true`) gates trivial-prompt and system-envelope short-circuits before BM25 retrieval runs (#674). `conversation_aware_query_enabled` (default `true`, v3.x #909) folds a small window of recent dialog turns into the BM25 query so paraphrase / pronoun / numeric-reference follow-ups still surface the load-bearing thread; tuned by `conversation_aware_turn_window` (default `4`) and `conversation_aware_prompt_weight` (default `3`).
 
 Locks are not affected. Hook behavior IS configurable here (`[user_prompt_submit_hook]`, `[feedback]`, `[cadence]`, `[hook_audit]`); the Bayesian update math itself is not.
@@ -284,6 +285,18 @@ sentiment_from_prose = false
 # fail-soft. AELFRICE_BELIEF_CATEGORIES=1 env var overrides. Manage
 # categories with `aelf category`. See docs/design/belief_categories.md.
 enabled = false
+
+[memory_block]
+# v4.x+ (#1359). Default `true`. Set to false to stop the
+# UserPromptSubmit hook writing the <aelfrice-memory> block into your
+# prompt. Nothing else stops: retrieval, the correction and relevance
+# lanes, hook_audit.jsonl, `aelf rebuild` and the SessionStart
+# <aelfrice-baseline> block all keep working. The
+# AELFRICE_MEMORY_BLOCK env var overrides this key in both directions
+# (=0/false/no/off forces off, =1/true/yes/on forces on); any other
+# value falls through to this key. Every emitted block carries a
+# one-line pointer to `aelf tail` and to this switch.
+enabled = true
 
 [user_prompt_submit_hook]
 # v3.0+ (#674). Default `true`. Short-circuits BM25 retrieval on two
