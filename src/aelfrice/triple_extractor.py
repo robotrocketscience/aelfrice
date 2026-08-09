@@ -107,6 +107,9 @@ class _RelationPattern:
     regex: re.Pattern[str]
     edge_type: str
     swap: bool
+    # The verb phrase this pattern was built from, kept so a bank can be
+    # filtered by template without parsing it back out of the regex.
+    template: str
 
 
 def _build_pattern(template: str, edge_type: str, *, swap: bool = False) -> _RelationPattern:
@@ -121,6 +124,7 @@ def _build_pattern(template: str, edge_type: str, *, swap: bool = False) -> _Rel
         regex=re.compile(full, re.IGNORECASE),
         edge_type=edge_type,
         swap=swap,
+        template=template,
     )
 
 
@@ -165,6 +169,47 @@ _PATTERNS: Final[tuple[_RelationPattern, ...]] = (
 )
 
 
+# --- The ingest-constrained bank (#1159 §3, #1376) -----------------------
+#
+# Six of the templates above are single tokens that are also common plural
+# nouns or non-relational verbs in ordinary prose. On the ingest path the
+# input is a git commit body, which is exactly the register where they
+# collide: "Two tests that encoded the old behaviour are removed." yields
+# ('Two', TESTS, 'that encoded the old behaviour are'), and `ingest_triples`
+# then records *both* phrases as beliefs, so one bogus triple becomes two
+# fragment beliefs.
+#
+# Measured over the 400 most recent commit bodies on `github/main`, the full
+# bank fires 82 times and **none of the 82 is a genuine relation**. The six
+# templates below account for 67 of them (`tests` 51, `covers` 12,
+# `replaces` 3, `follows` 1; `supports` and `extends` never fire at all).
+# `benchmarks/triple_precision_1376.py` re-derives that table.
+#
+# Each dropped template keeps a sibling that cannot collide with a plural
+# noun, so the relation stays reachable: `supersedes` for `replaces`,
+# `is derived from` / `is based on` for `extends`, `comes after` / `is after`
+# / `succeeds` for `follows`, `is supported by` for `supports`. TESTS lost
+# both of its single-token forms, so the two passive multi-token forms #1376
+# names as the obvious replacement are added here — ingest-side only.
+_INGEST_EXCLUDED_TEMPLATES: Final[frozenset[str]] = frozenset({
+    "supports",
+    "replaces",
+    "extends",
+    "follows",
+    "tests",
+    "covers",
+})
+
+_INGEST_ADDITIONAL_PATTERNS: Final[tuple[_RelationPattern, ...]] = (
+    _build_pattern("is tested by", EDGE_TESTS, swap=True),
+    _build_pattern("is covered by", EDGE_TESTS, swap=True),
+)
+
+_INGEST_PATTERNS: Final[tuple[_RelationPattern, ...]] = tuple(
+    p for p in _PATTERNS if p.template not in _INGEST_EXCLUDED_TEMPLATES
+) + _INGEST_ADDITIONAL_PATTERNS
+
+
 # --- Extraction -----------------------------------------------------------
 
 
@@ -197,18 +242,29 @@ def _expand_anchor(text: str, start: int, end: int) -> str:
     return text[new_start:new_end].strip()
 
 
-def extract_triples(text: str) -> list[Triple]:
+def extract_triples(
+    text: str, *, constrain_collision_verbs: bool = False
+) -> list[Triple]:
     """Extract (subject, relation, object) triples from `text`.
 
     Returns the triples in left-to-right order of their match start
     in the input. Overlapping matches from different patterns are
     each reported (downstream `ingest_triples` dedups by edge tuple).
     Empty / non-relational input returns an empty list.
+
+    `constrain_collision_verbs` selects the ingest-constrained bank
+    (`_INGEST_PATTERNS`): the six single-token templates that double as
+    plural nouns are dropped and TESTS' two passive forms are added. It
+    defaults to False so the read path is unchanged — operator ruling of
+    2026-08-06 scopes #1376 to the write path, and `context_rebuilder`
+    calls this on every prompt with behaviour that was never measured.
+    Only `hook_commit_ingest` passes True.
     """
     if not text:
         return []
+    patterns = _INGEST_PATTERNS if constrain_collision_verbs else _PATTERNS
     triples: list[Triple] = []
-    for pat in _PATTERNS:
+    for pat in patterns:
         for m in pat.regex.finditer(text):
             subj_raw = m.group("subject")
             obj_raw = m.group("object")

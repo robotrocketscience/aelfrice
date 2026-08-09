@@ -100,7 +100,7 @@ from typing import Any, Final, cast
 # Bump when any pinned value below changes, and append the new content
 # digest to DIGEST_HISTORY at the bottom of this module. The guard in
 # tests/test_detector_thresholds_manifest_1355.py fails until you do.
-DETECTOR_THRESHOLDS_VERSION: Final[int] = 1
+DETECTOR_THRESHOLDS_VERSION: Final[int] = 2
 
 # --- Kinds -------------------------------------------------------------
 
@@ -429,7 +429,7 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
         module="aelfrice.triple_extractor",
         name="_PATTERNS",
         kind=KIND_PATTERN_TABLE,
-        value="sha256:db6c470a051a084c83abdc0ca03e38948ff228b77c906799271b834d164b47cf",
+        value="sha256:b1bd1d4ef443b9b22a3a4bce1da5ac607d8be2f27e5e5670df5ad889d11cd7e0",
         size=25,
         edge_types=(
             "SUPPORTS", "CITES", "CONTRADICTS", "SUPERSEDES",
@@ -444,6 +444,32 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
             "TEMPORAL_NEXT patterns (`follows`, `comes after`, `is "
             "after`, `succeeds`), so the spine is NOT the only producer "
             "of that type — see EXCLUDED_WRITERS."
+        ),
+    ),
+    PinnedThreshold(
+        module="aelfrice.triple_extractor",
+        name="_INGEST_PATTERNS",
+        kind=KIND_PATTERN_TABLE,
+        value="sha256:cd362b13596162e4869c0c3c12b34df52c2ec760d12fa43e0a1e90780b035f21",
+        size=21,
+        edge_types=(
+            "SUPPORTS", "CITES", "CONTRADICTS", "SUPERSEDES",
+            "RELATES_TO", "DERIVED_FROM", "IMPLEMENTS", "TESTS",
+            "TEMPORAL_NEXT",
+        ),
+        overridable=OVERRIDE_NONE,
+        gates=(
+            "The bank the WRITE path uses (#1376). `_PATTERNS` above is "
+            "what `context_rebuilder` queries with; this is what "
+            "`hook_commit_ingest` mints beliefs and edges from, so it is "
+            "the one whose false positives are irreversible. It is "
+            "`_PATTERNS` minus the six single-token templates that are "
+            "also plural nouns (`tests`, `covers`, `follows`, `extends`, "
+            "`supports`, `replaces`) plus TESTS' two passive forms "
+            "(`is tested by`, `is covered by`). Same nine edge types — "
+            "no relation was made unreachable. Pinned separately because "
+            "the two banks can now drift apart, and a change to either "
+            "alone changes what one path writes or reads."
         ),
     ),
     PinnedThreshold(
@@ -664,6 +690,14 @@ THRESHOLDS: Final[tuple[PinnedThreshold, ...]] = (
 # truly mechanical. That belongs in CI and is deliberately not built here.
 DIGEST_HISTORY: Final[dict[int, str]] = {
     1: "ffaaca91fa8e74cb9d79d9a9322cf8ce0d3d3d41ac628694609e7c1fbbaeec74",
+    # 2 (#1376): the write path stopped sharing a pattern bank with the
+    # read path. `_PATTERNS`' digest moved without its *behaviour* moving
+    # — `_RelationPattern` gained a `template` field so a bank can be
+    # filtered by verb — and `_INGEST_PATTERNS` was pinned as a new entry.
+    # Recorded here because "the digest moved but nothing behavioural did"
+    # is exactly the claim a future reader should be able to check rather
+    # than take on trust: same 25 regexes, same order, same edge types.
+    2: "ebf57aff99876c17ca59a7dadd2dfd1841eb752baf0b78f7134f474f27d4f790",
 }
 
 # The digest the current version must produce. Derived, never hand-edited.

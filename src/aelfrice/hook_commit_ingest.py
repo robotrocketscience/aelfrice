@@ -189,7 +189,11 @@ def _do_ingest(payload: dict[str, object]) -> None:
         extract_triples, ingest_triples,
     )
 
-    triples = extract_triples(body)
+    # #1376: commit bodies are the register where single-token relation
+    # verbs collide with plural nouns ("Two tests that …"), and this is a
+    # write path — a fragment minted here is an irreversible belief. The
+    # read path in `context_rebuilder` deliberately does not pass this.
+    triples = extract_triples(body, constrain_collision_verbs=True)
     if not triples:
         return  # no relations => nothing to record
 

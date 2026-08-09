@@ -112,8 +112,12 @@ def test_three_paths_record_distinct_source_types(
     # The triple extractor needs at least one (subject, relation, object)
     # match in the message body, otherwise the hook short-circuits before
     # opening the store. Pattern: `<NP> <verb> <NP>` with a permitted
-    # relation verb. "supports" is in the relation bank.
-    commit_msg = "feat: the yokozuna parser supports nested meridian keys"
+    # relation verb. The passive `is supported by` rather than bare
+    # `supports`: #1376 dropped the six single-token verbs that double as
+    # plural nouns from the *ingest* bank, and this path is the ingest
+    # bank. Picking a verb the write path no longer honours would make
+    # this e2e assert nothing about source-type discrimination.
+    commit_msg = "feat: the yokozuna parser is supported by nested meridian keys"
     git_env = {
         **os.environ,
         "GIT_AUTHOR_NAME": "tiny-project",

@@ -124,11 +124,11 @@ def test_extracts_triple_from_commit_message(
     git_repo: Path, per_repo_db: Path,
 ) -> None:
     branch, short = _make_commit(
-        git_repo, "the new index supports faster queries"
+        git_repo, "the new index is supported by faster queries"
     )
     rc = _drive(_payload(
-        command="git commit -m 'the new index supports faster queries'",
-        stdout=f"[{branch} {short}] the new index supports faster queries",
+        command="git commit -m 'the new index is supported by faster queries'",
+        stdout=f"[{branch} {short}] the new index is supported by faster queries",
         cwd=str(git_repo),
     ))
     assert rc == 0
@@ -155,7 +155,7 @@ def test_session_id_is_derived_and_stable(
     git_repo: Path, per_repo_db: Path,
 ) -> None:
     branch, short = _make_commit(
-        git_repo, "the new index supports faster queries"
+        git_repo, "the new index is supported by faster queries"
     )
     expected_session = hk._derive_session_id(branch, short)  # pyright: ignore[reportPrivateUsage]
     _drive(_payload(
