@@ -131,14 +131,24 @@ tier on its own.
 
 With one exception, stated because it is exactly the property worth
 protecting: setting `AELF_AUTOLOCK_CORRECTIONS=1` makes the Stop hook lock
-this session's lock-candidates without asking. That population is wider
-than the flag's name suggests — `hook._belief_is_lock_candidate` admits any
-belief whose `origin` is `agent_inferred` or `agent_remembered`, not only
-`type=correction` — and the hook also rewrites `origin` to `user_stated`.
-So under that opt-in, a belief the agent inferred can enter the instruction
-tier having never been asserted by anyone. The flag is off by default and
-the prompt-instead-of-lock path is what ships; the property above holds for
-every default install, and this is the one setting that suspends it.
+part of this session's lock-candidates without asking. That population is
+wider than the flag's name suggests — `hook._belief_is_correction_class`
+admits any belief whose `origin` is `agent_inferred` or `agent_remembered`,
+not only `type=correction` — and the hook also rewrites `origin` to
+`user_stated`. So under that opt-in, a belief the agent inferred can enter
+the instruction tier having never been asserted by anyone. The flag is off
+by default and the prompt-instead-of-lock path is what ships; the property
+above holds for every default install, and this is the one setting that
+suspends it.
+
+Audit `_belief_is_correction_class`, **not** `_belief_is_lock_candidate`.
+The two came apart in #1315: candidacy is deliberately the wider predicate
+— it admits every directive belief in the session, 3,003 of them on this
+repo's own store — and everything it admits beyond correction-class is
+*proposed only*, never written. The filter that holds that line is at the
+`_autolock_candidates` call site in `hook.stop()`. Naming candidacy here
+would report those 3,003 as auto-lockable, which is a false alarm in the
+direction that gets a correct filter reverted.
 
 What the hook layer cannot do, by design: enforce that the model verifies
 named session artifacts before acting, or guarantee the model treats

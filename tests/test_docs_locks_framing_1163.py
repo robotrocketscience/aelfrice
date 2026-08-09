@@ -102,6 +102,18 @@ def test_autolock_candidate_set_includes_agent_origin_beliefs() -> None:
     ingested = _mk("i1", origin="ingest_transcript")
     assert not hook._belief_is_lock_candidate(ingested, "sess-1")  # noqa: SLF001
 
+    # The bound the paragraph actually rests on is `_belief_is_correction_class`,
+    # not candidacy — the two came apart in #1315. A directive belief IS a
+    # candidate and is NOT auto-lockable, and the controls above cannot see
+    # that: `_mk` hard-codes non-directive content, so every one of them
+    # passes whatever candidacy does. Without this pair, widening candidacy
+    # leaves the suite green while the paragraph's claim stops holding.
+    directive = _mk("d1", origin="ingest_transcript")
+    directive.content = "Always use tabs in this repo."
+    assert hook._belief_is_lock_candidate(directive, "sess-1")  # noqa: SLF001
+    assert not hook._belief_is_correction_class(directive)  # noqa: SLF001
+    assert hook._belief_is_correction_class(inferred)  # noqa: SLF001
+
 
 def test_autolock_promotes_an_inferred_belief_into_the_locked_tier(
     tmp_path, monkeypatch,
