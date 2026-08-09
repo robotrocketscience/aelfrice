@@ -172,8 +172,17 @@ def test_hook_passes_the_retrieval_query_and_none_on_the_gate_skip_branch() -> N
 
     The gate-skip branch must pass `None`: retrieval never ran there, and
     `retrieval_query` is assigned only in the sibling branch — naming it would
-    raise `NameError` inside the hook, which is a crash rather than a wrong
-    number.
+    raise `NameError` inside the hook.
+
+    That is **not** a crash, which is what makes it worth pinning here. The
+    emit at `hook.py:1285` sits inside the `try:` opened at `hook.py:927`,
+    whose handler at `hook.py:1343` catches bare `Exception` and only prints a
+    traceback (`# non-blocking: surface but do not fail`). `NameError` is an
+    `Exception`, so the hook still returns 0 and the turn still proceeds; what
+    is lost is the `rebuild_log` row for that turn, silently, plus stderr
+    noise the user never sees. An observability hole is exactly the kind of
+    defect a source-level assertion has to carry, because no behavioural test
+    would go red on it.
     """
     source = (
         Path(__file__).resolve().parents[1] / "src" / "aelfrice" / "hook.py"
