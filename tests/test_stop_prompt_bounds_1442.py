@@ -144,21 +144,27 @@ def test_the_collector_returns_newest_first_through_a_real_store() -> None:
     assert "Always use rule 0." not in out, "the oldest belief survived the cap"
 
 
-def test_the_renderer_takes_the_head_and_does_not_re_sort() -> None:
+@pytest.mark.parametrize("newest_id,oldest_id", [("aaa", "zzz"), ("zzz", "aaa")])
+def test_the_renderer_takes_the_head_and_does_not_re_sort(
+    newest_id: str, oldest_id: str,
+) -> None:
     """`_format_stop_prompt` must preserve the caller's order.
 
     A re-sort here cannot be a recency guarantee — the only keys on a
     `Belief` are `created_at` (tied) and `id` (content-hash) — so it would
     silently override the collector's `rowid` order with an arbitrary one.
-    Falsifiable by restoring `sorted(..., key=(created_at, id), reverse=True)`:
-    `zzz` sorts first and displaces the intended head.
+
+    Both id orders are run because one direction only catches one
+    mutation: with the newest at `aaa`, a descending `(created_at, id)`
+    re-sort fails and an ascending one passes; with the newest at `zzz`
+    it is the other way round. A single case leaves half the mutation
+    space green.
     """
     same = "2026-08-09T00:00:00Z"
-    ordered = [
-        _belief("aaa", "Always use rule NEWEST.", created=same),
-        _belief("zzz", "Always use rule OLDEST.", created=same),
-    ]
-    out = _format_stop_prompt(ordered[:1] + ordered[1:])
+    out = _format_stop_prompt([
+        _belief(newest_id, "Always use rule NEWEST.", created=same),
+        _belief(oldest_id, "Always use rule OLDEST.", created=same),
+    ])
     first = out.index("Always use rule NEWEST.")
     second = out.index("Always use rule OLDEST.")
     assert first < second, "the renderer re-sorted its input"
