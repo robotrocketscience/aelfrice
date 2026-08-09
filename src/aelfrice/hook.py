@@ -182,8 +182,10 @@ SESSION_START_CLOSE_TAG: Final[str] = "</aelfrice-baseline>"
 # inside the memory/baseline block instead of verbatim, so lock injection
 # stays bounded; the agent reads full text on demand.
 LOCKS_MANIFEST_OPEN_TAG: Final[str] = (
-    '<aelfrice-locks-manifest note="bounded reference locks (#1016); read '
-    'full text on demand via `aelf locked` / `aelf search`">'
+    '<aelfrice-locks-manifest note="one-line references. `ref` = bounded '
+    'reference lock (#1016). `seen` = already shown verbatim earlier in this '
+    'session (#1382), text unchanged. Read full text on demand via '
+    '`aelf locked` / `aelf search`">'
 )
 LOCKS_MANIFEST_CLOSE_TAG: Final[str] = "</aelfrice-locks-manifest>"
 
@@ -2426,11 +2428,31 @@ def _filter_session_exclusions(
         return hits
 
 
+def _renders_as_manifest(b: Belief, already_rendered: frozenset[str]) -> bool:
+    """The one manifest-vs-verbatim predicate (#1382 AC4).
+
+    There are two reasons a hit renders as a one-line manifest entry rather
+    than full content: it is a bounded reference lock (#1016-B), or it was
+    already rendered verbatim earlier in this session epoch (#1382).
+
+    Both `_split_belief_lines` and `_group_by_provenance` must ask *this*
+    function, never re-derive either half. `_group_by_provenance` positionally
+    zips its hit list against the already-rendered lines and bails out
+    ungrouped on a length mismatch, behind a `# pragma: no cover` guard — so a
+    second, independently-derived predicate would silently disable trust-tier
+    grouping with no error, no coverage and no failing test.
+    """
+    from aelfrice.retrieval import is_reference_lock  # noqa: PLC0415
+
+    return is_reference_lock(b) or b.id in already_rendered
+
+
 def _split_belief_lines(
     hits: list[Belief],
     *,
     order_policy: str | None = None,
     provenance_render: bool | None = None,
+    already_rendered: frozenset[str] = frozenset(),
 ) -> tuple[list[str], list[str]]:
     """Render hits into verbatim `<belief>` lines + reference manifest lines.
 
@@ -2453,6 +2475,7 @@ def _split_belief_lines(
         lock_manifest_line,
         order_for_injection,
         resolve_order_policy,
+        seen_manifest_line,
     )
     policy = order_policy if order_policy is not None else resolve_order_policy()
     # #1326: resolved here, next to the order policy, because both are
@@ -2467,14 +2490,22 @@ def _split_belief_lines(
     belief_lines: list[str] = []
     manifest_lines: list[str] = []
     for h in hits:
-        if is_reference_lock(h):
+        if _renders_as_manifest(h, already_rendered):
             # Escape framing tags in the manifest line exactly as belief
-            # content is escaped, so a reference lock cannot spoof the
+            # content is escaped, so a manifest entry cannot spoof the
             # envelope (#1037 review). The belief id is a hex hash; only
             # the topic could carry a tag.
-            manifest_lines.append(
-                "  " + _escape_for_hook_block(lock_manifest_line(h))
+            #
+            # A reference lock stays a `ref` entry even when it has also been
+            # seen this epoch: `ref` is the stronger statement (the full text
+            # was never injected at all), and #1016-B's bound is what that
+            # block's note documents.
+            line = (
+                lock_manifest_line(h)
+                if is_reference_lock(h)
+                else seen_manifest_line(h)
             )
+            manifest_lines.append("  " + _escape_for_hook_block(line))
             continue
         lock_attr = "user" if h.lock_level == LOCK_USER else "none"
         content = _escape_for_hook_block(h.content)
@@ -2495,12 +2526,17 @@ def _split_belief_lines(
             f'{speculative_attr}>{content}</belief>'
         )
     if provenance_render:
-        belief_lines = _group_by_provenance(hits, belief_lines)
+        belief_lines = _group_by_provenance(
+            hits, belief_lines, already_rendered=already_rendered
+        )
     return belief_lines, manifest_lines
 
 
 def _group_by_provenance(
-    hits: list[Belief], belief_lines: list[str]
+    hits: list[Belief],
+    belief_lines: list[str],
+    *,
+    already_rendered: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Re-emit `belief_lines` grouped into trust-tier sections (#1326).
 
@@ -2523,9 +2559,14 @@ def _group_by_provenance(
         evidence_attrs,
         section_for,
     )
-    from aelfrice.retrieval import is_reference_lock  # noqa: PLC0415
 
-    rendered = [h for h in hits if not is_reference_lock(h)]
+    # #1382 AC4: the same predicate `_split_belief_lines` used, not a second
+    # derivation of it. Filtering on `is_reference_lock` alone here while the
+    # splitter also diverts already-seen hits would leave this list longer than
+    # `belief_lines`, and the length guard below would return ungrouped —
+    # disabling trust-tier grouping silently, with the `# pragma: no cover`
+    # marker hiding it from coverage.
+    rendered = [h for h in hits if not _renders_as_manifest(h, already_rendered)]
     if len(rendered) != len(belief_lines):  # pragma: no cover - guard
         return belief_lines
 

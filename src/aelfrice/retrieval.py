@@ -724,6 +724,18 @@ def lock_manifest_line(b: Belief) -> str:
     return f'ref {b.id}: "{_lock_topic(b.content)}"'
 
 
+def seen_manifest_line(b: Belief) -> str:
+    """One-line reference to a belief already rendered verbatim this epoch.
+
+    #1382: the full text is already in this context window, above — so the
+    entry points at it rather than telling the reader to go fetch it, which is
+    what a `ref` entry means. Same escaping path and same topic extraction as
+    `lock_manifest_line`, so a differential entry cannot spoof the envelope
+    any more than a reference entry can.
+    """
+    return f'seen {b.id}: "{_lock_topic(b.content)}"'
+
+
 def is_reference_lock(b: Belief) -> bool:
     """True iff `b` is a user lock demoted to the bounded reference tier."""
     return b.lock_level == LOCK_USER and b.lock_tier == LOCK_TIER_REFERENCE
