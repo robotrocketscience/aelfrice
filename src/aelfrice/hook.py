@@ -429,6 +429,102 @@ def load_user_prompt_submit_config(
     return UserPromptSubmitConfig()
 
 
+# ---------------------------------------------------------------------------
+# Memory-block off-switch (#1359)
+# ---------------------------------------------------------------------------
+
+MEMORY_BLOCK_SECTION: Final[str] = "memory_block"
+MEMORY_BLOCK_ENABLED_KEY: Final[str] = "enabled"
+ENV_MEMORY_BLOCK: Final[str] = "AELFRICE_MEMORY_BLOCK"
+"""Off-switch for the per-prompt `<aelfrice-memory>` retrieval block.
+
+Tri-state, matching the `AELFRICE_BFS` / `AELFRICE_BM25F` convention in
+`retrieval.py`: a recognised falsy value forces the block off, a
+recognised truthy value forces it on, and an unset or unrecognised value
+falls through to `[memory_block] enabled` in `.aelfrice.toml`. Default is
+on, so the shipped behaviour is unchanged unless someone opts out.
+
+This suppresses only what `UserPromptSubmit` writes to stdout. Retrieval,
+the sentiment/correction lane, the relevance sweeper, the hook audit log,
+`aelf rebuild`, and the SessionStart `<aelfrice-baseline>` block all keep
+running — the switch is "stop putting this in my prompt", not "stop
+remembering".
+"""
+
+_MEMORY_BLOCK_ENV_FALSY: Final[frozenset[str]] = frozenset(
+    {"0", "false", "no", "off"},
+)
+_MEMORY_BLOCK_ENV_TRUTHY: Final[frozenset[str]] = frozenset(
+    {"1", "true", "yes", "on"},
+)
+
+
+def _env_memory_block_override(env: dict[str, str] | None = None) -> bool | None:
+    """Return the `AELFRICE_MEMORY_BLOCK` override, or None to fall through."""
+    env_map = env if env is not None else dict(os.environ)
+    raw = env_map.get(ENV_MEMORY_BLOCK)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _MEMORY_BLOCK_ENV_FALSY:
+        return False
+    if norm in _MEMORY_BLOCK_ENV_TRUTHY:
+        return True
+    return None
+
+
+def memory_block_enabled(
+    start: Path | None = None,
+    *,
+    env: dict[str, str] | None = None,
+    stderr: IO[str] | None = None,
+) -> bool:
+    """Resolve whether the UPS `<aelfrice-memory>` block is emitted.
+
+    Resolution order:
+    1. `AELFRICE_MEMORY_BLOCK` env var, when set to a recognised
+       truthy/falsy value (overrides TOML).
+    2. `[memory_block] enabled` in the nearest `.aelfrice.toml`.
+    3. Default `True`.
+
+    Missing file / missing section / malformed TOML / wrong-typed values
+    all degrade to the default with a stderr trace; never raises.
+    """
+    serr: IO[str] = stderr if stderr is not None else sys.stderr
+    override = _env_memory_block_override(env)
+    if override is not None:
+        return override
+    candidate = discover_config(start)
+    if candidate is None:
+        return True
+    try:
+        raw = candidate.read_bytes()
+    except OSError as exc:
+        print(f"aelfrice hook: cannot read {candidate}: {exc}", file=serr)
+        return True
+    try:
+        parsed: dict[str, Any] = tomllib.loads(
+            raw.decode("utf-8", errors="replace"),
+        )
+    except tomllib.TOMLDecodeError as exc:
+        print(f"aelfrice hook: malformed TOML in {candidate}: {exc}", file=serr)
+        return True
+    section_obj: Any = parsed.get(MEMORY_BLOCK_SECTION, {})
+    if not isinstance(section_obj, dict):
+        return True
+    enabled_obj: Any = cast(dict[str, Any], section_obj).get(
+        MEMORY_BLOCK_ENABLED_KEY, True,
+    )
+    if not isinstance(enabled_obj, bool):
+        print(
+            f"aelfrice hook: ignoring [{MEMORY_BLOCK_SECTION}] "
+            f"{MEMORY_BLOCK_ENABLED_KEY} in {candidate} (expected bool)",
+            file=serr,
+        )
+        return True
+    return enabled_obj
+
+
 def _dedup_by_content_hash(hits: list[Belief]) -> list[Belief]:
     """Return hits with duplicate content hashes removed (first occurrence wins)."""
     seen_hashes: set[str] = set()
@@ -1022,6 +1118,11 @@ def user_prompt_submit(
         # <recent-work> builder above. Falls back to process cwd when the
         # payload carries no cwd (start=None → Path.cwd()).
         config = load_user_prompt_submit_config(start=payload_cwd, stderr=serr)
+        # #1359: user off-switch for the injected block. Resolved from the
+        # payload's cwd for the same project-relative reason as `config`.
+        # Read here rather than at each write site so both emit paths ask
+        # the question once, on the same answer.
+        emit_memory_block = memory_block_enabled(start=payload_cwd, stderr=serr)
         # #606: sentiment-feedback lane — apply correction signals from
         # this prompt to the prior UPS turn's retrieved beliefs BEFORE
         # this turn's retrieval, so demoted posteriors are reflected in
@@ -1232,6 +1333,14 @@ def user_prompt_submit(
             coverage = _coverage_line(len(hits), tel, prompt)
             if coverage:
                 body = body + coverage
+            if not emit_memory_block:
+                # Nothing reaches the prompt. Blank the block before the
+                # audit write too: `aelf tail` is the inspection surface
+                # the hint names, and its `tokens` field is derived from
+                # `rendered_block` — leaving the text in would report an
+                # injection that never happened. `beliefs[]` still records
+                # what retrieval found.
+                body = ""
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
             sout.write(body)
             # AC1: append telemetry record for fires that produce a block.
@@ -1310,7 +1419,9 @@ def user_prompt_submit(
                 stderr=serr,
             )
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
-            if session_start_block:
+            if session_start_block and emit_memory_block:
+                # #1359: the same <aelfrice-memory> envelope, so it answers
+                # to the same off-switch.
                 body = _format_hits_with_session_start([], session_start_block)
                 sout.write(body)
             else:
