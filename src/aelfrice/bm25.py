@@ -1548,8 +1548,7 @@ class BM25IndexCache:
     build; an unwritable sidecar is skipped silently.
 
     Per-instance: two caches pointing at different stores never share
-    state. Thread safety is the caller's responsibility (matches the
-    contract of `aelfrice.retrieval.RetrievalCache`).
+    state. Thread safety is the caller's responsibility.
     """
 
     store: MemoryStore

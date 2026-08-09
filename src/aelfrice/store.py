@@ -1562,7 +1562,8 @@ class MemoryStore:
 
     # --- Invalidation callbacks ------------------------------------------
     #
-    # External components (e.g. RetrievalCache) register a zero-arg callback
+    # External components (e.g. `BM25IndexCache`, `graph_spectral`) register
+    # a zero-arg callback
     # that is fired on every belief/edge mutation. Used to wipe derived
     # state — query result caches, materialized views — that depends on the
     # store's contents. Callback order is registration order; exceptions

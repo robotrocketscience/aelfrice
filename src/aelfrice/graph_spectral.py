@@ -17,8 +17,10 @@ confidence (``α/(α+β)``); ``combine_log_scores`` is the log-additive
 ranking formula ``log(BM25F) + 1.0 * log(heat_safe) + 0.5 * log(post)``.
 
 All construction is offline — no query-time cost. Rebuild is wired to
-the same store-mutation invalidation callback that ``RetrievalCache``
-subscribes to (extending the registry, not duplicating it).
+``MemoryStore.add_invalidation_callback``, the shared store-mutation
+registry (extending it, not duplicating it). The registry predates this
+module and has four subscribers; see docs/design/historical/lru_query_cache.md
+for the one that motivated it and was later removed.
 """
 from __future__ import annotations
 
