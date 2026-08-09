@@ -48,7 +48,11 @@ from aelfrice.lock_expiry import (
 # the way `for the next week` does — implied by "next" — and that
 # spelling was still invisible after the first pass at this fix. Same
 # for the count class, whose scale words ("two hundred days", "a dozen
-# days") sit in a slot no leading-word list reaches.
+# days") sit in a slot no leading-word list reaches, and same for the
+# quantifier class, whose articled entries ("a couple of", "a number
+# of") were unreachable under `_UNUSABLE_WINDOW_RE`'s own `the next`
+# prefix — the prefix eats the article — so only the entries that
+# happened to be listed unarticled ("few", "several") worked there.
 _CLASSES = [
     pytest.param("for 30 minutes", id="sub-day-digit"),
     pytest.param("for two hours", id="sub-day-word"),
@@ -62,6 +66,14 @@ _CLASSES = [
     pytest.param("for a few days", id="quantifier-few"),
     pytest.param("for several days", id="quantifier-several"),
     pytest.param("for a couple of days", id="quantifier-couple"),
+    pytest.param("for a number of days", id="quantifier-number-of"),
+    pytest.param(
+        "for the next couple of days", id="quantifier-couple-under-prefix",
+    ),
+    pytest.param(
+        "for the next number of hours", id="quantifier-number-of-under-prefix",
+    ),
+    pytest.param("for the next few hours", id="quantifier-few-under-prefix"),
     pytest.param("for 2-3 days", id="range"),
 ]
 

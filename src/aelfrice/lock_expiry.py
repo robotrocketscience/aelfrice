@@ -270,6 +270,26 @@ _LARGE_NUMBER_SUFFIX: Final[str] = (
     r"(?:[-\s](?:one|two|three|four|five|six|seven|eight|nine))?"
 )
 
+# Counts that name a quantity without fixing it. Ordered longest-first
+# so "a couple of days" is read as one quantifier and not as "a couple"
+# followed by a unit word "of".
+#
+# The article is NOT baked into an entry. It used to be ("a couple of",
+# "a number of"), and `_UNUSABLE_WINDOW_RE`'s shared `(?:the\s+)?
+# (?:next\s+)?` prefix eats the article slot, so those spellings were
+# unreachable in "for the next couple of days" while "few" — listed
+# unarticled — worked there. The article gets its own optional slot
+# instead, which is what makes the articled and unarticled forms behave
+# identically (#1440).
+_QUANTIFIER_WORDS: Final[tuple[str, ...]] = (
+    "number of", "couple of", "couple", "several",
+    "numerous", "many", "some", "few",
+)
+
+_QUANTIFIER: Final[str] = (
+    r"(?:a\s+)?(?:" + "|".join(_QUANTIFIER_WORDS) + r")"
+)
+
 # Scale words, which never occupy that leading slot: English writes "two
 # hundred days" and "a dozen days", never "hundred days". Listed beside
 # `_LARGE_NUMBER_WORDS` they were unreachable in every sentence that
@@ -293,14 +313,6 @@ _SCALED_COUNT: Final[str] = (
     + r")s?"
 )
 
-# Counts that name a quantity without fixing it. Ordered longest-first
-# so "a couple of days" is read as one quantifier and not as "a couple"
-# followed by a unit word "of".
-_QUANTIFIER_WORDS: Final[tuple[str, ...]] = (
-    "a number of", "a couple of", "a couple", "a few", "several",
-    "numerous", "many", "some", "few",
-)
-
 # A window stated OUTSIDE the count/unit vocabulary above. It resolves to
 # nothing, but it is stated, and the module's rule for a stated-but-
 # unusable window is the zero-length one's: record it, do not drop it, so
@@ -317,7 +329,7 @@ _UNUSABLE_WINDOW_RE: Final[re.Pattern[str]] = re.compile(
     # An unreadable count with any unit word: "a few days", "twenty
     # days", "two hundred days", "2-3 days".
     r"(?:"
-    + "|".join(_QUANTIFIER_WORDS)
+    + _QUANTIFIER
     + r"|(?:" + "|".join(_LARGE_NUMBER_WORDS) + r")" + _LARGE_NUMBER_SUFFIX
     + r"|" + _SCALED_COUNT
     + r"|\d+\s*[-–—]\s*\d+"
