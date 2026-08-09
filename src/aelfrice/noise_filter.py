@@ -259,11 +259,26 @@ _TRANSCRIPT_ACK_BARE_RE: Final[re.Pattern[str]] = re.compile(
 #
 # The word-character requirement before the stop is what keeps `git add .`
 # and `cd /tmp/.` on the noise side: their trailing dot is an argument, not
-# a full stop. Measured over 17,562 user sentences from this repo's own
-# archived transcripts, this rescues 20 sentences the ack arm was
-# discarding — every one of them real content — while introducing zero new
+# a full stop. Measured over 17,592 user sentences from this repo's own
+# archived transcripts, this rescues 19 rows — 10 distinct sentences,
+# because three of them recur four times each — while introducing zero new
 # discards, and it changes nothing at all for the 135 genuine pasted
 # commands, none of which ends in prose punctuation.
+#
+# Not all ten are the same kind of thing, and the earlier claim that every
+# rescued row was real content was wrong. Two are the product's own policy
+# statements ("No telemetry, no network calls, no accounts.", "No action
+# required after aelf setup.", 8 of the 19 rows); two are operator
+# directives ("No work around.", the #1371 §1 acceptance case); and six —
+# 9 of the 19 rows — are **ephemeral session status** ("No failures yet.",
+# "No mutations attempted."), true of one run and of nothing after it.
+# Those ingest as `factual`/`agent_inferred` at alpha=3.0, beta=1.0, i.e. a
+# posterior mean of 0.75, which is a real percolation concern and a
+# different signal class from the ack and shell arms this rule addresses.
+# It is disclosed rather than filtered here: a recency/scope rule for
+# session status is its own change, not a clause bolted onto a punctuation
+# test. An eleventh rescued sentence *was* a pure acknowledgement; it is
+# now a member of `_TRANSCRIPT_ACK_PHRASES` below.
 _TRANSCRIPT_PROSE_END_RE: Final[re.Pattern[str]] = re.compile(r"[\w)\"']\.$")
 
 # Genuine acknowledgements that *do* carry terminal punctuation, so the
@@ -667,8 +682,10 @@ def is_transcript_noise(sentence: str) -> bool:
     # The old rule allowed 40 characters of *arbitrary* content after the
     # keyword, so it discarded the product's own policy statements —
     # "No vector embeddings, ever.", "No telemetry, no network calls, no
-    # accounts.". Of the 32 sentences it dropped across 17,562 archived
-    # user sentences, 20 were durable content.
+    # accounts.". Of the 32 rows it dropped across 17,592 archived user
+    # sentences, 19 are rescued here — 10 distinct sentences, not all of
+    # them durable; see the `_TRANSCRIPT_PROSE_END_RE` block above for the
+    # breakdown and for what is knowingly left admitted.
     #
     # A bare keyword is always an ack. A keyword with a continuation is an
     # ack only when it is not written prose (see `_looks_like_written_prose`),
@@ -697,7 +714,7 @@ def is_transcript_scaffolding(sentence: str) -> bool:
     `<task-notification>` block and wrong for a prompt that merely opens
     with "Yes.".
 
-    Measured on this repo's 6,268 archived user prompts: 759 of the 805
+    Measured on this repo's 6,274 archived user prompts: 762 of the 805
     whole-prompt drops are category 3, and only 32 are acks.
     """
     if not sentence or not sentence.strip():
@@ -712,7 +729,7 @@ def is_transcript_scaffolding(sentence: str) -> bool:
     # keeps `git add .` on the noise side while rescuing the sentence.
     #
     # Honest scope: unlike the ack arm, this rescues **nothing** on the
-    # measured corpus — all 135 shell-prefixed sentences in 17,562 are
+    # measured corpus — all 135 shell-prefixed rows (37 distinct) in 17,592 are
     # still discarded. That is a limit of *this* rule, not a property of
     # the population: at least two of those rows are prose about a tool,
     # not pasted commands —

@@ -576,8 +576,8 @@ def _handle_user_prompt_submit(payload: dict[str, object]) -> None:
         # every sentence in it is noise.
         #
         # Not sentence-granularity across the board, which is what #1371's
-        # acceptance text asks for: measured on this repo's 6,268 archived
-        # user prompts, that reading would have *kept* 763 multi-sentence
+        # acceptance text asks for: measured on this repo's 6,274 archived
+        # user prompts, that reading would have *kept* 751 multi-sentence
         # `<task-notification>` blocks, because their prose lines are not
         # individually noise. That is precisely the flooding #747 added
         # this gate to stop.

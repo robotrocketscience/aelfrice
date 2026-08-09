@@ -271,8 +271,8 @@ def test_a_harness_block_is_still_dropped_whole(
     """The regression the acceptance text's literal reading would have caused.
 
     A `<task-notification>` block's prose lines are not individually noise,
-    so plain sentence-granularity keeps it — measured, that is 763 of this
-    repo's 6,268 archived prompts, which is exactly the flooding #747 added
+    so plain sentence-granularity keeps it — measured, that is 751 of this
+    repo's 6,274 archived prompts, which is exactly the flooding #747 added
     the gate to stop. Scaffolding is judged on the whole payload instead.
 
     Falsifiable by dropping the `is_transcript_scaffolding` arm from the

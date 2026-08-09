@@ -8,7 +8,7 @@
 # the nine examples #1371's acceptance text names (executed against the
 # pre-fix predicate in #1159's audit finding, all nine returning True), and
 # rows the filter was measurably discarding on this repo's own archived
-# transcripts (17,562 user sentences) before the fix.
+# transcripts (17,592 user sentences) before the fix.
 #
 # Add a row here when a real belief is found to have been filtered. Do not
 # add a row to make a failing test pass without first checking the sentence
