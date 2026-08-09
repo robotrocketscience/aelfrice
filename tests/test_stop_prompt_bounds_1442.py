@@ -208,7 +208,14 @@ def test_the_autolock_caveat_counts_the_whole_set_not_the_shown_slice() -> None:
     Here all 25 are correction-class, so the flag covers the entire set
     and the "does not cover the rest" caveat must be absent — which it
     would not be if the comparison used the 20 shown against the 25
-    total. Falsifiable by scoping `covered` to `shown`.
+    total. Falsifiable by comparing `len(covered)` against the shown
+    count while leaving `covered` itself over the whole set.
+
+    This case alone is **not** sufficient: scoping `covered` *and* the
+    comparison to `shown` together is self-consistent and passes here,
+    because an all-correction-class list agrees under either scoping.
+    `test_the_autolock_caveat_survives_a_mixed_list_across_the_cap`
+    is the arm that separates them.
     """
     cands = [
         _belief(f"c{i:03d}", f"Actually it is {i}, not {i + 1}.",
@@ -218,6 +225,41 @@ def test_the_autolock_caveat_counts_the_whole_set_not_the_shown_slice() -> None:
     out = _format_stop_prompt(cands)
     assert "AELF_AUTOLOCK_CORRECTIONS=1." in out
     assert "does not cover the rest" not in out
+
+
+def test_the_autolock_caveat_survives_a_mixed_list_across_the_cap() -> None:
+    """The class boundary and the cap boundary are put in different
+    places, which is the only configuration that pins the scope.
+
+    The shown slice is entirely correction-class and everything the cap
+    withheld is not, so `AELF_AUTOLOCK_CORRECTIONS=1` covers 20 of 25
+    candidates while covering 20 of the 20 the user can see. Computing
+    `covered` over `shown` — the self-consistent half of the mutation,
+    which the all-correction-class case above passes — drops the caveat
+    and tells the user the flag covers a list of which five items it does
+    not. The flag writes over the whole candidate set, cap or no cap, so
+    the caveat has to be computed there too.
+    """
+    corrections = [
+        _belief(f"c{i:03d}", f"Actually it is {i}, not {i + 1}.",
+                created=f"2026-08-09T00:{i:02d}:00Z", type_=BELIEF_CORRECTION)
+        for i in range(STOP_PROMPT_MAX_ITEMS)
+    ]
+    # Withheld by the cap and outside the flag's population: `factual` /
+    # `user_transcript` is what production `derive()` types a #1315
+    # directive as.
+    directives = [
+        _belief(f"d{i:03d}", f"Always use rule {i}.",
+                created=f"2026-08-09T01:{i:02d}:00Z", type_=BELIEF_FACTUAL,
+                origin=ORIGIN_USER_TRANSCRIPT)
+        for i in range(5)
+    ]
+    out = _format_stop_prompt(corrections + directives)
+
+    assert "and 5 older beliefs from this session, not shown" in out
+    assert "does not cover the rest" in out, (
+        "the caveat was computed over the shown slice, not the whole set"
+    )
 
 
 @pytest.mark.parametrize("n", [1, STOP_PROMPT_MAX_ITEMS])
