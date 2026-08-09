@@ -14,9 +14,18 @@ Yes
 No
 
 # --- punctuated but contentless acks (the closed allowlist) -------------
+# All seven members of `_TRANSCRIPT_ACK_PHRASES`, and the whole list, because
+# the allowlist is the one place the prose rule is overridden by name. Four of
+# these were unpinned: deleting them from the frozenset left the suite green,
+# so the "closed set that only grows by someone naming a phrase" framing was
+# not enforced by anything.
 Ready when you are.
 Nothing to report.
 No changes needed.
+Polling for results.
+Nothing further.
+No problem.
+Standing by for your direction.
 
 # --- unpunctuated chat acks ---------------------------------------------
 Yes keep working

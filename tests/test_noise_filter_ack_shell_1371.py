@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from aelfrice.noise_filter import (
+    _TRANSCRIPT_ACK_PHRASES,
     _looks_like_written_prose,
     is_transcript_noise,
     is_transcript_scaffolding,
@@ -92,6 +93,21 @@ def test_scaffolding_and_bare_acks_are_still_discarded(sentence: str) -> None:
     """The control. Rescuing everything passes the corpus above and fails
     here."""
     assert is_transcript_noise(sentence) is True, sentence
+
+
+def test_the_ack_allowlist_is_closed_and_every_member_is_pinned() -> None:
+    """The allowlist is the one place the prose rule is overridden by name,
+    so its membership is the thing to pin, not its behaviour in general.
+
+    Every phrase must appear in the control corpus: a phrase in the frozenset
+    with no corpus row is unpinned (deleting it leaves the suite green), and a
+    corpus row with no frozenset entry means the row is being discarded by
+    some other arm than the one the block claims. The count is asserted
+    because the release notes state it — an auditor counting rows must find
+    the number the changelog gives.
+    """
+    assert len(_TRANSCRIPT_ACK_PHRASES) == 7
+    assert set(_TRANSCRIPT_ACK_PHRASES) <= set(MUST_DIE)
 
 
 def test_the_prose_test_is_what_separates_them() -> None:
