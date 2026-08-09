@@ -377,3 +377,49 @@ def test_the_pr_metadata_workflow_cannot_be_dispatched() -> None:
         assert job not in _jobs("staging-gate.yml"), (
             f"{job} is back in staging-gate.yml, which is dispatchable"
         )
+
+
+# Keys that take the SAME value on a `pull_request` run and on a
+# `workflow_dispatch` run of the same branch. Any of them in the concurrency
+# group makes the two events collide.
+_COLLIDING_CONCURRENCY_KEYS = ("github.head_ref", "github.ref_name", "github.sha")
+
+
+@pytest.mark.parametrize("workflow", sorted(_REQUIRED_CONTEXT_WORKFLOWS))
+def test_a_dispatch_cannot_cancel_a_pull_requests_own_run(workflow: str) -> None:
+    """`cancel-in-progress` plus a colliding group key would cancel a required check.
+
+    And a cancelled check-run reads as **green**, not as a failure: merge-train's
+    `FAILING_CONCLUSIONS` is `{failure, timed_out, action_required}`, a completed
+    run is not in `PENDING_STATUSES`, and the row exists so it is not `missing`
+    either. Every signal is an absence test that a cancelled row satisfies — the
+    same shape as the empty-rollup hole #1435 closed.
+
+    The group is safe today because its two arms cannot produce the same value:
+    a `pull_request` run keys on `github.event.pull_request.number` (an integer)
+    and a dispatch falls through to `github.ref` (`refs/heads/<branch>`). Keys
+    like `github.head_ref` or `github.ref_name` are identical across the two
+    events, so substituting one would make a dispatch cancel the PR's in-flight
+    run and turn its required checks green-by-cancellation.
+    """
+    lines = _text(workflow).splitlines()
+    i = next(k for k, line in enumerate(lines) if line.rstrip() == "concurrency:")
+    group = next(l for l in lines[i + 1 :] if l.strip().startswith("group:"))
+    cancels = any(
+        "cancel-in-progress: true" in l for l in lines[i + 1 : i + 4]
+    )
+    if not cancels:
+        return
+    assert "github.event.pull_request.number" in group, (
+        f"{workflow}: with cancel-in-progress, the concurrency group must key the "
+        "pull_request arm on the PR number so it can never equal the dispatch "
+        f"arm's `github.ref` (#1436): {group.strip()!r}"
+    )
+    for key in _COLLIDING_CONCURRENCY_KEYS:
+        assert key not in group, (
+            f"{workflow}: `{key}` takes the same value on a pull_request run and "
+            "on a dispatch of the same branch, so with cancel-in-progress a "
+            "dispatch would cancel the PR's in-flight run — and a cancelled "
+            "required check-run evaluates as green in merge-train's rollup "
+            f"(#1436): {group.strip()!r}"
+        )
