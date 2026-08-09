@@ -24,6 +24,8 @@ Three corpora, because any one of them alone is passed by a wrong fix:
 
 from __future__ import annotations
 
+import ast
+
 import hashlib
 import json
 
@@ -184,6 +186,35 @@ def test_default_bank_is_the_unconstrained_one() -> None:
         )
 
 
+def _extract_triples_calls(module: object) -> list[ast.Call]:
+    """Every `extract_triples(...)` call in `module`, parsed rather than grepped.
+
+    These two call sites are the whole scoping decision — the write path opts
+    in, the read path must not — and both were asserted by scanning source
+    *lines* for a substring. That is not a behaviour assert wearing a
+    behaviour assert's docstring; it is a formatting assert. Rewriting the
+    rebuilder's call across several lines moves the keyword onto a line that
+    does not contain `extract_triples(`, so the negative guard stops seeing it
+    and the read path can be constrained on every prompt with the full suite
+    green (verified: 7,667 passed, byte-identical to the unmutated run). The
+    positive guard has the opposite defect — it requires one exact literal, so
+    a harmless line wrap fails it, and a mention in a comment satisfies it.
+
+    Parsing the module removes both. Formatting is invisible to the AST, and a
+    string in a comment is not a `Call` node.
+    """
+    from pathlib import Path
+
+    tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "extract_triples"
+    ]
+
+
 def test_context_rebuilder_does_not_pass_the_constraint() -> None:
     """The read-path call site must stay byte-identical (ruling 2026-08-06).
 
@@ -191,15 +222,17 @@ def test_context_rebuilder_does_not_pass_the_constraint() -> None:
     rebuilder's own call is buried behind a store and a query, and a test
     that drove it would not fail for the reason this one is named after.
     """
-    from pathlib import Path
-
     import aelfrice.context_rebuilder as cr
 
-    src = Path(cr.__file__).read_text(encoding="utf-8")
-    calls = [ln.strip() for ln in src.splitlines() if "extract_triples(" in ln]
+    calls = _extract_triples_calls(cr)
     assert calls, "extract_triples call site vanished from context_rebuilder"
     for call in calls:
-        assert "constrain_collision_verbs" not in call, call
+        passed = {kw.arg for kw in call.keywords}
+        assert "constrain_collision_verbs" not in passed, (
+            "the read path opted into the write-path constraint at "
+            f"context_rebuilder.py:{call.lineno} — every prompt would be "
+            "filtered, which the 2026-08-06 ruling forbids"
+        )
 
 
 def test_hook_commit_ingest_does_pass_the_constraint() -> None:
@@ -208,12 +241,22 @@ def test_hook_commit_ingest_does_pass_the_constraint() -> None:
     Threading a parameter nothing passes is the failure mode that would
     leave this whole change inert while every other test here stays green.
     """
-    from pathlib import Path
-
     import aelfrice.hook_commit_ingest as hci
 
-    src = Path(hci.__file__).read_text(encoding="utf-8")
-    assert "extract_triples(body, constrain_collision_verbs=True)" in src
+    calls = _extract_triples_calls(hci)
+    assert calls, "extract_triples call site vanished from hook_commit_ingest"
+    for call in calls:
+        passed = {
+            kw.arg: kw.value
+            for kw in call.keywords
+            if isinstance(kw.value, ast.Constant)
+        }
+        assert passed.get("constrain_collision_verbs") is not None, (
+            "the write path stopped opting in at "
+            f"hook_commit_ingest.py:{call.lineno} — the constraint would be "
+            "threaded but inert, and every other test here would stay green"
+        )
+        assert passed["constrain_collision_verbs"].value is True
 
 
 # --- The bank composition itself --------------------------------------
