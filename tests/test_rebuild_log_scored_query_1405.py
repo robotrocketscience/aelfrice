@@ -303,3 +303,53 @@ def test_rebuild_v14_logs_the_same_string_it_handed_retrieve(
     assert rows[0]["input"]["extracted_query"] == logged.removeprefix(
         "TRANSFORMED "
     ), "extracted_query must remain the pre-transform value, not be overwritten"
+
+
+def test_the_gate_skip_branch_cannot_reach_the_retrieval_query_emit() -> None:
+    """Why CodeQL alert 566 is a false positive — enforced, not argued.
+
+    CodeQL flags `retrieval_query` at `hook.py:1164` as possibly-uninitialised,
+    and by pure control flow it is right: line 1164 lives under `if hits:`,
+    which is a *sibling* of the `if gate_skip:` block that assigns
+    `retrieval_query`. Nothing in the syntax stops the gate-skip path reaching
+    it.
+
+    What stops it is a correlation the analyser cannot see: the gate-skip
+    branch assigns `hits = []`, so `if hits:` is always false on that path and
+    control goes to the sibling emit that passes `scored_query=None`.
+
+    That argument is only as durable as the empty list. Give the gate-skip
+    branch any non-empty `hits` and line 1164 becomes a live `NameError` --
+    swallowed by the handler at `hook.py:1343`, so it would surface as a
+    silently missing rebuild_log row rather than a failure. This test pins the
+    premise so the dismissal cannot rot: it asserts the branch assigns exactly
+    `hits = []` and nothing else.
+    """
+    import ast
+
+    source = (
+        Path(__file__).resolve().parents[1] / "src" / "aelfrice" / "hook.py"
+    ).read_text()
+    fn = next(
+        n for n in ast.walk(ast.parse(source))
+        if isinstance(n, ast.FunctionDef) and n.name == "user_prompt_submit"
+    )
+    branch = next(
+        n for n in ast.walk(fn)
+        if isinstance(n, ast.If)
+        and isinstance(n.test, ast.Name)
+        and n.test.id == "gate_skip"
+        and n.orelse
+    )
+
+    assert len(branch.body) == 1, (
+        "the gate-skip branch grew a statement; if it can now leave `hits` "
+        "non-empty, hook.py:1164 reads an unbound `retrieval_query`"
+    )
+    stmt = branch.body[0]
+    assert isinstance(stmt, ast.Assign)
+    assert [t.id for t in stmt.targets if isinstance(t, ast.Name)] == ["hits"]
+    assert isinstance(stmt.value, ast.List) and not stmt.value.elts, (
+        "gate-skip must assign an EMPTY hits list -- that emptiness is the "
+        "only thing keeping the `if hits:` emit unreachable from this path"
+    )
