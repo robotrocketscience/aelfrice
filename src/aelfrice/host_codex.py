@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, cast
 
+from aelfrice.launcher import command_launcher_key, owned_keys, program_token
 from aelfrice.setup import (
     SettingsScope,
     resolve_commit_ingest_command,
@@ -138,22 +139,33 @@ def desired_codex_hooks(scope: SettingsScope = "user") -> dict[str, list[dict[st
     }
 
 
-def _command_basename(handler: object) -> str:
-    """Basename of a handler's command's first token, '' on shape miss."""
+def _command_basename(handler: object, *, windows: bool | None = None) -> str:
+    """Ownership key of a handler's command, '' on shape miss.
+
+    #1412: platform-gated. On Windows the key is case-folded with the
+    launcher suffix removed, so ``...\\Scripts\\aelf-hook.EXE`` compares
+    equal to ``aelf-hook``. On POSIX it is the plain basename, unchanged.
+    """
     if not isinstance(handler, dict):
         return ""
     hd = cast(dict[str, object], handler)
     cmd = hd.get("command")
     if not isinstance(cmd, str) or not cmd.strip():
         return ""
-    return Path(cmd.split()[0]).name
+    return command_launcher_key(cmd, windows=windows)
 
 
-def _group_is_owned(group: object) -> bool:
-    """A matcher group is aelfrice's iff every handler in it is ours.
+def _handler_is_owned(handler: object, *, windows: bool | None = None) -> bool:
+    """True iff a single handler is one of ours."""
+    key = _command_basename(handler, windows=windows)
+    return bool(key) and key in owned_keys(_OWNED_BASENAMES, windows=windows)
 
-    Mixed groups (user handler + aelfrice handler in one group) are left
-    untouched — we never edit inside someone else's group.
+
+def _group_is_owned(group: object, *, windows: bool | None = None) -> bool:
+    """True iff every handler in a matcher group is ours.
+
+    Retained for coverage reporting. Reconciliation no longer routes
+    through it — see `_without_owned_handlers`.
     """
     if not isinstance(group, dict):
         return False
@@ -162,12 +174,65 @@ def _group_is_owned(group: object) -> bool:
     if not isinstance(handlers, list) or not handlers:
         return False
     return all(
-        _command_basename(h) in _OWNED_BASENAMES
+        _handler_is_owned(h, windows=windows)
         for h in cast(list[object], handlers)
     )
 
 
-def claude_host_has_aelfrice_hooks(settings_path: Path) -> bool:
+def _owned_handlers_in(
+    group: object, *, windows: bool | None = None,
+) -> list[object]:
+    """Every aelfrice handler inside a matcher group, in file order."""
+    if not isinstance(group, dict):
+        return []
+    gd = cast(dict[str, object], group)
+    handlers = gd.get("hooks")
+    if not isinstance(handlers, list):
+        return []
+    return [
+        h for h in cast(list[object], handlers)
+        if _handler_is_owned(h, windows=windows)
+    ]
+
+
+def _without_owned_handlers(
+    group: object, *, windows: bool | None = None,
+) -> object | None:
+    """Drop our handlers from a group; None when nothing survives.
+
+    #1412: ownership has to be decided per *handler*, not per group. The
+    previous group-level rule left a mixed group — one aelfrice handler
+    beside a foreign one — entirely untouched, which produced a data-loss
+    asymmetry: setup did not recognise the aelfrice handler and appended a
+    second one, then unsetup removed the group it had just created and left
+    the original stranded inside the mixed group forever.
+
+    Foreign handlers and every other key on the group (its ``matcher``, any
+    field a future Codex adds) are preserved exactly; only the ``hooks``
+    list is rewritten, and only when it actually changes.
+    """
+    if not isinstance(group, dict):
+        return group
+    gd = cast(dict[str, object], group)
+    handlers = gd.get("hooks")
+    if not isinstance(handlers, list):
+        return group
+    kept = [
+        h for h in cast(list[object], handlers)
+        if not _handler_is_owned(h, windows=windows)
+    ]
+    if len(kept) == len(cast(list[object], handlers)):
+        return group
+    if not kept:
+        return None
+    survivor = dict(gd)
+    survivor["hooks"] = kept
+    return survivor
+
+
+def claude_host_has_aelfrice_hooks(
+    settings_path: Path, *, windows: bool | None = None,
+) -> bool:
     """True iff the Claude-host settings.json wires any aelfrice hook.
 
     Used by `aelf setup --host codex` (#1053) to distinguish a
@@ -176,6 +241,11 @@ def claude_host_has_aelfrice_hooks(settings_path: Path) -> bool:
     fail-closed: a missing or unreadable settings file counts as "no
     hooks" — the worst case of a false negative is an opt-out the user
     can undo with one explicit `aelf setup`.
+
+    #1412: this is the third consumer of the ownership-key derivation, and
+    the one whose failure is silent. On Windows the old basename never
+    started with ``aelf-``, so a dual-host machine read as Codex-only and
+    the Claude auto-install opt-out was written over a live install.
     """
     if not settings_path.is_file():
         return False
@@ -196,7 +266,8 @@ def claude_host_has_aelfrice_hooks(settings_path: Path) -> bool:
                 continue
             gd = cast(dict[str, object], group)
             for handler in cast(list[object], gd.get("hooks", []) or []):
-                if _command_basename(handler).startswith("aelf-"):
+                key = _command_basename(handler, windows=windows)
+                if key.startswith("aelf-"):
                     return True
     return False
 
@@ -215,12 +286,18 @@ def install_codex_hooks(
     *,
     scope: SettingsScope = "user",
     force: bool = False,
+    windows: bool | None = None,
 ) -> CodexInstallResult:
     """Write the aelfrice hook set into ``hooks_path``, merge-aware.
 
     Refuses (with ``error`` set) when the existing file is unparseable
     and ``force`` is False; ``force`` replaces the broken file with a
     fresh aelfrice-only document.
+
+    ``windows`` is the #1412 platform seam: `None` reads `os.name` at call
+    time, and an explicit bool drives the other platform's ownership rules.
+    Without it the Windows branch is unreachable from POSIX CI, which is why
+    this defect shipped.
     """
     existing: dict[str, object] = {}
     if hooks_path.is_file():
@@ -255,7 +332,14 @@ def install_codex_hooks(
         current_list = (
             cast(list[object], current) if isinstance(current, list) else []
         )
-        kept = [g for g in current_list if not _group_is_owned(g)]
+        kept = [
+            survivor
+            for survivor in (
+                _without_owned_handlers(g, windows=windows)
+                for g in current_list
+            )
+            if survivor is not None
+        ]
         hooks_map[event] = kept + cast(list[object], groups)
     existing["hooks"] = hooks_map
     after = json.dumps({"hooks": hooks_map}, sort_keys=True)
@@ -286,11 +370,16 @@ def install_codex_hooks(
     )
 
 
-def remove_codex_hooks(hooks_path: Path) -> CodexInstallResult:
-    """Remove aelfrice-owned matcher groups; drop emptied events.
+def remove_codex_hooks(
+    hooks_path: Path, *, windows: bool | None = None,
+) -> CodexInstallResult:
+    """Remove aelfrice-owned handlers; drop emptied groups and events.
 
     A missing or unparseable file is reported, not modified — uninstall
     never destroys content it cannot positively identify as ours.
+
+    #1412: removal is per handler. A mixed group keeps its foreign handler
+    and its matcher; only the group that ends up empty is dropped.
     """
     if not hooks_path.is_file():
         return CodexInstallResult(path=hooks_path, changed=False)
@@ -318,8 +407,15 @@ def remove_codex_hooks(hooks_path: Path) -> CodexInstallResult:
         groups = hooks_map[event]
         if not isinstance(groups, list):
             continue
-        kept = [g for g in cast(list[object], groups) if not _group_is_owned(g)]
-        if len(kept) != len(cast(list[object], groups)):
+        group_list = cast(list[object], groups)
+        kept = [
+            survivor
+            for survivor in (
+                _without_owned_handlers(g, windows=windows) for g in group_list
+            )
+            if survivor is not None
+        ]
+        if kept != group_list:
             changed = True
             removed_events.append(event)
             if kept:
@@ -722,7 +818,9 @@ class CodexDoctorReport:
     warnings: list[str] = field(default_factory=list[str])
 
 
-def doctor_codex(codex_dir: Path | None = None) -> CodexDoctorReport:
+def doctor_codex(
+    codex_dir: Path | None = None, *, windows: bool | None = None,
+) -> CodexDoctorReport:
     """Scan the Codex host: hooks.json shape, coverage, flag, trust.
 
     Read-only. Reports rather than raises; the CLI decides exit codes.
@@ -760,16 +858,20 @@ def doctor_codex(codex_dir: Path | None = None) -> CodexDoctorReport:
         if not isinstance(groups, list):
             continue
         for group in cast(list[object], groups):
-            if not _group_is_owned(group):
+            # #1412: count per handler. Gating on a fully-owned group made
+            # an aelfrice handler sharing a group with a foreign one
+            # invisible to doctor — the same blind spot that let setup
+            # duplicate it.
+            owned = _owned_handlers_in(group, windows=windows)
+            if not owned:
                 continue
             covered.add(event)
-            gd = cast(dict[str, object], group)
-            for handler in cast(list[object], gd.get("hooks", [])):
+            for handler in owned:
                 report.owned_handler_count += 1
                 hd = cast(dict[str, object], handler)
                 cmd = hd.get("command")
                 if isinstance(cmd, str):
-                    exe = Path(cmd.split()[0])
+                    exe = Path(program_token(cmd, windows=windows))
                     if (
                         exe.is_absolute()
                         and not exe.exists()
@@ -779,11 +881,23 @@ def doctor_codex(codex_dir: Path | None = None) -> CodexDoctorReport:
     report.missing_events = sorted(expected_events - covered)
     for cmd in report.stale_commands:
         report.warnings.append(f"hook command not found on disk: {cmd}")
-    if report.owned_handler_count and report.missing_events:
-        report.warnings.append(
-            "aelfrice hook coverage incomplete; missing events: "
-            + ", ".join(report.missing_events),
-        )
+    if report.missing_events:
+        # #1412: this used to be gated on `owned_handler_count and ...`, so
+        # the *worst* state — a hooks.json present and valid with zero
+        # recognised aelfrice handlers — produced no warning at all. That is
+        # exactly what a Windows user saw: seven duplicated groups on disk,
+        # doctor reporting nothing wrong.
+        if report.owned_handler_count:
+            report.warnings.append(
+                "aelfrice hook coverage incomplete; missing events: "
+                + ", ".join(report.missing_events),
+            )
+        elif report.hooks_file_present and report.hooks_file_valid:
+            report.warnings.append(
+                "no aelfrice hook handlers recognised in "
+                f"{hooks_path}; expected events are all missing "
+                "(run `aelf setup --host codex`)",
+            )
 
     config_path = codex_config_path(cdir)
     if config_path.is_file():
