@@ -27,7 +27,7 @@ when the user has set `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8` themselves.
 from __future__ import annotations
 
 import sys
-from typing import IO, Any
+from typing import IO, Any, cast
 
 _UTF8_ALIASES = frozenset({"utf8", "utf_8"})
 
@@ -67,4 +67,68 @@ def ensure_utf8_streams(streams: tuple[IO[str], ...] | None = None) -> None:
             continue
 
 
-__all__ = ["ensure_utf8_streams"]
+def read_hook_stdin(
+    stream: IO[str] | None = None,
+    stderr: IO[str] | None = None,
+) -> str:
+    """Read one hook payload as UTF-8, whatever the process locale (#1426).
+
+    Hosts write hook payloads as UTF-8 bytes. `sys.stdin.read()` decodes them
+    through the *interpreter's* stdio encoding, which on Windows with
+    redirected stdin is the ANSI code page — so a payload containing any
+    non-ascii character is parsed as locale-mangled text, and whatever
+    survives is stored as though the user typed it::
+
+        >>> '東京'.encode().decode('cp1252', errors='surrogateescape')
+        'æ\\udc9d±äº¬'
+
+    Reading the byte stream and decoding it strictly removes the locale from
+    the path entirely. `ensure_utf8_streams` cannot do this job: it
+    reconfigures *output* streams, and reconfiguring stdin after the wrapper
+    exists would not recover bytes already consumed.
+
+    **Returns `""` on undecodable input rather than replacement text.** A
+    prompt silently corrupted into the store is worse than a turn where the
+    hook did nothing, and every caller already treats an empty read as
+    "nothing to do", so this needs no signature changes anywhere. A one-line
+    diagnostic goes to `stderr` so the drop is visible rather than mute.
+
+    Falls back to a text-mode read when the stream has no usable `buffer`.
+    That covers `StringIO` under test, and deliberately preserves pytest's
+    behaviour: `_pytest.capture.DontReadFromInput.buffer` is a property
+    returning `self`, whose `read()` raises `OSError`, so the error still
+    propagates exactly as it does today instead of being converted into a
+    silent empty payload.
+    """
+    target: Any = sys.stdin if stream is None else stream
+    if target is None:
+        return ""
+    buffer: Any = getattr(target, "buffer", None)
+    if buffer is None or buffer is target:
+        # No byte layer, or pytest's self-returning stub. Read as text and
+        # let whatever it does happen -- including raising.
+        return cast(str, target.read())
+    try:
+        data: bytes = buffer.read()
+    except (AttributeError, ValueError):
+        # Detached or already-consumed byte layer.
+        return cast(str, target.read())
+    if isinstance(data, str):
+        # A test double whose `buffer` is itself text-mode.
+        return data
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        out: Any = sys.stderr if stderr is None else stderr
+        try:
+            print(
+                "aelfrice: hook payload was not valid UTF-8; skipping this "
+                f"turn rather than storing mangled text ({len(data)} bytes)",
+                file=out,
+            )
+        except Exception:
+            pass
+        return ""
+
+
+__all__ = ["ensure_utf8_streams", "read_hook_stdin"]

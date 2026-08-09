@@ -72,7 +72,7 @@ from aelfrice import wonder_consolidation
 from aelfrice import __version__ as _AELFRICE_VERSION
 from aelfrice import auto_install as _auto_install
 from aelfrice.auto_install import auto_install_at_cli_entry
-from aelfrice.stream_encoding import ensure_utf8_streams
+from aelfrice.stream_encoding import ensure_utf8_streams, read_hook_stdin
 from aelfrice.benchmark import run_benchmark, seed_corpus
 from aelfrice.classification import (
     HostClassification,
@@ -453,7 +453,11 @@ def _cmd_onboard_accept_classifications(
         return 2
     try:
         if src == "-":
-            raw = sys.stdin.read()
+            # Decoded as UTF-8, not through the process locale (#1426).
+            # The sibling branch one line down reads the *same JSON* with an
+            # explicit encoding, so without this the identical file produced
+            # different beliefs depending on whether it was piped or named.
+            raw = read_hook_stdin()
         else:
             raw = Path(src).read_text(encoding="utf-8")
     except OSError as exc:
@@ -5000,7 +5004,27 @@ def _read_password(args: argparse.Namespace) -> str | None:
     Never accepts password on argv (would leak via ps/proc/cmdline).
     """
     if args.password_stdin:
-        line = sys.stdin.readline()
+        # Read bytes and decode as UTF-8 rather than through the process
+        # locale (#1426). A non-ascii password decoded via cp1252 derives a
+        # *different* scrypt key than the same password on POSIX, so the
+        # archive becomes permanently undecryptable on the other platform.
+        #
+        # Unlike the hook path, an undecodable password must NOT degrade to
+        # an empty read: that would silently encrypt under the wrong key.
+        # Returning None aborts, which is the existing mismatch behaviour.
+        buffer = getattr(sys.stdin, "buffer", None)
+        if buffer is None or buffer is sys.stdin:
+            line = sys.stdin.readline()
+        else:
+            try:
+                line = buffer.readline().decode("utf-8")
+            except UnicodeDecodeError:
+                print(
+                    "aelf: --password-stdin input is not valid UTF-8; "
+                    "refusing rather than deriving a key from mangled text",
+                    file=sys.stderr,
+                )
+                return None
         return line.rstrip("\n\r")
     import getpass
 

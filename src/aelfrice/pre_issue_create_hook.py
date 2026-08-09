@@ -46,6 +46,7 @@ import re
 import shlex
 import subprocess
 import sys
+from aelfrice.stream_encoding import read_hook_stdin
 from pathlib import Path
 from typing import Callable
 
@@ -441,7 +442,7 @@ def run_guard(
 
 def main() -> None:
     """Entry point for the ``aelf-pre-issue-hook`` console script."""
-    raw = sys.stdin.read()
+    raw = read_hook_stdin()
     if not raw.strip():
         sys.exit(0)
     try:

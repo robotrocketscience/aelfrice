@@ -44,6 +44,7 @@ import json
 import os
 import sys
 import traceback
+from aelfrice.stream_encoding import read_hook_stdin
 from typing import IO, Final, cast
 
 AGENT_TOOL_NAMES: Final[tuple[str, ...]] = ("Agent", "Task")
@@ -80,7 +81,7 @@ def _is_disabled() -> bool:
 
 
 def _read_payload(stdin: IO[str]) -> dict[str, object] | None:
-    raw = stdin.read()
+    raw = read_hook_stdin(stdin)
     if not raw.strip():
         return None
     try:

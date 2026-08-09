@@ -94,6 +94,7 @@ from aelfrice.scoring import posterior_mean
 from aelfrice.store import MemoryStore
 from aelfrice.triple_extractor import extract_triples
 from aelfrice.config_discovery import discover_config
+from aelfrice.stream_encoding import read_hook_stdin
 
 if TYPE_CHECKING:
     from aelfrice.working_state import WorkingState
@@ -1691,7 +1692,7 @@ def main(
     sout = stdout if stdout is not None else sys.stdout
     serr = stderr if stderr is not None else sys.stderr
     try:
-        raw = sin.read()
+        raw = read_hook_stdin(sin, serr)
         payload = _parse_payload(raw)
         if payload is None:
             return 0

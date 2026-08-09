@@ -37,6 +37,7 @@ import secrets
 import subprocess  # noqa: F401 — used by _spawn_background_ingest
 import sys
 import traceback
+from aelfrice.stream_encoding import read_hook_stdin
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO, Callable, Final, cast
@@ -121,7 +122,7 @@ def _new_turn_id() -> str:
 
 
 def _read_payload(stdin: IO[str]) -> dict[str, object] | None:
-    raw = stdin.read()
+    raw = read_hook_stdin(stdin)
     if not raw.strip():
         return None
     try:

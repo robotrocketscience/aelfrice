@@ -57,13 +57,14 @@ from __future__ import annotations
 import json
 import sys
 import traceback
+from aelfrice.stream_encoding import read_hook_stdin
 from typing import IO, Final, cast
 
 # Tools whose successful invocation can land a memory fact file on disk.
 _WRITE_TOOLS: Final[frozenset[str]] = frozenset({"Write", "Edit", "MultiEdit"})
 
 def _read_payload(stdin: IO[str]) -> dict[str, object] | None:
-    raw = stdin.read()
+    raw = read_hook_stdin(stdin)
     if not raw.strip():
         return None
     try:
