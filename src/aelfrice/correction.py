@@ -129,7 +129,7 @@ _PRIOR_REF_TERMS: tuple[str, ...] = (
 
 
 def _boundary_alternation(
-    terms: tuple[str, ...], right_boundary: str = r"\b"
+    terms: tuple[str, ...], *, hyphen_strict: bool = False
 ) -> re.Pattern[str]:
     """Compile `terms` into one word-boundary alternation.
 
@@ -139,28 +139,37 @@ def _boundary_alternation(
     the term actually starts/ends with a word character — `"!"` carries no
     boundary at all, and `"don't"` gets one on each end.
 
-    `right_boundary` is the assertion placed after a word-final term.
-    The default `\\b` is the ordinary word boundary. Negation passes
-    `(?![\\w-])` instead, which additionally refuses a following hyphen so
-    "no-op" does not read as a negation; see the §5 note above for the
-    measurement that scopes that to negation alone.
+    `hyphen_strict` refuses a hyphen adjacent to the term on either side,
+    so "no-op" does not read as a negation. Only negation passes it; see
+    the §5 note above for the measurement that scopes it there.
+
+    The two sides are not equally load-bearing and the docstring says so
+    rather than implying symmetry buys something it does not. The **right**
+    guard is the fix: it suppresses 249 hyphen compounds on a 44,687-belief
+    store. The **left** guard suppresses **0** on the same store — no
+    belief has a hyphen-preceded negation token that the right guard does
+    not already catch. It is here because "yes-no" is not a negation and
+    the asymmetry would be arbitrary, not because it was measured to
+    matter. Do not cite it as evidence of anything.
 
     Terms must already be lowercase; callers match against lowercased text.
     """
+    left = r"(?<!-)\b" if hyphen_strict else r"\b"
+    right = r"(?![\w-])" if hyphen_strict else r"\b"
     parts: list[str] = []
     for term in sorted(terms, key=len, reverse=True):
         pattern = re.escape(term)
         if term[:1].isalnum() or term[:1] == "_":
-            pattern = r"\b" + pattern
+            pattern = left + pattern
         if term[-1:].isalnum() or term[-1:] == "_":
-            pattern = pattern + right_boundary
+            pattern = pattern + right
         parts.append(pattern)
     return re.compile("(?:" + "|".join(parts) + ")")
 
 
 _ALWAYS_NEVER_RE: re.Pattern[str] = _boundary_alternation(_ALWAYS_NEVER_TERMS)
 _NEGATION_RE: re.Pattern[str] = _boundary_alternation(
-    _NEGATION_TERMS, right_boundary=r"(?![\w-])"
+    _NEGATION_TERMS, hyphen_strict=True
 )
 _EMPHASIS_RE: re.Pattern[str] = _boundary_alternation(_EMPHASIS_TERMS)
 _PRIOR_REF_RE: re.Pattern[str] = _boundary_alternation(_PRIOR_REF_TERMS)

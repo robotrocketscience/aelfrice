@@ -194,9 +194,18 @@ _ENUM_MEMBER_PATTERNS: Final[dict[str, re.Pattern[str]]] = {
 # On the same store this changes 10 beliefs, all of them the real fix, and
 # loses nothing.
 #
-# Sorted by (-length, member) rather than by length alone: a plain
-# length sort leaves equal-length members in dict order, and #1157's
-# determinism contract requires the tie-break be part of the key.
+# Sorted by (-length, member). The tie-break is DEFENSIVE, not
+# load-bearing, and the distinction matters because the sibling
+# `sorted(group)` above genuinely is load-bearing and a reader who
+# conflates them will delete the wrong one. `_ENUM_MEMBER_INDEX` is
+# already built in a deterministic order (`ENUM_VOCAB` literal order ×
+# `sorted(group)`) and Python's sort is stable, so `key=-len(m)` alone
+# is equally deterministic — dropping the tie-break is unobservable
+# under the current vocabulary and no test can see it. It stays because
+# it makes the ordering independent of how `_ENUM_MEMBER_INDEX` happens
+# to be built, which is a property worth not relying on a second file
+# to preserve. #1157 is not the reason; that issue is about frozenset
+# iteration, which is the `sorted(group)` clause above.
 _ENUM_MEMBER_ORDER: Final[tuple[str, ...]] = tuple(
     sorted(_ENUM_MEMBER_INDEX, key=lambda m: (-len(m), m))
 )
