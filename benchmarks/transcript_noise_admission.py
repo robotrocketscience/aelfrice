@@ -124,7 +124,7 @@ def measure(tdir: str) -> dict[str, Any]:
         if not is_transcript_noise(p):
             return False
         parts = [s for s in extract_sentences(p) if s.strip()]
-        return not parts or all(is_transcript_noise(s) for s in parts)
+        return all(is_transcript_noise(s) for s in parts)
 
     return {
         "sentences": len(sentences),

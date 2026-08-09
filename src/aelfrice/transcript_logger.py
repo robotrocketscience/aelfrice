@@ -586,8 +586,13 @@ def _handle_user_prompt_submit(payload: dict[str, object]) -> None:
         if is_transcript_noise(prompt):
             from aelfrice.extraction import extract_sentences  # noqa: PLC0415
 
+            # `all([])` is True, so a prompt whose sentences all fall below
+            # `extraction._MIN_LEN` — a bare "Yes." — is still dropped here.
+            # An explicit `not parts or` would be dead, and worse: it would
+            # short-circuit the quantifier on exactly the prompts a bare-ack
+            # test drives, so no test could tell `all` from `any`.
             parts = [s for s in extract_sentences(prompt) if s.strip()]
-            if not parts or all(is_transcript_noise(s) for s in parts):
+            if all(is_transcript_noise(s) for s in parts):
                 return
     except Exception:
         # Fail-soft: any noise_filter regression falls through to the
