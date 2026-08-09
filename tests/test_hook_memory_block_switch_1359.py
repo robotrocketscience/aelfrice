@@ -488,6 +488,137 @@ def test_suppressed_fire_records_no_exposure_evidence(
     assert read_ring_state("s-eve-off").get("ring", []) == []
 
 
+def _read_hook_exposure_rows(db: Path) -> list[tuple[str, str, float]]:
+    """(belief_id, source, valence) for every feedback_history row."""
+    store = MemoryStore(str(db))
+    try:
+        return [
+            (str(r["belief_id"]), str(r["source"]), float(r["valence"]))
+            for r in store._conn.execute(
+                "SELECT belief_id, source, valence FROM feedback_history "
+                "ORDER BY belief_id"
+            ).fetchall()
+        ]
+    finally:
+        store.close()
+
+
+def _read_pool_and_stamp(db: Path) -> tuple[list[str], str | None, float]:
+    """(exploration_pool('banana'), F1.last_retrieved_at, F1.alpha)."""
+    store = MemoryStore(str(db))
+    try:
+        row = store._conn.execute(
+            "SELECT last_retrieved_at, alpha FROM beliefs WHERE id = 'F1'"
+        ).fetchone()
+        stamp = row["last_retrieved_at"]
+        return (
+            store.exploration_pool("banana"),
+            None if stamp is None else str(stamp),
+            float(row["alpha"]),
+        )
+    finally:
+        store.close()
+
+
+def test_suppressed_fire_does_not_evict_from_the_exploration_pool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fourth exposure writer, and the consequence that makes it a defect.
+
+    `search_for_prompt` writes one `feedback_history` row per hit tagged
+    `source='hook'`, and `models.EXPOSURE_ONLY_FEEDBACK_SOURCES` is
+    exactly `{'hook'}` — that row *is* this codebase's exposure record.
+    Its live consumer is `store.exploration_pool` (#1176), which selects
+    beliefs with no `feedback_history` and no `injection_events` row:
+    "never been shown". Written on a suppressed fire it evicts a belief
+    from that pool permanently, having never shown it, and gating
+    `injection_events` alone does not save it.
+
+    The enabled fire is the in-test control: it pins that one fire is
+    what empties the pool, so the disabled half's surviving `['F1']`
+    means suppression and not an inert pool query. `last_retrieved_at`
+    is asserted alongside because `record_retrieval` writes the row and
+    the stamp in one transaction — the fix skips the call, so the two
+    stay in agreement rather than splitting apart.
+    """
+    on_dir = tmp_path / "on"
+    on_dir.mkdir()
+    on_db = on_dir / "memory.db"
+    _seed(on_db)
+    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
+    monkeypatch.setenv("AELFRICE_DB", str(on_db))
+    assert _read_pool_and_stamp(on_db)[0] == ["F1"]
+    sout = io.StringIO()
+    assert user_prompt_submit(
+        stdin=io.StringIO(_payload(str(on_dir), _PROMPT, "s-pool-on")),
+        stdout=sout,
+        stderr=io.StringIO(),
+    ) == 0
+    assert OPEN_TAG in sout.getvalue()
+    assert _read_hook_exposure_rows(on_db) == [("F1", "hook", 0.1)]
+    on_pool, on_stamp, _ = _read_pool_and_stamp(on_db)
+    assert on_pool == []
+    assert on_stamp is not None
+
+    off_dir = tmp_path / "off"
+    off_dir.mkdir()
+    off_db = off_dir / "memory.db"
+    _seed(off_db)
+    monkeypatch.setenv("AELFRICE_DB", str(off_db))
+    monkeypatch.setenv("AELFRICE_MEMORY_BLOCK", "0")
+    sout_off = io.StringIO()
+    assert user_prompt_submit(
+        stdin=io.StringIO(_payload(str(off_dir), _PROMPT, "s-pool-off")),
+        stdout=sout_off,
+        stderr=io.StringIO(),
+    ) == 0
+    assert sout_off.getvalue() == ""
+    assert _read_hook_exposure_rows(off_db) == []
+    off_pool, off_stamp, _ = _read_pool_and_stamp(off_db)
+    assert off_pool == ["F1"]
+    assert off_stamp is None
+
+
+def test_suppressed_fire_leaves_the_posterior_alone_under_legacy_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`AELFRICE_EXPOSURE_UPDATES_POSTERIOR=1` must not reach a suppressed fire.
+
+    The documented rollback flag restores the pre-#1086 behaviour where a
+    hook retrieval moves α. That is defensible for a belief the model
+    saw; on a suppressed fire it moves the ranking math for a belief that
+    never reached the prompt. The enabled fire is the control that shows
+    the flag is live in this environment at all.
+    """
+    monkeypatch.setenv("AELFRICE_EXPOSURE_UPDATES_POSTERIOR", "1")
+
+    on_dir = tmp_path / "on"
+    on_dir.mkdir()
+    on_db = on_dir / "memory.db"
+    _seed(on_db)
+    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
+    monkeypatch.setenv("AELFRICE_DB", str(on_db))
+    assert user_prompt_submit(
+        stdin=io.StringIO(_payload(str(on_dir), _PROMPT, "s-post-on")),
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+    ) == 0
+    assert _read_pool_and_stamp(on_db)[2] == pytest.approx(1.1)
+
+    off_dir = tmp_path / "off"
+    off_dir.mkdir()
+    off_db = off_dir / "memory.db"
+    _seed(off_db)
+    monkeypatch.setenv("AELFRICE_DB", str(off_db))
+    monkeypatch.setenv("AELFRICE_MEMORY_BLOCK", "0")
+    assert user_prompt_submit(
+        stdin=io.StringIO(_payload(str(off_dir), _PROMPT, "s-post-off")),
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+    ) == 0
+    assert _read_pool_and_stamp(off_db)[2] == pytest.approx(1.0)
+
+
 def test_suppressed_fire_reports_zero_injected_chars(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

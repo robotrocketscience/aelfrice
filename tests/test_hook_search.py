@@ -276,5 +276,36 @@ def test_search_for_prompt_records_locked_hits_too() -> None:
     assert any(ev.belief_id == "L1" for ev in events)
 
 
+# --- record_exposure=False: read without the exposure claim ---------------
+
+
+def test_search_for_prompt_records_exposure_by_default() -> None:
+    """The contract non-hook callers get is unchanged (#1359).
+
+    Control for the pair below: `record_exposure` defaults to True, so
+    every existing caller keeps writing the audit row and the stamp.
+    """
+    s = _seed(_mk("b1", "the quick brown fox"))
+    hits = search_for_prompt(s, "quick fox")
+    assert [h.id for h in hits] == ["b1"]
+    assert len(s.list_feedback_events()) == 1
+    assert s.get_belief("b1").last_retrieved_at is not None  # type: ignore[union-attr]
+
+
+def test_search_for_prompt_record_exposure_false_returns_hits_unwritten() -> None:
+    """The read still happens; the exposure claim does not.
+
+    Same query as the control, so the returned hits pin that retrieval
+    ran — the correction and relevance lanes downstream of the #1359
+    off-switch depend on it — while feedback_history and the
+    `last_retrieved_at` mirror stay empty together.
+    """
+    s = _seed(_mk("b1", "the quick brown fox"))
+    hits = search_for_prompt(s, "quick fox", record_exposure=False)
+    assert [h.id for h in hits] == ["b1"]
+    assert s.list_feedback_events() == []
+    assert s.get_belief("b1").last_retrieved_at is None  # type: ignore[union-attr]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
