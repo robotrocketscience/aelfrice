@@ -79,7 +79,7 @@ def test_the_collector_returns_newest_first_through_a_real_store() -> None:
     only place with access to the key that discriminates.
 
     Every belief here shares one `created_at`, which is not a contrived
-    fixture: `created_at` has 2,771 tie groups on this repo's store and
+    fixture: `created_at` has 2,772 tie groups on this repo's store and
     the 6,427-belief session this whole bound is named for shares a single
     timestamp across all of them. Under a `(created_at, id)` sort the
     survivors would be chosen by content-hash order.

@@ -3858,14 +3858,14 @@ STOP_PROMPT_CLOSE_TAG: Final[str] = "</aelfrice-session-end>"
 
 # #1442 — the Stop block is written to stderr once per assistant turn and
 # was bounded on neither axis. Both limits are set off the measured
-# distribution on this repo's store (44,683 active beliefs, grouped by
+# distribution on this repo's store (44,687 active beliefs, grouped by
 # session over exactly the population `_collect_lock_candidates` returns),
 # not picked for roundness.
 #
 # Candidates per session: p50=10, p75=31, p90=69, p99=402, max=6,427.
 # A cap of 20 leaves the median session whole and truncates 33% of
 # sessions; 10 would truncate 47%. Unbounded, the worst session rendered
-# 3,448,428 bytes every turn.
+# 3,448,428 bytes every turn; bounded, that worst case is 11,388.
 STOP_PROMPT_MAX_ITEMS: Final[int] = 20
 # Candidate content length: p50=86, p90=367, p95=605, p99=1,479,
 # max=14,360. 1,000 withholds the command for 2.05% of candidates — the
@@ -4000,7 +4000,7 @@ def _collect_lock_candidates(
     most needs to see is the turn that just ended. `list_belief_ids` is
     ascending *content-hash* order and cannot supply that, so this walks
     `list_belief_ids_newest_first` (reverse `rowid`) instead. Sorting the
-    result on `created_at` would not fix it — that column has 2,771 tie
+    result on `created_at` would not fix it — that column has 2,772 tie
     groups on this repo's store and the worst session shares one
     timestamp across all 6,427 of its beliefs.
 
@@ -4049,7 +4049,7 @@ def _format_stop_prompt(candidates: list["Belief"]) -> str:
       `_collect_lock_candidates` returns newest-first (reverse `rowid`),
       so the head is the turn that just ended. This function deliberately
       does not re-sort: the only keys available on a `Belief` are
-      `created_at`, which has 2,771 tie groups on this store and is a
+      `created_at`, which has 2,772 tie groups on this store and is a
       single shared value across the whole 6,427-belief worst case, and
       `id`, which is content-hash order. Sorting on `(created_at, id)`
       here looks like a recency guarantee and is not one — inside a tie
