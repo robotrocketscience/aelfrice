@@ -205,6 +205,36 @@ large diffs (refactors, removals, generated code).
 
 Both workflows shipped as part of #602.
 
+### When a check never reports — the manual re-run hatch
+
+Occasionally a required check simply never appears on a PR: GitHub throttles
+webhook delivery during an incident, a run is deleted before it can be re-run,
+or an `on:` block stops matching. The PR is then unmergeable *and* unfixable by
+pushing, because pushing is exactly what is not being delivered.
+
+`ci.yml` and `staging-gate.yml` — which between them carry all five required
+contexts (`pytest (3.12)`, `pytest (3.13)`, `secrets-scan`, `pattern-scan`,
+`history-scan`) — accept `workflow_dispatch`. Dispatch goes over the REST API
+rather than the webhook path, so it still works when delivery is degraded:
+
+```sh
+gh workflow run ci.yml          --repo robotrocketscience/aelfrice --ref <your-branch>
+gh workflow run staging-gate.yml --repo robotrocketscience/aelfrice --ref <your-branch>
+gh run list --repo robotrocketscience/aelfrice --workflow ci.yml --limit 3
+```
+
+Two properties worth knowing:
+
+- **It cannot be used to skip a gate.** There is deliberately no `ref` *input*.
+  A run's check-runs attach to the head SHA of the ref it was dispatched on, and
+  both branch protection and `merge-train` evaluate checks on the PR's head SHA
+  — so a dispatch can only ever report against the commit it actually tested.
+- **A dispatched `ci.yml` always runs the full suite.** The `dorny/paths-filter`
+  short-circuit is `pull_request`-only, because a dispatch has no diff base and
+  a job that skips must never report a pass that looks like a run (#1160).
+
+Shipped as part of #1436.
+
 ## Code of Conduct
 
 See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). The short version: be respectful, focus on the work, no harassment.

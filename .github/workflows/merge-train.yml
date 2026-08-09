@@ -82,6 +82,9 @@ jobs:
           ${reason}
 
           The \`ready-to-merge\` label has been removed. Address the issue above and re-add the label when you're ready for another attempt.
+
+          If a required check never reported at all — rather than reported red — you can re-run it without pushing (#1436):
+          \`gh workflow run ci.yml --ref <branch>\` and \`gh workflow run staging-gate.yml --ref <branch>\`. Dispatch goes over the REST API, not the webhook path, so it still fires when delivery is degraded. See CONTRIBUTING.md § "When a check never reports".
           EOF
               jq -Rs '{body: .}' < /tmp/comment.md > /tmp/payload.json
               gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/comments" \
