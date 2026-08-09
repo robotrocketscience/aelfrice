@@ -181,7 +181,7 @@ The contradiction eval continues to score the broader pair-classification task; 
 
 ### vs. `correction.py` (utterance detector)
 
-`correction.py:121` (`detect_correction`) is a **single-string classifier**: "is this input text a correction directive?" (e.g. "no, do X instead of Y"). Different surface — operates on incoming user prose, not on belief pairs. The two share the word "correction" but no code path. The correction-detection eval does not consume `correction.py` output.
+`correction.py`'s `detect_correction` is a **single-string classifier**: "is this input text a correction directive?" (e.g. "no, do X instead of Y"). Different surface — operates on incoming user prose, not on belief pairs. The two share the word "correction" but no code path. The correction-detection eval does not consume `correction.py` output.
 
 ### vs. composition tracker (#154)
 
