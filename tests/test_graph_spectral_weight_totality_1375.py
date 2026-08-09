@@ -19,7 +19,6 @@ import sys
 
 import pytest
 
-import aelfrice.graph_spectral as graph_spectral
 from aelfrice import models
 from aelfrice.graph_spectral import (
     EDGE_LAPLACIAN_WEIGHTS,
@@ -100,7 +99,12 @@ def test_import_fails_when_a_new_edge_type_has_no_weight(
     behaviour was for such a type to be absorbed by
     `w_map.get(e.type, 0.0)` and never mentioned again.
     """
-    assert graph_spectral is not None  # the module under test is loaded
+    # `from aelfrice.graph_spectral import ...` at the top of this file has
+    # already put the module in `sys.modules`, which is what `delitem` below
+    # needs. The alias import that used to sit here existed only to feed an
+    # `is not None` assertion -- a tautology, and CodeQL flagged the resulting
+    # import-both-ways as the smell it is.
+    assert "aelfrice.graph_spectral" in sys.modules
     monkeypatch.setattr(
         models, "EDGE_TYPES", models.EDGE_TYPES | {"NEWLY_ADDED_EDGE"}
     )
