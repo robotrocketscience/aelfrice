@@ -254,10 +254,15 @@ def test_a_non_directive_with_a_window_is_not_proposed() -> None:
     )
     assert extract_stated_window(text) == "2y"
     assert _directive_window_spec(text) is None
+    # Since the decoupling the detector is the *whole* of candidacy, so
+    # dropping that arm no longer merely adds a `--for` to narration — it
+    # admits narration into the proposal list outright.
+    assert _belief_is_lock_candidate(_belief(text), _SESSION) is False
 
     narration = "The outage lasted for three days."
     assert extract_stated_window(narration) == "3d"
     assert _directive_window_spec(narration) is None
+    assert _belief_is_lock_candidate(_belief(narration), _SESSION) is False
 
 
 # --- the proposal, and that it is only a proposal ------------------------
@@ -335,11 +340,20 @@ def test_autolock_does_not_write_a_windowed_directive(
     on `lock_level`. The correction alongside it is the control — it must
     still be locked, so a filter that disables autolock outright fails
     here too.
+
+    `bare` carries the decoupling: since candidacy no longer requires a
+    stated window, the population autolock has to withhold is now every
+    directive, not just windowed ones — 3,003 beliefs on this repo's
+    store rather than 0. A filter keyed on the window rather than on
+    correction-class would pass the `directive` assertions and launder
+    this one to `user_stated`.
     """
     directive = _belief(_DIRECTIVE)
+    bare = _belief("Always use tabs in this repo.")
     correction = _belief("Actually the flag is --foo, not --bar.")
     correction.type = BELIEF_CORRECTION
     store.insert_belief(directive)
+    store.insert_belief(bare)
     store.insert_belief(correction)
     store.close()
 
@@ -357,6 +371,13 @@ def test_autolock_does_not_write_a_windowed_directive(
         assert after_directive is not None
         assert after_directive.lock_level == LOCK_NONE, "autolock wrote a proposal"
         assert after_directive.origin == ORIGIN_USER_TRANSCRIPT, "origin laundered"
+
+        after_bare = reopened.get_belief(bare.id)
+        assert after_bare is not None
+        assert after_bare.lock_level == LOCK_NONE, (
+            "autolock wrote a windowless directive"
+        )
+        assert after_bare.origin == ORIGIN_USER_TRANSCRIPT, "origin laundered"
 
         after_correction = reopened.get_belief(correction.id)
         assert after_correction is not None
@@ -410,23 +431,20 @@ def test_autolock_still_proposes_what_it_may_not_write(
     )
 
 
-def test_a_windowed_directive_is_a_candidate_whatever_its_type() -> None:
-    """Hypothesis: the candidate predicate admits a windowed directive on
-    its own merits, not only via the correction-class arms.
+def test_a_directive_is_a_candidate_whatever_its_type() -> None:
+    """Hypothesis: the candidate predicate admits a directive on its own
+    merits, not only via the correction-class arms.
 
     The belief here is `factual` with `user_transcript` origin — neither
     of the pre-#1315 arms matches — so this fails if the new clause is
     dropped. An already-locked one is still excluded, since locking it
     again is a no-op.
 
-    The negative controls state a window and are excluded by an *upstream*
-    gate, which is what pins the arm to `_directive_window_spec` rather
-    than to the bare extractor. Without them the whole clause reduces to
-    `extract_stated_window(b.content) is not None` — "does this text
-    mention any duration" — with the suite green, which would admit
-    ordinary narration into the population autolock then has to filter.
-    `The build finished.` states no window at all, so it is excluded by
-    the extractor alone and discriminates nothing on its own.
+    The negative controls are the two halves of `detect_directive` that
+    candidacy now rests on entirely: a statement with no imperative verb,
+    and narration that states a duration without being a rule. Without
+    the second, the clause could be weakened to "mentions any duration"
+    and stay green.
     """
     assert _belief_is_lock_candidate(_belief(_DIRECTIVE), _SESSION) is True
     assert _belief_is_lock_candidate(
@@ -439,15 +457,92 @@ def test_a_windowed_directive_is_a_candidate_whatever_its_type() -> None:
     assert _belief_is_lock_candidate(
         _belief("The outage lasted for three days."), _SESSION
     ) is False
-    # is a directive stating a window, but the window is the subject
-    # matter's rather than the memory's
-    assert _belief_is_lock_candidate(
-        _belief("Always keep CI logs for 30 days."), _SESSION
-    ) is False
-    # states two windows, so it is refused rather than resolved
-    assert _belief_is_lock_candidate(
-        _belief("Always remember this for two days, then for a week."), _SESSION
-    ) is False
+
+
+def test_a_directive_whose_window_is_refused_is_still_a_candidate() -> None:
+    """Candidacy is decoupled from the `--for` suffix (operator ruling
+    2026-08-06). This is the test that pins the decoupling.
+
+    Every fixture is a directive whose window `_directive_window_spec`
+    refuses — for a *different* reason each time, so no single gate
+    moving back upstream can satisfy all four. All four must still be
+    proposed, because the gates exist to prevent a wrong expiry literal,
+    not to withhold the proposal.
+
+    Falsifiable by restoring `return _directive_window_spec(b.content) is
+    not None` as the candidacy arm, which is the exact shape the ruling
+    supersedes: all four then report False. That coupling is what made
+    the feature unreachable — 0 candidates against 44,683 active beliefs
+    on this repo's store, 3,003 of which pass `detect_directive`.
+    """
+    refused = [
+        # no window stated at all — the overwhelmingly common shape
+        "Always use tabs in this repo.",
+        # a window, but it is the subject matter's, not the memory's
+        "Always keep CI logs for 30 days.",
+        # two windows, so the spec refuses rather than resolving one
+        "Always remember this for two days, then for a week.",
+        # a memory clause, then a new predicate that takes the window
+        "Always remember this and cache the index for two weeks.",
+    ]
+    for text in refused:
+        assert detect_directive(text) is True, f"fixture must be a directive: {text}"
+        assert _directive_window_spec(text) is None, f"fixture must be refused: {text}"
+        assert _belief_is_lock_candidate(_belief(text), _SESSION) is True, (
+            f"candidacy re-coupled to the --for suffix: {text}"
+        )
+
+
+def test_a_refused_window_renders_the_command_without_a_for_flag() -> None:
+    """The other half of the decoupling: wide candidacy must not widen
+    the suffix.
+
+    A subject-matter duration reaches the prompt now, so the attachment
+    gate has to hold at the render site rather than being enforced by the
+    belief never getting there. Falsifiable by dropping
+    `stated_window_attaches_to_memory` from `_directive_window_spec`:
+    this renders `--for 30d`, telling the user to forget a retention
+    policy in 30 days.
+    """
+    out = _format_stop_prompt([_belief("Always keep CI logs for 30 days.")])
+    assert "aelf lock 'Always keep CI logs for 30 days.'" in out, (
+        "the belief must be proposed"
+    )
+    assert "--for" not in out, "a subject-matter duration became a lock window"
+
+
+def test_a_correction_class_candidate_never_passed_the_detector() -> None:
+    """Why `_directive_window_spec` keeps its own `detect_directive`
+    guard now that candidacy applies one upstream.
+
+    `_format_stop_prompt` renders a suffix for *every* candidate, and a
+    correction-class belief becomes a candidate by type or origin without
+    the directive arm ever running. So candidacy does not imply
+    `detect_directive` at the render site — not even after the
+    decoupling — and the guard is the only thing standing between a
+    correction whose content happens to be a memory-anchored question and
+    a `--for 2y` on it.
+
+    Falsifiable by deleting the `detect_directive` arm from
+    `_directive_window_spec` as now-redundant, which is the obvious
+    cleanup the decoupling invites: this then renders `--for 2y`.
+    """
+    text = "Why would anyone retain this for two years?"
+    correction = _belief(text)
+    correction.type = BELIEF_CORRECTION
+
+    assert detect_directive(text) is False, "fixture must fail only the detector"
+    assert stated_window_attaches_to_memory(text) is True, (
+        "fixture must clear every gate except the detector"
+    )
+    assert extract_stated_window(text) == "2y"
+    assert _belief_is_lock_candidate(correction, _SESSION) is True, (
+        "fixture must be a candidate by its correction type, not as a directive"
+    )
+
+    out = _format_stop_prompt([correction])
+    assert "aelf lock " in out
+    assert "--for" not in out, "a question rendered an expiry literal"
 
 
 # --- the window must be the memory's, not the subject matter's ----------
@@ -500,7 +595,7 @@ def test_a_window_governed_by_a_memory_verb_still_proposes(
         ),
     ],
 )
-def test_a_subject_matter_duration_is_not_proposed(text: str) -> None:
+def test_a_subject_matter_duration_gets_no_for_suffix(text: str) -> None:
     """`for 90 days` is a property of the artifacts, not of the memory.
 
     Every string here is a directive and states a countable window, so
@@ -508,6 +603,12 @@ def test_a_subject_matter_duration_is_not_proposed(text: str) -> None:
     first four are the shapes review measured on live data; running the
     suggestion they used to produce would forget the retention policy on
     a date the user never chose.
+
+    Named for the *suffix*, not the proposal: since the 2026-08-06
+    decoupling ruling these are all still proposed — as a permanent lock,
+    which is what the user would get by typing `aelf lock` themselves.
+    Only the window is withheld. `test_a_directive_whose_window_is_
+    refused_is_still_a_candidate` pins that other half.
     """
     assert detect_directive(text) is True
     assert extract_stated_window(text) is not None

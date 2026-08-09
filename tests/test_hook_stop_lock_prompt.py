@@ -142,17 +142,34 @@ def test_not_candidate_factual_user_origin() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_collect_returns_only_session_unlocked_correction_class(
+def test_collect_returns_session_unlocked_correction_class_and_directives(
     tmp_path: Path,
 ) -> None:
+    """`KEEP3` is the #1315 arm at the collector: a `factual` /
+    `user_stated` directive, correction-class by neither type nor origin.
+
+    `SKIP_FACTUAL_USER` is the same type and origin and differs only in
+    not being a directive, so the pair discriminates the arm rather than
+    the type/origin guards. Both were "x" before the 2026-08-06
+    decoupling ruling, which left the collector's #1315 behaviour
+    unpinned in either direction.
+    """
     db = tmp_path / "memory.db"
     _seed(db, [
         _mk("KEEP1", "fix one", type_=BELIEF_CORRECTION, session_id="sess-A"),
         _mk("KEEP2", "fix two", origin=ORIGIN_AGENT_INFERRED,
             session_id="sess-A"),
+        _mk("KEEP3", "Always use tabs in this repo.", type_=BELIEF_FACTUAL,
+            origin=ORIGIN_USER_STATED, session_id="sess-A"),
         _mk("SKIP_OTHER_SESSION", "x", type_=BELIEF_CORRECTION,
             session_id="sess-B"),
+        _mk("SKIP_OTHER_SESSION_DIRECTIVE", "Always use spaces in this repo.",
+            type_=BELIEF_FACTUAL, origin=ORIGIN_USER_STATED,
+            session_id="sess-B"),
         _mk("SKIP_LOCKED", "x", type_=BELIEF_CORRECTION,
+            lock_level=LOCK_USER, session_id="sess-A"),
+        _mk("SKIP_LOCKED_DIRECTIVE", "Always sign every commit.",
+            type_=BELIEF_FACTUAL, origin=ORIGIN_USER_STATED,
             lock_level=LOCK_USER, session_id="sess-A"),
         _mk("SKIP_FACTUAL_USER", "x", type_=BELIEF_FACTUAL,
             origin=ORIGIN_USER_STATED, session_id="sess-A"),
@@ -163,7 +180,7 @@ def test_collect_returns_only_session_unlocked_correction_class(
     finally:
         s.close()
     ids = {c.id for c in cands}
-    assert ids == {"KEEP1", "KEEP2"}
+    assert ids == {"KEEP1", "KEEP2", "KEEP3"}
 
 
 def test_collect_empty_store_returns_empty(tmp_path: Path) -> None:

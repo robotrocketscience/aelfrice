@@ -3614,16 +3614,26 @@ def _belief_is_lock_candidate(b: "Belief", session_id: str) -> bool:
     Conditions:
       * `b.session_id == session_id` (created in this session).
       * `b.lock_level != LOCK_USER` (locking would be a no-op otherwise).
-      * and then any one of:
-          - `b.type == BELIEF_CORRECTION`,
-          - `b.origin in {agent_inferred, agent_remembered}`
+      * and then either of:
+          - `b.type == BELIEF_CORRECTION`, or
+            `b.origin in {agent_inferred, agent_remembered}`
             (both correction-class signal, per #582),
-          - `_directive_window_spec(b.content) is not None` — a directive
-            stating its own window, whatever its type or origin (#1315).
+          - `detect_directive(b.content)` — any durable imperative rule,
+            whatever its type or origin (#1315).
+
+    Candidacy is **decoupled** from the `--for` suffix (operator ruling
+    2026-08-06). It deliberately does NOT key on
+    `_directive_window_spec(...) is not None`: that predicate carries the
+    ambiguity and memory-attachment gates, whose purpose is to prevent a
+    *wrong expiry literal*, never to suppress a proposal. Keying candidacy
+    on it made the whole feature unreachable — 0 firings against 44,683
+    active beliefs on this repo's store, of which 3,003 pass
+    `detect_directive`. A directive whose window is refused is still worth
+    proposing; it is proposed without a `--for`.
 
     The two session/lock guards come first and are not weakened by the
     #1315 arm: an already-locked belief and a belief from another session
-    are still excluded however clearly they state a window.
+    are still excluded however clearly they state a rule.
     """
     if b.session_id != session_id:
         return False
@@ -3631,14 +3641,17 @@ def _belief_is_lock_candidate(b: "Belief", session_id: str) -> bool:
         return False
     if _belief_is_correction_class(b):
         return True
-    # #1315: a directive that STATES its own window is a candidate too,
-    # whatever its type or origin. The prompt proposes; nothing is
-    # written until the user runs the command, so a false positive here
-    # costs a declined suggestion rather than a wrong expiring lock —
-    # which is why this does not need the H1 precision bar. That argument
-    # only holds while no path writes these unprompted, which is what
-    # `_autolock_candidates` enforces.
-    return _directive_window_spec(b.content) is not None
+    # #1315: a directive is a candidate whatever its type or origin. The
+    # prompt proposes; nothing is written until the user runs the
+    # command, so a false positive here costs a declined suggestion
+    # rather than a wrong expiring lock — which is why this does not need
+    # the H1 precision bar the detector fails (P=0.665). That argument
+    # only holds while no path writes these unprompted, which is what the
+    # `_belief_is_correction_class` filter at the `_autolock_candidates`
+    # call site enforces.
+    from aelfrice.directive_detector import detect_directive  # noqa: PLC0415
+
+    return detect_directive(b.content)
 
 
 def _belief_is_correction_class(b: "Belief") -> bool:
@@ -3654,18 +3667,28 @@ def _belief_is_correction_class(b: "Belief") -> bool:
 def _directive_window_spec(content: str) -> str | None:
     """The `--for` spec a directive states, or None (#1315).
 
+    This governs the **suffix only**, not candidacy — see
+    `_belief_is_lock_candidate`. Returning None means "propose a
+    permanent lock", not "propose nothing".
+
     None on every arm that is not an unambiguous, explicitly-stated
     window **governed by a memory verb**: not a directive, no window
     named, more than one named, or a window that belongs to the subject
     matter rather than to how long to remember the rule. Ambiguity
-    refuses rather than picking the first — proposing a lock the user has
-    to notice is wrong is worse than proposing none.
+    refuses rather than picking the first — a `--for` the user has to
+    notice is wrong is worse than no `--for` at all.
 
     The attachment gate is the operator's 2026-08-06 ruling. Without it
     the arm fired 9 times on a 44,679-belief live store and **0** of the
     9 stated a retention window; every hit was a subject-matter duration
     (`Blocked for 9 days`, `traveling for a week`). See
     `lock_expiry.stated_window_attaches_to_memory`.
+
+    The `detect_directive` guard is kept even though candidacy now
+    applies it upstream: this is an independent predicate, and dropping
+    it would let ordinary narration that happens to state a window
+    (`The outage lasted for three days.`) render a `--for` at any future
+    call site that does not gate on the detector first.
     """
     from aelfrice.directive_detector import detect_directive  # noqa: PLC0415
     from aelfrice.lock_expiry import (  # noqa: PLC0415
@@ -3707,11 +3730,16 @@ def _format_stop_prompt(candidates: list["Belief"]) -> str:
     `aelf lock` command. Empty list → empty string.
 
     Says "belief", not "correction": since #1315 the candidate population
-    includes windowed directives, which are typically `factual` or
-    `requirement` rather than `BELIEF_CORRECTION`, so the old noun
-    described a `requirement` row to the user as a correction. The
-    per-item line prints the real type, and the header no longer
-    contradicts it.
+    includes directives, which are typically `factual` or `requirement`
+    rather than `BELIEF_CORRECTION`, so the old noun described a
+    `requirement` row to the user as a correction. The per-item line
+    prints the real type, and the header no longer contradicts it.
+
+    Most #1315 candidates render **without** a `--for`: candidacy admits
+    any directive, while the suffix requires a memory verb to govern a
+    stated window. On this repo's store that is 3,003 candidates and 0
+    suffixes, so the no-suffix branch is the common path, not the
+    exception.
     """
     if not candidates:
         return ""
@@ -3817,10 +3845,17 @@ def stop(
 
     Reads a Stop JSON payload from `stdin` (harness contract — same
     payload shape as the SessionStart and PreCompact handlers above),
-    finds all correction-class beliefs created in this session that
-    aren't yet user-locked, and either emits a stderr listing with
-    pre-filled `aelf lock` commands (default) or auto-locks them when
-    `AELF_AUTOLOCK_CORRECTIONS=1` is set in the environment.
+    finds the correction-class beliefs (#582) and directive beliefs
+    (#1315) created in this session that aren't yet user-locked, and
+    emits a stderr listing with pre-filled `aelf lock` commands.
+
+    `AELF_AUTOLOCK_CORRECTIONS=1` writes the **correction-class subset**
+    unasked; the rest still fall through to the listing. It is not an
+    auto-lock of everything the hook proposes, and since #1315 the two
+    populations differ by 3,003 beliefs on this repo's own store — see
+    the `_belief_is_correction_class` filter at the
+    `_autolock_candidates` call site below, which is what keeps a
+    proposal from becoming a write.
 
     Hook contract: never block, never raise. Empty / malformed payload,
     missing session_id, no candidates, store errors — all return 0
