@@ -609,6 +609,39 @@ Precedence (first decisive wins): env var `AELFRICE_BFS=1`/`0` > explicit Python
 
 The flag ships default-OFF at v1.3.0 because the literature-default edge weights have not yet been calibrated against the v1.2 corpus. A v1.3.x patch may re-tune them; the default-on flip is deferred until benchmark uplift is confirmed. See [bfs_multihop.md](../design/bfs_multihop.md) for the full spec, including the temporal-coherence limitation.
 
+### `use_lock_conflict_annotations`
+
+Boolean, default `false` (#1365, from #1175 proposal 2). Annotates a retrieved
+belief that numerically disagrees with one of your active locks, naming the lock
+on the injected tag.
+
+When enabled:
+- `retrieve_with_tiers` tests each surviving L2.5 and L1 candidate against the
+  locked set and records `belief id -> conflicting lock id`, readable via
+  `retrieval.last_lock_conflict_annotations()`.
+- The injected tag gains a `conflicts_with` attribute:
+  `<belief id="b1" lock="none" conflicts_with="LK7">retry limit is 9</belief>`.
+- The belief is still injected. This **annotates, never drops** — the
+  disagreement is handed to the agent to adjudicate, per the posture ratified in
+  #605. A slot heuristic that emits junk keys must not be able to delete your
+  context.
+
+When disabled (the default), the conflict is not computed at all and the
+rendered block is byte-identical to an unannotated one.
+
+Three measured suppressions apply to **both** sides, so a literal that cannot
+support a disagreement does not manufacture one: a key taking more than one
+value inside a single belief, a version key (`v`, `version`, `rev`, `release`),
+and a 4-digit calendar year. Suppression is slot-scoped — a belief carrying both
+a version literal and a real disagreement is still annotated on the real one.
+Measured over 189 real prompts on the live store, these took conflicts on
+retrieved unlocked beliefs from **6.12% to 1.38%** (#1244).
+
+Precedence (first decisive wins): env var
+`AELFRICE_LOCK_CONFLICT_ANNOTATIONS=1`/`0` > explicit Python kwarg > TOML
+`[retrieval] use_lock_conflict_annotations` > default `false`. An unrecognised
+env value falls through to the next rung rather than pinning the flag off.
+
 ### `use_bm25f_anchors`
 
 Boolean, default `true` since v1.7.0 (#154 bench gate). Enables the BM25F sparse-matvec L1 path that augments belief content with anchor text (#142) under Porter-stemmed FTS5 indexing.
