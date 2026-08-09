@@ -11,6 +11,19 @@ on:
     # Per #413/#427 follow-up: replaces the previous `paths-ignore`
     # filter that silently dropped the pytest check on docs-only PRs
     # and blocked them under `required_status_checks`.
+  # #1436 — manual escape hatch. `workflow_dispatch` is delivered through the
+  # REST API (`POST .../workflows/{id}/dispatches`), not the webhook path that
+  # carries `pull_request` events, so it still fires when delivery is degraded
+  # and a PR would otherwise be permanently unmergeable.
+  #
+  # Deliberately NO `ref` input. The built-in dispatch ref is the targeting
+  # mechanism, and it is also the safety property (#1436 AC5): a run's
+  # check-runs attach to the head SHA of the ref it was dispatched on, and
+  # merge-train reads `commits/${HEAD_SHA}/check-runs`. So a dispatch can only
+  # ever report against the commit it actually tested. A `ref` *input* would
+  # break exactly that — checkout would test one ref while the check-runs
+  # landed on another, which is a way to skip the gate rather than re-run it.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -30,7 +43,14 @@ jobs:
         with:
           egress-policy: audit
       - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      # Path detection is a pull_request-only optimisation. A manual dispatch
+      # is fired precisely when someone needs this check to report, so it runs
+      # the suite unconditionally rather than inferring "no code changed" from
+      # a diff base that a dispatch does not carry. Erring toward running is
+      # the #1160 lesson: a skipped job must never report a pass that looks
+      # like a run.
+      - if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
         id: filter
         with:
           filters: |
@@ -49,15 +69,15 @@ jobs:
               - 'pyproject.toml'
               - 'uv.lock'
               - '.github/workflows/ci.yml'
-      - if: steps.filter.outputs.code == 'true'
+      - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
           cache-dependency-glob: "uv.lock"
-      - if: steps.filter.outputs.code == 'true'
+      - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: uv sync --frozen --group dev --extra archive
-      - if: steps.filter.outputs.code == 'true'
+      - if: steps.filter.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
         run: uv run pytest tests/ --ignore=tests/e2e -q
-      - if: steps.filter.outputs.code != 'true'
+      - if: steps.filter.outputs.code != 'true' && github.event_name != 'workflow_dispatch'
         run: echo "No code paths changed; reporting pass for docs-only PR."

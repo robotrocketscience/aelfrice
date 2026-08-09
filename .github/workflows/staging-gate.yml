@@ -4,6 +4,20 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, edited]
+  # #1436 — manual escape hatch for the three required scan contexts
+  # (`secrets-scan`, `pattern-scan`, `history-scan`). See the matching note in
+  # ci.yml for why there is no `ref` input: the dispatch ref is both the
+  # targeting mechanism and the AC5 safety property.
+  #
+  # The four PR-shaped jobs below degrade rather than lie. `history-scan`,
+  # `release-docs-check` and `commit-msg-prefix` fall back to the repository
+  # default branch as their diff base, which reproduces the PR range exactly
+  # when the dispatch ref is the PR head. `pr-title-prefix` and
+  # `pr-body-issue-link` read fields that only exist on a pull_request payload,
+  # so they skip — merge-train's rollup counts `skipped` as non-failing and
+  # keeps only the latest run per check name, so skipping here cannot mask an
+  # earlier real result.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -82,8 +96,8 @@ jobs:
   history-scan:
     runs-on: ubuntu-latest
     env:
-      BASE_REF: ${{ github.event.pull_request.base.ref }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
         with:
@@ -142,7 +156,7 @@ jobs:
         run: python3 scripts/check_changelog_dupes.py CHANGELOG/*.md CHANGELOG.md
       - name: Detect release PR and verify docs
         env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           extract_version() {
@@ -230,8 +244,21 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
         run: |
           set -euo pipefail
+          # #1436 — a workflow_dispatch run carries no pull_request payload, so
+          # both SHAs arrive empty and `"${BASE_SHA}..${HEAD_SHA}"` would
+          # degenerate to `..` (HEAD..HEAD, an empty range) and pass having
+          # validated nothing. Reconstruct the same range the PR event supplies:
+          # merge-base of the default branch and the dispatched head.
+          if [ -z "${HEAD_SHA}" ]; then
+            HEAD_SHA="$(git rev-parse HEAD)"
+          fi
+          if [ -z "${BASE_SHA}" ]; then
+            git fetch --no-tags origin "${BASE_REF}"
+            BASE_SHA="$(git merge-base "origin/${BASE_REF}" "${HEAD_SHA}")"
+          fi
           fail=0
           while IFS= read -r sha; do
             subject="$(git log -1 --format='%s' "$sha")"
@@ -260,6 +287,10 @@ jobs:
   # in sync with `commit-msg-prefix` and CLAUDE.md.
   # ---------------------------------------------------------------------------
   pr-title-prefix:
+    # #1436 — reads a field that exists only on a pull_request payload.
+    # Skips on workflow_dispatch; merge-train counts `skipped` as
+    # non-failing, and neither job is a required context.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
@@ -299,6 +330,10 @@ jobs:
   # and as a check-run summary.  See CONTRIBUTING.md § PR body requirements.
   # ---------------------------------------------------------------------------
   pr-body-issue-link:
+    # #1436 — reads a field that exists only on a pull_request payload.
+    # Skips on workflow_dispatch; merge-train counts `skipped` as
+    # non-failing, and neither job is a required context.
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
