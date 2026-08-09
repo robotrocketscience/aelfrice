@@ -36,7 +36,12 @@ from typing import Any
 import pytest
 
 from aelfrice.hook import AUDIT_PROMPT_PREFIX_CAP
-from aelfrice.retrieval import LaneTelemetry
+from aelfrice import retrieval
+
+# Bound from the module rather than imported separately: the tests below
+# monkeypatch `retrieval.retrieve`, which needs the module object, and
+# importing the same module both ways is what CodeQL 564/565 flagged.
+LaneTelemetry = retrieval.LaneTelemetry
 from benchmarks import lane_firing_probe as probe
 
 
@@ -587,7 +592,6 @@ def _harness(
 
     Returns `(argv, retrieve_kwargs, env_seen_inside_the_run)`.
     """
-    import aelfrice.retrieval as retrieval
 
     store_path = tmp_path / "memory.db"
     sqlite3.connect(store_path).close()
@@ -727,7 +731,6 @@ def test_probe_calls_retrieve_once_per_prompt_with_the_shipped_kwargs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`probe()` itself, without the `main()` scaffolding."""
-    import aelfrice.retrieval as retrieval
 
     seen: list[tuple[str, dict[str, Any]]] = []
 
