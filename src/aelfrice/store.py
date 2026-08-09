@@ -2968,8 +2968,17 @@ class MemoryStore:
         return rewritten
 
     def list_belief_ids(self) -> list[str]:
-        """All belief ids in insertion-time order. Used by the v1.3
-        entity-index backfill to walk every existing belief once."""
+        """All belief ids in ascending **id** order. Used by the v1.3
+        entity-index backfill to walk every existing belief once.
+
+        Not insertion order, which this said until #1442. Ids are
+        content-addressed — `sha256(source + NUL + text)[:16]` — so `ORDER
+        BY id` is hash order and carries no temporal meaning: on this
+        repo's store all 44,683 active rows sit at a different position
+        here than they do ordered by `created_at`. Any caller that needs
+        recency must sort for it, and must break ties on `id`, because
+        `created_at` ties are the norm.
+        """
         cur = self._conn.execute("SELECT id FROM beliefs ORDER BY id ASC")
         return [str(r["id"]) for r in cur.fetchall()]
 
