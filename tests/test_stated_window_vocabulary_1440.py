@@ -169,9 +169,12 @@ _PROBE_COUNTS = (
     "", "1 ", "7 ", "30 ", "a ", "an ", "one ", "two ", "ten ", "twenty ",
     "twenty-five ", "twenty five ", "ninety ", "hundred ", "a hundred ",
     "two hundred ", "thousand ", "three thousand ", "twenty thousand ",
-    "dozen ", "a dozen ", "two dozen ", "dozens of ", "a few ", "several ",
-    "a couple ", "a couple of ", "a number of ", "many ", "some ", "few ",
-    "numerous ", "2-3 ", "2 - 3 ", "2–3 ", "two hundred and fifty ",
+    "dozen ", "a dozen ", "two dozen ", "dozens ", "dozens of ", "a few ",
+    "few ", "several ", "a couple ", "couple ", "a couple of ", "couple of ",
+    "a number of ", "number of ", "many ", "some ", "numerous ", "2-3 ",
+    "2 - 3 ", "2–3 ", "two hundred and fifty ", "two hundred and fifty-five ",
+    "a couple hundred ", "a couple of hundred ", "few thousand ",
+    "hundreds of ", "twenty-five hundred ",
 )
 _PROBE_UNITS = (
     "second", "seconds", "minute", "minutes", "hour", "hours", "day",
@@ -195,9 +198,13 @@ def test_no_two_patterns_claim_the_same_window() -> None:
     This is the invariant `_stated_windows_with_positions` used to defend
     with a dedupe on match start. The dedupe was unreachable — no input
     produced the collision — so it was removed and the property it stood
-    for is asserted here instead, over a 2,592-phrase sweep of the count
+    for is asserted here instead, over a 3,312-phrase sweep of the count
     and unit slots rather than over a handful of examples. A guard no
     input reaches proves nothing; this sweep does.
+
+    The sweep is also the evidence that widening the count slot over the
+    partitive, the `and`-joined tail and a quantified scale is safe: all
+    three spellings are probes here, and they collide with nothing.
 
     Falsifiable by widening any pattern's count slot into another's: add
     `_NUMBER_WORDS` to `_UNUSABLE_WINDOW_RE`'s unreadable-count
@@ -223,7 +230,7 @@ def test_no_two_patterns_claim_the_same_window() -> None:
             duplicated.append((text, ["merged twice"]))
         if stated_window_is_ambiguous(text):
             ambiguous.append(text)
-    assert probes == 2592, "the sweep lost a slot"
+    assert probes == 3312, "the sweep lost a slot"
     assert duplicated == []
     assert ambiguous == [], "a single stated window must not read as two"
 
@@ -236,18 +243,30 @@ def test_no_two_patterns_claim_the_same_window() -> None:
         pytest.param("for a couple hundred days", id="quantified-scale"),
     ],
 )
-def test_the_named_residual_count_forms_are_still_invisible(phrase: str) -> None:
-    """Hypothesis: the count vocabulary's stated gaps are exactly these,
-    and they still behave the pre-#1440 way — invisible, so the sentence
-    resolves to the window stated second.
+def test_the_named_residual_count_forms_are_read(phrase: str) -> None:
+    """Hypothesis: the three count spellings this fix once named as
+    residuals are stated windows like any other — alone they propose
+    nothing, beside a usable window they refuse.
 
-    Pinned rather than left to the comment, so the partial fix cannot be
-    read as a complete one. These are the forms `_SCALE_NUMBER_WORDS`
-    names as uncovered; widening the count slot to reach them is what
-    starts colliding with the resolving patterns, which is why it was not
-    done here. A future pass that does cover them turns this red, which
-    is the intended signal, not a regression.
+    They were left uncovered on the claim that widening the count slot
+    far enough to read them "starts colliding with the resolving
+    patterns". That claim was false and nothing backed it: widening the
+    slot produces zero same-offset collisions over
+    `test_no_two_patterns_claim_the_same_window`'s sweep — which now
+    probes all three spellings — and none of the five resolving fixtures
+    changes. This test is the inverse of the pin that published the
+    claim, so reverting the widening turns it red rather than green.
     """
+    alone = f"Always remember this {phrase}."
+    assert detect_directive(alone) is True, "fixture must reach the window arm"
+    assert extract_stated_window(alone) is None
+    assert stated_window_is_ambiguous(alone) is False, "one window is not two"
+
     text = f"Always remember this {phrase} for a week."
-    assert stated_window_is_ambiguous(text) is False
-    assert extract_stated_window(text) == "1w"
+    assert stated_window_attaches_to_memory(text) is True, (
+        "fixture must reach the ambiguity arm"
+    )
+    assert stated_window_is_ambiguous(text) is True
+    assert _directive_window_spec(text) is None, (
+        "two stated windows must refuse, not resolve to the second"
+    )

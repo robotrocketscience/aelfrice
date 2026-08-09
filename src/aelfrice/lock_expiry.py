@@ -296,21 +296,25 @@ _QUANTIFIER: Final[str] = (
 # actually uses them, so they carry their own optional multiplier
 # instead (#1440).
 #
-# What this does NOT read, deliberately: a tail joined by "and" ("two
-# hundred and fifty days") and the partitive ("dozens of days", "a
-# couple hundred days"). Both leave the window unrecorded — the
-# pre-#1440 behaviour — and widening the count slot far enough to catch
-# them is what starts colliding with the resolving patterns.
+# The multiplier slot takes a quantifier as well as a number ("a couple
+# hundred days"), the scale word may be partitive ("dozens of days"),
+# and an `and`-joined tail is read after it ("two hundred and fifty
+# days"). None of the three collides with the resolving patterns: the
+# count and unit sweep in `test_no_two_patterns_claim_the_same_window`
+# is the evidence, and it covers all three spellings.
 _SCALE_NUMBER_WORDS: Final[tuple[str, ...]] = ("hundred", "thousand", "dozen")
 
 _SCALED_COUNT: Final[str] = (
-    r"(?:(?:\d+|"
+    r"(?:(?:"
+    + _QUANTIFIER
+    + r"|(?:" + "|".join(_LARGE_NUMBER_WORDS) + r")" + _LARGE_NUMBER_SUFFIX
+    + r"|\d+|"
     + "|".join(_NUMBER_WORDS)
-    + r"|"
-    + "|".join(_LARGE_NUMBER_WORDS)
     + r")\s+)?(?:"
     + "|".join(_SCALE_NUMBER_WORDS)
-    + r")s?"
+    + r")s?(?:\s+of)?"
+    + r"(?:\s+and\s+(?:(?:" + "|".join(_LARGE_NUMBER_WORDS) + r")"
+    + _LARGE_NUMBER_SUFFIX + r"|\d+|" + "|".join(_NUMBER_WORDS) + r"))?"
 )
 
 # A window stated OUTSIDE the count/unit vocabulary above. It resolves to
