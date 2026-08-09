@@ -332,6 +332,107 @@ def test_claude_tool_result_is_not_a_turn_boundary(tmp_path: Path) -> None:
     assert tl._last_assistant_text(str(transcript)) == "TURN-2 ANSWER"
 
 
+def test_claude_tool_result_with_sibling_text_is_not_a_boundary(
+    tmp_path: Path,
+) -> None:
+    """A tool result plus an appended text segment is still mid-turn.
+
+    A <system-reminder> rides along with the tool result as a sibling
+    text segment on the Claude-host shape, so the record is a mixed
+    list. Requiring *every* segment to be a tool_result made that shape
+    a boundary and suppressed the answer the turn really gave.
+    """
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        _claude_user_line("question one") + "\n" +
+        _claude_assistant_line({"type": "text", "text": "TURN-1 ANSWER"})
+        + "\n" +
+        _claude_user_line("question two") + "\n" +
+        _claude_assistant_line(
+            {"type": "text", "text": "TURN-2 REAL ANSWER"}) + "\n" +
+        _claude_assistant_line(
+            {"type": "tool_use", "name": "Bash", "input": {}}) + "\n" +
+        _claude_user_line([
+            {"type": "tool_result", "content": "ok"},
+            {"type": "text", "text": "<system-reminder>note</system-reminder>"},
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    assert tl._last_assistant_text(str(transcript)) == "TURN-2 REAL ANSWER"
+
+
+def test_claude_interrupt_marker_is_not_a_boundary(tmp_path: Path) -> None:
+    """An interrupt is a harness-written user record, not a new prompt.
+
+    The turn's partial text is the right answer for it; treating the
+    marker as a turn start returned None instead.
+    """
+    transcript = tmp_path / "transcript.jsonl"
+    head = (
+        _claude_user_line("question one") + "\n" +
+        _claude_assistant_line({"type": "text", "text": "TURN-1 ANSWER"})
+        + "\n" +
+        _claude_user_line("question two") + "\n" +
+        _claude_assistant_line(
+            {"type": "text", "text": "TURN-2 REAL ANSWER"}) + "\n"
+    )
+    # Both marker texts, under both content encodings user records use
+    # (a one-segment text list, and a bare string).
+    for marker in (
+        "[Request interrupted by user]",
+        "[Request interrupted by user for tool use]",
+    ):
+        for content in ([{"type": "text", "text": marker}], marker):
+            transcript.write_text(
+                head + _claude_user_line(content) + "\n", encoding="utf-8")
+            assert (
+                tl._last_assistant_text(str(transcript))
+                == "TURN-2 REAL ANSWER"
+            )
+
+
+def test_claude_meta_record_is_not_a_boundary(tmp_path: Path) -> None:
+    """`isMeta` user records are harness text, not the turn's prompt."""
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        _claude_user_line("question one") + "\n" +
+        _claude_assistant_line({"type": "text", "text": "TURN-1 ANSWER"})
+        + "\n" +
+        _claude_user_line("question two") + "\n" +
+        _claude_assistant_line(
+            {"type": "text", "text": "TURN-2 REAL ANSWER"}) + "\n" +
+        json.dumps({"type": "user", "isMeta": True, "message": {
+            "role": "user",
+            "content": "Stop hook feedback: run the gate"}}) + "\n",
+        encoding="utf-8",
+    )
+    assert tl._last_assistant_text(str(transcript)) == "TURN-2 REAL ANSWER"
+
+
+def test_interrupt_tolerance_does_not_cross_the_prompt(
+    tmp_path: Path,
+) -> None:
+    """Skipping the interrupt marker must not re-open the #1439 leak.
+
+    Turn N is interrupted before it says anything, so the answer is
+    None — not turn N-1's text sitting one record further back.
+    """
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        _claude_user_line("question one") + "\n" +
+        _claude_assistant_line({"type": "text", "text": "TURN-1 ANSWER"})
+        + "\n" +
+        _claude_user_line("question two") + "\n" +
+        _claude_assistant_line(
+            {"type": "tool_use", "name": "Bash", "input": {}}) + "\n" +
+        _claude_user_line(
+            [{"type": "text", "text": "[Request interrupted by user]"}])
+        + "\n",
+        encoding="utf-8",
+    )
+    assert tl._last_assistant_text(str(transcript)) is None
+
+
 def test_stop_writes_empty_text_when_no_transcript(tdir: Path) -> None:
     rc = _run_main({"hook_event_name": "Stop"})
     assert rc == 0
