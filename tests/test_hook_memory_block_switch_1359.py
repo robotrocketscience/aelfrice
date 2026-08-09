@@ -9,6 +9,16 @@ Acceptance, from the governing 2026-08-06 ruling ("ship the cheap half"):
 - suppression does not disable the correction lane or the relevance
   sweeper, and does not touch `aelf rebuild`.
 
+Both `<aelfrice-memory>` emit paths are driven, not just the retrieval
+one: the `elif gate_skip:` path that ships a session's first prompt when
+the #674 shape gate refuses BM25 carries its own copy of the hint and of
+the switch.
+
+Suppression also records no exposure evidence — no `injection_events`
+row, no `belief_touches` row, no session-ring entry. An off-switch that
+logged an injection that never happened would hand the #779 Layer-3
+sweeper a set of beliefs it can only ever score `referenced=0`.
+
 The hint's cost is pinned as an explicit number rather than a range: it is
 paid on every fire that emits a block, so a silent growth in it is a
 silent tax on the retrieval budget.
@@ -26,16 +36,28 @@ from aelfrice.hook import (
     CLOSE_TAG,
     MEMORY_BLOCK_HINT,
     OPEN_TAG,
+    SESSION_START_SUBBLOCK_OPEN,
+    _audit_path_for_db,
     memory_block_enabled,
+    read_hook_audit,
     user_prompt_submit,
 )
-from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
+from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.store import MemoryStore
 
 _PROMPT = "tell me about bananas"
 
+# Length 2 → below `_MIN_PROMPT_LEN` (12), so `_should_skip_bm25` returns
+# ("trivial:short") and the hook takes the `elif gate_skip:` emit path.
+_GATED_PROMPT = "ok"
 
-def _mk(bid: str, content: str) -> Belief:
+
+def _mk(
+    bid: str,
+    content: str,
+    lock_level: str = LOCK_NONE,
+    locked_at: str | None = None,
+) -> Belief:
     return Belief(
         id=bid,
         content=content,
@@ -43,8 +65,8 @@ def _mk(bid: str, content: str) -> Belief:
         alpha=1.0,
         beta=1.0,
         type=BELIEF_FACTUAL,
-        lock_level=LOCK_NONE,
-        locked_at=None,
+        lock_level=lock_level,
+        locked_at=locked_at,
         created_at="2026-04-26T00:00:00Z",
         last_retrieved_at=None,
     )
@@ -106,6 +128,40 @@ def test_hint_cost_is_pinned() -> None:
     assert len(MEMORY_BLOCK_HINT) == 97
     assert len(MEMORY_BLOCK_HINT.encode("utf-8")) == 99
     assert -(-len(MEMORY_BLOCK_HINT) // 4) == 25
+
+
+def test_hint_is_inside_the_audited_token_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hint is audited, and this is what it costs the audit.
+
+    `_write_hook_audit_record` derives `tokens` from the whole rendered
+    block, so an emitting fire's audited token count now includes the
+    hint. That is correct — the audit records what was injected and this
+    line is injected — but it moves the per-turn injected-token baseline
+    #1382 is measured against, so the size of the move is pinned here.
+    +24 tokens, +25 when the pre-hint block length is a multiple of 4
+    (the estimator ceil-divides by 4 and the hint is 97 = 24*4 + 1).
+    """
+    db = tmp_path / "memory.db"
+    _seed(db)
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "1")
+    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
+    sout = io.StringIO()
+    assert user_prompt_submit(
+        stdin=io.StringIO(_payload(str(tmp_path))),
+        stdout=sout,
+        stderr=io.StringIO(),
+    ) == 0
+    out = sout.getvalue()
+    assert out.endswith(MEMORY_BLOCK_HINT)
+    rec = read_hook_audit(_audit_path_for_db(db))[0]
+    assert rec["tokens"] == hook_mod._audit_tokens_from_block(out)
+    without = hook_mod._audit_tokens_from_block(out[: -len(MEMORY_BLOCK_HINT)])
+    delta = int(rec["tokens"]) - without  # type: ignore[call-overload]
+    expected = 25 if (len(out) - len(MEMORY_BLOCK_HINT)) % 4 == 0 else 24
+    assert delta == expected
 
 
 def test_hint_is_one_line_naming_switch_and_inspect_command() -> None:
@@ -248,6 +304,169 @@ def test_suppression_leaves_rebuild_untouched(
     finally:
         store.close()
     assert "banana" in block
+
+
+# ---------------------------------------------------------------------------
+# The second emit path: shape-gate skip on a session's first prompt
+# ---------------------------------------------------------------------------
+#
+# `user_prompt_submit` writes an `<aelfrice-memory>` envelope from two
+# sites. The `if hits:` site above is the retrieval one; this is the
+# `elif gate_skip:` one, which fires when the prompt-shape gate (#674)
+# refuses BM25 but the turn is still a session's first prompt, so the
+# #578 session-start sub-block must not be silently dropped. It is a
+# live path — a bare "ok" on turn one reaches it — and it carries its own
+# copy of both the hint and the switch.
+
+
+def _seed_locked(db: Path) -> None:
+    store = MemoryStore(str(db))
+    try:
+        store.insert_belief(
+            _mk(
+                "L1",
+                "always run the suite before pushing",
+                lock_level=LOCK_USER,
+                locked_at="2026-04-26T00:00:00Z",
+            ),
+        )
+    finally:
+        store.close()
+
+
+def _run_gated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    session_id: str,
+) -> tuple[str, dict[str, object]]:
+    """Fire a shape-gated prompt as a session's first prompt.
+
+    Returns (stdout, the hook-audit record). The record is what proves
+    the fire took the gate-skip branch: `prompt_shape_gate_skip` is set
+    at that call site and nowhere else.
+    """
+    db = tmp_path / "memory.db"
+    _seed_locked(db)
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    monkeypatch.setenv("AELFRICE_HOOK_AUDIT", "1")
+    sout = io.StringIO()
+    rc = user_prompt_submit(
+        stdin=io.StringIO(
+            _payload(str(tmp_path), _GATED_PROMPT, session_id),
+        ),
+        stdout=sout,
+        stderr=io.StringIO(),
+    )
+    assert rc == 0
+    records = read_hook_audit(_audit_path_for_db(db))
+    assert len(records) == 1
+    return sout.getvalue(), records[0]
+
+
+def test_gate_skip_first_prompt_emits_the_block_and_the_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Switch on: the gate-skip envelope ships, and carries the hint."""
+    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
+    out, rec = _run_gated(tmp_path, monkeypatch, "s-gate-on")
+    assert rec["prompt_shape_gate_skip"] == "trivial:short"
+    assert rec["n_beliefs"] == 0
+    assert OPEN_TAG in out
+    assert SESSION_START_SUBBLOCK_OPEN in out
+    assert "always run the suite before pushing" in out
+    assert out.endswith(MEMORY_BLOCK_HINT)
+    without_hint = out[: -len(MEMORY_BLOCK_HINT)]
+    assert without_hint.rstrip("\n").endswith(CLOSE_TAG)
+
+
+def test_gate_skip_first_prompt_is_suppressed_by_the_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Switch off: the same fire writes nothing, sub-block included.
+
+    The #578 sub-block and #871's `<cadence-resume>` ride inside this
+    envelope, so they go with it. That is the documented behaviour, not
+    an accident — see `docs/user/CONFIG.md`.
+    """
+    monkeypatch.setenv("AELFRICE_MEMORY_BLOCK", "0")
+    out, rec = _run_gated(tmp_path, monkeypatch, "s-gate-off")
+    assert rec["prompt_shape_gate_skip"] == "trivial:short"
+    assert out == ""
+    assert rec["tokens"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Suppression records no exposure evidence
+# ---------------------------------------------------------------------------
+
+
+def _read_exposure(db: Path, session_id: str) -> tuple[int, int]:
+    """Return (injection_events rows, belief_touches rows) for a session."""
+    store = MemoryStore(str(db))
+    try:
+        events = store._conn.execute(
+            "SELECT COUNT(*) AS n FROM injection_events WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()["n"]
+        touches = store._conn.execute(
+            "SELECT COUNT(*) AS n FROM belief_touches WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()["n"]
+        return int(events), int(touches)
+    finally:
+        store.close()
+
+
+def test_suppressed_fire_records_no_exposure_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An off-switch must not manufacture negative evidence.
+
+    `injection_events`, `belief_touches` and the session ring all assert
+    that the model *saw* a belief. The Layer-3 sweeper (#779) resolves
+    pending injection events against the next assistant turn, so a row
+    written for a block that never reached the prompt can only ever
+    resolve `referenced=0`. Both halves run here: the enabled fire is
+    the control that shows the writes are reachable at all, so the
+    disabled half's zeroes mean suppression and not a dead fixture.
+    """
+    from aelfrice.session_ring import read_ring_state
+
+    on_dir = tmp_path / "on"
+    on_dir.mkdir()
+    on_db = on_dir / "memory.db"
+    _seed(on_db)
+    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
+    monkeypatch.setenv("AELFRICE_DB", str(on_db))
+    sout = io.StringIO()
+    assert user_prompt_submit(
+        stdin=io.StringIO(_payload(str(on_dir), _PROMPT, "s-eve-on")),
+        stdout=sout,
+        stderr=io.StringIO(),
+    ) == 0
+    assert OPEN_TAG in sout.getvalue()
+    on_events, on_touches = _read_exposure(on_db, "s-eve-on")
+    assert on_events == 1
+    assert on_touches == 1
+    assert [e["id"] for e in read_ring_state("s-eve-on")["ring"]] == ["F1"]
+
+    off_dir = tmp_path / "off"
+    off_dir.mkdir()
+    off_db = off_dir / "memory.db"
+    _seed(off_db)
+    monkeypatch.setenv("AELFRICE_DB", str(off_db))
+    monkeypatch.setenv("AELFRICE_MEMORY_BLOCK", "0")
+    sout_off = io.StringIO()
+    assert user_prompt_submit(
+        stdin=io.StringIO(_payload(str(off_dir), _PROMPT, "s-eve-off")),
+        stdout=sout_off,
+        stderr=io.StringIO(),
+    ) == 0
+    assert sout_off.getvalue() == ""
+    off_events, off_touches = _read_exposure(off_db, "s-eve-off")
+    assert off_events == 0
+    assert off_touches == 0
+    assert read_ring_state("s-eve-off").get("ring", []) == []
 
 
 # ---------------------------------------------------------------------------
