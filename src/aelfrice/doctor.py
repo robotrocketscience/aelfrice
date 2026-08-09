@@ -38,7 +38,6 @@ import importlib.metadata
 import json
 import os
 import re
-import shlex
 import shutil
 import sqlite3
 import time
@@ -46,6 +45,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
 
+from aelfrice import launcher
 from aelfrice import setup as _setup
 from aelfrice.setup import (
     PROJECT_SETTINGS_RELPATH,
@@ -979,8 +979,14 @@ def _inspect_command(
             detail="empty command string",
             silent_failure=silent,
         )
+    # #1412: NOT `shlex.split`. Its POSIX mode treats a backslash as an
+    # escape, so `C:\Scripts\aelf-hook.exe` tokenises to
+    # `C:Scriptsaelf-hook.exe` -- a path that does not exist. The hook is
+    # then classified broken, and `prune_broken_aelf_hooks` (which `aelf
+    # setup` runs unconditionally) DELETES a working Windows install on the
+    # next run. This is the destructive half of the issue.
     try:
-        tokens = shlex.split(stripped)
+        tokens = launcher.command_tokens(stripped)
     except ValueError:
         # Unparseable as shell tokens -- only safe to skip when no
         # interpreter+script is recognisable from a token prefix.
@@ -1030,11 +1036,15 @@ def _inspect_command(
             detail="contains shell metacharacters; not statically checked",
             silent_failure=silent,
         )
-    if "/" in program:
+    # #1412: a Windows absolute path contains no forward slash, so it fell
+    # through to the bare-name branch below and was reported as "not on
+    # $PATH" however correctly it was installed.
+    if "/" in program or "\\" in program:
         finding = _check_path(settings_path, location, command, program)
         return _with_silent_failure(finding) if silent else finding
-    # Bare name -- $PATH lookup.
-    resolved = shutil.which(program)
+    # Bare name -- $PATH lookup. Explicit `path=` (see launcher) keeps the
+    # win32 current-directory search out of a diagnostic.
+    resolved = launcher.which_on_path(program)
     if resolved is None:
         return CommandFinding(
             settings_path=settings_path, location=location,
@@ -1156,7 +1166,11 @@ def _entry_duplicate_key(entry: object) -> tuple[str | None, str] | None:
         stripped = cmd.strip()
         if not stripped:
             continue
-        base = Path(stripped.split(maxsplit=1)[0]).name
+        # #1412: same key derivation as setup/host_codex ownership. A
+        # Windows launcher used to key on the entire command string, so two
+        # installs of the same hook never collided and the duplicate
+        # collapse silently did nothing.
+        base = launcher.command_launcher_key(stripped)
         if base.startswith(_AELF_HOOK_BASENAME_PREFIX):
             basenames.append(base)
     if not basenames:
@@ -1355,8 +1369,13 @@ def _entry_is_broken_aelf_hook(
         stripped = cmd.strip()
         if not stripped:
             continue
-        first = stripped.split(maxsplit=1)[0]
-        if not Path(first).name.startswith(_AELF_HOOK_BASENAME_PREFIX):
+        # #1412: the predicate that decides whether prune may delete this
+        # entry. Under the old derivation a Windows launcher did not read as
+        # `aelf-*`, so the entry was skipped -- benign. The damage came from
+        # `_inspect_command` above, which then judged it broken.
+        if not launcher.command_launcher_key(stripped).startswith(
+            _AELF_HOOK_BASENAME_PREFIX,
+        ):
             continue
         finding = _inspect_command(settings_path, "<prune>", cmd)
         if finding.status == "broken":
