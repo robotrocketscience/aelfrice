@@ -433,6 +433,76 @@ def test_interrupt_tolerance_does_not_cross_the_prompt(
     assert tl._last_assistant_text(str(transcript)) is None
 
 
+# The body Codex writes verbatim when a turn is aborted; all 30
+# occurrences across the 76 local rollouts are byte-identical to this and
+# are the record's only content segment.
+_CODEX_ABORT_MARKER = (
+    "<turn_aborted>\n"
+    "The user interrupted the previous turn on purpose. Any running "
+    "unified exec processes may still be running in the background. If "
+    "any tools/commands were aborted, they may have partially executed.\n"
+    "</turn_aborted>"
+)
+
+
+def _codex_user_input_line(*texts: str) -> str:
+    """A Codex user record in the shape rollouts actually write.
+
+    User content segments are `input_text`; only assistant records use
+    the `output_text` type `_codex_rollout_line` emits.
+    """
+    return json.dumps({
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": t} for t in texts],
+        },
+    })
+
+
+def test_codex_abort_marker_is_not_a_boundary(tmp_path: Path) -> None:
+    """#1439: the Codex abort marker is harness text, not a new prompt.
+
+    The three exclusions were reachable on the Claude-host arm only —
+    the `response_item` arm returned before any of them — so this
+    record ended the scan and the aborted turn's own partial answer
+    was discarded. A turn that *did* answer returned None.
+    """
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        _codex_user_input_line("question one") + "\n" +
+        _codex_rollout_line("assistant", "TURN-1 ANSWER") + "\n" +
+        _codex_user_input_line("question two") + "\n" +
+        _codex_rollout_line("assistant", "TURN-2 PARTIAL") + "\n" +
+        _codex_user_input_line(_CODEX_ABORT_MARKER) + "\n",
+        encoding="utf-8",
+    )
+    assert tl._last_assistant_text(str(transcript)) == "TURN-2 PARTIAL"
+
+
+def test_codex_abort_tolerance_does_not_cross_the_prompt(
+    tmp_path: Path,
+) -> None:
+    """Skipping the Codex abort marker must not re-open the #1439 leak.
+
+    The aborted turn said nothing before it was interrupted, so None is
+    the answer — not turn N-1's text two records further back.
+    """
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        _codex_user_input_line("question one") + "\n" +
+        _codex_rollout_line("assistant", "TURN-1 ANSWER") + "\n" +
+        _codex_user_input_line("question two") + "\n" +
+        json.dumps({"type": "response_item",
+                    "payload": {"type": "function_call", "name": "shell"}})
+        + "\n" +
+        _codex_user_input_line(_CODEX_ABORT_MARKER) + "\n",
+        encoding="utf-8",
+    )
+    assert tl._last_assistant_text(str(transcript)) is None
+
+
 def test_stop_writes_empty_text_when_no_transcript(tdir: Path) -> None:
     rc = _run_main({"hook_event_name": "Stop"})
     assert rc == 0
