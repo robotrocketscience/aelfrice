@@ -27,6 +27,10 @@ import pytest
 
 from aelfrice.host_codex import install_codex_hooks, remove_codex_hooks
 
+#: Ceiling on every wait below. The lock timeout is 10s, so six writers
+#: contending for it cannot legitimately need more than this.
+_JOIN_TIMEOUT_S = 60.0
+
 _FOREIGN_A = {
     "hooks": {
         "SessionEnd": [
@@ -269,7 +273,7 @@ def test_concurrent_writers_preserve_the_foreign_entry(
     errors: list[str] = []
 
     def worker(remove: bool) -> None:
-        barrier.wait()
+        barrier.wait(timeout=_JOIN_TIMEOUT_S)
         result = remove_codex_hooks(p) if remove else install_codex_hooks(p)
         if result.error:
             errors.append(result.error)
@@ -280,7 +284,8 @@ def test_concurrent_writers_preserve_the_foreign_entry(
     for t in threads:
         t.start()
     for t in threads:
-        t.join()
+        t.join(timeout=_JOIN_TIMEOUT_S)
+    assert not [t for t in threads if t.is_alive()], "a writer never finished"
 
     assert errors == []
     final = json.loads(p.read_text(encoding="utf-8"))
