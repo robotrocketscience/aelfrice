@@ -4,8 +4,9 @@ Reads each user prompt, regex-matches against twelve positive and
 twelve negative sentiment patterns, and emits a `SentimentSignal`.
 The signal is split equally across the previous turn's retrieved
 beliefs via `apply_sentiment_to_pending`, which calls
-`feedback.apply_feedback` once per pending belief id with 1/N of the
-signal's magnitude.
+`feedback.apply_feedback` once per *live* pending belief id with 1/N of
+the signal's magnitude — N being the live ids that are not user-locked,
+since the #1168 floor refuses a posterior move on a lock.
 
 Design contract (spec: `docs/design/v2_sentiment_feedback.md`):
 
@@ -32,13 +33,13 @@ Design contract (spec: `docs/design/v2_sentiment_feedback.md`):
     the caller-supplied window.
 
 Distribution shape: `apply_sentiment_to_pending` splits the signal
-equally across all live pending belief ids — each gets `valence / N`, so
-one utterance is worth one unit of evidence in total rather than one
-unit per belief (#1372 §13). Per-rank scaling remains out of scope
-(decision ratified 2026-04-29: "ranked distribution adds a knob without
-an evidence-gate"); the equal split is not a claim that the beliefs are
-equally implicated, only a refusal to manufacture evidence in
-proportion to pack size.
+equally across the live pending belief ids that can take it — each gets
+`valence / N`, so one utterance is worth one unit of evidence in total
+rather than one unit per belief (#1372 §13). Per-rank scaling remains
+out of scope (decision ratified 2026-04-29: "ranked distribution adds a
+knob without an evidence-gate"); the equal split is not a claim that the
+beliefs are equally implicated, only a refusal to manufacture
+evidence in proportion to pack size.
 
 This module does NOT decide *when* to call into it. The hook layer is
 responsible for: (a) checking the config flag, (b) resolving the
@@ -54,6 +55,7 @@ from dataclasses import dataclass
 from typing import Final, Sequence
 
 from aelfrice.feedback import FeedbackResult, apply_feedback
+from aelfrice.models import LOCK_USER
 from aelfrice.store import MemoryStore
 
 # --- Public constants ---------------------------------------------------
@@ -328,18 +330,25 @@ def apply_sentiment_to_pending(
     `ESCALATED_NEGATIVE_VALENCE`. Has no effect on positive signals;
     the correction-frequency path only escalates negatives by design.
 
-    **Divides by the live pending count** (#1372 §13). The signal is one
-    utterance about (at most) one of the beliefs on the prior turn, so it
-    is worth one unit of evidence in total, not one unit *per belief*.
-    Applying the full magnitude N times manufactured N-1 units of
+    **Divides by the count of live, unlocked ids** (#1372 §13). The signal
+    is one utterance about (at most) one of the beliefs on the prior turn,
+    so it is worth one unit of evidence in total, not one unit *per
+    belief*. Applying the full magnitude N times manufactured N-1 units of
     evidence out of nothing and grew the fabrication with the size of the
-    retrieval pack. Each live id now receives `valence / N`, so the sum
-    of the applied magnitudes equals the signal's own magnitude
-    regardless of N. This is the cheap fix, not the principled one: the
-    principled fix attributes the signal to the beliefs the user's words
-    demonstrably reference, and nothing here does that — a uniform split
-    still puts evidence on beliefs the utterance was not about, merely
-    without inflating the total.
+    retrieval pack. Each id that can take a posterior update now receives
+    `valence / N`, so the sum of the magnitudes that move a posterior
+    equals the signal's own magnitude regardless of N. Live-but-locked
+    ids are excluded from N because the #1168 floor refuses them; they
+    still get their audit-only row, carrying the share they were offered
+    and refused (`skipped_locked`), so the log records that the signal
+    reached them. `feedback_history` has no applied/refused column, so
+    summing its `valence` over a mixed pack exceeds the signal — as it
+    did before #1372; the conservation claim here is about the magnitudes
+    that move a posterior. This is the cheap fix, not the principled one:
+    the principled fix attributes the signal to the beliefs the user's
+    words demonstrably reference, and nothing here does that — a uniform
+    split still puts evidence on beliefs the utterance was not about,
+    merely without inflating the total.
 
     **Does not propagate** (#1291). One prose signal already credits
     every belief on the prior turn, which is not a set of exchangeable
@@ -360,16 +369,32 @@ def apply_sentiment_to_pending(
     # Resolve liveness first: the divisor has to be the number of beliefs
     # that actually receive evidence, or the applied total drifts below
     # one unit whenever the prior turn surfaced a since-deleted belief.
-    live = [bid for bid in pending_belief_ids if store.get_belief(bid) is not None]
+    live = [b for b in map(store.get_belief, pending_belief_ids) if b is not None]
     if not live:
         return []
-    share = valence / len(live)
+
+    # Liveness is necessary but not sufficient: `apply_feedback` refuses
+    # a posterior move on a LOCK_USER belief (the #1168 lock floor) and
+    # writes an audit-only row instead. Counting locks in the divisor
+    # therefore shrinks the delivered total by the locked fraction —
+    # measured on this branch, a 4-id pack with three LOCK_USER ids under
+    # a 1.5 signal moved 0.375, i.e. 0.25 of a unit, where github/main
+    # moved 1.5 (1.0 unit) onto its one unlocked id. Locked packs are the
+    # ordinary shape rather than the corner case: L0 locks are injected on
+    # every prompt, which is the premise the lock floor itself argues from
+    # (feedback.py). Dividing by the ids that can take the evidence keeps
+    # the delivered total at one unit whatever the lock mix.
+    receivers = [b.id for b in live if b.lock_level != LOCK_USER]
+    # An all-locked pack has no receiver; divide by the live count so the
+    # offered magnitudes still sum to the signal, and let the floor refuse
+    # every one of them. Nothing moves, which is what #1168 requires.
+    share = valence / (len(receivers) if receivers else len(live))
 
     results: list[FeedbackResult] = []
-    for bid in live:
+    for b in live:
         result = apply_feedback(
             store=store,
-            belief_id=bid,
+            belief_id=b.id,
             valence=share,
             source=SENTIMENT_INFERRED_SOURCE,
             now=now,

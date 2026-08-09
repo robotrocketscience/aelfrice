@@ -11,7 +11,7 @@ from typing import Iterator
 import pytest
 
 from aelfrice.feedback import apply_feedback
-from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, Belief
+from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.sentiment_feedback import (
     AMPLIFIED_VALENCE,
     BASE_VALENCE,
@@ -35,7 +35,13 @@ from aelfrice.store import MemoryStore
 # --- Fixtures ------------------------------------------------------------
 
 
-def _mk(bid: str, alpha: float = 1.0, beta: float = 1.0) -> Belief:
+def _mk(
+    bid: str,
+    alpha: float = 1.0,
+    beta: float = 1.0,
+    *,
+    lock_level: str = LOCK_NONE,
+) -> Belief:
     return Belief(
         id=bid,
         content=f"belief {bid}",
@@ -43,8 +49,8 @@ def _mk(bid: str, alpha: float = 1.0, beta: float = 1.0) -> Belief:
         alpha=alpha,
         beta=beta,
         type=BELIEF_FACTUAL,
-        lock_level=LOCK_NONE,
-        locked_at=None,
+        lock_level=lock_level,
+        locked_at="2026-04-26T00:00:00Z" if lock_level == LOCK_USER else None,
         created_at="2026-04-26T00:00:00Z",
         last_retrieved_at=None,
     )
@@ -301,32 +307,81 @@ def test_apply_distributes_positive_signal_across_all_pending(
 # --- #1372 §13: one utterance is worth one unit of evidence, not N -------
 
 
-@pytest.mark.parametrize("n", [1, 2, 3])
+@pytest.mark.parametrize(
+    ("n", "n_locked"),
+    [(1, 0), (2, 0), (3, 0), (2, 1), (4, 3)],
+)
 def test_applied_valence_sums_to_one_signal_regardless_of_pack_size(
-    n: int,
+    n: int, n_locked: int
 ) -> None:
     """The whole pack must absorb |signal.valence| in total.
 
     Before #1372 every belief took the full magnitude, so the applied
     total was N x the signal and grew with the size of the retrieval
     pack — N-1 units of evidence the user never supplied.
+
+    The locked arms are the ones that pin the divisor. `apply_feedback`
+    refuses a posterior move on a LOCK_USER belief (#1168) and writes an
+    audit-only row instead, so a divisor that counts locks delivers only
+    the unlocked fraction of the unit: dividing a 1.5 signal by all four
+    ids of a 3-locked pack moves 0.375, i.e. 0.25 of a unit. Locked packs
+    are the production shape — L0 locks are injected on every prompt —
+    so the invariant has to hold here, not only on a lock-free fixture.
     """
     store = MemoryStore(":memory:")
     ids = [f"p{i}" for i in range(n)]
+    locked_ids = set(ids[:n_locked])
     for bid in ids:
-        store.insert_belief(_mk(bid))
+        store.insert_belief(
+            _mk(bid, lock_level=LOCK_USER if bid in locked_ids else LOCK_NONE)
+        )
 
     sig = SentimentSignal(NEGATIVE, -AMPLIFIED_VALENCE, 0.9, "wrong", "wrong")
     results = apply_sentiment_to_pending(store, sig, ids)
 
+    # Every live id is still audited, locked or not.
     assert len(results) == n
-    applied = sum(abs(r.valence) for r in results)
+    assert {r.belief_id for r in results if r.skipped_locked} == locked_ids
+
+    applied = sum(abs(r.valence) for r in results if r.posterior_applied)
     assert applied == pytest.approx(AMPLIFIED_VALENCE), (
-        f"{n} pending ids absorbed {applied} of a {AMPLIFIED_VALENCE} signal"
+        f"{n} pending ids ({n_locked} locked) absorbed {applied} "
+        f"of a {AMPLIFIED_VALENCE} signal"
     )
-    # And the posteriors agree with the audited valences.
+    # And the posteriors agree with the applied valences.
     moved = sum(store.get_belief(bid).beta - 1.0 for bid in ids)  # type: ignore[union-attr]
-    assert moved == pytest.approx(AMPLIFIED_VALENCE)
+    assert moved == pytest.approx(AMPLIFIED_VALENCE), (
+        f"{n_locked} of {n} locked delivered {moved / AMPLIFIED_VALENCE} of a unit"
+    )
+    # The floor still holds: a locked belief's posterior does not move.
+    for bid in locked_ids:
+        b = store.get_belief(bid)
+        assert b is not None
+        assert (b.alpha, b.beta) == (1.0, 1.0)
+
+
+def test_all_locked_pack_moves_nothing_and_offers_exactly_one_unit() -> None:
+    """No receiver: the floor refuses every id and nothing is inflated.
+
+    The divisor falls back to the live count here, so the offered
+    magnitudes still sum to the signal rather than putting the whole
+    signal on each refused id.
+    """
+    store = MemoryStore(":memory:")
+    ids = ["q0", "q1", "q2"]
+    for bid in ids:
+        store.insert_belief(_mk(bid, lock_level=LOCK_USER))
+
+    sig = SentimentSignal(NEGATIVE, -AMPLIFIED_VALENCE, 0.9, "wrong", "wrong")
+    results = apply_sentiment_to_pending(store, sig, ids)
+
+    assert len(results) == 3
+    assert all(r.skipped_locked for r in results)
+    assert sum(abs(r.valence) for r in results) == pytest.approx(AMPLIFIED_VALENCE)
+    for bid in ids:
+        b = store.get_belief(bid)
+        assert b is not None
+        assert (b.alpha, b.beta) == (1.0, 1.0)
 
 
 def test_divisor_counts_only_live_beliefs(store: MemoryStore) -> None:
