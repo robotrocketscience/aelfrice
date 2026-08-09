@@ -606,6 +606,12 @@ class DoctorReport:
     # on_disk_bytes (int), reason (str|None), last_build_seconds (float|None).
     # None when the HRR persist probe was not requested (no store_path).
     hrr_persist_state: dict[str, object] | None = None
+    # #1359: whether the UserPromptSubmit hook will write the
+    # <aelfrice-memory> block, resolved from AELFRICE_MEMORY_BLOCK and
+    # `[memory_block] enabled`. None when the probe did not run —
+    # "is this thing on?" is the question the block's own hint line
+    # points here to answer, so a silent absence is not an answer.
+    memory_block_enabled: bool | None = None
 
     @property
     def broken(self) -> list[CommandFinding]:
@@ -763,7 +769,27 @@ def diagnose(
         report.hrr_persist_state = _diagnose_hrr_persist(
             hrr_store_path, hrr_dim,
         )
+    # #1359: memory-block injection state. Resolved from `project_root`
+    # so a project-local `.aelfrice.toml` is honoured, and unconditional
+    # (unlike the HRR block) because there is no probe to gate on and the
+    # off state is exactly what needs reporting.
+    report.memory_block_enabled = _diagnose_memory_block(project_root)
     return report
+
+
+def _diagnose_memory_block(project_root: Path | None) -> bool | None:
+    """Resolve the #1359 memory-block switch, or None if unresolvable.
+
+    `aelfrice.hook` is imported lazily — it pulls the retrieval stack,
+    which doctor otherwise never pays for. Same policy as the
+    `read_user_prompt_submit_telemetry` import above.
+    """
+    try:
+        from aelfrice.hook import memory_block_enabled  # noqa: PLC0415
+
+        return memory_block_enabled(start=project_root)
+    except Exception:
+        return None
 
 
 def _diagnose_hrr_persist(
@@ -1443,6 +1469,8 @@ def format_report(report: DoctorReport) -> str:
         _format_reference_signal_section(report, lines)
         # #1375: store-derived too.
         _format_dangling_edges_section(report, lines)
+        # #1359: config-derived, independent of settings.json.
+        _format_memory_block_section(report, lines)
         return "\n".join(lines)
     for scope, path in report.scopes_scanned:
         lines.append(f"scanned {scope}: {path}")
@@ -1511,6 +1539,7 @@ def format_report(report: DoctorReport) -> str:
     _format_reference_signal_section(report, lines)
     _format_dangling_edges_section(report, lines)
     _format_hrr_section(report, lines)
+    _format_memory_block_section(report, lines)
     return "\n".join(lines)
 
 
@@ -1960,6 +1989,28 @@ def _format_hrr_section(
     else:
         lbs_str = f"{float(lbs):.3f}"  # type: ignore[arg-type]
     lines.append(f"  last_build_seconds:   {lbs_str}")
+
+
+def _format_memory_block_section(
+    report: DoctorReport, lines: list[str],
+) -> None:
+    """Append the memory-block injection state to `lines` (#1359).
+
+    Quiet when the probe did not resolve. The disabled row names both
+    spellings of the switch, because a user reaching doctor to ask why
+    nothing is being injected needs the answer here, not in the docs.
+    """
+    if report.memory_block_enabled is None:
+        return
+    lines.append("")
+    lines.append("Memory block")
+    if report.memory_block_enabled:
+        lines.append("  injection:            enabled")
+    else:
+        lines.append(
+            "  injection:            disabled "
+            "(AELFRICE_MEMORY_BLOCK=0 or [memory_block] enabled = false)"
+        )
 
 
 def _format_telemetry_section(report: DoctorReport, lines: list[str]) -> None:
