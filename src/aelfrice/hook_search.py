@@ -26,6 +26,11 @@ top-level call (retrieve + record), and `record_retrieval`, the audit
 half on its own. Both are best-effort on the write side: a failure to
 record does not prevent the retrieved beliefs from being returned.
 
+Exposure is a claim that the model saw the belief, so the caller may
+decline it: `search_for_prompt(..., record_exposure=False)` runs the
+read and skips the write. The #1359 off-switch passes it, because the
+block built from those hits never reaches the prompt.
+
 Non-blocking guarantee: `record_retrieval` swallows write-side failures
 with a stderr trace; the caller still gets the retrieval results. The
 read side (retrieve) is allowed to raise; `aelfrice.hook` catches at
@@ -90,12 +95,26 @@ def search_for_prompt(
     token_budget: int = DEFAULT_TOKEN_BUDGET,
     *,
     stderr: IO[str] | None = None,
+    record_exposure: bool = True,
 ) -> list[Belief]:
     """Retrieve hits for a hook prompt and record them to feedback_history.
 
     Wraps `retrieve(store, prompt, token_budget=...)` and, after the
     read, calls `record_retrieval` to write one audit row per returned
     belief.
+
+    `record_exposure=False` performs the read and skips that write
+    entirely (#1359). The caller passes it when the block built from
+    these hits will not reach the prompt: a `source='hook'`
+    feedback_history row is this codebase's canonical exposure record
+    (`models.EXPOSURE_ONLY_FEEDBACK_SOURCES`), and its live consumer
+    `store.exploration_pool` selects beliefs with no such row — so
+    writing one for a suppressed fire permanently evicts a belief from
+    the never-shown pool without ever having shown it. Retrieval itself
+    still runs, because the correction and relevance lanes read its
+    output. Skipping the whole call (rather than parts of it) keeps the
+    audit row and the `last_retrieved_at` mirror in agreement, which is
+    the invariant #1373 established.
     """
     # #1016-B: this is a hook injection path whose formatter renders
     # reference-tier locks as a one-line manifest, so budget them at
@@ -105,7 +124,8 @@ def search_for_prompt(
         store, prompt, token_budget=token_budget,
         manifest_reference_locks=True,
     )
-    record_retrieval(store, hits, stderr=stderr)
+    if record_exposure:
+        record_retrieval(store, hits, stderr=stderr)
     return hits
 
 

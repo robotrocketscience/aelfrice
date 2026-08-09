@@ -1210,7 +1210,21 @@ def user_prompt_submit(
                     # Fail-soft: surface the trace, retrieve on prompt.
                     traceback.print_exc(file=serr)
                     retrieval_query = prompt
-            hits = _retrieve(retrieval_query, budget, store=ups_store)
+            # #1359: the fourth exposure writer, gated on the same
+            # answer as the three below. `search_for_prompt` writes one
+            # `feedback_history` row per hit tagged `source='hook'` —
+            # `models.EXPOSURE_ONLY_FEEDBACK_SOURCES` is exactly that
+            # set, i.e. the row IS this codebase's exposure record — and
+            # `store.exploration_pool` (#1176) draws from beliefs with no
+            # such row. Written on a suppressed fire it evicts a belief
+            # from the never-shown pool permanently, having never shown
+            # it; under `AELFRICE_EXPOSURE_UPDATES_POSTERIOR=1` it also
+            # moves the posterior. Retrieval itself still runs — the
+            # correction and relevance lanes read these hits.
+            hits = _retrieve(
+                retrieval_query, budget, store=ups_store,
+                record_exposure=emit_memory_block,
+            )
             # #858 defect 3: drop hits whose stored project_context is
             # non-empty AND does not match the active in-process
             # context. '' on either side means "no filter": legacy
@@ -2193,6 +2207,7 @@ def _retrieve(
     token_budget: int,
     *,
     store: MemoryStore | None = None,
+    record_exposure: bool = True,
 ) -> list[Belief]:
     """Run retrieval for the given prompt and return the raw hit list.
 
@@ -2202,12 +2217,24 @@ def _retrieve(
     nothing. A caller-supplied `store` (#1135: the per-prompt shared
     handle) is used as-is and left open; without one the legacy
     open-per-call behaviour applies.
+
+    `record_exposure=False` (#1359) keeps the read and drops the
+    `feedback_history` exposure row `search_for_prompt` would otherwise
+    write per hit. The caller passes the memory-block switch here: a
+    fire whose block is suppressed retrieved these beliefs but never
+    showed them.
     """
     if store is not None:
-        return search_for_prompt(store, prompt, token_budget=token_budget)
+        return search_for_prompt(
+            store, prompt, token_budget=token_budget,
+            record_exposure=record_exposure,
+        )
     owned = _open_store()
     try:
-        return search_for_prompt(owned, prompt, token_budget=token_budget)
+        return search_for_prompt(
+            owned, prompt, token_budget=token_budget,
+            record_exposure=record_exposure,
+        )
     finally:
         owned.close()
 
