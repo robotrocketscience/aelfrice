@@ -27,6 +27,7 @@ from aelfrice.classification_core import (
     classify_sentence,
 )
 from aelfrice.correction import (
+    _ALWAYS_NEVER_TERMS,
     _EMPHASIS_TERMS,
     _IMPERATIVE_RE,
     _NEGATION_TERMS,
@@ -144,6 +145,52 @@ def test_negation_still_fires_on_the_standalone_word() -> None:
         assert "negation" in detect_correction(text).signals, text
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "rebasing that branch would produce a no-op",
+        "the lane returned no-match for every probe",
+        "work on something not-yet-issued",
+        "the anti-pattern list names no-numbers explicitly",
+    ],
+)
+def test_negation_does_not_fire_inside_a_hyphen_compound(text: str) -> None:
+    """`\\b` alone matches before a hyphen; the trailing space did not.
+
+    Swapping `"no "` for `\\bno\\b` was described as a pure narrowing and is
+    not one — it newly fires on hyphen compounds, which negate nothing.
+    `_NEGATION_RE` carries a `(?![\\w-])` right bound for exactly this.
+    Measured: 249 of the 44,687 active beliefs on one live store
+    (`benchmarks/classifier_boundary_1368.py`).
+    """
+    assert "negation" not in detect_correction(text).signals
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "A note in PHILOSOPHY.md is appropriate; a code change is not.",
+        "physically yes, policy-wise probably no, and there are vectors",
+        'the reviewer said "allowlist is not"',
+        "if not, name what you want changed",
+    ],
+)
+def test_negation_fires_when_the_word_is_punctuation_adjacent(text: str) -> None:
+    """The distinguishing half: this is what a trailing space would lose.
+
+    These four fail under the pre-#1368 `"not "` / `"no "` form, which
+    required a literal following space and so missed every sentence-final
+    and quote-adjacent negation. They pass under both plain `\\b` and the
+    shipped `(?![\\w-])` bound — so this test is what separates the shipped
+    variant from a revert, while
+    `test_negation_does_not_fire_inside_a_hyphen_compound` separates it
+    from plain `\\b`. Neither test alone pins the fix. Measured: 216 of
+    the 44,687 active beliefs on one live store
+    (`benchmarks/classifier_boundary_1368.py`).
+    """
+    assert "negation" in detect_correction(text).signals
+
+
 # --- #1159 §6: `_REQUIREMENT_KEYWORDS` word boundaries ----------------
 
 
@@ -216,6 +263,29 @@ def test_signal_category_token_sets_are_pairwise_disjoint() -> None:
     assert imperative & negation == frozenset()
     assert imperative & emphasis == frozenset()
     assert negation & emphasis == frozenset()
+
+
+def test_always_never_overlap_imperative_and_that_is_deliberate() -> None:
+    """Pins the one cross-category overlap #1159 §4 did *not* name.
+
+    "always" and "never" sit in both `_IMPERATIVE_RE`'s verb bank and
+    `_ALWAYS_NEVER_TERMS`, so one leading token yields two signals and
+    clears `CORRECTION_SIGNAL_THRESHOLD` unaided — the same shape as the
+    "stop" defect. §4 named only "stop", and removing a keyword changes
+    what the write path admits, so this is deferred with the other keyword
+    drops rather than fixed here.
+
+    The test exists so the overlap is deliberate rather than forgotten,
+    and so no future reader restores the "the categories are now
+    token-disjoint" claim that `correction.py` used to make. Delete this
+    test when the overlap is actually removed; it will go red first.
+    """
+    assert _imperative_verb_bank() & frozenset(_ALWAYS_NEVER_TERMS) == {
+        "always",
+        "never",
+    }
+    r = detect_correction("Always run the tests.")
+    assert sorted(r.signals) == ["always_never", "imperative"]
 
 
 def test_stop_fires_exactly_one_signal_category() -> None:

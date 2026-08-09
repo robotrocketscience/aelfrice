@@ -64,18 +64,42 @@ _ALWAYS_NEVER_TERMS: tuple[str, ...] = (
 # matched inside "pia*no* is" and `"not "` inside "can*not* ". Every term
 # list in this module is now compiled into a word-boundary alternation
 # (see `_boundary_alternation`), the shape `directive_detector.py` already
-# uses. The trailing spaces that used to stand in for a right-hand
-# boundary are gone — `\b` does that job and does it on both sides.
+# uses.
+#
+# The trailing spaces that used to stand in for a right-hand boundary are
+# gone, but `\b` alone is *not* an equivalent replacement: `\b` matches
+# before a hyphen where a space did not, so `\bno\b` fires inside "no-op",
+# "no-match" and "not-yet-issued". Measured over the 44,687 active beliefs
+# of one live store, plain `\b` on both sides newly fires negation on 465
+# beliefs — 249 hyphen compounds (false positives; 214 "no-", 35 "not-")
+# and 216 real negations the trailing-space form missed (sentence-final
+# "…is not.", "…probably no,", quote-adjacent). Negation therefore takes a
+# right bound of `(?![\w-])`, which keeps the 216 and drops the 249.
+# Operator ruling of 2026-08-09; `benchmarks/classifier_boundary_1368.py`
+# re-derives the split and cross-checks its replica against `_NEGATION_RE`.
+#
+# This bound is deliberately negation-only. The sibling categories carry
+# the same hyphen compounds (72 for always/never, 75 for prior-reference)
+# but theirs are semantically live — "always-on" is still an absolutist
+# claim and "already-shipped" is still a prior reference, whereas "no-op"
+# negates nothing. Widening the exclusion to them would cost real signal.
 #
 # #1159 §4: "stop" used to appear in three of the categories below
 # (`_IMPERATIVE_RE`, `_NEGATION_TERMS`, `_EMPHASIS_TERMS`), so a single
 # token cleared a `CORRECTION_SIGNAL_THRESHOLD` that exists to require two
-# *independent* signals. The categories are now token-disjoint: "stop"
-# lives only in `_IMPERATIVE_RE`, where an imperative-verb start is what it
-# actually is. (The other cross-category token, "cannot" satisfying both
-# `_REQUIREMENT_ANCHOR_RE` and negation's `"not "`, is fixed by the word
-# boundary alone: `\bnot\b` does not match inside "cannot".)
-# `test_classifier_word_boundaries_1368.py` asserts the disjointness.
+# *independent* signals. "stop" now lives only in `_IMPERATIVE_RE`, where
+# an imperative-verb start is what it actually is, and "cannot" — which
+# satisfied both `_REQUIREMENT_ANCHOR_RE` and negation's `"not "` — is
+# fixed by the word boundary alone (`\bnot\b` does not match inside
+# "cannot"). `test_classifier_word_boundaries_1368.py` asserts both.
+#
+# The categories are *not* fully token-disjoint, and this module does not
+# claim they are: "always" and "never" remain in both `_IMPERATIVE_RE`'s
+# verb bank and `_ALWAYS_NEVER_TERMS`, so `detect_correction("Always run
+# the tests.")` still returns two signals off one token. That overlap
+# predates #1159 §4, which named only "stop"; removing it changes what the
+# write path admits and is deferred with the other keyword drops. It is
+# pinned by a test so the next reader finds it deliberate.
 _NEGATION_TERMS: tuple[str, ...] = (
     "do not",
     "don't",
@@ -104,14 +128,22 @@ _PRIOR_REF_TERMS: tuple[str, ...] = (
 )
 
 
-def _boundary_alternation(terms: tuple[str, ...]) -> re.Pattern[str]:
+def _boundary_alternation(
+    terms: tuple[str, ...], right_boundary: str = r"\b"
+) -> re.Pattern[str]:
     """Compile `terms` into one word-boundary alternation.
 
     Same shape as `directive_detector.py`'s verb pattern: alternatives are
     sorted length-descending so a multi-word phrase matches before its own
-    single-word prefix. `\\b` is attached only on the sides where the term
-    actually starts/ends with a word character — `"!"` carries no boundary
-    at all, and `"don't"` gets one on each end.
+    single-word prefix. The boundary is attached only on the sides where
+    the term actually starts/ends with a word character — `"!"` carries no
+    boundary at all, and `"don't"` gets one on each end.
+
+    `right_boundary` is the assertion placed after a word-final term.
+    The default `\\b` is the ordinary word boundary. Negation passes
+    `(?![\\w-])` instead, which additionally refuses a following hyphen so
+    "no-op" does not read as a negation; see the §5 note above for the
+    measurement that scopes that to negation alone.
 
     Terms must already be lowercase; callers match against lowercased text.
     """
@@ -121,13 +153,15 @@ def _boundary_alternation(terms: tuple[str, ...]) -> re.Pattern[str]:
         if term[:1].isalnum() or term[:1] == "_":
             pattern = r"\b" + pattern
         if term[-1:].isalnum() or term[-1:] == "_":
-            pattern = pattern + r"\b"
+            pattern = pattern + right_boundary
         parts.append(pattern)
     return re.compile("(?:" + "|".join(parts) + ")")
 
 
 _ALWAYS_NEVER_RE: re.Pattern[str] = _boundary_alternation(_ALWAYS_NEVER_TERMS)
-_NEGATION_RE: re.Pattern[str] = _boundary_alternation(_NEGATION_TERMS)
+_NEGATION_RE: re.Pattern[str] = _boundary_alternation(
+    _NEGATION_TERMS, right_boundary=r"(?![\w-])"
+)
 _EMPHASIS_RE: re.Pattern[str] = _boundary_alternation(_EMPHASIS_TERMS)
 _PRIOR_REF_RE: re.Pattern[str] = _boundary_alternation(_PRIOR_REF_TERMS)
 
