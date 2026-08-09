@@ -56,6 +56,14 @@ EVENT_STOP: Final[str] = "Stop"
 EVENT_PRE_COMPACT: Final[str] = "PreCompact"
 EVENT_POST_COMPACT: Final[str] = "PostCompact"
 
+# #1439: the Claude-host harness writes an interrupt as a *user*-role record
+# whose only content is this marker ("[Request interrupted by user]" and
+# "[Request interrupted by user for tool use]" are the two forms observed
+# across 75 local transcripts; all 17 occurrences share this prefix). It is
+# harness-generated, not a new prompt, so it must not end the tail scan --
+# the partial text the interrupted turn produced is the right answer.
+_INTERRUPT_MARKER_PREFIX: Final[str] = "[Request interrupted by user"
+
 # #968: consecutive-duplicate guard. A turn whose (session_id, role, text)
 # matches the file's previous turn line within this window is treated as a
 # re-fire of one event (duplicated hook registration produces N identical
@@ -359,11 +367,19 @@ def _is_turn_start_user_record(obj: dict[str, object]) -> bool:
     (`payload.role` == "user" on a `message` item), mirroring the
     two assistant extractors.
 
-    Mid-turn tool results are *not* boundaries. The Claude-host shape
-    carries them as user-role records, so treating them as boundaries
-    would discard assistant text the same turn really produced. Codex
-    carries them as `function_call_output` items, which are not
-    messages and so never match here.
+    Three kinds of user-role record are *not* turn starts, because
+    stopping the scan at one discards assistant text the current turn
+    really produced:
+
+    * anything carrying a tool_result segment. The Claude-host shape puts
+      mid-turn tool results in user records, and other segments (a
+      <system-reminder> as a sibling text segment) can ride along, so
+      the test is "carries a tool_result", not "carries only tool
+      results". Codex keeps these in `function_call_output` items,
+      which are not messages and so never match here.
+    * the interrupt marker the harness writes as a plain user record.
+    * anything the host flags `isMeta` — caveat banners, skill
+      preambles, Stop-hook feedback: harness text, not a prompt.
     """
     if obj.get("type") == "response_item":
         payload = obj.get("payload")
@@ -376,18 +392,34 @@ def _is_turn_start_user_record(obj: dict[str, object]) -> bool:
         )
     if (obj.get("role") or obj.get("type")) != "user":
         return False
+    if obj.get("isMeta"):
+        return False
     msg = obj.get("message")
     if not isinstance(msg, dict):
         return True
     content = cast(dict[str, object], msg).get("content")
+    if isinstance(content, str):
+        return not _is_interrupt_marker(content)
     if not isinstance(content, list) or not content:
         return True
-    # A user record carrying only tool results is mid-turn, not a boundary.
-    return not all(
-        isinstance(seg, dict)
-        and cast(dict[str, object], seg).get("type") == "tool_result"
-        for seg in cast(list[object], content)
-    )
+    texts: list[str] = []
+    for seg in cast(list[object], content):
+        if not isinstance(seg, dict):
+            continue
+        seg_typed = cast(dict[str, object], seg)
+        if seg_typed.get("type") == "tool_result":
+            return False
+        t = seg_typed.get("text")
+        if isinstance(t, str):
+            texts.append(t)
+    # Text-only content that says nothing but "interrupted" is the marker
+    # record; anything else with text in it is a real prompt.
+    return not (texts and all(_is_interrupt_marker(t) for t in texts))
+
+
+def _is_interrupt_marker(text: str) -> bool:
+    """True for the harness's interrupt record text (#1439)."""
+    return text.strip().startswith(_INTERRUPT_MARKER_PREFIX)
 
 
 def _assistant_text_claude(obj: dict[str, object]) -> str | None:
