@@ -240,6 +240,53 @@ def test_the_outcome_vocabulary_is_closed() -> None:
     assert SIDECAR_OUTCOMES == {"fresh", "incremental", "full_rebuild"}
 
 
+@pytest.mark.parametrize(
+    ("sequence", "expected"),
+    [
+        # The case that exists today: a cadence-driven rebuild, then the main
+        # retrieval hits the now-warm cache. Under last-write-wins this fire
+        # recorded `fresh` despite having just paid a full rebuild — and at
+        # 74 ms the latency proxy missed it too.
+        ([SIDECAR_FULL_REBUILD, SIDECAR_FRESH], SIDECAR_FULL_REBUILD),
+        ([SIDECAR_INCREMENTAL, SIDECAR_FRESH], SIDECAR_INCREMENTAL),
+        ([SIDECAR_FRESH, SIDECAR_FULL_REBUILD], SIDECAR_FULL_REBUILD),
+        ([SIDECAR_INCREMENTAL, SIDECAR_FULL_REBUILD], SIDECAR_FULL_REBUILD),
+        ([SIDECAR_FULL_REBUILD, SIDECAR_INCREMENTAL], SIDECAR_FULL_REBUILD),
+        ([SIDECAR_FRESH, SIDECAR_FRESH], SIDECAR_FRESH),
+    ],
+)
+def test_a_fire_is_classified_by_its_most_expensive_get(
+    sequence: list[str], expected: str
+) -> None:
+    """Multiple `get()` calls in one fire must not let a later cheap one erase
+    an earlier expensive one — the field answers "did this fire pay for a
+    rebuild", and #1380 is priced on that answer."""
+    reset_sidecar_outcome()
+    for outcome in sequence:
+        bm25._record_sidecar_outcome(outcome)
+    assert last_sidecar_outcome() == expected
+
+
+def test_the_recorder_rejects_a_value_outside_the_vocabulary() -> None:
+    """`SIDECAR_OUTCOMES` must be enforced in production, not just asserted
+    about in tests.
+
+    Without this the frozenset is referenced only from this file — which is
+    what CodeQL flagged as an unused global, and it was right in substance: an
+    unrecognised state would have reached `hook_audit.jsonl` and been counted
+    as a category no aggregator knows, skewing the rate the field exists to
+    measure. No behavioural test can cover it, because no production branch
+    passes a bad value; that is exactly why it needs a direct one.
+    """
+    with pytest.raises(ValueError, match="unknown sidecar outcome"):
+        bm25._record_sidecar_outcome("stale")
+    # and the snapshot is not corrupted by the rejected write
+    reset_sidecar_outcome()
+    with pytest.raises(ValueError):
+        bm25._record_sidecar_outcome("")
+    assert last_sidecar_outcome() is None
+
+
 def test_recorded_values_are_always_in_the_vocabulary(
     file_store: MemoryStore,
 ) -> None:

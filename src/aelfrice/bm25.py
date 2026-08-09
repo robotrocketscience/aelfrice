@@ -1571,8 +1571,12 @@ _LAST_SIDECAR_OUTCOME: str | None = None
 
 
 def last_sidecar_outcome() -> str | None:
-    """The sidecar outcome of the most recent `BM25IndexCache.get()` in this
-    process, or None if none has run since `reset_sidecar_outcome()` (#1407)."""
+    """The most expensive sidecar outcome of any `BM25IndexCache.get()` since
+    the last `reset_sidecar_outcome()`, or None if none has run (#1407).
+
+    Not "the most recent" — a fire that rebuilt and then hit a warm cache paid
+    for the rebuild, and must be counted as one. See `_record_sidecar_outcome`.
+    """
     return _LAST_SIDECAR_OUTCOME
 
 
@@ -1583,9 +1587,43 @@ def reset_sidecar_outcome() -> None:
     _LAST_SIDECAR_OUTCOME = None
 
 
+# Cost order. A fire is classified by the most expensive thing it paid for, not
+# by whichever `get()` happened to return last — see `_record_sidecar_outcome`.
+_SIDECAR_COST: Final[dict[str, int]] = {
+    SIDECAR_FRESH: 0,
+    SIDECAR_INCREMENTAL: 1,
+    SIDECAR_FULL_REBUILD: 2,
+}
+
+
 def _record_sidecar_outcome(outcome: str) -> None:
+    """Record the outcome of a `get()`, keeping the most expensive one so far.
+
+    Validates against `SIDECAR_OUTCOMES` so the vocabulary is a production
+    contract rather than a test-only one: an unrecognised state would otherwise
+    reach `hook_audit.jsonl` and be counted as a category nothing knows how to
+    aggregate, silently skewing the rate this field exists to measure.
+
+    **Max-wins, not last-write-wins.** A single fire can call `get()` more than
+    once — a cadence-driven rebuild followed by the main retrieval is the case
+    that exists today. Under last-write-wins that fire recorded `fresh` even
+    though it had just paid a full rebuild, and the latency proxy missed it too
+    (74 ms), so the one event #1380 is priced on was the one event the field
+    failed to count. Keeping the max makes the field answer the question it is
+    actually asked: *did this fire pay for a rebuild?* Latent today only
+    because cadence is default-off — and this field is meant to outlive that.
+    """
+    if outcome not in SIDECAR_OUTCOMES:
+        raise ValueError(
+            f"unknown sidecar outcome {outcome!r}; "
+            f"expected one of {sorted(SIDECAR_OUTCOMES)}"
+        )
     global _LAST_SIDECAR_OUTCOME
-    _LAST_SIDECAR_OUTCOME = outcome
+    if (
+        _LAST_SIDECAR_OUTCOME is None
+        or _SIDECAR_COST[outcome] > _SIDECAR_COST[_LAST_SIDECAR_OUTCOME]
+    ):
+        _LAST_SIDECAR_OUTCOME = outcome
 
 
 @dataclass
