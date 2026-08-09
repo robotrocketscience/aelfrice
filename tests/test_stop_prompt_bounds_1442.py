@@ -128,10 +128,10 @@ def test_an_overlong_belief_is_listed_but_gets_no_pasteable_command() -> None:
     """
     long_content = "Always " + ("x" * (STOP_PROMPT_MAX_CONTENT + 1000))
     out = _format_stop_prompt([
-        _belief("blong", long_content, created="2026-08-09T00:00:00Z")
+        _belief("b_long", long_content, created="2026-08-09T00:00:00Z")
     ])
 
-    assert "blong" in out, "an overlong belief must still be listed"
+    assert "b_long" in out, "an overlong belief must still be listed"
     assert f"aelf lock '{long_content}'" not in out
     assert "too long to paste as a command" in out
     # The 120-char snippet still shows, so the user can tell what it is.
