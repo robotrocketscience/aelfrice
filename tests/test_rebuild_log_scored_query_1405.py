@@ -318,12 +318,16 @@ def test_the_gate_skip_branch_cannot_reach_the_retrieval_query_emit() -> None:
     branch assigns `hits = []`, so `if hits:` is always false on that path and
     control goes to the sibling emit that passes `scored_query=None`.
 
-    That argument is only as durable as the empty list. Give the gate-skip
-    branch any non-empty `hits` and line 1164 becomes a live `NameError` --
-    swallowed by the handler at `hook.py:1343`, so it would surface as a
-    silently missing rebuild_log row rather than a failure. This test pins the
-    premise so the dismissal cannot rot: it asserts the branch assigns exactly
-    `hits = []` and nothing else.
+    `retrieval_query` is now initialised to `None` above the branch, so the
+    `NameError` cannot happen even if that correlation breaks — belt and
+    braces, and `None` is the right value on a path that scored nothing.
+
+    This test guards the other half. The initialiser stops the crash; it does
+    not stop the gate-skip path reaching the `if hits:` emit and logging a
+    `scored_query` for a turn where **retrieval never ran**. Only `hits` being
+    empty prevents that, so that is what is asserted here: exactly one
+    statement in the branch, assigning an empty list. Without it the two
+    changes together would convert a loud-ish bug into a quiet wrong number.
     """
     import ast
 

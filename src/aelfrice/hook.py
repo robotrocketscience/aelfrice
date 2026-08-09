@@ -1047,6 +1047,20 @@ def user_prompt_submit(
         if config.prompt_shape_gate_enabled:
             gate_skip, gate_reason = _should_skip_bm25(prompt)
         retrieve_start = time.monotonic()
+        # Bound on every path, not only the retrieving one (CodeQL 566).
+        # The rebuild_log emit that reads this lives under `if hits:`, which
+        # is a *sibling* of the branch below that assigns it — so on control
+        # flow alone the gate-skip path reaches an unbound name. In practice
+        # it cannot, because gate-skip leaves `hits` empty and `if hits:` is
+        # then false; but that is a correlation the reader and the analyser
+        # both have to reconstruct, and if it ever breaks the result is a
+        # NameError swallowed by the handler at the end of this try, i.e. a
+        # silently missing log row rather than a failure.
+        #
+        # `None` is also the correct value on that path: nothing was scored.
+        # Every path that retrieves overwrites this before use, so nothing
+        # observes the initialiser today.
+        retrieval_query: str | None = None
         if gate_skip:
             hits = []
         else:
