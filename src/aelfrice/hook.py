@@ -1333,6 +1333,10 @@ def user_prompt_submit(
             coverage = _coverage_line(len(hits), tel, prompt)
             if coverage:
                 body = body + coverage
+            # #1359: unconditional one-line pointer to the inspect and
+            # off-switch commands, appended after the block like the #857
+            # coverage line so the block's own bytes are untouched.
+            body = body + MEMORY_BLOCK_HINT
             if not emit_memory_block:
                 # Nothing reaches the prompt. Blank the block before the
                 # audit write too: `aelf tail` is the inspection surface
@@ -1420,9 +1424,12 @@ def user_prompt_submit(
             )
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
             if session_start_block and emit_memory_block:
-                # #1359: the same <aelfrice-memory> envelope, so it answers
-                # to the same off-switch.
-                body = _format_hits_with_session_start([], session_start_block)
+                # #1359: the same <aelfrice-memory> envelope, so it carries
+                # the same hint and answers to the same off-switch.
+                body = (
+                    _format_hits_with_session_start([], session_start_block)
+                    + MEMORY_BLOCK_HINT
+                )
                 sout.write(body)
             else:
                 body = ""
@@ -2444,6 +2451,25 @@ def _coverage_line(
         f"retrieved {n_injected} of {m_total} matching beliefs for "
         f'"{display_topic}"; run `aelf search {search_topic}` to see the rest.\n'
     )
+
+
+MEMORY_BLOCK_HINT: Final[str] = (
+    "aelfrice memory — `aelf tail` shows what was injected; "
+    "`AELFRICE_MEMORY_BLOCK=0` turns this off.\n"
+)
+"""One-line pointer appended after an emitted `<aelfrice-memory>` block (#1359).
+
+Constructed like the #857 coverage line above and appended at the same
+site: outside `CLOSE_TAG`, so the block's own bytes are unchanged and the
+audit/token accounting that splits on the framing tags is unaffected.
+
+Unconditional, unlike the coverage line — the whole point is that a user
+who has never read the docs learns the block exists and how to turn it
+off. Measured cost: 97 characters (99 bytes UTF-8 — the em dash is
+three) = 25 estimated tokens under the project's `_CHARS_PER_TOKEN = 4`
+convention, on every fire that emits a block. That is ~1% of the
+2400-token default `[retrieval] token_budget`.
+"""
 
 
 def _open_store() -> MemoryStore:
