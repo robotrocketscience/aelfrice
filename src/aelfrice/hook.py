@@ -2498,12 +2498,13 @@ envelope are unchanged.
 It is *not* outside the accounting. `_write_hook_audit_record` takes
 `tokens` from `_audit_tokens_from_block(rendered_block)` over the whole
 string, so an emitting fire's audited token count rises by this line.
-Measured on this branch across four one-belief fires: **+24 tokens, and
-+25 when the pre-hint block length is a multiple of 4** (the estimator
-ceil-divides by 4 and the hint is 97 chars = 24*4 + 1). A seeded
-three-belief fire audits at 213 tokens with the hint against 188
-without. Anything baselining per-turn injected tokens — #1382 — must
-re-take its baseline after this lands.
+**+24 tokens, and +25 when the pre-hint block length is a multiple of
+4** (the estimator ceil-divides by 4 and the hint is 97 chars = 24*4 +
+1). That is the exact rule, not a sampled figure: for a pre-hint block
+of L characters the delta is `ceil((L+97)/4) - ceil(L/4)`, which is 25
+iff `L % 4 == 0` and 24 otherwise — swept over every L in [0, 4000) by
+`test_hint_token_delta_rule_is_exact`. Anything baselining per-turn
+injected tokens — #1382 — must re-take its baseline after this lands.
 
 Unconditional, unlike the coverage line — the whole point is that a user
 who has never read the docs learns the block exists and how to turn it

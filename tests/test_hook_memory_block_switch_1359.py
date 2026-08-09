@@ -164,6 +164,25 @@ def test_hint_is_inside_the_audited_token_count(
     assert delta == expected
 
 
+def test_hint_token_delta_rule_is_exact() -> None:
+    """The +24/+25 rule holds for every block length, not just sampled ones.
+
+    The docstring on `MEMORY_BLOCK_HINT` and the CHANGELOG publish the
+    delta as a rule rather than as a measured pair, so the rule is what
+    gets pinned: over the audited estimator itself, for a pre-hint block
+    of L characters the delta is 25 iff `L % 4 == 0` and 24 otherwise.
+    Swept over every L a real block can plausibly take.
+    """
+    seen: set[int] = set()
+    for length in range(4000):
+        delta = hook_mod._audit_tokens_from_block(
+            "x" * length + MEMORY_BLOCK_HINT
+        ) - hook_mod._audit_tokens_from_block("x" * length)
+        assert delta == (25 if length % 4 == 0 else 24), length
+        seen.add(delta)
+    assert seen == {24, 25}
+
+
 def test_hint_is_one_line_naming_switch_and_inspect_command() -> None:
     """One line, and it names both halves of the ask."""
     assert MEMORY_BLOCK_HINT.endswith("\n")
