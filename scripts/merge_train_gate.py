@@ -186,11 +186,75 @@ def evaluate(
     }
 
 
+
+def base_refusal(base_ref: str, default_branch: str) -> str | None:
+    """Return why this PR's base disqualifies it from the train, or None.
+
+    The train can only fast-forward the default branch, and its FF check —
+    `git merge-base --is-ancestor origin/main <head>` — asks only whether the
+    head *contains* main. A stacked PR satisfies that trivially, because its
+    parent branch is itself FF on main. Merging it would therefore land every
+    commit from the parent branch as well, unreviewed, and against whatever
+    version of the parent the child happened to branch from (#1424).
+
+    A stacked PR also runs **no required checks at all**: `ci.yml` and
+    `staging-gate.yml` declare `on: pull_request: branches: [main]`, so a PR
+    based on a feature branch never matches their trigger and the required
+    contexts are not skipped or pending — they never exist. That is the
+    actionable half of the message, because it is the part the author can see
+    for themselves once told where to look.
+
+    Compares against the branch the caller resolved rather than a hard-coded
+    "main", so a repository that renames its default branch does not silently
+    start refusing every PR.
+    """
+    if base_ref == default_branch:
+        return None
+    if not base_ref:
+        return (
+            "could not resolve this PR's base branch, so the merge gate "
+            "refuses to decide. The train only fast-forwards "
+            f"`{default_branch}`."
+        )
+    return (
+        f"this PR targets `{base_ref}`, not `{default_branch}`. The train can "
+        f"only fast-forward `{default_branch}`, so merging it would also land "
+        f"every commit from `{base_ref}` without review. It has also run **no "
+        "required checks** — `ci.yml` and `staging-gate.yml` trigger on "
+        f"`branches: [{default_branch}]`, so a PR based on a feature branch "
+        "never matches them and its required contexts never exist. Retarget "
+        f"to `{default_branch}` (rebase off the parent branch first), then "
+        "push, and re-add the label — retargeting alone fires "
+        "`pull_request.edited`, which does not start CI."
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--rollup", type=Path, required=True)
-    parser.add_argument("--rules", type=Path, required=True)
+    parser.add_argument("--rollup", type=Path)
+    parser.add_argument("--rules", type=Path)
+    parser.add_argument(
+        "--base-ref",
+        help="the PR's baseRefName; with --default-branch, runs the base "
+             "check and exits instead of evaluating check-runs (#1424)",
+    )
+    parser.add_argument("--default-branch", default="main")
     args = parser.parse_args(argv)
+
+    # Base mode. Separate from the check-run evaluation because it must run
+    # *before* the train waits on checks: a stacked PR has no required checks
+    # to wait for, so folding this into the poll loop would stall to the
+    # timeout instead of refusing in the first seconds.
+    if args.base_ref is not None:
+        refusal = base_refusal(args.base_ref, args.default_branch)
+        if refusal is not None:
+            print(refusal)
+            return 3
+        print(f"base is `{args.default_branch}`")
+        return 0
+
+    if args.rollup is None or args.rules is None:
+        parser.error("--rollup and --rules are required unless --base-ref is given")
 
     rollup = json.loads(args.rollup.read_text())
     check_runs = rollup.get("check_runs") if isinstance(rollup, dict) else rollup
