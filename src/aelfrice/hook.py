@@ -1289,16 +1289,23 @@ def user_prompt_submit(
             from aelfrice.retrieval import (  # noqa: PLC0415
                 get_active_meta_belief_consumers,
             )
-            _injection_turn_id = _new_injection_event_turn_id()
-            _record_injection_events(
-                session_id=session_id,
-                turn_id=_injection_turn_id,
-                hits=hits,
-                source="ups",
-                active_consumers=get_active_meta_belief_consumers(),
-                stderr=serr,
-                store=ups_store,
-            )
+            # #1359: gated on the off-switch. An injection_events row is
+            # a claim that the model saw the belief, and the Layer-3
+            # sweeper resolves every pending row against the next
+            # assistant turn — so recording a suppressed fire would score
+            # each of these beliefs `referenced=0` by construction. An
+            # off-switch must not manufacture negative evidence.
+            if emit_memory_block:
+                _injection_turn_id = _new_injection_event_turn_id()
+                _record_injection_events(
+                    session_id=session_id,
+                    turn_id=_injection_turn_id,
+                    hits=hits,
+                    source="ups",
+                    active_consumers=get_active_meta_belief_consumers(),
+                    stderr=serr,
+                    store=ups_store,
+                )
             # total_chars measured post-collapse (what is actually injected).
             total_chars = sum(len(h.content) for h in hits)
             # #578: inject session-start sub-block on first prompt.
@@ -1343,7 +1350,10 @@ def user_prompt_submit(
                 # the hint names, and its `tokens` field is derived from
                 # `rendered_block` — leaving the text in would report an
                 # injection that never happened. `beliefs[]` still records
-                # what retrieval found.
+                # what retrieval found, because the audit is the record of
+                # the fire; the exposure-evidence writes that claim the
+                # model *saw* these beliefs are skipped instead (see the
+                # `emit_memory_block` guards above and below).
                 body = ""
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
             sout.write(body)
@@ -1377,31 +1387,44 @@ def user_prompt_submit(
             # carry a `locked: true` flag in the ring entry but consumers
             # apply their own locked-set when filtering, so the ring is
             # explicit about caller intent rather than authoritative.
-            try:
-                injected_ids = [h.id for h in hits if getattr(h, "id", None)]
-                locked_now = {h.id for h in hits if h.lock_level == LOCK_USER}
-                _next_fire = _ring_append_ids(
-                    session_id,
-                    injected_ids,
-                    locked_ids=locked_now,
-                    stderr=serr,
-                )
-            except Exception:  # fail-soft: ring is noise reduction only
-                _next_fire = -1
-            # #816 hot-path: record belief_touches alongside the ring
-            # append, sharing the ring's fire_idx so JSON ring + sidecar
-            # table track the same monotonic counter. v1 is write-only;
-            # the originally-modelled rerank consumer is
-            # deferred-with-evidence post-R7c (see #848). Fail-soft:
-            # never breaks the hook.
-            if _next_fire >= 1 and injected_ids:
-                _record_touches(
-                    session_id=session_id,
-                    belief_ids=injected_ids,
-                    fire_idx=_next_fire - 1,
-                    stderr=serr,
-                    store=ups_store,
-                )
+            #
+            # #1359: gated on the off-switch alongside the injection
+            # events above. The ring is the dedup record of *this fire's
+            # injection set*, and a `belief_touches` row is exposure
+            # credit; neither is true of a fire whose block never reached
+            # the prompt, and a suppressed turn that claimed the ring
+            # would also make the next PreToolUse fire dedup against
+            # beliefs the model never saw.
+            if emit_memory_block:
+                try:
+                    injected_ids = [
+                        h.id for h in hits if getattr(h, "id", None)
+                    ]
+                    locked_now = {
+                        h.id for h in hits if h.lock_level == LOCK_USER
+                    }
+                    _next_fire = _ring_append_ids(
+                        session_id,
+                        injected_ids,
+                        locked_ids=locked_now,
+                        stderr=serr,
+                    )
+                except Exception:  # fail-soft: ring is noise reduction only
+                    _next_fire = -1
+                # #816 hot-path: record belief_touches alongside the ring
+                # append, sharing the ring's fire_idx so JSON ring +
+                # sidecar table track the same monotonic counter. v1 is
+                # write-only; the originally-modelled rerank consumer is
+                # deferred-with-evidence post-R7c (see #848). Fail-soft:
+                # never breaks the hook.
+                if _next_fire >= 1 and injected_ids:
+                    _record_touches(
+                        session_id=session_id,
+                        belief_ids=injected_ids,
+                        fire_idx=_next_fire - 1,
+                        stderr=serr,
+                        store=ups_store,
+                    )
         elif gate_skip:
             # Gate fired, no BM25 hits. Emit rebuild_log with empty hits
             # (no-op per its early-return guard on empty hits_pre_dedup).
