@@ -2,10 +2,11 @@
 
 Proposal 16 replaces the uniform valence smear in
 `sentiment_feedback.apply_sentiment_to_pending` — which credits every belief
-injected on the prior turn with the *same* valence — with winner-take-all
-attribution plus an abstention rule. Its own cheapest kill experiment is a free
-precision proxy: over real injection sets paired with the correction that
-followed them, compute the distribution of max-Jaccard.
+injected on the prior turn with an equal share of the same valence (#1372; it
+credited every belief with the *full* valence when this proposal was written) —
+with winner-take-all attribution plus an abstention rule. Its own cheapest kill
+experiment is a free precision proxy: over real injection sets paired with the
+correction that followed them, compute the distribution of max-Jaccard.
 
 Pre-registered kill rule, quoted from the proposal and unchanged:
 

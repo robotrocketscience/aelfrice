@@ -111,9 +111,14 @@ import path in the hook." as strong-positive +1.5 — the inverse of the
 signal the user sent, at the largest magnitude the lane emits (#1372).
 Praise therefore requires an evaluative frame: a copula subject in
 front of the word ("that's correct", "you're correct"), or the word
-standing alone as the whole prompt ("Correct."). The imperative always
-takes an object — "correct THE PATH", "correct THAT" — which neither
-form admits. Framing was chosen over "sentence-initial `correct` is
+standing alone as the whole prompt ("Correct."). The copula frame
+excludes the imperative outright, since the imperative that matters here
+carries its object — "correct THE PATH", "correct THAT". The whole-prompt
+form does admit the elliptical imperative: a bare "Correct." still scores
+positive/+1.5, and would whether the user meant "that is correct" or
+"correct it". That one is kept as praise because the verdict reading
+dominates and the utterance carries no object to attribute a correction
+to. Framing was chosen over "sentence-initial `correct` is
 negative" because that rule asserts a correction where there may be
 none; this one abstains instead. Unframed praise that is not the whole
 prompt ("Correct, keep going") now scores neutral rather than positive
