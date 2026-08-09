@@ -20,9 +20,12 @@ perturb what it measures.
   accounts."` matched `No` + a short tail and was discarded.
 * **Shell** — hardening only. The prefixes are matched by bare `startswith`,
   so `"pytest is the only test runner we support."` is discarded in principle;
-  on this corpus every prefixed sentence is a genuine pasted command, so the
-  fix rescues nothing here. Reported rather than quietly folded into the ack
-  number, because a rescue count of 0 is the honest figure for it.
+  on this corpus the fix rescues nothing. Read that as a limit of the rule
+  rather than as a clean population: at least two still-discarded rows are
+  prose about pytest, not pasted commands, and they stay discarded only
+  because they carry no terminal full stop. Reported separately rather than
+  folded into the ack number, because a rescue count of 0 is the honest
+  figure for this arm.
 
 Usage:
 

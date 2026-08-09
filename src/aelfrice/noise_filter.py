@@ -690,8 +690,20 @@ def is_transcript_scaffolding(sentence: str) -> bool:
     #
     # Honest scope: unlike the ack arm, this rescues **nothing** on the
     # measured corpus — all 135 shell-prefixed sentences in 17,562 are
-    # genuine pasted commands. This is hardening against a real but
-    # so-far-unobserved failure, not a measured defect.
+    # still discarded. That is a limit of *this* rule, not a property of
+    # the population: at least two of those rows are prose about a tool,
+    # not pasted commands —
+    #
+    #   "pytest suites should be extremely fast and deterministically
+    #    terminate"
+    #   "pytest and pytest-timeout to dev dependencies — unrelated to
+    #    #242, should be dropped"
+    #
+    # — and they stay discarded because they carry no terminal full stop
+    # for `_looks_like_written_prose` to find. The transcript logger
+    # writes prompts verbatim, so unpunctuated prose is common in this
+    # corpus. Closing that needs a signal other than terminal
+    # punctuation; do not read the zero as "no false positives remain".
     for prefix in _TRANSCRIPT_SHELL_PREFIXES:
         if sentence.startswith(prefix):
             return not _looks_like_written_prose(sentence)
