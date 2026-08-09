@@ -36,6 +36,7 @@ triage:
 from __future__ import annotations
 
 import json
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -53,9 +54,63 @@ from aelfrice.setup import (
     resolve_transcript_logger_command,
 )
 
-CODEX_DIR: Final[Path] = Path.home() / ".codex"
+CODEX_HOME_ENV: Final[str] = "CODEX_HOME"
+CODEX_DEFAULT_DIRNAME: Final[str] = ".codex"
 CODEX_HOOKS_FILENAME: Final[str] = "hooks.json"
 CODEX_CONFIG_FILENAME: Final[str] = "config.toml"
+
+
+class CodexHomeError(RuntimeError):
+    """`$CODEX_HOME` is set to something that cannot be a Codex home.
+
+    #1427. Raised instead of falling back to `~/.codex`: an explicitly
+    configured home that we silently ignore is exactly the failure this
+    issue is about — setup reports success against a directory the
+    running Codex never reads.
+    """
+
+
+def resolve_codex_home() -> Path:
+    """The directory Codex reads its configuration from (#1427).
+
+    Codex resolves its home from `$CODEX_HOME` when that variable holds
+    a non-empty value and falls back to `~/.codex` otherwise; aelfrice
+    bound `Path.home() / ".codex"` into a module-level constant at
+    import time, so `aelf setup --host codex` wrote hooks the running
+    Codex never loaded, and `doctor`/`unsetup` inspected and stripped
+    the wrong directory.
+
+    Late-bound on purpose. A module constant is wrong twice over: it
+    cannot see `$CODEX_HOME` at all, and it freezes `$HOME` at import,
+    so a test or a wrapper that changes the environment between two
+    calls gets the stale answer (#1320 is the same smell on another
+    path).
+
+    `~` is expanded and the result is made absolute, so a relative
+    `$CODEX_HOME` resolves against the process cwd exactly once, here,
+    rather than differently at each use site. An explicitly configured
+    value that names an existing non-directory raises `CodexHomeError`
+    rather than silently reverting to the conventional path.
+    """
+    raw = os.environ.get(CODEX_HOME_ENV)
+    if not raw:
+        # Unset or empty: Codex's own fallback, and the pre-#1427
+        # behaviour, byte for byte.
+        return Path.home() / CODEX_DEFAULT_DIRNAME
+    try:
+        home = Path(raw).expanduser().absolute()
+    except (OSError, ValueError) as exc:  # pragma: no cover - platform-dep
+        raise CodexHomeError(
+            f"${CODEX_HOME_ENV} is set to {raw!r}, which is not a usable "
+            f"path ({exc}); fix or unset it"
+        ) from exc
+    if home.exists() and not home.is_dir():
+        raise CodexHomeError(
+            f"${CODEX_HOME_ENV} is set to {home}, which exists but is not a "
+            "directory; fix or unset it"
+        )
+    return home
+
 
 # SessionStart matcher covering every source, so the baseline block fires
 # on fresh sessions and the rebuild block fires post-compaction (#1054:
@@ -78,11 +133,13 @@ _OWNED_BASENAMES: Final[frozenset[str]] = frozenset({
 
 
 def codex_hooks_path(codex_dir: Path | None = None) -> Path:
-    return (codex_dir if codex_dir is not None else CODEX_DIR) / CODEX_HOOKS_FILENAME
+    cdir = codex_dir if codex_dir is not None else resolve_codex_home()
+    return cdir / CODEX_HOOKS_FILENAME
 
 
 def codex_config_path(codex_dir: Path | None = None) -> Path:
-    return (codex_dir if codex_dir is not None else CODEX_DIR) / CODEX_CONFIG_FILENAME
+    cdir = codex_dir if codex_dir is not None else resolve_codex_home()
+    return cdir / CODEX_CONFIG_FILENAME
 
 
 def _handler(command: str, *, timeout: int | None = None) -> dict[str, object]:
@@ -440,7 +497,15 @@ def remove_codex_hooks(
 
 # Codex USER-scope skill discovery root (the open agent-skills standard
 # path, shared with other agents' skills — hence the marker-gated prune).
-AGENTS_SKILLS_DIR: Final[Path] = Path.home() / ".agents" / "skills"
+#
+# #1427: resolved from the user home and NOT from `$CODEX_HOME`. The
+# agent-skills location is a cross-agent standard path, so a custom Codex
+# configuration home must not move it. Late-bound for the same reason
+# `resolve_codex_home` is: an import-time `Path.home()` freezes `$HOME`.
+def resolve_agents_skills_dir() -> Path:
+    """The user-scope agent-skills root, `~/.agents/skills` (#1427)."""
+    return Path.home() / ".agents" / "skills"
+
 
 # Every generated SKILL.md carries this marker on its first body line. It
 # is the prune safety key: uninstall / orphan-prune only ever removes an
@@ -689,7 +754,7 @@ def install_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
     import os
     import tempfile
 
-    target = dest_dir if dest_dir is not None else AGENTS_SKILLS_DIR
+    target = dest_dir if dest_dir is not None else resolve_agents_skills_dir()
     bundle = _bundled_codex_skills()
 
     written: list[str] = []
@@ -761,7 +826,7 @@ def remove_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
     skills sharing the directory are preserved. Returns the removed skill
     names under ``pruned``.
     """
-    target = dest_dir if dest_dir is not None else AGENTS_SKILLS_DIR
+    target = dest_dir if dest_dir is not None else resolve_agents_skills_dir()
     pruned: list[str] = []
     failed: list[str] = []
     if target.is_dir():
@@ -775,7 +840,7 @@ def remove_codex_skills(dest_dir: Path | None = None) -> CodexSkillsResult:
 
 def count_installed_codex_skills(dest_dir: Path | None = None) -> int:
     """Count marker-carrying ``aelf-*`` skills present under ``dest_dir``."""
-    target = dest_dir if dest_dir is not None else AGENTS_SKILLS_DIR
+    target = dest_dir if dest_dir is not None else resolve_agents_skills_dir()
     if not target.is_dir():
         return 0
     return sum(
@@ -789,6 +854,10 @@ class CodexDoctorReport:
     """Structured result of the Codex host scan; render at the CLI."""
 
     codex_dir_present: bool
+    #: The resolved Codex home this scan ran against (#1427). Reported so
+    #: the operator can see WHICH directory was inspected — the whole
+    #: point of the `$CODEX_HOME` bug is that it was the wrong one.
+    codex_dir: Path | None = None
     hooks_file_present: bool = False
     hooks_file_valid: bool = False
     parse_error: str | None = None
@@ -807,8 +876,10 @@ def doctor_codex(
 
     Read-only. Reports rather than raises; the CLI decides exit codes.
     """
-    cdir = codex_dir if codex_dir is not None else CODEX_DIR
-    report = CodexDoctorReport(codex_dir_present=cdir.is_dir())
+    cdir = codex_dir if codex_dir is not None else resolve_codex_home()
+    report = CodexDoctorReport(
+        codex_dir_present=cdir.is_dir(), codex_dir=cdir,
+    )
     if not report.codex_dir_present:
         report.warnings.append(f"{cdir} not found — Codex not installed?")
         return report

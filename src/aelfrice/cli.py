@@ -4603,10 +4603,19 @@ def _cmd_setup_codex(
     ``hooks_path`` / ``skills_dest`` override the real-HOME defaults so
     the CLI path is testable (#1136).
     """
-    from aelfrice.host_codex import codex_hooks_path, install_codex_hooks
+    from aelfrice.host_codex import (
+        CodexHomeError,
+        codex_hooks_path,
+        install_codex_hooks,
+    )
 
+    try:
+        target = hooks_path if hooks_path is not None else codex_hooks_path()
+    except CodexHomeError as exc:
+        print(f"setup --host codex: {exc}", file=sys.stderr)
+        return 1
     result = install_codex_hooks(
-        hooks_path if hooks_path is not None else codex_hooks_path(),
+        target,
         scope="user",
         force=bool(getattr(args, "force", False)),
     )
@@ -4701,12 +4710,19 @@ def _cmd_unsetup_codex(
     ``hooks_path`` / ``skills_dest`` override the real-HOME defaults so
     the CLI path is testable (#1136).
     """
-    from aelfrice.host_codex import codex_hooks_path, remove_codex_hooks
+    from aelfrice.host_codex import (
+        CodexHomeError,
+        codex_hooks_path,
+        remove_codex_hooks,
+    )
 
     _ = args
-    result = remove_codex_hooks(
-        hooks_path if hooks_path is not None else codex_hooks_path()
-    )
+    try:
+        target = hooks_path if hooks_path is not None else codex_hooks_path()
+    except CodexHomeError as exc:
+        print(f"unsetup --host codex: {exc}", file=sys.stderr)
+        return 1
+    result = remove_codex_hooks(target)
     if result.error:
         print(f"unsetup --host codex: {result.error}", file=sys.stderr)
         return 1
@@ -4762,11 +4778,19 @@ def _cmd_doctor_codex(
     warnings — the host may simply not be set up yet. ``codex_dir`` /
     ``skills_dest`` override the real-HOME defaults for tests (#1136).
     """
-    from aelfrice.host_codex import doctor_codex
+    from aelfrice.host_codex import CodexHomeError, doctor_codex
 
     _ = args
-    report = doctor_codex(codex_dir)
+    try:
+        report = doctor_codex(codex_dir)
+    except CodexHomeError as exc:
+        print(f"doctor --host codex: {exc}", file=sys.stderr)
+        return 1
     ok = "ok" if report.hooks_file_valid else "-"
+    print(
+        f"[i] codex home: {report.codex_dir}",
+        file=out,  # type: ignore[arg-type]
+    )
     print(
         f"[{ok}] codex hooks.json: present={report.hooks_file_present} "
         f"valid={report.hooks_file_valid} "
@@ -4783,12 +4807,13 @@ def _cmd_doctor_codex(
         file=out,  # type: ignore[arg-type]
     )
     from aelfrice.host_codex import (
-        AGENTS_SKILLS_DIR,
         count_installed_codex_skills,
+        resolve_agents_skills_dir,
     )
 
     skills_dir = (
-        skills_dest if skills_dest is not None else AGENTS_SKILLS_DIR
+        skills_dest if skills_dest is not None
+        else resolve_agents_skills_dir()
     )
     n_skills = count_installed_codex_skills(skills_dir)
     print(
