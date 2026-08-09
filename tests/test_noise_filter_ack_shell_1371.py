@@ -268,6 +268,36 @@ def test_a_harness_block_is_still_dropped_whole(
     assert _log(tmp_path, block, monkeypatch) == []
 
 
+def test_a_pasted_command_prompt_is_still_dropped_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The *shell* half of the same whole-payload line, which nothing reached.
+
+    `test_a_harness_block_is_still_dropped_whole` drives a
+    `<task-notification>` fixture, so it exercises only the XML-prefix arm of
+    `is_transcript_scaffolding`. Narrowing the logger's gate to
+    `is_transcript_scaffolding(prompt) and not prompt.startswith(("cd /",
+    "git ", "gh ", "uv run", "pytest", "python "))` — dropping the pasted-command
+    half while keeping the tag half — left the whole suite green while changing
+    shipped behaviour: this prompt goes from unlogged to logged.
+
+    The fixture is mixed on purpose. Its sentences carry noise flags
+    `[True, False]`, so `all(...)` is False and the every-sentence arm does
+    *not* condemn it; the only rule that can drop it is the scaffolding one.
+    Without that assertion the case would pass under a logger that had lost
+    the scaffolding arm entirely.
+    """
+    from aelfrice.extraction import extract_sentences
+
+    prompt = "git rebase -i HEAD~3\nSquash the last two commits and force push"
+    parts = [s for s in extract_sentences(prompt) if s.strip()]
+    assert not all(is_transcript_noise(s) for s in parts), (
+        "fixture must have at least one non-noise sentence, or it does not "
+        "discriminate the scaffolding arm from the all-sentences arm"
+    )
+    assert _log(tmp_path, prompt, monkeypatch) == []
+
+
 def test_a_bare_ack_prompt_is_still_dropped(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
