@@ -212,7 +212,17 @@ class TestScriptResolution:
 
         monkeypatch.setattr(launcher, "scripts_dir", lambda: scripts)
         monkeypatch.setenv("PATH", str(elsewhere))
-        assert setup._resolve_script("aelf-hook", "project") == str(local)
+        chosen = Path(setup._resolve_script("aelf-hook", "project"))
+
+        # Compared by directory and key, not by string. On Windows
+        # `shutil.which` returns the name joined with a PATHEXT entry, and
+        # those are upper-case, so a fixture written as `aelf-hook.exe` comes
+        # back as `aelf-hook.EXE` and an equality assert fails on case alone.
+        # The property under test is *which directory won*, not its spelling.
+        assert chosen.parent == scripts
+        assert launcher.launcher_key(str(chosen)) == launcher.launcher_key(
+            str(local),
+        )
 
     def test_the_scripts_probe_delegates_to_the_pathext_aware_resolver(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,

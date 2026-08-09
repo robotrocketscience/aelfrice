@@ -147,12 +147,30 @@ def owned_keys(
 def scripts_dir() -> Path:
     """Directory holding console scripts for the active interpreter.
 
-    `sysconfig.get_path("scripts")` is the only correct source: the previous
-    ``Path(sys.prefix) / "bin"`` hardcoded the POSIX leaf, so on Windows the
+    The leaf is `Scripts` on Windows and `bin` on POSIX; the old
+    ``Path(sys.prefix) / "bin"`` hardcoded the POSIX one, so on Windows the
     venv branch pointed at a directory that does not exist and every caller
     silently degraded to a bare `PATH` search.
+
+    `sys.prefix` is read **at call time and passed in explicitly**. A bare
+    `sysconfig.get_path("scripts")` is wrong here: `sysconfig` captures the
+    prefix variables when it is first imported, so it does not follow a
+    reassigned `sys.prefix` — which is the seam `tests/test_setup_resolution
+    .py` drives, and which any in-process venv switch would need too. That
+    version passed the whole suite locally and turned six tests red on CI,
+    because this checkout is a worktree and `_is_worktree_path` discarded
+    the wrong answer before it could be compared.
     """
-    configured = sysconfig.get_path("scripts")
+    scheme = "nt" if os.name == "nt" else "posix_prefix"
+    try:
+        configured = sysconfig.get_path(
+            "scripts", scheme, vars={
+                "base": sys.prefix, "installed_base": sys.prefix,
+                "platbase": sys.prefix, "installed_platbase": sys.prefix,
+            },
+        )
+    except KeyError:  # a scheme without a "scripts" path
+        configured = ""
     if configured:
         return Path(configured)
     return Path(sys.prefix) / ("Scripts" if os.name == "nt" else "bin")
