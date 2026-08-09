@@ -92,6 +92,28 @@ _ENV_FALSY: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
 # are checked separately so a base-set match still wins when the prompt
 # does not also hit a strong pattern.
 
+_CORRECT_PRAISE: Final[str] = (
+    r"\b(?:that'?s|that is|this is|it'?s|it is|you'?re|you are"
+    r"|yes|yep|yup|absolutely|exactly|totally|all)\s+correct\b"
+    r"|^\s*correct[\s.!]*$"
+)
+r"""`correct` as a verdict, not as a verb.
+
+A bare `\bcorrect\b` scored the corrective imperative "Correct the
+import path in the hook." as strong-positive +1.5 — the inverse of the
+signal the user sent, at the largest magnitude the lane emits (#1372).
+Praise therefore requires an evaluative frame: a copula subject in
+front of the word ("that's correct", "you're correct"), or the word
+standing alone as the whole prompt ("Correct."). The imperative always
+takes an object — "correct THE PATH", "correct THAT" — which neither
+form admits. Framing was chosen over "sentence-initial `correct` is
+negative" because that rule asserts a correction where there may be
+none; this one abstains instead. Unframed praise that is not the whole
+prompt ("Correct, keep going") now scores neutral rather than positive
+— a lost positive delays a small posterior gain, where the bug it
+replaces inverted a correction into praise.
+"""
+
 _POSITIVE_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
     ("ok_good", r"\bok(ay)?[\s,!.]+good\b"),
     ("yes", r"\byes\b"),
@@ -100,7 +122,7 @@ _POSITIVE_PATTERNS: Final[tuple[tuple[str, str], ...]] = (
     ("great", r"\bgreat\b"),
     ("nice", r"\bnice\b"),
     ("thanks", r"\bthanks?\b"),
-    ("correct", r"\bcorrect\b"),
+    ("correct", _CORRECT_PRAISE),
     ("right", r"\bthat'?s right\b"),
     ("works", r"\b(it|that) works?\b"),
     ("looks_good", r"\blooks? good\b"),

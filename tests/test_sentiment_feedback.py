@@ -138,6 +138,56 @@ def test_strong_pattern_higher_confidence_than_base() -> None:
     assert strong.confidence > base.confidence
 
 
+# --- detect_sentiment: "correct" is a verb as often as a verdict (#1372) --
+
+# Imperatives. Every one of these is a user issuing a correction; none
+# may score positive. Before #1372 each returned positive/+1.5 — the
+# inverse of the signal, at the lane's largest magnitude.
+_CORRECTIVE_IMPERATIVES = (
+    "Correct the import path in the hook.",
+    "Correct that.",
+    "Correct the spelling.",
+    "Please correct the docstring.",
+    "correct the config value",
+    "Correct this before you commit.",
+)
+
+# Control arm. Genuine praise must STILL score positive — otherwise the
+# imperative fix is a recall regression dressed up as a correctness fix.
+_GENUINE_PRAISE = (
+    "That's correct.",
+    "that is correct",
+    "you're correct",
+    "Correct.",
+    "perfect",
+    "looks good",
+)
+
+
+@pytest.mark.parametrize("prompt", _CORRECTIVE_IMPERATIVES)
+def test_corrective_imperative_is_not_positive(prompt: str) -> None:
+    s = detect_sentiment(prompt)
+    assert s is None or s.sentiment != POSITIVE, (
+        f"corrective imperative {prompt!r} scored "
+        f"{s.sentiment if s else None}/{s.valence if s else 0.0}"
+    )
+
+
+@pytest.mark.parametrize("prompt", _GENUINE_PRAISE)
+def test_genuine_praise_still_positive(prompt: str) -> None:
+    s = detect_sentiment(prompt)
+    assert s is not None, f"praise {prompt!r} no longer detected at all"
+    assert s.sentiment == POSITIVE, f"praise {prompt!r} scored {s.sentiment}"
+
+
+def test_framed_correct_keeps_the_strong_tier() -> None:
+    """Narrowing the pattern must not silently demote framed praise."""
+    s = detect_sentiment("that's correct")
+    assert s is not None
+    assert s.pattern == "correct"
+    assert s.valence == AMPLIFIED_VALENCE
+
+
 # --- detect_sentiment: precedence + length guard -------------------------
 
 
