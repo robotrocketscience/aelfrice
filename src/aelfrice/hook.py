@@ -788,6 +788,7 @@ def _write_hook_audit_record(
     expansion_gate_reason: str | None = None,
     expansion_gate_skipped_bfs: bool | None = None,
     order_policy: str | None = None,
+    sidecar_outcome: str | None = None,
     source: str | None = None,
     config: HookAuditConfig | None = None,
     stderr: IO[str] | None = None,
@@ -865,12 +866,31 @@ def _write_hook_audit_record(
         record["expansion_gate_skipped_bfs"] = bool(expansion_gate_skipped_bfs)
     if order_policy is not None:
         record["order_policy"] = order_policy
+    # #1407: omitted entirely when no index work happened this fire. A
+    # missing key means "not measured", never "fresh" — the rate this
+    # feeds must not count a no-op fire as a cache hit.
+    if sidecar_outcome is not None:
+        record["sidecar_outcome"] = sidecar_outcome
     # #1357: empty string is the parse-failure sentinel at the
     # SessionStart call site, so it carries no more information than an
     # absent key — record only a real trigger.
     if source:
         record["source"] = source
     _append_audit(audit_path, record, cfg.max_bytes, stderr=stderr)
+
+
+def _last_sidecar_outcome() -> str | None:
+    """The BM25 sidecar outcome for this fire, or None (#1407).
+
+    Fail-soft and function-scope: a fire that never reached the BM25 path
+    must record no outcome rather than break the audit row.
+    """
+    try:
+        from aelfrice.bm25 import last_sidecar_outcome  # noqa: PLC0415
+
+        return last_sidecar_outcome()
+    except Exception:
+        return None
 
 
 def _audit_order_policy() -> str | None:
@@ -1175,6 +1195,14 @@ def user_prompt_submit(
                 _reset_last_telemetry,
             )
             _reset_last_telemetry(_LaneTelemetry())
+            # #1407: same reasoning for the BM25 sidecar outcome. Cleared
+            # to None here so that a fire which never builds an index
+            # records no outcome at all rather than inheriting the
+            # previous fire's — absence has to stay distinguishable from
+            # `fresh`, or a fire doing no work is counted as a cache hit.
+            from aelfrice.bm25 import reset_sidecar_outcome  # noqa: PLC0415
+
+            reset_sidecar_outcome()
             # #909: condition the BM25 query on recent dialog turns so a
             # paraphrased / pronoun / numeric-reference prompt still
             # surfaces the load-bearing thread (the topic vocabulary the
@@ -1414,6 +1442,7 @@ def user_prompt_submit(
                 expansion_gate_reason=tel.expansion_gate_reason or None,
                 expansion_gate_skipped_bfs=tel.expansion_gate_skipped_bfs,
                 order_policy=_audit_order_policy(),
+                sidecar_outcome=_last_sidecar_outcome(),
                 stderr=serr,
             )
             # #740: record the per-turn injected belief ids in the
