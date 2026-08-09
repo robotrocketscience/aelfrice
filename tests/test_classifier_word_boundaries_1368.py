@@ -53,11 +53,14 @@ MUST_SURVIVE_CORPUS: tuple[tuple[str, str], ...] = (
     # `"period"` inside "periodic".
     ("The periodic sweep is the only cleanup path.", BELIEF_FACTUAL),
     # #1159 §6 — `"require"` inside "requirements.txt", `"must"` inside
-    # "Mustard", bare `"constraint"` as ordinary schema vocabulary.
+    # "Mustard".
     ("See requirements.txt for the pinned dependency list.", BELIEF_FACTUAL),
     ("Mustard is not a dependency.", BELIEF_FACTUAL),
-    ("The FOREIGN KEY constraint on edges cascades on delete.", BELIEF_FACTUAL),
     ("Read requirement.md before filing.", BELIEF_FACTUAL),
+    # NOT here, deliberately: "The FOREIGN KEY constraint on edges cascades
+    # on delete." #1368's acceptance lists it, and it still types as a
+    # requirement — see test_bare_constraint_still_types_as_a_requirement
+    # for why that is a deferral rather than a miss.
     # #1159 §4 — one token satisfying two "independent" signal categories.
     # "cannot" fired `_REQUIREMENT_ANCHOR_RE` *and* negation's `"not "`;
     # "stop" fired the imperative bank, negation and emphasis at once.
@@ -71,8 +74,7 @@ MUST_SURVIVE_CORPUS: tuple[tuple[str, str], ...] = (
     ),
     ("Newest ts in the canonical turns.jsonl, or None.", BELIEF_FACTUAL),
     # The other direction: genuine requirements must NOT be lost to an
-    # over-tightened keyword set. Bare "constraint" is gone, so the
-    # explicit "hard constraint" has to carry it.
+    # over-tightened keyword set.
     ("Commits must be signed.", BELIEF_REQUIREMENT),
     ("Signed commits are mandatory.", BELIEF_REQUIREMENT),
     ("Hard rule: every PR has a test.", BELIEF_REQUIREMENT),
@@ -150,7 +152,6 @@ def test_negation_still_fires_on_the_standalone_word() -> None:
     [
         "See requirements.txt for the pinned dependency list.",
         "Mustard is not a dependency.",
-        "The FOREIGN KEY constraint on edges cascades on delete.",
         "Read requirement.md before filing.",
         "The mustache template is checked in.",
     ],
@@ -159,14 +160,34 @@ def test_requirement_keywords_do_not_substring_match(text: str) -> None:
     assert classify_sentence(text, "user").belief_type != BELIEF_REQUIREMENT
 
 
-def test_bare_constraint_is_no_longer_a_requirement_keyword() -> None:
-    """Bare `constraint` is dropped; only `hard constraint` survives."""
+def test_bare_constraint_still_types_as_a_requirement() -> None:
+    """Pins the ONE #1368 acceptance row this PR deliberately does not fix.
+
+    #1368 asks for `constraint` to be "dropped or tightened". It is
+    neither here. The operator ruling of 2026-08-06 split this issue:
+    word-boundary matching is mechanical and ships now, but *removing* a
+    keyword changes what the write path admits, and the write path is
+    irreversible for beliefs it discards — so keyword removals wait for a
+    funded must-survive corpus.
+
+    The boundary fix does apply to `constraint`; it just narrows it to the
+    whole word rather than deleting it. Both rows below therefore still
+    type as requirements, including the FOREIGN KEY sentence #1368's
+    acceptance names.
+
+    This test exists to fail loudly when the deferred half lands: whoever
+    drops the keyword must delete this test and move its rows into the
+    must-survive corpus above, rather than discovering the acceptance row
+    was quietly left unfixed.
+    """
     assert (
         classify_sentence("Add a UNIQUE constraint on the id column.", "user").belief_type
-        == BELIEF_FACTUAL
+        == BELIEF_REQUIREMENT
     )
     assert (
-        classify_sentence("That is a hard constraint.", "user").belief_type
+        classify_sentence(
+            "The FOREIGN KEY constraint on edges cascades on delete.", "user"
+        ).belief_type
         == BELIEF_REQUIREMENT
     )
 

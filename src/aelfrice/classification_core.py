@@ -57,8 +57,15 @@ USER_SOURCE: Final[str] = "user"
 #    on the substring ("requires", "required") are now spelled out; the
 #    plural "requirements" is deliberately absent so a bare mention of the
 #    filename stem cannot type a belief on its own.
-#  - bare "constraint" is dropped. It is ordinary schema vocabulary, not a
-#    directive; only the explicit "hard constraint" survives.
+#
+# `constraint` STAYS in this set, and that is a deliberate exclusion rather
+# than an oversight. #1368's acceptance asks for it to be dropped or
+# tightened, but the operator ruling of 2026-08-06 split this issue: the
+# word-boundary work is mechanical and ships now, while dropping a keyword
+# is a judgment call deferred behind a funded must-survive corpus, because
+# the write path is irreversible for beliefs it discards. So the FOREIGN KEY
+# sentence in that acceptance list still types as a requirement here; the
+# boundary fix narrows `constraint` to the whole word, nothing more.
 _REQUIREMENT_KEYWORDS: Final[tuple[str, ...]] = (
     "must",
     "require",
@@ -67,8 +74,8 @@ _REQUIREMENT_KEYWORDS: Final[tuple[str, ...]] = (
     "requirement",
     "mandatory",
     "hard cap",
+    "constraint",
     "hard rule",
-    "hard constraint",
 )
 
 # Word-boundary alternation, length-descending so multi-word phrases match
