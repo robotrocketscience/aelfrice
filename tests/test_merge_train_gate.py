@@ -35,6 +35,7 @@ from merge_train_gate import (  # noqa: E402
     ADVISORY_NAMES,
     evaluate,
     latest_per_name,
+    base_refusal,
     main,
     required_contexts,
 )
@@ -456,3 +457,100 @@ def test_the_gate_script_is_invocable_as_a_script() -> None:
         capture_output=True, text=True, check=False, timeout=20,
     )
     assert proc.returncode == 0, proc.stderr
+
+
+# --- #1424: the base ref is checked, and a stacked PR is refused ----------
+#
+# The train's FF check (`git merge-base --is-ancestor origin/main <head>`)
+# asks only whether the head *contains* main, which a stacked PR satisfies
+# trivially — its parent branch is itself FF on main. Both directions are
+# asserted below, because either alone is satisfied by a broken gate: one that
+# refuses everything passes the stacked case, and one that refuses nothing
+# passes the main case.
+
+
+def test_a_main_based_pr_is_not_refused() -> None:
+    """The gate must not refuse the ordinary case."""
+    assert base_refusal("main", "main") is None
+
+
+def test_a_stacked_pr_is_refused_and_the_message_names_the_base() -> None:
+    """Refusal has to say which branch, or the author cannot act on it."""
+    msg = base_refusal("docs/issue-1389-false-claims", "main")
+    assert msg is not None
+    assert "docs/issue-1389-false-claims" in msg
+    assert "main" in msg
+
+
+def test_the_refusal_says_the_required_checks_never_ran() -> None:
+    """The actionable half.
+
+    A stacked PR runs no required checks at all — `ci.yml` and
+    `staging-gate.yml` declare `on: pull_request: branches: [main]`, so a PR
+    based on a feature branch never matches their trigger. Telling the author
+    only "wrong base" leaves them to rediscover that their green-looking check
+    list is missing every gate.
+    """
+    msg = base_refusal("feature/x", "main")
+    assert msg is not None
+    assert "no required checks" in msg
+    # And the retarget-alone trap, which costs a second round otherwise.
+    assert "pull_request.edited" in msg
+
+
+def test_an_unresolved_base_is_refused_rather_than_waved_through() -> None:
+    """Fail closed. An empty base is what a failed `gh pr view` yields."""
+    assert base_refusal("", "main") is not None
+
+
+def test_the_default_branch_is_not_hard_coded() -> None:
+    """A repo that renames its default branch must not refuse every PR."""
+    assert base_refusal("trunk", "trunk") is None
+    assert base_refusal("main", "trunk") is not None
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize(
+    ("base", "expected_code"), [("main", 0), ("feature/x", 3)],
+)
+def test_base_mode_exit_codes(base: str, expected_code: int) -> None:
+    """The workflow branches on the exit code, so pin it end-to-end.
+
+    Carries its own budget for the same reason as the smoke test above
+    (#1307): a subprocess spawn on the suite's 5 s default reports
+    contention as a hang rather than as slowness.
+    """
+    proc = subprocess.run(
+        [sys.executable, str(_REPO / "scripts" / "merge_train_gate.py"),
+         "--base-ref", base, "--default-branch", "main"],
+        capture_output=True, text=True, check=False, timeout=20,
+    )
+    assert proc.returncode == expected_code, proc.stderr
+
+
+def test_the_workflow_runs_the_base_check_before_waiting_for_checks() -> None:
+    """Placement is the point, not merely presence.
+
+    A stacked PR has no required checks to wait for, so a base check placed
+    inside the poll loop would stall to the 30-minute timeout instead of
+    refusing immediately. Assert it precedes the wait step in the file.
+    """
+    text = _WORKFLOW.read_text(encoding="utf-8")
+    assert "--base-ref" in text, "the workflow never runs the base check"
+    base_at = text.index("--base-ref")
+    wait_at = text.index("waiting for required checks")
+    assert base_at < wait_at, "the base check must run before the check wait"
+    # And its failure must return the PR to the queue with an explanation.
+    assert "fail_and_unlabel \"${base_msg}\"" in text
+    # AC4: the resolved base is printed on every run, not only on refusal.
+    assert "resolved base:" in text
+    # The base must be READ FROM THE PR. Passing a constant would satisfy
+    # every assertion above while defeating the check entirely — which is
+    # what a mutation to `BASE_REF=main` does, and it survived until this
+    # line existed.
+    assert "--json baseRefName" in text, (
+        "the workflow must resolve the base from the PR, not assume it"
+    )
+    assert '--base-ref "${BASE_REF}"' in text, (
+        "the resolved base must be what is passed to the gate"
+    )
