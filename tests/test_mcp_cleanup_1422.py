@@ -413,11 +413,12 @@ def test_an_unreadable_config_re_arms_rather_than_latching(
     # The control: a clean scan still latches, or this test would pass
     # against a build that never wrote the sentinel at all.
     clean = _write(tmp_path / "clean.json", {"mcpServers": {}})
-    result = maybe_clean_up_mcp(
+    control = maybe_clean_up_mcp(
         config_paths=[clean],
         sentinel_path=sentinel,
         receipt_path=tmp_path / "absent.toml",
     )
+    assert control.ran is True
     assert sentinel.exists() is True
 
 
