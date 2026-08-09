@@ -76,9 +76,15 @@ def _old_is_transcript_noise(s: str) -> bool:
 
 
 def _transcript_dir() -> str:
-    return os.path.join(
-        os.path.expanduser("~/projects/aelfrice/.git/aelfrice/transcripts")
-    )
+    """Resolve the transcript directory the logger actually writes to.
+
+    Via `transcript_logger.transcripts_dir()` rather than a hard-coded
+    path, so this runs against whatever checkout it is invoked from and
+    honours the git-common-dir resolution the logger uses in a worktree.
+    """
+    from aelfrice.transcript_logger import transcripts_dir
+
+    return str(transcripts_dir())
 
 
 def _load(tdir: str) -> tuple[list[str], list[str]]:
