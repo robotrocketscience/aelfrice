@@ -140,6 +140,37 @@ def test_a_multi_sentence_prompt_survives_a_leading_ack(
     assert rows, "a real multi-sentence prompt was dropped on its leading ack"
 
 
+def test_a_mixed_prompt_is_kept_because_every_sentence_must_be_noise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The quantifier itself, which nothing else in the file reaches.
+
+    `"No it broke. Yes keep it"` is noise as a whole prompt (the ack pattern
+    matches `No` plus a 22-char tail with no prose-terminal stop), and its two
+    sentences carry noise flags `[False, True]` — the only shape that tells
+    `all` from `any`. `No it broke.` is durable content, so the prompt stays.
+
+    Falsifiable by weakening `all(...)` to `any(...)` at the logger's
+    every-sentence gate: this prompt is then dropped and no row is written.
+    The other logger tests cannot catch that — `'No work around. It needs to
+    be fixed'` is `[False, False]`, the `<task-notification>` block exits one
+    line earlier on `is_transcript_scaffolding`, and `"Yes."` splits to no
+    sentences at all.
+
+    Both sentences are >= 10 characters so `extraction._MIN_LEN` keeps them.
+    """
+    from aelfrice.extraction import extract_sentences
+
+    prompt = "No it broke. Yes keep it"
+    parts = [s for s in extract_sentences(prompt) if s.strip()]
+    assert [is_transcript_noise(s) for s in parts] == [False, True], (
+        "fixture must be mixed, or it cannot discriminate the quantifier"
+    )
+    assert _log(tmp_path, prompt, monkeypatch), (
+        "a prompt with one durable sentence was dropped on its trailing ack"
+    )
+
+
 def test_a_harness_block_is_still_dropped_whole(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
