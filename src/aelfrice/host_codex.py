@@ -35,9 +35,12 @@ triage:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import tempfile
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, cast
@@ -320,51 +323,171 @@ class CodexInstallResult:
     error: str | None = None
 
 
-def install_codex_hooks(
-    hooks_path: Path,
-    *,
-    scope: SettingsScope = "user",
-    force: bool = False,
-    windows: bool | None = None,
-) -> CodexInstallResult:
-    """Write the aelfrice hook set into ``hooks_path``, merge-aware.
+# --- hooks.json as a transaction (#1428) ---------------------------------
+#
+# `hooks.json` is shared configuration: an editor, another installer, or a
+# second aelfrice process can write it between our read and our write.
+# The pre-#1428 code did `Path.read_text()` ... `Path.write_text()` with
+# nothing in between, so a concurrent update was replaced by our stale
+# snapshot — silently, because the result is still valid JSON, and the
+# entries lost are whatever hooks the other writer had just added.
+#
+# The shape here mirrors the settings transaction added for the other host
+# in #1161, and inherits its two hard-won lessons:
+#
+# * **Do not collapse the read-modify-write.** Batching alone WIDENS the
+#   window it claims to close. What makes it safe is the fingerprint: the
+#   bytes are hashed at the read and re-hashed immediately before the
+#   replace, so a change under us is detected rather than overwritten.
+# * **Do not truncate in place.** `write_text` truncates first, so a short
+#   write leaves a half-document where a complete one used to be. Every
+#   commit goes to a same-directory temp file, is flushed and `fsync`ed,
+#   and is then `os.replace`d — a crash at any point leaves the previous
+#   complete file.
+#
+# The lock serialises aelfrice's own writers. The fingerprint catches a
+# non-cooperating one. What remains — a foreign process replacing the file
+# in the instant between the final fingerprint check and `os.replace` — is
+# not closeable without a shared protocol Codex does not offer, and is
+# documented rather than papered over.
+_HOOKS_LOCK_TIMEOUT: Final[float] = 10.0
 
-    Refuses (with ``error`` set) when the existing file is unparseable
-    and ``force`` is False; ``force`` replaces the broken file with a
-    fresh aelfrice-only document.
+# Bounded, because the merge is convergent: a retry re-reads the newer
+# document and re-applies the same owned groups to it, so retrying is
+# strictly better than aborting. Bounded rather than unbounded so a
+# pathologically busy file surfaces as an error instead of a hang.
+_HOOKS_COMMIT_ATTEMPTS: Final[int] = 3
 
-    ``windows`` is the #1412 platform seam: `None` reads `os.name` at call
-    time, and an explicit bool drives the other platform's ownership rules.
-    Without it the Windows branch is unreachable from POSIX CI, which is why
-    this defect shipped.
+
+def _fingerprint(path: Path) -> str:
+    """Content hash of `path`; `""` when it does not exist.
+
+    Hashed rather than stat-compared: mtime granularity is coarse enough
+    to miss a fast rewrite, and a same-size edit defeats size alone.
     """
-    existing: dict[str, object] = {}
-    if hooks_path.is_file():
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return ""
+
+
+def _read_hooks_snapshot(path: Path) -> tuple[str | None, str]:
+    """Return `(text, fingerprint)` for one read of `path`.
+
+    `text` is None when the file does not exist. Both values come from
+    the *same* `read_bytes`, so nothing can slip between the content we
+    merge and the fingerprint we later check it against.
+    """
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return None, ""
+    return raw.decode("utf-8"), hashlib.sha256(raw).hexdigest()
+
+
+def _atomic_replace_hooks(path: Path, text: str, expected: str) -> bool:
+    """Replace `path` with `text` iff it still hashes to `expected`.
+
+    Returns False when the file changed under us — the caller retries or
+    reports. The temp file is created in the destination directory so the
+    rename is a same-filesystem `os.replace`, and the destination's
+    permission bits are carried over: `mkstemp` creates 0600, and a shared
+    config file silently narrowing to owner-only is its own bug.
+    """
+    if _fingerprint(path) != expected:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=path.name + ".", suffix=".tmp", dir=str(path.parent),
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
         try:
-            parsed = json.loads(hooks_path.read_text(encoding="utf-8"))
-            if isinstance(parsed, dict):
-                existing = cast(dict[str, object], parsed)
-            elif not force:
-                return CodexInstallResult(
-                    path=hooks_path, changed=False,
-                    error="existing hooks.json is not a JSON object; "
-                          "re-run with --force to replace it",
-                )
+            os.chmod(tmp_path, path.stat().st_mode & 0o777)
+        except OSError:
+            # No destination yet (first install), or a platform that will
+            # not report/apply the mode. The default 0600 is restrictive,
+            # not permissive, so this degrades safely.
+            pass
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+    return True
+
+
+def _plan_install(
+    text: str | None, scope: SettingsScope, force: bool, hooks_path: Path,
+    *, windows: bool | None = None,
+) -> tuple[str | None, CodexInstallResult]:
+    """Merge our hook set into one snapshot. Pure — touches no file.
+
+    Returns `(serialized_or_None, result)`. `serialized` is None when
+    nothing should be written, either because the document is already
+    current or because `result.error` explains why we refuse.
+
+    Foreign structure is preserved or refused, never normalised away: the
+    pre-#1428 code substituted `{}` for a non-object `hooks` and `[]` for
+    a touched event whose value was not a list, so
+    `{"hooks":{"UserPromptSubmit":{"foreign":"keep"}}}` lost its object
+    during an ordinary setup run with no error and no `--force`.
+    """
+    refuse = lambda msg: (  # noqa: E731 - one-line early-return shorthand
+        None, CodexInstallResult(path=hooks_path, changed=False, error=msg)
+    )
+    existing: dict[str, object] = {}
+    if text is not None:
+        try:
+            parsed = json.loads(text)
         except json.JSONDecodeError as exc:
             if not force:
-                return CodexInstallResult(
-                    path=hooks_path, changed=False,
-                    error=f"existing hooks.json is invalid JSON ({exc}); "
-                          "re-run with --force to replace it",
+                return refuse(
+                    f"existing hooks.json is invalid JSON ({exc}); "
+                    "re-run with --force to replace it"
                 )
-            existing = {}
+            parsed = None
+        if isinstance(parsed, dict):
+            existing = cast(dict[str, object], parsed)
+        elif parsed is not None and not force:
+            return refuse(
+                "existing hooks.json is not a JSON object; "
+                "re-run with --force to replace it"
+            )
 
     hooks_obj = existing.get("hooks")
-    hooks_map: dict[str, object] = (
-        cast(dict[str, object], hooks_obj) if isinstance(hooks_obj, dict) else {}
-    )
+    if hooks_obj is None or force:
+        hooks_map: dict[str, object] = (
+            cast(dict[str, object], hooks_obj)
+            if isinstance(hooks_obj, dict) else {}
+        )
+    elif isinstance(hooks_obj, dict):
+        hooks_map = cast(dict[str, object], hooks_obj)
+    else:
+        return refuse(
+            "existing hooks.json has a non-object `hooks` value "
+            f"({type(hooks_obj).__name__}); it is not ours to reshape — "
+            "fix it, or re-run with --force to replace it"
+        )
 
     desired = desired_codex_hooks(scope)
+    if not force:
+        for event in desired:
+            current = hooks_map.get(event)
+            if current is not None and not isinstance(current, list):
+                return refuse(
+                    f"existing hooks.json has a non-list value for the "
+                    f"`{event}` event ({type(current).__name__}); it is not "
+                    "ours to reshape — fix it, or re-run with --force to "
+                    "replace it"
+                )
+
     before = json.dumps({"hooks": hooks_map}, sort_keys=True)
     for event, groups in desired.items():
         current = hooks_map.get(event)
@@ -383,13 +506,8 @@ def install_codex_hooks(
     existing["hooks"] = hooks_map
     after = json.dumps({"hooks": hooks_map}, sort_keys=True)
 
-    changed = before != after or not hooks_path.is_file()
-    if changed:
-        hooks_path.parent.mkdir(parents=True, exist_ok=True)
-        hooks_path.write_text(
-            json.dumps(existing, indent=2) + "\n", encoding="utf-8",
-        )
-    return CodexInstallResult(
+    changed = before != after or text is None
+    result = CodexInstallResult(
         path=hooks_path,
         changed=changed,
         installed_events=sorted(desired.keys()),
@@ -407,37 +525,39 @@ def install_codex_hooks(
             ),
         ],
     )
+    if not changed:
+        return None, result
+    return json.dumps(existing, indent=2) + "\n", result
 
 
-def remove_codex_hooks(
-    hooks_path: Path, *, windows: bool | None = None,
-) -> CodexInstallResult:
-    """Remove aelfrice-owned handlers; drop emptied groups and events.
+def _plan_remove(
+    text: str | None, hooks_path: Path, *, windows: bool | None = None,
+) -> tuple[str | None, CodexInstallResult]:
+    """Strip aelfrice-owned groups from one snapshot. Pure.
 
     A missing or unparseable file is reported, not modified — uninstall
-    never destroys content it cannot positively identify as ours.
-
-    #1412: removal is per handler. A mixed group keeps its foreign handler
-    and its matcher; only the group that ends up empty is dropped.
+    never destroys content it cannot positively identify as ours. An
+    event whose value is not a list is left exactly as found for the same
+    reason.
     """
-    if not hooks_path.is_file():
-        return CodexInstallResult(path=hooks_path, changed=False)
+    if text is None:
+        return None, CodexInstallResult(path=hooks_path, changed=False)
     try:
-        parsed = json.loads(hooks_path.read_text(encoding="utf-8"))
+        parsed = json.loads(text)
     except json.JSONDecodeError as exc:
-        return CodexInstallResult(
+        return None, CodexInstallResult(
             path=hooks_path, changed=False,
             error=f"hooks.json is invalid JSON ({exc}); not modified",
         )
     if not isinstance(parsed, dict):
-        return CodexInstallResult(
+        return None, CodexInstallResult(
             path=hooks_path, changed=False,
             error="hooks.json is not a JSON object; not modified",
         )
     doc = cast(dict[str, object], parsed)
     hooks_obj = doc.get("hooks")
     if not isinstance(hooks_obj, dict):
-        return CodexInstallResult(path=hooks_path, changed=False)
+        return None, CodexInstallResult(path=hooks_path, changed=False)
     hooks_map = cast(dict[str, object], hooks_obj)
 
     changed = False
@@ -461,12 +581,95 @@ def remove_codex_hooks(
                 hooks_map[event] = kept
             else:
                 del hooks_map[event]
-    if changed:
-        hooks_path.write_text(
-            json.dumps(doc, indent=2) + "\n", encoding="utf-8",
-        )
+    result = CodexInstallResult(
+        path=hooks_path, changed=changed,
+        installed_events=sorted(removed_events),
+    )
+    if not changed:
+        return None, result
+    return json.dumps(doc, indent=2) + "\n", result
+
+
+def _commit_hooks_transaction(
+    hooks_path: Path,
+    plan: Callable[[str | None], tuple[str | None, CodexInstallResult]],
+) -> CodexInstallResult:
+    """Run `plan` against `hooks_path` under lock, and commit atomically.
+
+    One read-modify-write per attempt: read a snapshot with its
+    fingerprint, plan against it, and replace the file only if it still
+    hashes the same. A mismatch means a writer that does not take our
+    lock got in; the plan is convergent, so we re-read and re-apply
+    rather than clobber, up to `_HOOKS_COMMIT_ATTEMPTS`.
+    """
+    from aelfrice.session_ring import exclusive_file_lock
+
+    with exclusive_file_lock(hooks_path, timeout=_HOOKS_LOCK_TIMEOUT):
+        for _ in range(_HOOKS_COMMIT_ATTEMPTS):
+            text, fingerprint = _read_hooks_snapshot(hooks_path)
+            serialized, result = plan(text)
+            if serialized is None:
+                return result
+            try:
+                committed = _atomic_replace_hooks(
+                    hooks_path, serialized, fingerprint,
+                )
+            except OSError as exc:
+                # A full disk, a revoked permission, an antivirus holding
+                # the rename. The previous document is still complete on
+                # disk; report rather than unwind a traceback through the
+                # CLI, which is all the caller could do with it anyway.
+                return CodexInstallResult(
+                    path=hooks_path, changed=False,
+                    error=f"could not write {hooks_path} ({exc}); "
+                          "the existing file is unchanged",
+                )
+            if committed:
+                return result
     return CodexInstallResult(
-        path=hooks_path, changed=changed, installed_events=sorted(removed_events),
+        path=hooks_path, changed=False,
+        error=(
+            f"{hooks_path} was modified by another process during each of "
+            f"{_HOOKS_COMMIT_ATTEMPTS} attempts; nothing was written. "
+            "Re-run the command."
+        ),
+    )
+
+
+def install_codex_hooks(
+    hooks_path: Path,
+    *,
+    scope: SettingsScope = "user",
+    force: bool = False,
+    windows: bool | None = None,
+) -> CodexInstallResult:
+    """Write the aelfrice hook set into ``hooks_path``, merge-aware.
+
+    Serialised against other aelfrice writers and committed atomically;
+    see the transaction notes above. Refuses (with ``error`` set) when
+    the existing file is unparseable, or holds a foreign structure at a
+    key we would have to reshape, and ``force`` is False.
+    """
+    return _commit_hooks_transaction(
+        hooks_path,
+        lambda text: _plan_install(
+            text, scope, force, hooks_path, windows=windows,
+        ),
+    )
+
+
+def remove_codex_hooks(
+    hooks_path: Path, *, windows: bool | None = None,
+) -> CodexInstallResult:
+    """Remove aelfrice-owned matcher groups; drop emptied events.
+
+    Same transaction as ``install_codex_hooks`` — an uninstall racing a
+    setup is exactly as capable of dropping a foreign entry as two
+    setups are.
+    """
+    return _commit_hooks_transaction(
+        hooks_path,
+        lambda text: _plan_remove(text, hooks_path, windows=windows),
     )
 
 
