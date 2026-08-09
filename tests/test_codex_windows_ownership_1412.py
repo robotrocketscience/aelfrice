@@ -243,10 +243,19 @@ class TestDoctor:
         assert any("coverage incomplete" in w for w in report.warnings)
 
 
-@pytest.mark.parametrize("windows", [True, False])
-def test_a_clean_install_is_idempotent_on_both_platforms(
-    tmp_path: Path, windows: bool,
+@pytest.mark.parametrize("windows", [None, True])
+def test_a_clean_install_is_idempotent(
+    tmp_path: Path, windows: bool | None,
 ) -> None:
+    """`None` is the host's own semantics; `True` forces the other branch.
+
+    There is deliberately no `False` arm. On a Windows host the commands
+    `desired_codex_hooks` resolves are backslash paths, and reading those
+    under POSIX rules *correctly* fails to recognise them — so a `False` arm
+    would assert idempotence against a deliberate mismatch and fail on
+    `windows-smoke` only. That direction is covered, as a mismatch, by
+    `test_the_same_file_still_duplicates_under_posix_rules`.
+    """
     hooks_path = tmp_path / "hooks.json"
     install_codex_hooks(hooks_path, windows=windows)
     snapshot = hooks_path.read_bytes()

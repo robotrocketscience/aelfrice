@@ -35,9 +35,21 @@ What cannot be checked from here is that a real Windows host agrees; the
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
+
+# The `installed_hook` fixture depends on a filename that *contains* a
+# backslash, which only POSIX permits — on Windows the same string names a
+# `Scripts` subdirectory, so the fixture would create a different thing and
+# assert nothing about the defect. The real-platform coverage for this file
+# is the `windows-smoke` job's console-launcher step, not a re-run of these
+# arms under a hostile fixture.
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="fixtures require POSIX filename semantics (backslash in a name)",
+)
 
 from aelfrice import launcher
 from aelfrice.doctor import (

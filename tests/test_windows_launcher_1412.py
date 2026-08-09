@@ -19,6 +19,18 @@ from aelfrice import launcher
 
 WIN_PATH = r"C:\Users\dev\.venv\Scripts\aelf-hook.EXE"
 
+# `shutil.which` resolves a bare name only against PATHEXT on win32, so a
+# fixture launcher must carry a real suffix there and must not on POSIX.
+LAUNCHER_NAME = "aelf-hook.exe" if os.name == "nt" else "aelf-hook"
+
+
+def _install_launcher(directory: Path, name: str = LAUNCHER_NAME) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / name
+    target.write_text("#!/bin/sh\n", encoding="utf-8")
+    target.chmod(0o755)
+    return target
+
 
 def test_the_platform_flag_is_not_bound_at_definition_time() -> None:
     """`os.name` must be read per call, not captured at import.
@@ -124,9 +136,7 @@ class TestResolution:
         assert launcher.scripts_dir() == Path(sysconfig.get_path("scripts"))
 
     def test_which_in_takes_an_explicit_directory(self, tmp_path: Path) -> None:
-        target = tmp_path / "aelf-hook"
-        target.write_text("#!/bin/sh\n", encoding="utf-8")
-        target.chmod(0o755)
+        target = _install_launcher(tmp_path)
         assert launcher.which_in(tmp_path, "aelf-hook") == target
         assert launcher.which_in(tmp_path, "aelf-missing") is None
 
@@ -190,14 +200,6 @@ class TestScriptResolution:
     an unrelated global shim" for project scope.
     """
 
-    @staticmethod
-    def _install(directory: Path, name: str) -> Path:
-        directory.mkdir(parents=True, exist_ok=True)
-        target = directory / name
-        target.write_text("#!/bin/sh\n", encoding="utf-8")
-        target.chmod(0o755)
-        return target
-
     def test_project_scope_prefers_the_interpreter_scripts_dir(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -205,8 +207,8 @@ class TestScriptResolution:
 
         scripts = tmp_path / "env" / "Scripts"
         elsewhere = tmp_path / "global"
-        local = self._install(scripts, "aelf-hook")
-        self._install(elsewhere, "aelf-hook")
+        local = _install_launcher(scripts)
+        _install_launcher(elsewhere)
 
         monkeypatch.setattr(launcher, "scripts_dir", lambda: scripts)
         monkeypatch.setenv("PATH", str(elsewhere))
@@ -263,10 +265,14 @@ class TestScriptResolution:
     def test_a_present_launcher_resolves_and_a_missing_one_does_not(
         self, tmp_path: Path,
     ) -> None:
-        installed = self._install(tmp_path / "Scripts", "aelf-hook")
+        installed = _install_launcher(tmp_path / "Scripts")
         assert setup_executable(tmp_path / "Scripts", "aelf-hook") == installed
         assert setup_executable(tmp_path / "Scripts", "aelf-nonesuch") is None
 
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="the executable bit is a POSIX concept; win32 gates on PATHEXT",
+    )
     def test_a_non_executable_file_is_not_a_launcher(
         self, tmp_path: Path,
     ) -> None:
