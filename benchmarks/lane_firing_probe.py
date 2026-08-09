@@ -395,9 +395,9 @@ OBSERVABLE_LANES: tuple[ObservableLane, ...] = (
     ObservableLane(
         name="fan_effect",
         resolver="is_fan_effect_enabled()",
-        field="fan_effect_ranked",
+        field="fan_effect_hits_consumed",
         reported=is_fan_effect_enabled,
-        observed=lambda t: t.fan_effect_ranked > 0,
+        observed=lambda t: t.fan_effect_hits_consumed > 0,
         note="recorded where the fan-weighted entity ordering is consumed "
              "rather than where the flag resolves, but the only thing "
              "between the two is whether L2.5 returned any hits at all — "

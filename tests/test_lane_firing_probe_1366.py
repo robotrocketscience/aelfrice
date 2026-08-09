@@ -149,7 +149,7 @@ def test_observed_predicates_are_true_when_their_field_is_set() -> None:
         "origin_tiebreak": LaneTelemetry(origin_tiebreak_decided=1),
         "gamma_posterior_temperature": LaneTelemetry(gamma_rerank_scored=1),
         "zeta_posterior_rerank": LaneTelemetry(zeta_rerank_scored=1),
-        "fan_effect": LaneTelemetry(fan_effect_ranked=1),
+        "fan_effect": LaneTelemetry(fan_effect_hits_consumed=1),
         "hrr_structural": LaneTelemetry(hrr_structural_hit=True),
     }
     by_name = {lane.name: lane for lane in probe.OBSERVABLE_LANES}

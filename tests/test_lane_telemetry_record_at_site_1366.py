@@ -526,7 +526,7 @@ def test_supersession_records_on_both_l1_arms(
 # --- fan_effect ----------------------------------------------------------
 
 
-def test_fan_effect_ranked_records_where_the_ordering_is_consumed(
+def test_fan_effect_hits_consumed_records_where_the_ordering_is_consumed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """L2.5 has to return hits before anything is recorded."""
@@ -536,16 +536,16 @@ def test_fan_effect_ranked_records_where_the_ordering_is_consumed(
         s.insert_belief(_mk("b1", "the deploy target is fly.io"))
         _add_entity(s, "b1", "fly.io", "identifier")
         retrieve_v2(s, "fly.io deploy", use_fan_effect=True)
-        assert last_lane_telemetry().fan_effect_ranked > 0
+        assert last_lane_telemetry().fan_effect_hits_consumed > 0
     finally:
         s.close()
 
 
-def test_fan_effect_ranked_is_zero_when_the_lane_is_off(
+def test_fan_effect_hits_consumed_is_zero_when_the_lane_is_off(
     store: MemoryStore,
 ) -> None:
     retrieve_v2(store, "alpha beta", use_fan_effect=False)
-    assert last_lane_telemetry().fan_effect_ranked == 0
+    assert last_lane_telemetry().fan_effect_hits_consumed == 0
 
 
 # --- hrr_structural ------------------------------------------------------

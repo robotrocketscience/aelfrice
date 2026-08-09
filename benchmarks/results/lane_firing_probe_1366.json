@@ -199,7 +199,7 @@
     },
     {
       "lane": "fan_effect",
-      "telemetry_field": "fan_effect_ranked",
+      "telemetry_field": "fan_effect_hits_consumed",
       "resolver": "is_fan_effect_enabled()",
       "reported_enabled": false,
       "fired_calls": 0,

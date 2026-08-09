@@ -3369,6 +3369,14 @@ class LaneTelemetry:
     # be 0 or 1. It is written by `retrieve_v2` on the early-return path
     # (`retrieve_with_tiers` never runs when the lane hits, so it can
     # only ever leave this False — which is the honest answer there).
+    #
+    # #1434. `fan_effect_hits_consumed` is named for what it counts: the
+    # L2.5 hits consumed on a call where the fan flag was on. It is not a
+    # count of rows the fan weighting reordered — `MemoryStore.
+    # lookup_entities` returns the same set either way and only the
+    # ordering changes, so this value is identical whether the weighting
+    # moved everything or nothing. Reading it as reordering evidence is
+    # the mistake the old name (`fan_effect_ranked`) invited.
     compression_renders: int = 0
     cluster_packed: int = 0
     max_coverage_packed: int = 0
@@ -3377,7 +3385,7 @@ class LaneTelemetry:
     origin_tiebreak_decided: int = 0
     gamma_rerank_scored: int = 0
     zeta_rerank_scored: int = 0
-    fan_effect_ranked: int = 0
+    fan_effect_hits_consumed: int = 0
     hrr_structural_hit: bool = False
 
 
@@ -3433,7 +3441,7 @@ LANE_FIRING_FIELDS: tuple[str, ...] = (
     "origin_tiebreak_decided",
     "gamma_rerank_scored",
     "zeta_rerank_scored",
-    "fan_effect_ranked",
+    "fan_effect_hits_consumed",
     "hrr_structural_hit",
 )
 """Names of the `LaneTelemetry` fields fed by `_record_lane_fired`.
@@ -3660,7 +3668,7 @@ def _l25_hits(
         # means the lane produced no ordering for this call to consume,
         # and records nothing — which is the difference between the flag
         # being on and the lane doing work.
-        _record_lane_fired("fan_effect_ranked", len(hits))
+        _record_lane_fired("fan_effect_hits_consumed", len(hits))
     out: list[Belief] = []
     used = 0
     for bid, _overlap in hits:
@@ -4942,7 +4950,7 @@ def retrieve_with_tiers(
         origin_tiebreak_decided=_lane_fired("origin_tiebreak_decided"),
         gamma_rerank_scored=_lane_fired("gamma_rerank_scored"),
         zeta_rerank_scored=_lane_fired("zeta_rerank_scored"),
-        fan_effect_ranked=_lane_fired("fan_effect_ranked"),
+        fan_effect_hits_consumed=_lane_fired("fan_effect_hits_consumed"),
     )
     return out, locked_ids_list, l25_ids_list, l1_ids_list, bfs_chains
 
