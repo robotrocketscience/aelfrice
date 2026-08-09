@@ -66,6 +66,26 @@ USER_SOURCE: Final[str] = "user"
 # the write path is irreversible for beliefs it discards. So the FOREIGN KEY
 # sentence in that acceptance list still types as a requirement here; the
 # boundary fix narrows `constraint` to the whole word, nothing more.
+#
+# The inflection compensation has to be SYMMETRIC or the boundary fix
+# becomes a silent recall cut. Substring containment matched every plural
+# for free — `"constraint" in "constraints"` — so spelling out only the
+# `require` family and leaving the others singular costs the type on real
+# beliefs. Measured on a 44,687-belief live store: of the 96 beliefs that
+# typed `requirement` before the boundary fix and not after, ~31 are the
+# intended false-positive removals (`constraint_failure`, `mustang`,
+# `belief_requirement`) and **46** are plurals of keywords already in this
+# set — 42 `constraints`, 4 `hard rules`. Those two are added below for
+# that reason, not to widen the surface.
+#
+# `requirements` is deliberately still absent, and this is the one
+# judgment call in the group. The dotted-stem guard below makes it safe to
+# add (`requirements.txt` and `requirements.in` stay non-matching), so the
+# reason is not safety: the 19 live beliefs it would recover are dominated
+# by document headings rather than stated requirements, and a bare mention
+# of the filename stem should not type a belief on its own. Recorded here
+# the way the `constraint` deferral is, so an omission does not read as an
+# oversight.
 _REQUIREMENT_KEYWORDS: Final[tuple[str, ...]] = (
     "must",
     "require",
@@ -75,7 +95,9 @@ _REQUIREMENT_KEYWORDS: Final[tuple[str, ...]] = (
     "mandatory",
     "hard cap",
     "constraint",
+    "constraints",
     "hard rule",
+    "hard rules",
 )
 
 # Word-boundary alternation, length-descending so multi-word phrases match
