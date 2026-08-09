@@ -3991,14 +3991,28 @@ def _directive_window_spec(content: str) -> str | None:
 def _collect_lock_candidates(
     store: "MemoryStore", session_id: str
 ) -> list["Belief"]:
-    """Walk all beliefs once and return the lock-prompt candidates.
+    """Walk all beliefs once and return the lock-prompt candidates,
+    **newest first**.
 
-    Cost: one `list_belief_ids()` + one `get_belief()` per id. For small
-    stores (<1k beliefs, the typical case at session-end) this is sub-100ms.
+    The order is part of the contract, because `_format_stop_prompt` caps
+    the list at `STOP_PROMPT_MAX_ITEMS` and takes the head (#1442):
+    whatever this returns first is what the user sees, and what the user
+    most needs to see is the turn that just ended. `list_belief_ids` is
+    ascending *content-hash* order and cannot supply that, so this walks
+    `list_belief_ids_newest_first` (reverse `rowid`) instead. Sorting the
+    result on `created_at` would not fix it — that column has 2,771 tie
+    groups on this repo's store and the worst session shares one
+    timestamp across all 6,427 of its beliefs.
+
+    Every belief is still visited: the total is needed for the withheld
+    count, so there is no early exit once the cap is reached.
+
+    Cost: one id listing + one `get_belief()` per id. For small stores
+    (<1k beliefs, the typical case at session-end) this is sub-100ms.
     A focused SQL query is a future optimisation when stores grow.
     """
     candidates: list[Belief] = []
-    for bid in store.list_belief_ids():
+    for bid in store.list_belief_ids_newest_first():
         b = store.get_belief(bid)
         if b is None:
             continue
@@ -4026,10 +4040,21 @@ def _format_stop_prompt(candidates: list["Belief"]) -> str:
     Bounded on two axes since #1442, because this block goes to stderr
     once per assistant turn and neither axis was bounded before:
 
-    * **Count.** At most `STOP_PROMPT_MAX_ITEMS`, newest first, with a
-      trailing line naming how many were withheld. Unbounded, the worst
-      session on this repo's store rendered 6,427 entries and 3,448,428
-      bytes — every turn.
+    * **Count.** At most `STOP_PROMPT_MAX_ITEMS`, taken from the head of
+      `candidates`, with a trailing line naming how many were withheld.
+      Unbounded, the worst session on this repo's store rendered 6,427
+      entries and 3,448,428 bytes — every turn.
+
+      **The caller supplies the order and it is load-bearing.**
+      `_collect_lock_candidates` returns newest-first (reverse `rowid`),
+      so the head is the turn that just ended. This function deliberately
+      does not re-sort: the only keys available on a `Belief` are
+      `created_at`, which has 2,771 tie groups on this store and is a
+      single shared value across the whole 6,427-belief worst case, and
+      `id`, which is content-hash order. Sorting on `(created_at, id)`
+      here looks like a recency guarantee and is not one — inside a tie
+      group it selects by hash, which is exactly the arbitrary choice the
+      cap has to avoid.
     * **Length.** A candidate longer than `STOP_PROMPT_MAX_CONTENT` is
       still listed, but its `aelf lock` line is withheld rather than
       emitted at full length. The longest live candidate is 14,360
@@ -4041,18 +4066,9 @@ def _format_stop_prompt(candidates: list["Belief"]) -> str:
     if not candidates:
         return ""
     total = len(candidates)
-    # Newest first. The cap is only safe if it keeps the turn that just
-    # ended: `_collect_lock_candidates` walks `list_belief_ids()`, whose
-    # `ORDER BY id ASC` is *content-hash* order (ids are
-    # `sha256(source + NUL + text)[:16]`), not insertion order — on this
-    # repo's store all 44,683 active rows sit at a different position in
-    # the two orderings. A head-cap over that would show an arbitrary
-    # fixed subset and hide the newest belief except by chance.
-    # `id` breaks the tie because `created_at` ties are the norm here,
-    # and determinism is a stated invariant of this project.
-    shown = sorted(
-        candidates, key=lambda b: (b.created_at or "", b.id), reverse=True
-    )[:STOP_PROMPT_MAX_ITEMS]
+    # Head, not a re-sort — see the docstring. The caller orders this
+    # newest-first from `rowid`, which is the only key that discriminates.
+    shown = candidates[:STOP_PROMPT_MAX_ITEMS]
     n = len(shown)
     withheld = total - n
     noun = "belief" if total == 1 else "beliefs"

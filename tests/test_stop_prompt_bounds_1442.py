@@ -42,9 +42,12 @@ def _belief(bid: str, content: str, *, created: str, type_: str = BELIEF_FACTUAL
 def test_the_shipped_limits_are_the_measured_ones() -> None:
     """Pins the values, not just the mechanism.
 
-    Every behavioural test below reads the constants, so it would pass
-    just as happily at `MAX_ITEMS = 10_000` — which is the bound not
-    existing. These two asserts are what make the rest mean something.
+    Every behavioural test below reads the constants rather than
+    hard-coding them, so raising a limit is largely invisible to them:
+    at `MAX_CONTENT = 1_000_000` this is the *only* test that fails, and
+    at `MAX_ITEMS = 10_000` only this and the collector-order test do.
+    Without these two asserts the bound could be widened to
+    non-existence with the suite green.
     """
     assert STOP_PROMPT_MAX_ITEMS == 20
     assert STOP_PROMPT_MAX_CONTENT == 1000
@@ -71,50 +74,79 @@ def test_the_list_is_capped_and_says_how_many_it_withheld() -> None:
     assert "and 10 older beliefs from this session, not shown" in out
 
 
-def test_the_cap_keeps_the_newest_not_an_arbitrary_slice() -> None:
-    """The cap is only safe if it keeps the turn that just ended.
+def test_the_collector_returns_newest_first_through_a_real_store() -> None:
+    """The recency guarantee lives at the collector, because that is the
+    only place with access to the key that discriminates.
 
-    `_collect_lock_candidates` walks `list_belief_ids()`, whose `ORDER BY
-    id ASC` is content-hash order — ids are `sha256(source + NUL +
-    text)[:16]`, so on the development store all 44,683 active rows sit
-    at a different position there than in `created_at` order. A head-cap
-    over that input would show a fixed arbitrary subset and hide the
-    newest belief except by chance.
+    Every belief here shares one `created_at`, which is not a contrived
+    fixture: `created_at` has 2,771 tie groups on this repo's store and
+    the 6,427-belief session this whole bound is named for shares a single
+    timestamp across all of them. Under a `(created_at, id)` sort the
+    survivors would be chosen by content-hash order.
 
-    So the ids here are deliberately ordered *against* recency: `b000` is
-    newest. Falsifiable by dropping the sort — the slice then keeps
-    `b000..b019`, which are the twenty OLDEST, and the newest-present
-    assertion fails.
+    Ids ascend **with** insertion order on purpose, so `ORDER BY id ASC`
+    yields oldest-first — the exact inverse of what the cap needs. An
+    earlier draft of this test numbered them the other way, which made
+    `id ASC` accidentally equal to newest-first and let the
+    `list_belief_ids()` mutation survive with the suite green.
+    Falsifiable by pointing `_collect_lock_candidates` back at
+    `list_belief_ids()`, or by re-introducing a `(created_at, id)` sort in
+    `_format_stop_prompt`: both then put rule 0 at the head and drop the
+    newest, failing the last two assertions.
     """
-    n = STOP_PROMPT_MAX_ITEMS + 5
-    cands = [
-        _belief(f"b{i:03d}", f"Always use rule {i}.",
-                created=f"2026-08-09T00:{(n - i):02d}:00Z")
-        for i in range(n)
-    ]
-    out = _format_stop_prompt(cands)
+    import string
+    import tempfile
+    from pathlib import Path as _Path
 
-    assert "Always use rule 0." in out, "the newest belief was dropped by the cap"
-    assert "Always use rule 24." not in out, "the oldest belief survived the cap"
+    from aelfrice.hook import _collect_lock_candidates
+    from aelfrice.store import MemoryStore
+
+    same = "2026-08-09T00:00:00Z"
+    with tempfile.TemporaryDirectory() as td:
+        db = _Path(td) / "m.db"
+        s = MemoryStore(str(db))
+        try:
+            # Inserted oldest-first; ids descend so `id DESC` is the
+            # reverse of insertion order.
+            letters = string.ascii_lowercase[: STOP_PROMPT_MAX_ITEMS + 5]
+            for i, ch in enumerate(letters):
+                s.insert_belief(
+                    _belief(f"{ch}{i:03d}", f"Always use rule {i}.", created=same)
+                )
+            got = _collect_lock_candidates(s, _SESSION)
+        finally:
+            s.close()
+
+    assert len(got) == STOP_PROMPT_MAX_ITEMS + 5
+    # The last row inserted must come first, whatever its id sorts like.
+    assert got[0].content == f"Always use rule {STOP_PROMPT_MAX_ITEMS + 4}."
+    assert got[-1].content == "Always use rule 0."
+
+    out = _format_stop_prompt(got)
+    assert f"Always use rule {STOP_PROMPT_MAX_ITEMS + 4}." in out, (
+        "the newest belief was dropped by the cap"
+    )
+    assert "Always use rule 0." not in out, "the oldest belief survived the cap"
 
 
-def test_ties_on_created_at_are_broken_deterministically() -> None:
-    """`created_at` ties are the norm on this store, so sorting on it
-    alone is not a total order and the cap would be nondeterministic —
-    against a stated invariant of the project.
+def test_the_renderer_takes_the_head_and_does_not_re_sort() -> None:
+    """`_format_stop_prompt` must preserve the caller's order.
 
-    Falsifiable by dropping `b.id` from the sort key: which twenty
-    survive then depends on the input list's order, so the two calls
-    below disagree.
+    A re-sort here cannot be a recency guarantee — the only keys on a
+    `Belief` are `created_at` (tied) and `id` (content-hash) — so it would
+    silently override the collector's `rowid` order with an arbitrary one.
+    Falsifiable by restoring `sorted(..., key=(created_at, id), reverse=True)`:
+    `zzz` sorts first and displaces the intended head.
     """
     same = "2026-08-09T00:00:00Z"
-    cands = [
-        _belief(f"b{i:03d}", f"Always use rule {i}.", created=same)
-        for i in range(STOP_PROMPT_MAX_ITEMS + 5)
+    ordered = [
+        _belief("aaa", "Always use rule NEWEST.", created=same),
+        _belief("zzz", "Always use rule OLDEST.", created=same),
     ]
-    first = _format_stop_prompt(cands)
-    second = _format_stop_prompt(list(reversed(cands)))
-    assert first == second
+    out = _format_stop_prompt(ordered[:1] + ordered[1:])
+    first = out.index("Always use rule NEWEST.")
+    second = out.index("Always use rule OLDEST.")
+    assert first < second, "the renderer re-sorted its input"
 
 
 def test_an_overlong_belief_is_listed_but_gets_no_pasteable_command() -> None:
