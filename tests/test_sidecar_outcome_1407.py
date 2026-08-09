@@ -249,3 +249,108 @@ def test_the_hook_helper_is_fail_soft(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(bm25, "last_sidecar_outcome", boom)
     assert hook._last_sidecar_outcome() is None
+
+
+# --- the edge between the two ends ----------------------------------------
+#
+# Everything above tests one end or the other: the recorder inside
+# `BM25IndexCache.get`, and `_write_hook_audit_record` called directly with an
+# explicit `sidecar_outcome=` kwarg. Neither observes that
+# `user_prompt_submit` actually joins them, and that join is the whole
+# product — the field exists to appear in production audit rows.
+#
+# Measured before adding these: deleting `sidecar_outcome=_last_sidecar_outcome(),`
+# from the production call site left the full suite green at 7,611 passed, and
+# so did replacing `reset_sidecar_outcome()` with a no-op.
+
+
+def _drive_ups(tmp_path: Path, prompt: str, monkeypatch: pytest.MonkeyPatch) -> dict:
+    """Fire the real UserPromptSubmit hook and return its audit row."""
+    import io
+    import json
+
+    from aelfrice.hook import user_prompt_submit
+    from aelfrice.store import MemoryStore
+
+    db = tmp_path / "memory.db"
+    s = MemoryStore(str(db))
+    try:
+        for i in range(20):
+            s.insert_belief(_mk(i))
+    finally:
+        s.close()
+
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    monkeypatch.delenv("AELFRICE_HOOK_AUDIT", raising=False)
+    monkeypatch.chdir(tmp_path)
+    user_prompt_submit(
+        stdin=io.StringIO(
+            json.dumps({"prompt": prompt, "session_id": "s1", "cwd": str(tmp_path)})
+        ),
+        stdout=io.StringIO(),
+    )
+    rows = [
+        r
+        for r in _audit_rows(tmp_path)
+        if r.get("hook") == "user_prompt_submit"
+    ]
+    assert rows, "the hook wrote no user_prompt_submit audit row"
+    return rows[-1]
+
+
+def test_a_real_fire_carries_the_outcome_into_its_audit_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The edge: production must actually pass the recorder's value through.
+
+    Asserted against the vocabulary rather than a literal, because which of
+    the three a first fire lands on is an implementation detail of the cache;
+    what must hold is that a fire which did index work records *something
+    real* rather than the key going missing.
+
+    Falsifiable by deleting `sidecar_outcome=_last_sidecar_outcome(),` from
+    the `_write_hook_audit_record` call in `user_prompt_submit` — which the
+    rest of this file does not catch.
+    """
+    row = _drive_ups(tmp_path, "belief number 3 about retrieval and indexing", monkeypatch)
+    assert "sidecar_outcome" in row, "the production call site stopped passing the field"
+    assert row["sidecar_outcome"] in SIDECAR_OUTCOMES
+
+
+def test_the_reset_stops_a_fire_inheriting_the_previous_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The per-fire reset, observed through the hook rather than the helper.
+
+    A stale process global is the defect class this repo has shipped twice
+    (#1366 lane firings, #1444's `_LAST_LOCK_CONFLICTS`). Here it would make a
+    fire that did no index work inherit the previous fire's outcome and count
+    as a rebuild.
+
+    Set the global to a value no real fire could have left, then drive a
+    fire that runs retrieval but never reaches `BM25IndexCache.get()`. With
+    the reset in place the key is absent; without it the planted value
+    survives into the row and a no-work fire is counted as a rebuild.
+
+    `AELFRICE_BM25F=0` is what makes the case reachable: `get()` is called
+    from `_l1_hits` under `if use_bm25f_anchors:`, so with the lane off
+    retrieval still runs and still writes an audit row, but no index work
+    happens. A *gate-skipped* prompt does not exercise this — that path
+    never reaches the reset either, and its audit write never passes the
+    field at all, so it passes with or without the reset.
+
+    Falsifiable by replacing `reset_sidecar_outcome()` with a no-op.
+    """
+    from aelfrice import bm25 as _bm25
+
+    monkeypatch.setenv("AELFRICE_BM25F", "0")
+    _bm25._record_sidecar_outcome(SIDECAR_FULL_REBUILD)
+    assert last_sidecar_outcome() == SIDECAR_FULL_REBUILD
+
+    row = _drive_ups(tmp_path, "belief number 3 about retrieval and indexing", monkeypatch)
+    assert not row.get("prompt_shape_gate_skip"), (
+        "fixture must run retrieval, or it does not exercise the reset"
+    )
+    assert "sidecar_outcome" not in row, (
+        "a fire that did no index work inherited the previous fire's outcome"
+    )
