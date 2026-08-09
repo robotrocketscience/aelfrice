@@ -2,9 +2,10 @@
 
 Reads each user prompt, regex-matches against twelve positive and
 twelve negative sentiment patterns, and emits a `SentimentSignal`.
-The signal is distributed equally across the previous turn's
-retrieved beliefs via `apply_sentiment_to_pending`, which calls
-`feedback.apply_feedback` once per pending belief id.
+The signal is split equally across the previous turn's retrieved
+beliefs via `apply_sentiment_to_pending`, which calls
+`feedback.apply_feedback` once per pending belief id with 1/N of the
+signal's magnitude.
 
 Design contract (spec: `docs/design/v2_sentiment_feedback.md`):
 
@@ -30,10 +31,14 @@ Design contract (spec: `docs/design/v2_sentiment_feedback.md`):
     fraction of the recent N turns were corrections. Stateless beyond
     the caller-supplied window.
 
-Distribution shape: `apply_sentiment_to_pending` distributes the signal
-equally across all pending belief ids. Per-rank scaling is explicitly
-out of scope (decision ratified 2026-04-29: "matches the research-line
-behavior; ranked distribution adds a knob without an evidence-gate").
+Distribution shape: `apply_sentiment_to_pending` splits the signal
+equally across all live pending belief ids — each gets `valence / N`, so
+one utterance is worth one unit of evidence in total rather than one
+unit per belief (#1372 §13). Per-rank scaling remains out of scope
+(decision ratified 2026-04-29: "ranked distribution adds a knob without
+an evidence-gate"); the equal split is not a claim that the beliefs are
+equally implicated, only a refusal to manufacture evidence in
+proportion to pack size.
 
 This module does NOT decide *when* to call into it. The hook layer is
 responsible for: (a) checking the config flag, (b) resolving the
@@ -312,8 +317,8 @@ def apply_sentiment_to_pending(
     now: str | None = None,
     escalated: bool = False,
 ) -> list[FeedbackResult]:
-    """Distribute one sentiment signal equally across the pending belief
-    set. Calls `apply_feedback` once per belief id.
+    """Split one sentiment signal across the pending belief set. Calls
+    `apply_feedback` once per belief id that still exists.
 
     Returns the list of FeedbackResults. Beliefs that no longer exist
     in the store are skipped silently (not an error: the previous turn
@@ -323,14 +328,27 @@ def apply_sentiment_to_pending(
     `ESCALATED_NEGATIVE_VALENCE`. Has no effect on positive signals;
     the correction-frequency path only escalates negatives by design.
 
+    **Divides by the live pending count** (#1372 §13). The signal is one
+    utterance about (at most) one of the beliefs on the prior turn, so it
+    is worth one unit of evidence in total, not one unit *per belief*.
+    Applying the full magnitude N times manufactured N-1 units of
+    evidence out of nothing and grew the fabrication with the size of the
+    retrieval pack. Each live id now receives `valence / N`, so the sum
+    of the applied magnitudes equals the signal's own magnitude
+    regardless of N. This is the cheap fix, not the principled one: the
+    principled fix attributes the signal to the beliefs the user's words
+    demonstrably reference, and nothing here does that — a uniform split
+    still puts evidence on beliefs the utterance was not about, merely
+    without inflating the total.
+
     **Does not propagate** (#1291). One prose signal already credits
-    every belief on the prior turn with the same valence, which is not
-    a set of exchangeable Bernoulli trials about any one of them;
-    letting that walk the edge graph as well multiplies an attribution
-    the signal never had. The direct application is the part with a
-    defensible — if coarse — link to the user's words, so it is the
-    part that is kept. Explicit sources (`aelf feedback`) still
-    propagate; this restriction is specific to the inferred lane.
+    every belief on the prior turn, which is not a set of exchangeable
+    Bernoulli trials about any one of them; letting that walk the edge
+    graph as well multiplies an attribution the signal never had. The
+    direct application is the part with a defensible — if coarse — link
+    to the user's words, so it is the part that is kept. Explicit
+    sources (`aelf feedback`) still propagate; this restriction is
+    specific to the inferred lane.
     """
     if not pending_belief_ids:
         return []
@@ -339,14 +357,20 @@ def apply_sentiment_to_pending(
     if escalated and signal.sentiment == NEGATIVE:
         valence = -ESCALATED_NEGATIVE_VALENCE
 
+    # Resolve liveness first: the divisor has to be the number of beliefs
+    # that actually receive evidence, or the applied total drifts below
+    # one unit whenever the prior turn surfaced a since-deleted belief.
+    live = [bid for bid in pending_belief_ids if store.get_belief(bid) is not None]
+    if not live:
+        return []
+    share = valence / len(live)
+
     results: list[FeedbackResult] = []
-    for bid in pending_belief_ids:
-        if store.get_belief(bid) is None:
-            continue
+    for bid in live:
         result = apply_feedback(
             store=store,
             belief_id=bid,
-            valence=valence,
+            valence=share,
             source=SENTIMENT_INFERRED_SOURCE,
             now=now,
             propagate=False,

@@ -294,7 +294,57 @@ def test_apply_distributes_positive_signal_across_all_pending(
     for bid in ("b1", "b2", "b3"):
         b = store.get_belief(bid)
         assert b is not None
-        assert b.alpha == 2.0  # was 1.0, +1.0 valence
+        # was 1.0, + BASE_VALENCE/3 — one unit split three ways (#1372).
+        assert b.alpha == pytest.approx(1.0 + BASE_VALENCE / 3)
+
+
+# --- #1372 §13: one utterance is worth one unit of evidence, not N -------
+
+
+@pytest.mark.parametrize("n", [1, 2, 3])
+def test_applied_valence_sums_to_one_signal_regardless_of_pack_size(
+    n: int,
+) -> None:
+    """The whole pack must absorb |signal.valence| in total.
+
+    Before #1372 every belief took the full magnitude, so the applied
+    total was N x the signal and grew with the size of the retrieval
+    pack — N-1 units of evidence the user never supplied.
+    """
+    store = MemoryStore(":memory:")
+    ids = [f"p{i}" for i in range(n)]
+    for bid in ids:
+        store.insert_belief(_mk(bid))
+
+    sig = SentimentSignal(NEGATIVE, -AMPLIFIED_VALENCE, 0.9, "wrong", "wrong")
+    results = apply_sentiment_to_pending(store, sig, ids)
+
+    assert len(results) == n
+    applied = sum(abs(r.valence) for r in results)
+    assert applied == pytest.approx(AMPLIFIED_VALENCE), (
+        f"{n} pending ids absorbed {applied} of a {AMPLIFIED_VALENCE} signal"
+    )
+    # And the posteriors agree with the audited valences.
+    moved = sum(store.get_belief(bid).beta - 1.0 for bid in ids)  # type: ignore[union-attr]
+    assert moved == pytest.approx(AMPLIFIED_VALENCE)
+
+
+def test_divisor_counts_only_live_beliefs(store: MemoryStore) -> None:
+    """A since-deleted pending id must not eat part of the unit."""
+    sig = SentimentSignal(POSITIVE, BASE_VALENCE, 0.6, "yes", "yes")
+    results = apply_sentiment_to_pending(store, sig, ["b1", "ghost", "b2"])
+    assert len(results) == 2
+    applied = sum(abs(r.valence) for r in results)
+    assert applied == pytest.approx(BASE_VALENCE)
+    for bid in ("b1", "b2"):
+        b = store.get_belief(bid)
+        assert b is not None
+        assert b.alpha == pytest.approx(1.0 + BASE_VALENCE / 2)
+
+
+def test_apply_all_pending_missing_returns_empty(store: MemoryStore) -> None:
+    sig = SentimentSignal(POSITIVE, BASE_VALENCE, 0.6, "yes", "yes")
+    assert apply_sentiment_to_pending(store, sig, ["ghost1", "ghost2"]) == []
 
 
 def test_apply_uses_sentiment_inferred_source(store: MemoryStore) -> None:
