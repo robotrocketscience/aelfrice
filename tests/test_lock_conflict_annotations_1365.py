@@ -203,6 +203,39 @@ def test_a_genuine_disagreement_is_still_annotated_alongside_a_suppressed_one(
     assert out == {"b1": "LK1"}
 
 
+def test_enum_slots_are_not_suppressed_and_have_no_subject_binding() -> None:
+    """Pins the known defect rather than asserting the feature is sound.
+
+    `annotation_slots` filters `numeric` only — it ends
+    `ValueSlots(numeric=kept, enum=slots.enum)` — so enum slots reach
+    `find_conflicts` unfiltered and conflict on same-category /
+    different-member with no subject binding whatsoever. Measured over 184
+    real injection fires, this is 74% of firings and precision is 0/42.
+
+    This asserts the *current, wrong* behaviour on purpose, so that anyone
+    fixing it has to delete this test deliberately and cannot conclude from
+    a green suite that the mechanism was already precise. The flag is
+    default-off for exactly this reason.
+    """
+    from aelfrice.lock_consistency import lock_conflict_annotations
+    from aelfrice.value_compare import extract_values
+
+    # Two beliefs about entirely unrelated subjects, sharing only that one
+    # says "optional" and the other "required".
+    lock = _mk("LK1", "thread an optional now into retrieve_v2", locked=True)
+    cand = _mk("b1", "Waiting for required checks.")
+    out = lock_conflict_annotations(
+        [("b1", extract_values(cand.content))],
+        [(lock, extract_values(lock.content))],
+    )
+    assert out == {"b1": "LK1"}, (
+        "expected the known enum false positive; if this now returns {} the "
+        "subject-binding defect has been fixed — delete this test and update "
+        "docs/user/CONFIG.md and the #1365 changelog entry, which both "
+        "document precision as 0"
+    )
+
+
 def test_suppression_applies_to_the_candidate_side_too() -> None:
     """Symmetric. Filtering only the lock side would let a candidate's own
     version literal manufacture a conflict against a real lock slot."""

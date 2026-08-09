@@ -629,13 +629,25 @@ When enabled:
 When disabled (the default), the conflict is not computed at all and the
 rendered block is byte-identical to an unannotated one.
 
-Three measured suppressions apply to **both** sides, so a literal that cannot
-support a disagreement does not manufacture one: a key taking more than one
-value inside a single belief, a version key (`v`, `version`, `rev`, `release`),
-and a 4-digit calendar year. Suppression is slot-scoped — a belief carrying both
-a version literal and a real disagreement is still annotated on the real one.
-Measured over 189 real prompts on the live store, these took conflicts on
-retrieved unlocked beliefs from **6.12% to 1.38%** (#1244).
+Three measured suppressions apply to both sides, so a literal that cannot support
+a disagreement does not manufacture one: a key taking more than one value inside
+a single belief, a version key (`v`, `version`, `rev`, `release`), and a 4-digit
+calendar year. Suppression is slot-scoped — a belief carrying both a version
+literal and a real disagreement is still annotated on the real one. Measured over
+189 real prompts on the live store, these took conflicts on retrieved unlocked
+beliefs from **6.12% to 1.38%** (#1244).
+
+> **Known defect — leave this off.** Those three rules filter **numeric slots
+> only**. `enum` slots pass through unfiltered and conflict on
+> same-category/different-member with **no subject binding**, so a lock
+> containing the word "optional" annotates a belief containing "required"
+> regardless of what either is about. Measured over 184 real injection fires,
+> **all 42 firing (belief, lock) pairs were subject-mismatched — precision 0** —
+> and the numeric half fails the same way on bare-word keys (`step 3` vs
+> `step 4`, `option 1` vs `option 2`). Longer locks are worse, because the more
+> text a lock carries the likelier some incidental word becomes its enum value.
+> The flag exists so the wiring is not lost; it is not usable until slots carry
+> a subject binding.
 
 Precedence (first decisive wins): env var
 `AELFRICE_LOCK_CONFLICT_ANNOTATIONS=1`/`0` > explicit Python kwarg > TOML
