@@ -57,6 +57,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal, cast, overload
 
+from aelfrice import launcher
 from aelfrice.session_ring import exclusive_file_lock
 
 # #1161. How long a settings mutation waits for another aelfrice writer
@@ -149,19 +150,25 @@ def default_settings_path(
 def _venv_bin_dir() -> Path:
     """Return the directory holding entry-point scripts for the active interpreter.
 
-    Uses `sys.prefix`, which is the venv root for an active virtualenv
-    (and the system root otherwise). `sys._base_executable` points at
-    the *base* interpreter even inside a venv, so it is unsuitable.
+    #1412: this was ``Path(sys.prefix) / "bin"``, which hardcodes the POSIX
+    leaf. On Windows the scripts live in ``Scripts``, so the venv branch
+    below probed a directory that does not exist and every caller silently
+    degraded to a bare `PATH` search. `sysconfig.get_path("scripts")` is
+    derived from the same `sys.prefix` and gets the leaf right on both.
     """
-    return Path(sys.prefix) / "bin"
+    return launcher.scripts_dir()
 
 
 def _executable_in_dir(directory: Path, name: str) -> Path | None:
-    """Return `directory/name` if it exists and is executable, else None."""
-    candidate = directory / name
-    if candidate.is_file() and os.access(candidate, os.X_OK):
-        return candidate
-    return None
+    """Return the launcher for `name` inside `directory`, else None.
+
+    #1412: `os.access(..., X_OK)` is meaningless on Windows — it returns
+    True for any existing file — and the old ``directory / name`` probe had
+    no extension, so ``aelf-hook`` never found ``aelf-hook.exe``.
+    `shutil.which` with an explicit `path=` applies PATHEXT on win32 and the
+    executable-bit check on POSIX.
+    """
+    return launcher.which_in(directory, name)
 
 
 def _is_worktree_path(path: Path) -> bool:
@@ -218,8 +225,11 @@ def _resolve_script(script_name: str, scope: SettingsScope) -> str:
     # write its absolute path into settings.json regardless of scope.
     if venv_hook is not None and _is_worktree_path(venv_hook):
         venv_hook = None
-    path_hook_str = shutil.which(script_name)
-    path_hook = Path(path_hook_str) if path_hook_str else None
+    # #1412: NOT a bare `shutil.which(script_name)`. On win32 CPython
+    # prepends `os.curdir` to the search path when `path is None`, so a
+    # stray `aelf-hook.exe` in whatever directory `aelf setup` was run from
+    # could be resolved and pinned into settings.json as an absolute path.
+    path_hook = launcher.which_on_path(script_name)
     if scope == "project":
         chosen = venv_hook or path_hook
     else:
@@ -1861,7 +1871,13 @@ def _entry_matches(entry: dict[str, object], command: str) -> bool:
 def _entry_matches_basename(
     entry: dict[str, object], basename: str
 ) -> bool:
-    """True iff any inner command's first whitespace-stripped path token has `basename`."""
+    """True iff any inner command's program resolves to the key `basename`.
+
+    #1412: `basename` is produced by `_command_basename`, so this side must
+    use the identical derivation. Leaving one end on
+    ``Path(first).name`` while the other normalises is how a comparison
+    silently stops matching — the pair is only correct together.
+    """
     inner = entry.get(_INNER_HOOKS_KEY)
     if not isinstance(inner, list):
         return False
@@ -1874,9 +1890,8 @@ def _entry_matches_basename(
         cmd = hook_dict.get(_COMMAND_KEY)
         if not isinstance(cmd, str):
             continue
-        # First whitespace token is the program; basename match against it.
-        first = cmd.strip().split(maxsplit=1)[0] if cmd.strip() else ""
-        if first and Path(first).name == basename:
+        key = launcher.command_launcher_key(cmd)
+        if key and key == basename:
             return True
     return False
 
@@ -1888,12 +1903,12 @@ def _command_basename(command: str) -> str:
     the program is the first whitespace token, the basename is what we
     deduplicate against. Returns `""` for an empty / whitespace-only
     command (callers treat that as "no basename, append").
+
+    #1412: routes through the shared platform-gated key, so the dedupe rule
+    here cannot drift from the ownership rule in `host_codex`. On Windows
+    ``...\\Scripts\\aelf-hook.EXE`` and ``aelf-hook`` are the same entry.
     """
-    stripped = command.strip()
-    if not stripped:
-        return ""
-    first = stripped.split(maxsplit=1)[0]
-    return Path(first).name
+    return launcher.command_launcher_key(command)
 
 
 def _install_or_replace_entry(

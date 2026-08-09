@@ -152,6 +152,24 @@ class TestResolution:
         assert launcher.which_on_path("aelf-hook") is None
         assert seen == ["/sentinel/bin"]
 
+    def test_setup_delegates_the_scripts_dir_rather_than_re_deriving_it(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """Asserting equality here would prove nothing on POSIX.
+
+        `sysconfig.get_path("scripts")` and the old ``Path(sys.prefix) /
+        "bin"`` are the *same directory* on this host, so
+        ``assert setup._venv_bin_dir() == launcher.scripts_dir()`` passes on
+        a tree that still hardcodes the POSIX leaf. Only the delegation is
+        observable from here: patch the primitive and require the caller to
+        follow it. The behavioural difference itself is Windows-only and is
+        covered by the `windows-smoke` job.
+        """
+        from aelfrice import setup
+
+        monkeypatch.setattr(launcher, "scripts_dir", lambda: tmp_path)
+        assert setup._venv_bin_dir() == tmp_path
+
     def test_owned_keys_folds_only_under_windows(self) -> None:
         names = frozenset({"aelf-hook", "aelf-stop-hook"})
         assert launcher.owned_keys(names, windows=True) == names
@@ -163,3 +181,100 @@ class TestResolution:
         assert launcher.launcher_key(
             "AELF-HOOK.EXE", windows=False,
         ) not in launcher.owned_keys(names, windows=False)
+
+
+class TestScriptResolution:
+    """`_resolve_script`'s two candidates, and which one wins.
+
+    AC: "a real installed `aelf-hook.EXE` under `Scripts` is preferred over
+    an unrelated global shim" for project scope.
+    """
+
+    @staticmethod
+    def _install(directory: Path, name: str) -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / name
+        target.write_text("#!/bin/sh\n", encoding="utf-8")
+        target.chmod(0o755)
+        return target
+
+    def test_project_scope_prefers_the_interpreter_scripts_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from aelfrice import setup
+
+        scripts = tmp_path / "env" / "Scripts"
+        elsewhere = tmp_path / "global"
+        local = self._install(scripts, "aelf-hook")
+        self._install(elsewhere, "aelf-hook")
+
+        monkeypatch.setattr(launcher, "scripts_dir", lambda: scripts)
+        monkeypatch.setenv("PATH", str(elsewhere))
+        assert setup._resolve_script("aelf-hook", "project") == str(local)
+
+    def test_the_scripts_probe_delegates_to_the_pathext_aware_resolver(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The old probe was ``directory / name`` — no extension, so on
+        Windows ``aelf-hook`` never found ``aelf-hook.exe``.
+
+        PATHEXT only exists on win32, so POSIX CI cannot observe the
+        difference in behaviour; what it can observe is that the probe now
+        routes through the resolver that implements it. Deleting that edge
+        is the regression this catches.
+        """
+        seen: list[tuple[Path, str]] = []
+        sentinel = tmp_path / "aelf-hook.exe"
+
+        def fake_which_in(directory: Path, name: str) -> Path:
+            seen.append((directory, name))
+            return sentinel
+
+        monkeypatch.setattr(launcher, "which_in", fake_which_in)
+        assert setup_executable(tmp_path, "aelf-hook") == sentinel
+        assert seen == [(tmp_path, "aelf-hook")]
+
+    def test_resolve_script_uses_the_curdir_safe_path_lookup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The edge, not the ends.
+
+        `launcher.which_on_path` is covered on its own, and
+        `_resolve_script` is covered on its own — but a straight revert to
+        ``shutil.which(script_name)`` inside `_resolve_script` passed every
+        other arm in this file. Only asserting the connecting call catches
+        it, and on POSIX that call is the *whole* difference: the curdir
+        insertion it avoids exists only on win32.
+        """
+        from aelfrice import setup
+
+        shim = tmp_path / "aelf-hook"
+        calls: list[str] = []
+
+        def fake_which_on_path(name: str) -> Path:
+            calls.append(name)
+            return shim
+
+        monkeypatch.setattr(launcher, "which_on_path", fake_which_on_path)
+        monkeypatch.setattr(launcher, "which_in", lambda _d, _n: None)
+        assert setup._resolve_script("aelf-hook", "user") == str(shim)
+        assert calls == ["aelf-hook"]
+
+    def test_a_present_launcher_resolves_and_a_missing_one_does_not(
+        self, tmp_path: Path,
+    ) -> None:
+        installed = self._install(tmp_path / "Scripts", "aelf-hook")
+        assert setup_executable(tmp_path / "Scripts", "aelf-hook") == installed
+        assert setup_executable(tmp_path / "Scripts", "aelf-nonesuch") is None
+
+    def test_a_non_executable_file_is_not_a_launcher(
+        self, tmp_path: Path,
+    ) -> None:
+        (tmp_path / "aelf-hook").write_text("not executable", encoding="utf-8")
+        assert setup_executable(tmp_path, "aelf-hook") is None
+
+
+def setup_executable(directory: Path, name: str) -> Path | None:
+    from aelfrice import setup
+
+    return setup._executable_in_dir(directory, name)
