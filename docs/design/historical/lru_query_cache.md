@@ -66,6 +66,9 @@ Two options:
 - **A (cache on store).** `MemoryStore` owns an internal cache plus a
   `cached_retrieve()` method. Single source of truth for invalidation.
   Cons: store now holds retrieval state.
+> **Removed in [#1418](https://github.com/robotrocketscience/aelfrice/issues/1418).** `RetrievalCache` never acquired a production caller and was deleted; the spec below is kept as the record of what was designed and why. The store's `add_invalidation_callback` registry it rests on is unaffected and still has four subscribers. This document is the canonical record of that decision;
+> `retrieval.py` and `graph_spectral.py` point here.
+
 - **B (cache class subscribes to store).** New `RetrievalCache` in
   `retrieval.py` wraps a store reference and registers an invalidation
   callback. Keeps store as pure storage. Cons: callback plumbing.

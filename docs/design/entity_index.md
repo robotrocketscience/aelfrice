@@ -563,7 +563,8 @@ The implementation PR (separate from this spec) must demonstrate:
 3. **On-write trigger fires.** A test inserts a belief through
    `MemoryStore.insert_belief` and verifies `belief_entities` rows
    exist for it without the test calling the index directly.
-4. **Cache invalidation.** A `RetrievalCache` fronting an L2.5-aware
+4. **Cache invalidation.** **Removed in [#1418](https://github.com/robotrocketscience/aelfrice/issues/1418).** `RetrievalCache` never acquired a production caller and was deleted; the spec below is kept as the record of what was designed and why. The store's `add_invalidation_callback` registry it rests on is unaffected and still has four subscribers. The acceptance test now observes the
+   registry with a probe callback instead. Original text: a `RetrievalCache` fronting an L2.5-aware
    `retrieve()` invalidates on belief mutations exactly as v1.0
    already does (regression coverage; the L2.5 work must not break
    existing cache semantics).

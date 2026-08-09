@@ -33,7 +33,7 @@ In scope at v1.3.0:
 - Add a `posterior_weight` parameter to `retrieve()` and `retrieve_v2()`. Default value matches the v1.3 ROADMAP slot ([§ "Posterior-weighted ranking (partial)"](../concepts/ROADMAP.md#v130--retrieval-wave)) — see § Defaults below.
 - Compute `score(b) = log(bm25_score(b)) + posterior_weight * log(posterior_mean(b))` for L1 candidates.
 - L0 (`lock_level = "user"`) bypasses scoring entirely — locks are user-asserted ground truth and ranking does not move them. This is unchanged from v1.0.x.
-- Extend `RetrievalCache`'s key tuple to include `posterior_weight` so two callers passing different weights do not collide on a shared cache.
+- ~~Extend `RetrievalCache`'s key tuple to include `posterior_weight` so two callers passing different weights do not collide on a shared cache.~~ **Removed in [#1418](https://github.com/robotrocketscience/aelfrice/issues/1418).** `RetrievalCache` never acquired a production caller and was deleted; the spec below is kept as the record of what was designed and why. The store's `add_invalidation_callback` registry it rests on is unaffected and still has four subscribers.
 - A regression test demonstrating that one `apply_feedback(belief, valence=+1.0, source=...)` reorders the next retrieval.
 - `aelf bench` gains a partial-MRR-uplift metric: same fixture corpus, one round of synthetic feedback applied, MRR delta reported. Honest "partial" claim, not the full v2.0 eval.
 - `docs/user/LIMITATIONS.md § "The big one"` is rewritten to reflect that ranking now consumes posterior — partially.

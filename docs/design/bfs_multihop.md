@@ -54,6 +54,7 @@ structure for BFS to find non-trivial chains.
 - Concrete depth and budget caps.
 - Cycle detection via per-query visited-set.
 - Integration with the unified retrieval token budget.
+- **Removed in [#1418](https://github.com/robotrocketscience/aelfrice/issues/1418).** `RetrievalCache` never acquired a production caller and was deleted; the spec below is kept as the record of what was designed and why. The store's `add_invalidation_callback` registry it rests on is unaffected and still has four subscribers.
 - Cache invalidation rule for `RetrievalCache` extended to cover
   edge mutations (already covered by the v1.0.1 wipe-on-write
   policy — see [§ Cache invalidation](#cache-invalidation)).

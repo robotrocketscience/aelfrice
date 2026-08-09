@@ -265,7 +265,9 @@ on fresh install: opt-in (consistency with v1.2.0 hook surface).
   `Grep|Glob` only — those are the two tools whose `tool_input`
   cleanly maps to a search query. Other matchers can be added once
   the hook surface is validated in production.
-- Hook-side caching. The retrieval layer's existing `RetrievalCache`
+- Hook-side caching. (The retrieval layer's `RetrievalCache`, referenced below,
+  was removed in #1418 as a zero-caller LRU — so this non-goal is now moot rather
+  than deferred.) The retrieval layer's then-existing `RetrievalCache`
   is opt-in for callers; the hook does not maintain its own.
   Repeated identical queries within a session would benefit from
   cache reuse, but cache lifetime across hook invocations is non-
