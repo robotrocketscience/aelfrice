@@ -36,10 +36,23 @@ from aelfrice.lock_expiry import (
 # The three classes #1440 names, each in the shape the issue measured:
 # an unusable window juxtaposed with a usable one, no connective between
 # them (a connective is refused earlier by `_gap_opens_a_new_predicate`).
+#
+# The sub-day class carries all three of its spellings, because a class
+# is not covered by one of them: `for the next hour` states its count
+# the way `for the next week` does — implied by "next" — and that
+# spelling was still invisible after the first pass at this fix. Same
+# for the count class, whose scale words ("two hundred days", "a dozen
+# days") sit in a slot no leading-word list reaches.
 _CLASSES = [
     pytest.param("for 30 minutes", id="sub-day-digit"),
     pytest.param("for two hours", id="sub-day-word"),
+    pytest.param("for the next hour", id="sub-day-count-implied"),
+    pytest.param("for the next minute", id="sub-day-count-implied-minute"),
     pytest.param("for twenty days", id="count-above-ten"),
+    pytest.param("for twenty-five days", id="count-compound"),
+    pytest.param("for two hundred days", id="count-scaled"),
+    pytest.param("for a dozen days", id="count-dozen"),
+    pytest.param("for three thousand days", id="count-thousand"),
     pytest.param("for a few days", id="quantifier-few"),
     pytest.param("for several days", id="quantifier-several"),
     pytest.param("for a couple of days", id="quantifier-couple"),
@@ -125,3 +138,28 @@ def test_the_supported_vocabulary_still_resolves(text: str, expected: str) -> No
     assert stated_window_is_ambiguous(text) is False
     assert extract_stated_window(text) == expected
     assert _directive_window_spec(text) == expected
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        pytest.param("for two hundred and fifty days", id="and-joined-tail"),
+        pytest.param("for dozens of days", id="partitive"),
+        pytest.param("for a couple hundred days", id="quantified-scale"),
+    ],
+)
+def test_the_named_residual_count_forms_are_still_invisible(phrase: str) -> None:
+    """Hypothesis: the count vocabulary's stated gaps are exactly these,
+    and they still behave the pre-#1440 way — invisible, so the sentence
+    resolves to the window stated second.
+
+    Pinned rather than left to the comment, so the partial fix cannot be
+    read as a complete one. These are the forms `_SCALE_NUMBER_WORDS`
+    names as uncovered; widening the count slot to reach them is what
+    starts colliding with the resolving patterns, which is why it was not
+    done here. A future pass that does cover them turns this red, which
+    is the intended signal, not a regression.
+    """
+    text = f"Always remember this {phrase} for a week."
+    assert stated_window_is_ambiguous(text) is False
+    assert extract_stated_window(text) == "1w"

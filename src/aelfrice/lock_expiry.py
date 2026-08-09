@@ -255,19 +255,42 @@ _NEXT_UNIT_RE: Final[re.Pattern[str]] = re.compile(
 # still a window the user stated; it just cannot be resolved (#1440).
 _SUB_DAY_UNIT_WORDS: Final[tuple[str, ...]] = ("second", "minute", "hour")
 
-# Counts above the `_NUMBER_WORDS` ceiling. Only the leading word is
-# listed; a compound ("twenty-five") is covered by the optional suffix
-# below, since the count's *value* is never read — an unusable window
-# resolves to None whatever the number is.
+# Counts above the `_NUMBER_WORDS` ceiling that stand alone in front of
+# the unit, which is where this vocabulary reads them: "twenty days".
+# A compound ("twenty-five") is covered by the optional suffix below,
+# since the count's *value* is never read — an unusable window resolves
+# to None whatever the number is.
 _LARGE_NUMBER_WORDS: Final[tuple[str, ...]] = (
     "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
     "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty",
-    "fifty", "sixty", "seventy", "eighty", "ninety", "hundred",
-    "thousand", "dozen",
+    "fifty", "sixty", "seventy", "eighty", "ninety",
 )
 
 _LARGE_NUMBER_SUFFIX: Final[str] = (
     r"(?:[-\s](?:one|two|three|four|five|six|seven|eight|nine))?"
+)
+
+# Scale words, which never occupy that leading slot: English writes "two
+# hundred days" and "a dozen days", never "hundred days". Listed beside
+# `_LARGE_NUMBER_WORDS` they were unreachable in every sentence that
+# actually uses them, so they carry their own optional multiplier
+# instead (#1440).
+#
+# What this does NOT read, deliberately: a tail joined by "and" ("two
+# hundred and fifty days") and the partitive ("dozens of days", "a
+# couple hundred days"). Both leave the window unrecorded — the
+# pre-#1440 behaviour — and widening the count slot far enough to catch
+# them is what starts colliding with the resolving patterns.
+_SCALE_NUMBER_WORDS: Final[tuple[str, ...]] = ("hundred", "thousand", "dozen")
+
+_SCALED_COUNT: Final[str] = (
+    r"(?:(?:\d+|"
+    + "|".join(_NUMBER_WORDS)
+    + r"|"
+    + "|".join(_LARGE_NUMBER_WORDS)
+    + r")\s+)?(?:"
+    + "|".join(_SCALE_NUMBER_WORDS)
+    + r")s?"
 )
 
 # Counts that name a quantity without fixing it. Ordered longest-first
@@ -289,18 +312,29 @@ _QUANTIFIER_WORDS: Final[tuple[str, ...]] = (
 # sentence pairing it with a real window into a refusal, which is a
 # recall cost on the supported units — the one thing this must not have.
 _UNUSABLE_WINDOW_RE: Final[re.Pattern[str]] = re.compile(
-    r"\bfor\s+(?:the\s+)?(?:next\s+)?(?:"
+    r"\bfor\s+(?:"
+    r"(?:the\s+)?(?:next\s+)?(?:"
     # An unreadable count with any unit word: "a few days", "twenty
-    # days", "2-3 days".
+    # days", "two hundred days", "2-3 days".
     r"(?:"
     + "|".join(_QUANTIFIER_WORDS)
     + r"|(?:" + "|".join(_LARGE_NUMBER_WORDS) + r")" + _LARGE_NUMBER_SUFFIX
+    + r"|" + _SCALED_COUNT
     + r"|\d+\s*[-–—]\s*\d+"
     r")\s+(?:" + "|".join((*_UNIT_WORDS, *_SUB_DAY_UNIT_WORDS)) + r")s?"
     # A readable count with an unresolvable unit: "30 minutes",
     # "two hours".
     r"|(?:\d+|" + "|".join(_NUMBER_WORDS) + r")\s+(?:"
     + "|".join(_SUB_DAY_UNIT_WORDS) + r")s?"
+    r")"
+    # The count implied by "next", with an unresolvable unit: "for the
+    # next hour". Same grammar as `_NEXT_UNIT_RE`, one class of unit
+    # further out, so it is spelled the same way that pattern spells it
+    # — `the` and `next` both required, no plural — rather than sharing
+    # the optional prefix above, which would also admit a bare "for
+    # hour" and "for the hour". There is no such English, and a stated
+    # window is the one thing this module must not invent.
+    r"|the\s+next\s+(?:" + "|".join(_SUB_DAY_UNIT_WORDS) + r")"
     r")\b",
     re.IGNORECASE,
 )
@@ -323,10 +357,11 @@ def _stated_windows(text: str) -> list[str | None]:
     resolve to the survivor.
 
     A window stated outside the count/unit vocabulary ("for 30 minutes",
-    "for a few days", "for twenty days") is the same situation and gets
-    the same `None` (#1440). Before that it was not recorded at all, so
-    "for 30 minutes for a week" reported one window and resolved to the
-    one stated *second* — the opposite of the documented rule.
+    "for the next hour", "for a few days", "for twenty days", "for two
+    hundred days") is the same situation and gets the same `None`
+    (#1440). Before that it was not recorded at all, so "for 30 minutes
+    for a week" reported one window and resolved to the one stated
+    *second* — the opposite of the documented rule.
     """
     return [spec for _, spec in _stated_windows_with_positions(text)]
 
