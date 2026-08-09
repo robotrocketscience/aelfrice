@@ -126,6 +126,25 @@ def test_the_prose_test_is_what_separates_them() -> None:
     assert _looks_like_written_prose("Yes keep working") is False
 
 
+def test_trailing_whitespace_does_not_flip_the_prose_verdict() -> None:
+    """`_looks_like_written_prose` rstrips, and that is behaviour, not tidiness.
+
+    The transcript logger writes prompts verbatim and `extract_sentences`
+    does not guarantee a stripped tail, so a real sentence can arrive with a
+    trailing space. Without the rstrip the anchored `$` no longer sees the
+    full stop, the sentence fails the prose test, and the ack arm deletes it
+    — which is the #1371 §1 defect coming back through the whitespace door.
+    The rstrip must not rescue a pasted command, so `git add . ` is asserted
+    on the other side.
+
+    Falsifiable by dropping `.rstrip()` from `_looks_like_written_prose`.
+    """
+    assert _looks_like_written_prose("No behavior change. ") is True
+    assert is_transcript_noise("No behavior change. ") is False
+    assert _looks_like_written_prose("git add . ") is False
+    assert is_transcript_noise("git add . ") is True
+
+
 def test_scaffolding_is_a_strict_subset_of_noise() -> None:
     """`is_transcript_scaffolding` must never admit something
     `is_transcript_noise` rejects — the logger relies on it as the
