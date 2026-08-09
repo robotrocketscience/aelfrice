@@ -251,6 +251,60 @@ _NEXT_UNIT_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 
+# Units `parse_for` has no spec for. A window stated in one of them is
+# still a window the user stated; it just cannot be resolved (#1440).
+_SUB_DAY_UNIT_WORDS: Final[tuple[str, ...]] = ("second", "minute", "hour")
+
+# Counts above the `_NUMBER_WORDS` ceiling. Only the leading word is
+# listed; a compound ("twenty-five") is covered by the optional suffix
+# below, since the count's *value* is never read — an unusable window
+# resolves to None whatever the number is.
+_LARGE_NUMBER_WORDS: Final[tuple[str, ...]] = (
+    "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty",
+    "fifty", "sixty", "seventy", "eighty", "ninety", "hundred",
+    "thousand", "dozen",
+)
+
+_LARGE_NUMBER_SUFFIX: Final[str] = (
+    r"(?:[-\s](?:one|two|three|four|five|six|seven|eight|nine))?"
+)
+
+# Counts that name a quantity without fixing it. Ordered longest-first
+# so "a couple of days" is read as one quantifier and not as "a couple"
+# followed by a unit word "of".
+_QUANTIFIER_WORDS: Final[tuple[str, ...]] = (
+    "a number of", "a couple of", "a couple", "a few", "several",
+    "numerous", "many", "some", "few",
+)
+
+# A window stated OUTSIDE the count/unit vocabulary above. It resolves to
+# nothing, but it is stated, and the module's rule for a stated-but-
+# unusable window is the zero-length one's: record it, do not drop it, so
+# that a second window beside it makes the text ambiguous rather than
+# silently resolving to the survivor (#1440).
+#
+# Deliberately still unit-anchored. Widening this to any `for <noun>`
+# would make "keep this for the trip" a stated window and turn every
+# sentence pairing it with a real window into a refusal, which is a
+# recall cost on the supported units — the one thing this must not have.
+_UNUSABLE_WINDOW_RE: Final[re.Pattern[str]] = re.compile(
+    r"\bfor\s+(?:the\s+)?(?:next\s+)?(?:"
+    # An unreadable count with any unit word: "a few days", "twenty
+    # days", "2-3 days".
+    r"(?:"
+    + "|".join(_QUANTIFIER_WORDS)
+    + r"|(?:" + "|".join(_LARGE_NUMBER_WORDS) + r")" + _LARGE_NUMBER_SUFFIX
+    + r"|\d+\s*[-–—]\s*\d+"
+    r")\s+(?:" + "|".join((*_UNIT_WORDS, *_SUB_DAY_UNIT_WORDS)) + r")s?"
+    # A readable count with an unresolvable unit: "30 minutes",
+    # "two hours".
+    r"|(?:\d+|" + "|".join(_NUMBER_WORDS) + r")\s+(?:"
+    + "|".join(_SUB_DAY_UNIT_WORDS) + r")s?"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 def _stated_windows(text: str) -> list[str | None]:
     """Every window `text` states, in the order it states them.
@@ -267,6 +321,12 @@ def _stated_windows(text: str) -> list[str | None]:
     dropped so that it still counts as *a* stated window: "for 0 days,
     then for a week" names two things and must refuse, not silently
     resolve to the survivor.
+
+    A window stated outside the count/unit vocabulary ("for 30 minutes",
+    "for a few days", "for twenty days") is the same situation and gets
+    the same `None` (#1440). Before that it was not recorded at all, so
+    "for 30 minutes for a week" reported one window and resolved to the
+    one stated *second* — the opposite of the documented rule.
     """
     return [spec for _, spec in _stated_windows_with_positions(text)]
 
@@ -291,9 +351,20 @@ def _stated_windows_with_positions(text: str) -> list[tuple[int, str | None]]:
         found.append((match.start(), spec))
     for match in _NEXT_UNIT_RE.finditer(text):
         found.append((match.start(), f"1{_UNIT_WORDS[match.group('unit').lower()]}"))
-    # The two patterns cannot match the same span — one requires a count
-    # word where the other requires a unit word — so position alone is a
-    # total order over the matches.
+    # The two patterns above cannot match the same span — one requires a
+    # count word where the other requires a unit word — so position alone
+    # is a total order over the matches.
+    #
+    # The unusable pattern is a third reading of the SAME `\bfor`, so its
+    # matches are deduped on start offset: a window both it and a
+    # resolving pattern see is one window, and appending it twice would
+    # invent an ambiguity out of a single stated window (#1440).
+    seen = {start for start, _ in found}
+    for match in _UNUSABLE_WINDOW_RE.finditer(text):
+        if match.start() in seen:
+            continue
+        seen.add(match.start())
+        found.append((match.start(), None))
     found.sort(key=lambda item: item[0])
     return found
 
