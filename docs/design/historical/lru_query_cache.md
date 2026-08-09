@@ -1,5 +1,17 @@
 # LRU query cache for `aelfrice.retrieval.retrieve()`
 
+> **Removed in [#1418](https://github.com/robotrocketscience/aelfrice/issues/1418).**
+> `RetrievalCache` shipped at v1.3.0, never acquired a production caller, and was
+> deleted along with the helpers that existed only to build its key
+> (`canonicalize_query`, `DEFAULT_CACHE_CAPACITY`,
+> `POSTERIOR_WEIGHT_KEY_PRECISION`). Everything below is kept unedited as the
+> record of what was designed and why. The one piece that outlived it is
+> `MemoryStore.add_invalidation_callback` — the registry Option B introduced —
+> which now has four subscribers (`BM25IndexCache`, `graph_spectral`,
+> `hrr_index`, `query_understanding.store_cache`) and is unaffected. This
+> document is the canonical record of the removal; `retrieval.py` and
+> `graph_spectral.py` point here.
+
 **Status:** spec.
 **Target milestone:** v1.0.1.
 **Dependencies:** stdlib only (`collections.OrderedDict`).
@@ -66,9 +78,6 @@ Two options:
 - **A (cache on store).** `MemoryStore` owns an internal cache plus a
   `cached_retrieve()` method. Single source of truth for invalidation.
   Cons: store now holds retrieval state.
-> **Removed in [#1418](https://github.com/robotrocketscience/aelfrice/issues/1418).** `RetrievalCache` never acquired a production caller and was deleted; the spec below is kept as the record of what was designed and why. The store's `add_invalidation_callback` registry it rests on is unaffected and still has four subscribers. This document is the canonical record of that decision;
-> `retrieval.py` and `graph_spectral.py` point here.
-
 - **B (cache class subscribes to store).** New `RetrievalCache` in
   `retrieval.py` wraps a store reference and registers an invalidation
   callback. Keeps store as pure storage. Cons: callback plumbing.

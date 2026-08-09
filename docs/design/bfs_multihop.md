@@ -54,10 +54,16 @@ structure for BFS to find non-trivial chains.
 - Concrete depth and budget caps.
 - Cycle detection via per-query visited-set.
 - Integration with the unified retrieval token budget.
-- **Removed in [#1418](https://github.com/robotrocketscience/aelfrice/issues/1418).** `RetrievalCache` never acquired a production caller and was deleted; the spec below is kept as the record of what was designed and why. The store's `add_invalidation_callback` registry it rests on is unaffected and still has four subscribers.
-- Cache invalidation rule for `RetrievalCache` extended to cover
+- ~~Cache invalidation rule for `RetrievalCache` extended to cover
   edge mutations (already covered by the v1.0.1 wipe-on-write
-  policy — see [§ Cache invalidation](#cache-invalidation)).
+  policy — see [§ Cache invalidation](#cache-invalidation)).~~
+  **Removed in [#1418](https://github.com/robotrocketscience/aelfrice/issues/1418)**
+  — `RetrievalCache` never acquired a production caller and was deleted;
+  the section this points at is kept as the record of what was designed
+  and why. The wipe-on-write policy itself is live and unaffected: the
+  edge mutators still fire `MemoryStore.add_invalidation_callback`, which
+  has four subscribers, and `tests/test_store_invalidation.py` pins each
+  mutator.
 - Default-off toggle (`use_bfs=True`) in `retrieve_v2`. Default-on
   candidate at v2.0.0 once benchmark uplift is confirmed.
 - Regression test on a fixture graph with known multi-hop chains.
