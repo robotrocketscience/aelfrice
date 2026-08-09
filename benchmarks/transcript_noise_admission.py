@@ -129,6 +129,10 @@ def measure(tdir: str) -> dict[str, Any]:
         parts = [s for s in extract_sentences(p) if s.strip()]
         return all(is_transcript_noise(s) for s in parts)
 
+    # Row counts and distinct counts are different claims and the row count
+    # is the misleading one: three sentences account for most of the rescue
+    # at four occurrences each, so "20 rescued" reads as 20 content items and
+    # is 10. Both are reported; neither is derivable from the other.
     return {
         "sentences": len(sentences),
         "prompts": len(prompts),
@@ -137,16 +141,22 @@ def measure(tdir: str) -> dict[str, Any]:
         "admission_rate_before": round(1 - len(old) / max(1, len(sentences)), 6),
         "admission_rate_after": round(1 - len(new) / max(1, len(sentences)), 6),
         "rescued_total": len(rescued),
+        "rescued_distinct": len(set(rescued)),
         "newly_discarded": len(newly),
+        "newly_discarded_distinct": len(set(newly)),
         "newly_discarded_examples": sorted({s[:120] for s in newly})[:10],
         "ack_arm": {
             "matched_old_pattern": len(ack_hits),
+            "matched_old_pattern_distinct": len(set(ack_hits)),
             "rescued": len(ack_rescued),
+            "rescued_distinct": len(set(ack_rescued)),
             "examples": sorted({s[:120] for s in ack_rescued})[:15],
         },
         "shell_arm": {
             "prefixed_sentences": len(shell_hits),
+            "prefixed_sentences_distinct": len(set(shell_hits)),
             "rescued": len(shell_rescued),
+            "rescued_distinct": len(set(shell_rescued)),
             "examples": sorted({s[:120] for s in shell_rescued})[:10],
         },
         "whole_prompt_drops_before": sum(
