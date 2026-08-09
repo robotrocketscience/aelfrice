@@ -1,0 +1,46 @@
+# #1371 §1 — the control corpus: rows the filter MUST still discard.
+#
+# Without this half, "rescue everything" passes the must-survive corpus
+# perfectly. Same format: blank lines and `#` comments ignored.
+
+# --- bare acknowledgements ----------------------------------------------
+Yes.
+No.
+Standing by.
+Ready.
+Nothing.
+Polling.
+Yes
+No
+
+# --- punctuated but contentless acks (the closed allowlist) -------------
+Ready when you are.
+Nothing to report.
+No changes needed.
+
+# --- unpunctuated chat acks ---------------------------------------------
+Yes keep working
+Yes proceed
+Yes do it all please
+
+# --- single-word progress emits -----------------------------------------
+Running.
+Waiting.
+
+# --- genuinely pasted shell commands ------------------------------------
+# `git add .` is the one that makes the prose test non-trivial: it ends in
+# a full stop, but the stop follows a space, so it is an argument.
+git add .
+git status
+git commit -S -m "fix: thing"
+gh pr view 1371 --repo robotrocketscience/aelfrice --json state
+uv run pytest -q
+pytest -q -p no:randomly
+python -m json.tool
+cd /tmp/worktree
+
+# --- harness scaffolding -------------------------------------------------
+<task-notification>
+<system-reminder>
+<command-name>clear</command-name>
+</result>

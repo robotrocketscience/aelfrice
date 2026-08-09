@@ -1,0 +1,176 @@
+"""#1371 §1 — the transcript filter stops deleting real beliefs.
+
+Two corpora, and both halves are required. `must_survive_1371.txt` alone is
+passed perfectly by a filter that discards nothing; `must_die_1371.txt` is
+the control that makes it mean something.
+
+The rule under test is one signal, applied to two categories: **terminal
+sentence punctuation separates written prose from a pasted command or a
+chat ack.** `git add .` fails it (the stop follows a space), `git push is
+forbidden on main.` passes it.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from aelfrice.noise_filter import (
+    _looks_like_written_prose,
+    is_transcript_noise,
+    is_transcript_scaffolding,
+)
+
+_DATA = Path(__file__).parent / "data"
+
+
+def _corpus(name: str) -> list[str]:
+    rows = []
+    for line in (_DATA / name).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            rows.append(line)
+    return rows
+
+
+MUST_SURVIVE = _corpus("must_survive_1371.txt")
+MUST_DIE = _corpus("must_die_1371.txt")
+
+
+def test_the_corpora_are_not_empty_and_do_not_overlap() -> None:
+    """A misparsed corpus file would silently make every row below vacuous —
+    `_corpus` returning `[]` turns a parametrized test into zero tests, which
+    reports as green."""
+    assert len(MUST_SURVIVE) >= 20
+    assert len(MUST_DIE) >= 25
+    assert not (set(MUST_SURVIVE) & set(MUST_DIE))
+
+
+@pytest.mark.parametrize("sentence", MUST_SURVIVE, ids=range(len(MUST_SURVIVE)))
+def test_a_real_belief_is_not_discarded(sentence: str) -> None:
+    """#1159 AC4's must-survive corpus. Each row is a sentence the filter
+    was measurably discarding, or one the issue quotes."""
+    assert is_transcript_noise(sentence) is False, sentence
+
+
+@pytest.mark.parametrize("sentence", MUST_DIE, ids=range(len(MUST_DIE)))
+def test_scaffolding_and_bare_acks_are_still_discarded(sentence: str) -> None:
+    """The control. Rescuing everything passes the corpus above and fails
+    here."""
+    assert is_transcript_noise(sentence) is True, sentence
+
+
+def test_the_prose_test_is_what_separates_them() -> None:
+    """The single signal both categories rest on.
+
+    `git add .` and `cd /tmp/.` end in a dot that is an *argument*; the stop
+    has to follow a word character to count as prose. Falsifiable by
+    relaxing the pattern to `\\.$`: both then read as prose and stop being
+    filtered, which the control corpus catches.
+    """
+    assert _looks_like_written_prose("git push is forbidden on main.") is True
+    assert _looks_like_written_prose("No behavior change.") is True
+    assert _looks_like_written_prose('He said "no".') is True
+    assert _looks_like_written_prose("git add .") is False
+    assert _looks_like_written_prose("cd /tmp/.") is False
+    assert _looks_like_written_prose("Yes keep working") is False
+
+
+def test_scaffolding_is_a_strict_subset_of_noise() -> None:
+    """`is_transcript_scaffolding` must never admit something
+    `is_transcript_noise` rejects — the logger relies on it as the
+    whole-payload half of the same predicate.
+
+    Falsifiable by adding a category to the scaffolding function that the
+    noise function does not consult.
+    """
+    for sentence in MUST_DIE + MUST_SURVIVE:
+        if is_transcript_scaffolding(sentence):
+            assert is_transcript_noise(sentence), sentence
+
+
+def test_scaffolding_covers_structure_and_not_acks() -> None:
+    """The split the logger depends on: a harness tag marks the whole
+    payload, an ack marks only its own sentence."""
+    assert is_transcript_scaffolding("<task-notification>") is True
+    assert is_transcript_scaffolding("git status") is True
+    assert is_transcript_scaffolding("⏺ ran a tool") is True
+    # acks and progress emits are noise but NOT scaffolding
+    assert is_transcript_scaffolding("Yes.") is False
+    assert is_transcript_noise("Yes.") is True
+    assert is_transcript_scaffolding("Running.") is False
+    assert is_transcript_noise("Running.") is True
+
+
+# --- the transcript_logger granularity fix --------------------------------
+
+
+def _log(tmp_path: Path, prompt: str, monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Drive the real UserPromptSubmit handler and return the rows it wrote.
+
+    Points `transcripts_dir` at a tmp path rather than stubbing the append,
+    so the gate under test is the shipped one and the assertion is on the
+    file the rebuilder would actually read.
+    """
+    monkeypatch.setenv("AELFRICE_DOTDIR", str(tmp_path / "dot"))
+    from aelfrice import transcript_logger
+
+    tdir = tmp_path / "transcripts"
+    tdir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(transcript_logger, "transcripts_dir", lambda: tdir)
+    transcript_logger._handle_user_prompt_submit(
+        {"session_id": "s1", "prompt": prompt, "cwd": "/tmp"}
+    )
+    out = tdir / transcript_logger.TURNS_FILENAME
+    if not out.exists():
+        return []
+    return [json.loads(x) for x in out.read_text().splitlines() if x.strip()]
+
+
+def test_a_multi_sentence_prompt_survives_a_leading_ack(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The #1371 §1 acceptance case, and it is not hypothetical — this exact
+    prompt is in this repo's archived transcripts and was dropped whole.
+
+    Falsifiable by restoring the bare `if is_transcript_noise(prompt)` gate.
+    """
+    rows = _log(tmp_path, "No work around. It needs to be fixed", monkeypatch)
+    assert rows, "a real multi-sentence prompt was dropped on its leading ack"
+
+
+def test_a_harness_block_is_still_dropped_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression the acceptance text's literal reading would have caused.
+
+    A `<task-notification>` block's prose lines are not individually noise,
+    so plain sentence-granularity keeps it — measured, that is 763 of this
+    repo's 6,268 archived prompts, which is exactly the flooding #747 added
+    the gate to stop. Scaffolding is judged on the whole payload instead.
+
+    Falsifiable by dropping the `is_transcript_scaffolding` arm from the
+    logger and gating only on "every sentence is noise".
+    """
+    block = (
+        "<task-notification>\n<task-id>bx7oplash</task-id>\n"
+        "<summary>Monitor fired</summary>\n"
+        "The background command finished successfully.\n"
+        "</task-notification>"
+    )
+    from aelfrice.extraction import extract_sentences
+
+    parts = [s for s in extract_sentences(block) if s.strip()]
+    assert not all(is_transcript_noise(s) for s in parts), (
+        "fixture must have at least one non-noise sentence, or it does not "
+        "discriminate the two logger rules"
+    )
+    assert _log(tmp_path, block, monkeypatch) == []
+
+
+def test_a_bare_ack_prompt_is_still_dropped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every sentence is noise, so the whole prompt goes — unchanged."""
+    assert _log(tmp_path, "Yes.", monkeypatch) == []

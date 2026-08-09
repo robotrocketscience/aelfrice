@@ -236,11 +236,15 @@ def test_shared_pattern_is_one_object_not_two_copies() -> None:
 # --- the part deliberately NOT fixed -------------------------------------
 
 
-def test_section_1_is_still_open() -> None:
-    """§1 is held behind the #1398 admission re-measurement — pin that.
+def test_section_1_is_closed() -> None:
+    """§1 is fixed; this is the inverse of the marker #1406 left here.
 
-    `is_transcript_noise` still discards durable product statements. If a later
-    change fixes §1, this test fails and must be deleted *with* that change, so
-    the fix is recorded rather than absorbed silently.
+    That marker asserted `is_transcript_noise("No vector embeddings, ever.")
+    was still True, and said in its own docstring that whichever change fixed
+    §1 must delete it so the fix is recorded rather than absorbed silently.
+    This is that change. Inverted rather than deleted, so the sentence #1159
+    named first stays pinned in the file that tracked it.
+
+    The full corpus lives in `tests/test_noise_filter_ack_shell_1371.py`.
     """
-    assert is_transcript_noise("No vector embeddings, ever.") is True
+    assert is_transcript_noise("No vector embeddings, ever.") is False

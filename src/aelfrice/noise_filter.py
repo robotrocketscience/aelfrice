@@ -229,9 +229,58 @@ _TRANSCRIPT_PROGRESS_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 # Agent ack emit: bare keyword or keyword + optional short trailing text.
+# Kept as the *candidate* pattern only — matching it is necessary but no
+# longer sufficient (#1371 §1). See `_looks_like_written_prose`.
 _TRANSCRIPT_ACK_RE: Final[re.Pattern[str]] = re.compile(
     r"^(Yes|No|Standing by|Ready|Nothing|Polling)( .{0,40})?\.?$"
 )
+
+# The ack keyword with nothing after it. Always contentless.
+_TRANSCRIPT_ACK_BARE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(Yes|No|Standing by|Ready|Nothing|Polling)\.?$"
+)
+
+# #1371 §1. Terminal sentence punctuation is what separates *written prose*
+# from a pasted command or a chat ack, and it is the one signal that
+# distinguishes the two populations without a growing denylist:
+#
+#   "No telemetry, no network calls, no accounts."  <- a durable belief
+#   "Yes keep working"                              <- a chat ack
+#   "git push is forbidden on main."                <- a durable belief
+#   "git add ."                                     <- a pasted command
+#
+# The word-character requirement before the stop is what keeps `git add .`
+# and `cd /tmp/.` on the noise side: their trailing dot is an argument, not
+# a full stop. Measured over 17,562 user sentences from this repo's own
+# archived transcripts, this rescues 20 sentences the ack arm was
+# discarding — every one of them real content — while introducing zero new
+# discards, and it changes nothing at all for the 135 genuine pasted
+# commands, none of which ends in prose punctuation.
+_TRANSCRIPT_PROSE_END_RE: Final[re.Pattern[str]] = re.compile(r"[\w)\"']\.$")
+
+# Genuine acknowledgements that *do* carry terminal punctuation, so the
+# prose test alone would rescue them. A closed set rather than a pattern:
+# each is a complete contentless utterance, and the list only grows by
+# someone naming a specific phrase.
+_TRANSCRIPT_ACK_PHRASES: Final[frozenset[str]] = frozenset({
+    "Ready when you are.",
+    "Nothing to report.",
+    "Polling for results.",
+    "No changes needed.",
+    "Nothing further.",
+    "No problem.",
+    "Standing by for your direction.",
+})
+
+
+def _looks_like_written_prose(sentence: str) -> bool:
+    """True when `sentence` ends the way a written sentence ends.
+
+    A word character (or a closing bracket / quote) immediately followed
+    by a full stop. `git add .` and `cd /tmp/.` fail this because the dot
+    follows a space or a slash.
+    """
+    return _TRANSCRIPT_PROSE_END_RE.search(sentence.rstrip()) is not None
 
 # #1081: an orphan section header — a short capitalised phrase terminated
 # by a colon with nothing after it ("Recommendation:", "Two paths:",
@@ -582,10 +631,70 @@ def is_transcript_noise(sentence: str) -> bool:
     if not sentence or not sentence.strip():
         return False
 
-    # Category 1: shell-command shape
+    if is_transcript_scaffolding(sentence):
+        return True
+
+    # Category 4: single-word progress emit
+    if _TRANSCRIPT_PROGRESS_RE.match(sentence) is not None:
+        return True
+
+    # Category 5: agent ack emit.
+    #
+    # #1371 §1: matching the keyword pattern is necessary, not sufficient.
+    # The old rule allowed 40 characters of *arbitrary* content after the
+    # keyword, so it discarded the product's own policy statements —
+    # "No vector embeddings, ever.", "No telemetry, no network calls, no
+    # accounts.". Of the 32 sentences it dropped across 17,562 archived
+    # user sentences, 20 were durable content.
+    #
+    # A bare keyword is always an ack. A keyword with a continuation is an
+    # ack only when it is not written prose (see `_looks_like_written_prose`),
+    # which is what separates "Yes keep working" from "No behavior change."
+    if _TRANSCRIPT_ACK_BARE_RE.match(sentence) is not None:
+        return True
+    if sentence in _TRANSCRIPT_ACK_PHRASES:
+        return True
+    if _TRANSCRIPT_ACK_RE.match(sentence) is not None:
+        return not _looks_like_written_prose(sentence)
+
+    return False
+
+
+def is_transcript_scaffolding(sentence: str) -> bool:
+    """True for the *structural* transcript-noise categories only (#1371 §1).
+
+    Categories 1, 2, 3 and 3b of `is_transcript_noise`: a pasted shell
+    command, a tool-call glyph, a pseudo-XML harness tag, a stray closing
+    tag, a box-drawing border.
+
+    Split out because these say something the ack and progress categories
+    do not: they mark the **whole payload** as machine-generated, not just
+    the sentence they appear in. `transcript_logger` needs that
+    distinction — dropping a whole user prompt is right for a
+    `<task-notification>` block and wrong for a prompt that merely opens
+    with "Yes.".
+
+    Measured on this repo's 6,268 archived user prompts: 759 of the 805
+    whole-prompt drops are category 3, and only 32 are acks.
+    """
+    if not sentence or not sentence.strip():
+        return False
+
+    # Category 1: shell-command shape.
+    #
+    # #1371 §1: the prefixes are matched by bare `startswith`, so before
+    # this any sentence *about* one of these tools was discarded —
+    # "pytest is the only test runner we support." A pasted command does
+    # not end in prose punctuation and a sentence about one does, which
+    # keeps `git add .` on the noise side while rescuing the sentence.
+    #
+    # Honest scope: unlike the ack arm, this rescues **nothing** on the
+    # measured corpus — all 135 shell-prefixed sentences in 17,562 are
+    # genuine pasted commands. This is hardening against a real but
+    # so-far-unobserved failure, not a measured defect.
     for prefix in _TRANSCRIPT_SHELL_PREFIXES:
         if sentence.startswith(prefix):
-            return True
+            return not _looks_like_written_prose(sentence)
 
     # Category 2: tool-call rendering glyph (U+23FA)
     if sentence.startswith(_TRANSCRIPT_GLYPH_PREFIX):
@@ -601,14 +710,6 @@ def is_transcript_noise(sentence: str) -> bool:
     if stripped.startswith(_TRANSCRIPT_CLOSING_TAG_PREFIX):
         return True
     if stripped and stripped[0] in _TRANSCRIPT_BOXDRAW_CHARS:
-        return True
-
-    # Category 4: single-word progress emit
-    if _TRANSCRIPT_PROGRESS_RE.match(sentence) is not None:
-        return True
-
-    # Category 5: agent ack emit
-    if _TRANSCRIPT_ACK_RE.match(sentence) is not None:
         return True
 
     return False

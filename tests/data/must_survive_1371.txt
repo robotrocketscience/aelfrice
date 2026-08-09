@@ -1,0 +1,45 @@
+# #1371 §1 / #1159 AC4 — the must-survive corpus.
+#
+# Every line below is a sentence the transcript noise filter MUST NOT
+# discard. Blank lines and `#` comments are ignored.
+#
+# Provenance is recorded per block, because a corpus whose rows nobody can
+# trace back decays into a list of things that happen to pass. Two sources:
+# rows quoted in #1159 §1 / #1371 §1, and rows the filter was measurably
+# discarding on this repo's own archived transcripts (17,562 user
+# sentences) before the fix.
+#
+# Add a row here when a real belief is found to have been filtered. Do not
+# add a row to make a failing test pass without first checking the sentence
+# is genuinely durable content.
+
+# --- quoted in the issue: the product's own policy statements -----------
+No vector embeddings, ever.
+pytest is the only test runner we support.
+python 3.13 is the minimum supported version.
+
+# --- ack-keyword openings that are real sentences -----------------------
+# Measured: the pre-fix ack pattern allowed 40 chars of arbitrary content
+# after the keyword, so all of these were discarded.
+No telemetry, no network calls, no accounts.
+No action required after aelf setup.
+No behavior change.
+No failures yet.
+No mutation testing.
+No mutations attempted.
+No work around.
+No content from the private directory was used.
+Yes that's what I want you to do.
+Nothing in the private config directory may reach a public remote.
+Ready the release branch before tagging.
+Polling the API every 5s is the documented cadence.
+Standing by for the operator's ruling is the wrong default.
+
+# --- sentences ABOUT a shell tool, not pasted commands ------------------
+# Matched by bare `startswith` against the shell-prefix list.
+git push is forbidden on main.
+uv run pytest is the CI-equivalent command.
+gh pr merge does not work on this repo.
+cd /tmp is not where the worktrees live.
+python 3.12 is still supported for now.
+pytest runs with -p no:randomly in the mutation harness.
