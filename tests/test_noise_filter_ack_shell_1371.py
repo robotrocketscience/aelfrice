@@ -107,7 +107,7 @@ def test_the_ack_allowlist_is_closed_and_every_member_is_pinned() -> None:
     because the release notes state it — an auditor counting rows must find
     the number the changelog gives.
     """
-    assert len(_TRANSCRIPT_ACK_PHRASES) == 7
+    assert len(_TRANSCRIPT_ACK_PHRASES) == 8
     assert set(_TRANSCRIPT_ACK_PHRASES) <= set(MUST_DIE)
 
 

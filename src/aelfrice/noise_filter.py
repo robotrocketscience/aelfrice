@@ -278,7 +278,15 @@ _TRANSCRIPT_ACK_PHRASES: Final[frozenset[str]] = frozenset({
     "Nothing further.",
     "No problem.",
     "Standing by for your direction.",
+    "Yes that's what I want you to do.",
 })
+
+# The allowlist is matched by equality, so a typographic apostrophe would
+# walk straight past it — and that is the form the corpus actually carries:
+# the one occurrence of the phrase above in this repo's archived transcripts
+# is "Yes that’s …", because the operator's keyboard substitutes it.
+# Folded rather than listed twice, so a phrase cannot be half-covered.
+_APOSTROPHE_FOLD: Final[dict[int, str]] = str.maketrans({"’": "'"})
 
 
 def _looks_like_written_prose(sentence: str) -> bool:
@@ -667,7 +675,7 @@ def is_transcript_noise(sentence: str) -> bool:
     # which is what separates "Yes keep working" from "No behavior change."
     if _TRANSCRIPT_ACK_BARE_RE.match(sentence) is not None:
         return True
-    if sentence in _TRANSCRIPT_ACK_PHRASES:
+    if sentence.translate(_APOSTROPHE_FOLD) in _TRANSCRIPT_ACK_PHRASES:
         return True
     if _TRANSCRIPT_ACK_RE.match(sentence) is not None:
         return not _looks_like_written_prose(sentence)

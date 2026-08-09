@@ -40,7 +40,6 @@ No mutation testing.
 No mutations attempted.
 No work around.
 No content from the private directory was used.
-Yes that's what I want you to do.
 Nothing in the private config directory may reach a public remote.
 Ready the release branch before tagging.
 Polling the API every 5s is the documented cadence.
