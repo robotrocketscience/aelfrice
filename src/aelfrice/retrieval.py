@@ -57,9 +57,11 @@ import sys
 import time
 import tomllib
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 from typing import IO, TYPE_CHECKING, Any, Final
 
 from aelfrice.bfs_multihop import (
@@ -332,6 +334,13 @@ INTENTIONAL_CLUSTERING_FLAG: Final[str] = "use_intentional_clustering"
 # headroom" is not "is better end to end" -- that needs the A/B.
 MAX_COVERAGE_PACK_FLAG: Final[str] = "use_max_coverage_pack"
 ENV_MAX_COVERAGE_PACK: Final[str] = "AELFRICE_MAX_COVERAGE_PACK"
+# #1365 (#1175 proposal 2) lock-conflict annotation. Default-OFF: it adds
+# an attribute to the injected belief tag, which changes what the agent
+# reads on every turn. ANNOTATE, never DROP -- the annotation hands the
+# model the disagreement and lets it adjudicate, per the posture ratified
+# in #605; it never removes the belief.
+LOCK_CONFLICT_ANNOTATIONS_FLAG: Final[str] = "use_lock_conflict_annotations"
+ENV_LOCK_CONFLICT_ANNOTATIONS: Final[str] = "AELFRICE_LOCK_CONFLICT_ANNOTATIONS"
 # v3.x #796 γ rerank flag. Default-OFF until a labeled relevance corpus
 # exists and the bench panel (PR@5 + ρ + ordered_top_k_overlap +
 # rank_biased_overlap) demonstrates uplift over log-additive. When ON,
@@ -3046,6 +3055,54 @@ def is_max_coverage_pack_enabled(
     return False
 
 
+def _env_lock_conflict_annotations_override() -> bool | None:
+    """Return True/False if AELFRICE_LOCK_CONFLICT_ANNOTATIONS is set to a
+    recognised truthy/falsy value, else None (#1365). Symmetric to
+    `_env_exploration_override`.
+
+    An unrecognised value returns None rather than False, so a typo falls
+    through to the kwarg/TOML rungs instead of silently pinning the flag
+    off — `None` and `False` are different answers here.
+    """
+    raw = os.environ.get(ENV_LOCK_CONFLICT_ANNOTATIONS)
+    if raw is None:
+        return None
+    norm = raw.strip().lower()
+    if norm in _ENV_FALSY:
+        return False
+    if norm in _ENV_TRUTHY:
+        return True
+    return None
+
+
+def is_lock_conflict_annotations_enabled(
+    kwarg: bool | None = None, *, start: Path | None = None
+) -> bool:
+    """Whether retrieval annotates beliefs that slot-conflict with a lock.
+
+    Resolution order (env first, per the repo convention):
+
+      1. ``AELFRICE_LOCK_CONFLICT_ANNOTATIONS`` env var.
+      2. Explicit `kwarg` from the caller.
+      3. ``[retrieval] use_lock_conflict_annotations`` in `.aelfrice.toml`.
+      4. Default: **False**.
+
+    Off by default because it adds an attribute to the injected belief tag
+    and so changes what the agent reads on every turn. With it off the
+    rendered block is byte-identical to the unannotated one, and the
+    conflict computation does not run at all.
+    """
+    env_value = _env_lock_conflict_annotations_override()
+    if env_value is not None:
+        return env_value
+    if kwarg is not None:
+        return kwarg
+    toml_value = _read_toml_flag_for(LOCK_CONFLICT_ANNOTATIONS_FLAG, start)
+    if toml_value is not None:
+        return toml_value
+    return False
+
+
 def _coverage_inputs(
     query: str,
     candidates: list[Belief],
@@ -3405,6 +3462,39 @@ def _reset_last_telemetry(tel: LaneTelemetry) -> None:
     """
     global _LAST_TELEMETRY
     _LAST_TELEMETRY = tel
+
+
+# #1365. Belief id -> the id of the lock it slot-conflicts with, for the
+# most recent retrieval call in this process. Mirrors `_LAST_TELEMETRY`
+# above, and shares its thread-safety posture: not thread-safe. Unlike
+# the telemetry there is no per-call return channel at all -- the
+# `retrieve_with_tiers` 5-tuple is deliberately not widened (that would
+# touch every call site), so this snapshot is the only way the hook
+# renderer learns which beliefs to annotate.
+_NO_LOCK_CONFLICTS: Final[Mapping[str, str]] = MappingProxyType({})
+_LAST_LOCK_CONFLICTS: Mapping[str, str] = _NO_LOCK_CONFLICTS
+
+
+def last_lock_conflict_annotations() -> Mapping[str, str]:
+    """Map belief id -> conflicting lock id for the most recent retrieval
+    call in this process (#1365).
+
+    Empty when the flag is off, which is the default, and empty when no
+    retrieved belief conflicts. The returned mapping is read-only: unlike
+    `last_lane_telemetry()`, whose frozen dataclass is immutable on its
+    own, a bare dict here would hand callers a mutable process global.
+    """
+    return _LAST_LOCK_CONFLICTS
+
+
+def _reset_last_lock_conflict_annotations(ann: Mapping[str, str]) -> None:
+    """Overwrite the process-level lock-conflict snapshot.
+
+    Copies `ann`, so a caller that keeps mutating its own dict afterwards
+    cannot reach through into the snapshot.
+    """
+    global _LAST_LOCK_CONFLICTS
+    _LAST_LOCK_CONFLICTS = MappingProxyType(dict(ann))
 
 
 # #1162. Whether the heat branch rewrote the ordering on the most recent
@@ -4564,6 +4654,12 @@ def retrieve_with_tiers(
     # per-call, so a value carried in from the previous call would
     # attribute that call's work to this one.
     _reset_lane_firings()
+    # #1365: clear the annotation snapshot on entry, not just on the
+    # publish path. This function has no try/finally and the publish is
+    # the penultimate statement, so any raise between here and there
+    # would otherwise leave the *previous* call's annotations readable as
+    # this call's — the stale-snapshot bug #1366 closed for lane firings.
+    _reset_last_lock_conflict_annotations({})
     # #1143 clock seam: read the wall clock at most once per call.
     # `retrieve_v2` threads its own pinned `now_ts` through here, so a
     # pinned outer call performs no wall-clock read anywhere in the
@@ -4619,6 +4715,10 @@ def retrieve_with_tiers(
     # #1176 proposal 2. Resolved next to `cluster_on` because it is the
     # alternative answer to the same question, and takes precedence.
     max_coverage_on = is_max_coverage_pack_enabled()
+    # #1365. Resolved here rather than at the use site so it joins this
+    # call's single memoised config discovery instead of adding a TOML
+    # walk of its own (#1289 counts probes per retrieve()).
+    lock_conflicts_on = is_lock_conflict_annotations_enabled()
     # #878: compose-reconciliation. The cluster pack reads the same
     # _cost closure the non-cluster L1 path uses; both arms account
     # in the same currency (raw token estimate or compressed
@@ -4914,6 +5014,31 @@ def retrieve_with_tiers(
                 bfs_chains.append(list(hop.path))
                 seen_ids.add(hop.belief.id)
                 used += cost
+    # #1365 (#1175 proposal 2). Annotate retrieved unlocked beliefs that
+    # slot-conflict with an active lock. Scoped to the L2.5 and L1
+    # candidates per the issue: `out` also carries the locks themselves
+    # plus HRR-expand, temporal-spine and BFS hits, and annotating those
+    # is a separate question nobody has measured.
+    #
+    # `lock_conflict_annotations` applies the three shipped suppression
+    # rules to BOTH sides itself, so raw `extract_values` output is what
+    # it wants — filtering here would double-suppress, and narrowing
+    # `extract_values` is the blast radius #1228 declined.
+    if lock_conflicts_on and locked:
+        from aelfrice.lock_consistency import (  # noqa: PLC0415
+            lock_conflict_annotations,
+        )
+        from aelfrice.value_compare import extract_values  # noqa: PLC0415
+
+        _reset_last_lock_conflict_annotations(
+            lock_conflict_annotations(
+                [
+                    (b.id, extract_values(b.content))
+                    for b in list(l25) + list(l1_packed)
+                ],
+                [(b, extract_values(b.content)) for b in locked],
+            )
+        )
     _LAST_TELEMETRY = LaneTelemetry(
         locked=len(locked_ids_list),
         l25=len(l25_ids_list),
@@ -5100,6 +5225,11 @@ def retrieve_v2(
         # `retrieve_with_tiers` does its own reset, and on a hit it
         # returns without ever reaching that reset.
         _reset_lane_firings()
+        # #1365: same reasoning for the annotation snapshot. The structural
+        # lane computes no annotations, so the honest value on a hit is
+        # empty — but without this reset a hit would serve the previous
+        # call's annotations, and this lane is default-ON.
+        _reset_last_lock_conflict_annotations({})
         struct_result = _route_structural_query(
             store, query, hrr_struct_index_cache,
             top_k=l1_limit,
