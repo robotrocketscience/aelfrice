@@ -177,9 +177,10 @@ _ENUM_MEMBER_PATTERNS: Final[dict[str, re.Pattern[str]]] = {
 # category could never report a conflict at all.
 #
 # The obvious fix is to add `-` to the boundary class above. Measured on the
-# live repo-local store (44,683 active beliefs) that is much worse than the
-# defect: adding `-` on both sides changes 588 beliefs and destroys **568**
-# whole-category tags, and adding it only on the left still destroys 290.
+# live repo-local store (44,687 active beliefs) that is much worse than the
+# defect: adding `-` on both sides changes 588 beliefs and destroys **565**
+# whole-category tags, and adding it only on the left still destroys 289.
+# `benchmarks/classifier_boundary_1368.py` re-derives all three arms.
 # The losses are ordinary hyphenated English that the vocabulary is supposed
 # to match — `shipped-default-on`, `secrets-scan`, `session-private` — and a
 # boundary class cannot tell those from `non-deterministic`.
