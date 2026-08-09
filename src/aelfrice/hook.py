@@ -1430,10 +1430,11 @@ def user_prompt_submit(
             # fire dedup against beliefs the model never saw — so a
             # suppressed fire contributes no ids. And it bumps
             # `next_fire_idx`, which counts *fires*: a suppressed fire is
-            # still a fire, and three cadence consumers read that counter
-            # (`_maybe_run_cadence_checkpoint`, the UPS `p3_velocity`
-            # branch, and `cadence.would_fire_p1`, the last two of which
-            # require it to have advanced). Guarding the whole call froze
+            # still a fire, and the cadence dispatchers read that counter
+            # (`_maybe_run_ups_cadence_checkpoint`'s P1 and `p3_velocity`
+            # branches, `_maybe_fire_cadence_checkpoint` on the Stop side,
+            # all through `cadence.would_fire_p1`, which requires a
+            # positive index). Guarding the whole call froze
             # it, which silently disabled the in-session
             # `<cadence-checkpoint>` the switch documents as surviving.
             # `append_ids` with an empty list is not a no-op: it persists
