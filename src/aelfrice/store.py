@@ -132,6 +132,41 @@ class WriteLogAuthorityViolation(RuntimeError):
     """
 
 
+class ReadOnlyStoreUnavailable(RuntimeError):
+    """A read-only handle could not be opened against an existing store.
+
+    #1416. `read_only=True` opens the file `mode=ro`, which is necessary
+    but not sufficient: a WAL-mode database needs its `-shm` shared-memory
+    sidecar, and SQLite creates that file in the database's *directory*.
+    When the directory is not writable and no usable `-shm`/`-wal` pair is
+    already there, even a `SELECT` fails with `SQLITE_READONLY_DIRECTORY`.
+
+    The alternative SQLite offers — `immutable=1` — is deliberately not
+    taken: it promises the engine the file never changes, and an aelfrice
+    store can be written at any moment by a hook running outside the
+    sandbox that protected the directory. A reader that made that promise
+    could return silently stale or torn results. Refusing loudly is the
+    honest outcome, so this carries an actionable message instead.
+    """
+
+
+def _is_readonly_open_failure(exc: BaseException) -> bool:
+    """True for the SQLite errors that mean "this store is not writable".
+
+    Keys on `sqlite_errorname` (`SQLITE_READONLY*`, `SQLITE_CANTOPEN*`)
+    rather than message text, and falls back to a substring probe only
+    when the attribute is absent, so a translated or reworded message
+    cannot silently turn a permission failure into a crash.
+    """
+    name = getattr(exc, "sqlite_errorname", "") or ""
+    if name.startswith(("SQLITE_READONLY", "SQLITE_CANTOPEN")):
+        return True
+    if name:
+        return False
+    text = str(exc).lower()
+    return "readonly" in text or "unable to open database file" in text
+
+
 def _is_write_log_authoritative_inline() -> bool:
     """Inline reader to avoid the store→derivation_worker→store cycle."""
     raw = os.environ.get(_ENV_WRITE_LOG_AUTHORITATIVE)
@@ -1353,6 +1388,28 @@ class MemoryStore:
             self._conn: sqlite3.Connection = sqlite3.connect(
                 f"file:{path}?mode=ro", uri=True
             )
+            # #1416: prove the handle can actually READ before handing it
+            # back. `sqlite3.connect` is lazy — it does not touch the
+            # pager — so a WAL store whose `-shm` cannot be created in a
+            # non-writable directory connects fine and then raises
+            # `SQLITE_READONLY_DIRECTORY` from the first SELECT, wherever
+            # that happens to be. One cheap probe here converts that into
+            # one actionable error at the open site.
+            try:
+                self._conn.execute("SELECT count(*) FROM sqlite_master")
+            except sqlite3.DatabaseError as exc:
+                self._conn.close()
+                if not _is_readonly_open_failure(exc):
+                    raise
+                parent = os.path.dirname(os.path.abspath(path)) or "."
+                raise ReadOnlyStoreUnavailable(
+                    f"cannot read {path} without write access: SQLite needs "
+                    f"to create the WAL sidecars (memory.db-shm/-wal) in "
+                    f"{parent}, which is not writable, and no usable pair is "
+                    f"already present ({exc}). Grant write access to that "
+                    f"directory for one command, or run this against a store "
+                    f"whose sidecars exist."
+                ) from exc
         else:
             self._conn = sqlite3.connect(path)
         self._conn.row_factory = sqlite3.Row
@@ -1613,6 +1670,16 @@ class MemoryStore:
     def db_path(self) -> str:
         """The path this store was opened with (":memory:" for tests)."""
         return self._db_path
+
+    @property
+    def read_only(self) -> bool:
+        """True when this handle was opened `mode=ro` (#1328/#1416).
+
+        Public because byte-invariance is not only SQLite's business: the
+        retrieval path writes a BM25F sidecar *next to* the database, which
+        the engine's read-only handle does nothing to prevent.
+        """
+        return self._read_only
 
     def store_generation(self) -> int:
         """Durable belief/edge mutation counter (#1135).

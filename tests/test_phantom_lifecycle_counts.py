@@ -162,7 +162,12 @@ def test_cli_status_prints_phantom_line(
     wonder_ingest(store, [_phantom("p1"), _phantom("p2")])
     promote(store, _speculative_ids(store)[0])
 
+    # #1416: `aelf status` is observational and opens through
+    # `open_store_for_read`. Both names are patched, so a future
+    # re-route cannot silently point this test at the live store —
+    # which is what it did (46k beliefs) when only one was patched.
     monkeypatch.setattr("aelfrice.cli._open_store", lambda: store)
+    monkeypatch.setattr("aelfrice.cli.open_store_for_read", lambda: store)
     monkeypatch.setattr(store, "close", lambda: None)
 
     buf = io.StringIO()
@@ -179,7 +184,12 @@ def test_cli_status_prints_phantom_line(
 def test_cli_status_phantom_line_empty_store(
     monkeypatch: pytest.MonkeyPatch, store: MemoryStore
 ) -> None:
+    # #1416: `aelf status` is observational and opens through
+    # `open_store_for_read`. Both names are patched, so a future
+    # re-route cannot silently point this test at the live store —
+    # which is what it did (46k beliefs) when only one was patched.
     monkeypatch.setattr("aelfrice.cli._open_store", lambda: store)
+    monkeypatch.setattr("aelfrice.cli.open_store_for_read", lambda: store)
     monkeypatch.setattr(store, "close", lambda: None)
 
     buf = io.StringIO()

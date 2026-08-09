@@ -1518,10 +1518,20 @@ _SIDECAR_SUFFIX: Final[str] = ".bm25f"
 
 
 def sidecar_path_for(store: MemoryStore) -> Path | None:
-    """The persistent-index sidecar path for `store`, or None for
-    in-memory stores (nothing to persist against)."""
+    """The persistent-index sidecar path for `store`, or None when there
+    is nothing to persist against.
+
+    None for an in-memory store, and — since #1416 — for a read-only
+    handle. `mode=ro` stops the engine writing the database; it does
+    nothing about a file aelfrice writes *beside* it, and a retrieval on
+    a read-only store was observed creating `memory.db.bm25f` in a
+    directory the caller was only supposed to be reading. Returning None
+    disables the load path too, which is the conservative half of the
+    trade: an index built in memory costs one rebuild and cannot leave a
+    stale blob behind under a handle that may not refresh it.
+    """
     db_path = store.db_path
-    if db_path == ":memory:":
+    if db_path == ":memory:" or store.read_only:
         return None
     return Path(db_path + _SIDECAR_SUFFIX)
 

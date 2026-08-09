@@ -201,8 +201,9 @@ from aelfrice.db_paths import (
     _git_common_dir,
     _open_store,
     db_path,
+    open_store_for_read,
 )
-from aelfrice.store import MemoryStore
+from aelfrice.store import MemoryStore, ReadOnlyStoreUnavailable
 
 # #1314: how far ahead `aelf doctor` warns about a closing lock window,
 # and how many it names before collapsing to a count. Seven days is the
@@ -880,7 +881,7 @@ def _run_llm_onboard(
 
 def _cmd_search(args: argparse.Namespace, out: object) -> int:
     show_conflicts = os.environ.get("AELF_SHOW_CONFLICTS", "0") == "1"
-    store = _open_store()
+    store = open_store_for_read()
     try:
         hits = retrieve(store, args.query, token_budget=args.budget)
         # #655 read-only federation overlay: surface peer FTS5 hits
@@ -2206,7 +2207,7 @@ def _cmd_locked(args: argparse.Namespace, out: object) -> int:
     from aelfrice.lock_expiry import format_remaining
 
     _ = args
-    store = _open_store()
+    store = open_store_for_read()
     try:
         locked = store.list_locked_beliefs()
     finally:
@@ -2719,7 +2720,7 @@ def _cmd_speculative(args: argparse.Namespace, out: object) -> int:
     by origin tag. Use ``--origin TAG`` to restrict to a single origin;
     use ``--json`` for machine-readable JSONL output.
     """
-    store = _open_store()
+    store = open_store_for_read()
     try:
         origin_filter: str | None = getattr(args, "origin", None) or None
         limit: int | None = getattr(args, "limit", None)
@@ -3689,7 +3690,7 @@ def _cmd_stats(args: argparse.Namespace, out: object) -> int:
     _ = args
     from aelfrice import __version__ as _aelf_version  # noqa: PLC0415
 
-    store = _open_store()
+    store = open_store_for_read()
     try:
         n_beliefs = store.count_beliefs()
         n_threads = store.count_edges()
@@ -10564,6 +10565,12 @@ def main(argv: Sequence[str] | None = None, out: object = None) -> int:
     if not _update_check_disabled() and cmd not in _UPDATE_CHECK_SKIP_CMDS:
         # Fire-and-forget: cache TTL gates duplicate work, never blocks.
         maybe_check_for_update_async()
-    code = int(args.func(args, out))
+    try:
+        code = int(args.func(args, out))
+    except ReadOnlyStoreUnavailable as exc:
+        # #1416: a read command pointed at a store that cannot be opened
+        # even `mode=ro`. One actionable line, not a traceback.
+        print(f"aelf {cmd}: {exc}", file=sys.stderr)
+        return 1
     _maybe_emit_update_banner(cmd)
     return code

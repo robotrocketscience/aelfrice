@@ -149,6 +149,68 @@ def _open_store() -> MemoryStore:
     return MemoryStore(str(p), project_context_default=repo_identity_from_db_path(p))
 
 
+def open_store_read_only() -> MemoryStore:
+    """Open the canonical store `mode=ro` — never creates, never migrates.
+
+    #1416. The parent directory is not created and the open-time write
+    window (DDL, migrations, scope-id mint, expired-lock sweep) does not
+    run. Raises `ReadOnlyStoreUnavailable` when a read-only handle cannot
+    be opened at all; see that exception for why the WAL sidecars decide
+    this and why `immutable=1` is not the escape hatch.
+    """
+    p = db_path()
+    return MemoryStore(
+        str(p),
+        project_context_default=repo_identity_from_db_path(p),
+        read_only=True,
+    )
+
+
+def open_store_for_read() -> MemoryStore:
+    """Open the store for a command whose contract is observational.
+
+    #1416. `aelf search` against a readable-but-not-writable store died
+    in `MemoryStore.__init__` with `sqlite3.OperationalError: attempt to
+    write a readonly database` — a *store open is a write* here (DDL,
+    migrations, the scope-id mint, and since #1314 the expired-lock
+    sweep), so a read command never reached retrieval. That is the
+    everyday shape of a Codex workspace-write session: the workspace is
+    writable, `.git/` — where the repo store lives — is not.
+
+    The writable open is attempted first, and **only** a permission
+    failure falls back to `mode=ro`. Not because trying twice is elegant,
+    but because the two handles are not interchangeable: the read-only
+    one runs no migration, so a store written by an older binary is read
+    at whatever shape it has, and no expired lock has been swept, so
+    `aelf locked` lists windows the writable path would already have
+    dropped. Preferring `mode=ro` unconditionally would impose that
+    degraded semantics on every user whose store is perfectly writable.
+    The failed attempt writes nothing — it failed *because* it could not.
+
+    Raises `ReadOnlyStoreUnavailable` when the fallback cannot be opened
+    either; callers turn that into a message rather than a traceback.
+    """
+    import sqlite3
+
+    from aelfrice.store import _is_readonly_open_failure
+
+    p = db_path()
+    ident = repo_identity_from_db_path(p)
+    if str(p) != ":memory:":
+        try:
+            _ensure_parent_dir(p)
+        except OSError:
+            # A non-writable parent-of-parent is itself the condition this
+            # function exists for; let the open decide.
+            pass
+    try:
+        return MemoryStore(str(p), project_context_default=ident)
+    except sqlite3.DatabaseError as exc:
+        if not _is_readonly_open_failure(exc):
+            raise
+    return MemoryStore(str(p), project_context_default=ident, read_only=True)
+
+
 # v3.2 #858 active project context resolver.
 PROJECT_CONTEXT_ENV: Final[str] = "AELFRICE_PROJECT_CONTEXT"
 """Env var name read by `active_project_context()`. Stable public name;
