@@ -17,7 +17,11 @@ per-defect tests below for the narrow assertions.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
+import subprocess
+import sys
 
 import pytest
 
@@ -83,6 +87,21 @@ MUST_SURVIVE_CORPUS: tuple[tuple[str, str], ...] = (
     ("Review is required before merge.", BELIEF_REQUIREMENT),
     ("The hard cap is 50 beliefs.", BELIEF_REQUIREMENT),
     ("That is a hard constraint on the budget.", BELIEF_REQUIREMENT),
+    # Plurals. Substring containment matched these for free, so the
+    # boundary fix drops them unless the inflection is spelled out —
+    # 46 live beliefs lost the requirement type to exactly this before
+    # `constraints` / `hard rules` were added alongside the `require`
+    # family. Without these two rows the asymmetry is invisible.
+    ("These are the hard rules for the merge train.", BELIEF_REQUIREMENT),
+    ("Additional constraints apply to the merge train.", BELIEF_REQUIREMENT),
+    # The hyphen compounds that a bare `\b` on the right newly typed as
+    # `correction` at the 0.947 prior. These assert the *outcome* rather
+    # than the negation signal, which is the thing that actually reaches
+    # the store — 63 of the 117 factual->correction flips under plain
+    # `\b` carried a `no-`/`not-` compound like these.
+    ("Idempotent: re-promotion is a no-op.", BELIEF_FACTUAL),
+    ("The no-match path emits a sentinel string on every call.", BELIEF_FACTUAL),
+    ("Running aelf setup with --no-search-tool removes it.", BELIEF_FACTUAL),
     # Requirement still precedes preference in `classify_sentence`'s
     # pipeline, so a sentence carrying both signals types as the former.
     # That ordering is unchanged by #1368 (its acceptance asks for word
@@ -105,16 +124,53 @@ def test_must_survive_corpus_types(text: str, expected_type: str) -> None:
     assert (result.alpha, result.beta) == TYPE_PRIORS[expected_type]
 
 
-@pytest.mark.parametrize(("text", "expected_type"), MUST_SURVIVE_CORPUS)
-def test_must_survive_corpus_is_deterministic(text: str, expected_type: str) -> None:
-    """Re-running the classifier on a corpus row is byte-stable.
+@pytest.mark.timeout(60)
+def test_must_survive_corpus_is_deterministic_across_hash_seeds() -> None:
+    """The corpus types identically under two different PYTHONHASHSEEDs.
 
-    The write path is replayed by `aelf rebuild`; a corpus row that types
-    differently on the second call would desync the store from its log.
+    The write path is replayed by `aelf rebuild`, so a row that types
+    differently between processes would desync the store from its log.
+
+    This used to call `classify_sentence` twice in one process and assert
+    the two results equal — which cannot fail for any input, because the
+    function is pure over module-level compiled patterns. It contributed
+    20 parametrised cases of zero coverage: reverting the requirement
+    matcher to substring containment turns 7 tests in this file red and
+    left every one of those 20 green.
+
+    The real risk is cross-*process*: set iteration order is seeded per
+    interpreter, so a classifier that grew a `set` in its return path
+    would be stable within a run and unstable between runs. Subprocesses
+    under two seeds are the only shape that can see it, which is what
+    `tests/test_value_compare_hashseed_1370.py` already does for the
+    sibling module.
     """
-    first = classify_sentence(text, "user")
-    second = classify_sentence(text, "user")
-    assert first == second
+    program = (
+        "import json,sys;"
+        "from aelfrice.classification_core import classify_sentence;"
+        "rows=json.loads(sys.argv[1]);"
+        "print(json.dumps([[classify_sentence(t,'user').belief_type,"
+        "classify_sentence(t,'user').alpha,classify_sentence(t,'user').beta]"
+        " for t in rows]))"
+    )
+    payload = json.dumps([text for text, _ in MUST_SURVIVE_CORPUS])
+
+    outputs: list[str] = []
+    for seed in ("0", "99"):
+        env = {**os.environ, "PYTHONHASHSEED": seed}
+        proc = subprocess.run(
+            [sys.executable, "-c", program, payload],
+            capture_output=True, text=True, check=True, env=env, timeout=120,
+        )
+        outputs.append(proc.stdout.strip())
+
+    assert outputs[0] == outputs[1], (
+        f"corpus typing differs across hash seeds:\n{outputs[0]}\n{outputs[1]}"
+    )
+    # A guard that passes on two empty strings would pass on anything.
+    decoded = json.loads(outputs[0])
+    assert len(decoded) == len(MUST_SURVIVE_CORPUS)
+    assert [row[0] for row in decoded] == [t for _, t in MUST_SURVIVE_CORPUS]
 
 
 # --- #1159 §5: `_NEGATION_TERMS` word boundaries ----------------------
@@ -333,6 +389,31 @@ def test_non_deterministic_tags_exactly_one_slot() -> None:
     slots = extract_values("retrieval is non-deterministic")
     members = sorted(s.member for s in slots.enum)
     assert members == ["non-deterministic"]
+
+
+def test_enum_emission_order_follows_the_vocabulary_not_the_claim_order() -> None:
+    """Pins the pass-2 contract that joins the two halves of the fix.
+
+    `_extract_enums` now runs two passes: pass 1 claims spans
+    longest-member-first, pass 2 emits in `_ENUM_MEMBER_INDEX` order,
+    which is `ENUM_VOCAB` declaration order. Both ends were tested and
+    the line joining them was not — rewriting pass 2 to iterate
+    `_ENUM_MEMBER_ORDER` instead leaves the whole suite green while
+    changing the emitted order, and that order propagates into
+    `find_conflicts`' per-category insertion order and hence into which
+    `SlotConflict` lands at `conflicts[0]`.
+
+    Deliberately a multi-category text: with one category the two
+    orderings coincide and the assert pins nothing. Under the pass-2
+    mutation this row emits `read-only` and `scan` transposed.
+    """
+    text = (
+        "the store is read-only, the scan is full-scan, "
+        "and the flag is default-on and public"
+    )
+    assert [s.member for s in extract_values(text).enum] == [
+        "default-on", "full-scan", "scan", "public", "read-only",
+    ]
 
 
 def test_determinism_category_can_produce_a_conflict() -> None:
