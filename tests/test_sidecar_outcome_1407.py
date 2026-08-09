@@ -113,16 +113,14 @@ def test_a_fresh_cache_over_a_current_sidecar_is_fresh(
 # --- the branch guard ----------------------------------------------------
 
 
-def test_every_index_constructing_branch_records_an_outcome() -> None:
-    """AC2: a test must fail if a branch is added without an outcome.
+def _assert_constructing_branches_record(src: str) -> None:
+    """Raise AssertionError if any index-constructing block lacks the recorder.
 
-    Parses `BM25IndexCache.get` and requires that every statement
-    constructing an index (`BM25Index.build`, `BM25Index.update_from`) is
-    accompanied by a `_record_sidecar_outcome(...)` call in the same
-    enclosing block. A behavioural test cannot cover this: a new branch
-    nobody wrote a scenario for would simply never run.
+    Factored out of the AC2 guard so the guard itself can be tested against a
+    known-bad source. A guard nothing proves is a guard that silently stops
+    guarding — this one already had that failure: it scanned only `.body`, so
+    a rebuild in an `else:` arm passed.
     """
-    src = textwrap.dedent(inspect.getsource(BM25IndexCache.get))
     tree = ast.parse(src)
 
     def _calls(node: ast.AST) -> list[str]:
@@ -138,23 +136,102 @@ def test_every_index_constructing_branch_records_an_outcome() -> None:
 
     constructing = {"build", "update_from"}
     found_any = False
+    # Every attribute that can hold a statement list. `.body` alone is not
+    # enough: an `else:` arm lives in `.orelse`, and a `finally:` arm in
+    # `.finalbody`, so a rebuild added there would be invisible to the guard
+    # while the CHANGELOG claims the guard covers it. (`except:` arms are
+    # reached anyway — ast.walk yields each ExceptHandler, whose block is its
+    # own `.body`.)
+    block_attrs = ("body", "orelse", "finalbody")
     for node in ast.walk(tree):
-        body = getattr(node, "body", None)
-        if not isinstance(body, list):
-            continue
-        for stmt in body:
-            names = _calls(stmt)
-            if constructing & set(names):
-                found_any = True
-                # the recorder must appear in this same block
-                block_names: list[str] = []
-                for sibling in body:
-                    block_names.extend(_calls(sibling))
-                assert "_record_sidecar_outcome" in block_names, (
-                    "an index-constructing branch in BM25IndexCache.get has no "
-                    f"_record_sidecar_outcome call in its block: {ast.dump(stmt)[:200]}"
-                )
+        for attr in block_attrs:
+            block = getattr(node, attr, None)
+            if not isinstance(block, list):
+                continue
+            if not all(isinstance(s, ast.stmt) for s in block):
+                continue  # e.g. IfExp.orelse is an expression, not a block
+            for stmt in block:
+                names = _calls(stmt)
+                if constructing & set(names):
+                    found_any = True
+                    # the recorder must appear in this same block
+                    block_names: list[str] = []
+                    for sibling in block:
+                        block_names.extend(_calls(sibling))
+                    assert "_record_sidecar_outcome" in block_names, (
+                        "an index-constructing branch in BM25IndexCache.get "
+                        "has no _record_sidecar_outcome call in its "
+                        f"{attr} block: {ast.dump(stmt)[:200]}"
+                    )
     assert found_any, "found no index-constructing call — did get() move?"
+
+
+def test_every_index_constructing_branch_records_an_outcome() -> None:
+    """AC2: a test must fail if a branch is added without an outcome.
+
+    Parses `BM25IndexCache.get` and requires that every statement
+    constructing an index (`BM25Index.build`, `BM25Index.update_from`) is
+    accompanied by a `_record_sidecar_outcome(...)` call in the same
+    enclosing block. A behavioural test cannot cover this: a new branch
+    nobody wrote a scenario for would simply never run.
+    """
+    _assert_constructing_branches_record(
+        textwrap.dedent(inspect.getsource(BM25IndexCache.get))
+    )
+
+
+@pytest.mark.parametrize(
+    ("arm", "expected_block"),
+    [
+        pytest.param(
+            "    if cond:\n"
+            "        self._index = BM25Index.build(rows)\n"
+            "        _record_sidecar_outcome(SIDECAR_FULL_REBUILD)\n"
+            "    else:\n"
+            "        self._index = BM25Index.build(rows)\n",
+            "orelse",
+            id="if-else-arm",
+        ),
+        pytest.param(
+            "    for _ in rows:\n"
+            "        self._index = BM25Index.build(rows)\n"
+            "        _record_sidecar_outcome(SIDECAR_FULL_REBUILD)\n"
+            "    else:\n"
+            "        self._index = BM25Index.build(rows)\n",
+            "orelse",
+            id="for-else-arm",
+        ),
+        pytest.param(
+            "    try:\n"
+            "        self._index = BM25Index.build(rows)\n"
+            "        _record_sidecar_outcome(SIDECAR_FULL_REBUILD)\n"
+            "    finally:\n"
+            "        self._index = BM25Index.build(rows)\n",
+            "finalbody",
+            id="finally-arm",
+        ),
+    ],
+)
+def test_the_branch_guard_catches_a_rebuild_outside_dot_body(
+    arm: str, expected_block: str
+) -> None:
+    """The guard must scan `orelse` and `finalbody`, not just `body`.
+
+    Before #1407's review this was live: the walk used
+    `getattr(node, "body", None)` only, so a bare `BM25Index.build(...)` in an
+    `else:` arm left every test in this file green.
+
+    Each source below puts a *compliant* rebuild in the `body` arm and a bare
+    one in the arm under test. That shape matters: `_calls` recurses the whole
+    subtree, so a function with no recorder anywhere fails at the outermost
+    block whether or not `orelse` is scanned — a naive version of this test
+    passes under the mutation it is meant to catch. Asserting on the block
+    *name* is what makes it distinguishing: narrowing the walk back to
+    `("body",)` turns these three green-by-accident into failures to raise.
+    """
+    src = "def get(self):\n" + arm
+    with pytest.raises(AssertionError, match=f"{expected_block} block"):
+        _assert_constructing_branches_record(src)
 
 
 def test_the_outcome_vocabulary_is_closed() -> None:
