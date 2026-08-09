@@ -19,7 +19,6 @@ from aelfrice.retrieval import (
     DEFAULT_L1_LIMIT,
     DEFAULT_TOKEN_BUDGET,
     POSTERIOR_WEIGHT_KEY_PRECISION,
-    RetrievalCache,
     resolve_l1_limit,
     resolve_posterior_weight,
     resolve_token_budget,
@@ -213,42 +212,45 @@ def test_ac5_apply_feedback_promotes_mid_rank_belief() -> None:
     )
 
 
-# --- AC6: cache key includes posterior_weight (hit / miss matrix) --------
+# --- AC6: retired with its subject ---------------------------------------
+#
+# AC6 asserted that `RetrievalCache`'s key tuple included `posterior_weight` —
+# two weights, two cache entries. #1418 deleted that class as a zero-caller
+# LRU, and a cache-key assertion has no subject once the cache is gone.
+#
+# Deleted rather than rewritten, deliberately. The retrieval-side property it
+# rested on — that `posterior_weight` actually reaches the ranking — is
+# already asserted, and asserted more strongly, by
+# `test_ac4_posterior_can_overcome_bm25_gap` above: that test has a
+# fixture built to reorder (F_high/F_low at weights 0.0 vs 2.0) and checks the
+# resulting *order*, where a cache-key test only ever showed that two dict
+# keys differed. Re-deriving AC6 here against `_equal_bm25_store` would have
+# been a weaker duplicate — and it does not even hold on that fixture, whose
+# five beliefs tie on BM25 by construction.
 
 
-def test_ac6_cache_key_includes_posterior_weight() -> None:
-    s = _equal_bm25_store()
-    cache = RetrievalCache(s)
-    cache.retrieve("widget", posterior_weight=0.5)
-    assert len(cache) == 1
-    # Same query, different weight -> miss + new entry.
-    cache.retrieve("widget", posterior_weight=1.0)
-    assert len(cache) == 2
-    # Same weight again -> hit, no new entry.
-    cache.retrieve("widget", posterior_weight=0.5)
-    assert len(cache) == 2
-    # Weight 0.0 is its own bucket (must not collide with default).
-    cache.retrieve("widget", posterior_weight=0.0)
-    assert len(cache) == 3
+# --- AC7: apply_feedback fires the store invalidation callback -----------
 
 
-# --- AC7: apply_feedback wipes the cache via the existing callback -------
+def test_ac7_apply_feedback_fires_the_store_invalidation_callback() -> None:
+    """apply_feedback must not reach into any derived cache directly; the
+    wipe travels through store.update_belief -> _fire_invalidation.
 
+    Observed with a probe callback rather than through `RetrievalCache`
+    (deleted in #1418). The registry itself is unaffected and still has four
+    production subscribers — `BM25IndexCache`, `graph_spectral`, `hrr_index`
+    and `query_understanding.store_cache` — so this contract still matters.
 
-def test_ac7_apply_feedback_wipes_cache_via_store_callback() -> None:
-    """apply_feedback must NOT reach into the cache directly. The
-    wipe comes through store.update_belief -> _fire_invalidation
-    -> cache.invalidate.
+    Falsifiable by making `apply_feedback` write without going through
+    `update_belief`: the probe never fires.
     """
     s = _equal_bm25_store()
-    cache = RetrievalCache(s)
-    cache.retrieve("widget", posterior_weight=0.5)
-    assert len(cache) == 1
-    target = cache.retrieve("widget", posterior_weight=0.5)[0].id
-    # Feedback application happens entirely without referencing
-    # the cache. The wipe must come through the store hook.
+    fired: list[int] = []
+    s.add_invalidation_callback(lambda: fired.append(1))
+    target = retrieve(s, "widget", posterior_weight=0.5)[0].id
+    assert not fired, "nothing should have invalidated before the write"
     apply_feedback(s, target, valence=+1.0, source="test_ac7")
-    assert len(cache) == 0, "cache should have been invalidated"
+    assert fired, "apply_feedback did not fire the store invalidation callback"
 
 
 # --- AC8: locked beliefs unaffected by posterior_weight ------------------

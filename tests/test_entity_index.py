@@ -9,8 +9,9 @@ One test per acceptance criterion in docs/design/entity_index.md § Validation:
   AC3. On-write trigger fires: insert_belief / update_belief writes
        belief_entities rows without the test calling the index
        directly.
-  AC4. Cache invalidation: RetrievalCache fronting an L2.5-aware
-       retrieve() invalidates on belief mutations exactly as v1.0.
+  AC4. Invalidation: belief mutations fire the store's invalidation
+       callback registry exactly as v1.0. (Observed through a probe
+       since #1418 deleted RetrievalCache, the LRU that fronted it.)
   AC5. Budget enforcement: L2.5 sub-budget is bounded; total output
        ≤ token_budget; monotonicity holds.
   AC6. Forward compatibility: a v1.0-shaped store opens cleanly on
@@ -47,7 +48,6 @@ from aelfrice.retrieval import (
     ENV_RETRIEVAL_TOKEN_BUDGET,
     resolve_token_budget_with_provenance,
     ENV_ENTITY_INDEX,
-    RetrievalCache,
     is_entity_index_enabled,
     retrieve,
 )
@@ -307,32 +307,42 @@ def test_ac3_delete_belief_cascades_to_entity_rows() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_ac4_cache_invalidates_on_entity_relevant_mutation() -> None:
-    """A RetrievalCache fronting an L2.5-aware retrieve() invalidates
-    on belief mutations — same contract as v1.0.
+def test_ac4_insert_belief_fires_the_invalidation_callback() -> None:
+    """An entity-relevant write invalidates derived state — same contract
+    as v1.0.
+
+    Observed with a probe callback. Until #1418 this was observed through
+    `RetrievalCache`, which has been deleted as a zero-caller LRU; the
+    registry it subscribed to is untouched and still has four production
+    subscribers, so the contract is unchanged and still worth pinning.
+
+    Falsifiable by removing the `_fire_invalidation()` call from
+    `insert_belief`: the probe never fires.
     """
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("B1", "uses aelfrice.retrieval today"))
-    cache = RetrievalCache(s)
-    cache.retrieve("aelfrice.retrieval")
-    assert len(cache) == 1
-    # Insert another belief — invalidate fires.
+    fired: list[int] = []
+    s.add_invalidation_callback(lambda: fired.append(1))
+    assert not fired
     s.insert_belief(_mk("B2", "extra fact"))
-    assert len(cache) == 0
+    assert fired, "insert_belief did not fire the invalidation callback"
 
 
-def test_ac4_cache_invalidates_on_update_too() -> None:
-    """update_belief fires the same callback registry."""
+def test_ac4_update_belief_fires_the_same_registry() -> None:
+    """`update_belief` shares the registry with `insert_belief`.
+
+    Falsifiable by removing `_fire_invalidation()` from `update_belief`
+    only — which the insert test above cannot see.
+    """
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("B1", "uses aelfrice.retrieval"))
-    cache = RetrievalCache(s)
-    cache.retrieve("aelfrice.retrieval")
-    assert len(cache) == 1
+    fired: list[int] = []
+    s.add_invalidation_callback(lambda: fired.append(1))
     b = s.get_belief("B1")
     assert b is not None
     b.content = "changed content with v1.3.0 noted"
     s.update_belief(b)
-    assert len(cache) == 0
+    assert fired, "update_belief did not fire the invalidation callback"
 
 
 # ---------------------------------------------------------------------------

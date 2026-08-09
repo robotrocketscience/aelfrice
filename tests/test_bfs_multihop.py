@@ -70,7 +70,6 @@ from aelfrice.models import (
 from aelfrice.retrieval import (
     ENV_BFS,
     ENV_ENTITY_INDEX,
-    RetrievalCache,
     is_bfs_enabled,
     retrieve,
     retrieve_v2,
@@ -502,33 +501,41 @@ def test_ac8_toml_flag_resolution(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_ac9_new_supersedes_edge_invalidates_cached_bfs_result() -> None:
-    """RetrievalCache wipes on edge mutation; the next BFS-enabled
-    retrieve picks up the new edge."""
+def test_ac9_a_new_supersedes_edge_is_picked_up_by_the_next_retrieve() -> None:
+    """A SUPERSEDES edge added after a query must be visible to the next one.
+
+    Framed against `RetrievalCache` until #1418 deleted it; the cache was only
+    the thing that could have served a stale answer. The property is the
+    edge's visibility, and it is asserted on `retrieve()` directly, which is
+    what the hook and the CLI actually call.
+
+    Falsifiable by dropping the edge walk from the BFS lane: `S2` never
+    appears in the second result.
+    """
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("Q1", "the kitchen has bananas"))
     s.insert_belief(_mk("S2", "the new yellow fruit policy"))
-    cache = RetrievalCache(s)
-    out1 = cache.retrieve("bananas", bfs_enabled=True)
+    out1 = retrieve(s, "bananas", bfs_enabled=True)
     assert "S2" not in {b.id for b in out1}
-    # Add a SUPERSEDES edge and re-query.
     s.insert_edge(_edge("S2", "Q1", EDGE_SUPERSEDES))
-    out2 = cache.retrieve("bananas", bfs_enabled=True)
+    out2 = retrieve(s, "bananas", bfs_enabled=True)
     assert "S2" in {b.id for b in out2}
 
 
-def test_ac9_cache_key_distinguishes_bfs_flag() -> None:
-    """Two queries that differ only in `bfs_enabled` are distinct
-    cache entries."""
+def test_ac9_the_bfs_flag_changes_the_result() -> None:
+    """`bfs_enabled` is load-bearing.
+
+    The old form asserted two cache entries, which shows the key differs, not
+    that the answer does. Comparing the results directly is strictly stronger
+    and survives the cache's removal.
+    """
     s = MemoryStore(":memory:")
     s.insert_belief(_mk("Q1", "the kitchen has bananas"))
     s.insert_belief(_mk("S2", "the new yellow fruit policy"))
     s.insert_edge(_edge("S2", "Q1", EDGE_SUPERSEDES))
-    cache = RetrievalCache(s)
-    off = cache.retrieve("bananas", bfs_enabled=False)
-    on = cache.retrieve("bananas", bfs_enabled=True)
+    off = retrieve(s, "bananas", bfs_enabled=False)
+    on = retrieve(s, "bananas", bfs_enabled=True)
     assert {b.id for b in off} != {b.id for b in on}
-    assert len(cache) == 2
 
 
 # ---------------------------------------------------------------------------
