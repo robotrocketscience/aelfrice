@@ -3856,6 +3856,23 @@ locking is meaning-bearing and should not happen silently."""
 STOP_PROMPT_OPEN_TAG: Final[str] = "<aelfrice-session-end>"
 STOP_PROMPT_CLOSE_TAG: Final[str] = "</aelfrice-session-end>"
 
+# #1442 — the Stop block is written to stderr once per assistant turn and
+# was bounded on neither axis. Both limits are set off the measured
+# distribution on this repo's store (44,683 active beliefs, grouped by
+# session over exactly the population `_collect_lock_candidates` returns),
+# not picked for roundness.
+#
+# Candidates per session: p50=10, p75=31, p90=69, p99=402, max=6,427.
+# A cap of 20 leaves the median session whole and truncates 33% of
+# sessions; 10 would truncate 47%. Unbounded, the worst session rendered
+# 3,448,428 bytes every turn.
+STOP_PROMPT_MAX_ITEMS: Final[int] = 20
+# Candidate content length: p50=86, p90=367, p95=605, p99=1,479,
+# max=14,360. 1,000 withholds the command for 2.05% of candidates — the
+# tail that is prose or captured data rather than a rule anyone would
+# lock.
+STOP_PROMPT_MAX_CONTENT: Final[int] = 1000
+
 # Origins that flag a belief as a candidate for end-of-session lock prompt.
 # Mirrors the issue #582 design: agent-paraphrased corrections never
 # survive context resets unless promoted to user-asserted ground truth.
@@ -4005,34 +4022,76 @@ def _format_stop_prompt(candidates: list["Belief"]) -> str:
     stated window. On this repo's store that is 3,003 candidates and 0
     suffixes, so the no-suffix branch is the common path, not the
     exception.
+
+    Bounded on two axes since #1442, because this block goes to stderr
+    once per assistant turn and neither axis was bounded before:
+
+    * **Count.** At most `STOP_PROMPT_MAX_ITEMS`, newest first, with a
+      trailing line naming how many were withheld. Unbounded, the worst
+      session on this repo's store rendered 6,427 entries and 3,448,428
+      bytes — every turn.
+    * **Length.** A candidate longer than `STOP_PROMPT_MAX_CONTENT` is
+      still listed, but its `aelf lock` line is withheld rather than
+      emitted at full length. The longest live candidate is 14,360
+      characters, which is neither readable nor safely pasteable, and
+      `aelf lock` takes the statement text — there is no id form to
+      offer instead. Truncating the command is not an option: it would
+      lock text the user never wrote.
     """
     if not candidates:
         return ""
-    n = len(candidates)
-    noun = "belief" if n == 1 else "beliefs"
-    verb = "isn't" if n == 1 else "aren't"
+    total = len(candidates)
+    # Newest first. The cap is only safe if it keeps the turn that just
+    # ended: `_collect_lock_candidates` walks `list_belief_ids()`, whose
+    # `ORDER BY id ASC` is *content-hash* order (ids are
+    # `sha256(source + NUL + text)[:16]`), not insertion order — on this
+    # repo's store all 44,683 active rows sit at a different position in
+    # the two orderings. A head-cap over that would show an arbitrary
+    # fixed subset and hide the newest belief except by chance.
+    # `id` breaks the tie because `created_at` ties are the norm here,
+    # and determinism is a stated invariant of this project.
+    shown = sorted(
+        candidates, key=lambda b: (b.created_at or "", b.id), reverse=True
+    )[:STOP_PROMPT_MAX_ITEMS]
+    n = len(shown)
+    withheld = total - n
+    noun = "belief" if total == 1 else "beliefs"
+    verb = "isn't" if total == 1 else "aren't"
     lines: list[str] = [
         STOP_PROMPT_OPEN_TAG,
-        f"Found {n} {noun} in this session that {verb} locked.",
+        f"Found {total} {noun} in this session that {verb} locked.",
         "Run the suggested commands to make them survive into the next session.",
     ]
     # Offer autolock only when something in this list would actually be
     # auto-locked. `AELF_AUTOLOCK_CORRECTIONS` does not cover the #1315
     # arm, so on a list of windowed directives the old unconditional
     # advice pointed the user at a flag that leaves the list untouched.
+    # Scoped to the whole candidate set, not the shown slice: the flag
+    # auto-locks every correction-class candidate, including ones the cap
+    # withheld, so a caveat computed over `shown` would understate it.
     covered = [b for b in candidates if _belief_is_correction_class(b)]
     if covered:
-        caveat = "" if len(covered) == n else "; it does not cover the rest"
+        caveat = "" if len(covered) == total else "; it does not cover the rest"
         lines.append(
             "Corrections can be locked automatically instead by setting "
             f"AELF_AUTOLOCK_CORRECTIONS=1{caveat}."
         )
     lines.append("")
-    for b in candidates:
+    for b in shown:
         snippet = b.content.strip().replace("\n", " ")
         if len(snippet) > 120:
             snippet = snippet[:117] + "..."
         lines.append(f"  - {b.id} ({b.type}, origin={b.origin}): {snippet}")
+        if len(b.content) > STOP_PROMPT_MAX_CONTENT:
+            # No command rather than a truncated one. `aelf lock` takes
+            # the statement text, so a shortened command would lock text
+            # the user never wrote — silently, and as ground truth.
+            lines.append(
+                f"    (content is {len(b.content)} characters — too long to "
+                "paste as a command; inspect it with "
+                f"`aelf search {_shell_quote(b.id)}` and lock it deliberately)"
+            )
+            continue
         # #1315: when the belief states its own window, pre-fill it. The
         # window resolves to an absolute UTC instant inside `aelf lock
         # --for`, at write time — this renders the spec, it does not
@@ -4040,6 +4099,13 @@ def _format_stop_prompt(candidates: list["Belief"]) -> str:
         window = _directive_window_spec(b.content)
         suffix = f" --for {window}" if window else ""
         lines.append(f"    aelf lock {_shell_quote(b.content)}{suffix}")
+    if withheld:
+        lines.append("")
+        lines.append(
+            f"  … and {withheld} older {'belief' if withheld == 1 else 'beliefs'} "
+            "from this session, not shown. Run `aelf review` to work through "
+            "them all."
+        )
     lines.append(STOP_PROMPT_CLOSE_TAG)
     lines.append("")
     return "\n".join(lines)
