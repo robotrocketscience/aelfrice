@@ -563,10 +563,32 @@ def _handle_user_prompt_submit(payload: dict[str, object]) -> None:
     # noise predicate ingest.py uses; fail-soft so a noise_filter import
     # error never breaks the logger.
     try:
-        from aelfrice.noise_filter import is_transcript_noise  # noqa: PLC0415
+        from aelfrice.noise_filter import (  # noqa: PLC0415
+            is_transcript_noise,
+            is_transcript_scaffolding,
+        )
 
-        if is_transcript_noise(prompt):
+        # #1371 §1. Two different questions, and conflating them dropped
+        # real turns. A *structural* marker — a harness tag, a glyph, a
+        # pasted command — describes the whole payload, so the prompt goes
+        # as a unit. An ack or a progress emit describes only the sentence
+        # it is in, so a prompt is dropped for those reasons only when
+        # every sentence in it is noise.
+        #
+        # Not sentence-granularity across the board, which is what #1371's
+        # acceptance text asks for: measured on this repo's 6,268 archived
+        # user prompts, that reading would have *kept* 763 multi-sentence
+        # `<task-notification>` blocks, because their prose lines are not
+        # individually noise. That is precisely the flooding #747 added
+        # this gate to stop.
+        if is_transcript_scaffolding(prompt):
             return
+        if is_transcript_noise(prompt):
+            from aelfrice.extraction import extract_sentences  # noqa: PLC0415
+
+            parts = [s for s in extract_sentences(prompt) if s.strip()]
+            if not parts or all(is_transcript_noise(s) for s in parts):
+                return
     except Exception:
         # Fail-soft: any noise_filter regression falls through to the
         # plain-append path. Silent by design — this hook runs on every
