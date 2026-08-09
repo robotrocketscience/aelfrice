@@ -1269,14 +1269,26 @@ def user_prompt_submit(
             # explored belief is logged and recorded as injected like any
             # other hit — recording it is the entire point, since evidence
             # accrues on exposure. Default-OFF and fail-soft.
-            hits = _substitute_exploration_slots(
-                hits,
-                session_id=session_id,
-                query=prompt,
-                store=ups_store,
-                serr=serr,
-                cwd=payload_cwd,
-            )
+            #
+            # #1359: gated on the off-switch, because both of the writes
+            # it takes are claims about a pack that reached the prompt —
+            # it claims the store-level exploration fire counter and
+            # writes an `exploration_events` row naming the belief drawn
+            # and the ones displaced to pay for it. Its own docstring is
+            # the argument: substituting without recording the exposure
+            # "would leave the loop exactly as closed as it was", and on
+            # a suppressed fire there is no exposure to record. Skipping
+            # the call keeps the coverage instrument this lane exists to
+            # produce free of draws nobody saw.
+            if emit_memory_block:
+                hits = _substitute_exploration_slots(
+                    hits,
+                    session_id=session_id,
+                    query=prompt,
+                    store=ups_store,
+                    serr=serr,
+                    cwd=payload_cwd,
+                )
             # #288 phase-1a extension: emit one rebuild_log row per
             # UPS retrieval. Without this the high-frequency rebuild
             # call site produces no log; phase-1b operator-week data

@@ -809,3 +809,108 @@ def test_suppressed_fires_advance_the_counter_and_record_no_ids(
         False, True, False, True, False,
     ]
 
+
+# ---------------------------------------------------------------------------
+# The #1279 exploration slot is an injection writer
+# ---------------------------------------------------------------------------
+
+
+def _seed_pack(db: Path, n: int = 12) -> None:
+    """Seed `n` banana beliefs — more than one token budget can carry."""
+    store = MemoryStore(str(db))
+    try:
+        for i in range(1, n + 1):
+            store.insert_belief(
+                _mk(f"F{i}", f"banana fact number {i} about yellow fruit"),
+            )
+    finally:
+        store.close()
+
+
+def _read_exploration(db: Path) -> list[tuple[str, str]]:
+    """(drawn_ids, displaced_ids) JSON text per `exploration_events` row."""
+    store = MemoryStore(str(db))
+    try:
+        return [
+            (str(r["drawn_ids"]), str(r["displaced_ids"]))
+            for r in store._conn.execute(
+                "SELECT drawn_ids, displaced_ids FROM exploration_events "
+                "ORDER BY id"
+            ).fetchall()
+        ]
+    finally:
+        store.close()
+
+
+def _read_exploration_counter(db: Path) -> str | None:
+    """The claimed global exploration fire index, or None when unclaimed."""
+    from aelfrice.store import SCHEMA_META_EXPLORATION_FIRE_IDX
+
+    store = MemoryStore(str(db))
+    try:
+        row = store._conn.execute(
+            "SELECT value FROM schema_meta WHERE key = ?",
+            (SCHEMA_META_EXPLORATION_FIRE_IDX,),
+        ).fetchone()
+        return None if row is None else str(row["value"])
+    finally:
+        store.close()
+
+
+def test_suppressed_fire_draws_no_exploration_slot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1279's slot takes two writes, and both are injection claims.
+
+    `_substitute_exploration_slots` claims the store-level exploration
+    fire counter and writes an `exploration_events` row naming the belief
+    drawn and the ones displaced to pay for it. Run on a suppressed fire
+    that row says a never-injected belief was substituted into a pack
+    that never reached the prompt — the state the function's own
+    docstring calls pointless — and it pollutes the coverage instrument
+    the lane exists to produce.
+
+    The enabled fire is the in-test control: it pins that this fixture
+    reaches a firing turn at all, so the disabled half's empty ledger
+    means suppression and not a lane that never fired.
+    """
+    monkeypatch.setenv("AELFRICE_EXPLORATION", "1")
+    monkeypatch.setenv("AELFRICE_EXPLORATION_CADENCE", "1")
+
+    on_dir = tmp_path / "on"
+    on_dir.mkdir()
+    on_db = on_dir / "memory.db"
+    _seed_pack(on_db)
+    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
+    monkeypatch.setenv("AELFRICE_DB", str(on_db))
+    sout = io.StringIO()
+    assert user_prompt_submit(
+        stdin=io.StringIO(_payload(str(on_dir), _PROMPT, "s-explore-on")),
+        stdout=sout,
+        stderr=io.StringIO(),
+        token_budget=80,
+    ) == 0
+    assert OPEN_TAG in sout.getvalue()
+    on_rows = _read_exploration(on_db)
+    assert len(on_rows) == 1
+    assert json.loads(on_rows[0][0])  # something was drawn
+    assert json.loads(on_rows[0][1])  # something paid for it
+    assert _read_exploration_counter(on_db) == "1"
+
+    off_dir = tmp_path / "off"
+    off_dir.mkdir()
+    off_db = off_dir / "memory.db"
+    _seed_pack(off_db)
+    monkeypatch.setenv("AELFRICE_DB", str(off_db))
+    monkeypatch.setenv("AELFRICE_MEMORY_BLOCK", "0")
+    sout_off = io.StringIO()
+    assert user_prompt_submit(
+        stdin=io.StringIO(_payload(str(off_dir), _PROMPT, "s-explore-off")),
+        stdout=sout_off,
+        stderr=io.StringIO(),
+        token_budget=80,
+    ) == 0
+    assert sout_off.getvalue() == ""
+    assert _read_exploration(off_db) == []
+    # The other write the lane takes: the global counter stays unclaimed.
+    assert _read_exploration_counter(off_db) is None
