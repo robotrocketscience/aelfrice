@@ -20,17 +20,40 @@ incremental path, a stale sidecar no longer implies a full rebuild.
 
 **`full_rebuild` is the rate #1380 is priced on.** `incremental` is cheap.
 
-## Rows predating the field
+## Rows with no outcome are three different populations, not one
 
 A row with no `sidecar_outcome` key is **excluded and counted**, never treated
-as `fresh` — every fire logged before #1407 shipped lacks the key, and folding
-those into the denominator as cache hits would drive the measured rebuild rate
-toward zero purely as a function of how long the log has existed. The excluded
-count is printed on every run; if it dominates, the answer is "not enough data
-yet", not a low rate.
+as `fresh` — folding a fire that did no index work into the denominator as a
+cache hit would drive the measured rebuild rate toward zero. But "excluded" is
+three distinct things and reporting them as one number names a cause that has
+stopped existing:
+
+- **gate-skipped** — `prompt_shape_gate_skip` is set. Retrieval never ran, so
+  the row *can never* carry the key. This is ~57% of fires and it is permanent;
+  a warning phrased as "wait for more data" will never clear against it.
+- **pre-field** — logged before #1407 shipped. Genuinely "not enough data yet",
+  and genuinely does shrink over time.
+- **no index work** — retrieval ran but built no index (L1 lane off). Neither a
+  measurement nor a wait; it is a real, ongoing population.
+
+The pre-field boundary is derived from the data (the earliest `ts` carrying an
+outcome), not hardcoded, so it stays correct if the field's ship date moves.
+
+## Which denominator
+
+`full_rebuild / scored` is **not** interchangeable with the 8.5% latency proxy
+it replaces: that proxy was computed over *all* UPS fires, and `scored` can only
+ever contain fires that ran retrieval. On the live log the two differ by 2.3x,
+so reading one against the other turns a confirmation into an apparent doubling.
+All three denominators are printed for that reason.
 
 Usage:
     uv run python benchmarks/sidecar_rebuild_rate.py [AUDIT_LOG ...]
+
+With no arguments this globs `hook_audit.jsonl*`, which includes **rotated**
+logs (`hook_audit.jsonl.1`, ...). The totals it prints are therefore across all
+rotations, not the single live file — pass an explicit path for a single-file
+count.
 """
 from __future__ import annotations
 
@@ -66,8 +89,13 @@ def main() -> int:
 
     counts: Counter[str] = Counter()
     unknown: Counter[str] = Counter()
-    missing = 0
     non_ups = 0
+    # Rows with no outcome, split by why. `gate_skipped` can never carry the
+    # key; `no_index_work` ran retrieval but built nothing; `pre_field` predates
+    # the field. Only the last of the three shrinks over time.
+    gate_skipped = 0
+    unkeyed: list[str | None] = []
+    scored_ts: list[str] = []
 
     for path in logs:
         for line in path.open("r", encoding="utf-8"):
@@ -83,46 +111,98 @@ def main() -> int:
                 continue
             outcome = rec.get("sidecar_outcome")
             if outcome is None:
-                # Pre-#1407 row, or a fire that did no index work. Both are
-                # "not measured" and must stay out of the denominator.
-                missing += 1
+                if rec.get("prompt_shape_gate_skip"):
+                    # Retrieval never ran; this row is structurally incapable
+                    # of carrying the key. Permanent, not "not yet".
+                    gate_skipped += 1
+                else:
+                    ts = rec.get("ts")
+                    unkeyed.append(str(ts) if ts is not None else None)
                 continue
             if outcome not in OUTCOMES:
                 unknown[str(outcome)] += 1
                 continue
             counts[str(outcome)] += 1
+            ts = rec.get("ts")
+            if ts is not None:
+                scored_ts.append(str(ts))
 
     scored = sum(counts.values())
+    # Derive the field's arrival from the data rather than hardcoding a date:
+    # an unkeyed row older than the earliest keyed row predates the field.
+    first_scored_ts = min(scored_ts) if scored_ts else None
+    if first_scored_ts is None:
+        # No keyed row exists, so there is no boundary to split on. Do not
+        # guess: calling all of these "pre-field" would assert something the
+        # data cannot support, in the one script whose whole job is to stop
+        # exactly that kind of unearned attribution.
+        pre_field = no_index_work = None
+        unclassified = len(unkeyed)
+    else:
+        pre_field = sum(1 for t in unkeyed if t is not None and t < first_scored_ts)
+        no_index_work = len(unkeyed) - pre_field
+        unclassified = 0
+    missing = gate_skipped + len(unkeyed)
+    all_fires = scored + missing + sum(unknown.values())
+    retrieval_fires = all_fires - gate_skipped
 
     print("#1407 — BM25 sidecar outcome per user_prompt_submit fire")
     for p in logs:
         print(f"  log                            {p}")
+    print(f"  user_prompt_submit fires       {all_fires}")
+    print(f"  non-UPS rows (ignored)         {non_ups}")
     print(f"  fires with an outcome (scored) {scored}")
-    print(f"  fires with no outcome key      {missing}   <- excluded, NOT 'fresh'")
+    print(f"  no key: gate-skipped           {gate_skipped}   <- can NEVER carry the key")
+    if unclassified:
+        print(
+            f"  no key: unclassified           {unclassified}   <- no keyed row yet, "
+            "so pre-field and no-index-work cannot be told apart"
+        )
+    else:
+        print(f"  no key: pre-#1407              {pre_field}   <- shrinks as the log grows")
+        print(f"  no key: retrieval, no index    {no_index_work}   <- ongoing, not a wait")
     if unknown:
         print(f"  unrecognised outcome values    {dict(unknown)}  <- vocabulary drift")
     print()
 
     if scored == 0:
-        print("  NO MEASUREMENT YET. Every user_prompt_submit row predates the")
-        print("  sidecar_outcome field (or did no index work). Let the log")
-        print("  accumulate before pricing #1380 — do not read this as a low")
-        print("  rebuild rate.")
+        print("  NO MEASUREMENT YET. No user_prompt_submit row carries the")
+        print("  sidecar_outcome field. Let the log accumulate before pricing")
+        print("  #1380 — do not read this as a low rebuild rate.")
         return 0
 
     for name in OUTCOMES:
         n = counts[name]
         print(f"  {name:<14} {n:>6}  {n / scored:>7.2%}")
     print()
-    rebuild_rate = counts["full_rebuild"] / scored
-    print(f"  FULL-REBUILD RATE  {counts['full_rebuild']}/{scored} = {rebuild_rate:.2%}")
-    print("  (this is the cold_rate term in #1380's cold_cost x cold_rate)")
 
-    if missing > scored:
+    rebuilds = counts["full_rebuild"]
+    print("  FULL-REBUILD RATE, on each denominator:")
+    print(f"    of scored fires           {rebuilds}/{scored} = {rebuilds / scored:.2%}")
+    if retrieval_fires:
+        print(
+            f"    of retrieval-running fires {rebuilds}/{retrieval_fires} = "
+            f"{rebuilds / retrieval_fires:.2%}"
+        )
+    if all_fires:
+        print(
+            f"    of ALL UPS fires          {rebuilds}/{all_fires} = "
+            f"{rebuilds / all_fires:.2%}"
+        )
+    print()
+    print("  #1380 is priced per-fire, so 'of ALL UPS fires' is the cold_rate")
+    print("  term in cold_cost x cold_rate. That is also the only one comparable")
+    print("  to the 8.5% latency proxy, which was computed over all fires — the")
+    print("  scored-fires figure excludes the gate-skipped majority and reads")
+    print("  roughly 2x higher for that reason alone.")
+
+    if pre_field is not None and pre_field > scored:
         print()
-        print(f"  CAUTION: {missing} excluded rows against {scored} scored. The")
-        print("  sample is dominated by pre-field fires; treat the rate as")
-        print("  provisional until the scored count is the larger of the two.")
+        print(f"  CAUTION: {pre_field} pre-#1407 rows against {scored} scored. The")
+        print("  sample is dominated by fires logged before the field existed;")
+        print("  treat the rate as provisional until the scored count is larger.")
+        print("  (Gate-skipped and no-index-work rows are excluded from this")
+        print("  comparison — neither ever becomes a measurement.)")
     return 0
 
 
