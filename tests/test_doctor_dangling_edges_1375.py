@@ -150,9 +150,40 @@ def test_retired_belief_endpoint_is_not_dangling(tmp_path: Path) -> None:
     assert stats.total == 0
 
 
-def test_fail_soft_on_unreadable_store(tmp_path: Path) -> None:
+def test_the_guard_rejects_memory_and_missing_paths(tmp_path: Path) -> None:
+    """Both of these are refused by the guard, before any sqlite call.
+
+    Named for what it covers. `doctor.py:270` short-circuits `:memory:` and a
+    non-existent path *above* the `try`, so neither of these arms reaches the
+    `except sqlite3.Error` handler -- the previous name for this test claimed
+    they did.
+    """
     assert diagnose_dangling_edges(str(tmp_path / "nope.db")) is None
     assert diagnose_dangling_edges(":memory:") is None
+
+
+def test_fail_soft_on_a_file_that_is_not_a_database(tmp_path: Path) -> None:
+    """The arm that actually reaches `except sqlite3.Error`.
+
+    The docstring promises fail-soft on "any sqlite error", and until now
+    nothing exercised that path: the file has to *exist* to get past the
+    guard, and then fail on read. A text file does both.
+    """
+    junk = tmp_path / "not-a-db.db"
+    junk.write_text("this is not a sqlite database", encoding="utf-8")
+    assert diagnose_dangling_edges(str(junk)) is None
+
+
+def test_fail_soft_on_a_database_with_no_edges_table(tmp_path: Path) -> None:
+    """The other half of the promise: a real db missing the table."""
+    import sqlite3 as _sqlite3
+
+    empty = tmp_path / "empty.db"
+    conn = _sqlite3.connect(empty)
+    conn.execute("CREATE TABLE unrelated (x INTEGER)")
+    conn.commit()
+    conn.close()
+    assert diagnose_dangling_edges(str(empty)) is None
 
 
 def test_format_report_renders_the_count(tmp_path: Path) -> None:
@@ -263,8 +294,10 @@ def test_asymmetric_fixture_pins_src_dst_order_sort_and_truncation(
     assert stats.missing_dst == 6
 
     # (b) largest first, and the head is decided by the count rather
-    # than by the alphabetical tie-break — SUPPORTS sorts last of the
-    # seven by name, so seeing it first can only be the DESC ordering.
+    # than by the alphabetical tie-break. SUPPORTS is 6th of these seven
+    # by name (TEMPORAL_NEXT is last, CITES first), so it heads neither
+    # an ascending nor a descending alphabetical sort — seeing it first
+    # can only be the count DESC ordering.
     assert stats.by_type[0] == (EDGE_SUPPORTS, 4)
     assert stats.by_type[1] == (EDGE_RELATES_TO, 3)
     assert stats.by_type[2] == (EDGE_TEMPORAL_NEXT, 2)
@@ -284,3 +317,49 @@ def test_asymmetric_fixture_pins_src_dst_order_sort_and_truncation(
     # (d) truncation fires: 7 types, 5 shown, 2 held back.
     assert f"{EDGE_SUPPORTS}: 4" in rendered
     assert "... and 2 more type(s)" in rendered
+
+
+def test_the_section_renders_on_the_path_a_real_doctor_run_takes(
+    tmp_path: Path,
+) -> None:
+    """Every other format test in this file exits before line 1493.
+
+    `format_report` has two call sites for `_format_dangling_edges_section`.
+    The one at doctor.py:1426 is inside the `if not report.scopes_scanned:`
+    early return -- the "no settings.json found" branch -- and every format
+    test here reaches it, because they all pass a `user_settings` path that
+    does not exist. The production path, doctor.py:1493, is the one an actual
+    `aelf doctor` run takes, and nothing exercised it: deleting the call at
+    1493 left the whole file green.
+
+    So this test writes a settings.json that exists. The two assertions on
+    `scanned user:` and `summary:` are not decoration -- they are what proves
+    the early return was NOT taken, and without them this test would pass
+    against the branch it is meant to distinguish.
+    """
+    path, store = _store(tmp_path)
+    try:
+        store.insert_edge(
+            Edge(src="A", dst="GHOST", type=EDGE_RELATES_TO, weight=1.0)
+        )
+    finally:
+        store.close()
+
+    user_settings = tmp_path / "settings.json"
+    user_settings.write_text("{}", encoding="utf-8")
+
+    report = diagnose(
+        user_settings=user_settings,
+        project_root=tmp_path / "missing-project",
+        store_path=str(path),
+    )
+
+    assert report.scopes_scanned, (
+        "fixture no longer reaches the main path; the rest of this test "
+        "would silently re-test the early return"
+    )
+    text = format_report(report)
+    assert "scanned user:" in text
+    assert "summary:" in text
+    assert "dangling edges" in text
+    assert "1 of 1 edge(s)" in text
