@@ -23,11 +23,17 @@ pin` had to repair.
 """
 from __future__ import annotations
 
+import itertools
+
 import pytest
 
 from aelfrice.directive_detector import detect_directive
 from aelfrice.hook import _directive_window_spec
 from aelfrice.lock_expiry import (
+    _NEXT_UNIT_RE,
+    _STATED_WINDOW_RE,
+    _UNUSABLE_WINDOW_RE,
+    _stated_windows_with_positions,
     extract_stated_window,
     stated_window_attaches_to_memory,
     stated_window_is_ambiguous,
@@ -125,19 +131,89 @@ def test_an_unusable_window_beside_a_usable_one_refuses(phrase: str) -> None:
     ],
 )
 def test_the_supported_vocabulary_still_resolves(text: str, expected: str) -> None:
-    """Hypothesis: the new pattern is unit-anchored, so it neither
-    double-counts a window the resolving patterns already saw nor invents
-    one out of a quantifier with no unit after it.
+    """Hypothesis: the new pattern is unit-anchored, so it does not
+    invent a window out of a quantifier with no unit after it, and these
+    five sentences still resolve to the spec they state.
 
-    Both are how this fix would silently break the shipped path: a
-    double-count makes every single-window directive "ambiguous", and a
-    `for <any noun>` reading makes "some planning" a second window. Either
-    turns the whole suffix off, which no assertion on the refusal arms
-    would notice.
+    That is how this fix would silently break the shipped path: a
+    `for <any noun>` reading makes "some planning" a second window, the
+    directive reads as ambiguous, and the whole suffix turns off — which
+    no assertion on the refusal arms would notice. The other way to turn
+    it off is a double-count, and these five texts would catch it too,
+    but only for themselves; the general form is
+    `test_no_two_patterns_claim_the_same_window` below.
     """
     assert stated_window_is_ambiguous(text) is False
     assert extract_stated_window(text) == expected
     assert _directive_window_spec(text) == expected
+
+
+# One `for` clause, spelled every way the three patterns can read one.
+# The cross product is the point: a collision between two patterns is a
+# property of their *slots*, so it has to be searched for rather than
+# spot-checked, and the slots only differ under a count/unit sweep.
+_PROBE_PREFIXES = ("", "the ", "next ", "the next ")
+_PROBE_COUNTS = (
+    "", "1 ", "7 ", "30 ", "a ", "an ", "one ", "two ", "ten ", "twenty ",
+    "twenty-five ", "twenty five ", "ninety ", "hundred ", "a hundred ",
+    "two hundred ", "thousand ", "three thousand ", "twenty thousand ",
+    "dozen ", "a dozen ", "two dozen ", "dozens of ", "a few ", "several ",
+    "a couple ", "a couple of ", "a number of ", "many ", "some ", "few ",
+    "numerous ", "2-3 ", "2 - 3 ", "2–3 ", "two hundred and fifty ",
+)
+_PROBE_UNITS = (
+    "second", "seconds", "minute", "minutes", "hour", "hours", "day",
+    "days", "week", "weeks", "month", "months", "year", "years", "trip",
+    "sprint", "of", "planning",
+)
+
+_PATTERNS = (
+    ("_STATED_WINDOW_RE", _STATED_WINDOW_RE),
+    ("_NEXT_UNIT_RE", _NEXT_UNIT_RE),
+    ("_UNUSABLE_WINDOW_RE", _UNUSABLE_WINDOW_RE),
+)
+
+
+def test_no_two_patterns_claim_the_same_window() -> None:
+    """Hypothesis: one stated window is recorded once, whatever it is
+    spelled like — the three patterns' count and unit slots are disjoint,
+    so a text with one `for` clause yields at most one entry and can
+    never read as ambiguous.
+
+    This is the invariant `_stated_windows_with_positions` used to defend
+    with a dedupe on match start. The dedupe was unreachable — no input
+    produced the collision — so it was removed and the property it stood
+    for is asserted here instead, over a 2,592-phrase sweep of the count
+    and unit slots rather than over a handful of examples. A guard no
+    input reaches proves nothing; this sweep does.
+
+    Falsifiable by widening any pattern's count slot into another's: add
+    `_NUMBER_WORDS` to `_UNUSABLE_WINDOW_RE`'s unreadable-count
+    alternation and "for two days" is claimed by two patterns at the same
+    offset, so it records twice and every such directive refuses.
+    """
+    duplicated: list[tuple[str, list[str]]] = []
+    ambiguous: list[str] = []
+    probes = 0
+    for prefix, count, unit in itertools.product(
+        _PROBE_PREFIXES, _PROBE_COUNTS, _PROBE_UNITS,
+    ):
+        text = f"Always remember this for {prefix}{count}{unit}."
+        probes += 1
+        by_start: dict[int, list[str]] = {}
+        for name, pattern in _PATTERNS:
+            for match in pattern.finditer(text):
+                by_start.setdefault(match.start(), []).append(name)
+        duplicated.extend(
+            (text, names) for names in by_start.values() if len(names) > 1
+        )
+        if len(_stated_windows_with_positions(text)) > 1:
+            duplicated.append((text, ["merged twice"]))
+        if stated_window_is_ambiguous(text):
+            ambiguous.append(text)
+    assert probes == 2592, "the sweep lost a slot"
+    assert duplicated == []
+    assert ambiguous == [], "a single stated window must not read as two"
 
 
 @pytest.mark.parametrize(

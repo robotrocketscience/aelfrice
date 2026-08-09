@@ -386,19 +386,17 @@ def _stated_windows_with_positions(text: str) -> list[tuple[int, str | None]]:
         found.append((match.start(), spec))
     for match in _NEXT_UNIT_RE.finditer(text):
         found.append((match.start(), f"1{_UNIT_WORDS[match.group('unit').lower()]}"))
-    # The two patterns above cannot match the same span — one requires a
-    # count word where the other requires a unit word — so position alone
-    # is a total order over the matches.
-    #
-    # The unusable pattern is a third reading of the SAME `\bfor`, so its
-    # matches are deduped on start offset: a window both it and a
-    # resolving pattern see is one window, and appending it twice would
-    # invent an ambiguity out of a single stated window (#1440).
-    seen = {start for start, _ in found}
+    # All three patterns read the same `\bfor`, but no two of them can
+    # match at the same offset: the resolving pair splits on count word
+    # versus unit word, and the unusable pattern's count slots and unit
+    # slots are each disjoint from theirs. So position alone is a total
+    # order over the matches, and no window is recorded twice — which
+    # matters, because a double-count would read a single stated window
+    # as an ambiguity and refuse. That disjointness is a property of the
+    # three patterns, not of this loop, and it is pinned as one by
+    # `test_no_two_patterns_claim_the_same_window` rather than defended
+    # here by a dedupe no input reaches (#1440).
     for match in _UNUSABLE_WINDOW_RE.finditer(text):
-        if match.start() in seen:
-            continue
-        seen.add(match.start())
         found.append((match.start(), None))
     found.sort(key=lambda item: item[0])
     return found
