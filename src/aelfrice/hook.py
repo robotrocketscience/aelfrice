@@ -1411,43 +1411,57 @@ def user_prompt_submit(
             # apply their own locked-set when filtering, so the ring is
             # explicit about caller intent rather than authoritative.
             #
-            # #1359: gated on the off-switch alongside the injection
-            # events above. The ring is the dedup record of *this fire's
-            # injection set*, and a `belief_touches` row is exposure
-            # credit; neither is true of a fire whose block never reached
-            # the prompt, and a suppressed turn that claimed the ring
-            # would also make the next PreToolUse fire dedup against
-            # beliefs the model never saw.
-            if emit_memory_block:
-                try:
-                    injected_ids = [
-                        h.id for h in hits if getattr(h, "id", None)
-                    ]
-                    locked_now = {
-                        h.id for h in hits if h.lock_level == LOCK_USER
-                    }
-                    _next_fire = _ring_append_ids(
-                        session_id,
-                        injected_ids,
-                        locked_ids=locked_now,
-                        stderr=serr,
-                    )
-                except Exception:  # fail-soft: ring is noise reduction only
-                    _next_fire = -1
-                # #816 hot-path: record belief_touches alongside the ring
-                # append, sharing the ring's fire_idx so JSON ring +
-                # sidecar table track the same monotonic counter. v1 is
-                # write-only; the originally-modelled rerank consumer is
-                # deferred-with-evidence post-R7c (see #848). Fail-soft:
-                # never breaks the hook.
-                if _next_fire >= 1 and injected_ids:
-                    _record_touches(
-                        session_id=session_id,
-                        belief_ids=injected_ids,
-                        fire_idx=_next_fire - 1,
-                        stderr=serr,
-                        store=ups_store,
-                    )
+            # #1359: the off-switch gates the *ids*, not the call. This
+            # one call does two jobs. It records the dedup set of *this
+            # fire's injection*, which is false of a fire whose block
+            # never reached the prompt and would make the next PreToolUse
+            # fire dedup against beliefs the model never saw — so a
+            # suppressed fire contributes no ids. And it bumps
+            # `next_fire_idx`, which counts *fires*: a suppressed fire is
+            # still a fire, and three cadence consumers read that counter
+            # (`_maybe_run_cadence_checkpoint`, the UPS `p3_velocity`
+            # branch, and `cadence.would_fire_p1`, the last two of which
+            # require it to have advanced). Guarding the whole call froze
+            # it, which silently disabled the in-session
+            # `<cadence-checkpoint>` the switch documents as surviving.
+            # `append_ids` with an empty list is not a no-op: it persists
+            # the bump and records nothing, which is exactly the split.
+            try:
+                injected_ids = [
+                    h.id for h in hits if getattr(h, "id", None)
+                ]
+                locked_now = {
+                    h.id for h in hits if h.lock_level == LOCK_USER
+                }
+                _next_fire = _ring_append_ids(
+                    session_id,
+                    injected_ids if emit_memory_block else [],
+                    locked_ids=locked_now,
+                    stderr=serr,
+                )
+            except Exception:  # fail-soft: ring is noise reduction only
+                _next_fire = -1
+            # #816 hot-path: record belief_touches alongside the ring
+            # append, sharing the ring's fire_idx so JSON ring +
+            # sidecar table track the same monotonic counter. v1 is
+            # write-only; the originally-modelled rerank consumer is
+            # deferred-with-evidence post-R7c (see #848). Fail-soft:
+            # never breaks the hook.
+            #
+            # #1359: a `belief_touches` row is exposure credit — the
+            # claim that the model saw these beliefs — so it stays behind
+            # the switch even though the ring append above no longer
+            # does. `injected_ids` is the hits' ids on both paths here,
+            # so this guard is the only thing keeping the row off a
+            # suppressed fire.
+            if emit_memory_block and _next_fire >= 1 and injected_ids:
+                _record_touches(
+                    session_id=session_id,
+                    belief_ids=injected_ids,
+                    fire_idx=_next_fire - 1,
+                    stderr=serr,
+                    store=ups_store,
+                )
         elif gate_skip:
             # Gate fired, no BM25 hits. Emit rebuild_log with empty hits
             # (no-op per its early-return guard on empty hits_pre_dedup).

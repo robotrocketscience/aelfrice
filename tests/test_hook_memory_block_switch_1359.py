@@ -15,9 +15,11 @@ the #674 shape gate refuses BM25 carries its own copy of the hint and of
 the switch.
 
 Suppression also records no exposure evidence — no `injection_events`
-row, no `belief_touches` row, no session-ring entry. An off-switch that
-logged an injection that never happened would hand the #779 Layer-3
-sweeper a set of beliefs it can only ever score `referenced=0`.
+row, no `belief_touches` row, no injected-id ring entry. An off-switch
+that logged an injection that never happened would hand the #779 Layer-3
+sweeper a set of beliefs it can only ever score `referenced=0`. The
+ring's `next_fire_idx` is the exception and is not exposure evidence: it
+counts fires, and a suppressed fire is still a fire.
 
 The hint's cost is pinned as an explicit number rather than a range: it is
 paid on every fire that emits a block, so a silent growth in it is a
@@ -733,3 +735,77 @@ def test_doctor_reads_the_project_toml_not_the_process_cwd(
     _write_toml(tmp_path, enabled=False)
     report = diagnose(user_settings=tmp_path / "none.json", project_root=tmp_path)
     assert report.memory_block_enabled is False
+
+
+# ---------------------------------------------------------------------------
+# The fire counter is not exposure evidence
+# ---------------------------------------------------------------------------
+
+
+def _fire_five(
+    work_dir: Path, monkeypatch: pytest.MonkeyPatch, session_id: str
+) -> list[int | None]:
+    """Fire UPS five times in `work_dir`; return next_fire_idx after each."""
+    from aelfrice.session_ring import read_ring_state
+
+    db = work_dir / "memory.db"
+    _seed(db)
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    seen: list[int | None] = []
+    for _ in range(5):
+        assert user_prompt_submit(
+            stdin=io.StringIO(_payload(str(work_dir), _PROMPT, session_id)),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+        ) == 0
+        state = read_ring_state(session_id)
+        raw = state.get("next_fire_idx")
+        seen.append(raw if isinstance(raw, int) else None)
+    return seen
+
+
+def test_suppressed_fires_advance_the_counter_and_record_no_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`session_ring.append_ids` does two jobs; only one of them is exposure.
+
+    The ring's id list is the dedup record of *this fire's injection set*
+    — false of a suppressed fire, and honouring it would make the next
+    PreToolUse fire dedup against beliefs the model never saw. But the
+    same call bumps `next_fire_idx`, which counts *fires*, and a
+    suppressed fire is still a fire. Guarding the whole call froze the
+    counter, so `should_fire` could never reach a firing multiple and the
+    in-session `<cadence-checkpoint>` this switch documents as surviving
+    was silently dead under `p1_every_k_turns` and `p3_velocity` (the
+    p3_velocity branch requires `next_fire_idx - fire_idx_at_last_fire`
+    to be positive off the same counter).
+
+    Both halves are asserted together, because each alone admits the
+    wrong fix: the counter alone passes if the ids come back too, and the
+    empty ring alone passes on the frozen counter this replaces.
+    """
+    from aelfrice.cadence import POLICY_P1_EVERY_K_TURNS, CadenceConfig, should_fire
+    from aelfrice.session_ring import read_ring_state
+
+    on_dir = tmp_path / "on"
+    on_dir.mkdir()
+    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
+    assert _fire_five(on_dir, monkeypatch, "s-ring-on") == [1, 2, 3, 4, 5]
+    assert [
+        e["id"] for e in read_ring_state("s-ring-on")["ring"]
+    ] == ["F1"]
+
+    off_dir = tmp_path / "off"
+    off_dir.mkdir()
+    monkeypatch.setenv("AELFRICE_MEMORY_BLOCK", "0")
+    assert _fire_five(off_dir, monkeypatch, "s-ring-off") == [1, 2, 3, 4, 5]
+    # The counter advanced; the dedup set stayed empty.
+    assert read_ring_state("s-ring-off")["ring"] == []
+
+    # The consumer, not just the field: at k=2 the P1 predicate fires on
+    # the turns it fires on with the block enabled.
+    cfg = CadenceConfig(enabled=True, policy=POLICY_P1_EVERY_K_TURNS, k=2)
+    assert [should_fire(i, cfg) for i in (1, 2, 3, 4, 5)] == [
+        False, True, False, True, False,
+    ]
+
