@@ -223,15 +223,40 @@ gh workflow run staging-gate.yml --repo robotrocketscience/aelfrice --ref <your-
 gh run list --repo robotrocketscience/aelfrice --workflow ci.yml --limit 3
 ```
 
-Two properties worth knowing:
+Three properties worth knowing, and the third is a caveat, not a feature.
 
-- **It cannot be used to skip a gate.** There is deliberately no `ref` *input*.
-  A run's check-runs attach to the head SHA of the ref it was dispatched on, and
-  both branch protection and `merge-train` evaluate checks on the PR's head SHA
-  — so a dispatch can only ever report against the commit it actually tested.
+- **A dispatch cannot report against a commit it did not test.** There is
+  deliberately no `ref` *input*. A run's check-runs attach to the head SHA of
+  the ref it was dispatched on, and both branch protection and `merge-train`
+  evaluate checks on the PR's head SHA. (`actions/checkout` in these two
+  workflows must likewise never pin a `ref:`, for the same reason; a test
+  enforces both.)
 - **A dispatched `ci.yml` always runs the full suite.** The `dorny/paths-filter`
   short-circuit is `pull_request`-only, because a dispatch has no diff base and
   a job that skips must never report a pass that looks like a run (#1160).
+  Relatedly, no job in either workflow may be guarded to `pull_request` only: a
+  guarded job still emits a check-run with conclusion `skipped` and a *later*
+  `started_at`, and `merge_train_gate.latest_per_name` keeps the newest row per
+  name while `skipped` is not a failing conclusion — so it would overwrite an
+  earlier real `failure` and clear a red gate. The two jobs that genuinely
+  cannot run outside a pull request live in `pr-metadata.yml`, which has no
+  `workflow_dispatch`.
+- **⚠️ Dispatching these two does *not* mean the PR is safe to label.** They
+  produce the five *required* contexts, and `merge-train`'s presence floor
+  (`missing`, #1435) is computed over the required set only. Every other gating
+  check — `migration-policy-check`, `e2e`, `CodeQL`, `zizmor`, `typos`,
+  `windows-smoke`, `Bench Smoke`, `Eval Calibration`, `deadcode` — is evaluated
+  by *absence tests*, which an absent check satisfies. So a head carrying only
+  the dispatched rows evaluates as green while those never ran. Before labelling,
+  confirm the full set is present on the head SHA:
+
+  ```sh
+  gh api repos/robotrocketscience/aelfrice/commits/<head-sha>/check-runs \
+      --jq '[.check_runs[] | {n: .name, c: .conclusion}]'
+  ```
+
+  Widening the presence floor to cover the whole gating set is tracked
+  separately — this section is the interim instruction, not the fix.
 
 Shipped as part of #1436.
 
