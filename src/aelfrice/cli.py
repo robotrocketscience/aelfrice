@@ -308,8 +308,17 @@ def _latest_turn_ts() -> str | None:
         return None
 
 
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _utc_now_iso(now: datetime | None = None) -> str:
+    """The stored timestamp form, at whole-second resolution.
+
+    `now` lets a caller that has ALREADY read the clock stamp from that
+    same instant instead of taking a second read (#1443). `aelf lock`
+    needs it because it must resolve the window before the store is
+    opened but stamps `locked_at` after, and a second read makes the
+    persisted anchor the resolved anchor plus store-open latency.
+    """
+    moment = datetime.now(timezone.utc) if now is None else now
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _resolve_corpus_min() -> int:
@@ -1955,21 +1964,37 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
     lock_for = getattr(args, "lock_for", None)
     lock_until = getattr(args, "lock_until", None)
     window_given = lock_for is not None or lock_until is not None
+    # #1443: ONE read of the clock, shared by the window resolution here
+    # and by the `locked_at` stamped below, so that
+    # `lock_expires_at == parse_for(spec, now=locked_at)` holds exactly.
+    # Two reads made the persisted anchor the resolved anchor plus
+    # however long `_open_store()` took — DDL, pending migrations and the
+    # #1314 open-time sweep, so not a constant — and nothing said which
+    # of the two a later expiry audit was looking at.
+    #
+    # Truncated to whole seconds at the read, not at the stamp: the
+    # stored form has second resolution, so an anchor resolved from a
+    # microsecond-bearing instant is not the anchor the row records and
+    # the identity fails by the microseconds the stamp drops.
+    now_dt = datetime.now(timezone.utc).replace(microsecond=0)
     expires_at: str | None = None
     if window_given:
         try:
             expires_at = (
-                parse_for(lock_for, now=datetime.now(timezone.utc))
+                parse_for(lock_for, now=now_dt)
                 if lock_for is not None
-                else parse_until(lock_until, now=datetime.now(timezone.utc))
+                else parse_until(lock_until, now=now_dt)
             )
         except LockExpiryError as exc:
             print(f"aelf lock: {exc}", file=sys.stderr)
             return 1
 
+    # Still resolved-and-validated BEFORE this line (#1314): a malformed
+    # window must fail without having written a permanent lock the user
+    # then has to notice and undo.
     store = _open_store()
     try:
-        now = _utc_now_iso()
+        now = _utc_now_iso(now_dt)
         sid = resolve_session_id(
             getattr(args, "session_id", None),
             surface_name="aelf lock",
