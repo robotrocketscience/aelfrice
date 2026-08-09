@@ -175,8 +175,6 @@ DEFAULT_L25_LIMIT: Final[int] = 20
 DEFAULT_L25_TOKEN_SUBBUDGET: Final[int] = 400
 DEFAULT_QUERY_ENTITY_CAP: Final[int] = 16
 
-DEFAULT_CACHE_CAPACITY: Final[int] = 256
-
 # Section / key names in `.aelfrice.toml`. Public so consumers can
 # reference them in their own config. `CONFIG_FILENAME` itself now lives
 # in `aelfrice.config_discovery`; it is bound here rather than imported
@@ -600,14 +598,8 @@ ENV_META_BELIEF_POSTERIOR_TEMPERATURE: Final[str] = (
     "AELFRICE_META_BELIEF_POSTERIOR_TEMPERATURE"
 )
 
-# Number of decimal places used to round `posterior_weight` before
-# inclusion in the cache key. Two callers passing weights that
-# differ by less than this granularity collapse to the same key.
-POSTERIOR_WEIGHT_KEY_PRECISION: Final[int] = 4
 _ENV_FALSY: Final[frozenset[str]] = frozenset({"0", "false", "no", "off"})
 _ENV_TRUTHY: Final[frozenset[str]] = frozenset({"1", "true", "yes", "on"})
-
-_CANONICALIZE_PUNCT: Final[re.Pattern[str]] = re.compile(r"[^\w\s]")
 
 # #677 retrieval-time literal boost for `#N` issue/PR references.
 # Audit-log survey of 88 substantive prompts containing a literal
@@ -649,19 +641,6 @@ def _hash_n_boosted(score: float, content: str, literals: list[str]) -> float:
     if any(lit in content for lit in literals):
         return score + _HASH_N_BOOST_LOG
     return score
-
-
-def canonicalize_query(query: str) -> str:
-    """Return a deterministic key for cache lookup.
-
-    Lowercase, replace punctuation with whitespace, split on whitespace,
-    sort tokens, rejoin with single spaces. Two queries that differ only
-    in word order or punctuation map to the same key — correct for FTS5
-    BM25, which is bag-of-words.
-    """
-    cleaned = _CANONICALIZE_PUNCT.sub(" ", query.lower()).strip()
-    tokens = sorted(cleaned.split())
-    return " ".join(tokens)
 
 
 @dataclass(frozen=True)

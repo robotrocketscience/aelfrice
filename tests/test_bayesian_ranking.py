@@ -18,7 +18,6 @@ from aelfrice.models import BELIEF_FACTUAL, LOCK_NONE, LOCK_USER, Belief
 from aelfrice.retrieval import (
     DEFAULT_L1_LIMIT,
     DEFAULT_TOKEN_BUDGET,
-    POSTERIOR_WEIGHT_KEY_PRECISION,
     resolve_l1_limit,
     resolve_posterior_weight,
     resolve_token_budget,
@@ -553,14 +552,13 @@ def test_calibration_one_round_feedback_promotes_at_least_one_belief() -> None:
     )
 
 
-# --- Cache-key precision sanity ---
-
-
-def test_cache_key_precision_constant_is_sane() -> None:
-    """Round-to-N decimals is enough granularity that two callers
-    passing 0.5 and 0.5000001 collapse, but 0.5 and 0.6 don't."""
-    assert POSTERIOR_WEIGHT_KEY_PRECISION >= 2
-    assert POSTERIOR_WEIGHT_KEY_PRECISION <= 10
+# --- Cache-key precision sanity: retired with its subject ---
+#
+# `POSTERIOR_WEIGHT_KEY_PRECISION` was the rounding granularity applied to
+# `posterior_weight` before it entered `RetrievalCache`'s key tuple. #1418
+# deleted that class and the constant with it, so there is no rounding step
+# left to bound. Nothing else read the constant, and no ranking behaviour
+# depended on it: `resolve_posterior_weight` returns the unrounded float.
 
 
 # --- Posterior-mean reuse pin ---
