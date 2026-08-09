@@ -4102,10 +4102,22 @@ def _format_stop_prompt(candidates: list["Belief"]) -> str:
             # No command rather than a truncated one. `aelf lock` takes
             # the statement text, so a shortened command would lock text
             # the user never wrote — silently, and as ground truth.
+            #
+            # The inspect pointer is `aelf graph`, not `aelf search`:
+            # this line is emitted only for beliefs that are *not*
+            # locked, ids are not part of belief content and so are not
+            # in the FTS index, and `_cmd_search` is `retrieve()` plus a
+            # peer overlay — so `aelf search '<id>'` returns 0 hits for
+            # exactly this population. `_cmd_graph` resolves its anchor
+            # through `store.get_belief(id)` first, which is a primary-key
+            # read and does not care about locks or indexing. Full
+            # content needs `--preview-chars` at least the content
+            # length, since the node label is truncated to it.
             lines.append(
                 f"    (content is {len(b.content)} characters — too long to "
-                "paste as a command; inspect it with "
-                f"`aelf search {_shell_quote(b.id)}` and lock it deliberately)"
+                "paste as a command; read it with "
+                f"`aelf graph {_shell_quote(b.id)} --hops 0 --format json "
+                f"--preview-chars {len(b.content)}` and lock it deliberately)"
             )
             continue
         # #1315: when the belief states its own window, pre-fill it. The

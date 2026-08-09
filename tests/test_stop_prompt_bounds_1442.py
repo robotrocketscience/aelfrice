@@ -185,6 +185,57 @@ def test_an_overlong_belief_is_listed_but_gets_no_pasteable_command() -> None:
     assert "Always xxx" in out
 
 
+def test_the_pointer_offered_instead_of_the_command_actually_resolves(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    """The withheld-command line is the user's only route to content up
+    to 14,360 characters they are being asked to lock, so the command it
+    names has to work on *this* population — an unlocked belief, looked
+    up by id.
+
+    `aelf search '<id>'` did not. Ids are not part of belief content and
+    so are not in the FTS index, and `_cmd_search` is `retrieve()` plus a
+    peer overlay; it appears to work only for *locked* beliefs, because
+    the L0 lane emits those whatever the query, and a lock candidate is
+    by construction never `lock_level=user`. The command is now taken
+    from the rendered block verbatim and run, rather than asserted as a
+    string, because a string assertion is exactly what let a dead
+    pointer ship.
+    """
+    import re
+    import shlex
+
+    from aelfrice import cli
+    from aelfrice.store import MemoryStore
+
+    long_content = "Always " + ("x" * (STOP_PROMPT_MAX_CONTENT + 1000))
+    bid = "deadbeefcafe0001"          # hash-shaped, and absent from the content
+    b = _belief(bid, long_content, created="2026-08-09T00:00:00Z")
+
+    db = tmp_path / "m.db"
+    monkeypatch.setenv("AELFRICE_DB", str(db))
+    s = MemoryStore(str(db))
+    try:
+        s.insert_belief(b)
+    finally:
+        s.close()
+
+    out = _format_stop_prompt([b])
+    quoted = [m for m in re.findall(r"`([^`]+)`", out) if m.startswith("aelf ")]
+    assert len(quoted) == 1, f"expected exactly one command, got {quoted!r}"
+    argv = shlex.split(quoted[0])
+    assert argv[0] == "aelf"
+
+    capsys.readouterr()
+    assert cli.main(argv[1:]) == 0, "the pointer's command failed"
+    printed = capsys.readouterr().out
+    assert bid in printed, "the pointer did not resolve the belief"
+    assert long_content in printed, (
+        "the pointer resolved but did not show the content the user is "
+        "being asked to lock"
+    )
+
+
 def test_a_belief_at_the_limit_still_renders_its_command() -> None:
     """Boundary control for the test above. Without it the guard could be
     `len(content) > 0` — withholding every command — and the suite stays
