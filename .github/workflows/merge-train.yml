@@ -90,6 +90,19 @@ jobs:
               exit 0
           }
 
+          # [0/6] Base check, first because it is the cheapest refusal and
+          # because a stacked PR has no required checks to wait for — folding
+          # it into the poll loop below would stall to the 30-minute timeout
+          # instead of refusing in the first seconds (#1424).
+          BASE_REF=$(gh pr view "${PR_NUMBER}" --repo "${REPO}" \
+              --json baseRefName --jq .baseRefName || echo "")
+          echo "[0/6] base check... resolved base: '${BASE_REF:-<unresolved>}'"
+          if ! base_msg=$(python3 scripts/merge_train_gate.py \
+                  --base-ref "${BASE_REF}" --default-branch main); then
+              fail_and_unlabel "${base_msg}"
+          fi
+          echo "${base_msg}"
+
           echo "[1/6] refreshing refs..."
           git fetch origin main "${HEAD_REF}" --quiet
 
