@@ -394,6 +394,18 @@ def main(argv: list[str] | None = None) -> int:
         lambda: [bm25.tokenize_stemmed(t) for t in texts], args.repeat,
     )
 
+    # The fold ON ITS OWN. `tokenize_stemmed` also lowercases, regex-scans
+    # and stems, so a saving expressed over its total answers a different
+    # question from one expressed over the fold. #1387 estimated a share of
+    # the *fold*; without this arm that estimate cannot be checked, and the
+    # two denominators had already been compared as if they were one.
+    fold_only_unguarded = time_min(
+        lambda: [unguarded_fold(t) for t in texts], args.repeat,
+    )
+    fold_only_shipped = time_min(
+        lambda: [bm25._fold_diacritics(t) for t in texts], args.repeat,
+    )
+
     # `read_only=True` is not a nicety: a bare open runs migrations and the
     # #1314 lock-expiry sweep, so the first arm would mutate the store the
     # second arm then measures.
@@ -474,6 +486,19 @@ def main(argv: list[str] | None = None) -> int:
         "repeat": args.repeat,
         "cold_repeat": args.cold,
         "statistic": "min",
+        # Denominator note: `saved / unguarded` here is a share of the
+        # FOLD, which is what #1387 estimated. The same saving over
+        # `tokenize_stemmed_ms.unguarded` is a smaller number describing a
+        # different quantity. Report both rather than picking one.
+        "fold_only_ms": {
+            "unguarded": round(fold_only_unguarded, 1),
+            "shipped": round(fold_only_shipped, 1),
+            "saved": round(fold_only_unguarded - fold_only_shipped, 1),
+            "saved_share_of_fold": round(
+                (fold_only_unguarded - fold_only_shipped)
+                / max(fold_only_unguarded, 1e-9), 4,
+            ),
+        },
         "tokenize_stemmed_ms": {
             "unguarded": round(fold_unguarded, 1),
             "shipped": round(fold_shipped, 1),
