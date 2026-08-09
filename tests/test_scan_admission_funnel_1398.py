@@ -190,3 +190,36 @@ def test_scan_writes_to_a_throwaway_store_not_the_corpus(corpus: Path) -> None:
     # The temp dir is removed after the run, so nothing accumulates per run.
     assert not store_path.exists()
     assert not (corpus / ".git" / "aelfrice").exists()
+
+
+def test_the_throwaway_store_is_closed_before_its_directory_goes(
+    corpus: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`rmtree` must not run while the connection is still open.
+
+    SQLite keeps `-wal` and `-shm` sidecars beside the db, so unlinking the
+    directory underneath a live connection leaks it and loses whatever the WAL
+    still held. Ordering carries the whole claim — a `close()` that happens
+    *after* the removal is no better than none — so this records the sequence
+    rather than the fact of the call.
+    """
+    seen: list[str] = []
+    real_rmtree = funnel.shutil.rmtree
+
+    class _RecordingStore(funnel.MemoryStore):  # type: ignore[misc,valid-type]
+        def close(self) -> None:
+            seen.append("close")
+            super().close()
+
+    def _recording_rmtree(path: object, **kwargs: object) -> object:
+        seen.append("rmtree")
+        return real_rmtree(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(funnel, "MemoryStore", _RecordingStore)
+    monkeypatch.setattr(funnel.shutil, "rmtree", _recording_rmtree)
+
+    funnel.measure(corpus)
+
+    assert seen == ["close", "rmtree"], (
+        f"expected the store closed before its directory was removed, got {seen}"
+    )

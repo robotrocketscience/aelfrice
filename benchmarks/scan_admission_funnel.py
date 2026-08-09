@@ -222,6 +222,7 @@ def measure(root: Path) -> dict[str, Any]:
     db_path = tmpdir / "memory.db"
     if db_path.exists():  # pragma: no cover - mkdtemp guarantees a fresh dir
         raise SystemExit(f"refusing to scan into a pre-existing store: {db_path}")
+    store: MemoryStore | None = None
     try:
         store = MemoryStore(str(db_path))
         before = len(store.list_belief_ids())
@@ -237,6 +238,10 @@ def measure(root: Path) -> dict[str, Any]:
                 types[belief.type] += 1
         stored = sum(types.values())
     finally:
+        # Close before unlinking: the connection holds WAL and SHM sidecars,
+        # and `MemoryStore.__init__` can raise, so the name may be unbound.
+        if store is not None:
+            store.close()
         shutil.rmtree(tmpdir, ignore_errors=True)
 
     total = result.total_candidates
