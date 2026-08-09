@@ -77,6 +77,18 @@ def _percentiles(values: list[int]) -> dict[str, int]:
 
 
 def _rows(db: str) -> list[tuple[str, str, str, str, str]]:
+    """Candidate rows in the order production sees them: `rowid DESC`.
+
+    The `ORDER BY` is load-bearing, not tidiness. `_collect_lock_candidates`
+    walks `MemoryStore.list_belief_ids_newest_first`, which is
+    `ORDER BY rowid DESC`, and `_format_stop_prompt` caps by taking the
+    **head** — so the bounded figures are a function of which 20 rows
+    arrive first. With no `ORDER BY` SQLite scans `rowid ASC`, i.e.
+    oldest-first, and every bounded percentile measures a slice production
+    never renders (max 10,218 rather than 11,388 on this repo's store).
+    Sorting by `id` instead measures content-hash order, the superseded
+    design this bound exists to avoid.
+    """
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     try:
         return [
@@ -84,7 +96,8 @@ def _rows(db: str) -> list[tuple[str, str, str, str, str]]:
             for r in con.execute(
                 "SELECT id, content, type, origin, session_id FROM beliefs "
                 "WHERE valid_to IS NULL AND session_id IS NOT NULL "
-                "AND (lock_level IS NULL OR lock_level != 'user')"
+                "AND (lock_level IS NULL OR lock_level != 'user') "
+                "ORDER BY rowid DESC"
             )
         ]
     finally:
