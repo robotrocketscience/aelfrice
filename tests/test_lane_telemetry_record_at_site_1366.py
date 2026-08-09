@@ -551,12 +551,17 @@ def test_fan_effect_hits_consumed_is_zero_when_the_lane_is_off(
 def test_fan_effect_counter_is_named_for_the_hits_it_consumes() -> None:
     """#1434. The field is named for hits consumed, not rows ranked.
 
-    `MemoryStore.lookup_entities` returns the same belief set with the
-    fan weighting on or off — only the ordering differs — so this
-    counter can never be evidence that the weighting reordered
-    anything. The old name (`fan_effect_ranked`) claimed it was. Pinned
-    on both sides, the dataclass and the record-key tuple, because a
-    half-rename leaves the lane reading as permanently dead.
+    `MemoryStore.lookup_entities` returns `min(pool, limit)` rows with
+    the fan weighting on or off, so this counter can never be evidence
+    that the weighting reordered anything. The old name
+    (`fan_effect_ranked`) claimed it was. Note the argument is about the
+    row *count*, not the row set: the "same set, only the ordering
+    differs" line in `lookup_entities`' docstring holds only when
+    `limit` covers the whole candidate pool — under truncation both
+    branches take the top `limit` of differently ordered lists and the
+    sets differ. Pinned on both sides, the dataclass and the record-key
+    tuple, because a half-rename leaves the lane reading as permanently
+    dead.
     """
     names = {f.name for f in fields(LaneTelemetry)}
     assert "fan_effect_hits_consumed" in names

@@ -3372,11 +3372,17 @@ class LaneTelemetry:
     #
     # #1434. `fan_effect_hits_consumed` is named for what it counts: the
     # L2.5 hits consumed on a call where the fan flag was on. It is not a
-    # count of rows the fan weighting reordered — `MemoryStore.
-    # lookup_entities` returns the same set either way and only the
-    # ordering changes, so this value is identical whether the weighting
-    # moved everything or nothing. Reading it as reordering evidence is
-    # the mistake the old name (`fan_effect_ranked`) invited.
+    # count of rows the fan weighting reordered. `MemoryStore.
+    # lookup_entities` returns `min(pool, limit)` rows either way, so the
+    # *count* is identical whether the weighting moved everything or
+    # nothing, and reading this counter as reordering evidence is the
+    # mistake the old name (`fan_effect_ranked`) invited.
+    #
+    # The stronger claim in `lookup_entities`' own docstring — same set,
+    # only the ordering differs — holds only when `limit` covers the
+    # whole candidate pool. Under truncation both branches take the top
+    # `limit` of differently ordered lists, so the *sets* differ; it is
+    # the row count, not the set, that the weighting cannot change.
     compression_renders: int = 0
     cluster_packed: int = 0
     max_coverage_packed: int = 0
