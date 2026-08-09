@@ -84,17 +84,23 @@ def test_the_collector_returns_newest_first_through_a_real_store() -> None:
     timestamp across all of them. Under a `(created_at, id)` sort the
     survivors would be chosen by content-hash order.
 
-    Ids ascend **with** insertion order on purpose, so `ORDER BY id ASC`
-    yields oldest-first — the exact inverse of what the cap needs. An
-    earlier draft of this test numbered them the other way, which made
-    `id ASC` accidentally equal to newest-first and let the
-    `list_belief_ids()` mutation survive with the suite green.
+    **The ids are hash-shaped, and that is the whole fixture.** An earlier
+    draft numbered them `a000, b001, … y024` — monotone with insertion —
+    so `ORDER BY id DESC` and `ORDER BY rowid DESC` returned the identical
+    sequence and swapping the shipped query for the former (a plausible
+    "use the PRIMARY KEY index instead of a rowid scan" edit) left the
+    **whole suite** green. Real ids are `sha256(source + NUL + text)[:16]`,
+    so these are generated the same way and carry no temporal signal; the
+    two adequacy asserts below fail if a future edit makes them monotone
+    again.
+
     Falsifiable by pointing `_collect_lock_candidates` back at
-    `list_belief_ids()`, or by re-introducing a `(created_at, id)` sort in
-    `_format_stop_prompt`: both then put rule 0 at the head and drop the
-    newest, failing the last two assertions.
+    `list_belief_ids()`, by re-introducing a `(created_at, id)` sort in
+    `_format_stop_prompt`, or by changing `list_belief_ids_newest_first`
+    to `ORDER BY id DESC`: all three put an arbitrary belief at the head
+    and drop the newest.
     """
-    import string
+    import hashlib
     import tempfile
     from pathlib import Path as _Path
 
@@ -102,28 +108,37 @@ def test_the_collector_returns_newest_first_through_a_real_store() -> None:
     from aelfrice.store import MemoryStore
 
     same = "2026-08-09T00:00:00Z"
+    n = STOP_PROMPT_MAX_ITEMS + 40
+    ids = [
+        hashlib.sha256(f"1442\x00Always use rule {i}.".encode()).hexdigest()[:16]
+        for i in range(n)
+    ]
+    # Adequacy: id order must carry no insertion signal in either
+    # direction, or `ORDER BY id` would pass by accident.
+    assert sorted(ids) != ids, "fixture ids ascend with insertion order"
+    assert sorted(ids, reverse=True) != ids[::-1], (
+        "fixture ids descend with insertion order"
+    )
+
     with tempfile.TemporaryDirectory() as td:
         db = _Path(td) / "m.db"
         s = MemoryStore(str(db))
         try:
-            # Inserted oldest-first; ids descend so `id DESC` is the
-            # reverse of insertion order.
-            letters = string.ascii_lowercase[: STOP_PROMPT_MAX_ITEMS + 5]
-            for i, ch in enumerate(letters):
+            for i, bid in enumerate(ids):        # inserted oldest-first
                 s.insert_belief(
-                    _belief(f"{ch}{i:03d}", f"Always use rule {i}.", created=same)
+                    _belief(bid, f"Always use rule {i}.", created=same)
                 )
             got = _collect_lock_candidates(s, _SESSION)
         finally:
             s.close()
 
-    assert len(got) == STOP_PROMPT_MAX_ITEMS + 5
+    assert len(got) == n
     # The last row inserted must come first, whatever its id sorts like.
-    assert got[0].content == f"Always use rule {STOP_PROMPT_MAX_ITEMS + 4}."
+    assert got[0].content == f"Always use rule {n - 1}."
     assert got[-1].content == "Always use rule 0."
 
     out = _format_stop_prompt(got)
-    assert f"Always use rule {STOP_PROMPT_MAX_ITEMS + 4}." in out, (
+    assert f"Always use rule {n - 1}." in out, (
         "the newest belief was dropped by the cap"
     )
     assert "Always use rule 0." not in out, "the oldest belief survived the cap"
