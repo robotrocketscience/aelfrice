@@ -56,13 +56,19 @@ EVENT_STOP: Final[str] = "Stop"
 EVENT_PRE_COMPACT: Final[str] = "PreCompact"
 EVENT_POST_COMPACT: Final[str] = "PostCompact"
 
-# #1439: the Claude-host harness writes an interrupt as a *user*-role record
-# whose only content is this marker ("[Request interrupted by user]" and
-# "[Request interrupted by user for tool use]" are the two forms observed
-# across 75 local transcripts; all 17 occurrences share this prefix). It is
-# harness-generated, not a new prompt, so it must not end the tail scan --
-# the partial text the interrupted turn produced is the right answer.
-_INTERRUPT_MARKER_PREFIX: Final[str] = "[Request interrupted by user"
+# #1439: both hosts write an interrupt as a *user*-role record whose only
+# content is a harness-generated marker. The Claude-host harness writes
+# "[Request interrupted by user]" or "[Request interrupted by user for tool
+# use]" (17 occurrences across 75 local transcripts, all sharing the first
+# prefix); the Codex CLI writes a `<turn_aborted>` block ("The user
+# interrupted the previous turn on purpose...", 30 occurrences across 76
+# local rollouts, every one of them the record's only segment). Neither is a
+# new prompt, so neither may end the tail scan -- the partial text the
+# interrupted turn produced is the right answer.
+_INTERRUPT_MARKER_PREFIXES: Final[tuple[str, ...]] = (
+    "[Request interrupted by user",
+    "<turn_aborted>",
+)
 
 # #968: consecutive-duplicate guard. A turn whose (session_id, role, text)
 # matches the file's previous turn line within this window is treated as a
@@ -365,7 +371,8 @@ def _is_turn_start_user_record(obj: dict[str, object]) -> bool:
     Host-agnostic (#1439): it recognises the Claude-host shape
     (top-level `role`/`type` == "user") and the Codex rollout shape
     (`payload.role` == "user" on a `message` item), mirroring the
-    two assistant extractors.
+    two assistant extractors, and routes both hosts' content through
+    the same exclusions.
 
     Three kinds of user-role record are *not* turn starts, because
     stopping the scan at one discards assistant text the current turn
@@ -376,20 +383,31 @@ def _is_turn_start_user_record(obj: dict[str, object]) -> bool:
       <system-reminder> as a sibling text segment) can ride along, so
       the test is "carries a tool_result", not "carries only tool
       results". Codex keeps these in `function_call_output` items,
-      which are not messages and so never match here.
-    * the interrupt marker the harness writes as a plain user record.
+      which are not messages, so this arm can only fire on the
+      Claude-host shape.
+    * the interrupt marker either harness writes as a plain user record
+      — `[Request interrupted by user...]` on the Claude-host shape,
+      `<turn_aborted>` on Codex. Both are matched by prefix through
+      `_is_interrupt_marker`, under both content encodings.
     * anything the host flags `isMeta` — caveat banners, skill
-      preambles, Stop-hook feedback: harness text, not a prompt.
+      preambles, Stop-hook feedback: harness text, not a prompt. Codex
+      rollout records carry no such flag, so this arm too can only fire
+      on the Claude-host shape.
+
+    Codex writes other synthetic user records (`<environment_context>`,
+    `<recommended_plugins>`, `<user_shell_command>`) that are outside
+    these three classes and are still treated as turn starts.
     """
     if obj.get("type") == "response_item":
         payload = obj.get("payload")
         if not isinstance(payload, dict):
             return False
         payload_typed = cast(dict[str, object], payload)
-        return (
-            payload_typed.get("type") == "message"
-            and payload_typed.get("role") == "user"
-        )
+        if payload_typed.get("type") != "message":
+            return False
+        if payload_typed.get("role") != "user":
+            return False
+        return _user_content_opens_a_turn(payload_typed.get("content"))
     if (obj.get("role") or obj.get("type")) != "user":
         return False
     if obj.get("isMeta"):
@@ -397,7 +415,17 @@ def _is_turn_start_user_record(obj: dict[str, object]) -> bool:
     msg = obj.get("message")
     if not isinstance(msg, dict):
         return True
-    content = cast(dict[str, object], msg).get("content")
+    msg_typed = cast(dict[str, object], msg)
+    return _user_content_opens_a_turn(msg_typed.get("content"))
+
+
+def _user_content_opens_a_turn(content: object) -> bool:
+    """True unless this user-record content is tool plumbing or a marker.
+
+    Shared by both host shapes (#1439), so the tool_result and
+    interrupt-marker exclusions apply wherever the content can carry
+    them rather than only on the Claude-host arm.
+    """
     if isinstance(content, str):
         return not _is_interrupt_marker(content)
     if not isinstance(content, list) or not content:
@@ -418,8 +446,9 @@ def _is_turn_start_user_record(obj: dict[str, object]) -> bool:
 
 
 def _is_interrupt_marker(text: str) -> bool:
-    """True for the harness's interrupt record text (#1439)."""
-    return text.strip().startswith(_INTERRUPT_MARKER_PREFIX)
+    """True for either host's interrupt/abort record text (#1439)."""
+    stripped = text.strip()
+    return any(stripped.startswith(p) for p in _INTERRUPT_MARKER_PREFIXES)
 
 
 def _assistant_text_claude(obj: dict[str, object]) -> str | None:
