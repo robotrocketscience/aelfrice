@@ -469,6 +469,78 @@ def test_suppressed_fire_records_no_exposure_evidence(
     assert read_ring_state("s-eve-off").get("ring", []) == []
 
 
+def test_suppressed_fire_reports_zero_injected_chars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A suppressed fire's telemetry must not claim an injection size.
+
+    `_write_telemetry`'s `total_chars` is the field `aelf doctor` renders
+    as `injection size p50/p95: N chars`. The fire is still recorded —
+    `n_returned` keeps saying what retrieval found — but with the block
+    suppressed nothing reached the prompt, so the injected size is zero.
+    The enabled fire is the in-test control: it pins that `total_chars`
+    is otherwise the sum of the injected hits' content lengths, so the
+    disabled half's zero means suppression and not an empty retrieval.
+    """
+    from aelfrice.hook import (
+        _telemetry_path_for_db,
+        read_user_prompt_submit_telemetry,
+    )
+
+    on_dir = tmp_path / "on"
+    on_dir.mkdir()
+    on_db = on_dir / "memory.db"
+    _seed(on_db)
+    monkeypatch.delenv("AELFRICE_MEMORY_BLOCK", raising=False)
+    monkeypatch.setenv("AELFRICE_DB", str(on_db))
+    sout = io.StringIO()
+    assert user_prompt_submit(
+        stdin=io.StringIO(_payload(str(on_dir), _PROMPT, "s-tel-on")),
+        stdout=sout,
+        stderr=io.StringIO(),
+    ) == 0
+    assert OPEN_TAG in sout.getvalue()
+    on_rec = read_user_prompt_submit_telemetry(
+        _telemetry_path_for_db(on_db),
+    )[-1]
+    assert on_rec["n_returned"] == 1
+    assert on_rec["total_chars"] == len("banana is a yellow fruit")
+
+    off_dir = tmp_path / "off"
+    off_dir.mkdir()
+    off_db = off_dir / "memory.db"
+    _seed(off_db)
+    monkeypatch.setenv("AELFRICE_DB", str(off_db))
+    monkeypatch.setenv("AELFRICE_MEMORY_BLOCK", "0")
+    sout_off = io.StringIO()
+    assert user_prompt_submit(
+        stdin=io.StringIO(_payload(str(off_dir), _PROMPT, "s-tel-off")),
+        stdout=sout_off,
+        stderr=io.StringIO(),
+    ) == 0
+    assert sout_off.getvalue() == ""
+    off_tel = _telemetry_path_for_db(off_db)
+    off_rec = read_user_prompt_submit_telemetry(off_tel)[-1]
+    # The fire is still on the record — only the injected size is zeroed.
+    assert off_rec["n_returned"] == 1
+    assert off_rec["total_chars"] == 0
+
+    # End-to-end: one `aelf doctor` report must not print an injection
+    # size beside "injection: disabled".
+    from aelfrice.doctor import diagnose, format_report
+
+    out = format_report(
+        diagnose(
+            user_settings=tmp_path / "none.json",
+            project_root=off_dir,
+            user_prompt_submit_telemetry_path=off_tel,
+        )
+    )
+    assert "injection:            disabled" in out
+    assert "injection size p50: 0 chars" in out
+    assert "injection size p95: 0 chars" in out
+
+
 # ---------------------------------------------------------------------------
 # `aelf doctor` reports the state
 # ---------------------------------------------------------------------------

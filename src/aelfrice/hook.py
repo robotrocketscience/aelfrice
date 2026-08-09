@@ -1355,6 +1355,15 @@ def user_prompt_submit(
                 # model *saw* these beliefs are skipped instead (see the
                 # `emit_memory_block` guards above and below).
                 body = ""
+                # Same treatment for the telemetry record's injected-size
+                # field: `aelf doctor` renders it as "injection size
+                # p50/p95: N chars", so leaving the would-be size in
+                # prints an injection size in the same report that says
+                # "Memory block / injection: disabled". The fire is still
+                # recorded — n_returned / n_l0 / n_l1 keep saying what
+                # retrieval found — but nothing was injected, so the size
+                # of what was injected is zero.
+                total_chars = 0
             latency_ms = int((time.monotonic() - retrieve_start) * 1000)
             sout.write(body)
             # AC1: append telemetry record for fires that produce a block.
