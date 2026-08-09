@@ -259,3 +259,121 @@ def test_the_degradation_invariant_is_not_vacuous() -> None:
         "deliberate, delete the degradation test rather than letting it pass "
         "vacuously"
     )
+
+
+def _job_conditions(workflow: str) -> dict[str, str]:
+    """Job name -> its job-level `if`, for jobs that have one."""
+    out: dict[str, str] = {}
+    for name, body in _jobs(workflow).items():
+        for line in body.splitlines():
+            m = re.match(r"^    if:\s*(.+?)\s*$", line)
+            if m:
+                out[name] = m.group(1)
+                break
+    return out
+
+
+@pytest.mark.parametrize("workflow", sorted(_REQUIRED_CONTEXT_WORKFLOWS))
+def test_no_job_here_is_guarded_to_pull_request_only(workflow: str) -> None:
+    """A guarded job does not vanish on a dispatch — it reports `skipped`.
+
+    And `skipped` is the dangerous conclusion, not a neutral one. Merge-train
+    evaluates `latest_per_name`, keeping the newest run per check name, and
+    `skipped` is not in `FAILING_CONCLUSIONS` — so a dispatch's skipped row
+    lands on the same head SHA with a later `started_at` and **overwrites an
+    earlier real `failure`**. The gate flips green and the train merges.
+
+    That turns the escape hatch into a way to clear a red check, which is the
+    one thing #1436 AC5 forbids. The two jobs that genuinely cannot run outside
+    a pull request live in `pr-metadata.yml`, which has no `workflow_dispatch`,
+    so they cannot produce a row on a dispatch at all.
+    """
+    for name, cond in _job_conditions(workflow).items():
+        assert "github.event_name == 'pull_request'" not in cond, (
+            f"{workflow} job {name!r} is guarded to pull_request only, so a "
+            "dispatched run emits a `skipped` check-run under that name — which "
+            "supersedes an earlier failure in merge-train's per-name latest "
+            f"rollup and clears the gate (#1436 AC5). Guard: {cond!r}"
+        )
+
+
+@pytest.mark.parametrize("workflow", sorted(_REQUIRED_CONTEXT_WORKFLOWS))
+def test_checkout_never_pins_a_ref_in_these_workflows(workflow: str) -> None:
+    """`ref:` on checkout is the back door the missing `ref` input leaves open.
+
+    `test_dispatch_declares_no_ref_input` closes the front one. `actions/checkout`
+    with `ref: main` makes the run *test* one commit while its check-runs land on
+    the head SHA of the ref it was dispatched on — literally the "checkout would
+    test one ref while the check-runs landed on another" failure the design
+    comment claims is structurally impossible.
+    """
+    lines = _text(workflow).splitlines()
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if "actions/checkout" not in stripped or "uses:" not in stripped:
+            continue
+        step_indent = _indent(line)
+        for follow in lines[i + 1 :]:
+            if not follow.strip():
+                continue
+            if _indent(follow) <= step_indent:
+                break
+            assert not re.match(r"\s*ref:\s", follow), (
+                f"{workflow}: actions/checkout at line {i + 1} pins a ref "
+                f"({follow.strip()!r}). On a dispatch the run would test that ref "
+                "while reporting its check-runs against the dispatched ref's head "
+                "SHA (#1436 AC5)."
+            )
+
+
+def test_the_gated_step_still_runs_the_suite() -> None:
+    """The dispatch guarantee is worth nothing if the step stops testing.
+
+    Every other assertion here is about *whether* the step runs. This one is
+    about whether running it means anything — replacing the command with an
+    `echo` satisfies all of them.
+    """
+    runs = [
+        line.strip()
+        for line in _text("ci.yml").splitlines()
+        if line.strip().startswith("run:")
+    ]
+    assert any("pytest tests/" in r and "--ignore=tests/e2e" in r for r in runs), (
+        f"ci.yml no longer runs the suite on the gated path: {runs!r}"
+    )
+
+
+def test_the_empty_range_is_reconstructed_not_merely_detected() -> None:
+    """`commit-msg-prefix` must rebuild the range, not just notice it is empty.
+
+    The degradation test greps for a `-z "${VAR}"` emptiness test, which a branch
+    that detects the empty case and then does nothing useful also satisfies —
+    `BASE_SHA="${HEAD_SHA}"` inside the guard passes it and restores the empty
+    commit range the whole file exists to prevent. Require the reconstruction.
+    """
+    body = _jobs("staging-gate.yml")["commit-msg-prefix"]
+    assert re.search(r'BASE_SHA="\$\(git merge-base ', body), (
+        "commit-msg-prefix's empty-payload branch must reconstruct the range "
+        "from a merge-base against the default branch; detecting the empty case "
+        "without rebuilding it validates nothing and exits 0 (#1436)."
+    )
+
+
+def test_the_pr_metadata_workflow_cannot_be_dispatched() -> None:
+    """The two PR-only jobs are only safe while nothing can dispatch them.
+
+    They moved out of `staging-gate.yml` precisely so a dispatch cannot emit a
+    `skipped` row under their names. Adding `workflow_dispatch` here would put
+    the masking mechanism straight back.
+    """
+    triggers = _child_keys(_block(_text("pr-metadata.yml"), "on", 0), 2)
+    assert triggers == ["pull_request"], (
+        "pr-metadata.yml must stay pull_request-only — a dispatchable run of "
+        "these jobs emits `skipped` check-runs that supersede an earlier "
+        f"failure in merge-train's rollup (#1436 AC5). Triggers: {triggers}"
+    )
+    for job in ("pr-title-prefix", "pr-body-issue-link"):
+        assert job in _jobs("pr-metadata.yml"), f"{job} left pr-metadata.yml"
+        assert job not in _jobs("staging-gate.yml"), (
+            f"{job} is back in staging-gate.yml, which is dispatchable"
+        )
