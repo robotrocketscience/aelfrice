@@ -2483,15 +2483,27 @@ MEMORY_BLOCK_HINT: Final[str] = (
 """One-line pointer appended after an emitted `<aelfrice-memory>` block (#1359).
 
 Constructed like the #857 coverage line above and appended at the same
-site: outside `CLOSE_TAG`, so the block's own bytes are unchanged and the
-audit/token accounting that splits on the framing tags is unaffected.
+site: outside `CLOSE_TAG`, so the beliefs the model reads inside the
+envelope are unchanged.
+
+It is *not* outside the accounting. `_write_hook_audit_record` takes
+`tokens` from `_audit_tokens_from_block(rendered_block)` over the whole
+string, so an emitting fire's audited token count rises by this line.
+Measured on this branch across four one-belief fires: **+24 tokens, and
++25 when the pre-hint block length is a multiple of 4** (the estimator
+ceil-divides by 4 and the hint is 97 chars = 24*4 + 1). A seeded
+three-belief fire audits at 213 tokens with the hint against 188
+without. Anything baselining per-turn injected tokens — #1382 — must
+re-take its baseline after this lands.
 
 Unconditional, unlike the coverage line — the whole point is that a user
 who has never read the docs learns the block exists and how to turn it
 off. Measured cost: 97 characters (99 bytes UTF-8 — the em dash is
 three) = 25 estimated tokens under the project's `_CHARS_PER_TOKEN = 4`
-convention, on every fire that emits a block. That is ~1% of the
-2400-token default `[retrieval] token_budget`.
+convention, on every fire that emits a block. That is 1.7% of the
+`DEFAULT_HOOK_TOKEN_BUDGET = 1500` the UPS hook actually passes — not of
+the 2400-token CLI default, which `resolve_token_budget` ranks below an
+explicit caller kwarg.
 """
 
 
