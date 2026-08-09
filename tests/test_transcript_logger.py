@@ -209,6 +209,129 @@ def test_stop_codex_rollout_skips_non_message_items(
     assert lines[0]["text"] == "real answer"
 
 
+# --- #1439: the tail scan must not cross the current turn's boundary ------
+#
+# Every case below puts turn N-1's answer in the file and gives turn N no
+# assistant message. The assertion is always that turn N-1's text is NOT
+# returned; on unmodified main each of these returns "TURN-1 ANSWER".
+
+
+def _claude_user_line(content: object) -> str:
+    return json.dumps({"type": "user", "message": {
+        "role": "user", "content": content}})
+
+
+def _claude_assistant_line(*segments: object) -> str:
+    return json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": list(segments)}})
+
+
+def test_codex_scan_stops_at_turn_boundary(tmp_path: Path) -> None:
+    """#1439: a Codex turn ending in a tool call yields no text."""
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        _codex_rollout_line("user", "question one") + "\n" +
+        _codex_rollout_line("assistant", "TURN-1 ANSWER") + "\n" +
+        _codex_rollout_line("user", "question two") + "\n" +
+        json.dumps({"type": "response_item",
+                    "payload": {"type": "function_call", "name": "shell"}})
+        + "\n" +
+        json.dumps({"type": "response_item",
+                    "payload": {"type": "function_call_output",
+                                "output": "ok"}}) + "\n",
+        encoding="utf-8",
+    )
+    assert tl._last_assistant_text(str(transcript)) is None
+
+
+def test_claude_scan_stops_at_turn_boundary(tmp_path: Path) -> None:
+    """#1439: the Claude-host shape has the same exposure, not just Codex."""
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        _claude_user_line("question one") + "\n" +
+        _claude_assistant_line({"type": "text", "text": "TURN-1 ANSWER"})
+        + "\n" +
+        _claude_user_line("question two") + "\n" +
+        _claude_assistant_line(
+            {"type": "tool_use", "name": "Bash", "input": {}}) + "\n",
+        encoding="utf-8",
+    )
+    assert tl._last_assistant_text(str(transcript)) is None
+
+
+def test_stop_writes_stub_when_current_turn_has_no_answer(
+    tdir: Path, tmp_path: Path,
+) -> None:
+    """The Stop row is an empty stub, not the previous turn's answer."""
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_text(
+        _codex_rollout_line("user", "question one") + "\n" +
+        _codex_rollout_line("assistant", "TURN-1 ANSWER") + "\n" +
+        _codex_rollout_line("user", "question two") + "\n" +
+        json.dumps({"type": "response_item",
+                    "payload": {"type": "function_call", "name": "shell"}})
+        + "\n",
+        encoding="utf-8",
+    )
+    rc = _run_main({
+        "hook_event_name": "Stop",
+        "transcript_path": str(transcript),
+    })
+    assert rc == 0
+    lines = _read_jsonl(tdir / "turns.jsonl")
+    assert len(lines) == 1
+    assert lines[0]["role"] == "assistant"
+    assert lines[0]["text"] == ""
+
+
+def test_scan_still_returns_current_turn_answer(tmp_path: Path) -> None:
+    """#1439 must not suppress a turn that *did* answer (both shapes)."""
+    codex = tmp_path / "rollout.jsonl"
+    codex.write_text(
+        _codex_rollout_line("user", "question one") + "\n" +
+        _codex_rollout_line("assistant", "TURN-1 ANSWER") + "\n" +
+        _codex_rollout_line("user", "question two") + "\n" +
+        _codex_rollout_line("assistant", "TURN-2 ANSWER") + "\n",
+        encoding="utf-8",
+    )
+    assert tl._last_assistant_text(str(codex)) == "TURN-2 ANSWER"
+    claude_path = tmp_path / "transcript.jsonl"
+    claude_path.write_text(
+        _claude_user_line("question one") + "\n" +
+        _claude_assistant_line({"type": "text", "text": "TURN-1 ANSWER"})
+        + "\n" +
+        _claude_user_line("question two") + "\n" +
+        _claude_assistant_line({"type": "text", "text": "TURN-2 ANSWER"})
+        + "\n",
+        encoding="utf-8",
+    )
+    assert tl._last_assistant_text(str(claude_path)) == "TURN-2 ANSWER"
+
+
+def test_claude_tool_result_is_not_a_turn_boundary(tmp_path: Path) -> None:
+    """Tool results arrive as user records on the Claude-host shape.
+
+    They are mid-turn, not turn starts.
+
+    The current turn's own text sits behind one, so treating a
+    tool-result record as a boundary would discard a real answer.
+    """
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        _claude_user_line("question one") + "\n" +
+        _claude_assistant_line({"type": "text", "text": "TURN-1 ANSWER"})
+        + "\n" +
+        _claude_user_line("question two") + "\n" +
+        _claude_assistant_line({"type": "text", "text": "TURN-2 ANSWER"})
+        + "\n" +
+        _claude_assistant_line(
+            {"type": "tool_use", "name": "Bash", "input": {}}) + "\n" +
+        _claude_user_line([{"type": "tool_result", "content": "ok"}]) + "\n",
+        encoding="utf-8",
+    )
+    assert tl._last_assistant_text(str(transcript)) == "TURN-2 ANSWER"
+
+
 def test_stop_writes_empty_text_when_no_transcript(tdir: Path) -> None:
     rc = _run_main({"hook_event_name": "Stop"})
     assert rc == 0
