@@ -18,6 +18,7 @@ import pytest
 
 from aelfrice.noise_filter import (
     _TRANSCRIPT_ACK_PHRASES,
+    _TRANSCRIPT_ACK_RE,
     _looks_like_written_prose,
     is_transcript_noise,
     is_transcript_scaffolding,
@@ -145,14 +146,39 @@ def test_trailing_whitespace_does_not_flip_the_prose_verdict() -> None:
     assert is_transcript_noise("git add . ") is True
 
 
-def test_scaffolding_is_a_strict_subset_of_noise() -> None:
-    """`is_transcript_scaffolding` must never admit something
-    `is_transcript_noise` rejects — the logger relies on it as the
-    whole-payload half of the same predicate.
+def test_the_scaffolding_split_is_proper_over_the_control_corpus() -> None:
+    """The split the logger's two arms rest on, asserted as a *partition*.
 
-    Falsifiable by adding a category to the scaffolding function that the
-    noise function does not consult.
+    The containment on its own is not a test. `is_transcript_noise` opens
+    with `if is_transcript_scaffolding(sentence): return True`, so
+    `scaffolding(x) -> noise(x)` holds for every input by construction — a
+    version of this that only walked the corpus asserting the implication
+    stayed green even with `return True` wired into the top of
+    `is_transcript_scaffolding`, and its docstring named a falsifier
+    ("add a category the noise function does not consult") that the
+    delegation makes impossible.
+
+    What is *not* free is that the subset is proper, and proper in the
+    direction the logger depends on: scaffolding condemns the whole payload,
+    so an ack must never be scaffolding or a prompt is dropped again on its
+    leading ack, which is the #1371 §1 defect. Every ack the filter knows
+    about is checked, not two hand-picked literals — a widening that swallows
+    the unpunctuated chat acks is invisible to a spot check.
+
+    Falsifiable by widening `is_transcript_scaffolding` to claim any ack
+    (`return True` at the top turns this red; so does folding
+    `_TRANSCRIPT_ACK_PHRASES` into the scaffolding branch).
     """
+    scaffolding = {s for s in MUST_DIE if is_transcript_scaffolding(s)}
+    assert scaffolding, "no control row is structural — the split is degenerate"
+    assert set(MUST_DIE) - scaffolding, "every control row is structural"
+
+    acks = set(_TRANSCRIPT_ACK_PHRASES) | {
+        s for s in MUST_DIE if _TRANSCRIPT_ACK_RE.match(s) is not None
+    }
+    assert not (acks & scaffolding), sorted(acks & scaffolding)
+
+    # And the containment itself, stated as the invariant the logger reads.
     for sentence in MUST_DIE + MUST_SURVIVE:
         if is_transcript_scaffolding(sentence):
             assert is_transcript_noise(sentence), sentence
