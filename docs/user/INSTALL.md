@@ -189,7 +189,7 @@ Bare `aelf setup` wires the v1.2.0 auto-capture pipeline alongside the read-side
 | transcript-ingest | `UserPromptSubmit` + `Stop` + `PreCompact` + `PostCompact` | **on** | logs every turn to a per-project JSONL; PreCompact rotates the file and ingests it into beliefs/edges |
 | commit-ingest | `PostToolUse:Bash` | **on** | each successful `git commit` runs the triple extractor on the message |
 | session-start | `SessionStart` | **on** | new sessions open with L0 locked beliefs already injected |
-| stop-lock-prompt | `Stop` | **on** | prompt to lock correction-class beliefs from this session (#582) |
+| stop-lock-prompt | `Stop` | **on** | prompt to lock correction-class (#582) and directive (#1315) beliefs from this session |
 | search-tool | `PreToolUse:Grep` / `Glob` | **on** (v3.0.1+) | belief-store check before the agent's own Grep/Glob fires |
 | search-tool-bash | `PreToolUse:Bash` | **on** (v3.0.1+) | belief-store check before shell grep/rg/find/fd/ack fires |
 | pre-issue-guard | `PreToolUse:Bash` | **on** (v3.4.0+) | blocks `gh issue create` when the title overlaps an existing issue or shipped commit at or above 0.5 Jaccard (#941) |

@@ -192,7 +192,7 @@ qualifications, both deliberate and both reachable today:
 | `aelf-transcript-logger` | `UserPromptSubmit`, `Stop`, `PreCompact`, `PostCompact` | One JSONL line per conversation turn; PreCompact rotates and re-ingests. | v2.1 (#529) |
 | `aelf-commit-ingest` | `PostToolUse:Bash` | After `git commit`, ingest the commit message via the triple extractor. | v2.1 (#529) |
 | `aelf-session-start-hook` | `SessionStart` | Inject locked beliefs as `<aelfrice-baseline>` once per session; emit `<recent-work>` sub-block (#887). | v2.1 (#529) |
-| `aelf-stop-hook` | `Stop` | End-of-session lock prompt — surfaces session-scoped unlocked correction-class beliefs as `<aelfrice-session-end>` with pre-filled `aelf lock` commands (#582); also hosts the default-off cadence checkpoint dispatch (#749 / #871 / #876). | v3.0 |
+| `aelf-stop-hook` | `Stop` | End-of-session lock prompt — surfaces session-scoped unlocked correction-class (#582) and directive (#1315) beliefs as `<aelfrice-session-end>` with pre-filled `aelf lock` commands, the directive ones carrying `--for` when a memory verb governs a stated window; also hosts the default-off cadence checkpoint dispatch (#749 / #871 / #876). | v3.0 |
 | `aelf-search-tool-hook` | `PreToolUse:Grep|Glob` | Surface relevant beliefs adjacent to tool-driven search (#674). | v3.0.1 (#738) |
 | `aelf-search-tool-hook` | `PreToolUse:Bash` | Same entry point, separate settings.json matcher, for bash search invocations. | v3.0.1 (#738) |
 | `aelf-pre-issue-hook` | `PreToolUse:Bash` | Duplicate-detection guard before `gh issue create` — blocks (exit 2) on Jaccard title overlap ≥ 0.5 against open issues and shipped commits (#941). | v3.5.0 |

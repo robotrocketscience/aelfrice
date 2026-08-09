@@ -9771,11 +9771,13 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--stop-hook", dest="stop_hook",
         action=argparse.BooleanOptionalAction, default=True,
         help=(
-            "wire the Stop hook so each session-end prompts to lock any "
-            "correction-class beliefs created in this session "
-            "(see #582). Coexists with the transcript-ingest Stop entry. "
-            "Default: ON. Pass --no-stop-hook to skip. "
-            "Set AELF_AUTOLOCK_CORRECTIONS=1 to auto-lock instead of prompt."
+            "wire the Stop hook so each session-end prompts to lock the "
+            "correction-class beliefs (see #582) and directive beliefs "
+            "(see #1315) created in this session. Coexists with the "
+            "transcript-ingest Stop entry. Default: ON. Pass "
+            "--no-stop-hook to skip. Set AELF_AUTOLOCK_CORRECTIONS=1 to "
+            "auto-lock the correction-class ones instead of prompting; "
+            "directives are always proposed, never written unasked."
         ),
     )
     p_setup.add_argument(
