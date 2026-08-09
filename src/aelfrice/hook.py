@@ -37,7 +37,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Any, Final, Iterator, Sequence, cast
+from typing import IO, Any, Final, Iterator, Mapping, Sequence, cast
 
 # Deliberately outside the guarded block below: `config_discovery` is
 # stdlib-only and imports nothing from `aelfrice`, so it cannot be the
@@ -2121,6 +2121,7 @@ def _split_belief_lines(
     *,
     order_policy: str | None = None,
     provenance_render: bool | None = None,
+    annotations: Mapping[str, str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Render hits into verbatim `<belief>` lines + reference manifest lines.
 
@@ -2140,11 +2141,24 @@ def _split_belief_lines(
     # module-load path (these formatters run only after a retrieve()).
     from aelfrice.retrieval import (  # noqa: PLC0415
         is_reference_lock,
+        is_lock_conflict_annotations_enabled,
+        last_lock_conflict_annotations,
         lock_manifest_line,
         order_for_injection,
         resolve_order_policy,
     )
     policy = order_policy if order_policy is not None else resolve_order_policy()
+    # #1365. Read the snapshot here rather than at each of the three
+    # `_split_belief_lines` call sites: this is the single render
+    # boundary, so an annotation added here cannot be missed by one
+    # formatter and present in another. `annotations` is explicitly
+    # passable so tests can pin it without a real retrieve().
+    if annotations is None:
+        annotations = (
+            last_lock_conflict_annotations()
+            if is_lock_conflict_annotations_enabled()
+            else {}
+        )
     # #1326: resolved here, next to the order policy, because both are
     # render-boundary decisions and both must stay explicitly passable so
     # tests can pin them without touching the environment.
@@ -2180,9 +2194,18 @@ def _split_belief_lines(
         speculative_attr = (
             ' speculative="1"' if h.origin == ORIGIN_SPECULATIVE else ""
         )
+        # #1365. ANNOTATE, never DROP: name the lock this belief
+        # disagrees with and let the agent adjudicate (#605). Appended
+        # last so every existing attribute keeps its position, and empty
+        # unless the default-off flag is on — with it off `annotations`
+        # is empty and this line is byte-identical to before.
+        conflict_lock_id = annotations.get(h.id)
+        conflict_attr = (
+            f' conflicts_with="{conflict_lock_id}"' if conflict_lock_id else ""
+        )
         belief_lines.append(
             f'<belief id="{h.id}" lock="{lock_attr}"'
-            f'{speculative_attr}>{content}</belief>'
+            f'{speculative_attr}{conflict_attr}>{content}</belief>'
         )
     if provenance_render:
         belief_lines = _group_by_provenance(hits, belief_lines)
