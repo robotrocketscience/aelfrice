@@ -310,6 +310,14 @@ def _last_assistant_text(transcript_path: str | None) -> str | None:
     rollout log) and varies across host versions. We scan from the
     tail and try each known shape per line, so schema selection is
     per-record rather than per-file.
+
+    The scan stops at the user prompt that opened the current turn
+    (#1439). Without that bound a turn ending in a tool call or an
+    interrupt walked past the boundary and returned the *previous*
+    turn's answer, which the Stop hook then wrote as the answer to
+    this turn. None is the correct result for a turn that produced
+    no assistant text; the one caller (`_handle_stop`) already
+    degrades it to an empty stub row.
     """
     if not transcript_path:
         return None
@@ -337,7 +345,49 @@ def _last_assistant_text(transcript_path: str | None) -> str | None:
             text = _assistant_text_codex(obj_typed)
         if text is not None:
             return text
+        if _is_turn_start_user_record(obj_typed):
+            # Turn boundary reached with no assistant text behind it.
+            return None
     return None
+
+
+def _is_turn_start_user_record(obj: dict[str, object]) -> bool:
+    """True when this record is the user prompt that opens a turn.
+
+    Host-agnostic (#1439): it recognises the Claude-host shape
+    (top-level `role`/`type` == "user") and the Codex rollout shape
+    (`payload.role` == "user" on a `message` item), mirroring the
+    two assistant extractors.
+
+    Mid-turn tool results are *not* boundaries. The Claude-host shape
+    carries them as user-role records, so treating them as boundaries
+    would discard assistant text the same turn really produced. Codex
+    carries them as `function_call_output` items, which are not
+    messages and so never match here.
+    """
+    if obj.get("type") == "response_item":
+        payload = obj.get("payload")
+        if not isinstance(payload, dict):
+            return False
+        payload_typed = cast(dict[str, object], payload)
+        return (
+            payload_typed.get("type") == "message"
+            and payload_typed.get("role") == "user"
+        )
+    if (obj.get("role") or obj.get("type")) != "user":
+        return False
+    msg = obj.get("message")
+    if not isinstance(msg, dict):
+        return True
+    content = cast(dict[str, object], msg).get("content")
+    if not isinstance(content, list) or not content:
+        return True
+    # A user record carrying only tool results is mid-turn, not a boundary.
+    return not all(
+        isinstance(seg, dict)
+        and cast(dict[str, object], seg).get("type") == "tool_result"
+        for seg in cast(list[object], content)
+    )
 
 
 def _assistant_text_claude(obj: dict[str, object]) -> str | None:
