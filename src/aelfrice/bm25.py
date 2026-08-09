@@ -1545,6 +1545,49 @@ def sidecar_path_for(
     return Path(db_path + _SIDECAR_SUFFIX)
 
 
+# #1407. Which of the three sidecar outcomes the most recent
+# `BM25IndexCache.get()` in this process took. #1380's cost case is
+# `cold_cost x cold_rate`; `cold_cost` is measured (2.89 s cold first-fire at
+# 44,668 beliefs) and `cold_rate` is not, and the best prior estimate was a
+# latency proxy that cannot tell a rebuild from lock contention or a cold page
+# cache.
+#
+# Three states, not a boolean: since #1199 a stale sidecar no longer implies a
+# full rebuild, and collapsing `incremental` into `full_rebuild` is exactly what
+# made #1199's 86.2% and the 8.5% latency proxy look contradictory when they
+# were measuring different events.
+SIDECAR_FRESH: Final[str] = "fresh"
+SIDECAR_INCREMENTAL: Final[str] = "incremental"
+SIDECAR_FULL_REBUILD: Final[str] = "full_rebuild"
+SIDECAR_OUTCOMES: Final[frozenset[str]] = frozenset(
+    {SIDECAR_FRESH, SIDECAR_INCREMENTAL, SIDECAR_FULL_REBUILD}
+)
+
+# `None` means no `get()` ran since the last reset — a fire that never built an
+# index at all (no L1 lane, gate-skipped). That must stay distinguishable from
+# `fresh`, or a fire doing no work is counted as a cache hit and the rate this
+# exists to measure is silently inflated.
+_LAST_SIDECAR_OUTCOME: str | None = None
+
+
+def last_sidecar_outcome() -> str | None:
+    """The sidecar outcome of the most recent `BM25IndexCache.get()` in this
+    process, or None if none has run since `reset_sidecar_outcome()` (#1407)."""
+    return _LAST_SIDECAR_OUTCOME
+
+
+def reset_sidecar_outcome() -> None:
+    """Clear the outcome snapshot. Called by the hook before retrieval so the
+    value read afterwards belongs to this fire and not a previous one."""
+    global _LAST_SIDECAR_OUTCOME
+    _LAST_SIDECAR_OUTCOME = None
+
+
+def _record_sidecar_outcome(outcome: str) -> None:
+    global _LAST_SIDECAR_OUTCOME
+    _LAST_SIDECAR_OUTCOME = outcome
+
+
 @dataclass
 class BM25IndexCache:
     """Lazy, invalidation-aware wrapper around a single `BM25Index`.
@@ -1599,6 +1642,10 @@ class BM25IndexCache:
                 self._index = None
         if self._index is None:
             self._index = self._load_sidecar()
+        if self._index is not None:
+            # #1407: reached with no build work — either the in-process
+            # index survived revalidation, or the sidecar loaded fresh.
+            _record_sidecar_outcome(SIDECAR_FRESH)
         if self._index is None:
             # Read the stamp BEFORE building: a mutation that lands
             # during the build makes the stamp stale, so the next
@@ -1624,7 +1671,12 @@ class BM25IndexCache:
                     per_field=self.per_field,
                     b_anchor=self.b_anchor,
                 )
+                if index is not None:
+                    # #1407: stale sidecar reused via update_from.
+                    _record_sidecar_outcome(SIDECAR_INCREMENTAL)
             if index is None:
+                # #1407: built from scratch — the outcome #1380 is priced on.
+                _record_sidecar_outcome(SIDECAR_FULL_REBUILD)
                 index = BM25Index.build(
                     self.store,
                     anchor_weight=self.anchor_weight,
