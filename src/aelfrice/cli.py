@@ -4599,7 +4599,7 @@ def _cmd_setup_codex(
     hooks_path: Path | None = None,
     skills_dest: Path | None = None,
 ) -> int:
-    """`aelf setup --host codex`: write ~/.codex/hooks.json (#1052).
+    """`aelf setup --host codex`: write $CODEX_HOME/hooks.json (#1052).
 
     ``hooks_path`` / ``skills_dest`` override the real-HOME defaults so
     the CLI path is testable (#1136).
@@ -9184,7 +9184,8 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
     p_doctor.add_argument(
         "--host", choices=("claude", "codex"), default="claude",
         help=(
-            "host to diagnose. 'codex' scans ~/.codex/hooks.json shape, "
+            "host to diagnose. 'codex' scans the Codex home's hooks.json "
+            "shape ($CODEX_HOME, else ~/.codex), "
             "aelfrice hook coverage, the `hooks` feature state, and "
             "[hooks.state] trust coverage (#1052); brain-graph checks "
             "are host-independent and are skipped in this mode."
@@ -9727,7 +9728,8 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         help=(
             "host to install hooks for. 'claude' (default) targets "
             "settings.json; 'codex' writes the portable aelfrice hook "
-            "subset into ~/.codex/hooks.json and prints trust-approval "
+            "subset into $CODEX_HOME/hooks.json (else ~/.codex) and prints "
+            "trust-approval "
             "guidance (#1052). Tool-matcher hooks are Claude-only "
             "pending #1055."
         ),
@@ -9951,7 +9953,8 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--host", choices=("claude", "codex"), default="claude",
         help=(
             "host whose hook wiring the unsetup half removes. 'codex' "
-            "removes the aelfrice entries from ~/.codex/hooks.json and "
+            "removes the aelfrice entries from $CODEX_HOME/hooks.json "
+            "(else ~/.codex) and "
             "the $aelf-* agent skills (#1136); data disposition "
             "(--keep-db / --purge / --archive) is host-independent."
         ),
@@ -9998,7 +10001,7 @@ def build_parser(*, show_advanced: bool = False) -> argparse.ArgumentParser:
         "--host", choices=("claude", "codex"), default="claude",
         help=(
             "host to remove hooks from. 'codex' removes only "
-            "aelfrice-owned entries from ~/.codex/hooks.json (#1052)."
+            "aelfrice-owned entries from $CODEX_HOME/hooks.json (#1052)."
         ),
     )
     p_unsetup.add_argument(

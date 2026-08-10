@@ -1,8 +1,9 @@
 """Codex host target for setup / doctor / uninstall (#1052).
 
 Writes, validates, and removes the aelfrice hook set in Codex's
-``~/.codex/hooks.json``. Design constraints established in #1054/#1052
-triage:
+``$CODEX_HOME/hooks.json`` (``~/.codex/hooks.json`` when that variable
+is unset — see ``resolve_codex_home``, #1427). Design constraints
+established in #1054/#1052 triage:
 
 - **hooks.json only.** The documented ``{"hooks": {"<Event>": [...]}}``
   shape is the stable public surface. The per-hook trust ledger
@@ -18,7 +19,7 @@ triage:
   of ours are replaced wholesale on every setup run; everything else in
   the file is preserved byte-for-byte at the JSON level. An unparseable
   hooks.json is never overwritten without ``force`` — a real-world
-  ``~/.codex/hooks.json`` has been observed holding truncated JSON, and
+  Codex ``hooks.json`` has been observed holding truncated JSON, and
   clobbering user content on a parse error is worse than refusing.
 - **Portable hook subset.** Host-agnostic hooks are installed:
   retrieval injection (UserPromptSubmit), the transcript logger
@@ -782,7 +783,7 @@ _SKILL_FILENAME: Final[str] = "SKILL.md"
 # ``aelf setup`` / ``aelf doctor`` / ``aelf unsetup`` / ``aelf uninstall``
 # runs, which on this host would install, scan, or tear down ANOTHER
 # host's configuration (settings-file hooks, statusline, slash bundle)
-# instead of ``~/.codex/hooks.json`` + the ``$aelf-*`` skills. Their
+# instead of the Codex home's ``hooks.json`` + the ``$aelf-*`` skills. Their
 # generated skills carry an adapter note steering every such invocation
 # to the ``--host codex`` form.
 _HOST_MANAGEMENT_SKILLS: Final[frozenset[str]] = frozenset({
@@ -797,7 +798,8 @@ _HOST_MANAGEMENT_SKILLS: Final[frozenset[str]] = frozenset({
 # instead, so implicit skill triggering matches what the command
 # actually does here (#1136).
 _SETUP_DESCRIPTION_OVERRIDE: Final[str] = (
-    "Install the aelfrice hooks in ~/.codex/hooks.json and the $aelf-* "
+    "Install the aelfrice hooks in the Codex home's hooks.json "
+    "($CODEX_HOME, else ~/.codex) and the $aelf-* "
     "agent skills under ~/.agents/skills/ on this host."
 )
 
