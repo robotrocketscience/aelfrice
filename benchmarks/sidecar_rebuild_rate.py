@@ -153,7 +153,11 @@ def main() -> int:
     print(f"  non-UPS rows (ignored)         {non_ups}")
     print(f"  fires with an outcome (scored) {scored}")
     print(f"  no key: gate-skipped           {gate_skipped}   <- can NEVER carry the key")
-    if unclassified:
+    # Gate on whether the split was COMPUTABLE, not on the count. With no
+    # keyed row `pre_field` is None, and a log whose unclassified count is
+    # also 0 -- every fire gate-skipped -- fell through to the else branch
+    # and printed the literal "None" as a row count.
+    if pre_field is None:
         print(
             f"  no key: unclassified           {unclassified}   <- no keyed row yet, "
             "so pre-field and no-index-work cannot be told apart"
