@@ -448,6 +448,12 @@ def _atomic_replace_hooks(path: Path, text: str, expected: str) -> bool:
         try:
             tmp_path.unlink()
         except OSError:
+            # Best-effort cleanup of the temp file on the failure path. If the
+            # unlink itself fails we still want the ORIGINAL exception to
+            # propagate — a stray temp file in the destination directory is a
+            # smaller problem than swallowing the reason the commit failed,
+            # and `mkstemp` names do not collide, so a leftover cannot
+            # corrupt a later attempt.
             pass
         raise
     return True
