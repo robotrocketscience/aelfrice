@@ -121,6 +121,81 @@ def _identity_from_git_common_dir(git_dir: Path) -> str:
     return f"{basename}-{digest}"
 
 
+#: Sidecar holding the durable repo identity, beside the repo store at
+#: ``<git-common-dir>/aelfrice/``. It lives on the filesystem rather than
+#: in `schema_meta` because the identity is needed to *construct* the
+#: store (it is `project_context_default`), and reading it from inside the
+#: store it parameterises is circular. `local_scope_id` is also not this
+#: value by design — `store.py` records it as federation provenance
+#: ("which DB a row came from"), a different lifecycle.
+_IDENTITY_SIDECAR_NAME: Final[str] = "identity"
+
+
+def _durable_identity(store_dir: Path, path_derived: str) -> str:
+    """Resolve the repo identity that both hosts agree on (#1415).
+
+    The identity used to be a digest of the absolute git-common-dir. Native
+    Windows and WSL spell one physical repository differently
+    (``C:\\repo\\.git`` against ``/mnt/c/repo/.git``), so they minted two
+    identities for the same store while reading and writing the same
+    ``memory.db`` — splitting one repo's provenance in two.
+
+    The first host to reach this writes its answer to a sidecar in the
+    directory the store already shares, and every later host reads it. That
+    seed is deliberately `path_derived`, **not** a fresh UUID: on the host
+    that creates the file the identity is byte-identical to what it was
+    before, so rows already stamped with it stay reachable and no migration
+    is needed. The other host's spelling is appended as an alias, which is
+    what makes the split *recorded* rather than merely resolved.
+
+    Fails soft to `path_derived` on any I/O error — a read-only checkout or
+    an unwritable ``.git`` must not break store open, and degrading to the
+    old behaviour is exactly as correct as it was before.
+    """
+    sidecar = store_dir / _IDENTITY_SIDECAR_NAME
+    try:
+        raw = sidecar.read_text(encoding="utf-8")
+    except OSError:
+        raw = ""
+
+    lines = [ln.strip() for ln in raw.splitlines()]
+    entries = [ln for ln in lines if ln and not ln.startswith("#")]
+
+    if entries:
+        canonical, aliases = entries[0], entries[1:]
+        if path_derived != canonical and path_derived not in aliases:
+            # Record this host's spelling. Once per host, not per open.
+            try:
+                with sidecar.open("a", encoding="utf-8") as fh:
+                    fh.write(f"{path_derived}\n")
+            except OSError:
+                pass
+        return canonical
+
+    try:
+        store_dir.mkdir(parents=True, exist_ok=True)
+        # Exclusive create: two hosts racing the first open must not both
+        # believe they set the canonical value. The loser re-reads below.
+        with sidecar.open("x", encoding="utf-8") as fh:
+            fh.write(
+                "# aelfrice repo identity (#1415). First line is canonical;\n"
+                "# later lines are equivalent spellings seen on other hosts.\n"
+                f"{path_derived}\n"
+            )
+        return path_derived
+    except FileExistsError:
+        try:
+            for ln in sidecar.read_text(encoding="utf-8").splitlines():
+                stripped = ln.strip()
+                if stripped and not stripped.startswith("#"):
+                    return stripped
+        except OSError:
+            pass
+    except OSError:
+        pass
+    return path_derived
+
+
 def repo_identity_from_db_path(p: Path) -> str:
     """Repo identity for a store at `p`, derived from its on-disk layout.
 
@@ -137,7 +212,7 @@ def repo_identity_from_db_path(p: Path) -> str:
         return ""
     if p.parent.name != _REPO_STORE_PARENT_DIRNAME:
         return ""
-    return _identity_from_git_common_dir(p.parent.parent)
+    return _durable_identity(p.parent, _identity_from_git_common_dir(p.parent.parent))
 
 
 def repo_identity() -> str:
@@ -154,7 +229,10 @@ def repo_identity() -> str:
     git_dir = _git_common_dir()
     if git_dir is None:
         return ""
-    return _identity_from_git_common_dir(git_dir)
+    return _durable_identity(
+        git_dir / _REPO_STORE_PARENT_DIRNAME,
+        _identity_from_git_common_dir(git_dir),
+    )
 
 
 def _open_store() -> MemoryStore:
