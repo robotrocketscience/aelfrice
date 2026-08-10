@@ -132,6 +132,51 @@ If you are changing retrieval ranking, compression, or clustering behaviour,
 say so in the PR body and expect the quality evidence to come from a
 corpus-bearing run rather than from CI being green.
 
+### Changelog entries — one file per entry
+
+**Add a file under `CHANGELOG/unreleased/`. Do not edit the
+`[Unreleased]` block of `CHANGELOG/v4.md`.**
+
+```
+CHANGELOG/unreleased/<issue>-<slug>.md
+```
+
+```markdown
+### Fixed
+
+- **One-line title ([#1475](https://github.com/robotrocketscience/aelfrice/issues/1475)).** Body prose.
+```
+
+Exactly one `### <Category>` heading and exactly one top-level `- `
+bullet per file. Category is one of `Added`, `Changed`, `Deprecated`,
+`Removed`, `Fixed`, `Security`, `Performance`, `Documentation`,
+`Build`, `CI`, `Dependencies`, `Internal`, `Reverted`, `Notes` — the
+`CATEGORIES` list in `scripts/collate_changelog.py`, which is exactly
+the set the committed changelogs already use. Indented
+continuation paragraphs under the bullet are preserved verbatim.
+`scripts/collate_changelog.py` refuses a file that breaks either rule
+rather than guessing.
+
+Why (#1475): entries are 2,000-4,500-character single lines, and
+thirteen of fourteen open PRs were inserting them into the same
+eight-line region. Every merge then forced a hand resolution on every
+remaining PR, and the resolution — two 4 KB lines with no intra-line
+granularity — can drop an entry without leaving a trace in the diff.
+Two branches adding files at distinct paths never conflict.
+
+**Transition.** The `[Unreleased]` block is still valid; collation
+emits it first and then the files. A PR already editing that block does
+not need to be rebased onto this convention to merge. New entries
+should be files.
+
+**At release time**, `scripts/collate_changelog.py` folds both into the
+dated section of `CHANGELOG/v<major>.md` and empties the directory —
+see [docs/concepts/RELEASING.md](docs/concepts/RELEASING.md).
+`release-docs-check` fails a release PR that leaves either the block or
+the directory undrained, and `scripts/check_changelog_dupes.py` compares
+entry files against each other and against the block, so two PRs
+restating the same fix in two files are still caught.
+
 ### Commit-message prefix enforcement
 
 `scripts/check-commit-msg.py` validates that every commit subject starts with

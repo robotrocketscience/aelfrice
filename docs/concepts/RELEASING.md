@@ -11,7 +11,22 @@ Semver in force. Current line: v4.x. The historical `0.x.y` milestones on the v1
 1. Branch `release/vX.Y.Z` off `main`.
 2. Bump `pyproject.toml` `version`. (Single source of truth — no `__version__` in code.)
 3. `uv lock`.
-4. In `CHANGELOG/v<major>.md` (e.g. `CHANGELOG/v3.md` for any v3.x release), move `[Unreleased]` entries into `[X.Y.Z] — YYYY-MM-DD`. Add the compare-link footnote at the bottom of the same file. Top-level `CHANGELOG.md` is a thin index; do not edit it for routine releases. A new major (`vN+1.0.0`) needs a new `CHANGELOG/v<N+1>.md` and a row added to the index.
+4. Collate the changelog (#1475):
+
+   ```bash
+   python3 scripts/collate_changelog.py --version X.Y.Z --date YYYY-MM-DD
+   ```
+
+   This folds **both** unreleased surfaces into a new `## [X.Y.Z] - YYYY-MM-DD` section of `CHANGELOG/v<major>.md` (e.g. `CHANGELOG/v3.md` for any v3.x release) and deletes the entry files:
+
+   - the `[Unreleased]` block of `CHANGELOG/v<major>.md` — emitted **first** within each category, so a PR that predates the file convention still releases correctly and never had to be rebased onto it;
+   - `CHANGELOG/unreleased/<issue>-<slug>.md`, one file per entry — appended after, sorted by file name.
+
+   Categories come out in the `CATEGORIES` order declared in the script — the Keep-a-Changelog six (Added, Changed, Deprecated, Removed, Fixed, Security) then the house additions (Performance, Documentation, Build, CI, Dependencies, Internal, Reverted, Notes); empty ones are omitted. A heading outside that list is an error, caught on the PR that adds the entry file rather than at the cut. Nothing reads filesystem order, so two maintainers cutting the same release get the same bytes. `--dry-run` prints the result and touches nothing.
+
+   Then **add the compare-link footnote by hand** at the bottom of the same file — the script does not, and `release-docs-check` requires it. Top-level `CHANGELOG.md` is a thin index; do not edit it for routine releases. A new major (`vN+1.0.0`) needs a new `CHANGELOG/v<N+1>.md` and a row added to the index.
+
+   `release-docs-check` refuses a release PR that leaves either surface undrained: content still under `[Unreleased]`, or any `*.md` other than `README.md` still in `CHANGELOG/unreleased/`. The second check exists because a stranded entry file is *silent* — nothing renders it, so it would surface only as a duplicate in the next release. Collation and both drain assertions are pinned by `tests/test_collate_changelog.py`.
 5. Update README roadmap status.
 6. Run locally:
    ```bash
