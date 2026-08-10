@@ -6,7 +6,9 @@ The signal is split equally across the previous turn's retrieved
 beliefs via `apply_sentiment_to_pending`, which calls
 `feedback.apply_feedback` once per *live* pending belief id with 1/N of
 the signal's magnitude — N being the live ids that are not user-locked,
-since the #1168 floor refuses a posterior move on a lock.
+since the #1168 floor refuses a posterior move on a lock. When every
+live id is locked there is no such id, and N falls back to the live
+count so the offered magnitudes still sum to one unit.
 
 Design contract (spec: `docs/design/v2_sentiment_feedback.md`):
 
@@ -36,10 +38,15 @@ Distribution shape: `apply_sentiment_to_pending` splits the signal
 equally across the live pending belief ids that can take it — each gets
 `valence / N`, so one utterance is worth one unit of evidence in total
 rather than one unit per belief (#1372 §13). Per-rank scaling remains
-out of scope (decision ratified 2026-04-29: "ranked distribution adds a
-knob without an evidence-gate"); the equal split is not a claim that the
-beliefs are equally implicated, only a refusal to manufacture
-evidence in proportion to pack size.
+out of scope on the second half of the 2026-04-29 ratification —
+"matches the research-line behavior; ranked distribution adds a knob
+without an evidence-gate" — quoted in full because its first clause is
+now the weaker one: the ported behaviour it named passed the *full*
+valence to every pending id, and this function no longer does. The
+evidence-gate clause is what survives #1372, and it is the one that was
+load-bearing. The equal split is not a claim that the beliefs are
+equally implicated, only a refusal to manufacture evidence in
+proportion to pack size.
 
 This module does NOT decide *when* to call into it. The hook layer is
 responsible for: (a) checking the config flag, (b) resolving the
@@ -347,7 +354,9 @@ def apply_sentiment_to_pending(
     `ESCALATED_NEGATIVE_VALENCE`. Has no effect on positive signals;
     the correction-frequency path only escalates negatives by design.
 
-    **Divides by the count of live, unlocked ids** (#1372 §13). The signal
+    **Divides by the count of live, unlocked ids** — or by the live count
+    when every live id is locked, since a zero divisor is not a
+    distribution (#1372 §13). The signal
     is one utterance about (at most) one of the beliefs on the prior turn,
     so it is worth one unit of evidence in total, not one unit *per
     belief*. Applying the full magnitude N times manufactured N-1 units of
@@ -394,11 +403,13 @@ def apply_sentiment_to_pending(
     # a posterior move on a LOCK_USER belief (the #1168 lock floor) and
     # writes an audit-only row instead. Counting locks in the divisor
     # therefore shrinks the delivered total by the locked fraction —
-    # measured on this branch, a 4-id pack with three LOCK_USER ids under
-    # a 1.5 signal moved 0.375, i.e. 0.25 of a unit, where github/main
-    # moved 1.5 (1.0 unit) onto its one unlocked id. Locked packs are the
-    # ordinary shape rather than the corner case: L0 locks are injected on
-    # every prompt, which is the premise the lock floor itself argues from
+    # measured against the lock-counting divisor, a 4-id pack with three
+    # LOCK_USER ids under a 1.5 signal moves 0.375, i.e. 0.25 of a unit.
+    # As written below that same pack moves the full 1.5 (1.0 unit) onto
+    # its one unlocked id, which is what github/main moves too; the divisor
+    # is what keeps that true. Locked packs are the ordinary shape rather
+    # than the corner case: L0 locks are injected on every prompt, which
+    # is the premise the lock floor itself argues from
     # (feedback.py). Dividing by the ids that can take the evidence keeps
     # the delivered total at one unit whatever the lock mix.
     receivers = [b.id for b in live if b.lock_level != LOCK_USER]
