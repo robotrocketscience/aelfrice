@@ -149,23 +149,6 @@ def _open_store() -> MemoryStore:
     return MemoryStore(str(p), project_context_default=repo_identity_from_db_path(p))
 
 
-def open_store_read_only() -> MemoryStore:
-    """Open the canonical store `mode=ro` — never creates, never migrates.
-
-    #1416. The parent directory is not created and the open-time write
-    window (DDL, migrations, scope-id mint, expired-lock sweep) does not
-    run. Raises `ReadOnlyStoreUnavailable` when a read-only handle cannot
-    be opened at all; see that exception for why the WAL sidecars decide
-    this and why `immutable=1` is not the escape hatch.
-    """
-    p = db_path()
-    return MemoryStore(
-        str(p),
-        project_context_default=repo_identity_from_db_path(p),
-        read_only=True,
-    )
-
-
 def open_store_for_read() -> MemoryStore:
     """Open the store for a command whose contract is observational.
 
