@@ -20,3 +20,7 @@ telemetry/
 # never commit it. Covers the single-slot rotation sibling (.1) too.
 hook_audit.jsonl
 hook_audit.jsonl.*
+
+# mutmut 3 materialises a mutated copy of the tree here while it runs (#1457).
+# Build artefact of the run, not source; regenerated on every invocation.
+mutants/

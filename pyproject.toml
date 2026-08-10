@@ -142,6 +142,20 @@ pythonVersion = "3.12"
 typeCheckingMode = "strict"
 reportMissingTypeStubs = false
 
+[tool.mutmut]
+# mutmut 3 takes its configuration from here, not from CLI flags. `mutation.yml`
+# passed `--paths-to-mutate` / `--tests-dir`, which mutmut 3 removed, so every
+# scheduled run since 2026-06-21 died on `No such option` and reported success
+# through a blanket `|| true` (#1457). `source_paths` is mandatory — mutmut
+# aborts rather than guessing when it cannot find the tree.
+source_paths = ["src/aelfrice"]
+
+# Generated and vendored surfaces carry no hand-written behaviour to protect,
+# and mutating them inflates the run without adding signal.
+do_not_mutate = [
+    "src/aelfrice/__init__.py",
+]
+
 [tool.deptry]
 known_first_party = ["aelfrice", "benchmarks"]
 
