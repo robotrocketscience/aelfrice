@@ -608,9 +608,12 @@ class DoctorReport:
     hrr_persist_state: dict[str, object] | None = None
     # #1359: whether the UserPromptSubmit hook will write the
     # <aelfrice-memory> block, resolved from AELFRICE_MEMORY_BLOCK and
-    # `[memory_block] enabled`. None when the probe did not run —
-    # "is this thing on?" is the question the block's own hint line
-    # points here to answer, so a silent absence is not an answer.
+    # `[memory_block] enabled`. "Is this thing on?" is the question the
+    # block's own hint line points here to answer, so the row is
+    # unconditional on both `format_report` paths rather than rendered
+    # only when the state is interesting. None is the one silent case
+    # and means the probe itself failed — `aelfrice.hook` would not
+    # import — which is a broken install doctor reports elsewhere.
     memory_block_enabled: bool | None = None
 
     @property
@@ -783,6 +786,12 @@ def _diagnose_memory_block(project_root: Path | None) -> bool | None:
     `aelfrice.hook` is imported lazily — it pulls the retrieval stack,
     which doctor otherwise never pays for. Same policy as the
     `read_user_prompt_submit_telemetry` import above.
+
+    Scope caveat: the env half resolves from *doctor's* process. A user
+    who sets `AELFRICE_MEMORY_BLOCK` only in settings.json's `env` block
+    gives the hook a value this shell never sees, so doctor reports the
+    TOML answer. The TOML half is exact — it is read from
+    `project_root`, the same way the hook reads it.
     """
     try:
         from aelfrice.hook import memory_block_enabled  # noqa: PLC0415

@@ -2563,11 +2563,13 @@ injected tokens — #1382 — must re-take its baseline after this lands.
 Unconditional, unlike the coverage line — the whole point is that a user
 who has never read the docs learns the block exists and how to turn it
 off. Measured cost: 97 characters (99 bytes UTF-8 — the em dash is
-three) = 25 estimated tokens under the project's `_CHARS_PER_TOKEN = 4`
-convention, on every fire that emits a block. That is 1.7% of the
-`DEFAULT_HOOK_TOKEN_BUDGET = 1500` the UPS hook actually passes — not of
-the 2400-token CLI default, which `resolve_token_budget` ranks below an
-explicit caller kwarg.
+three) = 25 estimated tokens under `_audit_tokens_from_block`, the
+4-chars-per-token estimator that produces the audited count (this
+module's constant is `_CORE_CHARS_PER_TOKEN = 4`; the float spelling
+`_CHARS_PER_TOKEN = 4.0` lives in retrieval), on every fire that emits
+a block. That is 1.7% of the `DEFAULT_HOOK_TOKEN_BUDGET = 1500` the UPS
+hook actually passes — not of the 2400-token CLI default, which
+`resolve_token_budget` ranks below an explicit caller kwarg.
 """
 
 
