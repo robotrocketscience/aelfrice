@@ -33,6 +33,8 @@ sys.path.insert(0, str(_REPO / "scripts"))
 
 from merge_train_gate import (  # noqa: E402
     ADVISORY_NAMES,
+    FLOOR_NAMES,
+    SELF_NAMES,
     evaluate,
     latest_per_name,
     base_refusal,
@@ -67,6 +69,17 @@ def _all_required_green() -> list[dict[str, Any]]:
     return [_run(name) for name in sorted(REQUIRED)]
 
 
+# The whole presence floor green (#1458). `_all_required_green` is no longer a
+# fully-covered head: since the floor widened past the required set, the five
+# required contexts alone are the *partial rollup* this issue is about. Tests
+# whose subject is "an otherwise-green head" must build from this instead.
+FLOOR = REQUIRED | FLOOR_NAMES
+
+
+def _all_floor_green() -> list[dict[str, Any]]:
+    return [_run(name) for name in sorted(FLOOR)]
+
+
 def _rules(contexts: list[str]) -> list[dict[str, Any]]:
     return [
         {"type": "pull_request", "parameters": {}},
@@ -84,7 +97,7 @@ def _rules(contexts: list[str]) -> list[dict[str, Any]]:
 
 def test_red_advisory_with_everything_else_green_does_not_block() -> None:
     """The #1394 case. This is the whole point of the change."""
-    runs = [*_all_required_green(), _run("Sourcery review", "failure")]
+    runs = [*_all_floor_green(), _run("Sourcery review", "failure")]
     verdict = evaluate(runs, REQUIRED)
     assert verdict["failing"] == []
     assert verdict["pending"] == []
@@ -233,7 +246,7 @@ def test_a_required_context_that_never_reported_is_missing_not_pending() -> None
     either hang the train to its timeout or, worse, let a required context
     that never ran pass as absent-and-therefore-fine.
     """
-    runs = [r for r in _all_required_green() if r["name"] != "secrets-scan"]
+    runs = [r for r in _all_floor_green() if r["name"] != "secrets-scan"]
     verdict = evaluate(runs, REQUIRED)
     assert verdict["missing"] == ["secrets-scan"]
     assert verdict["pending"] == []
@@ -284,8 +297,8 @@ def test_an_empty_rollup_is_all_missing_not_all_green() -> None:
     verdict = evaluate([], REQUIRED)
     assert verdict["failing"] == []
     assert verdict["pending"] == []
-    assert verdict["missing"] == sorted(REQUIRED), (
-        "an empty rollup must report every required context as missing; "
+    assert verdict["missing"] == sorted(FLOOR), (
+        "an empty rollup must report every floor name as missing; "
         "without that the workflow cannot tell it from a green one"
     )
 
@@ -304,7 +317,7 @@ def test_advisory_bots_alone_do_not_satisfy_the_floor() -> None:
     verdict = evaluate(runs, REQUIRED)
     assert verdict["failing"] == []
     assert verdict["pending"] == []
-    assert verdict["missing"] == sorted(REQUIRED)
+    assert verdict["missing"] == sorted(FLOOR)
 
 
 def test_an_unreadable_payload_still_aborts(tmp_path: Path) -> None:

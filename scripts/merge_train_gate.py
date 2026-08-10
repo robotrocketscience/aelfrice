@@ -36,16 +36,26 @@ read the set only to *label* which failures were required: the gate covered
 every non-advisory check either way, so losing the set cost nothing but the
 annotation, and resolution returning nothing warned and continued.
 
-Adding the presence floor changed that. `missing` — required contexts absent
-from the rollup — is the one signal here that is not an absence-test, and it is
-derived *from the required set*. An empty set yields an empty `missing`, which
-removes the floor entirely and restores exactly the hole #1435 describes: a
-head SHA carrying no check-runs reads as fully green. Worse, it fails silently,
+Adding the presence floor changed that. `missing` — floor names absent from the
+rollup — is the one signal here that is not an absence-test. It was derived
+*from the required set alone*, so an empty set yielded an empty `missing`, which
+removed the floor entirely and restored exactly the hole #1435 describes: a
+head SHA carrying no check-runs reads as fully green. Worse, it failed silently,
 because every remaining signal reports clean.
 
 So resolution returning nothing now exits non-zero and the workflow aborts
 fail-closed. Unknown still means gate on more, never on less — it is just that
 "more" now includes a set we must actually have.
+
+**The floor is wider than the required set (#1458).** It is
+`required | FLOOR_NAMES`, where `FLOOR_NAMES` is every check-run emitted by an
+unfiltered `pull_request` workflow. Required-only covered a head with *no*
+checks but not one with *some*: five required contexts against ~26 check-runs
+meant 21 gates could be absent and the verdict was identical. `FLOOR_NAMES`
+carries the floor now, so the fail-closed abort above is defence in depth rather
+than the only thing holding it up — but it stays, because a required set that
+will not resolve means the ruleset read failed, and that is worth stopping for
+on its own.
 
 Two behaviours are inherited deliberately and must not be simplified away:
 
@@ -90,6 +100,49 @@ SELF_NAMES: frozenset[str] = frozenset({"Attempt merge-train FF", "merge"})
 # check-run, so it never reached this filter and its entry is inert today —
 # kept because it costs nothing and a bot can change surface.
 ADVISORY_NAMES: frozenset[str] = frozenset({"Sourcery review", "CodeRabbit"})
+
+# The presence floor (#1458). Check-run names emitted by every workflow that
+# triggers on `pull_request` and carries **no** `paths:`/`paths-ignore:` filter.
+#
+# #1435 built the floor from the *required* set, which closed the zero-checks
+# case but not the partial one: a head carrying just the five required contexts
+# evaluated identically to one carrying all ~26. #1436 made that constructible —
+# dispatching `ci.yml` and `staging-gate.yml` produces the five required
+# contexts and nothing else, so `migration-policy-check`, `e2e`, `CodeQL`,
+# `typos` and `Windows smoke` need never have run.
+#
+# Why these names and not others: a path-filtered workflow that does not match a
+# PR's diff never runs, so it emits no row, so a floor containing its names would
+# block every docs-only PR — the constraint that makes #1458 AC1 hard. Excluding
+# path-filtered workflows makes AC2 hold *by construction* rather than by
+# argument. Verified empirically over the 14 PRs open on 2026-08-10: all 14 names
+# below are present on every one of them.
+#
+# Deliberately excluded, though also unfiltered, because they do not emit a row
+# on every PR head: `auto-add-to-board` (`types: [opened]` only),
+# `auto-status-board` (`types: [closed]`), `replay-soak` (`schedule:` only), and
+# merge-train's own `merge` job (SELF_NAMES — waiting on it would deadlock).
+#
+# This list drifts when a workflow is added.
+# `tests/test_merge_train_gate.py::test_every_unfiltered_pr_workflow_is_in_the_floor`
+# is what closes that: it re-derives the set from `.github/workflows/` and fails
+# if a workflow contributes no name here.
+FLOOR_NAMES: frozenset[str] = frozenset({
+    "bench-smoke",              # bench-smoke.yml
+    "commit-msg-prefix",        # staging-gate.yml
+    "history-scan",             # staging-gate.yml
+    "label",                    # label-docs.yml
+    "migration-policy-check",   # migration-policy-check.yml
+    "pattern-scan",             # staging-gate.yml
+    "pr-body-issue-link",       # staging-gate.yml
+    "pr-title-prefix",          # staging-gate.yml
+    "pytest (3.12)",            # ci.yml
+    "pytest (3.13)",            # ci.yml
+    "release-docs-check",       # staging-gate.yml
+    "secrets-scan",             # staging-gate.yml
+    "size-check",               # pr-size-soft-cap.yml
+    "typos",                    # typos.yml
+})
 
 FAILING_CONCLUSIONS: frozenset[str] = frozenset(
     {"failure", "timed_out", "action_required"}
@@ -145,10 +198,10 @@ def evaluate(
     as before. `required` is used only to annotate which of the failures were
     required contexts; it never narrows the gate.
 
-    `missing` is a required context with no check-run on the SHA at all, held
-    separately from `pending` because they mean different things: pending is
-    "reported, not finished", missing is "never reported", and only the second
-    can sit forever.
+    `missing` is a name in the presence floor with no check-run on the SHA at
+    all, held separately from `pending` because they mean different things:
+    pending is "reported, not finished", missing is "never reported", and only
+    the second can sit forever.
 
     It **gates** (#1435). Every other signal here is an absence — nothing
     failing, nothing pending — and an empty rollup satisfies all of them, so
@@ -157,6 +210,14 @@ def evaluate(
     waits on it rather than aborting on it, because a context that has not
     started yet and one that never will are the same observation until the
     deadline separates them.
+
+    The floor is `required | FLOOR_NAMES`, not `required` alone (#1458).
+    Required-only closed the *zero*-checks case and left the *partial* one: the
+    required set is five contexts against ~26 check-runs, so a head carrying
+    only those five — which #1436's dispatch hatch makes constructible — was
+    indistinguishable from a fully covered head. `required` stays in the union
+    rather than being replaced by it, so a context the ruleset requires is
+    floored even if no unfiltered workflow emits it.
     """
     latest = latest_per_name(check_runs)
     gating = {n: r for n, r in latest.items() if n not in ADVISORY_NAMES}
@@ -178,7 +239,7 @@ def evaluate(
         "failing_required": sorted(n for n in failing if n in required),
         "failing_not_required": sorted(n for n in failing if n not in required),
         "pending": pending,
-        "missing": sorted(n for n in required if n not in latest),
+        "missing": sorted((required | FLOOR_NAMES) - set(latest)),
         "advisory_failing": advisory_failing,
         # Advisory entries that matched nothing on this SHA. A renamed bot
         # would silently start blocking again, so the run says so out loud.
