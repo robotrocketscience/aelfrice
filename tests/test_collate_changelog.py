@@ -10,6 +10,14 @@ lose an entry. Both were mutation-checked: `files[:-1]` in `collate`'s
 merge loop reddens the first, `paths[:-1]` in `cut`'s unlink loop
 reddens the second, and dropping the `sorted()` in `entry_files`
 reddens `test_order_does_not_depend_on_filesystem_iteration`.
+
+An entry can be lost by halves as well as whole, so the same standard
+applies to its body: `entry = lines[starts[0]]` in `parse_entry_file`
+— keeping the bullet, discarding every continuation paragraph —
+reddens `test_a_multi_paragraph_entry_file_survives_verbatim` and
+`test_the_committed_v4_changelog_collates_without_loss`. The latter
+compares whole entry blocks, and derives its expectation without the
+parser it is checking.
 """
 from __future__ import annotations
 
@@ -240,6 +248,31 @@ def test_existing_block_entries_come_first_within_a_category() -> None:
     assert _issues(_bullets(out)) == ["98", "99", "101"]
 
 
+def test_a_multi_paragraph_entry_file_survives_verbatim() -> None:
+    """The twin of the block test below, for the new convention.
+
+    An entry's continuation paragraphs are most of its text — the
+    committed #1475 entry file is 2,591 characters across 5 lines, of
+    which the bullet line is one. Collation is a re-arrangement and
+    never a re-wrap, so the whole block has to arrive byte for byte;
+    keeping only the bullet would drop four fifths of the entry and
+    leave a plausible-looking one-liner in the release.
+    """
+    entry = "\n".join([
+        "- **Multi-part ([#101](u)).** First paragraph.",
+        "",
+        "  **Second paragraph.** Detail.",
+        "",
+        "  Third paragraph, indented like the committed entries.",
+    ])
+    out = collate(
+        _changelog(),
+        [("101-slug.md", f"### Fixed\n\n{entry}\n")],
+        "4.3.0", "2026-08-10",
+    )
+    assert entry in out
+
+
 def test_a_multi_paragraph_block_entry_survives_verbatim() -> None:
     """The v4 block has entries with indented continuation paragraphs."""
     block = [
@@ -404,14 +437,37 @@ def test_the_committed_unreleased_directory_parses() -> None:
         assert entry.startswith("- ")
 
 
+def _entry_blocks(text: str) -> list[str]:
+    """Every `- ` bullet with its continuation lines, verbatim.
+
+    Re-derived here rather than reusing `parse_entry_file`: an
+    expectation computed with the code under test cannot catch that
+    code dropping something. A `#` heading closes the open block.
+    """
+    blocks: list[str] = []
+    inside = False
+    for line in text.split("\n"):
+        if line.startswith("- "):
+            blocks.append(line)
+            inside = True
+        elif line.startswith("#"):
+            inside = False
+        elif inside:
+            blocks[-1] += "\n" + line
+    return [block.rstrip() for block in blocks]
+
+
 def test_the_committed_v4_changelog_collates_without_loss() -> None:
-    """99 block entries in the real file; none may vanish."""
+    """99 block entries in the real file; none may vanish, none truncate.
+
+    Whole entries, not opening lines. Most of an entry's text is its
+    indented continuation paragraphs — the committed entry file is
+    2,591 characters of which the bullet line is the first of five —
+    so comparing first lines would pass just as happily on a collation
+    that discarded every paragraph after the first.
+    """
     text = (_REPO / "CHANGELOG" / "v4.md").read_text(encoding="utf-8")
-    before = [
-        line for line in
-        text.split("## [Unreleased]")[1].split("\n## [")[0].split("\n")
-        if line.startswith("- ")
-    ]
+    block = text.split("## [Unreleased]")[1].split("\n## [")[0]
     directory = _REPO / "CHANGELOG" / "unreleased"
     files = [
         (p.name, p.read_text(encoding="utf-8"))
@@ -420,11 +476,14 @@ def test_the_committed_v4_changelog_collates_without_loss() -> None:
 
     out = collate(text, files, "4.3.0", "2026-08-10")
 
-    assert sorted(_bullets(out)) == sorted(
-        before + [
-            parse_entry_file(t, n)[1].split("\n")[0] for n, t in files
-        ]
-    )
+    expected = _entry_blocks(block)
+    assert len(expected) == 99, "the block this test claims to cover"
+    for name, file_text in files:
+        one = _entry_blocks(file_text)
+        assert len(one) == 1, f"{name} holds {len(one)} entries"
+        expected += one
+    section = out.split("## [4.3.0] - 2026-08-10")[1].split("\n## [")[0]
+    assert sorted(_entry_blocks(section)) == sorted(expected)
 
 
 # ---------------------------------------------------------------------------
