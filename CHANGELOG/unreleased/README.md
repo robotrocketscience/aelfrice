@@ -27,6 +27,14 @@ the list `CATEGORIES` in the script, and the only headings the
 committed changelogs use. Indented
 continuation paragraphs under the bullet are preserved verbatim.
 
+This directory is flat and holds nothing else. A different suffix
+(`.txt`, `.markdown`, an uppercase `.MD`), an extensionless file or a
+subdirectory is an error naming the path — collation refuses it,
+`scripts/check_changelog_dupes.py` refuses it, and `release-docs-check`
+lists it as stranded. All three refuse rather than skip: a file
+collation will not collect is one the release omits without a word,
+which is the one failure this convention has to keep loud.
+
 Collation order is stated in the script's docstring: categories in
 `CATEGORIES` order; within a category, entries still in the
 `[Unreleased]` block of `CHANGELOG/v<major>.md` first, then these files

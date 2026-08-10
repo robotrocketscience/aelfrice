@@ -34,6 +34,16 @@ cut = collate_changelog.cut
 entry_files = collate_changelog.entry_files
 main = collate_changelog.main
 parse_entry_file = collate_changelog.parse_entry_file
+scan_entry_dir = collate_changelog.scan_entry_dir
+
+# The duplicate check keeps its own copy of the same walk — both are
+# standalone stdlib scripts. Loaded here so the two can be compared
+# against each other and against the workflow's scan in one place.
+_DUPES = _REPO / "scripts" / "check_changelog_dupes.py"
+_dupes_spec = importlib.util.spec_from_file_location("_dupes", _DUPES)
+assert _dupes_spec and _dupes_spec.loader
+check_changelog_dupes = importlib.util.module_from_spec(_dupes_spec)
+_dupes_spec.loader.exec_module(check_changelog_dupes)
 
 HEADER = "\n".join([
     "# Changelog — v4.x",
@@ -178,11 +188,12 @@ def test_collation_is_byte_identical_to_hand_assembly() -> None:
 def test_order_does_not_depend_on_filesystem_iteration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`glob` order is not collation order.
+    """Directory order is not collation order.
 
     Handing back the same directory in the opposite order must not
     change a byte — otherwise the release section's order would depend
-    on which machine cut it.
+    on which machine cut it. `iterdir` is what the walk actually reads,
+    so that is what is perturbed.
     """
     directory = tmp_path / "unreleased"
     directory.mkdir()
@@ -192,12 +203,12 @@ def test_order_does_not_depend_on_filesystem_iteration(
 
     forward = [p.name for p in entry_files(directory)]
 
-    real_glob = Path.glob
+    real_iterdir = Path.iterdir
 
-    def reversed_glob(self: Path, pattern: str) -> Iterator[Path]:
-        return iter(sorted(real_glob(self, pattern), reverse=True))
+    def reversed_iterdir(self: Path) -> Iterator[Path]:
+        return iter(sorted(real_iterdir(self), reverse=True))
 
-    monkeypatch.setattr(Path, "glob", reversed_glob)
+    monkeypatch.setattr(Path, "iterdir", reversed_iterdir)
     assert [p.name for p in entry_files(directory)] == forward
     assert forward == ["101-slug.md", "102-slug.md", "103-slug.md"]
 
@@ -434,3 +445,92 @@ def test_the_release_gate_ignores_the_directory_note(tmp_path: Path) -> None:
     (directory / "README.md").write_text("note\n", encoding="utf-8")
 
     assert _run_leftover(tmp_path) == []
+
+
+# ---------------------------------------------------------------------------
+# A path that is not an entry file must be loud in all three places.
+#
+# Globbing `*.md` one level deep is a filter, and a filter is silent
+# about what it drops. The collator, the duplicate check and the
+# release gate all filtered the same way, so a `notes.txt` — or an
+# entry hidden one directory down — was invisible to all three at once:
+# never collated, never dupe-checked, never reported as stranded, exit
+# 0 with a success message. That is the release-time silence this whole
+# convention has to buy off, so it is an error naming the path.
+# ---------------------------------------------------------------------------
+
+# One of each way a path can fail to be a top-level `<issue>-<slug>.md`.
+_STRAY_NAMES = ("102-b.txt", "103-c.markdown", "104-d", "105-e.MD", "sub")
+
+
+def _mixed_tree(root: Path) -> Path:
+    """`CHANGELOG/unreleased/` holding one real entry and five strays."""
+    directory = root / "CHANGELOG" / "unreleased"
+    directory.mkdir(parents=True)
+    (directory / "README.md").write_text("note\n", encoding="utf-8")
+    name, text = _file(101)
+    (directory / name).write_text(text, encoding="utf-8")
+    for stray in _STRAY_NAMES:
+        if stray == "sub":
+            (directory / stray).mkdir()
+            hidden, hidden_text = _file(106)
+            (directory / stray / hidden).write_text(
+                hidden_text, encoding="utf-8"
+            )
+        else:
+            (directory / stray).write_text(text, encoding="utf-8")
+    return directory
+
+
+def test_a_path_that_is_not_an_entry_file_is_an_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Named, not skipped — and the cut writes nothing."""
+    directory = _mixed_tree(tmp_path)
+
+    entries, stray = scan_entry_dir(directory)
+
+    assert [p.name for p in entries] == ["101-slug.md"]
+    assert [str(p.relative_to(directory)) for p in stray] == [
+        "102-b.txt", "103-c.markdown", "104-d", "105-e.MD",
+        "sub", "sub/106-slug.md",
+    ]
+
+    with pytest.raises(CollationError) as raised:
+        entry_files(directory)
+    for path in stray:
+        assert str(path) in str(raised.value)
+
+    changelog = tmp_path / "v4.md"
+    changelog.write_text(_changelog(), encoding="utf-8")
+    code = main([
+        "collate_changelog.py", "--version", "4.3.0", "--date",
+        "2026-08-10", "--changelog", str(changelog), "--unreleased",
+        str(directory),
+    ])
+
+    assert code == 1
+    assert "102-b.txt" in capsys.readouterr().err
+    assert changelog.read_text(encoding="utf-8") == _changelog()
+    assert (directory / "101-slug.md").is_file(), "nothing unlinked"
+
+
+@pytest.mark.timeout(30)
+def test_the_three_call_sites_see_the_same_paths(tmp_path: Path) -> None:
+    """The collator, the duplicate check and the release gate agree.
+
+    The two scripts must classify identically — a path one collates and
+    the other skips is an entry that ships unchecked. The gate must be
+    *broader* than either: it lists everything but the note, so the
+    only way to satisfy it is a directory genuinely drained.
+    """
+    directory = _mixed_tree(tmp_path)
+
+    assert scan_entry_dir(directory) == (
+        check_changelog_dupes.scan_entry_dir(directory)
+    )
+
+    entries, stray = scan_entry_dir(directory)
+    assert sorted(_run_leftover(tmp_path)) == sorted(
+        str(p.relative_to(tmp_path)) for p in entries + stray
+    )

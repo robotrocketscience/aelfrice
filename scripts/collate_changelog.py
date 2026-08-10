@@ -31,6 +31,13 @@ Category must be one already in use in the changelog — the
 Keep-a-Changelog six plus the house additions listed in
 `CATEGORIES`.
 
+The directory is flat and holds nothing else. Any other path under it
+— a different suffix, an extensionless file, an uppercase `.MD`, a
+subdirectory — is an error naming the path, never a skip: a file
+collation would not collect is one the release would omit without a
+word. `release-docs-check`'s leftover scan is deliberately broader
+than the acceptance rule here, so the same path is loud there too.
+
 ## Ordering rule (deterministic, filesystem-independent)
 
 1. Categories in `CATEGORIES` order — the Keep-a-Changelog six
@@ -95,16 +102,37 @@ class CollationError(Exception):
     """An entry file or `[Unreleased]` block that cannot be collated."""
 
 
-def entry_files(directory: Path) -> list[Path]:
-    """Entry files in collation order — sorted by name, not by glob.
+def scan_entry_dir(directory: Path) -> tuple[list[Path], list[Path]]:
+    """Partition `directory` into `(entry files, everything else)`.
 
-    A missing directory is an error, not an empty one. `Path.glob` on a
-    path that does not exist returns `[]` without complaint, so a
+    Walks the whole tree with `iterdir` instead of globbing `*.md` one
+    level deep. A glob is a filter, and a filter is silent about what
+    it drops: `notes.txt`, `1475-slug.markdown`, an extensionless file,
+    an uppercase `.MD` on a case-sensitive filesystem, and anything
+    inside a subdirectory were invisible to collation, to the release
+    gate's leftover scan and to the duplicate check at once — never
+    collated, never reported as stranded, never compared. The entry
+    such a file holds ships as nothing at all, which is precisely the
+    quiet release-time failure this convention has to buy off.
+
+    **A subdirectory is an error, not a place to collate from.** The
+    convention is one flat directory of `<issue>-<slug>.md`: collation
+    order is by file *name*, which two same-named files in different
+    subdirectories cannot supply unambiguously, and a grouping
+    directory would be a second convention nobody wrote down. The walk
+    recurses anyway so the hidden entry is named, not just the
+    directory hiding it.
+
+    A missing directory is an error too, not an empty one. `Path.glob`
+    on a path that does not exist returns `[]` without complaint, so a
     typo'd `--unreleased` or a cut run from the wrong working directory
-    would collate zero files, exit 0 and report the release drained —
-    the quiet failure this whole convention has to buy off.
+    would collate nothing, exit 0 and report the release drained.
     `check_changelog_dupes.py` already refuses a directory argument
     that does not exist; this matches it.
+
+    Both lists are ordered deterministically — entries by name (the
+    collation order), the rest by path relative to `directory` — so no
+    diagnostic depends on filesystem iteration order either.
     """
     if not directory.is_dir():
         raise CollationError(
@@ -112,10 +140,45 @@ def entry_files(directory: Path) -> list[Path]:
             f"an empty result here means a wrong --unreleased path, "
             f"not a release with no entries."
         )
-    return sorted(
-        (p for p in directory.glob("*.md") if p.name != README_NAME),
-        key=lambda p: p.name,
+    entries: list[Path] = []
+    stray: list[Path] = []
+    pending = [directory]
+    while pending:
+        for path in pending.pop().iterdir():
+            relative = path.relative_to(directory)
+            if path.is_dir() and not path.is_symlink():
+                stray.append(path)
+                pending.append(path)
+            elif relative.as_posix() == README_NAME:
+                continue
+            elif len(relative.parts) == 1 and path.suffix == ".md":
+                entries.append(path)
+            else:
+                stray.append(path)
+    return (
+        sorted(entries, key=lambda p: p.name),
+        sorted(stray, key=lambda p: p.relative_to(directory).as_posix()),
     )
+
+
+def entry_files(directory: Path) -> list[Path]:
+    """Entry files in collation order — sorted by name, not by glob.
+
+    Refuses rather than skips: anything `scan_entry_dir` could not
+    classify as an entry file is an error naming the path, because the
+    alternative is a release that quietly omits it.
+    """
+    entries, stray = scan_entry_dir(directory)
+    if stray:
+        raise CollationError(
+            f"{directory}: not entry files, and never collated — "
+            + ", ".join(str(path) for path in stray)
+            + f". An entry is a top-level '<issue>-<slug>.md' (plus the "
+            f"'{README_NAME}' note); a subdirectory, another suffix or "
+            f"an uppercase '.MD' would ship as nothing at all. Rename "
+            f"or move it."
+        )
+    return entries
 
 
 def parse_entry_file(text: str, source: str) -> tuple[str, str]:

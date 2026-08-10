@@ -157,6 +157,13 @@ continuation paragraphs under the bullet are preserved verbatim.
 `scripts/collate_changelog.py` refuses a file that breaks either rule
 rather than guessing.
 
+The directory is flat and holds nothing else. A different suffix
+(`.txt`, `.markdown`, an uppercase `.MD`), an extensionless file or a
+subdirectory is an error naming the path — in collation, in
+`scripts/check_changelog_dupes.py` and in `release-docs-check` alike.
+All three refuse rather than skip: a file collation will not collect
+is one the release would omit without a word.
+
 Why (#1475): entries are 2,000-4,500-character single lines, and
 thirteen of fourteen open PRs were inserting them into the same
 eight-line region. Every merge then forced a hand resolution on every

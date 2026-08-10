@@ -38,7 +38,11 @@ anywhere reaches 120.
 ## Directories, and why comparison is global (#1475)
 
 An argument may be a directory — `CHANGELOG/unreleased/`, one file per
-entry. Every `*.md` in it except `README.md` is an entry file.
+entry. Every top-level `*.md` in it except `README.md` is an entry
+file, and anything else under it — another suffix, an extensionless
+file, a subdirectory — is an error naming the path, exactly as the
+collator treats it. Skipping such a path would report a pass on an
+entry that was never compared and will never be collated either.
 
 Those files are checked *together with* the `[Unreleased]` block of the
 changelog files given in the same invocation, not one file at a time.
@@ -144,11 +148,43 @@ def find_duplicates(text: str) -> list[tuple[str, int, str]]:
     ]
 
 
-def entry_files(directory: Path) -> list[Path]:
-    """Entry files in `CHANGELOG/unreleased/`, in a stable order."""
-    return sorted(
-        (p for p in directory.glob("*.md") if p.name != README_NAME),
-        key=lambda p: p.name,
+def scan_entry_dir(directory: Path) -> tuple[list[Path], list[Path]]:
+    """Partition `directory` into `(entry files, everything else)`.
+
+    The twin of `collate_changelog.scan_entry_dir`, and deliberately
+    the same classification: a path this check skips is a path the
+    collator would skip too, and both silences land on the same file.
+    Globbing `*.md` one level deep read `notes.txt`, an extensionless
+    file, an uppercase `.MD` and anything in a subdirectory as "not
+    there" — so an entry hidden that way was never compared against
+    anything, and the check reported a pass having not examined it.
+    A subdirectory is an error rather than a place to look, matching
+    the flat `<issue>-<slug>.md` convention the collator enforces.
+
+    Duplicated rather than imported: both are standalone stdlib
+    scripts run by `release-docs-check` as `python3 scripts/<name>.py`,
+    and `tests/test_collate_changelog.py` pins that the two agree.
+    Callers check `is_dir()` first — `main` does, and reports a missing
+    directory itself.
+    """
+    entries: list[Path] = []
+    stray: list[Path] = []
+    pending = [directory]
+    while pending:
+        for path in pending.pop().iterdir():
+            relative = path.relative_to(directory)
+            if path.is_dir() and not path.is_symlink():
+                stray.append(path)
+                pending.append(path)
+            elif relative.as_posix() == README_NAME:
+                continue
+            elif len(relative.parts) == 1 and path.suffix == ".md":
+                entries.append(path)
+            else:
+                stray.append(path)
+    return (
+        sorted(entries, key=lambda p: p.name),
+        sorted(stray, key=lambda p: p.relative_to(directory).as_posix()),
     )
 
 
@@ -166,9 +202,22 @@ def main(argv: list[str]) -> int:
             # An empty directory is the expected steady state right
             # after a release, so it is not an error — but the caller
             # naming a directory that does not exist is.
+            entries, stray = scan_entry_dir(path)
+            for outlier in stray:
+                # Loud on the PR that adds it. Skipping it here would
+                # mean reporting a pass on an entry never compared.
+                print(
+                    f"::error file={outlier}::Not an entry file, so it "
+                    f"is neither collated at release nor checked for "
+                    f"duplicates here. Entries are top-level "
+                    f"'<issue>-<slug>.md' under {path} (plus the "
+                    f"'{README_NAME}' note). Rename or move it.",
+                    file=sys.stderr,
+                )
+                failed = True
             sources.extend(
                 (str(f), f.read_text(encoding="utf-8"), UNRELEASED_SECTION)
-                for f in entry_files(path)
+                for f in entries
             )
         elif path.is_file():
             sources.append(

@@ -118,7 +118,7 @@ def test_committed_changelogs_are_clean(path: Path) -> None:
 # during the transition.
 # ---------------------------------------------------------------------------
 
-entry_files = check_changelog_dupes.entry_files
+scan_entry_dir = check_changelog_dupes.scan_entry_dir
 main = check_changelog_dupes.main
 
 _WORKFLOW = _REPO / ".github" / "workflows" / "staging-gate.yml"
@@ -189,6 +189,31 @@ def test_distinct_entry_files_pass(tmp_path: Path) -> None:
         "2-b.md": "### Fixed\n\n" + _entry("Another fix ([#2])", "b"),
     })
     assert main(argv) == 0
+
+
+def test_a_path_that_is_not_an_entry_file_is_an_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A skipped path is an entry compared against nothing.
+
+    The control below shows the directory is otherwise clean, so this
+    fails on the stray paths and not on the entry beside them.
+    """
+    argv = _tree(tmp_path, "", {
+        "1-a.md": "### Fixed\n\n" + _entry("One fix ([#1])", "a"),
+    })
+    directory = tmp_path / "unreleased"
+    (directory / "2-b.txt").write_text(
+        "### Fixed\n\n" + _entry("Another fix ([#2])", "b") + "\n",
+        encoding="utf-8",
+    )
+    (directory / "sub").mkdir()
+
+    assert main(argv) == 1
+
+    err = capsys.readouterr().err
+    assert str(directory / "2-b.txt") in err
+    assert str(directory / "sub") in err
 
 
 def test_an_empty_entry_directory_is_not_an_error(tmp_path: Path) -> None:

@@ -238,9 +238,18 @@ jobs:
           # unlike a stranded [Unreleased] bullet nothing renders it, so
           # nothing else would show it. README.md is the directory note,
           # not an entry.
-          leftover=$(find CHANGELOG/unreleased -maxdepth 1 -type f -name '*.md' ! -name 'README.md' 2>/dev/null | sort)
+          #
+          # Deliberately broader than the collator's acceptance rule
+          # (top-level '*.md'): every path except the note, at any
+          # depth, whatever its suffix. A scan that filtered the same
+          # way the collator collects would share its blind spot, and a
+          # 'notes.txt' or an 'old/1475-slug.md' would be invisible to
+          # both — never collated, never reported stranded. Broader
+          # means the only way to satisfy this step is a directory the
+          # collator has genuinely emptied.
+          leftover=$(find CHANGELOG/unreleased -mindepth 1 ! -path 'CHANGELOG/unreleased/README.md' 2>/dev/null | sort)
           if [ -n "$leftover" ]; then
-            echo "::error file=${changelog_file}::Release PR detected (${base_ver} -> ${head_ver}) but CHANGELOG/unreleased/ still holds entry files. Collate them: python3 scripts/collate_changelog.py --version ${head_ver} --date YYYY-MM-DD"
+            echo "::error file=${changelog_file}::Release PR detected (${base_ver} -> ${head_ver}) but CHANGELOG/unreleased/ is not empty. Collate the entries: python3 scripts/collate_changelog.py --version ${head_ver} --date YYYY-MM-DD. Anything listed below that the collator will not collect (a suffix other than '.md', a subdirectory) it also refuses by name — rename or remove it."
             printf '%s\n' "$leftover" | sed 's/^/  /'
             fail=1
           fi
