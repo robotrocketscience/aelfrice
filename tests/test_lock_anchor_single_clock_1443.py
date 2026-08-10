@@ -152,6 +152,50 @@ def test_the_until_path_takes_the_same_single_read(
     assert expires_at == parse_until(spec, now=_as_dt(locked_at))
 
 
+def test_a_sub_second_past_until_is_still_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hypothesis: the single read did not move `--until`'s refusal
+    boundary.
+
+    `parse_until` refuses on `parsed <= now`, so whatever `now` it is
+    handed *is* the boundary. Truncating the shared read to whole seconds
+    for the anchor moves that boundary back by up to a second, and a
+    `--until` inside the gap — already past, but after the truncated
+    read — is accepted and written as a lock the next `_open_store()`
+    sweep silently discards. That is the state `parse_until`'s docstring
+    names as the thing it exists to prevent.
+
+    The clock is frozen at a fixed instant with microseconds on it rather
+    than measured, because the window this pins is under a second wide
+    and a wall-clock probe would be a race. The `--until` value sits
+    250ms *before* the read: past, so it must be refused, and inside the
+    truncated second, so a truncated `now` accepts it.
+
+    Falsifiable by handing `parse_until` the truncated read: the command
+    exits 0 and the store holds an already-expired lock.
+    """
+    from aelfrice import cli
+
+    frozen = datetime(2030, 6, 1, 12, 0, 0, 500_000, tzinfo=timezone.utc)
+
+    class _FrozenClock(datetime):
+        @classmethod
+        def now(cls, tz: object | None = None) -> datetime:
+            # `tz` is accepted for signature compatibility and ignored:
+            # the frozen instant is already UTC-aware.
+            return frozen
+
+    monkeypatch.setattr(cli, "datetime", _FrozenClock)
+    spec = frozen.replace(microsecond=250_000).isoformat()
+    assert _run(["lock", "the freeze already ended", "--until", spec]) == 1
+    store = MemoryStore(str(tmp_path / "cli.db"))
+    try:
+        assert store.list_locked_beliefs() == []
+    finally:
+        store.close()
+
+
 def test_a_malformed_window_still_fails_before_the_store_is_opened(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

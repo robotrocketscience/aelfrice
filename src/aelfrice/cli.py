@@ -1972,18 +1972,27 @@ def _cmd_lock(args: argparse.Namespace, out: object) -> int:
     # #1314 open-time sweep, so not a constant — and nothing said which
     # of the two a later expiry audit was looking at.
     #
-    # Truncated to whole seconds at the read, not at the stamp: the
-    # stored form has second resolution, so an anchor resolved from a
-    # microsecond-bearing instant is not the anchor the row records and
-    # the identity fails by the microseconds the stamp drops.
-    now_dt = datetime.now(timezone.utc).replace(microsecond=0)
+    # Truncated to whole seconds for the two consumers that need the
+    # anchor, not at the stamp: the stored form has second resolution, so
+    # an anchor resolved from a microsecond-bearing instant is not the
+    # anchor the row records and the identity fails by the microseconds
+    # the stamp drops.
+    #
+    # `parse_until` gets the UNtruncated read. It does not anchor
+    # anything — it resolves the typed instant and consults `now` only to
+    # refuse a value that is not in the future — so truncating its `now`
+    # would move the refusal boundary back by up to a second and accept
+    # an already-past `--until` that the next open-time sweep would
+    # silently discard, which is exactly what its docstring forbids.
+    read_at = datetime.now(timezone.utc)
+    now_dt = read_at.replace(microsecond=0)
     expires_at: str | None = None
     if window_given:
         try:
             expires_at = (
                 parse_for(lock_for, now=now_dt)
                 if lock_for is not None
-                else parse_until(lock_until, now=now_dt)
+                else parse_until(lock_until, now=read_at)
             )
         except LockExpiryError as exc:
             print(f"aelf lock: {exc}", file=sys.stderr)
