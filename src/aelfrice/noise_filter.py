@@ -722,8 +722,13 @@ def is_transcript_scaffolding(sentence: str) -> bool:
     `<task-notification>` block and wrong for a prompt that merely opens
     with "Yes.".
 
-    Measured on this repo's 6,274 archived user prompts: 762 of the 805
-    whole-prompt drops are category 3, and only 32 are acks.
+    Measured on this repo's 6,279 archived user prompts, the 805
+    whole-prompt drops the pre-#1371 gate made split **773 structural /
+    32 ack / 0 progress**: 759 category 3 (pseudo-XML), 8 category 2
+    (glyph), 3 category 1 (pasted command), 3 category 3b (box-draw).
+    773 is also exactly the count this predicate returns True for on
+    those 805, which is the cross-check that the split is this
+    function's and not a re-derivation of it.
     """
     if not sentence or not sentence.strip():
         return False
