@@ -412,11 +412,11 @@ def apply_sentiment_to_pending(
     # is the premise the lock floor itself argues from
     # (feedback.py). Dividing by the ids that can take the evidence keeps
     # the delivered total at one unit whatever the lock mix.
-    receivers = [b.id for b in live if b.lock_level != LOCK_USER]
+    receivers = sum(1 for b in live if b.lock_level != LOCK_USER)
     # An all-locked pack has no receiver; divide by the live count so the
     # offered magnitudes still sum to the signal, and let the floor refuse
     # every one of them. Nothing moves, which is what #1168 requires.
-    share = valence / (len(receivers) if receivers else len(live))
+    share = valence / (receivers or len(live))
 
     results: list[FeedbackResult] = []
     for b in live:
