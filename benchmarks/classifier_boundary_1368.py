@@ -32,7 +32,12 @@ must not mutate the corpus it measures.
 **The numbers move with the store.** These are counts over one operator's
 live belief set, not a fixed corpus, so they drift as beliefs accumulate.
 `n_active` is printed on every run and should be quoted alongside any figure
-taken from it. The CHANGELOG figures were taken at n=44,683.
+taken from it. The CHANGELOG figures were taken at n=44,687, the denominator
+`correction.py`, `classification_core.py` and `value_compare.py` also quote.
+Drift is slower than the counts suggest: a re-run at n=44,688 reproduced all
+six published figures unchanged (465/249/216 and 588/32/565, 310/19/289,
+10/10/0), so quote the denominator with the figure but do not read a moved
+`n_active` as a stale table.
 
 Usage::
 
@@ -60,18 +65,24 @@ from aelfrice.value_compare import _ENUM_MEMBER_INDEX, _extract_enums
 _NEG_TERMS: tuple[str, ...] = ("do not", "don't", "dont", "not", "no more", "no")
 
 
-def _neg_pattern(right_boundary: str) -> re.Pattern[str]:
-    """Compile the negation alternation with a chosen right-hand bound.
+def _neg_pattern(left_boundary: str, right_boundary: str) -> re.Pattern[str]:
+    """Compile the negation alternation with chosen left/right bounds.
 
-    Mirrors `correction._boundary_alternation`. Kept as a local replica
-    rather than an import so the three arms can be built side by side; the
-    shipped arm is cross-checked against the real `_NEGATION_RE` below.
+    Mirrors `correction._boundary_alternation`, which takes *both* edges
+    from its `hyphen_strict` flag — the shipped negation arm is
+    `(?<!-)\\b … (?![\\w-])`, not a plain `\\b` on the left. Both edges are
+    parameters here for the same reason the right one is: the arms differ
+    only in their bounds, and a hard-coded edge is how this replica last
+    drifted out of agreement with the pattern it replicates. Kept as a
+    local replica rather than an import so the arms can be built side by
+    side; the shipped arm is cross-checked against the real `_NEGATION_RE`
+    below.
     """
     parts: list[str] = []
     for term in sorted(_NEG_TERMS, key=len, reverse=True):
         pattern = re.escape(term)
         if term[:1].isalnum() or term[:1] == "_":
-            pattern = r"\b" + pattern
+            pattern = left_boundary + pattern
         if term[-1:].isalnum() or term[-1:] == "_":
             pattern = pattern + right_boundary
         parts.append(pattern)
@@ -86,8 +97,8 @@ def _pre_fix_pattern() -> re.Pattern[str]:
 
 def negation_arm(texts: list[str]) -> dict[str, Any]:
     before = _pre_fix_pattern()
-    plain = _neg_pattern(r"\b")
-    shipped = _neg_pattern(r"(?![\w-])")
+    plain = _neg_pattern(r"\b", r"\b")
+    shipped = _neg_pattern(r"(?<!-)\b", r"(?![\w-])")
 
     from aelfrice.correction import _NEGATION_RE
 
