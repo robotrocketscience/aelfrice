@@ -59,15 +59,35 @@ EVENT_POST_COMPACT: Final[str] = "PostCompact"
 # #1439: both hosts write an interrupt as a *user*-role record whose only
 # content is a harness-generated marker. The Claude-host harness writes
 # "[Request interrupted by user]" or "[Request interrupted by user for tool
-# use]" (17 occurrences across 75 local transcripts, all sharing the first
-# prefix); the Codex CLI writes a `<turn_aborted>` block ("The user
-# interrupted the previous turn on purpose...", 30 occurrences across 76
-# local rollouts, every one of them the record's only segment). Neither is a
-# new prompt, so neither may end the tail scan -- the partial text the
-# interrupted turn produced is the right answer.
+# use]" (every local occurrence shares the first prefix); the Codex CLI
+# writes a `<turn_aborted>` block ("The user interrupted the previous turn
+# on purpose...", every local occurrence the record's only segment).
+# Neither is a new prompt, so neither may end the tail scan -- the partial
+# text the interrupted turn produced is the right answer.
 _INTERRUPT_MARKER_PREFIXES: Final[tuple[str, ...]] = (
     "[Request interrupted by user",
     "<turn_aborted>",
+)
+
+# #1439: Codex writes three more user-role records that nobody typed. The
+# environment block (and the plugin list that rides with it) is re-injected
+# after a compaction or a resume, immediately before the real prompt; a
+# `<user_shell_command>` record is the transcript of a command the user ran
+# in the TUI, written between `exec_command_end` and `task_complete` with no
+# model call in between. Same class as the abort marker -- harness-generated
+# records, not turn starts -- so the same rule applies to them.
+_SYNTHETIC_RECORD_PREFIXES: Final[tuple[str, ...]] = (
+    "<environment_context>",
+    "<recommended_plugins>",
+    "<user_shell_command>",
+)
+
+# Matched on either host shape: the tags are Codex's, but the predicate is
+# shared, so a Claude-host prompt that opened with one of them would be read
+# as harness text too. That is the same trade already taken for
+# `<turn_aborted>`, and no local Claude-host user record matches any of them.
+_HARNESS_RECORD_PREFIXES: Final[tuple[str, ...]] = (
+    _INTERRUPT_MARKER_PREFIXES + _SYNTHETIC_RECORD_PREFIXES
 )
 
 # #968: consecutive-duplicate guard. A turn whose (session_id, role, text)
@@ -374,7 +394,7 @@ def _is_turn_start_user_record(obj: dict[str, object]) -> bool:
     two assistant extractors, and routes both hosts' content through
     the same exclusions.
 
-    Three kinds of user-role record are *not* turn starts, because
+    Four kinds of user-role record are *not* turn starts, because
     stopping the scan at one discards assistant text the current turn
     really produced:
 
@@ -388,15 +408,22 @@ def _is_turn_start_user_record(obj: dict[str, object]) -> bool:
     * the interrupt marker either harness writes as a plain user record
       — `[Request interrupted by user...]` on the Claude-host shape,
       `<turn_aborted>` on Codex. Both are matched by prefix through
-      `_is_interrupt_marker`, under both content encodings.
+      `_is_harness_record_text`, under both content encodings.
+    * the other synthetic records Codex writes —
+      `<environment_context>`, `<recommended_plugins>`,
+      `<user_shell_command>` — matched by the same prefix rule. A shell
+      command run in the TUI is recorded as a user message but calls no
+      model, and the environment block is re-injected on resume just
+      ahead of the real prompt, which still bounds the scan.
     * anything the host flags `isMeta` — caveat banners, skill
       preambles, Stop-hook feedback: harness text, not a prompt. Codex
       rollout records carry no such flag, so this arm too can only fire
       on the Claude-host shape.
 
-    Codex writes other synthetic user records (`<environment_context>`,
-    `<recommended_plugins>`, `<user_shell_command>`) that are outside
-    these three classes and are still treated as turn starts.
+    What is *not* excluded, deliberately: the Claude-host records that
+    are harness-shaped but do open a turn the model answers — slash
+    commands (`<command-name>`), `<task-notification>` records and
+    local command output. Excluding those would suppress real answers.
     """
     if obj.get("type") == "response_item":
         payload = obj.get("payload")
@@ -423,11 +450,11 @@ def _user_content_opens_a_turn(content: object) -> bool:
     """True unless this user-record content is tool plumbing or a marker.
 
     Shared by both host shapes (#1439), so the tool_result and
-    interrupt-marker exclusions apply wherever the content can carry
+    harness-record exclusions apply wherever the content can carry
     them rather than only on the Claude-host arm.
     """
     if isinstance(content, str):
-        return not _is_interrupt_marker(content)
+        return not _is_harness_record_text(content)
     if not isinstance(content, list) or not content:
         return True
     texts: list[str] = []
@@ -440,15 +467,20 @@ def _user_content_opens_a_turn(content: object) -> bool:
         t = seg_typed.get("text")
         if isinstance(t, str):
             texts.append(t)
-    # Text-only content that says nothing but "interrupted" is the marker
-    # record; anything else with text in it is a real prompt.
-    return not (texts and all(_is_interrupt_marker(t) for t in texts))
+    # Text-only content that says nothing but harness boilerplate is the
+    # marker record; anything else with text in it is a real prompt, so a
+    # record carrying a marker *and* a typed segment still opens a turn.
+    return not (texts and all(_is_harness_record_text(t) for t in texts))
 
 
-def _is_interrupt_marker(text: str) -> bool:
-    """True for either host's interrupt/abort record text (#1439)."""
+def _is_harness_record_text(text: str) -> bool:
+    """True for either host's harness-written record text (#1439).
+
+    Covers both interrupt markers and Codex's other synthetic records;
+    see `_INTERRUPT_MARKER_PREFIXES` / `_SYNTHETIC_RECORD_PREFIXES`.
+    """
     stripped = text.strip()
-    return any(stripped.startswith(p) for p in _INTERRUPT_MARKER_PREFIXES)
+    return any(stripped.startswith(p) for p in _HARNESS_RECORD_PREFIXES)
 
 
 def _assistant_text_claude(obj: dict[str, object]) -> str | None:
