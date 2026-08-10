@@ -270,3 +270,49 @@ def test_the_named_residual_count_forms_are_read(phrase: str) -> None:
     assert _directive_window_spec(text) is None, (
         "two stated windows must refuse, not resolve to the second"
     )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Always remember this for a week, and thanks for a second opinion.",
+        "Always remember this for a week; I looked for a minute detail.",
+    ],
+)
+def test_an_adjectival_unit_beside_a_real_window_does_not_refuse(text: str) -> None:
+    """`second` and `minute` are adjectives too, and refusing on them is a
+    recall cost this pattern's own contract forbids.
+
+    `_UNUSABLE_WINDOW_RE` is new in this change, so this is not inherited
+    behaviour: without the clause-boundary guard, "for a second opinion"
+    reads as a second stated window and the sentence pairing it with a
+    real `for a week` resolves to nothing instead of to `1w`. The guard
+    is narrow on purpose — it applies only to `a`/`an` + `second`/`minute`,
+    the one form where the adjective reading collides with a duration.
+    """
+    assert [w for _, w in _stated_windows_with_positions(text)] == ["1w"]
+    assert stated_window_is_ambiguous(text) is False
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("Remember this for a second.", [None]),
+        ("Remember this for a second, then drop it.", [None]),
+        ("Remember this for a minute!", [None]),
+        ("Remember this for an hour.", [None]),
+        ("Remember this for 30 minutes.", [None]),
+        ("Remember this for two hours.", [None]),
+    ],
+)
+def test_a_genuine_sub_day_duration_is_still_stated(
+    text: str, expected: list[str | None]
+) -> None:
+    """The guard must not cost the durations it sits next to.
+
+    Each of these states an unresolvable window and must keep doing so —
+    a `None` here is what makes `aelf lock --for` refuse rather than
+    invent an expiry. If the guard ever swallowed one, the directive
+    would silently resolve some *other* window in the sentence instead.
+    """
+    assert [w for _, w in _stated_windows_with_positions(text)] == expected

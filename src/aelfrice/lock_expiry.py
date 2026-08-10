@@ -255,6 +255,10 @@ _NEXT_UNIT_RE: Final[re.Pattern[str]] = re.compile(
 # still a window the user stated; it just cannot be resolved (#1440).
 _SUB_DAY_UNIT_WORDS: Final[tuple[str, ...]] = ("second", "minute", "hour")
 
+# The sub-day units that are also English adjectives. Only these need the
+# clause-boundary guard below; "hour" has no adjective reading.
+_ADJECTIVAL_UNIT_WORDS: Final[tuple[str, ...]] = ("second", "minute")
+
 # Counts above the `_NUMBER_WORDS` ceiling that stand alone in front of
 # the unit, which is where this vocabulary reads them: "twenty days".
 # A compound ("twenty-five") is covered by the optional suffix below,
@@ -340,8 +344,26 @@ _UNUSABLE_WINDOW_RE: Final[re.Pattern[str]] = re.compile(
     r")\s+(?:" + "|".join((*_UNIT_WORDS, *_SUB_DAY_UNIT_WORDS)) + r")s?"
     # A readable count with an unresolvable unit: "30 minutes",
     # "two hours".
-    r"|(?:\d+|" + "|".join(_NUMBER_WORDS) + r")\s+(?:"
-    + "|".join(_SUB_DAY_UNIT_WORDS) + r")s?"
+    #
+    # `second` and `minute` are also English adjectives, and the
+    # indefinite article is the form that collides: "for a second
+    # opinion" and "for a minute detail" are not durations. Left
+    # unguarded they read as a stated window, so a sentence pairing one
+    # with a real window refuses instead of resolving it — the recall
+    # cost on supported units this pattern's own contract forbids. When
+    # the count is `a`/`an` and the unit is one of those two, the phrase
+    # must therefore end its clause: end of string, punctuation, or a
+    # conjunction. "for a second," and "for a second." still state a
+    # window; "for a second opinion" no longer does. A numeral or a
+    # spelled count ("two seconds") is never adjectival and stays
+    # unguarded, as does "an hour", which has no adjective reading.
+    r"|(?:a|an)\s+(?:" + "|".join(_ADJECTIVAL_UNIT_WORDS) + r")s?"
+    r"(?=$|[^\w\s]|\s+(?:and|or|but|then|so)\b)"
+    r"|(?:\d+|" + "|".join(w for w in _NUMBER_WORDS if w not in ("a", "an"))
+    + r")\s+(?:" + "|".join(_SUB_DAY_UNIT_WORDS) + r")s?"
+    r"|(?:a|an)\s+(?:"
+    + "|".join(u for u in _SUB_DAY_UNIT_WORDS
+               if u not in _ADJECTIVAL_UNIT_WORDS) + r")s?"
     r")"
     # The count implied by "next", with an unresolvable unit: "for the
     # next hour". Same grammar as `_NEXT_UNIT_RE`, one class of unit
