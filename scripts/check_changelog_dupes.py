@@ -35,17 +35,46 @@ every committed changelog (v0–v4 and the index): the two known
 duplicates match at 496 and 2763 characters, and no unrelated pair
 anywhere reaches 120.
 
-Usage: check_changelog_dupes.py CHANGELOG/v4.md [...]
+## Directories, and why comparison is global (#1475)
+
+An argument may be a directory — `CHANGELOG/unreleased/`, one file per
+entry. Every `*.md` in it except `README.md` is an entry file.
+
+Those files are checked *together with* the `[Unreleased]` block of the
+changelog files given in the same invocation, not one file at a time.
+Two reasons, both failure modes this check exists to catch:
+
+- Two PRs can add near-identical entries as two separate files. Per
+  file there is one entry and never a duplicate, so a per-file check
+  would report a pass having examined nothing that could fail — the
+  #1160 defect class.
+- During the transition an entry can exist both in the `[Unreleased]`
+  block and as a file. Collation emits both, so the duplicate reaches
+  the released section.
+
+Entries from an entry file are therefore bucketed under `[Unreleased]`,
+which is where collation will put them.
+
+Usage: check_changelog_dupes.py CHANGELOG/v4.md CHANGELOG/unreleased [...]
 """
 from __future__ import annotations
 
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 # Characters two entries must agree on before they are called the same
 # entry. Between the widest incidental overlap observed (<120) and the
 # narrowest real duplicate (496), so neither bound is tight.
 PREFIX_THRESHOLD = 200
+
+# Section an entry file's bullet belongs to: the block it will be
+# collated into.
+UNRELEASED_SECTION = "[Unreleased]"
+
+# The directory note, not an entry (it also keeps the directory
+# tracked — git stores no empty trees).
+README_NAME = "README.md"
 
 
 def _common_prefix_len(a: str, b: str) -> int:
@@ -57,52 +86,111 @@ def _common_prefix_len(a: str, b: str) -> int:
     return n
 
 
-def find_duplicates(text: str) -> list[tuple[str, int, str]]:
-    """Return (section, shared_prefix_len, entry) per restated pair."""
-    section = "(preamble)"
-    buckets: dict[str, list[str]] = {}
+def _collect(
+    text: str,
+    source: str,
+    buckets: dict[str, list[tuple[str, str]]],
+    section: str = "(preamble)",
+) -> None:
+    """Bucket `text`'s bullets by section, tagging each with `source`."""
     for line in text.split("\n"):
         if line.startswith("## "):
             section = line[3:].strip()
         elif line.startswith("- "):
-            buckets.setdefault(section, []).append(line)
+            buckets.setdefault(section, []).append((line, source))
 
-    found: list[tuple[str, int, str]] = []
+
+def find_duplicates_across(
+    sources: Iterable[tuple[str, str, str]],
+) -> list[tuple[str, int, str, str, str]]:
+    """Compare every source against every other in one pass.
+
+    `sources` is `(source_label, text, default_section)`. Returns
+    `(section, shared_prefix_len, older_entry, older_source,
+    other_source)` per restated pair.
+    """
+    buckets: dict[str, list[tuple[str, str]]] = {}
+    for label, text, section in sources:
+        _collect(text, label, buckets, section)
+
+    found: list[tuple[str, int, str, str, str]] = []
     for name, entries in buckets.items():
-        for i, first in enumerate(entries):
-            for second in entries[i + 1:]:
+        for i, (first, first_src) in enumerate(entries):
+            for second, second_src in entries[i + 1:]:
                 shared = _common_prefix_len(first, second)
                 if shared >= PREFIX_THRESHOLD:
                     # Report the shorter: it is the superseded revision.
-                    older = min(first, second, key=len)
-                    found.append((name, shared, older))
+                    if len(second) < len(first):
+                        older, older_src, other_src = (
+                            second, second_src, first_src
+                        )
+                    else:
+                        older, older_src, other_src = (
+                            first, first_src, second_src
+                        )
+                    found.append(
+                        (name, shared, older, older_src, other_src)
+                    )
     return found
+
+
+def find_duplicates(text: str) -> list[tuple[str, int, str]]:
+    """Return (section, shared_prefix_len, entry) per restated pair."""
+    return [
+        (section, shared, older)
+        for section, shared, older, _, _ in find_duplicates_across(
+            [("(text)", text, "(preamble)")]
+        )
+    ]
+
+
+def entry_files(directory: Path) -> list[Path]:
+    """Entry files in `CHANGELOG/unreleased/`, in a stable order."""
+    return sorted(
+        (p for p in directory.glob("*.md") if p.name != README_NAME),
+        key=lambda p: p.name,
+    )
 
 
 def main(argv: list[str]) -> int:
     paths = [Path(a) for a in argv[1:]]
     if not paths:
-        print("usage: check_changelog_dupes.py <changelog.md> ...",
+        print("usage: check_changelog_dupes.py <changelog.md|dir> ...",
               file=sys.stderr)
         return 2
 
     failed = False
+    sources: list[tuple[str, str, str]] = []
     for path in paths:
-        if not path.is_file():
-            print(f"::error file={path}::no such file", file=sys.stderr)
-            failed = True
-            continue
-        for section, shared, older in find_duplicates(
-            path.read_text(encoding="utf-8")
-        ):
-            failed = True
-            print(
-                f"::error file={path}::Two entries under '## {section}' "
-                f"agree for {shared} characters — an amended entry kept "
-                f"beside the revision it replaced. Keep the longer, drop "
-                f"the shorter. Starts: {older[:120]}",
-                file=sys.stderr,
+        if path.is_dir():
+            # An empty directory is the expected steady state right
+            # after a release, so it is not an error — but the caller
+            # naming a directory that does not exist is.
+            sources.extend(
+                (str(f), f.read_text(encoding="utf-8"), UNRELEASED_SECTION)
+                for f in entry_files(path)
             )
+        elif path.is_file():
+            sources.append(
+                (str(path), path.read_text(encoding="utf-8"), "(preamble)")
+            )
+        else:
+            print(f"::error file={path}::no such file or directory",
+                  file=sys.stderr)
+            failed = True
+
+    for section, shared, older, older_src, other_src in (
+        find_duplicates_across(sources)
+    ):
+        failed = True
+        print(
+            f"::error file={older_src}::Two entries under "
+            f"'## {section}' agree for {shared} characters — an amended "
+            f"entry kept beside the revision it replaced (the other is "
+            f"in {other_src}). Keep the longer, drop the shorter. "
+            f"Starts: {older[:120]}",
+            file=sys.stderr,
+        )
     return 1 if failed else 0
 
 

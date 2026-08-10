@@ -8,6 +8,8 @@ revision beside the one that replaced it. Two entries reached
 from __future__ import annotations
 
 import importlib.util
+import re
+import shlex
 from pathlib import Path
 
 import pytest
@@ -104,3 +106,130 @@ def test_committed_changelogs_are_clean(path: Path) -> None:
         f"{path.name} has a restated entry: "
         + "; ".join(f"{s} ({n} chars) {e[:90]}" for s, n, e in found)
     )
+
+
+# ---------------------------------------------------------------------------
+# `CHANGELOG/unreleased/` coverage (#1475).
+#
+# One entry per file means no single file can hold a duplicate, so a
+# per-file check would report a pass having examined nothing that could
+# fail — the #1160 defect class. These pin the two pairs that can
+# actually duplicate: file-vs-file, and file-vs-`[Unreleased]` block
+# during the transition.
+# ---------------------------------------------------------------------------
+
+entry_files = check_changelog_dupes.entry_files
+main = check_changelog_dupes.main
+
+_WORKFLOW = _REPO / ".github" / "workflows" / "staging-gate.yml"
+_INVOCATION_RE = re.compile(
+    r"python3 scripts/check_changelog_dupes\.py ([^\n]*)"
+)
+
+
+def _ci_arguments() -> list[str]:
+    """The arguments `release-docs-check` actually passes."""
+    found = _INVOCATION_RE.search(_WORKFLOW.read_text(encoding="utf-8"))
+    assert found, "release-docs-check no longer runs the duplicate check"
+    return shlex.split(found.group(1))
+
+
+def _tree(tmp_path: Path, block: str, files: dict[str, str]) -> list[str]:
+    """A changelog + entry directory; returns argv for `main`."""
+    directory = tmp_path / "unreleased"
+    directory.mkdir()
+    (directory / "README.md").write_text(
+        _entry("Not an entry, the directory note", "z") + "\n",
+        encoding="utf-8",
+    )
+    for name, text in files.items():
+        (directory / name).write_text(text + "\n", encoding="utf-8")
+    changelog = tmp_path / "v4.md"
+    changelog.write_text(
+        "\n".join(["## [Unreleased]", "", "### Fixed", block, ""]),
+        encoding="utf-8",
+    )
+    return ["check_changelog_dupes.py", str(changelog), str(directory)]
+
+
+def test_a_duplicate_across_two_entry_files_is_caught(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Neither file is a duplicate on its own."""
+    argv = _tree(tmp_path, "", {
+        "1-a.md": "### Fixed\n\n" + _entry("Same fix ([#1])", "16 of 121"),
+        "2-b.md": "### Fixed\n\n" + _entry("Same fix ([#1])", "16.0 not 121"),
+    })
+    assert main(argv) == 1
+    err = capsys.readouterr().err
+    assert "1-a.md" in err and "2-b.md" in err
+
+
+def test_a_duplicate_between_the_block_and_an_entry_file_is_caught(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The transition shape: the same entry in both conventions.
+
+    Collation emits the block and then the files, so this reaches the
+    released section twice.
+    """
+    argv = _tree(
+        tmp_path,
+        _entry("Same fix ([#1])", "in the block"),
+        {"1-a.md": "### Fixed\n\n" + _entry("Same fix ([#1])", "in a file")},
+    )
+    assert main(argv) == 1
+    assert "[Unreleased]" in capsys.readouterr().err
+
+
+def test_distinct_entry_files_pass(tmp_path: Path) -> None:
+    """The control: the check is not simply failing on any directory."""
+    argv = _tree(tmp_path, "", {
+        "1-a.md": "### Fixed\n\n" + _entry("One fix ([#1])", "a"),
+        "2-b.md": "### Fixed\n\n" + _entry("Another fix ([#2])", "b"),
+    })
+    assert main(argv) == 0
+
+
+def test_an_empty_entry_directory_is_not_an_error(tmp_path: Path) -> None:
+    """The steady state right after a release cut."""
+    assert main(_tree(tmp_path, "", {})) == 0
+
+
+def test_a_missing_directory_is_still_an_error(tmp_path: Path) -> None:
+    """A gate pointed at nothing must not report a pass."""
+    assert main(["check_changelog_dupes.py", str(tmp_path / "gone")]) == 1
+
+
+def test_the_ci_invocation_names_the_unreleased_directory() -> None:
+    """`CHANGELOG/*.md` does not match a directory.
+
+    If the argument is dropped, entry files stop being examined and the
+    check still reports green — so assert the argument, not the result.
+    """
+    directory = (_REPO / "CHANGELOG" / "unreleased").resolve()
+    matched = [
+        arg for arg in _ci_arguments()
+        if any(p.resolve() == directory for p in _REPO.glob(arg))
+    ]
+    assert matched, (
+        "release-docs-check does not pass CHANGELOG/unreleased to "
+        "check_changelog_dupes.py; entry files would go unchecked"
+    )
+
+
+def test_the_committed_tree_passes_the_ci_invocation(
+    monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run the gate's own command line against the tree.
+
+    The workflow's `CHANGELOG/*.md` is expanded by the shell before the
+    script sees it, so expand it here too rather than handing the script
+    a literal it would report as missing.
+    """
+    monkeypatch.chdir(_REPO)
+    expanded: list[str] = []
+    for arg in _ci_arguments():
+        matches = sorted(str(p) for p in _REPO.glob(arg))
+        expanded.extend(matches or [arg])
+    assert main(["check_changelog_dupes.py", *expanded]) == 0
